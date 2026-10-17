@@ -1080,4 +1080,59 @@ describe('agent repository guidance bootstrap', () => {
       await manager.stop();
     });
   });
+
+  describe('profile-selected spawn', () => {
+    function savedProfileManager() {
+      const directory = mkdtempSync(join(tmpdir(), 'agent-manager-profile-'));
+      directories.push(directory);
+      const store = new StateStore(join(directory, 'state.db'));
+      openStores.push(store);
+      const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
+      const record = workspace('network-none', ownerId);
+      store.create(record);
+      const modelProfiles = createCachedProfile(store, ownerId);
+      const manager = new AgentManager(agentsConfig, store, {
+        repository: new AgentStateRepository(store.database, agentsConfig.limits),
+        launcher: new FakeLauncher(),
+        gateway: new FakeGateway(),
+        toolExecutor: vi.fn(async () => ({ ok: true as const, message: 'read', data: {}, truncated: false })),
+        modelProfiles
+      });
+      return { manager, modelProfiles, ownerId, record };
+    }
+
+    it('pins the saved profile\'s active revision and reports its model in spawn and status', async () => {
+      const { manager, modelProfiles, ownerId, record } = savedProfileManager();
+      const saved = modelProfiles.listProfiles(ownerId).find((profile) => profile.id === 'cached');
+      const expected = { profileId: 'cached', revisionId: saved?.activeRevisionId, model: 'openai/gpt-5', apiMode: 'chat-completions' };
+      expect(expected.revisionId).toMatch(/^rev_/);
+      const spawned = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { profileId: 'cached' }));
+      expect(spawned.data).toMatchObject({ modelProfile: expected });
+      const agentId = (spawned.data as { agentId: string }).agentId;
+      const status = await manager.dispatch(record.ownerId, record, 'agent_status', { workspaceId: record.id, agentId });
+      expect(status.data).toMatchObject({ profileId: expected.revisionId, modelProfile: expected });
+      // A replay returns the same pinned revision rather than re-resolving the profile.
+      const replayed = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { profileId: 'cached' }));
+      expect(replayed.data).toMatchObject({ agentId, replayed: true, modelProfile: expected });
+      await manager.stop();
+    });
+
+    it('reports a static profile without a revision', async () => {
+      const { manager, record } = savedProfileManager();
+      const spawned = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+      expect(spawned.data).toMatchObject({ modelProfile: { profileId: 'default', revisionId: null, model: 'test/model', apiMode: 'chat-completions' } });
+      await manager.stop();
+    });
+
+    it('says a disabled saved profile is disabled instead of unknown', async () => {
+      const { manager, modelProfiles, ownerId, record } = savedProfileManager();
+      const saved = modelProfiles.listProfiles(ownerId).find((profile) => profile.id === 'cached')!;
+      modelProfiles.disableProfile(ownerId, 'cached', saved.generation);
+      await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { profileId: 'cached' })))
+        .rejects.toMatchObject({ code: 'INVALID_INPUT', message: expect.stringContaining('"cached" is disabled') });
+      await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { profileId: 'missing', idempotencyKey: 'spawn-missing' })))
+        .rejects.toMatchObject({ code: 'INVALID_INPUT', message: 'unknown agent model profile' });
+      await manager.stop();
+    });
+  });
 });

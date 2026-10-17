@@ -1236,6 +1236,16 @@ export class ModelProfileStateRepository {
   }
 
   /** The provider of one credential owned by `principalId`, or undefined for another principal's or a missing one. */
+  /** One revision owned by `principalId`, active or not, or undefined for another principal's or a missing one. */
+  getRevision(principalId: string, revisionId: string): AgentModelProfileRevision | undefined {
+    const row = this.database.prepare(`
+      SELECT ${REVISION_COLUMNS}
+      FROM agent_model_profile_revisions
+      WHERE id = ? AND principal_id = ?
+    `).get(revisionId, principalId) as RevisionRow | undefined;
+    return row ? revisionFromRow(row) : undefined;
+  }
+
   getCredentialProvider(principalId: string, credentialId: string): ModelProviderKind | undefined {
     const row = this.database.prepare('SELECT provider FROM model_provider_credentials WHERE id = ? AND principal_id = ?')
       .get(credentialId, principalId) as { provider: string } | undefined;

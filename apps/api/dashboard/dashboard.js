@@ -65,7 +65,7 @@ import {
   renderWorkspaceCockpitHeader, renderWorkspaceTabs, renderWorkspaceSummary,
   renderWorkspaceArtifacts, renderWorkspaceActivity, renderFinalizeDialog,
   renderWorkspaceUnavailableTab, workspaceHasAction, workspaceTabAvailable,
-  renderAgentsIndex, renderAgentDetail,
+  renderAgentsIndex, renderAgentDetail, renderAgentLive, agentStatusLabel, renderAgentControls, isAgentTerminal, agentMessageOutcome,
   renderRuntimePanel, renderGitPanel,
   renderAutomationPanel, renderDeployPanel,
   renderActivityCenter, renderApprovals, grantIsActionable, planIsActionable, renderPackages,
@@ -73,6 +73,7 @@ import {
   WORKSPACE_LIFECYCLE_FIELDS, isWorkspaceLifecycleView, lifecycleDurationLabel, workspaceLifecycleDisplayValue, workspaceLifecycleFieldBounds
 } from './dashboard-render.js';
 import { mountTerminalPane } from './dashboard-terminal.js';
+import { createAgentSpawnDialog } from './dashboard-agent-spawn.js';
 import { createModelWizard, createSpendPanel, renderModelsPage, verificationLabel } from './dashboard-models.js';
 import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
@@ -3584,7 +3585,8 @@ export function initializeDashboard() {
   /** The workspace Agents tab reuses the global renderer with a scoped list. */
   async function renderWorkspaceAgents(workspaceId) {
     const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/agents`);
-    return renderAgentsIndex({ agents: result.data?.agents ?? [], filters: { workspaceId } });
+    const launcher = `<p class="toolbar"><button type="button" class="accent-btn" data-agent-spawn data-workspace-id="${escapeHtml(workspaceId)}">Run Pi agent</button></p>`;
+    return `${launcher}${renderAgentsIndex({ agents: result.data?.agents ?? [], filters: { workspaceId } })}`;
   }
   /** Renew, recover, finalize, and close, each with pending state and live feedback. */
   function bindCockpitActions(item) {
@@ -3763,6 +3765,7 @@ export function initializeDashboard() {
       ...(profileId ? { profileId } : {}), ...(parentAgentId ? { parentAgentId } : {}),
       ...(attention ? { attention } : {})
     });
+    setPageActions(renderPrimaryAction({ id: 'open-agent-spawn', label: 'Run Pi agent' }));
     const result = await api(`/agents${query.size ? `?${query}` : ''}`);
     insertRendered(content, renderAgentsIndex({ agents: result.data?.agents ?? [], filters: { status, workspaceId: scope, profileId, parentAgentId, attention } }));
     document.querySelector('#agent-filters')?.addEventListener('submit', (event) => {
@@ -3772,20 +3775,87 @@ export function initializeDashboard() {
       navigateTo(`/dashboard/agents${next.size ? `?${next}` : ''}`);
     });
   }
-  /** One agent: overview, usage, bounded logs, and the message/cancel controls. */
+  /**
+   * The spawn dialog is created once and reused, so a key reused for a retried submit
+   * survives closing and reopening only while the payload is unchanged.
+   */
+  let agentSpawnDialog;
+  async function openAgentSpawn(trigger, workspaceId) {
+    // The profile list is the form, so its failure is reported; the gateway status and
+    // the workspace list only enrich it and degrade to an empty or unknown state.
+    const [workspacesRes, profilesRes, statusRes] = await Promise.all([
+      api('/workspaces').catch(() => null),
+      listModelProfiles(),
+      getModelConfigStatus().catch(() => null)
+    ]);
+    const workspaces = workspacesRes?.data?.workspaces ?? [];
+    agentSpawnDialog ??= createAgentSpawnDialog({
+      dialog: document.querySelector('#agent-spawn-dialog'),
+      insert: insertRendered,
+      api,
+      announce,
+      onSpawned: ({ agentId, workspaceId: spawnedIn }) => navigateTo(`/dashboard/agents/${encodeURIComponent(agentId)}?workspaceId=${encodeURIComponent(spawnedIn)}`)
+    });
+    agentSpawnDialog.open({
+      workspaces,
+      profiles: profilesRes.data?.profiles ?? [],
+      gatewayStatus: statusRes?.data?.status ?? null,
+      workspace: workspaceId ? workspaces.find((entry) => entry.workspaceId === workspaceId) ?? { workspaceId } : null,
+      trigger
+    });
+  }
+  document.addEventListener('click', (event) => {
+    const trigger = event.target instanceof globalThis.Element ? event.target.closest('#open-agent-spawn, [data-agent-spawn]') : null;
+    if (!trigger) return;
+    event.preventDefault();
+    void openAgentSpawn(trigger, trigger.dataset.workspaceId || undefined).catch(showError);
+  });
+  const AGENT_POLL_MS = 3_000;
+  const AGENT_LOG_EVENT_LIMIT = 500;
+  /**
+   * One agent: overview, usage, bounded logs, and the message/cancel controls. While the
+   * run is live the page polls status and appends new log events from the runner cursor;
+   * navigation aborts the load signal, which ends the loop.
+   */
   async function loadAgentDetail(agentId) {
     selectNavigation('agents');
     document.querySelector('#command-surface').hidden = true;
+    const signal = loadController?.signal;
     const workspaceScope = new URLSearchParams(location.search).get('workspaceId');
-    const query = workspaceScope ? `?workspaceId=${encodeURIComponent(workspaceScope)}` : '';
+    const scope = workspaceScope ? `workspaceId=${encodeURIComponent(workspaceScope)}` : '';
     const [statusResult, logsResult] = await Promise.all([
-      api(`/agents/${encodeURIComponent(agentId)}${query}`),
-      api(`/agents/${encodeURIComponent(agentId)}/logs${query}`).catch(() => undefined)
+      api(`/agents/${encodeURIComponent(agentId)}${scope ? `?${scope}` : ''}`),
+      api(`/agents/${encodeURIComponent(agentId)}/logs${scope ? `?${scope}` : ''}`).catch(() => undefined)
     ]);
-    const agent = statusResult.data;
+    let agent = statusResult.data;
+    let logs = logsResult?.data?.events ?? [];
+    let cursor = logsResult?.data?.nextCursor;
     setTitle('Agent detail', 'One coding agent: status, usage, bounded logs, and control.');
-    insertRendered(content, renderAgentDetail({ agent, logs: logsResult?.data?.events ?? [] }));
+    insertRendered(content, renderAgentDetail({ agent, logs, live: !isAgentTerminal(agent.status) }));
     bindAgentControls(agent, agentId);
+    while (!isAgentTerminal(agent.status)) {
+      await new Promise((resolve) => globalThis.setTimeout(resolve, AGENT_POLL_MS));
+      if (signal?.aborted || !document.querySelector('#agent-live')) return;
+      const logQuery = new URLSearchParams(scope);
+      if (cursor) logQuery.set('cursor', cursor);
+      const [nextStatus, nextLogs] = await Promise.all([
+        api(`/agents/${encodeURIComponent(agentId)}${scope ? `?${scope}` : ''}`).catch(() => undefined),
+        api(`/agents/${encodeURIComponent(agentId)}/logs?${logQuery}`).catch(() => undefined)
+      ]);
+      if (signal?.aborted || !document.querySelector('#agent-live')) return;
+      if (nextStatus?.data) agent = nextStatus.data;
+      if (nextLogs?.data) {
+        logs = [...logs, ...(nextLogs.data.events ?? [])].slice(-AGENT_LOG_EVENT_LIMIT);
+        cursor = nextLogs.data.nextCursor ?? cursor;
+      }
+      const terminal = isAgentTerminal(agent.status);
+      insertRendered(document.querySelector('#agent-live'), renderAgentLive({ agent, logs, live: !terminal }));
+      if (terminal) {
+        insertRendered(document.querySelector('#agent-controls'), renderAgentControls(agent));
+        bindAgentControls(agent, agentId);
+        announce(`Agent ${agentStatusLabel(agent.status).toLowerCase()}.`);
+      }
+    }
   }
   function bindAgentControls(agent, agentId) {
     const form = document.querySelector('#agent-message-form');
@@ -3794,12 +3864,14 @@ export function initializeDashboard() {
       const values = new FormData(form);
       // The contract requires an idempotency key, so a retry cannot double-deliver.
       const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      let outcome;
       void submitForm(form, 'Sending…', async () => {
-        await api(`/agents/${encodeURIComponent(agentId)}/messages`, {
+        const result = await api(`/agents/${encodeURIComponent(agentId)}/messages`, {
           method: 'POST',
           body: requestBody({ workspaceId: agent.workspaceId, message: values.get('message'), mode: values.get('mode'), idempotencyKey })
         });
-      }, async () => { announce('Message sent to the agent.'); await loadAgentDetail(agentId); });
+        outcome = agentMessageOutcome(result?.data?.state);
+      }, async () => { form.reset(); announce(outcome); });
     });
     document.querySelector('#cancel-agent')?.addEventListener('click', (event) => confirmAction({
       title: 'Cancel this agent and its children?',

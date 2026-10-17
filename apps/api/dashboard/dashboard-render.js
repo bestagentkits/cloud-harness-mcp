@@ -346,21 +346,64 @@ export function renderAgentsIndex({ agents = [], filters = {}, now = Date.now() 
   })}`;
 }
 
+/** States an agent never leaves; a run in one of them has exited and is no longer polled. */
+export const AGENT_TERMINAL_STATUSES = Object.freeze(['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED']);
+export const isAgentTerminal = (status) => AGENT_TERMINAL_STATUSES.includes(String(status ?? ''));
+
+/** What every Dashboard agent is: a bounded run, not a persistent interactive session. */
+export const AGENT_BOUNDED_RUN_NOTE = 'A bounded run: the agent works on one task until it finishes, fails, hits a budget, or its time limit ends, then its process exits. It is not a persistent terminal session; steering and follow-up messages reach it only while it is running.';
+
+/** The model a run is pinned to, said in words; a revision the runner can no longer resolve says so. */
+function agentModelFacts(agent) {
+  const reference = agent?.modelProfile;
+  if (!reference || typeof reference !== 'object') return `<dt>Profile</dt><dd>${escape(agent?.profileId ?? 'Not reported')}</dd>`;
+  const apiMode = reference.apiMode === 'responses' ? 'Responses' : reference.apiMode === 'chat-completions' ? 'Chat Completions' : 'Not reported';
+  return `<dt>Profile</dt><dd>${escape(reference.profileId ?? 'Deleted profile')}</dd><dt>Model</dt><dd class="mono">${escape(reference.model ?? 'Not reported')}</dd><dt>API mode</dt><dd>${escape(apiMode)}</dd><dt>Pinned revision</dt><dd class="mono wrap">${escape(reference.revisionId ?? 'Static runner profile')}</dd>`;
+}
+
 /**
- * One agent in full: overview, usage, logs, and the message controls. Logs are the
- * bounded projection the adapter produced; nothing larger is rendered here.
+ * The parts of an agent that change while it runs: overview, usage and logs. The
+ * detail page re-renders only this block while polling, so a message being typed
+ * below it is never lost.
  */
-export function renderAgentDetail({ agent, logs = [] } = {}) {
+export function renderAgentLive({ agent, logs = [], live = false } = {}) {
   const usage = agent?.usage ?? {};
   const budget = agent?.budget ?? {};
   const logRows = logs.length
     ? logs.map((event) => `<li class="agent-log-event"><span class="mono">${escape(event.type ?? 'event')}</span>${time(event.timestamp)}<pre class="mono">${escape(event.content ?? '')}</pre></li>`).join('')
     : '<li class="empty">No retained log events for this agent.</li>';
-  const overview = `<section class="panel" aria-labelledby="agent-overview-heading"><h2 id="agent-overview-heading">Overview</h2><dl class="facts"><dt>Status</dt><dd><span class="status ${escape(String(agent?.status ?? '').toLowerCase())}">${escape(agentStatusLabel(agent?.status))}</span></dd><dt>Profile</dt><dd>${escape(agent?.profileId ?? 'Not reported')}</dd><dt>Parent</dt><dd>${escape(agent?.parentAgentId ?? 'None')}</dd><dt>Started</dt><dd>${agent?.startedAt ? time(agent.startedAt) : 'Not reported'}</dd><dt>Terminal</dt><dd>${agent?.terminalAt ? time(agent.terminalAt) : 'Still running or not reported'}</dd><dt>Expires</dt><dd>${agent?.expiresAt ? time(agent.expiresAt) : 'Not reported'}</dd><dt>Terminal reason</dt><dd>${escape(agent?.terminalReason ?? 'Not reported')}</dd><dt>Outcome</dt><dd>${agent?.outcomeUnknown === true ? 'Unknown — no terminal state was recorded' : 'Reported'}</dd><dt>Allowed proxy operations</dt><dd>${Array.isArray(agent?.proxyOperations) && agent.proxyOperations.length ? agent.proxyOperations.map((operation) => escape(operation)).join(', ') : 'Not reported'}</dd></dl></section>`;
-  const usagePanel = `<section class="panel" aria-labelledby="agent-usage-heading"><h2 id="agent-usage-heading">Usage</h2><dl class="facts"><dt>Input tokens</dt><dd>${escape(countOf(usage.inputTokens))} of ${escape(countOf(budget.maxInputTokens))} (${escape(percentOf(usage.inputTokens, budget.maxInputTokens))})</dd><dt>Output tokens</dt><dd>${escape(countOf(usage.outputTokens))} of ${escape(countOf(budget.maxOutputTokens))} (${escape(percentOf(usage.outputTokens, budget.maxOutputTokens))})</dd><dt>Cost</dt><dd>${escape(costOf(usage.costMicros))} of ${escape(costOf(budget.maxCostMicros))} (${escape(percentOf(usage.costMicros, budget.maxCostMicros))})</dd><dt>Output bytes</dt><dd>${escape(countOf(usage.outputBytes))} of ${escape(countOf(budget.maxOutputBytes))}</dd><dt>Tool time</dt><dd>${escape(countOf(usage.toolTimeMs))} ms</dd><dt>Wall time</dt><dd>${escape(countOf(usage.wallTimeMs))} ms</dd><dt>Events</dt><dd>${escape(countOf(usage.eventCount))}</dd></dl><p class="page-note">Usage is the runner's reported counters; a limit that was never configured reads as “Not reported”.</p></section>`;
+  const remainingCost = Number.isSafeInteger(budget.maxCostMicros) && Number.isSafeInteger(usage.costMicros) ? Math.max(0, budget.maxCostMicros - usage.costMicros) : undefined;
+  const refresh = live ? '<p class="page-note" role="status">Live: this page refreshes every few seconds until the run ends.</p>' : '';
+  const overview = `<section class="panel" aria-labelledby="agent-overview-heading"><h2 id="agent-overview-heading">Overview</h2>${refresh}<dl class="facts"><dt>Status</dt><dd><span class="status ${escape(String(agent?.status ?? '').toLowerCase())}">${escape(agentStatusLabel(agent?.status))}</span></dd>${agentModelFacts(agent)}<dt>Run type</dt><dd>Bounded run</dd><dt>Parent</dt><dd>${escape(agent?.parentAgentId ?? 'None')}</dd><dt>Started</dt><dd>${agent?.startedAt ? time(agent.startedAt) : 'Not reported'}</dd><dt>Terminal</dt><dd>${agent?.terminalAt ? time(agent.terminalAt) : 'Still running or not reported'}</dd><dt>Expires</dt><dd>${agent?.expiresAt ? time(agent.expiresAt) : 'Not reported'}</dd><dt>Terminal reason</dt><dd>${escape(agent?.terminalReason ?? 'Not reported')}</dd><dt>Outcome</dt><dd>${agent?.outcomeUnknown === true ? 'Unknown — no terminal state was recorded' : 'Reported'}</dd><dt>Allowed proxy operations</dt><dd>${Array.isArray(agent?.proxyOperations) && agent.proxyOperations.length ? agent.proxyOperations.map((operation) => escape(operation)).join(', ') : 'Not reported'}</dd></dl><p class="page-note">${escape(AGENT_BOUNDED_RUN_NOTE)}</p></section>`;
+  const usagePanel = `<section class="panel" aria-labelledby="agent-usage-heading"><h2 id="agent-usage-heading">Usage</h2><dl class="facts"><dt>Input tokens</dt><dd>${escape(countOf(usage.inputTokens))} of ${escape(countOf(budget.maxInputTokens))} (${escape(percentOf(usage.inputTokens, budget.maxInputTokens))})</dd><dt>Output tokens</dt><dd>${escape(countOf(usage.outputTokens))} of ${escape(countOf(budget.maxOutputTokens))} (${escape(percentOf(usage.outputTokens, budget.maxOutputTokens))})</dd><dt>Cost (estimate)</dt><dd>${escape(costOf(usage.costMicros))} of ${escape(costOf(budget.maxCostMicros))} (${escape(percentOf(usage.costMicros, budget.maxCostMicros))})</dd><dt>Remaining cost budget</dt><dd>${escape(costOf(remainingCost))}</dd><dt>Output bytes</dt><dd>${escape(countOf(usage.outputBytes))} of ${escape(countOf(budget.maxOutputBytes))}</dd><dt>Tool time</dt><dd>${escape(countOf(usage.toolTimeMs))} ms</dd><dt>Wall time</dt><dd>${escape(countOf(usage.wallTimeMs))} ms</dd><dt>Events</dt><dd>${escape(countOf(usage.eventCount))}</dd></dl><p class="page-note">Usage is the runner's reported counters; cost is estimated from reported tokens and the pinned revision's prices, not a provider bill. A limit that was never configured reads as “Not reported”.</p></section>`;
   const logsPanel = `<section class="panel" aria-labelledby="agent-logs-heading"><h2 id="agent-logs-heading">Logs</h2><p class="page-note">Bounded and redacted: large events are truncated before they reach this page.</p><ul class="agent-log-list">${logRows}</ul></section>`;
-  const messagesPanel = `<section class="panel" aria-labelledby="agent-messages-heading"><h2 id="agent-messages-heading">Messages</h2><form id="agent-message-form" class="stack-form"><label for="agent-message-mode">Delivery</label><select id="agent-message-mode" name="mode"><option value="steer" selected>Steer the running agent</option><option value="followUp">Queue a follow-up</option></select><label for="agent-message-text">Message</label><textarea id="agent-message-text" name="message" rows="3" required maxlength="65536"></textarea><div class="form-row-actions"><button type="submit" class="accent-btn">Send message</button><button id="cancel-agent" class="danger" type="button">Cancel agent</button></div><p class="form-status" aria-live="polite"></p></form></section>`;
-  return `${overview}${usagePanel}${logsPanel}${messagesPanel}`;
+  return `${overview}${usagePanel}${logsPanel}`;
+}
+
+/** Message and cancel controls; once a run has ended they are disabled and say why. */
+export function renderAgentControls(agent) {
+  const ended = isAgentTerminal(agent?.status);
+  const disabled = ended ? ' disabled' : '';
+  const note = ended
+    ? '<p class="page-note">This run has ended. Messages can no longer reach it; spawn a new run to continue the work.</p>'
+    : '<p class="page-note">Steer redirects the agent after its current tool call; a follow-up waits until it finishes its current work. Either reaches the agent only while it runs.</p>';
+  return `<section class="panel" aria-labelledby="agent-messages-heading"><h2 id="agent-messages-heading">Messages</h2>${note}<form id="agent-message-form" class="stack-form"><label for="agent-message-mode">Delivery</label><select id="agent-message-mode" name="mode"${disabled}><option value="steer" selected>Steer the running agent</option><option value="followUp">Queue a follow-up</option></select><label for="agent-message-text">Message</label><textarea id="agent-message-text" name="message" rows="3" required maxlength="65536"${disabled}></textarea><div class="form-row-actions"><button type="submit" class="accent-btn"${disabled}>Send message</button><button id="cancel-agent" class="danger" type="button"${disabled}>Cancel agent</button></div><p class="form-status" aria-live="polite"></p></form></section>`;
+}
+
+/**
+ * One agent in full: overview, usage, logs, and the message controls. Logs are the
+ * bounded projection the adapter produced; nothing larger is rendered here.
+ */
+export function renderAgentDetail({ agent, logs = [], live = false } = {}) {
+  return `<div id="agent-live">${renderAgentLive({ agent, logs, live })}</div><div id="agent-controls">${renderAgentControls(agent)}</div>`;
+}
+
+/** What a message delivery state means to the owner; UNKNOWN is never reported as sent. */
+export function agentMessageOutcome(state) {
+  if (state === 'SENT') return 'Message delivered to the agent.';
+  if (state === 'RESERVED') return 'Message accepted and queued for the agent.';
+  if (state === 'REJECTED') return 'The agent refused the message because its queue is full. Wait, then retry.';
+  return 'The message was not confirmed: the agent\'s channel was unavailable (the run may have ended), so it may never see it.';
 }
 
 const TASK_STATUS_LABELS = {

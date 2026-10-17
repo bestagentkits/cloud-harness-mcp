@@ -874,6 +874,9 @@ dialog .stack-form { margin-block: 0; max-width: none; }
 #open-workspace-dialog { width: min(40rem, calc(100vw - 2 * var(--space-4))); }
 #model-credential-dialog { width: min(38rem, calc(100vw - 2 * var(--space-4))); }
 #model-profile-dialog { width: min(48rem, calc(100vw - 2 * var(--space-4))); max-width: calc(100vw - 2 * var(--space-4)); }
+#agent-spawn-dialog { width: min(44rem, calc(100vw - 2 * var(--space-4))); max-width: calc(100vw - 2 * var(--space-4)); }
+.agent-spawn-budget { display: grid; gap: var(--space-1); }
+.agent-spawn-budget small { color: var(--ink-muted); font-size: var(--text-12); }
 #knowledge-conflict-dialog { width: min(64rem, calc(100vw - 2 * var(--space-4))); }
 #mcp-server-dialog { width: min(44rem, calc(100vw - 2 * var(--space-4))); }
 #confirm-dialog { width: min(28rem, calc(100vw - 2 * var(--space-4))); }

@@ -68,6 +68,12 @@ function input(operation: RunnerOperation, value: unknown): Record<string, unkno
 
 const AGENT_FAN_OUT_CONCURRENCY = 8;
 
+/** A dashboard profile's agent records its pinned revision, so the profile filter also matches the profile it came from. */
+function agentModelProfileId(agent: Record<string, unknown>): string {
+  const reference = agent.modelProfile;
+  return reference !== null && typeof reference === 'object' ? String((reference as Record<string, unknown>).profileId ?? '') : '';
+}
+
 // The runner resolves an agent operation without a workspaceId to the principal's
 // single active workspace, so a global view fails once that workspace is gone or
 // several are open. A global list therefore fans out over the principal's listed
@@ -450,11 +456,21 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
       const profileId = typeof request.query.profileId === 'string' ? request.query.profileId.trim() : '';
       const attention = typeof request.query.attention === 'string' ? request.query.attention : '';
       const agents = (mapped.agents ?? []).filter((agent) => (
-        (!profileId || String(agent.profileId ?? '') === profileId) &&
+        (!profileId || String(agent.profileId ?? '') === profileId || agentModelProfileId(agent) === profileId) &&
         (!attention || agentNeedsAttention(agent) === (attention === 'needs-attention'))
       ));
       response.json({ data: { ...mapped, agents } });
     } catch (error) { next(error); }
+  });
+
+  // Starts one bounded Pi run. The body is the `agent_spawn` input without the workspace id,
+  // which comes from the path; the runner resolves the profile's active revision, checks the
+  // workspace posture, profile ceilings and spend policies, and replays a repeated key.
+  router.post('/api/v1/workspaces/:workspaceId/agents', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_spawn', {
+      ...(request.body && typeof request.body === 'object' ? request.body : {}),
+      workspaceId: workspaceId.parse(request.params.workspaceId)
+    });
   });
 
   router.get('/api/v1/workspaces/:workspaceId/agents', async (request: DashboardRequest, response, next) => {

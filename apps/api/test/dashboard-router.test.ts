@@ -89,6 +89,10 @@ beforeEach(async () => {
           ownerId: 'internal-owner', containerName: 'executor-secret', workspacePath: '/host/jobs/private', prompt: 'do the thing'
         }
       ] } };
+      if (operation === 'agent_spawn') return { ok: true, message: 'spawned', truncated: false, data: {
+        agentId: `agent_${'s'.repeat(24)}`, status: 'RUNNING', generation: 1, replayed: false, ownerId: 'internal-owner', containerId: 'executor-secret',
+        modelProfile: { profileId: 'coding', revisionId: `rev_${'r'.repeat(24)}`, model: 'openai/gpt-5', apiMode: 'responses', credentialId: 'cred-secret' }
+      } };
       if (operation === 'agent_logs') return { ok: true, message: 'logs', truncated: false, data: {
         agentId: `agent_${'g'.repeat(24)}`, cursor: '0', nextCursor: '1', retainedBaseCursor: '0', truncated: false, hasMore: false,
         events: [{ cursor: '0', nextCursor: '1', timestamp: '2026-08-17T00:00:30.000Z', type: 'tool.call', content: `hello ${'x'.repeat(5_000)}` }]
@@ -436,6 +440,37 @@ describe('dashboard BFF', () => {
     expect(logs.json.data.events[0].content).toContain('… truncated');
     expect(logs.json.data.events[0].content.length).toBeLessThan(4_100);
     expect(logs.json.data.events[0].type).toBe('tool.call');
+  });
+
+  it('spawns a profile-selected agent through the same runner operation, scoped by the path workspace', async () => {
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const input = {
+      prompt: 'fix the failing test', profileId: 'coding', proxyOperations: ['files_read'], ttlSeconds: 900, maxOutputBytes: 262_144,
+      maxInputTokens: 10_000, maxOutputTokens: 2_000, maxCostMicros: 500_000, idempotencyKey: 'dashboard-spawn-1'
+    };
+
+    // Without the CSRF session the runner is never reached.
+    calls = [];
+    const forged = await send(`/api/v1/workspaces/${workspaceId}/agents`, { method: 'POST', headers: { ...headers, 'x-csrf-token': 'wrong' }, body: JSON.stringify(input) });
+    expect(forged.status).toBe(403);
+    expect(calls.some((call) => call.operation === 'agent_spawn')).toBe(false);
+
+    // A body that names another workspace cannot redirect the spawn away from the path.
+    const spawned = await send(`/api/v1/workspaces/${workspaceId}/agents`, { method: 'POST', headers, body: JSON.stringify({ ...input, workspaceId: `ws_${'z'.repeat(24)}` }) });
+    expect(spawned.status).toBe(200);
+    expect(calls.findLast((call) => call.operation === 'agent_spawn')?.input).toMatchObject({ ...input, workspaceId });
+    expect(spawned.json.data).toEqual({
+      agentId: `agent_${'s'.repeat(24)}`, status: 'RUNNING', generation: 1, replayed: false,
+      modelProfile: { profileId: 'coding', revisionId: `rev_${'r'.repeat(24)}`, model: 'openai/gpt-5', apiMode: 'responses' }
+    });
+
+    // The contract rejects an incomplete request before it reaches the runner.
+    calls = [];
+    const incomplete = await send(`/api/v1/workspaces/${workspaceId}/agents`, { method: 'POST', headers, body: JSON.stringify({ prompt: 'hi' }) });
+    expect(incomplete.status).toBe(400);
+    expect(calls.some((call) => call.operation === 'agent_spawn')).toBe(false);
   });
 
   it('serves the workspace-scoped agent list and rejects an unknown agent status', async () => {

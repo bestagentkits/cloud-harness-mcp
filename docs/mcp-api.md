@@ -123,7 +123,7 @@ duplicating work:
 ## Coding-agent operations
 
 The six `agent_*` tools run a bounded Pi coding session against an existing
-`networkMode: "none"` workspace. Their exact input limits and result shapes
+`networkProfile: "network-none"` workspace. Their exact input limits and result shapes
 are the executable `TOOL_SCHEMA_BY_NAME` and `Agent*DataSchema` definitions in
 [`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts)
 and
@@ -134,6 +134,21 @@ Agent calls do not refresh the parent workspace idle TTL.
   requested proxy-tool subset before launch. Its result is an acknowledgement
   with an opaque ID, generation, status, and replay flag—not prompt
   completion.
+  A saved (Models & Budgets) profile is resolved only while it is `ACTIVE`,
+  and the spawn pins that profile's active revision: the run keeps that
+  revision's model, API mode, prices, and ceilings even if the profile is
+  edited, re-activated, or disabled afterwards, and a replay returns the same
+  pin. The result and `agent_status` carry an optional `modelProfile` object
+  (`profileId`, `revisionId`, `model`, `apiMode`) naming it; a static runner
+  profile reports `revisionId: null`, and a revision the runner can no longer
+  resolve reports `null` for the fields it cannot read. A disabled,
+  not-yet-synchronised, or revision-less saved profile is refused with
+  `INVALID_INPUT` naming that state rather than as an unknown profile.
+  Requested budgets and proxy operations must fit the profile's ceilings;
+  they are refused, never clamped.
+  A run is bounded: it works on one prompt until it succeeds, fails, is
+  cancelled, or reaches a budget or its TTL, then its process exits. It is not
+  a resumable session; continuing finished work means a new spawn.
   When the owner has set an aggregate model spend policy (daily or monthly,
   for the principal or for one model profile), the spawn also reserves its
   whole `maxCostMicros` against it. A spawn that would take any applicable
@@ -162,7 +177,8 @@ Agent calls do not refresh the parent workspace idle TTL.
   message-specific idempotency key. `RESERVED` means delivery was durably
   admitted, `SENT` means it was written to the live worker channel (not that
   the model acted on it), `REJECTED` means it was not accepted, and `UNKNOWN`
-  means restart or transport loss prevented a trustworthy determination.
+  means restart or transport loss prevented a trustworthy determination,
+  which includes a message sent after the run has exited.
   Replaying the same key returns the recorded state without another send.
 - `agent_cancel` is idempotent and cancels descendants in post-order before the
   target. Its bounded result identifies the affected agents; terminal agents

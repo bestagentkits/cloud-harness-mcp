@@ -91,6 +91,11 @@ describe('dashboard application mount', () => {
     expect(models.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
     expect(await models.text()).toContain('createModelWizard');
 
+    const spawn = await fetch(`${root}/${encodeURIComponent(manifestVersion)}/dashboard-agent-spawn.js`);
+    expect(spawn.status).toBe(200);
+    expect(spawn.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
+    expect(await spawn.text()).toContain('createAgentSpawnDialog');
+
     const legacy = await fetch(`${root}/dashboard-pages.js`);
     expect(legacy.status).toBe(200);
     expect(legacy.headers.get('cache-control')).toBe('private, no-cache');

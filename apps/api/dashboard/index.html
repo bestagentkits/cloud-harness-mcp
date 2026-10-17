@@ -143,6 +143,18 @@
       </div>
     </form>
   </dialog>
+  <dialog id="agent-spawn-dialog" aria-labelledby="agent-spawn-title" aria-describedby="agent-spawn-description">
+    <h2 id="agent-spawn-title">Run Pi agent</h2>
+    <p id="agent-spawn-description">Start one bounded coding-agent run on a model profile you choose. Review the permissions and cost cap before spawning.</p>
+    <form id="agent-spawn-form" class="stack-form wizard-form" novalidate>
+      <div id="agent-spawn-body" class="wizard-body"></div>
+      <p id="agent-spawn-status" class="form-status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-agent-spawn">Cancel</button>
+        <button type="submit" id="submit-agent-spawn" class="accent-btn">Spawn agent</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="model-profile-dialog" aria-labelledby="model-profile-title" aria-describedby="model-profile-description">
     <h2 id="model-profile-title">Add model profile</h2>
     <p id="model-profile-description">Pick a provider, connect a key, choose a model, check the connection, and save.</p>

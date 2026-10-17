@@ -318,11 +318,24 @@ export const AgentUsageSchema = z.object({
 
 const instant = z.iso.datetime({ offset: true });
 
+/**
+ * The model an agent runs on. `revisionId` is the immutable saved-profile revision pinned
+ * at spawn (null for a static runner profile); `profileId` is null only when that revision's
+ * profile can no longer be resolved.
+ */
+export const AgentModelProfileRefSchema = z.object({
+  profileId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/).nullable(),
+  revisionId: z.string().regex(/^rev_[A-Za-z0-9_-]{20,80}$/).nullable(),
+  model: z.string().max(200).nullable(),
+  apiMode: z.enum(['chat-completions', 'responses']).nullable()
+}).strict();
+
 export const AgentLiveStatusDataSchema = z.object({
   agentId: AgentIdSchema,
   workspaceId: WorkspaceIdSchema,
   parentAgentId: AgentIdSchema.nullable(),
   profileId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/),
+  modelProfile: AgentModelProfileRefSchema.optional(),
   proxyOperations: z.array(AgentProxyOperationSchema)
     .min(1)
     .max(AgentProxyOperationSchema.options.length)
@@ -358,7 +371,8 @@ export const AgentSpawnDataSchema = z.object({
   agentId: AgentIdSchema,
   status: AgentStatusSchema,
   generation: z.number().int().positive(),
-  replayed: z.boolean()
+  replayed: z.boolean(),
+  modelProfile: AgentModelProfileRefSchema.optional()
 }).strict();
 
 export const AgentLogEventSchema = z.object({

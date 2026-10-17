@@ -362,14 +362,14 @@ export class AgentManager {
     });
     this.spendLedger.reportThresholds(crossings);
     if (reservation.replayed) {
-      return success('Agent spawn replayed', spawnData(reservation.record, true));
+      return success('Agent spawn replayed', { ...spawnData(reservation.record, true), modelProfile: this.modelProfileOf(reservation.record) });
     }
     const repositoryContext = (input.repositoryContext as AgentRepositoryContext | undefined) ?? 'codex';
     const launch = this.launch(reservation.record, prompt, profile, repositoryContext, dashboardManaged)
       .finally(() => this.launches.delete(reservation.record.id));
     this.launches.set(reservation.record.id, launch);
     void launch.catch(() => undefined);
-    return success('Agent spawn accepted', spawnData(reservation.record, false));
+    return success('Agent spawn accepted', { ...spawnData(reservation.record, false), modelProfile: this.modelProfileOf(reservation.record) });
   }
 
   /**
@@ -1069,7 +1069,7 @@ export class AgentManager {
       }
     }
     const staticProfile = this.config.profiles.find((candidate) => candidate.id === id);
-    if (!staticProfile) throw new HarnessError('INVALID_INPUT', 'unknown agent model profile');
+    if (!staticProfile) throw new HarnessError('INVALID_INPUT', this.unspawnableProfileMessage(id, ownerId));
     // The gateway charges a static profile's unknown cache prices at its input
     // price, whatever the provider, so the agent reports the same prices.
     const pricing = resolveEffectivePricing(staticProfile, { billsCacheWrites: false });
@@ -1082,12 +1082,46 @@ export class AgentManager {
     };
   }
 
+  /**
+   * Why a saved profile cannot be spawned, so the owner learns the profile exists but is
+   * not usable rather than reading it as unknown. Another principal's profile is never
+   * listed here, so its existence is not disclosed.
+   */
+  private unspawnableProfileMessage(id: string, ownerId?: string): string {
+    const saved = ownerId && this.modelProfiles
+      ? this.modelProfiles.listProfiles(ownerId).find((candidate) => candidate.id === id)
+      : undefined;
+    if (!saved) return 'unknown agent model profile';
+    if (saved.status === 'DISABLED') return `agent model profile "${id}" is disabled; activate it in Models & Budgets before spawning`;
+    if (saved.status === 'SYNC_PENDING' || saved.status === 'SYNC_FAILED') {
+      return `agent model profile "${id}" is not active yet (${saved.status}); retry after the model gateway applies it`;
+    }
+    return `agent model profile "${id}" has no active revision; save and activate it before spawning`;
+  }
+
+  /**
+   * The saved profile and pinned revision an agent runs on. A dashboard profile's agent
+   * record stores the revision it pinned at spawn, so the profile slug, model and API mode
+   * come from that immutable revision rather than the profile's current state.
+   */
+  private modelProfileOf(record: AgentRecord) {
+    if (this.modelProfiles && record.profileId.startsWith('rev_')) {
+      const revision = this.modelProfiles.getRevision(record.ownerId, record.profileId);
+      return revision
+        ? { profileId: revision.profileId, revisionId: revision.id, model: revision.model, apiMode: revision.apiMode }
+        : { profileId: null, revisionId: record.profileId, model: null, apiMode: null };
+    }
+    const configured = this.config.profiles.find((candidate) => candidate.id === record.profileId);
+    return { profileId: record.profileId, revisionId: null, model: configured?.model ?? null, apiMode: configured?.apiMode ?? null };
+  }
+
   private publicStatus(record: AgentRecord) {
     return {
       agentId: record.id,
       workspaceId: record.workspaceId,
       parentAgentId: record.parentAgentId,
       profileId: record.profileId,
+      modelProfile: this.modelProfileOf(record),
       proxyOperations: record.proxyOperations,
       status: record.status,
       generation: record.generation,

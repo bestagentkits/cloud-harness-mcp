@@ -5,6 +5,7 @@ import {
   GITHUB_READ_ACTIONS,
   GITHUB_WRITE_ACTIONS,
   AgentProxyOperationSchema,
+  AgentSpawnDataSchema,
   AgentStatusDataSchema,
   ApiConfigSchema,
   ContextManifestItemSchema,
@@ -879,6 +880,19 @@ describe('contracts', () => {
       workspaceId, agentId, idempotencyKey: 'message-key-1234', mode: 'steer', message: ''
     })).toThrow();
     expect(() => TOOL_SCHEMA_BY_NAME.agent_list.parse({ workspaceId, limit: 101 })).toThrow();
+  });
+
+  it('reports the profile and pinned revision an agent runs on, additively and strictly', () => {
+    const spawned = { agentId: `agent_${'a'.repeat(24)}`, status: 'RUNNING', generation: 1, replayed: false };
+    // Older runners omit the field, so it stays optional.
+    expect(AgentSpawnDataSchema.parse(spawned)).toEqual(spawned);
+    const saved = { profileId: 'coding', revisionId: `rev_${'r'.repeat(24)}`, model: 'openai/gpt-5', apiMode: 'responses' };
+    expect(AgentSpawnDataSchema.parse({ ...spawned, modelProfile: saved }).modelProfile).toEqual(saved);
+    // A static profile has no revision, and a missing revision reports nulls rather than inventing values.
+    const unresolved = { profileId: null, revisionId: `rev_${'r'.repeat(24)}`, model: null, apiMode: null };
+    expect(AgentSpawnDataSchema.parse({ ...spawned, modelProfile: unresolved }).modelProfile).toEqual(unresolved);
+    expect(() => AgentSpawnDataSchema.parse({ ...spawned, modelProfile: { ...saved, revisionId: 'v1' } })).toThrow();
+    expect(() => AgentSpawnDataSchema.parse({ ...spawned, modelProfile: { ...saved, credentialId: 'cred_1' } })).toThrow();
   });
 
   it('publishes exact truthful agent annotations', () => {

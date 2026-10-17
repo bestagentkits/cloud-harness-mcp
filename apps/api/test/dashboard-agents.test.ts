@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_STATUSES, agentAge, agentStatusLabel, agentTreeIndex, agentTtl, budgetUtilization,
-  renderAgentDetail, renderAgentHierarchy, renderAgentTable, renderAgentsIndex
+  agentMessageOutcome, isAgentTerminal, renderAgentControls, renderAgentDetail, renderAgentHierarchy, renderAgentLive, renderAgentTable,
+  renderAgentsIndex
 } from '../dashboard/dashboard-render.js';
 
 const workspaceId = `ws_${'a'.repeat(24)}`;
@@ -115,5 +116,42 @@ describe('agent control center renderers', () => {
     expect(markup).toContain('runner stopped');
     expect(markup).not.toContain('<img src=x');
     expect(markup).toContain('&lt;img src=x onerror=alert(1)&gt;');
+  });
+
+  it('names the saved profile, model and pinned revision a run is bound to', () => {
+    const revisionId = `rev_${'r'.repeat(24)}`;
+    const live = renderAgentLive({ agent: agent({ profileId: revisionId, modelProfile: { profileId: 'coding', revisionId, model: 'openai/gpt-5', apiMode: 'responses' } }) });
+    for (const fact of ['coding', 'openai/gpt-5', 'Responses', revisionId, 'Pinned revision', 'Bounded run', 'not a persistent terminal session']) expect(live).toContain(fact);
+    expect(renderAgentLive({ agent: agent({ modelProfile: { profileId: null, revisionId, model: null, apiMode: null } }) })).toContain('Deleted profile');
+    expect(renderAgentLive({ agent: agent({ modelProfile: { profileId: 'default', revisionId: null, model: 'test/model', apiMode: 'chat-completions' } }) })).toContain('Static runner profile');
+    // An older runner without the field still shows the raw profile.
+    expect(renderAgentLive({ agent: agent() })).toContain('<dt>Profile</dt><dd>coding-fast</dd>');
+  });
+
+  it('marks a live run and reports the remaining cost budget as an estimate', () => {
+    const live = renderAgentLive({ agent: agent(), live: true });
+    expect(live).toContain('Live: this page refreshes');
+    expect(live).toContain('Cost (estimate)');
+    expect(live).toContain('<dt>Remaining cost budget</dt><dd>$4.0000</dd>');
+    expect(renderAgentLive({ agent: agent({ status: 'SUCCEEDED' }) })).not.toContain('Live:');
+  });
+
+  it('separates the live block from the controls and disables controls once the run ends', () => {
+    const detail = renderAgentDetail({ agent: agent() });
+    expect(detail.indexOf('id="agent-live"')).toBeLessThan(detail.indexOf('id="agent-controls"'));
+    expect(renderAgentControls(agent())).not.toContain(' disabled');
+    const ended = renderAgentControls(agent({ status: 'TIMED_OUT' }));
+    expect(ended).toContain('This run has ended');
+    expect(ended).toContain('<button id="cancel-agent" class="danger" type="button" disabled>');
+    for (const status of ['SPAWNING', 'RUNNING', 'CANCELLING']) expect(isAgentTerminal(status), status).toBe(false);
+    for (const status of ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED']) expect(isAgentTerminal(status), status).toBe(true);
+    expect(AGENT_STATUSES.filter((status: string) => !isAgentTerminal(status))).toEqual(['SPAWNING', 'RUNNING', 'CANCELLING']);
+  });
+
+  it('never reports an unconfirmed message as delivered', () => {
+    expect(agentMessageOutcome('SENT')).toBe('Message delivered to the agent.');
+    expect(agentMessageOutcome('RESERVED')).toContain('queued');
+    expect(agentMessageOutcome('REJECTED')).toContain('queue is full');
+    for (const state of ['UNKNOWN', undefined]) expect(agentMessageOutcome(state)).toContain('not confirmed');
   });
 });

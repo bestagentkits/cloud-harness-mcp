@@ -219,16 +219,15 @@ Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container
   paths and digests, never content. If guidance cannot be scanned the agent
   ends `FAILED` with an "agent bootstrap failed" reason: retry, or spawn again
   with `repositoryContext: "none"` and a new idempotency key.
-- If the owner set an aggregate model spend policy (daily or monthly, for the
-  principal or one model profile), the spawn reserves its whole
-  `maxCostMicros` against it until the agent ends. A spawn that would exceed a
-  policy fails with `LIMIT_EXCEEDED` (429, not retryable) and creates no
-  agent; the message names the policy and the headroom left. Lower
-  `maxCostMicros`, or wait for running agents to finish, before retrying; a
-  refused spawn records nothing, so its idempotency key can be reused.
-  Aggregate spend is an estimate, not provider billing, and per-run caps are
-  unchanged. No MCP tool reads or changes policies: ask the owner to adjust
-  one in the dashboard rather than looking for a tool.
+- An owner spend policy reserves the whole `maxCostMicros` until the agent ends;
+  exceeding one fails `LIMIT_EXCEEDED` (429, no agent, key reusable) naming the
+  headroom. Lower the cap or wait; only the owner changes policies (dashboard).
+- Needs an `ACTIVE` `network-none` workspace and an `ACTIVE` saved profile; a
+  disabled, unsynced, or revision-less one fails `INVALID_INPUT` naming that
+  state (ask the owner). Budgets and operations must fit its ceilings.
+- The active revision is pinned and reported as `modelProfile` (`profileId`,
+  `revisionId`, `model`, `apiMode`); later edits never change the run. It is a
+  bounded run, not a session: once terminal, spawn again with a new key.
 
 <!-- cloudharness-example:agent_spawn
 {"prompt":"Implement feature","idempotencyKey":"spawn-subagent-1234","profileId":"default","proxyOperations":["files_read","files_write","files_apply_patch"]}
@@ -262,6 +261,8 @@ Read bounded streaming diagnostic and tool events from one coding agent.
 Send an idempotent steering or follow-up message to a running coding agent.
 
 - Required: `agentId`, `idempotencyKey`, `mode` (`steer` or `followUp`), `message`. Optional: `workspaceId`.
+- `state`: `RESERVED`, `SENT` (written, not acted on), `REJECTED` (queue
+  full), or `UNKNOWN` (no live channel, e.g. run ended): treat as undelivered.
 
 <!-- cloudharness-example:agent_message
 {"agentId":"agent_aaaaaaaaaaaaaaaaaaaa","idempotencyKey":"msg-steer-1234","mode":"steer","message":"Please also add unit tests"}

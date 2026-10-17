@@ -79,9 +79,19 @@ const AGENT_LOG_CONTENT_LIMIT = 4_000;
  * runner payloads never project; `proxyOperations` is already the runner's bounded
  * allowlist, so it passes through as computed.
  */
+const agentModelProfileKeys = ['profileId', 'revisionId', 'model', 'apiMode'] as const;
+
+/** The pinned model reference, re-picked so nothing else a runner attaches reaches the browser. */
+function agentModelProfile(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' ? { modelProfile: pick(value, agentModelProfileKeys) } : {};
+}
+
 function agentProjection(value: unknown): Record<string, unknown> {
   const source = value && typeof value === 'object' ? value as Record<string, unknown> : {};
-  return { ...pick(source, agentKeys), budget: pick(source.budget, agentBudgetKeys), usage: pick(source.usage, agentUsageKeys) };
+  return {
+    ...pick(source, agentKeys), ...agentModelProfile(source.modelProfile),
+    budget: pick(source.budget, agentBudgetKeys), usage: pick(source.usage, agentUsageKeys)
+  };
 }
 
 /** Bounded log events: an oversized event is truncated with an explicit marker. */
@@ -173,6 +183,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'workspace_lease_renew',
   'workspace_recover',
   'workspace_finalize',
+  'agent_spawn',
   'agent_list',
   'agent_status',
   'agent_logs',
@@ -432,6 +443,9 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
       truncated: data.truncated === true, hasMore: data.hasMore === true, events: agentLogEvents(data.events)
     };
   }
+  if (operation === 'agent_spawn') {
+    return { ...pick(data, ['agentId', 'status', 'generation', 'replayed']), ...agentModelProfile(data.modelProfile) };
+  }
   if (operation === 'agent_message' || operation === 'agent_cancel') {
     return pick(data, ['agentId', 'status', 'state', 'replayed', 'affectedAgentIds']);
   }
@@ -651,6 +665,7 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   return data;
 }
 const descriptiveOperations = new Set<string>([
+  'agent_spawn',
   // The runner composes plain-language, credential-free provider messages for these
   // (missing permission, concurrent edit, unconfirmed read-back).
   'oauth_settings_get', 'oauth_settings_update',
@@ -707,6 +722,13 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
   package_plan_reject: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
   package_rollback: { FORBIDDEN: packagesDisabled },
   package_remove: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package binding not found.' },
+  // A spawn's own refusals (profile not active, network posture, budget over the profile,
+  // spend policy) are composed by the runner without credentials and pass through; gateway
+  // and unexpected failures keep static wording because their text can carry internal detail.
+  agent_spawn: {
+    UNAVAILABLE: 'The model gateway or agent service is temporarily unavailable. Check the gateway status in Models & Budgets, then retry; the same request is safe to resend.',
+    INTERNAL_ERROR: 'The agent could not be started. Review the runner logs, then retry; the same request is safe to resend.'
+  },
   model_catalog_search: { NOT_FOUND: 'Provider credential not found.' },
   model_catalog_refresh: { NOT_FOUND: 'Provider credential not found.' },
   model_spend_policy_delete: { NOT_FOUND: 'Model spend policy not found.' },

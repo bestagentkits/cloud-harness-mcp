@@ -106,7 +106,7 @@ function containerDepth(markup: string, ownerId: string, id: string): number {
 describe('dashboard static UI contract', () => {
   const html = asset('index.html');
   const css = asset('dashboard.css');
-  const script = `${asset('dashboard.js')}\n${asset('dashboard-api.js')}\n${asset('dashboard-render.js')}\n${asset('dashboard-pages.js')}\n${asset('dashboard-models.js')}`;
+  const script = `${asset('dashboard.js')}\n${asset('dashboard-api.js')}\n${asset('dashboard-render.js')}\n${asset('dashboard-pages.js')}\n${asset('dashboard-models.js')}\n${asset('dashboard-agent-spawn.js')}`;
   const squishedCss = squish(css);
 
   it('provides native landmarks, focus entry, live status, and destructive confirmation', () => {
@@ -120,6 +120,22 @@ describe('dashboard static UI contract', () => {
     for (const recovery of ['Review latest', 'Copy my changes', 'Cancel']) expect(html).toContain(recovery);
     expect(html).not.toContain('<form method="dialog"');
     expect((html.match(/<h1/g) ?? [])).toHaveLength(1);
+  });
+
+  it('starts, watches and cancels a Pi agent run without assembling MCP payloads', () => {
+    expect(html).toContain('<dialog id="agent-spawn-dialog"');
+    for (const id of ['agent-spawn-form', 'agent-spawn-body', 'agent-spawn-status', 'submit-agent-spawn', 'cancel-agent-spawn']) expect(html, id).toContain(`id="${id}"`);
+    const app = asset('dashboard.js');
+    expect(app).toContain("import { createAgentSpawnDialog } from './dashboard-agent-spawn.js';");
+    expect(app).toContain("label: 'Run Pi agent'");
+    expect(app).toContain('data-agent-spawn');
+    // The live detail polls only while the run is not terminal and stops with the page load.
+    expect(app).toMatch(/while \(!isAgentTerminal\(agent\.status\)\)/);
+    expect(app).toContain('signal?.aborted');
+    expect(app).toContain('agentMessageOutcome(');
+    const spawn = asset('dashboard-agent-spawn.js');
+    expect(spawn).toContain('/agents`, { method: \'POST\'');
+    expect(spawn).toContain('idempotencyKey');
   });
 
   it('marks state changes with bounded motion that reduced-motion collapses', () => {
