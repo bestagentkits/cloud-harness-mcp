@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ModelCredentialIdSchema } from './identifiers.js';
-import { ModelCatalogPriceProvenanceSchema, PriceMicrosPerMillionSchema } from './model-pricing.js';
+import { ModelCatalogPriceProvenanceSchema, ModelPriceTiersSchema, PriceMicrosPerMillionSchema } from './model-pricing.js';
 import { ModelProviderKindSchema } from './model-profile-schemas.js';
 
 // The price source, confidence, and provenance schemas live in model-pricing.ts,
@@ -16,11 +16,21 @@ export const ModelCatalogPriceSchema = z.object({
   cacheReadMicrosPerMillionTokens: MicrosPerMillionSchema.optional(),
   cacheWriteMicrosPerMillionTokens: MicrosPerMillionSchema.optional(),
   provenance: ModelCatalogPriceProvenanceSchema,
-  // OpenRouter `overrides`: the price changes under conditions such as a long
-  // prompt, so the listed price is the base tier only.
+  // Long-prompt prices from OpenRouter `overrides` whose only condition is a
+  // minimum prompt length. Every tier satisfies the saved-revision tier rules for
+  // the entry's provider, so a client can save them unchanged.
+  tiers: ModelPriceTiersSchema.optional(),
+  // The price also changes under a condition `tiers` cannot express (an unknown
+  // override condition, or a published tier that breaks the tier rules), so the
+  // listed prices understate some requests.
   hasConditionalPricing: z.boolean()
 }).strict();
 export type ModelCatalogPrice = z.infer<typeof ModelCatalogPriceSchema>;
+
+// A saved price that differs from the cached catalog price by at least this
+// percentage, in either direction, is flagged for review: an increase leaves cost
+// estimates and caps understated, a decrease leaves them overstated.
+export const REPRICING_WARNING_PERCENT = 10;
 
 // `reported` is backed by provider or OpenRouter metadata, `unsupported` by
 // metadata that lists the model's parameters or modalities without it, and

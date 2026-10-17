@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   AgentModelProfileInputSchema,
+  AgentModelProfileMetadataSchema,
   AgentModelProfileRevisionSchema,
+  AgentModelProfileUpdateInputSchema,
   GatewayControlAckSchema,
   GatewayControlApplySnapshotSchema,
   GatewayControlDigestSchema,
   ModelConfigStatusSchema,
   ModelCredentialIdSchema,
+  ModelPricingReviewSchema,
   ModelProfileIdSchema,
   ModelRevisionIdSchema,
   ProviderCredentialInputSchema,
@@ -106,6 +109,47 @@ describe('Model Profile & Credential Contracts', () => {
       createdAt: Date.now()
     });
     expect(revision.downstreamPath).toBe('/v1/chat/completions');
+  });
+
+  it('accepts a catalog price reference but never client-stated provenance', () => {
+    const input = {
+      profileId: 'coding', displayName: 'Coding', credentialId: `cred_${'a'.repeat(24)}`, model: 'gpt-5', apiMode: 'responses',
+      pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 2 },
+      limits: { maxInputTokens: 1, maxOutputTokens: 1, maxCostMicros: 1 },
+      maxProxyOperations: ['files_read']
+    };
+    expect(AgentModelProfileInputSchema.parse({ ...input, catalogPriceRef: { sourceModelId: ' openai/gpt-5 ' } }).catalogPriceRef)
+      .toEqual({ sourceModelId: 'openai/gpt-5' });
+    expect(AgentModelProfileUpdateInputSchema.parse({ expectedGeneration: 1, catalogPriceRef: { sourceModelId: 'openai/gpt-5' } }).catalogPriceRef)
+      .toEqual({ sourceModelId: 'openai/gpt-5' });
+    for (const ref of [{ sourceModelId: '' }, { sourceModelId: 'x'.repeat(301) }, { sourceModelId: 'openai/gpt-5', confidence: 'exact' }]) {
+      expect(AgentModelProfileInputSchema.safeParse({ ...input, catalogPriceRef: ref }).success).toBe(false);
+    }
+    const provenance = { source: 'openrouter', sourceModelId: 'openai/gpt-5', retrievedAt: 1, confidence: 'exact', isOverride: false };
+    expect(AgentModelProfileInputSchema.safeParse({ ...input, priceProvenance: provenance }).success).toBe(false);
+    expect(AgentModelProfileUpdateInputSchema.safeParse({ expectedGeneration: 1, priceProvenance: provenance }).success).toBe(false);
+  });
+
+  it('describes a repricing review on listed profile metadata', () => {
+    const review = {
+      state: 'repriced', catalogRetrievedAt: 1_800_000_000_000, isOverride: false, catalogHasConditionalPricing: true,
+      changes: [
+        { field: 'input', minPromptTokens: null, pinned: 1_000_000, catalog: 1_100_000, percent: 10 },
+        { field: 'tier', minPromptTokens: 200_000, pinned: null, catalog: 2_000_000, percent: null }
+      ]
+    };
+    expect(ModelPricingReviewSchema.parse(review)).toEqual(review);
+    expect(ModelPricingReviewSchema.safeParse({ ...review, state: 'stale' }).success).toBe(false);
+    expect(ModelPricingReviewSchema.safeParse({ ...review, changes: [{ ...review.changes[0], field: 'request' }] }).success).toBe(false);
+    // Conditional pricing is a flag, never a change, and the flag is required.
+    expect(ModelPricingReviewSchema.safeParse({ ...review, changes: [{ ...review.changes[0], field: 'conditionalPricing' }] }).success).toBe(false);
+    expect(ModelPricingReviewSchema.safeParse({ ...review, catalogHasConditionalPricing: undefined }).success).toBe(false);
+    const metadata = {
+      id: 'coding', principalId: 'p1', displayName: 'Coding', credentialId: `cred_${'a'.repeat(24)}`, desiredRevisionId: null, activeRevisionId: null,
+      generation: 1, status: 'ACTIVE', activeRevision: null, createdAt: 1, updatedAt: 1
+    };
+    expect(AgentModelProfileMetadataSchema.parse(metadata)).not.toHaveProperty('pricingReview');
+    expect(AgentModelProfileMetadataSchema.parse({ ...metadata, pricingReview: review }).pricingReview).toEqual(review);
   });
 
   it('validates framed control transport messages (apply_snapshot, ack, digest, status)', () => {

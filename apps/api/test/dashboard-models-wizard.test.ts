@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
+import { AgentModelProfileInputSchema } from '@cloud-harness/contracts';
 import './dashboard-test-dom.js';
 import {
   MUTATING_PROXY_OPERATIONS, PERMISSION_PRESETS, PROXY_OPERATIONS,
@@ -247,6 +248,7 @@ describe('model profile wizard rules', () => {
       body: {
         profileId: 'gpt-5-mini', displayName: 'GPT-5 mini', credentialId, model: 'gpt-5-mini', apiMode: 'chat-completions',
         pricing: { inputMicrosPerMillionTokens: 250_000, outputMicrosPerMillionTokens: 2_000_000 },
+        catalogPriceRef: { sourceModelId: 'openai/gpt-5-mini' },
         limits: { maxInputTokens: 200_000, maxOutputTokens: 32_000, maxCostMicros: 5_000_000 },
         maxProxyOperations: [...PERMISSION_PRESETS.read.operations].sort((a, b) => PROXY_OPERATIONS.indexOf(a) - PROXY_OPERATIONS.indexOf(b))
       }
@@ -267,6 +269,38 @@ describe('model profile wizard rules', () => {
     expect(updated.request.body).toMatchObject({ displayName: 'Renamed', expectedGeneration: 3 });
     expect(updated.request.body).not.toHaveProperty('profileId');
     expect(updated.request.body).not.toHaveProperty('customUpstreamUrl');
+  });
+
+  it('sends an unedited catalog price whole with its reference, and an edited price as typed', () => {
+    const tier = { minPromptTokens: 272_000, inputMicrosPerMillionTokens: 500_000, outputMicrosPerMillionTokens: 4_000_000, cacheReadMicrosPerMillionTokens: null, cacheWriteMicrosPerMillionTokens: null };
+    const tiered = entry({ pricing: { ...entry().pricing, cacheReadMicrosPerMillionTokens: 25_000, cacheWriteMicrosPerMillionTokens: null, tiers: [tier] } });
+    const state = createDraft();
+    applyCatalogEntry(state, tiered);
+    const accepted = buildProfileRequest(state, openai).request.body;
+    expect(accepted.pricing).toEqual({ inputMicrosPerMillionTokens: 250_000, outputMicrosPerMillionTokens: 2_000_000, cacheReadMicrosPerMillionTokens: 25_000, tiers: [tier] });
+    expect(accepted.catalogPriceRef).toEqual({ sourceModelId: 'openai/gpt-5-mini' });
+    expect(AgentModelProfileInputSchema.safeParse(accepted).success).toBe(true);
+
+    state.pricingOutput = '2.5';
+    state.touched.add('pricingOutput');
+    const edited = buildProfileRequest(state, openai).request.body;
+    expect(edited.pricing).toEqual({ inputMicrosPerMillionTokens: 250_000, outputMicrosPerMillionTokens: 2_500_000 });
+    expect(edited).not.toHaveProperty('catalogPriceRef');
+
+    // Retyping the catalog value still counts as the operator's own price.
+    state.pricingOutput = '2.00';
+    expect(buildProfileRequest(state, openai).request.body).not.toHaveProperty('catalogPriceRef');
+
+    // A saved profile's own price and a typed model carry no reference.
+    const saved = profile();
+    const edit = initialWizardState({ mode: 'edit', profile: saved, profiles: [saved], credentials });
+    expect(buildProfileRequest(edit, openai).request.body).not.toHaveProperty('catalogPriceRef');
+    const typedModel = createDraft();
+    applyCatalogEntry(typedModel, tiered);
+    applyCustomModel(typedModel, 'gpt-5-mini-custom');
+    typedModel.pricingInput = '0.25';
+    typedModel.pricingOutput = '2';
+    expect(buildProfileRequest(typedModel, openai).request.body).not.toHaveProperty('catalogPriceRef');
   });
 
   it('keeps a custom upstream on edit only while the key and API mode are unchanged', () => {

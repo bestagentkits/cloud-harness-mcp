@@ -272,12 +272,40 @@ export function buildProfileRequest(state, provider) {
     model,
     apiMode: state.apiMode,
     ...(provider?.requiresCustomUpstream && typedUpstream ? { customUpstreamUrl: typedUpstream } : {}),
-    pricing: { inputMicrosPerMillionTokens: inputMicros, outputMicrosPerMillionTokens: outputMicros },
+    ...profilePricing(state, inputMicros, outputMicros),
     limits: { maxInputTokens, maxOutputTokens, maxCostMicros },
     maxProxyOperations
   };
   if (state.mode === 'edit') return { errors: {}, request: { kind: 'update', profileId: state.profile.id, body: { ...body, expectedGeneration: state.profile.generation } } };
   return { errors: {}, request: { kind: 'create', body: { profileId, ...body } } };
+}
+
+/**
+ * Pricing for a save. A catalog price the operator accepted unedited is sent
+ * whole, cache prices and long-prompt tiers included, with a reference to its
+ * catalog model; the runner records it as the catalog's only when it matches the
+ * runner's own cached price. A typed price is sent as typed, with no reference,
+ * and is saved as the operator's override.
+ */
+export function profilePricing(state, inputMicros, outputMicros) {
+  const typed = { inputMicrosPerMillionTokens: inputMicros, outputMicrosPerMillionTokens: outputMicros };
+  const price = state.selectedEntry?.pricing;
+  const sourceModelId = price?.provenance?.source === 'openrouter' ? price.provenance.sourceModelId : null;
+  const edited = state.touched.has('pricingInput') || state.touched.has('pricingOutput');
+  if (!sourceModelId || edited || price.inputMicrosPerMillionTokens !== inputMicros || price.outputMicrosPerMillionTokens !== outputMicros) {
+    return { pricing: typed };
+  }
+  const cacheRead = price.cacheReadMicrosPerMillionTokens;
+  const cacheWrite = price.cacheWriteMicrosPerMillionTokens;
+  return {
+    pricing: {
+      ...typed,
+      ...(Number.isSafeInteger(cacheRead) ? { cacheReadMicrosPerMillionTokens: cacheRead } : {}),
+      ...(Number.isSafeInteger(cacheWrite) ? { cacheWriteMicrosPerMillionTokens: cacheWrite } : {}),
+      ...(Array.isArray(price.tiers) && price.tiers.length ? { tiers: price.tiers } : {})
+    },
+    catalogPriceRef: { sourceModelId }
+  };
 }
 
 /** The verification input for the current draft. The key is never part of it. */
@@ -576,7 +604,7 @@ function renderSelectedModel(state) {
   if (!state.model) return '<p class="field-help">No model chosen yet.</p>';
   if (!entry) return `<dl class="facts wizard-facts"><dt>Model ID</dt><dd class="mono wrap">${escape(state.model)}</dd><dt>Source</dt><dd>${state.mode === 'edit' && state.model === state.profile?.activeRevision?.model ? 'Saved on this profile' : 'Entered by you; not in the catalog'}</dd></dl>`;
   const capabilities = Object.entries(entry.capabilities ?? {}).filter(([, value]) => value === 'reported').map(([name]) => name);
-  return `<dl class="facts wizard-facts"><dt>Model</dt><dd>${escape(entry.displayName)} <span class="mono wrap">${escape(entry.providerModelId)}</span></dd><dt>Availability</dt><dd>${escape(availabilityLabel(entry.availability))}</dd><dt>Price per 1M</dt><dd>${escape(formatPrice(entry.pricing?.inputMicrosPerMillionTokens))} in / ${escape(formatPrice(entry.pricing?.outputMicrosPerMillionTokens))} out<br><small>${escape(priceProvenanceText(entry.pricing?.provenance))}</small></dd>${entry.contextWindow ? `<dt>Context window</dt><dd>${escape(entry.contextWindow.toLocaleString())} tokens</dd>` : ''}${capabilities.length ? `<dt>Reported</dt><dd>${escape(capabilities.join(', '))}</dd>` : ''}</dl>${entry.pricing?.hasConditionalPricing ? '<p class="field-help">The price changes under some conditions, such as a long prompt; this is the base tier.</p>' : ''}`;
+  return `<dl class="facts wizard-facts"><dt>Model</dt><dd>${escape(entry.displayName)} <span class="mono wrap">${escape(entry.providerModelId)}</span></dd><dt>Availability</dt><dd>${escape(availabilityLabel(entry.availability))}</dd><dt>Price per 1M</dt><dd>${escape(formatPrice(entry.pricing?.inputMicrosPerMillionTokens))} in / ${escape(formatPrice(entry.pricing?.outputMicrosPerMillionTokens))} out<br><small>${escape(priceProvenanceText(entry.pricing?.provenance))}</small></dd>${entry.contextWindow ? `<dt>Context window</dt><dd>${escape(entry.contextWindow.toLocaleString())} tokens</dd>` : ''}${capabilities.length ? `<dt>Reported</dt><dd>${escape(capabilities.join(', '))}</dd>` : ''}</dl>${entry.pricing?.hasConditionalPricing ? '<p class="field-help">The price also changes under conditions a saved profile cannot express, so some requests can cost more than shown.</p>' : ''}`;
 }
 
 export function renderCatalogFreshness(catalog) {
