@@ -70,7 +70,13 @@ export async function startControlServer(options: {
       handled = true;
       void (async () => {
         try {
-          const command = JSON.parse(record) as Record<string, unknown>;
+          let command: Record<string, unknown>;
+          try {
+            command = JSON.parse(record) as Record<string, unknown>;
+          } catch {
+            // V8 parse errors quote the input, and a snapshot record carries provider keys.
+            throw new Error('invalid control record');
+          }
           if (command.operation === 'issue') {
             const profileId = typeof command.profileId === 'string' ? command.profileId : '';
             const profile = registry.profiles.get(profileId) ?? config.profiles.get(profileId);
