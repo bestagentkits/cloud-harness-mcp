@@ -1,3 +1,15 @@
+# [0.68.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.67.0...v0.68.0) (2026-10-17)
+
+
+### Bug Fixes
+
+* **models:** list OpenCode Go models from its public models endpoint ([4a9783a](https://github.com/bestagentkits/cloud-harness-mcp/commit/4a9783a913459f2fb50c01320393a9aa61f93917))
+
+
+### Features
+
+* **site:** refresh landing with hero video, isometric design, gateway, agents and skills ([#402](https://github.com/bestagentkits/cloud-harness-mcp/issues/402)) ([88c805f](https://github.com/bestagentkits/cloud-harness-mcp/commit/88c805f50776e6fd7304f4f18b778a719bda65f1)), closes [#401](https://github.com/bestagentkits/cloud-harness-mcp/issues/401)
+
 # [0.67.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0...v0.67.0) (2026-10-17)
 
 
