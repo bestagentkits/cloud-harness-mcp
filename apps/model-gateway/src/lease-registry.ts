@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { saturatingAdd } from './budget.js';
 import type { GatewayProfile, LeaseGrant, LeaseIssueInput, LeaseSettlement } from './types.js';
 
 const AGENT_ID_PATTERN = /^agent_[A-Za-z0-9_-]{20,80}$/;
@@ -15,6 +16,8 @@ interface RetiredLease {
   retiredAt: number;
   reason: LeaseSettlement['reason'];
   grant: LeaseGrant;
+  /** Set once the lease's in-flight requests have drained; never recomputed after that. */
+  frozen?: Readonly<LeaseSettlement>;
 }
 
 export function createLeaseGrant(input: {
@@ -64,7 +67,7 @@ function settlementOf(leaseId: string, retired: RetiredLease): LeaseSettlement {
     initialInputTokens: accounting.initialInputTokens,
     initialOutputTokens: accounting.initialOutputTokens,
     initialCostMicros: accounting.initialCostMicros,
-    costMicros: accounting.initialCostMicros - grant.remainingCostMicros + accounting.unabsorbedOverrunCostMicros,
+    costMicros: saturatingAdd(accounting.initialCostMicros - grant.remainingCostMicros, accounting.unabsorbedOverrunCostMicros),
     overrunCostMicros: accounting.overrunCostMicros,
     promptTokens: accounting.promptTokens,
     cacheReadTokens: accounting.cacheReadTokens,
@@ -172,12 +175,32 @@ export class LeaseRegistry {
     return true;
   }
 
-  /** The settlement of a revoked or expired lease, kept for the replay-retention horizon. */
-  settlementFor(leaseId: string): LeaseSettlement | undefined {
+  /**
+   * The settlement of a revoked or expired lease, kept for the replay-retention
+   * horizon. Until it is frozen it is read live, so it reflects requests still
+   * draining.
+   */
+  settlementFor(leaseId: string): Readonly<LeaseSettlement> | undefined {
     this.#prune();
+    const retired = this.#retired(leaseId);
+    return retired === undefined ? undefined : retired.frozen ?? settlementOf(leaseId, retired);
+  }
+
+  /**
+   * Freezes a retired lease's settlement. Call it only after the lease's
+   * in-flight requests have drained; every later read returns the same object.
+   */
+  freezeSettlement(leaseId: string): Readonly<LeaseSettlement> | undefined {
+    this.#prune();
+    const retired = this.#retired(leaseId);
+    if (retired === undefined) return undefined;
+    retired.frozen ??= Object.freeze(settlementOf(leaseId, retired));
+    return retired.frozen;
+  }
+
+  #retired(leaseId: string): RetiredLease | undefined {
     const key = this.#keysByLeaseId.get(leaseId);
-    const retired = key === undefined ? undefined : this.#used.get(key);
-    return retired === undefined ? undefined : settlementOf(leaseId, retired);
+    return key === undefined ? undefined : this.#used.get(key);
   }
 
   #retire(key: string, grant: LeaseGrant, reason: RetiredLease['reason']): void {

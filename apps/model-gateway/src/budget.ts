@@ -18,22 +18,48 @@ export const noOpBudgetHooks: BudgetHooks = {
  */
 export const MEDIA_PART_RESERVE_TOKENS = 8_192;
 
+const FILE_PART_TYPES: ReadonlySet<string> = new Set(['file', 'input_file']);
 const MEDIA_PART_TYPES: ReadonlySet<string> = new Set([
-  'image', 'image_url', 'input_image', 'audio', 'input_audio', 'file', 'input_file'
+  'image', 'image_url', 'input_image', 'audio', 'input_audio', 'video', 'video_url', 'input_video', ...FILE_PART_TYPES
 ]);
+/** Keys by which a file part names stored or remote content instead of carrying it inline. */
+const FILE_REFERENCE_KEYS = ['file_id', 'file_url', 'url'] as const;
 
 /**
  * Responses fields that pull stored server-side context into the prompt. The
  * gateway cannot see or bound that context, so it refuses them.
  */
 const STATEFUL_RESPONSES_FIELDS = ['previous_response_id', 'conversation'] as const;
+/**
+ * Chat Completions fields that make the provider fetch web content. That adds
+ * unbounded context and lets an agent in a network-none workspace reach the
+ * network through the provider, so they are refused.
+ */
+const PROVIDER_SIDE_CHAT_FIELDS = ['plugins', 'web_search_options'] as const;
+/**
+ * Tool types the caller executes itself. Every other type is a hosted tool the
+ * provider runs (web search, file search, code interpreter, remote MCP, computer
+ * use, image generation), which reaches the network or stored data on the
+ * agent's behalf and bills context the gateway cannot bound.
+ */
+const CALLER_TOOL_TYPES: Readonly<Record<GatewayProfile['downstreamPath'], ReadonlySet<string>>> = {
+  '/v1/chat/completions': new Set(['function']),
+  '/v1/responses': new Set(['function', 'custom'])
+};
+
+const MAX_SAFE = Number.MAX_SAFE_INTEGER;
+
+/** Adds without leaving the safe-integer range; cost and settlement figures saturate instead. */
+export function saturatingAdd(...values: number[]): number {
+  return Math.min(values.reduce((total, value) => total + value, 0), MAX_SAFE);
+}
 
 /** A request the caller must fix; its message is safe to return to the caller verbatim. */
 export class ModelRequestError extends Error {}
 
 function costMicros(tokens: number, pricePerMillion: number): number {
-  const numerator = BigInt(tokens) * BigInt(pricePerMillion);
-  return Number((numerator + 999_999n) / 1_000_000n);
+  const micros = (BigInt(tokens) * BigInt(pricePerMillion) + 999_999n) / 1_000_000n;
+  return micros > BigInt(MAX_SAFE) ? MAX_SAFE : Number(micros);
 }
 
 /** Prices for a prompt of `promptTokens`: the highest tier whose threshold it reaches, else the base prices. */
@@ -61,10 +87,12 @@ export function costUsage(normalized: NormalizedUsage, profile: GatewayProfile):
       cacheWriteTokens: prompt.cacheWriteTokens,
       outputTokens: normalized.outputTokens,
       reasoningTokens: normalized.reasoningTokens,
-      costMicros: costMicros(prompt.uncachedInputTokens, prices.inputMicrosPerMillionTokens) +
-        costMicros(prompt.cacheReadTokens, prices.cacheReadMicrosPerMillionTokens) +
-        costMicros(prompt.cacheWriteTokens, prices.cacheWriteMicrosPerMillionTokens) +
+      costMicros: saturatingAdd(
+        costMicros(prompt.uncachedInputTokens, prices.inputMicrosPerMillionTokens),
+        costMicros(prompt.cacheReadTokens, prices.cacheReadMicrosPerMillionTokens),
+        costMicros(prompt.cacheWriteTokens, prices.cacheWriteMicrosPerMillionTokens),
         costMicros(normalized.outputTokens, prices.outputMicrosPerMillionTokens)
+      )
     };
   });
   const charged = priced.reduce((best, candidate) => candidate.costMicros > best.costMicros ? candidate : best);
@@ -102,26 +130,62 @@ function requestedOutputTokens(body: Record<string, unknown>, profile: GatewayPr
   return requested.length === 0 ? profile.limits.maxOutputTokens : Math.min(...requested);
 }
 
-function assertBoundedResponsesContext(body: Record<string, unknown>): void {
-  for (const field of STATEFUL_RESPONSES_FIELDS) {
+function refuse(message: string): never {
+  throw new ModelRequestError(message);
+}
+
+/**
+ * Refuses request fields whose context or side effects the gateway cannot
+ * bound: stored server-side state, provider-side web access, and hosted tools.
+ */
+function assertBoundedRequest(body: Record<string, unknown>, profile: GatewayProfile): void {
+  const responses = profile.downstreamPath === '/v1/responses';
+  const fields = responses ? STATEFUL_RESPONSES_FIELDS : PROVIDER_SIDE_CHAT_FIELDS;
+  for (const field of fields) {
     if (body[field] !== undefined && body[field] !== null) {
-      throw new ModelRequestError(`${field} is not supported: the gateway cannot bound stored server-side context; resend the full input`);
+      refuse(responses
+        ? `${field} is not supported: the gateway cannot bound stored server-side context; resend the full input`
+        : `${field} is not supported: the gateway does not allow provider-side web access`);
     }
   }
-  const prompt = body.prompt;
-  if (prompt !== null && typeof prompt === 'object') {
-    throw new ModelRequestError('an object-valued prompt is not supported: the gateway cannot bound a stored prompt template; send the input inline');
+  if (responses && body.prompt !== null && typeof body.prompt === 'object') {
+    refuse('an object-valued prompt is not supported: the gateway cannot bound a stored prompt template; send the input inline');
+  }
+  if (body.tools === undefined || body.tools === null) return;
+  if (!Array.isArray(body.tools)) refuse('tools must be an array');
+  const allowed = CALLER_TOOL_TYPES[profile.downstreamPath];
+  for (const tool of body.tools as unknown[]) {
+    const type = tool !== null && typeof tool === 'object' ? (tool as Record<string, unknown>).type : undefined;
+    if (typeof type !== 'string') refuse('every tools entry needs a type');
+    if (!allowed.has(type)) {
+      refuse(`tool type ${JSON.stringify(type).slice(0, 80)} is not supported: the gateway allows only ${[...allowed].join(' and ')} tools, not provider-hosted tools`);
+    }
   }
 }
 
-/** Counts image, file, and audio content parts anywhere in the request body. */
+/** A file part must carry its data inline; a file id or URL is stored or remote context the gateway cannot bound. */
+function assertInlineFile(part: Record<string, unknown>): void {
+  const nestedFile = part.file !== null && typeof part.file === 'object' ? part.file as Record<string, unknown> : undefined;
+  for (const container of [part, nestedFile]) {
+    for (const key of FILE_REFERENCE_KEYS) {
+      if (container?.[key] !== undefined && container[key] !== null) {
+        refuse(`file parts with ${key} are not supported: send the file data inline`);
+      }
+    }
+  }
+}
+
+/** Counts image, file, audio, and video content parts anywhere in the request body. */
 function mediaPartCount(body: Record<string, unknown>): number {
   let parts = 0;
   const pending: object[] = [body];
   for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
     if (!Array.isArray(next)) {
-      const type = (next as Record<string, unknown>).type;
-      if (typeof type === 'string' && MEDIA_PART_TYPES.has(type)) parts += 1;
+      const node = next as Record<string, unknown>;
+      if (typeof node.type === 'string' && MEDIA_PART_TYPES.has(node.type)) {
+        if (FILE_PART_TYPES.has(node.type)) assertInlineFile(node);
+        parts += 1;
+      }
     }
     for (const child of Object.values(next)) if (child !== null && typeof child === 'object') pending.push(child as object);
   }
@@ -148,7 +212,7 @@ export function reserveBudget(
   lease: LeaseGrant,
   profile: GatewayProfile
 ): BudgetReservation {
-  if (profile.downstreamPath === '/v1/responses') assertBoundedResponsesContext(body);
+  assertBoundedRequest(body, profile);
   const estimatedInputTokens = Math.max(1, bodyBytes) + mediaPartCount(body) * MEDIA_PART_RESERVE_TOKENS;
   const inputTokens = Math.min(estimatedInputTokens, lease.remainingInputTokens, profile.limits.maxInputTokens);
   if (estimatedInputTokens > inputTokens) throw new Error('input token budget exceeded');
@@ -177,7 +241,7 @@ export function reserveBudget(
     lease,
     inputTokens,
     outputTokens,
-    costMicros: inputCost + costMicros(outputTokens, prices.outputMicrosPerMillionTokens)
+    costMicros: saturatingAdd(inputCost, costMicros(outputTokens, prices.outputMicrosPerMillionTokens))
   };
   lease.remainingInputTokens -= reservation.inputTokens;
   lease.remainingOutputTokens -= reservation.outputTokens;
@@ -216,11 +280,11 @@ function settleComponent(lease: LeaseGrant, field: RemainingField, reserved: num
 }
 
 function recordUsage(accounting: LeaseAccounting, usage: Usage, reported: boolean): void {
-  accounting.promptTokens += usage.inputTokens;
-  accounting.cacheReadTokens += usage.cacheReadTokens;
-  accounting.cacheWriteTokens += usage.cacheWriteTokens;
-  accounting.outputTokens += usage.outputTokens;
-  accounting.reasoningTokens += usage.reasoningTokens;
+  accounting.promptTokens = saturatingAdd(accounting.promptTokens, usage.inputTokens);
+  accounting.cacheReadTokens = saturatingAdd(accounting.cacheReadTokens, usage.cacheReadTokens);
+  accounting.cacheWriteTokens = saturatingAdd(accounting.cacheWriteTokens, usage.cacheWriteTokens);
+  accounting.outputTokens = saturatingAdd(accounting.outputTokens, usage.outputTokens);
+  accounting.reasoningTokens = saturatingAdd(accounting.reasoningTokens, usage.reasoningTokens);
   if (!reported) accounting.requestsWithoutUsage += 1;
 }
 
@@ -237,8 +301,8 @@ function charge(reservation: BudgetReservation, charged: Usage, refund: boolean,
   settleComponent(lease, 'remainingOutputTokens', reservation.outputTokens, charged.outputTokens, refund);
   const unabsorbed = settleComponent(lease, 'remainingCostMicros', reservation.costMicros, charged.costMicros, refund);
   const overrunCostMicros = Math.max(0, charged.costMicros - reservation.costMicros);
-  lease.accounting.overrunCostMicros += overrunCostMicros;
-  lease.accounting.unabsorbedOverrunCostMicros += unabsorbed;
+  lease.accounting.overrunCostMicros = saturatingAdd(lease.accounting.overrunCostMicros, overrunCostMicros);
+  lease.accounting.unabsorbedOverrunCostMicros = saturatingAdd(lease.accounting.unabsorbedOverrunCostMicros, unabsorbed);
   recordUsage(lease.accounting, charged, reported);
   return { charged, overrunCostMicros };
 }

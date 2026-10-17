@@ -35,11 +35,10 @@ The workspace TTLs, recoverable grace, and active-workspace quota can also be ov
 
 ## Agent model budgets
 
-Every `agent_spawn` model request goes through the Model Gateway, which reserves the request's worst case from the agent's token and cost caps before sending it:
+Every `agent_spawn` model request goes through the Model Gateway. Before sending a request, the gateway reserves the worst case the request can cost from the agent's token and cost caps:
 
-- **Input** is reserved at one token per request byte. Each image, file, or audio part adds 8,192 tokens, because a small image can cost more tokens than its bytes. Reserved input is priced at the highest of the input, cache-read, and cache-write prices for the price tier the estimate reaches.
+- **Input** is reserved per request byte. Each image, audio, video, or file part also adds a fixed surcharge, because a small image can cost more tokens than its bytes.
 - **Output** is reserved at the output cap the gateway sends upstream. The cap is lowered to what the remaining cost budget can pay for. Reasoning tokens count as output.
-- When the response ends, the gateway charges the usage the provider reported, including cache reads, cache writes, reasoning, and long-context tiers. It never charges less than a cost the provider reports. Unused reservation is refunded. A request that fails, is cancelled, or reports no usage is charged its full reservation.
+- When the response ends, the gateway charges the usage the provider reported, including cache reads, cache writes, reasoning, and long-context price tiers. It never charges less than a cost the provider reports. Unused reservation is refunded. A request that fails, is cancelled, or reports no usage is charged its full reservation.
 
-A request that the remaining budget cannot cover is refused with `429 model_budget_exhausted`. All figures are gateway estimates, not a provider invoice.
-
+A request that the remaining budget cannot cover is refused with `429 model_budget_exhausted`. All figures are gateway estimates, not a provider invoice. The exact reservation rules, surcharge, and pricing are owned by [`apps/model-gateway/src/budget.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/main/apps/model-gateway/src/budget.ts).

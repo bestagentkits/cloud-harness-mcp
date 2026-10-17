@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  costUsage,
   MEDIA_PART_RESERVE_TOKENS,
   ModelRequestError,
   pricesForPrompt,
@@ -10,7 +11,7 @@ import {
 } from '../src/budget.js';
 import { parsePricing } from '../src/config.js';
 import { createLeaseGrant, LeaseRegistry } from '../src/lease-registry.js';
-import { normalizeProviderUsage } from '../src/usage-normalizer.js';
+import { MAX_REPORTED_TOKENS, normalizeProviderUsage } from '../src/usage-normalizer.js';
 import type { GatewayProfile, LeaseGrant, PriceTier, Usage } from '../src/types.js';
 
 const AGENT_ID = 'agent_0123456789abcdefghij';
@@ -247,8 +248,14 @@ describe('reservation', () => {
     };
     expect(reserveBudget(body, 300, lease(), profile()).inputTokens).toBe(300 + 3 * MEDIA_PART_RESERVE_TOKENS);
     const responses = profile({ downstreamPath: '/v1/responses' });
-    const input = { input: [{ role: 'user', content: [{ type: 'input_image', image_url: 'https://example.net/a.png' }, { type: 'input_file', file_id: 'f' }] }] };
-    expect(reserveBudget(input, 200, lease(), responses).inputTokens).toBe(200 + 2 * MEDIA_PART_RESERVE_TOKENS);
+    const input = { input: [{ role: 'user', content: [
+      { type: 'input_image', image_url: 'https://example.net/a.png' },
+      { type: 'input_file', filename: 'a.pdf', file_data: 'data:application/pdf;base64,AAAA' },
+      { type: 'input_video', video_url: 'data:video/mp4;base64,AAAA' }
+    ] }] };
+    expect(reserveBudget(input, 200, lease(), responses).inputTokens).toBe(200 + 3 * MEDIA_PART_RESERVE_TOKENS);
+    const video = { messages: [{ role: 'user', content: [{ type: 'video_url', video_url: { url: 'data:video/mp4;base64,AAAA' } }] }] };
+    expect(reserveBudget(video, 100, lease(), profile()).inputTokens).toBe(100 + MEDIA_PART_RESERVE_TOKENS);
   });
 
   it('refuses stateful Responses fields that pull in unbounded server-side context', () => {
@@ -391,3 +398,141 @@ describe('lease settlement', () => {
     expect(() => leases.issue(input('lease-cap-2'), profile())).toThrow('capacity');
   });
 });
+
+describe('hostile and mixed usage reports', () => {
+  const MAX_SAFE = Number.MAX_SAFE_INTEGER;
+
+  it('clamps provider token counts instead of rejecting them', () => {
+    expect(usageFromProvider(usage({ prompt_tokens: 1e20, completion_tokens: 2 ** 60 }), profile())).toMatchObject({
+      inputTokens: MAX_REPORTED_TOKENS, outputTokens: MAX_REPORTED_TOKENS
+    });
+  });
+
+  it('saturates cost at the largest safe integer', () => {
+    const extreme = profile({
+      inputMicrosPerMillionTokens: MAX_SAFE, outputMicrosPerMillionTokens: MAX_SAFE,
+      cacheReadMicrosPerMillionTokens: MAX_SAFE, cacheWriteMicrosPerMillionTokens: MAX_SAFE
+    });
+    const charged = usageFromProvider(usage({ prompt_tokens: 1e9, completion_tokens: 1e9 }), extreme);
+    expect(charged?.costMicros).toBe(MAX_SAFE);
+    expect(costUsage({ prompt: [{ promptTokens: 1, uncachedInputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 }], outputTokens: 0, reasoningTokens: 0, providerCostMicros: MAX_SAFE }, profile()).costMicros)
+      .toBe(MAX_SAFE);
+    expect(usageFromProvider(usage({ prompt_tokens: 1, completion_tokens: 1, cost: 1e300 }), profile())?.costMicros).toBe(MAX_SAFE);
+  });
+
+  it('saturates settlement figures', () => {
+    const leases = new LeaseRegistry();
+    const token = leases.issue({
+      leaseId: 'lease-saturate', agentId: AGENT_ID, profileId: 'accounting-test', ttlMs: 60_000,
+      maxInputTokens: 400_000, maxOutputTokens: 4_096, maxCostMicros: 1_000
+    }, profile());
+    const grant = leases.consume(token, AGENT_ID, 'accounting-test');
+    const reservations = [0, 1].map(() => reserveBudget({ messages: [], max_tokens: 1 }, 10, grant, profile()));
+    for (const reservation of reservations) {
+      reconcileBudget(reservation, {
+        inputTokens: MAX_SAFE, cacheReadTokens: MAX_SAFE, cacheWriteTokens: 0, outputTokens: MAX_SAFE, reasoningTokens: 0, costMicros: MAX_SAFE
+      });
+    }
+    leases.revoke('lease-saturate');
+    const settlement = leases.freezeSettlement('lease-saturate');
+    for (const [field, value] of Object.entries(settlement ?? {})) {
+      if (typeof value === 'number') expect(Number.isSafeInteger(value), field).toBe(true);
+    }
+    expect(settlement).toMatchObject({ costMicros: MAX_SAFE, overrunCostMicros: MAX_SAFE, promptTokens: MAX_SAFE });
+  });
+
+  it('charges the larger alias when a report carries both chat and Responses names', () => {
+    // LiteLLM-style proxies may emit both naming schemes in one usage object.
+    expect(usageFromProvider(usage({
+      prompt_tokens: 100,
+      input_tokens: 1_000,
+      completion_tokens: 5,
+      output_tokens: 50,
+      prompt_tokens_details: { cached_tokens: 0 },
+      input_tokens_details: { cached_tokens: 600 },
+      completion_tokens_details: { reasoning_tokens: 1 },
+      output_tokens_details: { reasoning_tokens: 3 }
+    }), profile())).toEqual({
+      inputTokens: 1_000, cacheReadTokens: 600, cacheWriteTokens: 0, outputTokens: 50, reasoningTokens: 3, costMicros: 400 * 2 + 300 + 50 * 8
+    });
+  });
+
+  it('floors at the exact provider cost in whole micros', () => {
+    expect(usageFromProvider(usage({ prompt_tokens: 0, completion_tokens: 0, cost: 0.1 }), profile())?.costMicros).toBe(100_000);
+    expect(usageFromProvider(usage({ prompt_tokens: 0, completion_tokens: 0, cost: 1.0000009e-6 }), profile())?.costMicros).toBe(2);
+    expect(usageFromProvider(usage({ prompt_tokens: 0, completion_tokens: 0, cost: 0.000123 }), profile())?.costMicros).toBe(123);
+  });
+
+  it('accepts contract-valid prices above one billion and ignores unknown snapshot tier keys', () => {
+    expect(parsePricing({ inputMicrosPerMillionTokens: 2_000_000_000, outputMicrosPerMillionTokens: MAX_SAFE }, 'pricing', { strictKeys: true }))
+      .toEqual({ inputMicrosPerMillionTokens: 2_000_000_000, outputMicrosPerMillionTokens: MAX_SAFE });
+    expect(() => parsePricing({ inputMicrosPerMillionTokens: MAX_SAFE + 1, outputMicrosPerMillionTokens: 1 }, 'pricing', { strictKeys: true }))
+      .toThrow('inputMicrosPerMillionTokens');
+    const tiers = [{ minPromptTokens: 10, inputMicrosPerMillionTokens: 3, outputMicrosPerMillionTokens: 9, note: 'newer runner field' }];
+    expect(parsePricing({ inputMicrosPerMillionTokens: 2, outputMicrosPerMillionTokens: 8, tiers }, 'pricing', { strictKeys: false })
+      .tiers).toEqual([{ minPromptTokens: 10, inputMicrosPerMillionTokens: 3, outputMicrosPerMillionTokens: 9, cacheReadMicrosPerMillionTokens: 3, cacheWriteMicrosPerMillionTokens: 3 }]);
+    expect(() => parsePricing({ inputMicrosPerMillionTokens: 2, outputMicrosPerMillionTokens: 8, tiers }, 'pricing', { strictKeys: true }))
+      .toThrow('unsupported field note');
+  });
+});
+
+describe('provider-side tools and unbounded context', () => {
+  const responses = profile({ downstreamPath: '/v1/responses' });
+
+  function refused(body: Record<string, unknown>, target: GatewayProfile, named: string): void {
+    const grant = lease();
+    const call = () => reserveBudget(body, 100, grant, target);
+    expect(call, named).toThrow(ModelRequestError);
+    expect(call, named).toThrow(named);
+    expect(grant.remainingCostMicros).toBe(10_000_000);
+  }
+
+  it('refuses hosted Responses tools and allows function and custom tools', () => {
+    for (const type of ['web_search', 'web_search_preview', 'file_search', 'code_interpreter', 'image_generation', 'mcp', 'computer_use_preview', 'local_shell']) {
+      refused({ input: 'hi', tools: [{ type: 'function', name: 'f' }, { type }] }, responses, type);
+    }
+    refused({ input: 'hi', tools: [{ name: 'untyped' }] }, responses, 'needs a type');
+    refused({ input: 'hi', tools: { type: 'function' } }, responses, 'tools must be an array');
+    expect(() => reserveBudget({ input: 'hi', tools: [{ type: 'function', name: 'f' }, { type: 'custom', name: 'c' }] }, 100, lease(), responses))
+      .not.toThrow();
+  });
+
+  it('refuses provider-side web access and non-function tools on chat completions', () => {
+    refused({ messages: [], plugins: [{ id: 'web' }] }, profile(), 'plugins');
+    refused({ messages: [], web_search_options: {} }, profile(), 'web_search_options');
+    refused({ messages: [], tools: [{ type: 'web_search' }] }, profile(), 'web_search');
+    refused({ messages: [], tools: [{ type: 'custom', name: 'c' }] }, profile(), 'custom');
+    expect(() => reserveBudget({ messages: [], tools: [{ type: 'function', function: { name: 'f' } }] }, 100, lease(), profile())).not.toThrow();
+  });
+
+  it('refuses file parts that reference stored or remote files', () => {
+    refused({ messages: [{ role: 'user', content: [{ type: 'file', file: { file_id: 'file-1' } }] }] }, profile(), 'file_id');
+    refused({ input: [{ role: 'user', content: [{ type: 'input_file', file_id: 'file-1' }] }] }, responses, 'file_id');
+    refused({ input: [{ role: 'user', content: [{ type: 'input_file', file_url: 'https://example.net/a.pdf' }] }] }, responses, 'file_url');
+    expect(reserveBudget({ messages: [{ role: 'user', content: [{ type: 'file', file: { filename: 'a.pdf', file_data: 'data:application/pdf;base64,AAAA' } }] }] }, 100, lease(), profile()).inputTokens)
+      .toBe(100 + MEDIA_PART_RESERVE_TOKENS);
+  });
+});
+
+describe('settlement freezing', () => {
+  it('returns the same frozen settlement once the lease has drained', () => {
+    const leases = new LeaseRegistry();
+    const token = leases.issue({
+      leaseId: 'lease-freeze', agentId: AGENT_ID, profileId: 'accounting-test', ttlMs: 60_000,
+      maxInputTokens: 400_000, maxOutputTokens: 4_096, maxCostMicros: 10_000
+    }, profile());
+    const grant = leases.consume(token, AGENT_ID, 'accounting-test');
+    const inFlight = reserveBudget({ messages: [], max_tokens: 10 }, 100, grant, profile());
+    leases.revoke('lease-freeze');
+    // A request still draining is read live until the settlement is frozen.
+    reconcileBudget(inFlight, { inputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1, reasoningTokens: 0, costMicros: 10 });
+    expect(leases.settlementFor('lease-freeze')?.costMicros).toBe(10);
+    const frozen = leases.freezeSettlement('lease-freeze');
+    expect(Object.isFrozen(frozen)).toBe(true);
+    grant.remainingCostMicros = 0;
+    expect(leases.freezeSettlement('lease-freeze')).toBe(frozen);
+    expect(leases.settlementFor('lease-freeze')).toBe(frozen);
+    expect(frozen?.costMicros).toBe(10);
+  });
+});
+

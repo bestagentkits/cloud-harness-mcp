@@ -30,10 +30,19 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-/** A present field must be a non-negative safe integer; absent or null reads as undefined. */
+/** Provider-reported token counts are clamped here, so a hostile or buggy report cannot overflow cost math. */
+export const MAX_REPORTED_TOKENS = 1_000_000_000;
+
+/** A present field must be a non-negative integer; absent or null reads as undefined. */
 function count(value: unknown): Field {
   if (value === undefined || value === null) return undefined;
-  return Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : INVALID;
+  return Number.isInteger(value) && (value as number) >= 0 ? Math.min(value as number, MAX_REPORTED_TOKENS) : INVALID;
+}
+
+/** The larger of two aliases, so a report carrying both never charges the smaller. */
+function larger(first: number | undefined, second: number | undefined): number | undefined {
+  if (first === undefined) return second;
+  return second === undefined ? first : Math.max(first, second);
 }
 
 function nested(container: Record<string, unknown>, detailsKey: string, key: string): Field {
@@ -41,6 +50,11 @@ function nested(container: Record<string, unknown>, detailsKey: string, key: str
   if (details === undefined || details === null) return undefined;
   const detailsRecord = record(details);
   return detailsRecord === undefined ? INVALID : count(detailsRecord[key]);
+}
+
+/** True when the event carries a usage object, whether or not it is well formed. */
+export function carriesUsage(event: unknown): boolean {
+  return usageRecord(event) !== undefined;
 }
 
 /** Top-level `usage` (chat chunks, JSON bodies) or `response.usage` (Responses stream events). */
@@ -87,37 +101,30 @@ export function normalizeProviderUsage(event: unknown): NormalizedUsage | undefi
   let providerCostMicros: number | undefined;
   if (usage.cost !== undefined && usage.cost !== null) {
     if (typeof usage.cost !== 'number' || !Number.isFinite(usage.cost) || usage.cost < 0) return undefined;
-    // The epsilon absorbs binary floating-point noise (0.1 * 1e6 = 100000.00000000001).
-    providerCostMicros = Math.max(0, Math.ceil(usage.cost * 1_000_000 - 1e-6));
-    if (!Number.isSafeInteger(providerCostMicros)) return undefined;
+    // Rounding at picodollars removes binary noise (0.1 * 1e6 = 100000.00000000001)
+    // before rounding up to whole micros.
+    providerCostMicros = Math.min(Math.ceil(Math.round(usage.cost * 1e12) / 1e6), Number.MAX_SAFE_INTEGER);
   }
 
   const anthropicNames = value.anthropicRead !== undefined || value.anthropicWrite !== undefined;
-  const anthropicRead = value.anthropicRead ?? 0;
-  const anthropicWrite = value.anthropicWrite ?? 0;
-  let reportedPrompt: number;
+  const reportedPrompt = larger(value.promptTokens, value.inputTokens);
+  const reportedOutput = larger(value.completionTokens, value.outputTokens);
+  if (reportedPrompt === undefined || reportedOutput === undefined) return undefined;
+  // DeepSeek reports `prompt_cache_hit_tokens` and may omit the OpenAI-style detail.
+  const read = Math.max(larger(value.chatCached, value.responsesCached) ?? value.deepseekHit ?? 0, value.anthropicRead ?? 0);
+  const write = Math.max(value.chatCacheWrite ?? 0, value.anthropicWrite ?? 0);
+  const additive = split(reportedPrompt + read + write, reportedPrompt, read, write);
   let prompt: [PromptSplit, ...PromptSplit[]];
-  if (value.promptTokens !== undefined) {
-    reportedPrompt = value.promptTokens;
-    // DeepSeek reports `prompt_cache_hit_tokens` and may omit the OpenAI-style detail.
-    const read = Math.max(value.chatCached ?? value.deepseekHit ?? 0, anthropicRead);
-    const write = Math.max(value.chatCacheWrite ?? 0, anthropicWrite);
+  if (anthropicNames && value.promptTokens === undefined) {
+    // Anthropic's native names are additive: `input_tokens` excludes cache reads and writes.
+    prompt = [additive];
+  } else {
     const primary = inclusiveOrAdditive(reportedPrompt, read, write);
     // Anthropic cache names next to `prompt_tokens` may or may not be included in it.
-    prompt = anthropicNames ? [primary, split(reportedPrompt + read + write, reportedPrompt, read, write)] : [primary];
-  } else if (value.inputTokens !== undefined) {
-    reportedPrompt = value.inputTokens;
-    prompt = anthropicNames
-      // Anthropic's native names are additive: `input_tokens` excludes cache reads and writes.
-      ? [split(reportedPrompt + anthropicRead + anthropicWrite, reportedPrompt, anthropicRead, anthropicWrite)]
-      : [inclusiveOrAdditive(reportedPrompt, value.responsesCached ?? 0, 0)];
-  } else {
-    return undefined;
+    prompt = anthropicNames ? [primary, additive] : [primary];
   }
 
-  const reportedOutput = value.completionTokens ?? value.outputTokens;
-  if (reportedOutput === undefined) return undefined;
-  const reasoningTokens = value.chatReasoning ?? value.responsesReasoning ?? 0;
+  const reasoningTokens = larger(value.chatReasoning, value.responsesReasoning) ?? 0;
   // Reasoning larger than the output total can only have been reported separately from it.
   let outputTokens = reasoningTokens > reportedOutput ? reportedOutput + reasoningTokens : reportedOutput;
   if (value.totalTokens !== undefined) outputTokens = Math.max(outputTokens, value.totalTokens - reportedPrompt);

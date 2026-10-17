@@ -141,11 +141,17 @@ a lost response; do not create a second key until the first result is resolved.
 
 ## Tool behavior
 
-- An agent's model request fails with `400 invalid_model_request` naming
-  `previous_response_id`, `conversation`, or an object-valued `prompt`: the
-  Model Gateway refuses these `/v1/responses` fields, because the stored
-  server-side context they pull in cannot be bounded by the request budget.
-  The runtime must resend the full input and use `store: false`; see
+- An agent's model request fails with `400 invalid_model_request` naming a
+  field or tool type: the Model Gateway refuses requests it cannot bound or
+  that would let the provider act on the agent's behalf. These are stored
+  Responses context (`previous_response_id`, `conversation`, an object-valued
+  `prompt`), provider-hosted tools (anything but `function` and, on
+  `/v1/responses`, `custom`), the chat fields `plugins` and
+  `web_search_options`, and file parts with a `file_id` or URL. Hosted tools
+  would give an agent in a `network-none` workspace network or remote MCP
+  access through the provider. The runtime must resend the full input, run
+  tools itself, and send file data inline; see the
+  [security model](security-model.md#subagent-model-provider-credential-isolation--gateway-control) and
   [`apps/model-gateway/src/budget.ts`](../apps/model-gateway/src/budget.ts).
 - `files_apply_patch` conflict: read the file again, choose an exact unique
   `oldText`, and pass the latest SHA when concurrency matters. It is not a

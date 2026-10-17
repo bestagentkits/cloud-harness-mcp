@@ -24,7 +24,13 @@ const TIER_KEYS: Record<string, true> = {
   cacheWriteMicrosPerMillionTokens: true
 };
 const MAX_PRICE_TIERS = 4;
-const MAX_PRICE_MICROS = 1_000_000_000;
+/**
+ * Prices accept any non-negative safe integer, matching the runner's
+ * AgentModelPricingSchema (packages/contracts/src/model-profile-schemas.ts), so
+ * a snapshot the runner exports is never refused for a large price. Cost math
+ * saturates instead (budget.ts).
+ */
+const MAX_PRICE_MICROS = Number.MAX_SAFE_INTEGER;
 const PRICE_FIELDS = [
   'inputMicrosPerMillionTokens', 'outputMicrosPerMillionTokens', 'cacheReadMicrosPerMillionTokens', 'cacheWriteMicrosPerMillionTokens'
 ] as const;
@@ -152,8 +158,8 @@ function optionalPrice(value: unknown, label: string): number | undefined {
  * tier); the reservation relies on that to never pick a cheaper tier than the
  * provider bills.
  *
- * `strictKeys` refuses unknown pricing keys (static profile files); the control
- * snapshot ignores them, so a newer runner can add fields. Base prices default
+ * `strictKeys` refuses unknown pricing and tier keys (static profile files); the
+ * control snapshot ignores them, so a newer runner can add fields. Base prices default
  * to 0 only when `baseDefault` is set, matching the control snapshot.
  */
 export function parsePricing(value: unknown, label: string, options: { strictKeys: boolean; baseDefault?: number }): ProfilePricing {
@@ -186,7 +192,7 @@ export function parsePricing(value: unknown, label: string, options: { strictKey
   for (let index = 0; index < pricing.tiers.length; index += 1) {
     const tierLabel = `${label}.tiers[${index}]`;
     const raw = object(pricing.tiers[index], tierLabel);
-    exactKeys(raw, TIER_KEYS, tierLabel);
+    if (options.strictKeys) exactKeys(raw, TIER_KEYS, tierLabel);
     const tierInput = price(raw.inputMicrosPerMillionTokens, `${tierLabel}.inputMicrosPerMillionTokens`);
     const tier: PriceTier = {
       minPromptTokens: integer(raw.minPromptTokens, `${tierLabel}.minPromptTokens`, 1, 10_000_000),

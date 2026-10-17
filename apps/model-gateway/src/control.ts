@@ -79,10 +79,11 @@ export async function startControlServer(options: {
             send(socket, { ok: true, lease, gatewayBootId: registry.gatewayBootId });
           } else if (command.operation === 'revoke') {
             if (typeof command.leaseId !== 'string') throw new Error('invalid leaseId');
-            // revokeLease drains in-flight requests first, so the settlement is final.
-            // Revoking again returns the same settlement for the retention horizon.
+            // revokeLease drains in-flight requests before returning, so the settlement
+            // is final and frozen here. Revoking again returns the same settlement for
+            // the retention horizon.
             const revoked = await revokeLease(command.leaseId);
-            const settlement = leases.settlementFor(command.leaseId);
+            const settlement = leases.freezeSettlement(command.leaseId);
             send(socket, { ok: true, revoked, gatewayBootId: registry.gatewayBootId, ...(settlement === undefined ? {} : { settlement }) });
           } else if (command.operation === 'cancel') {
             if (typeof command.requestId !== 'string') throw new Error('invalid requestId');

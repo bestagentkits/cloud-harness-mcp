@@ -5,6 +5,7 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { isUnsafeAddress, readExactSecret } from './config.js';
 import { usageFromProvider } from './budget.js';
+import { carriesUsage } from './usage-normalizer.js';
 import type { GatewayProfile, Usage } from './types.js';
 
 export interface UpstreamResult {
@@ -46,14 +47,21 @@ async function resolveAddress(profile: GatewayProfile): Promise<{ address: strin
   return { address: selected.address, family: selected.family };
 }
 
-function extractUsageFromLine(line: string, profile: GatewayProfile): Usage | undefined {
+/**
+ * Reads usage from one stream line. `malformed` marks a line that carries a
+ * usage object the normaliser rejects.
+ */
+function extractUsageFromLine(line: string, profile: GatewayProfile): { usage?: Usage; malformed: boolean } {
   const payload = line.startsWith('data:') ? line.slice(5).trimStart() : line;
-  if (payload.length === 0 || payload === '[DONE]' || payload[0] !== '{') return undefined;
+  if (payload.length === 0 || payload === '[DONE]' || payload[0] !== '{') return { malformed: false };
+  let event: unknown;
   try {
-    return usageFromProvider(JSON.parse(payload) as unknown, profile);
+    event = JSON.parse(payload) as unknown;
   } catch {
-    return undefined;
+    return { malformed: false };
   }
+  const usage = usageFromProvider(event, profile);
+  return usage === undefined ? { malformed: carriesUsage(event) } : { usage, malformed: false };
 }
 
 export async function startUpstreamRequest(options: {
@@ -83,6 +91,13 @@ export async function startUpstreamRequest(options: {
   let responseCloseResolve: (() => void) | undefined;
   let responseBytes = 0;
   let usage: Usage | undefined;
+  // A malformed usage report after a valid one discards both, so the request
+  // settles at its reservation instead of an earlier, possibly partial, figure.
+  let usageDiscarded = false;
+  const recordUsage = (line: { usage?: Usage; malformed: boolean }): void => {
+    if (line.malformed && usage !== undefined) usageDiscarded = true;
+    usage = line.usage ?? usage;
+  };
   let pendingLine = '';
   const credentialBytes = Buffer.from(credential, 'utf8');
   let outboundPending = Buffer.alloc(0);
@@ -173,7 +188,8 @@ export async function startUpstreamRequest(options: {
             downstream.destroy();
             return;
           }
-          const lineUsage = extractUsageFromLine(line, profile);
+          const lineResult = extractUsageFromLine(line, profile);
+          const lineUsage = lineResult.usage;
           // outputTokens includes reasoning, so reasoning counts against the reserved output cap.
           if (lineUsage && lineUsage.outputTokens > maxOutputTokens) {
             exceededUsage = lineUsage;
@@ -182,7 +198,7 @@ export async function startUpstreamRequest(options: {
             downstream.destroy();
             return;
           }
-          usage = lineUsage ?? usage;
+          recordUsage(lineResult);
           newline = pendingLine.indexOf('\n');
         }
         if (Buffer.byteLength(pendingLine) > profile.limits.maxStreamLineBytes) {
@@ -210,7 +226,8 @@ export async function startUpstreamRequest(options: {
       response.on('end', () => {
         if (settled) return;
         if (pendingLine.length > 0) {
-          const finalUsage = extractUsageFromLine(pendingLine, profile);
+          const finalResult = extractUsageFromLine(pendingLine, profile);
+          const finalUsage = finalResult.usage;
           if (finalUsage && finalUsage.outputTokens > maxOutputTokens) {
             exceededUsage = finalUsage;
             abortReason = 'provider output token limit exceeded';
@@ -219,11 +236,11 @@ export async function startUpstreamRequest(options: {
             reject(failure(abortReason));
             return;
           }
-          usage = finalUsage ?? usage;
+          recordUsage(finalResult);
         }
         settled = true;
         downstream.end(outboundPending);
-        resolve({ status: response.statusCode ?? 502, responseBytes, ...(usage === undefined ? {} : { usage }) });
+        resolve({ status: response.statusCode ?? 502, responseBytes, ...(usage === undefined || usageDiscarded ? {} : { usage }) });
       });
       response.on('close', () => {
         responseCloseResolve?.();

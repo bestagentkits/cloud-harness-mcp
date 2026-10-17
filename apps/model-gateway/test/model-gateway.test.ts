@@ -596,6 +596,42 @@ describe('model gateway usage accounting', () => {
     }]));
   });
 
+  it('charges the reservation when a malformed usage line follows a valid one', async () => {
+    const provider = await fakeProvider((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write('data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":1}}\n\n');
+      response.end('data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":-3}}\n\ndata: [DONE]\n\n');
+    });
+    const recording = recordingHooks();
+    const running = await gateway(pricedProfile(provider.upstream), recording.hooks);
+    const response = await fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers(activate(running.runtime, issue())), body: chatBody
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    const reservation = recording.reserved[0];
+    await vi.waitFor(() => expect(recording.reconciled).toEqual([expect.objectContaining({
+      inputTokens: reservation?.inputTokens, outputTokens: reservation?.outputTokens, costMicros: reservation?.costMicros
+    })]));
+  });
+
+  it('refuses provider-hosted tools with a message naming the tool type', async () => {
+    let providerRequests = 0;
+    const provider = await fakeProvider((_request, response) => {
+      providerRequests += 1;
+      response.end();
+    });
+    const running = await gateway(pricedProfile(provider.upstream, { downstreamPath: '/v1/responses' }));
+    const response = await fetch(`${running.baseUrl}/v1/responses`, {
+      method: 'POST', headers: headers(activate(running.runtime, issue())),
+      body: JSON.stringify({ input: 'hi', tools: [{ type: 'web_search_preview' }] })
+    });
+    expect(response.status).toBe(400);
+    const payload = await response.json() as { error: { code: string; message: string } };
+    expect(payload.error).toMatchObject({ code: 'invalid_model_request', message: expect.stringContaining('web_search_preview') });
+    expect(providerRequests).toBe(0);
+  });
+
   it('never reserves more than the lease cap across concurrent requests', async () => {
     const pending: Array<() => void> = [];
     const provider = await fakeProvider((_request, response) => {
