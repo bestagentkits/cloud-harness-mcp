@@ -558,6 +558,21 @@ describe('model connection verifier', () => {
     expect(ctx.repo.listCredentials(ctx.p1)[0]?.lastVerification).toMatchObject({ outcome: 'failed', checkedAt: 3_000 });
   });
 
+  it('keeps the active key version\'s result across key versions whatever the timestamps', () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    const record = (credentialVersion: number, outcome: 'verified' | 'failed', checkedAt: number) => ctx.repo.recordVerification(ctx.p1, {
+      targetKind: 'credential', targetId: cred.id, revisionId: null, credentialVersion, outcome, resultJson: '{}', checkedAt
+    });
+    expect(record(1, 'failed', 1_000)).toBe(true);
+    const rotated = ctx.repo.rotateCredential(ctx.p1, cred.id, { apiKey: `${SECRET}-2`, expectedGeneration: 1 });
+    expect(rotated.activeVersion).toBe(2);
+    expect(record(2, 'verified', 2_000)).toBe(true);
+    // A check of the old key that finishes later never replaces the current key's result.
+    expect(record(1, 'failed', 3_000)).toBe(false);
+    expect(ctx.repo.listCredentials(ctx.p1)[0]?.lastVerification).toMatchObject({ outcome: 'verified', checkedAt: 2_000 });
+  });
+
   it('keeps the active revision\'s result across revisions whatever the timestamps', () => {
     const ctx = setup(openAiHandler());
     const cred = ctx.credential();

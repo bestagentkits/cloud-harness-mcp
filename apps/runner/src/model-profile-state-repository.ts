@@ -167,6 +167,14 @@ export class ModelProfileStateRepository {
         result_json = excluded.result_json,
         checked_at = excluded.checked_at
       WHERE CASE
+        -- Across key versions only the credential's active version wins, so a slow
+        -- check of a rotated-out key never replaces the current key's result.
+        WHEN excluded.target_kind = 'credential'
+          THEN CASE
+            WHEN excluded.credential_version IS model_verification_results.credential_version
+              THEN excluded.checked_at >= model_verification_results.checked_at
+            ELSE excluded.credential_version = (SELECT active_version FROM model_provider_credentials WHERE id = excluded.target_id)
+          END
         WHEN excluded.revision_id IS model_verification_results.revision_id
           THEN excluded.checked_at >= model_verification_results.checked_at
         -- Across revisions only the profile's active revision wins, whatever the
