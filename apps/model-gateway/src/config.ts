@@ -62,6 +62,31 @@ function privateIpv4(address: string): boolean {
     (first === 203 && second === 0 && third === 113) || first >= 224;
 }
 
+/** Expands an IPv6 literal (compressed or with an embedded IPv4 tail) into eight 16-bit words. */
+function ipv6Words(address: string): number[] | undefined {
+  let text = address;
+  const tail: number[] = [];
+  const lastColon = text.lastIndexOf(':');
+  const embedded = text.slice(lastColon + 1);
+  if (isIP(embedded) === 4) {
+    const octets = embedded.split('.').map(Number);
+    tail.push(((octets[0] ?? 0) << 8) | (octets[1] ?? 0), ((octets[2] ?? 0) << 8) | (octets[3] ?? 0));
+    text = `${text.slice(0, lastColon + 1)}0`;
+  }
+  const halves = text.split('::');
+  if (halves.length > 2) return undefined;
+  const parse = (part: string | undefined): number[] =>
+    part === undefined || part === '' ? [] : part.split(':').map((word) => Number.parseInt(word, 16));
+  const head = parse(halves[0]);
+  const rest = parse(halves[1]);
+  if (tail.length > 0) (rest.length > 0 ? rest : head).pop();
+  const explicit = [...head, ...rest, ...tail];
+  const words = halves.length === 2
+    ? [...head, ...new Array<number>(8 - explicit.length).fill(0), ...rest, ...tail]
+    : explicit;
+  return words.length === 8 && words.every((word) => Number.isInteger(word) && word >= 0 && word <= 0xffff) ? words : undefined;
+}
+
 export function isUnsafeAddress(address: string): boolean {
   const normalized = address.toLowerCase().split('%', 1)[0] ?? address.toLowerCase();
   if (isIP(normalized) === 4) return privateIpv4(normalized);
@@ -78,6 +103,12 @@ export function isUnsafeAddress(address: string): boolean {
         }
       }
     }
+    const words = ipv6Words(normalized);
+    if (words === undefined) return true;
+    // NAT64 (64:ff9b::/96, 64:ff9b:1::/48) and 6to4 (2002::/16) embed an IPv4
+    // address that a translator may route to a private or metadata endpoint.
+    if (words[0] === 0x2002 || (words[0] === 0x64 && words[1] === 0xff9b && (words[2] === 1 ||
+        (words[2] === 0 && words[3] === 0 && words[4] === 0 && words[5] === 0)))) return true;
     return normalized === '::' || normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd') ||
       normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb') ||
       normalized.startsWith('ff') || normalized.startsWith('2001:db8:') || normalized.startsWith('2001:2:') ||

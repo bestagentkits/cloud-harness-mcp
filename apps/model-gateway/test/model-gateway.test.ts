@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertProductionHostname, loadGatewayConfig, readExactSecret } from '../src/config.js';
+import { assertProductionHostname, isUnsafeAddress, loadGatewayConfig, readExactSecret } from '../src/config.js';
 import { LeaseRegistry } from '../src/lease-registry.js';
 import { createGatewayRuntime, type GatewayRuntime } from '../src/gateway.js';
 import { reserveBudget } from '../src/budget.js';
@@ -164,6 +164,18 @@ describe('model gateway security boundary', () => {
       expect(() => assertProductionHostname(host)).toThrow();
     }
     expect(() => assertProductionHostname('api.openai.com')).not.toThrow();
+  });
+
+  it('refuses NAT64 and 6to4 prefixes in every IPv6 text form', () => {
+    for (const address of [
+      '64:ff9b::a9fe:a9fe', '64:ff9b:0:0:0:0:a9fe:a9fe', '64:FF9B::169.254.169.254', '0064:ff9b:0000::0a00:0001',
+      '64:ff9b:1::1', '64:ff9b:1:abcd::a9fe:a9fe', '2002:a9fe:a9fe::1', '2002::', '2002:0808:0808:0:0:0:0:1'
+    ]) {
+      expect(isUnsafeAddress(address), address).toBe(true);
+    }
+    for (const address of ['2606:4700::6810:84e5', '64:ff9c::1', '64:ff9b:0:1::1', '2003::1', '2001:4860:4860::8888']) {
+      expect(isUnsafeAddress(address), address).toBe(false);
+    }
   });
 
   it('clamps model and output tokens before reserving cost', () => {
