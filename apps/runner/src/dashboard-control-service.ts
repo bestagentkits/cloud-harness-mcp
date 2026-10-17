@@ -61,7 +61,7 @@ import { ModelCatalogService } from './model-catalog/model-catalog-service.js';
 import { reviewPricing, savedPriceProvenance } from './model-catalog/pricing-review.js';
 import { createProviderHttpClient, type ProviderHttpClient } from './model-provider-http.js';
 import { ModelConnectionVerifier } from './model-verification/model-connection-verifier.js';
-import { gatewaySnapshotDigest, type AgentGatewayControl } from './agent-gateway-control.js';
+import { syncGatewaySnapshot, type AgentGatewayControl } from './agent-gateway-control.js';
 import { ModelSpendLedger, type ModelSpendPolicyHooks } from './model-spend-ledger.js';
 import { packageApprovalUnavailable } from './config.js';
 import {
@@ -553,34 +553,31 @@ export class DashboardControlService {
           record: this.recordSpendPolicyChange(principalId)
         }));
         case 'model_config_status': {
-          const activeProfiles = this.models().listProfiles(principalId).filter((p) => p.status === 'ACTIVE').length;
-          const activeCreds = this.models().listCredentials(principalId).filter((c) => c.status === 'ACTIVE').length;
           let gatewaySynced = false;
           let gatewayBootId: string | null = null;
           let gatewayError: string | null = null;
           const control = this.gatewayControl;
+          const models = this.models();
           if (control) {
             try {
-              // The gateway applies the whole-instance snapshot, so compare against the same export syncGateway pushes.
-              const snapshot = this.models().getExportSnapshot();
-              const expectedDigest = gatewaySnapshotDigest(snapshot);
-              const digest = await control.queryDigest();
-              gatewayBootId = digest.gatewayBootId;
-              let gatewayDigest = digest.snapshotDigest;
-              if (gatewayDigest !== expectedDigest) {
-                // Self-heal with one push per read: the gateway restarted, a push failed, or the
-                // snapshot changed without one (an agent pinned to an older revision ended).
-                const ack = await control.applySnapshot(snapshot);
-                gatewayBootId = ack.gatewayBootId;
-                gatewayDigest = ack.snapshotDigest;
-              }
-              gatewaySynced = gatewayDigest === expectedDigest;
+              // One serialized section: query the gateway, build the whole-instance snapshot the
+              // runner pushes, and repair a mismatch with one push. The expected digest comes from
+              // a snapshot built after any earlier push landed, and a repair never overwrites a newer push.
+              const sync = await syncGatewaySnapshot(control, () => models.getExportSnapshot(), {
+                onlyIfMismatch: true,
+                onQueried: (digest) => { gatewayBootId = digest.gatewayBootId; }
+              });
+              gatewayBootId = sync.gatewayBootId;
+              gatewaySynced = sync.gatewayDigest === sync.expectedDigest;
             } catch (err) {
               gatewayError = err instanceof Error ? err.message : 'gateway unreachable';
             }
           }
           // Every push, from this service or the agent manager, is recorded on the shared control.
           const push = control?.snapshotPushState?.() ?? { lastSuccessAt: null, lastError: null };
+          // Counted after the sync, so they describe the same state the expected digest does.
+          const activeProfiles = models.listProfiles(principalId).filter((p) => p.status === 'ACTIVE').length;
+          const activeCreds = models.listCredentials(principalId).filter((c) => c.status === 'ACTIVE').length;
           return ok('Model configuration status', {
             status: {
               gatewaySynced,
@@ -1559,9 +1556,11 @@ export class DashboardControlService {
 
   private async syncGateway(): Promise<void> {
     const control = this.gatewayControl;
-    if (!this.modelProfiles || !control) return;
+    const modelProfiles = this.modelProfiles;
+    if (!modelProfiles || !control) return;
     try {
-      await control.applySnapshot(this.modelProfiles.getExportSnapshot());
+      // Built inside the push queue, so the push carries the state as of the push, not of this call.
+      await syncGatewaySnapshot(control, () => modelProfiles.getExportSnapshot(), { onlyIfMismatch: false });
     } catch {
       // The gateway control records the failure; model_config_status reports it instead of failing the mutation.
     }

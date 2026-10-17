@@ -40,6 +40,10 @@ async function startGateway(root: string) {
     registry: undefined as DynamicGatewayRegistry | undefined,
     reachable: true,
     failApply: false,
+    /** While set, digest queries wait on it, so a test can act while a sync is mid-flight. */
+    digestGate: undefined as Promise<void> | undefined,
+    digestQueries: 0,
+    issueRequests: 0,
     get socketPath() { return socketPath; },
     async start() {
       generation += 1;
@@ -98,6 +102,11 @@ async function setup() {
   const gateway = await startGateway(root);
   vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async (_args, options) => {
     const stdin = options?.stdin ?? '';
+    if (stdin.includes('"operation":"issue"')) gateway.issueRequests += 1;
+    if (stdin.includes('"operation":"digest"')) {
+      gateway.digestQueries += 1;
+      if (gateway.digestGate) await gateway.digestGate;
+    }
     if (!gateway.reachable || (gateway.failApply && stdin.includes('"apply_snapshot"'))) {
       return { exitCode: 1, stdout: '', stderr: 'gateway container is not running' };
     }
@@ -166,6 +175,7 @@ async function setup() {
   });
   return {
     gateway, repo, status, call, createProfile, profileInput, restartRunner, runAgentOn, agentManager,
+    workspace: () => principals.byId(workspaceId)!,
     /** A push by another component sharing this runner's gateway control, such as the agent manager. */
     pushFromAgentManager: async () => await runner.control.applySnapshot(repo.getExportSnapshot()),
     ownerId
@@ -331,5 +341,53 @@ describe('model configuration status', () => {
     expect(healed.lastSyncTime).toBeGreaterThanOrEqual(before);
     expect(gateway.registry?.profiles.size).toBe(1);
     expect(gateway.registry?.snapshotDigest).toBe(expectedDigest(repo));
+  });
+  it('never pushes a snapshot older than a key rotation that lands while a status read is in flight', async () => {
+    const { gateway, repo, status, call, createProfile, ownerId } = await setup();
+    await createProfile('coding');
+    const credential = repo.listCredentials(ownerId)[0]!;
+    // Make the gateway stale so the status read decides to repair it.
+    gateway.registry!.snapshotDigest = 'sha256:stale';
+
+    let release!: () => void;
+    gateway.digestGate = new Promise<void>((resolve) => { release = resolve; });
+    const queriesBefore = gateway.digestQueries;
+    const reading = status();
+    await vi.waitFor(() => expect(gateway.digestQueries).toBe(queriesBefore + 1));
+
+    // The owner rotates the key, keeping the credential id, while the read waits on the gateway.
+    const rotating = call('model_credential_rotate', { credentialId: credential.id, apiKey: 'sk-rotated-secret', expectedGeneration: 1 });
+    await vi.waitFor(() => expect(repo.listCredentials(ownerId)[0]!.activeVersion).toBe(2));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    gateway.digestGate = undefined;
+    release();
+    const result = await reading;
+    await rotating;
+
+    const current = repo.getExportSnapshot();
+    // Compared by identity only, so a failure never prints a key.
+    expect(gateway.registry!.credentials.get(credential.id)?.secret === current.credentials[credential.id]?.secret).toBe(true);
+    expect(gateway.registry!.snapshotDigest).toBe(expectedDigest(repo));
+    // Synced is judged against a snapshot built after the rotation, never the one from before it.
+    expect(result).toMatchObject({ gatewaySynced: true, error: null });
+    expect(await status()).toMatchObject({ gatewaySynced: true, error: null });
+  });
+
+  it('refuses a spawn as retryable and issues no lease when the gateway cannot be brought in sync', async () => {
+    const { gateway, repo, createProfile, agentManager, workspace, ownerId } = await setup();
+    const created = await createProfile('coding') as unknown as { id: string };
+    gateway.failApply = true;
+    gateway.registry!.snapshotDigest = 'sha256:stale';
+    const manager = agentManager();
+    const syncing = manager.ensureGatewaySynced();
+    await expect(syncing).rejects.toMatchObject({ code: 'UNAVAILABLE', retryable: true });
+
+    const spawning = manager.dispatch(ownerId, workspace(), 'agent_spawn', {
+      workspaceId: workspace().id, prompt: 'never launched', idempotencyKey: 'spawn-gateway-down', profileId: created.id,
+      proxyOperations: ['files_read'], ttlSeconds: 60, maxOutputBytes: 65536, maxInputTokens: 5000, maxOutputTokens: 500, maxCostMicros: 50000
+    });
+    await expect(spawning).rejects.toMatchObject({ code: 'UNAVAILABLE', retryable: true });
+    expect(gateway.issueRequests).toBe(0);
+    expect(gateway.registry!.snapshotDigest).not.toBe(expectedDigest(repo));
   });
 });

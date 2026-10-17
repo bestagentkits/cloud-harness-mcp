@@ -412,7 +412,12 @@ The badge beside **Model profiles** reads `GET /api/v1/agent-model-config-status
 When the digests differ, reading the status pushes the current snapshot once and reports the
 result. This repairs a gateway that restarted, missed a failed push, or holds a snapshot that
 changed without a push, such as when an agent pinned to an older profile revision ends. The
-agent manager makes the same comparison before it launches an agent.
+agent manager makes the same comparison before it launches an agent on a dashboard-managed
+profile, and refuses the launch as retryable when the gateway cannot be brought in sync.
+
+The runner serializes every snapshot push, and it builds each snapshot just before sending it.
+A push therefore always carries the latest saved state, such as a key rotated a moment earlier,
+and a slower push can never replace a newer snapshot with an older one.
 
 ## Spend policies
 

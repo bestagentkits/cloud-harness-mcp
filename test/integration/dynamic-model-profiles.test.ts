@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AgentManager } from '../../apps/runner/src/agent-manager.js';
-import type { AgentGatewayControl } from '../../apps/runner/src/agent-gateway-control.js';
+import { gatewaySnapshotDigest, type AgentGatewayControl, type GatewaySnapshot } from '../../apps/runner/src/agent-gateway-control.js';
 import type { AgentLauncher } from '../../apps/runner/src/agent-launcher.js';
 import { AgentStateRepository } from '../../apps/runner/src/agent-state-repository.js';
 import { ModelProfileStateRepository } from '../../apps/runner/src/model-profile-state-repository.js';
@@ -168,6 +168,8 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
 
     const issuedLeases: Array<{ profileId: string }> = [];
     const launched: unknown[] = [];
+    let lastApplied: GatewaySnapshot | undefined;
+    let snapshotPushes = 0;
     const mockGateway = {
       gatewayContainer: async () => 'gateway-container',
       issue: async (input: { profileId: string }) => {
@@ -176,8 +178,16 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       },
       revokeAndDrain: async () => {},
       cancelAndDrain: async () => {},
-      applySnapshot: async () => ({ gatewayBootId: 'boot1', snapshotDigest: 'sha1' }),
-      queryDigest: async () => ({ gatewayBootId: 'boot1', snapshotDigest: 'sha1', activeProfileCount: 1, activeCredentialCount: 1, activeLeaseCount: 0 })
+      // Acks and reports the digest a real gateway would, so a spawn on an in-sync gateway pushes nothing.
+      applySnapshot: async (snapshot: GatewaySnapshot) => {
+        lastApplied = snapshot;
+        snapshotPushes += 1;
+        return { gatewayBootId: 'boot1', snapshotDigest: gatewaySnapshotDigest(snapshot) };
+      },
+      queryDigest: async () => ({
+        gatewayBootId: 'boot1', snapshotDigest: lastApplied ? gatewaySnapshotDigest(lastApplied) : '',
+        activeProfileCount: 1, activeCredentialCount: 1, activeLeaseCount: 0
+      })
     };
 
     const mockLauncher = {
@@ -195,6 +205,7 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     });
 
     await manager.start();
+    expect(snapshotPushes).toBe(1);
 
     // 3. Create workspace
     const wsId = `ws_${'w'.repeat(24)}`;
@@ -237,6 +248,8 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     });
 
     expect(spawnRes.ok).toBe(true);
+    // The gateway already holds the current snapshot, so the spawn's reconciliation pushes nothing.
+    expect(snapshotPushes).toBe(1);
     expect(issuedLeases).toHaveLength(1);
     expect(issuedLeases[0].profileId).toBe(profile.activeRevisionId); // Lease bound to exact revision!
 

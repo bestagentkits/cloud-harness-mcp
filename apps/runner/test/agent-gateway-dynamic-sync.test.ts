@@ -193,45 +193,30 @@ describe('gateway snapshot push state', () => {
     spy.mockRestore();
   });
 
-  it('keeps the outcome of a later push when an earlier one settles after it', async () => {
+  it('serializes pushes, builds each snapshot after the previous push landed, and keeps going after a failure', async () => {
     const releases: Array<() => void> = [];
+    const order: string[] = [];
     let calls = 0;
     const spy = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async () => {
       calls += 1;
-      if (calls === 1) {
-        await new Promise<void>((resolve) => releases.push(resolve));
-        return { exitCode: 1, stdout: '', stderr: '' };
-      }
-      return { exitCode: 0, stdout: ack, stderr: '' };
+      const call = calls;
+      order.push(`push ${call} started`);
+      if (call === 1) await new Promise<void>((resolve) => releases.push(resolve));
+      order.push(`push ${call} settled`);
+      return call === 1 ? { exitCode: 1, stdout: '', stderr: '' } : { exitCode: 0, stdout: ack, stderr: '' };
     });
-    const control = new DockerAgentGatewayControl('gateway', () => 5_000);
-    const slowFailure = control.applySnapshot(snapshot);
-    await control.applySnapshot(snapshot);
+    const control = new DockerAgentGatewayControl('gateway', () => 7_000);
+    let state = 'old';
+    const first = control.syncSnapshot(() => { order.push(`build ${state}`); return snapshot; }, { onlyIfMismatch: false });
+    const second = control.syncSnapshot(() => { order.push(`build ${state}`); return snapshot; }, { onlyIfMismatch: false });
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    // The second sync has not built its snapshot yet, so a change made now is the one it pushes.
+    state = 'new';
     releases[0]!();
-    await expect(slowFailure).rejects.toThrow();
-    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: 5_000, lastError: null });
-    spy.mockRestore();
-  });
-
-  it('keeps the success time of an earlier push that settles after a later failure, with the later error', async () => {
-    const releases: Array<() => void> = [];
-    let calls = 0;
-    let clock = 1_000;
-    const spy = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async () => {
-      calls += 1;
-      if (calls === 1) {
-        await new Promise<void>((resolve) => releases.push(resolve));
-        return { exitCode: 0, stdout: ack, stderr: '' };
-      }
-      return { exitCode: 1, stdout: '', stderr: '' };
-    });
-    const control = new DockerAgentGatewayControl('gateway', () => clock);
-    const slowSuccess = control.applySnapshot(snapshot);
-    await expect(control.applySnapshot(snapshot)).rejects.toThrow('model gateway control request failed');
-    clock = 2_000;
-    releases[0]!();
-    await slowSuccess;
-    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: 2_000, lastError: 'model gateway control request failed' });
+    await expect(first).rejects.toThrow('model gateway control request failed');
+    await expect(second).resolves.toMatchObject({ pushed: true, gatewayDigest: 'sha256:a' });
+    expect(order).toEqual(['build old', 'push 1 started', 'push 1 settled', 'build new', 'push 2 started', 'push 2 settled']);
+    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: 7_000, lastError: null });
     spy.mockRestore();
   });
 });

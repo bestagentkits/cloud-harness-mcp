@@ -130,6 +130,26 @@ export type GatewaySnapshotPushState = {
   lastError: string | null;
 };
 
+/** A snapshot builder. It runs inside the push section, so it reads the state as of the push. */
+export type GatewaySnapshotBuilder = () => GatewaySnapshot | Promise<GatewaySnapshot>;
+
+/** The result of one snapshot sync. */
+export type GatewaySnapshotSync = {
+  gatewayBootId: string;
+  /** The digest the gateway holds after the sync. */
+  gatewayDigest: string;
+  /** The digest of the snapshot built during the sync, the runner's current state. */
+  expectedDigest: string;
+  pushed: boolean;
+};
+
+export type GatewaySnapshotSyncOptions = {
+  /** Query the gateway first and push only when its digest differs from the built snapshot. */
+  onlyIfMismatch: boolean;
+  /** Called with the gateway's answer to the query, before any push, so a caller keeps it when the push fails. */
+  onQueried?: (digest: { gatewayBootId: string; snapshotDigest: string }) => void;
+};
+
 export interface AgentGatewayControl {
   gatewayContainer(): Promise<string>;
   issue(input: Omit<AgentLeaseGrant, 'lease' | 'gatewayBootId'>): Promise<AgentLeaseGrant>;
@@ -140,6 +160,45 @@ export interface AgentGatewayControl {
   queryDigest(): Promise<{ gatewayBootId: string; snapshotDigest: string; activeProfileCount: number; activeCredentialCount: number; activeLeaseCount: number }>;
   /** The shared record of every applySnapshot outcome. Optional so lease-only test doubles stay small. */
   snapshotPushState?(): GatewaySnapshotPushState;
+  /** Builds and, when needed, pushes a snapshot in one serialized section. Optional for test doubles. */
+  syncSnapshot?(build: GatewaySnapshotBuilder, options: GatewaySnapshotSyncOptions): Promise<GatewaySnapshotSync>;
+}
+
+/** One sync, unserialized: query (when asked), build after the query answered, compare, push. */
+async function runSnapshotSync(
+  query: () => Promise<{ gatewayBootId: string; snapshotDigest: string }>,
+  apply: (snapshot: GatewaySnapshot) => Promise<{ gatewayBootId: string; snapshotDigest: string }>,
+  build: GatewaySnapshotBuilder,
+  options: GatewaySnapshotSyncOptions
+): Promise<GatewaySnapshotSync> {
+  if (options.onlyIfMismatch) {
+    const digest = await query();
+    options.onQueried?.(digest);
+    const snapshot = await build();
+    const expectedDigest = gatewaySnapshotDigest(snapshot);
+    if (digest.snapshotDigest === expectedDigest) {
+      return { gatewayBootId: digest.gatewayBootId, gatewayDigest: digest.snapshotDigest, expectedDigest, pushed: false };
+    }
+    const ack = await apply(snapshot);
+    return { gatewayBootId: ack.gatewayBootId, gatewayDigest: ack.snapshotDigest, expectedDigest, pushed: true };
+  }
+  const snapshot = await build();
+  const ack = await apply(snapshot);
+  return { gatewayBootId: ack.gatewayBootId, gatewayDigest: ack.snapshotDigest, expectedDigest: gatewaySnapshotDigest(snapshot), pushed: true };
+}
+
+/**
+ * Every snapshot push goes through here. The Docker control serializes these sections, so a
+ * snapshot is always built after the previous push landed and pushes land in build order:
+ * a sync that started earlier can never push an older snapshot over a newer one.
+ */
+export async function syncGatewaySnapshot(
+  control: AgentGatewayControl,
+  build: GatewaySnapshotBuilder,
+  options: GatewaySnapshotSyncOptions
+): Promise<GatewaySnapshotSync> {
+  if (control.syncSnapshot) return await control.syncSnapshot(build, options);
+  return await runSnapshotSync(() => control.queryDigest(), (snapshot) => control.applySnapshot(snapshot), build, options);
 }
 
 type ControlResponse = {
@@ -153,8 +212,8 @@ type ControlResponse = {
 export class DockerAgentGatewayControl implements AgentGatewayControl {
   private resolvedContainer?: Promise<string>;
   private pushState: GatewaySnapshotPushState = { lastSuccessAt: null, lastError: null };
-  private pushAttempts = 0;
-  private recordedAttempt = 0;
+  /** The tail of the snapshot push queue. It never rejects, so a failed push does not block later ones. */
+  private pushQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly explicitContainer?: string,
@@ -203,30 +262,32 @@ export class DockerAgentGatewayControl implements AgentGatewayControl {
     await this.control({ operation: 'cancel', requestId });
   }
 
+  /** Pushes this exact snapshot, queued behind any sync already in flight. */
   async applySnapshot(snapshot: GatewaySnapshot): Promise<{ gatewayBootId: string; snapshotDigest: string }> {
-    // The error follows the order pushes started, so a slow earlier push that settles late
-    // never replaces the outcome of a later one. The success time only ever moves forward.
-    const attempt = ++this.pushAttempts;
+    const result = await this.syncSnapshot(() => snapshot, { onlyIfMismatch: false });
+    return { gatewayBootId: result.gatewayBootId, snapshotDigest: result.gatewayDigest };
+  }
+
+  syncSnapshot(build: GatewaySnapshotBuilder, options: GatewaySnapshotSyncOptions): Promise<GatewaySnapshotSync> {
+    const run = () => runSnapshotSync(() => this.queryDigest(), (snapshot) => this.pushNow(snapshot), build, options);
+    const result = this.pushQueue.then(run, run);
+    this.pushQueue = result.catch(() => undefined);
+    return result;
+  }
+
+  /** One push, recorded. Only called inside the push queue, so outcomes are recorded in push order. */
+  private async pushNow(snapshot: GatewaySnapshot): Promise<{ gatewayBootId: string; snapshotDigest: string }> {
     try {
       const response = await this.control(snapshotCommand(snapshot), 1_048_576);
       if (!response.ack) {
         throw new HarnessError('UNAVAILABLE', 'model gateway omitted snapshot ack', 503, true);
       }
-      this.recordPush(attempt, null);
+      this.pushState = { lastSuccessAt: Math.max(this.pushState.lastSuccessAt ?? Number.NEGATIVE_INFINITY, this.now()), lastError: null };
       return response.ack;
     } catch (err) {
-      this.recordPush(attempt, err instanceof Error ? err.message : 'snapshot push failed');
+      this.pushState = { lastSuccessAt: this.pushState.lastSuccessAt, lastError: err instanceof Error ? err.message : 'snapshot push failed' };
       throw err;
     }
-  }
-
-  private recordPush(attempt: number, error: string | null): void {
-    const lastSuccessAt = error === null
-      ? Math.max(this.pushState.lastSuccessAt ?? Number.NEGATIVE_INFINITY, this.now())
-      : this.pushState.lastSuccessAt;
-    const latest = attempt >= this.recordedAttempt;
-    if (latest) this.recordedAttempt = attempt;
-    this.pushState = { lastSuccessAt, lastError: latest ? error : this.pushState.lastError };
   }
 
   async queryDigest(): Promise<{ gatewayBootId: string; snapshotDigest: string; activeProfileCount: number; activeCredentialCount: number; activeLeaseCount: number }> {

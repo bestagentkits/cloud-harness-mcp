@@ -25,8 +25,8 @@ import {
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
 import {
   DockerAgentGatewayControl,
-  gatewaySnapshotDigest,
   isDefiniteIssueRefusal,
+  syncGatewaySnapshot,
   type AgentGatewayControl,
   type AgentLeaseRevocation
 } from './agent-gateway-control.js';
@@ -158,15 +158,14 @@ export class AgentManager {
 
 
   async ensureGatewaySynced(): Promise<void> {
-    if (!this.modelProfiles || !this.gateway.applySnapshot || !this.gateway.queryDigest) return;
+    const modelProfiles = this.modelProfiles;
+    // A lease-only gateway double has no snapshot surface; there is nothing to reconcile.
+    if (!modelProfiles || (!this.gateway.syncSnapshot && (!this.gateway.applySnapshot || !this.gateway.queryDigest))) return;
     try {
-      // Compare with the snapshot as it is now: it changes without a push when an agent pinned
-      // to an older revision ends, and a restarted gateway reports an empty digest.
-      const snapshot = this.modelProfiles.getExportSnapshot();
-      const digestResult = await this.gateway.queryDigest();
-      if (digestResult.snapshotDigest !== gatewaySnapshotDigest(snapshot)) {
-        await this.gateway.applySnapshot(snapshot);
-      }
+      // Compare with the snapshot as it is now, built after any earlier push landed: it changes
+      // without a push when an agent pinned to an older revision ends, and a restarted gateway
+      // reports an empty digest.
+      await syncGatewaySnapshot(this.gateway, () => modelProfiles.getExportSnapshot(), { onlyIfMismatch: true });
     } catch (err) {
       throw new HarnessError('UNAVAILABLE', `model gateway reconciliation failed: ${err instanceof Error ? err.message : 'unreachable'}`, 503, true);
     }
@@ -183,9 +182,10 @@ export class AgentManager {
     this.stopping = false;
     this.epoch = this.repository.bumpEpoch(this.store.instanceId(), this.now());
     await this.launcher.reconcile?.();
-    if (this.modelProfiles && this.gateway.applySnapshot) {
+    const modelProfiles = this.modelProfiles;
+    if (modelProfiles) {
       try {
-        await this.gateway.applySnapshot(this.modelProfiles.getExportSnapshot());
+        await syncGatewaySnapshot(this.gateway, () => modelProfiles.getExportSnapshot(), { onlyIfMismatch: false });
       } catch {
         // Gateway will be reconciled upon spawn or status check
       }
