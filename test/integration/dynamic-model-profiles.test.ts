@@ -193,8 +193,9 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
         }, build, options)
     };
 
+    const firstLaunch = Promise.withResolvers<void>();
     const mockLauncher = {
-      launch: async (spec: unknown) => { launched.push(spec); },
+      launch: async (spec: unknown) => { launched.push(spec); firstLaunch.resolve(); },
       stop: async () => {},
       reconcile: async () => {}
     };
@@ -251,6 +252,8 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     });
 
     expect(spawnRes.ok).toBe(true);
+    // The lease is issued inside the launch, after the spawn is acknowledged.
+    await firstLaunch.promise;
     // The gateway already holds the current snapshot, so the spawn's reconciliation pushes nothing.
     expect(snapshotPushes).toBe(1);
     expect(issuedLeases).toHaveLength(1);
@@ -1040,7 +1043,13 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       repository: new AgentStateRepository(store.database, agentConfig.limits, store.instanceId()),
       gateway: gatewayForManager,
       // The launch itself is not under test; the lease issue before it is.
-      launcher: { launch: async () => { throw new Error('launcher not under test'); }, stop: async () => {}, reconcile: async () => {}, cleanup: async () => {} } as unknown as AgentLauncher,
+      // A launch that ends before issuing a lease still cleans up, which ends the wait below.
+      launcher: {
+        launch: async () => { throw new Error('launcher not under test'); },
+        stop: async () => {},
+        reconcile: async () => {},
+        cleanup: async () => { issued.resolve({ error: 'launch ended without issuing a lease' }); }
+      } as unknown as AgentLauncher,
       modelProfiles: repo,
       toolExecutor: async () => ({ ok: true, message: 'ok', data: {}, truncated: false })
     });
@@ -1059,17 +1068,19 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       });
 
       armed = true;
-      const spawned = await manager.dispatch(p, store.byId(wsId)!, 'agent_spawn', {
+      const spawning = manager.dispatch(p, store.byId(wsId)!, 'agent_spawn', {
         workspaceId: wsId, prompt: 'race', idempotencyKey: 'spawn-race-1', profileId: 'race-profile',
         proxyOperations: ['files_read'], ttlSeconds: 60, maxOutputBytes: 65536,
         maxInputTokens: 10000, maxOutputTokens: 1000, maxCostMicros: 50000
       });
+      // A rejected spawn ends the wait at once instead of leaving the issue outcome pending.
+      const outcome = await Promise.race([issued.promise, spawning.then(() => issued.promise)]);
 
-      expect(spawned.ok).toBe(true);
+      expect((await spawning).ok).toBe(true);
       expect(editedRevision).toBeDefined();
       expect(editedRevision).not.toBe(spawnedRevision);
       // The lease is issued on the revision the spawn resolved, which the edit's snapshot omitted.
-      expect(await issued.promise).toEqual({ profileId: spawnedRevision });
+      expect(outcome).toEqual({ profileId: spawnedRevision });
     } finally {
       await manager.stop();
       runDockerSpy.mockRestore();
@@ -1077,12 +1088,16 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     }
   });
 
-  it('fails a spawn as retryable when the post-reservation gateway sync fails, and releases its reservation', async () => {
+  /**
+   * A manager whose dashboard profile `post-reservation` is reconciled through `syncSnapshot`. The
+   * first sync of a spawn runs before the reservation and the second inside the launch, after it.
+   */
+  async function postReservationFixture(name: string, gateway: AgentGatewayControl, launcher: Partial<AgentLauncher>) {
     const { repo, p, store } = setup();
-    const cred = repo.createCredential(p, { label: 'OpenAI Sync Failure', provider: 'openai', apiKey: 'sk-secret-sync-failure' });
+    const cred = repo.createCredential(p, { label: `OpenAI ${name}`, provider: 'openai', apiKey: `sk-secret-${name}` });
     repo.createProfile(p, {
-      profileId: ModelProfileIdSchema.parse('sync-failure'),
-      displayName: 'Sync Failure',
+      profileId: ModelProfileIdSchema.parse('post-reservation'),
+      displayName: 'Post Reservation',
       credentialId: cred.id,
       model: 'gpt-5.2',
       apiMode: 'chat-completions',
@@ -1090,22 +1105,6 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       limits: { maxInputTokens: 50000, maxOutputTokens: 2000, maxCostMicros: 100000 },
       maxProxyOperations: ['files_read']
     });
-    let syncCalls = 0;
-    let issueCalls = 0;
-    const gatewayControl: AgentGatewayControl = {
-      gatewayContainer: async () => 'gateway-container',
-      issue: async (input) => { issueCalls += 1; return { ...input, lease: 'unused' }; },
-      revokeAndDrain: async () => ({ revoked: false }),
-      cancelAndDrain: async () => {},
-      queryDigest: async () => ({ gatewayBootId: 'boot1', snapshotDigest: '', activeProfileCount: 1, activeCredentialCount: 1, activeLeaseCount: 0 }),
-      // The pre-reservation sync succeeds; the gateway becomes unreachable before the post-reservation one.
-      syncSnapshot: async (build) => {
-        syncCalls += 1;
-        if (syncCalls > 1) throw new Error('model gateway control request failed');
-        const snapshot = await build();
-        return { gatewayBootId: 'boot1', gatewayDigest: gatewaySnapshotDigest(snapshot), expectedDigest: gatewaySnapshotDigest(snapshot), pushed: true };
-      }
-    };
     const agentConfig = RunnerAgentsConfigSchema.parse({
       image: 'agent:test',
       networkMode: 'none',
@@ -1121,37 +1120,163 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     const manager = new AgentManager(agentConfig, store, {
       repository,
       spendLedger,
-      gateway: gatewayControl,
-      launcher: { launch: async () => {}, stop: async () => {}, reconcile: async () => {}, cleanup: async () => {} } as unknown as AgentLauncher,
+      gateway,
+      launcher: { launch: async () => {}, stop: async () => {}, reconcile: async () => {}, cleanup: async () => {}, ...launcher } as unknown as AgentLauncher,
       modelProfiles: repo,
       toolExecutor: async () => ({ ok: true, message: 'ok', data: {}, truncated: false })
     });
-    const wsId = `ws_${'f'.repeat(24)}`;
+    const wsId = `ws_${randomBytes(12).toString('hex')}`;
     const now = Date.now();
     store.create({
-      id: wsId, ownerId: p, idempotencyKey: 'workspace-sync-failure', repositoryUrl: 'https://github.com/org/repo.git',
-      repositoryRef: null, containerName: 'executor', workspacePath: '/tmp/ws-sync-failure', environmentId: null,
+      id: wsId, ownerId: p, idempotencyKey: `workspace-${name}`, repositoryUrl: 'https://github.com/org/repo.git',
+      repositoryRef: null, containerName: 'executor', workspacePath: `/tmp/ws-${name}`, environmentId: null,
       status: 'ACTIVE', networkProfile: 'network-none', createdAt: now, lastActivityAt: now,
       expiresAt: now + 3600_000, hardExpiresAt: now + 7200_000, gitAuthorName: null, gitAuthorEmail: null,
       mutationLockedUntil: null, generation: 1, error: null
     });
-    // start() pushes once; count only the spawn's syncs.
+    const spawn = (idempotencyKey: string) => manager.dispatch(p, store.byId(wsId)!, 'agent_spawn', {
+      workspaceId: wsId, prompt: name, idempotencyKey, profileId: 'post-reservation',
+      proxyOperations: ['files_read'], ttlSeconds: 60, maxOutputBytes: 65536,
+      maxInputTokens: 10000, maxOutputTokens: 1000, maxCostMicros: 50000
+    });
+    return { manager, repository, spendLedger, p, wsId, spawn };
+  }
+
+  const snapshotAck = async (build: Parameters<AgentGatewayControl['syncSnapshot']>[0]) => {
+    const digest = gatewaySnapshotDigest(await build());
+    return { gatewayBootId: 'boot1', gatewayDigest: digest, expectedDigest: digest, pushed: true };
+  };
+  const unusedGatewayCalls = {
+    gatewayContainer: async () => 'gateway-container',
+    cancelAndDrain: async () => {},
+    queryDigest: async () => ({ gatewayBootId: 'boot1', snapshotDigest: '', activeProfileCount: 1, activeCredentialCount: 1, activeLeaseCount: 0 })
+  };
+
+  it('ends the agent as a launch failure when the post-reservation gateway sync fails, and releases its reservation', async () => {
+    let syncCalls = 0;
+    let issueCalls = 0;
+    const cleanedUp = Promise.withResolvers<void>();
+    const fixture = await postReservationFixture('sync-failure', {
+      ...unusedGatewayCalls,
+      issue: async (input) => { issueCalls += 1; return { ...input, lease: 'unused' }; },
+      // The gateway stays unreachable, so the cleanup cannot settle the ledger row through a revoke.
+      revokeAndDrain: async () => { throw new Error('model gateway control request failed'); },
+      syncSnapshot: async (build) => {
+        syncCalls += 1;
+        // start() and the spawn's pre-reservation sync succeed; the post-reservation one fails.
+        if (syncCalls === 3) throw new Error('model gateway control request failed');
+        return await snapshotAck(build);
+      }
+    }, { cleanup: async () => { cleanedUp.resolve(); } });
+    const { manager, repository, spendLedger, p, wsId, spawn } = fixture;
     await manager.start();
-    syncCalls = 0;
 
     try {
-      await expect(manager.dispatch(p, store.byId(wsId)!, 'agent_spawn', {
-        workspaceId: wsId, prompt: 'sync failure', idempotencyKey: 'spawn-sync-failure', profileId: 'sync-failure',
-        proxyOperations: ['files_read'], ttlSeconds: 60, maxOutputBytes: 65536,
-        maxInputTokens: 10000, maxOutputTokens: 1000, maxCostMicros: 50000
-      })).rejects.toMatchObject({ code: 'UNAVAILABLE', retryable: true });
+      const spawned = await spawn('spawn-sync-failure');
+      // The spawn is acknowledged; the failure belongs to the launch.
+      expect(spawned).toMatchObject({ ok: true, data: { status: 'SPAWNING', replayed: false } });
+      await cleanedUp.promise;
+      // The failed cleanup records its retry synchronously after the launcher cleanup settles.
+      await new Promise((resolve) => setImmediate(resolve));
 
-      expect(syncCalls).toBe(2);
+      expect(syncCalls).toBe(3);
       expect(issueCalls).toBe(0);
-      const record = repository.findByIdempotency(p, wsId, 'spawn-sync-failure');
-      expect(record?.status).toBe('FAILED');
-      expect(spendLedger.find(record!.gatewayLeaseId)).toMatchObject({ state: 'released', chargedMicros: 0 });
+      const record = repository.findByIdempotency(p, wsId, 'spawn-sync-failure')!;
+      // The revoke failed, so the agent waits in CANCELLING for its scheduled cleanup retry.
+      expect(record.status).toBe('CANCELLING');
+      expect(record.cleanupReason).toContain('model gateway reconciliation failed');
+      expect(repository.cleanupRetry(p, wsId, record.id, record.generation)).toMatchObject({
+        attempts: 1, lastError: expect.stringContaining('model gateway control request failed')
+      });
+      // No lease could exist, so the reservation was released at zero without the gateway.
+      expect(spendLedger.find(record.gatewayLeaseId)).toMatchObject({ state: 'released', chargedMicros: 0 });
+      // Once the gateway answers again, a same-key retry replays the existing record rather than
+      // spawning again.
+      await expect(spawn('spawn-sync-failure')).resolves.toMatchObject({
+        ok: true, data: { agentId: record.id, status: 'CANCELLING', replayed: true }
+      });
+      expect(syncCalls).toBe(4);
     } finally {
+      await manager.stop();
+    }
+  });
+
+  it('still ends the agent when releasing its reservation throws after a post-reservation sync failure', async () => {
+    let syncCalls = 0;
+    const cleanedUp = Promise.withResolvers<void>();
+    const fixture = await postReservationFixture('settle-throws', {
+      ...unusedGatewayCalls,
+      issue: async (input) => ({ ...input, lease: 'unused' }),
+      revokeAndDrain: async () => ({ revoked: false }),
+      syncSnapshot: async (build) => {
+        syncCalls += 1;
+        if (syncCalls === 3) throw new Error('model gateway control request failed');
+        return await snapshotAck(build);
+      }
+    }, { cleanup: async () => { cleanedUp.resolve(); } });
+    const { manager, repository, spendLedger, p, wsId, spawn } = fixture;
+    const settle = vi.spyOn(spendLedger, 'settle').mockImplementationOnce(() => { throw new Error('database is locked'); });
+    await manager.start();
+
+    try {
+      await spawn('spawn-settle-throws');
+      await cleanedUp.promise;
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const record = repository.findByIdempotency(p, wsId, 'spawn-settle-throws')!;
+      expect(record.status).toBe('FAILED');
+      // The cleanup's own settle released the row the explicit release could not.
+      expect(settle).toHaveBeenCalledTimes(2);
+      expect(spendLedger.find(record.gatewayLeaseId)).toMatchObject({ state: 'released', chargedMicros: 0 });
+    } finally {
+      settle.mockRestore();
+      await manager.stop();
+    }
+  });
+
+  it('issues no lease and starts no container when the workspace stops during the post-reservation sync', async () => {
+    let syncCalls = 0;
+    let issueCalls = 0;
+    let launchCalls = 0;
+    const gate = Promise.withResolvers<void>();
+    const reachedPostReservationSync = Promise.withResolvers<void>();
+    const fixture = await postReservationFixture('stop-during-sync', {
+      ...unusedGatewayCalls,
+      issue: async (input) => { issueCalls += 1; return { ...input, lease: 'lease_stop_during_sync_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }; },
+      revokeAndDrain: async () => ({ revoked: false }),
+      syncSnapshot: async (build) => {
+        syncCalls += 1;
+        if (syncCalls === 3) {
+          reachedPostReservationSync.resolve();
+          await gate.promise;
+        }
+        return await snapshotAck(build);
+      }
+    }, { launch: async () => { launchCalls += 1; throw new Error('launcher not under test'); } });
+    const { manager, repository, spendLedger, p, wsId, spawn } = fixture;
+    await manager.start();
+
+    try {
+      const spawning = spawn('spawn-stop-during-sync');
+      await Promise.race([reachedPostReservationSync.promise, spawning.then(() => reachedPostReservationSync.promise)]);
+      // stopWorkspace moves the agent to CANCELLING before its first await, so the cancel has landed
+      // while the sync is still held open.
+      const stopping = manager.stopWorkspace(p, wsId, 'workspace closing');
+      expect(repository.findByIdempotency(p, wsId, 'spawn-stop-during-sync')?.status).toBe('CANCELLING');
+      gate.resolve();
+      await stopping;
+      await spawning;
+      // Let any launch continuation still queued behind the sync run before checking it did nothing.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(issueCalls).toBe(0);
+      expect(launchCalls).toBe(0);
+      const record = repository.findByIdempotency(p, wsId, 'spawn-stop-during-sync')!;
+      expect(record.status).toBe('CANCELLED');
+      expect(repository.cleanupRetry(p, wsId, record.id, record.generation)).toBeUndefined();
+      expect(spendLedger.find(record.gatewayLeaseId)).toMatchObject({ state: 'released', chargedMicros: 0 });
+    } finally {
+      gate.resolve();
       await manager.stop();
     }
   });

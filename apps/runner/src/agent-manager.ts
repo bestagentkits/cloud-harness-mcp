@@ -364,24 +364,8 @@ export class AgentManager {
     if (reservation.replayed) {
       return success('Agent spawn replayed', spawnData(reservation.record, true));
     }
-    if (dashboardManaged) {
-      // A snapshot built between resolving the revision and reserving the agent row may omit the
-      // revision, and the gateway replaces its set with each snapshot. Now that the row exists,
-      // every snapshot includes the revision, so reconcile once more before the lease is issued.
-      try {
-        await this.ensureGatewaySynced();
-      } catch (error) {
-        // No lease can exist yet, so the reservation is released at zero now rather than when the
-        // cleanup (which needs the unreachable gateway) eventually succeeds; a failed cleanup is
-        // already scheduled for retry, and the caller still gets the retryable UNAVAILABLE.
-        this.spendLedger.settle(reservation.record.gatewayLeaseId, undefined, this.now());
-        await this.failLaunch(reservation.record, error instanceof Error ? error.message : 'model gateway reconciliation failed')
-          .catch(() => undefined);
-        throw error;
-      }
-    }
     const repositoryContext = (input.repositoryContext as AgentRepositoryContext | undefined) ?? 'codex';
-    const launch = this.launch(reservation.record, prompt, profile, repositoryContext)
+    const launch = this.launch(reservation.record, prompt, profile, repositoryContext, dashboardManaged)
       .finally(() => this.launches.delete(reservation.record.id));
     this.launches.set(reservation.record.id, launch);
     void launch.catch(() => undefined);
@@ -438,16 +422,34 @@ export class AgentManager {
     return composed.prompt;
   }
 
-  private async launch(record: AgentRecord, prompt: string, profile: PricedAgentModelProfile, repositoryContext: AgentRepositoryContext): Promise<void> {
+  private async launch(
+    record: AgentRecord,
+    prompt: string,
+    profile: PricedAgentModelProfile,
+    repositoryContext: AgentRepositoryContext,
+    reconcileGateway: boolean
+  ): Promise<void> {
     const spec = this.launchSpec(record);
+    let leaseMayExist = false;
     try {
       if (this.epoch !== this.repository.currentEpoch(this.store.instanceId())) {
         throw new HarnessError('CONFLICT', 'agent launch lost its runtime epoch fence', 409, true);
       }
+      if (reconcileGateway) {
+        // The revision was resolved before the agent row existed, so a snapshot built in that gap
+        // (a profile edit's push) may omit it, and the gateway replaces its set with each snapshot.
+        // Every snapshot built from now on includes the revision; reconcile once before the lease.
+        await this.ensureGatewaySynced();
+      }
+      // A cancel that landed while this launch waited owns the cleanup; it waits for this launch,
+      // so stop before any lease or container exists.
+      if (!this.stillSpawning(record)) return;
       // Guidance is composed before any lease or container exists, so an agent never starts its
       // first turn without the repository's applicable guidance, and a failed scan costs nothing.
       const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext);
+      if (!this.stillSpawning(record)) return;
       // From here the lease may exist in the gateway, so an unsettled row is charged its whole cap.
+      leaseMayExist = true;
       this.spendLedger.markIssuing(record.gatewayLeaseId);
       let grant: Awaited<ReturnType<AgentGatewayControl['issue']>>;
       try {
@@ -509,8 +511,22 @@ export class AgentManager {
         if (!context.terminalSeen) void this.interrupt(running, `agent runtime exited before terminal record (${code ?? 'signal'})`);
       }).catch((error: unknown) => { void this.interrupt(running, error instanceof Error ? error.message : 'agent runtime failed'); });
     } catch (error) {
+      if (!leaseMayExist) {
+        // No lease can exist, so the reservation is released at zero now instead of waiting for a
+        // cleanup that may need the same unreachable gateway. A failure here leaves the row open for
+        // the cleanup retry or the spend sweep, and must not keep the agent from ending.
+        try {
+          this.spendLedger.settle(record.gatewayLeaseId, undefined, this.now());
+        } catch {
+          // The open row is settled later; ending the agent below matters more.
+        }
+      }
       await this.failLaunch(record, error instanceof Error ? error.message : 'agent launch failed');
     }
+  }
+
+  private stillSpawning(record: AgentRecord): boolean {
+    return this.repository.findAgent(record.ownerId, record.workspaceId, record.id)?.status === 'SPAWNING';
   }
 
   /** Ends an agent whose launch failed: cancels its descendants, releases its lease, and records it FAILED. */
