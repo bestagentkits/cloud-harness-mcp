@@ -558,6 +558,24 @@ describe('model connection verifier', () => {
     expect(ctx.repo.listCredentials(ctx.p1)[0]?.lastVerification).toMatchObject({ outcome: 'failed', checkedAt: 3_000 });
   });
 
+  it('keeps the active revision\'s result across revisions whatever the timestamps', () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    const saved = ctx.profile(cred.id, 'gpt-test');
+    const oldRevision = saved.activeRevisionId;
+    const record = (revisionId: string | null, outcome: 'verified' | 'failed', checkedAt: number) => ctx.repo.recordVerification(ctx.p1, {
+      targetKind: 'profile', targetId: saved.id, revisionId, credentialVersion: null, outcome, resultJson: '{}', checkedAt
+    });
+    expect(record(oldRevision, 'failed', 5_000)).toBe(true);
+    const updated = ctx.repo.updateProfile(ctx.p1, saved.id, { displayName: 'Renamed', expectedGeneration: saved.generation });
+    // An earlier draft check attached to the new revision replaces the old revision's newer result.
+    expect(record(updated.activeRevisionId, 'verified', 4_000)).toBe(true);
+    expect(ctx.repo.listProfiles(ctx.p1)[0]?.lastVerification).toMatchObject({ outcome: 'verified', checkedAt: 4_000 });
+    // A late result for the old revision never replaces the active revision's.
+    expect(record(oldRevision, 'failed', 6_000)).toBe(false);
+    expect(ctx.repo.listProfiles(ctx.p1)[0]?.lastVerification).toMatchObject({ outcome: 'verified', checkedAt: 4_000 });
+  });
+
   it('does not store a result for a target that was deleted or belongs to another principal', () => {
     const ctx = setup(openAiHandler());
     const cred = ctx.credential();
