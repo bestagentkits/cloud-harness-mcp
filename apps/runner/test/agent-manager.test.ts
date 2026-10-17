@@ -621,11 +621,10 @@ describe('agent repository guidance bootstrap', () => {
       return (JSON.parse(line!) as { model: { cost: Record<string, number> } }).model.cost;
     }
 
-    it('reports conservative cache prices for a static profile without them', async () => {
+    it('reports a static profile\'s unknown cache prices at its input price, as the gateway charges them', async () => {
       const { manager, record, launcher } = setup();
       await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
-      // The test profile names no registry provider, so it resolves as custom: reads at input, writes at twice input.
-      expect(await startRecordCost(launcher)).toEqual({ input: 0.000001, output: 0.000001, cacheRead: 0.000001, cacheWrite: 0.000002 });
+      expect(await startRecordCost(launcher)).toEqual({ input: 0.000001, output: 0.000001, cacheRead: 0.000001, cacheWrite: 0.000001 });
       await manager.stop();
     });
 

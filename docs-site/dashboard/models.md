@@ -194,10 +194,15 @@ and `AgentModelPricingSchema` in
 
 - **Cache prices.** `cacheReadMicrosPerMillionTokens` and `cacheWriteMicrosPerMillionTokens`
   are optional. Leaving one out, or sending `null`, records it as unknown, never as free.
-- **Tiers.** `tiers` holds up to four long-prompt price levels. Each tier applies once a
-  request's prompt reaches its `minPromptTokens`; the base prices cover shorter prompts.
-  Thresholds must strictly ascend, and no tier may charge less than the level below it.
-  Cache prices are compared only where both levels state them.
+- **Tiers.** `tiers` holds up to four long-prompt price levels; an empty list means flat
+  pricing. Each tier applies once a request's prompt reaches its `minPromptTokens` (at most
+  10,000,000); the base prices cover shorter prompts. Thresholds must strictly ascend, and
+  no tier may charge less than the level below it. That rule applies to the prices the
+  gateway charges, after unknown cache prices are resolved for the key's provider (see the
+  table below). A save is refused with `INVALID_INPUT` when, for example, a tier states a
+  cache read below the base's unstated one (which costs the base input price), or the base
+  states a cache write and a tier leaves it out. State the cache prices on every level to
+  avoid this.
 - **Provenance.** `priceProvenance` records where the prices came from: `source`
   (`provider`, `openrouter`, `user`, or `none`), `sourceModelId`, `retrievedAt`,
   `confidence` (`exact`, `estimate`, or `unknown`), and `isOverride`. Prices you type are
@@ -207,8 +212,11 @@ and `AgentModelPricingSchema` in
 **Pinned prices never drift.** Revisions are immutable, and catalog refreshes never write
 to them. An edit that does not submit pricing copies the current revision's prices, cache
 prices, tiers, and provenance unchanged, and keeps its limits unless the edit changes them.
-An edit that submits pricing replaces all of them: send the cache prices and tiers again to
-keep them, and the new prices are recorded as your override.
+Submitting only the input and output prices, unchanged, counts as not submitting pricing.
+If the edit changes the model or the key, the copied prices are recorded as your override
+of `unknown` confidence, because they were set for the previous model. Any other submitted
+pricing replaces all of them: send the cache prices and tiers again to keep them, and the
+new prices are recorded as your override.
 
 **How unknown prices are charged.** The gateway and the agent's own cost report use the
 same concrete prices, resolved when the runner sends the revision to the gateway and when it
@@ -225,6 +233,10 @@ Whether a provider bills cache writes is the `billsCacheWrites` field of the
 These defaults can only over-charge; enter the real price to make estimates exact. The
 profile list shows the prices as saved, not the resolved defaults. An agent's self-reported
 cost uses the base prices; the gateway applies tiers.
+
+Static profiles from the runner configuration are not tied to a registry provider: their
+unknown cache prices, read and write alike, cost the input price, which is how the gateway
+charges a static profile file.
 
 ### The profile wizard
 

@@ -48,10 +48,13 @@ export const DEFAULT_USER_PRICE_PROVENANCE: AgentModelPriceProvenance = Object.f
 // conservative concrete price in resolveEffectivePricing.
 const OptionalCachePriceSchema = PriceMicrosPerMillionSchema.nullable().optional();
 
+// The largest tier threshold the model gateway accepts; no model takes a longer prompt.
+export const MAX_PRICE_TIER_MIN_PROMPT_TOKENS = 10_000_000;
+
 // Prices that apply once a request's prompt reaches `minPromptTokens`. The base
 // prices cover prompts below the first tier.
 export const ModelPriceTierSchema = z.object({
-  minPromptTokens: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  minPromptTokens: z.number().int().positive().max(MAX_PRICE_TIER_MIN_PROMPT_TOKENS),
   inputMicrosPerMillionTokens: PriceMicrosPerMillionSchema,
   outputMicrosPerMillionTokens: PriceMicrosPerMillionSchema,
   cacheReadMicrosPerMillionTokens: OptionalCachePriceSchema,
@@ -74,7 +77,8 @@ type PriceLevel = Partial<Record<(typeof PRICE_KEYS)[number], number | null | un
  * Reports a tier whose threshold does not rise above the previous one, or whose
  * price is lower than the same price one level below (the base prices for the
  * first tier). Cache prices are compared only where both levels state them,
- * because an unknown price has no value to compare.
+ * because an unknown price resolves per provider; `findResolvedPriceTierIssues`
+ * checks the resolved prices once the provider is known.
  */
 export function addPriceTierIssues(
   base: PriceLevel,
@@ -108,7 +112,8 @@ export function addPriceTierIssues(
   });
 }
 
-export const ModelPriceTiersSchema = z.array(ModelPriceTierSchema).min(1).max(MAX_MODEL_PRICE_TIERS);
+// An empty list means flat pricing, the same as leaving `tiers` out.
+export const ModelPriceTiersSchema = z.array(ModelPriceTierSchema).max(MAX_MODEL_PRICE_TIERS);
 
 export interface EffectivePriceLevel {
   inputMicrosPerMillionTokens: number;
@@ -132,7 +137,17 @@ export interface PinnedModelPricing extends PriceLevel {
   tiers?: readonly ModelPriceTier[] | undefined;
 }
 
-function resolveLevel(level: PriceLevel & { inputMicrosPerMillionTokens: number; outputMicrosPerMillionTokens: number }, billsCacheWrites: boolean): EffectivePriceLevel {
+/**
+ * How unknown cache prices resolve: by a registry provider, or by an explicit
+ * cache-write rule for prices that belong to no registry provider (static profiles).
+ */
+export type PriceResolutionBasis = ModelProviderKind | { billsCacheWrites: boolean };
+
+function billsCacheWrites(basis: PriceResolutionBasis): boolean {
+  return typeof basis === 'string' ? getModelProvider(basis).billsCacheWrites : basis.billsCacheWrites;
+}
+
+function resolveLevel(level: PriceLevel & { inputMicrosPerMillionTokens: number; outputMicrosPerMillionTokens: number }, billsWrites: boolean): EffectivePriceLevel {
   const input = level.inputMicrosPerMillionTokens;
   const cacheRead = level.cacheReadMicrosPerMillionTokens;
   const cacheWrite = level.cacheWriteMicrosPerMillionTokens;
@@ -145,8 +160,40 @@ function resolveLevel(level: PriceLevel & { inputMicrosPerMillionTokens: number;
     // published write premiums. The clamp keeps the result a safe integer.
     cacheWriteMicrosPerMillionTokens: typeof cacheWrite === 'number'
       ? cacheWrite
-      : billsCacheWrites ? Math.min(Number.MAX_SAFE_INTEGER, input * 2) : input
+      : billsWrites ? Math.min(Number.MAX_SAFE_INTEGER, input * 2) : input
   };
+}
+
+/** Each level resolved on its own, before tiers are raised to the level below. */
+function resolveLevels(pricing: PinnedModelPricing, basis: PriceResolutionBasis): { base: EffectivePriceLevel; tiers: EffectivePriceTier[] } {
+  const billsWrites = billsCacheWrites(basis);
+  return {
+    base: resolveLevel(pricing, billsWrites),
+    tiers: (pricing.tiers ?? []).map((tier) => ({ minPromptTokens: tier.minPromptTokens, ...resolveLevel(tier, billsWrites) }))
+  };
+}
+
+/**
+ * Describes each tier price that, once unknown prices resolve for `basis`, is lower
+ * than the same price one level below. The model gateway refuses such pricing,
+ * so a revision must not be saved with it: an unstated tier cache price resolves
+ * from the tier's own input price and can land below a base cache price that is
+ * stated or resolved higher. An empty list means the pricing is accepted as is.
+ */
+export function findResolvedPriceTierIssues(pricing: PinnedModelPricing, basis: PriceResolutionBasis): string[] {
+  const { base, tiers } = resolveLevels(pricing, basis);
+  const issues: string[] = [];
+  let below: EffectivePriceLevel = base;
+  tiers.forEach((tier, index) => {
+    for (const key of PRICE_KEYS) {
+      if (tier[key] < below[key]) {
+        const stated = typeof pricing.tiers?.[index]?.[key] === 'number' ? 'is' : 'resolves to';
+        issues.push(`tiers[${index}].${key} ${stated} ${tier[key]}, below ${below[key]} one level down; state a price of at least ${below[key]}`);
+      }
+    }
+    below = tier;
+  });
+  return issues;
 }
 
 /**
@@ -154,16 +201,22 @@ function resolveLevel(level: PriceLevel & { inputMicrosPerMillionTokens: number;
  * Unknown prices are never free: an unknown cache read costs the input price, and
  * an unknown cache write costs twice the input price for providers that bill
  * cache writes, otherwise the input price. Each tier resolves the same way from
- * its own input price. This is the only place these defaults live.
+ * its own input price, then every tier price is raised to at least the same price
+ * one level below, so the result always satisfies the gateway's tier ordering;
+ * pricing without `findResolvedPriceTierIssues` issues is never raised. This is
+ * the only place these defaults live.
  */
-export function resolveEffectivePricing(pricing: PinnedModelPricing, provider: ModelProviderKind): EffectiveModelPricing {
-  const { billsCacheWrites } = getModelProvider(provider);
-  const effective: EffectiveModelPricing = resolveLevel(pricing, billsCacheWrites);
-  if (pricing.tiers && pricing.tiers.length > 0) {
-    effective.tiers = pricing.tiers.map((tier) => ({
-      minPromptTokens: tier.minPromptTokens,
-      ...resolveLevel(tier, billsCacheWrites)
-    }));
+export function resolveEffectivePricing(pricing: PinnedModelPricing, basis: PriceResolutionBasis): EffectiveModelPricing {
+  const { base, tiers } = resolveLevels(pricing, basis);
+  const effective: EffectiveModelPricing = base;
+  if (tiers.length > 0) {
+    let below: EffectivePriceLevel = base;
+    effective.tiers = tiers.map((tier) => {
+      const raised: EffectivePriceTier = { ...tier };
+      for (const key of PRICE_KEYS) raised[key] = Math.max(tier[key], below[key]);
+      below = raised;
+      return raised;
+    });
   }
   return effective;
 }

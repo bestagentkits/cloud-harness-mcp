@@ -136,6 +136,32 @@ describe('model profile revision pricing columns', () => {
     expect(repo.listProfiles(principalId)[0]?.activeRevision?.priceProvenance).toEqual(USER_OVERRIDE);
   });
 
+  it('adds all of the columns or none of them', () => {
+    const { store } = open();
+    const database = store.database;
+    let alters = 0;
+    // Fails the fourth column addition, as a crash or a full disk would mid-upgrade.
+    const failing = new Proxy(database, {
+      get(target, property) {
+        if (property === 'exec') {
+          return (sql: string) => {
+            if (sql.startsWith('ALTER TABLE') && ++alters === 4) throw new Error('simulated failure');
+            return target.exec(sql);
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+    });
+    // The proxy forwards every DatabaseSync member, intercepting only exec.
+    expect(() => initializeModelProfilePricingColumns(failing as DatabaseSync)).toThrow('simulated failure');
+    expect(revisionColumns(database).filter((column) => PRICING_COLUMNS.includes(column))).toEqual([]);
+    expect(database.prepare('SELECT 1 AS ok').get()).toEqual({ ok: 1 });
+
+    initializeModelProfilePricingColumns(database);
+    expect(revisionColumns(database).filter((column) => PRICING_COLUMNS.includes(column))).toHaveLength(PRICING_COLUMNS.length);
+  });
+
   it('rejects provenance values outside the allowed sets', () => {
     const { store } = open();
     const principalId = store.resolvePrincipal({ kind: 'owner', ownerId: 'check-owner' });

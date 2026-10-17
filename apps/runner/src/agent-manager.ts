@@ -2,7 +2,6 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   AgentProxyOperationSchema,
   HarnessError,
-  ModelProviderKindSchema,
   composeAgentBootstrapPrompt,
   resolveEffectivePricing,
   TOOL_SCHEMA_BY_NAME,
@@ -24,12 +23,6 @@ import {
   type AgentTombstone
 } from './agent-state-repository.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
-
-/** A profile whose cache prices are resolved to the concrete prices the agent reports. */
-type PricedAgentModelProfile = AgentModelProfile & {
-  cacheReadMicrosPerMillionTokens: number;
-  cacheWriteMicrosPerMillionTokens: number;
-};
 import { DockerAgentGatewayControl, type AgentGatewayControl } from './agent-gateway-control.js';
 import {
   AgentProtocolChannel,
@@ -40,6 +33,12 @@ import {
 } from './agent-protocol.js';
 import { DockerAgentLauncher, type AgentLaunchSpec, type AgentLauncher, type AgentRuntimeProcess } from './agent-launcher.js';
 import type { StateStore, WorkspaceRecord } from './state-store.js';
+
+/** A profile whose cache prices are resolved to the concrete prices the agent reports. */
+type PricedAgentModelProfile = AgentModelProfile & {
+  cacheReadMicrosPerMillionTokens: number;
+  cacheWriteMicrosPerMillionTokens: number;
+};
 
 const AGENT_OPERATIONS: Readonly<Partial<Record<RunnerOperation, true>>> = {
   agent_spawn: true,
@@ -908,7 +907,7 @@ export class AgentManager {
       if (matched && matched.activeRevision) {
         const rev = matched.activeRevision;
         // A missing credential resolves as `custom`, the most conservative defaults.
-        const provider = this.modelProfiles.getCredential(ownerId, rev.credentialId)?.provider ?? 'custom';
+        const provider = this.modelProfiles.getCredentialProvider(ownerId, rev.credentialId) ?? 'custom';
         const pricing = resolveEffectivePricing(rev.pricing, provider);
         return {
           id: rev.id,
@@ -929,10 +928,9 @@ export class AgentManager {
     }
     const staticProfile = this.config.profiles.find((candidate) => candidate.id === id);
     if (!staticProfile) throw new HarnessError('INVALID_INPUT', 'unknown agent model profile');
-    // A static profile's provider is free text; one that names no registry provider
-    // resolves as `custom`.
-    const provider = ModelProviderKindSchema.safeParse(staticProfile.provider);
-    const pricing = resolveEffectivePricing(staticProfile, provider.success ? provider.data : 'custom');
+    // The gateway charges a static profile's unknown cache prices at its input
+    // price, whatever the provider, so the agent reports the same prices.
+    const pricing = resolveEffectivePricing(staticProfile, { billsCacheWrites: false });
     return {
       ...staticProfile,
       cacheReadMicrosPerMillionTokens: pricing.cacheReadMicrosPerMillionTokens,

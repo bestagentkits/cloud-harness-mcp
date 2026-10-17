@@ -1,16 +1,19 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { z } from 'zod';
 import {
   AgentModelPriceProvenanceSchema,
   AgentProxyOperationSchema,
   DEFAULT_USER_PRICE_PROVENANCE,
   HarnessError,
+  MAX_MODEL_PRICE_TIERS,
   ModelCredentialIdSchema,
-  ModelPriceTiersSchema,
+  ModelPriceTierSchema,
   ModelProfileIdSchema,
   ModelProviderKindSchema,
   ModelRevisionIdSchema,
   assertProviderAuthMode,
+  findResolvedPriceTierIssues,
   getModelProvider,
   resolveEffectivePricing,
   resolveProviderUpstreamUrl,
@@ -61,6 +64,35 @@ function normalizePricing(pricing: AgentModelPricing): AgentModelPricing {
   return normalized;
 }
 
+/**
+ * Refuses pricing the model gateway would refuse once unknown cache prices resolve
+ * for `provider`, so a saved revision never breaks the snapshot the gateway applies.
+ */
+function assertResolvedPriceTiers(pricing: AgentModelPricing, provider: ModelProviderKind): void {
+  const issues = findResolvedPriceTierIssues(pricing, provider);
+  if (issues.length > 0) {
+    throw new HarnessError('INVALID_INPUT', `pricing tiers must not charge less than the level below for ${provider}: ${issues.join('; ')}`);
+  }
+}
+
+/**
+ * True when submitted pricing is the legacy two-price shape and repeats the stored
+ * input and output prices: a client that knows only those two prices (an older
+ * dashboard or API caller) is not changing the price, so the stored cache prices,
+ * tiers, and provenance stay.
+ */
+function restatesStoredPrices(pricing: AgentModelPricing, row: RevisionRow): boolean {
+  return pricing.cacheReadMicrosPerMillionTokens === undefined
+    && pricing.cacheWriteMicrosPerMillionTokens === undefined
+    && pricing.tiers === undefined
+    && pricing.inputMicrosPerMillionTokens === row.input_micros_per_million
+    && pricing.outputMicrosPerMillionTokens === row.output_micros_per_million;
+}
+
+// Stored tiers were validated on write. Reading drops keys this runner does not
+// know, so a revision written by a newer runner still reads after a rollback.
+const StoredPriceTiersSchema = z.array(z.object(ModelPriceTierSchema.shape)).max(MAX_MODEL_PRICE_TIERS);
+
 /** One `agent_model_profile_revisions` row, including the additive pricing columns. */
 interface RevisionRow {
   id: string;
@@ -101,7 +133,10 @@ function pricingFromRow(row: RevisionRow): AgentModelPricing {
   };
   if (row.cache_read_micros_per_million !== null) pricing.cacheReadMicrosPerMillionTokens = row.cache_read_micros_per_million;
   if (row.cache_write_micros_per_million !== null) pricing.cacheWriteMicrosPerMillionTokens = row.cache_write_micros_per_million;
-  if (row.price_tiers_json !== null) pricing.tiers = ModelPriceTiersSchema.parse(JSON.parse(row.price_tiers_json));
+  if (row.price_tiers_json !== null) {
+    const tiers = StoredPriceTiersSchema.parse(JSON.parse(row.price_tiers_json));
+    if (tiers.length > 0) pricing.tiers = tiers;
+  }
   return pricing;
 }
 
@@ -197,17 +232,27 @@ const PRICING_COLUMNS: ReadonlyArray<readonly [name: string, definition: string]
  * Added in place without a schema version bump: every column is nullable or
  * defaulted, so existing revisions read back as user-entered overrides of
  * unknown confidence, and older code, which reads columns by name and inserts
- * with explicit column lists, keeps working after a rollback. Idempotent.
+ * with explicit column lists, keeps working after a rollback. Idempotent, and
+ * all-or-nothing: the columns are checked and added under one write transaction,
+ * so a failure or a concurrent runner never leaves a partial set.
  */
 export function initializeModelProfilePricingColumns(database: DatabaseSync): void {
-  const existing = new Set((database.prepare('PRAGMA table_info(agent_model_profile_revisions)').all() as Array<{ name: string }>)
-    .map((column) => column.name));
-  // The state schema creates the table; without it there is nothing to extend.
-  if (existing.size === 0) return;
-  for (const [name, definition] of PRICING_COLUMNS) {
-    if (!existing.has(name)) {
-      database.exec(`ALTER TABLE agent_model_profile_revisions ADD COLUMN ${name} ${definition};`);
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const existing = new Set((database.prepare('PRAGMA table_info(agent_model_profile_revisions)').all() as Array<{ name: string }>)
+      .map((column) => column.name));
+    // The state schema creates the table; without it there is nothing to extend.
+    if (existing.size > 0) {
+      for (const [name, definition] of PRICING_COLUMNS) {
+        if (!existing.has(name)) {
+          database.exec(`ALTER TABLE agent_model_profile_revisions ADD COLUMN ${name} ${definition};`);
+        }
+      }
     }
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
   }
 }
 
@@ -616,6 +661,7 @@ export class ModelProfileStateRepository {
     const revId = ModelRevisionIdSchema.parse(`rev_${randomBytes(16).toString('hex')}`);
     const now = Date.now();
     const pricing = normalizePricing(input.pricing);
+    assertResolvedPriceTiers(pricing, cred.provider);
     const priceProvenance = AgentModelPriceProvenanceSchema.parse(options.priceProvenance ?? DEFAULT_USER_PRICE_PROVENANCE);
 
     const digest = computeRevisionDigest({
@@ -766,15 +812,26 @@ export class ModelProfileStateRepository {
 
     const model = input.model ?? currentRev?.model ?? 'default';
     const apiMode = input.apiMode ?? currentRev?.api_mode ?? 'chat-completions';
-    // Prices and their provenance travel together: an edit without pricing pins
-    // the current revision's prices, cache prices, tiers, and provenance verbatim,
-    // and an edit with pricing is the operator's unless the service names its source.
-    const pricing = input.pricing
-      ? normalizePricing(input.pricing)
-      : currentRev ? pricingFromRow(currentRev) : { inputMicrosPerMillionTokens: 0, outputMicrosPerMillionTokens: 0 };
-    const priceProvenance = input.pricing || !currentRev
-      ? AgentModelPriceProvenanceSchema.parse(options.priceProvenance ?? DEFAULT_USER_PRICE_PROVENANCE)
-      : provenanceFromRow(currentRev);
+    // Prices and their provenance travel together. An edit that omits pricing, or
+    // only repeats the stored input and output prices, keeps the current revision's
+    // prices, cache prices, tiers, and provenance; kept prices that now serve another
+    // model or credential are the operator's carry-over of unknown confidence. An
+    // edit with new pricing is the operator's unless the service names its source.
+    let pricing: AgentModelPricing;
+    let priceProvenance: AgentModelPriceProvenance;
+    if (currentRev && (!input.pricing || restatesStoredPrices(input.pricing, currentRev))) {
+      pricing = pricingFromRow(currentRev);
+      const stored = provenanceFromRow(currentRev);
+      const servesSameModel = model === currentRev.model && credentialId === currentRev.credential_id;
+      priceProvenance = servesSameModel ? stored : { ...stored, isOverride: true, confidence: 'unknown' };
+    } else if (input.pricing) {
+      pricing = normalizePricing(input.pricing);
+      assertResolvedPriceTiers(pricing, cred.provider);
+      priceProvenance = AgentModelPriceProvenanceSchema.parse(options.priceProvenance ?? DEFAULT_USER_PRICE_PROVENANCE);
+    } else {
+      // Never invent prices: an unknown price would be charged as free.
+      throw new HarnessError('INVALID_INPUT', 'pricing is required: the profile has no current revision to copy prices from');
+    }
     const limits = input.limits ?? {
       maxInputTokens: currentRev?.max_input_tokens ?? 100000,
       maxOutputTokens: currentRev?.max_output_tokens ?? 10000,
@@ -1025,6 +1082,14 @@ export class ModelProfileStateRepository {
     }
 
     return { credentials, profiles };
+  }
+
+  /** The provider of one credential owned by `principalId`, or undefined for another principal's or a missing one. */
+  getCredentialProvider(principalId: string, credentialId: string): ModelProviderKind | undefined {
+    const row = this.database.prepare('SELECT provider FROM model_provider_credentials WHERE id = ? AND principal_id = ?')
+      .get(credentialId, principalId) as { provider: string } | undefined;
+    const provider = ModelProviderKindSchema.safeParse(row?.provider);
+    return provider.success ? provider.data : undefined;
   }
 
   /** Metadata of one credential owned by `principalId`, or undefined for another principal's or a missing one. */
