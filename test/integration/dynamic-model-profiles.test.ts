@@ -8,9 +8,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentManager } from '../../apps/runner/src/agent-manager.js';
-import { gatewaySnapshotDigest, runSnapshotSync, type AgentGatewayControl, type GatewaySnapshot } from '../../apps/runner/src/agent-gateway-control.js';
+import { DockerAgentGatewayControl, gatewaySnapshotDigest, runSnapshotSync, type AgentGatewayControl, type GatewaySnapshot } from '../../apps/runner/src/agent-gateway-control.js';
+import * as dockerEngine from '../../apps/runner/src/docker-engine.js';
 import type { AgentLauncher } from '../../apps/runner/src/agent-launcher.js';
 import { AgentStateRepository } from '../../apps/runner/src/agent-state-repository.js';
 import { ModelProfileStateRepository } from '../../apps/runner/src/model-profile-state-repository.js';
@@ -18,6 +19,7 @@ import { SecretKeyring } from '../../apps/runner/src/secret-keyring.js';
 import { StateStore } from '../../apps/runner/src/state-store.js';
 import { createGatewayRuntime } from '../../apps/model-gateway/src/gateway.js';
 import { loadGatewayConfig } from '../../apps/model-gateway/src/config.js';
+import type { GatewayConfig, GatewayProfile } from '../../apps/model-gateway/src/types.js';
 import { HarnessError, ModelProfileIdSchema, RunnerAgentsConfigSchema, type ApiConfig, type MetadataRunnerRequest, type RunnerConfig, type RunnerResponse } from '@cloud-harness/contracts';
 import express from 'express';
 import { createServer as createHttpServer } from 'node:http';
@@ -859,6 +861,101 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     } finally {
       await gwRuntime.close();
       await new Promise<void>((res) => upstreamServer.close(() => res()));
+    }
+  });
+
+  it('never lets an older snapshot build evict a revision that a newer push delivered, and keeps static gateway profiles', async () => {
+    const { repo, p } = setup();
+    const cred = repo.createCredential(p, { label: 'OpenAI Ordering', provider: 'openai', apiKey: 'sk-secret-ordering' });
+    const profileInput = (profileId: string) => ({
+      profileId: ModelProfileIdSchema.parse(profileId),
+      displayName: profileId,
+      credentialId: cred.id,
+      model: 'gpt-5.2',
+      apiMode: 'chat-completions' as const,
+      pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+      limits: { maxInputTokens: 50000, maxOutputTokens: 2000, maxCostMicros: 100000 },
+      maxProxyOperations: ['files_read' as const]
+    });
+    const existing = repo.createProfile(p, profileInput('ordering-existing'));
+
+    const controlSocket = process.platform === 'win32'
+      ? `\\\\.\\pipe\\gw-ordering-${randomBytes(6).toString('hex')}`
+      : join(tmpdir(), `gw-ordering-${randomBytes(6).toString('hex')}.sock`);
+    const staticProfile: GatewayProfile = {
+      id: 'static-ordering',
+      provider: 'openai',
+      model: 'gpt-static',
+      downstreamPath: '/v1/chat/completions',
+      upstream: new URL('https://127.0.0.1:3443/v1/chat/completions'),
+      credentialFile: '/run/secrets/static-provider-key',
+      credentialHeader: 'authorization',
+      credentialScheme: 'Bearer',
+      inputMicrosPerMillionTokens: 1000,
+      outputMicrosPerMillionTokens: 2000,
+      limits: {
+        maxRequestBytes: 4_194_304, maxResponseBytes: 16_777_216, maxHeaderBytes: 16_384, maxHeaders: 32, deadlineMs: 300_000,
+        maxInputTokens: 400_000, maxOutputTokens: 128_000, maxCostMicros: 100_000_000, maxStreamLineBytes: 1_048_576
+      },
+      testOnly: true,
+      allowPrivateUpstream: true
+    };
+    const gatewayConfig: GatewayConfig = {
+      mode: 'test', host: '127.0.0.1', port: 0, controlSocket, profiles: new Map([[staticProfile.id, staticProfile]])
+    };
+    const gateway = createGatewayRuntime(gatewayConfig);
+    await gateway.listen();
+
+    // The runner's real control, with `docker exec` replaced by a direct write to the gateway's control socket.
+    const runDockerSpy = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async (_args, options) => {
+      const socket = connect(controlSocket);
+      const { promise, resolve: done, reject } = Promise.withResolvers<string>();
+      let output = '';
+      socket.on('data', (chunk) => { output += chunk.toString(); });
+      socket.on('end', () => done(output));
+      socket.on('error', reject);
+      socket.end(options?.stdin ?? '');
+      return { exitCode: 0, stdout: await promise, stderr: '' };
+    });
+    const control = new DockerAgentGatewayControl('gateway-under-test');
+    const issueOn = (profileId: string, leaseId: string) => control.issue({
+      leaseId, agentId: `agent_${'o'.repeat(24)}`, profileId, ttlMs: 30_000,
+      maxInputTokens: 1_000, maxOutputTokens: 100, maxCostMicros: 10_000
+    });
+
+    try {
+      // The older sync starts first and reads the state before the new revision exists,
+      // then stalls before it hands its snapshot back.
+      const { promise: olderBuildReleased, resolve: releaseOlderBuild } = Promise.withResolvers<void>();
+      const { promise: olderBuildRead, resolve: markOlderBuildRead } = Promise.withResolvers<void>();
+      const older = control.syncSnapshot(async () => {
+        const stale = repo.getExportSnapshot();
+        markOlderBuildRead();
+        await olderBuildReleased;
+        return stale;
+      }, { onlyIfMismatch: false });
+      await olderBuildRead;
+
+      const added = repo.createProfile(p, profileInput('ordering-added'));
+      const addedRevision = added.activeRevisionId!;
+      const newer = control.syncSnapshot(() => repo.getExportSnapshot(), { onlyIfMismatch: false });
+      releaseOlderBuild();
+      const [olderSync, newerSync] = await Promise.all([older, newer]);
+
+      // The revision the newer push delivered is still routable after the older push.
+      await expect(issueOn(addedRevision, 'lease_ordering_added')).resolves.toMatchObject({ profileId: addedRevision });
+      expect(olderSync.pushed).toBe(true);
+      expect(newerSync.pushed).toBe(true);
+      expect(newerSync.gatewayDigest).toBe(gatewaySnapshotDigest(repo.getExportSnapshot()));
+      const digest = await control.queryDigest();
+      expect(digest.snapshotDigest).toBe(newerSync.gatewayDigest);
+      // The static profile plus both dynamic revisions.
+      expect(digest.activeProfileCount).toBe(3);
+      await expect(issueOn(existing.activeRevisionId!, 'lease_ordering_existing')).resolves.toBeDefined();
+      await expect(issueOn(staticProfile.id, 'lease_ordering_static')).resolves.toBeDefined();
+    } finally {
+      runDockerSpy.mockRestore();
+      await gateway.close();
     }
   });
 });
