@@ -147,6 +147,8 @@ executor's `/workspace` is the tree root and each checkout lives at
   selector their paths and `cwd` are relative to the tree root, so a build can
   span checkouts. With one, paths and `cwd` resolve inside that checkout, and
   file and search tools cannot reach a sibling through `..` or a symlink. A
+  scoped call to a checkout whose directory was removed or replaced by a
+  symlink fails with `CONFLICT`. A
   command still runs in the shared executor and can reach every checkout.
 - **Workspace-level reads pick a default.** Workspace records from
   `workspace_open`, `workspace_status`, and `workspace_list` carry the primary
