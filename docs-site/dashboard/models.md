@@ -410,20 +410,33 @@ A spawn whose cap does not fit in a policy's remaining headroom is refused with
 `LIMIT_EXCEEDED` and creates no agent. A policy never changes a run's own cost cap, which
 the model gateway still enforces.
 
+A profile policy, and the spend counted in its windows, belong to the profile id, not to
+one profile record. Deleting a profile keeps its policies and its spend, and a profile
+created again with the same id inherits both. Delete the policies yourself if the new
+profile should start without them.
+
 The page has no spend controls yet, and no MCP tool manages policies. Use these dashboard
-routes, which require a signed-in dashboard session and its CSRF token for changes:
+routes. Each needs a signed-in dashboard session; a change also needs the session cookie
+and the `x-csrf-token` header that `GET /dashboard/api/v1/session` returns.
 
 - `GET /dashboard/api/v1/model-spend` returns the summary and the policies. For the
   current UTC day and month, the summary lists your account and every saved profile that
   has a policy or spend this month. Each window reports `estimatedSettledMicros`,
   `estimatedReservedMicros` (open runs at their cap), and `estimatedUnreconciledMicros`,
   its start and end, its policy, and a `thresholdState` of `ok`, `warning` (from the
-  policy's `warnPercent`, 80 unless set), or `exceeded` (at the limit).
-- `PUT /dashboard/api/v1/model-spend/policies` creates or updates the policy for a scope
-  and period: `{ "profileId"?, "period": "day" | "month", "limitMicros", "warnPercent"?,
-  "expectedGeneration"? }`. Omit `expectedGeneration` to create a policy, and send the
-  policy's current `generation` to update it. A mismatch is refused as a conflict. A new
-  profile policy must name one of your saved profiles.
+  policy's `warnPercent`), or `exceeded` (at the limit).
+- `GET /dashboard/api/v1/model-spend/policies` returns only the policies.
+- `PUT /dashboard/api/v1/model-spend/policies` creates or updates a policy: `{ "policyId"?,
+  "profileId"?, "period": "day" | "month", "limitMicros", "warnPercent"?,
+  "expectedGeneration"? }`.
+  - To create one, send neither `policyId` nor `expectedGeneration`. A new profile policy
+    must name one of your saved profiles, and a scope and period that already has a policy
+    is refused as a conflict. `warnPercent` defaults to 80.
+  - To update one, send its `policyId` and current `generation` as `expectedGeneration`,
+    with the scope and period it already has; a policy cannot move to another scope or
+    period. A changed generation, or a policy that was deleted and created again for the
+    same scope and period, is refused as a conflict, so reload the policy and retry. An
+    update that omits `warnPercent` keeps the current value.
 - `DELETE /dashboard/api/v1/model-spend/policies/<id>` with `{ "expectedGeneration" }`
   deletes a policy. A policy whose profile was deleted is still listed so you can remove
   it.

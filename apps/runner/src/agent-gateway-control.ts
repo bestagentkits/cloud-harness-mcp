@@ -31,12 +31,19 @@ export class GatewayControlRejection extends HarnessError {
 }
 
 const CounterSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+/**
+ * Ten million dollars in micros, ten times the largest spend policy limit. No
+ * single run costs that, so a larger amount is a corrupt answer, not a charge.
+ */
+const SETTLEMENT_COST_MAX_MICROS = 10_000_000_000_000;
+const CostMicrosSchema = CounterSchema.max(SETTLEMENT_COST_MAX_MICROS);
 
 /**
  * The gateway's frozen accounting for a revoked or expired lease. Unknown keys
- * are stripped so a newer gateway stays compatible; a missing, negative, or
- * non-integer value makes the settlement invalid, because the ledger charges
- * from it and a malformed settlement must never be read as a smaller charge.
+ * are stripped so a newer gateway stays compatible; a missing, negative,
+ * non-integer, or implausibly large value makes the settlement invalid, because
+ * the ledger charges from it and a malformed settlement must never be read as a
+ * smaller charge.
  */
 export const AgentLeaseSettlementSchema = z.object({
   leaseId: z.string().min(1).max(256),
@@ -44,9 +51,9 @@ export const AgentLeaseSettlementSchema = z.object({
   settledAt: CounterSchema,
   initialInputTokens: CounterSchema,
   initialOutputTokens: CounterSchema,
-  initialCostMicros: CounterSchema,
-  costMicros: CounterSchema,
-  overrunCostMicros: CounterSchema,
+  initialCostMicros: CostMicrosSchema,
+  costMicros: CostMicrosSchema,
+  overrunCostMicros: CostMicrosSchema,
   promptTokens: CounterSchema,
   cacheReadTokens: CounterSchema,
   cacheWriteTokens: CounterSchema,

@@ -673,7 +673,8 @@ const descriptiveOperations = new Set<string>([
   'model_credential_create', 'model_profile_create', 'model_profile_update',
   // The runner composes credential-free check refusals (unknown or disabled credential, rate limit).
   'model_connection_verify',
-  // Spend policy refusals name the period, the limit bounds, or the stale generation; they carry no credential.
+  // Spend policy refusals say whether the profile or the policy is missing, or that the policy changed
+  // or was replaced; they carry no credential.
   'model_spend_policy_set', 'model_spend_policy_delete',
   // Package decisions answer with the store's plain refusal (digest mismatch, expired, rollback target gone,
   // stale generation, apply in flight).
@@ -707,7 +708,6 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
   package_remove: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package binding not found.' },
   model_catalog_search: { NOT_FOUND: 'Provider credential not found.' },
   model_catalog_refresh: { NOT_FOUND: 'Provider credential not found.' },
-  model_spend_policy_set: { NOT_FOUND: 'Model profile not found.' },
   model_spend_policy_delete: { NOT_FOUND: 'Model spend policy not found.' },
   // A terminal the runner no longer knows about, including every terminal from before a runner
   // restart, answers NOT_FOUND. The browser turns that into its "no longer available" state.

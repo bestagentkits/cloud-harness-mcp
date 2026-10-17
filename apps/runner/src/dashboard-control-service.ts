@@ -538,10 +538,12 @@ export class DashboardControlService {
         case 'model_catalog_search': return ok('Model catalog searched', ModelCatalogSearchResultSchema.parse(await this.catalog().search(principalId, parsed.input)));
         case 'model_catalog_refresh': return ok('Model catalog refreshed', ModelCatalogRefreshResultSchema.parse(await this.catalog().refresh(principalId, parsed.input)));
         case 'model_connection_verify': return ok('Model connection checked', await this.verifier().verify(principalId, parsed.input));
-        case 'model_spend_summary': return ok('Model spend summarized', {
-          summary: this.spend().summary(principalId, Date.now()),
-          policies: this.spend().listPolicies(principalId)
-        });
+        case 'model_spend_summary': {
+          const summary = this.spend().summary(principalId, Date.now());
+          // Every policy has a window, so the list is built from the same read as the windows and
+          // can never disagree with them.
+          return ok('Model spend summarized', { summary, policies: summary.windows.flatMap((window) => (window.policy ? [window.policy] : [])) });
+        }
         case 'model_spend_policy_list': return ok('Model spend policies listed', { policies: this.spend().listPolicies(principalId) });
         case 'model_spend_policy_set': return mutation('Model spend policy saved', this.spend().setPolicy(principalId, parsed.input, Date.now(), {
           // A policy can name only one of the principal's saved profiles when it is created.

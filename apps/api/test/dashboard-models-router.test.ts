@@ -70,6 +70,9 @@ beforeEach(async () => {
       if (operation === 'model_spend_policy_set' && input.profileId === 'missing') {
         return { ok: false, message: 'missing', truncated: false, error: { code: 'NOT_FOUND', message: 'model profile was not found', retryable: false } };
       }
+      if (operation === 'model_spend_policy_set' && input.expectedGeneration === 8) {
+        return { ok: false, message: 'gone', truncated: false, error: { code: 'NOT_FOUND', message: 'model spend policy was not found', retryable: false } };
+      }
       if (operation === 'model_spend_policy_set' && input.expectedGeneration === 9) {
         return { ok: false, message: 'stale', truncated: false, error: { code: 'CONFLICT', message: 'model spend policy changed; reload it and retry', retryable: false } };
       }
@@ -265,14 +268,17 @@ describe('Dashboard Models & Credentials Router', () => {
 
     const missing = await request('/model-spend/policies', { method: 'PUT', body: { profileId: 'missing', period: 'day', limitMicros: 1 } });
     expect(missing.status).toBe(404);
-    expect(missing.json).toEqual({ error: 'not_found', message: 'Model profile not found.' });
-    const stale = await request('/model-spend/policies', { method: 'PUT', body: { period: 'day', limitMicros: 1, expectedGeneration: 9 } });
+    // A set refuses both a missing profile and a missing policy as NOT_FOUND, so the runner's wording says which.
+    expect(missing.json).toEqual({ error: 'not_found', message: 'model profile was not found' });
+    const unknown = await request('/model-spend/policies', { method: 'PUT', body: { policyId: spendPolicyId, period: 'day', limitMicros: 1, expectedGeneration: 8 } });
+    expect(unknown.json).toEqual({ error: 'not_found', message: 'model spend policy was not found' });
+    const stale = await request('/model-spend/policies', { method: 'PUT', body: { policyId: spendPolicyId, period: 'day', limitMicros: 1, expectedGeneration: 9 } });
     expect(stale.status).toBe(409);
     expect(stale.json.message).toBe('model spend policy changed; reload it and retry');
 
     const deleted = await request(`/model-spend/policies/${spendPolicyId}`, { method: 'DELETE', body: { expectedGeneration: 2 } });
     expect(deleted.status).toBe(200);
-    expect(calls[5]).toMatchObject({ operation: 'model_spend_policy_delete', input: { policyId: spendPolicyId, expectedGeneration: 2 } });
+    expect(calls[6]).toMatchObject({ operation: 'model_spend_policy_delete', input: { policyId: spendPolicyId, expectedGeneration: 2 } });
     const gone = await request(`/model-spend/policies/${spendPolicyId}`, { method: 'DELETE', body: { expectedGeneration: 9 } });
     expect(gone.json).toEqual({ error: 'not_found', message: 'Model spend policy not found.' });
 
@@ -281,6 +287,6 @@ describe('Dashboard Models & Credentials Router', () => {
     expect(unguarded.status).toBe(400);
     const noCsrf = await request('/model-spend/policies', { method: 'PUT', body: { period: 'day', limitMicros: 1 }, headers: { 'x-csrf-token': 'wrong' } });
     expect(noCsrf.status).toBe(403);
-    expect(calls).toHaveLength(7);
+    expect(calls).toHaveLength(8);
   });
 });

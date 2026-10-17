@@ -139,6 +139,8 @@ describe('Runner AgentGatewayControl Dynamic Sync', () => {
     it.each([
       ['a negative counter', { settlement: { ...settlement, costMicros: -1 } }],
       ['a fractional counter', { settlement: { ...settlement, costMicros: 1.5 } }],
+      ['an implausibly large cost', { settlement: { ...settlement, costMicros: 10_000_000_000_001 } }],
+      ['an implausibly large overrun', { settlement: { ...settlement, overrunCostMicros: 10_000_000_000_001 } }],
       ['a missing counter', { settlement: { ...settlement, requestsWithoutUsage: undefined } }],
       ['another lease', { settlement: { ...settlement, leaseId: 'lease_bbbbbbbbbbbbbbbbbbbbbbbb' } }],
       ['an unreadable boot id', { settlement, gatewayBootId: 7 }],

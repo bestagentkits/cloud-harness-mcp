@@ -289,16 +289,31 @@ describe('ModelSpendLedger', () => {
     const created = ledger.setPolicy('principal-a', { period: 'day', limitMicros: 10 }, NOW);
     expect(created).toMatchObject({ profileId: null, period: 'day', limitMicros: 10, warnPercent: 80, generation: 1 });
     expect(() => ledger.setPolicy('principal-a', { period: 'day', limitMicros: 20 }, NOW)).toThrow(expect.objectContaining({ code: 'CONFLICT' }));
-    const updated = ledger.setPolicy('principal-a', { period: 'day', limitMicros: 20, warnPercent: 90, expectedGeneration: 1 }, NOW + 1);
+    const updated = ledger.setPolicy('principal-a', { policyId: created.id, period: 'day', limitMicros: 20, warnPercent: 90, expectedGeneration: 1 }, NOW + 1);
     expect(updated).toMatchObject({ id: created.id, limitMicros: 20, warnPercent: 90, generation: 2, updatedAt: NOW + 1 });
-    expect(() => ledger.setPolicy('principal-a', { profileId: 'profile-a', period: 'day', limitMicros: 5, expectedGeneration: 1 }, NOW))
+    // An update that omits warnPercent keeps the current one.
+    expect(ledger.setPolicy('principal-a', { policyId: created.id, period: 'day', limitMicros: 20, expectedGeneration: 2 }, NOW + 2))
+      .toMatchObject({ warnPercent: 90, generation: 3 });
+    // An update keeps the policy's scope and period.
+    for (const moved of [{ profileId: 'profile-a', period: 'day' }, { period: 'month' }]) {
+      expect(() => ledger.setPolicy('principal-a', { ...moved, policyId: created.id, limitMicros: 5, expectedGeneration: 3 }, NOW))
+        .toThrow(expect.objectContaining({ code: 'CONFLICT' }));
+    }
+    // An unknown policy is missing, unless another policy holds the scope and period it names.
+    const unknownId = `msp_${'f'.repeat(32)}`;
+    expect(() => ledger.setPolicy('principal-a', { policyId: unknownId, period: 'month', limitMicros: 5, expectedGeneration: 1 }, NOW))
+      .toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+    expect(() => ledger.setPolicy('principal-a', { policyId: unknownId, period: 'day', limitMicros: 5, expectedGeneration: 1 }, NOW))
       .toThrow(expect.objectContaining({ code: 'CONFLICT' }));
+    expect(() => ledger.setPolicy('principal-b', { policyId: created.id, period: 'day', limitMicros: 5, expectedGeneration: 3 }, NOW))
+      .toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+    expect(ledger.listPolicies('principal-a')).toEqual([expect.objectContaining({ id: created.id, profileId: null, period: 'day', limitMicros: 20, generation: 3 })]);
     ledger.setPolicy('principal-a', { profileId: 'profile-a', period: 'day', limitMicros: 5 }, NOW);
     expect(ledger.listPolicies('principal-a')).toHaveLength(2);
     expect(ledger.listPolicies('principal-b')).toEqual([]);
-    expect(() => ledger.deletePolicy('principal-b', { policyId: created.id, expectedGeneration: 2 })).toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
-    expect(() => ledger.deletePolicy('principal-a', { policyId: created.id, expectedGeneration: 1 })).toThrow(expect.objectContaining({ code: 'CONFLICT' }));
-    ledger.deletePolicy('principal-a', { policyId: created.id, expectedGeneration: 2 });
+    expect(() => ledger.deletePolicy('principal-b', { policyId: created.id, expectedGeneration: 3 })).toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+    expect(() => ledger.deletePolicy('principal-a', { policyId: created.id, expectedGeneration: 2 })).toThrow(expect.objectContaining({ code: 'CONFLICT' }));
+    ledger.deletePolicy('principal-a', { policyId: created.id, expectedGeneration: 3 });
     expect(ledger.listPolicies('principal-a').map((policy) => policy.profileId)).toEqual(['profile-a']);
   });
 

@@ -400,7 +400,9 @@ change is needed. Open rows it leaves behind are settled conservatively by the s
 the next upgrade. To lift enforcement during an incident without a rollback, delete the
 policy instead: read its id and `generation` from `GET /dashboard/api/v1/model-spend`,
 then send `DELETE /dashboard/api/v1/model-spend/policies/<id>` with
-`{ "expectedGeneration": <generation> }`. No MCP tool manages policies.
+`{ "expectedGeneration": <generation> }`. The DELETE is a dashboard mutation, so it also
+needs the session cookie and the `x-csrf-token` header that
+`GET /dashboard/api/v1/session` returns. No MCP tool manages policies.
 
 The ledger settles each run from the settlement the model gateway returns on revoke. A
 gateway older than the runner returns no settlement and no boot id, so every run that

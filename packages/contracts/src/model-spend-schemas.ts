@@ -41,14 +41,25 @@ export const ModelSpendPolicySchema = z.object({
 }).strict();
 export type ModelSpendPolicy = z.infer<typeof ModelSpendPolicySchema>;
 
-/** An upsert keyed by scope (`profileId`, or the principal when absent) and period. */
+/**
+ * Creates the policy for a scope (`profileId`, or the principal when absent) and
+ * period, or updates one policy. A create sends neither `policyId` nor
+ * `expectedGeneration`; an update sends both and names the scope and period the
+ * policy already has. Naming the policy, not only its scope, keeps a stale update
+ * from landing on a policy that was deleted and created again. An update that
+ * omits `warnPercent` keeps the current one.
+ */
 export const ModelSpendPolicyInputSchema = z.object({
+  policyId: ModelSpendPolicyIdSchema.optional(),
   profileId: ModelProfileIdSchema.optional(),
   period: ModelSpendPeriodSchema,
   limitMicros: LimitMicrosSchema,
   warnPercent: WarnPercentSchema.optional(),
   expectedGeneration: z.number().int().positive().optional()
-}).strict();
+}).strict().refine(
+  (input) => (input.policyId === undefined) === (input.expectedGeneration === undefined),
+  { message: 'policyId and expectedGeneration must be sent together', path: ['expectedGeneration'] }
+);
 export type ModelSpendPolicyInput = z.infer<typeof ModelSpendPolicyInputSchema>;
 
 export const ModelSpendPolicyDeleteInputSchema = z.object({

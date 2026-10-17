@@ -135,6 +135,8 @@ export class AgentManager {
   private lastSyncedDigest?: string | undefined;
   private readonly now: () => number;
   private accepting = true;
+  /** Set while stopping, so a reap already in flight cannot start a spend sweep after stop() returns. */
+  private stopping = false;
   private epoch = 0;
   private reaper?: NodeJS.Timeout;
   constructor(
@@ -183,6 +185,7 @@ export class AgentManager {
 
   async start(): Promise<void> {
     this.accepting = false;
+    this.stopping = false;
     this.epoch = this.repository.bumpEpoch(this.store.instanceId(), this.now());
     await this.launcher.reconcile?.();
     if (this.modelProfiles && this.gateway.applySnapshot) {
@@ -221,6 +224,7 @@ export class AgentManager {
 
   async stop(): Promise<void> {
     this.fence();
+    this.stopping = true;
     clearInterval(this.reaper);
     // Promise.allSettled keeps teardown non-throwing: one workspace failing to stop must not abort
     // the rest. The callback returns the promise explicitly so that intent is unambiguous.
@@ -907,6 +911,7 @@ export class AgentManager {
    * leaves the row open, still committed at its cap, for the next sweep.
    */
   private async sweepSpend(minAgeMs: number): Promise<void> {
+    if (this.stopping) return;
     this.spendSweep ??= this.runSpendSweep(minAgeMs).finally(() => { this.spendSweep = undefined; });
     await this.spendSweep;
   }

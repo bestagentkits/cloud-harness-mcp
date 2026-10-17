@@ -922,6 +922,22 @@ describe('agent spend ledger enforcement', () => {
     await manager.stop();
   });
 
+  it('starts no spend sweep from a reap that finishes after stop', async () => {
+    const { manager, spendLedger } = setup();
+    await manager.start();
+    await manager.stop();
+    const listOpen = vi.spyOn(spendLedger, 'listOpen');
+    try {
+      // The tail of a reap that was already running when stop() was called, with a sweep due.
+      const internals = manager as unknown as { lastSpendSweepAt: number; reap(): Promise<void> };
+      internals.lastSpendSweepAt = 0;
+      await internals.reap();
+      expect(listOpen).not.toHaveBeenCalled();
+    } finally {
+      listOpen.mockRestore();
+    }
+  });
+
   it('logs the first admission that reaches a policy warning threshold', async () => {
     const { manager, record, spendLedger, spendLog } = setup();
     spendLedger.setPolicy(record.ownerId, { period: 'month', limitMicros: 2_000_000, warnPercent: 50 }, Date.now());

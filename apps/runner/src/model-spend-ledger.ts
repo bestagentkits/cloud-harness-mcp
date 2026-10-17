@@ -485,19 +485,32 @@ export class ModelSpendLedger {
   }
 
   /**
-   * Creates or updates the policy for a scope and period. Updating requires the
-   * current generation, and creating refuses one, so a lost update or a policy
-   * deleted meanwhile is reported as CONFLICT.
+   * Creates the policy for a scope and period, or updates the policy the input
+   * names. A create collides with an existing policy for the same scope and
+   * period, and an update needs the policy's current generation, scope, and
+   * period, so a lost update, or a stale update of a policy that was deleted and
+   * created again, is reported as CONFLICT instead of overwriting another limit.
    */
   setPolicy(principalId: string, rawInput: unknown, now: number, hooks: ModelSpendPolicyHooks = {}): ModelSpendPolicy {
     const input = ModelSpendPolicyInputSchema.parse(rawInput);
     const profileId = input.profileId ?? null;
     return this.immediate(() => {
-      const existing = this.database.prepare(`SELECT * FROM model_spend_policies
+      const current = this.database.prepare(`SELECT * FROM model_spend_policies
         WHERE principal_id=? AND profile_id IS ? AND period=?`).get(principalId, profileId, input.period) as PolicyRow | undefined;
-      if (existing) {
-        if (input.expectedGeneration !== existing.generation) {
+      if (input.policyId !== undefined) {
+        const existing = this.database.prepare('SELECT * FROM model_spend_policies WHERE principal_id=? AND id=?')
+          .get(principalId, input.policyId) as PolicyRow | undefined;
+        if (!existing) {
+          // The named policy is gone. When another policy now holds its scope and
+          // period, the caller's view is stale rather than merely wrong.
+          if (current) throw new HarnessError('CONFLICT', 'model spend policy was replaced; reload it and retry', 409, false);
+          throw new HarnessError('NOT_FOUND', 'model spend policy was not found', 404, false);
+        }
+        if (existing.generation !== input.expectedGeneration) {
           throw new HarnessError('CONFLICT', 'model spend policy changed; reload it and retry', 409, false);
+        }
+        if (existing.profile_id !== profileId || existing.period !== input.period) {
+          throw new HarnessError('CONFLICT', 'a model spend policy keeps its scope and period; create a policy for the new one instead', 409, false);
         }
         this.database.prepare(`UPDATE model_spend_policies SET limit_micros=?, warn_percent=?, generation=generation+1, updated_at=?
           WHERE id=?`)
@@ -506,8 +519,8 @@ export class ModelSpendLedger {
         hooks.record?.('updated', updated);
         return updated;
       }
-      if (input.expectedGeneration !== undefined) {
-        throw new HarnessError('CONFLICT', 'model spend policy no longer exists; reload and retry', 409, false);
+      if (current) {
+        throw new HarnessError('CONFLICT', 'a model spend policy already exists for this scope and period; reload it and update it', 409, false);
       }
       if (profileId !== null && hooks.profileExists?.(profileId) === false) {
         throw new HarnessError('NOT_FOUND', 'model profile was not found', 404, false);

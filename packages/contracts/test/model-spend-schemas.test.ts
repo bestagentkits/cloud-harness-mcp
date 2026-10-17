@@ -25,7 +25,7 @@ describe('model spend operation contracts', () => {
   it('accepts a policy limit from one micro to the maximum and a warning percentage from 1 to 100', () => {
     expect(request('model_spend_policy_set', { period: 'day', limitMicros: 1 }).success).toBe(true);
     expect(request('model_spend_policy_set', { period: 'month', limitMicros: MODEL_SPEND_LIMIT_MAX_MICROS, warnPercent: 100 }).success).toBe(true);
-    expect(request('model_spend_policy_set', { profileId: 'coding-fast', period: 'day', limitMicros: 5, warnPercent: 1, expectedGeneration: 3 }).success).toBe(true);
+    expect(request('model_spend_policy_set', { policyId, profileId: 'coding-fast', period: 'day', limitMicros: 5, warnPercent: 1, expectedGeneration: 3 }).success).toBe(true);
     for (const input of [
       { period: 'day', limitMicros: 0 },
       { period: 'day', limitMicros: MODEL_SPEND_LIMIT_MAX_MICROS + 1 },
@@ -37,6 +37,18 @@ describe('model spend operation contracts', () => {
       { period: 'day', limitMicros: 10, expectedGeneration: 0 },
       { period: 'day', limitMicros: 10, profileId: 'not a profile' },
       { period: 'day', limitMicros: 10, principalId: 'other' }
+    ]) {
+      expect(request('model_spend_policy_set', input).success, JSON.stringify(input)).toBe(false);
+    }
+  });
+
+  it('updates only when the policy id and its generation are sent together', () => {
+    expect(request('model_spend_policy_set', { policyId, period: 'day', limitMicros: 1, expectedGeneration: 1 }).success).toBe(true);
+    for (const input of [
+      { policyId, period: 'day', limitMicros: 1 },
+      { period: 'day', limitMicros: 1, expectedGeneration: 1 },
+      { policyId: 'msp_short', period: 'day', limitMicros: 1, expectedGeneration: 1 },
+      { policyId: `pol_${'a'.repeat(32)}`, period: 'day', limitMicros: 1, expectedGeneration: 1 }
     ]) {
       expect(request('model_spend_policy_set', input).success, JSON.stringify(input)).toBe(false);
     }

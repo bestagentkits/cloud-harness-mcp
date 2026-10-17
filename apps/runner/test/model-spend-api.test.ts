@@ -94,16 +94,20 @@ describe('model spend policy operations', () => {
 
     // Creating the same scope and period again, or updating without the current generation, is a lost update.
     await expect(call(ownerA, 'model_spend_policy_set', { period: 'day', limitMicros: 1 })).rejects.toMatchObject({ code: 'CONFLICT' });
-    await expect(call(ownerA, 'model_spend_policy_set', { period: 'day', limitMicros: 1, expectedGeneration: 2 })).rejects.toMatchObject({ code: 'CONFLICT' });
-    const updated = policyOf(await call(ownerA, 'model_spend_policy_set', { period: 'day', limitMicros: 7_000_000, warnPercent: 90, expectedGeneration: 1 }));
+    await expect(call(ownerA, 'model_spend_policy_set', { policyId: created.id, period: 'day', limitMicros: 1, expectedGeneration: 2 }))
+      .rejects.toMatchObject({ code: 'CONFLICT' });
+    const updated = policyOf(await call(ownerA, 'model_spend_policy_set', {
+      policyId: created.id, period: 'day', limitMicros: 7_000_000, warnPercent: 90, expectedGeneration: 1
+    }));
     expect(updated).toMatchObject({ id: created.id, limitMicros: 7_000_000, warnPercent: 90, generation: 2 });
 
     await expect(call(ownerA, 'model_spend_policy_delete', { policyId: created.id, expectedGeneration: 1 })).rejects.toMatchObject({ code: 'CONFLICT' });
     expect((await call(ownerA, 'model_spend_policy_delete', { policyId: created.id, expectedGeneration: 2 })).data).toMatchObject({ id: created.id });
     expect((await call(ownerA, 'model_spend_policy_list', {})).data).toEqual({ policies: [] });
     await expect(call(ownerA, 'model_spend_policy_delete', { policyId: created.id, expectedGeneration: 2 })).rejects.toMatchObject({ code: 'NOT_FOUND' });
-    // An update of a policy deleted meanwhile is a conflict, not a silent re-create.
-    await expect(call(ownerA, 'model_spend_policy_set', { period: 'day', limitMicros: 1, expectedGeneration: 2 })).rejects.toMatchObject({ code: 'CONFLICT' });
+    // An update of a policy deleted meanwhile is refused, not a silent re-create.
+    await expect(call(ownerA, 'model_spend_policy_set', { policyId: created.id, period: 'day', limitMicros: 1, expectedGeneration: 2 }))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
 
     const audit = metadata.listAudit(principalA).filter((event) => event.subjectType === 'model_spend_policy').reverse();
     expect(audit.map((event) => [event.action, event.subjectId, event.subjectGeneration])).toEqual([
@@ -114,7 +118,24 @@ describe('model spend policy operations', () => {
     expect(audit[1]!.details).toEqual({ period: 'day', limitMicros: 7_000_000, warnPercent: 90 });
   });
 
-  it('creates a profile policy only for one of the principal\'s saved profiles, and keeps it after the profile is deleted', async () => {
+  it('refuses a stale update after the policy was deleted and created again', async () => {
+    const { call } = setup();
+    const first = policyOf(await call(ownerA, 'model_spend_policy_set', { period: 'day', limitMicros: 5_000_000 }));
+    await call(ownerA, 'model_spend_policy_delete', { policyId: first.id, expectedGeneration: 1 });
+    const recreated = policyOf(await call(ownerA, 'model_spend_policy_set', { period: 'day', limitMicros: 9_000_000 }));
+    expect(recreated).toMatchObject({ generation: 1 });
+    expect(recreated.id).not.toBe(first.id);
+
+    // A client still holding the first policy at generation 1 must not overwrite the new limit.
+    await expect(call(ownerA, 'model_spend_policy_set', { policyId: first.id, period: 'day', limitMicros: 1, expectedGeneration: 1 }))
+      .rejects.toMatchObject({ code: 'CONFLICT' });
+    // Nor may a create that collides with the new policy.
+    await expect(call(ownerA, 'model_spend_policy_set', { period: 'day', limitMicros: 1 })).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect((await call(ownerA, 'model_spend_policy_list', {})).data)
+      .toEqual({ policies: [expect.objectContaining({ id: recreated.id, limitMicros: 9_000_000, generation: 1 })] });
+  });
+
+  it('creates a profile policy only for one of the principal\'s saved profiles, and keeps it for the profile id after the profile is deleted', async () => {
     const { call, modelProfiles, metadata, principalA, principalB } = setup();
     await expect(call(ownerA, 'model_spend_policy_set', { profileId: 'coding', period: 'month', limitMicros: 10 }))
       .rejects.toMatchObject({ code: 'NOT_FOUND' });
@@ -134,45 +155,69 @@ describe('model spend policy operations', () => {
       expect.objectContaining({ scope: 'profile', period: 'day', policy: null }),
       expect.objectContaining({ scope: 'profile', period: 'month', policy: expect.objectContaining({ id: created.id }) })
     ]);
-    // The orphaned policy can still be changed and deleted.
-    await call(ownerA, 'model_spend_policy_set', { profileId: 'coding', period: 'month', limitMicros: 20, expectedGeneration: 1 });
+    // A profile created again with the same id inherits the policy, because policies follow the profile id.
+    createProfile(modelProfiles, principalA, 'coding');
+    expect((await call(ownerA, 'model_spend_policy_list', {})).data).toEqual({ policies: [expect.objectContaining({ id: created.id, profileId: 'coding' })] });
+    // The policy can still be changed and deleted.
+    await call(ownerA, 'model_spend_policy_set', { policyId: created.id, profileId: 'coding', period: 'month', limitMicros: 20, expectedGeneration: 1 });
     await call(ownerA, 'model_spend_policy_delete', { policyId: created.id, expectedGeneration: 2 });
   });
 
   it('splits settled, reserved, and unreconciled estimates per window and profile', async () => {
-    const { call, ledger, principalA, modelProfiles } = setup();
-    createProfile(modelProfiles, principalA, 'coding');
-    const settledLease = admit(ledger, principalA, savedProfileSpendKey('coding'), 100);
-    ledger.markIssuing(settledLease);
-    ledger.settle(settledLease, { revoked: true, settlement: settlement(settledLease, 30) }, Date.now());
-    admit(ledger, principalA, savedProfileSpendKey('coding'), 50);
-    const lostLease = admit(ledger, principalA, staticProfileSpendKey('default'), 70);
-    ledger.markIssuing(lostLease);
-    ledger.settle(lostLease, { revoked: false }, Date.now());
-    // Spend from an earlier month is retained but outside both current windows.
-    admit(ledger, principalA, savedProfileSpendKey('coding'), 1_000, Date.UTC(2020, 0, 15));
+    // Pinned mid-day, so admission and the summary always fall in the same UTC day.
+    const pinned = Date.UTC(2026, 9, 17, 12);
+    vi.useFakeTimers({ toFake: ['Date'], now: pinned });
+    try {
+      const { call, ledger, principalA, modelProfiles } = setup();
+      createProfile(modelProfiles, principalA, 'coding');
+      const settledLease = admit(ledger, principalA, savedProfileSpendKey('coding'), 100);
+      ledger.markIssuing(settledLease);
+      ledger.settle(settledLease, { revoked: true, settlement: settlement(settledLease, 30) }, Date.now());
+      admit(ledger, principalA, savedProfileSpendKey('coding'), 50);
+      const lostLease = admit(ledger, principalA, staticProfileSpendKey('default'), 70);
+      ledger.markIssuing(lostLease);
+      ledger.settle(lostLease, { revoked: false }, Date.now());
+      // Spend from an earlier month is retained but outside both current windows.
+      admit(ledger, principalA, savedProfileSpendKey('coding'), 1_000, Date.UTC(2020, 0, 15));
 
-    const response = await call(ownerA, 'model_spend_summary', {});
-    const summary = summaryOf(response);
-    expect(summary.isEstimate).toBe(true);
-    expect((response.data as { policies: unknown[] }).policies).toEqual([]);
-    const now = new Date();
-    const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    expect(summary.windows).toEqual([
-      expect.objectContaining({
-        scope: 'principal', profileId: null, period: 'day', estimatedSettledMicros: 30, estimatedReservedMicros: 50, estimatedUnreconciledMicros: 70,
-        windowStartsAt: dayStart.toISOString(), windowEndsAt: new Date(dayStart.getTime() + 86_400_000).toISOString(),
-        policy: null, thresholdState: null
-      }),
-      expect.objectContaining({
-        scope: 'principal', period: 'month', estimatedSettledMicros: 30, estimatedReservedMicros: 50, estimatedUnreconciledMicros: 70,
-        windowStartsAt: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
-        windowEndsAt: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString()
-      }),
-      // A static profile cannot carry a policy, so its runs appear only in the principal's windows.
-      expect.objectContaining({ scope: 'profile', profileId: 'coding', period: 'day', estimatedSettledMicros: 30, estimatedReservedMicros: 50, estimatedUnreconciledMicros: 0 }),
-      expect.objectContaining({ scope: 'profile', profileId: 'coding', period: 'month', estimatedSettledMicros: 30, estimatedReservedMicros: 50, estimatedUnreconciledMicros: 0 })
-    ]);
+      const response = await call(ownerA, 'model_spend_summary', {});
+      const summary = summaryOf(response);
+      expect(summary.isEstimate).toBe(true);
+      expect((response.data as { policies: unknown[] }).policies).toEqual([]);
+      const now = new Date(pinned);
+      const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+      expect(summary.windows).toEqual([
+        expect.objectContaining({
+          scope: 'principal', profileId: null, period: 'day', estimatedSettledMicros: 30, estimatedReservedMicros: 50, estimatedUnreconciledMicros: 70,
+          windowStartsAt: dayStart.toISOString(), windowEndsAt: new Date(dayStart.getTime() + 86_400_000).toISOString(),
+          policy: null, thresholdState: null
+        }),
+        expect.objectContaining({
+          scope: 'principal', period: 'month', estimatedSettledMicros: 30, estimatedReservedMicros: 50, estimatedUnreconciledMicros: 70,
+          windowStartsAt: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
+          windowEndsAt: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString()
+        }),
+        // A static profile cannot carry a policy, so its runs appear only in the principal's windows.
+        expect.objectContaining({ scope: 'profile', profileId: 'coding', period: 'day', estimatedSettledMicros: 30, estimatedReservedMicros: 50, estimatedUnreconciledMicros: 0 }),
+        expect.objectContaining({ scope: 'profile', profileId: 'coding', period: 'month', estimatedSettledMicros: 30, estimatedReservedMicros: 50, estimatedUnreconciledMicros: 0 })
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lists exactly the policies the summary windows carry', async () => {
+    const { call, ledger, modelProfiles, principalA } = setup();
+    createProfile(modelProfiles, principalA, 'coding');
+    await call(ownerA, 'model_spend_policy_set', { period: 'day', limitMicros: 10 });
+    await call(ownerA, 'model_spend_policy_set', { profileId: 'coding', period: 'month', limitMicros: 20 });
+    // A policy change between two separate reads would leave the list and the windows disagreeing.
+    const listPolicies = ledger.listPolicies.bind(ledger);
+    let reads = 0;
+    vi.spyOn(ledger, 'listPolicies').mockImplementation((principalId) => (reads++ === 0 ? listPolicies(principalId) : []));
+    const data = (await call(ownerA, 'model_spend_summary', {})).data as { summary: ModelSpendSummary; policies: ModelSpendPolicy[] };
+    expect(data.policies).toEqual(data.summary.windows.flatMap((window) => (window.policy ? [window.policy] : [])));
+    expect(data.policies.map((policy) => [policy.profileId, policy.period])).toEqual([[null, 'day'], ['coding', 'month']]);
   });
 
   it('reports ok below the warning percentage, warning from it, and exceeded at the limit', async () => {
