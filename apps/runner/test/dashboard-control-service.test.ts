@@ -3,12 +3,17 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HarnessError, type MetadataRunnerRequest, type RunnerConfig } from '@cloud-harness/contracts';
+import {
+  HarnessError, ModelProfileValidateResultSchema,
+  type AgentModelProfileMetadata, type MetadataRunnerRequest, type ModelConnectionVerifyResult, type ModelProfileValidateResult, type RunnerConfig
+} from '@cloud-harness/contracts';
 import { ArtifactStore } from '../src/artifact-store.js';
 import { DashboardControlService } from '../src/dashboard-control-service.js';
 import { GitHubBindingService, GitHubSetupStateStore } from '../src/github-binding-service.js';
 import { InMemoryGitHubInstallationStore } from '../src/github-installation-store.js';
 import { MetadataStore } from '../src/metadata-store.js';
+import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
+import type { ProviderHttpClient } from '../src/model-provider-http.js';
 import { PackageStore } from '../src/package-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
@@ -868,5 +873,204 @@ describe('dashboard managed packages', () => {
     expect(metadata.listAudit(ownerId)).toEqual(expect.arrayContaining([
       expect.objectContaining({ action: 'package.rollback', subjectId: bindingId, subjectGeneration: 3 })
     ]));
+  });
+});
+
+function omitKeys<T extends object>(value: T, keys: readonly string[]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
+}
+
+describe('dashboard model profile validation and audit', () => {
+  const SENTINEL_KEY = 'sk-sentinel-profile-key-0123456789abcdef';
+  const CATALOG_MODEL = 'vendor/catalog-model';
+  const sse = (events: unknown[]) => [...events.map((event) => `data: ${JSON.stringify(event)}`), 'data: [DONE]', ''].join('\n\n');
+
+  function modelSetup() {
+    const root = mkdtempSync(join(tmpdir(), 'cloud-harness-model-controls-')); roots.push(root);
+    const databasePath = join(root, 'state.db');
+    const principals = new StateStore(databasePath);
+    const keyring = new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]);
+    const metadata = new MetadataStore(databasePath, keyring);
+    cleanups.push(() => { metadata.database.close(); principals.close(); });
+    const artifacts = new ArtifactStore(principals.database, { root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000 });
+    const repo = new ModelProfileStateRepository(principals.database, keyring);
+    const requests: string[] = [];
+    const http: ProviderHttpClient = {
+      async request(request) {
+        requests.push(request.url);
+        const reply = (body: string) => {
+          if (request.onLine) for (const line of body.split('\n')) request.onLine(line);
+          return { status: 200, headers: {}, body, truncated: false };
+        };
+        if (request.url === 'https://openrouter.ai/api/v1/models') {
+          return reply(JSON.stringify({ data: [{ id: CATALOG_MODEL, name: 'Catalog model', pricing: { prompt: '0.000003', completion: '0.000015' } }] }));
+        }
+        if (request.url.endsWith('/v1/models')) return reply(JSON.stringify({ data: [{ id: 'gpt-test' }] }));
+        return reply(sse([
+          { choices: [{ index: 0, delta: { role: 'assistant', content: 'OK' }, finish_reason: null }] },
+          { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+          { choices: [], usage: { prompt_tokens: 12, completion_tokens: 2 } }
+        ]));
+      }
+    };
+    const controls = new DashboardControlService(
+      { artifactRetentionSeconds: 60 } as RunnerConfig, principals, metadata, artifacts, {} as WorkspaceService,
+      undefined, undefined, repo, undefined, keyring, undefined, http
+    );
+    const ownerA = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'operator-a' };
+    const ownerB = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'operator-b' };
+    const call = async <T>(operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>, principal = ownerA) =>
+      (await controls.execute({ version: 2, principal, operation, input } as MetadataRunnerRequest)).data as T;
+    const validate = async (input: Record<string, unknown>, principal = ownerA) =>
+      ModelProfileValidateResultSchema.parse(await call<ModelProfileValidateResult>('model_profile_validate', input, principal));
+    const principalA = principals.resolvePrincipal(ownerA);
+    const profileAudit = () => metadata.listAudit(principalA, 100).filter((event) => event.action.startsWith('model_'));
+    const rows = () => ({
+      profiles: (principals.database.prepare('SELECT count(*) AS count FROM agent_model_profiles').get() as { count: number }).count,
+      revisions: (principals.database.prepare('SELECT count(*) AS count FROM agent_model_profile_revisions').get() as { count: number }).count,
+      audit: (principals.database.prepare('SELECT count(*) AS count FROM audit_events').get() as { count: number }).count
+    });
+    const credential = async (provider: 'openai' | 'openrouter' | 'custom', principal = ownerA) =>
+      (await call<{ id: string }>('model_credential_create', { label: provider, provider, apiKey: SENTINEL_KEY }, principal)).id;
+    return { call, validate, profileAudit, rows, credential, requests, ownerB };
+  }
+
+  const LIMITS = { maxInputTokens: 10_000, maxOutputTokens: 2_000, maxCostMicros: 1_000_000 };
+  const body = (credentialId: string, profileId = 'coding', extra: Record<string, unknown> = {}) => ({
+    profileId, displayName: 'Coding', credentialId, model: 'gpt-test', apiMode: 'chat-completions',
+    pricing: { inputMicrosPerMillionTokens: 3_000_000, outputMicrosPerMillionTokens: 15_000_000 },
+    limits: LIMITS, maxProxyOperations: ['files_read'], ...extra
+  });
+
+  it('dry-runs a create without writing, auditing, or calling a provider', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('openai');
+    const before = ctx.rows();
+    const result = await ctx.validate({ action: 'create', ...body(credentialId) });
+    expect(result).toMatchObject({
+      valid: true, action: 'create', profileId: 'coding', issues: [], escalations: [], ownerApprovalRequiredOverMcp: false,
+      statusAfterSaveOverMcp: 'DISABLED', currentGeneration: null, verificationAttachable: false,
+      revision: {
+        credentialId, provider: 'openai', model: 'gpt-test', apiMode: 'chat-completions', upstreamUrl: 'https://api.openai.com/v1/chat/completions',
+        limits: LIMITS, maxProxyOperations: ['files_read'], priceProvenance: { source: 'user', isOverride: true }
+      },
+      pricingReview: { state: 'unknown' }
+    });
+    expect(ctx.rows()).toEqual(before);
+    expect(ctx.requests).toEqual([]);
+  });
+
+  it('reports the revision the save then writes, and reviews an update against the cached catalog', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('openrouter');
+    await ctx.call('model_catalog_search', { provider: 'openrouter', query: 'catalog' });
+    const catalogPricing = { inputMicrosPerMillionTokens: 3_000_000, outputMicrosPerMillionTokens: 15_000_000 };
+    const input = body(credentialId, 'catalog', { model: CATALOG_MODEL, pricing: catalogPricing, catalogPriceRef: { sourceModelId: CATALOG_MODEL } });
+    const planned = await ctx.validate({ action: 'create', ...input });
+    const saved = await ctx.call<AgentModelProfileMetadata>('model_profile_create', input);
+    const written = omitKeys(saved.activeRevision!, ['id', 'profileId', 'principalId', 'downstreamPath', 'digest', 'createdAt']);
+    expect({ ...written, provider: 'openrouter' }).toEqual(planned.revision);
+    expect(planned.revision?.priceProvenance).toMatchObject({ source: 'openrouter', isOverride: false });
+
+    const requestsBefore = ctx.requests.length;
+    const update = await ctx.validate({ action: 'update', profileId: 'catalog', expectedGeneration: saved.generation, limits: { ...LIMITS, maxCostMicros: 500_000 } });
+    expect(update).toMatchObject({ valid: true, statusAfterSaveOverMcp: 'unchanged', currentGeneration: 1, escalations: [], pricingReview: { state: 'current', isOverride: false } });
+    expect(ctx.requests).toHaveLength(requestsBefore);
+  });
+
+  it('reports refusals as issues', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('openai');
+    await ctx.call('model_profile_create', body(credentialId));
+
+    const unknownCredential = await ctx.validate({ action: 'create', ...body('cred_00000000000000000000000000000000', 'other') });
+    expect(unknownCredential).toMatchObject({ valid: false, revision: null, pricingReview: null, issues: [{ code: 'NOT_FOUND', message: 'referenced credential was not found' }] });
+    const stale = await ctx.validate({ action: 'update', profileId: 'coding', expectedGeneration: 5, model: 'gpt-other' });
+    expect(stale).toMatchObject({ valid: false, action: 'update', issues: [{ code: 'CONFLICT' }] });
+    const customUrl = await ctx.validate({ action: 'create', ...body(credentialId, 'other', { customUpstreamUrl: 'https://llm.example.org/v1/chat/completions' }) });
+    expect(customUrl.issues).toEqual([{ code: 'INVALID_INPUT', message: 'customUpstreamUrl applies only to the custom provider' }]);
+    const taken = await ctx.validate({ action: 'create', ...body(credentialId) });
+    expect(taken.issues[0]?.code).toBe('CONFLICT');
+
+    // Another principal cannot see that the profile exists.
+    await ctx.credential('openai', ctx.ownerB);
+    const foreign = await ctx.validate({ action: 'update', profileId: 'coding', expectedGeneration: 1 }, ctx.ownerB);
+    expect(foreign.issues).toEqual([{ code: 'NOT_FOUND', message: 'model profile was not found' }]);
+
+    // A body the schema refuses is still an operation error, not an issue.
+    await expect(ctx.call('model_profile_validate', { action: 'create', ...body(credentialId, 'x'), unknownField: true })).rejects.toThrow();
+    await expect(ctx.call('model_profile_validate', { action: 'delete', profileId: 'coding' })).rejects.toThrow();
+  });
+
+  it('reports escalations to every caller, and the Dashboard still saves them', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('openai');
+    const saved = await ctx.call<AgentModelProfileMetadata>('model_profile_create', body(credentialId));
+    const change = {
+      action: 'update', profileId: 'coding', expectedGeneration: saved.generation, model: 'gpt-other',
+      pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { ...LIMITS, maxCostMicros: LIMITS.maxCostMicros + 1 }, maxProxyOperations: ['files_read', 'grep_search']
+    };
+    const result = await ctx.validate(change);
+    expect(result.escalations).toEqual(['limits_raised', 'price_lowered', 'price_unverified_for_new_route', 'proxy_operations_widened']);
+    expect(result.ownerApprovalRequiredOverMcp).toBe(true);
+    const updated = await ctx.call<AgentModelProfileMetadata>('model_profile_update', omitKeys(change, ['action']));
+    expect(updated.generation).toBe(2);
+
+    const customId = await ctx.credential('custom');
+    const unbound = await ctx.validate({ action: 'create', ...body(customId, 'custom', { customUpstreamUrl: 'https://llm.example.org/v1/chat/completions' }) });
+    expect(unbound.escalations).toEqual(['custom_upstream_unbound']);
+  });
+
+  it('peeks at a draft check so the save that follows still keeps it', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('openai');
+    const draft = await ctx.call<ModelConnectionVerifyResult>('model_connection_verify', { credentialId, model: 'gpt-test' });
+    const input = body(credentialId, 'coding', { verificationRef: draft.verificationRef });
+    expect((await ctx.validate({ action: 'create', ...input })).verificationAttachable).toBe(true);
+    expect((await ctx.validate({ action: 'create', ...input, model: 'gpt-other' })).verificationAttachable).toBe(false);
+    const saved = await ctx.call<AgentModelProfileMetadata>('model_profile_create', input);
+    expect(saved.lastVerification).toMatchObject({ outcome: 'verified', revisionId: saved.activeRevisionId });
+  });
+
+  it('audits each Dashboard profile change once with the actor, and never a key', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('custom');
+    const customUrl = `https://llm.example.org/v1/${SENTINEL_KEY.slice(3, 12)}/chat/completions`;
+    const created = await ctx.call<AgentModelProfileMetadata>('model_profile_create', body(credentialId, 'coding', { customUpstreamUrl: customUrl }));
+    const updated = await ctx.call<AgentModelProfileMetadata>('model_profile_update', { profileId: 'coding', expectedGeneration: created.generation, limits: { ...LIMITS, maxCostMicros: 2_000_000 } });
+    const disabled = await ctx.call<AgentModelProfileMetadata>('model_profile_disable', { profileId: 'coding', expectedGeneration: updated.generation });
+    const activated = await ctx.call<AgentModelProfileMetadata>('model_profile_activate', { profileId: 'coding', expectedGeneration: disabled.generation });
+    await ctx.call('model_profile_delete', { profileId: 'coding', expectedGeneration: activated.generation });
+    // A validation is a read and records nothing.
+    await ctx.validate({ action: 'create', ...body(credentialId, 'unsaved', { customUpstreamUrl: customUrl }) });
+    // A refused save records nothing either.
+    await expect(ctx.call('model_profile_update', { profileId: 'coding', expectedGeneration: 1 })).rejects.toThrow();
+
+    const events = ctx.profileAudit().filter((event) => event.action.startsWith('model_profile.')).reverse();
+    expect(events.map((event) => [event.action, event.subjectId, event.subjectGeneration])).toEqual([
+      ['model_profile.created', 'coding', 1],
+      ['model_profile.updated', 'coding', 2],
+      ['model_profile.disabled', 'coding', 3],
+      ['model_profile.activated', 'coding', 4],
+      ['model_profile.deleted', 'coding', 4]
+    ]);
+    for (const event of events) {
+      expect(event.details).toMatchObject({ actor: 'dashboard', credentialId, provider: 'custom', upstreamHost: 'llm.example.org', apiMode: 'chat-completions' });
+    }
+    expect(events[1]?.details).toMatchObject({ maxCostMicros: 2_000_000, priceSource: 'user', isOverride: true, revisionId: updated.activeRevisionId });
+    const serialized = JSON.stringify(ctx.profileAudit());
+    expect(serialized).not.toContain(SENTINEL_KEY);
+    expect(serialized).not.toContain(SENTINEL_KEY.slice(3, 12));
+    expect(serialized).not.toContain('3000000');
+  });
+
+  it('names the Dashboard as the actor of a connection check', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('openai');
+    await ctx.call('model_connection_verify', { credentialId, model: 'gpt-test' });
+    const [event] = ctx.profileAudit().filter((entry) => entry.action === 'model_connection.verified');
+    expect(event?.details).toMatchObject({ actor: 'dashboard', target: 'draft' });
+    expect(JSON.stringify(event)).not.toContain(SENTINEL_KEY);
   });
 });

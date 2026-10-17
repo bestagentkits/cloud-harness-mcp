@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import {
   HarnessError, MetadataRunnerRequestSchema, ModelCatalogRefreshResultSchema, ModelCatalogSearchResultSchema,
-  listModelProviders, qualifiedToolName,
-  type AgentModelPricing, type AgentModelProfileMetadata, type MetadataRunnerRequest, type ModelCatalogPriceRef, type RunnerConfig,
-  type RunnerResponse
+  ModelProfileValidateResultSchema, listModelProviders, qualifiedToolName,
+  type AgentModelPricing, type AgentModelProfileInput, type AgentModelProfileMetadata, type AgentModelProfileUpdateInput,
+  type MetadataRunnerRequest, type ModelCatalogPriceRef, type ModelProfileEscalation, type ModelProfileValidateInput,
+  type ModelProfileValidateResult, type RunnerConfig, type RunnerResponse
 } from '@cloud-harness/contracts';
 import { ArtifactStoreError, type ArtifactStore } from './artifact-store.js';
 import type { GitHubBindingService } from './github-binding-service.js';
@@ -56,7 +58,10 @@ import { parseSkillXSearchResults } from './adapters/skillx-adapter.js';
 const MAX_REVISION_BYTES = 262_144;
 import { resolveWorkspaceSkills, type SkillCandidate, type SkillTier } from './skill-resolver.js';
 import type { WorkspaceService } from './workspace-service.js';
-import type { ModelProfileStateRepository, ProfileRevisionOptions } from './model-profile-state-repository.js';
+import type {
+  ModelProfileStateRepository, ProfileChangeRecorder, ProfileRevisionOptions, ProfileRevisionPlan
+} from './model-profile-state-repository.js';
+import { profileAuditDetails, profileChangeRefusedDetails, profileEscalations, type ModelChangeActor } from './model-profile-guard.js';
 import { ModelCatalogService } from './model-catalog/model-catalog-service.js';
 import { reviewPricing, savedPriceProvenance } from './model-catalog/pricing-review.js';
 import { createProviderHttpClient, type ProviderHttpClient } from './model-provider-http.js';
@@ -500,43 +505,46 @@ export class DashboardControlService {
         case 'model_profile_list': return ok('Agent model profiles listed', { profiles: this.reviewedProfiles(principalId) });
         case 'model_profile_create': {
           const { input } = parsed;
-          const options = this.submittedPriceProvenance(principalId, input.credentialId, input.model, input.pricing, input.catalogPriceRef);
-          const created = this.verifier().attachDraftVerification(principalId, input.verificationRef, this.models().createProfile(principalId, input, options));
+          const created = this.verifier().attachDraftVerification(principalId, input.verificationRef, this.models().createProfile(principalId, input, {
+            ...this.createRevisionOptions(principalId, input), record: this.profileRecorder(principalId, 'created', 'dashboard')
+          }));
           await this.syncGateway();
           return mutation('Agent model profile created', created);
         }
         case 'model_profile_update': {
           const { input } = parsed;
-          const current = input.pricing && input.catalogPriceRef ? this.models().getProfileRoute(principalId, input.profileId) : undefined;
-          // An unknown profile gets no provenance here; the repository reports it as not found.
-          const options = current
-            ? this.submittedPriceProvenance(
-              principalId, input.credentialId ?? current.credentialId, input.model ?? current.model ?? 'default', input.pricing, input.catalogPriceRef
-            )
-            : {};
-          const updated = this.verifier().attachDraftVerification(principalId, input.verificationRef, this.models().updateProfile(principalId, input.profileId, input, options));
+          const updated = this.verifier().attachDraftVerification(principalId, input.verificationRef, this.models().updateProfile(principalId, input.profileId, input, {
+            ...this.updateRevisionOptions(principalId, input), record: this.profileRecorder(principalId, 'updated', 'dashboard')
+          }));
           await this.syncGateway();
           return mutation('Agent model profile updated', updated);
         }
+        case 'model_profile_validate': return ok('Agent model profile validated', this.validateProfile(principalId, parsed.input));
         case 'model_profile_activate': {
-          const activated = this.models().activateProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration);
+          const activated = this.models().activateProfile(
+            principalId, parsed.input.profileId, parsed.input.expectedGeneration, this.profileRecorder(principalId, 'activated', 'dashboard')
+          );
           await this.syncGateway();
           return mutation('Agent model profile activated', activated);
         }
         case 'model_profile_disable': {
-          const disabled = this.models().disableProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration);
+          const disabled = this.models().disableProfile(
+            principalId, parsed.input.profileId, parsed.input.expectedGeneration, this.profileRecorder(principalId, 'disabled', 'dashboard')
+          );
           await this.syncGateway();
           return mutation('Agent model profile disabled', disabled);
         }
         case 'model_profile_delete': {
-          this.models().deleteProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration);
+          this.models().deleteProfile(
+            principalId, parsed.input.profileId, parsed.input.expectedGeneration, this.profileRecorder(principalId, 'deleted', 'dashboard')
+          );
           await this.syncGateway();
           return ok('Agent model profile deleted', { deleted: true });
         }
         case 'model_provider_list': return ok('Model providers listed', { providers: listModelProviders() });
         case 'model_catalog_search': return ok('Model catalog searched', ModelCatalogSearchResultSchema.parse(await this.catalog().search(principalId, parsed.input)));
         case 'model_catalog_refresh': return ok('Model catalog refreshed', ModelCatalogRefreshResultSchema.parse(await this.catalog().refresh(principalId, parsed.input)));
-        case 'model_connection_verify': return ok('Model connection checked', await this.verifier().verify(principalId, parsed.input));
+        case 'model_connection_verify': return ok('Model connection checked', await this.verifier().verify(principalId, parsed.input, 'dashboard'));
         case 'model_spend_summary': {
           const summary = this.spend().summary(principalId, Date.now());
           // Every policy has a window, so the list is built from the same read as the windows and
@@ -1515,6 +1523,141 @@ export class DashboardControlService {
     const credential = this.models().getCredential(principalId, credentialId);
     if (!credential) return {};
     return { priceProvenance: savedPriceProvenance(pricing, ref, this.catalog().cachedPrice(credential.provider, model)) };
+  }
+
+  /** Price provenance for a create: the submitted catalog reference is checked against the route's model. */
+  private createRevisionOptions(principalId: string, input: AgentModelProfileInput): ProfileRevisionOptions {
+    return this.submittedPriceProvenance(principalId, input.credentialId, input.model, input.pricing, input.catalogPriceRef);
+  }
+
+  /** Price provenance for an update, checked against the model the updated revision will route to. */
+  private updateRevisionOptions(principalId: string, input: AgentModelProfileUpdateInput & { profileId: string }): ProfileRevisionOptions {
+    const current = input.pricing && input.catalogPriceRef ? this.models().getProfileRoute(principalId, input.profileId) : undefined;
+    // An unknown profile gets no provenance here; the repository reports it as not found.
+    return current
+      ? this.submittedPriceProvenance(
+        principalId, input.credentialId ?? current.credentialId, input.model ?? current.model ?? 'default', input.pricing, input.catalogPriceRef
+      )
+      : {};
+  }
+
+  /**
+   * A dry run of a profile save. It runs the same plan as the save, so it refuses
+   * what the save refuses and reports the revision the save would write, then adds
+   * what a caller needs before saving: the pricing review against the cached
+   * catalog, whether the draft check would attach, and the changes that need the
+   * owner's approval outside the Dashboard. It writes nothing, spends no draft
+   * reference, makes no provider request, and records no audit entry.
+   */
+  private validateProfile(principalId: string, input: ModelProfileValidateInput): ModelProfileValidateResult {
+    const statusAfterSaveOverMcp = input.action === 'create' ? 'DISABLED' as const : 'unchanged' as const;
+    const refused = (code: 'INVALID_INPUT' | 'NOT_FOUND' | 'CONFLICT', message: string): ModelProfileValidateResult => ({
+      valid: false, action: input.action, profileId: input.profileId,
+      issues: [{ code, message: message.slice(0, 1000) }],
+      revision: null, pricingReview: null, verificationAttachable: false,
+      escalations: [], ownerApprovalRequiredOverMcp: false, statusAfterSaveOverMcp, currentGeneration: null
+    });
+
+    let plan: ProfileRevisionPlan;
+    try {
+      plan = input.action === 'create'
+        ? this.models().planCreateRevision(principalId, input, this.createRevisionOptions(principalId, input))
+        : this.models().planUpdateRevision(principalId, input.profileId, input, this.updateRevisionOptions(principalId, input));
+    } catch (error) {
+      if (error instanceof HarnessError && (error.code === 'INVALID_INPUT' || error.code === 'NOT_FOUND' || error.code === 'CONFLICT')) {
+        return refused(error.code, error.message);
+      }
+      throw error;
+    }
+
+    const { revision, provider, current } = plan;
+    const escalations = this.planEscalations(principalId, input.action, plan);
+    return ModelProfileValidateResultSchema.parse({
+      valid: true,
+      action: input.action,
+      profileId: input.profileId,
+      issues: [],
+      revision: {
+        credentialId: revision.credentialId,
+        provider,
+        model: revision.model,
+        apiMode: revision.apiMode,
+        upstreamUrl: revision.upstreamUrl,
+        pricing: revision.pricing,
+        priceProvenance: revision.priceProvenance,
+        limits: revision.limits,
+        maxProxyOperations: revision.maxProxyOperations
+      },
+      pricingReview: reviewPricing(revision, this.catalog().cachedPrice(provider, revision.model)),
+      verificationAttachable: this.verifier().draftVerificationAttachable(principalId, input.verificationRef, revision),
+      escalations,
+      ownerApprovalRequiredOverMcp: escalations.length > 0,
+      statusAfterSaveOverMcp,
+      currentGeneration: current?.generation ?? null
+    });
+  }
+
+  /**
+   * The changes in a planned save that need the owner's approval outside the
+   * Dashboard. Reads go through the repository's handle, so a guard running inside
+   * the save's transaction classifies the state the save commits against.
+   */
+  private planEscalations(principalId: string, action: 'create' | 'update', plan: ProfileRevisionPlan): ModelProfileEscalation[] {
+    const { revision, provider, current } = plan;
+    const currentRevision = current?.activeRevision ?? null;
+    const currentProvider = currentRevision ? this.models().getCredentialProvider(principalId, currentRevision.credentialId) : undefined;
+    return profileEscalations({
+      action,
+      current: currentRevision,
+      next: revision,
+      provider,
+      ...(currentProvider ? { currentProvider } : {}),
+      boundCustomUrls: this.models().listBoundCustomUpstreams(principalId, revision.credentialId)
+    });
+  }
+
+  /**
+   * Records a profile change in the transaction that commits it. Details name the
+   * actor, route, limits, and price source, never prices, URL paths, or keys.
+   */
+  private profileRecorder(
+    principalId: string,
+    action: 'created' | 'updated' | 'activated' | 'disabled' | 'deleted',
+    actor: ModelChangeActor
+  ): ProfileChangeRecorder {
+    return (database, profile) => this.auditProfile(database, principalId, action, profile, actor);
+  }
+
+  private auditProfile(
+    database: DatabaseSync,
+    principalId: string,
+    action: 'created' | 'updated' | 'activated' | 'disabled' | 'deleted',
+    profile: AgentModelProfileMetadata,
+    actor: ModelChangeActor
+  ): void {
+    const provider = this.models().getCredentialProvider(principalId, profile.activeRevision?.credentialId ?? profile.credentialId);
+    this.metadata.recordAuditInTransaction(
+      database, principalId, `model_profile.${action}`, 'model_profile', profile.id, profile.generation,
+      profileAuditDetails(profile, provider, actor)
+    );
+  }
+
+  /**
+   * Records a profile change the guard refused. Nothing was written, so the entry
+   * carries the generation the caller saw: 0 for a create.
+   */
+  private auditProfileChangeRefused(
+    principalId: string,
+    profileId: string,
+    generation: number,
+    actor: ModelChangeActor,
+    attempted: 'create' | 'update',
+    escalations: readonly ModelProfileEscalation[]
+  ): void {
+    this.metadata.recordAudit(
+      principalId, 'model_profile.change_refused', 'model_profile', profileId, generation,
+      profileChangeRefusedDetails(actor, attempted, escalations)
+    );
   }
 
   /** The ledger shares the state database, so it is created on first use rather than wired by the caller. */

@@ -4,6 +4,7 @@ import {
   resolveProviderUpstreamUrl,
   type AgentModelApiMode,
   type AgentModelProfileMetadata,
+  type AgentModelProfileRevision,
   type AgentModelPricing,
   type ModelConnectionVerifyInput,
   type ModelConnectionVerifyResult,
@@ -16,12 +17,13 @@ import {
   type ProviderAuthMode
 } from '@cloud-harness/contracts';
 import { ProviderHttpError, assertProviderRequestUrl, type ProviderHttpClient, type ProviderHttpRequest, type ProviderHttpResponse } from '../model-provider-http.js';
+import type { ModelChangeActor } from '../model-profile-guard.js';
 import type { ModelProfileStateRepository, VerificationCredential } from '../model-profile-state-repository.js';
 import {
   classifyHttpFailure, classifyStreamError, classifyTransportFailure, isScopeRefusal, isToolsUnsupported, outcomeForCategory, sanitizeMessage,
   type ClassifiedFailure
 } from './failure-classification.js';
-import { DraftVerificationStore } from './draft-verification-store.js';
+import { DraftVerificationStore, type DraftVerificationRoute } from './draft-verification-store.js';
 import { calledTool, createStreamProbe, parseNonStreamedAnswer } from './stream-probe.js';
 import { VerificationRateLimiter } from './verification-rate-limiter.js';
 
@@ -50,6 +52,9 @@ const ANTHROPIC_VERSION = '2023-06-01';
 const KEY_CHECK_URLS: Partial<Record<ModelProviderKind, string>> = {
   openrouter: 'https://openrouter.ai/api/v1/key'
 };
+
+/** The route fields of a revision that a draft check must match. */
+export type DraftRevisionRoute = Pick<AgentModelProfileRevision, 'credentialId' | 'model' | 'apiMode' | 'upstreamUrl'>;
 
 export type VerificationAudit = (
   principalId: string,
@@ -188,7 +193,11 @@ export class ModelConnectionVerifier {
     this.totalBudgetMs = options.totalBudgetMs ?? TOTAL_BUDGET_MS;
   }
 
-  async verify(principalId: string, input: ModelConnectionVerifyInput): Promise<ModelConnectionVerifyResult> {
+  /**
+   * Checks a route with bounded probes. `actor` names the channel that asked, for
+   * the audit entry only; it never changes what is checked.
+   */
+  async verify(principalId: string, input: ModelConnectionVerifyInput, actor: ModelChangeActor = 'dashboard'): Promise<ModelConnectionVerifyResult> {
     const target = this.resolveTarget(principalId, input);
     // Only a request that will reach the provider uses up the principal's allowance.
     this.rateLimiter.take(principalId);
@@ -238,6 +247,7 @@ export class ModelConnectionVerifier {
       target.kind === 'profile' ? target.profileId! : target.credential.id,
       target.kind === 'profile' ? target.profileGeneration! : target.credential.generation,
       {
+        actor,
         outcome: result.outcome,
         provider,
         target: target.kind,
@@ -263,15 +273,9 @@ export class ModelConnectionVerifier {
   attachDraftVerification(principalId: string, ref: string | undefined, profile: AgentModelProfileMetadata): AgentModelProfileMetadata {
     const revision = profile.activeRevision;
     if (ref === undefined || !revision) return profile;
-    const credential = this.options.repository.getCredential(principalId, revision.credentialId);
-    if (!credential) return profile;
-    const result = this.drafts.take(principalId, ref, {
-      credentialId: revision.credentialId,
-      credentialVersion: credential.activeVersion,
-      model: revision.model,
-      apiMode: revision.apiMode,
-      upstreamUrl: revision.upstreamUrl
-    });
+    const route = this.draftRoute(principalId, revision);
+    if (!route) return profile;
+    const result = this.drafts.take(principalId, ref, route);
     if (!result) return profile;
     let recorded = false;
     try {
@@ -283,6 +287,29 @@ export class ModelConnectionVerifier {
       // The save is already committed; losing the check only leaves the revision unverified.
     }
     return recorded ? { ...profile, lastVerification: { outcome: result.outcome, checkedAt: result.checkedAt, revisionId: revision.id } } : profile;
+  }
+
+  /**
+   * Whether `attachDraftVerification` would keep the draft check for a revision with
+   * this route. It only looks, so the reference stays available for the save.
+   */
+  draftVerificationAttachable(principalId: string, ref: string | undefined, revision: DraftRevisionRoute): boolean {
+    if (ref === undefined) return false;
+    const route = this.draftRoute(principalId, revision);
+    return route !== undefined && this.drafts.peek(principalId, ref, route);
+  }
+
+  /** The draft route a revision matches: its route plus the credential's current key version. */
+  private draftRoute(principalId: string, revision: DraftRevisionRoute): DraftVerificationRoute | undefined {
+    const credential = this.options.repository.getCredential(principalId, revision.credentialId);
+    if (!credential) return undefined;
+    return {
+      credentialId: revision.credentialId,
+      credentialVersion: credential.activeVersion,
+      model: revision.model,
+      apiMode: revision.apiMode,
+      upstreamUrl: revision.upstreamUrl
+    };
   }
 
   /** Only a draft that names a model can match a profile, and only a route that resolves can be saved. */

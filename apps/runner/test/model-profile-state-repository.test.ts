@@ -1,6 +1,7 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -19,7 +20,7 @@ import { ArtifactStore } from '../src/artifact-store.js';
 import { CatalogSnapshotStore } from '../src/model-catalog/catalog-snapshot-store.js';
 import { DashboardControlService } from '../src/dashboard-control-service.js';
 import { MetadataStore } from '../src/metadata-store.js';
-import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
+import { ModelProfileStateRepository, type ProfileRevisionPlan } from '../src/model-profile-state-repository.js';
 import type { ProviderHttpClient } from '../src/model-provider-http.js';
 import type { WorkspaceService } from '../src/workspace-service.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
@@ -819,5 +820,174 @@ describe('ModelProfileStateRepository single-profile route read', () => {
       store.close();
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+});
+
+describe('ModelProfileStateRepository plan and write steps', () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+  });
+
+  function setup() {
+    const directory = mkdtempSync(join(tmpdir(), 'model-profile-plan-'));
+    const store = new StateStore(join(directory, 'state.sqlite'));
+    cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+    cleanups.push(() => store.close());
+    const repo = new ModelProfileStateRepository(store.database, new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]));
+    const p1 = store.resolvePrincipal({ kind: 'owner', ownerId: 'user-1' });
+    const p2 = store.resolvePrincipal({ kind: 'owner', ownerId: 'user-2' });
+    const rows = () => ({
+      profiles: (store.database.prepare('SELECT count(*) AS count FROM agent_model_profiles').get() as { count: number }).count,
+      revisions: (store.database.prepare('SELECT count(*) AS count FROM agent_model_profile_revisions').get() as { count: number }).count
+    });
+    return { store, repo, p1, p2, rows };
+  }
+
+  const input = (credentialId: ModelCredentialId, profileId = 'planned', extra: Record<string, unknown> = {}) => ({
+    profileId: ModelProfileIdSchema.parse(profileId),
+    displayName: 'Planned',
+    credentialId,
+    model: 'gpt-plan',
+    apiMode: 'chat-completions' as const,
+    pricing: { inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000 },
+    limits: { maxInputTokens: 1_000, maxOutputTokens: 500, maxCostMicros: 10_000 },
+    maxProxyOperations: ['files_read' as const],
+    ...extra
+  });
+
+  it('plans a create and an update without writing a row', () => {
+    const { repo, p1, rows } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const before = rows();
+    const created = repo.planCreateRevision(p1, input(credential.id));
+    expect(rows()).toEqual(before);
+    expect(created).toMatchObject({ displayName: 'Planned', provider: 'openai', current: null });
+    expect(created.revision).toMatchObject({ model: 'gpt-plan', upstreamUrl: 'https://api.openai.com/v1/chat/completions' });
+
+    const saved = repo.createProfile(p1, input(credential.id));
+    const afterCreate = rows();
+    const planned = repo.planUpdateRevision(p1, saved.id, { model: 'gpt-next', expectedGeneration: saved.generation });
+    expect(rows()).toEqual(afterCreate);
+    expect(planned.current).toEqual({ generation: 1, status: 'ACTIVE', activeRevision: saved.activeRevision, createdAt: saved.createdAt });
+    expect(repo.listProfiles(p1)[0]?.activeRevision?.model).toBe('gpt-plan');
+  });
+
+  it('plans exactly the revision the save then writes', () => {
+    const { repo, p1 } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const saved = repo.createProfile(p1, input(credential.id));
+    const update = { model: 'gpt-next', limits: { maxInputTokens: 2_000, maxOutputTokens: 500, maxCostMicros: 10_000 }, expectedGeneration: 1 };
+    const { revision: planned } = repo.planUpdateRevision(p1, saved.id, update);
+    const { activeRevision: written } = repo.updateProfile(p1, saved.id, update);
+    // The id, digest, and creation time are assigned when the revision is written.
+    const routeFields = (revision: object) => Object.fromEntries(Object.entries(revision).filter(([key]) => !['id', 'digest', 'createdAt'].includes(key)));
+    expect(routeFields(written!)).toEqual(routeFields(planned));
+  });
+
+  it('refuses in the plan step what the save refuses', () => {
+    const { repo, p1, p2, rows } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const saved = repo.createProfile(p1, input(credential.id));
+    const before = rows();
+    const refusal = (action: () => unknown) => {
+      try {
+        action();
+      } catch (error) {
+        return error instanceof HarnessError ? error.code : 'not a HarnessError';
+      }
+      return 'accepted';
+    };
+    expect(refusal(() => repo.planCreateRevision(p2, input(credential.id, 'other')))).toBe('NOT_FOUND');
+    expect(refusal(() => repo.planUpdateRevision(p1, saved.id, { expectedGeneration: 9 }))).toBe('CONFLICT');
+    expect(refusal(() => repo.planUpdateRevision(p2, saved.id, { expectedGeneration: 1 }))).toBe('NOT_FOUND');
+    // A taken profile id is a conflict, not a failed insert, for the save as well.
+    expect(refusal(() => repo.planCreateRevision(p1, input(credential.id)))).toBe('CONFLICT');
+    expect(refusal(() => repo.createProfile(p1, input(credential.id)))).toBe('CONFLICT');
+    // A registry provider has a fixed endpoint, so a custom URL is refused rather than ignored.
+    const customUrl = { customUpstreamUrl: 'https://llm.example.org/v1/chat/completions' };
+    expect(refusal(() => repo.planCreateRevision(p1, input(credential.id, 'custom-url', customUrl)))).toBe('INVALID_INPUT');
+    expect(refusal(() => repo.updateProfile(p1, saved.id, { ...customUrl, expectedGeneration: 1 }))).toBe('INVALID_INPUT');
+    expect(rows()).toEqual(before);
+  });
+
+  it('creates a DISABLED profile on request and leaves it out of the gateway snapshot', () => {
+    const { repo, p1 } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const disabled = repo.createProfile(p1, input(credential.id, 'starts-disabled'), { initialStatus: 'DISABLED' });
+    const active = repo.createProfile(p1, input(credential.id, 'starts-active'));
+    expect(disabled.status).toBe('DISABLED');
+    expect(active.status).toBe('ACTIVE');
+    expect(repo.listProfiles(p1).find((profile) => profile.id === disabled.id)?.status).toBe('DISABLED');
+    const snapshot = repo.getExportSnapshot();
+    expect(Object.keys(snapshot.profiles)).toEqual([active.activeRevisionId]);
+  });
+
+  it('records a change inside the write and rolls the write back when recording fails', () => {
+    const { store, repo, p1, rows } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const recorded: string[] = [];
+    const record = (database: DatabaseSync, profile: AgentModelProfileMetadata) => {
+      // The recorder writes on the handle that holds the transaction.
+      expect(database).toBe(store.database);
+      expect(database.isTransaction).toBe(true);
+      recorded.push(`${profile.id}@${profile.generation}:${profile.status}`);
+    };
+    const saved = repo.createProfile(p1, input(credential.id), { record });
+    repo.updateProfile(p1, saved.id, { model: 'gpt-next', expectedGeneration: 1 }, { record });
+    repo.disableProfile(p1, saved.id, 2, record);
+    repo.activateProfile(p1, saved.id, 3, record);
+    repo.deleteProfile(p1, saved.id, 4, record);
+    expect(recorded).toEqual(['planned@1:ACTIVE', 'planned@2:ACTIVE', 'planned@3:DISABLED', 'planned@4:ACTIVE', 'planned@4:ACTIVE']);
+
+    const before = rows();
+    const failing = () => { throw new Error('audit unavailable'); };
+    expect(() => repo.createProfile(p1, input(credential.id, 'unrecorded'), { record: failing })).toThrow('audit unavailable');
+    expect(rows()).toEqual(before);
+  });
+
+  it('commits exactly the plan the guard saw', () => {
+    const { repo, p1 } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const guarded: ProfileRevisionPlan[] = [];
+    const guard = (plan: ProfileRevisionPlan) => { guarded.push(plan); };
+
+    const created = repo.createProfile(p1, input(credential.id), { guard });
+    const updated = repo.updateProfile(p1, created.id, { model: 'gpt-next', expectedGeneration: 1 }, { guard });
+    expect(guarded.map((plan) => plan.revision)).toEqual([created.activeRevision, updated.activeRevision]);
+    expect(guarded[1]?.current).toMatchObject({ generation: 1, activeRevision: created.activeRevision });
+    // The stored revision is the guarded one, down to its id, digest, and timestamp.
+    expect(repo.listProfiles(p1).find((profile) => profile.id === created.id)?.activeRevision).toEqual(guarded[1]?.revision);
+  });
+
+  it('writes nothing when the guard refuses the plan', () => {
+    const { repo, p1, rows } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const saved = repo.createProfile(p1, input(credential.id));
+    const before = rows();
+    const refuse = () => { throw new HarnessError('CONFLICT', 'owner approval required', 409, false); };
+    const record = vi.fn();
+    expect(() => repo.createProfile(p1, input(credential.id, 'refused'), { guard: refuse, record })).toThrow('owner approval required');
+    expect(() => repo.updateProfile(p1, saved.id, { model: 'gpt-next', expectedGeneration: 1 }, { guard: refuse, record })).toThrow('owner approval required');
+    expect(rows()).toEqual(before);
+    expect(record).not.toHaveBeenCalled();
+    expect(repo.listProfiles(p1).map((profile) => [profile.id, profile.generation])).toEqual([[saved.id, 1]]);
+  });
+
+  it('lists the upstream URLs bound to one credential of one principal', () => {
+    const { repo, p1, p2 } = setup();
+    const custom = repo.createCredential(p1, { label: 'Custom', provider: 'custom', apiKey: 'sk-plan-secret' });
+    const other = repo.createCredential(p1, { label: 'Custom 2', provider: 'custom', apiKey: 'sk-plan-secret' });
+    const first = 'https://llm.example.org/v1/chat/completions';
+    const second = 'https://llm.example.org/v2/chat/completions';
+    const saved = repo.createProfile(p1, input(custom.id, 'custom-a', { customUpstreamUrl: first }));
+    repo.updateProfile(p1, saved.id, { customUpstreamUrl: second, expectedGeneration: 1 });
+    repo.createProfile(p1, input(other.id, 'custom-b', { customUpstreamUrl: 'https://elsewhere.example.org/v1/chat/completions' }));
+    // Earlier revisions of a profile stay bound; another credential's URLs never are.
+    expect(repo.listBoundCustomUpstreams(p1, custom.id)).toEqual([first, second]);
+    expect(repo.listBoundCustomUpstreams(p2, custom.id)).toEqual([]);
+    // A deleted profile no longer binds its URLs.
+    repo.deleteProfile(p1, saved.id, 2);
+    expect(repo.listBoundCustomUpstreams(p1, custom.id)).toEqual([]);
   });
 });

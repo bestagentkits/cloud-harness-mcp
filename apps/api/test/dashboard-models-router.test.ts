@@ -52,6 +52,12 @@ beforeEach(async () => {
       if (operation === 'model_profile_create') {
         return { ok: false, message: 'refused', truncated: false, error: { code: 'INVALID_INPUT', message: 'Google Gemini does not support the responses API mode; supported: chat-completions', retryable: false } };
       }
+      if (operation === 'model_profile_validate' && input.action === 'update') {
+        return { ok: false, message: 'refused', truncated: false, error: { code: 'INVALID_INPUT', message: 'customUpstreamUrl applies only to the custom provider', retryable: false } };
+      }
+      if (operation === 'model_profile_validate') {
+        return { ok: true, message: 'validated', truncated: false, data: { valid: true, action: input.action, profileId: input.profileId, escalations: [] } };
+      }
       if (operation === 'model_catalog_search') {
         return { ok: true, message: 'searched', truncated: false, data: { entries: [], nextCursor: null, freshness: { state: 'fresh', fetchedAt: 1, sources: [] } } };
       }
@@ -193,6 +199,22 @@ describe('Dashboard Models & Credentials Router', () => {
     expect(calls[0]?.operation).toBe('model_profile_create');
     expect(reply.status).toBe(400);
     expect(reply.json.message).toBe('Google Gemini does not support the responses API mode; supported: chat-completions');
+  });
+
+  it('dry-runs a profile body through POST /agent-model-profiles/validate and shows its refusal', async () => {
+    const body = {
+      action: 'create', profileId: 'coding', displayName: 'Coding', credentialId: 'cred_12345678901234567890', model: 'gpt-test',
+      apiMode: 'chat-completions', pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { maxInputTokens: 1000, maxOutputTokens: 100, maxCostMicros: 1000 }, maxProxyOperations: ['files_read']
+    };
+    const reply = await request('/agent-model-profiles/validate', { method: 'POST', body });
+    expect(reply.status).toBe(200);
+    expect(calls[0]).toMatchObject({ operation: 'model_profile_validate', input: body });
+    expect(reply.json.data).toEqual({ valid: true, action: 'create', profileId: 'coding', escalations: [] });
+
+    const refused = await request('/agent-model-profiles/validate', { method: 'POST', body: { action: 'update', profileId: 'coding', expectedGeneration: 1 } });
+    expect(refused.status).toBe(400);
+    expect(refused.json.message).toBe('customUpstreamUrl applies only to the custom provider');
   });
 
   it('forwards catalog search query parameters with numbers coerced and refresh bodies', async () => {

@@ -17,11 +17,13 @@ import {
   getModelProvider,
   resolveEffectivePricing,
   resolveProviderUpstreamUrl,
+  type AgentModelApiMode,
   type AgentModelPriceProvenance,
   type AgentModelPricing,
   type AgentModelProfileInput,
   type AgentModelProfileMetadata,
   type AgentModelProfileRevision,
+  type AgentModelProfileStatus,
   type AgentModelProfileUpdateInput,
   type ModelLastVerification,
   type ModelProviderKind,
@@ -179,6 +181,66 @@ export interface ProfileRevisionOptions {
   priceProvenance?: AgentModelPriceProvenance;
 }
 
+/**
+ * Called inside the write transaction, on the database handle that holds it, with
+ * the profile as it will be committed, so a change and its audit row land
+ * together or not at all.
+ */
+export type ProfileChangeRecorder = (database: DatabaseSync, profile: AgentModelProfileMetadata) => void;
+
+/**
+ * Called inside the write transaction with the exact plan the save then commits:
+ * the same revision id, timestamp, and prices, read under the write lock. Throwing
+ * refuses the save and writes nothing.
+ */
+export type ProfileChangeGuard = (plan: ProfileRevisionPlan) => void;
+
+export interface CreateProfileOptions extends ProfileRevisionOptions {
+  // The status a new profile starts in. The Dashboard creates ACTIVE profiles; a
+  // caller that is not the owner's input channel creates DISABLED ones.
+  initialStatus?: 'ACTIVE' | 'DISABLED';
+  guard?: ProfileChangeGuard;
+  record?: ProfileChangeRecorder;
+}
+
+export interface UpdateProfileOptions extends ProfileRevisionOptions {
+  guard?: ProfileChangeGuard;
+  record?: ProfileChangeRecorder;
+}
+
+/** The profile a planned update replaces. */
+export interface PlannedProfileCurrent {
+  generation: number;
+  status: AgentModelProfileStatus;
+  activeRevision: AgentModelProfileRevision | null;
+  createdAt: number;
+}
+
+/**
+ * The revision a save would write right now, with nothing written. A save and a
+ * dry run use the same plan, so they cannot disagree about the route or prices.
+ */
+export interface ProfileRevisionPlan {
+  revision: AgentModelProfileRevision;
+  displayName: string;
+  // The provider of the revision's credential.
+  provider: ModelProviderKind;
+  // Null for a create.
+  current: PlannedProfileCurrent | null;
+}
+
+/**
+ * The upstream a revision routes to. A custom URL is refused for a provider whose
+ * endpoints are fixed, with the same refusal as a connection check, rather than
+ * silently ignored.
+ */
+function resolveRevisionUpstreamUrl(provider: ModelProviderKind, apiMode: AgentModelApiMode, customUrl: string | undefined): string {
+  if (customUrl !== undefined && !getModelProvider(provider).requiresCustomUpstream) {
+    throw new HarnessError('INVALID_INPUT', 'customUpstreamUrl applies only to the custom provider', 400, false);
+  }
+  return resolveProviderUpstreamUrl(provider, apiMode, customUrl);
+}
+
 function resolveDownstreamPath(apiMode: string): string {
   if (apiMode === 'chat-completions') return '/v1/chat/completions';
   if (apiMode === 'responses') return '/v1/responses';
@@ -299,6 +361,18 @@ export class ModelProfileStateRepository {
   ) {
     initializeModelVerificationSchema(database);
     initializeModelProfilePricingColumns(database);
+  }
+
+  private inTransaction<T>(write: () => T): T {
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      const result = write();
+      this.database.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   private insertRevision(revision: AgentModelProfileRevision): void {
@@ -648,16 +722,22 @@ export class ModelProfileStateRepository {
     }
   }
 
-  createProfile(principalId: string, input: AgentModelProfileInput, options: ProfileRevisionOptions = {}): AgentModelProfileMetadata {
+  /** The revision a create would write, refusing exactly what the create refuses. Writes nothing. */
+  planCreateRevision(principalId: string, input: AgentModelProfileInput, options: ProfileRevisionOptions = {}): ProfileRevisionPlan {
     const cred = this.database.prepare(`
       SELECT id, provider, auth_mode FROM model_provider_credentials WHERE id = ? AND principal_id = ?
     `).get(input.credentialId, principalId) as { id: string; provider: ModelProviderKind; auth_mode: ProviderAuthMode } | undefined;
 
     if (!cred) throw new HarnessError('NOT_FOUND', 'referenced credential was not found', 404, false);
     assertCredentialUsable(cred);
+    // Profile ids are unique across the instance, so a taken id is refused here
+    // rather than failing the insert.
+    if (this.database.prepare('SELECT 1 FROM agent_model_profiles WHERE id = ?').get(input.profileId)) {
+      throw new HarnessError('CONFLICT', 'a model profile with this id already exists; choose another profileId', 409, false);
+    }
 
     const downstreamPath = resolveDownstreamPath(input.apiMode);
-    const upstreamUrl = resolveProviderUpstreamUrl(cred.provider, input.apiMode, input.customUpstreamUrl);
+    const upstreamUrl = resolveRevisionUpstreamUrl(cred.provider, input.apiMode, input.customUpstreamUrl);
     const revId = ModelRevisionIdSchema.parse(`rev_${randomBytes(16).toString('hex')}`);
     const now = Date.now();
     const pricing = normalizePricing(input.pricing);
@@ -694,35 +774,58 @@ export class ModelProfileStateRepository {
       createdAt: now
     };
 
-    this.database.exec('BEGIN IMMEDIATE');
-    try {
+    return { revision, displayName: input.displayName, provider: cred.provider, current: null };
+  }
+
+  createProfile(principalId: string, input: AgentModelProfileInput, options: CreateProfileOptions = {}): AgentModelProfileMetadata {
+    // Planning under the write lock means the guard sees, and the insert commits,
+    // one plan against one state.
+    return this.inTransaction(() => {
+      const plan = this.planCreateRevision(principalId, input, options);
+      options.guard?.(plan);
+      const { revision, displayName } = plan;
+      const status = options.initialStatus ?? 'ACTIVE';
+      const now = revision.createdAt;
+      const profile: AgentModelProfileMetadata = {
+        id: input.profileId,
+        principalId,
+        displayName,
+        credentialId: input.credentialId,
+        desiredRevisionId: revision.id,
+        activeRevisionId: revision.id,
+        generation: 1,
+        status,
+        activeRevision: revision,
+        createdAt: now,
+        updatedAt: now
+      };
+
       this.database.prepare(`
         INSERT INTO agent_model_profiles (
           id, principal_id, display_name, credential_id, desired_revision_id, active_revision_id, generation, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 1, 'ACTIVE', ?, ?)
-      `).run(input.profileId, principalId, input.displayName, input.credentialId, revId, revId, now, now);
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+      `).run(input.profileId, principalId, displayName, input.credentialId, revision.id, revision.id, status, now, now);
 
       this.insertRevision(revision);
+      options.record?.(this.database, profile);
+      return profile;
+    });
+  }
 
-      this.database.exec('COMMIT');
-    } catch (error) {
-      this.database.exec('ROLLBACK');
-      throw error;
-    }
-
-    return {
-      id: input.profileId,
-      principalId,
-      displayName: input.displayName,
-      credentialId: input.credentialId,
-      desiredRevisionId: revId,
-      activeRevisionId: revId,
-      generation: 1,
-      status: 'ACTIVE',
-      activeRevision: revision,
-      createdAt: now,
-      updatedAt: now
-    };
+  /**
+   * The distinct upstream URLs of the principal's saved revisions on one credential,
+   * of profiles that still exist. A custom upstream in this list has already been
+   * approved by the owner for that key.
+   */
+  listBoundCustomUpstreams(principalId: string, credentialId: string): string[] {
+    const rows = this.database.prepare(`
+      SELECT DISTINCT r.upstream_url
+      FROM agent_model_profile_revisions r
+      JOIN agent_model_profiles p ON p.id = r.profile_id AND p.principal_id = r.principal_id
+      WHERE r.principal_id = ? AND r.credential_id = ?
+      ORDER BY r.upstream_url
+    `).all(principalId, credentialId) as Array<{ upstream_url: string }>;
+    return rows.map((row) => row.upstream_url);
   }
 
   listProfiles(principalId: string): AgentModelProfileMetadata[] {
@@ -785,12 +888,13 @@ export class ModelProfileStateRepository {
     return row ? { credentialId: row.credential_id, model: row.model } : undefined;
   }
 
-  updateProfile(
+  /** The revision an update would write, refusing exactly what the update refuses. Writes nothing. */
+  planUpdateRevision(
     principalId: string,
     profileId: string,
     input: AgentModelProfileUpdateInput,
     options: ProfileRevisionOptions = {}
-  ): AgentModelProfileMetadata {
+  ): ProfileRevisionPlan {
     const profile = this.database.prepare(`
       SELECT id, principal_id, display_name, credential_id, active_revision_id, generation, status, created_at
       FROM agent_model_profiles
@@ -802,7 +906,7 @@ export class ModelProfileStateRepository {
       credential_id: string;
       active_revision_id: string | null;
       generation: number;
-      status: 'ACTIVE' | 'DISABLED' | 'SYNC_PENDING' | 'SYNC_FAILED';
+      status: AgentModelProfileStatus;
       created_at: number;
     } | undefined;
 
@@ -862,7 +966,7 @@ export class ModelProfileStateRepository {
     const keptCustomUrl = cred.provider === 'custom' && credentialId === profile.credential_id && apiMode === currentRev?.api_mode
       ? currentRev.upstream_url
       : undefined;
-    const upstreamUrl = resolveProviderUpstreamUrl(cred.provider, apiMode, input.customUpstreamUrl ?? keptCustomUrl);
+    const upstreamUrl = resolveRevisionUpstreamUrl(cred.provider, apiMode, input.customUpstreamUrl ?? keptCustomUrl);
     const revId = ModelRevisionIdSchema.parse(`rev_${randomBytes(16).toString('hex')}`);
     const now = Date.now();
 
@@ -898,37 +1002,74 @@ export class ModelProfileStateRepository {
 
     const displayName = input.displayName ?? profile.display_name;
 
-    this.database.exec('BEGIN IMMEDIATE');
-    try {
+    return {
+      revision,
+      displayName,
+      provider: cred.provider,
+      current: {
+        generation: profile.generation,
+        status: profile.status,
+        activeRevision: currentRev ? revisionFromRow(currentRev) : null,
+        createdAt: profile.created_at
+      }
+    };
+  }
+
+  updateProfile(
+    principalId: string,
+    profileId: string,
+    input: AgentModelProfileUpdateInput,
+    options: UpdateProfileOptions = {}
+  ): AgentModelProfileMetadata {
+    // Planning under the write lock means the guard sees, and the update commits,
+    // one plan against one state.
+    return this.inTransaction(() => {
+      const plan = this.planUpdateRevision(principalId, profileId, input, options);
+      options.guard?.(plan);
+      const { revision, displayName, current } = plan;
+      // An update plan always describes the profile it replaces.
+      const { generation, status, createdAt } = current!;
+      const now = revision.createdAt;
+      const profile: AgentModelProfileMetadata = {
+        id: revision.profileId,
+        principalId,
+        displayName,
+        credentialId: revision.credentialId,
+        desiredRevisionId: revision.id,
+        activeRevisionId: revision.id,
+        generation: generation + 1,
+        status,
+        activeRevision: revision,
+        createdAt,
+        updatedAt: now
+      };
+
       this.insertRevision(revision);
       this.database.prepare(`
         UPDATE agent_model_profiles
         SET display_name = ?, credential_id = ?, desired_revision_id = ?, active_revision_id = ?, generation = generation + 1, updated_at = ?
         WHERE id = ? AND principal_id = ?
-      `).run(displayName, credentialId, revId, revId, now, profileId, principalId);
-
-      this.database.exec('COMMIT');
-    } catch (error) {
-      this.database.exec('ROLLBACK');
-      throw error;
-    }
-
-    return {
-      id: ModelProfileIdSchema.parse(profileId),
-      principalId,
-      displayName,
-      credentialId: ModelCredentialIdSchema.parse(credentialId),
-      desiredRevisionId: revId,
-      activeRevisionId: revId,
-      generation: profile.generation + 1,
-      status: profile.status,
-      activeRevision: revision,
-      createdAt: profile.created_at,
-      updatedAt: now
-    };
+      `).run(displayName, revision.credentialId, revision.id, revision.id, now, profileId, principalId);
+      options.record?.(this.database, profile);
+      return profile;
+    });
   }
 
-  activateProfile(principalId: string, profileId: string, expectedGeneration: number): AgentModelProfileMetadata {
+  activateProfile(principalId: string, profileId: string, expectedGeneration: number, record?: ProfileChangeRecorder): AgentModelProfileMetadata {
+    return this.setProfileStatus(principalId, profileId, expectedGeneration, 'ACTIVE', record);
+  }
+
+  disableProfile(principalId: string, profileId: string, expectedGeneration: number, record?: ProfileChangeRecorder): AgentModelProfileMetadata {
+    return this.setProfileStatus(principalId, profileId, expectedGeneration, 'DISABLED', record);
+  }
+
+  private setProfileStatus(
+    principalId: string,
+    profileId: string,
+    expectedGeneration: number,
+    status: 'ACTIVE' | 'DISABLED',
+    record: ProfileChangeRecorder | undefined
+  ): AgentModelProfileMetadata {
     const profile = this.database.prepare(`
       SELECT id, generation FROM agent_model_profiles WHERE id = ? AND principal_id = ?
     `).get(profileId, principalId) as { id: string; generation: number } | undefined;
@@ -938,33 +1079,19 @@ export class ModelProfileStateRepository {
       throw new HarnessError('CONFLICT', 'profile generation conflict', 409, false);
     }
 
-    this.database.prepare(`
-      UPDATE agent_model_profiles SET status = 'ACTIVE', generation = generation + 1, updated_at = ?
-      WHERE id = ? AND principal_id = ?
-    `).run(Date.now(), profileId, principalId);
+    return this.inTransaction(() => {
+      this.database.prepare(`
+        UPDATE agent_model_profiles SET status = ?, generation = generation + 1, updated_at = ?
+        WHERE id = ? AND principal_id = ?
+      `).run(status, Date.now(), profileId, principalId);
 
-    return this.listProfiles(principalId).find((p) => p.id === profileId)!;
+      const updated = this.listProfiles(principalId).find((p) => p.id === profileId)!;
+      record?.(this.database, updated);
+      return updated;
+    });
   }
 
-  disableProfile(principalId: string, profileId: string, expectedGeneration: number): AgentModelProfileMetadata {
-    const profile = this.database.prepare(`
-      SELECT id, generation FROM agent_model_profiles WHERE id = ? AND principal_id = ?
-    `).get(profileId, principalId) as { id: string; generation: number } | undefined;
-
-    if (!profile) throw new HarnessError('NOT_FOUND', 'model profile was not found', 404, false);
-    if (profile.generation !== expectedGeneration) {
-      throw new HarnessError('CONFLICT', 'profile generation conflict', 409, false);
-    }
-
-    this.database.prepare(`
-      UPDATE agent_model_profiles SET status = 'DISABLED', generation = generation + 1, updated_at = ?
-      WHERE id = ? AND principal_id = ?
-    `).run(Date.now(), profileId, principalId);
-
-    return this.listProfiles(principalId).find((p) => p.id === profileId)!;
-  }
-
-  deleteProfile(principalId: string, profileId: string, expectedGeneration: number): void {
+  deleteProfile(principalId: string, profileId: string, expectedGeneration: number, record?: ProfileChangeRecorder): void {
     const profile = this.database.prepare(`
       SELECT id, generation FROM agent_model_profiles WHERE id = ? AND principal_id = ?
     `).get(profileId, principalId) as { id: string; generation: number } | undefined;
@@ -989,15 +1116,13 @@ export class ModelProfileStateRepository {
       // agents table may not exist in isolated repository tests
     }
 
-    this.database.exec('BEGIN IMMEDIATE');
-    try {
+    this.inTransaction(() => {
+      // The profile as it was, so the record names what was deleted.
+      const deleted = record ? this.listProfiles(principalId).find((p) => p.id === profileId) : undefined;
       this.database.prepare('DELETE FROM agent_model_profiles WHERE id = ? AND principal_id = ?').run(profileId, principalId);
       this.deleteVerification(principalId, 'profile', profileId);
-      this.database.exec('COMMIT');
-    } catch (error) {
-      this.database.exec('ROLLBACK');
-      throw error;
-    }
+      if (deleted) record?.(this.database, deleted);
+    });
   }
 
   /**

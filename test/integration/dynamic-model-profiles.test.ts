@@ -5,7 +5,7 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -897,8 +897,9 @@ describe('model spend policies over the dashboard API', () => {
     });
   }
 
-  it('refuses the next spawn over a policy set through the dashboard API, and reports it in the summary', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'model-spend-http-'));
+  /** The dashboard router in front of a real control service, as the runner's internal endpoint serves it. */
+  async function startDashboard() {
+    const root = await mkdtemp(join(tmpdir(), 'model-dashboard-http-'));
     const databasePath = join(root, 'state.db');
     const store = new StateStore(databasePath);
     const keyring = new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]);
@@ -931,6 +932,18 @@ describe('model spend policies over the dashboard API', () => {
     const server = createHttpServer(app);
     await new Promise<void>((ready) => server.listen(0, '127.0.0.1', ready));
     const port = (server.address() as AddressInfo).port;
+    const close = async () => {
+      server.closeAllConnections();
+      await new Promise<void>((closed) => server.close(() => closed()));
+      metadata.database.close();
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    };
+    return { store, metadata, repo, port, close };
+  }
+
+  it('refuses the next spawn over a policy set through the dashboard API, and reports it in the summary', async () => {
+    const { store, repo, port, close } = await startDashboard();
     try {
       const principalId = store.resolvePrincipal(dashboardPrincipal);
       const credential = repo.createCredential(principalId, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-key-123' });
@@ -1002,10 +1015,41 @@ describe('model spend policies over the dashboard API', () => {
         await manager.stop();
       }
     } finally {
-      server.closeAllConnections();
-      await new Promise<void>((closed) => server.close(() => closed()));
-      metadata.database.close();
-      store.close();
+      await close();
+    }
+  });
+
+  it('dry-runs a profile change through the dashboard API without writing it', async () => {
+    const { store, metadata, repo, port, close } = await startDashboard();
+    try {
+      const principalId = store.resolvePrincipal(dashboardPrincipal);
+      const credential = repo.createCredential(principalId, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-validate-key-123' });
+      const saved = repo.createProfile(principalId, {
+        profileId: ModelProfileIdSchema.parse('coding'), displayName: 'Coding', credentialId: credential.id, model: 'gpt-5',
+        apiMode: 'chat-completions', pricing: { inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000 },
+        limits: { maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 2_000_000 }, maxProxyOperations: ['files_read']
+      });
+      const sessionReply = await send(port, '/session');
+      const session = { token: String(sessionReply.json.csrfToken), cookie: String(sessionReply.json.cookie) };
+
+      const change = { action: 'update', profileId: 'coding', expectedGeneration: saved.generation, limits: { maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 3_000_000 } };
+      const validated = await send(port, '/agent-model-profiles/validate', 'POST', change, session);
+      expect(validated.status).toBe(200);
+      expect(validated.json.data).toMatchObject({
+        valid: true, action: 'update', profileId: 'coding', issues: [], escalations: ['limits_raised'], ownerApprovalRequiredOverMcp: true,
+        statusAfterSaveOverMcp: 'unchanged', currentGeneration: 1, revision: { provider: 'openai', limits: { maxCostMicros: 3_000_000 } }
+      });
+      const stale = await send(port, '/agent-model-profiles/validate', 'POST', { ...change, expectedGeneration: 7 }, session);
+      expect(stale.json.data).toMatchObject({ valid: false, issues: [{ code: 'CONFLICT', message: 'profile generation conflict' }] });
+      const malformed = await send(port, '/agent-model-profiles/validate', 'POST', { action: 'update', profileId: 'coding' }, session);
+      expect(malformed.status).toBe(400);
+
+      // Nothing was written or audited, and the key never left the runner.
+      expect(repo.listProfiles(principalId)).toEqual([expect.objectContaining({ generation: 1, activeRevisionId: saved.activeRevisionId })]);
+      expect(metadata.listAudit(principalId).filter((event) => event.action.startsWith('model_profile.'))).toEqual([]);
+      expect(JSON.stringify([validated.json, stale.json])).not.toContain('sk-validate-key-123');
+    } finally {
+      await close();
     }
   });
 });

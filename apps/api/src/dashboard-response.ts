@@ -230,6 +230,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove',
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
   'model_profile_list', 'model_profile_create', 'model_profile_update', 'model_profile_activate', 'model_profile_disable', 'model_profile_delete',
+  'model_profile_validate',
   'model_config_status', 'model_provider_list',
   'model_catalog_search', 'model_catalog_refresh',
   'model_connection_verify',
@@ -670,7 +671,7 @@ const descriptiveOperations = new Set<string>([
   'skill_suggest',
   // Model setup refusals come from the provider registry (unsupported API or auth mode, custom URL rules)
   // and name the supported values without echoing a credential or URL.
-  'model_credential_create', 'model_profile_create', 'model_profile_update',
+  'model_credential_create', 'model_profile_create', 'model_profile_update', 'model_profile_validate',
   // The runner composes credential-free check refusals (unknown or disabled credential, rate limit).
   'model_connection_verify',
   // Spend policy refusals say whether the profile or the policy is missing, or that the policy changed
