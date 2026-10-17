@@ -24,7 +24,7 @@ export default function setup(): () => void {
       else process.env[key] = value;
     }
     try {
-      rmSync(runDir, { recursive: true, force: true, maxRetries: 3 });
+      rmSync(runDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     } catch (error) {
       // A leftover file (for example one a container wrote as another uid) must not turn a
       // passing run into a failure; report the exact directory so it can be removed by hand.
