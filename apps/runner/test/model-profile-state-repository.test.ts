@@ -1,6 +1,6 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ModelProfileIdSchema, ModelVerificationRefSchema, type AgentModelPriceProvenance, type ModelCredentialId } from '@cloud-harness/contracts';
 import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
@@ -358,31 +358,26 @@ describe('ModelProfileStateRepository', () => {
         .toEqual({ inputMicrosPerMillionTokens: 3_000, outputMicrosPerMillionTokens: 15_000 });
     });
 
-    it('keeps the legacy digest for legacy-shaped pricing and covers cache prices and tiers when present', () => {
+    it('gives revisions that differ in any price, tier, or limit different digests', () => {
       const { repo, p1 } = setup();
       const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-digest' });
-      const legacyInput = { ...pricedProfile(cred.id, 'legacy-shape'), pricing: { inputMicrosPerMillionTokens: 1_250, outputMicrosPerMillionTokens: 10_000 } };
-      const legacy = repo.createProfile(p1, legacyInput);
-      const fields = {
-        profileId: legacyInput.profileId,
-        credentialId: legacyInput.credentialId,
-        model: legacyInput.model,
-        apiMode: legacyInput.apiMode,
-        downstreamPath: '/v1/chat/completions',
-        upstreamUrl: 'https://api.openai.com/v1/chat/completions',
-        pricing: legacyInput.pricing,
-        limits: legacyInput.limits,
-        maxProxyOperations: legacyInput.maxProxyOperations
-      };
-      const legacyDigest = `sha256:${createHash('sha256').update(JSON.stringify(fields, Object.keys(fields).sort()), 'utf8').digest('hex')}`;
-      expect(legacy.activeRevision?.digest).toBe(legacyDigest);
-
-      const withCache = repo.updateProfile(p1, legacy.id, { pricing: { ...legacyInput.pricing, cacheReadMicrosPerMillionTokens: 125 }, expectedGeneration: 1 });
-      const withOtherCache = repo.updateProfile(p1, legacy.id, { pricing: { ...legacyInput.pricing, cacheReadMicrosPerMillionTokens: 126 }, expectedGeneration: 2 });
-      const withTiers = repo.updateProfile(p1, legacy.id, { pricing: { ...legacyInput.pricing, tiers }, expectedGeneration: 3 });
-      const withOtherTiers = repo.updateProfile(p1, legacy.id, { pricing: { ...legacyInput.pricing, tiers: [{ ...tiers[0]!, minPromptTokens: 128_000 }] }, expectedGeneration: 4 });
-      const digests = [legacy, withCache, withOtherCache, withTiers, withOtherTiers].map((profile) => profile.activeRevision?.digest);
+      const input = { ...pricedProfile(cred.id, 'digest-shape'), pricing: { inputMicrosPerMillionTokens: 1_250, outputMicrosPerMillionTokens: 10_000 } };
+      const base = repo.createProfile(p1, input);
+      const update = (changes: Record<string, unknown>, generation: number) => repo.updateProfile(p1, base.id, { ...changes, expectedGeneration: generation });
+      const revisions = [
+        base,
+        update({ pricing: { ...input.pricing, inputMicrosPerMillionTokens: 1_251 } }, 1),
+        update({ pricing: { ...input.pricing, outputMicrosPerMillionTokens: 10_001 } }, 2),
+        update({ pricing: { ...input.pricing, cacheReadMicrosPerMillionTokens: 125 } }, 3),
+        update({ pricing: { ...input.pricing, cacheReadMicrosPerMillionTokens: 126 } }, 4),
+        update({ pricing: { ...input.pricing, tiers } }, 5),
+        update({ pricing: { ...input.pricing, tiers: [{ ...tiers[0]!, minPromptTokens: 128_000 }] } }, 6),
+        update({ pricing: input.pricing, limits: { ...input.limits, maxCostMicros: input.limits.maxCostMicros + 1 } }, 7)
+      ];
+      const digests = revisions.map((profile) => profile.activeRevision?.digest);
       expect(new Set(digests).size).toBe(digests.length);
+      // The same settings always hash the same.
+      expect(update({ pricing: input.pricing, limits: input.limits }, 8).activeRevision?.digest).toBe(base.activeRevision?.digest);
     });
   });
 });

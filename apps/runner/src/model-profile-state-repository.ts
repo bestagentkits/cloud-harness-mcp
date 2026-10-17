@@ -28,35 +28,12 @@ import {
   type ProviderCredentialMetadata,
   type ProviderCredentialRotateInput
 } from '@cloud-harness/contracts';
+import { canonicalJson } from './cloudflare-access-oauth-provider.js';
 import type { SecretKeyring, EncryptedSecret } from './secret-keyring.js';
 
+/** Hashes every revision field, nested pricing and limits included, in canonical key order. */
 function computeRevisionDigest(fields: Record<string, unknown>): string {
-  const json = JSON.stringify(fields, Object.keys(fields).sort());
-  return `sha256:${createHash('sha256').update(json, 'utf8').digest('hex')}`;
-}
-
-// The digest replacer above is an allowlist of top-level keys, and JSON.stringify
-// applies it at every depth, so nested objects hash as `{}`. Cache prices are
-// therefore added as top-level numbers and tiers as one canonical string, and
-// only when present, so a revision without them keeps its legacy digest.
-function pricingDigestFields(pricing: AgentModelPricing): Record<string, unknown> {
-  const fields: Record<string, unknown> = {};
-  if (typeof pricing.cacheReadMicrosPerMillionTokens === 'number') {
-    fields.cacheReadMicrosPerMillionTokens = pricing.cacheReadMicrosPerMillionTokens;
-  }
-  if (typeof pricing.cacheWriteMicrosPerMillionTokens === 'number') {
-    fields.cacheWriteMicrosPerMillionTokens = pricing.cacheWriteMicrosPerMillionTokens;
-  }
-  if (pricing.tiers && pricing.tiers.length > 0) {
-    fields.priceTiers = JSON.stringify(pricing.tiers.map((tier) => [
-      tier.minPromptTokens,
-      tier.inputMicrosPerMillionTokens,
-      tier.outputMicrosPerMillionTokens,
-      tier.cacheReadMicrosPerMillionTokens ?? null,
-      tier.cacheWriteMicrosPerMillionTokens ?? null
-    ]));
-  }
-  return fields;
+  return `sha256:${createHash('sha256').update(canonicalJson(fields), 'utf8').digest('hex')}`;
 }
 
 // Unknown (null) and absent cache prices mean the same thing, so they are stored
@@ -650,8 +627,7 @@ export class ModelProfileStateRepository {
       upstreamUrl,
       pricing,
       limits: input.limits,
-      maxProxyOperations: input.maxProxyOperations,
-      ...pricingDigestFields(pricing)
+      maxProxyOperations: input.maxProxyOperations
     });
 
     const revision: AgentModelProfileRevision = {
@@ -827,8 +803,7 @@ export class ModelProfileStateRepository {
       upstreamUrl,
       pricing,
       limits,
-      maxProxyOperations,
-      ...pricingDigestFields(pricing)
+      maxProxyOperations
     });
 
     const revision: AgentModelProfileRevision = {
