@@ -1,3 +1,11 @@
+# [0.66.0-beta.14](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.13...v0.66.0-beta.14) (2026-10-17)
+
+
+### Bug Fixes
+
+* **models:** refuse custom upstream URLs with userinfo, query, fragment, or unfixed paths ([#365](https://github.com/bestagentkits/cloud-harness-mcp/issues/365)) ([9e7528f](https://github.com/bestagentkits/cloud-harness-mcp/commit/9e7528f278c3c4d2664addfb13fcc8c8823ecd8b)), closes [#362](https://github.com/bestagentkits/cloud-harness-mcp/issues/362)
+* **models:** typed provider registry, Gemini OpenAI-compatible endpoint, API-mode compatibility ([#361](https://github.com/bestagentkits/cloud-harness-mcp/issues/361)) ([dbf4d6f](https://github.com/bestagentkits/cloud-harness-mcp/commit/dbf4d6fe66e9659fae32785b208693406aff3fd4)), closes [#354](https://github.com/bestagentkits/cloud-harness-mcp/issues/354)
+
 # [0.66.0-beta.13](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.12...v0.66.0-beta.13) (2026-10-17)
 
 
