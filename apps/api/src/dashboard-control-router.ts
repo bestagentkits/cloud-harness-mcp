@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import express, { type NextFunction, type Response, type Router } from 'express';
-import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, McpEventSubscriptionIdSchema, McpEventsRunnerDataSchemas, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, PackagePlanApproveInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema, type ApiConfig, type ApiKeyManagementOperation, type McpEventsRunnerRequest, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
 import { requireArchiveMediaType, SKILL_ARCHIVE_MEDIA_TYPES, SKILL_ARCHIVE_PATH } from './dashboard-security.js';
@@ -10,6 +10,8 @@ import type { McpGatewayService } from './mcp-gateway/service.js';
 
 const internalId = (prefix: string) => z.string().regex(new RegExp(`^${prefix}_[A-Za-z0-9_-]{20,80}$`));
 const generation = z.object({ expectedGeneration: z.number().int().positive() }).strict();
+/** Only a single string query value is forwarded; a repeated or nested parameter becomes null and fails the runner schema. */
+const queryText = (value: unknown): string | null => (typeof value === 'string' ? value : null);
 const createName = z.object({ name: z.string().trim().min(1).max(100), expectedGeneration: z.literal(0) }).strict();
 /** Mirrors the runner's archive cap, so an oversized upload is refused before anything decodes it. */
 const SKILL_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;
@@ -43,8 +45,15 @@ export function registerDashboardControlRoutes(
   router.delete('/api/v1/secrets/:name', endpoint('global_secret_delete', (request) => ({ name: request.params.name, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
   router.get('/api/v1/provider-credentials', endpoint('model_credential_list', () => ({})));
   router.post('/api/v1/provider-credentials', endpoint('model_credential_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
-  router.put('/api/v1/provider-credentials/:id/rotate', endpoint('model_credential_rotate', (request) => ({ credentialId: internalId('cred').parse(request.params.id), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.put('/api/v1/provider-credentials/:id/rotate', endpoint('model_credential_rotate', (request) => ({ ...(request.body && typeof request.body === 'object' ? request.body : {}), credentialId: internalId('cred').parse(request.params.id) })));
   router.delete('/api/v1/provider-credentials/:id', endpoint('model_credential_delete', (request) => ({ credentialId: internalId('cred').parse(request.params.id), ...generation.parse(request.body) })));
+  // Integration keys are write-only: the value travels inbound to the runner's keyring and every
+  // response is metadata mapped through the strict credential key allowlist.
+  router.get('/api/v1/integration-credentials', endpoint('integration_credential_list', () => ({})));
+  router.post('/api/v1/integration-credentials', endpoint('integration_credential_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.put('/api/v1/integration-credentials/:id/rotate', endpoint('integration_credential_rotate', (request) => ({ ...(request.body && typeof request.body === 'object' ? request.body : {}), credentialId: internalId('icr').parse(request.params.id) })));
+  router.delete('/api/v1/integration-credentials/:id', endpoint('integration_credential_delete', (request) => ({ credentialId: internalId('icr').parse(request.params.id), ...generation.parse(request.body) })));
+  router.get('/api/v1/typesafe/status', endpoint('typesafe_status', () => ({})));
   router.get('/api/v1/agent-model-profiles', endpoint('model_profile_list', () => ({})));
   // Skills. `limit` and the list filters default inside the operation schema, so the route only
   // parses the identifier it owns and lets the schema fill the rest.
@@ -109,11 +118,30 @@ export function registerDashboardControlRoutes(
   router.patch('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_update', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
   router.delete('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_delete', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId), ...generation.parse(request.body) })));
   router.post('/api/v1/agent-model-profiles', endpoint('model_profile_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  // A dry run of a create or update body; registered before any POST /:id route so "validate" is never read as an id.
+  router.post('/api/v1/agent-model-profiles/validate', endpoint('model_profile_validate', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   router.patch('/api/v1/agent-model-profiles/:id', endpoint('model_profile_update', (request) => ({ profileId: request.params.id, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
   router.post('/api/v1/agent-model-profiles/:id/activate', endpoint('model_profile_activate', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));
   router.post('/api/v1/agent-model-profiles/:id/disable', endpoint('model_profile_disable', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));
   router.delete('/api/v1/agent-model-profiles/:id', endpoint('model_profile_delete', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));
   router.get('/api/v1/agent-model-config-status', endpoint('model_config_status', () => ({})));
+  router.get('/api/v1/model-providers', endpoint('model_provider_list', () => ({})));
+  router.get('/api/v1/model-catalog', endpoint('model_catalog_search', (request) => ({
+    provider: queryText(request.query.provider),
+    ...(request.query.credentialId !== undefined ? { credentialId: queryText(request.query.credentialId) } : {}),
+    ...(request.query.q !== undefined ? { query: queryText(request.query.q) } : {}),
+    ...(request.query.cursor !== undefined ? { cursor: queryText(request.query.cursor) } : {}),
+    ...(request.query.limit !== undefined ? { limit: Number(queryText(request.query.limit)) } : {}),
+    ...(request.query.capability !== undefined ? { capability: queryText(request.query.capability) } : {})
+  })));
+  router.post('/api/v1/model-catalog/refresh', endpoint('model_catalog_refresh', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  // Spend figures are estimates from the runner's ledger; a policy is an upsert keyed by scope and period.
+  router.get('/api/v1/model-spend', endpoint('model_spend_summary', () => ({})));
+  router.get('/api/v1/model-spend/policies', endpoint('model_spend_policy_list', () => ({})));
+  router.put('/api/v1/model-spend/policies', endpoint('model_spend_policy_set', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.delete('/api/v1/model-spend/policies/:id', endpoint('model_spend_policy_delete', (request) => ({ policyId: request.params.id, ...generation.parse(request.body) })));
+  router.post('/api/v1/model-connection/verify', endpoint('model_connection_verify', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.get('/api/v1/decision-plane/status', endpoint('decision_plane_status', () => ({})));
   router.get('/api/v1/audit', endpoint('audit_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
   router.get('/api/v1/artifacts', endpoint('artifact_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
   router.post('/api/v1/artifacts', endpoint('artifact_snapshot', (request) => request.body as Record<string, unknown>));
@@ -179,12 +207,26 @@ export function registerDashboardControlRoutes(
   router.get('/api/v1/privilege-grants', endpoint('privilege_grant_list', (request) => ({ ...(request.query.workspaceId ? { workspaceId: String(request.query.workspaceId) } : {}) })));
   router.post('/api/v1/privilege-grants/:grantId/approve', endpoint('privilege_grant_approve', (request) => ({ grantId: request.params.grantId })));
   router.post('/api/v1/privilege-grants/:grantId/reject', endpoint('privilege_grant_reject', (request) => ({ grantId: request.params.grantId })));
+  // Managed packages. Approval posts the digest the operator was shown, so a plan that changed is refused.
+  router.get('/api/v1/packages', endpoint('package_overview', () => ({})));
+  router.get('/api/v1/package-plans', endpoint('package_plan_list', () => ({})));
+  router.post('/api/v1/package-plans/:planId/approve', endpoint('package_plan_approve', (request) => PackagePlanApproveInputSchema.parse({
+    planId: request.params.planId, ...z.object({ planDigest: z.string() }).strict().parse(request.body)
+  })));
+  router.post('/api/v1/package-plans/:planId/reject', endpoint('package_plan_reject', (request) => PackagePlanRejectInputSchema.parse({ planId: request.params.planId })));
+  router.post('/api/v1/packages/rollback', endpoint('package_rollback', (request) => PackageRollbackInputSchema.parse(request.body)));
+  router.post('/api/v1/packages/remove', endpoint('package_remove', (request) => PackageRemoveInputSchema.parse(request.body)));
   router.get('/api/v1/api-keys', apiKeyEndpoint('api_key_list', () => ({})));
   router.post('/api/v1/api-keys', apiKeyEndpoint('api_key_create', (request) => z.object({
     name: z.string().trim().min(1).max(100), expiresInDays: z.number().int().min(1).max(API_KEY_MAX_EXPIRY_DAYS)
   }).strict().parse(request.body)));
   router.delete('/api/v1/api-keys/:keyId', apiKeyEndpoint('api_key_revoke', (request) => ({
     keyId: internalId('apk').parse(request.params.keyId), ...generation.parse(request.body)
+  })));
+  // MCP Events subscriptions: visible and revocable here, never created here.
+  router.get('/api/v1/event-subscriptions', eventsEndpoint(() => ({ operation: 'events_subscriptions_list', input: {} })));
+  router.post('/api/v1/event-subscriptions/:subscriptionId/revoke', eventsEndpoint((request) => ({
+    operation: 'events_subscription_revoke', input: { id: McpEventSubscriptionIdSchema.parse(request.params.subscriptionId) }
   })));
   router.get('/api/v1/knowledge', endpoint('knowledge_dashboard_list', (request) => ({
     ...(request.query.kind ? { kind: String(request.query.kind) } : {}),
@@ -290,6 +332,27 @@ export function registerDashboardControlRoutes(
           const serverId = typeof payload.serverId === 'string' ? payload.serverId : undefined;
           if (serverId) gateway?.invalidateConnection(serverId);
         }
+      } catch (error) { next(error); }
+    };
+  }
+
+  function eventsEndpoint(build: (request: DashboardRequest) => { operation: 'events_subscriptions_list' | 'events_subscription_revoke'; input: Record<string, unknown> }) {
+    return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+      try {
+        const selected = principal(request, response);
+        if (!selected) return;
+        if (!runner.callEvents) {
+          response.status(503).json({ error: 'unavailable', message: 'MCP Events are not available.' });
+          return;
+        }
+        const { operation, input } = build(request);
+        const result = await runner.callEvents({ version: 1, principal: selected, operation, input } as McpEventsRunnerRequest);
+        if (!result.ok) {
+          const status = result.error.code === 'NOT_FOUND' ? 404 : result.error.code === 'INVALID_INPUT' ? 400 : 503;
+          response.status(status).json({ error: result.error.code.toLowerCase(), message: status === 503 ? 'MCP Events are temporarily unavailable.' : result.error.message });
+          return;
+        }
+        response.json({ data: McpEventsRunnerDataSchemas[operation].parse(result.data) });
       } catch (error) { next(error); }
     };
   }

@@ -22,6 +22,34 @@ before calling them. Prefer one bounded command over persistent process state.
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","command":"npm test -- --runInBand","cwd":".","timeoutMs":300000,"maxOutputBytes":262144}
 -->
 
+<!-- cloudharness-tool:bash -->
+### `bash`
+
+- Required: `command`. `target` defaults to `workspace`; `timeoutMs` and
+  `maxOutputBytes` have the same defaults and bounds as `exec_run`.
+- `target: "workspace"` is `exec_run` without privilege: same workspace,
+  limits, and result envelope plus `data.target`. `cwd` and `async: true` work
+  as on `exec_run`; async returns an `operationId` for `operation_wait`.
+- `target: "toolbox"` runs in a fresh no-network container with no checkout and
+  no secrets, then removes it. Pass no `workspaceId` or `cwd`. Add
+  `async: true` for a long command: you get an `operationId` for
+  `operation_wait`, and `operation_cancel` removes the container. It is refused
+  with `FORBIDDEN` unless the operator enabled packages, and with retryable
+  `LIMIT_EXCEEDED` while the instance's toolbox slots are busy; wait for one of
+  your runs to finish, then retry. `UNAVAILABLE` means Docker could not start
+  the container, not that your command failed. Use it for checkout-independent
+  work such as `node --version` or a quick calculation.
+- There is no `privileged` field. Use `exec_run` and its approval flow.
+- Prefer `exec_run` when you already use it; prefer `shell_*` or `sessions_*`
+  only when terminal state must persist between calls.
+
+<!-- cloudharness-example:bash
+{"target":"toolbox","command":"node --version && jq --version","timeoutMs":30000}
+-->
+
+For durable CLI tools across workspaces, see
+[managed packages](managed-packages.md).
+
 ## Ephemeral interactive shell
 
 <!-- cloudharness-tool:shell_open -->
@@ -191,6 +219,16 @@ Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container
   paths and digests, never content. If guidance cannot be scanned the agent
   ends `FAILED` with an "agent bootstrap failed" reason: retry, or spawn again
   with `repositoryContext: "none"` and a new idempotency key.
+- If the owner set an aggregate model spend policy (daily or monthly, for the
+  principal or one model profile), the spawn reserves its whole
+  `maxCostMicros` against it until the agent ends. A spawn that would exceed a
+  policy fails with `LIMIT_EXCEEDED` (429, not retryable) and creates no
+  agent; the message names the policy and the headroom left. Lower
+  `maxCostMicros`, or wait for running agents to finish, before retrying; a
+  refused spawn records nothing, so its idempotency key can be reused.
+  Aggregate spend is an estimate, not provider billing, and per-run caps are
+  unchanged. No MCP tool reads or changes policies: ask the owner to adjust
+  one in the dashboard rather than looking for a tool.
 
 <!-- cloudharness-example:agent_spawn
 {"prompt":"Implement feature","idempotencyKey":"spawn-subagent-1234","profileId":"default","proxyOperations":["files_read","files_write","files_apply_patch"]}

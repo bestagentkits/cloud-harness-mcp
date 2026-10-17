@@ -1,14 +1,14 @@
 ---
 title: Sessions and Task DAGs
-description: Interactive PTY terminal sessions and directed acyclic task graph workflows.
+description: Interactive pipe shell sessions and directed acyclic task graph workflows.
 ---
 
 # Sessions and Task DAGs
 
-## Persistent PTY Sessions
+## Persistent Shell Sessions
 
 For commands requiring user interaction, REPLs, or live monitoring:
-- `shell_open`: Spawns a persistent pseudoterminal (PTY) session inside the workspace.
+- `shell_open`: Starts a persistent `bash` session inside the workspace. Input and output are plain pipes, not a pseudoterminal: there is no window size or terminal line editing, and full-screen programs such as `vim` or `top` do not work. Use the [Dashboard Terminal](/dashboard/terminal) for those.
 - `shell_io`: Sends input (keystrokes, text) and reads streaming output.
 - `shell_close`: Gracefully signals or terminates the process.
 
@@ -23,9 +23,10 @@ For detached builds, test suites, and multi-stage workflows:
 
 ### Durability & Restart Reconciliation
 
-- **Durable State:** Unlike interactive PTY sessions (which live in volatile memory only and are lost on runner restart), task records, dependency DAGs, and on-disk logs persist across runner restarts.
+- **Durable State:** Unlike interactive shell sessions (which live in volatile memory only and are lost on runner restart), task records, dependency DAGs, and on-disk logs persist across runner restarts.
 - **Crash Reconciliation:** In-flight tasks from a prior runner epoch transition to terminal failed status (`status: "failed"` with `errorCode: "RUNNER_RESTARTED"`) upon restart and can be inspected via `tasks_status`/`tasks_list`.
 - **Artifact Spooling:** When a workspace closes or expires, task log outputs are automatically spooled into retained artifact storage.
+- **Completion Events:** Clients that support MCP Events, such as ChatGPT, can subscribe to `cloudharness.task.completed` and `cloudharness.task.failed` instead of polling; each task produces one event, including a task interrupted by a restart. See [ChatGPT notifications](/ai-tools/chatgpt#_3-task-and-agent-notifications-mcp-events).
 
 The official Model Context Protocol specification ([Tasks Extension Overview](https://modelcontextprotocol.io/extensions/tasks/overview), 2026-07-28 revision) defines task management as an optional protocol extension (`io.modelcontextprotocol/tasks`) with `tasks/get`, `tasks/update`, `tasks/cancel`, and progress notifications.
 

@@ -27,6 +27,18 @@ MCP gateway client
      resolution stay in the runner)
   -> principal-configured downstream MCP server over an API-owned, address-pinned
      outbound socket
+
+MCP Events webhook delivery
+  -> runner records a terminal task/agent event in its state database
+  -> API delivery worker leases due deliveries over the service channel
+  -> client-registered public HTTPS callback over an API-owned, address-pinned
+     outbound socket (Standard Webhooks signature)
+
+Dashboard Terminal (browser)
+  -> /dashboard BFF on the API (session cookie, Origin, CSRF)
+  -> runner internal terminal operation (service bearer, not an MCP tool)
+  -> Docker Engine API exec with a PTY over the runner's unix socket
+  -> interactive shell inside the workspace's existing executor
 ```
 
 Cloudflare Access is an optional public authentication edge in front of nginx;
@@ -92,6 +104,71 @@ Agent tools communicate with the runner via a bounded stdio JSONL protocol for
 10 safe file and search operations. Model API requests route exclusively through
 the trusted Model Gateway service via per-agent internal Docker networks using
 opaque, short-lived capability leases with pre-reserved token and cost budgets.
+
+The gateway budget is conservative by design, so it never charges less than
+the provider bills. Each request reserves its worst case before it goes
+upstream. Input is estimated at one token per request byte, plus a fixed
+surcharge for each media part, and priced at the highest input-side price
+(input, cache read, or cache write). Output is reserved at the cap sent
+upstream. One token per byte is a safe upper bound for text, because each
+byte-level BPE token covers at least one byte and a message's template tokens
+are fewer than its JSON framing bytes. Media is the exception, which is why it
+carries the surcharge. When the response ends, the gateway prices the reported
+usage. Cache reads, cache writes, and reasoning are priced separately, and long
+prompts are priced at the tier their prompt total reaches. Where a provider's
+report is ambiguous, the gateway charges the more expensive reading, and a
+provider-reported cost is used as a floor. A completed request is refunded at
+most what it reserved. A request that fails, is cancelled, or reports no usage
+keeps its whole reservation. Usage above the reservation is recorded as an
+overrun. Revoking a lease drains its in-flight requests and returns a
+settlement of what the lease consumed. The gateway keeps that settlement in RAM
+for 24 hours, so a repeated revoke returns it again. On `/v1/responses` the
+gateway refuses `previous_response_id`, `conversation`, and an object-valued
+`prompt`, because the stored context they pull in cannot be bounded.
+[`apps/model-gateway/src/budget.ts`](../apps/model-gateway/src/budget.ts),
+[`apps/model-gateway/src/usage-normalizer.ts`](../apps/model-gateway/src/usage-normalizer.ts),
+and [`apps/model-gateway/src/lease-registry.ts`](../apps/model-gateway/src/lease-registry.ts)
+own these rules.
+
+The Dashboard Terminal reuses the executor rather than adding an execution
+engine. The browser never talks to the runner or Docker: the API BFF in
+[`apps/api/src/dashboard-terminal-router.ts`](../apps/api/src/dashboard-terminal-router.ts)
+rebuilds each request from the session and path, the runner dispatches it in
+[`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts),
+and [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts)
+keeps the PTY beside the pipe-based shells and sessions over the transport in
+[`apps/runner/src/docker-pty.ts`](../apps/runner/src/docker-pty.ts). The runner
+talks to the Engine API directly because the Docker CLI cannot allocate a TTY
+without a local one. The browser pulls output with long-poll reads over
+ordinary dashboard requests. [ADR 0003](adr/0003-terminal-bash-and-managed-toolbox.md) records
+the decision; the [security model](security-model.md#dashboard-terminal) records
+its boundary.
+
+Managed toolbox packages split orchestration from building. The `packages_*`
+MCP tools reach the runner like every other tool, but the runner dispatches
+them before workspace resolution, so they take no workspace mutation lock.
+[`apps/runner/src/package-service.ts`](../apps/runner/src/package-service.ts)
+owns the plan resolution, approval, durable apply, rollback, uninstall,
+startup reconciliation, and hourly garbage collection over the SQLite records in
+[`apps/runner/src/package-store.ts`](../apps/runner/src/package-store.ts).
+[`apps/runner/src/package-builder.ts`](../apps/runner/src/package-builder.ts)
+runs resolution and builds in short-lived executor-image containers on the
+provisioning network and verifies each release tree below `PACKAGES_ROOT`.
+When the runner starts an executor or a `bash` toolbox container, it mounts
+the owner's and workspace's bound releases read-only and puts their `bin`
+directories on PATH. The Dashboard lists, rolls back, and uninstalls packages
+and approves plans through internal runner operations behind the BFF. The
+[security model](security-model.md#managed-toolbox-packages) records the
+boundary.
+
+The Decision Plane ([ADR 0004](adr/0004-decision-plane.md)) lives in the
+runner under
+[`apps/runner/src/decision-plane/`](../apps/runner/src/decision-plane/). It
+holds the provider key, redaction, bounds, metrics, and audit. The workspace
+service asks it for an advisory diagnosis of generic GitHub failures. The API's
+gateway `search` reaches it only through the internal `decision_rerank_tools`
+operation, and checks the returned ordering against its own candidate pool. The
+API never holds the provider credential.
 
 Third-party agent toolkits are acquired and normalized via disposable clone helpers running on a dedicated internal Docker network (`cloud-harness-provisioning`). All helper egress routes through the dual-homed `provisioning-proxy` (port 3128) with DNS destination allowlists. Normalized bundles are published to runner Content-Addressed Storage (`TOOLKIT_CACHE_ROOT`) and mounted into executors read-only at `/opt/cloud-harness/owner-skills:ro` or staged into `.cloud-harness/skills` under explicit confirmation.
 
@@ -247,8 +324,9 @@ remain queryable via `tasks_list`/`tasks_status`.
 A restart reconciles prior-epoch in-flight tasks as terminal failed tasks
 (`status: 'failed'`, `errorCode: 'RUNNER_RESTARTED'`) and spools completed task logs
 into retained artifact storage upon workspace closure. In contrast, interactive
-shell and named-session process handles and in-memory output streams live in
-volatile runner memory and do not survive a runner restart.
+shell and named-session process handles, Dashboard Terminal PTYs, and their
+in-memory output streams live in volatile runner memory and do not survive a
+runner restart.
 
 A restart reconciles persisted workspace records against Docker containers and
 restarts every surviving executor. This preserves repository files while
@@ -282,6 +360,46 @@ schemas and lifecycle owners are under `apps/runner/src/metadata-*`,
 [`apps/runner/src/secret-metadata-store.ts`](../apps/runner/src/secret-metadata-store.ts),
 [`apps/runner/src/artifact-store.ts`](../apps/runner/src/artifact-store.ts), and
 [`apps/runner/src/github-installation-sqlite-store.ts`](../apps/runner/src/github-installation-sqlite-store.ts).
+
+MCP Events use a transactional outbox in the same state database (schema
+v13). The outbox row and its per-subscription delivery rows are written in the
+same savepoint as the generation-guarded terminal transition they describe, so
+a state change and its event commit or roll back together, and a task or agent
+yields at most one logical event. The runner owns subscriptions, fan-out,
+retry scheduling, retention, and API-key revocation checks; the API only
+claims leased deliveries, signs, and posts them, so a crash between post and
+report re-sends the same event after the lease expires. The owners are
+[`apps/runner/src/event-outbox.ts`](../apps/runner/src/event-outbox.ts),
+[`apps/runner/src/mcp-event-service.ts`](../apps/runner/src/mcp-event-service.ts),
+and
+[`apps/api/src/events/event-delivery-worker.ts`](../apps/api/src/events/event-delivery-worker.ts);
+the protocol contract is in [MCP API](mcp-api.md#mcp-events-webhook-delivery).
+
+Aggregate model spend is tracked in a durable ledger in the same database
+(`model_spend_ledger` and `model_spend_policies`, created additively without a
+schema version bump, so an older runner ignores them). A gateway lease is the
+reservation. Spawn admission reserves the run's whole cost cap against the
+principal's and the profile's daily and monthly UTC policies in the same write
+transaction that admits the spawn, so concurrent spawns are serialised and a
+replay never reserves twice. The gateway still enforces the per-run cap in
+memory, so a policy only bounds how many caps may be outstanding and needs no
+per-request round trip. When the runner revokes the lease, it settles the row
+from the gateway's frozen settlement: at the gateway's cost (which can exceed
+the cap on overrun, and is at least the cap when a request reported no usage),
+released at zero when the lease was never issued (including when the gateway
+explicitly refused to issue it), or `unreconciled` at the cap when the lease may
+have been issued (an ambiguous issue failure, or no settlement from the issuing
+gateway).
+A gateway restart therefore over-counts rather than under-counts: open rows stay
+committed at their cap, and revoking a lost lease returns a new boot id. A
+runner restart keeps the ledger, and a sweep at startup and every minute
+settles rows whose agent is terminal or gone and prunes closed rows after 400
+days. Every aggregate figure is an estimate, never provider billing. A first
+crossing of a policy's warning threshold writes one structured
+`model spend threshold reached` log line with identifiers only. The owners are
+[`apps/runner/src/model-spend-ledger.ts`](../apps/runner/src/model-spend-ledger.ts),
+[`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts), and
+[`packages/contracts/src/model-spend-schemas.ts`](../packages/contracts/src/model-spend-schemas.ts).
 
 The admission policy permits up to `MAX_ACTIVE_WORKSPACES_PER_OWNER` concurrent
 counted workspaces per principal (default 3; `1` restores single-workspace

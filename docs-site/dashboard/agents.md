@@ -20,6 +20,13 @@ Each row carries the agent's status, workspace, model profile, age, TTL, token u
 cost, and cost-budget utilisation. A limit the runner never reported reads as **Not
 reported** rather than `0%`, and an over-spend clamps at 100%.
 
+The per-agent token use and cost are the agent's own estimate, reported by the agent
+runtime from the profile's prices. They are not provider billing, and they are not what
+aggregate spend policies count: the runner's spend ledger counts each run's whole cost
+cap while it runs, then the model gateway's own accounting once it ends. A spawn that
+would take a spend policy over its limit is refused with `LIMIT_EXCEEDED` and never
+appears in this list.
+
 ## One agent
 
 Opening an agent shows four sections:

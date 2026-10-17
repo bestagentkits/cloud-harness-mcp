@@ -487,6 +487,16 @@ describe('contracts', () => {
     expect(parsed.operations.gitPush).toBe(true);
   });
 
+  it('carries the managed toolbox error codes in the result envelope', () => {
+    for (const code of ['NOT_SUPPORTED', 'PACKAGE_APPROVAL_REQUIRED', 'PACKAGE_BUILD_FAILED', 'PACKAGE_VERIFICATION_FAILED'] as const) {
+      expect(ErrorCodeSchema.parse(code)).toBe(code);
+      const result = ToolResultSchema.parse({ ok: false, message: 'refused', error: { code, message: 'refused', retryable: false } });
+      expect(result.error?.code).toBe(code);
+      expect(new HarnessError(code, 'refused', 409).code).toBe(code);
+    }
+    expect(() => ErrorCodeSchema.parse('PACKAGE_UNKNOWN')).toThrow();
+  });
+
   it('validates executor network profile schemas and legacy rejection', () => {
     expect(ExecutorNetworkProfileSchema.parse('network-none')).toBe('network-none');
     expect(ExecutorNetworkProfileSchema.parse('dependency-access')).toBe('dependency-access');

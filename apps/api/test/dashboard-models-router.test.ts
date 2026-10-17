@@ -19,6 +19,9 @@ const config: ApiConfig = {
   mcpGatewayMaxConnections: 32, mcpGatewayAllowInsecureHttp: false, mcpGatewayAllowPrivateEndpoints: false
 };
 
+const verificationRef = `vref_${'0'.repeat(32)}`;
+const spendPolicyId = `msp_${'p'.repeat(32)}`;
+
 type Reply = { status: number; text: string; json: Record<string, unknown> };
 let server: Server;
 let port: number;
@@ -39,6 +42,51 @@ beforeEach(async () => {
       }
       if (operation === 'model_profile_list') {
         return { ok: true, message: 'listed', truncated: false, data: { profiles: [{ id: 'coding-fast', displayName: 'Fast Coding', status: 'ACTIVE' }] } };
+      }
+      if (operation === 'model_provider_list') {
+        return { ok: true, message: 'listed', truncated: false, data: { providers: [{ id: 'google', displayName: 'Google Gemini' }] } };
+      }
+      if (operation === 'model_profile_create' && input.verificationRef) {
+        return { ok: true, message: 'created', truncated: false, data: { id: input.profileId, lastVerification: { outcome: 'verified', checkedAt: 1, revisionId: 'rev_12345678901234567890' } } };
+      }
+      if (operation === 'model_profile_create') {
+        return { ok: false, message: 'refused', truncated: false, error: { code: 'INVALID_INPUT', message: 'Google Gemini does not support the responses API mode; supported: chat-completions', retryable: false } };
+      }
+      if (operation === 'model_profile_validate' && input.action === 'update') {
+        return { ok: false, message: 'refused', truncated: false, error: { code: 'INVALID_INPUT', message: 'customUpstreamUrl applies only to the custom provider', retryable: false } };
+      }
+      if (operation === 'model_profile_validate') {
+        return { ok: true, message: 'validated', truncated: false, data: { valid: true, action: input.action, profileId: input.profileId, escalations: [] } };
+      }
+      if (operation === 'model_catalog_search') {
+        return { ok: true, message: 'searched', truncated: false, data: { entries: [], nextCursor: null, freshness: { state: 'fresh', fetchedAt: 1, sources: [] } } };
+      }
+      if (operation === 'model_catalog_refresh' && input.provider === 'openai') {
+        return { ok: false, message: 'limited', truncated: false, error: { code: 'LIMIT_EXCEEDED', message: 'The model catalog was refreshed recently. Try again in 12 seconds.', retryable: true } };
+      }
+      if (operation === 'model_connection_verify' && input.credentialId === 'cred_limited_1234567890ab') {
+        return { ok: false, message: 'limited', truncated: false, error: { code: 'LIMIT_EXCEEDED', message: 'Connection checks are limited to 6 per minute. Retry in 30 s.', retryable: true } } as RunnerResponse;
+      }
+      if (operation === 'model_connection_verify') {
+        return { ok: true, message: 'checked', truncated: false, data: { outcome: 'verified', checkedAt: 1, elapsedMs: 5, provider: 'openai', model: 'gpt-test', apiMode: 'chat-completions', checks: [], estimatedCostMicros: null, verificationRef } };
+      }
+      if (operation === 'model_spend_summary') {
+        return { ok: true, message: 'summarized', truncated: false, data: { summary: { isEstimate: true, windows: [] }, policies: [] } };
+      }
+      if (operation === 'model_spend_policy_set' && input.profileId === 'missing') {
+        return { ok: false, message: 'missing', truncated: false, error: { code: 'NOT_FOUND', message: 'model profile was not found', retryable: false } };
+      }
+      if (operation === 'model_spend_policy_set' && input.expectedGeneration === 8) {
+        return { ok: false, message: 'gone', truncated: false, error: { code: 'NOT_FOUND', message: 'model spend policy was not found', retryable: false } };
+      }
+      if (operation === 'model_spend_policy_set' && input.expectedGeneration === 9) {
+        return { ok: false, message: 'stale', truncated: false, error: { code: 'CONFLICT', message: 'model spend policy changed; reload it and retry', retryable: false } };
+      }
+      if (operation === 'model_spend_policy_set') {
+        return { ok: true, message: 'saved', truncated: false, data: { id: spendPolicyId, profileId: null, period: input.period, limitMicros: input.limitMicros, warnPercent: 80, generation: 1, createdAt: 1, updatedAt: 1 } };
+      }
+      if (operation === 'model_spend_policy_delete' && input.expectedGeneration === 9) {
+        return { ok: false, message: 'gone', truncated: false, error: { code: 'NOT_FOUND', message: 'model spend policy was not found', retryable: false } };
       }
       if (operation === 'model_config_status') {
         return { ok: true, message: 'status', truncated: false, data: { status: { gatewaySynced: true } } };
@@ -82,6 +130,8 @@ async function request(path: string, options: { method?: string; body?: unknown;
       origin: 'https://dashboard.example',
       cookie: sessionReq.cookie,
       ...(isMutation ? { 'content-type': 'application/json', 'x-csrf-token': sessionReq.token } : {}),
+      // Node does not chunk a DELETE body, so its length must be declared for the server to read it.
+      ...(options.body ? { 'content-length': String(Buffer.byteLength(JSON.stringify(options.body))) } : {}),
       ...options.headers
     };
     const req = httpRequest({ host: '127.0.0.1', port, path: `/dashboard/api/v1${path}`, method: options.method ?? 'GET', headers }, (res) => {
@@ -128,5 +178,138 @@ describe('Dashboard Models & Credentials Router', () => {
     const status = await request('/agent-model-config-status');
     expect(status.status).toBe(200);
     expect(calls[1]?.operation).toBe('model_config_status');
+  });
+
+  it('lists the provider registry through GET /model-providers', async () => {
+    const reply = await request('/model-providers');
+    expect(reply.status).toBe(200);
+    expect(calls[0]?.operation).toBe('model_provider_list');
+    expect(reply.json.data).toEqual({ providers: [{ id: 'google', displayName: 'Google Gemini' }] });
+  });
+
+  it('shows the registry refusal naming the supported values when a profile save is rejected', async () => {
+    const reply = await request('/agent-model-profiles', {
+      method: 'POST',
+      body: {
+        profileId: 'gemini', displayName: 'Gemini', credentialId: 'cred_12345678901234567890', model: 'gemini-2.5-flash',
+        apiMode: 'responses', pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+        limits: { maxInputTokens: 1000, maxOutputTokens: 100, maxCostMicros: 1000 }, maxProxyOperations: ['files_read']
+      }
+    });
+    expect(calls[0]?.operation).toBe('model_profile_create');
+    expect(reply.status).toBe(400);
+    expect(reply.json.message).toBe('Google Gemini does not support the responses API mode; supported: chat-completions');
+  });
+
+  it('dry-runs a profile body through POST /agent-model-profiles/validate and shows its refusal', async () => {
+    const body = {
+      action: 'create', profileId: 'coding', displayName: 'Coding', credentialId: 'cred_12345678901234567890', model: 'gpt-test',
+      apiMode: 'chat-completions', pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { maxInputTokens: 1000, maxOutputTokens: 100, maxCostMicros: 1000 }, maxProxyOperations: ['files_read']
+    };
+    const reply = await request('/agent-model-profiles/validate', { method: 'POST', body });
+    expect(reply.status).toBe(200);
+    expect(calls[0]).toMatchObject({ operation: 'model_profile_validate', input: body });
+    expect(reply.json.data).toEqual({ valid: true, action: 'create', profileId: 'coding', escalations: [] });
+
+    const refused = await request('/agent-model-profiles/validate', { method: 'POST', body: { action: 'update', profileId: 'coding', expectedGeneration: 1 } });
+    expect(refused.status).toBe(400);
+    expect(refused.json.message).toBe('customUpstreamUrl applies only to the custom provider');
+  });
+
+  it('forwards catalog search query parameters with numbers coerced and refresh bodies', async () => {
+    const searched = await request('/model-catalog?provider=anthropic&credentialId=cred_12345678901234567890&q=sonnet&cursor=Y2F0YWxvZzoy&limit=10&capability=tools');
+    expect(searched.status).toBe(200);
+    expect(searched.json).toMatchObject({ data: { entries: [], nextCursor: null, freshness: { state: 'fresh' } } });
+    expect(calls[0]).toMatchObject({
+      operation: 'model_catalog_search',
+      input: { provider: 'anthropic', credentialId: 'cred_12345678901234567890', query: 'sonnet', cursor: 'Y2F0YWxvZzoy', limit: 10, capability: 'tools' },
+      principal
+    });
+
+    await request('/model-catalog?provider=openrouter');
+    expect(calls[1]?.input).toEqual({ provider: 'openrouter' });
+
+    await request('/model-catalog?provider=openai&provider=google&limit=abc');
+    expect(calls[2]?.input).toMatchObject({ provider: null });
+    expect(Number.isNaN(calls[2]?.input.limit)).toBe(true);
+
+    const refreshed = await request('/model-catalog/refresh', { method: 'POST', body: { provider: 'anthropic' } });
+    expect(refreshed.status).toBe(200);
+    expect(calls[3]).toMatchObject({ operation: 'model_catalog_refresh', input: { provider: 'anthropic' } });
+
+    const limited = await request('/model-catalog/refresh', { method: 'POST', body: { provider: 'openai' } });
+    expect(limited.status).toBe(429);
+    expect(limited.json).toMatchObject({ error: 'limit_exceeded', message: 'The model catalog was refreshed recently. Try again in 12 seconds.' });
+  });
+
+  it('forwards POST /model-connection/verify to the runner, carries its verification reference to profile saves, and surfaces its rate limit message', async () => {
+    const verified = await request('/model-connection/verify', {
+      method: 'POST',
+      body: { credentialId: 'cred_12345678901234567890', model: 'gpt-test', checks: { tools: true } }
+    });
+    expect(verified.status).toBe(200);
+    expect(calls[0]).toMatchObject({
+      operation: 'model_connection_verify',
+      input: { credentialId: 'cred_12345678901234567890', model: 'gpt-test', checks: { tools: true } },
+      principal
+    });
+    expect((verified.json.data as Record<string, unknown>).outcome).toBe('verified');
+    // The draft check's opaque reference reaches the browser so the next save can name it.
+    expect((verified.json.data as Record<string, unknown>).verificationRef).toBe(verificationRef);
+
+    const limited = await request('/model-connection/verify', { method: 'POST', body: { credentialId: 'cred_limited_1234567890ab' } });
+    expect(limited.status).toBe(429);
+    expect(limited.json.message).toBe('Connection checks are limited to 6 per minute. Retry in 30 s.');
+
+    const created = await request('/agent-model-profiles', { method: 'POST', body: { profileId: 'coding', verificationRef } });
+    expect(created.status).toBe(200);
+    expect(calls[2]).toMatchObject({ operation: 'model_profile_create', input: { profileId: 'coding', verificationRef } });
+    expect((created.json.data as Record<string, unknown>).lastVerification).toEqual({ outcome: 'verified', checkedAt: 1, revisionId: 'rev_12345678901234567890' });
+    await request('/agent-model-profiles/coding', { method: 'PATCH', body: { expectedGeneration: 1, verificationRef } });
+    expect(calls[3]).toMatchObject({ operation: 'model_profile_update', input: { profileId: 'coding', expectedGeneration: 1, verificationRef } });
+
+    const noCsrf = await request('/model-connection/verify', { method: 'POST', body: { profileId: 'coding' }, headers: { 'x-csrf-token': 'wrong' } });
+    expect(noCsrf.status).toBe(403);
+    expect(calls).toHaveLength(4);
+  });
+
+  it('routes spend summary and policy changes to the runner and passes their refusals through', async () => {
+    const summary = await request('/model-spend');
+    expect(summary.status).toBe(200);
+    expect(calls[0]).toMatchObject({ operation: 'model_spend_summary', input: {}, principal });
+    expect(summary.json).toEqual({ data: { summary: { isEstimate: true, windows: [] }, policies: [] }, truncated: false });
+
+    await request('/model-spend/policies');
+    expect(calls[1]).toMatchObject({ operation: 'model_spend_policy_list', input: {} });
+
+    const saved = await request('/model-spend/policies', { method: 'PUT', body: { period: 'day', limitMicros: 5_000_000 } });
+    expect(saved.status).toBe(200);
+    expect(calls[2]).toMatchObject({ operation: 'model_spend_policy_set', input: { period: 'day', limitMicros: 5_000_000 } });
+    expect(saved.json.data).toMatchObject({ id: spendPolicyId, generation: 1 });
+
+    const missing = await request('/model-spend/policies', { method: 'PUT', body: { profileId: 'missing', period: 'day', limitMicros: 1 } });
+    expect(missing.status).toBe(404);
+    // A set refuses both a missing profile and a missing policy as NOT_FOUND, so the runner's wording says which.
+    expect(missing.json).toEqual({ error: 'not_found', message: 'model profile was not found' });
+    const unknown = await request('/model-spend/policies', { method: 'PUT', body: { policyId: spendPolicyId, period: 'day', limitMicros: 1, expectedGeneration: 8 } });
+    expect(unknown.status).toBe(404);
+    expect(unknown.json).toEqual({ error: 'not_found', message: 'model spend policy was not found' });
+    const stale = await request('/model-spend/policies', { method: 'PUT', body: { policyId: spendPolicyId, period: 'day', limitMicros: 1, expectedGeneration: 9 } });
+    expect(stale.status).toBe(409);
+    expect(stale.json.message).toBe('model spend policy changed; reload it and retry');
+
+    const deleted = await request(`/model-spend/policies/${spendPolicyId}`, { method: 'DELETE', body: { expectedGeneration: 2 } });
+    expect(deleted.status).toBe(200);
+    expect(calls[6]).toMatchObject({ operation: 'model_spend_policy_delete', input: { policyId: spendPolicyId, expectedGeneration: 2 } });
+    const gone = await request(`/model-spend/policies/${spendPolicyId}`, { method: 'DELETE', body: { expectedGeneration: 9 } });
+    expect(gone.json).toEqual({ error: 'not_found', message: 'Model spend policy not found.' });
+
+    // A delete without a generation never reaches the runner.
+    const unguarded = await request(`/model-spend/policies/${spendPolicyId}`, { method: 'DELETE', body: { force: true } });
+    expect(unguarded.status).toBe(400);
+    const noCsrf = await request('/model-spend/policies', { method: 'PUT', body: { period: 'day', limitMicros: 1 }, headers: { 'x-csrf-token': 'wrong' } });
+    expect(noCsrf.status).toBe(403);
+    expect(calls).toHaveLength(8);
   });
 });

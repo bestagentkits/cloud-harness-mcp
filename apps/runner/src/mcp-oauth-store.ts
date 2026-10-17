@@ -323,20 +323,26 @@ export class McpOAuthStore {
     });
   }
 
-  /** Records a state transition while keeping the grant's diagnostic metadata. */
+  /**
+   * Records a state transition while keeping the grant's diagnostic metadata. `error` comes
+   * from a failed or declined interactive Connect, which never touches the stored tokens: a
+   * grant that still works (or already needs reauthorization) keeps its state and only
+   * records the failure as its last error.
+   */
   markGrant(principalId: string, serverId: string, state: 'authorizing' | 'reauthorization_required' | 'error', error: string | null): boolean {
     return transaction(this.database, () => {
       const row = this.grantRow(principalId, serverId);
       if (!row) return false;
       const now = this.now();
       const message = error ? scrubOAuthError(error) : null;
+      const next = state === 'error' && (row.state === 'connected' || row.state === 'reauthorization_required') ? row.state : state;
       this.database.prepare(
         'UPDATE mcp_oauth_grants SET state = ?, last_error = ?, updated_at = ? WHERE principal_id = ? AND server_id = ?'
-      ).run(state, message, now, principalId, serverId);
+      ).run(next, message, now, principalId, serverId);
       appendAudit(
         this.database, principalId,
         state === 'reauthorization_required' ? 'mcp_oauth.reauthorization_required' : 'mcp_oauth.authorization_failed',
-        'mcp_server', serverId, row.generation, { issuer: row.issuer, state }, now
+        'mcp_server', serverId, row.generation, { issuer: row.issuer, state: next }, now
       );
       return true;
     });
@@ -364,11 +370,5 @@ export class McpOAuthStore {
       }, this.now());
       return true;
     });
-  }
-
-  /** Server deletion cascade. Called from the same transaction as the soft delete. */
-  deleteForServer(principalId: string, serverId: string): void {
-    this.database.prepare('DELETE FROM mcp_oauth_flows WHERE principal_id = ? AND server_id = ?').run(principalId, serverId);
-    this.database.prepare('DELETE FROM mcp_oauth_grants WHERE principal_id = ? AND server_id = ?').run(principalId, serverId);
   }
 }

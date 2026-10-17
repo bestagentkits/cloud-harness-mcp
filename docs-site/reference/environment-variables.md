@@ -47,7 +47,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `MCP_GATEWAY_ALLOW_INSECURE_HTTP` | `false` | Optional | Optional configuration. |
 | `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` | `https://dashboard.example.com/dashboard/mcp-oauth/callback` | Optional | Downstream MCP OAuth (Cloud Harness authenticating TO a third-party MCP server; unrelated to the Cloudflare Access login that authenticates clients TO Cloud Harness). The redirect URL must be the dashboard origin plus /dashboard/mcp-oauth/callback; OAuth Connect is unavailable until it is set. The client metadata URL is optional: a public https URL serving this client's metadata document, used as client_id when the authorization server supports Client ID Metadata Documents. Without it, dynamic registration or a manually registered client is used. |
 | `MCP_DOWNSTREAM_OAUTH_CLIENT_METADATA_URL` | `https://public.example.com/oauth/client/cloud-harness` | Optional | Optional configuration. |
-| `MODEL_GATEWAY_SESSION_HEADER` | `x-opencode-session` | Optional | Model gateway provider override. When set, the gateway sends this one upstream header, filled with the calling agent id, to OpenAI-compatible providers that require a conversation identifier (for example x-opencode-session for OpenCode Go). Unset sends no such header. The value must be a lowercase header name the gateway does not set itself. |
+| `MODEL_GATEWAY_SESSION_HEADER` | `x-opencode-session` | Optional | Model gateway provider override. When set, the gateway sends this one upstream header, filled with the calling agent id, to OpenAI-compatible providers that require a conversation identifier (for example x-opencode-session for a Custom route to OpenCode). A registry provider's own session header, such as OpenCode Go's, takes precedence. Unset sends no such header. The value must be a lowercase header name the gateway does not set itself. |
 | `JOBS_ROOT` | `/var/lib/cloud-harness/jobs` | **Required** | Required configuration. |
 | `STATE_DB` | `/var/lib/cloud-harness/state/cloud-harness.db` | **Required** | Required configuration. |
 | `ARTIFACT_ROOT` | `/var/lib/cloud-harness/artifacts` | **Required** | Required configuration. |
@@ -72,9 +72,26 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `DEPENDENCY_BRIDGE_SUBNET` | `172.30.240.0/24` | Optional | Optional configuration. |
 | `DEPENDENCY_BRIDGE_INTERFACE` | `chm-egress0` | Optional | Optional configuration. |
 | `DEPENDENCY_NETWORK_NAME` | `cloud-harness-dependency-access` | Optional | Optional configuration. |
-| `WORKSPACE_WALL_TTL_SECONDS` | `900` | **Required** | Required configuration. |
-| `WORKSPACE_IDLE_TTL_SECONDS` | `300` | **Required** | Required configuration. |
+| `WORKSPACE_WALL_TTL_SECONDS` | `900` | **Required** | Workspace lifetime defaults. Dashboard Settings > Workspace limits & lifecycle can override these (and MAX_ACTIVE_WORKSPACES_PER_OWNER) for newly opened workspaces without a redeploy. |
+| `WORKSPACE_IDLE_TTL_SECONDS` | `300` | **Required** | Idle timeout: a workspace without tool activity for this long expires (30..43200, always capped by the wall TTL). |
+| `WORKSPACE_RECOVERABLE_GRACE_SECONDS` | `3600` | Optional | How long an expired workspace stays recoverable before auto-close (0..86400, default 3600). 0 closes clean expired workspaces on the next reaper pass; work that is not pushed is always retained. |
 | `MAX_ACTIVE_WORKSPACES_PER_OWNER` | `3` | **Required** | Concurrent active workspaces allowed per principal. Defaults to 3 when unset; set 1 to restore single-workspace behaviour. Each counted workspace can use up to 1 GiB of container memory, one CPU, and 256 pids, so size host memory for this limit times the expected simultaneous builds. |
+| `TERMINAL_MAX_PER_WORKSPACE` | `4` | Optional | Dashboard Terminal (runner): live PTYs one workspace may hold; another open is refused with 429. |
+| `TERMINAL_RETAINED_BYTES` | `1048576` | Optional | Raw output bytes retained per terminal for reconnecting readers; older bytes are reported as missed. |
+| `TERMINAL_IDLE_TIMEOUT_MS` | `900000` | Optional | A terminal with no input, resize, or read for this long ends as timed_out. |
+| `TERMINAL_MAX_LIFETIME_MS` | `28800000` | Optional | Absolute terminal lifetime regardless of activity. |
+| `PACKAGES_ENABLED` | `false` | Optional | Managed toolbox (runner): enables the `bash` tool's `toolbox` target, which runs each command in a disposable no-network executor-image container. Off by default; the `workspace` target is unaffected. |
+| `TOOLBOX_MAX_CONCURRENT` | `2` | Optional | Maximum toolbox containers running at once on this runner; a call beyond it gets LIMIT_EXCEEDED (429, retryable). |
+| `PACKAGES_ROOT` | `/var/lib/cloud-harness/packages` | Optional | Managed toolbox packages (runner, used only while PACKAGES_ENABLED=true). Immutable releases live here; Compose mounts HOST_PACKAGES_ROOT at this path and the two must be equal. |
+| `PACKAGES_ECOSYSTEMS` | `npm,uv` | Optional | Ecosystems that may be planned: a comma-separated subset of npm,uv. apt always answers NOT_SUPPORTED. |
+| `PACKAGES_APPROVAL_MODE` | `required` | Optional | required: each plan waits for a Dashboard approval bound to its digest (cloudflare-access mode; owner-bearer refuses apply). none: plans are approved by policy when created. |
+| `PACKAGES_NPM_LIFECYCLE_SCRIPTS` | `deny` | Optional | allow lets a plan that asks for npm lifecycle scripts run them in the builder; deny always skips them. |
+| `PACKAGES_MAX_RELEASE_BYTES` | `536870912` | Optional | Largest verified release tree, in bytes (16 MiB to 4 GiB). |
+| `PACKAGES_MAX_OWNER_BYTES` | `4294967296` | Optional | Total retained release bytes per owner (64 MiB to 64 GiB). |
+| `PACKAGES_MAX_BINDINGS` | `32` | Optional | Package bindings (one package in one scope) per owner. |
+| `PACKAGES_BUILD_TIMEOUT_MS` | `600000` | Optional | Wall-clock limit for one plan or apply builder container. |
+| `DECISION_PLANE_PURPOSES` | `—` | Optional | Decision Plane (runner): advisory semantic decisions, sent only when the owner has a TypeSafe integration key. Comma-separated subset of mcp-routing,failure-classification; empty keeps it off. |
+| `TYPESAFE_EGRESS` | `on` | Optional | Instance-wide TypeSafe egress switch (runner): off stops skill suggestions and the Decision Plane even when an owner has stored a key. Per owner, deleting the key does the same. |
 | `GITHUB_APP_ID` | `—` | Optional | Optional GitHub App repository access; required fields depend on AUTH_MODE: |
 | `GITHUB_APP_INSTALLATION_ID` | `—` | Optional | Required in owner-bearer mode; omit in Access mode, where each principal binds an installation: |
 | `GITHUB_APP_SLUG` | `—` | Optional | Required in Access mode for the installation redirect: |

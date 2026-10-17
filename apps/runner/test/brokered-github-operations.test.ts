@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { RunnerConfig } from '@cloud-harness/contracts';
+import type { DecisionAnswer, RunnerConfig } from '@cloud-harness/contracts';
 import { HarnessError } from '@cloud-harness/contracts';
 import { InMemoryGitHubInstallationStore } from '../src/github-installation-store.js';
 import { MetadataStore } from '../src/metadata-store.js';
@@ -43,6 +43,7 @@ vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
 vi.mock('../src/repository-policy.js', () => ({ validateRepositoryUrl: vi.fn(async (value: string) => new URL(value)) }));
 
 import { WorkspaceService } from '../src/workspace-service.js';
+import { DecisionPlane, type DecisionProvider } from '../src/decision-plane/decision-plane.js';
 const temporaryDirectories: string[] = [];
 const openStores: StateStore[] = [];
 const openMetadataStores: MetadataStore[] = [];
@@ -443,6 +444,71 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
       expect(args.join(' ')).not.toContain('pr-scoped-write-token');
       expect(args.join(' ')).toContain('/repo:/workspace:ro');
     });
+
+    it('redacts both a workspace GH_TOKEN and a different fallback token', () => {
+      const { config, store, metadata, installations, workspaceId } = fixture();
+      const fallback = 'fallback-runner-token-0123456789';
+      const injected = 'workspace-injected-token-9876543210';
+      const service = new WorkspaceService({ ...config, authMode: 'owner-bearer', githubToken: fallback } as RunnerConfig, store, metadata, installations);
+      vi.spyOn(store, 'getSecretSnapshot').mockReturnValue({
+        initialized: true,
+        secrets: [{ name: 'GH_TOKEN', version: 1, environmentId: 'env_test', envelope: {} as never }]
+      });
+      vi.spyOn(metadata, 'decryptEnvelope').mockReturnValue(injected);
+      const values = Object.values(service.redactionSecrets(workspaceId));
+      expect(values).toContain(injected);
+      expect(values).toContain(fallback);
+    });
+
+    describe('advisory failure diagnosis', () => {
+      const answers: Record<string, DecisionAnswer> = {
+        failure_type: { kind: 'choice', value: 'transient_network', confidence: 0.9, probabilities: { transient_network: 0.9, unknown: 0.1 } },
+        retry_succeeds: { kind: 'boolean', probability: 0.8 }, credential_refresh: { kind: 'boolean', probability: 0.1 },
+        workspace_recreate: { kind: 'boolean', probability: 0.05 }, agent_needed: { kind: 'boolean', probability: 0.1 }, human_needed: { kind: 'boolean', probability: 0.1 }
+      };
+      const attach = (service: WorkspaceService, evaluate: DecisionProvider['evaluate']) => {
+        const provider = { name: 'stub', evaluate: vi.fn(evaluate) };
+        service.useDecisionPlane(new DecisionPlane({ purposes: ['failure-classification'], providerFor: () => provider }));
+        return provider;
+      };
+      const unnamed = 'error connecting to api.github.com: dial tcp: lookup api.github.com on 10.0.0.2:53: i/o timeout';
+
+      it('adds a diagnosis only to the generic fallback and keeps the deterministic code and retryability', async () => {
+        const { config, store, installations, workspaceId, principalSelector } = fixture();
+        const service = new WorkspaceService(config, store, undefined, installations);
+        const provider = attach(service, async () => ({ ok: true, model: 'stub', answers, inputTokens: 0, outputTokens: 0, inputBytes: 0, redactionCount: 0 }));
+        writeToken();
+        docker.ghResult = { stdout: '', stderr: unnamed, exitCode: 1, truncated: false };
+        const result = await service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_review', prNumber: 12, event: 'APPROVE' });
+        expect(result.error).toMatchObject({ code: 'GITHUB_ACTION_FAILED' });
+        expect((result.data as { diagnosis?: unknown }).diagnosis).toMatchObject({ advisory: true, failureType: 'transient_network' });
+        expect(provider.evaluate).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(provider.evaluate.mock.calls[0]?.[0])).not.toContain('pr-scoped-write-token');
+
+        writeToken();
+        docker.ghResult = { stdout: '', stderr: 'X Pull request #12 is not mergeable: the base branch policy prohibits the merge.', exitCode: 1, truncated: false };
+        const known = await service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_merge', prNumber: 12, method: 'squash' });
+        expect(known.error).toMatchObject({ code: 'GITHUB_MERGE_BLOCKED', retryable: false });
+        expect((known.data as { diagnosis?: unknown }).diagnosis).toBeUndefined();
+        expect(provider.evaluate).toHaveBeenCalledTimes(1);
+      });
+
+      it('returns the deterministic failure unchanged when the provider rejects', async () => {
+        const { config, store, installations, workspaceId, principalSelector } = fixture();
+        const service = new WorkspaceService(config, store, undefined, installations);
+        const without = await (async () => {
+          writeToken();
+          docker.ghResult = { stdout: '', stderr: unnamed, exitCode: 1, truncated: false };
+          return service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_review', prNumber: 12, event: 'APPROVE' });
+        })();
+        attach(service, async () => { throw new Error('provider exploded'); });
+        writeToken();
+        const result = await service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_review', prNumber: 12, event: 'APPROVE' });
+        expect(result.ok).toBe(false);
+        expect(result.error).toEqual(without.error);
+        expect((result.data as { diagnosis?: unknown }).diagnosis).toBeUndefined();
+      });
+    });
   });
 
   it('executes pr_list and pr_view using pull_requests:read token scope', async () => {
@@ -808,5 +874,78 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
       title: 'Bug: fix needed'
     })).rejects.toMatchObject({ code: 'UNAVAILABLE' });
     expect(docker.runDocker.mock.calls.find(([args]) => args.includes('/opt/harness/gh-helper.sh'))).toBeUndefined();
+  });
+  it('asks for pull_requests beside issues so an issue action reaches a pull request number', async () => {
+    const { config, store, installations, workspaceId, principalSelector } = fixture();
+    const service = new WorkspaceService(config, store, undefined, installations);
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('issue-and-pr-token', { issues: 'write', pull_requests: 'write' }));
+    docker.ghResult = { stdout: 'https://github.com/bestagentkits/cloud-harness-mcp/pull/1379#issuecomment-1\n', stderr: '', exitCode: 0, truncated: false };
+
+    const result = await service.execute(principalSelector, 'github_action', {
+      workspaceId,
+      action: 'issue_comment',
+      issueNumber: 1379,
+      body: 'Looks good'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(broker.mintPrincipalRepositoryScopedToken).toHaveBeenCalledWith(expect.objectContaining({
+      permissionScope: 'issues',
+      requiredPermission: 'write',
+      optionalScope: 'pull_requests'
+    }));
+  });
+
+  it('names the pull request permission when an issue action on a pull request number is refused', async () => {
+    const { config, store, installations, workspaceId, principalSelector } = fixture();
+    const service = new WorkspaceService(config, store, undefined, installations);
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('issues-only-token', { issues: 'read', contents: 'read' }));
+    docker.ghResult = { stdout: '', stderr: 'GraphQL: Resource not accessible by integration (repository.issue)\n', exitCode: 1, truncated: false };
+
+    const result = await service.execute(principalSelector, 'github_read', {
+      workspaceId,
+      action: 'issue_view',
+      issueNumber: 1379
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatchObject({ code: 'GITHUB_PERMISSION_MISSING', retryable: false });
+    expect(result.error!.message).toContain('pull_requests:read');
+    expect(result.error!.message).toContain('pr_view');
+    expect(result.error!.message).toContain('Resource not accessible by integration');
+    expect(JSON.stringify(result)).not.toContain('issues-only-token');
+  });
+
+  it('keeps the generic permission remedy when the token already reaches pull requests', async () => {
+    const { config, store, installations, workspaceId, principalSelector } = fixture();
+    const service = new WorkspaceService(config, store, undefined, installations);
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('issue-and-pr-token', { issues: 'read', pull_requests: 'write', contents: 'read' }));
+    docker.ghResult = { stdout: '', stderr: 'GraphQL: Resource not accessible by integration (repository.issue)\n', exitCode: 1, truncated: false };
+
+    const result = await service.execute(principalSelector, 'github_read', {
+      workspaceId,
+      action: 'issue_view',
+      issueNumber: 7
+    });
+
+    expect(result.error).toMatchObject({ code: 'GITHUB_PERMISSION_MISSING' });
+    expect(result.error!.message).not.toContain('most likely names a pull request');
+  });
+  it('keeps the generic remedy for a permission refusal that is not a pull request lookup', async () => {
+    const { config, store, installations, workspaceId, principalSelector } = fixture();
+    const service = new WorkspaceService(config, store, undefined, installations);
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('issues-only-token', { issues: 'write', contents: 'read' }));
+    docker.ghResult = { stdout: '', stderr: 'HTTP 403: Resource protected by organization SAML enforcement.\n', exitCode: 1, truncated: false };
+
+    const result = await service.execute(principalSelector, 'github_action', {
+      workspaceId,
+      action: 'issue_comment',
+      issueNumber: 7,
+      body: 'hello'
+    });
+
+    expect(result.error).toMatchObject({ code: 'GITHUB_PERMISSION_MISSING' });
+    expect(result.error!.message).not.toContain('most likely names a pull request');
+    expect(result.error!.message).toContain('GH_TOKEN');
   });
 });

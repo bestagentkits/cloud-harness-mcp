@@ -1,14 +1,20 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HarnessError, type MetadataRunnerRequest, type RunnerConfig } from '@cloud-harness/contracts';
+import {
+  HarnessError, ModelProfileValidateResultSchema,
+  type AgentModelProfileMetadata, type MetadataRunnerRequest, type ModelConnectionVerifyResult, type ModelProfileValidateResult, type RunnerConfig
+} from '@cloud-harness/contracts';
 import { ArtifactStore } from '../src/artifact-store.js';
 import { DashboardControlService } from '../src/dashboard-control-service.js';
 import { GitHubBindingService, GitHubSetupStateStore } from '../src/github-binding-service.js';
 import { InMemoryGitHubInstallationStore } from '../src/github-installation-store.js';
 import { MetadataStore } from '../src/metadata-store.js';
+import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
+import type { ProviderHttpClient } from '../src/model-provider-http.js';
+import { PackageStore } from '../src/package-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
 import { ToolkitCacheManager } from '../src/toolkit-cache-manager.js';
@@ -24,7 +30,10 @@ afterEach(() => {
   }
 });
 
-function setup(withKeyring = true) {
+/** The executor image the stubbed workspace service reports to the package overview. */
+let currentPackageImageId: string | undefined = 'sha256:executor-image';
+
+function setup(withKeyring = true, config: Partial<RunnerConfig> | ((root: string) => Partial<RunnerConfig>) = {}) {
   const root = mkdtempSync(join(tmpdir(), 'cloud-harness-controls-')); roots.push(root);
   const databasePath = join(root, 'state.db'); const principals = new StateStore(databasePath);
   const keyring = withKeyring ? new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]) : undefined;
@@ -35,6 +44,7 @@ function setup(withKeyring = true) {
   });
   const artifacts = new ArtifactStore(principals.database, { root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000 });
   const workspaces = {
+    packages: { currentImageId: async () => currentPackageImageId },
     toolkitCacheManager: new ToolkitCacheManager(join(root, 'toolkits'), principals),
     readArtifactSource: async (p: PrincipalSelector) => ({ ownerId: principals.resolvePrincipal(p), content: Buffer.from('snapshot') }),
     snapshotArtifact: async (p: PrincipalSelector, input: { workspaceId?: string; path: string; logicalName: string; retentionSeconds?: number; projectId?: string; environmentId?: string }) => {
@@ -84,11 +94,11 @@ function setup(withKeyring = true) {
     }
   } as unknown as WorkspaceService;
   const controls = new DashboardControlService(
-    { artifactRetentionSeconds: 60 } as RunnerConfig,
+    { artifactRetentionSeconds: 60, ...(typeof config === 'function' ? config(root) : config) } as RunnerConfig,
     principals, metadata, artifacts, workspaces,
     undefined, undefined, undefined, undefined, keyring
   );
-  return { controls, principals, metadata, artifacts, keyring, workspaces };
+  return { controls, principals, metadata, artifacts, keyring, workspaces, root };
 }
 
 describe('skill revisions', () => {
@@ -239,6 +249,24 @@ describe('integration credentials and typesafe', () => {
     expect(deleted.data).toMatchObject({ deleted: true });
   });
 
+  it('answers 409 for a stale generation or a second create, and 404 for a key already removed', async () => {
+    const { controls } = setup();
+    const created = await controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: 'ts_live_first', expectedGeneration: 0
+    }));
+    const credentialId = (created.data as { id: string }).id;
+
+    await expect(controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: 'ts_live_second', expectedGeneration: 0
+    }))).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+    await expect(controls.execute(request('integration_credential_rotate', {
+      credentialId, value: 'ts_live_stale', expectedGeneration: 7
+    }))).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+    await controls.execute(request('integration_credential_delete', { credentialId, expectedGeneration: 1 }));
+    await expect(controls.execute(request('integration_credential_delete', { credentialId, expectedGeneration: 1 })))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
   it('reports an empty roster rather than calling out when a key exists but no workspace was named', async () => {
     const { controls } = setup();
     await controls.execute(request('integration_credential_create', {
@@ -248,6 +276,17 @@ describe('integration credentials and typesafe', () => {
     const result = await controls.execute(request('skill_suggest', { prompt: 'Please refactor the authentication middleware.' }));
 
     expect(result.data).toMatchObject({ suggested: null, reason: 'empty_roster', outboundCalls: 0 });
+  });
+
+  it('reports egress as disabled when the operator turned TYPESAFE_EGRESS off', async () => {
+    const { controls } = setup(true, { typesafeEgress: 'off' });
+    await controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: 'ts_live_key', expectedGeneration: 0
+    }));
+
+    const status = await controls.execute(request('typesafe_status', {}));
+
+    expect(status.data).toMatchObject({ configured: true, enabled: false });
   });
 
   it('answers not_configured with zero outbound work when the owner has no key', async () => {
@@ -673,5 +712,365 @@ describe('dashboard control service', () => {
 
     const audit = await controls.execute(request('audit_list', { limit: 50 }));
     expect(JSON.stringify(audit)).toContain('artifact.restored');
+  });
+});
+
+describe('dashboard managed packages', () => {
+  const packageLimits = { maxBindings: 32, maxOwnerBytes: 4_294_967_296, maxReleaseBytes: 536_870_912, minFreeBytes: 0 };
+  const runtime = { imageId: 'sha256:executor-image', node: 'v24.11.0', npm: '11.6.0', uv: null, python: null };
+
+  function packagesSetup() {
+    const context = setup(true, (root) => ({
+      authMode: 'cloudflare-access', packagesEnabled: true, packagesApprovalMode: 'required', packagesEcosystems: ['npm', 'uv'],
+      packagesNpmLifecycleScripts: 'deny', packagesMaxReleaseBytes: 536_870_912, packagesMaxOwnerBytes: 4_294_967_296,
+      packagesMaxBindings: 32, packagesRoot: join(root, 'packages')
+    }));
+    const packagesRoot = join(context.root, 'packages');
+    const store = new PackageStore(context.principals.database, (...args) => context.metadata.recordAuditInTransaction(...args));
+    const ownerId = context.principals.resolvePrincipal(principal);
+    const plan = (owner: string, version: string, approvalMode: 'required' | 'none' = 'required', now = Date.now(), lifecycleScripts = false) => store.createPlan({
+      ownerId: owner, scope: 'owner', workspaceId: null, ecosystem: 'npm', packageName: 'chm-hello', version,
+      requestedSpec: version, lockText: '{"lockfileVersion":3}', approvalMode, now,
+      content: {
+        source: { registry: 'https://registry.npmjs.org/', resolved: `https://registry.npmjs.org/chm-hello/-/chm-hello-${version}.tgz` },
+        integrity: 'sha512-abc', dependencyCount: 2, sizeEstimateBytes: 8_192, binaries: ['hello'], conflicts: [],
+        lifecycleScripts, runtime
+      }
+    });
+    /** Drives a plan through a successful apply and puts its release tree on disk. */
+    const install = (version: string) => {
+      const approved = plan(ownerId, version, 'none');
+      const { apply } = store.startApply({ ownerId, planId: approved.id, planDigest: approved.digest, now: Date.now(), limits: packageLimits });
+      for (const step of ['BUILDING', 'VERIFYING', 'PUBLISHING'] as const) store.advanceApply(apply.id, step, { now: Date.now() });
+      const published = store.publish(apply.id, {
+        treeDigest: createHash('sha256').update(approved.id).digest('hex'), sizeBytes: 2_048, fileCount: 4, binaries: ['hello'],
+        runtime, provenance: { registry: 'https://registry.npmjs.org/' }, sbom: [{ name: 'chm-hello', version }]
+      }, { now: Date.now() });
+      mkdirSync(join(packagesRoot, published.release.relPath), { recursive: true });
+      return published;
+    };
+    return { ...context, store, ownerId, plan, install, packagesRoot };
+  }
+
+  it('answers an empty overview and refuses every decision while the feature is off', async () => {
+    const { controls, metadata, principals } = setup(true, { packagesEnabled: false, packagesApprovalMode: 'required' });
+    const overview = await controls.execute(request('package_overview', {}));
+    expect(overview.data).toMatchObject({ enabled: false, bindings: [], releases: [], inFlight: [], recentApplies: [], pendingPlans: [] });
+    const plans = await controls.execute(request('package_plan_list', {}));
+    expect(plans.data).toMatchObject({ enabled: false, plans: [] });
+    const planId = `pkp_${'a'.repeat(24)}`;
+    for (const [operation, input] of [
+      ['package_plan_approve', { planId, planDigest: 'a'.repeat(64) }],
+      ['package_plan_reject', { planId }],
+      ['package_rollback', { bindingId: `pkb_${'a'.repeat(24)}`, releaseId: `pkr_${'a'.repeat(24)}`, expectedGeneration: 1 }]
+    ] as const) {
+      await expect(controls.execute(request(operation, input))).rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining('PACKAGES_ENABLED=true') });
+    }
+    expect(metadata.listAudit(principals.resolvePrincipal(principal)).filter((event) => event.action.startsWith('package'))).toEqual([]);
+  });
+
+  it('approves only the digest the operator saw and records the dashboard decision', async () => {
+    const { controls, plan, ownerId, metadata, store } = packagesSetup();
+    const pending = plan(ownerId, '1.0.0', 'required', Date.now(), true);
+
+    const listed = await controls.execute(request('package_plan_list', {}));
+    const listedPlan = (listed.data as { plans: Record<string, unknown>[] }).plans[0];
+    expect(listedPlan).toMatchObject({
+      planId: pending.id, planDigest: pending.digest, status: 'PENDING_APPROVAL', lifecycleScripts: true,
+      dependencyCount: 2, binaries: ['hello'], currentRelease: null, stale: false
+    });
+    expect(listedPlan).not.toHaveProperty('ownerId');
+    expect(JSON.stringify(listed.data)).not.toContain(ownerId);
+
+    await expect(controls.execute(request('package_plan_approve', { planId: pending.id, planDigest: 'f'.repeat(64) })))
+      .rejects.toMatchObject({ code: 'STALE_GENERATION' });
+    expect(store.getPlan(ownerId, pending.id)?.status).toBe('PENDING_APPROVAL');
+
+    const approved = await controls.execute(request('package_plan_approve', { planId: pending.id, planDigest: pending.digest }));
+    expect(approved.data).toMatchObject({ plan: { planId: pending.id, status: 'APPROVED', decidedBy: 'dashboard' } });
+    expect(store.getPlan(ownerId, pending.id)).toMatchObject({ status: 'APPROVED', decidedBy: ownerId });
+    expect(metadata.listAudit(ownerId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'package_plan.approved', subjectType: 'package_plan', subjectId: pending.id })
+    ]));
+  });
+
+  it('hides a plan owned by another principal and refuses an expired plan', async () => {
+    const { controls, plan, principals, store, ownerId } = packagesSetup();
+    const foreignOwner = principals.resolvePrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'operator-b' });
+    const foreign = plan(foreignOwner, '1.0.0');
+    await expect(controls.execute(request('package_plan_approve', { planId: foreign.id, planDigest: foreign.digest })))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(controls.execute(request('package_plan_reject', { planId: foreign.id }))).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(store.getPlan(foreignOwner, foreign.id)?.status).toBe('PENDING_APPROVAL');
+
+    const expired = plan(ownerId, '1.0.0', 'required', Date.now() - 60 * 60_000);
+    const listed = await controls.execute(request('package_plan_list', {}));
+    expect((listed.data as { plans: { planId: string; status: string }[] }).plans.find((entry) => entry.planId === expired.id)?.status).toBe('EXPIRED');
+    await expect(controls.execute(request('package_plan_approve', { planId: expired.id, planDigest: expired.digest })))
+      .rejects.toMatchObject({ code: 'EXPIRED' });
+  });
+
+  it('rejects a pending plan with an audit row', async () => {
+    const { controls, plan, ownerId, metadata, store } = packagesSetup();
+    const pending = plan(ownerId, '1.0.0');
+    const rejected = await controls.execute(request('package_plan_reject', { planId: pending.id }));
+    expect(rejected.data).toMatchObject({ plan: { planId: pending.id, status: 'REJECTED', decidedBy: 'dashboard' } });
+    expect(store.getPlan(ownerId, pending.id)?.status).toBe('REJECTED');
+    expect(metadata.listAudit(ownerId).some((event) => event.action === 'package_plan.rejected' && event.subjectId === pending.id)).toBe(true);
+  });
+
+  it('summarizes installed releases, history, applies, quotas, and pending plans', async () => {
+    const { controls, install, plan, ownerId } = packagesSetup();
+    install('1.0.0');
+    const second = install('1.1.0');
+    const pending = plan(ownerId, '1.2.0');
+
+    const overview = await controls.execute(request('package_overview', {}));
+    const data = overview.data as {
+      bindings: { history: { version: string; available: boolean }[] }[];
+      releases: unknown[]; recentApplies: { state: string; name: string }[];
+    };
+    expect(overview.data).toMatchObject({
+      enabled: true, approvalMode: 'required', ecosystems: ['npm', 'uv'], quotas: { maxBindings: 32 },
+      usage: { ownerBytes: 4_096, bindings: 1 },
+      bindings: [{ bindingId: second.binding.id, generation: 2, release: { version: '1.1.0', status: 'VERIFIED' } }],
+      pendingPlans: [{ planId: pending.id, currentRelease: { version: '1.1.0' } }]
+    });
+    expect(data.bindings[0].history.map((entry) => [entry.version, entry.available])).toEqual([['1.1.0', true], ['1.0.0', true]]);
+    expect(data.releases).toHaveLength(2);
+    expect(data.recentApplies.map((apply) => [apply.state, apply.name])).toEqual([['SUCCEEDED', 'chm-hello'], ['SUCCEEDED', 'chm-hello']]);
+    expect(JSON.stringify(overview.data)).not.toContain(ownerId);
+    expect(JSON.stringify(overview.data)).not.toContain('releases/');
+    expect((overview.data as { releases: { stale: boolean }[] }).releases.map((release) => release.stale)).toEqual([false, false]);
+
+    currentPackageImageId = 'sha256:newer-executor-image';
+    const afterRedeploy = await controls.execute(request('package_overview', {}));
+    expect((afterRedeploy.data as { releases: { stale: boolean }[] }).releases.map((release) => release.stale)).toEqual([true, true]);
+    currentPackageImageId = 'sha256:executor-image';
+  });
+
+  it('rolls back from the dashboard and refuses a stale generation or a release that left the disk', async () => {
+    const { controls, install, ownerId, metadata, store, packagesRoot } = packagesSetup();
+    const first = install('1.0.0');
+    const second = install('1.1.0');
+    const bindingId = second.binding.id;
+
+    await expect(controls.execute(request('package_rollback', { bindingId, releaseId: first.release.id, expectedGeneration: 1 })))
+      .rejects.toMatchObject({ code: 'STALE_GENERATION' });
+    await expect(controls.execute(request('package_rollback', { bindingId, releaseId: second.release.id, expectedGeneration: 2 })))
+      .rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(controls.execute(request('package_rollback', { bindingId: `pkb_${'z'.repeat(24)}`, releaseId: first.release.id, expectedGeneration: 2 })))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    rmSync(join(packagesRoot, first.release.relPath), { recursive: true, force: true });
+    await expect(controls.execute(request('package_rollback', { bindingId, releaseId: first.release.id, expectedGeneration: 2 })))
+      .rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('no longer available') });
+    mkdirSync(join(packagesRoot, first.release.relPath), { recursive: true });
+
+    const rolled = await controls.execute(request('package_rollback', { bindingId, releaseId: first.release.id, expectedGeneration: 2 }));
+    expect(rolled.data).toMatchObject({ binding: { bindingId, generation: 3, releaseId: first.release.id }, replayed: false });
+    expect(store.history(ownerId, bindingId)[0]).toMatchObject({ reason: 'rollback', actor: 'dashboard', releaseId: first.release.id });
+    expect(metadata.listAudit(ownerId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'package.rollback', subjectId: bindingId, subjectGeneration: 3 })
+    ]));
+  });
+});
+
+function omitKeys<T extends object>(value: T, keys: readonly string[]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
+}
+
+describe('dashboard model profile validation and audit', () => {
+  const SENTINEL_KEY = 'sk-sentinel-profile-key-0123456789abcdef';
+  const CATALOG_MODEL = 'vendor/catalog-model';
+  const sse = (events: unknown[]) => [...events.map((event) => `data: ${JSON.stringify(event)}`), 'data: [DONE]', ''].join('\n\n');
+
+  function modelSetup() {
+    const root = mkdtempSync(join(tmpdir(), 'cloud-harness-model-controls-')); roots.push(root);
+    const databasePath = join(root, 'state.db');
+    const principals = new StateStore(databasePath);
+    const keyring = new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]);
+    const metadata = new MetadataStore(databasePath, keyring);
+    cleanups.push(() => { metadata.database.close(); principals.close(); });
+    const artifacts = new ArtifactStore(principals.database, { root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000 });
+    const repo = new ModelProfileStateRepository(principals.database, keyring);
+    const requests: string[] = [];
+    const http: ProviderHttpClient = {
+      async request(request) {
+        requests.push(request.url);
+        const reply = (body: string) => {
+          if (request.onLine) for (const line of body.split('\n')) request.onLine(line);
+          return { status: 200, headers: {}, body, truncated: false };
+        };
+        if (request.url === 'https://openrouter.ai/api/v1/models') {
+          return reply(JSON.stringify({ data: [{ id: CATALOG_MODEL, name: 'Catalog model', pricing: { prompt: '0.000003', completion: '0.000015' } }] }));
+        }
+        if (request.url.endsWith('/v1/models')) return reply(JSON.stringify({ data: [{ id: 'gpt-test' }] }));
+        return reply(sse([
+          { choices: [{ index: 0, delta: { role: 'assistant', content: 'OK' }, finish_reason: null }] },
+          { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+          { choices: [], usage: { prompt_tokens: 12, completion_tokens: 2 } }
+        ]));
+      }
+    };
+    const controls = new DashboardControlService(
+      { artifactRetentionSeconds: 60 } as RunnerConfig, principals, metadata, artifacts, {} as WorkspaceService,
+      undefined, undefined, repo, undefined, keyring, undefined, http
+    );
+    const ownerA = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'operator-a' };
+    const ownerB = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'operator-b' };
+    const call = async <T>(operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>, principal = ownerA) =>
+      (await controls.execute({ version: 2, principal, operation, input } as MetadataRunnerRequest)).data as T;
+    const validate = async (input: Record<string, unknown>, principal = ownerA) =>
+      ModelProfileValidateResultSchema.parse(await call<ModelProfileValidateResult>('model_profile_validate', input, principal));
+    const principalA = principals.resolvePrincipal(ownerA);
+    const profileAudit = () => metadata.listAudit(principalA, 100).filter((event) => event.action.startsWith('model_'));
+    const rows = () => ({
+      profiles: (principals.database.prepare('SELECT count(*) AS count FROM agent_model_profiles').get() as { count: number }).count,
+      revisions: (principals.database.prepare('SELECT count(*) AS count FROM agent_model_profile_revisions').get() as { count: number }).count,
+      audit: (principals.database.prepare('SELECT count(*) AS count FROM audit_events').get() as { count: number }).count
+    });
+    const credential = async (provider: 'openai' | 'openrouter' | 'custom', principal = ownerA) =>
+      (await call<{ id: string }>('model_credential_create', { label: provider, provider, apiKey: SENTINEL_KEY }, principal)).id;
+    return { call, validate, profileAudit, rows, credential, requests, ownerB };
+  }
+
+  const LIMITS = { maxInputTokens: 10_000, maxOutputTokens: 2_000, maxCostMicros: 1_000_000 };
+  const body = (credentialId: string, profileId = 'coding', extra: Record<string, unknown> = {}) => ({
+    profileId, displayName: 'Coding', credentialId, model: 'gpt-test', apiMode: 'chat-completions',
+    pricing: { inputMicrosPerMillionTokens: 3_000_000, outputMicrosPerMillionTokens: 15_000_000 },
+    limits: LIMITS, maxProxyOperations: ['files_read'], ...extra
+  });
+
+  it('dry-runs a create without writing, auditing, or calling a provider', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('openai');
+    const before = ctx.rows();
+    const result = await ctx.validate({ action: 'create', ...body(credentialId) });
+    expect(result).toMatchObject({
+      valid: true, action: 'create', profileId: 'coding', issues: [], escalations: [], ownerApprovalRequiredOverMcp: false,
+      statusAfterSaveOverMcp: 'DISABLED', currentGeneration: null, verificationAttachable: false,
+      revision: {
+        credentialId, provider: 'openai', model: 'gpt-test', apiMode: 'chat-completions', upstreamUrl: 'https://api.openai.com/v1/chat/completions',
+        limits: LIMITS, maxProxyOperations: ['files_read'], priceProvenance: { source: 'user', isOverride: true }
+      },
+      pricingReview: { state: 'unknown' }
+    });
+    expect(ctx.rows()).toEqual(before);
+    expect(ctx.requests).toEqual([]);
+  });
+
+  it('reports the revision the save then writes, and reviews an update against the cached catalog', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('openrouter');
+    await ctx.call('model_catalog_search', { provider: 'openrouter', query: 'catalog' });
+    const catalogPricing = { inputMicrosPerMillionTokens: 3_000_000, outputMicrosPerMillionTokens: 15_000_000 };
+    const input = body(credentialId, 'catalog', { model: CATALOG_MODEL, pricing: catalogPricing, catalogPriceRef: { sourceModelId: CATALOG_MODEL } });
+    const planned = await ctx.validate({ action: 'create', ...input });
+    const saved = await ctx.call<AgentModelProfileMetadata>('model_profile_create', input);
+    const written = omitKeys(saved.activeRevision!, ['id', 'profileId', 'principalId', 'downstreamPath', 'digest', 'createdAt']);
+    expect({ ...written, provider: 'openrouter' }).toEqual(planned.revision);
+    expect(planned.revision?.priceProvenance).toMatchObject({ source: 'openrouter', isOverride: false });
+
+    const requestsBefore = ctx.requests.length;
+    const update = await ctx.validate({ action: 'update', profileId: 'catalog', expectedGeneration: saved.generation, limits: { ...LIMITS, maxCostMicros: 500_000 } });
+    expect(update).toMatchObject({ valid: true, statusAfterSaveOverMcp: 'unchanged', currentGeneration: 1, escalations: [], pricingReview: { state: 'current', isOverride: false } });
+    expect(ctx.requests).toHaveLength(requestsBefore);
+  });
+
+  it('reports refusals as issues', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('openai');
+    await ctx.call('model_profile_create', body(credentialId));
+
+    const unknownCredential = await ctx.validate({ action: 'create', ...body('cred_00000000000000000000000000000000', 'other') });
+    expect(unknownCredential).toMatchObject({ valid: false, revision: null, pricingReview: null, issues: [{ code: 'NOT_FOUND', message: 'referenced credential was not found' }] });
+    const stale = await ctx.validate({ action: 'update', profileId: 'coding', expectedGeneration: 5, model: 'gpt-other' });
+    expect(stale).toMatchObject({ valid: false, action: 'update', issues: [{ code: 'CONFLICT' }] });
+    const customUrl = await ctx.validate({ action: 'create', ...body(credentialId, 'other', { customUpstreamUrl: 'https://llm.example.org/v1/chat/completions' }) });
+    expect(customUrl.issues).toEqual([{ code: 'INVALID_INPUT', message: 'customUpstreamUrl applies only to the custom provider' }]);
+    const taken = await ctx.validate({ action: 'create', ...body(credentialId) });
+    expect(taken.issues[0]?.code).toBe('CONFLICT');
+
+    // Another principal cannot see that the profile exists.
+    await ctx.credential('openai', ctx.ownerB);
+    const foreign = await ctx.validate({ action: 'update', profileId: 'coding', expectedGeneration: 1 }, ctx.ownerB);
+    expect(foreign.issues).toEqual([{ code: 'NOT_FOUND', message: 'model profile was not found' }]);
+
+    // A body the schema refuses is still an operation error, not an issue.
+    await expect(ctx.call('model_profile_validate', { action: 'create', ...body(credentialId, 'x'), unknownField: true })).rejects.toThrow();
+    await expect(ctx.call('model_profile_validate', { action: 'delete', profileId: 'coding' })).rejects.toThrow();
+  });
+
+  it('reports escalations to every caller, and the Dashboard still saves them', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('openai');
+    const saved = await ctx.call<AgentModelProfileMetadata>('model_profile_create', body(credentialId));
+    const change = {
+      action: 'update', profileId: 'coding', expectedGeneration: saved.generation, model: 'gpt-other',
+      pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { ...LIMITS, maxCostMicros: LIMITS.maxCostMicros + 1 }, maxProxyOperations: ['files_read', 'grep_search']
+    };
+    const result = await ctx.validate(change);
+    expect(result.escalations).toEqual(['limits_raised', 'price_lowered', 'price_unverified_for_new_route', 'proxy_operations_widened']);
+    expect(result.ownerApprovalRequiredOverMcp).toBe(true);
+    const updated = await ctx.call<AgentModelProfileMetadata>('model_profile_update', omitKeys(change, ['action']));
+    expect(updated.generation).toBe(2);
+
+    const customId = await ctx.credential('custom');
+    const unbound = await ctx.validate({ action: 'create', ...body(customId, 'custom', { customUpstreamUrl: 'https://llm.example.org/v1/chat/completions' }) });
+    expect(unbound.escalations).toEqual(['custom_upstream_unbound']);
+  });
+
+  it('peeks at a draft check so the save that follows still keeps it', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('openai');
+    const draft = await ctx.call<ModelConnectionVerifyResult>('model_connection_verify', { credentialId, model: 'gpt-test' });
+    const input = body(credentialId, 'coding', { verificationRef: draft.verificationRef });
+    expect((await ctx.validate({ action: 'create', ...input })).verificationAttachable).toBe(true);
+    expect((await ctx.validate({ action: 'create', ...input, model: 'gpt-other' })).verificationAttachable).toBe(false);
+    const saved = await ctx.call<AgentModelProfileMetadata>('model_profile_create', input);
+    expect(saved.lastVerification).toMatchObject({ outcome: 'verified', revisionId: saved.activeRevisionId });
+  });
+
+  it('audits each Dashboard profile change once with the actor, and never a key', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('custom');
+    const customUrl = `https://llm.example.org/v1/${SENTINEL_KEY.slice(3, 12)}/chat/completions`;
+    const created = await ctx.call<AgentModelProfileMetadata>('model_profile_create', body(credentialId, 'coding', { customUpstreamUrl: customUrl }));
+    const updated = await ctx.call<AgentModelProfileMetadata>('model_profile_update', { profileId: 'coding', expectedGeneration: created.generation, limits: { ...LIMITS, maxCostMicros: 2_000_000 } });
+    const disabled = await ctx.call<AgentModelProfileMetadata>('model_profile_disable', { profileId: 'coding', expectedGeneration: updated.generation });
+    const activated = await ctx.call<AgentModelProfileMetadata>('model_profile_activate', { profileId: 'coding', expectedGeneration: disabled.generation });
+    await ctx.call('model_profile_delete', { profileId: 'coding', expectedGeneration: activated.generation });
+    // A validation is a read and records nothing.
+    await ctx.validate({ action: 'create', ...body(credentialId, 'unsaved', { customUpstreamUrl: customUrl }) });
+    // A refused save records nothing either.
+    await expect(ctx.call('model_profile_update', { profileId: 'coding', expectedGeneration: 1 })).rejects.toThrow();
+
+    const events = ctx.profileAudit().filter((event) => event.action.startsWith('model_profile.')).reverse();
+    expect(events.map((event) => [event.action, event.subjectId, event.subjectGeneration])).toEqual([
+      ['model_profile.created', 'coding', 1],
+      ['model_profile.updated', 'coding', 2],
+      ['model_profile.disabled', 'coding', 3],
+      ['model_profile.activated', 'coding', 4],
+      ['model_profile.deleted', 'coding', 4]
+    ]);
+    for (const event of events) {
+      expect(event.details).toMatchObject({ actor: 'dashboard', credentialId, provider: 'custom', upstreamHost: 'llm.example.org', apiMode: 'chat-completions' });
+    }
+    expect(events[1]?.details).toMatchObject({ maxCostMicros: 2_000_000, priceSource: 'user', isOverride: true, revisionId: updated.activeRevisionId });
+    const serialized = JSON.stringify(ctx.profileAudit());
+    expect(serialized).not.toContain(SENTINEL_KEY);
+    expect(serialized).not.toContain(SENTINEL_KEY.slice(3, 12));
+    expect(serialized).not.toContain('3000000');
+  });
+
+  it('names the Dashboard as the actor of a connection check', async () => {
+    const ctx = modelSetup();
+    const credentialId = await ctx.credential('openai');
+    await ctx.call('model_connection_verify', { credentialId, model: 'gpt-test' });
+    const [event] = ctx.profileAudit().filter((entry) => entry.action === 'model_connection.verified');
+    expect(event?.details).toMatchObject({ actor: 'dashboard', target: 'draft' });
+    expect(JSON.stringify(event)).not.toContain(SENTINEL_KEY);
   });
 });

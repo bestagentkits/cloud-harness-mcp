@@ -5,12 +5,13 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentManager } from '../../apps/runner/src/agent-manager.js';
-import type { AgentGatewayControl } from '../../apps/runner/src/agent-gateway-control.js';
+import { DockerAgentGatewayControl, GatewayControlRejection, gatewaySnapshotDigest, runSnapshotSync, type AgentGatewayControl, type GatewaySnapshot } from '../../apps/runner/src/agent-gateway-control.js';
+import * as dockerEngine from '../../apps/runner/src/docker-engine.js';
 import type { AgentLauncher } from '../../apps/runner/src/agent-launcher.js';
 import { AgentStateRepository } from '../../apps/runner/src/agent-state-repository.js';
 import { ModelProfileStateRepository } from '../../apps/runner/src/model-profile-state-repository.js';
@@ -18,7 +19,17 @@ import { SecretKeyring } from '../../apps/runner/src/secret-keyring.js';
 import { StateStore } from '../../apps/runner/src/state-store.js';
 import { createGatewayRuntime } from '../../apps/model-gateway/src/gateway.js';
 import { loadGatewayConfig } from '../../apps/model-gateway/src/config.js';
-import { ModelProfileIdSchema, RunnerAgentsConfigSchema } from '@cloud-harness/contracts';
+import type { GatewayConfig, GatewayProfile } from '../../apps/model-gateway/src/types.js';
+import { HarnessError, ModelProfileIdSchema, RunnerAgentsConfigSchema, type ApiConfig, type MetadataRunnerRequest, type RunnerConfig, type RunnerResponse } from '@cloud-harness/contracts';
+import express from 'express';
+import { createServer as createHttpServer } from 'node:http';
+import { createDashboardRouter } from '../../apps/api/src/dashboard-router.js';
+import type { DashboardRunnerClient } from '../../apps/api/src/dashboard-types.js';
+import { ArtifactStore } from '../../apps/runner/src/artifact-store.js';
+import { DashboardControlService } from '../../apps/runner/src/dashboard-control-service.js';
+import { MetadataStore } from '../../apps/runner/src/metadata-store.js';
+import { ModelSpendLedger } from '../../apps/runner/src/model-spend-ledger.js';
+import type { WorkspaceService } from '../../apps/runner/src/workspace-service.js';
 const tempDbPath = () => join(tmpdir(), `test-dyn-models-${randomBytes(8).toString('hex')}.sqlite`);
 
 async function ensureTlsFixtures(): Promise<{ certFile: string; keyFile: string }> {
@@ -159,6 +170,8 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
 
     const issuedLeases: Array<{ profileId: string }> = [];
     const launched: unknown[] = [];
+    let lastApplied: GatewaySnapshot | undefined;
+    let snapshotPushes = 0;
     const mockGateway = {
       gatewayContainer: async () => 'gateway-container',
       issue: async (input: { profileId: string }) => {
@@ -167,12 +180,22 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       },
       revokeAndDrain: async () => {},
       cancelAndDrain: async () => {},
-      applySnapshot: async () => ({ gatewayBootId: 'boot1', snapshotDigest: 'sha1' }),
-      queryDigest: async () => ({ gatewayBootId: 'boot1', snapshotDigest: 'sha1', activeProfileCount: 1, activeCredentialCount: 1, activeLeaseCount: 0 })
+      queryDigest: async () => ({
+        gatewayBootId: 'boot1', snapshotDigest: lastApplied ? gatewaySnapshotDigest(lastApplied) : '',
+        activeProfileCount: 1, activeCredentialCount: 1, activeLeaseCount: 0
+      }),
+      // Acks and reports the digest a real gateway would, so a spawn on an in-sync gateway pushes nothing.
+      syncSnapshot: (build: Parameters<AgentGatewayControl['syncSnapshot']>[0], options: Parameters<AgentGatewayControl['syncSnapshot']>[1]) =>
+        runSnapshotSync(mockGateway.queryDigest, async (snapshot: GatewaySnapshot) => {
+          lastApplied = snapshot;
+          snapshotPushes += 1;
+          return { gatewayBootId: 'boot1', snapshotDigest: gatewaySnapshotDigest(snapshot) };
+        }, build, options)
     };
 
+    const firstLaunch = Promise.withResolvers<void>();
     const mockLauncher = {
-      launch: async (spec: unknown) => { launched.push(spec); },
+      launch: async (spec: unknown) => { launched.push(spec); firstLaunch.resolve(); },
       stop: async () => {},
       reconcile: async () => {}
     };
@@ -186,6 +209,7 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     });
 
     await manager.start();
+    expect(snapshotPushes).toBe(1);
 
     // 3. Create workspace
     const wsId = `ws_${'w'.repeat(24)}`;
@@ -228,6 +252,10 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     });
 
     expect(spawnRes.ok).toBe(true);
+    // The lease is issued inside the launch, after the spawn is acknowledged.
+    await firstLaunch.promise;
+    // The gateway already holds the current snapshot, so the spawn's reconciliation pushes nothing.
+    expect(snapshotPushes).toBe(1);
     expect(issuedLeases).toHaveLength(1);
     expect(issuedLeases[0].profileId).toBe(profile.activeRevisionId); // Lease bound to exact revision!
 
@@ -623,16 +651,16 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       cancelAndDrain: async (requestId) => {
         await sendGwControl({ operation: 'cancel', requestId });
       },
-      applySnapshot: async (snapshot) => {
-        const res = await sendGwControl({ operation: 'apply_snapshot', sequence: 1, generation: 1, credentials: snapshot.credentials, profiles: snapshot.profiles }) as { ok: boolean; ack: { gatewayBootId: string; snapshotDigest: string }; error?: string };
-        if (!res.ok) throw new Error(res.error ?? 'apply failed');
-        return res.ack;
-      },
       queryDigest: async () => {
         const res = await sendGwControl({ operation: 'digest' }) as { ok: boolean; digest: { gatewayBootId: string; snapshotDigest: string; activeProfileCount: number; activeCredentialCount: number; activeLeaseCount: number }; error?: string };
         if (!res.ok) throw new Error(res.error ?? 'digest failed');
         return res.digest;
-      }
+      },
+      syncSnapshot: (build, options) => runSnapshotSync(mockGatewayControl.queryDigest, async (snapshot) => {
+        const res = await sendGwControl({ operation: 'apply_snapshot', sequence: 1, generation: 1, credentials: snapshot.credentials, profiles: snapshot.profiles }) as { ok: boolean; ack: { gatewayBootId: string; snapshotDigest: string }; error?: string };
+        if (!res.ok) throw new Error(res.error ?? 'apply failed');
+        return res.ack;
+      }, build, options)
     };
 
     // 1. Start Gateway 1
@@ -740,5 +768,896 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
 
     await manager.stop();
     await gwRuntime.close();
+  });
+  it('applies a snapshot carrying cache and tier prices to the gateway and serves requests from it', async () => {
+    const { repo, p } = setup();
+    const { certFile, keyFile } = await ensureTlsFixtures();
+    const upstreamServer: TlsServer = createTlsServer({ cert: readFileSync(certFile), key: readFileSync(keyFile) }, (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: {"choices":[{"delta":{"content":"priced"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":2}}}\n\n');
+      res.end('data: [DONE]\n\n');
+    });
+    await new Promise<void>((res) => upstreamServer.listen(0, '127.0.0.1', res));
+    const upstreamAddress = upstreamServer.address() as AddressInfo;
+
+    const controlSocket = process.platform === 'win32'
+      ? `\\\\.\\pipe\\gw-priced-${randomBytes(6).toString('hex')}`
+      : join(tmpdir(), `gw-priced-${randomBytes(6).toString('hex')}.sock`);
+    const gwRuntime = createGatewayRuntime(await loadGatewayConfig({
+      MODEL_GATEWAY_MODE: 'test',
+      MODEL_GATEWAY_CONTROL_SOCKET: controlSocket,
+      MODEL_GATEWAY_HOST: '127.0.0.1',
+      MODEL_GATEWAY_PORT: '3210',
+      MODEL_GATEWAY_PROFILES_JSON: '[]',
+      MODEL_GATEWAY_TEST_TLS_CA_FILE: certFile
+    }));
+    await gwRuntime.listen();
+    const gwAddress = gwRuntime.httpServer.address() as AddressInfo;
+
+    try {
+      const cred = repo.createCredential(p, { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or-priced-778899' });
+      const profile = repo.createProfile(p, {
+        profileId: ModelProfileIdSchema.parse('priced-tiers'),
+        displayName: 'Priced Tiers',
+        credentialId: cred.id,
+        model: 'google/gemini-2.5-pro',
+        apiMode: 'chat-completions',
+        pricing: {
+          inputMicrosPerMillionTokens: 1_250_000,
+          outputMicrosPerMillionTokens: 10_000_000,
+          cacheReadMicrosPerMillionTokens: 310_000,
+          tiers: [{ minPromptTokens: 200_000, inputMicrosPerMillionTokens: 2_500_000, outputMicrosPerMillionTokens: 15_000_000, cacheReadMicrosPerMillionTokens: 625_000 }]
+        },
+        limits: { maxInputTokens: 50_000, maxOutputTokens: 2_000, maxCostMicros: 100_000 },
+        maxProxyOperations: ['files_read']
+      }, { priceProvenance: { source: 'openrouter', sourceModelId: 'google/gemini-2.5-pro', retrievedAt: 1_700_000_000_000, confidence: 'exact', isOverride: false } });
+      const revisionId = profile.activeRevisionId!;
+
+      const snapshot = repo.getExportSnapshot(p);
+      expect(snapshot.profiles[revisionId]?.pricing).toEqual({
+        inputMicrosPerMillionTokens: 1_250_000,
+        outputMicrosPerMillionTokens: 10_000_000,
+        cacheReadMicrosPerMillionTokens: 310_000,
+        cacheWriteMicrosPerMillionTokens: 2_500_000,
+        tiers: [{
+          minPromptTokens: 200_000,
+          inputMicrosPerMillionTokens: 2_500_000,
+          outputMicrosPerMillionTokens: 15_000_000,
+          cacheReadMicrosPerMillionTokens: 625_000,
+          cacheWriteMicrosPerMillionTokens: 5_000_000
+        }]
+      });
+      snapshot.profiles[revisionId]!.upstreamUrl = `https://127.0.0.1:${upstreamAddress.port}/v1/chat/completions`;
+
+      const controlClient = connect(controlSocket);
+      const applied = await new Promise<{ ok: boolean; ack?: { activeProfileCount: number } }>((res, rej) => {
+        let buf = '';
+        controlClient.on('data', (d) => { buf += d.toString(); });
+        controlClient.on('end', () => res(JSON.parse(buf)));
+        controlClient.on('error', rej);
+        controlClient.end(JSON.stringify({ operation: 'apply_snapshot', sequence: 1, generation: 1, credentials: snapshot.credentials, profiles: snapshot.profiles }) + '\n');
+      });
+      expect(applied).toMatchObject({ ok: true, ack: { activeProfileCount: 1 } });
+
+      const lease = gwRuntime.issueLease({
+        leaseId: 'lease_priced_1', agentId: 'agent_012345678901234567890', profileId: revisionId,
+        ttlMs: 60_000, maxInputTokens: 10_000, maxOutputTokens: 1_000, maxCostMicros: 50_000
+      });
+      const request = httpRequest({
+        host: '127.0.0.1', port: gwAddress.port, path: '/v1/chat/completions', method: 'POST',
+        headers: {
+          'content-type': 'application/json', authorization: `Bearer ${lease}`, 'x-model-profile': revisionId,
+          'x-agent-id': 'agent_012345678901234567890', 'x-request-id': 'req_priced_1'
+        }
+      });
+      const response = await new Promise<{ status: number; body: string }>((res, rej) => {
+        request.on('response', (r) => {
+          let body = '';
+          r.on('data', (chunk) => { body += chunk; });
+          r.on('end', () => res({ status: r.statusCode ?? 500, body }));
+        });
+        request.on('error', rej);
+        request.end(JSON.stringify({ model: 'google/gemini-2.5-pro', stream: true, max_tokens: 100, messages: [{ role: 'user', content: 'hello' }] }));
+      });
+      expect(response.status).toBe(200);
+      expect(response.body).toContain('priced');
+    } finally {
+      await gwRuntime.close();
+      await new Promise<void>((res) => upstreamServer.close(() => res()));
+    }
+  });
+
+  it('never lets an older snapshot build evict a revision that a newer push delivered, and keeps static gateway profiles', async () => {
+    const { repo, p } = setup();
+    const cred = repo.createCredential(p, { label: 'OpenAI Ordering', provider: 'openai', apiKey: 'sk-secret-ordering' });
+    const profileInput = (profileId: string) => ({
+      profileId: ModelProfileIdSchema.parse(profileId),
+      displayName: profileId,
+      credentialId: cred.id,
+      model: 'gpt-5.2',
+      apiMode: 'chat-completions' as const,
+      pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+      limits: { maxInputTokens: 50000, maxOutputTokens: 2000, maxCostMicros: 100000 },
+      maxProxyOperations: ['files_read' as const]
+    });
+    const existing = repo.createProfile(p, profileInput('ordering-existing'));
+
+    const controlSocket = process.platform === 'win32'
+      ? `\\\\.\\pipe\\gw-ordering-${randomBytes(6).toString('hex')}`
+      : join(tmpdir(), `gw-ordering-${randomBytes(6).toString('hex')}.sock`);
+    const staticProfile: GatewayProfile = {
+      id: 'static-ordering',
+      provider: 'openai',
+      model: 'gpt-static',
+      downstreamPath: '/v1/chat/completions',
+      upstream: new URL('https://127.0.0.1:3443/v1/chat/completions'),
+      credentialFile: '/run/secrets/static-provider-key',
+      credentialHeader: 'authorization',
+      credentialScheme: 'Bearer',
+      inputMicrosPerMillionTokens: 1000,
+      outputMicrosPerMillionTokens: 2000,
+      limits: {
+        maxRequestBytes: 4_194_304, maxResponseBytes: 16_777_216, maxHeaderBytes: 16_384, maxHeaders: 32, deadlineMs: 300_000,
+        maxInputTokens: 400_000, maxOutputTokens: 128_000, maxCostMicros: 100_000_000, maxStreamLineBytes: 1_048_576
+      },
+      testOnly: true,
+      allowPrivateUpstream: true
+    };
+    const gatewayConfig: GatewayConfig = {
+      mode: 'test', host: '127.0.0.1', port: 0, controlSocket, profiles: new Map([[staticProfile.id, staticProfile]])
+    };
+    const gateway = createGatewayRuntime(gatewayConfig);
+
+    // The runner's real control, with `docker exec` replaced by a direct write to the gateway's control socket.
+    const runDockerSpy = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async (_args, options) => {
+      const socket = connect(controlSocket);
+      const { promise, resolve: done, reject } = Promise.withResolvers<string>();
+      let output = '';
+      socket.on('data', (chunk) => { output += chunk.toString(); });
+      socket.on('end', () => done(output));
+      socket.on('error', reject);
+      socket.end(options?.stdin ?? '');
+      return { exitCode: 0, stdout: await promise, stderr: '' };
+    });
+    const control = new DockerAgentGatewayControl('gateway-under-test');
+    const issueOn = (profileId: string, leaseId: string) => control.issue({
+      leaseId, agentId: `agent_${'o'.repeat(24)}`, profileId, ttlMs: 30_000,
+      maxInputTokens: 1_000, maxOutputTokens: 100, maxCostMicros: 10_000
+    });
+
+    try {
+      await gateway.listen();
+      // The older sync starts first and reads the state before the new revision exists,
+      // then stalls before it hands its snapshot back.
+      const { promise: olderBuildReleased, resolve: releaseOlderBuild } = Promise.withResolvers<void>();
+      const { promise: olderBuildRead, resolve: markOlderBuildRead } = Promise.withResolvers<void>();
+      const older = control.syncSnapshot(async () => {
+        const stale = repo.getExportSnapshot();
+        markOlderBuildRead();
+        await olderBuildReleased;
+        return stale;
+      }, { onlyIfMismatch: false });
+      await olderBuildRead;
+
+      const added = repo.createProfile(p, profileInput('ordering-added'));
+      const addedRevision = added.activeRevisionId!;
+      const newer = control.syncSnapshot(() => repo.getExportSnapshot(), { onlyIfMismatch: false });
+      releaseOlderBuild();
+      const [olderSync, newerSync] = await Promise.all([older, newer]);
+
+      // The revision the newer push delivered is still routable after the older push.
+      await expect(issueOn(addedRevision, 'lease_ordering_added')).resolves.toMatchObject({ profileId: addedRevision });
+      expect(olderSync.pushed).toBe(true);
+      // The older build really was stale: it omits the revision the newer one carries.
+      expect(olderSync.expectedDigest).not.toBe(newerSync.expectedDigest);
+      expect(newerSync.pushed).toBe(true);
+      expect(newerSync.gatewayDigest).toBe(gatewaySnapshotDigest(repo.getExportSnapshot()));
+      const digest = await control.queryDigest();
+      expect(digest.snapshotDigest).toBe(newerSync.gatewayDigest);
+      // The static profile plus both dynamic revisions.
+      expect(digest.activeProfileCount).toBe(3);
+      await expect(issueOn(existing.activeRevisionId!, 'lease_ordering_existing')).resolves.toBeDefined();
+      await expect(issueOn(staticProfile.id, 'lease_ordering_static')).resolves.toBeDefined();
+    } finally {
+      runDockerSpy.mockRestore();
+      // Close also removes the control socket after a partial listen; a server that never
+      // started listening rejects the close, which must not hide the original failure.
+      await gateway.close().catch(() => undefined);
+    }
+  });
+
+  it('keeps the spawned revision in the gateway when a profile edit pushes between resolving the revision and reserving the agent', async () => {
+    const { repo, p, store } = setup();
+    const cred = repo.createCredential(p, { label: 'OpenAI Race', provider: 'openai', apiKey: 'sk-secret-race' });
+    const profile = repo.createProfile(p, {
+      profileId: ModelProfileIdSchema.parse('race-profile'),
+      displayName: 'Race Profile',
+      credentialId: cred.id,
+      model: 'gpt-5.2',
+      apiMode: 'chat-completions',
+      pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+      limits: { maxInputTokens: 50000, maxOutputTokens: 2000, maxCostMicros: 100000 },
+      maxProxyOperations: ['files_read']
+    });
+    const spawnedRevision = profile.activeRevisionId!;
+
+    const controlSocket = process.platform === 'win32'
+      ? `\\\\.\\pipe\\gw-spawn-race-${randomBytes(6).toString('hex')}`
+      : join(tmpdir(), `gw-spawn-race-${randomBytes(6).toString('hex')}.sock`);
+    const gateway = createGatewayRuntime({ mode: 'test', host: '127.0.0.1', port: 0, controlSocket, profiles: new Map() });
+    const runDockerSpy = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async (_args, options) => {
+      const socket = connect(controlSocket);
+      const { promise, resolve: done, reject } = Promise.withResolvers<string>();
+      let output = '';
+      socket.on('data', (chunk) => { output += chunk.toString(); });
+      socket.on('end', () => done(output));
+      socket.on('error', reject);
+      socket.end(options?.stdin ?? '');
+      return { exitCode: 0, stdout: await promise, stderr: '' };
+    });
+    const control = new DockerAgentGatewayControl('gateway-under-test');
+
+    // The first sync after arming is the spawn's pre-reservation reconciliation, which runs after the
+    // revision was resolved. A dashboard edit lands right then and pushes a snapshot built before the
+    // agent row exists, so that snapshot no longer carries the spawned revision.
+    let armed = false;
+    let editedRevision: string | undefined;
+    const issued = Promise.withResolvers<{ profileId: string } | { error: string }>();
+    const gatewayForManager: AgentGatewayControl = {
+      gatewayContainer: () => control.gatewayContainer(),
+      queryDigest: () => control.queryDigest(),
+      revokeAndDrain: (leaseId) => control.revokeAndDrain(leaseId),
+      cancelAndDrain: (requestId) => control.cancelAndDrain(requestId),
+      issue: async (input) => {
+        try {
+          const grant = await control.issue(input);
+          issued.resolve({ profileId: grant.profileId });
+          return grant;
+        } catch (error) {
+          issued.resolve({ error: error instanceof GatewayControlRejection ? error.gatewayError : String(error) });
+          throw error;
+        }
+      },
+      syncSnapshot: async (build, options) => {
+        const result = await control.syncSnapshot(build, options);
+        if (armed) {
+          armed = false;
+          editedRevision = repo.updateProfile(p, profile.id, { model: 'gpt-5.2-edited', expectedGeneration: profile.generation }).activeRevisionId!;
+          await control.syncSnapshot(() => repo.getExportSnapshot(), { onlyIfMismatch: false });
+        }
+        return result;
+      }
+    };
+
+    const agentConfig = RunnerAgentsConfigSchema.parse({
+      image: 'agent:test',
+      networkMode: 'none',
+      gatewayUrl: 'http://model-gateway:3210',
+      profiles: [{
+        id: 'default', displayName: 'Default', provider: 'openai', model: 'gpt-5',
+        inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000,
+        maxInputTokens: 100000, maxOutputTokens: 20000, maxCostMicros: 2000000, maxProxyOperations: ['files_read']
+      }]
+    });
+    const manager = new AgentManager(agentConfig, store, {
+      repository: new AgentStateRepository(store.database, agentConfig.limits, store.instanceId()),
+      gateway: gatewayForManager,
+      // The launch itself is not under test; the lease issue before it is.
+      // A launch that ends before issuing a lease still cleans up, which ends the wait below.
+      launcher: {
+        launch: async () => { throw new Error('launcher not under test'); },
+        stop: async () => {},
+        reconcile: async () => {},
+        cleanup: async () => { issued.resolve({ error: 'launch ended without issuing a lease' }); }
+      } as unknown as AgentLauncher,
+      modelProfiles: repo,
+      toolExecutor: async () => ({ ok: true, message: 'ok', data: {}, truncated: false })
+    });
+
+    try {
+      await gateway.listen();
+      await manager.start();
+      const wsId = `ws_${'r'.repeat(24)}`;
+      const now = Date.now();
+      store.create({
+        id: wsId, ownerId: p, idempotencyKey: 'workspace-race', repositoryUrl: 'https://github.com/org/repo.git',
+        repositoryRef: null, containerName: 'executor', workspacePath: '/tmp/ws-race', environmentId: null,
+        status: 'ACTIVE', networkProfile: 'network-none', createdAt: now, lastActivityAt: now,
+        expiresAt: now + 3600_000, hardExpiresAt: now + 7200_000, gitAuthorName: null, gitAuthorEmail: null,
+        mutationLockedUntil: null, generation: 1, error: null
+      });
+
+      armed = true;
+      const spawning = manager.dispatch(p, store.byId(wsId)!, 'agent_spawn', {
+        workspaceId: wsId, prompt: 'race', idempotencyKey: 'spawn-race-1', profileId: 'race-profile',
+        proxyOperations: ['files_read'], ttlSeconds: 60, maxOutputBytes: 65536,
+        maxInputTokens: 10000, maxOutputTokens: 1000, maxCostMicros: 50000
+      });
+      // A rejected spawn ends the wait at once instead of leaving the issue outcome pending.
+      const outcome = await Promise.race([issued.promise, spawning.then(() => issued.promise)]);
+
+      expect((await spawning).ok).toBe(true);
+      expect(editedRevision).toBeDefined();
+      expect(editedRevision).not.toBe(spawnedRevision);
+      // The lease is issued on the revision the spawn resolved, which the edit's snapshot omitted.
+      expect(outcome).toEqual({ profileId: spawnedRevision });
+    } finally {
+      await manager.stop();
+      runDockerSpy.mockRestore();
+      await gateway.close().catch(() => undefined);
+    }
+  });
+
+  /**
+   * A manager whose dashboard profile `post-reservation` is reconciled through `syncSnapshot`. The
+   * first sync of a spawn runs before the reservation and the second inside the launch, after it.
+   */
+  async function postReservationFixture(name: string, gateway: AgentGatewayControl, launcher: Partial<AgentLauncher>) {
+    const { repo, p, store } = setup();
+    const cred = repo.createCredential(p, { label: `OpenAI ${name}`, provider: 'openai', apiKey: `sk-secret-${name}` });
+    repo.createProfile(p, {
+      profileId: ModelProfileIdSchema.parse('post-reservation'),
+      displayName: 'Post Reservation',
+      credentialId: cred.id,
+      model: 'gpt-5.2',
+      apiMode: 'chat-completions',
+      pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+      limits: { maxInputTokens: 50000, maxOutputTokens: 2000, maxCostMicros: 100000 },
+      maxProxyOperations: ['files_read']
+    });
+    const agentConfig = RunnerAgentsConfigSchema.parse({
+      image: 'agent:test',
+      networkMode: 'none',
+      gatewayUrl: 'http://model-gateway:3210',
+      profiles: [{
+        id: 'default', displayName: 'Default', provider: 'openai', model: 'gpt-5',
+        inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000,
+        maxInputTokens: 100000, maxOutputTokens: 20000, maxCostMicros: 2000000, maxProxyOperations: ['files_read']
+      }]
+    });
+    const repository = new AgentStateRepository(store.database, agentConfig.limits, store.instanceId());
+    const spendLedger = new ModelSpendLedger(store.database);
+    const manager = new AgentManager(agentConfig, store, {
+      repository,
+      spendLedger,
+      gateway,
+      launcher: { launch: async () => {}, stop: async () => {}, reconcile: async () => {}, cleanup: async () => {}, ...launcher } as unknown as AgentLauncher,
+      modelProfiles: repo,
+      toolExecutor: async () => ({ ok: true, message: 'ok', data: {}, truncated: false })
+    });
+    const wsId = `ws_${randomBytes(12).toString('hex')}`;
+    const now = Date.now();
+    store.create({
+      id: wsId, ownerId: p, idempotencyKey: `workspace-${name}`, repositoryUrl: 'https://github.com/org/repo.git',
+      repositoryRef: null, containerName: 'executor', workspacePath: `/tmp/ws-${name}`, environmentId: null,
+      status: 'ACTIVE', networkProfile: 'network-none', createdAt: now, lastActivityAt: now,
+      expiresAt: now + 3600_000, hardExpiresAt: now + 7200_000, gitAuthorName: null, gitAuthorEmail: null,
+      mutationLockedUntil: null, generation: 1, error: null
+    });
+    const spawn = (idempotencyKey: string) => manager.dispatch(p, store.byId(wsId)!, 'agent_spawn', {
+      workspaceId: wsId, prompt: name, idempotencyKey, profileId: 'post-reservation',
+      proxyOperations: ['files_read'], ttlSeconds: 60, maxOutputBytes: 65536,
+      maxInputTokens: 10000, maxOutputTokens: 1000, maxCostMicros: 50000
+    });
+    return { manager, repository, spendLedger, p, wsId, spawn };
+  }
+
+  const snapshotAck = async (build: Parameters<AgentGatewayControl['syncSnapshot']>[0]) => {
+    const digest = gatewaySnapshotDigest(await build());
+    return { gatewayBootId: 'boot1', gatewayDigest: digest, expectedDigest: digest, pushed: true };
+  };
+  const unusedGatewayCalls = {
+    gatewayContainer: async () => 'gateway-container',
+    cancelAndDrain: async () => {},
+    queryDigest: async () => ({ gatewayBootId: 'boot1', snapshotDigest: '', activeProfileCount: 1, activeCredentialCount: 1, activeLeaseCount: 0 })
+  };
+
+  it('ends the agent as a launch failure when the post-reservation gateway sync fails, and releases its reservation', async () => {
+    let syncCalls = 0;
+    let issueCalls = 0;
+    const cleanedUp = Promise.withResolvers<void>();
+    const fixture = await postReservationFixture('sync-failure', {
+      ...unusedGatewayCalls,
+      issue: async (input) => { issueCalls += 1; return { ...input, lease: 'unused' }; },
+      // The gateway stays unreachable, so the cleanup cannot settle the ledger row through a revoke.
+      revokeAndDrain: async () => { throw new Error('model gateway control request failed'); },
+      syncSnapshot: async (build) => {
+        syncCalls += 1;
+        // start() and the spawn's pre-reservation sync succeed; the post-reservation one fails.
+        if (syncCalls === 3) throw new Error('model gateway control request failed');
+        return await snapshotAck(build);
+      }
+    }, { cleanup: async () => { cleanedUp.resolve(); } });
+    const { manager, repository, spendLedger, p, wsId, spawn } = fixture;
+    await manager.start();
+
+    try {
+      const spawned = await spawn('spawn-sync-failure');
+      // The spawn is acknowledged; the failure belongs to the launch.
+      expect(spawned).toMatchObject({ ok: true, data: { status: 'SPAWNING', replayed: false } });
+      await cleanedUp.promise;
+      // The failed cleanup records its retry synchronously after the launcher cleanup settles.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(syncCalls).toBe(3);
+      expect(issueCalls).toBe(0);
+      const record = repository.findByIdempotency(p, wsId, 'spawn-sync-failure')!;
+      // The revoke failed, so the agent waits in CANCELLING for its scheduled cleanup retry.
+      expect(record.status).toBe('CANCELLING');
+      expect(record.cleanupReason).toContain('model gateway reconciliation failed');
+      expect(repository.cleanupRetry(p, wsId, record.id, record.generation)).toMatchObject({
+        attempts: 1, lastError: expect.stringContaining('model gateway control request failed')
+      });
+      // No lease could exist, so the reservation was released at zero without the gateway.
+      expect(spendLedger.find(record.gatewayLeaseId)).toMatchObject({ state: 'released', chargedMicros: 0 });
+      // Once the gateway answers again, a same-key retry replays the existing record rather than
+      // spawning again.
+      await expect(spawn('spawn-sync-failure')).resolves.toMatchObject({
+        ok: true, data: { agentId: record.id, status: 'CANCELLING', replayed: true }
+      });
+      expect(syncCalls).toBe(4);
+    } finally {
+      await manager.stop();
+    }
+  });
+
+  it('still ends the agent when releasing its reservation throws after a post-reservation sync failure', async () => {
+    let syncCalls = 0;
+    const cleanedUp = Promise.withResolvers<void>();
+    const fixture = await postReservationFixture('settle-throws', {
+      ...unusedGatewayCalls,
+      issue: async (input) => ({ ...input, lease: 'unused' }),
+      revokeAndDrain: async () => ({ revoked: false }),
+      syncSnapshot: async (build) => {
+        syncCalls += 1;
+        if (syncCalls === 3) throw new Error('model gateway control request failed');
+        return await snapshotAck(build);
+      }
+    }, { cleanup: async () => { cleanedUp.resolve(); } });
+    const { manager, repository, spendLedger, p, wsId, spawn } = fixture;
+    const settle = vi.spyOn(spendLedger, 'settle').mockImplementationOnce(() => { throw new Error('database is locked'); });
+    await manager.start();
+
+    try {
+      await spawn('spawn-settle-throws');
+      await cleanedUp.promise;
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const record = repository.findByIdempotency(p, wsId, 'spawn-settle-throws')!;
+      expect(record.status).toBe('FAILED');
+      // The cleanup's own settle released the row the explicit release could not.
+      expect(settle).toHaveBeenCalledTimes(2);
+      expect(spendLedger.find(record.gatewayLeaseId)).toMatchObject({ state: 'released', chargedMicros: 0 });
+    } finally {
+      settle.mockRestore();
+      await manager.stop();
+    }
+  });
+
+  it('issues no lease and starts no container when the workspace stops during the post-reservation sync', async () => {
+    let syncCalls = 0;
+    let issueCalls = 0;
+    let launchCalls = 0;
+    const gate = Promise.withResolvers<void>();
+    const reachedPostReservationSync = Promise.withResolvers<void>();
+    const fixture = await postReservationFixture('stop-during-sync', {
+      ...unusedGatewayCalls,
+      issue: async (input) => { issueCalls += 1; return { ...input, lease: 'lease_stop_during_sync_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }; },
+      revokeAndDrain: async () => ({ revoked: false }),
+      syncSnapshot: async (build) => {
+        syncCalls += 1;
+        if (syncCalls === 3) {
+          reachedPostReservationSync.resolve();
+          await gate.promise;
+        }
+        return await snapshotAck(build);
+      }
+    }, { launch: async () => { launchCalls += 1; throw new Error('launcher not under test'); } });
+    const { manager, repository, spendLedger, p, wsId, spawn } = fixture;
+    await manager.start();
+
+    try {
+      const spawning = spawn('spawn-stop-during-sync');
+      await Promise.race([reachedPostReservationSync.promise, spawning.then(() => reachedPostReservationSync.promise)]);
+      // stopWorkspace moves the agent to CANCELLING before its first await, so the cancel has landed
+      // while the sync is still held open.
+      const stopping = manager.stopWorkspace(p, wsId, 'workspace closing');
+      expect(repository.findByIdempotency(p, wsId, 'spawn-stop-during-sync')?.status).toBe('CANCELLING');
+      gate.resolve();
+      await stopping;
+      await spawning;
+      // Let any launch continuation still queued behind the sync run before checking it did nothing.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(issueCalls).toBe(0);
+      expect(launchCalls).toBe(0);
+      const record = repository.findByIdempotency(p, wsId, 'spawn-stop-during-sync')!;
+      expect(record.status).toBe('CANCELLED');
+      expect(repository.cleanupRetry(p, wsId, record.id, record.generation)).toBeUndefined();
+      expect(spendLedger.find(record.gatewayLeaseId)).toMatchObject({ state: 'released', chargedMicros: 0 });
+    } finally {
+      gate.resolve();
+      await manager.stop();
+    }
+  });
+
+  it('sends the OpenCode Go session header with the agent id through a synced snapshot', async () => {
+    const { repo, p } = setup();
+    const { certFile, keyFile } = await ensureTlsFixtures();
+    const received: Array<{ path: string; session: string | undefined; authorization: string | undefined; custom: string | undefined }> = [];
+    const upstreamServer: TlsServer = createTlsServer({ cert: readFileSync(certFile), key: readFileSync(keyFile) }, (req, res) => {
+      const session = req.headers['x-opencode-session'];
+      received.push({
+        path: req.url ?? '',
+        session: typeof session === 'string' ? session : undefined,
+        authorization: req.headers.authorization,
+        custom: typeof req.headers['x-custom'] === 'string' ? req.headers['x-custom'] : undefined
+      });
+      if (typeof session !== 'string' || session === '') {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end('{"error":{"type":"MissingSessionID"}}');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: {"choices":[{"delta":{"content":"opencode"}}],"usage":{"prompt_tokens":5,"completion_tokens":3}}\n\n');
+      res.end('data: [DONE]\n\n');
+    });
+    await new Promise<void>((res) => upstreamServer.listen(0, '127.0.0.1', res));
+    const upstreamAddress = upstreamServer.address() as AddressInfo;
+
+    const controlSocket = process.platform === 'win32'
+      ? `\\\\.\\pipe\\gw-opencode-${randomBytes(6).toString('hex')}`
+      : join(tmpdir(), `gw-opencode-${randomBytes(6).toString('hex')}.sock`);
+    // The instance-wide header stays set to show that the provider's own header takes precedence.
+    const gwRuntime = createGatewayRuntime(await loadGatewayConfig({
+      MODEL_GATEWAY_MODE: 'test',
+      MODEL_GATEWAY_CONTROL_SOCKET: controlSocket,
+      MODEL_GATEWAY_HOST: '127.0.0.1',
+      MODEL_GATEWAY_PORT: '3210',
+      MODEL_GATEWAY_PROFILES_JSON: '[]',
+      MODEL_GATEWAY_TEST_TLS_CA_FILE: certFile,
+      MODEL_GATEWAY_SESSION_HEADER: 'x-custom'
+    }));
+    await gwRuntime.listen();
+    const gwAddress = gwRuntime.httpServer.address() as AddressInfo;
+
+    try {
+      const cred = repo.createCredential(p, { label: 'OpenCode Go', provider: 'opencode-go', apiKey: 'sk-opencode-go-445566' });
+      const profile = repo.createProfile(p, {
+        profileId: ModelProfileIdSchema.parse('opencode-go-coding'),
+        displayName: 'OpenCode Go coding',
+        credentialId: cred.id,
+        model: 'kimi-k2.5',
+        apiMode: 'chat-completions',
+        pricing: { inputMicrosPerMillionTokens: 600_000, outputMicrosPerMillionTokens: 2_500_000 },
+        limits: { maxInputTokens: 50_000, maxOutputTokens: 2_000, maxCostMicros: 100_000 },
+        maxProxyOperations: ['files_read']
+      });
+      const revisionId = profile.activeRevisionId!;
+
+      const snapshot = repo.getExportSnapshot(p);
+      expect(snapshot.credentials[cred.id]?.sessionHeader).toBe('x-opencode-session');
+      expect(snapshot.profiles[revisionId]?.upstreamUrl).toBe('https://opencode.ai/inference/go/openai/v1/chat/completions');
+      // The test upstream stands in for opencode.ai; no request leaves the host.
+      snapshot.profiles[revisionId]!.upstreamUrl = `https://127.0.0.1:${upstreamAddress.port}/inference/go/openai/v1/chat/completions`;
+
+      const controlClient = connect(controlSocket);
+      const applied = await new Promise<{ ok: boolean; ack?: { activeProfileCount: number } }>((res, rej) => {
+        let buf = '';
+        controlClient.on('data', (d) => { buf += d.toString(); });
+        controlClient.on('end', () => res(JSON.parse(buf)));
+        controlClient.on('error', rej);
+        controlClient.end(JSON.stringify({ operation: 'apply_snapshot', sequence: 1, generation: 1, credentials: snapshot.credentials, profiles: snapshot.profiles }) + '\n');
+      });
+      expect(applied).toMatchObject({ ok: true, ack: { activeProfileCount: 1 } });
+
+      const agentId = 'agent_opencode_go_0123456789';
+      const lease = gwRuntime.issueLease({
+        leaseId: 'lease_opencode_1', agentId, profileId: revisionId,
+        ttlMs: 60_000, maxInputTokens: 10_000, maxOutputTokens: 1_000, maxCostMicros: 50_000
+      });
+      const request = httpRequest({
+        host: '127.0.0.1', port: gwAddress.port, path: '/v1/chat/completions', method: 'POST',
+        headers: {
+          'content-type': 'application/json', authorization: `Bearer ${lease}`, 'x-model-profile': revisionId,
+          'x-agent-id': agentId, 'x-request-id': 'req_opencode_1'
+        }
+      });
+      const response = await new Promise<{ status: number; body: string }>((res, rej) => {
+        request.on('response', (r) => {
+          let body = '';
+          r.on('data', (chunk) => { body += chunk; });
+          r.on('end', () => res({ status: r.statusCode ?? 500, body }));
+        });
+        request.on('error', rej);
+        request.end(JSON.stringify({ model: 'kimi-k2.5', stream: true, max_tokens: 100, messages: [{ role: 'user', content: 'hello' }] }));
+      });
+      expect(response.status).toBe(200);
+      expect(response.body).toContain('opencode');
+      expect(received).toEqual([{
+        path: '/inference/go/openai/v1/chat/completions',
+        session: agentId,
+        authorization: 'Bearer sk-opencode-go-445566',
+        custom: undefined
+      }]);
+    } finally {
+      await gwRuntime.close();
+      await new Promise<void>((res) => upstreamServer.close(() => res()));
+    }
+  });
+});
+
+describe('model spend policies over the dashboard API', () => {
+  const dashboardPrincipal = { kind: 'external' as const, issuer: 'https://team.cloudflareaccess.com', subject: 'operator' };
+  const apiConfig: ApiConfig = {
+    host: '127.0.0.1', port: 3000, authMode: 'cloudflare-access', ownerId: 'owner',
+    accessIssuer: 'https://team.cloudflareaccess.com', accessAudience: 'audience',
+    accessJwksUrl: 'https://team.cloudflareaccess.com/cdn-cgi/access/certs', runnerUrl: 'http://runner:3001',
+    apiKeyAuthEnabled: false, runnerToken: 'runner-token-that-is-longer-than-32-characters', publicHosts: ['dashboard.example'],
+    allowedOrigins: ['https://dashboard.example'], requestTimeoutMs: 2_000, maxBodyBytes: 65_536,
+    mcpGatewayTimeoutMs: 30_000, mcpGatewayMaxResponseBytes: 262_144, mcpGatewayMaxToolsPerServer: 500,
+    mcpGatewayMaxSchemaBytes: 65_536, mcpGatewayMaxCatalogBytes: 2_097_152, mcpGatewayMaxTraceRows: 20_000,
+    mcpGatewayMaxConnections: 32, mcpGatewayAllowInsecureHttp: false, mcpGatewayAllowPrivateEndpoints: false
+  } as ApiConfig;
+
+  function send(port: number, path: string, method = 'GET', body?: unknown, session?: { token: string; cookie: string }): Promise<{ status: number; json: Record<string, unknown> }> {
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+    return new Promise((resolveReply, reject) => {
+      const req = httpRequest({
+        host: '127.0.0.1', port, path: `/dashboard/api/v1${path}`, method,
+        headers: {
+          host: 'dashboard.example', origin: 'https://dashboard.example',
+          ...(session ? { cookie: session.cookie } : {}),
+          ...(payload ? { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(payload)), 'x-csrf-token': session?.token ?? '' } : {})
+        }
+      }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => resolveReply({ status: res.statusCode ?? 500, json: { ...(JSON.parse(data || '{}') as Record<string, unknown>), ...(res.headers['set-cookie'] ? { cookie: res.headers['set-cookie'][0] } : {}) } }));
+      });
+      req.on('error', reject);
+      if (payload) req.write(payload);
+      req.end();
+    });
+  }
+
+  /** The dashboard router in front of a real control service, as the runner's internal endpoint serves it. */
+  async function startDashboard() {
+    const root = await mkdtemp(join(tmpdir(), 'model-dashboard-http-'));
+    const databasePath = join(root, 'state.db');
+    const store = new StateStore(databasePath);
+    const keyring = new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]);
+    const metadata = new MetadataStore(databasePath, keyring);
+    const repo = new ModelProfileStateRepository(store.database, keyring);
+    const controls = new DashboardControlService(
+      { artifactRetentionSeconds: 60 } as RunnerConfig, store, metadata,
+      new ArtifactStore(store.database, { root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000 }),
+      {} as WorkspaceService, undefined, undefined, repo, undefined, keyring
+    );
+    // The runner's internal endpoint answers a refusal as an error envelope; this stands in for it.
+    const runner: DashboardRunnerClient = {
+      call: async () => { throw new Error('not used'); },
+      callInternal: async (operation, input, principal): Promise<RunnerResponse> => {
+        try {
+          return await controls.execute({ version: 2, principal, operation, input } as MetadataRunnerRequest);
+        } catch (error) {
+          if (!(error instanceof HarnessError)) throw error;
+          return { ok: false, message: error.message, truncated: false, error: { code: error.code, message: error.message, retryable: error.retryable } } as RunnerResponse;
+        }
+      },
+      callApiKeys: async () => { throw new Error('not used'); }
+    } as DashboardRunnerClient;
+    const app = express();
+    app.use((request: express.Request, _response, next) => {
+      (request as unknown as { auth: Record<string, unknown> }).auth = { token: 'cloudflare-access', clientId: 'operator', scopes: [], extra: { principal: dashboardPrincipal } };
+      next();
+    });
+    app.use('/dashboard', createDashboardRouter(apiConfig, runner));
+    const server = createHttpServer(app);
+    await new Promise<void>((ready) => server.listen(0, '127.0.0.1', ready));
+    const port = (server.address() as AddressInfo).port;
+    const close = async () => {
+      server.closeAllConnections();
+      await new Promise<void>((closed) => server.close(() => closed()));
+      metadata.database.close();
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    };
+    return { store, metadata, repo, controls, port, close };
+  }
+
+  it('refuses the next spawn over a policy set through the dashboard API, and reports it in the summary', async () => {
+    const { store, repo, port, close } = await startDashboard();
+    try {
+      const principalId = store.resolvePrincipal(dashboardPrincipal);
+      const credential = repo.createCredential(principalId, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-key-123' });
+      repo.createProfile(principalId, {
+        profileId: ModelProfileIdSchema.parse('coding'), displayName: 'Coding', credentialId: credential.id, model: 'gpt-5',
+        apiMode: 'chat-completions', pricing: { inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000 },
+        limits: { maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 2_000_000 }, maxProxyOperations: ['files_read']
+      });
+
+      const sessionReply = await send(port, '/session');
+      const session = { token: String(sessionReply.json.csrfToken), cookie: String(sessionReply.json.cookie) };
+      const saved = await send(port, '/model-spend/policies', 'PUT', { profileId: 'coding', period: 'day', limitMicros: 1_500_000 }, session);
+      expect(saved.status).toBe(200);
+      expect(saved.json.data).toMatchObject({ profileId: 'coding', period: 'day', limitMicros: 1_500_000, generation: 1 });
+
+      const summary = await send(port, '/model-spend');
+      expect(summary.status).toBe(200);
+      expect(summary.json).toMatchObject({
+        truncated: false,
+        data: {
+          summary: { isEstimate: true, windows: expect.arrayContaining([expect.objectContaining({ scope: 'profile', profileId: 'coding', period: 'day', thresholdState: 'ok' })]) },
+          policies: [expect.objectContaining({ profileId: 'coding' })]
+        }
+      });
+
+      const agentConfig = RunnerAgentsConfigSchema.parse({
+        image: 'agent:test', gatewayUrl: 'http://model-gateway:3210',
+        profiles: [{
+          id: 'default', displayName: 'Default', provider: 'openai', model: 'gpt-5',
+          inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000,
+          maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 2_000_000, maxProxyOperations: ['files_read']
+        }]
+      });
+      const manager = new AgentManager(agentConfig, store, {
+        repository: new AgentStateRepository(store.database, agentConfig.limits, store.instanceId()),
+        gateway: {
+          issue: async (input: Record<string, unknown>) => ({ ...input, lease: `lease_${'x'.repeat(48)}` }),
+          revokeAndDrain: async () => {}, cancelAndDrain: async () => {}
+        } as unknown as AgentGatewayControl,
+        // Admission is under test, not the runtime: the launch fails after the lease is issued.
+        launcher: { launch: async () => { throw new Error('launch is not under test'); }, cleanup: async () => {}, reconcile: async () => {}, inspect: async () => ({ container: false, network: false }) } as unknown as AgentLauncher,
+        modelProfiles: repo,
+        spendLedger: new ModelSpendLedger(store.database, { log: () => undefined }),
+        toolExecutor: async () => ({ ok: true, message: 'ok', data: {}, truncated: false })
+      });
+      const now = Date.now();
+      const workspace = {
+        id: `ws_${'w'.repeat(24)}`, ownerId: principalId, idempotencyKey: 'workspace-key-1',
+        repositoryUrl: 'https://github.com/org/repo.git', repositoryRef: null, containerName: 'executor', workspacePath: '/tmp/ws-1',
+        environmentId: null, status: 'ACTIVE' as const, networkProfile: 'network-none' as const,
+        createdAt: now, lastActivityAt: now, expiresAt: now + 600_000, hardExpiresAt: now + 3_600_000,
+        gitAuthorName: null, gitAuthorEmail: null, mutationLockedUntil: null, generation: 1, error: null
+      };
+      store.create(workspace);
+      const spawn = (idempotencyKey: string) => manager.dispatch(principalId, workspace, 'agent_spawn', {
+        workspaceId: workspace.id, prompt: 'inspect', idempotencyKey, profileId: 'coding', proxyOperations: ['files_read'],
+        ttlSeconds: 60, maxOutputBytes: 65_536, maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 1_000_000
+      });
+      try {
+        await expect(spawn('first-spawn-key')).resolves.toBeDefined();
+        await expect(spawn('second-spawn-key')).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED', message: expect.stringContaining('(profile coding, day)') });
+        const after = await send(port, '/model-spend');
+        const profileDay = (after.json.data as { summary: { windows: Array<Record<string, unknown>> } }).summary.windows
+          .find((window) => window.profileId === 'coding' && window.period === 'day');
+        // The failed first run is still committed at its cap, open or unreconciled depending on how far its cleanup got.
+        expect(Number(profileDay?.estimatedReservedMicros) + Number(profileDay?.estimatedUnreconciledMicros)).toBe(1_000_000);
+        expect(profileDay).toMatchObject({ estimatedSettledMicros: 0, thresholdState: 'ok' });
+      } finally {
+        await manager.stop();
+      }
+    } finally {
+      await close();
+    }
+  });
+
+  it('dry-runs a profile change through the dashboard API without writing it', async () => {
+    const { store, metadata, repo, port, close } = await startDashboard();
+    try {
+      const principalId = store.resolvePrincipal(dashboardPrincipal);
+      const credential = repo.createCredential(principalId, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-validate-key-123' });
+      const saved = repo.createProfile(principalId, {
+        profileId: ModelProfileIdSchema.parse('coding'), displayName: 'Coding', credentialId: credential.id, model: 'gpt-5',
+        apiMode: 'chat-completions', pricing: { inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000 },
+        limits: { maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 2_000_000 }, maxProxyOperations: ['files_read']
+      });
+      const sessionReply = await send(port, '/session');
+      const session = { token: String(sessionReply.json.csrfToken), cookie: String(sessionReply.json.cookie) };
+
+      const change = { action: 'update', profileId: 'coding', expectedGeneration: saved.generation, limits: { maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 3_000_000 } };
+      const validated = await send(port, '/agent-model-profiles/validate', 'POST', change, session);
+      expect(validated.status).toBe(200);
+      expect(validated.json.data).toMatchObject({
+        valid: true, action: 'update', profileId: 'coding', issues: [], escalations: ['limits_raised'], ownerApprovalRequiredOverMcp: true,
+        statusAfterSaveOverMcp: 'unchanged', currentGeneration: 1, revision: { provider: 'openai', limits: { maxCostMicros: 3_000_000 } }
+      });
+      const stale = await send(port, '/agent-model-profiles/validate', 'POST', { ...change, expectedGeneration: 7 }, session);
+      expect(stale.json.data).toMatchObject({ valid: false, issues: [{ code: 'CONFLICT', message: 'profile generation conflict' }] });
+      const malformed = await send(port, '/agent-model-profiles/validate', 'POST', { action: 'update', profileId: 'coding' }, session);
+      expect(malformed.status).toBe(400);
+
+      // Nothing was written or audited, and the key never left the runner.
+      expect(repo.listProfiles(principalId)).toEqual([expect.objectContaining({ generation: 1, activeRevisionId: saved.activeRevisionId })]);
+      expect(metadata.listAudit(principalId).filter((event) => event.action.startsWith('model_profile.'))).toEqual([]);
+      expect(JSON.stringify([validated.json, stale.json])).not.toContain('sk-validate-key-123');
+    } finally {
+      await close();
+    }
+  });
+
+  it('spawns from a profile created over MCP only after the owner activates it, and leaves raised limits to the Dashboard', async () => {
+    const { store, metadata, repo, controls, port, close } = await startDashboard();
+    try {
+      const principalId = store.resolvePrincipal(dashboardPrincipal);
+      const credential = repo.createCredential(principalId, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-mcp-profile-key-123' });
+      const limits = { maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 2_000_000 };
+      const created = await controls.executeModelTool(dashboardPrincipal, 'model_profile_create', {
+        profileId: 'coding', displayName: 'Coding', credentialId: credential.id, model: 'gpt-5', apiMode: 'chat-completions',
+        pricing: { inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000 }, limits, maxProxyOperations: ['files_read'],
+        idempotencyKey: 'mcp-create-key-1'
+      });
+      expect(created.data).toMatchObject({ profile: { status: 'DISABLED', generation: 1 }, activation: 'dashboard_required' });
+
+      const agentConfig = RunnerAgentsConfigSchema.parse({
+        image: 'agent:test', gatewayUrl: 'http://model-gateway:3210',
+        profiles: [{
+          id: 'default', displayName: 'Default', provider: 'openai', model: 'gpt-5',
+          inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000,
+          maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 2_000_000, maxProxyOperations: ['files_read']
+        }]
+      });
+      const leases: Array<{ profileId: string }> = [];
+      const manager = new AgentManager(agentConfig, store, {
+        repository: new AgentStateRepository(store.database, agentConfig.limits, store.instanceId()),
+        gateway: {
+          gatewayContainer: async () => 'gateway-container',
+          issue: async (input: { profileId: string }) => { leases.push(input); return { ...input, lease: `lease_${'y'.repeat(48)}` }; },
+          revokeAndDrain: async () => {}, cancelAndDrain: async () => {}
+        } as unknown as AgentGatewayControl,
+        launcher: { launch: async () => {}, stop: async () => {}, reconcile: async () => {} } as unknown as AgentLauncher,
+        modelProfiles: repo,
+        toolExecutor: async () => ({ ok: true, message: 'ok', data: {}, truncated: false })
+      });
+      await manager.start();
+      const now = Date.now();
+      const workspace = {
+        id: `ws_${'m'.repeat(24)}`, ownerId: principalId, idempotencyKey: 'workspace-key-mcp',
+        repositoryUrl: 'https://github.com/org/repo.git', repositoryRef: null, containerName: 'executor', workspacePath: '/tmp/ws-mcp',
+        environmentId: null, status: 'ACTIVE' as const, networkProfile: 'network-none' as const,
+        createdAt: now, lastActivityAt: now, expiresAt: now + 600_000, hardExpiresAt: now + 3_600_000,
+        gitAuthorName: null, gitAuthorEmail: null, mutationLockedUntil: null, generation: 1, error: null
+      };
+      store.create(workspace);
+      const spawn = (idempotencyKey: string) => manager.dispatch(principalId, workspace, 'agent_spawn', {
+        workspaceId: workspace.id, prompt: 'inspect', idempotencyKey, profileId: 'coding', proxyOperations: ['files_read'],
+        ttlSeconds: 60, maxOutputBytes: 65_536, maxInputTokens: 50_000, maxOutputTokens: 10_000, maxCostMicros: 1_000_000
+      });
+      try {
+        // A disabled profile cannot run an agent.
+        await expect(spawn('spawn-before-activate')).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+        expect(leases).toEqual([]);
+
+        const sessionReply = await send(port, '/session');
+        const session = { token: String(sessionReply.json.csrfToken), cookie: String(sessionReply.json.cookie) };
+        const activated = await send(port, '/agent-model-profiles/coding/activate', 'POST', { expectedGeneration: 1 }, session);
+        expect(activated.status).toBe(200);
+        expect(activated.json.data).toMatchObject({ status: 'ACTIVE', generation: 2 });
+        await expect(spawn('spawn-after-activate')).resolves.toMatchObject({ ok: true });
+        expect(leases.map((lease) => lease.profileId)).toEqual([(activated.json.data as { activeRevisionId: string }).activeRevisionId]);
+
+        // Raising the cost limit needs the owner: MCP is refused, and the Dashboard saves it.
+        await expect(controls.executeModelTool(dashboardPrincipal, 'model_profile_update', {
+          profileId: 'coding', expectedGeneration: 2, limits: { ...limits, maxCostMicros: 4_000_000 }, idempotencyKey: 'mcp-update-key-1'
+        })).rejects.toMatchObject({ code: 'OWNER_APPROVAL_REQUIRED' });
+        expect(repo.listProfiles(principalId)).toEqual([expect.objectContaining({ generation: 2 })]);
+        const raised = await send(port, '/agent-model-profiles/coding', 'PATCH', { expectedGeneration: 2, limits: { ...limits, maxCostMicros: 4_000_000 } }, session);
+        expect(raised.status).toBe(200);
+        expect(raised.json.data).toMatchObject({ generation: 3, activeRevision: { limits: { maxCostMicros: 4_000_000 } } });
+
+        const actors = metadata.listAudit(principalId).filter((event) => event.action.startsWith('model_profile.')).reverse()
+          .map((event) => [event.action, event.details.actor]);
+        expect(actors).toEqual([
+          ['model_profile.created', 'mcp'], ['model_profile.activated', 'dashboard'],
+          ['model_profile.change_refused', 'mcp'], ['model_profile.updated', 'dashboard']
+        ]);
+        expect(JSON.stringify([created, activated.json, raised.json])).not.toContain('sk-mcp-profile-key-123');
+      } finally {
+        await manager.stop();
+      }
+    } finally {
+      await close();
+    }
   });
 });

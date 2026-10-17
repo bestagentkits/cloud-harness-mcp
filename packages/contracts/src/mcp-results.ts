@@ -32,7 +32,14 @@ export const ErrorCodeSchema = z.enum([
   'DEPENDENCY_EGRESS_UNAVAILABLE',
   'HOOK_FAILED',
   'EXECUTION_FAILED',
-  'AUTHORIZATION_REQUIRED'
+  'AUTHORIZATION_REQUIRED',
+  'NOT_SUPPORTED',
+  'PACKAGE_APPROVAL_REQUIRED',
+  'PACKAGE_BUILD_FAILED',
+  'PACKAGE_VERIFICATION_FAILED',
+  // A model profile change raises spend capacity, widens agent permissions, or sends a
+  // key to a new host; only the owner can make it, on the Dashboard.
+  'OWNER_APPROVAL_REQUIRED'
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 export const ToolResultSchema = z.object({

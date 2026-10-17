@@ -89,7 +89,8 @@ async function openCanaryWorkspace(suffix, networkProfile) {
     name: 'workspace_open',
     arguments: {
       repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
-      idempotencyKey: `deploy-canary-${suffix}`,
+      // Each attempt is its own request: the fallback must not replay the failed default-profile open.
+      idempotencyKey: `deploy-canary-${suffix}-${networkProfile ?? 'default'}`,
       ...(networkProfile ? { networkProfile } : {})
     }
   });

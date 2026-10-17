@@ -133,7 +133,12 @@ required for local health or smoke checks.
 
 `REQUEST_TIMEOUT_MS` bounds API-to-runner work and `MAX_BODY_BYTES` bounds JSON
 request bodies. If a client tool timeout is increased, the server-side timeout
-must still be large enough for the intended operation.
+must still be large enough for the intended operation. Keep it above the
+inline wait of `packages_plan` (`PACKAGES_PLAN_INLINE_WAIT_MS` in
+[`packages/contracts/src/package-schemas.ts`](../packages/contracts/src/package-schemas.ts)):
+a slower plan resolution continues in the runner and is polled through
+`packages_status`, but a timeout below the inline wait aborts the call before
+the plan or its `resolutionId` comes back.
 
 ## Workspace and repository policy
 
@@ -173,13 +178,37 @@ the persisted default and its reset semantics by
 [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts).
 Runner-owned remote Git helpers do not depend on the executor network profile.
 
-`WORKSPACE_WALL_TTL_SECONDS`, `WORKSPACE_IDLE_TTL_SECONDS`, and
-`REAPER_INTERVAL_SECONDS` define lifecycle timing. `MAX_OUTPUT_BYTES` bounds
-runner/worker results. `MIN_FREE_BYTES` gates new workspace admission against a
-host reserve.
+`WORKSPACE_WALL_TTL_SECONDS`, `WORKSPACE_IDLE_TTL_SECONDS`,
+`WORKSPACE_RECOVERABLE_GRACE_SECONDS`, and `REAPER_INTERVAL_SECONDS` define
+lifecycle timing. The grace is how long an expired workspace stays
+`EXPIRED_RECOVERABLE` before the reaper may close it; `0` closes clean expired
+workspaces on the next reaper pass, and auto-close never discards unsaved work
+(see [operations](operations.md#expired-workspaces-and-auto-close)).
+`MAX_OUTPUT_BYTES` bounds runner/worker results. `MIN_FREE_BYTES` gates new
+workspace admission against a host reserve.
+
+**Dashboard lifecycle overrides.** Dashboard → Settings → **Workspace limits &
+lifecycle** stores durable, instance-wide overrides for
+`MAX_ACTIVE_WORKSPACES_PER_OWNER`, the idle TTL, the wall TTL, and the
+recoverable grace, so these can change without a redeploy. Each value resolves
+as Dashboard override, then the runner environment variable, then the built-in
+default, and the panel shows which source applies. Resetting a field returns it
+to the runner value. Override ranges are narrower than some environment ranges
+(the idle floor is a minute, and the Dashboard edits whole minutes); the bounds
+are owned by
+[`packages/contracts/src/workspace-lifecycle.ts`](../packages/contracts/src/workspace-lifecycle.ts)
+and the environment schema by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts). The
+TTLs and grace are snapshotted onto each workspace at `workspace_open`, so a
+change applies only to workspaces opened afterwards; a workspace persisted
+before the snapshot existed uses the runner idle TTL and a one-hour grace. The
+quota is re-read on every admission and recovery. Writes, validation, and
+auditing are owned by
+[`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
+and [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts).
 
 `MAX_ACTIVE_WORKSPACES_PER_OWNER` bounds the concurrent counted workspaces one
-principal may hold. Counted statuses are `CREATING`, `ACTIVE`, and
+principal may hold, unless a Dashboard override replaces it. Counted statuses are `CREATING`, `ACTIVE`, and
 `NETWORK_QUARANTINED`; a record in `REAPING` is in flight to teardown and holds no
 slot, so destroying a workspace never consumes capacity. The shipped default is `3`
 and the accepted range is `1..64`, where `1` restores single-workspace behaviour.
@@ -354,6 +383,67 @@ schemas are owned by
 [`packages/contracts/src/api-key-api.ts`](../packages/contracts/src/api-key-api.ts)
 and [`apps/runner/src/api-key-store.ts`](../apps/runner/src/api-key-store.ts).
 
+## Dashboard Terminal
+
+The Dashboard Terminal runs a real PTY inside the owned workspace executor. PTYs
+live in runner memory, are never resumed after a runner restart, and end with
+their workspace. A running terminal's reads and input refresh the workspace's
+idle lease (`WORKSPACE_IDLE_TTL_SECONDS`) at most every 30 s, but never past its
+wall-clock cap (`WORKSPACE_WALL_TTL_SECONDS`). The runner reaches the Docker
+Engine API over its unix socket for this, so a non-unix `DOCKER_HOST` makes
+terminals unavailable. Exact ranges are owned by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts); the
+lifecycle by [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts).
+
+| Variable | Default | Decision |
+|---|---|---|
+| `TERMINAL_MAX_PER_WORKSPACE` | `4` | Bounds live PTYs per workspace; another open is refused with `LIMIT_EXCEEDED` (429). |
+| `TERMINAL_RETAINED_BYTES` | `1048576` | Raw output kept per terminal for reconnecting readers; older bytes are reported as `missedBytes`. |
+| `TERMINAL_IDLE_TIMEOUT_MS` | `900000` | Input, resize, and reads reset it; expiry ends the terminal as `timed_out`. |
+| `TERMINAL_MAX_LIFETIME_MS` | `28800000` | Absolute lifetime regardless of activity. |
+
+## Managed toolbox
+
+The toolbox is the `bash` tool's `toolbox` target: each command runs in a
+disposable container from `EXECUTOR_IMAGE` with the executor hardening, no
+network, and no workspace checkout. The boundary and rollout order are recorded
+in [ADR 0003](adr/0003-terminal-bash-and-managed-toolbox.md); the container
+arguments are owned by [`apps/runner/src/toolbox-runner.ts`](../apps/runner/src/toolbox-runner.ts).
+
+| Variable | Default | Decision |
+|---|---|---|
+| `PACKAGES_ENABLED` | `false` | Runner flag. Only `true` enables the toolbox target; otherwise it is refused with `FORBIDDEN` (403) before any container starts. The `workspace` target is unaffected. |
+| `TOOLBOX_MAX_CONCURRENT` | `2` | Runner cap on toolbox containers running at once, sync and async together. Each holds the executor's 1 GiB memory, 1 CPU, and 256-pid bounds, so size it with `MAX_ACTIVE_WORKSPACES_PER_OWNER` against host memory. A call beyond it is refused with `LIMIT_EXCEEDED` (429, retryable). |
+
+Managed packages are immutable releases that the runner builds below
+`PACKAGES_ROOT` and binds per owner or per workspace. Their input and result
+schemas are owned by
+[`packages/contracts/src/package-schemas.ts`](../packages/contracts/src/package-schemas.ts),
+the bounds by `RunnerConfigSchema` in
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts), and
+the durable plan, apply, release, and binding records by
+[`apps/runner/src/package-store.ts`](../apps/runner/src/package-store.ts).
+Every variable below is runner-only and inert while `PACKAGES_ENABLED` is not
+`true`.
+
+| Variable | Default | Decision |
+|---|---|---|
+| `PACKAGES_ROOT` | `/var/lib/cloud-harness/packages` | Absolute release store, mounted only into the runner. Compose mounts `HOST_PACKAGES_ROOT` at the same path, so the two must be equal; production keeps the default because Compose interpolation does not read `runtime.env`. Backup and retention are in [operations](operations.md#managed-package-releases). |
+| `PACKAGES_ECOSYSTEMS` | `npm,uv` | Comma-separated subset of the buildable ecosystems. A plan for another ecosystem is refused. |
+| `PACKAGES_APPROVAL_MODE` | `required` | `required` holds each plan for an owner decision in the dashboard before apply. Owner-bearer auth has no dashboard approver, so planning still works but apply is refused with `FORBIDDEN` and the runner logs one startup warning; `none` records plans as approved by policy instead. |
+| `PACKAGES_NPM_LIFECYCLE_SCRIPTS` | `deny` | `allow` lets an npm plan that explicitly requests lifecycle scripts run them during the build; otherwise installs ignore them. |
+| `PACKAGES_MAX_RELEASE_BYTES` | `536870912` | Per-release size cap, 16 MiB to 4 GiB, and never above the owner cap. |
+| `PACKAGES_MAX_OWNER_BYTES` | `4294967296` | Per-owner cap on retained releases plus in-flight builds, 64 MiB to 64 GiB. Exceeding it is refused with `LIMIT_EXCEEDED`. |
+| `PACKAGES_MAX_BINDINGS` | `32` | Per-owner binding count, 1 to 256. |
+| `PACKAGES_BUILD_TIMEOUT_MS` | `600000` | Build deadline, 60000 to 1800000 ms. |
+
+Registry egress for builds is not a runner variable. The provisioning proxy's
+default allow-list contains no package registry; the owner opts registries in
+through `PACKAGES_PROXY_HOSTS` in the proxy-only
+`/etc/cloud-harness-mcp/provisioning-proxy.env`, as described in
+[operations](operations.md#package-registry-egress). The proxy is shared with
+toolkit helpers, so its Compose-set `ALLOWED_HOSTS` reach builders as well.
+
 ## MCP gateway
 
 The `/mcp-gateway` composition root adds nine settings. Their exact defaults,
@@ -418,15 +508,23 @@ The deployment steps are in
 
 `MODEL_GATEWAY_SESSION_HEADER` names one optional upstream header that the model
 gateway fills with the calling agent id, for OpenAI-compatible providers that
-reject a request without a conversation identifier (for example
-`x-opencode-session`, which OpenCode Go requires). It is unset by default, so no
+ask for or require a conversation identifier. It is unset by default, so no
 header is invented for other providers. The gateway always identifies itself
 through `user-agent: cloud-harness-model-gateway`. The accepted shape and the
 reserved names the override may not collide with are owned by
 [`apps/model-gateway/src/config.ts`](../apps/model-gateway/src/config.ts), and
-production Compose forwards the setting into the gateway container. A profile
-cannot carry extra upstream headers of its own, so this override is the only way
-to serve such a provider.
+production Compose forwards the setting into the gateway container.
+
+A registry provider that asks for such a header names it in the provider
+registry
+([`packages/contracts/src/model-provider-registry.ts`](../packages/contracts/src/model-provider-registry.ts)),
+for example `x-opencode-session` for OpenCode Go. The runner exports it with the
+credential in the gateway snapshot, and the gateway applies the same name
+validation and rejects the whole snapshot if it fails. The gateway sends the
+provider's own header when it has one and falls back to
+`MODEL_GATEWAY_SESSION_HEADER` otherwise; the value is always the agent id. So
+the variable is needed only for a Custom route to a provider that asks for a
+session header, and setting it never changes the header OpenCode Go receives.
 
 ## Optional GitHub App repository access
 
@@ -480,6 +578,23 @@ the token rule by
 flag parsing by [`apps/api/src/cli-options.ts`](../apps/api/src/cli-options.ts).
 An example file is in the
 [user guide](../docs-site/connect.md#several-local-workspaces-from-one-server).
+
+## Decision Plane
+
+| Variable | Default | Decision |
+|---|---|---|
+| `DECISION_PLANE_PURPOSES` | empty (off) | Runner flag. A comma-separated subset of `mcp-routing` and `failure-classification`. A listed purpose is evaluated only for owners who stored a TypeSafe integration key. Any other value fails startup. |
+| `TYPESAFE_EGRESS` | `on` | Runner flag. `off` stops every TypeSafe call, both skill suggestions and the Decision Plane, even for owners with a stored key. `typesafe_status` then reports `enabled: false`. |
+
+`mcp-routing` reranks MCP gateway `search` results. `failure-classification`
+adds an advisory `data.diagnosis` to GitHub actions that end in the generic
+`GITHUB_ACTION_FAILED`. Both fall back to the deterministic result on any error.
+The purpose list is owned by
+[`packages/contracts/src/decision-plane.ts`](../packages/contracts/src/decision-plane.ts),
+the call bounds by
+[`apps/runner/src/decision-plane/decision-plane.ts`](../apps/runner/src/decision-plane/decision-plane.ts),
+and the rationale by [ADR 0004](adr/0004-decision-plane.md). Live counters are
+at `GET /api/v1/decision-plane/status`.
 
 ## Compose and logging overrides
 

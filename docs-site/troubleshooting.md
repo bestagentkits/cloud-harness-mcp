@@ -26,8 +26,8 @@ docker compose --profile images build executor-image
 ---
 
 ### 3. `workspace expired: TTL exceeded`
-**Cause:** The workspace reached its 15-minute wall-clock limit or 5-minute idle limit.
-**Fix:** Workspaces are ephemeral by design. Re-open a workspace using `workspace_open` with a fresh idempotency key.
+**Cause:** The workspace reached its wall-clock lifetime or idle timeout (15 and 5 minutes by default; the operator can change both in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle) for workspaces opened afterwards).
+**Fix:** Workspaces are ephemeral by design. While the workspace is `EXPIRED_RECOVERABLE`, `workspace_recover` restores or exports its work. Otherwise re-open a workspace using `workspace_open` with a fresh idempotency key.
 
 ---
 
@@ -114,7 +114,7 @@ bash deploy/scripts/setup-dependency-firewall.sh
 ```
 2. Confirm **Egress readiness** reports `Ready` on the dashboard [Settings](/dashboard/settings) page.
 3. Open the workspace again with a fresh idempotency key. The failed attempt kept its key with a `FAILED` status, and replaying that key returns the failed record without retrying the attestation.
-To work without egress meanwhile, reset the default to `network-none` on the Settings page or open the workspace with `networkProfile: "network-none"`.
+To work without egress meanwhile, reset the default to `network-none` on the Settings page or open the workspace with `networkProfile: "network-none"` under a new idempotency key. An omitted profile and an explicit `network-none` are different requests, so reusing the failed open's key with the explicit profile returns `CONFLICT`.
 
 ---
 
@@ -124,7 +124,8 @@ To work without egress meanwhile, reset the default to `network-none` on the Set
 1. The error names the missing scope. Add that permission to the GitHub App and approve the pending installation change on GitHub, then retry. The [GitHub App setup](https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/github-app-private-repositories.md) guide lists which operations need which permission. An action-scoped token also carries **Contents: Read-only** so that `gh` can resolve repository metadata, so that permission is required for `github_action` even when the named action scope is already granted.
 2. Alternatively, configure the fallback credential for that principal: the runner-environment `GH_TOKEN`/`GITHUB_TOKEN` in `owner-bearer` mode, or that principal's global runtime secret in Access mode. The runner-environment credential is harness-side only and never enters an executor; a principal's global runtime secret is injected into that principal's workspaces, so it also authenticates the workspace `gh` CLI.
 A `403` from the helper is never retried, because the operation may already have had side effects; inspect the issue or pull request before retrying.
-3. `pr_merge` and `pr_auto_merge_enable` need **Contents: Read and write** as well as **Pull requests: Read and write**; the error names both scopes. Review actions (`pr_review`, `pr_review_comment`, thread, reviewer, and draft/ready actions) need only **Pull requests: Read and write**.
+3. Issue actions accept a pull request number, because on GitHub a pull request is also an issue: `issue_view` returns its issue view and `issue_comment` posts a conversation comment. Those calls also need **Pull requests** permission at the same level (Read-only for `issue_view`, Read and write for comments and labels). When the installation lacks it, the error says the number most likely names a pull request and names `pull_requests`; grant the permission, or use `pr_view` / `pr_comment`.
+4. `pr_merge` and `pr_auto_merge_enable` need **Contents: Read and write** as well as **Pull requests: Read and write**; the error names both scopes. Review actions (`pr_review`, `pr_review_comment`, thread, reviewer, and draft/ready actions) need only **Pull requests: Read and write**.
 
 ### 11a. Review or merge errors (`GITHUB_REVIEW_NOT_ALLOWED`, `GITHUB_REVIEW_COMMENT_INVALID`, `GITHUB_REVIEWER_UNASSIGNABLE`, `GITHUB_MERGE_BLOCKED`, `GITHUB_MERGE_CONFLICT`, `GITHUB_AUTO_MERGE_UNAVAILABLE`)
 **Cause:** GitHub accepted the credential but refused the pull request operation itself.
@@ -135,13 +136,14 @@ A `403` from the helper is never retried, because the operation may already have
 - `GITHUB_MERGE_BLOCKED`: required checks, required approvals, branch protection, or a moved head blocks the merge. Check `mergeStateStatus` and `reviewDecision` from `pr_view`; use `pr_auto_merge_enable` to merge once the requirements pass.
 - `GITHUB_MERGE_CONFLICT`: update the PR branch and resolve the conflict, then retry.
 - `GITHUB_AUTO_MERGE_UNAVAILABLE`: the repository does not allow auto-merge, or the PR is already mergeable (merge it directly).
+- A successful `pr_merge` or `pr_auto_merge_enable` result that carries a `warning`: the request went through, but the harness could not fully read the pull request state afterwards. Do not retry it; read `pr_view` to get the merge commit or auto-merge state.
 
 ### 12. `LIMIT_EXCEEDED: active workspace limit reached` on `workspace_open`
 **Cause:** The principal already holds `MAX_ACTIVE_WORKSPACES_PER_OWNER` counted workspaces (`CREATING`, `ACTIVE`, `NETWORK_QUARANTINED`). A record in `REAPING` is in flight to teardown and holds no slot. Multiple concurrent workspaces are supported by design, so this is a quota rather than a harness limitation.
 **Fix:**
 1. Call `workspace_list` to see the counted workspaces, then `workspace_close` one you no longer need. Closing removes that workspace's files, so finalize or push unpushed work first.
 2. An `ACTIVE` workspace also frees its slot when its idle or wall TTL expires. A `NETWORK_QUARANTINED` record does not expire, so close it explicitly.
-3. Raise `MAX_ACTIVE_WORKSPACES_PER_OWNER` on the runner (default `3`, maximum `64`) after sizing host memory for the new limit, because each counted workspace may use up to 1 GiB of container memory, one CPU, and 256 pids.
+3. Raise the quota in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle) → **Workspace limits & lifecycle**, or `MAX_ACTIVE_WORKSPACES_PER_OWNER` on the runner when no Dashboard override is set (default `3`, maximum `64`), after sizing host memory for the new limit, because each counted workspace may use up to 1 GiB of container memory, one CPU, and 256 pids.
 Lowering the limit never reaps an existing workspace; it only blocks new admission and recovery until the counted total drops.
 
 ### 13. A workspace is stuck in `REAPING`
@@ -204,7 +206,7 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
    - `denied` — you or the provider declined the request. Check the scopes and the account you signed in with.
    - `issuer_mismatch` — the provider's response did not come from the expected authorization server. Do not retry blindly; confirm the endpoint is the vendor's real MCP URL.
    - `exchange_failed` — the provider rejected the sign-in completion. The **OAuth** panel shows the sanitized error; a wrong manual client ID or secret is a common cause.
-3. If **Connect** reports that MCP OAuth is unavailable, the operator must set `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` (see the [environment variables reference](/reference/environment-variables)).
+3. If the **OAuth** panel reads **Not configured** (no **Connect** button) or **Connect** reports that MCP OAuth is unavailable, the operator must set `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` (see the [environment variables reference](/reference/environment-variables)).
 4. If **Connect** fails before the provider's page opens, the provider may not support automatic client registration. Register a client with the provider and enter its **Client ID** (and a client-secret global secret, if it issued one) in the server form.
 
 ---
@@ -242,10 +244,131 @@ If an agent started but followed the wrong files, read the `repository_context` 
 
 ---
 
-### 22. A merge-train routine: `git_push` lock returns `CONFLICT`/`FORBIDDEN`, or a dispatched run cannot be found
+### 22. Dashboard Terminal is unavailable or "No longer available"
+**Cause:** [Dashboard terminals](/dashboard/terminal) live in the runner's memory and are never resumed. The most common causes are:
+
+| Symptom | Meaning and fix |
+| :--- | :--- |
+| **No longer available** on an open terminal | The runner restarted, or the terminal was closed, timed out, or ended long enough ago to be discarded. Choose **New session**. Use a background task for work that must survive a restart. |
+| **Timed out** | The terminal reached its idle timeout or maximum lifetime. Choose **New session**. |
+| **No longer available**, "ended with its workspace" | The workspace was closed or expired, and its terminals ended with it. Renew or recover the workspace, then choose **New session**. |
+| "Output stopped" under the terminal | The harness refused the output request, or it stayed unreachable through about a minute of retries. Reload the page, then re-attach the terminal from the Terminal tab if it is still running. |
+| Opening fails with HTTP `429` and "too many open terminals" | The workspace already holds its limit of live terminals. Close one from the Terminal tab or [`/dashboard/terminals`](/dashboard/terminal#all-terminals), or ask the operator to raise `TERMINAL_MAX_PER_WORKSPACE` (see the [environment variables reference](/reference/environment-variables)). |
+| "Unsent keystrokes were dropped" while typing or pasting | Input arrived faster than the shell accepted it, and in-order retries ran out. Wait for the shell to catch up, then send the rest again. |
+| Opening fails with HTTP `503` while other workspace actions work | The workspace executor is not running, or the runner cannot reach Docker over a unix socket. Recover the workspace first. Operators: terminals require the runner's `DOCKER_HOST` to be unset or a `unix://` path. |
+
+### 23. `bash` with `target: "toolbox"` returns `FORBIDDEN`, `LIMIT_EXCEEDED`, or `UNAVAILABLE`
+**Cause:** The toolbox target runs each command in a fresh, network-less container from the executor image. Each error has one meaning:
+
+| Error | Meaning and fix |
+| :--- | :--- |
+| `FORBIDDEN` | The operator has not enabled the toolbox. It is off unless `PACKAGES_ENABLED=true` (see the [environment variables reference](/reference/environment-variables)). Use `target: "workspace"` meanwhile. |
+| `LIMIT_EXCEEDED` (HTTP `429`, retryable) | `TOOLBOX_MAX_CONCURRENT` toolbox commands are already running on this instance, sync and async together. Wait for one to finish, or cancel an async handle with `operation_cancel`, then retry. Operators can raise the limit. |
+| `UNAVAILABLE` (HTTP `503`, retryable) | Docker could not create or start the toolbox container, or the runner could not read its state afterwards; the command did not report an exit code. Retry. If it persists, operators should check that the executor image exists on the host and that the runner can reach Docker. |
+
+### 24. `packages_plan`, `packages_apply`, or `packages_remove` fails
+**Cause:** Managed packages are planned, approved for one exact plan digest, then built in an isolated builder. Each error points to one step:
+
+| Error | Meaning and fix |
+| :--- | :--- |
+| `FORBIDDEN`, "disabled on this instance" | Managed packages are off. Operators enable them with `PACKAGES_ENABLED=true` (see the [environment variables reference](/reference/environment-variables)). |
+| `FORBIDDEN`, "has no Dashboard in owner-bearer mode" | `PACKAGES_APPROVAL_MODE=required` needs a Dashboard approver, and owner-bearer deployments have none. Operators either run with Cloudflare Access or set `PACKAGES_APPROVAL_MODE=none` deliberately. |
+| `PACKAGE_APPROVAL_REQUIRED` | The plan is waiting for approval. Approve it on the Dashboard **Packages** page, then call `packages_apply` again with the same `planId` and `planDigest`. |
+| `NOT_SUPPORTED` | `apt` and other system packages are not managed packages. Bake them into an executor image variant instead. |
+| `UNAVAILABLE` naming a registry host | The provisioning proxy refused that host. Operators add it to `PACKAGES_PROXY_HOSTS` in the provisioning-proxy environment and restart the proxy. |
+| `packages_plan` returns `state: "RESOLVING"` with a `resolutionId` | Not an error. Resolution took longer than the plan call waits (a cold uv toolchain or a large npm tree) and keeps running. Poll `packages_status` with that `resolutionId` and a `waitMs` until it is `READY` (the plan is included) or `FAILED` (with `errorCode` and `errorMessage`). |
+| `NOT_FOUND`, "plan resolution not found" | Resolutions are kept only in runner memory: the runner restarted, the resolution finished more than 30 minutes ago, or enough newer resolutions finished to replace it. Run `packages_plan` again. |
+| `UNAVAILABLE`, "the runner is shutting down" | The runner is restarting (for example during a deploy). Retry the plan or apply once it is back. |
+| `STALE_GENERATION` | The `planDigest` does not match the current plan, the executor image changed since the plan was made (for example after a redeploy), or the plan was approved by policy and the operator has since switched `PACKAGES_APPROVAL_MODE` to `required`. For `packages_rollback` or `packages_remove`, the binding changed since you read it. Review the plan or list packages again, then retry with current values. |
+| `EXPIRED` | Plans expire 30 minutes after they are made. Create a new plan. |
+| `CONFLICT`, "binaries collide" | Another binding in the same scope already provides a command with that name. Roll back, replace, or uninstall that binding (`packages_remove`) first. |
+| `CONFLICT`, "an apply for this package and scope is in progress" | `packages_remove` waits for no build. Let the apply finish (`packages_status`), then remove. |
+| `LIMIT_EXCEEDED`, "package build limit reached" (HTTP `429`, retryable) | Two builds are already running. Wait for one to finish, then retry. |
+| `LIMIT_EXCEEDED`, "owner package storage quota would be exceeded" or "maximum of … package bindings" | The owner's release bytes or binding count are used up. Uninstall packages you no longer need with `packages_remove` (or **Uninstall** on the Dashboard [Packages](/dashboard/packages) page), then plan again. |
+| `PACKAGE_BUILD_FAILED`, "only wheels are supported" | uv installs pre-built wheels only and never builds a source distribution, so planning runs no package code. The package or one of its dependencies has no wheel for the managed Python. Pin a version that ships wheels, or install it in a workspace with `uv` instead. |
+| `PACKAGE_BUILD_FAILED` / `PACKAGE_VERIFICATION_FAILED` | The install failed, or the built tree or a binary's launch check did not pass. `packages_status` shows the redacted output tail. Pin a different version or ask for lifecycle scripts only when the package truly needs them. |
+
+### 25. A merge-train routine: `git_push` lock returns `CONFLICT`/`FORBIDDEN`, or a dispatched run cannot be found
 **Cause:** Leased `git_push` calls are atomic on GitHub's side, so they report the remote's real state instead of retrying. Workflow dispatch is asynchronous and GitHub returns no run ID for it.
 **Fix:**
 1. `CONFLICT` on `expectedAbsent: true` means another holder created the lock branch first; on `expectedRemoteOid` (update or `delete: true`) it means the branch moved. Read the branch with `github_read` `ref_get`, then wait or take the new value as your next lease. `CONFLICT` on a create-only push also appears when the lock already holds the very commit you pushed: two holders pushing the same `HEAD` cannot both win, so push a commit unique to the holder (see [Git transfer](/reference/git-transfer)). After `UNKNOWN_REMOTE_STATE`, retry with the same `idempotencyKey`: a lock that already holds your refspec source's commit returns `alreadyFinalized: true`, and `CONFLICT` carries `currentRemoteOid` to compare with the commit you pushed.
 2. `FORBIDDEN` "rejected by the remote's branch protection, ruleset, or hook" (`[remote rejected]`, `GH006`, `GH013`) is a policy refusal and is not retryable: the target branch requires passing checks, a pull request, or a bypass entry for the App. `GITHUB_PERMISSION_MISSING` on a push means the commit changes `.github/workflows` and the App lacks **Workflows: Read and write**.
 3. After `workflow_dispatch`, poll `github_read` `workflow_runs_list` with the returned `runLookup` (`workflow`, `headSha`, `event: "workflow_dispatch"`) for a few seconds until the run appears.
-4. A routine that keeps one workspace for about an hour needs `WORKSPACE_WALL_TTL_SECONDS` of at least `3600`, because `workspace_lease_renew` never extends past the wall-clock deadline. Alternatively open a fresh workspace (a `fetchDepth: 1` checkout is enough for brokered GitHub calls) for each phase.
+4. A routine that keeps one workspace for about an hour needs `WORKSPACE_WALL_TTL_SECONDS` of at least `3600`, because `workspace_lease_renew` never extends past the wall-clock deadline (`hardExpiresAt`). A renewal the deadline caps returns `leaseCapped: true`, `requestedExpiresAt`, and a `leaseWarnings` entry, so check `leaseCapped` instead of `ok` before a long step. Alternatively open a fresh workspace (a `fetchDepth: 1` checkout is enough for brokered GitHub calls) for each phase.
+
+---
+
+### 26. ChatGPT does not receive task or agent events, or `events/subscribe` fails
+**Cause:** [MCP Events](/ai-tools/chatgpt#_3-task-and-agent-notifications-mcp-events) are offered only on the remote `/mcp` endpoint, are delivered to the client's own HTTPS callback, and are never replayed.
+**Fix:**
+1. Connect to `https://harness.zuey.me/mcp`. Local stdio mode and `/mcp-gateway` do not offer events.
+2. Check the subscription's state, last error category, and recent deliveries with `GET /dashboard/api/v1/event-subscriptions`.
+3. `-32015` means the callback failed the signed verification challenge (unreachable, timed out, TLS error, non-`2xx` or redirect response, or a wrong `challenge` echo); nothing was stored. `-32602` means the callback is not a public `https` URL or the secret is not a valid `whsec_` secret. `-32012` means the request was not authenticated or a filter names a workspace, task, or agent you do not own; `-32013` means the subscription quota is reached.
+4. A subscription created with an API key stops when that key is revoked or expires; subscribe again with a valid credential.
+5. An event that happened before the subscription existed, or after it lapsed, is never delivered. Read the result with `tasks_status` or `agent_status`.
+6. Receivers may see the same event twice; deduplicate on the `webhook-id` header.
+
+---
+
+### 27. MCP gateway `search` says `ranking: "lexical"` although semantic routing is on, or a GitHub error has no `diagnosis`
+**Cause:** The Decision Plane is advisory and falls back silently to the deterministic result. That happens when the purpose is not listed in `DECISION_PLANE_PURPOSES`, `TYPESAFE_EGRESS=off`, the owner has no TypeSafe key, the provider timed out or was rate limited, the answer was malformed or low-confidence, or fewer than two tools matched lexically. A `diagnosis` is attached only to failures the deterministic classifier could not name (`GITHUB_ACTION_FAILED`).
+**Fix:**
+1. Read `GET /api/v1/decision-plane/status`. `enabled` and `purposes` show what is on, `configured` shows whether this owner has a key, and `metrics.<purpose>.fallbackReasons` counts why calls fell back.
+2. Search the audit log for `decision.evaluated` rows. Each one carries the `outcome` and `fallbackReason` without any prompt text.
+3. Lexical results are always correct to use. A fallback is never an error.
+
+---
+
+### 28. An expired workspace is not auto-closed, and its `error` starts with `auto-close deferred:`
+**Cause:** The recoverable grace passed, but closing the workspace would have lost work: agents were still running, or the checkout had uncommitted or untracked files, stashes, or commits on a local branch that is not on any remote. A check that could not run defers the close too. Earlier releases deleted recoverable workspaces after one hour regardless; auto-close now retains them, and the reaper retries after the longer of the grace and one hour.
+**Fix:**
+1. Call `workspace_recover` with `mode: "status"` or `"patch"` to see what is unsaved.
+2. Push it (resume with `workspace_recover`, then `git_push`) or use `mode: "export"` to push a recovery snapshot branch.
+3. Call `workspace_close`. Closing without saving first discards the work.
+**Retained by auto-close** in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle) counts these workspaces; they no longer count against the active quota but still use disk.
+
+---
+
+### 29. An agent's model request fails with `400 invalid_model_request` naming a field or tool type
+**Cause:** The Model Gateway charges every request against the agent's budget before sending it, and it keeps the agent inside its workspace's network profile. It refuses anything it cannot measure, and anything that would make the provider act for the agent. The error message names the refused field or tool type:
+- stored Responses context: `previous_response_id`, `conversation`, or an object-valued `prompt` (a stored prompt template);
+- any tool type other than the agent-run `function` and `custom` tools, such as the provider-hosted `web_search`, `file_search`, `code_interpreter`, `image_generation`, `mcp`, or `computer_use`. A hosted web search or remote MCP tool would let an agent in a `network-none` workspace reach the network through the provider;
+- the fields `plugins` and `web_search_options`, which turn on provider-side web search on either API;
+- image, audio, video, or file parts that point at a `file_id` or at a URL other than a `data:` URL, because the provider would download that content for the agent.
+
+**Fix:**
+1. The built-in agent runtime sends the full input on every turn, uses only function tools, and never sends these fields. If you see this error, a custom runtime or tool added one of them.
+2. Send the full conversation as `input` on each request, and send the prompt text inline instead of a stored prompt ID.
+3. Run tools in the agent as function or custom tools, and send images, audio, video, and files inline as a `data:` URL or base64.
+
+---
+
+### 30. `agent_spawn` fails with `LIMIT_EXCEEDED: model spend policy (...) would be exceeded`
+**Cause:** The owner has set a daily or monthly model spend policy, for the whole account or for one model profile. Every spawn reserves its whole `maxCostMicros` against the policies that apply, in UTC days and months, and this spawn's cap does not fit in what is left. A running agent counts at its full cap until it ends; then it counts at what the model gateway charged. A run whose gateway accounting was lost, for example to a gateway restart, keeps counting at its full cap and is marked unreconciled. All of these amounts are estimates, not provider billing: a run counts entirely in the window it was admitted in, so spend near a day or month boundary can exceed one window's limit. The error is marked not retryable because retrying unchanged right away fails the same way. The error message names the policy, the estimated amount already committed, and the headroom left. The refused spawn created no agent, so nothing needs cleaning up.
+
+**Fix:**
+1. Lower `maxCostMicros` to fit the headroom named in the message, or wait for running agents to finish, then retry. The refused spawn recorded nothing, so the same idempotency key can be reused.
+2. If the limit is too tight, the owner can raise or remove the policy through the dashboard's spend routes; see [Spend policies](/dashboard/models#spend-policies). No MCP tool changes policies; `model_spend_summary` only reads them, with the estimated spend in each window.
+
+Per-run caps are unchanged: a policy never raises or clamps an agent's own `maxCostMicros`, which the model gateway still enforces.
+
+---
+
+### 31. `model_profile_create`, `model_profile_update`, or `model_connection_verify` returns `OWNER_APPROVAL_REQUIRED`
+**Cause:** An MCP client may prepare model profiles, but a change that raises spend capacity, widens what agents may do, or sends a key to a new host needs the owner. The message lists the refused escalations:
+
+| Escalation | What triggered it |
+| :--- | :--- |
+| `limits_raised` | A token or cost limit above the current revision's. |
+| `price_lowered` | A lower price that is not pinned from the catalog (`catalogPriceRef`). |
+| `credential_changed` | An update that moves the profile to another provider credential. |
+| `price_unverified_for_new_route` | Override prices carried to another model or credential. |
+| `proxy_operations_widened` | A proxy operation the current revision does not allow. |
+| `custom_upstream_unbound` | A Custom credential's upstream URL that none of your profiles on that credential uses yet, on a create, an update, or a draft connection check. |
+
+Nothing was saved or sent to the provider; the refusal is recorded in the audit log with the actor `mcp`. It is not retryable: the same call fails the same way. A refused call does not spend its `idempotencyKey`.
+
+**Fix:**
+1. Run `model_profile_validate` with the same change: its `escalations` list shows exactly what a save would refuse. Drop those fields to save the rest over MCP.
+2. Otherwise, ask the owner to make the change on the Dashboard [Models page](/dashboard/models), where the same change is saved. Once the owner has saved a profile on a Custom upstream URL, MCP calls may use that URL with that credential.
+3. A profile created over MCP starts **Disabled**. `agent_spawn` cannot use it until the owner activates it on the Models page; no MCP tool activates, disables, or deletes a profile.

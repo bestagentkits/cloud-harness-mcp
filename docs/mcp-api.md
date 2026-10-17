@@ -106,6 +106,10 @@ duplicating work:
 
 - Creation ops (`workspace_open`, `shell_open`, `sessions_open`, `tasks_run`,
   `agent_spawn`, `agent_message`) return the existing handle or reservation.
+  For `workspace_open`, an omitted `networkProfile` resolves through the
+  instance default and is a different parameter from an explicit
+  `network-none`; reusing a key across the two returns `CONFLICT` instead of
+  replaying a workspace opened under another profile.
 - Git mutations (`git_commit`, `git_push`, `workspace_finalize`) take the key
   on the initial attempt and reuse it to reconcile an unverified outcome (e.g.
   `UNKNOWN_REMOTE_STATE`). A same-key replay reporting `alreadyFinalized: true`
@@ -131,6 +135,20 @@ Agent calls do not refresh the parent workspace idle TTL.
   requested proxy-tool subset before launch. Its result is an acknowledgement
   with an opaque ID, generation, status, and replay flag—not prompt
   completion.
+  When the owner has set an aggregate model spend policy (daily or monthly,
+  for the principal or for one model profile), the spawn also reserves its
+  whole `maxCostMicros` against it. A spawn that would take any applicable
+  policy over its limit is refused with `LIMIT_EXCEEDED` (429, not
+  retryable: an unchanged retry right away fails the same way) before any
+  agent exists. The message names the policy and the remaining headroom, so
+  lower `maxCostMicros` or wait for open runs to settle. Aggregate spend is
+  an estimate, not provider billing: a run counts entirely in the UTC window
+  it was admitted in, so spend near a window boundary can exceed one
+  window's limit. Per-run caps are unchanged, and a replayed spawn never
+  reserves twice. `model_spend_summary` reads the policies and the estimated
+  spend in each window; no MCP tool changes them. The owner manages them
+  through the dashboard routes described in
+  [Models & Budgets](../docs-site/dashboard/models.md#spend-policies).
 - `agent_status` accepts exactly one of the agent ID or spawn idempotency key.
   While full state is retained, it reports lineage, configured policy and
   budgets, usage, timestamps, terminal reason, and `outcomeUnknown`.
@@ -169,6 +187,71 @@ A runner restart never replays prompts, messages, model requests, or proxy
 writes. Any active agent from a prior runner epoch is reconciled: its model
 lease is revoked, its container is removed, and its status transitions to
 `INTERRUPTED` with `outcomeUnknown: true`.
+
+### Model setup and spend
+
+Eight tools let a client choose a model for `agent_spawn` and prepare its
+profile: `model_provider_list`, `model_catalog_search`,
+`model_connection_verify`, `model_profile_list`, `model_profile_validate`,
+`model_profile_create`, `model_profile_update`, and the read-only
+`model_spend_summary`. They are scoped to the caller's principal and run in
+the runner on the same control service as the Dashboard's model routes, so
+the catalog cache, the per-principal connection-check rate limit, the
+revision plan, and the gateway sync are shared. Inputs and the strict result
+schemas are owned by
+[`packages/contracts/src/model-tool-schemas.ts`](../packages/contracts/src/model-tool-schemas.ts);
+the runner parses every result against its schema before returning it, so a
+field the schema does not list, such as key material, fails the call instead
+of reaching the client. Local stdio mode refuses them with `INVALID_INPUT`,
+because profiles live in the remote runner.
+
+The Dashboard keeps the owner's decisions:
+
+- **No key, lifecycle, or policy tool.** Credentials are added, rotated, and
+  deleted only on the Dashboard; `model_provider_list` returns their
+  metadata, never a key. No tool activates, disables, or deletes a profile,
+  refreshes the catalog, or changes a spend policy.
+- **Created disabled.** `model_profile_create` always saves a `DISABLED`
+  profile (`activation: "dashboard_required"`), which the gateway does not
+  serve until the owner activates it. `model_profile_update` keeps the
+  profile's status.
+- **Escalations need the owner.** An update that would move the profile to
+  another credential, raise a token or cost limit, lower a price that is not
+  catalog-verified, carry override prices to another model or credential, or
+  widen proxy operations, and any save that would use a Custom upstream URL
+  that none of the principal's profiles on that credential uses, is refused
+  with `OWNER_APPROVAL_REQUIRED` (403, not retryable,
+  `resumeAction: "dashboard:models"`), whatever the profile's status. The rules are owned by
+  [`apps/runner/src/model-profile-guard.ts`](../apps/runner/src/model-profile-guard.ts)
+  and are applied inside the save's transaction, so nothing is written; the
+  refusal is audited separately as `model_profile.change_refused` with the
+  actor `mcp`. A draft `model_connection_verify` with an unbound Custom
+  upstream URL is refused the same way before any request is sent, and audited
+  as `model_connection.refused`. `model_profile_validate` reports the same
+  escalations without writing, and the Dashboard can save every one of them.
+- **A create has no baseline.** The other rules compare a change with the
+  profile's current revision, so only an unbound Custom upstream can refuse a
+  create: its limits, override prices, and proxy operations are what the
+  client chose. Dashboard **Activate** approves that whole MCP-authored
+  revision, so the owner reviews them before activating.
+- **Idempotency and generations.** Create and update require an
+  `idempotencyKey`. The record is keyed by principal, tool, and key, bound to
+  a SHA-256 fingerprint of the rest of the input, written in the save's
+  transaction, and kept for 24 hours: the same key and input return the first
+  result with `replayed: true`, and the same key with other input returns
+  `CONFLICT`. A refused or failed call records nothing, so its key can be
+  reused. Replaying an update of an `ACTIVE` profile also resyncs the gateway
+  when its snapshot is behind, so a retry heals a sync lost after the commit.
+  A save whose draft check could not be kept after the commit still succeeds;
+  its result, and every replay of it, then omits `lastVerification`. Update also requires `expectedGeneration`; a moved generation
+  returns `CONFLICT`, recovered by re-reading `model_profile_list`.
+- **Audit.** Saves and connection checks are audited with the actor `mcp`;
+  reads are not audited. Audit details name the route, limits, and price
+  source, never a key, price, or URL path.
+
+`model_spend_summary` returns the same body as the Dashboard's spend route:
+the UTC day and month windows (settled, reserved, and unreconciled estimates)
+and the policies that bound them, optionally narrowed to one `period`.
 
 ### Repository guidance bootstrap
 
@@ -301,6 +384,89 @@ Executable owners:
 and
 [`test/integration/skills-extension-http.test.ts`](../test/integration/skills-extension-http.test.ts).
 
+## MCP Events (webhook delivery)
+
+The remote Streamable HTTP API (`/mcp`, `/mcp/workspaces/<workspaceId>`, and
+the managed API-key lane) advertises `capabilities.events` in
+`server/discover` and serves `events/list`, `events/subscribe`, and
+`events/unsubscribe` from the MCP Events design sketch at protocol revision
+`2026-07-28`. It exists so a client such as ChatGPT can learn that a durable
+task or managed agent finished without polling. It is a protocol surface beside
+the tools, not a tool: `tools/list` is unchanged, and local stdio and local
+HTTP backends, like `/mcp-gateway`, do not advertise it.
+
+Decisions that are easy to misread:
+
+- **Webhook mode only.** Only `delivery.mode: "webhook"` is accepted, because
+  that is the mode ChatGPT supports; any other mode is refused as unsupported.
+  The event-specific JSON-RPC error codes follow the sketch revision ChatGPT
+  implements (`-32011`…`-32015`). They live in one constant,
+  `MCP_EVENTS_ERROR_CODES`, so a protocol renumbering is a single change.
+- **Four terminal-state events.** `cloudharness.task.completed`,
+  `cloudharness.task.failed`, `cloudharness.agent.settled`, and
+  `cloudharness.agent.failed`. Their filter arguments, payload schemas, and the
+  status sets each one covers are owned by `MCP_EVENT_DEFINITIONS` and are
+  returned verbatim by `events/list`. A task event fires once, on the task's
+  first transition into a terminal status, including a task the runner marks
+  `RUNNER_RESTARTED` after a restart. `agent.settled` means the agent reached
+  its terminal `SUCCEEDED` record and released its runtime; a turn ending is
+  never settlement.
+- **Payloads are notifications, not results.** They carry identifiers, status,
+  exit or error codes, and timestamps only, never command text, output,
+  prompts, or messages. Read the result with `tasks_status` or `agent_status`
+  after the event arrives.
+- **Owner scoping.** Subscriptions belong to the authenticated principal, and
+  a `workspaceId`, `taskId`, or `agentId` filter must name something that
+  principal owns. An unauthenticated request is refused before reaching the
+  runner. Events fan out only to the owner's matching, unexpired
+  subscriptions.
+- **Subscriptions are leases.** A subscription is identified by principal,
+  callback URL, event name, and canonical arguments, so re-subscribing is an
+  idempotent refresh that extends it and returns its current
+  `deliveryStatus`. Grants are finite even for `ttlMs: null`; the client
+  refreshes before `refreshBefore`. Re-subscribing with a different secret
+  rotates it, and deliveries carry both signatures for a short grace window.
+  `events/unsubscribe` is idempotent and always returns an empty result. The
+  per-principal active quota, the cap on retained (including revoked and
+  expired) rows, and the TTL bounds are owned by `MCP_EVENTS_LIMITS`; either
+  limit answers `-32013`.
+- **No replay.** Events are recorded only for subscriptions that exist when the
+  transition commits. `cursor` is always `null`, and a requested `cursor` or
+  `maxAgeMs` is accepted but ignored.
+- **At-least-once delivery.** The body is
+  `{eventId, name, timestamp, data, cursor: null}`, signed per
+  [Standard Webhooks](https://www.standardwebhooks.com/) with `webhook-id`
+  (equal to `eventId`), `webhook-timestamp`, and `webhook-signature`
+  (`v1,<base64>`, space-separated during a secret rotation), plus
+  `X-MCP-Subscription-Id`. A retry re-sends the same `webhook-id` and body, so
+  receivers must deduplicate on it. `410` and `413` responses stop retries for
+  that delivery; other failures are retried within a bounded window owned by
+  [`apps/runner/src/mcp-event-service.ts`](../apps/runner/src/mcp-event-service.ts)
+  and then abandoned.
+- **Callback verification.** Before the first subscription for a
+  principal and callback URL, the API posts a signed
+  `{"type":"verification","challenge":...}` request and requires a `2xx`
+  JSON response echoing the same `challenge`; a pass is reused for a bounded
+  period. Callback URL rules are in the
+  [security model](security-model.md#mcp-events-webhook-egress).
+- **Stopping delivery.** Subscriptions created over a managed API key stop
+  when that key is revoked or expires. OAuth-lane subscriptions lapse at their
+  TTL unless the client refreshes them. The dashboard lists and revokes the
+  owner's subscriptions (`/dashboard/api/v1/event-subscriptions`, newest
+  first, with `truncated` set when the bounded page omits older rows) but
+  never creates one, and a client that re-subscribes reactivates a revoked
+  subscription; to stop a client permanently, revoke its credential.
+
+Executable owners:
+[`packages/contracts/src/events-api.ts`](../packages/contracts/src/events-api.ts),
+[`apps/api/src/events/`](../apps/api/src/events/),
+[`apps/runner/src/mcp-event-service.ts`](../apps/runner/src/mcp-event-service.ts),
+[`apps/runner/src/event-outbox.ts`](../apps/runner/src/event-outbox.ts), and
+[`test/integration/mcp-events-http.test.ts`](../test/integration/mcp-events-http.test.ts).
+These tests use a mock callback receiver; they are not evidence of a live
+ChatGPT subscription (see
+[operations](operations.md#mcp-events-deployment-verification)).
+
 ## Semantics that are easy to misread
 
 - `files_apply_patch` is not a unified-diff parser. It performs one exact
@@ -319,6 +485,134 @@ and
   If its API request disconnects or reaches the API deadline, the
   runner terminates and verifies the operation's process groups; the workspace
   remains active for later calls.
+- `bash` is a convenience entry point, not a second engine. With
+  `target: "workspace"` (the default) it is `exec_run` without the privileged
+  fields: the same workspace resolution, lease and mutation lock, output
+  ceiling, redaction, and `async: true` operation handle for `operation_status`,
+  `operation_wait`, and `operation_cancel`. Its result is the `exec_run`
+  envelope plus `data.target`, both when returned directly and when read
+  through an operation handle (whose `kind` is `exec_run`). `bash` has no
+  `privileged` or `approvalGrantToken` field and rejects both; privileged
+  commands stay on `exec_run` and its approval flow. A `command` containing a
+  NUL byte is `INVALID_INPUT` for both `bash` and `exec_run`.
+  With `target: "toolbox"`, the command runs in a login shell (`bash -lc`, as
+  in a workspace) inside a fresh container from the executor image with the
+  executor's hardening, `--network none`, no workspace checkout, no secrets,
+  and no Docker socket. The runner creates the container, then starts and
+  attaches to it, so it exists by name before any stop decision. Whether the
+  command exits, reaches the output bound, times out, or is cancelled, the
+  runner removes the container by that exact name and retries the removal for
+  about 10 seconds until Docker reports it gone; anything that survives is
+  removed by the runner's periodic sweep of this instance's toolbox containers
+  older than the longest command timeout plus a margin, and an in-container
+  `timeout` deadline ends the command even if the runner dies. A timeout
+  returns `ok: false` with `TIMEOUT` and keeps the partial output. A command the
+  runner stopped (timeout, output bound) reports `exitCode: null` and
+  `signal: "SIGKILL"` rather than an exit code; a timeout reached while the
+  container is still being created reports `exitCode: null` and
+  `signal: null`, because no command ran. A container Docker cannot create or
+  start, or whose state the runner cannot read after the run, is
+  `UNAVAILABLE` (503, retryable), never an exit code. With
+  `async: true` the toolbox returns an operation handle (`kind: "bash"`) for
+  `operation_status`, `operation_wait`, and `operation_cancel`; the handle is
+  visible only to the owner that started it, its result carries
+  `data.target`, and cancelling it waits up to 15 seconds for the container
+  removal before it returns; a removal still running then finishes in the
+  background. At most `TOOLBOX_MAX_CONCURRENT` toolbox commands run at once
+  per runner, sync and async together, shared by every principal of the
+  instance (a single-owner pool, per the trust model); a call beyond that is
+  `LIMIT_EXCEEDED` (429, retryable). The toolbox target takes no `workspaceId` or `cwd`, and is
+  refused with `FORBIDDEN` unless the operator sets `PACKAGES_ENABLED=true`
+  ([configuration](configuration.md#managed-toolbox)). The schema is owned by
+  [`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts);
+  the container arguments by
+  [`apps/runner/src/toolbox-runner.ts`](../apps/runner/src/toolbox-runner.ts).
+- `packages_plan`, `packages_apply`, `packages_list`, `packages_status`,
+  `packages_rollback`, and `packages_remove` manage durable CLI tools (npm
+  packages and uv tools) for the owner or for one workspace. All six return
+  `FORBIDDEN` unless
+  `PACKAGES_ENABLED=true`; local stdio modes refuse them with `INVALID_INPUT`.
+  The flow, the approval binding, and the failure codes are easy to misread:
+  - **Plan resolves, never installs.** `packages_plan` resolves exact
+    versions and a lockfile in an isolated builder and stores an immutable plan
+    whose `planDigest` covers the owner, scope, package, version, source,
+    integrity, lockfile hash, binaries, conflicts, executor image ID, binding
+    generation, and expiry (30 minutes). `ecosystem: "apt"` returns
+    `NOT_SUPPORTED`: system packages need a reviewed executor image variant.
+    The `instance` scope does not exist; `owner` covers the single owner.
+    Resolution never runs package code: uv resolves and installs pre-built
+    wheels only (`--no-build`), so a package or dependency available only as
+    a source distribution fails with `PACKAGE_BUILD_FAILED`.
+  - **Plan may answer before resolution finishes.** The API aborts runner
+    calls at `REQUEST_TIMEOUT_MS`, and a cold uv toolchain or a large npm tree
+    can take longer. `packages_plan` therefore waits inline only up to
+    `PACKAGES_PLAN_INLINE_WAIT_MS` and otherwise returns
+    `{resolutionId, state: "RESOLVING", package}`; `packages_status` with that
+    `resolutionId` (and optional `waitMs`) returns `RESOLVING`, `READY` with
+    the plan, or `FAILED` with its error. `applyId` and `resolutionId` are
+    mutually exclusive. Resolutions are runner memory, not durable rows: a
+    runner restart, or the bounded retention of finished resolutions, turns
+    the id into `NOT_FOUND`, and the caller plans again.
+  - **Approval binds the digest.** With `PACKAGES_APPROVAL_MODE=required` (the
+    default) an operator approves the plan on the Dashboard Approvals page,
+    which submits the digest it displayed. A plan whose digest, binding
+    generation, or executor image changed returns `STALE_GENERATION` at apply;
+    an expired plan returns `EXPIRED`; a pending one returns
+    `PACKAGE_APPROVAL_REQUIRED`; a rejected one returns `CONFLICT`. In
+    `owner-bearer` mode, which has no Dashboard, `required` makes
+    `packages_plan` report `approval: "unavailable"` and `packages_apply`
+    return `FORBIDDEN`; the operator opts into `PACKAGES_APPROVAL_MODE=none`
+    to apply without separate approval. A plan approved by that policy
+    returns `STALE_GENERATION` at apply if the mode was switched back to
+    `required` in the meantime. While the runner shuts down, new plans and
+    applies return `UNAVAILABLE` (503, retryable).
+  - **Apply is durable, not an operation handle.** `packages_apply` returns an
+    `applyId` at once, and replaying the same plan returns the same apply.
+    `packages_status` reads the stored apply (`QUEUED`, `BUILDING`,
+    `VERIFYING`, `PUBLISHING`, `SUCCEEDED`, `FAILED`) and can wait up to 30
+    seconds for its next change. Only `SUCCEEDED` means installed: the release
+    was built, its file tree verified (no special files, no set-ID bits, no
+    symlinks leaving the release, the declared binaries only, within
+    `PACKAGES_MAX_RELEASE_BYTES`), every binary launch-checked with
+    `--version` or `--help` in a container without network, then published by
+    rename and one generation-fenced transaction. A failure leaves the previous
+    release in place and reports `PACKAGE_BUILD_FAILED`,
+    `PACKAGE_VERIFICATION_FAILED`, `LIMIT_EXCEEDED`, `TIMEOUT`, `UNAVAILABLE`
+    (registry host not allowed by the provisioning proxy, or Docker failure),
+    or `RUNNER_RESTARTED` (the runner restarted mid-apply). One apply runs per
+    binding at a time (`CONFLICT` otherwise) and at most two builds run per
+    runner; a plan while both slots are busy is `LIMIT_EXCEEDED` (retryable).
+  - **Releases are pinned per workspace.** New and recreated workspace
+    executors mount every release bound for them read-only at
+    `/opt/chm-packages/<releaseId>` with its `bin` on `PATH` after the
+    workspace's own tools and before the image's; the `bash` toolbox target
+    mounts the owner-scope releases the same way. Existing workspaces keep the
+    releases they started with until they are recreated, and
+    `packages_status` without `applyId` lists the ones that would change. A
+    workspace-scope binding overrides the owner binding of the same package;
+    any other binary-name collision is a `CONFLICT` listed in the plan.
+  - **Rollback needs no approval.** `packages_rollback` points a binding back
+    to a verified release from its last five history entries, guarded by
+    `expectedGeneration` (`STALE_GENERATION` if it moved).
+  - **Remove uninstalls one scope.** `packages_remove` (destructive, no
+    approval) deletes a binding and its rollback history, guarded by
+    `expectedGeneration`, and is refused with `CONFLICT` while an apply for
+    that binding is in flight. Releases nothing else references are collected
+    at once; a release a retained workspace profile still mounts is collected
+    by later garbage collection, and running workspaces keep the tool until
+    they are recreated. Reinstalling needs a new plan. It is audited as
+    `package.removed`, and the Dashboard Packages page offers the same action.
+
+  Schemas are owned by
+  [`packages/contracts/src/package-schemas.ts`](../packages/contracts/src/package-schemas.ts);
+  orchestration by
+  [`apps/runner/src/package-service.ts`](../apps/runner/src/package-service.ts);
+  durable state by
+  [`apps/runner/src/package-store.ts`](../apps/runner/src/package-store.ts); the
+  builder, verification, and launch check by
+  [`apps/runner/src/package-builder.ts`](../apps/runner/src/package-builder.ts).
+  The boundary is in the
+  [security model](security-model.md#managed-toolbox-packages).
 - `github_read` is a read-only, non-destructive tool sharing the same broker
   and handler as `github_action`, restricted to the read actions (`pr_list`,
   `pr_view`, `pr_review_threads`, `pr_reviews`, `issue_list`, `issue_view`,
@@ -353,7 +647,10 @@ and
   users and team slugs; `pr_ready` and `pr_convert_to_draft` move the draft state; `pr_merge`
   (`merge`, `squash`, or `rebase`, optional commit message and `matchHeadCommit` guard) and
   `pr_auto_merge_enable`/`pr_auto_merge_disable` complete the lifecycle. Merge and auto-merge
-  additionally need `contents: write` on the token. `workspace_capabilities` reports each
+  additionally need `contents: write` on the token. After a merge or auto-merge request succeeds, the
+  helper reads the pull request state over GraphQL, falling back to REST (without
+  `isInMergeQueue`) when GraphQL fails; a fallback or a failed status lookup adds a `warning` to
+  a successful result and never reports the completed request as `GITHUB_ACTION_FAILED`. `workspace_capabilities` reports each
   capability under `operations` (`pullRequestReview`, `pullRequestReviewComment`,
   `pullRequestReviewThread`, `pullRequestReviewerManage`, `pullRequestReady`,
   `pullRequestMerge`, `pullRequestAutoMerge`) and the authoritative action split under
@@ -406,6 +703,13 @@ and
   `GITHUB_REVIEWER_UNASSIGNABLE`, `GITHUB_MERGE_BLOCKED`, `GITHUB_MERGE_CONFLICT`,
   `GITHUB_AUTO_MERGE_UNAVAILABLE`);
   a `403` from the helper is never retried.
+  When the `failure-classification` Decision Plane purpose is on and a failure
+  matches no rule (`GITHUB_ACTION_FAILED`), the error may carry an advisory
+  `data.diagnosis` (`failureType`, `confidence`, `retryLikelyToSucceed`,
+  `credentialRefreshNeeded`, `workspaceRecreateNeeded`, `agentNeeded`,
+  `humanNeeded`, `priorFailures`, `decisionId`; schema `FailureDiagnosisSchema`
+  in [`packages/contracts/src/decision-plane.ts`](../packages/contracts/src/decision-plane.ts)).
+  It never changes `code` or `retryable`, and its absence means nothing.
   Comment, label, publish, review, reviewer-request, merge, commit-status, dispatch, and re-run mutations support idempotency keys with a 24-hour
   retention window; retries within 24 hours replay the cached result or reject
   payload mismatches with `CONFLICT`, after which the key expires and the request
@@ -478,14 +782,28 @@ and
   than continuing invisibly. Task log output is automatically spooled into retained
   artifact storage upon workspace closure. In contrast, interactive shells (`shell_*`)
   and named sessions (`sessions_*`) live in volatile runner memory only and are lost on restart.
+- The Dashboard Terminal is not part of this contract. Its `terminal_*`
+  operations are internal dashboard operations reached only through the
+  authenticated dashboard, and no MCP tool opens a PTY; agents keep `shell_*`,
+  `sessions_*`, and `exec_run`. Its boundary is in the
+  [security model](security-model.md#dashboard-terminal).
 - `workspace_lease_renew` and `workspace_recover` allow inspecting, extending,
   and restoring workspaces across their lifecycle states:
   - **`ACTIVE` → `EXPIRED_RECOVERABLE` → `CLOSED` Lifecycle:** When an active
     workspace's idle lease expires, its container executor is reaped to release CPU
     and memory, but its repository files, unpushed commits, branches, and working-tree
     modifications are retained during a recoverable grace period (`EXPIRED_RECOVERABLE`).
-    If the recoverable grace period lapses or the workspace is explicitly closed, it
-    transitions to `CLOSED` and all host files are permanently pruned.
+    The grace window starts at expiry. Its length, like the idle and wall TTLs, is
+    instance configuration snapshotted when the workspace opens, so a later
+    setting change never shortens or extends an open workspace
+    ([configuration](configuration.md#workspace-and-repository-policy)). An
+    explicit `workspace_close` transitions it to `CLOSED` and permanently prunes
+    its host files. When the grace lapses, the reaper closes it only if nothing
+    would be lost: running agents (an agent past its TTL no longer counts),
+    uncommitted or untracked files in the checkout or any linked worktree,
+    stashes, or commits not on any remote ref (including a worktree's detached
+    `HEAD`) keep it `EXPIRED_RECOVERABLE`, with `error`
+    starting `auto-close deferred:`, until it is recovered or explicitly closed.
   - **`workspace_recover`:** Restores or exports work from active or `EXPIRED_RECOVERABLE`
     workspaces. In `resume` mode (default), it restores the workspace to `ACTIVE` state,
     recreates and starts the executor container on demand, and refreshes the idle lease
@@ -495,10 +813,15 @@ and
     safety escape hatch even if the hard wall-clock deadline was reached.
   - **`workspace_lease_renew`:** Explicitly extends the idle lease of an `ACTIVE` or
     `EXPIRED_RECOVERABLE` workspace (clamped to the maximum `hardExpiresAt` limit),
-    reactivating the executor container if previously reaped.
+    reactivating the executor container if previously reaped. Every successful
+    renewal returns `leaseCapped`; when the requested extension would pass
+    `hardExpiresAt`, it is `true`, the result adds `requestedExpiresAt` and a
+    `leaseWarnings` entry, and the message says the lease ends at the hard
+    deadline (or was not extended at all).
   - **Long routines:** renewal extends only the idle lease and never passes
-    `hardExpiresAt`, which `WORKSPACE_WALL_TTL_SECONDS` sets when the workspace opens
-    (shipped default 15 minutes). A routine that holds one workspace for about an hour
+    `hardExpiresAt`, which the instance wall TTL (Dashboard override or
+    `WORKSPACE_WALL_TTL_SECONDS`) sets when the workspace opens (shipped default
+    15 minutes). A routine that holds one workspace for about an hour
     needs an instance wall TTL of at least `3600`, or should open a fresh workspace per
     phase and keep its state in GitHub (statuses, refs, comments). Brokered
     `github_action`/`github_read` calls do not read local history, so a
@@ -605,7 +928,7 @@ When running Cloud Harness MCP over local stdio (`--transport stdio --workspace 
 1. **Pre-opened workspace:** The workspace is configured at process startup. Calling `workspace_open` returns `INVALID_INPUT` explaining that the workspace is already selected.
 2. **Lifecycle operations:** `workspace_list` lists the active local workspace. `workspace_status` and `workspace_capabilities` return structured repository and workspace capabilities (`mode: 'local'`, `gitNetwork`, `gitPush`, `sandboxed: false`, granular operations and permissions). `workspace_close` terminates owned child processes but **never deletes the local folder**.
 3. **Subprocess execution:** `exec_run`, `shell_*`, `sessions_*`, and `tasks_*` execute on the local host with the current user's permissions. Output is bounded by ring buffers and paginated with monotonic cursors.
-4. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action` and `exec_run.privileged=true` return structured unsupported errors.
+4. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action`, `exec_run.privileged=true`, and `bash` with `target: "toolbox"` return structured unsupported errors; `bash` with `target: "workspace"` behaves like `exec_run`.
 5. **Filesystem operations:** File reading, writing, patching, deletion, and searching apply within the canonical workspace root. Traversal escapes are rejected.
 
 ### Local multi-workspace mode

@@ -3,6 +3,17 @@ import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, Oper
 import { AgentProxyOperationSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
 import { SkillSuggestInputSchema } from './typesafe-schemas.js';
 import {
+  ModelConnectionVerifyToolInputSchema,
+  ModelProfileCreateToolInputSchema,
+  ModelProfileListToolInputSchema,
+  ModelProfileUpdateToolInputSchema,
+  ModelProfileValidateToolInputSchema,
+  ModelProviderListToolInputSchema,
+  ModelSpendSummaryToolInputSchema
+} from './model-tool-schemas.js';
+import { ModelCatalogSearchInputSchema } from './model-catalog-schemas.js';
+import { PackagesApplyInputSchema, PackagesListInputSchema, PackagesPlanInputSchema, PackagesRemoveInputSchema, PackagesRollbackInputSchema, PackagesStatusInputSchema } from './package-schemas.js';
+import {
   JournalTypeSchema,
   KnowledgeItemIdSchema,
   KnowledgeKindSchema,
@@ -671,6 +682,11 @@ const agentLookup = z.object({
   }
 });
 
+/** Upper bound for one `exec_run` or `bash` command; the runner derives its stale toolbox sweep age from it. */
+export const COMMAND_MAX_TIMEOUT_MS = 300_000;
+/** A NUL byte cannot cross a process argv, so a command containing one is invalid input rather than a spawn failure. */
+const shellCommand = z.string().min(1).max(32_768).refine((value) => !value.includes('\0'), 'command must not contain NUL bytes');
+
 const schemas = {
   workspace_open: z.object({
     repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema,
@@ -788,14 +804,44 @@ const schemas = {
   symbols_references: z.object({ ...workspace, symbol: z.string().min(1).max(256).refine((value) => !value.includes('\0') && !value.includes('\n')), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
   exec_run: z.object({
     ...workspace,
-    command: z.string().min(1).max(32_768),
+    command: shellCommand,
     cwd: relativePath.default('.'),
-    timeoutMs: z.number().int().min(100).max(300_000).default(60_000),
+    timeoutMs: z.number().int().min(100).max(COMMAND_MAX_TIMEOUT_MS).default(60_000),
     maxOutputBytes: z.number().int().min(1_024).max(1_048_576).default(262_144),
     privileged: z.boolean().default(false),
     approvalGrantToken: z.string().min(1).max(128).optional(),
     async: z.boolean().default(false)
   }),
+  // `bash` deliberately has no `privileged` or `approvalGrantToken`: a strict object refuses them, so
+  // privileged commands can only take the `exec_run` approval path.
+  bash: z.object({
+    ...workspace,
+    command: shellCommand,
+    target: z.enum(['workspace', 'toolbox']).default('workspace')
+      .describe('workspace runs in the workspace executor like exec_run; toolbox runs in a disposable no-network container with no checkout.'),
+    cwd: relativePath.default('.').describe('Workspace-relative directory; workspace target only.'),
+    timeoutMs: z.number().int().min(100).max(COMMAND_MAX_TIMEOUT_MS).default(60_000),
+    maxOutputBytes: z.number().int().min(1_024).max(1_048_576).default(262_144),
+    async: z.boolean().default(false).describe('Return an operation handle for operation_status, operation_wait, and operation_cancel instead of waiting.')
+  }).strict().superRefine((input, context) => {
+    if (input.target !== 'toolbox') return;
+    if (input.workspaceId !== undefined) context.addIssue({ code: 'custom', path: ['workspaceId'], message: 'workspaceId is not allowed for the toolbox target' });
+    if (input.cwd !== '.') context.addIssue({ code: 'custom', path: ['cwd'], message: 'cwd is only valid for the workspace target' });
+  }),
+  packages_plan: PackagesPlanInputSchema,
+  packages_apply: PackagesApplyInputSchema,
+  packages_list: PackagesListInputSchema,
+  packages_status: PackagesStatusInputSchema,
+  packages_rollback: PackagesRollbackInputSchema,
+  packages_remove: PackagesRemoveInputSchema,
+  model_provider_list: ModelProviderListToolInputSchema,
+  model_catalog_search: ModelCatalogSearchInputSchema,
+  model_connection_verify: ModelConnectionVerifyToolInputSchema,
+  model_profile_list: ModelProfileListToolInputSchema,
+  model_profile_validate: ModelProfileValidateToolInputSchema,
+  model_profile_create: ModelProfileCreateToolInputSchema,
+  model_profile_update: ModelProfileUpdateToolInputSchema,
+  model_spend_summary: ModelSpendSummaryToolInputSchema,
   shell_open: z.object({ ...workspace, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
   shell_io: z.object({ ...workspace, shellId: ShellIdSchema, input: z.string().max(65_536).optional(), cursor: z.string().max(256).optional(), waitMs: z.number().int().min(0).max(5_000).default(100) }),
   shell_close: z.object({ ...workspace, shellId: ShellIdSchema }),
@@ -1130,7 +1176,12 @@ const titles: Record<RunnerOperation, string> = {
   workspace_finalize: 'Finalize workspace commit and push',
   files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_write_batch: 'Write batch files', files_apply_patch: 'Apply text patch', files_delete: 'Delete file or directory', files_move: 'Move file or directory', files_mkdir: 'Create directory', grep_search: 'Search workspace',
   symbols_search: 'Find symbol definitions', symbols_references: 'Find lexical symbol references',
-  exec_run: 'Run command', shell_open: 'Open shell', shell_io: 'Use shell', shell_close: 'Close shell', tasks_list: 'List tasks', tasks_run: 'Run task', tasks_status: 'Task status', tasks_cancel: 'Cancel task',
+  exec_run: 'Run command', bash: 'Run bash command',
+  packages_plan: 'Plan managed package change', packages_apply: 'Apply managed package plan', packages_list: 'List managed packages', packages_status: 'Managed package status', packages_rollback: 'Roll back managed package', packages_remove: 'Uninstall managed package',
+  model_provider_list: 'List model providers', model_catalog_search: 'Search model catalog', model_connection_verify: 'Check model connection',
+  model_profile_list: 'List agent model profiles', model_profile_validate: 'Dry-run agent model profile change', model_profile_create: 'Create agent model profile',
+  model_profile_update: 'Update agent model profile', model_spend_summary: 'Read estimated model spend',
+  shell_open: 'Open shell', shell_io: 'Use shell', shell_close: 'Close shell', tasks_list: 'List tasks', tasks_run: 'Run task', tasks_status: 'Task status', tasks_cancel: 'Cancel task',
   sessions_list: 'List coding sessions', sessions_open: 'Open coding session', sessions_io: 'Use coding session', sessions_close: 'Close coding session',
   tasks_graph: 'Read task dependency graph',
   operation_status: 'Read operation status', operation_cancel: 'Cancel operation', operation_wait: 'Wait for operation',
@@ -1155,12 +1206,12 @@ const titles: Record<RunnerOperation, string> = {
 };
 
 const descriptions: Record<RunnerOperation, string> = {
-  workspace_open: 'Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace.',
+  workspace_open: 'Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace. The result hardExpiresAt is a fixed deadline set by the instance maximum workspace lifetime that no renewal or activity extends.',
   workspace_list: 'List owner-visible workspace records with bounded cursor pagination.',
   workspace_status: 'Read the lifecycle state and metadata for one workspace.',
   workspace_capabilities: 'Inspect workspace and repository authorization capabilities (including issue and pull request operations mapped to github_action) without modifying state or minting tokens.',
   workspace_close: 'Stop a workspace executor and permanently remove all workspace files, including unpushed commits.',
-  workspace_lease_renew: 'Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace.',
+  workspace_lease_renew: 'Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace. Renewal never passes hardExpiresAt; when the requested extension would pass it, the result sets leaseCapped: true with requestedExpiresAt and a leaseWarnings entry.',
   workspace_recover: 'Recover a recoverable expired workspace to active state, or inspect, patch, or export unpushed work.',
   workspace_context: 'Read the active workspace ID, branch, lease time, Git identity, and repository overview.',
   workspace_set_active: 'Set the caller preferred active workspace when multiple workspaces exist.',
@@ -1177,6 +1228,21 @@ const descriptions: Record<RunnerOperation, string> = {
   symbols_search: 'Find bounded indexed symbol definitions by case-insensitive substring.',
   symbols_references: 'Find bounded lexical whole-word occurrences of a symbol in workspace text.',
   exec_run: 'Run one bounded shell command in the workspace and return captured output.',
+  packages_plan: 'Resolve one managed toolbox package change into an immutable plan without installing anything and without running package code (uv accepts wheels only; npm lifecycle scripts stay off unless allowed). ecosystem "npm" or "uv" (uv tools get their own managed Python); "apt" is not supported and returns NOT_SUPPORTED because system packages need a reviewed executor image variant. scope "owner" (default) makes the tool available to all your new workspaces and the bash toolbox target; scope "workspace" needs workspaceId and overrides the owner binding there. "instance" scope does not exist. If resolution is still running after about 20 seconds, the result is { resolutionId, state: "RESOLVING" } instead: poll packages_status with that resolutionId (and waitMs) until it is READY with the plan or FAILED. The plan lists the exact version, source, integrity, dependency count, size, binaries, conflicts, affected workspaces, and planDigest. approval "required" means an operator approves the plan in the Dashboard first; "unavailable" means this instance cannot approve plans. Use for durable CLI tools; use npm install or uv in a workspace for project dependencies. Off unless the operator sets PACKAGES_ENABLED=true.',
+  packages_apply: 'Build an approved plan (planId with the exact planDigest from packages_plan) into an immutable release in an isolated builder, verify its file tree, and launch-check every binary without network. Returns an applyId immediately; poll packages_status with applyId. Replaying the same plan returns the same apply. A release is installed only when the apply reaches SUCCEEDED. Existing workspaces keep their mounted releases until they are recreated; new workspaces and the bash toolbox target use the new release.',
+  packages_list: 'List managed package bindings (what each scope uses now) and verified releases, with versions, digests, sizes, binaries, and whether a release was built for an older executor image (stale). Set includeHistory to see earlier releases you can roll back to.',
+  packages_status: 'Read a managed package apply by applyId (state, error code, bounded output tail, release id) or a plan resolution by resolutionId (RESOLVING, READY with the plan, or FAILED with its error), optionally waiting up to waitMs for it to change. Without either, summarize in-flight applies, plans waiting for approval, missing releases, and workspaces that need recreation to pick up a change.',
+  packages_rollback: 'Point a managed package binding back to an earlier verified release from its history. Needs bindingId, releaseId, and the binding generation you last read (expectedGeneration); a moved generation returns STALE_GENERATION. Needs no new approval. Workspaces pick up the change when recreated.',
+  packages_remove: 'Uninstall a managed package from one scope: deletes the binding (bindingId from packages_list, with its current generation as expectedGeneration) and its rollback history, and collects releases no retained workspace still mounts. A moved generation returns STALE_GENERATION; a running apply returns CONFLICT. Needs no approval. New workspaces and the bash toolbox stop seeing the tool at once; existing workspaces keep it until recreated. Reinstalling needs a new plan.',
+  bash: 'Run one bounded bash command. target "workspace" (default) uses the exec_run path in the workspace executor. target "toolbox" runs in a disposable no-network container with no workspace checkout, no secrets, and no workspaceId; it is available only when the operator enables packages. Both targets accept async: true for an operation handle. bash has no privileged mode: use exec_run with its approval flow for privileged commands.',
+  model_provider_list: 'List the supported model providers (auth header modes, API modes and endpoints, catalog source) and your connected provider credentials as metadata (id, provider, status, key version, last check). Keys are never returned, and no tool creates, rotates, or reads one: the owner adds keys on the Dashboard. Optional provider narrows both lists.',
+  model_catalog_search: 'Search the cached model catalog for one provider, optionally through your credential\'s models listing (credentialId). Prices are integer micro-USD per million tokens and are estimates; null means unknown, not free. A cold or stale cache may be filled from the provider, so the call can be slow. When saving a profile, use an entry\'s providerModelId as model and its pricing.provenance.sourceModelId as catalogPriceRef.sourceModelId to pin catalog-verified prices.',
+  model_connection_verify: 'Check a saved profile (profileId) or a draft route on a stored credential (credentialId with model, apiMode, and customUpstreamUrl for a Custom credential) with bounded probes: authentication, model access, streaming inference, and an opt-in tool call. It spends a few tokens, shares the per-principal rate limit with the Dashboard, and is audited. A draft that names a model returns verificationRef; pass it to model_profile_validate and model_profile_create or model_profile_update with the same route to keep the result. Over MCP, a custom upstream URL must already be used by one of your profiles on that credential, else OWNER_APPROVAL_REQUIRED.',
+  model_profile_list: 'List your agent model profiles with status, generation (pass it as expectedGeneration to model_profile_update), active revision, pinned prices, limits, last connection check, and a repricing review against the cached catalog. Optional profileId narrows the list to one profile.',
+  model_profile_validate: 'Dry-run a profile create (action "create" with the model_profile_create fields) or update (action "update" with profileId, expectedGeneration, and the changed fields). It returns the revision a save would write, issues, a pricing review, whether verificationRef would attach, and escalations: changes that need owner approval on the Dashboard and that model_profile_create or model_profile_update would refuse with OWNER_APPROVAL_REQUIRED. It writes nothing.',
+  model_profile_create: 'Create an agent model profile on one of your stored credentials. Profiles created over MCP start DISABLED: the owner activates them on the Dashboard before agent_spawn can use them. Needs an idempotencyKey; replaying the same key and input returns the first result with replayed true, and the same key with other input returns CONFLICT. A custom upstream URL that none of your profiles on that credential uses returns OWNER_APPROVAL_REQUIRED and creates nothing.',
+  model_profile_update: 'Create a new revision of one of your profiles, guarded by expectedGeneration (a moved generation returns CONFLICT: re-read it with model_profile_list) and an idempotencyKey. Omitted fields keep their current values. Moving to another credentialId, raising a limit, lowering a price that is not catalog-verified, carrying override prices to another model or credential, widening proxy operations, or using an unbound custom upstream returns OWNER_APPROVAL_REQUIRED and changes nothing, whatever the profile status; the owner makes those changes on the Dashboard. Status is never changed here.',
+  model_spend_summary: 'Read your estimated model spend for the current UTC day and month windows (settled, reserved by open runs, and unreconciled), and the owner-set spend policies that bound it. Read-only. Figures are gateway-side estimates from pinned profile prices, not provider invoices. Spend policies are changed only on the Dashboard. Optional period narrows windows and policies to "day" or "month".',
   shell_open: 'Open an idempotent ephemeral interactive shell in the workspace.',
   shell_io: 'Send input to or poll bounded output from an open interactive shell.',
   shell_close: 'Terminate an interactive shell and release its in-memory state.',
@@ -1258,18 +1324,22 @@ const readOnly = new Set<RunnerOperation>([
   'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search',
   'knowledge_read', 'knowledge_list', 'knowledge_search', 'knowledge_graph', 'deployments_list',
   'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read',
-  'agent_status', 'agent_logs', 'agent_list'
+  'packages_list', 'packages_status',
+  'agent_status', 'agent_logs', 'agent_list',
+  'model_provider_list', 'model_catalog_search', 'model_profile_list', 'model_profile_validate', 'model_spend_summary'
 ]);
 const destructive = new Set<RunnerOperation>([
   'workspace_close', 'workspace_recover', 'workspace_finalize',
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move',
-  'exec_run', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close',
+  'exec_run', 'bash', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close',
   'tasks_run', 'tasks_cancel', 'operation_cancel',
   'git_branch', 'git_checkout', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'git_identity_set',
   'worktrees_remove', 'skills_run', 'hooks_run', 'hooks_activate', 'hooks_deactivate', 'memories_write', 'memories_delete',
   'knowledge_create', 'knowledge_update', 'knowledge_delete', 'knowledge_link', 'knowledge_unlink',
   'deployments_run', 'artifacts_restore', 'artifacts_delete', 'github_action',
-  'agent_spawn', 'agent_message', 'agent_cancel'
+  'packages_rollback', 'packages_remove',
+  'agent_spawn', 'agent_message', 'agent_cancel',
+  'model_profile_update'
 ]);
 const idempotent = new Set<RunnerOperation>([
   'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize',
@@ -1282,12 +1352,17 @@ const idempotent = new Set<RunnerOperation>([
   'knowledge_create', 'knowledge_read', 'knowledge_update', 'knowledge_delete', 'knowledge_list', 'knowledge_search', 'knowledge_link', 'knowledge_unlink', 'knowledge_graph',
   'deployments_list',
   'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read',
-  'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list'
+  'packages_apply', 'packages_list', 'packages_status', 'packages_rollback',
+  'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list',
+  'model_provider_list', 'model_catalog_search', 'model_profile_list', 'model_profile_validate', 'model_profile_create', 'model_profile_update',
+  'model_spend_summary'
 ]);
 const openWorld = new Set<RunnerOperation>([
-  'workspace_open', 'workspace_finalize', 'exec_run', 'shell_io', 'sessions_io', 'tasks_run',
+  'workspace_open', 'workspace_finalize', 'exec_run', 'bash', 'shell_io', 'sessions_io', 'tasks_run',
   'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action', 'github_read',
-  'agent_spawn', 'agent_message'
+  'packages_plan', 'packages_apply',
+  'agent_spawn', 'agent_message',
+  'model_catalog_search', 'model_connection_verify'
 ]);
 
 export const TOOL_SPECS: ToolSpec[] = (Object.keys(schemas) as RunnerOperation[]).map((name) => ({

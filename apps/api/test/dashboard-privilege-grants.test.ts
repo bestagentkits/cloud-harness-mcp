@@ -157,6 +157,7 @@ describe('Dashboard privilege grant routes', () => {
     expect(reply.json.data).toMatchObject({
       grants: [expect.objectContaining({ id: 'pvg_1234567890abcdef', status: 'PENDING' })]
     });
+    expect((reply.json.data as { grants: Record<string, unknown>[] }).grants[0]).not.toHaveProperty('ownerId');
   });
 
   it('approves a privilege grant through the dashboard control router', async () => {
@@ -179,6 +180,7 @@ describe('Dashboard privilege grant routes', () => {
     expect(reply.json.data).toMatchObject({
       grant: expect.objectContaining({ id: 'pvg_1234567890abcdef', status: 'APPROVED' })
     });
+    expect((reply.json.data as { grant: Record<string, unknown> }).grant).not.toHaveProperty('ownerId');
   });
 
   it('rejects a privilege grant through the dashboard control router', async () => {

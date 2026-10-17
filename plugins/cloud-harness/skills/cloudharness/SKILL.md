@@ -1,6 +1,6 @@
 ---
 name: cloudharness
-description: "Operate Cloud Harness MCP safely and effectively: open isolated remote coding workspaces with optional environment/secrets injection, inspect capabilities, inspect and edit files, run bounded commands or managed tasks, work with Git, worktrees, and brokered GitHub actions, manage lifecycle recovery, and clean up resources. Use whenever Cloud Harness MCP, cloudharness tools, remote workspaces, or remote coding executor operations are involved."
+description: "Operate Cloud Harness MCP safely and effectively: open isolated remote coding workspaces with optional environment/secrets injection, inspect capabilities, inspect and edit files, run bounded commands or managed tasks, work with Git, worktrees, and brokered GitHub actions, prepare subagent model profiles and read estimated model spend, manage lifecycle recovery, and clean up resources. Use whenever Cloud Harness MCP, cloudharness tools, remote workspaces, or remote coding executor operations are involved."
 ---
 
 # Cloud Harness MCP
@@ -20,10 +20,12 @@ network isolation.
 | Open, recover, inspect, or close a workspace; interpret results/errors | [Workspace lifecycle and results](references/workspace-lifecycle-and-results.md) |
 | List, read, write, patch, move, delete, grep, or search symbols | [Files and search](references/files-and-search.md) |
 | Run a command, interactive shell, coding session, or dependency task | [Execution and tasks](references/execution-and-tasks.md) |
+| Install, update, roll back, or uninstall a durable CLI tool for every workspace | [Managed packages](references/managed-packages.md) |
 | Inspect or change Git state, transfer origin refs, or use worktrees | [Git and worktrees](references/git-and-worktrees.md) |
 | Run an automated merge train: branch locks, commit statuses, check runs, review state, workflow dispatch and re-runs | [GitHub merge train](references/github-merge-train.md) |
 | Read/run repository skills, hooks, knowledge (memories & journals), or deployments | [Repository automation](references/repository-automation.md) |
 | Snapshot, list, read, restore, or delete retained artifacts | [Retained artifacts](references/artifacts.md) |
+| Choose a subagent model, check a connection, save an agent model profile, or read estimated model spend | [Models and spend](references/models-and-spend.md) |
 
 Read a reference before using an unfamiliar, destructive, networked, or
 recovery-sensitive operation. The references are bundled with this skill and do
@@ -41,6 +43,9 @@ Its tool set is exactly `search`, `inspect`, `execute`, `permissions`, and
 `status`. Downstream tools are never aggregated into `tools/list`, so work
 progressively: `search` by intent, `inspect` one qualified `<server>.<tool>`
 name for its real input schema, then `execute` with matching arguments.
+`search` reports `ranking: "semantic"` when the operator's Decision Plane
+reordered the permission-filtered matches, and `"lexical"` otherwise. Either
+order is safe to use, and neither one can surface a denied tool.
 `permissions` reports the effective allow/deny decision and `status` reports
 server health. Credentials are referenced as dashboard global secrets and are
 never echoed back. A downstream server may instead use OAuth that the owner
@@ -64,6 +69,20 @@ Reading a skill never activates it or runs a script; scripts
 still run only through `skills_run` with the digest `skills_list` returned.
 Details: [Repository automation](references/repository-automation.md#skills).
 
+## MCP Events
+
+The remote HTTP endpoint also advertises MCP Events (`events/list`,
+`events/subscribe`, `events/unsubscribe`, webhook delivery only) for four
+terminal-state notifications: `cloudharness.task.completed`,
+`cloudharness.task.failed`, `cloudharness.agent.settled`, and
+`cloudharness.agent.failed`. These are client-side protocol subscriptions, not
+tools: only the host client subscribes, with its own HTTPS callback and secret,
+so never try to create one through a tool call or a workspace command. An event
+carries ids, status, codes, and timestamps only, so after one arrives call
+`tasks_status` or `agent_status` for the result. Events are not replayed and may
+arrive more than once; when your client lacks events, or in local stdio mode,
+poll `tasks_status`, `operation_wait`, or `agent_status` instead.
+
 ## Effective workflow
 
 1. **Preflight and authorization.** Confirm the target repository. Use a
@@ -72,7 +91,13 @@ Details: [Repository automation](references/repository-automation.md#skills).
    80/443 through an attested host firewall), so omit it for normal work. Pass
    `networkProfile: 'network-none'` to block all executor egress only when the
    owner asks for isolation. Subagents require a network-disabled workspace, so
-   open a separate `network-none` workspace for `agent_spawn`. Workspaces
+   open a separate `network-none` workspace for `agent_spawn`. A spawn the
+   owner's estimated model spend policy cannot fit fails with non-retryable
+   `LIMIT_EXCEEDED`; lower `maxCostMicros` or wait for running agents to
+   finish rather than retrying unchanged. `model_spend_summary` shows the
+   headroom; no MCP tool changes policies, only the owner can, through the
+   dashboard. A profile you save with `model_profile_create` stays disabled
+   until the owner activates it. Workspaces
    automatically inherit active **Global Secrets** for your signed-in identity.
    When project-specific environment credentials are also required, provide
    `environmentId` with `confirmEnvironmentInjection: true` (environment secrets
@@ -130,6 +155,12 @@ Details: [Repository automation](references/repository-automation.md#skills).
    - On `CONFLICT`, re-read the target file hash and rebuild the edit.
 6. **Execute deliberately and safely.**
    - Use `exec_run` for synchronous, bounded single commands.
+   - `bash` with the default `target: "workspace"` is the same path as
+     `exec_run` (add `async: true` for an operation handle). Use
+     `target: "toolbox"` only for work that needs no checkout, no network, and
+     no secrets (it also takes `async: true`); it is off unless the operator
+     enabled packages. `bash` has no
+     privileged mode, so privileged commands stay on `exec_run`.
    - The shipped executor includes `ak` separately from mounted AgentKit skills.
      Before following a skill's CLI steps, inspect `ak --version` and
      `ak plan --help` through `exec_run`. Do not run `ak init` or inject the
@@ -176,6 +207,8 @@ Details: [Repository automation](references/repository-automation.md#skills).
 | Known file inspection/edit | `files_*`, `grep_search`, `symbols_*` | `exec_run` |
 | Multi-file scaffolding | `files_write_batch` | multiple `files_write` or shell scripts |
 | Single command | `exec_run` | persistent shell/session |
+| Command with no checkout or network | `bash` with `target: "toolbox"` | `exec_run` in a workspace |
+| CLI tool kept across workspaces and redeploys | `packages_plan` then `packages_apply` (operator approves) | `npm install -g` in one workspace |
 | Long-running build / test suite | `tasks_run` | long synchronous command |
 | Branch isolation in workspace | `worktrees_*` | manual Git branching |
 | Stage, commit, preflight, push | `workspace_finalize` | sequence of manual `git_*` calls |
@@ -184,6 +217,7 @@ Details: [Repository automation](references/repository-automation.md#skills).
 | Automation hooks / deployments | `hooks_list` / `deployments_list` | run only owner-reviewed target |
 | Durable repository note | `memories_*` | never store credentials or personal data |
 | Retain build output / snapshot | `artifacts_snapshot` | unmetered workspace disk retention |
+| Model for a subagent | `model_profile_list`, then `model_profile_validate` before a save | `model_profile_create` (owner activates it) |
 
 ## Mandatory safety rules
 

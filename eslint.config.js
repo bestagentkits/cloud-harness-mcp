@@ -41,6 +41,13 @@ export default tseslint.config(
         URL: 'readonly',
         URLSearchParams: 'readonly'
       }
+    },
+    rules: {
+      // The browser's deprecated escape() percent-encodes instead of HTML-escaping, and a missing
+      // import of the renderer's helper silently falls through to it.
+      'no-restricted-globals': ['error',
+        { name: 'escape', message: 'Use escapeHtml from dashboard-render.js for markup.' },
+        { name: 'unescape', message: 'Use decodeURIComponent.' }]
     }
   }
 );

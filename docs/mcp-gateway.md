@@ -143,7 +143,15 @@ meta-tools and discloses downstream tools one step at a time:
 
 1. `search` finds a qualified name (`<server>.<tool>`) from a description of
    what you need. It is lexical/fuzzy matching, permission-filtered, and
-   optionally restricted to one server.
+   optionally restricted to one server. When the `mcp-routing` Decision Plane
+   purpose is on, the lexical pool is reranked semantically. The response then
+   reports `ranking: "semantic"` and a `decisionId`; otherwise it reports
+   `ranking: "lexical"`. A rerank can only reorder tools already in the
+   permission-filtered pool
+   ([ADR 0004](adr/0004-decision-plane.md)). A search whose pool holds two or
+   more tools asks the runner for a rerank on every call, so it costs one
+   internal round-trip even when the purpose is off or the owner has no key;
+   the runner answers those cases at once without contacting the provider.
 2. `inspect` returns that one tool's real upstream input schema, annotations,
    availability, and effective permission.
 3. `execute` routes one call with arguments matching that schema, re-checks
@@ -245,7 +253,10 @@ existing boundaries rather than adding a new credential path:
   never open a browser and never create state at an authorization server: they
   may only use or refresh an existing grant. Without a usable grant they fail
   with the structured `AUTHORIZATION_REQUIRED` code so the dashboard can offer
-  Connect or Reauthorize.
+  Connect or Reauthorize. A failed or declined Connect, Reconnect, or
+  Reauthorize never touches the stored tokens, so a grant that still works
+  stays `connected` (or `reauthorization_required`) and only records the
+  failure as `lastError`.
 - **Grants are principal-scoped and bound to what they were issued for.**
   Changing the endpoint or the manual client, or turning OAuth off, discards
   the stored grant locally; deleting the server deletes it. **Disconnect**
@@ -258,8 +269,12 @@ existing boundaries rather than adding a new credential path:
   client registration. A server that supports neither needs a manual client.
 - **Deployment opt-in.** Connect is unavailable until
   `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` is set; see
-  [configuration](configuration.md#downstream-mcp-oauth). Because the dashboard
-  is served only in `cloudflare-access` mode, the callback is too.
+  [configuration](configuration.md#downstream-mcp-oauth). Until then the
+  status reads `not_configured` and the dashboard offers no Connect; an
+  existing connected grant keeps working in the background and can still be
+  disconnected. Because the dashboard is served only in `cloudflare-access`
+  mode, the callback is too. The shipped nginx and Caddy configurations keep
+  the callback's one-time `code` and `state` out of their access logs.
 
 The state names, status fields, and transitions are owned by
 `McpGatewayOAuthStateSchema` and `McpGatewayOAuthStatusSchema` in the

@@ -3,8 +3,16 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, s
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { type ErrorCode, HarnessError } from '@cloud-harness/contracts';
+import {
+  type ErrorCode,
+  HarnessError,
+  TERMINAL_MAX_READ_BYTES,
+  type TerminalReadResult,
+  type TerminalStatus,
+  type TerminalView
+} from '@cloud-harness/contracts';
 import { spawnDocker, terminateContainerProcessGroup } from './docker-engine.js';
+import { DockerPtyClient, type PtyConnection, type PtyEnd, type PtyTransport } from './docker-pty.js';
 import type { DurableTaskStatus, StateStore } from './state-store.js';
 
 type ManagedStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'blocked';
@@ -39,6 +47,11 @@ type Managed = {
 export type TrackedOperation = {
   id: string;
   workspaceId?: string | undefined;
+  /**
+   * Owner of an operation that has no workspace (a toolbox `bash` run). A workspace operation is scoped
+   * through its workspace's owner instead; a handle with neither is never returned to any caller.
+   */
+  ownerId?: string | undefined;
   kind: string;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   createdAt: number;
@@ -52,7 +65,182 @@ export type TrackedOperation = {
   child?: ChildProcessWithoutNullStreams | undefined;
   container?: string | undefined;
   abortController?: AbortController | undefined;
+  /** Settles once the operation's own cleanup has finished; cancellation waits for it, up to a bound. Never rejects. */
+  completion?: Promise<void> | undefined;
 };
+type RedactionStream = { processChunk(chunk: Buffer): Buffer; flush(): Buffer };
+
+export type TerminalLimits = {
+  /** Live (running) terminals one workspace may hold. */
+  maxPerWorkspace: number;
+  /** Raw output bytes retained per terminal; older bytes fall out and are reported as `missedBytes`. */
+  retainedBytes: number;
+  idleTimeoutMs: number;
+  maxLifetimeMs: number;
+  /** How long an ended terminal stays readable so a client can render its final screen and status. */
+  endedRetentionMs: number;
+  maxEndedPerWorkspace: number;
+  /** Unflushed input above this is refused so a stalled PTY cannot buffer unbounded keystrokes. */
+  maxPendingInputBytes: number;
+};
+
+export const DEFAULT_TERMINAL_LIMITS: TerminalLimits = {
+  maxPerWorkspace: 4,
+  retainedBytes: 1_048_576,
+  idleTimeoutMs: 900_000,
+  maxLifetimeMs: 28_800_000,
+  endedRetentionMs: 600_000,
+  maxEndedPerWorkspace: 16,
+  maxPendingInputBytes: 262_144
+};
+
+export type TerminalOptions = {
+  transport?: PtyTransport | undefined;
+  limits?: { [Key in keyof TerminalLimits]?: TerminalLimits[Key] | undefined } | undefined;
+};
+
+/** Small PTY writes are copied into blocks of this size, so retention holds a few dozen buffers, not one per write. */
+const TERMINAL_OUTPUT_BLOCK_BYTES = 16_384;
+/**
+ * Longest a cancel waits for the operation's own cleanup before answering. The cleanup keeps running after
+ * that, so a slow container removal never turns an accepted cancel into a client-side transport timeout.
+ */
+const CANCEL_CLEANUP_WAIT_MS = 15_000;
+
+async function settleWithin(work: Promise<void>, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([work, new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); timer.unref(); })]);
+  clearTimeout(timer);
+}
+const EMPTY_BUFFER = Buffer.alloc(0);
+
+/**
+ * Bounded output retention addressed by absolute byte offset. Writes smaller than a block coalesce into the
+ * newest block, so the chunk count stays near `capacity / TERMINAL_OUTPUT_BLOCK_BYTES` however small the
+ * writes are; trimming advances a head index instead of shifting the array.
+ */
+export class TerminalOutput {
+  private blocks: Buffer[] = [];
+  private head = 0;
+  /** Backing store of the newest block while it still accepts coalesced writes. */
+  private tail: Buffer | undefined;
+  private tailUsed = 0;
+  /** Absolute offset of the first retained byte. */
+  start = 0;
+  length = 0;
+
+  constructor(private readonly capacity: number) {}
+
+  get end(): number {
+    return this.start + this.length;
+  }
+
+  /** Buffers currently holding retained bytes. */
+  get chunkCount(): number {
+    return this.blocks.length - this.head;
+  }
+
+  append(chunk: Buffer): void {
+    if (chunk.length === 0) return;
+    if (this.tail && this.tailUsed + chunk.length <= this.tail.length) {
+      chunk.copy(this.tail, this.tailUsed);
+      this.tailUsed += chunk.length;
+      this.blocks[this.blocks.length - 1] = this.tail.subarray(0, this.tailUsed);
+    } else if (chunk.length < TERMINAL_OUTPUT_BLOCK_BYTES) {
+      this.tail = Buffer.allocUnsafe(TERMINAL_OUTPUT_BLOCK_BYTES);
+      chunk.copy(this.tail, 0);
+      this.tailUsed = chunk.length;
+      this.blocks.push(this.tail.subarray(0, this.tailUsed));
+    } else {
+      this.tail = undefined;
+      this.blocks.push(chunk);
+    }
+    this.length += chunk.length;
+    while (this.length > this.capacity) {
+      const first = this.blocks[this.head]!;
+      const excess = this.length - this.capacity;
+      // A trimmed newest block stops accepting writes: its view no longer starts at offset 0 of the store.
+      if (this.head === this.blocks.length - 1) this.tail = undefined;
+      if (first.length <= excess) {
+        this.blocks[this.head] = EMPTY_BUFFER;
+        this.head += 1;
+        this.start += first.length;
+        this.length -= first.length;
+      } else {
+        this.blocks[this.head] = first.subarray(excess);
+        this.start += excess;
+        this.length -= excess;
+      }
+    }
+    if (this.head >= 32 && this.head * 2 >= this.blocks.length) {
+      this.blocks = this.blocks.slice(this.head);
+      this.head = 0;
+    }
+  }
+
+  read(from: number, maxBytes: number): Buffer {
+    const parts: Buffer[] = [];
+    let skip = from - this.start;
+    let remaining = Math.min(maxBytes, this.end - from);
+    for (let index = this.head; index < this.blocks.length && remaining > 0; index += 1) {
+      const chunk = this.blocks[index]!;
+      if (skip >= chunk.length) {
+        skip -= chunk.length;
+        continue;
+      }
+      const slice = chunk.subarray(skip, skip + remaining);
+      skip = 0;
+      remaining -= slice.length;
+      parts.push(slice);
+    }
+    return Buffer.concat(parts);
+  }
+}
+
+type TerminalRecord = {
+  id: string;
+  workspaceId: string;
+  ownerId: string;
+  container: string;
+  cwd: string;
+  cols: number;
+  rows: number;
+  status: TerminalStatus;
+  /** Set while the PTY handshake is in flight; the id is not yet visible to any client. */
+  opening: boolean;
+  createdAt: number;
+  lastActivityAt: number;
+  exitCode?: number | undefined;
+  endedAt?: number | undefined;
+  endReason?: string | undefined;
+  output: TerminalOutput;
+  connection?: PtyConnection | undefined;
+  redaction?: RedactionStream | undefined;
+  waiters: Set<() => void>;
+  idleTimer?: NodeJS.Timeout | undefined;
+  lifetimeTimer?: NodeJS.Timeout | undefined;
+  /** The session's processes are known to be gone (or the executor is). */
+  sessionCleaned: boolean;
+  /** The kill in flight, shared so a retry and an explicit close never run two kills at once. */
+  cleaning?: Promise<void> | undefined;
+  cleanupTimer?: NodeJS.Timeout | undefined;
+  /** When this terminal last refreshed its workspace lease. */
+  workspaceTouchedAt: number;
+};
+
+/** A running terminal refreshes its workspace lease at most this often, so idle long-polls cost no write. */
+export const TERMINAL_WORKSPACE_TOUCH_INTERVAL_MS = 30_000;
+/**
+ * Backoff between session-kill retries. Closing the PTY stream does not end the shell, so the kill is the only
+ * thing that does; a transient failure (Engine timeout, pids limit) must not leave the session running.
+ */
+export const TERMINAL_CLEANUP_RETRY_DELAYS_MS: readonly number[] = [1_000, 5_000, 15_000, 30_000];
+
+/** The workspace's own lease, used to keep a terminal's reported expiry truthful. */
+export type TerminalWorkspaceLease = { expiresAt: number; hardExpiresAt: number };
+
+export type TerminalEndEvent = { ownerId: string; view: TerminalView };
+
 const id = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
 function utf8SafeLength(buf: Buffer, maxLen: number): number {
   if (maxLen <= 0) return 0;
@@ -85,12 +273,32 @@ export class OperationManager {
   private readonly retainedOutputBytes = 67_108_864;
   onTaskStart?: (workspaceId: string, timeoutMs: number) => void;
   onTaskSettle?: (workspaceId: string, taskId: string) => void;
-  redactorProvider?: (workspaceId: string) => { createStream(): { processChunk(chunk: Buffer): Buffer; flush(): Buffer } } | undefined;
+  redactorProvider?: (workspaceId: string) => { createStream(): RedactionStream } | undefined;
+  /** Called once per terminal when it stops running, for metadata-only audit. */
+  onTerminalEnd?: (event: TerminalEndEvent) => void;
+  /**
+   * Called (throttled per terminal) while a running terminal is read, written, or resized, so the workspace
+   * counts it as active work. May throw to refuse the request when the workspace lifecycle changed.
+   */
+  onTerminalActivity?: (workspaceId: string) => void;
+  /** The workspace lease, so a terminal never reports an expiry later than its workspace's. */
+  terminalWorkspaceLease?: (workspaceId: string) => TerminalWorkspaceLease | undefined;
+  private readonly terminals = new Map<string, TerminalRecord>();
+  private readonly terminalLimits: TerminalLimits;
+  private terminalTransport?: PtyTransport | undefined;
 
   constructor(
     private readonly store?: StateStore,
-    private readonly bootId: string = randomBytes(16).toString('hex')
-  ) {}
+    private readonly bootId: string = randomBytes(16).toString('hex'),
+    terminalOptions: TerminalOptions = {}
+  ) {
+    const limits = { ...DEFAULT_TERMINAL_LIMITS };
+    for (const [key, value] of Object.entries(terminalOptions.limits ?? {}) as Array<[keyof TerminalLimits, number | undefined]>) {
+      if (value !== undefined) limits[key] = value;
+    }
+    this.terminalLimits = limits;
+    this.terminalTransport = terminalOptions.transport;
+  }
 
   hasTaskKey(key: string, ownerId?: string, workspaceId?: string): boolean {
     if (this.idempotency.has(key)) return true;
@@ -615,6 +823,7 @@ export class OperationManager {
     return record;
   }
   async stopWorkspace(workspaceId: string, ownerId?: string): Promise<void> {
+    this.stopWorkspaceTerminals(workspaceId);
     const activeRecords = this.records(workspaceId).filter(
       (record) => record.status === 'running' || record.status === 'queued'
     );
@@ -784,6 +993,7 @@ export class OperationManager {
   registerGenericOperation(op: {
     id: string;
     workspaceId?: string | undefined;
+    ownerId?: string | undefined;
     kind: string;
     deadlineMs?: number | undefined;
     container?: string | undefined;
@@ -804,6 +1014,7 @@ export class OperationManager {
     const tracked: TrackedOperation = {
       id: op.id,
       workspaceId: op.workspaceId,
+      ownerId: op.ownerId,
       kind: op.kind,
       status: 'running',
       createdAt: now,
@@ -872,6 +1083,7 @@ export class OperationManager {
             await terminateContainerProcessGroup(op.container, `/tmp/cloud-harness-operations/${id}.pid`);
           } catch { /* container already stopped */ }
         }
+        if (op.completion) await settleWithin(op.completion, CANCEL_CLEANUP_WAIT_MS);
       }
       return op;
     }
@@ -895,5 +1107,351 @@ export class OperationManager {
     const hasRunningTasks = [...this.tasks.values()].some((t) => t.workspaceId === workspaceId && t.status === 'running');
     const hasRunningGeneric = [...this.genericOperations.values()].some((o) => o.workspaceId === workspaceId && o.status === 'running');
     return hasRunningTasks || hasRunningGeneric;
+  }
+
+  private ptyTransport(): PtyTransport {
+    this.terminalTransport ??= new DockerPtyClient();
+    return this.terminalTransport;
+  }
+
+  /** Forget ended terminals past their read window, then cap how many ended ones a workspace keeps. */
+  private pruneTerminals(now = Date.now()): void {
+    const endedByWorkspace = new Map<string, TerminalRecord[]>();
+    for (const record of this.terminals.values()) {
+      // A session whose kill has not succeeded stays tracked so a retry or a close can still end it.
+      if (record.status === 'running' || record.endedAt === undefined || !record.sessionCleaned) continue;
+      if (now - record.endedAt >= this.terminalLimits.endedRetentionMs) {
+        this.terminals.delete(record.id);
+        continue;
+      }
+      const list = endedByWorkspace.get(record.workspaceId) ?? [];
+      list.push(record);
+      endedByWorkspace.set(record.workspaceId, list);
+    }
+    for (const list of endedByWorkspace.values()) {
+      list.sort((left, right) => left.endedAt! - right.endedAt!);
+      for (const record of list.slice(0, Math.max(0, list.length - this.terminalLimits.maxEndedPerWorkspace))) {
+        this.terminals.delete(record.id);
+      }
+    }
+  }
+
+  private requireTerminal(ownerId: string, workspaceId: string, terminalId: string): TerminalRecord {
+    this.pruneTerminals();
+    const record = this.terminals.get(terminalId);
+    if (!record || record.opening || record.workspaceId !== workspaceId || record.ownerId !== ownerId) {
+      throw new HarnessError('NOT_FOUND', 'terminal not found', 404, false);
+    }
+    return record;
+  }
+
+  private wakeTerminal(record: TerminalRecord): void {
+    const waiters = [...record.waiters];
+    record.waiters.clear();
+    for (const wake of waiters) wake();
+  }
+
+  private armIdleTimer(record: TerminalRecord): void {
+    if (record.idleTimer) clearTimeout(record.idleTimer);
+    record.idleTimer = setTimeout(() => {
+      record.idleTimer = undefined;
+      this.endTerminal(record, 'timed_out', 'idle timeout');
+      this.cleanTerminalSessionWithRetry(record);
+    }, this.terminalLimits.idleTimeoutMs);
+    record.idleTimer.unref?.();
+  }
+
+  private touchTerminal(record: TerminalRecord): void {
+    if (record.status !== 'running') return;
+    record.lastActivityAt = Date.now();
+    this.armIdleTimer(record);
+  }
+
+  /** Refresh the workspace lease for a running terminal, at most once per interval. */
+  private noteWorkspaceActivity(record: TerminalRecord): void {
+    if (record.status !== 'running' || !this.onTerminalActivity) return;
+    const now = Date.now();
+    if (now - record.workspaceTouchedAt < TERMINAL_WORKSPACE_TOUCH_INTERVAL_MS) return;
+    this.onTerminalActivity(record.workspaceId);
+    record.workspaceTouchedAt = now;
+  }
+
+  private appendTerminalOutput(record: TerminalRecord, raw: Buffer): void {
+    // The redaction stream was flushed when the terminal ended; bytes after that are dropped, never sent raw.
+    if (record.status !== 'running') return;
+    const chunk = record.redaction ? record.redaction.processChunk(raw) : raw;
+    if (chunk.length === 0) return;
+    record.output.append(chunk);
+    this.wakeTerminal(record);
+  }
+
+  /**
+   * Move a running terminal to its final state exactly once: stop the timers, flush the redaction holdback,
+   * hang up the PTY, and wake every parked reader so it observes the status change.
+   */
+  private endTerminal(record: TerminalRecord, status: Exclude<TerminalStatus, 'running'>, reason: string, exitCode?: number): boolean {
+    if (record.status !== 'running') return false;
+    record.status = status;
+    record.endedAt = Date.now();
+    record.endReason = reason.slice(0, 200);
+    if (exitCode !== undefined) record.exitCode = exitCode;
+    if (record.idleTimer) clearTimeout(record.idleTimer);
+    if (record.lifetimeTimer) clearTimeout(record.lifetimeTimer);
+    record.idleTimer = undefined;
+    record.lifetimeTimer = undefined;
+    if (record.redaction) {
+      const flushed = record.redaction.flush();
+      if (flushed.length > 0) record.output.append(flushed);
+    }
+    try { record.connection?.close(); } catch { /* already closed */ }
+    this.wakeTerminal(record);
+    try {
+      this.onTerminalEnd?.({ ownerId: record.ownerId, view: this.terminalView(record) });
+    } catch { /* audit is best-effort and must not break teardown */ }
+    return true;
+  }
+
+  /** End every process left in the terminal's session (job-control children in other process groups too). */
+  private cleanTerminalSession(record: TerminalRecord): Promise<void> {
+    if (record.sessionCleaned) return Promise.resolve();
+    record.cleaning ??= this.ptyTransport().killSession(record.container, record.id)
+      .then(() => { record.sessionCleaned = true; })
+      .finally(() => { record.cleaning = undefined; });
+    return record.cleaning;
+  }
+
+  /**
+   * Kill the session in the background, retrying with bounded backoff while the workspace still tracks the
+   * terminal. When every attempt fails the record stays (unpruned) so an explicit close can retry; stopping the
+   * workspace removes the executor and the record with it.
+   */
+  private cleanTerminalSessionWithRetry(record: TerminalRecord, attempt = 0): void {
+    this.cleanTerminalSession(record).catch(() => {
+      const delay = TERMINAL_CLEANUP_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || record.sessionCleaned || this.terminals.get(record.id) !== record) return;
+      if (record.cleanupTimer) clearTimeout(record.cleanupTimer);
+      record.cleanupTimer = setTimeout(() => {
+        record.cleanupTimer = undefined;
+        this.cleanTerminalSessionWithRetry(record, attempt + 1);
+      }, delay);
+      record.cleanupTimer.unref?.();
+    });
+  }
+
+  private async settleTerminalStream(record: TerminalRecord, end: PtyEnd): Promise<void> {
+    if (record.status !== 'running') return;
+    if (end.error) {
+      this.endTerminal(record, 'failed', 'terminal stream failed');
+      this.cleanTerminalSessionWithRetry(record);
+      return;
+    }
+    // The attach stream can close a moment before the daemon records the exit code.
+    let exitCode: number | null = null;
+    try {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const state = await this.ptyTransport().inspect(record.connection!.execId);
+        if (!state.running) {
+          exitCode = state.exitCode;
+          break;
+        }
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+      }
+    } catch {
+      // An inspect failure is not proof the executor is gone (an Engine timeout looks the same), so the
+      // session kill still runs; it fails harmlessly when the executor really has stopped.
+      this.endTerminal(record, 'failed', 'workspace executor stopped');
+      this.cleanTerminalSessionWithRetry(record);
+      return;
+    }
+    if (exitCode === null) this.endTerminal(record, 'failed', 'terminal stream ended without an exit status');
+    else this.endTerminal(record, 'exited', `shell exited with code ${exitCode}`, exitCode);
+    this.cleanTerminalSessionWithRetry(record);
+  }
+
+  async openTerminal(input: {
+    ownerId: string;
+    workspaceId: string;
+    container: string;
+    cwd: string;
+    cols: number;
+    rows: number;
+  }): Promise<TerminalView> {
+    this.pruneTerminals();
+    const live = [...this.terminals.values()].filter((record) => record.workspaceId === input.workspaceId && record.status === 'running');
+    if (live.length >= this.terminalLimits.maxPerWorkspace) {
+      throw new HarnessError('LIMIT_EXCEEDED', `too many open terminals in this workspace (maximum ${this.terminalLimits.maxPerWorkspace})`, 429, false);
+    }
+    const now = Date.now();
+    const record: TerminalRecord = {
+      id: id('term'),
+      workspaceId: input.workspaceId,
+      ownerId: input.ownerId,
+      container: input.container,
+      cwd: input.cwd,
+      cols: input.cols,
+      rows: input.rows,
+      status: 'running',
+      opening: true,
+      createdAt: now,
+      lastActivityAt: now,
+      output: new TerminalOutput(this.terminalLimits.retainedBytes),
+      redaction: this.redactorProvider?.(input.workspaceId)?.createStream(),
+      waiters: new Set(),
+      sessionCleaned: false,
+      // Opening is itself workspace activity (the caller refreshed the lease), so the throttle starts now.
+      workspaceTouchedAt: now
+    };
+    // Reserve the slot before the handshake so concurrent opens cannot exceed the limit.
+    this.terminals.set(record.id, record);
+    let connection: PtyConnection;
+    try {
+      connection = await this.ptyTransport().open({
+        container: input.container,
+        terminalId: record.id,
+        workingDir: `/workspace/${input.cwd === '.' ? '' : input.cwd}`,
+        cols: input.cols,
+        rows: input.rows
+      });
+    } catch (error) {
+      this.terminals.delete(record.id);
+      // The exec may already exist (a start handshake that timed out); end whatever it started, best effort.
+      void this.ptyTransport().killSession(input.container, record.id).catch(() => undefined);
+      throw error;
+    }
+    if (!this.terminals.has(record.id)) {
+      // The workspace stopped while the handshake was in flight.
+      connection.close();
+      throw new HarnessError('NOT_FOUND', 'workspace not found', 404, false);
+    }
+    record.connection = connection;
+    record.opening = false;
+    connection.onData((chunk) => this.appendTerminalOutput(record, chunk));
+    connection.onEnd((end) => { void this.settleTerminalStream(record, end); });
+    this.armIdleTimer(record);
+    record.lifetimeTimer = setTimeout(() => {
+      record.lifetimeTimer = undefined;
+      this.endTerminal(record, 'timed_out', 'lifetime limit');
+      this.cleanTerminalSessionWithRetry(record);
+    }, this.terminalLimits.maxLifetimeMs);
+    record.lifetimeTimer.unref?.();
+    return this.terminalView(record);
+  }
+
+  async readTerminal(ownerId: string, workspaceId: string, terminalId: string, cursor: string, waitMs: number, signal?: AbortSignal): Promise<TerminalReadResult> {
+    const record = this.requireTerminal(ownerId, workspaceId, terminalId);
+    const requested = Number(cursor);
+    if (!Number.isSafeInteger(requested) || requested < 0 || requested > record.output.end) {
+      throw new HarnessError('INVALID_INPUT', 'invalid terminal cursor', 400, false);
+    }
+    this.noteWorkspaceActivity(record);
+    this.touchTerminal(record);
+    // A parked read ends early when the caller goes away, so a closed browser tab never pins a waiter.
+    if (waitMs > 0 && requested === record.output.end && record.status === 'running' && !signal?.aborted) {
+      await new Promise<void>((resolveWait) => {
+        const wake = () => {
+          clearTimeout(timer);
+          record.waiters.delete(wake);
+          signal?.removeEventListener('abort', wake);
+          resolveWait();
+        };
+        const timer = setTimeout(wake, waitMs);
+        record.waiters.add(wake);
+        signal?.addEventListener('abort', wake, { once: true });
+      });
+    }
+    const from = Math.max(requested, record.output.start);
+    const missedBytes = from - requested;
+    const page = record.output.read(from, TERMINAL_MAX_READ_BYTES);
+    const nextCursor = from + page.length;
+    return {
+      terminal: this.terminalView(record),
+      data: page.toString('base64'),
+      cursor: String(requested),
+      nextCursor: String(nextCursor),
+      missedBytes,
+      more: nextCursor < record.output.end
+    };
+  }
+
+  writeTerminal(ownerId: string, workspaceId: string, terminalId: string, data: Buffer): TerminalView {
+    const record = this.requireTerminal(ownerId, workspaceId, terminalId);
+    if (record.status !== 'running' || !record.connection) throw new HarnessError('CONFLICT', 'terminal is not running', 409, false);
+    if (record.connection.writableLength > this.terminalLimits.maxPendingInputBytes) {
+      throw new HarnessError('LIMIT_EXCEEDED', 'terminal input is backed up; retry shortly', 429, true);
+    }
+    this.noteWorkspaceActivity(record);
+    if (data.length > 0) record.connection.write(data);
+    this.touchTerminal(record);
+    return this.terminalView(record);
+  }
+
+  async resizeTerminal(ownerId: string, workspaceId: string, terminalId: string, cols: number, rows: number): Promise<TerminalView> {
+    const record = this.requireTerminal(ownerId, workspaceId, terminalId);
+    if (record.status !== 'running' || !record.connection) throw new HarnessError('CONFLICT', 'terminal is not running', 409, false);
+    this.noteWorkspaceActivity(record);
+    await this.ptyTransport().resize(record.connection.execId, cols, rows);
+    record.cols = cols;
+    record.rows = rows;
+    this.touchTerminal(record);
+    return this.terminalView(record);
+  }
+
+  /** Idempotent: closing an ended terminal only retries a session cleanup that has not succeeded yet. */
+  async closeTerminal(ownerId: string, workspaceId: string, terminalId: string): Promise<TerminalView> {
+    const record = this.requireTerminal(ownerId, workspaceId, terminalId);
+    this.endTerminal(record, 'closed', 'closed by user');
+    await this.cleanTerminalSession(record);
+    return this.terminalView(record);
+  }
+
+  /** Every terminal the owner can still read, optionally scoped to one workspace, oldest first. */
+  listTerminals(ownerId: string, workspaceId?: string): TerminalView[] {
+    this.pruneTerminals();
+    return [...this.terminals.values()]
+      .filter((record) => !record.opening && record.ownerId === ownerId && (workspaceId === undefined || record.workspaceId === workspaceId))
+      .sort((left, right) => left.createdAt - right.createdAt)
+      .map((record) => this.terminalView(record));
+  }
+
+  terminalView(record: TerminalRecord): TerminalView {
+    const iso = (value: number) => new Date(value).toISOString();
+    // The workspace reaper ends the terminal with its executor, so never report a later expiry than that.
+    const lease = this.terminalWorkspaceLease?.(record.workspaceId);
+    const idleExpiresAt = Math.min(record.lastActivityAt + this.terminalLimits.idleTimeoutMs, lease?.expiresAt ?? Infinity, lease?.hardExpiresAt ?? Infinity);
+    const hardExpiresAt = Math.min(record.createdAt + this.terminalLimits.maxLifetimeMs, lease?.hardExpiresAt ?? Infinity);
+    return {
+      terminalId: record.id as TerminalView['terminalId'],
+      workspaceId: record.workspaceId as TerminalView['workspaceId'],
+      status: record.status,
+      cwd: record.cwd,
+      cols: record.cols,
+      rows: record.rows,
+      createdAt: iso(record.createdAt),
+      lastActivityAt: iso(record.lastActivityAt),
+      idleExpiresAt: iso(idleExpiresAt),
+      hardExpiresAt: iso(hardExpiresAt),
+      ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
+      ...(record.endedAt !== undefined ? { endedAt: iso(record.endedAt) } : {}),
+      ...(record.endReason !== undefined ? { endReason: record.endReason } : {})
+    };
+  }
+
+  /**
+   * Hang up every terminal of a workspace whose executor is being removed (stop, close, expiry, quarantine) and
+   * forget them, ended ones included, so their retained output is released now rather than on a later call.
+   */
+  stopWorkspaceTerminals(workspaceId: string, reason = 'workspace stopped'): void {
+    for (const [terminalId, record] of this.terminals) {
+      if (record.workspaceId !== workspaceId) continue;
+      if (record.opening) {
+        this.terminals.delete(terminalId);
+        continue;
+      }
+      this.endTerminal(record, 'failed', reason);
+      record.sessionCleaned = true;
+      if (record.cleanupTimer) clearTimeout(record.cleanupTimer);
+      record.cleanupTimer = undefined;
+      this.terminals.delete(terminalId);
+    }
   }
 }

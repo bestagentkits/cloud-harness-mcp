@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { readdir, readFile } from 'node:fs/promises';
-import { applyGuidanceActivity, sanitizeAndAttributeProvenance, type GuidanceProfile, type RunnerOperation, type RunnerResponse } from '@cloud-harness/contracts';
+import { applyGuidanceActivity, isModelToolOperation, sanitizeAndAttributeProvenance, type GuidanceProfile, type RunnerOperation, type RunnerResponse } from '@cloud-harness/contracts';
 import type { OperationBackend } from '../operation-backend.js';
 import type { CliOptions } from '../cli-options.js';
 import { LocalPathPolicy } from './local-path-policy.js';
@@ -146,6 +146,21 @@ export class LocalWorkspaceBackend implements OperationBackend {
         data: { workspaces: [this.getPublicRecord()] },
         truncated: false
       };
+    }
+
+    if (operation === 'bash' && input.target === 'toolbox') {
+      const message = 'the bash toolbox target is unsupported in local mode because it needs the remote runner\'s disposable containers; use target "workspace"';
+      return { ok: false, message, error: { code: 'INVALID_INPUT', message, retryable: false }, truncated: false };
+    }
+
+    if (operation.startsWith('packages_')) {
+      const message = `${operation} is unsupported in local mode because managed toolbox packages need the remote runner's isolated builder and release store; install project tools in the workspace instead`;
+      return { ok: false, message, error: { code: 'INVALID_INPUT', message, retryable: false }, truncated: false };
+    }
+
+    if (isModelToolOperation(operation)) {
+      const message = `${operation} is unsupported in local mode because model profiles live in the remote runner; use the remote MCP endpoint or the Dashboard`;
+      return { ok: false, message, error: { code: 'INVALID_INPUT', message, retryable: false }, truncated: false };
     }
 
     if (operation === 'workspace_open') {
@@ -451,7 +466,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
       return {
         ok: true,
         message: 'Local workspace lease is permanent',
-        data: this.getPublicRecord(),
+        data: { ...this.getPublicRecord(), leaseCapped: false },
         truncated: false
       };
     }
@@ -536,7 +551,9 @@ export class LocalWorkspaceBackend implements OperationBackend {
       };
     }
 
-    if (operation === 'exec_run') {
+    if (operation === 'exec_run' || operation === 'bash') {
+      // `bash` with the workspace target is exec_run; its result also names the target.
+      const target = operation === 'bash' ? { target: 'workspace' } : {};
       if (input.privileged === true) {
         return {
           ok: false,
@@ -563,7 +580,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
           return {
             ok: false,
             message: msg,
-            data: result,
+            data: { ...result, ...target },
             error: { code: 'CONFLICT', message: msg, retryable: false },
             truncated: result.truncated
           };
@@ -571,7 +588,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
         return {
           ok: true,
           message: `Command exited with ${result.exitCode}`,
-          data: result,
+          data: { ...result, ...target },
           truncated: result.truncated
         };
       } catch (err: unknown) {

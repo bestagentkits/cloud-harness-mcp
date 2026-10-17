@@ -36,7 +36,7 @@ The production defaults place:
   `/etc/cloud-harness-mcp`.
 
 The database persists workspace and task metadata across runner restarts.
-Interactive shell and session streams remain in-memory, while background tasks
+Interactive shell, session, and Dashboard Terminal streams remain in-memory, while background tasks
 and dependency graphs are durable in SQLite. Startup reconciles in-flight tasks
 from prior process boots to `FAILED` with `error_code: "RUNNER_RESTARTED"` while
 preserving completed task metadata and file logs.
@@ -94,8 +94,8 @@ one-off runner re-encryption entry point owned by
 [`apps/runner/src/rekey-secrets.ts`](../apps/runner/src/rekey-secrets.ts) through
 the `secrets:rekey` package script or its compiled runner command.
 
-That command re-encrypts secret versions, workspace secret snapshots, and
-downstream MCP OAuth grants and pending flows. A grant is rewritten only while
+That command re-encrypts secret versions, workspace secret snapshots,
+downstream MCP OAuth grants and pending flows, and MCP Events webhook secrets. A grant is rewritten only while
 its generation is unchanged, so a concurrent token refresh is never overwritten.
 
 The command is interruptible and safe to resume; verify that it completes,
@@ -107,11 +107,51 @@ command output.
 
 ## Cleanup
 
-Normal cleanup is `workspace_close` or TTL expiry. It stops known
-shell/session/task children, removes the named executor, deletes only the
-verified job directory, and records the workspace as closed. Startup also
-reconciles database, filesystem, and Docker inventories, scoped to the
-configured runner instance.
+Normal cleanup is `workspace_close` or reaper auto-close after the recoverable
+grace. It stops known shell/session/task children, removes the named executor,
+deletes only the verified job directory, and records the workspace as closed.
+TTL expiry alone only removes the executor; the checkout stays on disk while
+the workspace is `EXPIRED_RECOVERABLE`. Startup also reconciles database,
+filesystem, and Docker inventories, scoped to the configured runner instance.
+
+### Expired workspaces and auto-close
+
+The quota, idle TTL, wall TTL, and recoverable grace are set in Dashboard →
+Settings → **Workspace limits & lifecycle**, falling back to the runner
+environment ([configuration](configuration.md#workspace-and-repository-policy)).
+The panel also shows the reaper interval, your counted, recoverable, and
+auto-close-retained workspaces, and the per-executor ceilings that multiply
+with every concurrent workspace. TTL and grace changes apply only to
+workspaces opened afterwards. Lowering the quota closes nothing; it blocks new
+opens and recoveries until usage drops.
+
+An expired workspace becomes due for auto-close at roughly expiry + grace +
+one reaper interval. Before deleting it, the reaper holds a mutation lease and
+checks for running agents within their TTL, uncommitted or untracked paths
+in the checkout and in each linked worktree (a clean worktree does not hold the
+workspace), stashes, and commits on any local branch or worktree `HEAD` that no
+remote-tracking ref contains. A
+successful `git_push` moves the checkout's remote-tracking ref to the pushed
+commit, and the commit a workspace was cloned at counts as on the remote, so
+pushed and freshly cloned work is not mistaken for unsaved work. Git-ignored
+files are not checked and are deleted with the checkout. Any of these,
+or a check that cannot run, defers the close: the workspace stays
+`EXPIRED_RECOVERABLE`, its `error` starts with `auto-close deferred:` and names
+the reason, and the reaper retries after the longer of its grace and one hour.
+A clean workspace is closed and audited as `workspace.auto_closed`; a deferral
+is audited as `workspace.auto_close_deferred` when its reason changes. Before
+this check existed, the reaper deleted recoverable workspaces after a fixed
+hour regardless of unsaved work.
+
+A retained workspace never closes on its own while the unsaved work remains,
+so it keeps using disk. To clear one, use `workspace_status` or
+`workspace_recover` in `status` or `patch` mode to see what is unsaved, push
+or export it (`workspace_recover` `export` mode, or resume and push), then
+`workspace_close`. Calling `workspace_close` directly discards the unsaved
+work. The check is owned by `autoCloseBlocker` in
+[`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
+and the `close_check` mode in
+[`worker/harness-worker.mjs`](../worker/harness-worker.mjs).
 
 Inspect managed containers before any manual action:
 
@@ -132,6 +172,102 @@ Monitor free space because the workspace size setting is not a hard quota:
 df -h /var/lib/cloud-harness
 sudo du -sh /var/lib/cloud-harness/jobs/*
 ```
+
+## Managed package releases
+
+Managed toolbox packages live below `PACKAGES_ROOT`
+(`/var/lib/cloud-harness/packages` by default), mounted read-write only into
+the runner; `HOST_PACKAGES_ROOT` must name the same path. Each release is an
+immutable directory recorded in the state database with its tree digest, lock,
+SBOM, and provenance. Plans, applies, bindings, and the binding history are
+rows in the same database, owned by
+[`apps/runner/src/package-store.ts`](../apps/runner/src/package-store.ts).
+
+Retention is reference-based. A release stays while a binding points at it,
+while it is among the last five entries of a binding's rollback history, or
+while a retained workspace's profile references it. Workspace bindings go
+away with their workspace once it is closed or failed. Uninstalling a package
+(`packages_remove` or **Uninstall** on the Dashboard Packages page, audited as
+`package.removed`) deletes its binding and history and frees releases nothing
+else references at once; releases a retained workspace still mounts wait for
+the hourly collection. That is the way to recover from the per-owner storage
+quota. Collection of unreferenced releases is scoped to the recorded release
+path. Expired and rejected plans are purged, and applied plans lose their lock
+text, after a fixed retention owned by `package-store.ts`.
+
+A release directory found missing at startup is marked `MISSING` rather than
+rebuilt. If the packages root itself is absent (storage not mounted yet),
+startup marks and removes nothing. When a `MISSING` release's directory comes
+back, startup or the hourly collection restores it to `VERIFIED` if its tree
+digest still matches (audited as `package.release.restored`) and removes the
+directory if it does not. A filesystem failure during this startup reconcile
+is logged as a runner warning (`managed package startup reconcile failed`)
+and does not stop the runner; check the mount and permissions of
+`PACKAGES_ROOT`.
+
+Releases are rebuildable from their locked plans, so they are not part of the
+deploy script's recovery set. If you back them up, treat the state database
+and `PACKAGES_ROOT` as one unit: stop the service, copy both, and restore them
+together. An old database with a newer package tree, or the reverse, leaves
+bindings pointing at releases that the startup verification marks `MISSING`.
+Never delete the packages root recursively; remove a release only through the
+runner or after confirming in SQLite that nothing references it.
+
+Monitor its size alongside the other state roots:
+
+```bash
+sudo du -sh /var/lib/cloud-harness/packages
+```
+
+### Package registry egress
+
+The provisioning proxy's built-in allow-list has no npm or PyPI host, and
+`scripts/verify-compose-boundaries.mjs` asserts that. To let package builds
+reach a registry, the owner adds hostnames to the non-secret, proxy-only file
+`/etc/cloud-harness-mcp/provisioning-proxy.env`. Compose loads it only into the
+`provisioning-proxy` service and treats a missing file as empty, which needs
+Docker Compose 2.24 or newer. Never point it at `runtime.env` and never put
+credentials in it.
+
+```bash
+# /etc/cloud-harness-mcp/provisioning-proxy.env
+PACKAGES_PROXY_HOSTS=registry.npmjs.org,pypi.org,files.pythonhosted.org
+```
+
+Use `registry.npmjs.org` for npm, and `pypi.org` plus `files.pythonhosted.org`
+for uv. A uv build also downloads its managed Python from GitHub releases, so
+it needs `github.com` and `release-assets.githubusercontent.com` as well. The
+proxy's Compose-set `ALLOWED_HOSTS` (the Git and toolkit hosts, which normally
+include `github.com`) apply to package builders too, and these registry hosts
+apply to toolkit helpers too, because both share the one proxy. The value is a comma-separated list of lowercase DNS hostnames; IP
+literals, wildcards, ports, and other non-hostnames are logged on the proxy's
+stderr and ignored, and the proxy still starts. Apply a change by restarting
+the service, which recreates the stack through the installed Compose wrapper
+with the production file set, then check the proxy for ignored entries:
+
+```bash
+sudo systemctl restart cloud-harness-mcp.service
+sudo docker logs --tail 200 cloud-harness-mcp-provisioning-proxy-1 2>&1 | grep PACKAGES_PROXY_HOSTS
+```
+
+Remove the line, or the file, and restart again to withdraw registry access. Builds that need a blocked host fail with `UNAVAILABLE` and name the
+host to add.
+
+## Dashboard terminals
+
+Dashboard Terminal PTYs are runner memory, not state. A runner restart or
+redeploy ends every open terminal; operators see them as lost and open a new
+session, and there is nothing to back up or restore. The executor restart that
+follows reconciliation ends any process those shells left behind. Closing a
+terminal from `/dashboard/terminals` or the workspace tab ends its whole shell
+session without touching the workspace.
+
+Terminals need the runner to reach Docker over a unix socket, which the
+production Compose topology provides. The per-workspace limit, idle timeout,
+lifetime, and retained output are runner settings documented in
+[configuration](configuration.md#dashboard-terminal). Their lifecycle appears
+in the audit log only as `terminal.opened` and `terminal.closed`; input and
+output are never retained there, so the audit log cannot reconstruct a session.
 
 ## Managed API-key lifecycle
 
@@ -206,6 +342,112 @@ and the command by
 [`apps/runner/src/metadata-schema-down-v6.ts`](../apps/runner/src/metadata-schema-down-v6.ts).
 Then deploy the prior runner and canary readiness, the dashboard, and the MCP
 server list. Restore-from-backup remains the fallback.
+
+## MCP Events state schema rollback
+
+MCP Events add runner state schema v13 (event subscriptions, callback
+verifications, the event outbox, and delivery rows). A pre-v13 runner refuses a
+v13 state database, so release rollback relies on the pre-deploy recovery set,
+which restores the prior database together with the release. There is no
+packaged command for this downgrade. The bounded `downgradeStateSchemaToV12` in
+[`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts)
+drops only the four event tables, and refuses while any subscription or outbox
+row exists unless data loss is explicitly allowed. A lossy downgrade discards
+every subscription and undelivered event; clients must subscribe again after a
+later upgrade, and nothing replays the lost events.
+
+## Model catalog state schema rollback
+
+The model catalog adds runner state schema v14: one table of last-good catalog
+snapshots. A pre-v14 runner refuses a v14 state database, so release rollback
+relies on the pre-deploy recovery set as for v13. The snapshots are a cache the
+runner rebuilds from providers, so the bounded `downgradeStateSchemaToV13` in
+[`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts)
+drops the table without a data-loss guard; the next search refetches.
+
+## Revision pricing columns rollback
+
+Revision cache prices, long-prompt tiers, and price provenance are columns added in place
+to `agent_model_profile_revisions` by `initializeModelProfilePricingColumns` in
+[`apps/runner/src/model-profile-state-repository.ts`](../apps/runner/src/model-profile-state-repository.ts),
+without a state schema version bump. Every column is nullable or defaulted, so existing
+revisions read as user overrides of unknown confidence, and a rolled-back runner keeps
+reading and writing revisions by column name; its new revisions take the defaults. No data
+change is needed to roll back, and the columns stay in place for the next upgrade.
+
+Charging the new prices needs a model gateway that reads cache prices and tiers from the
+control snapshot, in releases after 0.66.0-beta.17; every release with these columns
+includes it. An older gateway ignores them, and Compose rolls the runner and the gateway
+back together. While running the older release:
+
+- Cache usage is billed at the input price, which over-charges models with cheaper cached
+  reads.
+- Long prompts on a revision with tiers are billed at the base prices, which under-charges.
+  Lower the per-run cost caps of tiered profiles or avoid long prompts on them.
+- An edit saved by the older runner writes a revision with only input and output prices:
+  its cache prices and tiers are dropped, and its provenance reads as a user override of
+  unknown confidence. Upgrading again does not restore them; re-enter the cache prices and
+  tiers of every profile edited during the rollback.
+
+## Model spend ledger rollback and version mixing
+
+Aggregate spend policies are enforced against `model_spend_ledger` and
+`model_spend_policies`, which `initializeModelSpendSchema` in
+[`apps/runner/src/model-spend-ledger.ts`](../apps/runner/src/model-spend-ledger.ts)
+creates in place without a state schema version bump and without foreign keys. A
+rolled-back runner ignores both tables, so it enforces no aggregate policy, and no data
+change is needed. Open rows it leaves behind are settled conservatively by the sweep after
+the next upgrade. To lift enforcement during an incident without a rollback, delete the
+policy instead: read its id and `generation` from `GET /dashboard/api/v1/model-spend`,
+then send `DELETE /dashboard/api/v1/model-spend/policies/<id>` with
+`{ "expectedGeneration": <generation> }`. The DELETE is a dashboard mutation, so it also
+needs the dashboard session cookie, an `x-csrf-token` header set to the `csrfToken` field
+of the `GET /dashboard/api/v1/session` response, `Content-Type: application/json`, and an
+`Origin` header naming an origin in `API_ALLOWED_ORIGINS` that matches the request host;
+without them it is refused with `403 origin_required`, `403 forbidden_origin`, or `415`
+(see [troubleshooting](troubleshooting.md)). No MCP tool manages policies.
+
+The ledger settles each run from the settlement the model gateway returns on revoke. A
+gateway older than the runner returns no settlement and no boot id, so every run that
+reached lease issue is recorded as `unreconciled` at its full `maxCostMicros` cap. That
+over-counts aggregate spend but never under-counts it, and per-run caps are unaffected.
+Compose rolls the runner and the gateway together, so this only lasts while the two are
+mixed; expect tight policies to refuse spawns earlier than real spend would suggest until
+both run the same release. A spawn that the gateway explicitly refuses at issue (for
+example an unknown profile) releases its reservation at zero on any gateway version,
+while an ambiguous issue failure (exec failure, timeout, unreadable answer) is charged its
+cap as `unreconciled`, because the lease may exist.
+
+## MCP Events deployment verification
+
+Automated tests prove [MCP Events](mcp-api.md#mcp-events-webhook-delivery)
+against a mock callback receiver only. A live ChatGPT subscription is
+separate, owner-authorized evidence; do not claim it from the mock tests or
+from configuration. After a release that ships or changes events:
+
+1. Deploy through the normal release path and confirm readiness.
+2. Confirm `server/discover` on the remote `/mcp` endpoint advertises
+   `capabilities.events` and that `events/list` returns the four
+   `cloudharness.*` events.
+3. From ChatGPT with the Cloud Harness connector, subscribe to a task or agent
+   event, so ChatGPT supplies its own callback URL and secret. Confirm the
+   subscription appears in `GET /dashboard/api/v1/event-subscriptions` with
+   the expected event name and callback origin, and that the audit log records
+   `mcp_event.subscribed`.
+4. Run a short `tasks_run` task in a disposable workspace and confirm ChatGPT
+   receives the event; the subscription's recent deliveries should show
+   `DELIVERED` with no `lastError`.
+5. Revoke the subscription through the dashboard revoke route
+   (`POST /dashboard/api/v1/event-subscriptions/<id>/revoke`, with the normal
+   dashboard session and CSRF token) or unsubscribe from the client, then
+   confirm no further delivery and the matching audit entry. Close the
+   workspace.
+
+Record the result in the tracking issue as a live receipt: release SHA, date,
+client and plan, event name, subscription and event ids, delivery status, and
+the revocation outcome. Keep callback URLs, secrets, and payload contents out
+of the receipt. Label mock-receiver test runs as mock evidence, never as live
+ChatGPT verification.
 
 ## Release rollback
 

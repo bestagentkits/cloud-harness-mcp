@@ -88,6 +88,9 @@ services:
       - ${HOST_ARTIFACT_ROOT:-/var/lib/cloud-harness/artifacts}:${ARTIFACT_ROOT:-/var/lib/cloud-harness/artifacts}
       - ${HOST_REPO_CACHE_ROOT:-/var/lib/cloud-harness/cache/repos}:${REPO_CACHE_ROOT:-/var/lib/cloud-harness/cache/repos}
       - ${HOST_TOOLKIT_CACHE_ROOT:-/var/lib/cloud-harness/cache/toolkits}:${TOOLKIT_CACHE_ROOT:-/var/lib/cloud-harness/cache/toolkits}
+      # Managed toolbox releases. The runner mounts them into executors by host path, so the host and
+      # container paths must stay equal.
+      - ${HOST_PACKAGES_ROOT:-/var/lib/cloud-harness/packages}:${PACKAGES_ROOT:-/var/lib/cloud-harness/packages}
       - ${AGENT_PROFILES_HOST_FILE:-./config/runner-agent-profiles.json}:/run/agent-config/profiles.json:ro
     networks: [control, runner-egress]
     depends_on:
@@ -103,6 +106,11 @@ services:
     image: cloud-harness-api:local
     restart: unless-stopped
     command: ["node", "/app/deploy/provisioning-proxy.mjs"]
+    # Optional, non-secret operator opt-in (PACKAGES_PROXY_HOSTS) for managed toolbox registry hosts.
+    # It is a dedicated file and never the runtime env file, so the proxy never receives secrets.
+    env_file:
+      - path: ${PROVISIONING_PROXY_ENV_FILE:-/etc/cloud-harness-mcp/provisioning-proxy.env}
+        required: false
     environment:
       PROVISIONING_PROXY_HOST: 0.0.0.0
       PROVISIONING_PROXY_PORT: 3128

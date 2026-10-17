@@ -60,7 +60,7 @@ vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
 }));
 
 import type * as GitHubAppBroker from '../src/github-app-broker.js';
-import { WorkspaceService } from '../src/workspace-service.js';
+import { computeWorkspaceOpenFingerprint, WorkspaceService } from '../src/workspace-service.js';
 
 const temporaryDirectories: string[] = [];
 const openStores: StateStore[] = [];
@@ -769,5 +769,54 @@ describe('Workspace network default resolution', () => {
     store.setWorkspaceDefaultNetworkProfile('dependency-access');
     const opened = await openWithoutProfile(service, principal, 'resolution-explicit-request-1', { networkProfile: 'network-none' });
     expect(store.byId((opened.data as { workspaceId: string }).workspaceId)?.networkProfile).toBe('network-none');
+  });
+
+  it('never replays a failed default-profile open for an explicit network-none request', async () => {
+    const { store, service, principal } = resolutionFixture('resolution-fallback-key');
+    store.setWorkspaceDefaultNetworkProfile('dependency-access');
+    await expect(openWithoutProfile(service, principal, 'resolution-fallback-key-1')).rejects.toMatchObject({
+      code: 'DEPENDENCY_EGRESS_UNAVAILABLE'
+    });
+    // Reusing the key with a different network intent is a conflict, not a replay of the FAILED workspace.
+    await expect(openWithoutProfile(service, principal, 'resolution-fallback-key-1', { networkProfile: 'network-none' })).rejects.toMatchObject({
+      code: 'CONFLICT'
+    });
+    // A retry of the same omitted-profile request still replays the stored result.
+    const replayed = await openWithoutProfile(service, principal, 'resolution-fallback-key-1');
+    expect(replayed).toMatchObject({ ok: false, message: 'Idempotent workspace result', data: { status: 'FAILED' } });
+    // A distinct key, as the deploy canary fallback uses, opens a fresh network-none workspace.
+    const fallback = await openWithoutProfile(service, principal, 'resolution-fallback-key-1-network-none', { networkProfile: 'network-none' });
+    expect(fallback.ok).toBe(true);
+    expect(store.byId((fallback.data as { workspaceId: string }).workspaceId)).toMatchObject({ status: 'ACTIVE', networkProfile: 'network-none' });
+  });
+
+  it('never replays an explicit network-none workspace for an omitted-profile request', async () => {
+    const { store, service, principal } = resolutionFixture('resolution-reverse-key');
+    store.setWorkspaceDefaultNetworkProfile('dependency-access');
+    const opened = await openWithoutProfile(service, principal, 'resolution-reverse-key-1', { networkProfile: 'network-none' });
+    expect(opened.ok).toBe(true);
+    await expect(openWithoutProfile(service, principal, 'resolution-reverse-key-1')).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('does not let a record fingerprinted before the split answer an explicit network-none request', async () => {
+    const { store, service, principal } = resolutionFixture('resolution-legacy-fingerprint');
+    store.setWorkspaceDefaultNetworkProfile('dependency-access');
+    await expect(openWithoutProfile(service, principal, 'resolution-legacy-fingerprint-1')).rejects.toMatchObject({
+      code: 'DEPENDENCY_EGRESS_UNAVAILABLE'
+    });
+    const [record] = store.list(store.resolvePrincipal(principal));
+    const legacyFingerprint = computeWorkspaceOpenFingerprint({ repositoryUrl: 'https://github.com/example/repo.git', networkProfile: 'network-none' });
+    store.database.prepare('UPDATE workspaces SET request_fingerprint = ? WHERE id = ?').run(legacyFingerprint, record!.id);
+
+    // The legacy fingerprint equals an explicit network-none request's, but the stored workspace resolved
+    // dependency-access, so it must not answer that request.
+    await expect(openWithoutProfile(service, principal, 'resolution-legacy-fingerprint-1', { networkProfile: 'network-none' })).rejects.toMatchObject({
+      code: 'CONFLICT'
+    });
+  });
+
+  it('fingerprints an omitted network profile apart from an explicit network-none', () => {
+    const repositoryUrl = 'https://github.com/example/repo.git';
+    expect(computeWorkspaceOpenFingerprint({ repositoryUrl })).not.toBe(computeWorkspaceOpenFingerprint({ repositoryUrl, networkProfile: 'network-none' }));
   });
 });

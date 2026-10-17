@@ -5,6 +5,7 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { isUnsafeAddress, readExactSecret } from './config.js';
 import { usageFromProvider } from './budget.js';
+import { carriesUsage } from './usage-normalizer.js';
 import type { GatewayProfile, Usage } from './types.js';
 
 export interface UpstreamResult {
@@ -13,18 +14,32 @@ export interface UpstreamResult {
   usage?: Usage;
 }
 
+/** An upstream failure; carries the usage the provider reported before the gateway aborted, if any. */
+export class UpstreamError extends Error {
+  constructor(message: string, readonly usage?: Usage) {
+    super(message);
+  }
+}
+
 export interface UpstreamHandle {
   result: Promise<UpstreamResult>;
   abort(reason: string): Promise<void>;
 }
 
+/** URL.hostname keeps the brackets around an IPv6 literal; address checks need the bare address. */
+function upstreamHost(profile: GatewayProfile): string {
+  const hostname = profile.upstream.hostname;
+  return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+}
+
 async function resolveAddress(profile: GatewayProfile): Promise<{ address: string; family: 4 | 6 }> {
-  const literalFamily = isIP(profile.upstream.hostname);
+  const host = upstreamHost(profile);
+  const literalFamily = isIP(host);
   if (literalFamily === 4 || literalFamily === 6) {
-    if (!profile.allowPrivateUpstream && isUnsafeAddress(profile.upstream.hostname)) throw new Error('unsafe upstream address');
-    return { address: profile.upstream.hostname, family: literalFamily };
+    if (!profile.allowPrivateUpstream && isUnsafeAddress(host)) throw new Error('unsafe upstream address');
+    return { address: host, family: literalFamily };
   }
-  const addresses = await lookup(profile.upstream.hostname, { all: true, verbatim: true });
+  const addresses = await lookup(host, { all: true, verbatim: true });
   if (addresses.length === 0) throw new Error('upstream hostname did not resolve');
   const selected = addresses.find(({ address }) => profile.allowPrivateUpstream || !isUnsafeAddress(address));
   if (!selected) throw new Error('upstream hostname resolved only to unsafe addresses');
@@ -32,14 +47,21 @@ async function resolveAddress(profile: GatewayProfile): Promise<{ address: strin
   return { address: selected.address, family: selected.family };
 }
 
-function extractUsageFromLine(line: string, profile: GatewayProfile): Usage | undefined {
+/**
+ * Reads usage from one stream line. `malformed` marks a line that carries a
+ * usage object the normaliser rejects.
+ */
+function extractUsageFromLine(line: string, profile: GatewayProfile): { usage?: Usage; malformed: boolean } {
   const payload = line.startsWith('data:') ? line.slice(5).trimStart() : line;
-  if (payload.length === 0 || payload === '[DONE]' || payload[0] !== '{') return undefined;
+  if (payload.length === 0 || payload === '[DONE]' || payload[0] !== '{') return { malformed: false };
+  let event: unknown;
   try {
-    return usageFromProvider(JSON.parse(payload) as unknown, profile);
+    event = JSON.parse(payload) as unknown;
   } catch {
-    return undefined;
+    return { malformed: false };
   }
+  const usage = usageFromProvider(event, profile);
+  return usage === undefined ? { malformed: carriesUsage(event) } : { usage, malformed: false };
 }
 
 export async function startUpstreamRequest(options: {
@@ -69,18 +91,28 @@ export async function startUpstreamRequest(options: {
   let responseCloseResolve: (() => void) | undefined;
   let responseBytes = 0;
   let usage: Usage | undefined;
+  // A malformed usage report after a valid one discards both, so the request
+  // settles at its reservation instead of an earlier, possibly partial, figure.
+  let usageDiscarded = false;
+  const recordUsage = (line: { usage?: Usage; malformed: boolean }): void => {
+    if (line.malformed && usage !== undefined) usageDiscarded = true;
+    usage = line.usage ?? usage;
+  };
   let pendingLine = '';
   const credentialBytes = Buffer.from(credential, 'utf8');
   let outboundPending = Buffer.alloc(0);
   let abortReason: string | undefined;
+  // Usage that tripped the output limit; the request is still charged for it.
+  let exceededUsage: Usage | undefined;
+  const failure = (message: string): UpstreamError => new UpstreamError(message, exceededUsage);
 
   const requestOptions: RequestOptions = {
     protocol: 'https:',
-    hostname: profile.upstream.hostname,
+    hostname: upstreamHost(profile),
     port: profile.upstream.port === '' ? 443 : Number(profile.upstream.port),
     method: 'POST',
     path: profile.upstream.pathname,
-    ...(isIP(profile.upstream.hostname) === 0 ? { servername: profile.upstream.hostname } : (profile.testOnly ? { servername: 'localhost' } : {})),
+    ...(isIP(upstreamHost(profile)) === 0 ? { servername: profile.upstream.hostname } : (profile.testOnly ? { servername: 'localhost' } : {})),
     minVersion: 'TLSv1.2',
     ...(ca === undefined ? {} : { ca }),
     rejectUnauthorized: true,
@@ -156,14 +188,17 @@ export async function startUpstreamRequest(options: {
             downstream.destroy();
             return;
           }
-          const lineUsage = extractUsageFromLine(line, profile);
+          const lineResult = extractUsageFromLine(line, profile);
+          const lineUsage = lineResult.usage;
+          // outputTokens includes reasoning, so reasoning counts against the reserved output cap.
           if (lineUsage && lineUsage.outputTokens > maxOutputTokens) {
+            exceededUsage = lineUsage;
             abortReason = 'provider output token limit exceeded';
             upstream?.destroy(new Error(abortReason));
             downstream.destroy();
             return;
           }
-          usage = lineUsage ?? usage;
+          recordUsage(lineResult);
           newline = pendingLine.indexOf('\n');
         }
         if (Buffer.byteLength(pendingLine) > profile.limits.maxStreamLineBytes) {
@@ -191,31 +226,33 @@ export async function startUpstreamRequest(options: {
       response.on('end', () => {
         if (settled) return;
         if (pendingLine.length > 0) {
-          const finalUsage = extractUsageFromLine(pendingLine, profile);
+          const finalResult = extractUsageFromLine(pendingLine, profile);
+          const finalUsage = finalResult.usage;
           if (finalUsage && finalUsage.outputTokens > maxOutputTokens) {
+            exceededUsage = finalUsage;
             abortReason = 'provider output token limit exceeded';
             settled = true;
             downstream.destroy();
-            reject(new Error(abortReason));
+            reject(failure(abortReason));
             return;
           }
-          usage = finalUsage ?? usage;
+          recordUsage(finalResult);
         }
         settled = true;
         downstream.end(outboundPending);
-        resolve({ status: response.statusCode ?? 502, responseBytes, ...(usage === undefined ? {} : { usage }) });
+        resolve({ status: response.statusCode ?? 502, responseBytes, ...(usage === undefined || usageDiscarded ? {} : { usage }) });
       });
       response.on('close', () => {
         responseCloseResolve?.();
         upstreamResponseClosed = true;
         if (settled) return;
         settled = true;
-        reject(new Error(abortReason ?? 'upstream response closed before completion'));
+        reject(failure(abortReason ?? 'upstream response closed before completion'));
       });
       response.on('error', (error) => {
         if (settled) return;
         settled = true;
-        reject(new Error(abortReason ?? `upstream response failed: ${error.name}`));
+        reject(failure(abortReason ?? `upstream response failed: ${error.name}`));
       });
     });
     const deadline = setTimeout(() => {
@@ -229,7 +266,7 @@ export async function startUpstreamRequest(options: {
     upstream.on('error', (error) => {
       if (settled) return;
       settled = true;
-      reject(new Error(abortReason ?? `upstream request failed: ${error.name}`));
+      reject(failure(abortReason ?? `upstream request failed: ${error.name}`));
     });
     upstream.on('close', () => {
       clearTimeout(deadline);

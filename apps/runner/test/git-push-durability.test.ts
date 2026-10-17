@@ -189,6 +189,8 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
         stderr: '',
         truncated: false
       });
+      const recoveryWorkerSpy = vi.spyOn(service as unknown as { runRecoveryWorker: () => Promise<unknown> }, 'runRecoveryWorker')
+        .mockResolvedValue({ ok: true, message: 'Remote-tracking ref updated', truncated: false });
 
       // 1. Initial push with idempotencyKey
       const res = await service.execute(ownerId, 'git_push', {
@@ -198,6 +200,11 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
       });
       expect(res.ok).toBe(true);
       expect(pushTransferSpy).toHaveBeenCalledTimes(2); // stage-push + push
+      // The checkout's tracking ref follows the push, so the pushed commit no longer reads as unsaved work.
+      expect(recoveryWorkerSpy).toHaveBeenCalledTimes(1);
+      expect(recoveryWorkerSpy.mock.calls[0]!.slice(1, 3)).toEqual([
+        'workspace_recover', { mode: 'track_push', branch: 'main', commit: 'aaaabbbbccccddddeeeeffff1111222233334444' }
+      ]);
 
       // Advance local HEAD commit (user committed again locally)
       pushHead = 'bbbbccccddddeeeeffff11112222333344445555';
@@ -211,6 +218,7 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
       expect(replay.ok).toBe(true);
       expect((replay.data as Record<string, unknown>).alreadyFinalized).toBe(true);
       expect(pushTransferSpy).toHaveBeenCalledTimes(2); // No second transfer!
+      expect(recoveryWorkerSpy).toHaveBeenCalledTimes(1);
       // 3. Replay with different refspec -> throws CONFLICT
       await expect(
         service.execute(ownerId, 'git_push', {

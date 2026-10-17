@@ -90,7 +90,9 @@ parameters after a lost response or an `UNKNOWN_REMOTE_STATE`:
   not issue another mutation.
 
 Changing the operation or its parameters requires a new key; a mismatched reuse
-returns `CONFLICT`.
+returns `CONFLICT`. For `workspace_open`, omitting `networkProfile` and passing
+`network-none` explicitly are different parameters, so a `network-none` retry
+after a failed default-profile open needs its own key.
 
 ## Workspace operations
 
@@ -184,6 +186,10 @@ Explicitly renew the active workspace idle lease or reactivate a recoverable exp
 
 - Optional: `workspaceId`, `extensionSeconds` (60–86,400).
 - Returns refreshed lease metadata with remaining lease time.
+- Never extends past `hardExpiresAt`. A renewal the deadline caps still returns
+  `ok: true` but sets `leaseCapped: true`, `requestedExpiresAt`, and a
+  `leaseWarnings` entry; check `leaseCapped` before a long step and plan to
+  push, finalize, or open a fresh workspace before `hardExpiresAt`.
 
 <!-- cloudharness-example:workspace_lease_renew
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","extensionSeconds":3600}

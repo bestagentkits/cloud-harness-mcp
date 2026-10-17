@@ -3,16 +3,20 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { createHash } from 'node:crypto';
 import type { GatewayConfig, GatewayProfile, LeaseIssueInput, ProfileLimits } from './types.js';
 import type { LeaseRegistry } from './lease-registry.js';
-import { assertProductionHostname } from './config.js';
+import { assertProductionHostname, assertSessionHeaderName, parsePricing } from './config.js';
 
 const MAX_CONTROL_RECORD_BYTES = 1_048_576;
 
 type CancelRequest = (requestId: string) => Promise<boolean>;
 type RevokeLease = (leaseId: string) => Promise<boolean>;
 
+/**
+ * The gateway's live routing state. `profiles` holds the startup-configured profiles plus the
+ * revisions of the latest accepted snapshot; `credentials` holds only that snapshot's keys.
+ */
 export interface DynamicGatewayRegistry {
   profiles: Map<string, GatewayProfile>;
-  credentials: Map<string, { provider: string; authMode: 'authorization' | 'x-api-key'; secret: string }>;
+  credentials: Map<string, { provider: string; authMode: 'authorization' | 'x-api-key'; secret: string; sessionHeader?: string }>;
   snapshotDigest: string;
   gatewayBootId: string;
 }
@@ -70,37 +74,67 @@ export async function startControlServer(options: {
       handled = true;
       void (async () => {
         try {
-          const command = JSON.parse(record) as Record<string, unknown>;
+          let command: Record<string, unknown>;
+          try {
+            command = JSON.parse(record) as Record<string, unknown>;
+          } catch {
+            // V8 parse errors quote the input, and a snapshot record carries provider keys.
+            throw new Error('invalid control record');
+          }
           if (command.operation === 'issue') {
             const profileId = typeof command.profileId === 'string' ? command.profileId : '';
             const profile = registry.profiles.get(profileId) ?? config.profiles.get(profileId);
             if (!profile) throw new Error('unknown profile');
             const lease = leases.issue(command as unknown as LeaseIssueInput, profile);
-            send(socket, { ok: true, lease });
+            send(socket, { ok: true, lease, gatewayBootId: registry.gatewayBootId });
           } else if (command.operation === 'revoke') {
             if (typeof command.leaseId !== 'string') throw new Error('invalid leaseId');
-            send(socket, { ok: true, revoked: await revokeLease(command.leaseId) });
+            // revokeLease drains in-flight requests before returning, so the settlement
+            // is final and frozen here. Revoking again returns the same settlement for
+            // the retention horizon.
+            const revoked = await revokeLease(command.leaseId);
+            const settlement = leases.freezeSettlement(command.leaseId);
+            send(socket, { ok: true, revoked, gatewayBootId: registry.gatewayBootId, ...(settlement === undefined ? {} : { settlement }) });
           } else if (command.operation === 'cancel') {
             if (typeof command.requestId !== 'string') throw new Error('invalid requestId');
             send(socket, { ok: true, cancelled: await cancelRequest(command.requestId) });
           } else if (command.operation === 'apply_snapshot' || command.type === 'apply_snapshot') {
-            const credentials = (command.credentials ?? {}) as Record<string, { provider: string; authMode?: string; secret: string }>;
+            const credentials = (command.credentials ?? {}) as Record<string, { provider: string; authMode?: string; secret: string; sessionHeader?: unknown }>;
             const profiles = (command.profiles ?? {}) as Record<string, any>;
 
-            // Update credentials
+            // A snapshot is the complete set the runner still exports, so it replaces every
+            // earlier snapshot entry rather than merging into them: a credential or revision
+            // missing from it is evicted. Validate and build the whole snapshot before touching
+            // the registry, so a rejected snapshot leaves the active credentials and profiles unchanged.
+            const stagedCredentials: DynamicGatewayRegistry['credentials'] = new Map();
             for (const [credId, credData] of Object.entries(credentials)) {
+              if (credData === null || typeof credData !== 'object' || typeof credData.provider !== 'string') {
+                throw new Error(`invalid provider for credential ${credId}`);
+              }
+              if (typeof credData.secret !== 'string' || credData.secret === '') throw new Error(`invalid secret for credential ${credId}`);
               const authMode = credData.authMode === 'x-api-key' ? 'x-api-key' : 'authorization';
-              registry.credentials.set(credId, {
+              let sessionHeader: string | undefined;
+              if (credData.sessionHeader !== undefined) {
+                if (typeof credData.sessionHeader !== 'string') throw new Error(`invalid sessionHeader for credential ${credId}`);
+                sessionHeader = assertSessionHeaderName(credData.sessionHeader, `sessionHeader for credential ${credId}`);
+              }
+              stagedCredentials.set(credId, {
                 provider: credData.provider,
                 authMode,
-                secret: credData.secret
+                secret: credData.secret,
+                ...(sessionHeader === undefined ? {} : { sessionHeader })
               });
             }
 
-            // Update profiles
+            const stagedProfiles = new Map<string, GatewayProfile>();
             for (const [revId, revData] of Object.entries(profiles)) {
+              // A snapshot must not shadow a profile configured at startup, so that profile
+              // survives every replacement unchanged.
+              if (config.profiles.has(revId)) {
+                throw new Error(`profile revision ${revId} collides with a configured profile`);
+              }
               const credId = revData.credentialId;
-              const cred = typeof credId === 'string' ? registry.credentials.get(credId) : undefined;
+              const cred = typeof credId === 'string' ? stagedCredentials.get(credId) : undefined;
               if (!cred) {
                 throw new Error(`unresolved credential binding for profile revision ${revId}`);
               }
@@ -111,6 +145,8 @@ export async function startControlServer(options: {
                 maxCostMicros: revData.limits.maxCostMicros ?? 100_000_000
               } : defaultLimits();
 
+              const pricing = parsePricing(revData.pricing ?? {}, `pricing for profile revision ${revId}`, { strictKeys: false, baseDefault: 0 });
+
               const upstreamUrl = new URL(revData.upstreamUrl ?? 'https://api.openai.com/v1/chat/completions');
               if (config.mode !== 'test') {
                 // assertProductionHostname rejects an unsafe address literal, and the resolved
@@ -120,7 +156,7 @@ export async function startControlServer(options: {
 
               const profile: GatewayProfile = {
                 id: revId,
-                provider: revData.model ?? 'default',
+                provider: cred.provider,
                 model: revData.model ?? 'default',
                 downstreamPath: revData.downstreamPath ?? '/v1/chat/completions',
                 upstream: upstreamUrl,
@@ -128,16 +164,23 @@ export async function startControlServer(options: {
                 credentialSecret: cred.secret,
                 credentialHeader: cred.authMode === 'x-api-key' ? 'x-api-key' : 'authorization',
                 credentialScheme: cred.authMode === 'x-api-key' ? '' : 'Bearer',
-                inputMicrosPerMillionTokens: revData.pricing?.inputMicrosPerMillionTokens ?? 0,
-                outputMicrosPerMillionTokens: revData.pricing?.outputMicrosPerMillionTokens ?? 0,
+                ...pricing,
                 limits,
                 testOnly: config.mode === 'test',
                 allowPrivateUpstream: config.mode === 'test',
-                tlsCaFile: config.mode === 'test' ? config.tlsCaFile : undefined
+                tlsCaFile: config.mode === 'test' ? config.tlsCaFile : undefined,
+                ...(cred.sessionHeader === undefined ? {} : { sessionHeader: cred.sessionHeader })
               };
 
-              registry.profiles.set(revId, profile);
+              stagedProfiles.set(revId, profile);
             }
+            // Credentials only ever come from snapshots. Profiles configured at startup
+            // (config.profiles) are the static origin and survive every replacement.
+            registry.credentials.clear();
+            for (const [credId, cred] of stagedCredentials) registry.credentials.set(credId, cred);
+            registry.profiles.clear();
+            for (const [profileId, profile] of config.profiles) registry.profiles.set(profileId, profile);
+            for (const [revId, profile] of stagedProfiles) registry.profiles.set(revId, profile);
             const snapshotDigest = `sha256:${createHash('sha256').update(record, 'utf8').digest('hex')}`;
             registry.snapshotDigest = snapshotDigest;
 

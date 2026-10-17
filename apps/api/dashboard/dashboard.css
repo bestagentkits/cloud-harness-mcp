@@ -447,6 +447,29 @@ li.empty { padding: var(--space-6); }
 #alert { margin-block-start: var(--space-4); animation: rise-in var(--motion-state) var(--ease-out); }
 .status-error { color: var(--danger); }
 
+/* ───────────────────────── Managed packages ───────────────────────── */
+.packages-page { display: grid; gap: var(--space-6); }
+.packages-page section { display: grid; gap: var(--space-3); min-width: 0; }
+.packages-page h2, #package-plans-heading { margin: 0; }
+#package-plans-heading { margin-block-start: var(--space-6); }
+section[aria-labelledby="package-plans-heading"] { display: grid; gap: var(--space-3); }
+.package-version { color: var(--ink-muted); font-weight: 500; }
+.package-compare { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); margin: var(--space-3) 0; font-size: var(--text-13); color: var(--ink-muted); }
+.package-compare strong { color: var(--ink); font-family: var(--font-mono); }
+.package-risks { margin: var(--space-3) 0; padding: var(--space-3) var(--space-4) var(--space-3) var(--space-8); background: var(--warning-soft); border: 1px solid var(--warning-line); border-radius: var(--radius-md); color: var(--ink); font-size: var(--text-13); display: grid; gap: var(--space-1); }
+.package-steps { list-style: none; display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-3) 0; padding: 0; font-size: var(--text-12); }
+.package-steps li { padding: var(--space-1) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-pill); color: var(--ink-faint); background: var(--surface-raised); }
+.package-steps li.done { color: var(--success); border-color: var(--success-line); background: var(--success-soft); }
+.package-steps li.current { color: var(--info); border-color: var(--info-line); background: var(--info-soft); font-weight: 600; }
+.package-table { margin-block-start: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); overflow-x: auto; background: var(--surface); }
+.package-table table { min-width: 36rem; }
+.package-table caption { padding: var(--space-2) var(--space-4); text-align: start; font-size: var(--text-12); color: var(--ink-muted); }
+.package-table td .danger { white-space: nowrap; }
+/* The short form is what the eye reads; the full digest stays in the accessibility tree and replaces it on focus. */
+.digest { position: relative; cursor: help; overflow-wrap: anywhere; }
+.digest:not(:focus) .digest-full { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.digest:focus .digest-short { display: none; }
+
 /* ───────────────────────── Buttons, secondary ───────────────────────── */
 /* Explicit primary control. The positional `button[type="submit"]:not(.danger)`
    rule stays the default primary for form submits; this adds the same treatment
@@ -486,11 +509,11 @@ li.empty { padding: var(--space-6); }
 /* A state is a ledger stamp: square-cornered, mono, with a dot that carries the hue. */
 .status { display: inline-flex; gap: .375rem; align-items: center; flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: .0625rem var(--space-2) .0625rem .4375rem; font-family: var(--font-mono); font-size: var(--text-11); font-weight: 600; letter-spacing: .02em; text-transform: lowercase; line-height: 1.6; white-space: nowrap; background: var(--surface-raised); color: var(--ink-muted); }
 .status::before { content: ""; width: .375rem; height: .375rem; border-radius: var(--radius-pill); background: currentColor; flex: 0 0 auto; }
-.status.active, .status.enabled, .status.succeeded, .status.connected, .status.ready, .status.healthy, .status.approved, .status.open { background: var(--success-soft); color: var(--success); border-color: var(--success-line); }
+.status.active, .status.enabled, .status.succeeded, .status.connected, .status.ready, .status.healthy, .status.approved, .status.consumed, .status.open { background: var(--success-soft); color: var(--success); border-color: var(--success-line); }
 .status.reaping, .status.expired, .status.pending, .status.cancelling, .status.degraded, .status.stale { background: var(--warning-soft); color: var(--warning); border-color: var(--warning-line); }
-.status.failed, .status.error, .status.timed_out, .status.timedout, .status.limit_exceeded, .status.interrupted, .status.network_quarantined, .status.revoked, .status.rejected, .status.disconnected { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-line); }
+.status.failed, .status.error, .status.timed_out, .status.timedout, .status.limit_exceeded, .status.interrupted, .status.network_quarantined, .status.revoked, .status.rejected, .status.disconnected, .status.lost { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-line); }
 /* Neutral in-progress state. Emitted by MCP_STATUS.connecting in dashboard-render.js. */
-.status.info, .status.running, .status.spawning, .status.creating, .status.queued { background: var(--info-soft); color: var(--info); border-color: var(--info-line); }
+.status.info, .status.running, .status.spawning, .status.creating, .status.queued, .status.connecting { background: var(--info-soft); color: var(--info); border-color: var(--info-line); }
 /* A library skill is on, off, or set aside. `enabled` shares the success pill and `archived` the neutral
    info pill, so the State column of the Skills library reads at a glance; a disabled skill keeps the
    quiet base pill, because being switched off is a deliberate state rather than a fault. */
@@ -772,6 +795,7 @@ td details.row-edit pre { max-height: 12rem; max-width: 36rem; font-size: var(--
 .approval-row { display: grid; gap: var(--space-4); border-inline-start: .1875rem solid var(--warning-line); }
 .approval-row h3 { font-family: var(--font-mono); font-size: var(--text-13); font-weight: 600; overflow-wrap: anywhere; }
 .approval-row .row-actions { justify-content: flex-start; padding-block-start: var(--space-3); border-block-start: 1px solid var(--line); }
+.package-binding > .row-actions { justify-content: flex-start; margin-block: var(--space-3); }
 .deploy-target { display: grid; gap: var(--space-4); }
 .session-row { display: grid; gap: var(--space-3); }
 .session-row .row-actions { justify-content: flex-start; }
@@ -818,6 +842,20 @@ nav[aria-label="Breadcrumb"] > * + *::before { content: "/"; margin-inline-end: 
 .stack-form .checkbox-label { display: flex; align-items: start; gap: var(--space-3); font-weight: 500; }
 .checkbox-label input { flex: 0 0 auto; width: 1.5rem; height: 1.5rem; min-height: auto; padding: 0; margin-block-start: 0; accent-color: var(--accent); box-shadow: none; }
 .checkbox-label span { padding-block-start: .125rem; }
+/* One labelled setting with its provenance, help, and inline error. The error line is empty until the
+   client validates, so a field without a problem takes no extra space. */
+.lifecycle-field { display: grid; gap: var(--space-1); padding-block: var(--space-3); border-block-start: 1px solid var(--line); }
+.lifecycle-field:first-child { border-block-start: 0; padding-block-start: 0; }
+.lifecycle-field > .facts, .lifecycle-field > .warning { margin-block: var(--space-2) 0; }
+.field-meta { margin: 0; color: var(--ink-muted); font-size: var(--text-12); font-variant-numeric: tabular-nums; }
+.field-help { margin: 0; color: var(--ink-muted); font-size: var(--text-13); }
+.field-error { margin: 0; color: var(--danger); font-size: var(--text-13); font-weight: 500; }
+.field-error:empty { display: none; }
+.stack-form input[aria-invalid="true"] { border-color: var(--danger-line); }
+.lifecycle-ack { display: grid; gap: var(--space-2); margin-block-start: var(--space-2); padding: var(--space-3) var(--space-4); border: 1px solid var(--danger-line); border-radius: var(--radius-md); background: var(--danger-soft); font-size: var(--text-13); }
+.lifecycle-ack[hidden] { display: none; }
+.lifecycle-ack p { margin: 0; }
+.lifecycle-states li strong { color: var(--ink); }
 .tools-checkbox-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: var(--space-2); padding: var(--space-3); background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-12); margin-block: var(--space-1); }
 .tools-checkbox-grid label { display: flex; align-items: center; gap: var(--space-2); cursor: pointer; font-weight: 400; }
 .tools-checkbox-grid input { min-height: auto; width: 1.125rem; height: 1.125rem; accent-color: var(--accent); }
@@ -835,10 +873,80 @@ dialog .stack-form { margin-block: 0; max-width: none; }
 #bulk-import-dialog { width: min(46rem, calc(100vw - 2 * var(--space-4))); }
 #open-workspace-dialog { width: min(40rem, calc(100vw - 2 * var(--space-4))); }
 #model-credential-dialog { width: min(38rem, calc(100vw - 2 * var(--space-4))); }
-#model-profile-dialog { width: min(48rem, calc(100vw - 2 * var(--space-4))); }
+#model-profile-dialog { width: min(48rem, calc(100vw - 2 * var(--space-4))); max-width: calc(100vw - 2 * var(--space-4)); }
 #knowledge-conflict-dialog { width: min(64rem, calc(100vw - 2 * var(--space-4))); }
 #mcp-server-dialog { width: min(44rem, calc(100vw - 2 * var(--space-4))); }
 #confirm-dialog { width: min(28rem, calc(100vw - 2 * var(--space-4))); }
+
+/* Model profile wizard. One dialog walks provider, key, model, review, and verify; each step is a
+   plain stack so the dialog scrolls as one column on a phone. */
+.wizard-steps { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin: 0 0 var(--space-4); padding: 0 0 var(--space-3); list-style: none; border-block-end: 1px solid var(--line); font-size: var(--text-12); color: var(--ink-muted); }
+.wizard-steps li { display: inline-flex; align-items: center; gap: var(--space-2); }
+.wizard-step-index { display: inline-grid; place-items: center; width: 1.375rem; height: 1.375rem; border: 1px solid var(--line-strong); border-radius: var(--radius-pill); font-family: var(--font-mono); font-size: var(--text-11); }
+.wizard-steps li.done .wizard-step-index { border-color: var(--success-line); background: var(--success-soft); color: var(--success); }
+.wizard-steps li[aria-current="step"] { color: var(--ink); font-weight: 600; }
+.wizard-steps li[aria-current="step"] .wizard-step-index { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.wizard-body { display: grid; gap: var(--space-2); min-width: 0; }
+.wizard-step-heading { margin: 0 0 var(--space-2); font-size: var(--text-16); font-weight: 650; }
+.wizard-body fieldset { min-width: 0; margin: 0; padding: 0; border: 0; display: grid; gap: var(--space-2); }
+.wizard-body legend { padding: 0; margin-block-end: var(--space-2); font-size: var(--text-13); font-weight: 600; }
+.wizard-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr)); gap: var(--space-2); }
+.wizard-choice { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: var(--space-1) var(--space-3); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); cursor: pointer; transition: border-color var(--motion-fast) var(--ease-out), background-color var(--motion-fast) var(--ease-out); }
+.wizard-choice:hover { border-color: var(--line-strong); }
+.wizard-choice:has(input:checked) { border-color: var(--accent-line); background: var(--accent-soft); }
+.wizard-choice > input { grid-row: 1 / span 3; margin-block-start: .125rem; }
+.wizard-choice-title { font-weight: 600; }
+.wizard-choice-note, .wizard-choice-meta { grid-column: 2; font-size: var(--text-12); color: var(--ink-muted); }
+.wizard-choice-compact > input { grid-row: 1 / span 2; }
+.wizard-subfields { display: grid; gap: var(--space-2); padding-inline-start: var(--space-8); }
+.wizard-subfields[hidden] { display: none; }
+.wizard-facts { padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); }
+.wizard-facts small, .verification-checks small { color: var(--ink-muted); }
+.model-combobox { display: grid; gap: var(--space-1); }
+.model-options { margin: 0; padding: var(--space-1); list-style: none; max-height: 16rem; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--highlight); }
+.model-options[hidden] { display: none; }
+.model-option { display: grid; gap: .125rem; padding: var(--space-2) var(--space-3); border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }
+.model-option:hover { background: var(--surface-raised); }
+.model-option.selected { background: var(--accent-soft); border-color: var(--accent-line); }
+.model-option-name { font-weight: 550; overflow-wrap: anywhere; }
+.model-option-id { font-size: var(--text-12); color: var(--ink-muted); overflow-wrap: anywhere; }
+.model-option-meta { font-size: var(--text-12); color: var(--ink-muted); }
+.catalog-freshness { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.catalog-freshness > p { flex: 1 1 16rem; }
+.wizard-permissions .tools-checkbox-grid { margin-block: 0; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); }
+.wizard-permissions .tools-checkbox-grid label { flex-wrap: wrap; min-width: 0; }
+.wizard-permissions .tools-checkbox-grid input { flex: none; }
+.permission-flag { padding: 0 var(--space-1); border: 1px solid var(--warning-line); border-radius: var(--radius-sm); background: var(--warning-soft); color: var(--warning); font-family: var(--font-mono); font-size: var(--text-11); white-space: nowrap; }
+.permission-diff { display: grid; gap: .125rem; margin: var(--space-1) 0 0; padding: var(--space-2) var(--space-3); list-style: none; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); font-size: var(--text-12); }
+.permission-diff li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.permission-added { color: var(--success); }
+.permission-removed { color: var(--danger); }
+.permission-kept { color: var(--ink-muted); }
+.permission-added.permission-mutating { color: var(--warning); font-weight: 600; }
+.wizard-advanced { margin-block-start: var(--space-2); }
+.wizard-advanced-body { display: grid; gap: var(--space-2); padding-block: var(--space-3) 0; }
+.wizard-advanced-body .form-row > div { min-width: 0; }
+.wizard-advanced-body .form-row input { width: 100%; min-width: 0; }
+.wizard-section { display: grid; gap: var(--space-2); }
+.wizard-section h4 { margin: var(--space-2) 0 0; font-size: var(--text-13); font-weight: 600; }
+.verification-result { display: grid; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); font-size: var(--text-13); }
+.verification-result > p { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; }
+.verification-checks { display: grid; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.verification-checks li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.wizard-gate { display: grid; gap: var(--space-2); margin-block-start: var(--space-2); padding-block-start: var(--space-3); border-block-start: 1px solid var(--line); }
+.gate-reasons { margin: 0; padding-inline-start: var(--space-6); color: var(--warning); font-size: var(--text-13); }
+.wizard-actions #model-wizard-back[hidden] { display: none; }
+.models-page { display: grid; gap: var(--space-6); }
+/* Saved revision prices: secondary lines under the input/output pair, the provenance pill, and the
+   repricing warning, whose words carry the meaning and whose amber only reinforces it. */
+.price-line { display: block; margin-block-start: var(--space-1); color: var(--ink-muted); font-size: var(--text-12); }
+.price-provenance { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); margin-block-start: var(--space-1); font-size: var(--text-12); color: var(--ink-muted); }
+.pricing-review { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); margin-block-start: var(--space-1); color: var(--warning); font-size: var(--text-12); font-weight: 550; }
+/* Every spend figure is an estimate; the tag says so in words next to the amount. */
+.estimate-tag { display: inline-block; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 0 var(--space-1); color: var(--ink-muted); font-size: var(--text-11); font-weight: 600; white-space: nowrap; }
+.spend-policy-form { display: grid; gap: var(--space-3); margin-block-start: var(--space-4); padding-block-start: var(--space-4); border-block-start: 1px solid var(--line); }
+.spend-policy-form h3 { margin: 0; font-size: var(--text-13); font-weight: 600; }
+.spend-policy-form .form-row input, .spend-policy-form .form-row select { width: 100%; min-width: 0; }
 #confirm-target { margin: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); font-size: var(--text-12); overflow-wrap: anywhere; }
 #confirm-target:empty { display: none; }
 
@@ -1095,6 +1203,21 @@ dialog .stack-form { margin-block: 0; max-width: none; }
 /* ───────────────────────── Density on precise pointers ───────────────────────── */
 /* A mouse can hit a 36px control reliably, so the desktop console tightens to a working density;
    coarse pointers keep the 44px floor declared on the base rules above. */
+/* Dashboard Terminal. The emulator paints inside .terminal-surface; its colours come from these tokens
+   through dashboard-terminal.js, so the surface and the cells agree in both themes. */
+.terminal-panel { display: grid; gap: var(--space-3); }
+.terminal-panel > .page-note { margin: 0; }
+.terminal-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-4); }
+.terminal-status { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; min-width: 0; color: var(--ink-muted); font-size: var(--text-13); }
+.terminal-status > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.terminal-reattach { display: grid; gap: var(--space-2); margin: 0; padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); }
+.terminal-reattach ul { list-style: none; display: grid; gap: var(--space-2); margin: 0; padding: 0; }
+.terminal-reattach li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); min-width: 0; }
+.terminal-surface { position: relative; width: 100%; min-width: 0; height: min(32rem, 62dvh); min-height: 14rem; overflow: hidden; padding: var(--space-2); background: var(--code-bg); border: 1px solid var(--line-strong); border-radius: var(--radius-md); }
+.terminal-surface:focus-visible, .terminal-surface:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+.terminal-surface .xterm { height: 100%; }
+.terminal-surface .xterm-viewport { background: transparent; }
+
 @media (pointer: fine) {
   :root { --control-h: 2.25rem; }
   button, input, select, .accent-btn:not(.danger), .button, .secondary, .icon-btn, .profile-chip, details.row-edit > summary, .cockpit-actions details.row-edit > summary { min-height: 2.25rem; }
@@ -1206,10 +1329,24 @@ dialog .stack-form { margin-block: 0; max-width: none; }
   .activity-center > li.activity-event::before { inset-inline-start: calc(-1 * var(--space-4) + .1875rem); }
   .activity-center::before { inset-inline-start: .4375rem; }
   dialog { padding: var(--space-4); }
+  /* The wizard stays one column on a phone: provider cards stack, sub-fields lose their indent, and
+     the step actions share the row so Continue is never pushed off screen. */
+  .wizard-choices { grid-template-columns: minmax(0, 1fr); }
+  .wizard-subfields { padding-inline-start: 0; }
+  .wizard-steps { font-size: var(--text-11); gap: var(--space-1) var(--space-2); }
+  .wizard-actions > button { flex: 1 1 0; }
+  .wizard-facts { padding: var(--space-2); }
   #command-palette { margin-block-start: var(--space-4); }
   .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .facts dd { margin-block-end: var(--space-2); }
   .agent-node .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 47.9375rem) {
+  .terminal-toolbar { align-items: stretch; }
+  .terminal-toolbar .row-actions { width: 100%; }
+  .terminal-toolbar .row-actions > button { flex: 1 1 0; }
+  .terminal-surface { height: 55dvh; min-height: 12rem; padding: var(--space-1); }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ApiConfig } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { createApiApp, type ApiRuntime } from '../src/app.js';
-import { DASHBOARD_COMPAT_REDIRECTS, DASHBOARD_SHELL_PATHS, createDashboardAssetsRouter } from '../src/dashboard-assets.js';
+import { DASHBOARD_COMPAT_REDIRECTS, DASHBOARD_SHELL_PATHS, DASHBOARD_VENDOR_ASSETS, createDashboardAssetsRouter } from '../src/dashboard-assets.js';
 import { normalizeServerVersion } from '../src/version.js';
 
 const manifestVersion = z.object({ version: z.string() })
@@ -86,12 +86,45 @@ describe('dashboard application mount', () => {
     expect(versioned.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
     expect(await versioned.text()).toContain('DASHBOARD_PAGES');
 
+    const models = await fetch(`${root}/${encodeURIComponent(manifestVersion)}/dashboard-models.js`);
+    expect(models.status).toBe(200);
+    expect(models.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
+    expect(await models.text()).toContain('createModelWizard');
+
     const legacy = await fetch(`${root}/dashboard-pages.js`);
     expect(legacy.status).toBe(200);
     expect(legacy.headers.get('cache-control')).toBe('private, no-cache');
 
     expect((await fetch(`${root}/not-${encodeURIComponent(manifestVersion)}/dashboard-pages.js`)).status).toBe(404);
     expect((await fetch(`${root}/${encodeURIComponent(manifestVersion)}/package.json`)).status).toBe(404);
+  });
+
+  it('serves the terminal module and only the allow-listed emulator files from the release namespace', async () => {
+    const app = express();
+    app.use('/dashboard', createDashboardAssetsRouter());
+    server = createServer(app);
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server failed');
+    const root = `http://127.0.0.1:${address.port}/dashboard/assets/${encodeURIComponent(manifestVersion)}`;
+    expect([...DASHBOARD_VENDOR_ASSETS.keys()].sort()).toEqual(['xterm-addon-fit.mjs', 'xterm.css', 'xterm.mjs']);
+    const expectations: Array<[string, string, string]> = [
+      ['dashboard-terminal.js', 'javascript', 'createTerminalSession'],
+      ['xterm.mjs', 'javascript', 'Terminal'],
+      ['xterm-addon-fit.mjs', 'javascript', 'FitAddon'],
+      ['xterm.css', 'text/css', '.xterm']
+    ];
+    for (const [name, type, marker] of expectations) {
+      const response = await fetch(`${root}/${name}`);
+      expect(response.status, name).toBe(200);
+      expect(response.headers.get('content-type'), name).toContain(type);
+      expect(response.headers.get('cache-control'), name).toBe('private, max-age=31536000, immutable');
+      expect(await response.text(), name).toContain(marker);
+    }
+    // Nothing else under node_modules is reachable, by name or by traversal.
+    for (const probe of ['xterm.js', 'addon-fit.mjs', 'package.json', '..%2F..%2Fpackage.json', '%40xterm%2Fxterm%2Flib%2Fxterm.mjs']) {
+      expect((await fetch(`${root}/${probe}`)).status, probe).toBe(404);
+    }
   });
 
   it('injects the forced theme from the preference cookie into the shell', async () => {

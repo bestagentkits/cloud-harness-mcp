@@ -104,9 +104,13 @@ Things to know:
 - **Disconnect** asks the provider to revoke the token where it supports that,
   then deletes it from Cloud Harness either way. Changing the endpoint or the
   manual client, or turning OAuth off, also discards the stored sign-in.
-- **Your operator must enable it.** If **Connect** reports that MCP OAuth is
-  unavailable, the deployment has not set
-  [`MCP_DOWNSTREAM_OAUTH_REDIRECT_URL`](/reference/environment-variables).
+- **A failed reconnect keeps a working sign-in.** If you cancel or the
+  provider rejects a **Reconnect**, the existing sign-in keeps working and the
+  panel shows the failure as a warning until the next successful sign-in.
+- **Your operator must enable it.** Until the deployment sets
+  [`MCP_DOWNSTREAM_OAUTH_REDIRECT_URL`](/reference/environment-variables), the
+  panel reads **Not configured** and offers no **Connect**. A sign-in made
+  before then keeps working and can still be disconnected.
 
 ## Connect an MCP client
 
@@ -137,7 +141,11 @@ Work through it in three steps:
 1. **`search`** — describe what you want to do, for example "create a GitHub
    issue". You get back qualified tool names in the form
    `<server>.<tool>`, ranked and filtered to tools you are allowed to use.
-   Optionally restrict the search to one server.
+   Optionally restrict the search to one server. If the operator enabled
+   semantic routing, the response says `ranking: "semantic"` and the matches
+   are reordered by meaning rather than shared words. Otherwise it says
+   `ranking: "lexical"`. Semantic routing only reorders tools you could already
+   see. It never adds a denied tool.
 2. **`inspect`** — pass one qualified name to receive that tool's real input
    schema, annotations, availability, and effective permission. Read the schema
    before you call it.
