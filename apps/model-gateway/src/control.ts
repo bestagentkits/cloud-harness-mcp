@@ -122,6 +122,11 @@ export async function startControlServer(options: {
 
             const stagedProfiles = new Map<string, GatewayProfile>();
             for (const [revId, revData] of Object.entries(profiles)) {
+              // A snapshot must not shadow a profile configured at startup, so that profile
+              // survives every replacement unchanged.
+              if (config.profiles.has(revId)) {
+                throw new Error(`profile revision ${revId} collides with a configured profile`);
+              }
               const credId = revData.credentialId;
               const cred = typeof credId === 'string' ? stagedCredentials.get(credId) : undefined;
               if (!cred) {

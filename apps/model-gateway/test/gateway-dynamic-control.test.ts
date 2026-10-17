@@ -340,6 +340,25 @@ describe('Model Gateway Dynamic Control & Hot Reload', () => {
     }]))
   });
 
+  const staticProfileFixture = (): GatewayProfile => ({
+    id: 'static-profile',
+    provider: 'openai',
+    model: 'gpt-static',
+    downstreamPath: '/v1/chat/completions',
+    upstream: new URL('https://api.openai.com/v1/chat/completions'),
+    credentialFile: '/run/secrets/static-provider-key',
+    credentialHeader: 'authorization',
+    credentialScheme: 'Bearer',
+    inputMicrosPerMillionTokens: 1000,
+    outputMicrosPerMillionTokens: 2000,
+    limits: {
+      maxRequestBytes: 4_194_304, maxResponseBytes: 16_777_216, maxHeaderBytes: 16_384, maxHeaders: 32, deadlineMs: 300_000,
+      maxInputTokens: 400_000, maxOutputTokens: 128_000, maxCostMicros: 100_000_000, maxStreamLineBytes: 1_048_576
+    },
+    testOnly: false,
+    allowPrivateUpstream: false
+  });
+
   async function startRegistryControl(profiles: ReadonlyMap<string, GatewayProfile> = new Map()): Promise<{
     socketPath: string;
     registry: DynamicGatewayRegistry;
@@ -405,31 +424,7 @@ describe('Model Gateway Dynamic Control & Hot Reload', () => {
   });
 
   it('keeps statically configured profiles while evicting earlier snapshot revisions', async () => {
-    const staticProfile: GatewayProfile = {
-      id: 'static-profile',
-      provider: 'openai',
-      model: 'gpt-static',
-      downstreamPath: '/v1/chat/completions',
-      upstream: new URL('https://api.openai.com/v1/chat/completions'),
-      credentialFile: '/run/secrets/static-provider-key',
-      credentialHeader: 'authorization',
-      credentialScheme: 'Bearer',
-      inputMicrosPerMillionTokens: 1000,
-      outputMicrosPerMillionTokens: 2000,
-      limits: {
-        maxRequestBytes: 4_194_304,
-        maxResponseBytes: 16_777_216,
-        maxHeaderBytes: 16_384,
-        maxHeaders: 32,
-        deadlineMs: 300_000,
-        maxInputTokens: 400_000,
-        maxOutputTokens: 128_000,
-        maxCostMicros: 100_000_000,
-        maxStreamLineBytes: 1_048_576
-      },
-      testOnly: false,
-      allowPrivateUpstream: false
-    };
+    const staticProfile = staticProfileFixture();
     const { socketPath, registry } = await startRegistryControl(new Map([[staticProfile.id, staticProfile]]));
 
     const first = await sendControl(socketPath, snapshotOf(1, [{ credentialId: 'cred_old', revisionId: 'rev_old' }]));
@@ -440,6 +435,28 @@ describe('Model Gateway Dynamic Control & Hot Reload', () => {
     expect(registry.profiles.get('static-profile')).toBe(staticProfile);
     expect([...registry.profiles.keys()].sort()).toEqual(['rev_new', 'static-profile']);
     expect([...registry.credentials.keys()]).toEqual(['cred_new']);
+  });
+
+  it('rejects a snapshot revision that collides with a configured profile and keeps the previous set', async () => {
+    const staticProfile = staticProfileFixture();
+    const { socketPath, registry } = await startRegistryControl(new Map([[staticProfile.id, staticProfile]]));
+    const accepted = await sendControl(socketPath, snapshotOf(1, [{ credentialId: 'cred_kept', revisionId: 'rev_kept' }]));
+    expect(accepted.ok).toBe(true);
+    const credentialsBefore = new Map(registry.credentials);
+    const profilesBefore = new Map(registry.profiles);
+    const digestBefore = registry.snapshotDigest;
+
+    const rejected = await sendControl(socketPath, snapshotOf(2, [
+      { credentialId: 'cred_new', revisionId: 'rev_new' },
+      { credentialId: 'cred_shadow', revisionId: 'static-profile' }
+    ]));
+
+    expect(rejected.ok).toBe(false);
+    expect(String(rejected.error)).toContain('profile revision static-profile collides with a configured profile');
+    expect(registry.credentials).toEqual(credentialsBefore);
+    expect(registry.profiles).toEqual(profilesBefore);
+    expect(registry.profiles.get('static-profile')).toBe(staticProfile);
+    expect(registry.snapshotDigest).toBe(digestBefore);
   });
 
   it('fails closed for a live lease whose revision a later snapshot evicted', async () => {
