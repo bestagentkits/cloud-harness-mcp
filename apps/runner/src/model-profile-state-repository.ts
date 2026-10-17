@@ -13,7 +13,9 @@ import {
   type AgentModelProfileMetadata,
   type AgentModelProfileRevision,
   type AgentModelProfileUpdateInput,
+  type ModelLastVerification,
   type ModelProviderKind,
+  type ModelVerificationOutcome,
   type ProviderAuthMode,
   type ProviderCredentialInput,
   type ProviderCredentialMetadata,
@@ -41,11 +43,138 @@ function assertCredentialUsable(cred: { provider: ModelProviderKind; auth_mode: 
   }
 }
 
+/**
+ * The latest connection check per credential and per saved profile. Additive and
+ * idempotent like the package tables: an older release ignores it, so a code-only
+ * rollback needs no data change. Rows are removed with the credential or profile
+ * they describe; there is no foreign key so schema downgrades never trip on it.
+ */
+export function initializeModelVerificationSchema(database: DatabaseSync): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS model_verification_results (
+      principal_id TEXT NOT NULL,
+      target_kind TEXT NOT NULL CHECK(target_kind IN ('profile', 'credential')),
+      target_id TEXT NOT NULL,
+      revision_id TEXT,
+      credential_version INTEGER,
+      outcome TEXT NOT NULL CHECK(outcome IN ('verified', 'limited', 'failed', 'not_tested')),
+      result_json TEXT NOT NULL,
+      checked_at INTEGER NOT NULL,
+      PRIMARY KEY(principal_id, target_kind, target_id)
+    );
+  `);
+}
+
+/** A decrypted ACTIVE credential, handed only to the runner-side connection check. */
+export interface VerificationCredential {
+  id: string;
+  provider: ModelProviderKind;
+  authMode: ProviderAuthMode;
+  activeVersion: number;
+  secret: string;
+}
+
+export interface VerificationRecord {
+  targetKind: 'profile' | 'credential';
+  targetId: string;
+  revisionId: string | null;
+  credentialVersion: number | null;
+  outcome: ModelVerificationOutcome;
+  resultJson: string;
+  checkedAt: number;
+}
+
+/** A profile result counts only for the revision it checked, so a new revision reads as not verified. */
+function lastProfileVerification(
+  verification: { revision_id: string | null; outcome: ModelVerificationOutcome; checked_at: number } | undefined,
+  activeRevisionId: string | null
+): { lastVerification?: ModelLastVerification } {
+  if (!verification || activeRevisionId === null || verification.revision_id !== activeRevisionId) return {};
+  return {
+    lastVerification: {
+      outcome: verification.outcome,
+      checkedAt: verification.checked_at,
+      revisionId: ModelRevisionIdSchema.parse(activeRevisionId)
+    }
+  };
+}
+
 export class ModelProfileStateRepository {
   constructor(
     private readonly database: DatabaseSync,
     private readonly keyring: SecretKeyring
-  ) {}
+  ) {
+    initializeModelVerificationSchema(database);
+  }
+
+  /**
+   * Decrypts the active key of one credential the principal owns. A disabled or
+   * revoked credential is refused so a check can never exercise a key the operator
+   * switched off.
+   */
+  getActiveCredentialForVerification(principalId: string, credentialId: string): VerificationCredential {
+    const row = this.database.prepare(`
+      SELECT id, provider, auth_mode, active_version, status FROM model_provider_credentials
+      WHERE id = ? AND principal_id = ?
+    `).get(credentialId, principalId) as {
+      id: string; provider: ModelProviderKind; auth_mode: ProviderAuthMode; active_version: number; status: string;
+    } | undefined;
+    if (!row) throw new HarnessError('NOT_FOUND', 'model provider credential was not found', 404, false);
+    if (row.status !== 'ACTIVE') {
+      throw new HarnessError('INVALID_INPUT', `model provider credential is ${row.status.toLowerCase()} and cannot be verified`, 400, false);
+    }
+    const ver = this.database.prepare(`
+      SELECT key_version, nonce, ciphertext, auth_tag FROM model_provider_credential_versions
+      WHERE credential_id = ? AND principal_id = ? AND version = ?
+    `).get(row.id, principalId, row.active_version) as {
+      key_version: number; nonce: string; ciphertext: string; auth_tag: string;
+    } | undefined;
+    if (!ver) throw new HarnessError('NOT_FOUND', 'model provider credential has no active key version', 404, false);
+    const secret = this.keyring.decrypt({
+      keyVersion: ver.key_version,
+      nonce: Buffer.from(ver.nonce, 'hex'),
+      ciphertext: Buffer.from(ver.ciphertext, 'hex'),
+      authTag: Buffer.from(ver.auth_tag, 'hex')
+    }, {
+      principalId,
+      environmentId: 'model_provider_credential',
+      name: row.id,
+      version: row.active_version
+    });
+    return { id: row.id, provider: row.provider, authMode: row.auth_mode, activeVersion: row.active_version, secret };
+  }
+
+  /** Stores the latest check for a target, replacing the previous one. */
+  recordVerification(principalId: string, record: VerificationRecord): void {
+    this.database.prepare(`
+      INSERT INTO model_verification_results (
+        principal_id, target_kind, target_id, revision_id, credential_version, outcome, result_json, checked_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(principal_id, target_kind, target_id) DO UPDATE SET
+        revision_id = excluded.revision_id,
+        credential_version = excluded.credential_version,
+        outcome = excluded.outcome,
+        result_json = excluded.result_json,
+        checked_at = excluded.checked_at
+    `).run(principalId, record.targetKind, record.targetId, record.revisionId, record.credentialVersion, record.outcome, record.resultJson, record.checkedAt);
+  }
+
+  private latestVerifications(principalId: string, targetKind: 'profile' | 'credential'): Map<string, {
+    revision_id: string | null; credential_version: number | null; outcome: ModelVerificationOutcome; checked_at: number;
+  }> {
+    const rows = this.database.prepare(`
+      SELECT target_id, revision_id, credential_version, outcome, checked_at FROM model_verification_results
+      WHERE principal_id = ? AND target_kind = ?
+    `).all(principalId, targetKind) as Array<{
+      target_id: string; revision_id: string | null; credential_version: number | null; outcome: ModelVerificationOutcome; checked_at: number;
+    }>;
+    return new Map(rows.map((row) => [row.target_id, row]));
+  }
+
+  private deleteVerification(principalId: string, targetKind: 'profile' | 'credential', targetId: string): void {
+    this.database.prepare('DELETE FROM model_verification_results WHERE principal_id = ? AND target_kind = ? AND target_id = ?')
+      .run(principalId, targetKind, targetId);
+  }
 
   createCredential(principalId: string, input: ProviderCredentialInput): ProviderCredentialMetadata {
     const id = ModelCredentialIdSchema.parse(`cred_${randomBytes(16).toString('hex')}`);
@@ -120,18 +249,27 @@ export class ModelProfileStateRepository {
       updated_at: number;
     }>;
 
-    return rows.map((row) => ({
-      id: ModelCredentialIdSchema.parse(row.id),
-      principalId: row.principal_id,
-      label: row.label,
-      provider: row.provider,
-      authMode: row.auth_mode,
-      activeVersion: row.active_version,
-      status: row.status,
-      syncStatus: 'SYNCED',
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
-    }));
+    const verifications = this.latestVerifications(principalId, 'credential');
+    return rows.map((row) => {
+      // A rotated key has not been checked yet, so an older result is not shown for it.
+      const verification = verifications.get(row.id);
+      const lastVerification: ModelLastVerification | undefined = verification && verification.credential_version === row.active_version
+        ? { outcome: verification.outcome, checkedAt: verification.checked_at, revisionId: null }
+        : undefined;
+      return {
+        id: ModelCredentialIdSchema.parse(row.id),
+        principalId: row.principal_id,
+        label: row.label,
+        provider: row.provider,
+        authMode: row.auth_mode,
+        activeVersion: row.active_version,
+        status: row.status,
+        syncStatus: 'SYNCED' as const,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        ...(lastVerification ? { lastVerification } : {})
+      };
+    });
   }
 
   rotateCredential(principalId: string, credentialId: string, input: ProviderCredentialRotateInput): ProviderCredentialMetadata {
@@ -242,7 +380,15 @@ export class ModelProfileStateRepository {
       // agents table may not exist in isolated repository tests
     }
 
-    this.database.prepare('DELETE FROM model_provider_credentials WHERE id = ? AND principal_id = ?').run(credentialId, principalId);
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database.prepare('DELETE FROM model_provider_credentials WHERE id = ? AND principal_id = ?').run(credentialId, principalId);
+      this.deleteVerification(principalId, 'credential', credentialId);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   createProfile(principalId: string, input: AgentModelProfileInput): AgentModelProfileMetadata {
@@ -359,6 +505,7 @@ export class ModelProfileStateRepository {
       updated_at: number;
     }>;
 
+    const verifications = this.latestVerifications(principalId, 'profile');
     return profiles.map((p) => {
       let activeRevision: AgentModelProfileRevision | null = null;
       if (p.active_revision_id) {
@@ -424,7 +571,8 @@ export class ModelProfileStateRepository {
         status: p.status,
         activeRevision,
         createdAt: p.created_at,
-        updatedAt: p.updated_at
+        updatedAt: p.updated_at,
+        ...lastProfileVerification(verifications.get(p.id), p.active_revision_id)
       };
     });
   }
@@ -630,7 +778,15 @@ export class ModelProfileStateRepository {
       // agents table may not exist in isolated repository tests
     }
 
-    this.database.prepare('DELETE FROM agent_model_profiles WHERE id = ? AND principal_id = ?').run(profileId, principalId);
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database.prepare('DELETE FROM agent_model_profiles WHERE id = ? AND principal_id = ?').run(profileId, principalId);
+      this.deleteVerification(principalId, 'profile', profileId);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   getExportSnapshot(principalId?: string): {

@@ -52,6 +52,12 @@ beforeEach(async () => {
       if (operation === 'model_catalog_refresh' && input.provider === 'openai') {
         return { ok: false, message: 'limited', truncated: false, error: { code: 'LIMIT_EXCEEDED', message: 'The model catalog was refreshed recently. Try again in 12 seconds.', retryable: true } };
       }
+      if (operation === 'model_connection_verify' && input.credentialId === 'cred_limited_1234567890ab') {
+        return { ok: false, message: 'limited', truncated: false, error: { code: 'LIMIT_EXCEEDED', message: 'Connection checks are limited to 6 per minute. Retry in 30 s.', retryable: true } } as RunnerResponse;
+      }
+      if (operation === 'model_connection_verify') {
+        return { ok: true, message: 'checked', truncated: false, data: { outcome: 'verified', checkedAt: 1, elapsedMs: 5, provider: 'openai', model: 'gpt-test', apiMode: 'chat-completions', checks: [], estimatedCostMicros: null } };
+      }
       if (operation === 'model_config_status') {
         return { ok: true, message: 'status', truncated: false, data: { status: { gatewaySynced: true } } };
       }
@@ -187,5 +193,27 @@ describe('Dashboard Models & Credentials Router', () => {
     const limited = await request('/model-catalog/refresh', { method: 'POST', body: { provider: 'openai' } });
     expect(limited.status).toBe(429);
     expect(limited.json).toMatchObject({ error: 'limit_exceeded', message: 'The model catalog was refreshed recently. Try again in 12 seconds.' });
+  });
+
+  it('forwards POST /model-connection/verify to the runner and surfaces its rate limit message', async () => {
+    const verified = await request('/model-connection/verify', {
+      method: 'POST',
+      body: { credentialId: 'cred_12345678901234567890', model: 'gpt-test', checks: { tools: true } }
+    });
+    expect(verified.status).toBe(200);
+    expect(calls[0]).toMatchObject({
+      operation: 'model_connection_verify',
+      input: { credentialId: 'cred_12345678901234567890', model: 'gpt-test', checks: { tools: true } },
+      principal
+    });
+    expect((verified.json.data as Record<string, unknown>).outcome).toBe('verified');
+
+    const limited = await request('/model-connection/verify', { method: 'POST', body: { credentialId: 'cred_limited_1234567890ab' } });
+    expect(limited.status).toBe(429);
+    expect(limited.json.message).toBe('Connection checks are limited to 6 per minute. Retry in 30 s.');
+
+    const noCsrf = await request('/model-connection/verify', { method: 'POST', body: { profileId: 'coding' }, headers: { 'x-csrf-token': 'wrong' } });
+    expect(noCsrf.status).toBe(403);
+    expect(calls).toHaveLength(2);
   });
 });

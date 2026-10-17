@@ -57,7 +57,8 @@ import { resolveWorkspaceSkills, type SkillCandidate, type SkillTier } from './s
 import type { WorkspaceService } from './workspace-service.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
 import { ModelCatalogService } from './model-catalog/model-catalog-service.js';
-import { createProviderHttpClient } from './model-provider-http.js';
+import { createProviderHttpClient, type ProviderHttpClient } from './model-provider-http.js';
+import { ModelConnectionVerifier } from './model-verification/model-connection-verifier.js';
 import type { AgentGatewayControl } from './agent-gateway-control.js';
 import { packageApprovalUnavailable } from './config.js';
 import {
@@ -67,6 +68,7 @@ import {
 
 export class DashboardControlService {
   private lastGatewaySync?: { synced: boolean; bootId: string | null; time: number; error: string | null };
+  private connectionVerifier?: ModelConnectionVerifier;
 
   constructor(
     private readonly config: RunnerConfig,
@@ -79,7 +81,8 @@ export class DashboardControlService {
     private readonly modelProfiles?: ModelProfileStateRepository,
     private readonly gatewayControl?: AgentGatewayControl,
     private readonly keyring?: SecretKeyring,
-    private readonly decisionPlane?: DecisionPlane
+    private readonly decisionPlane?: DecisionPlane,
+    private readonly providerHttp?: ProviderHttpClient
   ) {}
 
   /**
@@ -520,6 +523,7 @@ export class DashboardControlService {
         case 'model_provider_list': return ok('Model providers listed', { providers: listModelProviders() });
         case 'model_catalog_search': return ok('Model catalog searched', ModelCatalogSearchResultSchema.parse(await this.catalog().search(principalId, parsed.input)));
         case 'model_catalog_refresh': return ok('Model catalog refreshed', ModelCatalogRefreshResultSchema.parse(await this.catalog().refresh(principalId, parsed.input)));
+        case 'model_connection_verify': return ok('Model connection checked', await this.verifier().verify(principalId, parsed.input));
         case 'model_config_status': {
           const activeProfiles = this.models().listProfiles(principalId).filter((p) => p.status === 'ACTIVE').length;
           const activeCreds = this.models().listCredentials(principalId).filter((c) => c.status === 'ACTIVE').length;
@@ -1449,10 +1453,21 @@ export class DashboardControlService {
   private catalogService?: ModelCatalogService;
   private catalog(): ModelCatalogService {
     this.catalogService ??= new ModelCatalogService({
-      database: this.principals.database, credentials: this.models(), http: createProviderHttpClient()
+      database: this.principals.database, credentials: this.models(), http: this.providerHttp ?? createProviderHttpClient()
     });
     return this.catalogService;
   }
+
+  private verifier(): ModelConnectionVerifier {
+    this.connectionVerifier ??= new ModelConnectionVerifier({
+      repository: this.models(),
+      http: this.providerHttp ?? createProviderHttpClient(),
+      audit: (principalId, action, subjectType, subjectId, generation, details) =>
+        this.metadata.recordAudit(principalId, action, subjectType, subjectId, generation, details)
+    });
+    return this.connectionVerifier;
+  }
+
   private async syncGateway(): Promise<void> {
     if (this.modelProfiles && this.gatewayControl?.applySnapshot) {
       try {

@@ -133,6 +133,7 @@ export function registerDashboardControlRoutes(
     ...(request.query.capability !== undefined ? { capability: queryText(request.query.capability) } : {})
   })));
   router.post('/api/v1/model-catalog/refresh', endpoint('model_catalog_refresh', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.post('/api/v1/model-connection/verify', endpoint('model_connection_verify', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   router.get('/api/v1/decision-plane/status', endpoint('decision_plane_status', () => ({})));
   router.get('/api/v1/audit', endpoint('audit_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
   router.get('/api/v1/artifacts', endpoint('artifact_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
