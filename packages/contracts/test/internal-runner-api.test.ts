@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   InternalRunnerRequestSchema,
+  MODEL_TOOL_OPERATIONS,
   InternalRunnerOperationSchema,
   MetadataRunnerOperationSchema,
   MetadataRunnerRequestSchema,
@@ -107,8 +108,19 @@ describe('internal runner API contract', () => {
     expect(MetadataRunnerOperationSchema.options).toContain('audit_list');
     // `skill_suggest` is deliberately both. It is a metadata operation because it reads
     // principal-scoped state and writes an audit row, and it is a public tool because a caller submits a
-    // prompt rather than administering the instance. Every other metadata operation stays internal.
-    const deliberatelyPublic = new Set(['skill_suggest']);
+    // prompt rather than administering the instance. The model tools share their names with the
+    // Dashboard operations of the same meaning but run behind the owner-approval guard, which is
+    // why credential, activation, deletion, and spend-policy operations stay internal. Every other
+    // metadata operation stays internal.
+    const deliberatelyPublic = new Set<string>(['skill_suggest', ...MODEL_TOOL_OPERATIONS]);
+    for (const internal of [
+      'model_credential_create', 'model_credential_rotate', 'model_credential_delete', 'model_credential_list',
+      'model_profile_activate', 'model_profile_disable', 'model_profile_delete', 'model_catalog_refresh',
+      'model_spend_policy_list', 'model_spend_policy_set', 'model_spend_policy_delete'
+    ]) {
+      expect(MetadataRunnerOperationSchema.options).toContain(internal);
+      expect(deliberatelyPublic.has(internal)).toBe(false);
+    }
     for (const operation of MetadataRunnerOperationSchema.options) {
       if (deliberatelyPublic.has(operation)) continue;
       expect(RunnerOperationSchema.options).not.toContain(operation);

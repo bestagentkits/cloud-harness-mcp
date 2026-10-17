@@ -14,8 +14,8 @@ supported. To add keys and build profiles, see [Models & Budgets](/dashboard/mod
 The provider registry
 ([`packages/contracts/src/model-provider-registry.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-provider-registry.ts))
 is the only source of truth for endpoints, auth modes, and API modes. Authenticated
-dashboard sessions read it live at `GET /api/v1/model-providers`. There is no MCP tool for
-this list today.
+dashboard sessions read it live at `GET /api/v1/model-providers`, and MCP clients read the
+same list, with their own key metadata, through `model_provider_list`.
 
 | Provider | Auth header | API modes | Catalog source | Cache-write billing assumed | API keys |
 | --- | --- | --- | --- | --- | --- |
@@ -111,6 +111,65 @@ Limitations:
 
 The full behaviour of the catalog, checks, and pricing review is described in
 [Models & Budgets](/dashboard/models).
+
+## API and MCP examples
+
+An MCP client can prepare a profile end to end, but the owner keeps the last word. Keys are
+added only on the Dashboard; no tool creates, reads, or rotates one. A profile saved over MCP
+starts **Disabled**, so the owner activates it on the [Models page](/dashboard/models) before
+`agent_spawn` can use it. Activation, disabling, deletion, and spend policies have no MCP
+tool.
+
+| Step | Dashboard API | MCP tool |
+| --- | --- | --- |
+| List providers and connected keys | `GET /api/v1/model-providers`, `GET /api/v1/provider-credentials` | `model_provider_list` |
+| Find a model and its catalog price | `GET /api/v1/model-catalog` | `model_catalog_search` |
+| Check a route before saving | `POST /api/v1/model-connection/verify` | `model_connection_verify` |
+| Dry-run a save | `POST /api/v1/agent-model-profiles/validate` | `model_profile_validate` |
+| Save a profile | `POST` / `PATCH /api/v1/agent-model-profiles` | `model_profile_create` (Disabled), `model_profile_update` |
+| Activate it | `POST /api/v1/agent-model-profiles/:id/activate` | none: the owner activates it |
+| Read estimated spend | `GET /api/v1/model-spend` | `model_spend_summary` (read-only) |
+
+A typical MCP flow, with a credential the owner already added:
+
+```json
+{ "tool": "model_catalog_search", "arguments": { "provider": "openrouter", "query": "sonnet" } }
+{ "tool": "model_connection_verify", "arguments": { "credentialId": "cred_…", "model": "anthropic/claude-sonnet-4.5" } }
+{ "tool": "model_profile_create", "arguments": {
+  "idempotencyKey": "create-reviewer-profile-1",
+  "profileId": "reviewer", "displayName": "Reviewer", "credentialId": "cred_…",
+  "model": "anthropic/claude-sonnet-4.5", "apiMode": "chat-completions",
+  "catalogPriceRef": { "sourceModelId": "anthropic/claude-sonnet-4.5" },
+  "pricing": { "inputMicrosPerMillionTokens": 3000000, "outputMicrosPerMillionTokens": 15000000 },
+  "limits": { "maxInputTokens": 200000, "maxOutputTokens": 16000, "maxCostMicros": 2000000 },
+  "maxProxyOperations": ["files_read", "grep_search"],
+  "verificationRef": "…from the check…"
+} }
+```
+
+What an MCP save cannot do on its own:
+
+- **Escalations need the owner.** `model_profile_update` refuses, with
+  `OWNER_APPROVAL_REQUIRED`, a move to another credential, a raised token or cost limit, a
+  lower price that is not catalog-verified, override prices carried to another model or
+  credential, and a wider proxy operation list, whether the profile is active or disabled.
+  Run `model_profile_validate` first: its `escalations` list names exactly what a save would
+  refuse. The owner makes those changes on the Dashboard.
+- **A create is reviewed at activation.** A new profile has nothing to compare with, so only
+  an unbound Custom URL refuses a create. It is saved disabled, and **Activate** on the
+  Dashboard approves the whole revision the client wrote, so review its limits, prices, and
+  proxy operations before activating it.
+- **Custom upstream URLs stay bound.** Over MCP, a create, an update, or a draft check may
+  send a Custom key only to an upstream URL that one of the owner's profiles on that
+  credential already uses, including a URL an older revision used; a URL stays bound until
+  its profile is deleted. A new URL is refused with `OWNER_APPROVAL_REQUIRED`, and nothing
+  is sent to it.
+- **Retries are safe.** A create or update needs an `idempotencyKey`. The same key with the
+  same input replays the first result for 24 hours; with other input it returns `CONFLICT`.
+  An update also needs the `expectedGeneration` from `model_profile_list`.
+
+Every refusal is recorded in the audit log with the actor `mcp`. The full contracts are in
+the [tools reference](/reference/tools#models-and-spend).
 
 ## Feasibility record
 

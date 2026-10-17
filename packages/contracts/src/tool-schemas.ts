@@ -2,6 +2,16 @@ import { z } from 'zod';
 import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { AgentProxyOperationSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
 import { SkillSuggestInputSchema } from './typesafe-schemas.js';
+import {
+  ModelConnectionVerifyToolInputSchema,
+  ModelProfileCreateToolInputSchema,
+  ModelProfileListToolInputSchema,
+  ModelProfileUpdateToolInputSchema,
+  ModelProfileValidateToolInputSchema,
+  ModelProviderListToolInputSchema,
+  ModelSpendSummaryToolInputSchema
+} from './model-tool-schemas.js';
+import { ModelCatalogSearchInputSchema } from './model-catalog-schemas.js';
 import { PackagesApplyInputSchema, PackagesListInputSchema, PackagesPlanInputSchema, PackagesRemoveInputSchema, PackagesRollbackInputSchema, PackagesStatusInputSchema } from './package-schemas.js';
 import {
   JournalTypeSchema,
@@ -824,6 +834,14 @@ const schemas = {
   packages_status: PackagesStatusInputSchema,
   packages_rollback: PackagesRollbackInputSchema,
   packages_remove: PackagesRemoveInputSchema,
+  model_provider_list: ModelProviderListToolInputSchema,
+  model_catalog_search: ModelCatalogSearchInputSchema,
+  model_connection_verify: ModelConnectionVerifyToolInputSchema,
+  model_profile_list: ModelProfileListToolInputSchema,
+  model_profile_validate: ModelProfileValidateToolInputSchema,
+  model_profile_create: ModelProfileCreateToolInputSchema,
+  model_profile_update: ModelProfileUpdateToolInputSchema,
+  model_spend_summary: ModelSpendSummaryToolInputSchema,
   shell_open: z.object({ ...workspace, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
   shell_io: z.object({ ...workspace, shellId: ShellIdSchema, input: z.string().max(65_536).optional(), cursor: z.string().max(256).optional(), waitMs: z.number().int().min(0).max(5_000).default(100) }),
   shell_close: z.object({ ...workspace, shellId: ShellIdSchema }),
@@ -1159,7 +1177,11 @@ const titles: Record<RunnerOperation, string> = {
   files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_write_batch: 'Write batch files', files_apply_patch: 'Apply text patch', files_delete: 'Delete file or directory', files_move: 'Move file or directory', files_mkdir: 'Create directory', grep_search: 'Search workspace',
   symbols_search: 'Find symbol definitions', symbols_references: 'Find lexical symbol references',
   exec_run: 'Run command', bash: 'Run bash command',
-  packages_plan: 'Plan managed package change', packages_apply: 'Apply managed package plan', packages_list: 'List managed packages', packages_status: 'Managed package status', packages_rollback: 'Roll back managed package', packages_remove: 'Uninstall managed package', shell_open: 'Open shell', shell_io: 'Use shell', shell_close: 'Close shell', tasks_list: 'List tasks', tasks_run: 'Run task', tasks_status: 'Task status', tasks_cancel: 'Cancel task',
+  packages_plan: 'Plan managed package change', packages_apply: 'Apply managed package plan', packages_list: 'List managed packages', packages_status: 'Managed package status', packages_rollback: 'Roll back managed package', packages_remove: 'Uninstall managed package',
+  model_provider_list: 'List model providers', model_catalog_search: 'Search model catalog', model_connection_verify: 'Check model connection',
+  model_profile_list: 'List agent model profiles', model_profile_validate: 'Dry-run agent model profile change', model_profile_create: 'Create agent model profile',
+  model_profile_update: 'Update agent model profile', model_spend_summary: 'Read estimated model spend',
+  shell_open: 'Open shell', shell_io: 'Use shell', shell_close: 'Close shell', tasks_list: 'List tasks', tasks_run: 'Run task', tasks_status: 'Task status', tasks_cancel: 'Cancel task',
   sessions_list: 'List coding sessions', sessions_open: 'Open coding session', sessions_io: 'Use coding session', sessions_close: 'Close coding session',
   tasks_graph: 'Read task dependency graph',
   operation_status: 'Read operation status', operation_cancel: 'Cancel operation', operation_wait: 'Wait for operation',
@@ -1213,6 +1235,14 @@ const descriptions: Record<RunnerOperation, string> = {
   packages_rollback: 'Point a managed package binding back to an earlier verified release from its history. Needs bindingId, releaseId, and the binding generation you last read (expectedGeneration); a moved generation returns STALE_GENERATION. Needs no new approval. Workspaces pick up the change when recreated.',
   packages_remove: 'Uninstall a managed package from one scope: deletes the binding (bindingId from packages_list, with its current generation as expectedGeneration) and its rollback history, and collects releases no retained workspace still mounts. A moved generation returns STALE_GENERATION; a running apply returns CONFLICT. Needs no approval. New workspaces and the bash toolbox stop seeing the tool at once; existing workspaces keep it until recreated. Reinstalling needs a new plan.',
   bash: 'Run one bounded bash command. target "workspace" (default) uses the exec_run path in the workspace executor. target "toolbox" runs in a disposable no-network container with no workspace checkout, no secrets, and no workspaceId; it is available only when the operator enables packages. Both targets accept async: true for an operation handle. bash has no privileged mode: use exec_run with its approval flow for privileged commands.',
+  model_provider_list: 'List the supported model providers (auth header modes, API modes and endpoints, catalog source) and your connected provider credentials as metadata (id, provider, status, key version, last check). Keys are never returned, and no tool creates, rotates, or reads one: the owner adds keys on the Dashboard. Optional provider narrows both lists.',
+  model_catalog_search: 'Search the cached model catalog for one provider, optionally through your credential\'s models listing (credentialId). Prices are integer micro-USD per million tokens and are estimates; null means unknown, not free. A cold or stale cache may be filled from the provider, so the call can be slow. When saving a profile, use an entry\'s providerModelId as model and its pricing.provenance.sourceModelId as catalogPriceRef.sourceModelId to pin catalog-verified prices.',
+  model_connection_verify: 'Check a saved profile (profileId) or a draft route on a stored credential (credentialId with model, apiMode, and customUpstreamUrl for a Custom credential) with bounded probes: authentication, model access, streaming inference, and an opt-in tool call. It spends a few tokens, shares the per-principal rate limit with the Dashboard, and is audited. A draft that names a model returns verificationRef; pass it to model_profile_validate and model_profile_create or model_profile_update with the same route to keep the result. Over MCP, a custom upstream URL must already be used by one of your profiles on that credential, else OWNER_APPROVAL_REQUIRED.',
+  model_profile_list: 'List your agent model profiles with status, generation (pass it as expectedGeneration to model_profile_update), active revision, pinned prices, limits, last connection check, and a repricing review against the cached catalog. Optional profileId narrows the list to one profile.',
+  model_profile_validate: 'Dry-run a profile create (action "create" with the model_profile_create fields) or update (action "update" with profileId, expectedGeneration, and the changed fields). It returns the revision a save would write, issues, a pricing review, whether verificationRef would attach, and escalations: changes that need owner approval on the Dashboard and that model_profile_create or model_profile_update would refuse with OWNER_APPROVAL_REQUIRED. It writes nothing.',
+  model_profile_create: 'Create an agent model profile on one of your stored credentials. Profiles created over MCP start DISABLED: the owner activates them on the Dashboard before agent_spawn can use them. Needs an idempotencyKey; replaying the same key and input returns the first result with replayed true, and the same key with other input returns CONFLICT. A custom upstream URL that none of your profiles on that credential uses returns OWNER_APPROVAL_REQUIRED and creates nothing.',
+  model_profile_update: 'Create a new revision of one of your profiles, guarded by expectedGeneration (a moved generation returns CONFLICT: re-read it with model_profile_list) and an idempotencyKey. Omitted fields keep their current values. Moving to another credentialId, raising a limit, lowering a price that is not catalog-verified, carrying override prices to another model or credential, widening proxy operations, or using an unbound custom upstream returns OWNER_APPROVAL_REQUIRED and changes nothing, whatever the profile status; the owner makes those changes on the Dashboard. Status is never changed here.',
+  model_spend_summary: 'Read your estimated model spend for the current UTC day and month windows (settled, reserved by open runs, and unreconciled), and the owner-set spend policies that bound it. Read-only. Figures are gateway-side estimates from pinned profile prices, not provider invoices. Spend policies are changed only on the Dashboard. Optional period narrows windows and policies to "day" or "month".',
   shell_open: 'Open an idempotent ephemeral interactive shell in the workspace.',
   shell_io: 'Send input to or poll bounded output from an open interactive shell.',
   shell_close: 'Terminate an interactive shell and release its in-memory state.',
@@ -1295,7 +1325,8 @@ const readOnly = new Set<RunnerOperation>([
   'knowledge_read', 'knowledge_list', 'knowledge_search', 'knowledge_graph', 'deployments_list',
   'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read',
   'packages_list', 'packages_status',
-  'agent_status', 'agent_logs', 'agent_list'
+  'agent_status', 'agent_logs', 'agent_list',
+  'model_provider_list', 'model_catalog_search', 'model_profile_list', 'model_profile_validate', 'model_spend_summary'
 ]);
 const destructive = new Set<RunnerOperation>([
   'workspace_close', 'workspace_recover', 'workspace_finalize',
@@ -1307,7 +1338,8 @@ const destructive = new Set<RunnerOperation>([
   'knowledge_create', 'knowledge_update', 'knowledge_delete', 'knowledge_link', 'knowledge_unlink',
   'deployments_run', 'artifacts_restore', 'artifacts_delete', 'github_action',
   'packages_rollback', 'packages_remove',
-  'agent_spawn', 'agent_message', 'agent_cancel'
+  'agent_spawn', 'agent_message', 'agent_cancel',
+  'model_profile_update'
 ]);
 const idempotent = new Set<RunnerOperation>([
   'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize',
@@ -1321,13 +1353,16 @@ const idempotent = new Set<RunnerOperation>([
   'deployments_list',
   'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read',
   'packages_apply', 'packages_list', 'packages_status', 'packages_rollback',
-  'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list'
+  'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list',
+  'model_provider_list', 'model_catalog_search', 'model_profile_list', 'model_profile_validate', 'model_profile_create', 'model_profile_update',
+  'model_spend_summary'
 ]);
 const openWorld = new Set<RunnerOperation>([
   'workspace_open', 'workspace_finalize', 'exec_run', 'bash', 'shell_io', 'sessions_io', 'tasks_run',
   'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action', 'github_read',
   'packages_plan', 'packages_apply',
-  'agent_spawn', 'agent_message'
+  'agent_spawn', 'agent_message',
+  'model_catalog_search', 'model_connection_verify'
 ]);
 
 export const TOOL_SPECS: ToolSpec[] = (Object.keys(schemas) as RunnerOperation[]).map((name) => ({

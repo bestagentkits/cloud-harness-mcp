@@ -59,6 +59,17 @@ See [repository automation](repository-automation.md).
 Not tools: `skills/list`, `skills/get`, and `resources/read` belong to the
 MCP Skills extension; see [native MCP skills](../SKILL.md#native-mcp-skills).
 
+## Models and spend
+
+See [models and spend](models-and-spend.md).
+
+`model_provider_list` `model_catalog_search` `model_connection_verify`
+`model_profile_list` `model_profile_validate` `model_profile_create`
+`model_profile_update` `model_spend_summary`
+
+Profiles created here arrive disabled; keys, activation, deletion, and spend
+policies stay with the owner on the Dashboard.
+
 ## Retained artifacts
 
 See [retained artifacts](artifacts.md).

@@ -348,6 +348,27 @@ If an agent started but followed the wrong files, read the `repository_context` 
 
 **Fix:**
 1. Lower `maxCostMicros` to fit the headroom named in the message, or wait for running agents to finish, then retry. The refused spawn recorded nothing, so the same idempotency key can be reused.
-2. If the limit is too tight, the owner can raise or remove the policy through the dashboard's spend routes; see [Spend policies](/dashboard/models#spend-policies). No MCP tool changes policies.
+2. If the limit is too tight, the owner can raise or remove the policy through the dashboard's spend routes; see [Spend policies](/dashboard/models#spend-policies). No MCP tool changes policies; `model_spend_summary` only reads them, with the estimated spend in each window.
 
 Per-run caps are unchanged: a policy never raises or clamps an agent's own `maxCostMicros`, which the model gateway still enforces.
+
+---
+
+### 31. `model_profile_create`, `model_profile_update`, or `model_connection_verify` returns `OWNER_APPROVAL_REQUIRED`
+**Cause:** An MCP client may prepare model profiles, but a change that raises spend capacity, widens what agents may do, or sends a key to a new host needs the owner. The message lists the refused escalations:
+
+| Escalation | What triggered it |
+| :--- | :--- |
+| `limits_raised` | A token or cost limit above the current revision's. |
+| `price_lowered` | A lower price that is not pinned from the catalog (`catalogPriceRef`). |
+| `credential_changed` | An update that moves the profile to another provider credential. |
+| `price_unverified_for_new_route` | Override prices carried to another model or credential. |
+| `proxy_operations_widened` | A proxy operation the current revision does not allow. |
+| `custom_upstream_unbound` | A Custom credential's upstream URL that none of your profiles on that credential uses yet, on a create, an update, or a draft connection check. |
+
+Nothing was saved or sent to the provider; the refusal is recorded in the audit log with the actor `mcp`. It is not retryable: the same call fails the same way. A refused call does not spend its `idempotencyKey`.
+
+**Fix:**
+1. Run `model_profile_validate` with the same change: its `escalations` list shows exactly what a save would refuse. Drop those fields to save the rest over MCP.
+2. Otherwise, ask the owner to make the change on the Dashboard [Models page](/dashboard/models), where the same change is saved. Once the owner has saved a profile on a Custom upstream URL, MCP calls may use that URL with that credential.
+3. A profile created over MCP starts **Disabled**. `agent_spawn` cannot use it until the owner activates it on the Models page; no MCP tool activates, disables, or deletes a profile.

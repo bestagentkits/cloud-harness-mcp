@@ -1,5 +1,5 @@
 import { realpath, stat } from 'node:fs/promises';
-import type { RunnerOperation, RunnerResponse } from '@cloud-harness/contracts';
+import { isModelToolOperation, type RunnerOperation, type RunnerResponse } from '@cloud-harness/contracts';
 import type { OperationBackend } from '../operation-backend.js';
 import type { CliOptions } from '../cli-options.js';
 import { LocalWorkspaceBackend } from './local-workspace-backend.js';
@@ -148,9 +148,10 @@ export class MultiLocalWorkspaceBackend implements OperationBackend {
     }
     if (operation === 'workspace_set_active') return await this.setActive(input);
 
-    // The toolbox target and managed packages need the remote runner; any member refuses them with the
-    // local-mode explanation, even when a packages_* call names a workspace.
-    if (WORKSPACELESS_OPERATIONS.has(operation) || (operation === 'bash' && input.target === 'toolbox') || operation.startsWith('packages_')) {
+    // The toolbox target, managed packages, and model tools need the remote runner; any member refuses
+    // them with the local-mode explanation, even when a packages_* call names a workspace.
+    if (WORKSPACELESS_OPERATIONS.has(operation) || (operation === 'bash' && input.target === 'toolbox') || operation.startsWith('packages_')
+      || isModelToolOperation(operation)) {
       const member = this.resolveDefault() ?? this.pool.list()[0]!;
       return await member.backend.call(operation, input, signal);
     }

@@ -87,8 +87,9 @@ function catalogVerified(provenance: AgentModelPriceProvenance): boolean {
 /**
  * The changes in a profile save that need the owner's approval when they do not
  * come from the Dashboard. Pure: it reads nothing and writes nothing. The result
- * is sorted and has no duplicates. A create has no current revision, so only an
- * unbound custom upstream applies to it. An update with no readable current
+ * is sorted and has no duplicates. Every rule applies whatever the profile's
+ * status. A create has no current revision, so only an unbound custom upstream
+ * applies to it. An update with no readable current
  * revision fails closed: nothing is treated as approved, so every escalation the
  * next revision can carry is reported.
  */
@@ -102,12 +103,16 @@ export function profileEscalations(input: ProfileEscalationInput): ModelProfileE
 
   if (input.action === 'update' && !current) {
     // Limits are positive and a revision allows at least one proxy operation, so
-    // both exceed an approved baseline of nothing.
+    // both exceed an approved baseline of nothing, and no credential is approved.
+    found.add('credential_changed');
     found.add('limits_raised');
     found.add('proxy_operations_widened');
     if (!catalogVerified(next.priceProvenance)) found.add('price_lowered');
     if (next.priceProvenance.isOverride) found.add('price_unverified_for_new_route');
   } else if (current) {
+    // Another credential bills another provider account, whatever its prices.
+    if (next.credentialId !== current.credentialId) found.add('credential_changed');
+
     if (LIMIT_KEYS.some((key) => next.limits[key] > current.limits[key])) found.add('limits_raised');
 
     if (!catalogVerified(next.priceProvenance)) {

@@ -86,6 +86,11 @@ describe('MultiLocalWorkspaceBackend', () => {
     const packages = await router.call('packages_plan', { ecosystem: 'npm', name: 'prettier', scope: 'workspace', workspaceId: id('netforge') });
     expect(packages.error?.code).toBe('INVALID_INPUT');
     expect(packages.message).toContain('packages_plan is unsupported in local mode');
+
+    // Model tools name no workspace and need the remote runner, so a member refuses them instead of a routing error.
+    const model = await router.call('model_profile_list', {});
+    expect(model.error?.code).toBe('INVALID_INPUT');
+    expect(model.message).toContain('model_profile_list is unsupported in local mode');
   });
 
   it('fails closed on a missing ID with multiple workspaces and on an unknown ID', async () => {
