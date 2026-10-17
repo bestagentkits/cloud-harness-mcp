@@ -156,8 +156,8 @@ a lost response; do not create a second key until the first result is resolved.
   [`apps/model-gateway/src/budget.ts`](../apps/model-gateway/src/budget.ts).
 - `agent_spawn` fails with `INVALID_INPUT` and `agent model profile is
   DISABLED` (or `SYNC_PENDING`, `SYNC_FAILED`, or `has no active revision`):
-  the profile exists but cannot run. Activate or re-sync it on the Dashboard
-  Models page and spawn again; the refused spawn created nothing. `unknown
+  the profile exists but cannot run. Activate a disabled profile, or fix the
+  credential of one that does not sync, on the Dashboard Models page and spawn again; the refused spawn created nothing. `unknown
   agent model profile` means no profile of yours has that ID. `agent_message`
   returning `CONFLICT` with `agent message admission is closed` means the
   agent is not `RUNNING`; a bounded run keeps no session, so start a new run.

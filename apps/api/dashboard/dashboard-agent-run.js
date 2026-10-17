@@ -239,6 +239,61 @@ export function readRunDraft(form, previous) {
   };
 }
 
+/** Every listed workspace, following the page cursor for a bounded number of pages. */
+export async function listWorkspaces(api, maxPages = 10) {
+  const workspaces = [];
+  let cursor;
+  for (let page = 0; page < maxPages; page += 1) {
+    const result = await api(`/workspaces${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`);
+    workspaces.push(...(result?.data?.workspaces ?? []));
+    cursor = result?.cursor;
+    if (!cursor) break;
+  }
+  return workspaces;
+}
+
+/** A 4xx other than a timeout is a refusal: the runner created nothing for that request. */
+export function spawnRefused(error) {
+  const status = Number(error?.status);
+  return status >= 400 && status < 500 && status !== 408;
+}
+
+/**
+ * Refreshes a live agent's page on a bounded timer. `shouldDefer` keeps a refresh from replacing
+ * what the operator is doing (focus, a draft message, an open dialog, a hidden tab); a failed read
+ * counts against the bound and tries again. `stop` invalidates every pending tick, so a refresh
+ * that resolves after navigation never renders.
+ */
+export function createAgentRefresh({ fetchDetail, render, shouldDefer = () => false, onExhausted = () => {}, intervalMs = 5_000, limit = 360, timers = globalThis }) {
+  let timer;
+  let generation = 0;
+  function stop() {
+    generation += 1;
+    if (timer) timers.clearTimeout(timer);
+    timer = undefined;
+  }
+  function schedule(own, remaining) {
+    if (remaining <= 0) { onExhausted(); return; }
+    timer = timers.setTimeout(async () => {
+      timer = undefined;
+      if (own !== generation) return;
+      if (shouldDefer()) { schedule(own, remaining - 1); return; }
+      let detail;
+      try { detail = await fetchDetail(); } catch { if (own === generation) schedule(own, remaining - 1); return; }
+      if (own !== generation) return;
+      render(detail);
+      if (!agentRunEnded(detail?.agent?.status)) schedule(own, remaining - 1);
+    }, intervalMs);
+  }
+  return {
+    /** Starts a fresh bounded refresh, replacing any earlier one. */
+    start() { stop(); schedule(generation, limit); },
+    stop,
+    /** Changes whenever the refresh is stopped or restarted, so a slow load can tell it was superseded. */
+    generation: () => generation
+  };
+}
+
 /**
  * The dialog controller. One idempotency key belongs to one request body: retrying the same body
  * after a lost response replays the first spawn, and an edited body gets a new key instead of a
@@ -256,6 +311,7 @@ export function createRunAgentDialog({ dialog, insert, api, announce, onSpawned,
   let attempt;
   let invoker;
   let busy = false;
+  let loading = false;
 
   const setStatus = (message, tone = '') => { status.textContent = message; if (tone) status.dataset.saveState = tone; else delete status.dataset.saveState; };
   const lookup = () => ({
@@ -300,7 +356,7 @@ export function createRunAgentDialog({ dialog, insert, api, announce, onSpawned,
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    if (busy) return;
+    if (busy || loading) return;
     draft = readRunDraft(form, draft);
     const { workspace, profile } = lookup();
     errors = validateRunDraft(draft, { workspace, profile });
@@ -313,6 +369,7 @@ export function createRunAgentDialog({ dialog, insert, api, announce, onSpawned,
     const request = buildSpawnRequest(draft);
     const signature = JSON.stringify([draft.workspaceId, request]);
     if (attempt?.signature !== signature) attempt = { signature, key: newKey() };
+    attempt.draft = draft;
     busy = true; submit.disabled = true; form.setAttribute('aria-busy', 'true');
     setStatus('Starting the agent…', 'saving');
     void (async () => {
@@ -327,6 +384,10 @@ export function createRunAgentDialog({ dialog, insert, api, announce, onSpawned,
         announce(result?.data?.replayed ? 'This run was already started; opening it.' : 'Agent started.');
         if (agentId) await onSpawned({ agentId, workspaceId: draft.workspaceId });
       } catch (error) {
+        // A refusal is final and created nothing, so the next request may take a new key. Anything
+        // else (a lost response, a timeout, a server error) may have started the run, so the key stays
+        // until the same request is confirmed, even across closing and reopening the dialog.
+        if (spawnRefused(error)) attempt = undefined;
         setStatus(error?.message ?? 'The agent could not start.', 'error');
       } finally {
         busy = false; submit.disabled = false; form.removeAttribute('aria-busy');
@@ -337,22 +398,31 @@ export function createRunAgentDialog({ dialog, insert, api, announce, onSpawned,
   return {
     /** Loads fresh workspaces, profiles, and gateway status, then opens on the given workspace. */
     async open({ workspaceId, trigger } = {}) {
+      if (busy || loading) return;
       invoker = trigger;
       errors = {};
-      attempt = undefined;
+      // Nothing from the previous opening can be submitted while fresh choices load.
+      loading = true; submit.disabled = true; form.setAttribute('aria-busy', 'true');
+      insert(body, '');
       setStatus('Loading workspaces and profiles…');
       if (!dialog.open) dialog.showModal();
       try {
-        const [workspacesResult, profilesResult, configResult] = await Promise.all([
-          api('/workspaces'),
+        const [workspaces, profilesResult, configResult] = await Promise.all([
+          listWorkspaces(api),
           api('/agent-model-profiles'),
           api('/agent-model-config-status').catch(() => null)
         ]);
         context = {
-          workspaces: (workspacesResult?.data?.workspaces ?? []).filter((workspace) => workspace.status === 'ACTIVE'),
+          workspaces: workspaces.filter((workspace) => workspace.status === 'ACTIVE'),
           profiles: profilesResult?.data?.profiles ?? [],
           configStatus: configResult?.data?.status ?? null
         };
+        if (attempt?.draft) {
+          draft = attempt.draft;
+          setStatus('The last start was not confirmed. Start again with the same request to resume it without a second run.', 'error');
+          render('submit-run-agent');
+          return;
+        }
         const preferred = context.workspaces.find((workspace) => workspace.workspaceId === workspaceId && workspaceEligibility(workspace).eligible)
           ?? context.workspaces.find((workspace) => workspaceEligibility(workspace).eligible);
         const profile = context.profiles.find((entry) => profileEligibility(entry).eligible);
@@ -364,6 +434,8 @@ export function createRunAgentDialog({ dialog, insert, api, announce, onSpawned,
         draft = draftForProfile(undefined);
         render();
         setStatus(error?.message ?? 'Workspaces and profiles could not be loaded.', 'error');
+      } finally {
+        loading = false; submit.disabled = false; form.removeAttribute('aria-busy');
       }
     }
   };

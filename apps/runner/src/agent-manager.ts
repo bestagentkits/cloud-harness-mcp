@@ -1072,7 +1072,10 @@ export class AgentManager {
       const unusable = activeProfiles.find((p: AgentModelProfileMetadata) => p.id === id);
       if (unusable && this.config.profiles.every((candidate) => candidate.id !== id)) {
         const state = unusable.status === 'ACTIVE' ? 'has no active revision' : `is ${unusable.status}`;
-        throw new HarnessError('INVALID_INPUT', `agent model profile ${state}; activate it on the Dashboard before spawning`);
+        const remedy = unusable.status === 'DISABLED'
+          ? 'activate it on the Dashboard before spawning'
+          : 'fix its credential or re-save it on the Dashboard so it syncs, then spawn again';
+        throw new HarnessError('INVALID_INPUT', `agent model profile ${state}; ${remedy}`);
       }
     }
     const staticProfile = this.config.profiles.find((candidate) => candidate.id === id);

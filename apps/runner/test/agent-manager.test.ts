@@ -371,6 +371,42 @@ describe('AgentManager', () => {
     await manager.stop();
   });
 
+  it('names every unusable profile state with its remedy, and lets a static profile of the same id run', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agent-manager-profile-states-'));
+    directories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
+    const record = workspace('network-none', ownerId);
+    store.create(record);
+    const modelProfiles = createCachedProfile(store, ownerId);
+    const listProfiles = modelProfiles.listProfiles.bind(modelProfiles);
+    let shape: (profile: AgentModelProfileMetadata) => AgentModelProfileMetadata = (profile) => profile;
+    vi.spyOn(modelProfiles, 'listProfiles').mockImplementation((owner) => listProfiles(owner).map((profile) => shape(profile)));
+    const launcher = new FakeLauncher();
+    const manager = new AgentManager(agentsConfig, store, {
+      repository: new AgentStateRepository(store.database, agentsConfig.limits),
+      launcher, gateway: new FakeGateway(),
+      toolExecutor: vi.fn(async () => ({ ok: true as const, message: 'read', data: {}, truncated: false })),
+      modelProfiles
+    });
+    const cases: Array<[Partial<AgentModelProfileMetadata>, string]> = [
+      [{ status: 'SYNC_PENDING' }, 'agent model profile is SYNC_PENDING; fix its credential or re-save it on the Dashboard so it syncs, then spawn again'],
+      [{ status: 'SYNC_FAILED' }, 'agent model profile is SYNC_FAILED; fix its credential or re-save it on the Dashboard so it syncs, then spawn again'],
+      [{ status: 'ACTIVE', activeRevision: undefined }, 'agent model profile has no active revision; fix its credential or re-save it on the Dashboard so it syncs, then spawn again']
+    ];
+    for (const [overrides, message] of cases) {
+      shape = (profile) => ({ ...profile, ...overrides });
+      await expect(manager.dispatch(ownerId, record, 'agent_spawn', spawnInput(record, { profileId: 'cached', idempotencyKey: `spawn-${String(overrides.status)}-${message.length}` })))
+        .rejects.toMatchObject({ code: 'INVALID_INPUT', message });
+    }
+    // A saved profile that shadows a static one by id does not block the static profile.
+    shape = (profile) => ({ ...profile, id: 'default', status: 'DISABLED' });
+    await manager.dispatch(ownerId, record, 'agent_spawn', spawnInput(record, { profileId: 'default', idempotencyKey: 'spawn-static-default' }));
+    await vi.waitFor(() => expect(launcher.launches).toHaveLength(1));
+    await manager.stop();
+  });
+
   it('executes only granted proxy tools and appends bounded protocol events', async () => {
     const { manager, record, launcher, toolExecutor, store } = setup();
     await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));

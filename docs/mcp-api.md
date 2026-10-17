@@ -133,8 +133,8 @@ Agent calls do not refresh the parent workspace idle TTL.
 - `agent_spawn` durably reserves the prompt, budgets, profile, parent, and
   requested proxy-tool subset before launch. Its result is an acknowledgement
   with an opaque ID, generation, status, and replay flag—not prompt
-  completion. The agent is pinned to the profile's active revision at spawn,
-  so a later profile edit never changes a running agent. A saved profile that
+  completion. The agent records the profile's active revision at spawn, and
+  its budgets and prices are fixed then. A saved profile that
   is not `ACTIVE` (or has no active revision) is refused with `INVALID_INPUT`
   naming its state; an ID that matches none of the caller's profiles stays
   `unknown agent model profile`, so another owner's profile is never

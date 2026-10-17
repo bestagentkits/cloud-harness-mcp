@@ -23,8 +23,9 @@ starts one bounded run through the same `agent_spawn` contract MCP clients use.
 3. **Task.** The prompt, up to 128 KiB.
 4. **Allowed tools.** The run starts **Read only**. **Code changes** adds the file
    write tools; every preset and checkbox is narrowed to what the profile allows.
-5. **Limits and repository guidance.** Time limit, cost cap, and input and output
-   token caps default to the MCP defaults and can only be lowered below the profile's
+5. **Limits and repository guidance.** The time limit defaults to 15 minutes and can be
+   set from 1 minute to 24 hours. The cost cap and the input and output token caps start
+   at the MCP defaults lowered to the profile's per-run limits, and cannot go above those
    limits. Repository guidance chooses which instruction files go before the task.
 
 Before you start, the preview shows exactly what the run may do: the model and API
@@ -35,8 +36,9 @@ the token caps could cost at the profile's prices.
 
 These checks only mirror the runner: it refuses the same workspace, profile, tool,
 or budget whatever the browser sends. A retry of the same request after a lost
-response replays the first spawn instead of starting a second one. On success the
-agent's detail page opens.
+response replays the first spawn instead of starting a second one, even if you close
+and reopen the dialog: it keeps the unconfirmed request until it is confirmed or
+refused. On success the agent's detail page opens.
 
 A run is **bounded**: it ends when the task completes, its time limit or a cap is
 reached, or you cancel it. No session survives it, so to continue the work start a
@@ -76,8 +78,9 @@ Opening an agent shows four sections:
   says so instead. **Cancel** is offered until the agent stops, cascades to every child
   agent, and asks for confirmation first.
 
-While an agent has not ended, its page refreshes every few seconds for a bounded time.
-A refresh never replaces a message you are writing.
+While an agent has not ended, its page refreshes every few seconds for up to 30 minutes,
+then says that live refresh stopped. A refresh waits while you are focused in the page,
+writing a message, in a dialog, or on another tab.
 
 ## Filters
 

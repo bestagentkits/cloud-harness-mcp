@@ -74,7 +74,7 @@ import {
 } from './dashboard-render.js';
 import { mountTerminalPane } from './dashboard-terminal.js';
 import { createModelWizard, createSpendPanel, renderModelsPage, verificationLabel } from './dashboard-models.js';
-import { createRunAgentDialog } from './dashboard-agent-run.js';
+import { createAgentRefresh, createRunAgentDialog } from './dashboard-agent-run.js';
 import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -3798,34 +3798,18 @@ export function initializeDashboard() {
     });
   }
   /**
-   * A live run refreshes its detail page on a bounded timer until it ends. A refresh never
-   * replaces a message being written, and any navigation stops it.
+   * A live run refreshes its detail page on a bounded timer until it ends. A refresh waits while the
+   * operator is focused in the page, writing a message, in a dialog, or away from the tab, and any
+   * navigation stops it.
    */
-  const AGENT_REFRESH_MS = 5_000;
-  const AGENT_REFRESH_LIMIT = 120;
-  let agentRefreshTimer;
-  let agentRefreshGeneration = 0;
-  function stopAgentRefresh() {
-    agentRefreshGeneration += 1;
-    if (agentRefreshTimer) globalThis.clearTimeout(agentRefreshTimer);
-    agentRefreshTimer = undefined;
-  }
-  function scheduleAgentRefresh(agentId, remaining) {
-    const generation = agentRefreshGeneration;
-    agentRefreshTimer = globalThis.setTimeout(async () => {
-      agentRefreshTimer = undefined;
-      const form = document.querySelector('#agent-message-form');
-      const writing = form && (form.contains(document.activeElement) || String(new FormData(form).get('message') ?? '').trim());
-      if (writing || document.querySelector('dialog[open]')) {
-        if (remaining > 1) scheduleAgentRefresh(agentId, remaining - 1);
-        return;
-      }
-      let detail;
-      try { detail = await fetchAgentDetail(agentId); } catch { return; }
-      if (generation !== agentRefreshGeneration) return;
-      showAgentDetail(agentId, detail);
-      if (!agentRunEnded(detail.agent?.status) && remaining > 1) scheduleAgentRefresh(agentId, remaining - 1);
-    }, AGENT_REFRESH_MS);
+  let agentRefresh;
+  function stopAgentRefresh() { agentRefresh?.stop(); }
+  function operatorBusyOnAgentPage() {
+    if (document.hidden || document.querySelector('dialog[open]')) return true;
+    const active = document.activeElement;
+    if (active && active !== content && content.contains(active)) return true;
+    const form = document.querySelector('#agent-message-form');
+    return Boolean(form && String(new FormData(form).get('message') ?? '').trim());
   }
   async function fetchAgentDetail(agentId) {
     const workspaceScope = new URLSearchParams(location.search).get('workspaceId');
@@ -3845,11 +3829,21 @@ export function initializeDashboard() {
     selectNavigation('agents');
     document.querySelector('#command-surface').hidden = true;
     stopAgentRefresh();
+    const refresh = createAgentRefresh({
+      fetchDetail: () => fetchAgentDetail(agentId),
+      render: (detail) => showAgentDetail(agentId, detail),
+      shouldDefer: operatorBusyOnAgentPage,
+      onExhausted: () => announce('Live refresh stopped. Reload the page to see the latest state.')
+    });
+    agentRefresh = refresh;
+    const generation = refresh.generation();
     const detail = await fetchAgentDetail(agentId);
+    // A navigation or a newer load of this page stops this refresh, and then owns the page.
+    if (generation !== refresh.generation()) return;
     setTitle('Agent detail', 'One coding agent: status, usage, bounded logs, and control.');
     showAgentDetail(agentId, detail);
     setRunAgentAction(detail.agent?.workspaceId);
-    if (!agentRunEnded(detail.agent?.status)) scheduleAgentRefresh(agentId, AGENT_REFRESH_LIMIT);
+    if (!agentRunEnded(detail.agent?.status)) refresh.start();
   }
   function bindAgentControls(agent, agentId) {
     const form = document.querySelector('#agent-message-form');

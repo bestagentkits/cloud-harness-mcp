@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TOOL_SCHEMA_BY_NAME } from '@cloud-harness/contracts';
 import {
-  SPAWN_DEFAULTS, buildSpawnRequest, createRunAgentDialog, draftForProfile, gatewayReadiness, presetWithin,
-  profileEligibility, renderRunAgentForm, renderRunPreview, tokenCapEstimateMicros, validateRunDraft, workspaceEligibility
+  SPAWN_DEFAULTS, buildSpawnRequest, createAgentRefresh, createRunAgentDialog, draftForProfile, gatewayReadiness, listWorkspaces,
+  presetWithin, profileEligibility, renderRunAgentForm, renderRunPreview, spawnRefused, tokenCapEstimateMicros, validateRunDraft,
+  workspaceEligibility
 } from '../dashboard/dashboard-agent-run.js';
 import { TreeElement } from './dashboard-tree-dom.js';
 
@@ -194,6 +195,75 @@ describe('Run Pi agent dialog', () => {
     expect(later).toEqual(['key-2', 'key-3']);
   });
 
+  it('keeps an unconfirmed start across closing and reopening, so the retry replays it', async () => {
+    let failures = 1;
+    const view = mount({ spawn: async () => { if (failures-- > 0) throw new Error('The connection was lost.'); return { data: { agentId: `agent_${'d'.repeat(24)}`, replayed: true } }; } });
+    await view.controller.open({ workspaceId });
+    view.fillDefaults();
+    view.fill({ 'run-agent-prompt': 'Fix the flaky test.' });
+    await view.submit();
+    view.q('#cancel-run-agent').dispatch('click', {});
+    expect(view.dialog.open).toBe(false);
+
+    await view.controller.open({ workspaceId });
+    expect(view.q('#run-agent-status').textContent).toContain('The last start was not confirmed');
+    expect(view.q('#run-agent-prompt').textContent).toBe('Fix the flaky test.');
+    expect(view.q('#submit-run-agent').focus).toHaveBeenCalled();
+    view.fillDefaults();
+    view.fill({ 'run-agent-prompt': 'Fix the flaky test.' });
+    await view.submit();
+    const keys = view.spawn.mock.calls.map((call) => (call as unknown as [string, { idempotencyKey: string }])[1].idempotencyKey);
+    expect(keys).toEqual(['key-1', 'key-1']);
+
+    // Confirmed, so the next opening starts fresh.
+    await view.controller.open({ workspaceId });
+    expect(view.q('#run-agent-status').textContent).toBe('');
+  });
+
+  it('drops the key after a refusal, which created nothing', async () => {
+    let refusals = 1;
+    const view = mount({ spawn: async () => { if (refusals-- > 0) throw Object.assign(new Error('agent model profile is DISABLED'), { status: 400 }); return { data: { agentId: `agent_${'d'.repeat(24)}` } }; } });
+    await view.controller.open({ workspaceId });
+    view.fillDefaults();
+    await view.submit();
+    expect(view.q('#run-agent-status').textContent).toBe('agent model profile is DISABLED');
+    await view.submit();
+    const keys = view.spawn.mock.calls.map((call) => (call as unknown as [string, { idempotencyKey: string }])[1].idempotencyKey);
+    expect(keys).toEqual(['key-1', 'key-2']);
+    expect(spawnRefused({ status: 409 })).toBe(true);
+    expect(spawnRefused({ status: 408 })).toBe(false);
+    expect(spawnRefused({ status: 502 })).toBe(false);
+    expect(spawnRefused(new TypeError('Failed to fetch'))).toBe(false);
+  });
+
+  it('cannot submit what the previous opening showed while fresh choices load', async () => {
+    const view = mount();
+    await view.controller.open({ workspaceId });
+    view.fillDefaults();
+    let release: () => void = () => {};
+    view.api.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve({ data: { workspaces: [workspace()] } }); }));
+    const opening = view.controller.open({ workspaceId });
+    expect(view.q('#submit-run-agent').disabled).toBe(true);
+    expect(view.dialog.querySelector('#run-agent-prompt')).toBeNull();
+    view.form.dispatch('submit', { preventDefault: vi.fn() });
+    release();
+    await opening;
+    expect(view.spawn).not.toHaveBeenCalled();
+    expect(view.q('#submit-run-agent').disabled).toBe(false);
+  });
+
+  it('follows the workspace page cursor', async () => {
+    const pages: Record<string, unknown> = {
+      '/workspaces': { data: { workspaces: [workspace({ workspaceId: otherWorkspaceId })] }, cursor: '100' },
+      '/workspaces?cursor=100': { data: { workspaces: [workspace()] } }
+    };
+    const api = vi.fn(async (path: string) => pages[path]);
+    expect((await listWorkspaces(api)).map((entry) => entry.workspaceId)).toEqual([otherWorkspaceId, workspaceId]);
+    const endless = vi.fn(async () => ({ data: { workspaces: [] }, cursor: 'again' }));
+    await listWorkspaces(endless, 3);
+    expect(endless).toHaveBeenCalledTimes(3);
+  });
+
   it('says how to proceed when no workspace can run agents', async () => {
     const view = mount({ workspaces: [workspace({ networkProfile: 'dependency-access' })] });
     await view.controller.open({});
@@ -203,5 +273,61 @@ describe('Run Pi agent dialog', () => {
     await view.submit();
     expect(view.spawn).not.toHaveBeenCalled();
     expect(view.q('#run-agent-workspaceId-error').textContent).toBe('Choose a workspace.');
+  });
+});
+
+describe('live agent refresh', () => {
+  const running = { agent: { status: 'RUNNING' } };
+  function harness(overrides: Record<string, unknown> = {}) {
+    vi.useFakeTimers();
+    const fetchDetail = vi.fn(async () => running);
+    const render = vi.fn();
+    const onExhausted = vi.fn();
+    const refresh = createAgentRefresh({ fetchDetail, render, onExhausted, intervalMs: 1_000, limit: 3, ...overrides });
+    return { refresh, fetchDetail, render, onExhausted };
+  }
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('re-renders on a bounded timer and says when it stops', async () => {
+    const { refresh, render, onExhausted } = harness();
+    refresh.start();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(render).toHaveBeenCalledTimes(3);
+    expect(onExhausted).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops at a terminal status', async () => {
+    const { refresh, render, onExhausted } = harness({ fetchDetail: vi.fn(async () => ({ agent: { status: 'SUCCEEDED' } })) });
+    refresh.start();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(onExhausted).not.toHaveBeenCalled();
+  });
+
+  it('waits while the operator is busy and retries after a failed read', async () => {
+    let busy = true;
+    const fetchDetail = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(running);
+    const { refresh, render } = harness({ shouldDefer: () => busy, fetchDetail, limit: 10 });
+    refresh.start();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fetchDetail).not.toHaveBeenCalled();
+    busy = false;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fetchDetail).toHaveBeenCalledTimes(2);
+    expect(render).toHaveBeenCalledTimes(1);
+  });
+
+  it('never renders a read that resolves after it was stopped', async () => {
+    let resolve: (value: unknown) => void = () => {};
+    const fetchDetail = vi.fn(() => new Promise((done) => { resolve = done; }));
+    const { refresh, render } = harness({ fetchDetail });
+    refresh.start();
+    const before = refresh.generation();
+    await vi.advanceTimersByTimeAsync(1_000);
+    refresh.stop();
+    expect(refresh.generation()).not.toBe(before);
+    resolve(running);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(render).not.toHaveBeenCalled();
   });
 });
