@@ -27,8 +27,8 @@ same list, with their own key metadata, through `model_provider_list`.
 | OpenCode Go | Bearer | Chat Completions, Responses (OpenAI-compatible paths) | Provider's models endpoint, with your key | Yes | [opencode.ai/console](https://opencode.ai/console) |
 | Custom (OpenAI-compatible) | Bearer or `x-api-key` | Chat Completions or Responses, at the one HTTPS URL you enter | None: you enter the model ID | Yes | Your provider's console |
 
-OpenCode Go needs a session header on every request, which the harness sends for you; see
-[OpenCode Go](#opencode-go).
+OpenCode asks clients to send a session header, and the harness always sends it for OpenCode
+Go; see [OpenCode Go](#opencode-go).
 
 What the columns mean:
 
@@ -58,12 +58,13 @@ create a profile with a model from its catalog and the Chat Completions or Respo
 mode. OpenCode lists which models are served on which path.
 
 OpenCode asks clients to send their own user agent and a stable session ID in
-`x-opencode-session`, and can reject a request without one (`400 MissingSessionID`). The
-harness does both for this provider without any instance setting:
+`x-opencode-session`, so it can optimize routing and prompt caching. The harness always does
+both for this provider, without any instance setting:
 
 - the gateway identifies itself as `cloud-harness-model-gateway` and sends
   `x-opencode-session` filled with the calling agent's ID;
-- the connection check sends the same header with a new ID for each check.
+- the connection check and the catalog listing send the same header with a new random ID
+  for each call.
 
 If `MODEL_GATEWAY_SESSION_HEADER` is also set, the provider's own header still wins for
 OpenCode Go, and the instance-wide header goes to every other provider. A Custom route to
