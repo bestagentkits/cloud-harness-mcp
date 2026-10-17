@@ -82,9 +82,24 @@ Every price carries its provenance: the source (`provider`, `openrouter`, `user`
 when no source published a price), the
 source model ID, when it was retrieved, and its confidence (`exact`, `estimate`, or
 `unknown`). An unknown price is `null`, never zero, so a missing price is never treated as
-free. `hasConditionalPricing` marks models whose price changes with conditions such as a long
-prompt; the listed price is the base tier. Capabilities (tools, reasoning, vision) are
-`reported` only when provider or OpenRouter metadata says so.
+free. Capabilities (tools, reasoning, vision) are `reported` only when provider or OpenRouter
+metadata says so.
+
+Catalog prices follow the same rules as [saved revision prices](#revision-pricing-and-provenance),
+so a catalog price can be saved unchanged:
+
+- **Cache writes.** OpenRouter publishes a default and a one-hour cache-write price. The
+  catalog keeps the higher of the two, because the agent runtime can ask for long retention
+  and the usage a provider reports does not say which write was billed.
+- **Tiers.** An OpenRouter price override whose only condition is a minimum prompt length
+  (`min_prompt_tokens`) becomes a long-prompt tier in `tiers`. A tier never inherits a
+  base price: one without its own input and output price is not used, and a cache price it
+  does not publish stays unknown.
+- **Conditional pricing.** `hasConditionalPricing` marks a price that also changes under a
+  condition the tiers cannot express: an override with any other condition, more tiers than
+  a revision can hold, two overrides for one threshold, or a tier that would break the tier
+  rules once unknown cache prices are resolved for the selected provider. Such overrides are
+  left out, so the listed prices understate some requests.
 
 ### Freshness and refresh
 
@@ -205,10 +220,21 @@ and `AgentModelPricingSchema` in
   avoid this.
 - **Provenance.** `priceProvenance` records where the prices came from: `source`
   (`provider`, `openrouter`, `user`, or `none`), `sourceModelId`, `retrievedAt`,
-  `confidence` (`exact`, `estimate`, or `unknown`), and `isOverride`. Today every saved
-  price is recorded as a `user` override of `unknown` confidence, including a price the
-  wizard filled in from the model catalog: saving does not yet record the catalog as the
-  source. Revisions saved before provenance existed read back the same way.
+  `confidence` (`exact`, `estimate`, or `unknown`), and `isOverride`. A client cannot set
+  provenance or confidence; the runner assigns them when the revision is saved:
+  - A save that sends `catalogPriceRef: { "sourceModelId": "vendor/model" }` names the
+    catalog model its prices came from. The runner looks that model up in its own cached
+    catalog, without a network call. When the submitted input, output, cache read, cache
+    write, and tier prices all equal the cached catalog price, the catalog's provenance is
+    copied with `isOverride: false`: confidence `exact` when an OpenRouter profile routes to
+    that very model, `estimate` otherwise (a direct vendor, or another OpenRouter model).
+    For a direct vendor the reference must name one of that vendor's models.
+  - Pricing that differs in any price or tier is your override: `source: "user"`,
+    `isOverride: true`, confidence `unknown`, with the referenced catalog model and its
+    retrieval time kept for context.
+  - A save without a reference, or with one the cached catalog does not list, is recorded
+    as your override with no source model. Revisions saved before provenance existed read
+    back the same way.
 
 **Pinned prices never drift.** Revisions are immutable, and catalog refreshes never write
 to them. An edit that does not submit pricing copies the current revision's prices, cache
@@ -218,8 +244,35 @@ If the edit changes the model or the key, the copied prices are recorded as your
 of `unknown` confidence, because they were set for the previous model. A key for another
 provider can resolve unknown cache prices differently, so switching keys is refused with
 `INVALID_INPUT` when the copied tiers would break the rule above. Any other submitted
-pricing replaces all of them: send the cache prices and tiers again to keep them, and the
-new prices are recorded as your override.
+pricing replaces all of them: send the cache prices and tiers again to keep them. The new
+prices get provenance by the rules above, so they are your override unless they match the
+catalog price they reference.
+
+**Repricing review.** Listing profiles (`model_profile_list`) adds a `pricingReview` to
+each profile with an active revision. It compares the revision's pinned prices with the
+cached catalog price for its `sourceModelId`, or, for a revision without one, for its model
+ID matched the way the catalog search matches it. The schema is `ModelPricingReviewSchema` in
+[`model-profile-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-profile-schemas.ts).
+
+- `repriced`: an input, output, cache read, cache write, or tier price differs from the
+  catalog by at least `REPRICING_WARNING_PERCENT` (10%, in
+  [`model-catalog-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-catalog-schemas.ts))
+  in either direction; a pinned price of zero now has a catalog price; a tier exists on
+  only one side; or the catalog has conditional pricing. A rise means cost estimates and
+  caps are understated, a fall means they are overstated. A cache price is compared only
+  when both sides state it, because an unknown pinned cache price is charged at the
+  conservative default below. `changes` lists each difference with the pinned price, the
+  catalog price, and the signed percentage.
+- `current`: nothing differs by that much.
+- `unknown`: the runner has no cached catalog price for the model, for example before the
+  catalog was first searched, for a Custom provider, or for a model the catalog does not
+  list.
+
+`isOverride` repeats the revision's provenance: for your own prices the difference is
+information, not a sign that the price is stale. Listing never makes a network call: the
+review reads the last cached catalog, kept across restarts, whatever its age. It is computed
+on every list and never stored, so a catalog refresh changes the review but never the pinned
+prices, provenance, or limits. To take a new catalog price, edit the profile and save it.
 
 **How unknown prices are charged.** The gateway and the agent's own cost report use the
 same concrete prices, resolved when the runner sends the revision to the gateway and when it
@@ -265,7 +318,10 @@ key, connection check, or save is in flight.
    it came from: the catalog source with its confidence and retrieval time, a price you
    typed, or, when editing or duplicating, the price saved on the profile. A custom model ID
    never inherits the previous model's price. A price no source published stays **Unknown**:
-   enter it yourself, and enter `0` only for a model that is really free. Choose a permission preset here. **Advanced** holds the profile ID (derived
+   enter it yourself, and enter `0` only for a model that is really free. A catalog price
+   you keep unedited is saved whole, cache prices and long-prompt tiers included, with a
+   `catalogPriceRef` to its catalog model; once you edit a price, only the input and output
+   prices you typed are sent, as your override. Choose a permission preset here. **Advanced** holds the profile ID (derived
    from the model and made unique among your profiles), the API mode, the custom upstream
    URL (Custom only), per-run limits, prices, and the model ID.
 5. **Verify and save:** run a [connection check](#verifying-a-connection) against the
