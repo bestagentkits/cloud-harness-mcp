@@ -1,3 +1,10 @@
+# [0.66.0-beta.22](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.21...v0.66.0-beta.22) (2026-10-17)
+
+
+### Bug Fixes
+
+* **runner:** report model gateway sync from the snapshot digest ([#385](https://github.com/bestagentkits/cloud-harness-mcp/issues/385)) ([1573809](https://github.com/bestagentkits/cloud-harness-mcp/commit/15738098a04d76e288657d5ebcfee5eaa964cd0e))
+
 # [0.66.0-beta.21](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.20...v0.66.0-beta.21) (2026-10-17)
 
 
