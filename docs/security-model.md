@@ -137,6 +137,65 @@ restart both control services. Review logs for exposure before resuming
 service; tokens must not appear in URLs, commands, documentation, or source
 control.
 
+### Inbound MCP OAuth: Cloudflare Access is the authorization server
+
+This is the canonical explanation of the Managed OAuth lane; other pages link
+here instead of restating it. In `cloudflare-access` mode, Cloudflare Zero
+Trust Access with Managed OAuth enabled is both the OAuth authorization server
+that MCP clients see and the public protection layer in front of the origin.
+The client-facing bearer and the origin-facing assertion are different
+credentials:
+
+```mermaid
+sequenceDiagram
+  participant C as MCP client
+  participant A as Cloudflare Access / Managed OAuth
+  participant I as GitHub or Google IdP
+  participant O as Cloud Harness origin
+
+  C->>A: MCP initialize without token
+  A-->>C: 401 + protected-resource metadata challenge
+  C->>A: OAuth discovery / registration / authorization
+  A->>I: Authenticate operator
+  I-->>A: Access identity
+  A-->>C: Opaque OAuth access + refresh tokens
+  C->>A: MCP request with opaque bearer
+  A->>O: Forward request + signed Cf-Access-Jwt-Assertion
+  O->>O: Verify signature, issuer, audience, expiry
+  O-->>A: MCP response
+  A-->>C: Principal-bound MCP response
+```
+
+1. An unauthenticated MCP request stops at Access, which answers with the
+   OAuth protected-resource challenge and discovery path.
+2. Discovery, dynamic client registration where enabled, browser
+   authorization, token issuance, refresh, and revocation all terminate at
+   Access. Cloud Harness does not issue or refresh client tokens.
+3. GitHub and Google authenticate the operator as Access identity providers.
+   Cloud Harness never treats either provider as its OAuth server.
+4. The client presents an opaque bearer to Access. Access validates it at the
+   edge and forwards a signed `Cf-Access-Jwt-Assertion`. The origin verifies
+   that assertion against the pinned issuer, audience, and JWKS
+   ([`access-jwt-verifier.ts`](../apps/api/src/access-jwt-verifier.ts)) and
+   derives the principal from it ([`auth.ts`](../apps/api/src/auth.ts)); it
+   never uses the opaque bearer as identity or validates it.
+5. Access is only the public authentication and admission edge. It does not
+   join the Compose control network and gains no API-to-runner, Docker,
+   workspace, or repository credential authority.
+6. The Managed OAuth endpoint and the static API-key endpoint described above
+   are separate, non-interchangeable lanes with independent trust boundaries.
+
+The repository owns the origin side: assertion verification, principal
+derivation, and the post-deploy canary in
+[`deploy-canary.mjs`](../scripts/deploy-canary.mjs), which calls MCP through
+Access with a service token; it proves the edge-to-origin assertion path, not
+the interactive Managed OAuth client flow. The Access application,
+its policies, IdPs, Managed OAuth settings, redirect allowlist, and revocation
+are operator-owned live Cloudflare configuration, set up through the
+[Cloudflare Access rollout](deployment.md#cloudflare-access-rollout). Token and
+session lifetimes are covered in
+[Inbound MCP OAuth session lifetimes](#inbound-mcp-oauth-session-lifetimes).
+
 ### Inbound MCP OAuth session lifetimes
 
 Three lifetimes govern a Managed OAuth client and must not be conflated:
@@ -413,6 +472,46 @@ When repository caching is enabled (`enableRepoCache: true`):
 2. Cache initialization uses ephemeral helper containers that mount the owner's cache directory writable (`:rw`) to clone the bare repository mirror. Once READY, existing mirrors are referenced without ongoing background synchronization.
 3. Initial workspace checkouts mount the cache directory strictly read-only (`:ro`) in the clone helper and use `git clone --reference-if-able <cache> --dissociate <workspace>`. The `--dissociate` flag copies referenced objects into the workspace repository during creation, severing any ongoing link to the shared object store before the executor starts.
 4. Checkouts are fully independent and writable only to their own workspace; no writable Git state is ever shared across workspaces or principals.
+
+### Multi-repository workspaces
+
+A multi-repository workspace widens what one workspace holds, not who can
+reach it. Every checkout shares the workspace's single executor, lease, owner,
+and trust domain, and lives at `repos/<alias>/` under the one writable
+workspace mount, so the executor restrictions and resource bounds above apply
+unchanged and the checkouts share the workspace byte ceiling.
+
+- **Per-repository brokering.** Each URL passes the repository opening policy
+  before admission. Clone, fetch, push, and GitHub helpers resolve the target
+  repository from the runner's registry, never from caller input, and the
+  trusted broker mints private-clone and push tokens for that repository URL
+  only. No token is shared between checkouts or written into any of them.
+- **Selector confinement.** A `repositoryId` on a file or search tool sets the
+  worker's root to that checkout, which resolves every path and symlink, so the
+  call cannot reach a sibling checkout. The worker root variables use reserved
+  secret-name prefixes, so a runtime secret cannot override them. A scoped call
+  refuses a checkout whose `repos/<alias>` entry is missing or is no longer a
+  real directory, so a symlink swapped in by the executor is not followed.
+  Command tools only start in the selected checkout.
+- **`read-only` is policy, not isolation.** It refuses brokered writes for that
+  repository (push, pushing finalize, recovery export, GitHub write actions)
+  and clamps its advertised capabilities. Any process in the executor can still
+  modify files and local Git state in every checkout, including a `read-only`
+  one, and with `dependency-access` egress or an operator-injected
+  `GH_TOKEN`/`GITHUB_TOKEN` could push by its own means. Do not group
+  repositories of different sensitivity in one workspace on the strength of
+  `read-only`.
+- **No silent fallback.** Git-bound tools refuse an unselected call in a
+  multi-repository workspace instead of defaulting to one checkout, so a commit
+  or push cannot land in the wrong repository by omission.
+
+Scoping and the write refusal are owned by
+[`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts)
+and [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts);
+the reserved prefixes by
+[`packages/contracts/src/secret-policy.ts`](../packages/contracts/src/secret-policy.ts).
+The decision record is
+[ADR 0005](adr/0005-multi-repository-workspaces.md).
 
 ### Brokered GitHub actions
 
@@ -942,7 +1041,7 @@ the boundary is explicit; the composer is
 ### Subagent Model Provider Credential Isolation & Gateway Control
 
 - **Zero Credential Exposure:** Provider API keys (every provider in `packages/contracts/src/model-provider-registry.ts`) are write-only, encrypted in StateStore (schema v9) via `SecretKeyring` (AES-256-GCM) with domain-separated AAD (`purpose: "model_provider_credential"`). Keys are never injected into workspace environment variables, executor containers, or Pi subagent containers.
-- **Runner-only Provider Requests:** Model catalog discovery (`apps/runner/src/model-catalog/`) is the runner's only outbound use of a decrypted provider key outside the gateway. Requests go through `apps/runner/src/model-provider-http.ts`: registry hosts only (or the operator's custom upstream host), credential-free HTTPS on port 443, the resolved address checked against private and reserved ranges and pinned for the connection, no redirects, and bounded time and response size. Only an active credential is decrypted, for one listing, and the key is sent only in that provider's auth header in the credential's stored auth mode. For a provider whose registry entry names a session header (OpenCode Go's `x-opencode-session`), each listing also sends that header with a fresh random id, which identifies nothing; failures are reduced to fixed error categories, so neither the key nor provider response text reaches logs or the dashboard. Credential-backed catalog snapshots are keyed by principal, credential, and key version and are deleted with the credential; only OpenRouter's public, credential-free catalog is shared across principals.
+- **Runner-only Provider Requests:** Model catalog discovery (`apps/runner/src/model-catalog/`) is the runner's only outbound use of a decrypted provider key outside the gateway. Requests go through `apps/runner/src/model-provider-http.ts`: registry hosts only (or the operator's custom upstream host, or the public metadata host `models.dev`, which never receives a key), credential-free HTTPS on port 443, the resolved address checked against private and reserved ranges and pinned for the connection, no redirects, and bounded time and response size. Only an active credential is decrypted, for one listing, and the key is sent only in that provider's auth header in the credential's stored auth mode. For a provider whose registry entry names a session header (OpenCode Go's `x-opencode-session`), each listing also sends that header with a fresh random id, which identifies nothing; failures are reduced to fixed error categories, so neither the key nor provider response text reaches logs or the dashboard. Credential-backed catalog snapshots are keyed by principal, credential, and key version and are deleted with the credential. Only public, credential-free lists are shared across principals: OpenRouter's catalog and a registry provider's public models endpoint (`auth: 'none'`, OpenCode Go's), which is listed without any key and cached in memory only. OpenCode Go's per-model prices come from the public models.dev registry (`https://models.dev/api.json`), which OpenCode's own client reads; it is fetched without any credential through the same pinned, bounded client (`assertPublicMetadataUrl`) and cached in memory only.
 - **Framed Stdin Control Transport:** Gateway configuration snapshots and credentials travel strictly over stdin via `docker exec -i` to the Gateway's internal Unix domain socket (`mode 0600`), ensuring secrets never appear in command-line arguments, environment variables, or disk logs.
 - **RAM-Only Active Projections:** Model Gateway retains active credentials and profile revisions exclusively in memory. Each accepted snapshot replaces every credential and revision an earlier snapshot loaded, so a deleted credential or a revision the runner no longer exports is dropped from the gateway's registry on the next push instead of staying loaded until the gateway restarts. Profiles configured at gateway startup are kept: a snapshot revision that reuses one of their IDs is rejected. A snapshot is validated whole before it is applied, so a rejected one leaves the previous set active. A request already in flight completes with the key it started with, and a lease whose revision was evicted is refused as an invalid lease rather than falling back to another route ([`apps/model-gateway/src/control.ts`](../apps/model-gateway/src/control.ts)). The runner pushes one snapshot at a time, each built after the previous push landed ([`apps/runner/src/agent-gateway-control.ts`](../apps/runner/src/agent-gateway-control.ts)), and reconciles again after reserving the agent and before issuing its lease, so a snapshot built before the agent existed cannot leave its revision missing once the agent runs ([`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts)).
 - **Strict SSRF Guard on Custom Endpoints:** Custom upstream endpoints are strictly validated for public HTTPS origins on default port 443. Query strings, fragments, userinfo, encoded path separators, and directory-only paths are refused when a profile revision is created or edited (`resolveProviderUpstreamUrl` in `packages/contracts/src/model-provider-registry.ts`); private IPv4/IPv6, loopback, link-local, AWS metadata (`169.254.169.254`), and IPv6 forms that embed or translate IPv4 (IPv4-mapped and -compatible, SIIT, NAT64, 6to4, Teredo) are refused as address literals at gateway apply-time and as resolved addresses, which are pinned, at request socket connection (`isUnsafeAddress` in `apps/model-gateway/src/config.ts`), and redirects are not followed. Revisions stored before that create/edit check keep applying unchanged and meet it on their next edit.

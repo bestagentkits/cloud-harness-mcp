@@ -102,6 +102,8 @@ after a failed default-profile open needs its own key.
 Clone an approved repository and start its bounded executor.
 
 - Required: `repositoryUrl` (credential-free HTTPS URL), `idempotencyKey`.
+  To open several repositories in one workspace, pass `repositories` instead;
+  see [multi-repository workspaces](multi-repository-workspaces.md).
 - Optional: `ref` (1–255 characters, cannot start with `-`), `fetchDepth`
   (0–100000; 0 clones full history), `shallowSince` (ISO date/datetime) —
   mutually exclusive, and omitting both keeps the default single-commit
@@ -126,7 +128,7 @@ Clone an approved repository and start its bounded executor.
 - Side effects: clone, state record, workspace directory, executor creation;
   may contact the approved repository host through the trusted clone broker.
 - Recovery: after a lost response, retry with the same key. A different key is
-  a new open request and may hit the one-active-workspace limit.
+  a new open request and may hit the active-workspace limit.
 
 <!-- cloudharness-example:workspace_open
 {"repositoryUrl":"https://github.com/example/project.git","ref":"main","idempotencyKey":"open-project-20260817"}
@@ -239,6 +241,19 @@ Set the preferred active workspace for subsequent calls that omit `workspaceId`.
 <!-- cloudharness-example:workspace_set_active
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa"}
 -->
+
+<!-- cloudharness-tool:workspace_repos_list -->
+### `workspace_repos_list`
+
+List the workspace's checkouts: `repositoryId`, `alias`, `repositoryUrl`, `ref`,
+`access`, `primary`, and `path` (`repos/<alias>`, or `.` for a single-repository
+workspace). Optional: `workspaceId`. Read-only; call it before passing `repositoryId`.
+
+<!-- cloudharness-tool:workspace_repo_status -->
+### `workspace_repo_status`
+
+Per checkout: `branch` (tracking line), `hasUncommitted`, and short `status`, or
+`error` when it cannot be read. Optional: `workspaceId`, `repositoryId`. Read-only.
 
 <!-- cloudharness-tool:secrets_list -->
 ### `secrets_list`

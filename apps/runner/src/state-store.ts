@@ -175,6 +175,33 @@ export type WorkspaceRecord = {
   expiredAt?: number | null;
   /** When the reaper may next try to auto-close the recoverable record; cleared with `expiredAt`. */
   recoverableUntil?: number | null;
+  /**
+   * Set only on an in-memory view scoped to one checkout of a multi-repository workspace,
+   * whose `repositoryUrl` and `repositoryRef` then name that checkout. Never persisted.
+   */
+  repositoryScope?: WorkspaceRepositoryScope;
+};
+
+export type WorkspaceRepositoryAccess = 'read-write' | 'read-only';
+
+/** One checkout of a multi-repository workspace, as recorded when the workspace was admitted. */
+export type WorkspaceRepositoryRecord = {
+  id: string;
+  workspaceId: string;
+  alias: string;
+  repositoryUrl: string;
+  repositoryRef: string | null;
+  access: WorkspaceRepositoryAccess;
+  position: number;
+  primary: boolean;
+};
+
+/** The checkout a scoped record view resolves to: `subpath` is relative to the workspace tree root. */
+export type WorkspaceRepositoryScope = {
+  id: string;
+  alias: string;
+  access: WorkspaceRepositoryAccess;
+  subpath: string;
 };
 
 /** Changes a fenced lifecycle write may apply to one workspace row. */
@@ -520,6 +547,17 @@ export class StateStore {
       CREATE TABLE IF NOT EXISTS comment_idempotency (owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, fingerprint TEXT, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, idempotency_key));
       CREATE TABLE IF NOT EXISTS finalize_idempotency (owner_id TEXT NOT NULL, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, workspace_id, idempotency_key));
       CREATE TABLE IF NOT EXISTS batch_write_idempotency (owner_id TEXT NOT NULL, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, workspace_id, idempotency_key));
+      CREATE TABLE IF NOT EXISTS workspace_repositories (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        alias TEXT NOT NULL,
+        repository_url TEXT NOT NULL,
+        repository_ref TEXT,
+        access TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        is_primary INTEGER NOT NULL,
+        UNIQUE(workspace_id, alias)
+      );
     `);
     const commentCols = (this.database.prepare('PRAGMA table_info(comment_idempotency)').all() as { name: string }[]).map((c) => c.name);
     if (!commentCols.includes('fingerprint')) {
@@ -588,18 +626,39 @@ export class StateStore {
    * it, so no pre-check can be trusted on its own, and a concurrent limit change
    * cannot be admitted against a stale value.
    */
-  admit(record: WorkspaceRecord, configuredLimit: number): void {
+  admit(record: WorkspaceRecord, configuredLimit: number, repositories: readonly WorkspaceRepositoryRecord[] = []): void {
     this.database.exec('BEGIN IMMEDIATE;');
     try {
       const activeLimit = this.effectiveActiveWorkspaceLimit(configuredLimit);
       const active = this.countOwnerCountedWorkspaces(record.ownerId);
       if (active >= activeLimit) throw new ActiveWorkspaceLimitReachedError(active, activeLimit);
       this.create(record);
+      const insertRepository = this.database.prepare(`INSERT INTO workspace_repositories
+        (id, workspace_id, alias, repository_url, repository_ref, access, position, is_primary) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const repository of repositories) {
+        if (repository.workspaceId !== record.id) throw new Error('workspace repository belongs to another workspace');
+        insertRepository.run(repository.id, record.id, repository.alias, repository.repositoryUrl, repository.repositoryRef, repository.access, repository.position, repository.primary ? 1 : 0);
+      }
       this.database.exec('COMMIT;');
     } catch (error) {
       try { this.database.exec('ROLLBACK;'); } catch { /* ignore rollback error */ }
       throw error;
     }
+  }
+
+  /** The repository registry of a multi-repository workspace in open order; empty for a single-repository workspace. */
+  workspaceRepositories(workspaceId: string): WorkspaceRepositoryRecord[] {
+    const rows = this.database.prepare('SELECT * FROM workspace_repositories WHERE workspace_id = ? ORDER BY position ASC').all(workspaceId) as Record<string, unknown>[];
+    return rows.map((row) => ({
+      id: String(row.id),
+      workspaceId: String(row.workspace_id),
+      alias: String(row.alias),
+      repositoryUrl: String(row.repository_url),
+      repositoryRef: row.repository_ref === null ? null : String(row.repository_ref),
+      access: row.access === 'read-only' ? 'read-only' : 'read-write',
+      position: Number(row.position),
+      primary: Number(row.is_primary) === 1
+    }));
   }
 
   /**

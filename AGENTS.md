@@ -21,6 +21,7 @@ instead of copying behavior, defaults, command inventories, or configuration.
 | MCP Events (webhook delivery) | [`docs/mcp-api.md`](docs/mcp-api.md), [`docs/security-model.md`](docs/security-model.md) | `packages/contracts/src/events-api.ts`, `apps/api/src/events/`, `apps/runner/src/event-outbox.ts`, `apps/runner/src/mcp-event-service.ts`, `test/integration/mcp-events-http.test.ts` |
 | API/runner boundary | [`docs/system-architecture.md`](docs/system-architecture.md) | `apps/api/src/`, `apps/runner/src/`, `compose*.yaml`, `scripts/verify-compose-boundaries.mjs` |
 | Repository and executor behavior | [`docs/security-model.md`](docs/security-model.md) | `apps/runner/src/repository-policy.ts`, `worker/`, runner and Docker tests |
+| Multi-repository workspaces | [`docs/mcp-api.md`](docs/mcp-api.md), [`docs/adr/0005-multi-repository-workspaces.md`](docs/adr/0005-multi-repository-workspaces.md) | `apps/runner/src/workspace-repositories.ts`, `apps/runner/src/workspace-service.ts`, `apps/runner/test/multi-repository-workspaces.test.ts` |
 | Configuration | [`docs/configuration.md`](docs/configuration.md) | `.env.example`, `packages/contracts/src/config.ts`, `apps/api/src/config.ts`, `apps/runner/src/config.ts`, `compose*.yaml` |
 | Development and verification | [`docs/development.md`](docs/development.md) | `package.json`, `.github/workflows/ci.yml`, tests |
 | Deployment and recovery | [`docs/deployment.md`](docs/deployment.md), [`docs/operations.md`](docs/operations.md), [`docs/troubleshooting.md`](docs/troubleshooting.md) | `deploy/`, `compose.production.yaml`, `scripts/verify-production.mjs`, `scripts/deploy-canary.mjs` |
@@ -122,7 +123,10 @@ current:
      targeted suites (`npm run test:unit`, `npm run test:integration`, `npm run lint`,
      `npm run typecheck`) as your baseline; shell fixture tests in
      `test/deploy-release-runtime.test.ts` and `test/upgrade-nginx-routes.test.ts`
-     require a POSIX host and are verified in Linux CI.
+     require a POSIX host and are verified in Linux CI. The nginx upgrade
+     script refuses its test root when run as root, so in a root-only
+     container run that suite as an unprivileged user instead of treating the
+     failure as a regression.
    - Compose or network-boundary changes: `npm run verify:compose` and
      `npm run verify`.
    - Shell changes: run the syntax check owned by `.github/workflows/ci.yml`.

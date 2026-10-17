@@ -372,3 +372,21 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 1. Run `model_profile_validate` with the same change: its `escalations` list shows exactly what a save would refuse. Drop those fields to save the rest over MCP.
 2. Otherwise, ask the owner to make the change on the Dashboard [Models page](/dashboard/models), where the same change is saved. Once the owner has saved a profile on a Custom upstream URL, MCP calls may use that URL with that credential.
 3. A profile created over MCP starts **Disabled**. `agent_spawn` cannot use it until the owner activates it on the Models page; no MCP tool activates, disables, or deletes a profile.
+
+---
+
+### 32. Multi-repository workspace: `needs repositoryId`, `is read-only`, or a repository-limit `LIMIT_EXCEEDED`
+**Cause:** A workspace opened with `repositories` holds one checkout per alias under `repos/<alias>/`, and some tools need to know which one you mean.
+- `INVALID_INPUT: <tool> needs repositoryId in a multi-repository workspace` comes from a Git, worktree, `workspace_finalize`, `workspace_recover` `export`, `github_read`, or `github_action` call without a selector. These tools never guess, so a commit or push cannot land in the wrong repository.
+- `FORBIDDEN: repository <alias> is read-only in this workspace` means that repository was opened with `access: "read-only"`, which refuses pushes, pushing finalizes, recovery exports, and GitHub write actions for it.
+- `LIMIT_EXCEEDED: a workspace holds at most N repositories on this instance` means the `repositories` set is larger than the operator's `MAX_WORKSPACE_REPOSITORIES`.
+- `repository <alias>: ...` on `workspace_open` means that repository's clone failed. The whole open fails and no checkout is kept.
+- `repositoryId is unsupported in local mode` means you are on a local stdio server, which has one directory per workspace.
+
+**Fix:**
+1. Call `workspace_repos_list` and pass the `alias` or `repositoryId` it returns as `repositoryId`.
+2. To push to a read-only repository, open a new workspace that lists it as `read-write`. Access is fixed when the workspace opens.
+3. Open fewer repositories, or ask the operator to raise `MAX_WORKSPACE_REPOSITORIES` (see [Environment Variables](/reference/environment-variables)).
+4. For a failed clone, fix that repository's URL, ref, or access, then open again with a new idempotency key.
+
+File and command tools without `repositoryId` work on the workspace root, so paths start with `repos/<alias>/`. `read-only` is not isolation: commands in the workspace can still change files in every checkout.

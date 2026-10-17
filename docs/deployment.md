@@ -151,8 +151,11 @@ sites.
 ## Cloudflare Access rollout
 
 Access mode is an explicit operator rollout after the code is merged and the
-origin is healthy. It requires a hostname in an owner-controlled
-Cloudflare-managed zone and the matching Zero Trust organization; the current
+origin is healthy. Why Access is the client-facing OAuth authorization server
+and what the origin still verifies is explained in the
+[security model](security-model.md#inbound-mcp-oauth-cloudflare-access-is-the-authorization-server); this section covers only the
+operator-owned Cloudflare configuration. Access mode requires a hostname in an
+owner-controlled Cloudflare-managed zone and the matching Zero Trust organization; the current
 `sslip.io` hostname may not satisfy that prerequisite.
 
 Use a compatibility deployment before changing authentication configuration.

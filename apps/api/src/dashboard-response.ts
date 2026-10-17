@@ -35,6 +35,7 @@ function cleanWorkspace(value: unknown): Record<string, unknown> {
     clean.availableActions = item.availableActions.filter((action): action is string => typeof action === 'string').slice(0, 16);
   }
   if (item.status === 'FAILED' && typeof item.error === 'string') clean.error = 'Workspace setup failed. Review runner logs.';
+  if (Array.isArray(item.repositories)) clean.repositories = item.repositories.slice(0, 20).map((entry) => pick(entry, ['repositoryId', 'alias', 'repositoryUrl', 'ref', 'access', 'primary', 'path']));
   return clean;
 }
 

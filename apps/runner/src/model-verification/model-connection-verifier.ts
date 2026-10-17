@@ -49,9 +49,11 @@ const TOOL_MAX_OUTPUT_TOKENS = 128;
 const TOOL_NAME = 'report_status';
 const ANTHROPIC_VERSION = '2023-06-01';
 
-// OpenRouter's model list is public, so a key is checked against its key endpoint instead.
+// A public model list cannot prove a key, so the key is checked elsewhere: OpenRouter's
+// key endpoint, and OpenCode Go's model list, which refuses a bearer it cannot verify.
 const KEY_CHECK_URLS: Partial<Record<ModelProviderKind, string>> = {
-  openrouter: 'https://openrouter.ai/api/v1/key'
+  openrouter: 'https://openrouter.ai/api/v1/key',
+  'opencode-go': 'https://opencode.ai/inference/go/v1/models'
 };
 
 /** The route fields of a revision that a draft check must match. */

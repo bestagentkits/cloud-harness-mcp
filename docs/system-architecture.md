@@ -42,8 +42,12 @@ Dashboard Terminal (browser)
 ```
 
 Cloudflare Access is an optional public authentication edge in front of nginx;
-it does not join the Compose control network. GitHub and Google are IdPs of
-that Access application, not direct API integrations.
+it does not join the Compose control network. With Managed OAuth enabled it is
+also the OAuth authorization server MCP clients see, and it forwards a signed
+assertion that the API verifies. GitHub and Google are IdPs of that Access
+application, not direct API integrations. The sequence and credential split are
+explained once in the
+[security model](security-model.md#inbound-mcp-oauth-cloudflare-access-is-the-authorization-server).
 
 The split is deliberate. The ingress proxy owns no secret or application
 logic; it only bridges host loopback to an internal frontend network. The API owns public HTTP, MCP negotiation, request
@@ -303,6 +307,17 @@ schema migrations. The
 repository checkout lives under the configured jobs root and persists across
 MCP calls while the workspace is active. Close or TTL cleanup removes the
 executor and its workspace directory; SQLite retains the resulting metadata.
+
+A multi-repository workspace keeps the same executor mount: its tree root holds
+one checkout per alias under `repos/<alias>/`, and the repository set is written
+to an additive registry in the transaction that admits the workspace. The
+runner resolves a `repositoryId` selector to an in-memory record view scoped to
+one checkout, which every existing clone, transfer, recovery, GitHub, and
+capability helper receives unchanged, so per-repository behaviour needs no
+second code path. A single-repository workspace has no registry rows and gets a
+synthesized deterministic entry. The resolver lives in
+[`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts);
+the reasoning is in [ADR 0005](adr/0005-multi-repository-workspaces.md).
 
 The skill registry is a separate concern that shares that store. Sources, revisions, sets, and import
 jobs are written through [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts), while

@@ -122,6 +122,10 @@ export const DEFAULT_RUNNER_AGENT_LIMITS = RunnerAgentLimitsSchema.parse({});
  * single-workspace behaviour.
  */
 export const DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER = 3;
+/** Repositories a multi-repository workspace holds unless the operator sets MAX_WORKSPACE_REPOSITORIES. */
+export const DEFAULT_MAX_WORKSPACE_REPOSITORIES = 5;
+/** The schema bound on one workspace_open repository set; the operator setting may only lower it. */
+export const MAX_WORKSPACE_REPOSITORIES_LIMIT = 20;
 
 export const RunnerAgentsConfigSchema = z.object({
   image: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/),
@@ -278,6 +282,8 @@ export const RunnerConfigSchema = z.object({
   packagesBuildTimeoutMs: z.coerce.number().int().min(60_000).max(1_800_000).default(600_000),
   minFreeBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
   maxWorkspaceBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
+  // Repositories one multi-repository workspace may hold; they share the workspace's disk ceiling.
+  maxWorkspaceRepositories: z.coerce.number().int().min(1).max(MAX_WORKSPACE_REPOSITORIES_LIMIT).default(DEFAULT_MAX_WORKSPACE_REPOSITORIES),
   maxActiveWorkspacesPerOwner: z.coerce.number().int().min(1).max(64).default(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER),
   // An expired workspace stays recoverable this long before the reaper may close it; a Dashboard override
   // replaces it for workspaces opened afterwards. 0 closes clean expired workspaces on the next pass.
