@@ -273,10 +273,15 @@ export class ModelConnectionVerifier {
       upstreamUrl: revision.upstreamUrl
     });
     if (!result) return profile;
-    const recorded = this.options.repository.recordVerification(principalId, {
-      targetKind: 'profile', targetId: profile.id, revisionId: revision.id, credentialVersion: null,
-      outcome: result.outcome, resultJson: JSON.stringify(result), checkedAt: result.checkedAt
-    });
+    let recorded = false;
+    try {
+      recorded = this.options.repository.recordVerification(principalId, {
+        targetKind: 'profile', targetId: profile.id, revisionId: revision.id, credentialVersion: null,
+        outcome: result.outcome, resultJson: JSON.stringify(result), checkedAt: result.checkedAt
+      });
+    } catch {
+      // The save is already committed; losing the check only leaves the revision unverified.
+    }
     return recorded ? { ...profile, lastVerification: { outcome: result.outcome, checkedAt: result.checkedAt, revisionId: revision.id } } : profile;
   }
 

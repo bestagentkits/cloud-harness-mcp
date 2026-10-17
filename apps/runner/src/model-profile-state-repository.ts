@@ -173,7 +173,8 @@ export class ModelProfileStateRepository {
         -- timestamps: a draft check attached to a new revision replaces a newer
         -- result for the old one, and a late result for an old revision never
         -- replaces the active revision's.
-        ELSE excluded.revision_id = (SELECT active_revision_id FROM agent_model_profiles WHERE id = excluded.target_id)
+        ELSE excluded.target_kind = 'profile'
+          AND excluded.revision_id = (SELECT active_revision_id FROM agent_model_profiles WHERE id = excluded.target_id)
       END
     `).run(
       principalId, record.targetKind, record.targetId, record.revisionId, record.credentialVersion, record.outcome, record.resultJson, record.checkedAt,

@@ -117,11 +117,13 @@ the input and result schemas are in
   model, API mode, and upstream.
 - `{ "credentialId": "cred_…", "model": "…", "apiMode": "…", "customUpstreamUrl": "…" }`
   checks unsaved settings. A draft never creates or changes a profile, revision, or
-  credential. Without a model only the key is checked. With a model the result includes a
-  `verificationRef`; passing it as `verificationRef` when creating or updating a profile
-  with the same route keeps the result on the new revision (see
-  [the profile wizard](#the-profile-wizard)). A reference that does not match is ignored
-  rather than refused, and the saved profile simply has no `lastVerification`. A draft for a Custom credential
+  credential. Without a model only the key is checked. A check of a model whose route
+  resolves includes a `verificationRef`; passing it as `verificationRef` when creating or
+  updating a profile with the same route keeps the result on the new revision (see
+  [the profile wizard](#the-profile-wizard)). A save that matches uses the reference up, and
+  so does a save whose route differs: that save is not refused, its profile simply has no
+  `lastVerification`, and the check must be run again. A save that fails leaves the
+  reference unused. A draft for a Custom credential
   sends the key to the `customUpstreamUrl` you submit, exactly as saving a profile with that
   upstream would, so only submit an upstream you trust with the key.
 - `"checks": { "inference": false, "tools": true }` turns the paid checks off or on.
