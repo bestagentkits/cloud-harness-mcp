@@ -153,9 +153,25 @@ export function resolveProviderUpstreamUrl(provider: ModelProviderKind, apiMode:
   const definition = getModelProvider(provider);
   if (definition.requiresCustomUpstream) {
     if (!customUrl) throw new HarnessError('INVALID_INPUT', 'customUpstreamUrl is required for custom provider');
-    const parsed = new URL(customUrl);
+    let parsed: URL;
+    try {
+      parsed = new URL(customUrl);
+    } catch {
+      throw new HarnessError('INVALID_INPUT', 'customUpstreamUrl must be an absolute HTTPS URL');
+    }
     if (parsed.protocol !== 'https:' || (parsed.port !== '' && parsed.port !== '443')) {
       throw new HarnessError('INVALID_INPUT', 'customUpstreamUrl must use HTTPS on default port 443');
+    }
+    // Same one-fixed-path rules as env-configured gateway profiles: userinfo would be a second
+    // credential channel outside the encrypted store, and the URL parser drops an empty "?"/"#".
+    if (/[\0-\x20\x7f]/u.test(customUrl)) {
+      throw new HarnessError('INVALID_INPUT', 'customUpstreamUrl must not contain whitespace or control characters');
+    }
+    if (parsed.username || parsed.password || parsed.search || parsed.hash || customUrl.includes('?') || customUrl.includes('#')) {
+      throw new HarnessError('INVALID_INPUT', 'customUpstreamUrl must not contain credentials, a query string, or a fragment');
+    }
+    if (/%(?:2e|2f|5c)|\\/iu.test(customUrl) || parsed.pathname === '/' || parsed.pathname.endsWith('/')) {
+      throw new HarnessError('INVALID_INPUT', 'customUpstreamUrl must name one fixed request path without encoded separators');
     }
     return customUrl;
   }

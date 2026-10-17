@@ -44,4 +44,24 @@ describe('model provider registry', () => {
     expect(resolveProviderUpstreamUrl('custom', 'responses', 'https://llm.example.com/v1/responses')).toBe('https://llm.example.com/v1/responses');
     expect(getModelProvider('custom').requiresCustomUpstream).toBe(true);
   });
+
+  it('refuses custom upstream URLs that carry credentials, a query, a fragment, or an unfixed path', () => {
+    const resolve = (url: string) => () => resolveProviderUpstreamUrl('custom', 'chat-completions', url);
+    for (const url of [
+      'https://user:pass@llm.example.com/v1/chat/completions',
+      'https://llm.example.com/v1/chat/completions?api-key=x',
+      'https://llm.example.com/v1/chat/completions?',
+      'https://llm.example.com/v1/chat/completions#frag'
+    ]) expect(resolve(url)).toThrow('credentials, a query string, or a fragment');
+    for (const url of [
+      'https://llm.example.com/v1/%2e%2e/chat/completions',
+      'https://llm.example.com/v1\\chat/completions',
+      'https://llm.example.com/',
+      'https://llm.example.com/v1/'
+    ]) expect(resolve(url)).toThrow('one fixed request path');
+    expect(resolve('not a url')).toThrow('absolute HTTPS URL');
+    expect(resolve('https://llm.example.com/v1/chat/completions\n')).toThrow('whitespace or control characters');
+    expect(resolveProviderUpstreamUrl('custom', 'chat-completions', 'https://llm.example.com:443/v1/chat/completions'))
+      .toBe('https://llm.example.com:443/v1/chat/completions');
+  });
 });
