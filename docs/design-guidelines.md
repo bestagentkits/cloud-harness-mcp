@@ -570,6 +570,21 @@ wired, so the visible one is never the only working one. Owners:
   `renderMcpGatewayCard`, `renderMcpServersIndex`, and `renderMcpOAuthSection`
   in `dashboard-render.js`, and the MCP server routes in
   [`apps/api/src/dashboard-gateway-router.ts`](../apps/api/src/dashboard-gateway-router.ts).
+- **Model profile wizard:** `/dashboard/models` adds and edits profiles in one
+  dialog whose steps run provider, connect, model, review, then verify and save.
+  The step list marks the current step with `aria-current="step"`, and each step
+  moves focus to its own heading (or the first invalid field) so a screen reader
+  hears "Step N of 5". The model search is an ARIA combobox (`aria-expanded`,
+  `aria-activedescendant`, `role="listbox"` options) whose Escape closes the
+  list before it can close the dialog. An API key field is write-only and
+  cleared after submission. Price fields never turn an unknown price into zero,
+  and saving is blocked until the route is verified or explicitly saved
+  unverified and any newly allowed file-changing operation is acknowledged.
+  Owners: `createModelWizard`, `createModelCombobox`, `wizardSaveGate`, and
+  `renderModelsPage` in
+  [`dashboard-models.js`](../apps/api/dashboard/dashboard-models.js), with
+  [`apps/api/test/dashboard-models-wizard.test.ts`](../apps/api/test/dashboard-models-wizard.test.ts)
+  as the behaviour evidence.
 - **Interaction states:** every control ships default / hover / `:focus-visible`
   / active / disabled; touch targets >= 44px (small controls expand their hit
   area via `::before`); inputs >= 16px.

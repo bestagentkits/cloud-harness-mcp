@@ -177,6 +177,70 @@ Model profiles define how subagents interact with LLMs:
 - **Budget Limits:** Hard limits for maximum input tokens, output tokens, and cost per agent execution.
 - **Allowed Proxy Operations:** Hard ceiling on permitted file and search operations from the exact 10 safe tools (`files_list`, `files_read`, `files_write`, `files_apply_patch`, `files_delete`, `files_move`, `files_mkdir`, `grep_search`, `symbols_search`, `symbols_references`).
 
+### The profile wizard
+
+**Add profile** opens a five-step wizard. **Back** returns to an earlier step without
+losing what you entered, and a failed request keeps every field so you can retry.
+
+1. **Provider:** pick the provider. The list and each provider's API modes come from
+   `GET /api/v1/model-providers`.
+2. **Connect:** choose a saved key for that provider or add a new one. A new key is sent
+   once, write-only, and the field is cleared as soon as it is stored; the wizard never shows
+   or keeps it.
+3. **Model:** search the [model catalog](#model-catalog) with the combobox (arrow keys move
+   through results, Enter selects, Escape closes). Each result shows its availability:
+   listed for your key, or public catalog only. The catalog's freshness is shown above the
+   results, so a stale or unavailable catalog is visible rather than silent. If the model is
+   not listed, or the provider is Custom, use the **custom model ID** option.
+4. **Review:** the selected model fills the display name and prices. Each price shows where
+   it came from, its confidence, and when it was retrieved. A price no source
+   published stays **Unknown**: enter it yourself, and enter `0` only for a model that is
+   really free. Choose a permission preset here. **Advanced** holds the profile ID (derived
+   from the model and made unique among your profiles), the API mode, the custom upstream
+   URL (Custom only), per-run limits, prices, and the model ID.
+5. **Verify and save:** run a [connection check](#verifying-a-connection) against the
+   unsaved settings (the tool-call check is optional), then save.
+
+**Permission presets** cover the 10 safe operations:
+
+| Preset | Operations |
+| --- | --- |
+| Read only | `files_list`, `files_read`, `grep_search`, `symbols_search`, `symbols_references` |
+| Code editing | Read only plus `files_write`, `files_apply_patch`, `files_move`, `files_mkdir` |
+| Custom | Any combination you choose |
+
+Before saving, the wizard shows the full permission change: operations added, removed, and
+kept compared with the saved revision (or with nothing, for a new or duplicated profile).
+
+**Saving is gated.** The wizard refuses to save until:
+
+- the connection for the current key, model, API mode, and upstream is verified, or you tick
+  **Save without a verified connection**. A model that came only from the public catalog
+  is unconfirmed for your key, so it always needs one or the other. Both apply only to the
+  route they were made for: changing the key, model, API mode, or upstream asks again;
+- you tick the acknowledgement for any newly allowed operation that changes files
+  (`files_write`, `files_apply_patch`, `files_delete`, `files_move`, `files_mkdir`). No
+  preset or edit turns these on without that tick.
+
+**Edit** and **Duplicate** open the wizard at the review step with the existing values.
+An edit keeps the profile ID and counts as verified only when the route is unchanged and the
+saved revision was verified. A duplicate gets a new unique ID and starts with no operations
+inherited as already approved.
+
+> A connection check run inside the wizard is not stored on the profile it saves, because
+> verification results belong to a saved revision. A newly saved profile therefore shows
+> **Not verified** until you run **Verify** from the list.
+
+### The profile list
+
+Each profile shows its provider and model, verification status and when it was checked,
+the key it uses, its prices, and its per-run cost and token limits. Actions are **Verify**
+(checks the saved profile), **Edit**, **Duplicate**, **Disable** or **Activate**, and
+**Delete**. When the catalog now lists a different price for the model than the profile
+saved, or the catalog price could not be refreshed, a pricing note appears next to the
+price: edit the profile to take the new price. The comparison is advisory and is skipped
+when the catalog cannot be reached.
+
 ## Where this page lives now
 
 The page is labelled **Models & Budgets** in the navigation and still lives at

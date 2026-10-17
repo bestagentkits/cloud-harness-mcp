@@ -877,6 +877,64 @@ dialog .stack-form { margin-block: 0; max-width: none; }
 #knowledge-conflict-dialog { width: min(64rem, calc(100vw - 2 * var(--space-4))); }
 #mcp-server-dialog { width: min(44rem, calc(100vw - 2 * var(--space-4))); }
 #confirm-dialog { width: min(28rem, calc(100vw - 2 * var(--space-4))); }
+
+/* Model profile wizard. One dialog walks provider, key, model, review, and verify; each step is a
+   plain stack so the dialog scrolls as one column on a phone. */
+.wizard-steps { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin: 0 0 var(--space-4); padding: 0 0 var(--space-3); list-style: none; border-block-end: 1px solid var(--line); font-size: var(--text-12); color: var(--ink-muted); }
+.wizard-steps li { display: inline-flex; align-items: center; gap: var(--space-2); }
+.wizard-step-index { display: inline-grid; place-items: center; width: 1.375rem; height: 1.375rem; border: 1px solid var(--line-strong); border-radius: var(--radius-pill); font-family: var(--font-mono); font-size: var(--text-11); }
+.wizard-steps li.done .wizard-step-index { border-color: var(--success-line); background: var(--success-soft); color: var(--success); }
+.wizard-steps li[aria-current="step"] { color: var(--ink); font-weight: 600; }
+.wizard-steps li[aria-current="step"] .wizard-step-index { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.wizard-body { display: grid; gap: var(--space-2); min-width: 0; }
+.wizard-step-heading { margin: 0 0 var(--space-2); font-size: var(--text-16); font-weight: 650; }
+.wizard-body fieldset { min-width: 0; margin: 0; padding: 0; border: 0; display: grid; gap: var(--space-2); }
+.wizard-body legend { padding: 0; margin-block-end: var(--space-2); font-size: var(--text-13); font-weight: 600; }
+.wizard-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr)); gap: var(--space-2); }
+.wizard-choice { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: var(--space-1) var(--space-3); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); cursor: pointer; transition: border-color var(--motion-fast) var(--ease-out), background-color var(--motion-fast) var(--ease-out); }
+.wizard-choice:hover { border-color: var(--line-strong); }
+.wizard-choice:has(input:checked) { border-color: var(--accent-line); background: var(--accent-soft); }
+.wizard-choice > input { grid-row: 1 / span 3; margin-block-start: .125rem; }
+.wizard-choice-title { font-weight: 600; }
+.wizard-choice-note, .wizard-choice-meta { grid-column: 2; font-size: var(--text-12); color: var(--ink-muted); }
+.wizard-choice-compact > input { grid-row: 1 / span 2; }
+.wizard-subfields { display: grid; gap: var(--space-2); padding-inline-start: var(--space-8); }
+.wizard-subfields[hidden] { display: none; }
+.wizard-facts { padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); }
+.wizard-facts small, .verification-checks small { color: var(--ink-muted); }
+.model-combobox { display: grid; gap: var(--space-1); }
+.model-options { margin: 0; padding: var(--space-1); list-style: none; max-height: 16rem; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--highlight); }
+.model-options[hidden] { display: none; }
+.model-option { display: grid; gap: .125rem; padding: var(--space-2) var(--space-3); border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }
+.model-option:hover { background: var(--surface-raised); }
+.model-option.selected { background: var(--accent-soft); border-color: var(--accent-line); }
+.model-option-name { font-weight: 550; overflow-wrap: anywhere; }
+.model-option-id { font-size: var(--text-12); color: var(--ink-muted); overflow-wrap: anywhere; }
+.model-option-meta { font-size: var(--text-12); color: var(--ink-muted); }
+.catalog-freshness { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.catalog-freshness > p { flex: 1 1 16rem; }
+.wizard-permissions .tools-checkbox-grid { margin-block: 0; }
+.permission-flag { padding: 0 var(--space-1); border: 1px solid var(--warning-line); border-radius: var(--radius-sm); background: var(--warning-soft); color: var(--warning); font-family: var(--font-mono); font-size: var(--text-11); white-space: nowrap; }
+.permission-diff { display: grid; gap: .125rem; margin: var(--space-1) 0 0; padding: var(--space-2) var(--space-3); list-style: none; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); font-size: var(--text-12); }
+.permission-diff li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.permission-added { color: var(--success); }
+.permission-removed { color: var(--danger); }
+.permission-kept { color: var(--ink-muted); }
+.permission-added.permission-mutating { color: var(--warning); font-weight: 600; }
+.wizard-advanced { margin-block-start: var(--space-2); }
+.wizard-advanced-body { display: grid; gap: var(--space-2); padding-block: var(--space-3) 0; }
+.wizard-section { display: grid; gap: var(--space-2); }
+.wizard-section h4 { margin: var(--space-2) 0 0; font-size: var(--text-13); font-weight: 600; }
+.verification-result { display: grid; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); font-size: var(--text-13); }
+.verification-result > p { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; }
+.verification-checks { display: grid; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.verification-checks li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.wizard-gate { display: grid; gap: var(--space-2); margin-block-start: var(--space-2); padding-block-start: var(--space-3); border-block-start: 1px solid var(--line); }
+.gate-reasons { margin: 0; padding-inline-start: var(--space-6); color: var(--warning); font-size: var(--text-13); }
+.wizard-actions #model-wizard-back[hidden] { display: none; }
+.models-page { display: grid; gap: var(--space-6); }
+.pricing-drift { display: block; margin-block-start: var(--space-1); color: var(--warning); font-size: var(--text-12); font-weight: 550; }
+.pricing-drift[hidden] { display: none; }
 #confirm-target { margin: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); font-size: var(--text-12); overflow-wrap: anywhere; }
 #confirm-target:empty { display: none; }
 
@@ -1259,6 +1317,13 @@ dialog .stack-form { margin-block: 0; max-width: none; }
   .activity-center > li.activity-event::before { inset-inline-start: calc(-1 * var(--space-4) + .1875rem); }
   .activity-center::before { inset-inline-start: .4375rem; }
   dialog { padding: var(--space-4); }
+  /* The wizard stays one column on a phone: provider cards stack, sub-fields lose their indent, and
+     the step actions share the row so Continue is never pushed off screen. */
+  .wizard-choices { grid-template-columns: minmax(0, 1fr); }
+  .wizard-subfields { padding-inline-start: 0; }
+  .wizard-steps { font-size: var(--text-11); gap: var(--space-1) var(--space-2); }
+  .wizard-actions > button { flex: 1 1 0; }
+  .wizard-facts { padding: var(--space-2); }
   #command-palette { margin-block-start: var(--space-4); }
   .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .facts dd { margin-block-end: var(--space-2); }

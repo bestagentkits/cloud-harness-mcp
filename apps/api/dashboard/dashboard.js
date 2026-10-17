@@ -12,6 +12,10 @@ import {
   disableModelProfile,
   deleteModelProfile,
   getModelConfigStatus,
+  listModelProviders,
+  searchModelCatalog,
+  refreshModelCatalog,
+  verifyModelConnection,
   listIntegrationCredentials,
   createIntegrationCredential,
   rotateIntegrationCredential,
@@ -43,7 +47,7 @@ import {
 import {
   escapeHtml,
   launchBlockedByConflicts,
-  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
+  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderOverview, renderOverviewSkeleton,
   renderProjectDetail, renderProfile, renderProjectIndex, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
   renderMcpServersIndex, renderMcpServerDetail,
@@ -66,6 +70,7 @@ import {
   WORKSPACE_LIFECYCLE_FIELDS, isWorkspaceLifecycleView, lifecycleDurationLabel, workspaceLifecycleDisplayValue, workspaceLifecycleFieldBounds
 } from './dashboard-render.js';
 import { mountTerminalPane } from './dashboard-terminal.js';
+import { createModelWizard, pricingDrift, renderModelsPage, verificationLabel } from './dashboard-models.js';
 import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -2031,278 +2036,188 @@ export function initializeDashboard() {
       }
     }, event.currentTarget));
   }
+  // Models & Budgets. The profile wizard and the credential dialog live in the static shell, so each
+  // is bound once; the page body is re-rendered per load and wired through one delegated listener.
+  let modelWizard;
+  let modelCredentialDialog;
   async function loadModels() {
     selectNavigation('models');
     document.querySelector('#command-surface').hidden = true;
     setPageActions(renderModelsActions());
-
-    const [profilesRes, credsRes, statusRes] = await Promise.all([
-      listModelProfiles().catch(() => ({ data: { profiles: [] } })),
-      listModelCredentials().catch(() => ({ data: { credentials: [] } })),
-      getModelConfigStatus().catch(() => ({ data: { status: null } }))
+    // Profiles and keys are the page, so their failure is a failed load rather than an empty list.
+    // Gateway status and the provider registry only enrich it.
+    const [profilesRes, credentialsRes, statusRes, providersRes] = await Promise.all([
+      listModelProfiles(),
+      listModelCredentials(),
+      getModelConfigStatus().catch(() => null),
+      listModelProviders().catch(() => null)
     ]);
+    const page = {
+      profiles: profilesRes.data?.profiles ?? [],
+      credentials: credentialsRes.data?.credentials ?? [],
+      status: statusRes?.data?.status ?? null,
+      providers: providersRes?.data?.providers ?? []
+    };
+    insertRendered(content, renderModelsPage(page));
+    bindModelsPage(page);
+    void checkProfilePricing(page);
+  }
+  const reloadModels = () => loadModels().catch(showError);
 
-    const profiles = profilesRes.data?.profiles ?? [];
-    const credentials = credsRes.data?.credentials ?? [];
-    const status = statusRes.data?.status ?? null;
-
-    insertRendered(content, renderModelsPage(profiles, credentials, status));
-    bindModelsControls(credentials);
+  /**
+   * Marks a profile whose saved price no longer matches the catalog. The check is advisory and
+   * batched below the per-principal request budget; a catalog failure leaves the saved price as shown.
+   */
+  async function checkProfilePricing(page) {
+    const targets = page.profiles.flatMap((profile) => {
+      const revision = profile.activeRevision;
+      const credential = page.credentials.find((entry) => entry.id === revision?.credentialId);
+      const provider = page.providers.find((entry) => entry.id === credential?.provider);
+      return revision && credential?.status === 'ACTIVE' && provider && provider.catalogStrategy !== 'none' ? [{ profile, revision, credential }] : [];
+    });
+    for (const batch of chunkPaletteRequests(targets)) {
+      await Promise.all(batch.map(async ({ profile, revision, credential }) => {
+        try {
+          const result = await searchModelCatalog({ provider: credential.provider, credentialId: credential.id, q: revision.model, limit: 10 });
+          const entry = result?.data?.entries?.find((candidate) => candidate.providerModelId === revision.model);
+          const drift = pricingDrift(revision, entry, result?.data?.freshness);
+          if (drift.state !== 'changed' && drift.state !== 'catalog_stale') return;
+          for (const marker of content.querySelectorAll('[data-pricing-drift]')) {
+            if (marker.dataset.pricingDrift !== profile.id) continue;
+            marker.textContent = drift.text;
+            marker.hidden = false;
+          }
+        } catch { /* advisory only: see above */ }
+      }));
+    }
   }
 
-  function bindModelsControls(credentials = []) {
-    const credDialog = document.querySelector('#model-credential-dialog');
-    const credForm = document.querySelector('#model-credential-form');
-    const cancelCred = document.querySelector('#cancel-model-credential');
-    const profileDialog = document.querySelector('#model-profile-dialog');
-    const profileForm = document.querySelector('#model-profile-form');
-    const cancelProfile = document.querySelector('#cancel-model-profile');
-
+  function bindModelCredentialDialog() {
+    if (modelCredentialDialog) return modelCredentialDialog;
+    const dialog = document.querySelector('#model-credential-dialog');
+    const form = document.querySelector('#model-credential-form');
     const providerSelect = document.querySelector('#model-credential-provider');
-    const authModeGroup = document.querySelector('#model-credential-auth-mode');
-    providerSelect?.addEventListener('change', () => {
-      authModeGroup.value = providerSelect.value === 'custom' ? 'bearer' : 'bearer';
-    });
-
-    const customUrlGroup = document.querySelector('#model-profile-custom-url-group');
-    const credentialSelect = document.querySelector('#model-profile-credential');
-
-    function syncCustomUrlVisibility() {
-      const selectedCred = credentials.find((c) => c.id === credentialSelect.value);
-      if (customUrlGroup) {
-        customUrlGroup.hidden = selectedCred?.provider !== 'custom';
-      }
+    const authSelect = document.querySelector('#model-credential-auth-mode');
+    let providers = [];
+    let invoker;
+    // The registry, when it loaded, owns which auth headers a provider accepts.
+    function syncAuthModes() {
+      const definition = providers.find((entry) => entry.id === providerSelect.value);
+      const modes = definition?.authModes ?? ['bearer', 'x-api-key'];
+      insertRendered(authSelect, modes.map((mode) => `<option value="${escapeHtml(mode)}"${mode === (definition?.defaultAuthMode ?? 'bearer') ? ' selected' : ''}>${mode === 'bearer' ? 'Authorization: Bearer &lt;key&gt;' : 'X-API-Key: &lt;key&gt;'}</option>`).join(''));
     }
-    credentialSelect?.addEventListener('change', syncCustomUrlVisibility);
-
-    document.querySelector('#open-add-credential-btn')?.addEventListener('click', () => {
-      credForm.reset();
-      document.querySelector('#model-credential-id').value = '';
-      document.querySelector('#model-credential-title').textContent = 'Add provider credential';
-      document.querySelector('#model-credential-label').disabled = false;
-      document.querySelector('#model-credential-provider').disabled = false;
-      credDialog.showModal();
-      document.querySelector('#model-credential-label').focus();
+    providerSelect.addEventListener('change', syncAuthModes);
+    document.querySelector('#cancel-model-credential')?.addEventListener('click', () => dialog.close());
+    dialog.addEventListener('close', () => {
+      form.reset();
+      document.querySelector('#model-credential-key').value = '';
+      invoker?.focus?.({ preventScroll: true });
     });
-
-    cancelCred?.addEventListener('click', () => {
-      credForm.reset();
-      credDialog.close();
-    });
-
-    credForm?.addEventListener('submit', (event) => {
+    form.addEventListener('submit', (event) => {
       event.preventDefault();
-      const form = event.currentTarget;
       const values = new FormData(form);
-      const credentialId = values.get('credentialId');
+      const credentialId = String(values.get('credentialId') ?? '');
       const apiKey = String(values.get('apiKey') ?? '').trim();
-      const label = String(values.get('label') ?? '').trim();
-      const provider = values.get('provider');
-      const authMode = values.get('authMode');
       const expectedGeneration = Number(values.get('expectedGeneration') ?? 1);
+      const payload = { label: String(values.get('label') ?? '').trim(), provider: values.get('provider'), authMode: values.get('authMode'), apiKey };
+      // The key leaves the field as soon as it is read; a failed save asks for it again.
+      document.querySelector('#model-credential-key').value = '';
+      const rotate = Boolean(credentialId);
+      void submitForm(form, rotate ? 'Rotating…' : 'Saving…', async () => (rotate ? rotateModelCredential(credentialId, { apiKey, expectedGeneration }) : createModelCredential(payload)), async () => {
+        dialog.close();
+        announce(rotate ? 'Provider credential rotated.' : 'Provider credential saved.');
+        await reloadModels();
+      });
+    });
+    modelCredentialDialog = {
+      open({ credential = null, providerList = [], trigger } = {}) {
+        providers = providerList;
+        invoker = trigger;
+        form.reset();
+        document.querySelector('#model-credential-id').value = credential?.id ?? '';
+        document.querySelector('#model-credential-generation').value = String(credential?.generation ?? 1);
+        const label = document.querySelector('#model-credential-label');
+        label.value = credential?.label ?? '';
+        label.disabled = Boolean(credential);
+        providerSelect.disabled = Boolean(credential);
+        if (credential) providerSelect.value = credential.provider;
+        syncAuthModes();
+        authSelect.disabled = Boolean(credential);
+        document.querySelector('#model-credential-title').textContent = credential ? `Rotate credential (${credential.label})` : 'Add provider credential';
+        dialog.showModal();
+        (credential ? document.querySelector('#model-credential-key') : label).focus();
+      }
+    };
+    return modelCredentialDialog;
+  }
 
-      form.querySelector('#model-credential-key').value = '';
-
-      if (credentialId) {
-        void submitForm(form, 'Rotating…', async () => rotateModelCredential(credentialId, { apiKey, expectedGeneration }), async () => {
-          credDialog.close();
-          announce('Provider credential rotated.');
-          await loadModels();
-        });
-      } else {
-        void submitForm(form, 'Saving…', async () => createModelCredential({ label, provider, authMode, apiKey }), async () => {
-          credDialog.close();
-          announce('Provider credential saved.');
-          await loadModels();
-        });
+  function bindModelsPage(page) {
+    const credentialDialog = bindModelCredentialDialog();
+    modelWizard ??= createModelWizard({
+      dialog: document.querySelector('#model-profile-dialog'),
+      insert: insertRendered,
+      announce,
+      onSaved: reloadModels,
+      api: {
+        listProviders: listModelProviders,
+        createCredential: createModelCredential,
+        searchCatalog: searchModelCatalog,
+        refreshCatalog: refreshModelCatalog,
+        verify: verifyModelConnection,
+        createProfile: createModelProfile,
+        updateProfile: updateModelProfile
       }
     });
-
-    for (const btn of document.querySelectorAll('.rotate-model-credential')) {
-      btn.addEventListener('click', (event) => {
-        const id = event.currentTarget.dataset.credentialId;
-        const label = event.currentTarget.dataset.label;
-        const gen = event.currentTarget.dataset.generation;
-        credForm.reset();
-        document.querySelector('#model-credential-id').value = id;
-        document.querySelector('#model-credential-generation').value = gen;
-        document.querySelector('#model-credential-label').value = label;
-        document.querySelector('#model-credential-label').disabled = true;
-        document.querySelector('#model-credential-provider').disabled = true;
-        document.querySelector('#model-credential-title').textContent = `Rotate credential (${label})`;
-        credDialog.showModal();
-        document.querySelector('#model-credential-key').focus();
-      });
-    }
-
-    for (const btn of document.querySelectorAll('.delete-model-credential')) {
-      btn.addEventListener('click', (event) => {
-        const id = event.currentTarget.dataset.credentialId;
-        const gen = Number(event.currentTarget.dataset.generation ?? 1);
+    const openWizard = (mode, profile, trigger) => modelWizard.open({ mode, profile, profiles: page.profiles, credentials: page.credentials, providers: page.providers, trigger });
+    document.querySelector('#open-add-profile-btn')?.addEventListener('click', (event) => openWizard('create', null, event.currentTarget));
+    document.querySelector('#open-add-credential-btn')?.addEventListener('click', (event) => credentialDialog.open({ providerList: page.providers, trigger: event.currentTarget }));
+    document.querySelector('#models-page')?.addEventListener('click', (event) => {
+      const button = event.target?.closest?.('[data-model-action]');
+      if (!button) return;
+      const action = button.dataset.modelAction;
+      const profile = page.profiles.find((entry) => entry.id === button.dataset.profileId);
+      const credential = page.credentials.find((entry) => entry.id === button.dataset.credentialId);
+      if (action === 'add') openWizard('create', null, button);
+      else if ((action === 'edit' || action === 'duplicate') && profile) openWizard(action, profile, button);
+      else if (action === 'verify' && profile) void verifyModelProfile(profile, button);
+      else if ((action === 'activate' || action === 'disable') && profile) {
+        void (async () => {
+          button.disabled = true;
+          try {
+            await (action === 'activate' ? activateModelProfile : disableModelProfile)(profile.id, profile.generation);
+            announce(action === 'activate' ? 'Model profile activated.' : 'Model profile disabled.');
+            await reloadModels();
+          } catch (error) { button.disabled = false; showError(error); }
+        })();
+      } else if (action === 'delete' && profile) {
         confirmAction({
-          title: 'Delete provider credential?',
-          label: 'Delete credential',
-          pendingLabel: 'Deleting…',
-          target: id,
+          title: 'Delete model profile?', label: 'Delete profile', pendingLabel: 'Deleting…', target: profile.id,
+          description: 'Permanently delete this subagent model profile and its verification results.',
+          action: async () => { await deleteModelProfile(profile.id, profile.generation); announce('Model profile deleted.'); await reloadModels(); }
+        }, button);
+      } else if (action === 'rotate-credential' && credential) credentialDialog.open({ credential, providerList: page.providers, trigger: button });
+      else if (action === 'delete-credential' && credential) {
+        confirmAction({
+          title: 'Delete provider credential?', label: 'Delete credential', pendingLabel: 'Deleting…', target: credential.id,
           description: 'Permanently delete this provider credential. Referenced profiles must be deleted first.',
-          action: async () => {
-            await deleteModelCredential(id, gen);
-            announce('Provider credential deleted.');
-            await loadModels();
-          }
-        }, event.currentTarget);
-      });
-    }
-
-    document.querySelector('#open-add-profile-btn')?.addEventListener('click', () => {
-      profileForm.reset();
-      document.querySelector('#model-profile-id').disabled = false;
-      document.querySelector('#model-profile-edit-mode').value = 'false';
-      document.querySelector('#model-profile-title').textContent = 'Add model profile';
-
-      insertRendered(credentialSelect, credentials.length
-        ? credentials.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.label)} (${escapeHtml(c.provider)})</option>`).join('')
-        : '<option value="">No credentials available (create one first)</option>');
-
-      syncCustomUrlVisibility();
-      profileDialog.showModal();
-      document.querySelector('#model-profile-id').focus();
-    });
-
-    cancelProfile?.addEventListener('click', () => {
-      profileForm.reset();
-      profileDialog.close();
-    });
-
-    for (const btn of document.querySelectorAll('.edit-model-profile')) {
-      btn.addEventListener('click', (event) => {
-        let profile;
-        try {
-          profile = JSON.parse(event.currentTarget.dataset.profileJson);
-        } catch {
-          // A malformed dataset value must not take the whole page down with it.
-          announce('This profile could not be opened. Reload the page and try again.');
-          return;
-        }
-        profileForm.reset();
-        document.querySelector('#model-profile-edit-mode').value = 'true';
-        document.querySelector('#model-profile-generation').value = String(profile.generation);
-        document.querySelector('#model-profile-id').value = profile.id;
-        document.querySelector('#model-profile-id').disabled = true;
-        document.querySelector('#model-profile-display-name').value = profile.displayName;
-        document.querySelector('#model-profile-title').textContent = `Edit profile (${profile.displayName})`;
-
-        insertRendered(credentialSelect, credentials.map((c) => `<option value="${escapeHtml(c.id)}" ${c.id === profile.credentialId ? 'selected' : ''}>${escapeHtml(c.label)} (${escapeHtml(c.provider)})</option>`).join(''));
-
-        if (profile.activeRevision) {
-          document.querySelector('#model-profile-model').value = profile.activeRevision.model;
-          document.querySelector('#model-profile-api-mode').value = profile.activeRevision.apiMode;
-          document.querySelector('#model-profile-pricing-input').value = (profile.activeRevision.pricing.inputMicrosPerMillionTokens / 1_000_000).toFixed(6);
-          document.querySelector('#model-profile-pricing-output').value = (profile.activeRevision.pricing.outputMicrosPerMillionTokens / 1_000_000).toFixed(6);
-          document.querySelector('#model-profile-max-input').value = String(profile.activeRevision.limits.maxInputTokens);
-          document.querySelector('#model-profile-max-output').value = String(profile.activeRevision.limits.maxOutputTokens);
-          document.querySelector('#model-profile-max-cost').value = (profile.activeRevision.limits.maxCostMicros / 1_000_000).toFixed(6);
-
-          const ops = new Set(profile.activeRevision.maxProxyOperations);
-          for (const chk of profileForm.querySelectorAll('input[name="proxyOps"]')) {
-            chk.checked = ops.has(chk.value);
-          }
-        }
-
-        syncCustomUrlVisibility();
-        profileDialog.showModal();
-        document.querySelector('#model-profile-display-name').focus();
-      });
-    }
-
-    profileForm?.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const values = new FormData(form);
-      const isEdit = values.get('isEdit') === 'true';
-      const profileId = String(values.get('profileId') ?? '').trim();
-      const displayName = String(values.get('displayName') ?? '').trim();
-      const credentialId = String(values.get('credentialId') ?? '').trim();
-      const model = String(values.get('model') ?? '').trim();
-      const apiMode = String(values.get('apiMode') ?? 'chat-completions');
-      const customUpstreamUrl = String(values.get('customUpstreamUrl') ?? '').trim() || undefined;
-      const expectedGeneration = Number(values.get('expectedGeneration') ?? 1);
-
-      const pricingInputMicros = Math.round(Number(values.get('pricingInput') ?? 0) * 1_000_000);
-      const pricingOutputMicros = Math.round(Number(values.get('pricingOutput') ?? 0) * 1_000_000);
-      const maxInputTokens = Number(values.get('maxInputTokens') ?? 200000);
-      const maxOutputTokens = Number(values.get('maxOutputTokens') ?? 32000);
-      const maxCostMicros = Math.round(Number(values.get('maxCost') ?? 5) * 1_000_000);
-
-      const maxProxyOperations = [...form.querySelectorAll('input[name="proxyOps"]:checked')].map((c) => c.value);
-
-      const payload = {
-        displayName,
-        credentialId,
-        model,
-        apiMode,
-        ...(customUpstreamUrl ? { customUpstreamUrl } : {}),
-        pricing: { inputMicrosPerMillionTokens: pricingInputMicros, outputMicrosPerMillionTokens: pricingOutputMicros },
-        limits: { maxInputTokens, maxOutputTokens, maxCostMicros },
-        maxProxyOperations
-      };
-
-      if (isEdit) {
-        void submitForm(form, 'Updating…', async () => updateModelProfile(profileId, { ...payload, expectedGeneration }), async () => {
-          profileDialog.close();
-          announce('Model profile updated.');
-          await loadModels();
-        });
-      } else {
-        void submitForm(form, 'Creating…', async () => createModelProfile({ profileId, ...payload }), async () => {
-          profileDialog.close();
-          announce('Model profile created.');
-          await loadModels();
-        });
+          action: async () => { await deleteModelCredential(credential.id, credential.generation ?? 1); announce('Provider credential deleted.'); await reloadModels(); }
+        }, button);
       }
     });
+  }
 
-    for (const btn of document.querySelectorAll('.activate-model-profile')) {
-      btn.addEventListener('click', async (event) => {
-        const id = event.currentTarget.dataset.profileId;
-        const gen = Number(event.currentTarget.dataset.generation ?? 1);
-        try {
-          await activateModelProfile(id, gen);
-          announce('Model profile activated.');
-          await loadModels();
-        } catch (err) { showError(err); }
-      });
-    }
-
-    for (const btn of document.querySelectorAll('.disable-model-profile')) {
-      btn.addEventListener('click', async (event) => {
-        const id = event.currentTarget.dataset.profileId;
-        const gen = Number(event.currentTarget.dataset.generation ?? 1);
-        try {
-          await disableModelProfile(id, gen);
-          announce('Model profile disabled.');
-          await loadModels();
-        } catch (err) { showError(err); }
-      });
-    }
-
-    for (const btn of document.querySelectorAll('.delete-model-profile')) {
-      btn.addEventListener('click', (event) => {
-        const id = event.currentTarget.dataset.profileId;
-        const gen = Number(event.currentTarget.dataset.generation ?? 1);
-        confirmAction({
-          title: 'Delete model profile?',
-          label: 'Delete profile',
-          pendingLabel: 'Deleting…',
-          target: id,
-          description: 'Permanently delete this subagent model profile.',
-          action: async () => {
-            await deleteModelProfile(id, gen);
-            announce('Model profile deleted.');
-            await loadModels();
-          }
-        }, event.currentTarget);
-      });
+  async function verifyModelProfile(profile, button) {
+    const label = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Verifying…';
+    try {
+      const result = await verifyModelConnection({ profileId: profile.id });
+      announce(`${profile.displayName}: connection ${verificationLabel(result?.data?.outcome).toLowerCase()}.`);
+      await reloadModels();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = label;
+      showError(error);
     }
   }
   async function loadArtifacts() {
