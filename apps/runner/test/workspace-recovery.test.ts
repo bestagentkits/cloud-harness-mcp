@@ -790,7 +790,15 @@ describe('Workspace network default resolution', () => {
     expect(store.byId((fallback.data as { workspaceId: string }).workspaceId)).toMatchObject({ status: 'ACTIVE', networkProfile: 'network-none' });
   });
 
-  it('keeps replaying records fingerprinted before omitted and explicit network-none were distinguished', async () => {
+  it('never replays an explicit network-none workspace for an omitted-profile request', async () => {
+    const { store, service, principal } = resolutionFixture('resolution-reverse-key');
+    store.setWorkspaceDefaultNetworkProfile('dependency-access');
+    const opened = await openWithoutProfile(service, principal, 'resolution-reverse-key-1', { networkProfile: 'network-none' });
+    expect(opened.ok).toBe(true);
+    await expect(openWithoutProfile(service, principal, 'resolution-reverse-key-1')).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('does not let a record fingerprinted before the split answer an explicit network-none request', async () => {
     const { store, service, principal } = resolutionFixture('resolution-legacy-fingerprint');
     store.setWorkspaceDefaultNetworkProfile('dependency-access');
     await expect(openWithoutProfile(service, principal, 'resolution-legacy-fingerprint-1')).rejects.toMatchObject({
@@ -800,8 +808,6 @@ describe('Workspace network default resolution', () => {
     const legacyFingerprint = computeWorkspaceOpenFingerprint({ repositoryUrl: 'https://github.com/example/repo.git', networkProfile: 'network-none' });
     store.database.prepare('UPDATE workspaces SET request_fingerprint = ? WHERE id = ?').run(legacyFingerprint, record!.id);
 
-    const replayed = await openWithoutProfile(service, principal, 'resolution-legacy-fingerprint-1');
-    expect(replayed).toMatchObject({ ok: false, message: 'Idempotent workspace result', data: { workspaceId: record!.id } });
     // The legacy fingerprint equals an explicit network-none request's, but the stored workspace resolved
     // dependency-access, so it must not answer that request.
     await expect(openWithoutProfile(service, principal, 'resolution-legacy-fingerprint-1', { networkProfile: 'network-none' })).rejects.toMatchObject({

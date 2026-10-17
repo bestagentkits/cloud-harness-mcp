@@ -166,23 +166,20 @@ export function computeWorkspaceOpenFingerprint(input: {
 }
 
 /**
- * Whether a stored workspace may be replayed for this open request. Records persisted before omitted
- * and explicit `network-none` profiles were fingerprinted apart carry the `network-none` fingerprint
- * for an omitted profile, so an omitted request still accepts it; an explicit profile must also match
- * the profile the stored workspace actually resolved, which keeps those older records from answering
- * an explicit `network-none` request with a workspace opened under another profile.
+ * Whether a stored workspace may be replayed for this open request. An explicit profile must also
+ * match the profile the stored workspace resolved: records persisted before omitted and explicit
+ * `network-none` were fingerprinted apart share the explicit request's fingerprint, and must not
+ * answer it with a workspace opened under another profile. An omitted profile accepts whatever the
+ * instance default resolved to at open time, so it is never compared with the current default.
  */
 function workspaceOpenReplayMatches(
   prior: Pick<WorkspaceRecord, 'requestFingerprint' | 'networkProfile'>,
-  parsed: Parameters<typeof computeWorkspaceOpenFingerprint>[0],
+  parsed: { networkProfile?: string | undefined },
   requestFingerprint: string
 ): boolean {
   if (!prior.requestFingerprint) return true;
-  if (parsed.networkProfile !== undefined) {
-    return prior.requestFingerprint === requestFingerprint && prior.networkProfile === parsed.networkProfile;
-  }
   return prior.requestFingerprint === requestFingerprint
-    || prior.requestFingerprint === computeWorkspaceOpenFingerprint({ ...parsed, networkProfile: 'network-none' });
+    && (parsed.networkProfile === undefined || prior.networkProfile === parsed.networkProfile);
 }
 
 
