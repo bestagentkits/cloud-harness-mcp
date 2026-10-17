@@ -1,3 +1,10 @@
+# [0.66.0-beta.19](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.18...v0.66.0-beta.19) (2026-10-17)
+
+
+### Features
+
+* **models:** pin cache prices, tiers, and price provenance on profile revisions ([#377](https://github.com/bestagentkits/cloud-harness-mcp/issues/377)) ([f4c3643](https://github.com/bestagentkits/cloud-harness-mcp/commit/f4c3643c431858b8a16049f5efce26e1ac98975d))
+
 # [0.66.0-beta.18](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.17...v0.66.0-beta.18) (2026-10-17)
 
 
