@@ -27,7 +27,7 @@ MCP skill / `docs/mcp-api.md`: no change here. MCP parity for budget usage is #3
 1. **Operations** (additive, next to the existing model operations):
    - `model_spend_summary`: `{}` in, `ModelSpendSummarySchema` out;
    - `model_spend_policy_list`;
-   - `model_spend_policy_set`: `{profileId?, period, limitMicros, warnPercent?, expectedGeneration?}`, an upsert keyed by scope and period, where a generation conflict gives `CONFLICT`;
+   - `model_spend_policy_set`: `{policyId?, profileId?, period, limitMicros, warnPercent?, expectedGeneration?}`. A create sends neither `policyId` nor `expectedGeneration` and conflicts with an existing policy for the same scope and period; an update sends both and is matched by policy id, so a stale generation from a deleted and recreated policy gives `CONFLICT`;
    - `model_spend_policy_delete`: `{policyId, expectedGeneration}`.
 2. **Summary shape** (every amount is an estimate). For the current UTC day and month, per principal and per profile with a policy or recorded spend:
    - `estimatedSettledMicros`, `estimatedReservedMicros` (open rows at their cap), and `estimatedUnreconciledMicros`;
@@ -37,7 +37,7 @@ MCP skill / `docs/mcp-api.md`: no change here. MCP parity for budget usage is #3
    A profile id whose profile was deleted is still listed, so the user can delete its policy.
 3. **Validation.**
    - `limitMicros` is an integer from 1 to 1e12. `warnPercent` is 1 to 100, default 80. There are at most 64 policies per principal.
-   - `profileId` must name one of the principal's profiles when the policy is created; otherwise `NOT_FOUND`, with the API wording "Model profile not found.".
+   - `profileId` must name one of the principal's profiles when the policy is created; otherwise `NOT_FOUND`. The API passes the runner's wording through, because a set's `NOT_FOUND` can mean a missing profile or a missing policy.
 4. **Audit.** Policy set and delete are recorded through the same `mutation()` path as profile changes. The audit entry contains ids, the period, and the limit.
 5. **Routes:**
    - `GET /api/v1/model-spend`: summary and policies;
