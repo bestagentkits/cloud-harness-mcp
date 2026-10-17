@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { usdPerTokenToMicrosPerMillion } from '../src/model-catalog/pricing.js';
+import { usdPerMillionTokensToMicrosPerMillion, usdPerTokenToMicrosPerMillion } from '../src/model-catalog/pricing.js';
 
 describe('model catalog price conversion', () => {
+  it('converts models.dev USD-per-million prices without float error', () => {
+    expect(usdPerMillionTokensToMicrosPerMillion(0.6)).toBe(600_000);
+    expect(usdPerMillionTokensToMicrosPerMillion(2.2)).toBe(2_200_000);
+    expect(usdPerMillionTokensToMicrosPerMillion(0.003625)).toBe(3_625);
+    expect(usdPerMillionTokensToMicrosPerMillion(15)).toBe(15_000_000);
+    expect(usdPerMillionTokensToMicrosPerMillion(0)).toBe(0);
+    // A fraction of a micro rounds up, so a stored price never understates cost.
+    expect(usdPerMillionTokensToMicrosPerMillion(0.0000001)).toBe(1);
+    expect(usdPerMillionTokensToMicrosPerMillion(undefined)).toBeNull();
+    expect(usdPerMillionTokensToMicrosPerMillion(-1)).toBeNull();
+  });
+
   it('converts decimal USD-per-token strings to exact micros per million tokens', () => {
     expect(usdPerTokenToMicrosPerMillion('0.000003')).toBe(3_000_000);
     expect(usdPerTokenToMicrosPerMillion('0.000015')).toBe(15_000_000);

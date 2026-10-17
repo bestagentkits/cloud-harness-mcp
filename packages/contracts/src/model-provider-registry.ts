@@ -157,7 +157,8 @@ const definitions: readonly ModelProviderDefinition[] = [
     // so it is fetched without the key; the connection check sends the key there.
     modelsEndpoint: { url: 'https://opencode.ai/inference/go/v1/models', auth: 'none' },
     catalogStrategy: 'provider-models',
-    // OpenRouter does not price the subscription, so there is no price fallback.
+    // OpenRouter does not list OpenCode Go. The runner catalog prices it from
+    // models.dev instead (apps/runner/src/model-catalog/models-dev-catalog.ts).
     openRouterVendor: null,
     requiresCustomUpstream: false,
     // The subscription meters cache writes against the plan allowance; assume a premium.

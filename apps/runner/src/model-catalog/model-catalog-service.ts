@@ -10,6 +10,7 @@ import {
 import type { ProviderHttpClient } from '../model-provider-http.js';
 import { CatalogSourceError } from './catalog-source.js';
 import { CatalogSnapshotStore, type CatalogSnapshot } from './catalog-snapshot-store.js';
+import { fetchModelsDevModels, modelsDevProviderFor } from './models-dev-catalog.js';
 import { fetchOpenRouterModels, type OpenRouterModel } from './openrouter-catalog.js';
 import { fetchProviderModels, type ProviderListedModel } from './provider-catalog.js';
 
@@ -172,11 +173,17 @@ function acceptedTiers(model: OpenRouterModel, provider: ModelProviderKind): { t
   return { tiers: [], dropped: tiers.length > 0 };
 }
 
+// Where catalog metadata came from: OpenRouter, or models.dev, which publishes
+// the provider's own prices for a provider whose API exposes none and which
+// therefore reads as a `provider` price source.
+type MetadataSource = 'openrouter' | 'models_dev';
+
 function price(
   model: OpenRouterModel | undefined,
   provider: ModelProviderKind,
   confidence: ModelCatalogPriceConfidence,
-  retrievedAt: number | null
+  retrievedAt: number | null,
+  metadataSource: MetadataSource = 'openrouter'
 ): ModelCatalogPrice {
   if (!model) {
     return {
@@ -193,7 +200,12 @@ function price(
     outputMicrosPerMillionTokens: model.prices.output,
     cacheReadMicrosPerMillionTokens: model.prices.cacheRead,
     cacheWriteMicrosPerMillionTokens: model.prices.cacheWrite,
-    provenance: { source: 'openrouter', sourceModelId: model.id, retrievedAt, confidence: known ? confidence : 'unknown' },
+    provenance: {
+      source: metadataSource === 'models_dev' ? 'provider' : 'openrouter',
+      sourceModelId: model.id,
+      retrievedAt,
+      confidence: known ? confidence : 'unknown'
+    },
     ...(tiers.length > 0 ? { tiers } : {}),
     hasConditionalPricing: model.hasConditionalPricing || dropped
   };
@@ -277,7 +289,8 @@ function overallFreshness(sources: ModelCatalogSourceStatus[], hasCatalog: boole
 /**
  * The model catalog: a provider's own listing for the selected credential (the
  * availability evidence) merged with OpenRouter's public metadata (names, limits,
- * capabilities, prices). Provider model IDs come only from the provider listing;
+ * capabilities, prices), or with models.dev's for a provider it prices. Provider
+ * model IDs come only from the provider listing;
  * OpenRouter's `vendor/model` IDs are kept as `canonicalModelId` and never sent
  * to a direct vendor.
  */
@@ -286,6 +299,9 @@ export class ModelCatalogService {
   private readonly now: () => number;
   private readonly openRouterCache: SourceCache<OpenRouterModel>;
   private readonly providerCache: SourceCache<ProviderListedModel>;
+  // models.dev holds no private data, so like a public models list it is cached
+  // in memory only: after a restart its prices return with the first catalog search.
+  private readonly modelsDevCache: SourceCache<OpenRouterModel>;
   private readonly lastRefresh = new Map<string, number>();
   // OpenRouter is one source shared by every principal and credential, so its
   // forced fetches are limited on their own: cycling credentials (each with its
@@ -300,6 +316,7 @@ export class ModelCatalogService {
     this.now = options.now ?? Date.now;
     this.openRouterCache = new SourceCache(this.now);
     this.providerCache = new SourceCache(this.now);
+    this.modelsDevCache = new SourceCache(this.now);
   }
 
   async search(principalId: string, input: ModelCatalogSearchInput): Promise<ModelCatalogSearchResult> {
@@ -337,8 +354,9 @@ export class ModelCatalogService {
 
   /**
    * The cached catalog price of the model a revision routes to, from the last-good
-   * OpenRouter snapshot in memory or in the state database. Never makes a network
-   * call. An OpenRouter revision's model is the OpenRouter ID itself (confidence
+   * OpenRouter snapshot in memory or in the state database, or for a provider
+   * priced by models.dev from its in-memory snapshot. Never makes a network call.
+   * An OpenRouter revision's model is the OpenRouter ID itself (confidence
    * `exact`); a direct vendor's model is matched as the catalog search matches it
    * (confidence `estimate`). A client's catalog reference never selects the price.
    */
@@ -346,35 +364,49 @@ export class ModelCatalogService {
     return this.cachedPrices()(provider, model);
   }
 
-  /** A lookup over one peek at the snapshot, for pricing many revisions at once. */
+  /** A lookup over one peek at each snapshot, for pricing many revisions at once. */
   cachedPrices(): (provider: ModelProviderKind, model: string) => ModelCatalogPrice | undefined {
-    const snapshot = this.openRouterCache.peek(this.openRouterRequest(false));
+    const openRouter = this.openRouterCache.peek(this.openRouterRequest(false));
+    const modelsDev = new Map<string, CatalogSnapshot<OpenRouterModel> | undefined>();
     return (provider, model) => {
       const definition = getModelProvider(provider);
-      if (!snapshot || definition.catalogStrategy === 'none') return undefined;
+      if (definition.catalogStrategy === 'none') return undefined;
+      const modelsDevProvider = modelsDevProviderFor(provider);
+      if (modelsDevProvider !== undefined) {
+        if (!modelsDev.has(modelsDevProvider)) {
+          modelsDev.set(modelsDevProvider, this.modelsDevCache.peek(this.modelsDevRequest(modelsDevProvider, false)));
+        }
+        const snapshot = modelsDev.get(modelsDevProvider);
+        const metadata = snapshot ? this.vendorIndex(snapshot, modelsDevProvider).match(model) : undefined;
+        return snapshot && metadata ? price(metadata, provider, 'estimate', snapshot.fetchedAt, 'models_dev') : undefined;
+      }
+      if (!openRouter) return undefined;
       if (definition.catalogStrategy === 'openrouter') {
-        let byId = this.modelsById.get(snapshot);
+        let byId = this.modelsById.get(openRouter);
         if (!byId) {
-          byId = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
-          this.modelsById.set(snapshot, byId);
+          byId = new Map(openRouter.entries.map((entry) => [entry.id, entry]));
+          this.modelsById.set(openRouter, byId);
         }
         const metadata = byId.get(model);
-        return metadata ? price(metadata, provider, 'exact', snapshot.fetchedAt) : undefined;
+        return metadata ? price(metadata, provider, 'exact', openRouter.fetchedAt) : undefined;
       }
-      const vendor = definition.openRouterVendor ?? provider;
-      let indexes = this.vendorIndexes.get(snapshot);
-      if (!indexes) {
-        indexes = new Map();
-        this.vendorIndexes.set(snapshot, indexes);
-      }
-      let index = indexes.get(vendor);
-      if (!index) {
-        index = new VendorModelIndex(vendor, snapshot.entries);
-        indexes.set(vendor, index);
-      }
-      const metadata = index.match(model);
-      return metadata ? price(metadata, provider, 'estimate', snapshot.fetchedAt) : undefined;
+      const metadata = this.vendorIndex(openRouter, definition.openRouterVendor ?? provider).match(model);
+      return metadata ? price(metadata, provider, 'estimate', openRouter.fetchedAt) : undefined;
     };
+  }
+
+  private vendorIndex(snapshot: CatalogSnapshot<OpenRouterModel>, vendor: string): VendorModelIndex {
+    let indexes = this.vendorIndexes.get(snapshot);
+    if (!indexes) {
+      indexes = new Map();
+      this.vendorIndexes.set(snapshot, indexes);
+    }
+    let index = indexes.get(vendor);
+    if (!index) {
+      index = new VendorModelIndex(vendor, snapshot.entries);
+      indexes.set(vendor, index);
+    }
+    return index;
   }
 
   private credentialFor(principalId: string, provider: ModelProviderKind, credentialId: string | undefined): ProviderCredentialMetadata | undefined {
@@ -407,13 +439,21 @@ export class ModelCatalogService {
       : definition.catalogStrategy === 'provider-models' && credential
         ? this.providerListing(principalId, provider, credential, force.provider)
         : Promise.resolve(undefined);
-    const [openRouter, listing] = await Promise.all([this.openRouter(force.openRouter), listingRequest]);
-    const openRouterModels = openRouter.snapshot?.entries ?? [];
-    const openRouterFetchedAt = openRouter.snapshot?.fetchedAt ?? null;
-    const sources = listing ? [listing.status, openRouter.status] : [openRouter.status];
+    // A provider models.dev prices takes its metadata from there instead of
+    // OpenRouter, which does not list it. Both are shared public sources, so the
+    // same forced-refresh limit applies.
+    const modelsDevProvider = modelsDevProviderFor(provider);
+    const metadataSource: MetadataSource = modelsDevProvider === undefined ? 'openrouter' : 'models_dev';
+    const metadataRequest = modelsDevProvider === undefined
+      ? this.openRouter(force.openRouter)
+      : this.modelsDev(modelsDevProvider, force.openRouter);
+    const [metadataResult, listing] = await Promise.all([metadataRequest, listingRequest]);
+    const metadataModels = metadataResult.snapshot?.entries ?? [];
+    const metadataFetchedAt = metadataResult.snapshot?.fetchedAt ?? null;
+    const sources = listing ? [listing.status, metadataResult.status] : [metadataResult.status];
 
     if (definition.catalogStrategy === 'openrouter') {
-      const entries = openRouterModels.map((model): ModelCatalogEntry => ({
+      const entries = metadataModels.map((model): ModelCatalogEntry => ({
         provider,
         providerModelId: model.id,
         canonicalModelId: model.id,
@@ -421,14 +461,17 @@ export class ModelCatalogService {
         contextWindow: model.contextLength,
         maxOutputTokens: model.maxCompletionTokens,
         capabilities: model.capabilities,
-        pricing: price(model, provider, 'exact', openRouterFetchedAt),
+        pricing: price(model, provider, 'exact', metadataFetchedAt),
         availability: 'public_catalog',
         expiresAt: model.expiresAt
       }));
       return { entries, freshness: overallFreshness(sources, true) };
     }
 
-    const index = new VendorModelIndex(definition.openRouterVendor ?? provider, openRouterModels);
+    const vendor = modelsDevProvider ?? definition.openRouterVendor ?? provider;
+    const index = new VendorModelIndex(vendor, metadataModels);
+    // `canonicalModelId` is an OpenRouter ID; a models.dev ID is not one.
+    const canonical = (model: OpenRouterModel | undefined) => (metadataSource === 'openrouter' ? model?.id ?? null : null);
     const listed = listing?.snapshot?.entries;
     const entries = listed
       ? listed.map((model): ModelCatalogEntry => {
@@ -436,12 +479,12 @@ export class ModelCatalogService {
         return {
           provider,
           providerModelId: model.id,
-          canonicalModelId: metadata?.id ?? null,
+          canonicalModelId: canonical(metadata),
           displayName: model.displayName ?? metadata?.name ?? model.id,
           contextWindow: model.contextWindow ?? metadata?.contextLength ?? null,
           maxOutputTokens: model.maxOutputTokens ?? metadata?.maxCompletionTokens ?? null,
           capabilities: vendorCapabilities(metadata),
-          pricing: price(metadata, provider, 'estimate', openRouterFetchedAt),
+          pricing: price(metadata, provider, 'estimate', metadataFetchedAt, metadataSource),
           // A public list proves the model ID, not that the selected key may use it.
           availability: publicListing && !credential ? 'public_catalog' : 'listed_for_credential',
           expiresAt: metadata?.expiresAt ?? null
@@ -452,13 +495,13 @@ export class ModelCatalogService {
       // `public_catalog` tells the caller to verify them before relying on them.
       : index.models.map((model): ModelCatalogEntry => ({
         provider,
-        providerModelId: model.id.slice((definition.openRouterVendor ?? provider).length + 1),
-        canonicalModelId: model.id,
+        providerModelId: model.id.slice(vendor.length + 1),
+        canonicalModelId: canonical(model),
         displayName: model.name ?? model.id,
         contextWindow: model.contextLength,
         maxOutputTokens: model.maxCompletionTokens,
         capabilities: vendorCapabilities(model),
-        pricing: price(model, provider, 'estimate', openRouterFetchedAt),
+        pricing: price(model, provider, 'estimate', metadataFetchedAt, metadataSource),
         availability: 'public_catalog',
         expiresAt: model.expiresAt
       }));
@@ -467,6 +510,26 @@ export class ModelCatalogService {
 
   private async openRouter(force: boolean): Promise<SourceResult<OpenRouterModel>> {
     return await this.openRouterCache.get(this.openRouterRequest(force));
+  }
+
+  private async modelsDev(modelsDevProvider: string, force: boolean): Promise<SourceResult<OpenRouterModel>> {
+    return await this.modelsDevCache.get(this.modelsDevRequest(modelsDevProvider, force));
+  }
+
+  /**
+   * models.dev publishes the provider's own price list, so its status reads as a
+   * `provider` source. Shared by every principal and kept in memory only.
+   */
+  private modelsDevRequest(modelsDevProvider: string, force: boolean): SourceRequest<OpenRouterModel> {
+    return {
+      source: 'provider',
+      key: `models.dev\u0000${modelsDevProvider}`,
+      ttlMs: OPENROUTER_CATALOG_TTL_MS,
+      force,
+      load: () => undefined,
+      fetch: () => fetchModelsDevModels(this.options.http, modelsDevProvider),
+      save: () => undefined
+    };
   }
 
   private openRouterRequest(force: boolean): SourceRequest<OpenRouterModel> {
