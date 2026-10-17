@@ -24,6 +24,11 @@ const openRouterPayload = {
   ]
 };
 
+const CLAUDE_LONG_PROMPT_TIER = {
+  minPromptTokens: 200_000, inputMicrosPerMillionTokens: 6_000_000, outputMicrosPerMillionTokens: 22_500_000,
+  cacheReadMicrosPerMillionTokens: 600_000, cacheWriteMicrosPerMillionTokens: 12_000_000
+};
+
 const json = (body: unknown, status = 200): ProviderHttpResponse => ({ status, headers: {}, body: JSON.stringify(body), truncated: false });
 
 type Handler = (request: ProviderHttpRequest) => ProviderHttpResponse | Promise<ProviderHttpResponse>;
@@ -82,7 +87,8 @@ describe('ModelCatalogService', () => {
       capabilities: { tools: 'reported', reasoning: 'reported', vision: 'reported' }, availability: 'public_catalog',
       pricing: {
         inputMicrosPerMillionTokens: 3_000_000, outputMicrosPerMillionTokens: 15_000_000,
-        cacheReadMicrosPerMillionTokens: 300_000, cacheWriteMicrosPerMillionTokens: 3_750_000, hasConditionalPricing: true,
+        cacheReadMicrosPerMillionTokens: 300_000, cacheWriteMicrosPerMillionTokens: 6_000_000, hasConditionalPricing: false,
+        tiers: [CLAUDE_LONG_PROMPT_TIER],
         provenance: { source: 'openrouter', sourceModelId: 'anthropic/claude-sonnet-4.5', confidence: 'exact' }
       }
     });
@@ -104,9 +110,10 @@ describe('ModelCatalogService', () => {
       capabilities: { tools: 'reported', reasoning: 'reported', vision: 'reported' },
       pricing: {
         inputMicrosPerMillionTokens: 3_000_000, outputMicrosPerMillionTokens: 15_000_000,
-        cacheReadMicrosPerMillionTokens: 300_000, cacheWriteMicrosPerMillionTokens: 3_750_000,
+        cacheReadMicrosPerMillionTokens: 300_000, cacheWriteMicrosPerMillionTokens: 6_000_000,
         provenance: { source: 'openrouter', sourceModelId: 'anthropic/claude-sonnet-4.5', retrievedAt: 1_800_000_000_000, confidence: 'estimate' },
-        hasConditionalPricing: true
+        tiers: [CLAUDE_LONG_PROMPT_TIER],
+        hasConditionalPricing: false
       },
       availability: 'listed_for_credential',
       expiresAt: null
@@ -330,6 +337,102 @@ describe('ModelCatalogService', () => {
     for (const credential of credentials) await catalog.refresh(p1, { provider: 'openai', credentialId: credential.id });
     expect([http.count('api.openai.com'), http.count('openrouter.ai')]).toEqual([6, 2]);
   });
+
+  it('keeps only the catalog tiers a revision for the provider may save', async () => {
+    const { repo, p1, http, service } = setup();
+    // An unpublished base cache-write price resolves to twice the input price where
+    // cache writes are billed (OpenRouter) and to the input price elsewhere (OpenAI).
+    const tiered = { id: 'openai/tiered', name: 'Tiered', pricing: {
+      prompt: '0.000002', completion: '0.000004',
+      overrides: [{ min_prompt_tokens: 100_000, prompt: '0.000003', completion: '0.000004', input_cache_write: '0.0000035' }]
+    } };
+    const cheaper = { id: 'openai/cheaper', name: 'Cheaper', pricing: {
+      prompt: '0.000002', completion: '0.000004',
+      overrides: [
+        { min_prompt_tokens: 100_000, prompt: '0.000001', completion: '0.000004' },
+        { min_prompt_tokens: 300_000, prompt: '0.000003', completion: '0.000005' }
+      ]
+    } };
+    http.openRouter = () => json({ data: [tiered, cheaper] });
+    const viaOpenRouter = await service().search(p1, search({ provider: 'openrouter', limit: 100 }));
+    expect(viaOpenRouter.entries.find((entry) => entry.providerModelId === 'openai/tiered')?.pricing).toMatchObject({ hasConditionalPricing: true });
+    expect(viaOpenRouter.entries.find((entry) => entry.providerModelId === 'openai/tiered')?.pricing).not.toHaveProperty('tiers');
+
+    const direct = await service().search(p1, search({ provider: 'openai', limit: 100 }));
+    const tieredEntry = direct.entries.find((entry) => entry.providerModelId === 'tiered');
+    expect(tieredEntry?.pricing).toMatchObject({
+      hasConditionalPricing: false,
+      tiers: [{ minPromptTokens: 100_000, inputMicrosPerMillionTokens: 3_000_000, cacheWriteMicrosPerMillionTokens: 3_500_000 }]
+    });
+    // A tier cheaper than the base is dropped; the tier above it still applies.
+    const cheaperEntry = direct.entries.find((entry) => entry.providerModelId === 'cheaper');
+    expect(cheaperEntry?.pricing).toMatchObject({ hasConditionalPricing: true, tiers: [{ minPromptTokens: 300_000 }] });
+
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-openai-secret' });
+    for (const entry of [tieredEntry, cheaperEntry]) {
+      const pricing = entry!.pricing;
+      expect(() => repo.createProfile(p1, {
+        profileId: `catalog-${entry!.providerModelId}`, displayName: 'Catalog tiers', credentialId: credential.id, model: entry!.providerModelId,
+        apiMode: 'chat-completions',
+        pricing: {
+          inputMicrosPerMillionTokens: pricing.inputMicrosPerMillionTokens!, outputMicrosPerMillionTokens: pricing.outputMicrosPerMillionTokens!,
+          cacheReadMicrosPerMillionTokens: pricing.cacheReadMicrosPerMillionTokens ?? null,
+          cacheWriteMicrosPerMillionTokens: pricing.cacheWriteMicrosPerMillionTokens ?? null,
+          ...(pricing.tiers ? { tiers: pricing.tiers } : {})
+        },
+        limits: { maxInputTokens: 1_000, maxOutputTokens: 1_000, maxCostMicros: 1_000_000 },
+        maxProxyOperations: ['files_read']
+      })).not.toThrow();
+    }
+  });
+
+  it('reads a cached price without any network call, before and after the cache expires', async () => {
+    const { p1, http, clock, service } = setup();
+    const cold = service();
+    expect(cold.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5', null)).toBeUndefined();
+    expect(http.calls).toHaveLength(0);
+
+    await cold.search(p1, search({ provider: 'openrouter' }));
+    const calls = http.calls.length;
+    clock.now += OPENROUTER_CATALOG_TTL_MS * 2;
+    // A fresh service (a runner restart) peeks at the persisted last-good snapshot.
+    const restarted = service();
+    expect(restarted.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5', null)?.inputMicrosPerMillionTokens).toBe(3_000_000);
+    expect(cold.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5', null)?.inputMicrosPerMillionTokens).toBe(3_000_000);
+    expect(http.calls).toHaveLength(calls);
+  });
+
+  it('resolves a cached price by catalog reference and by a legacy model ID', async () => {
+    const { p1, service } = setup();
+    const catalog = service();
+    await catalog.search(p1, search({ provider: 'openrouter' }));
+    const fetchedAt = 1_800_000_000_000;
+
+    expect(catalog.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5', null)?.provenance)
+      .toEqual({ source: 'openrouter', sourceModelId: 'anthropic/claude-sonnet-4.5', retrievedAt: fetchedAt, confidence: 'exact' });
+    // A reference to another OpenRouter model is that route's price, an estimate for this one.
+    expect(catalog.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5:beta', 'anthropic/claude-sonnet-4.5')?.provenance.confidence).toBe('estimate');
+    // A direct vendor's legacy revision matches as the search does, dated snapshot suffix included.
+    expect(catalog.cachedPrice('anthropic', 'claude-sonnet-4-5-20250929', null)).toMatchObject({
+      inputMicrosPerMillionTokens: 3_000_000, tiers: [CLAUDE_LONG_PROMPT_TIER],
+      provenance: { sourceModelId: 'anthropic/claude-sonnet-4.5', confidence: 'estimate' }
+    });
+    expect(catalog.cachedPrice('anthropic', 'my-alias', 'anthropic/claude-sonnet-4.5')?.provenance.sourceModelId).toBe('anthropic/claude-sonnet-4.5');
+    // A reference must name the vendor's own model.
+    expect(catalog.cachedPrice('anthropic', 'claude-sonnet-4-5', 'openai/gpt-4o-mini')).toBeUndefined();
+    expect(catalog.cachedPrice('openai', 'gpt-4o-mini', 'openai/gpt-4o-mini:free')).toBeUndefined();
+    expect(catalog.cachedPrice('openrouter', 'vendor/missing', null)).toBeUndefined();
+    expect(catalog.cachedPrice('custom', 'anything', null)).toBeUndefined();
+  });
+
+  it('treats a persisted snapshot without tiers as absent', async () => {
+    const { store, p1, service } = setup();
+    await service().search(p1, search({ provider: 'openrouter' }));
+    const row = store.database.prepare("SELECT entries_json FROM model_catalog_snapshots WHERE cache_key = 'openrouter:public'").get() as { entries_json: string };
+    const legacy = (JSON.parse(row.entries_json) as Array<Record<string, unknown>>).map((model) => Object.fromEntries(Object.entries(model).filter(([key]) => key !== 'tiers')));
+    store.database.prepare("UPDATE model_catalog_snapshots SET entries_json = ? WHERE cache_key = 'openrouter:public'").run(JSON.stringify(legacy));
+    expect(service().cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5', null)).toBeUndefined();
+  });
 });
 
 describe('SourceCache', () => {
@@ -338,6 +441,19 @@ describe('SourceCache', () => {
     source: 'provider', key: 'p\u0000c\u00001', ttlMs: 1_000, force: false,
     load: () => undefined, fetch: async () => ['model'], save: () => undefined,
     ...overrides
+  });
+
+  it('peeks at the memory or persisted snapshot and never fetches', async () => {
+    const cache = new SourceCache<string>(() => clock.now);
+    let fetches = 0;
+    const counting = (overrides: Partial<SourceRequest<string>>) => request({ fetch: async () => { fetches += 1; return ['fetched']; }, ...overrides });
+    expect(cache.peek(counting({}))).toBeUndefined();
+    expect(cache.peek(counting({ key: 'persisted', load: () => ({ entries: ['stored'], fetchedAt: 1 }) }))?.entries).toEqual(['stored']);
+    await cache.get(counting({}));
+    expect(fetches).toBe(1);
+    clock.now += 10_000;
+    expect(cache.peek(counting({}))?.entries).toEqual(['fetched']);
+    expect(fetches).toBe(1);
   });
 
   it('retries after a fetch that fails synchronously instead of pinning the failure as in flight', async () => {

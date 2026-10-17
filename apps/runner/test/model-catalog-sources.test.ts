@@ -37,7 +37,7 @@ async function categoryOf(promise: Promise<unknown>): Promise<string> {
 }
 
 describe('OpenRouter catalog normalization', () => {
-  it('normalizes the sample payload with exact prices, limits, capabilities, and conditional pricing', () => {
+  it('normalizes the sample payload with exact prices, limits, capabilities, and long-prompt tiers', () => {
     const models = normalizeOpenRouterModels(fixture);
     expect(models.map((model) => model.id)).toEqual(['anthropic/claude-sonnet-4.5', 'deepseek/deepseek-chat', 'openai/gpt-4o-mini']);
     const [claude, deepseek, mini] = models;
@@ -46,15 +46,71 @@ describe('OpenRouter catalog normalization', () => {
       name: 'Anthropic: Claude Sonnet 4.5',
       contextLength: 1_000_000,
       maxCompletionTokens: 64_000,
-      prices: { input: 3_000_000, output: 15_000_000, cacheRead: 300_000, cacheWrite: 3_750_000 },
-      hasConditionalPricing: true,
+      // The one-hour cache write is the higher write price, so it is the one kept.
+      prices: { input: 3_000_000, output: 15_000_000, cacheRead: 300_000, cacheWrite: 6_000_000 },
+      tiers: [{
+        minPromptTokens: 200_000, inputMicrosPerMillionTokens: 6_000_000, outputMicrosPerMillionTokens: 22_500_000,
+        cacheReadMicrosPerMillionTokens: 600_000, cacheWriteMicrosPerMillionTokens: 12_000_000
+      }],
+      hasConditionalPricing: false,
       capabilities: { tools: 'reported', reasoning: 'reported', vision: 'reported' },
       expiresAt: null
     });
     expect(deepseek?.capabilities).toEqual({ tools: 'reported', reasoning: 'unsupported', vision: 'unsupported' });
     expect(deepseek?.prices).toEqual({ input: 320_000, output: 890_000, cacheRead: null, cacheWrite: null });
     expect(deepseek?.hasConditionalPricing).toBe(false);
+    expect(deepseek?.tiers).toEqual([]);
     expect(mini?.prices).toEqual({ input: 150_000, output: 600_000, cacheRead: 75_000, cacheWrite: null });
+  });
+
+  it('keeps the default cache-write price when the one-hour price is lower or unknown', () => {
+    const [lower, unknown, onlyHour] = normalizeOpenRouterModels({
+      data: [
+        { id: 'vendor/lower', pricing: { prompt: '0.000001', completion: '0.000002', input_cache_write: '0.000003', input_cache_write_1h: '0.000002' } },
+        { id: 'vendor/unknown', pricing: { prompt: '0.000001', completion: '0.000002', input_cache_write: '0.000003', input_cache_write_1h: '-1' } },
+        { id: 'vendor/only-hour', pricing: { prompt: '0.000001', completion: '0.000002', input_cache_write_1h: '0.000004' } }
+      ]
+    });
+    expect(lower?.prices.cacheWrite).toBe(3_000_000);
+    expect(unknown?.prices.cacheWrite).toBe(3_000_000);
+    expect(onlyHour?.prices.cacheWrite).toBe(4_000_000);
+  });
+
+  it('turns only min_prompt_tokens overrides into tiers and flags every other override', () => {
+    const tier = (min: unknown, extra: Record<string, unknown> = {}) => ({ min_prompt_tokens: min, prompt: '0.000004', completion: '0.000008', ...extra });
+    const models = normalizeOpenRouterModels({
+      data: [
+        { id: 'vendor/condition', pricing: { prompt: '0.000002', completion: '0.000004', overrides: [{ ...tier(200_000), max_output_tokens: 10 }] } },
+        { id: 'vendor/time', pricing: { prompt: '0.000002', completion: '0.000004', overrides: [{ hour_of_day: 3, prompt: '0.000001', completion: '0.000002' }] } },
+        { id: 'vendor/sorted', pricing: { prompt: '0.000002', completion: '0.000004', overrides: [tier(500_000, { prompt: '0.000005' }), tier(100_000, { web_search: '0.01' })] } },
+        {
+          id: 'vendor/invalid',
+          pricing: {
+            prompt: '0.000002', completion: '0.000004',
+            overrides: [tier(0), tier(10_000_001), tier(1.5), tier('200000'), { min_prompt_tokens: 300_000, prompt: '0.000004' }, 'not an override', tier(64_000)]
+          }
+        },
+        { id: 'vendor/duplicate', pricing: { prompt: '0.000002', completion: '0.000004', overrides: [tier(200_000), tier(200_000, { prompt: '0.000009' }), tier(400_000)] } },
+        { id: 'vendor/many', pricing: { prompt: '0.000002', completion: '0.000004', overrides: [1, 2, 3, 4, 5].map((step) => tier(step * 100_000)) } },
+        { id: 'vendor/not-a-list', pricing: { prompt: '0.000002', completion: '0.000004', overrides: { min_prompt_tokens: 1 } } }
+      ]
+    });
+    const byId = new Map(models.map((model) => [model.id, model]));
+    expect(byId.get('vendor/condition')).toMatchObject({ tiers: [], hasConditionalPricing: true });
+    expect(byId.get('vendor/time')).toMatchObject({ tiers: [], hasConditionalPricing: true });
+    // Unpublished tier cache prices stay unknown rather than inheriting the base price.
+    expect(byId.get('vendor/sorted')).toMatchObject({
+      hasConditionalPricing: false,
+      tiers: [
+        { minPromptTokens: 100_000, inputMicrosPerMillionTokens: 4_000_000, cacheReadMicrosPerMillionTokens: null, cacheWriteMicrosPerMillionTokens: null },
+        { minPromptTokens: 500_000, inputMicrosPerMillionTokens: 5_000_000 }
+      ]
+    });
+    expect(byId.get('vendor/invalid')).toMatchObject({ tiers: [{ minPromptTokens: 64_000 }], hasConditionalPricing: true });
+    expect(byId.get('vendor/duplicate')).toMatchObject({ tiers: [{ minPromptTokens: 400_000 }], hasConditionalPricing: true });
+    expect(byId.get('vendor/many')?.tiers.map((entry) => entry.minPromptTokens)).toEqual([100_000, 200_000, 300_000, 400_000]);
+    expect(byId.get('vendor/many')?.hasConditionalPricing).toBe(true);
+    expect(byId.get('vendor/not-a-list')).toMatchObject({ tiers: [], hasConditionalPricing: true });
   });
 
   it('treats missing evidence as unknown and skips malformed models', () => {

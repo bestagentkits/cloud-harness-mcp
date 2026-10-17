@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -8,10 +8,19 @@ import {
   ModelProfileIdSchema,
   ModelVerificationRefSchema,
   type AgentModelPriceProvenance,
+  type AgentModelProfileMetadata,
+  type MetadataRunnerRequest,
+  type ModelCatalogSearchResult,
   type ModelCredentialId,
-  type ModelProviderKind
+  type ModelProviderKind,
+  type RunnerConfig
 } from '@cloud-harness/contracts';
+import { ArtifactStore } from '../src/artifact-store.js';
+import { DashboardControlService } from '../src/dashboard-control-service.js';
+import { MetadataStore } from '../src/metadata-store.js';
 import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
+import type { ProviderHttpClient } from '../src/model-provider-http.js';
+import type { WorkspaceService } from '../src/workspace-service.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
 
@@ -530,5 +539,160 @@ describe('ModelProfileStateRepository', () => {
       expect(repeated.activeRevisionId).not.toBe(revisions[7]?.activeRevisionId);
       expect(repeated.activeRevision?.digest).toBe(revisions[7]?.activeRevision?.digest);
     });
+  });
+});
+
+describe('profile pricing provenance and repricing review through the dashboard service', () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+  });
+
+  const MODEL = 'anthropic/claude-sonnet-4.5';
+  const openRouterModel = (prompt: string, completion: string) => ({
+    id: MODEL, name: 'Claude Sonnet 4.5',
+    pricing: {
+      prompt, completion, input_cache_read: '0.0000003', input_cache_write: '0.00000375', input_cache_write_1h: '0.000006',
+      overrides: [{ min_prompt_tokens: 200_000, prompt: '0.000006', completion: '0.0000225', input_cache_read: '0.0000006', input_cache_write_1h: '0.000012' }]
+    }
+  });
+
+  function setup() {
+    const root = mkdtempSync(join(tmpdir(), 'model-profile-pricing-'));
+    const databasePath = join(root, 'state.db');
+    const principals = new StateStore(databasePath);
+    const keyring = new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]);
+    const metadata = new MetadataStore(databasePath, keyring);
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    cleanups.push(() => { metadata.database.close(); principals.close(); });
+    const artifacts = new ArtifactStore(principals.database, {
+      root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000
+    });
+    const repo = new ModelProfileStateRepository(principals.database, keyring);
+    const upstream = { models: [openRouterModel('0.000003', '0.000015')], requests: 0 };
+    const http: ProviderHttpClient = {
+      request: async (request) => {
+        upstream.requests += 1;
+        if (new URL(request.url).hostname !== 'openrouter.ai') throw new Error(`unexpected request to ${request.url}`);
+        return { status: 200, headers: {}, body: JSON.stringify({ data: upstream.models }), truncated: false };
+      }
+    };
+    const controls = new DashboardControlService(
+      { artifactRetentionSeconds: 60 } as RunnerConfig, principals, metadata, artifacts, {} as WorkspaceService,
+      undefined, undefined, repo, undefined, keyring, undefined, http
+    );
+    const principal = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'operator-a' };
+    const call = async (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>) =>
+      (await controls.execute({ version: 2, principal, operation, input } as MetadataRunnerRequest)).data;
+    return { principals, upstream, call };
+  }
+
+  const LIMITS = { maxInputTokens: 300_000, maxOutputTokens: 10_000, maxCostMicros: 5_000_000 };
+
+  async function catalogPricing(call: ReturnType<typeof setup>['call']) {
+    const result = await call('model_catalog_search', { provider: 'openrouter', query: 'claude' }) as ModelCatalogSearchResult;
+    const pricing = result.entries[0]!.pricing;
+    return {
+      fetchedAt: pricing.provenance.retrievedAt,
+      pricing: {
+        inputMicrosPerMillionTokens: pricing.inputMicrosPerMillionTokens, outputMicrosPerMillionTokens: pricing.outputMicrosPerMillionTokens,
+        cacheReadMicrosPerMillionTokens: pricing.cacheReadMicrosPerMillionTokens, cacheWriteMicrosPerMillionTokens: pricing.cacheWriteMicrosPerMillionTokens,
+        tiers: pricing.tiers
+      }
+    };
+  }
+
+  async function createProfile(call: ReturnType<typeof setup>['call'], profileId: string, credentialId: string, extra: Record<string, unknown>) {
+    return await call('model_profile_create', {
+      profileId, displayName: profileId, credentialId, model: MODEL, apiMode: 'chat-completions', limits: LIMITS, maxProxyOperations: ['files_read'], ...extra
+    }) as AgentModelProfileMetadata;
+  }
+
+  const listProfiles = async (call: ReturnType<typeof setup>['call']) =>
+    ((await call('model_profile_list', {})) as { profiles: AgentModelProfileMetadata[] }).profiles;
+
+  it('records catalog provenance only for an unchanged catalog price', async () => {
+    const { call } = setup();
+    const credential = await call('model_credential_create', { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or-secret' }) as { id: string };
+    const { pricing, fetchedAt } = await catalogPricing(call);
+    const ref = { sourceModelId: MODEL };
+
+    const accepted = await createProfile(call, 'catalog', credential.id, { pricing, catalogPriceRef: ref });
+    expect(accepted.activeRevision?.pricing).toEqual(pricing);
+    expect(accepted.activeRevision?.priceProvenance).toEqual({ source: 'openrouter', sourceModelId: MODEL, retrievedAt: fetchedAt, confidence: 'exact', isOverride: false });
+
+    const edited = await createProfile(call, 'edited', credential.id, { pricing: { ...pricing, outputMicrosPerMillionTokens: 14_000_000 }, catalogPriceRef: ref });
+    expect(edited.activeRevision?.priceProvenance).toEqual({ source: 'user', sourceModelId: MODEL, retrievedAt: fetchedAt, confidence: 'unknown', isOverride: true });
+
+    // A reference the runner has no cached price for, and a save without one, are the operator's prices.
+    const unknownRef = await createProfile(call, 'unknown-ref', credential.id, { pricing, catalogPriceRef: { sourceModelId: 'vendor/not-listed' } });
+    expect(unknownRef.activeRevision?.priceProvenance).toEqual({ source: 'user', sourceModelId: null, retrievedAt: null, confidence: 'unknown', isOverride: true });
+    const noRef = await createProfile(call, 'no-ref', credential.id, { pricing });
+    expect(noRef.activeRevision?.priceProvenance.isOverride).toBe(true);
+
+    // A client cannot state provenance or confidence itself.
+    await expect(createProfile(call, 'asserted', credential.id, {
+      pricing, priceProvenance: { source: 'openrouter', sourceModelId: MODEL, retrievedAt: fetchedAt, confidence: 'exact', isOverride: false }
+    })).rejects.toThrow();
+    await expect(createProfile(call, 'asserted-ref', credential.id, { pricing, catalogPriceRef: { ...ref, confidence: 'exact' } })).rejects.toThrow();
+
+    // An edit applies the same rule; an edit that only renames keeps the stored prices and provenance.
+    const updated = await call('model_profile_update', {
+      profileId: 'edited', expectedGeneration: edited.generation, pricing, catalogPriceRef: ref
+    }) as AgentModelProfileMetadata;
+    expect(updated.activeRevision?.priceProvenance).toMatchObject({ source: 'openrouter', isOverride: false });
+    const reedited = await call('model_profile_update', {
+      profileId: 'edited', expectedGeneration: updated.generation, pricing: { ...pricing, tiers: [] }, catalogPriceRef: ref
+    }) as AgentModelProfileMetadata;
+    expect(reedited.activeRevision?.priceProvenance).toMatchObject({ source: 'user', sourceModelId: MODEL, isOverride: true });
+    const renamed = await call('model_profile_update', {
+      profileId: 'catalog', expectedGeneration: accepted.generation, displayName: 'Renamed', catalogPriceRef: { sourceModelId: 'vendor/other' }
+    }) as AgentModelProfileMetadata;
+    expect(renamed.activeRevision?.priceProvenance).toEqual(accepted.activeRevision?.priceProvenance);
+  });
+
+  it('flags a repriced catalog on list without ever changing saved prices, provenance, or limits', async () => {
+    const { principals, upstream, call } = setup();
+    const credential = await call('model_credential_create', { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or-secret' }) as { id: string };
+    const { pricing } = await catalogPricing(call);
+    await createProfile(call, 'catalog', credential.id, { pricing, catalogPriceRef: { sourceModelId: MODEL } });
+    // A profile saved before provenance existed is matched to the catalog by its model ID.
+    await createProfile(call, 'legacy', credential.id, { pricing: { inputMicrosPerMillionTokens: 3_000_000, outputMicrosPerMillionTokens: 15_000_000 } });
+
+    const requestsBeforeList = upstream.requests;
+    const before = await listProfiles(call);
+    expect(upstream.requests).toBe(requestsBeforeList);
+    const reviewOf = (profiles: AgentModelProfileMetadata[], id: string) => profiles.find((profile) => profile.id === id)?.pricingReview;
+    expect(reviewOf(before, 'catalog')).toMatchObject({ state: 'current', changes: [], isOverride: false });
+    // The legacy profile lacks the catalog's long-prompt tier.
+    expect(reviewOf(before, 'legacy')).toMatchObject({ state: 'repriced', isOverride: true, changes: [{ field: 'tier', minPromptTokens: 200_000 }] });
+
+    const revisionRows = () => principals.database.prepare('SELECT * FROM agent_model_profile_revisions ORDER BY id').all();
+    const rowsBefore = JSON.stringify(revisionRows());
+    upstream.models = [openRouterModel('0.0000036', '0.000015')];
+    await call('model_catalog_refresh', { provider: 'openrouter' });
+    const after = await listProfiles(call);
+
+    const pinned = (profiles: AgentModelProfileMetadata[]) => JSON.stringify(profiles.map((profile) => ({ ...profile, pricingReview: undefined })));
+    expect(pinned(after)).toBe(pinned(before));
+    expect(JSON.stringify(revisionRows())).toBe(rowsBefore);
+    expect(reviewOf(after, 'catalog')).toMatchObject({
+      state: 'repriced', isOverride: false,
+      changes: [{ field: 'input', minPromptTokens: null, pinned: 3_000_000, catalog: 3_600_000, percent: 20 }]
+    });
+
+    // Only the list attaches a review, and nothing stores it.
+    const mutated = await call('model_profile_disable', { profileId: 'catalog', expectedGeneration: before.find((profile) => profile.id === 'catalog')!.generation });
+    expect(mutated).not.toHaveProperty('pricingReview');
+    expect(JSON.stringify(revisionRows())).not.toContain('pricingReview');
+  });
+
+  it('keeps catalog code free of revision writes', () => {
+    const directory = new URL('../src/model-catalog/', import.meta.url);
+    const sources = readdirSync(directory).filter((name) => name.endsWith('.ts'));
+    expect(sources.length).toBeGreaterThan(0);
+    for (const name of sources) {
+      expect(readFileSync(new URL(name, directory), 'utf8'), name).not.toMatch(/agent_model_profile|\.(?:create|update|activate)Profile\(/u);
+    }
   });
 });

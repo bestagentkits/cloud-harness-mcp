@@ -104,6 +104,15 @@ export const AgentModelLimitsSchema = z.object({
 }).strict();
 export type AgentModelLimits = z.infer<typeof AgentModelLimitsSchema>;
 
+// The catalog model whose price the client offered for this save. The runner
+// compares the submitted pricing with its own cached catalog price for that model:
+// only an exact match is recorded as catalog-sourced. Provenance and confidence are
+// never taken from the client.
+export const ModelCatalogPriceRefSchema = z.object({
+  sourceModelId: z.string().trim().min(1).max(300)
+}).strict();
+export type ModelCatalogPriceRef = z.infer<typeof ModelCatalogPriceRefSchema>;
+
 export const AgentModelProfileInputSchema = z.object({
   profileId: ModelProfileIdSchema,
   displayName: z.string().trim().min(1).max(100),
@@ -116,7 +125,8 @@ export const AgentModelProfileInputSchema = z.object({
   maxProxyOperations: z.array(AgentProxyOperationSchema).min(1).max(10),
   // A draft connection check of this exact route; the runner attaches its stored
   // result to the new revision on a full match and otherwise ignores it.
-  verificationRef: ModelVerificationRefSchema.optional()
+  verificationRef: ModelVerificationRefSchema.optional(),
+  catalogPriceRef: ModelCatalogPriceRefSchema.optional()
 }).strict();
 export type AgentModelProfileInput = z.infer<typeof AgentModelProfileInputSchema>;
 
@@ -130,7 +140,8 @@ export const AgentModelProfileUpdateInputSchema = z.object({
   limits: AgentModelLimitsSchema.optional(),
   maxProxyOperations: z.array(AgentProxyOperationSchema).min(1).max(10).optional(),
   expectedGeneration: z.number().int().positive(),
-  verificationRef: ModelVerificationRefSchema.optional()
+  verificationRef: ModelVerificationRefSchema.optional(),
+  catalogPriceRef: ModelCatalogPriceRefSchema.optional()
 }).strict();
 export type AgentModelProfileUpdateInput = z.infer<typeof AgentModelProfileUpdateInputSchema>;
 
@@ -152,6 +163,40 @@ export const AgentModelProfileRevisionSchema = z.object({
 }).strict();
 export type AgentModelProfileRevision = z.infer<typeof AgentModelProfileRevisionSchema>;
 
+// How a saved revision's pinned prices compare with the cached catalog price.
+// `repriced`: a price differs by at least REPRICING_WARNING_PERCENT
+// (model-catalog-schemas.ts), a pinned zero now has a catalog price, or the catalog
+// has tiers or conditional pricing the revision lacks. `unknown`: no cached catalog
+// price exists for the model. For an override (`isOverride`) the result is
+// informational: the operator chose the price.
+export const ModelPricingReviewStateSchema = z.enum(['current', 'repriced', 'unknown']);
+export type ModelPricingReviewState = z.infer<typeof ModelPricingReviewStateSchema>;
+
+// `tier`: a tier exists on one side only, `pinned` and `catalog` hold that tier's
+// input price. `conditionalPricing`: the catalog price changes under a condition no
+// revision can express. Price fields of a tier carry its `minPromptTokens`.
+export const ModelPricingReviewFieldSchema = z.enum(['input', 'output', 'cacheRead', 'cacheWrite', 'tier', 'conditionalPricing']);
+export type ModelPricingReviewField = z.infer<typeof ModelPricingReviewFieldSchema>;
+
+export const ModelPricingReviewChangeSchema = z.object({
+  field: ModelPricingReviewFieldSchema,
+  minPromptTokens: z.number().int().positive().nullable(),
+  pinned: PriceMicrosPerMillionSchema.nullable(),
+  catalog: PriceMicrosPerMillionSchema.nullable(),
+  // Signed change from the pinned price to the catalog price, one decimal; null
+  // when no percentage exists (a pinned zero, or a structural change).
+  percent: z.number().nullable()
+}).strict();
+export type ModelPricingReviewChange = z.infer<typeof ModelPricingReviewChangeSchema>;
+
+export const ModelPricingReviewSchema = z.object({
+  state: ModelPricingReviewStateSchema,
+  changes: z.array(ModelPricingReviewChangeSchema).max(32),
+  catalogRetrievedAt: z.number().int().nonnegative().nullable(),
+  isOverride: z.boolean()
+}).strict();
+export type ModelPricingReview = z.infer<typeof ModelPricingReviewSchema>;
+
 export const AgentModelProfileStatusSchema = z.enum(['ACTIVE', 'DISABLED', 'SYNC_PENDING', 'SYNC_FAILED']);
 export type AgentModelProfileStatus = z.infer<typeof AgentModelProfileStatusSchema>;
 
@@ -167,7 +212,10 @@ export const AgentModelProfileMetadataSchema = z.object({
   activeRevision: AgentModelProfileRevisionSchema.nullable(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
-  lastVerification: ModelLastVerificationSchema.optional()
+  lastVerification: ModelLastVerificationSchema.optional(),
+  // Computed when profiles are listed and never stored, so a catalog refresh can
+  // change the warning but never the pinned prices or limits.
+  pricingReview: ModelPricingReviewSchema.optional()
 }).strict();
 export type AgentModelProfileMetadata = z.infer<typeof AgentModelProfileMetadataSchema>;
 

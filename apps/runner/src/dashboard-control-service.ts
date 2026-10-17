@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import {
   HarnessError, MetadataRunnerRequestSchema, ModelCatalogRefreshResultSchema, ModelCatalogSearchResultSchema,
   listModelProviders, qualifiedToolName,
-  type MetadataRunnerRequest, type RunnerConfig, type RunnerResponse
+  type AgentModelPricing, type AgentModelProfileMetadata, type MetadataRunnerRequest, type ModelCatalogPriceRef, type RunnerConfig,
+  type RunnerResponse
 } from '@cloud-harness/contracts';
 import { ArtifactStoreError, type ArtifactStore } from './artifact-store.js';
 import type { GitHubBindingService } from './github-binding-service.js';
@@ -55,8 +56,9 @@ import { parseSkillXSearchResults } from './adapters/skillx-adapter.js';
 const MAX_REVISION_BYTES = 262_144;
 import { resolveWorkspaceSkills, type SkillCandidate, type SkillTier } from './skill-resolver.js';
 import type { WorkspaceService } from './workspace-service.js';
-import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
+import type { ModelProfileStateRepository, ProfileRevisionOptions } from './model-profile-state-repository.js';
 import { ModelCatalogService } from './model-catalog/model-catalog-service.js';
+import { reviewPricing, savedPriceProvenance } from './model-catalog/pricing-review.js';
 import { createProviderHttpClient, type ProviderHttpClient } from './model-provider-http.js';
 import { ModelConnectionVerifier } from './model-verification/model-connection-verifier.js';
 import type { AgentGatewayControl } from './agent-gateway-control.js';
@@ -494,14 +496,26 @@ export class DashboardControlService {
           await this.syncGateway();
           return ok('Model provider credential deleted', { deleted: true });
         }
-        case 'model_profile_list': return ok('Agent model profiles listed', { profiles: this.models().listProfiles(principalId) });
+        case 'model_profile_list': return ok('Agent model profiles listed', { profiles: this.reviewedProfiles(principalId) });
         case 'model_profile_create': {
-          const created = this.verifier().attachDraftVerification(principalId, parsed.input.verificationRef, this.models().createProfile(principalId, parsed.input));
+          const { input } = parsed;
+          const options = this.submittedPriceProvenance(principalId, input.credentialId, input.model, input.pricing, input.catalogPriceRef);
+          const created = this.verifier().attachDraftVerification(principalId, input.verificationRef, this.models().createProfile(principalId, input, options));
           await this.syncGateway();
           return mutation('Agent model profile created', created);
         }
         case 'model_profile_update': {
-          const updated = this.verifier().attachDraftVerification(principalId, parsed.input.verificationRef, this.models().updateProfile(principalId, parsed.input.profileId, parsed.input));
+          const { input } = parsed;
+          const current = input.pricing && input.catalogPriceRef
+            ? this.models().listProfiles(principalId).find((profile) => profile.id === input.profileId)
+            : undefined;
+          // An unknown profile gets no provenance here; the repository reports it as not found.
+          const options = current
+            ? this.submittedPriceProvenance(
+              principalId, input.credentialId ?? current.credentialId, input.model ?? current.activeRevision?.model ?? 'default', input.pricing, input.catalogPriceRef
+            )
+            : {};
+          const updated = this.verifier().attachDraftVerification(principalId, input.verificationRef, this.models().updateProfile(principalId, input.profileId, input, options));
           await this.syncGateway();
           return mutation('Agent model profile updated', updated);
         }
@@ -1450,6 +1464,40 @@ export class DashboardControlService {
     }
     return this.modelProfiles;
   }
+  /**
+   * Profiles with each active revision's prices reviewed against the cached
+   * catalog. The cache is only peeked, so listing never makes a provider request,
+   * and the review is never stored.
+   */
+  private reviewedProfiles(principalId: string): AgentModelProfileMetadata[] {
+    const providers = new Map(this.models().listCredentials(principalId).map((credential) => [credential.id, credential.provider]));
+    return this.models().listProfiles(principalId).map((profile) => {
+      const revision = profile.activeRevision;
+      if (!revision) return profile;
+      const provider = providers.get(revision.credentialId);
+      const catalogPrice = provider ? this.catalog().cachedPrice(provider, revision.model, revision.priceProvenance.sourceModelId) : undefined;
+      return { ...profile, pricingReview: reviewPricing(revision, catalogPrice) };
+    });
+  }
+
+  /**
+   * Provenance for submitted prices that name a catalog model. The runner resolves
+   * the reference against its own cached catalog; without a reference, or for a
+   * credential it cannot find, the repository records the operator's override.
+   */
+  private submittedPriceProvenance(
+    principalId: string,
+    credentialId: string,
+    model: string,
+    pricing: AgentModelPricing | undefined,
+    ref: ModelCatalogPriceRef | undefined
+  ): ProfileRevisionOptions {
+    if (!pricing || !ref) return {};
+    const credential = this.models().getCredential(principalId, credentialId);
+    if (!credential) return {};
+    return { priceProvenance: savedPriceProvenance(pricing, this.catalog().cachedPrice(credential.provider, model, ref.sourceModelId)) };
+  }
+
   private catalogService?: ModelCatalogService;
   private catalog(): ModelCatalogService {
     this.catalogService ??= new ModelCatalogService({

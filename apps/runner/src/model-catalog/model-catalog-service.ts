@@ -1,10 +1,11 @@
 import type { DatabaseSync } from 'node:sqlite';
 import {
-  HarnessError, getModelProvider,
+  HarnessError, findResolvedPriceTierIssues, getModelProvider,
   type ModelCatalogCapabilities, type ModelCatalogEntry, type ModelCatalogFreshness, type ModelCatalogPrice,
   type ModelCatalogPriceConfidence, type ModelCatalogRefreshInput, type ModelCatalogRefreshResult,
   type ModelCatalogSearchInput, type ModelCatalogSearchResult, type ModelCatalogSourceError,
-  type ModelCatalogSourceKind, type ModelCatalogSourceStatus, type ModelProviderKind, type ProviderCredentialMetadata
+  type ModelCatalogSourceKind, type ModelCatalogSourceStatus, type ModelPriceTier, type ModelProviderKind,
+  type ProviderCredentialMetadata
 } from '@cloud-harness/contracts';
 import type { ProviderHttpClient } from '../model-provider-http.js';
 import { CatalogSourceError } from './catalog-source.js';
@@ -81,6 +82,11 @@ export class SourceCache<T> {
     return await pending;
   }
 
+  /** The in-memory or persisted last-good snapshot, whatever its age. Never fetches. */
+  peek(request: Pick<SourceRequest<T>, 'key' | 'load'>): CatalogSnapshot<T> | undefined {
+    return this.cached(request);
+  }
+
   /** Drops every in-memory entry whose key starts with `prefix`. */
   evict(prefix: string, keep?: string): void {
     for (const map of [this.memory, this.failures]) {
@@ -88,7 +94,7 @@ export class SourceCache<T> {
     }
   }
 
-  private cached(request: SourceRequest<T>): CatalogSnapshot<T> | undefined {
+  private cached(request: Pick<SourceRequest<T>, 'key' | 'load'>): CatalogSnapshot<T> | undefined {
     let snapshot = this.memory.get(request.key);
     if (!snapshot) {
       snapshot = request.load();
@@ -138,7 +144,36 @@ export class SourceCache<T> {
 
 const unknownCapabilities: ModelCatalogCapabilities = { tools: 'unknown', reasoning: 'unknown', vision: 'unknown' };
 
-function price(model: OpenRouterModel | undefined, confidence: ModelCatalogPriceConfidence, retrievedAt: number | null): ModelCatalogPrice {
+/**
+ * The model's tiers that a saved revision for `provider` may carry: ascending, and
+ * no resolved price below the level beneath it. A tier that breaks those rules is
+ * dropped and reported, so a client that saves catalog tiers unchanged never sends
+ * pricing the runner or the gateway refuses.
+ */
+function acceptedTiers(model: OpenRouterModel, provider: ModelProviderKind): { tiers: ModelPriceTier[]; dropped: boolean } {
+  const { input, output, cacheRead, cacheWrite } = model.prices;
+  if (input === null || output === null) return { tiers: [], dropped: model.tiers.length > 0 };
+  const base = {
+    inputMicrosPerMillionTokens: input, outputMicrosPerMillionTokens: output,
+    cacheReadMicrosPerMillionTokens: cacheRead, cacheWriteMicrosPerMillionTokens: cacheWrite
+  };
+  const tiers: ModelPriceTier[] = [];
+  let dropped = false;
+  for (const tier of model.tiers) {
+    const previous = tiers.at(-1);
+    const ascending = !previous || tier.minPromptTokens > previous.minPromptTokens;
+    if (ascending && findResolvedPriceTierIssues({ ...base, tiers: [...tiers, tier] }, provider).length === 0) tiers.push(tier);
+    else dropped = true;
+  }
+  return { tiers, dropped };
+}
+
+function price(
+  model: OpenRouterModel | undefined,
+  provider: ModelProviderKind,
+  confidence: ModelCatalogPriceConfidence,
+  retrievedAt: number | null
+): ModelCatalogPrice {
   if (!model) {
     return {
       inputMicrosPerMillionTokens: null, outputMicrosPerMillionTokens: null,
@@ -148,13 +183,15 @@ function price(model: OpenRouterModel | undefined, confidence: ModelCatalogPrice
     };
   }
   const known = model.prices.input !== null || model.prices.output !== null;
+  const { tiers, dropped } = acceptedTiers(model, provider);
   return {
     inputMicrosPerMillionTokens: model.prices.input,
     outputMicrosPerMillionTokens: model.prices.output,
     cacheReadMicrosPerMillionTokens: model.prices.cacheRead,
     cacheWriteMicrosPerMillionTokens: model.prices.cacheWrite,
     provenance: { source: 'openrouter', sourceModelId: model.id, retrievedAt, confidence: known ? confidence : 'unknown' },
-    hasConditionalPricing: model.hasConditionalPricing
+    ...(tiers.length > 0 ? { tiers } : {}),
+    hasConditionalPricing: model.hasConditionalPricing || dropped
   };
 }
 
@@ -180,10 +217,12 @@ function normalizeModelId(id: string): string {
 export class VendorModelIndex {
   private readonly exact = new Map<string, OpenRouterModel>();
   private readonly normalized = new Map<string, OpenRouterModel | null>();
+  private readonly prefix: string;
   readonly models: OpenRouterModel[];
 
   constructor(vendor: string, models: readonly OpenRouterModel[]) {
     const prefix = `${vendor}/`;
+    this.prefix = prefix;
     // Variant routes (`:free`, `:thinking`) are OpenRouter constructs that no vendor serves.
     this.models = models.filter((model) => model.id.startsWith(prefix) && model.id.length > prefix.length && !model.id.includes(':'));
     for (const model of this.models) {
@@ -192,6 +231,11 @@ export class VendorModelIndex {
       const key = normalizeModelId(bare);
       this.normalized.set(key, this.normalized.has(key) ? null : model);
     }
+  }
+
+  /** The vendor's model with exactly this OpenRouter `vendor/model` ID. */
+  get(canonicalModelId: string): OpenRouterModel | undefined {
+    return canonicalModelId.startsWith(this.prefix) ? this.exact.get(canonicalModelId.slice(this.prefix.length)) : undefined;
   }
 
   match(providerModelId: string): OpenRouterModel | undefined {
@@ -250,6 +294,9 @@ export class ModelCatalogService {
   // forced fetches are limited on their own: cycling credentials (each with its
   // own refresh window) cannot force it more than once per interval.
   private lastOpenRouterForce: number | undefined;
+  // Lookups built once per snapshot, so listing many profiles stays linear.
+  private readonly modelsById = new WeakMap<CatalogSnapshot<OpenRouterModel>, Map<string, OpenRouterModel>>();
+  private readonly vendorIndexes = new WeakMap<CatalogSnapshot<OpenRouterModel>, Map<string, VendorModelIndex>>();
 
   constructor(private readonly options: ModelCatalogServiceOptions) {
     this.store = new CatalogSnapshotStore(options.database);
@@ -289,6 +336,45 @@ export class ModelCatalogService {
     if (forceOpenRouter) this.lastOpenRouterForce = now;
     const { entries, freshness } = await this.build(principalId, input.provider, credential, { provider: true, openRouter: forceOpenRouter });
     return { entryCount: entries.length, freshness };
+  }
+
+  /**
+   * The cached catalog price for a saved revision's model, from the last-good
+   * OpenRouter snapshot in memory or in the state database. Never makes a network
+   * call, so listing profiles costs no provider request. `sourceModelId` names the
+   * OpenRouter model directly; without it (revisions saved before provenance) the
+   * revision's model is matched as the catalog search matches it. For a direct
+   * vendor, `sourceModelId` must be that vendor's model.
+   */
+  cachedPrice(provider: ModelProviderKind, revisionModel: string, sourceModelId: string | null): ModelCatalogPrice | undefined {
+    const definition = getModelProvider(provider);
+    if (definition.catalogStrategy === 'none') return undefined;
+    const snapshot = this.openRouterCache.peek(this.openRouterRequest(false));
+    if (!snapshot) return undefined;
+    if (definition.catalogStrategy === 'openrouter') {
+      let byId = this.modelsById.get(snapshot);
+      if (!byId) {
+        byId = new Map(snapshot.entries.map((model) => [model.id, model]));
+        this.modelsById.set(snapshot, byId);
+      }
+      const id = sourceModelId ?? revisionModel;
+      const model = byId.get(id);
+      // OpenRouter bills its own listed price only for the model the revision routes to.
+      return model ? price(model, provider, id === revisionModel ? 'exact' : 'estimate', snapshot.fetchedAt) : undefined;
+    }
+    const vendor = definition.openRouterVendor ?? provider;
+    let indexes = this.vendorIndexes.get(snapshot);
+    if (!indexes) {
+      indexes = new Map();
+      this.vendorIndexes.set(snapshot, indexes);
+    }
+    let index = indexes.get(vendor);
+    if (!index) {
+      index = new VendorModelIndex(vendor, snapshot.entries);
+      indexes.set(vendor, index);
+    }
+    const model = sourceModelId === null ? index.match(revisionModel) : index.get(sourceModelId);
+    return model ? price(model, provider, 'estimate', snapshot.fetchedAt) : undefined;
   }
 
   private credentialFor(principalId: string, provider: ModelProviderKind, credentialId: string | undefined): ProviderCredentialMetadata | undefined {
@@ -331,7 +417,7 @@ export class ModelCatalogService {
         contextWindow: model.contextLength,
         maxOutputTokens: model.maxCompletionTokens,
         capabilities: model.capabilities,
-        pricing: price(model, 'exact', openRouterFetchedAt),
+        pricing: price(model, provider, 'exact', openRouterFetchedAt),
         availability: 'public_catalog',
         expiresAt: model.expiresAt
       }));
@@ -351,7 +437,7 @@ export class ModelCatalogService {
           contextWindow: model.contextWindow ?? metadata?.contextLength ?? null,
           maxOutputTokens: model.maxOutputTokens ?? metadata?.maxCompletionTokens ?? null,
           capabilities: vendorCapabilities(metadata),
-          pricing: price(metadata, 'estimate', openRouterFetchedAt),
+          pricing: price(metadata, provider, 'estimate', openRouterFetchedAt),
           availability: 'listed_for_credential',
           expiresAt: metadata?.expiresAt ?? null
         };
@@ -367,7 +453,7 @@ export class ModelCatalogService {
         contextWindow: model.contextLength,
         maxOutputTokens: model.maxCompletionTokens,
         capabilities: vendorCapabilities(model),
-        pricing: price(model, 'estimate', openRouterFetchedAt),
+        pricing: price(model, provider, 'estimate', openRouterFetchedAt),
         availability: 'public_catalog',
         expiresAt: model.expiresAt
       }));
@@ -375,7 +461,11 @@ export class ModelCatalogService {
   }
 
   private async openRouter(force: boolean): Promise<SourceResult<OpenRouterModel>> {
-    return await this.openRouterCache.get({
+    return await this.openRouterCache.get(this.openRouterRequest(force));
+  }
+
+  private openRouterRequest(force: boolean): SourceRequest<OpenRouterModel> {
+    return {
       source: 'openrouter',
       key: 'openrouter',
       ttlMs: OPENROUTER_CATALOG_TTL_MS,
@@ -383,7 +473,7 @@ export class ModelCatalogService {
       load: () => this.store.loadOpenRouter(),
       fetch: () => fetchOpenRouterModels(this.options.http),
       save: (snapshot) => this.store.saveOpenRouter(snapshot)
-    });
+    };
   }
 
   /** Keyed by principal, credential, and active version, so a rotated key or another principal never reuses a listing. */

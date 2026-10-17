@@ -6,7 +6,8 @@ import {
   ModelCatalogPriceSchema,
   ModelCatalogRefreshInputSchema,
   ModelCatalogSearchInputSchema,
-  ModelCatalogSearchResultSchema
+  ModelCatalogSearchResultSchema,
+  REPRICING_WARNING_PERCENT
 } from '../src/index.js';
 
 const unknownPrice = {
@@ -44,6 +45,16 @@ describe('model catalog contracts', () => {
     expect(() => ModelCatalogPriceSchema.parse({ ...unknownPrice, inputMicrosPerMillionTokens: 1.5 })).toThrow();
     expect(() => ModelCatalogPriceSchema.parse({ ...unknownPrice, outputMicrosPerMillionTokens: -1 })).toThrow();
     expect(() => ModelCatalogPriceSchema.parse({ ...unknownPrice, provenance: { ...unknownPrice.provenance, confidence: 'guess' } })).toThrow();
+  });
+
+  it('carries optional long-prompt tiers under the tier rules', () => {
+    const tier = { minPromptTokens: 200_000, inputMicrosPerMillionTokens: 6_000_000, outputMicrosPerMillionTokens: 22_500_000, cacheReadMicrosPerMillionTokens: null };
+    expect(ModelCatalogPriceSchema.parse({ ...entry.pricing, tiers: [tier] }).tiers).toEqual([tier]);
+    expect(ModelCatalogPriceSchema.parse(entry.pricing)).not.toHaveProperty('tiers');
+    expect(ModelCatalogPriceSchema.safeParse({ ...entry.pricing, tiers: [{ ...tier, minPromptTokens: 10_000_001 }] }).success).toBe(false);
+    expect(ModelCatalogPriceSchema.safeParse({ ...entry.pricing, tiers: [tier, tier, tier, tier, tier] }).success).toBe(false);
+    expect(ModelCatalogPriceSchema.safeParse({ ...entry.pricing, tiers: [{ ...tier, outputMicrosPerMillionTokens: null }] }).success).toBe(false);
+    expect(REPRICING_WARNING_PERCENT).toBe(10);
   });
 
   it('accepts a complete entry and rejects unknown fields and states', () => {
