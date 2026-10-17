@@ -249,7 +249,7 @@ describe('reservation', () => {
     expect(reserveBudget(body, 300, lease(), profile()).inputTokens).toBe(300 + 3 * MEDIA_PART_RESERVE_TOKENS);
     const responses = profile({ downstreamPath: '/v1/responses' });
     const input = { input: [{ role: 'user', content: [
-      { type: 'input_image', image_url: 'https://example.net/a.png' },
+      { type: 'input_image', image_url: 'data:image/png;base64,AAAA' },
       { type: 'input_file', filename: 'a.pdf', file_data: 'data:application/pdf;base64,AAAA' },
       { type: 'input_video', video_url: 'data:video/mp4;base64,AAAA' }
     ] }] };
@@ -487,29 +487,54 @@ describe('provider-side tools and unbounded context', () => {
     expect(grant.remainingCostMicros).toBe(10_000_000);
   }
 
-  it('refuses hosted Responses tools and allows function and custom tools', () => {
+  it('refuses hosted and built-in Responses tools and allows function and custom tools', () => {
     for (const type of ['web_search', 'web_search_preview', 'file_search', 'code_interpreter', 'image_generation', 'mcp', 'computer_use_preview', 'local_shell']) {
       refused({ input: 'hi', tools: [{ type: 'function', name: 'f' }, { type }] }, responses, type);
     }
+    refused({ input: 'hi', tools: [{ type: 'shell' }] }, responses, 'not supported through the model gateway');
     refused({ input: 'hi', tools: [{ name: 'untyped' }] }, responses, 'needs a type');
     refused({ input: 'hi', tools: { type: 'function' } }, responses, 'tools must be an array');
     expect(() => reserveBudget({ input: 'hi', tools: [{ type: 'function', name: 'f' }, { type: 'custom', name: 'c' }] }, 100, lease(), responses))
       .not.toThrow();
   });
 
-  it('refuses provider-side web access and non-function tools on chat completions', () => {
+  it('refuses provider-side web access on chat completions and allows caller-executed tools', () => {
     refused({ messages: [], plugins: [{ id: 'web' }] }, profile(), 'plugins');
     refused({ messages: [], web_search_options: {} }, profile(), 'web_search_options');
     refused({ messages: [], tools: [{ type: 'web_search' }] }, profile(), 'web_search');
-    refused({ messages: [], tools: [{ type: 'custom', name: 'c' }] }, profile(), 'custom');
-    expect(() => reserveBudget({ messages: [], tools: [{ type: 'function', function: { name: 'f' } }] }, 100, lease(), profile())).not.toThrow();
+    expect(() => reserveBudget({ messages: [], tools: [{ type: 'function', function: { name: 'f' } }, { type: 'custom', custom: { name: 'c' } }] }, 100, lease(), profile()))
+      .not.toThrow();
   });
 
-  it('refuses file parts that reference stored or remote files', () => {
-    refused({ messages: [{ role: 'user', content: [{ type: 'file', file: { file_id: 'file-1' } }] }] }, profile(), 'file_id');
-    refused({ input: [{ role: 'user', content: [{ type: 'input_file', file_id: 'file-1' }] }] }, responses, 'file_id');
-    refused({ input: [{ role: 'user', content: [{ type: 'input_file', file_url: 'https://example.net/a.pdf' }] }] }, responses, 'file_url');
-    expect(reserveBudget({ messages: [{ role: 'user', content: [{ type: 'file', file: { filename: 'a.pdf', file_data: 'data:application/pdf;base64,AAAA' } }] }] }, 100, lease(), profile()).inputTokens)
+  it('refuses provider-side web access on Responses too', () => {
+    refused({ input: 'hi', plugins: [{ id: 'web' }] }, responses, 'plugins');
+    refused({ input: 'hi', web_search_options: {} }, responses, 'web_search_options');
+  });
+
+  it('refuses media parts that reference stored or remote content and names the part type and field', () => {
+    const chat = (part: Record<string, unknown>) => ({ messages: [{ role: 'user', content: [part] }] });
+    const input = (part: Record<string, unknown>) => ({ input: [{ role: 'user', content: [part] }] });
+    const cases: Array<[Record<string, unknown>, GatewayProfile, string, string]> = [
+      [chat({ type: 'image_url', image_url: { url: 'https://example.net/a.png' } }), profile(), 'image_url', 'url'],
+      [chat({ type: 'video_url', video_url: { url: 'http://example.net/a.mp4' } }), profile(), 'video_url', 'url'],
+      [chat({ type: 'file', file: { file_id: 'file-1' } }), profile(), 'file', 'file_id'],
+      [chat({ type: 'file', file: { filename: 'a.pdf', file_data: 'https://example.net/a.pdf' } }), profile(), 'file', 'file_data'],
+      [chat({ type: 'input_audio', input_audio: { data: 'ftp://example.net/a.wav', format: 'wav' } }), profile(), 'input_audio', 'data'],
+      [input({ type: 'input_image', image_url: 'https://example.net/a.png' }), responses, 'input_image', 'image_url'],
+      [input({ type: 'input_image', file_id: 'file-1' }), responses, 'input_image', 'file_id'],
+      [input({ type: 'input_video', video_url: 'gs://bucket/a.mp4' }), responses, 'input_video', 'video_url'],
+      [input({ type: 'input_file', file_id: 'file-1' }), responses, 'input_file', 'file_id'],
+      [input({ type: 'input_file', file_url: 'https://example.net/a.pdf' }), responses, 'input_file', 'file_url'],
+      [input({ type: 'input_file', filename: 'a.pdf', file_data: 'https://example.net/a.pdf' }), responses, 'input_file', 'file_data'],
+      [chat({ type: 'image', source: { type: 'url', url: 'https://example.net/a.png' } }), profile(), 'image', 'url']
+    ];
+    for (const [body, target, type, field] of cases) {
+      refused(body, target, `${type} parts with`);
+      refused(body, target, field);
+    }
+    expect(reserveBudget(chat({ type: 'file', file: { filename: 'a.pdf', file_data: 'data:application/pdf;base64,AAAA' } }), 100, lease(), profile()).inputTokens)
+      .toBe(100 + MEDIA_PART_RESERVE_TOKENS);
+    expect(reserveBudget(input({ type: 'input_file', filename: 'a.pdf', file_data: 'JVBERi0xLjQK' }), 100, lease(), responses).inputTokens)
       .toBe(100 + MEDIA_PART_RESERVE_TOKENS);
   });
 });

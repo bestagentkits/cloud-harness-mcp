@@ -189,6 +189,10 @@ export class LeaseRegistry {
   /**
    * Freezes a retired lease's settlement. Call it only after the lease's
    * in-flight requests have drained; every later read returns the same object.
+   * It cannot freeze a live lease: it reads only retired leases, and the
+   * control revoke path calls it after revoke(), which retires the lease
+   * synchronously before the drain starts. An unknown or live lease id
+   * returns undefined.
    */
   freezeSettlement(leaseId: string): Readonly<LeaseSettlement> | undefined {
     this.#prune();

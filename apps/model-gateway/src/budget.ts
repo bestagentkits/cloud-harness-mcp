@@ -12,18 +12,26 @@ export const noOpBudgetHooks: BudgetHooks = {
 };
 
 /**
- * Tokens reserved for each image, file, or audio content part on top of its
+ * Tokens reserved for each image, file, audio, or video content part on top of its
  * bytes. A small (even data-URL) image can cost providers more tokens than it
  * has bytes, so bytes alone cannot bound it.
  */
 export const MEDIA_PART_RESERVE_TOKENS = 8_192;
 
-const FILE_PART_TYPES: ReadonlySet<string> = new Set(['file', 'input_file']);
 const MEDIA_PART_TYPES: ReadonlySet<string> = new Set([
-  'image', 'image_url', 'input_image', 'audio', 'input_audio', 'video', 'video_url', 'input_video', ...FILE_PART_TYPES
+  'image', 'image_url', 'input_image', 'audio', 'input_audio', 'video', 'video_url', 'input_video', 'file', 'input_file'
 ]);
-/** Keys by which a file part names stored or remote content instead of carrying it inline. */
-const FILE_REFERENCE_KEYS = ['file_id', 'file_url', 'url'] as const;
+/**
+ * Media fields that hold a URL. Only a `data:` URL is inline; any other URL is
+ * content the provider would fetch for the agent.
+ */
+const MEDIA_URL_KEYS: ReadonlySet<string> = new Set(['url', 'image_url', 'video_url', 'audio_url', 'file_url']);
+/** Media fields that hold inline content: a `data:` URL or bare base64, never a URL with another scheme. */
+const MEDIA_DATA_KEYS: ReadonlySet<string> = new Set(['data', 'file_data']);
+/** Media fields that name content stored with the provider instead of carrying it. */
+const MEDIA_REFERENCE_KEYS: ReadonlySet<string> = new Set(['file_id']);
+const DATA_URL = /^data:/i;
+const URL_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 
 /**
  * Responses fields that pull stored server-side context into the prompt. The
@@ -31,21 +39,20 @@ const FILE_REFERENCE_KEYS = ['file_id', 'file_url', 'url'] as const;
  */
 const STATEFUL_RESPONSES_FIELDS = ['previous_response_id', 'conversation'] as const;
 /**
- * Chat Completions fields that make the provider fetch web content. That adds
- * unbounded context and lets an agent in a network-none workspace reach the
- * network through the provider, so they are refused.
+ * Request fields that make the provider fetch web content. That adds unbounded
+ * context and lets an agent in a network-none workspace reach the network
+ * through the provider, so they are refused on every path (OpenRouter accepts
+ * plugins on its Responses endpoint too).
  */
-const PROVIDER_SIDE_CHAT_FIELDS = ['plugins', 'web_search_options'] as const;
+const PROVIDER_SIDE_FIELDS = ['plugins', 'web_search_options'] as const;
 /**
- * Tool types the caller executes itself. Every other type is a hosted tool the
- * provider runs (web search, file search, code interpreter, remote MCP, computer
- * use, image generation), which reaches the network or stored data on the
- * agent's behalf and bills context the gateway cannot bound.
+ * Tool types the caller executes itself. Every other type is refused: hosted
+ * tools the provider runs (web search, file search, code interpreter, remote
+ * MCP, computer use, image generation) reach the network or stored data on the
+ * agent's behalf and bill context the gateway cannot bound, and other built-in
+ * types (local shell, apply patch) are outside the contract the gateway checks.
  */
-const CALLER_TOOL_TYPES: Readonly<Record<GatewayProfile['downstreamPath'], ReadonlySet<string>>> = {
-  '/v1/chat/completions': new Set(['function']),
-  '/v1/responses': new Set(['function', 'custom'])
-};
+const CALLER_TOOL_TYPES: ReadonlySet<string> = new Set(['function', 'custom']);
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
@@ -139,37 +146,47 @@ function refuse(message: string): never {
  * bound: stored server-side state, provider-side web access, and hosted tools.
  */
 function assertBoundedRequest(body: Record<string, unknown>, profile: GatewayProfile): void {
+  const present = (field: string) => body[field] !== undefined && body[field] !== null;
+  for (const field of PROVIDER_SIDE_FIELDS) {
+    if (present(field)) refuse(`${field} is not supported: the gateway does not allow provider-side web access`);
+  }
   const responses = profile.downstreamPath === '/v1/responses';
-  const fields = responses ? STATEFUL_RESPONSES_FIELDS : PROVIDER_SIDE_CHAT_FIELDS;
-  for (const field of fields) {
-    if (body[field] !== undefined && body[field] !== null) {
-      refuse(responses
-        ? `${field} is not supported: the gateway cannot bound stored server-side context; resend the full input`
-        : `${field} is not supported: the gateway does not allow provider-side web access`);
-    }
+  for (const field of responses ? STATEFUL_RESPONSES_FIELDS : []) {
+    if (present(field)) refuse(`${field} is not supported: the gateway cannot bound stored server-side context; resend the full input`);
   }
   if (responses && body.prompt !== null && typeof body.prompt === 'object') {
     refuse('an object-valued prompt is not supported: the gateway cannot bound a stored prompt template; send the input inline');
   }
   if (body.tools === undefined || body.tools === null) return;
   if (!Array.isArray(body.tools)) refuse('tools must be an array');
-  const allowed = CALLER_TOOL_TYPES[profile.downstreamPath];
   for (const tool of body.tools as unknown[]) {
     const type = tool !== null && typeof tool === 'object' ? (tool as Record<string, unknown>).type : undefined;
     if (typeof type !== 'string') refuse('every tools entry needs a type');
-    if (!allowed.has(type)) {
-      refuse(`tool type ${JSON.stringify(type).slice(0, 80)} is not supported: the gateway allows only ${[...allowed].join(' and ')} tools, not provider-hosted tools`);
+    if (!CALLER_TOOL_TYPES.has(type)) {
+      refuse(`tool type ${JSON.stringify(type).slice(0, 80)} is not supported through the model gateway: use function or custom tools`);
     }
   }
 }
 
-/** A file part must carry its data inline; a file id or URL is stored or remote context the gateway cannot bound. */
-function assertInlineFile(part: Record<string, unknown>): void {
-  const nestedFile = part.file !== null && typeof part.file === 'object' ? part.file as Record<string, unknown> : undefined;
-  for (const container of [part, nestedFile]) {
-    for (const key of FILE_REFERENCE_KEYS) {
-      if (container?.[key] !== undefined && container[key] !== null) {
-        refuse(`file parts with ${key} are not supported: send the file data inline`);
+/**
+ * A media part must carry its content inline, as a `data:` URL or base64. A
+ * remote URL or a provider file id makes the provider fetch content for the
+ * agent, which is network access the workspace may not have and context the
+ * gateway cannot bound.
+ */
+function assertInlineMedia(part: Record<string, unknown>, type: string): void {
+  const pending: object[] = [part];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    for (const [key, value] of Object.entries(next)) {
+      if (value === undefined || value === null) continue;
+      if (MEDIA_REFERENCE_KEYS.has(key)) refuse(`${type} parts with ${key} are not supported: send the media inline as a data: URL or base64`);
+      if (typeof value === 'string') {
+        const remote = MEDIA_URL_KEYS.has(key)
+          ? !DATA_URL.test(value)
+          : MEDIA_DATA_KEYS.has(key) && URL_SCHEME.test(value) && !DATA_URL.test(value);
+        if (remote) refuse(`${type} parts with a non-data URL in ${key} are not supported: send the media inline as a data: URL or base64`);
+      } else if (typeof value === 'object') {
+        pending.push(value);
       }
     }
   }
@@ -183,7 +200,7 @@ function mediaPartCount(body: Record<string, unknown>): number {
     if (!Array.isArray(next)) {
       const node = next as Record<string, unknown>;
       if (typeof node.type === 'string' && MEDIA_PART_TYPES.has(node.type)) {
-        if (FILE_PART_TYPES.has(node.type)) assertInlineFile(node);
+        assertInlineMedia(node, node.type);
         parts += 1;
       }
     }
