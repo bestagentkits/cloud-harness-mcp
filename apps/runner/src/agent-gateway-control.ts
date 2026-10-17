@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import { z } from 'zod';
 import { HarnessError } from '@cloud-harness/contracts';
@@ -93,6 +94,33 @@ export function isDefiniteIssueRefusal(error: unknown): boolean {
 
 const BootIdSchema = z.string().min(1).max(256);
 const IssueResponseSchema = z.object({ gatewayBootId: BootIdSchema.optional() });
+export type GatewaySnapshot = {
+  credentials: Record<string, { provider: string; authMode?: string; secret: string }>;
+  profiles: Record<string, unknown>;
+  generation?: number;
+  sequence?: number;
+};
+
+/** The control command the runner sends to apply a snapshot. */
+function snapshotCommand(snapshot: GatewaySnapshot): Record<string, unknown> {
+  return {
+    operation: 'apply_snapshot',
+    sequence: snapshot.sequence ?? 1,
+    generation: snapshot.generation ?? 1,
+    credentials: snapshot.credentials,
+    profiles: snapshot.profiles
+  };
+}
+
+/**
+ * The `snapshotDigest` the gateway acks after applying this snapshot. The gateway hashes
+ * the exact control record it receives (apps/model-gateway/src/control.ts), and the runner
+ * sends `JSON.stringify` of the snapshot command as that record, so the digest is
+ * reproducible here without contacting the gateway.
+ */
+export function gatewaySnapshotDigest(snapshot: GatewaySnapshot): string {
+  return `sha256:${createHash('sha256').update(JSON.stringify(snapshotCommand(snapshot)), 'utf8').digest('hex')}`;
+}
 
 export interface AgentGatewayControl {
   gatewayContainer(): Promise<string>;
@@ -100,12 +128,7 @@ export interface AgentGatewayControl {
   /** Revokes the lease after its in-flight requests drain. A fake or older control may return nothing. */
   revokeAndDrain(leaseId: string): Promise<AgentLeaseRevocation | void>;
   cancelAndDrain(requestId: string): Promise<void>;
-  applySnapshot(snapshot: {
-    credentials: Record<string, { provider: string; authMode?: string; secret: string }>;
-    profiles: Record<string, unknown>;
-    generation?: number;
-    sequence?: number;
-  }): Promise<{ gatewayBootId: string; snapshotDigest: string }>;
+  applySnapshot(snapshot: GatewaySnapshot): Promise<{ gatewayBootId: string; snapshotDigest: string }>;
   queryDigest(): Promise<{ gatewayBootId: string; snapshotDigest: string; activeProfileCount: number; activeCredentialCount: number; activeLeaseCount: number }>;
 }
 
@@ -160,19 +183,8 @@ export class DockerAgentGatewayControl implements AgentGatewayControl {
     await this.control({ operation: 'cancel', requestId });
   }
 
-  async applySnapshot(snapshot: {
-    credentials: Record<string, { provider: string; authMode?: string; secret: string }>;
-    profiles: Record<string, unknown>;
-    generation?: number;
-    sequence?: number;
-  }): Promise<{ gatewayBootId: string; snapshotDigest: string }> {
-    const response = await this.control({
-      operation: 'apply_snapshot',
-      sequence: snapshot.sequence ?? 1,
-      generation: snapshot.generation ?? 1,
-      credentials: snapshot.credentials,
-      profiles: snapshot.profiles
-    }, 1_048_576);
+  async applySnapshot(snapshot: GatewaySnapshot): Promise<{ gatewayBootId: string; snapshotDigest: string }> {
+    const response = await this.control(snapshotCommand(snapshot), 1_048_576);
     if (!response.ack) {
       throw new HarnessError('UNAVAILABLE', 'model gateway omitted snapshot ack', 503, true);
     }

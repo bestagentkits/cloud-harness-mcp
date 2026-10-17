@@ -388,6 +388,24 @@ saved, or the catalog price could not be refreshed, a pricing note appears next 
 price: edit the profile to take the new price. The comparison is advisory and is skipped
 when the catalog cannot be reached.
 
+### Gateway status
+
+The badge beside **Model profiles** reads `GET /api/v1/agent-model-config-status`
+(schema `ModelConfigStatusSchema` in
+[`model-profile-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-profile-schemas.ts)):
+
+- **Gateway synchronized** (`gatewaySynced: true`) means the Model Gateway answered and holds
+  exactly the runner's current profile and credential snapshot: the snapshot digest it reports
+  equals the digest of the snapshot the runner would send now. A gateway that answers with an
+  older snapshot shows **Gateway sync pending**, as does an unreachable one.
+- **Last successful sync** (`lastSyncTime`) is when the dashboard last pushed a snapshot
+  successfully, or **Never** (`null`) when it has not pushed one since the runner started.
+  Pushes made at runner startup and before an agent launch do not update it.
+- The error line (`error`) explains an unreachable gateway or a failed last push.
+
+If the gateway reports no profiles while you have active ones, for example after it restarted,
+reading the status sends it the snapshot again.
+
 ## Spend policies
 
 A spend policy caps the estimated model spend of a UTC day or month. A policy without a

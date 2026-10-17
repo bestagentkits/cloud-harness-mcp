@@ -61,7 +61,7 @@ import { ModelCatalogService } from './model-catalog/model-catalog-service.js';
 import { reviewPricing, savedPriceProvenance } from './model-catalog/pricing-review.js';
 import { createProviderHttpClient, type ProviderHttpClient } from './model-provider-http.js';
 import { ModelConnectionVerifier } from './model-verification/model-connection-verifier.js';
-import type { AgentGatewayControl } from './agent-gateway-control.js';
+import { gatewaySnapshotDigest, type AgentGatewayControl, type GatewaySnapshot } from './agent-gateway-control.js';
 import { ModelSpendLedger, type ModelSpendPolicyHooks } from './model-spend-ledger.js';
 import { packageApprovalUnavailable } from './config.js';
 import {
@@ -70,7 +70,8 @@ import {
 } from './package-store.js';
 
 export class DashboardControlService {
-  private lastGatewaySync?: { synced: boolean; bootId: string | null; time: number; error: string | null };
+  /** This runner's own snapshot pushes: when one last succeeded, and the error of the latest push if it failed. */
+  private gatewayPush: { lastSuccessAt: number | null; lastError: string | null } = { lastSuccessAt: null, lastError: null };
   private connectionVerifier?: ModelConnectionVerifier;
 
   constructor(
@@ -558,33 +559,35 @@ export class DashboardControlService {
           const activeCreds = this.models().listCredentials(principalId).filter((c) => c.status === 'ACTIVE').length;
           let gatewaySynced = false;
           let gatewayBootId: string | null = null;
-          let syncError: string | null = null;
-          if (this.gatewayControl?.queryDigest) {
+          let gatewayError: string | null = null;
+          const control = this.gatewayControl;
+          if (control) {
             try {
-              const digest = await this.gatewayControl.queryDigest();
+              // The gateway holds the whole-instance snapshot, so compare against the same export syncGateway pushes.
+              const snapshot = this.models().getExportSnapshot();
+              const expectedDigest = gatewaySnapshotDigest(snapshot);
+              const digest = await control.queryDigest();
               gatewayBootId = digest.gatewayBootId;
-              if (activeProfiles > 0 && digest.activeProfileCount === 0 && this.gatewayControl.applySnapshot) {
-                const snapshot = this.models().getExportSnapshot();
-                const ack = await this.gatewayControl.applySnapshot(snapshot);
+              let gatewayDigest = digest.snapshotDigest;
+              if (activeProfiles > 0 && digest.activeProfileCount === 0) {
+                // Self-heal a gateway that lost its snapshot, for example after a restart.
+                const ack = await this.applyGatewaySnapshot(control, snapshot);
                 gatewayBootId = ack.gatewayBootId;
-                gatewaySynced = true;
-                this.lastGatewaySync = { synced: true, bootId: ack.gatewayBootId, time: Date.now(), error: null };
-              } else {
-                gatewaySynced = true;
+                gatewayDigest = ack.snapshotDigest;
               }
+              gatewaySynced = gatewayDigest === expectedDigest;
             } catch (err) {
-              gatewaySynced = false;
-              syncError = err instanceof Error ? err.message : 'gateway unreachable';
+              gatewayError = err instanceof Error ? err.message : 'gateway unreachable';
             }
           }
           return ok('Model configuration status', {
             status: {
               gatewaySynced,
               gatewayBootId,
-              lastSyncTime: this.lastGatewaySync?.time ?? Date.now(),
+              lastSyncTime: this.gatewayPush.lastSuccessAt,
               activeProfileCount: activeProfiles,
               activeCredentialCount: activeCreds,
-              error: syncError
+              error: gatewayError ?? this.gatewayPush.lastError
             }
           });
         }
@@ -1553,14 +1556,25 @@ export class DashboardControlService {
   }
 
   private async syncGateway(): Promise<void> {
-    if (this.modelProfiles && this.gatewayControl?.applySnapshot) {
-      try {
-        const snapshot = this.modelProfiles.getExportSnapshot();
-        const ack = await this.gatewayControl.applySnapshot(snapshot);
-        this.lastGatewaySync = { synced: true, bootId: ack.gatewayBootId, time: Date.now(), error: null };
-      } catch (err) {
-        this.lastGatewaySync = { synced: false, bootId: null, time: Date.now(), error: err instanceof Error ? err.message : 'sync failed' };
-      }
+    const control = this.gatewayControl;
+    if (!this.modelProfiles || !control) return;
+    try {
+      await this.applyGatewaySnapshot(control, this.modelProfiles.getExportSnapshot());
+    } catch (err) {
+      // A failed push is reported through model_config_status rather than failing the mutation.
+      this.gatewayPush.lastError = err instanceof Error ? err.message : 'sync failed';
+    }
+  }
+
+  /** Pushes a snapshot and records the outcome; rethrows so a caller can react to the failure. */
+  private async applyGatewaySnapshot(control: AgentGatewayControl, snapshot: GatewaySnapshot): Promise<{ gatewayBootId: string; snapshotDigest: string }> {
+    try {
+      const ack = await control.applySnapshot(snapshot);
+      this.gatewayPush = { lastSuccessAt: Date.now(), lastError: null };
+      return ack;
+    } catch (err) {
+      this.gatewayPush.lastError = err instanceof Error ? err.message : 'sync failed';
+      throw err;
     }
   }
 
