@@ -24,10 +24,11 @@ same list, with their own key metadata, through `model_provider_list`.
 | OpenRouter | Bearer | Chat Completions, Responses | OpenRouter's public catalog | Yes | [openrouter.ai](https://openrouter.ai/settings/keys) |
 | Google Gemini | Bearer | Chat Completions (OpenAI-compatible endpoint) | Provider's models endpoint, with your key | No | [aistudio.google.com](https://aistudio.google.com/apikey) |
 | DeepSeek | Bearer | Chat Completions | Provider's models endpoint, with your key | No | [platform.deepseek.com](https://platform.deepseek.com/api_keys) |
+| OpenCode Go | Bearer | Chat Completions, Responses (OpenAI-compatible paths) | Provider's models endpoint, with your key | Yes | [opencode.ai/console](https://opencode.ai/console) |
 | Custom (OpenAI-compatible) | Bearer or `x-api-key` | Chat Completions or Responses, at the one HTTPS URL you enter | None: you enter the model ID | Yes | Your provider's console |
 
-OpenCode Go is not a registry provider. It works today through the Custom provider with the
-Bearer auth mode; see [OpenCode Go](#opencode-go).
+OpenCode Go needs a session header on every request, which the harness sends for you; see
+[OpenCode Go](#opencode-go).
 
 What the columns mean:
 
@@ -51,30 +52,40 @@ What the columns mean:
 
 ## OpenCode Go
 
-[OpenCode Go](https://opencode.ai/docs/go) works today as a **Custom (OpenAI-compatible)**
-provider:
+[OpenCode Go](https://opencode.ai/docs/go) is a registry provider. Add an **OpenCode Go**
+credential with your API key from the [OpenCode Console](https://opencode.ai/console), then
+create a profile with a model from its catalog and the Chat Completions or Responses API
+mode. OpenCode lists which models are served on which path.
 
-1. Set `MODEL_GATEWAY_SESSION_HEADER=x-opencode-session` for the instance (see the
-   [environment variables reference](/reference/environment-variables)) and recreate the
-   gateway container so it picks up the change. OpenCode asks clients to send a stable
-   session ID in this header and can reject requests without one.
-2. Add a Custom credential with your OpenCode Console API key and the Bearer auth mode.
-3. Create a profile with the OpenCode Go Chat Completions or Responses URL from its docs,
-   the matching API mode, and the model ID. OpenCode lists which models are served on
-   which path.
+OpenCode asks clients to send their own user agent and a stable session ID in
+`x-opencode-session`, and can reject a request without one (`400 MissingSessionID`). The
+harness does both for this provider without any instance setting:
+
+- the gateway identifies itself as `cloud-harness-model-gateway` and sends
+  `x-opencode-session` filled with the calling agent's ID;
+- the connection check sends the same header with a new ID for each check.
+
+If `MODEL_GATEWAY_SESSION_HEADER` is also set, the provider's own header still wins for
+OpenCode Go, and the instance-wide header goes to every other provider. A Custom route to
+OpenCode still works when that variable is set to `x-opencode-session`, but the OpenCode Go
+provider is the simpler choice.
 
 Limitations:
 
-- The session header is instance-wide. When set, the gateway sends it, filled with the
-  calling agent's ID, on every upstream request to every provider.
-- The connection check runs from the runner, which does not send the session header, so
-  OpenCode Go can reject it and the check reports **Failed** (`unsupported_protocol`, "The
-  provider rejected the request format"). A failed check does not block activation or
-  spawning; a short subagent run is the real test.
-- Models served only on OpenCode's Anthropic Messages or Google paths cannot be used.
-- OpenCode publishes per-token prices for Go models on its Go page. Enter them on the
-  profile yourself, because a Custom provider has no catalog price. Plan allowances (5-hour,
-  weekly, and monthly dollar limits per model) are enforced by OpenCode, not by the harness.
+- Only the OpenAI Chat Completions and Responses paths are used. A model that OpenCode
+  serves only on its Anthropic Messages or Google paths fails the connection check with
+  `unsupported_protocol`.
+- OpenCode publishes per-token prices (input, output, cached read, cached write) on its Go
+  page, but offers no price API to sync, and OpenRouter does not price the subscription. The
+  catalog shows these models with unknown prices, so enter the prices on the profile
+  yourself; the profile marks them as an override, and every spend figure is an estimate.
+  An unknown cache-write price is charged at twice the input price.
+- Over MCP, override prices on a new route always need owner approval
+  (`price_unverified_for_new_route`). Like every MCP-created profile, an OpenCode Go profile
+  created over MCP needs activation in the Dashboard, and an MCP update that changes its
+  model or credential must be made in the Dashboard instead.
+- OpenCode enforces the plan allowances (5-hour, weekly, and monthly limits); the harness
+  does not mirror them. A request over a plan limit fails with the provider's error.
 
 ## Sync and verification limits
 
@@ -211,12 +222,14 @@ token refresh, and gateway request rewriting.
 
 ### OpenCode Go subscription
 
-**Verdict: supported through a Custom provider today.** Source reviewed 2026-10-17:
+**Verdict: supported as a registry provider.** Source reviewed 2026-10-17:
 [OpenCode Go docs](https://opencode.ai/docs/go).
 
 OpenCode Go uses an API key, which fits the existing credential model, and documents
-OpenAI-compatible Chat Completions and Responses endpoints. Its docs address third-party
-coding agents directly and ask them to send their own user agent and a stable
-`x-opencode-session`. The gateway identifies itself as `cloud-harness-model-gateway` and
-fills the session header when it is configured. The limits are listed under
-[OpenCode Go](#opencode-go) above.
+OpenAI-compatible Chat Completions and Responses endpoints under
+`https://opencode.ai/inference/go/openai/v1/` and a models list at
+`https://opencode.ai/inference/go/v1/models`. Its docs address third-party coding agents
+directly and ask them to send their own user agent and a stable `x-opencode-session`. The
+registry records that header for the provider, so the gateway and the connection check send
+it without an instance setting. The limits are listed under [OpenCode Go](#opencode-go)
+above.

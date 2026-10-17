@@ -22,6 +22,7 @@ which authenticated dashboard sessions can read at `GET /api/v1/model-providers`
 | OpenRouter | `openrouter.ai/api/v1/chat/completions` | `openrouter.ai/api/v1/responses` | Bearer |
 | Google Gemini | `generativelanguage.googleapis.com/v1beta/openai/chat/completions` | Not supported | Bearer |
 | DeepSeek | `api.deepseek.com/chat/completions` | Not supported | Bearer |
+| OpenCode Go | `opencode.ai/inference/go/openai/v1/chat/completions` | `opencode.ai/inference/go/openai/v1/responses` | Bearer (the gateway also sends `x-opencode-session`; see [OpenCode Go](/reference/model-providers#opencode-go)) |
 | Custom | Your HTTPS URL on port 443 naming one fixed request path, with no userinfo, query string, or fragment (SSRF-validated; endpoints that need a query string such as `?api-version=` are not supported, because the gateway sends only the URL path) | Your HTTPS URL | Bearer or `x-api-key` |
 
 Saving a profile with an API mode its provider does not offer, or a credential with an auth

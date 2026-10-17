@@ -30,13 +30,15 @@ To change a profile: `model_profile_list` → `model_profile_validate` with
 ### `model_provider_list`
 
 - Lists the supported providers (auth modes, API modes and endpoints, catalog
-  source, whether a Custom upstream URL is required) and your connected
+  source, whether a Custom upstream URL is required, and the session header the
+  harness sends for you, if any) and your connected
   credentials as metadata: `id`, `label`, `provider`, `authMode`, `status`,
   `activeVersion`, and the last check.
   A provider's `apiKeyUrl` is the page where the owner creates a key, not a key.
 - No credential for a provider means the owner has not added one; ask them to,
   rather than asking for the key.
-- Optional `provider` narrows both lists.
+- Optional `provider` narrows both lists. It is a registry id, for example
+  `openai`, `openrouter`, `deepseek`, `opencode-go`, or `custom`.
 
 <!-- cloudharness-example:model_provider_list
 {"provider":"openrouter"}
@@ -56,6 +58,10 @@ To change a profile: `model_profile_list` → `model_profile_validate` with
 - When saving, use an entry's `providerModelId` as `model` and its
   `pricing.provenance.sourceModelId` as `catalogPriceRef.sourceModelId`, so the
   profile pins catalog-verified prices.
+- A provider without a price source, such as `opencode-go`, lists its models
+  with `null` prices. Save such a profile with override prices the owner
+  confirms and no `catalogPriceRef`; a later update that changes its model or
+  credential then needs the owner (`price_unverified_for_new_route`).
 
 <!-- cloudharness-example:model_catalog_search
 {"provider":"openrouter","query":"sonnet","capability":"tools","limit":10}

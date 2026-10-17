@@ -508,15 +508,23 @@ The deployment steps are in
 
 `MODEL_GATEWAY_SESSION_HEADER` names one optional upstream header that the model
 gateway fills with the calling agent id, for OpenAI-compatible providers that
-reject a request without a conversation identifier (for example
-`x-opencode-session`, which OpenCode Go requires). It is unset by default, so no
+reject a request without a conversation identifier. It is unset by default, so no
 header is invented for other providers. The gateway always identifies itself
 through `user-agent: cloud-harness-model-gateway`. The accepted shape and the
 reserved names the override may not collide with are owned by
 [`apps/model-gateway/src/config.ts`](../apps/model-gateway/src/config.ts), and
-production Compose forwards the setting into the gateway container. A profile
-cannot carry extra upstream headers of its own, so this override is the only way
-to serve such a provider.
+production Compose forwards the setting into the gateway container.
+
+A registry provider that requires such a header names it in the provider
+registry
+([`packages/contracts/src/model-provider-registry.ts`](../packages/contracts/src/model-provider-registry.ts)),
+for example `x-opencode-session` for OpenCode Go. The runner exports it with the
+credential in the gateway snapshot, and the gateway applies the same name
+validation and rejects the whole snapshot if it fails. The gateway sends the
+provider's own header when it has one and falls back to
+`MODEL_GATEWAY_SESSION_HEADER` otherwise; the value is always the agent id. So
+the variable is needed only for a Custom route to a provider that requires a
+session header, and setting it never changes the header OpenCode Go receives.
 
 ## Optional GitHub App repository access
 
