@@ -1827,7 +1827,9 @@ export class DashboardControlService {
           : { profile: attached });
       }
       return attached;
-    } catch {
+    } catch (error) {
+      // Only the error class: the message can carry the draft ref.
+      console.warn('[runner] attaching a draft check after a model tool save failed', error instanceof Error ? error.name : 'unknown');
       return profile;
     }
   }

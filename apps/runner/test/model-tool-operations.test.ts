@@ -296,6 +296,17 @@ describe('MCP model profile saves', () => {
     expect(updated.activeRevision?.limits.maxCostMicros).toBe(2_000_000);
   });
 
+  it('lets the Dashboard move a profile to another key that MCP may not move', async () => {
+    const ctx = setup();
+    const credentialId = await ctx.credential('openai');
+    const otherCredentialId = await ctx.credential('openai');
+    const current = await createActive(ctx, credentialId);
+    const move = { profileId: 'coding', expectedGeneration: current.generation, credentialId: otherCredentialId };
+    expect((await refusal(ctx.controls.executeModelTool(ownerA, 'model_profile_update', { ...move, idempotencyKey: 'update-key-0001' }))).code).toBe('OWNER_APPROVAL_REQUIRED');
+    const moved = await ctx.dashboard<AgentModelProfileMetadata>('model_profile_update', move);
+    expect(moved.credentialId).toBe(otherCredentialId);
+  });
+
   it('binds a custom upstream URL to the owner: refused on create, update, and draft check unless already in use', async () => {
     const ctx = setup();
     const customId = await ctx.credential('custom');
