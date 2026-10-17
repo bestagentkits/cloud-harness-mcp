@@ -2,7 +2,9 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   AgentProxyOperationSchema,
   HarnessError,
+  ModelProviderKindSchema,
   composeAgentBootstrapPrompt,
+  resolveEffectivePricing,
   TOOL_SCHEMA_BY_NAME,
   type AgentBudget,
   type AgentModelProfile,
@@ -22,6 +24,12 @@ import {
   type AgentTombstone
 } from './agent-state-repository.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
+
+/** A profile whose cache prices are resolved to the concrete prices the agent reports. */
+type PricedAgentModelProfile = AgentModelProfile & {
+  cacheReadMicrosPerMillionTokens: number;
+  cacheWriteMicrosPerMillionTokens: number;
+};
 import { DockerAgentGatewayControl, type AgentGatewayControl } from './agent-gateway-control.js';
 import {
   AgentProtocolChannel,
@@ -371,7 +379,7 @@ export class AgentManager {
     return composed.prompt;
   }
 
-  private async launch(record: AgentRecord, prompt: string, profile: AgentModelProfile, repositoryContext: AgentRepositoryContext): Promise<void> {
+  private async launch(record: AgentRecord, prompt: string, profile: PricedAgentModelProfile, repositoryContext: AgentRepositoryContext): Promise<void> {
     const spec = this.launchSpec(record);
     try {
       if (this.epoch !== this.repository.currentEpoch(this.store.instanceId())) {
@@ -890,20 +898,28 @@ export class AgentManager {
     return record;
   }
 
-  private profile(id: string, ownerId?: string): AgentModelProfile {
+  // Cache prices resolve through the same defaults the gateway snapshot uses, so the
+  // agent's self-reported cost never treats cached usage as free. The agent reports
+  // base-tier prices only; the gateway charges long-prompt tiers.
+  private profile(id: string, ownerId?: string): PricedAgentModelProfile {
     if (ownerId && this.modelProfiles) {
       const activeProfiles = this.modelProfiles.listProfiles(ownerId);
       const matched = activeProfiles.find((p: AgentModelProfileMetadata) => (p.id === id || p.activeRevisionId === id) && p.status === 'ACTIVE');
       if (matched && matched.activeRevision) {
         const rev = matched.activeRevision;
+        // A missing credential resolves as `custom`, the most conservative defaults.
+        const provider = this.modelProfiles.getCredential(ownerId, rev.credentialId)?.provider ?? 'custom';
+        const pricing = resolveEffectivePricing(rev.pricing, provider);
         return {
           id: rev.id,
           displayName: matched.displayName,
           provider: rev.model,
           model: rev.model,
           apiMode: rev.apiMode,
-          inputMicrosPerMillionTokens: rev.pricing.inputMicrosPerMillionTokens,
-          outputMicrosPerMillionTokens: rev.pricing.outputMicrosPerMillionTokens,
+          inputMicrosPerMillionTokens: pricing.inputMicrosPerMillionTokens,
+          outputMicrosPerMillionTokens: pricing.outputMicrosPerMillionTokens,
+          cacheReadMicrosPerMillionTokens: pricing.cacheReadMicrosPerMillionTokens,
+          cacheWriteMicrosPerMillionTokens: pricing.cacheWriteMicrosPerMillionTokens,
           maxInputTokens: rev.limits.maxInputTokens,
           maxOutputTokens: rev.limits.maxOutputTokens,
           maxCostMicros: rev.limits.maxCostMicros,
@@ -913,7 +929,15 @@ export class AgentManager {
     }
     const staticProfile = this.config.profiles.find((candidate) => candidate.id === id);
     if (!staticProfile) throw new HarnessError('INVALID_INPUT', 'unknown agent model profile');
-    return staticProfile;
+    // A static profile's provider is free text; one that names no registry provider
+    // resolves as `custom`.
+    const provider = ModelProviderKindSchema.safeParse(staticProfile.provider);
+    const pricing = resolveEffectivePricing(staticProfile, provider.success ? provider.data : 'custom');
+    return {
+      ...staticProfile,
+      cacheReadMicrosPerMillionTokens: pricing.cacheReadMicrosPerMillionTokens,
+      cacheWriteMicrosPerMillionTokens: pricing.cacheWriteMicrosPerMillionTokens
+    };
   }
 
   private publicStatus(record: AgentRecord) {
@@ -956,7 +980,7 @@ export class AgentManager {
     };
   }
 
-  private startRecord(record: AgentRecord, prompt: string, profile: AgentModelProfile, lease: string): AgentInputRecord {
+  private startRecord(record: AgentRecord, prompt: string, profile: PricedAgentModelProfile, lease: string): AgentInputRecord {
     const contextWindow = Math.min(2_000_000, profile.maxInputTokens + profile.maxOutputTokens);
     return {
       type: 'start', requestId: randomUUID(), agentId: record.id, prompt, tools: record.proxyOperations,
@@ -967,8 +991,8 @@ export class AgentManager {
         cost: {
           input: profile.inputMicrosPerMillionTokens / 1_000_000,
           output: profile.outputMicrosPerMillionTokens / 1_000_000,
-          cacheRead: 0,
-          cacheWrite: 0
+          cacheRead: profile.cacheReadMicrosPerMillionTokens / 1_000_000,
+          cacheWrite: profile.cacheWriteMicrosPerMillionTokens / 1_000_000
         }
       },
       limits: {

@@ -31,6 +31,10 @@ export interface ModelProviderDefinition {
   // Provider model IDs never carry it; the catalog strips it when mapping.
   openRouterVendor: string | null;
   requiresCustomUpstream: boolean;
+  // Whether the provider's route can bill a cache write above the input price.
+  // An unknown cache-write price defaults to twice the input price when true and
+  // to the input price when false (resolveEffectivePricing in model-pricing.ts).
+  billsCacheWrites: boolean;
 }
 
 const definitions: readonly ModelProviderDefinition[] = [
@@ -49,7 +53,9 @@ const definitions: readonly ModelProviderDefinition[] = [
     modelsEndpoint: { url: 'https://api.openai.com/v1/models', auth: 'bearer' },
     catalogStrategy: 'provider-models',
     openRouterVendor: 'openai',
-    requiresCustomUpstream: false
+    requiresCustomUpstream: false,
+    // OpenAI caches automatically and charges no cache-write premium.
+    billsCacheWrites: false
   },
   {
     id: 'anthropic',
@@ -65,7 +71,9 @@ const definitions: readonly ModelProviderDefinition[] = [
     modelsEndpoint: { url: 'https://api.anthropic.com/v1/models', auth: 'anthropic' },
     catalogStrategy: 'provider-models',
     openRouterVendor: 'anthropic',
-    requiresCustomUpstream: false
+    requiresCustomUpstream: false,
+    // The OpenAI SDK compatibility endpoint does not support prompt caching.
+    billsCacheWrites: false
   },
   {
     id: 'openrouter',
@@ -82,7 +90,9 @@ const definitions: readonly ModelProviderDefinition[] = [
     modelsEndpoint: { url: 'https://openrouter.ai/api/v1/models', auth: 'none' },
     catalogStrategy: 'openrouter',
     openRouterVendor: null,
-    requiresCustomUpstream: false
+    requiresCustomUpstream: false,
+    // OpenRouter routes to vendors that charge for cache writes.
+    billsCacheWrites: true
   },
   {
     id: 'google',
@@ -98,7 +108,9 @@ const definitions: readonly ModelProviderDefinition[] = [
     modelsEndpoint: { url: 'https://generativelanguage.googleapis.com/v1beta/openai/models', auth: 'bearer' },
     catalogStrategy: 'provider-models',
     openRouterVendor: 'google',
-    requiresCustomUpstream: false
+    requiresCustomUpstream: false,
+    // Gemini implicit caching charges no write premium.
+    billsCacheWrites: false
   },
   {
     id: 'deepseek',
@@ -114,7 +126,9 @@ const definitions: readonly ModelProviderDefinition[] = [
     modelsEndpoint: { url: 'https://api.deepseek.com/models', auth: 'bearer' },
     catalogStrategy: 'provider-models',
     openRouterVendor: 'deepseek',
-    requiresCustomUpstream: false
+    requiresCustomUpstream: false,
+    // DeepSeek context caching charges no write premium.
+    billsCacheWrites: false
   },
   {
     id: 'custom',
@@ -128,7 +142,9 @@ const definitions: readonly ModelProviderDefinition[] = [
     modelsEndpoint: null,
     catalogStrategy: 'none',
     openRouterVendor: null,
-    requiresCustomUpstream: true
+    requiresCustomUpstream: true,
+    // An unknown upstream may bill cache writes, so assume it does.
+    billsCacheWrites: true
   }
 ];
 

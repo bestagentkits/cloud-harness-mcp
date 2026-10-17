@@ -1,14 +1,21 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
+  AgentModelPriceProvenanceSchema,
   AgentProxyOperationSchema,
+  DEFAULT_USER_PRICE_PROVENANCE,
   HarnessError,
   ModelCredentialIdSchema,
+  ModelPriceTiersSchema,
   ModelProfileIdSchema,
+  ModelProviderKindSchema,
   ModelRevisionIdSchema,
   assertProviderAuthMode,
   getModelProvider,
+  resolveEffectivePricing,
   resolveProviderUpstreamUrl,
+  type AgentModelPriceProvenance,
+  type AgentModelPricing,
   type AgentModelProfileInput,
   type AgentModelProfileMetadata,
   type AgentModelProfileRevision,
@@ -26,6 +33,138 @@ import type { SecretKeyring, EncryptedSecret } from './secret-keyring.js';
 function computeRevisionDigest(fields: Record<string, unknown>): string {
   const json = JSON.stringify(fields, Object.keys(fields).sort());
   return `sha256:${createHash('sha256').update(json, 'utf8').digest('hex')}`;
+}
+
+// The digest replacer above is an allowlist of top-level keys, and JSON.stringify
+// applies it at every depth, so nested objects hash as `{}`. Cache prices are
+// therefore added as top-level numbers and tiers as one canonical string, and
+// only when present, so a revision without them keeps its legacy digest.
+function pricingDigestFields(pricing: AgentModelPricing): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  if (typeof pricing.cacheReadMicrosPerMillionTokens === 'number') {
+    fields.cacheReadMicrosPerMillionTokens = pricing.cacheReadMicrosPerMillionTokens;
+  }
+  if (typeof pricing.cacheWriteMicrosPerMillionTokens === 'number') {
+    fields.cacheWriteMicrosPerMillionTokens = pricing.cacheWriteMicrosPerMillionTokens;
+  }
+  if (pricing.tiers && pricing.tiers.length > 0) {
+    fields.priceTiers = JSON.stringify(pricing.tiers.map((tier) => [
+      tier.minPromptTokens,
+      tier.inputMicrosPerMillionTokens,
+      tier.outputMicrosPerMillionTokens,
+      tier.cacheReadMicrosPerMillionTokens ?? null,
+      tier.cacheWriteMicrosPerMillionTokens ?? null
+    ]));
+  }
+  return fields;
+}
+
+// Unknown (null) and absent cache prices mean the same thing, so they are stored
+// as NULL and returned absent; a revision without them keeps the legacy shape.
+function normalizePricing(pricing: AgentModelPricing): AgentModelPricing {
+  const normalized: AgentModelPricing = {
+    inputMicrosPerMillionTokens: pricing.inputMicrosPerMillionTokens,
+    outputMicrosPerMillionTokens: pricing.outputMicrosPerMillionTokens
+  };
+  if (typeof pricing.cacheReadMicrosPerMillionTokens === 'number') {
+    normalized.cacheReadMicrosPerMillionTokens = pricing.cacheReadMicrosPerMillionTokens;
+  }
+  if (typeof pricing.cacheWriteMicrosPerMillionTokens === 'number') {
+    normalized.cacheWriteMicrosPerMillionTokens = pricing.cacheWriteMicrosPerMillionTokens;
+  }
+  if (pricing.tiers && pricing.tiers.length > 0) {
+    normalized.tiers = pricing.tiers.map((tier) => ({
+      minPromptTokens: tier.minPromptTokens,
+      inputMicrosPerMillionTokens: tier.inputMicrosPerMillionTokens,
+      outputMicrosPerMillionTokens: tier.outputMicrosPerMillionTokens,
+      ...(typeof tier.cacheReadMicrosPerMillionTokens === 'number' ? { cacheReadMicrosPerMillionTokens: tier.cacheReadMicrosPerMillionTokens } : {}),
+      ...(typeof tier.cacheWriteMicrosPerMillionTokens === 'number' ? { cacheWriteMicrosPerMillionTokens: tier.cacheWriteMicrosPerMillionTokens } : {})
+    }));
+  }
+  return normalized;
+}
+
+/** One `agent_model_profile_revisions` row, including the additive pricing columns. */
+interface RevisionRow {
+  id: string;
+  profile_id: string;
+  principal_id: string;
+  credential_id: string;
+  model: string;
+  api_mode: 'chat-completions' | 'responses';
+  downstream_path: string;
+  upstream_url: string;
+  input_micros_per_million: number;
+  output_micros_per_million: number;
+  cache_read_micros_per_million: number | null;
+  cache_write_micros_per_million: number | null;
+  price_tiers_json: string | null;
+  price_source: string;
+  price_source_model_id: string | null;
+  price_retrieved_at: number | null;
+  price_confidence: string;
+  price_is_override: number;
+  max_input_tokens: number;
+  max_output_tokens: number;
+  max_cost_micros: number;
+  max_proxy_operations_json: string;
+  digest: string;
+  created_at: number;
+}
+
+const REVISION_COLUMNS = `id, profile_id, principal_id, credential_id, model, api_mode, downstream_path, upstream_url,
+  input_micros_per_million, output_micros_per_million, cache_read_micros_per_million, cache_write_micros_per_million,
+  price_tiers_json, price_source, price_source_model_id, price_retrieved_at, price_confidence, price_is_override,
+  max_input_tokens, max_output_tokens, max_cost_micros, max_proxy_operations_json, digest, created_at`;
+
+function pricingFromRow(row: RevisionRow): AgentModelPricing {
+  const pricing: AgentModelPricing = {
+    inputMicrosPerMillionTokens: row.input_micros_per_million,
+    outputMicrosPerMillionTokens: row.output_micros_per_million
+  };
+  if (row.cache_read_micros_per_million !== null) pricing.cacheReadMicrosPerMillionTokens = row.cache_read_micros_per_million;
+  if (row.cache_write_micros_per_million !== null) pricing.cacheWriteMicrosPerMillionTokens = row.cache_write_micros_per_million;
+  if (row.price_tiers_json !== null) pricing.tiers = ModelPriceTiersSchema.parse(JSON.parse(row.price_tiers_json));
+  return pricing;
+}
+
+function provenanceFromRow(row: RevisionRow): AgentModelPriceProvenance {
+  return AgentModelPriceProvenanceSchema.parse({
+    source: row.price_source,
+    sourceModelId: row.price_source_model_id,
+    retrievedAt: row.price_retrieved_at,
+    confidence: row.price_confidence,
+    isOverride: row.price_is_override === 1
+  });
+}
+
+function revisionFromRow(row: RevisionRow): AgentModelProfileRevision {
+  return {
+    id: ModelRevisionIdSchema.parse(row.id),
+    profileId: ModelProfileIdSchema.parse(row.profile_id),
+    principalId: row.principal_id,
+    credentialId: ModelCredentialIdSchema.parse(row.credential_id),
+    model: row.model,
+    apiMode: row.api_mode,
+    downstreamPath: row.downstream_path,
+    upstreamUrl: row.upstream_url,
+    pricing: pricingFromRow(row),
+    priceProvenance: provenanceFromRow(row),
+    limits: {
+      maxInputTokens: row.max_input_tokens,
+      maxOutputTokens: row.max_output_tokens,
+      maxCostMicros: row.max_cost_micros
+    },
+    maxProxyOperations: AgentProxyOperationSchema.array().parse(JSON.parse(row.max_proxy_operations_json)),
+    digest: row.digest,
+    createdAt: row.created_at
+  };
+}
+
+/** Internal, service-supplied revision inputs that never come from the client schema. */
+export interface ProfileRevisionOptions {
+  // Where submitted prices came from. Absent means the operator typed them.
+  priceProvenance?: AgentModelPriceProvenance;
 }
 
 function resolveDownstreamPath(apiMode: string): string {
@@ -63,6 +202,36 @@ export function initializeModelVerificationSchema(database: DatabaseSync): void 
       PRIMARY KEY(principal_id, target_kind, target_id)
     );
   `);
+}
+
+const PRICING_COLUMNS: ReadonlyArray<readonly [name: string, definition: string]> = [
+  ['cache_read_micros_per_million', 'INTEGER'],
+  ['cache_write_micros_per_million', 'INTEGER'],
+  ['price_tiers_json', 'TEXT'],
+  ['price_source', "TEXT NOT NULL DEFAULT 'user' CHECK(price_source IN ('provider', 'openrouter', 'user', 'none'))"],
+  ['price_source_model_id', 'TEXT'],
+  ['price_retrieved_at', 'INTEGER'],
+  ['price_confidence', "TEXT NOT NULL DEFAULT 'unknown' CHECK(price_confidence IN ('exact', 'estimate', 'unknown'))"],
+  ['price_is_override', 'INTEGER NOT NULL DEFAULT 1 CHECK(price_is_override IN (0, 1))']
+];
+
+/**
+ * Cache prices, long-prompt tiers, and price provenance on profile revisions.
+ * Added in place without a schema version bump: every column is nullable or
+ * defaulted, so existing revisions read back as user-entered overrides of
+ * unknown confidence, and older code, which reads columns by name and inserts
+ * with explicit column lists, keeps working after a rollback. Idempotent.
+ */
+export function initializeModelProfilePricingColumns(database: DatabaseSync): void {
+  const existing = new Set((database.prepare('PRAGMA table_info(agent_model_profile_revisions)').all() as Array<{ name: string }>)
+    .map((column) => column.name));
+  // The state schema creates the table; without it there is nothing to extend.
+  if (existing.size === 0) return;
+  for (const [name, definition] of PRICING_COLUMNS) {
+    if (!existing.has(name)) {
+      database.exec(`ALTER TABLE agent_model_profile_revisions ADD COLUMN ${name} ${definition};`);
+    }
+  }
 }
 
 /** A decrypted ACTIVE credential, handed only to the runner-side connection check. */
@@ -107,6 +276,40 @@ export class ModelProfileStateRepository {
     private readonly keyring: SecretKeyring
   ) {
     initializeModelVerificationSchema(database);
+    initializeModelProfilePricingColumns(database);
+  }
+
+  private insertRevision(revision: AgentModelProfileRevision): void {
+    const { pricing, priceProvenance: provenance, limits } = revision;
+    this.database.prepare(`
+      INSERT INTO agent_model_profile_revisions (${REVISION_COLUMNS})
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      revision.id,
+      revision.profileId,
+      revision.principalId,
+      revision.credentialId,
+      revision.model,
+      revision.apiMode,
+      revision.downstreamPath,
+      revision.upstreamUrl,
+      pricing.inputMicrosPerMillionTokens,
+      pricing.outputMicrosPerMillionTokens,
+      pricing.cacheReadMicrosPerMillionTokens ?? null,
+      pricing.cacheWriteMicrosPerMillionTokens ?? null,
+      pricing.tiers ? JSON.stringify(pricing.tiers) : null,
+      provenance.source,
+      provenance.sourceModelId,
+      provenance.retrievedAt,
+      provenance.confidence,
+      provenance.isOverride ? 1 : 0,
+      limits.maxInputTokens,
+      limits.maxOutputTokens,
+      limits.maxCostMicros,
+      JSON.stringify(revision.maxProxyOperations),
+      revision.digest,
+      revision.createdAt
+    );
   }
 
   /**
@@ -423,7 +626,7 @@ export class ModelProfileStateRepository {
     }
   }
 
-  createProfile(principalId: string, input: AgentModelProfileInput): AgentModelProfileMetadata {
+  createProfile(principalId: string, input: AgentModelProfileInput, options: ProfileRevisionOptions = {}): AgentModelProfileMetadata {
     const cred = this.database.prepare(`
       SELECT id, provider, auth_mode FROM model_provider_credentials WHERE id = ? AND principal_id = ?
     `).get(input.credentialId, principalId) as { id: string; provider: ModelProviderKind; auth_mode: ProviderAuthMode } | undefined;
@@ -435,6 +638,8 @@ export class ModelProfileStateRepository {
     const upstreamUrl = resolveProviderUpstreamUrl(cred.provider, input.apiMode, input.customUpstreamUrl);
     const revId = ModelRevisionIdSchema.parse(`rev_${randomBytes(16).toString('hex')}`);
     const now = Date.now();
+    const pricing = normalizePricing(input.pricing);
+    const priceProvenance = AgentModelPriceProvenanceSchema.parse(options.priceProvenance ?? DEFAULT_USER_PRICE_PROVENANCE);
 
     const digest = computeRevisionDigest({
       profileId: input.profileId,
@@ -443,9 +648,10 @@ export class ModelProfileStateRepository {
       apiMode: input.apiMode,
       downstreamPath,
       upstreamUrl,
-      pricing: input.pricing,
+      pricing,
       limits: input.limits,
-      maxProxyOperations: input.maxProxyOperations
+      maxProxyOperations: input.maxProxyOperations,
+      ...pricingDigestFields(pricing)
     });
 
     const revision: AgentModelProfileRevision = {
@@ -457,7 +663,8 @@ export class ModelProfileStateRepository {
       apiMode: input.apiMode,
       downstreamPath,
       upstreamUrl,
-      pricing: input.pricing,
+      pricing,
+      priceProvenance,
       limits: input.limits,
       maxProxyOperations: input.maxProxyOperations,
       digest,
@@ -472,30 +679,7 @@ export class ModelProfileStateRepository {
         ) VALUES (?, ?, ?, ?, ?, ?, 1, 'ACTIVE', ?, ?)
       `).run(input.profileId, principalId, input.displayName, input.credentialId, revId, revId, now, now);
 
-      this.database.prepare(`
-        INSERT INTO agent_model_profile_revisions (
-          id, profile_id, principal_id, credential_id, model, api_mode, downstream_path, upstream_url,
-          input_micros_per_million, output_micros_per_million, max_input_tokens, max_output_tokens, max_cost_micros,
-          max_proxy_operations_json, digest, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        revId,
-        input.profileId,
-        principalId,
-        input.credentialId,
-        input.model,
-        input.apiMode,
-        downstreamPath,
-        upstreamUrl,
-        input.pricing.inputMicrosPerMillionTokens,
-        input.pricing.outputMicrosPerMillionTokens,
-        input.limits.maxInputTokens,
-        input.limits.maxOutputTokens,
-        input.limits.maxCostMicros,
-        JSON.stringify(input.maxProxyOperations),
-        digest,
-        now
-      );
+      this.insertRevision(revision);
 
       this.database.exec('COMMIT');
     } catch (error) {
@@ -542,54 +726,12 @@ export class ModelProfileStateRepository {
       let activeRevision: AgentModelProfileRevision | null = null;
       if (p.active_revision_id) {
         const rev = this.database.prepare(`
-          SELECT id, profile_id, principal_id, credential_id, model, api_mode, downstream_path, upstream_url,
-                 input_micros_per_million, output_micros_per_million, max_input_tokens, max_output_tokens, max_cost_micros,
-                 max_proxy_operations_json, digest, created_at
+          SELECT ${REVISION_COLUMNS}
           FROM agent_model_profile_revisions
           WHERE id = ? AND principal_id = ?
-        `).get(p.active_revision_id, principalId) as {
-          id: string;
-          profile_id: string;
-          principal_id: string;
-          credential_id: string;
-          model: string;
-          api_mode: 'chat-completions' | 'responses';
-          downstream_path: string;
-          upstream_url: string;
-          input_micros_per_million: number;
-          output_micros_per_million: number;
-          max_input_tokens: number;
-          max_output_tokens: number;
-          max_cost_micros: number;
-          max_proxy_operations_json: string;
-          digest: string;
-          created_at: number;
-        } | undefined;
+        `).get(p.active_revision_id, principalId) as RevisionRow | undefined;
 
-        if (rev) {
-          activeRevision = {
-            id: ModelRevisionIdSchema.parse(rev.id),
-            profileId: ModelProfileIdSchema.parse(rev.profile_id),
-            principalId: rev.principal_id,
-            credentialId: ModelCredentialIdSchema.parse(rev.credential_id ?? p.credential_id),
-            model: rev.model,
-            apiMode: rev.api_mode,
-            downstreamPath: rev.downstream_path,
-            upstreamUrl: rev.upstream_url,
-            pricing: {
-              inputMicrosPerMillionTokens: rev.input_micros_per_million,
-              outputMicrosPerMillionTokens: rev.output_micros_per_million
-            },
-            limits: {
-              maxInputTokens: rev.max_input_tokens,
-              maxOutputTokens: rev.max_output_tokens,
-              maxCostMicros: rev.max_cost_micros
-            },
-            maxProxyOperations: AgentProxyOperationSchema.array().parse(JSON.parse(rev.max_proxy_operations_json)),
-            digest: rev.digest,
-            createdAt: rev.created_at
-          };
-        }
+        if (rev) activeRevision = revisionFromRow(rev);
       }
 
       return {
@@ -609,7 +751,12 @@ export class ModelProfileStateRepository {
     });
   }
 
-  updateProfile(principalId: string, profileId: string, input: AgentModelProfileUpdateInput): AgentModelProfileMetadata {
+  updateProfile(
+    principalId: string,
+    profileId: string,
+    input: AgentModelProfileUpdateInput,
+    options: ProfileRevisionOptions = {}
+  ): AgentModelProfileMetadata {
     const profile = this.database.prepare(`
       SELECT id, principal_id, display_name, credential_id, active_revision_id, generation, status, created_at
       FROM agent_model_profiles
@@ -631,8 +778,8 @@ export class ModelProfileStateRepository {
     }
 
     const currentRev = profile.active_revision_id ? this.database.prepare(`
-      SELECT * FROM agent_model_profile_revisions WHERE id = ?
-    `).get(profile.active_revision_id) as Record<string, any> | undefined : undefined;
+      SELECT ${REVISION_COLUMNS} FROM agent_model_profile_revisions WHERE id = ?
+    `).get(profile.active_revision_id) as RevisionRow | undefined : undefined;
 
     const credentialId = input.credentialId ?? profile.credential_id;
     const cred = this.database.prepare(`
@@ -643,24 +790,29 @@ export class ModelProfileStateRepository {
 
     const model = input.model ?? currentRev?.model ?? 'default';
     const apiMode = input.apiMode ?? currentRev?.api_mode ?? 'chat-completions';
-    const pricing = input.pricing ?? {
-      inputMicrosPerMillionTokens: currentRev?.input_micros_per_million ?? 0,
-      outputMicrosPerMillionTokens: currentRev?.output_micros_per_million ?? 0
-    };
+    // Prices and their provenance travel together: an edit without pricing pins
+    // the current revision's prices, cache prices, tiers, and provenance verbatim,
+    // and an edit with pricing is the operator's unless the service names its source.
+    const pricing = input.pricing
+      ? normalizePricing(input.pricing)
+      : currentRev ? pricingFromRow(currentRev) : { inputMicrosPerMillionTokens: 0, outputMicrosPerMillionTokens: 0 };
+    const priceProvenance = input.pricing || !currentRev
+      ? AgentModelPriceProvenanceSchema.parse(options.priceProvenance ?? DEFAULT_USER_PRICE_PROVENANCE)
+      : provenanceFromRow(currentRev);
     const limits = input.limits ?? {
       maxInputTokens: currentRev?.max_input_tokens ?? 100000,
       maxOutputTokens: currentRev?.max_output_tokens ?? 10000,
       maxCostMicros: currentRev?.max_cost_micros ?? 1000000
     };
-    const maxProxyOperations = input.maxProxyOperations ?? (currentRev?.max_proxy_operations_json ? JSON.parse(currentRev.max_proxy_operations_json) : ['files_read']);
+    const maxProxyOperations = input.maxProxyOperations
+      ?? (currentRev ? AgentProxyOperationSchema.array().parse(JSON.parse(currentRev.max_proxy_operations_json)) : ['files_read' as const]);
 
     const downstreamPath = resolveDownstreamPath(apiMode);
     // A custom endpoint is part of the profile, so an edit that keeps the same
     // credential and API mode keeps the current URL unless a new one is
     // submitted. A different mode needs its own endpoint path.
     const keptCustomUrl = cred.provider === 'custom' && credentialId === profile.credential_id && apiMode === currentRev?.api_mode
-      && typeof currentRev?.upstream_url === 'string'
-      ? currentRev.upstream_url as string
+      ? currentRev.upstream_url
       : undefined;
     const upstreamUrl = resolveProviderUpstreamUrl(cred.provider, apiMode, input.customUpstreamUrl ?? keptCustomUrl);
     const revId = ModelRevisionIdSchema.parse(`rev_${randomBytes(16).toString('hex')}`);
@@ -675,7 +827,8 @@ export class ModelProfileStateRepository {
       upstreamUrl,
       pricing,
       limits,
-      maxProxyOperations
+      maxProxyOperations,
+      ...pricingDigestFields(pricing)
     });
 
     const revision: AgentModelProfileRevision = {
@@ -688,6 +841,7 @@ export class ModelProfileStateRepository {
       downstreamPath,
       upstreamUrl,
       pricing,
+      priceProvenance,
       limits,
       maxProxyOperations,
       digest,
@@ -698,30 +852,7 @@ export class ModelProfileStateRepository {
 
     this.database.exec('BEGIN IMMEDIATE');
     try {
-      this.database.prepare(`
-        INSERT INTO agent_model_profile_revisions (
-          id, profile_id, principal_id, credential_id, model, api_mode, downstream_path, upstream_url,
-          input_micros_per_million, output_micros_per_million, max_input_tokens, max_output_tokens, max_cost_micros,
-          max_proxy_operations_json, digest, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        revId,
-        profileId,
-        principalId,
-        credentialId,
-        model,
-        apiMode,
-        downstreamPath,
-        upstreamUrl,
-        pricing.inputMicrosPerMillionTokens,
-        pricing.outputMicrosPerMillionTokens,
-        limits.maxInputTokens,
-        limits.maxOutputTokens,
-        limits.maxCostMicros,
-        JSON.stringify(maxProxyOperations),
-        digest,
-        now
-      );
+      this.insertRevision(revision);
       this.database.prepare(`
         UPDATE agent_model_profiles
         SET display_name = ?, credential_id = ?, desired_revision_id = ?, active_revision_id = ?, generation = generation + 1, updated_at = ?
@@ -861,37 +992,26 @@ export class ModelProfileStateRepository {
     const profiles: Record<string, AgentModelProfileRevision> = {};
     const credentialIdsToExport = new Set<string>();
 
+    const revisionStatement = this.database.prepare(`
+      SELECT ${REVISION_COLUMNS},
+        (SELECT provider FROM model_provider_credentials
+          WHERE model_provider_credentials.id = agent_model_profile_revisions.credential_id) AS credential_provider
+      FROM agent_model_profile_revisions
+      WHERE id = ?
+    `);
     for (const revId of revisionIdsToExport) {
-      const rev = this.database.prepare(`
-        SELECT * FROM agent_model_profile_revisions WHERE id = ?
-      `).get(revId) as Record<string, any> | undefined;
+      const rev = revisionStatement.get(revId) as (RevisionRow & { credential_provider: string | null }) | undefined;
 
       if (rev) {
-        const credId = ModelCredentialIdSchema.parse(rev.credential_id);
-        profiles[rev.id] = {
-          id: ModelRevisionIdSchema.parse(rev.id),
-          profileId: ModelProfileIdSchema.parse(rev.profile_id),
-          principalId: rev.principal_id,
-          credentialId: credId,
-          model: rev.model,
-          apiMode: rev.api_mode,
-          downstreamPath: rev.downstream_path,
-          upstreamUrl: rev.upstream_url,
-          pricing: {
-            inputMicrosPerMillionTokens: rev.input_micros_per_million,
-            outputMicrosPerMillionTokens: rev.output_micros_per_million
-          },
-          limits: {
-            maxInputTokens: rev.max_input_tokens,
-            maxOutputTokens: rev.max_output_tokens,
-            maxCostMicros: rev.max_cost_micros
-          },
-          maxProxyOperations: AgentProxyOperationSchema.array().parse(JSON.parse(rev.max_proxy_operations_json)),
-          digest: rev.digest,
-          createdAt: rev.created_at
-        };
+        const revision = revisionFromRow(rev);
+        // The gateway charges concrete prices: unknown cache prices resolve to the
+        // conservative defaults for the credential's provider. A revision whose
+        // provider cannot be read resolves as `custom`, the most conservative case.
+        const provider = ModelProviderKindSchema.safeParse(rev.credential_provider);
+        revision.pricing = resolveEffectivePricing(revision.pricing, provider.success ? provider.data : 'custom');
+        profiles[rev.id] = revision;
 
-        credentialIdsToExport.add(credId);
+        credentialIdsToExport.add(revision.credentialId);
       }
     }
 

@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import { ModelCredentialIdSchema, ModelProfileIdSchema, ModelRevisionIdSchema, ModelVerificationRefSchema } from './identifiers.js';
+import {
+  AgentModelPriceProvenanceSchema,
+  ModelPriceTiersSchema,
+  PriceMicrosPerMillionSchema,
+  addPriceTierIssues
+} from './model-pricing.js';
 import { AgentProxyOperationSchema } from './runner-api.js';
 
 export const ModelProviderKindSchema = z.enum([
@@ -75,10 +81,20 @@ export type ProviderCredentialMetadata = z.infer<typeof ProviderCredentialMetada
 export const AgentModelApiModeSchema = z.enum(['chat-completions', 'responses']);
 export type AgentModelApiMode = z.infer<typeof AgentModelApiModeSchema>;
 
+// Prices pinned on a revision, in integer micro-USD per one million tokens. A
+// null or absent cache price is unknown, never free: the gateway and the agent
+// charge the conservative default from resolveEffectivePricing (model-pricing.ts).
+// `tiers` holds long-prompt prices; each tier must not charge less than the level
+// below it.
 export const AgentModelPricingSchema = z.object({
-  inputMicrosPerMillionTokens: z.number().int().nonnegative(),
-  outputMicrosPerMillionTokens: z.number().int().nonnegative()
-}).strict();
+  inputMicrosPerMillionTokens: PriceMicrosPerMillionSchema,
+  outputMicrosPerMillionTokens: PriceMicrosPerMillionSchema,
+  cacheReadMicrosPerMillionTokens: PriceMicrosPerMillionSchema.nullable().optional(),
+  cacheWriteMicrosPerMillionTokens: PriceMicrosPerMillionSchema.nullable().optional(),
+  tiers: ModelPriceTiersSchema.optional()
+}).strict().superRefine((pricing, context) => {
+  if (pricing.tiers) addPriceTierIssues(pricing, pricing.tiers, context);
+});
 export type AgentModelPricing = z.infer<typeof AgentModelPricingSchema>;
 
 export const AgentModelLimitsSchema = z.object({
@@ -128,6 +144,7 @@ export const AgentModelProfileRevisionSchema = z.object({
   downstreamPath: z.string(),
   upstreamUrl: z.string(),
   pricing: AgentModelPricingSchema,
+  priceProvenance: AgentModelPriceProvenanceSchema,
   limits: AgentModelLimitsSchema,
   maxProxyOperations: z.array(AgentProxyOperationSchema),
   digest: z.string(),

@@ -180,9 +180,51 @@ Model profiles define how subagents interact with LLMs:
 - **Model Name:** The provider-specific model identifier (e.g. `gpt-5.2-codex`, `claude-3.7-sonnet`).
 - **API Mode:** `chat-completions` (`/v1/chat/completions`) or `responses` (`/v1/responses`), limited to the modes the provider offers.
 - **Custom upstream URL:** Required for a Custom credential. Editing the profile keeps its current URL unless you enter a new one; changing the API mode or switching to a different Custom credential requires entering the URL again.
-- **Token Pricing:** Input and output token pricing in USD per 1M tokens.
+- **Token Pricing:** Input and output token pricing in USD per 1M tokens, plus optional cache prices and long-prompt tiers (see [Revision pricing and provenance](#revision-pricing-and-provenance)).
 - **Budget Limits:** Hard limits for maximum input tokens, output tokens, and cost per agent execution.
 - **Allowed Proxy Operations:** Hard ceiling on permitted file and search operations from the exact 10 safe tools (`files_list`, `files_read`, `files_write`, `files_apply_patch`, `files_delete`, `files_move`, `files_mkdir`, `grep_search`, `symbols_search`, `symbols_references`).
+
+### Revision pricing and provenance
+
+Every saved revision pins its prices. Prices are integer micro-USD per one million tokens,
+and the contract lives in
+[`packages/contracts/src/model-pricing.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-pricing.ts)
+and `AgentModelPricingSchema` in
+[`model-profile-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-profile-schemas.ts).
+
+- **Cache prices.** `cacheReadMicrosPerMillionTokens` and `cacheWriteMicrosPerMillionTokens`
+  are optional. Leaving one out, or sending `null`, records it as unknown, never as free.
+- **Tiers.** `tiers` holds up to four long-prompt price levels. Each tier applies once a
+  request's prompt reaches its `minPromptTokens`; the base prices cover shorter prompts.
+  Thresholds must strictly ascend, and no tier may charge less than the level below it.
+  Cache prices are compared only where both levels state them.
+- **Provenance.** `priceProvenance` records where the prices came from: `source`
+  (`provider`, `openrouter`, `user`, or `none`), `sourceModelId`, `retrievedAt`,
+  `confidence` (`exact`, `estimate`, or `unknown`), and `isOverride`. Prices you type are
+  recorded as a `user` override of `unknown` confidence. Revisions saved before provenance
+  existed read back the same way, because those prices were entered by hand.
+
+**Pinned prices never drift.** Revisions are immutable, and catalog refreshes never write
+to them. An edit that does not submit pricing copies the current revision's prices, cache
+prices, tiers, and provenance unchanged, and keeps its limits unless the edit changes them.
+An edit that submits pricing replaces all of them: send the cache prices and tiers again to
+keep them, and the new prices are recorded as your override.
+
+**How unknown prices are charged.** The gateway and the agent's own cost report use the
+same concrete prices, resolved when the runner sends the revision to the gateway and when it
+starts an agent:
+
+| Price | When unknown |
+| --- | --- |
+| Cache read | The input price of the same level |
+| Cache write, OpenRouter and Custom | Twice the input price of the same level |
+| Cache write, OpenAI, Anthropic, Gemini, DeepSeek | The input price of the same level |
+
+Whether a provider bills cache writes is the `billsCacheWrites` field of the
+[provider registry](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-provider-registry.ts).
+These defaults can only over-charge; enter the real price to make estimates exact. The
+profile list shows the prices as saved, not the resolved defaults. An agent's self-reported
+cost uses the base prices; the gateway applies tiers.
 
 ### The profile wizard
 

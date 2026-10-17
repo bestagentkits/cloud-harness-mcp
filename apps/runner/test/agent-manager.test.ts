@@ -3,13 +3,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { RunnerAgentsConfigSchema, buildRepositoryGuidanceSnapshot, type RunnerOperation } from '@cloud-harness/contracts';
-import { createHash } from 'node:crypto';
+import { ModelProfileIdSchema, RunnerAgentsConfigSchema, buildRepositoryGuidanceSnapshot, type RunnerOperation } from '@cloud-harness/contracts';
+import { createHash, randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentManager } from '../src/agent-manager.js';
 import type { AgentGatewayControl, AgentLeaseGrant } from '../src/agent-gateway-control.js';
 import type { AgentLaunchSpec, AgentLauncher, AgentRuntimeProcess } from '../src/agent-launcher.js';
 import { AgentStateRepository } from '../src/agent-state-repository.js';
+import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
+import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
 
 const directories: string[] = [];
@@ -605,5 +607,71 @@ describe('agent repository guidance bootstrap', () => {
     expect((report.injectedBytes as number) + Buffer.byteLength('inspect the repository')).toBeLessThanOrEqual(2_500);
     expect(report.skipped as number).toBeGreaterThan(0);
     await manager.stop();
+  });
+  describe('start record pricing', () => {
+    // The start record is the first protocol line the runner writes to the agent.
+    async function startRecordCost(launcher: FakeLauncher): Promise<Record<string, number>> {
+      await vi.waitFor(() => expect(launcher.inputs).toHaveLength(1));
+      let line: string | undefined;
+      await vi.waitFor(() => {
+        const buffered = launcher.inputs[0]!.read() as Buffer | null;
+        line = buffered?.toString('utf8').split('\n').find((candidate) => candidate.includes('"type":"start"'));
+        expect(line).toBeDefined();
+      });
+      return (JSON.parse(line!) as { model: { cost: Record<string, number> } }).model.cost;
+    }
+
+    it('reports conservative cache prices for a static profile without them', async () => {
+      const { manager, record, launcher } = setup();
+      await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+      // The test profile names no registry provider, so it resolves as custom: reads at input, writes at twice input.
+      expect(await startRecordCost(launcher)).toEqual({ input: 0.000001, output: 0.000001, cacheRead: 0.000001, cacheWrite: 0.000002 });
+      await manager.stop();
+    });
+
+    it('reports the configured cache prices of a static profile', async () => {
+      const config = RunnerAgentsConfigSchema.parse({
+        ...agentsConfig,
+        profiles: [{ ...agentsConfig.profiles[0]!, provider: 'openai', inputMicrosPerMillionTokens: 2_000_000, cacheReadMicrosPerMillionTokens: 500_000 }]
+      });
+      const { manager, record, launcher } = setup('network-none', config);
+      await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+      expect(await startRecordCost(launcher)).toEqual({ input: 2, output: 0.000001, cacheRead: 0.5, cacheWrite: 2 });
+      await manager.stop();
+    });
+
+    it('reports a saved profile revision\'s effective cache prices instead of zero', async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'agent-manager-pricing-'));
+      directories.push(directory);
+      const store = new StateStore(join(directory, 'state.db'));
+      openStores.push(store);
+      const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
+      const record = workspace('network-none', ownerId);
+      store.create(record);
+      const modelProfiles = new ModelProfileStateRepository(store.database, new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]));
+      const credential = modelProfiles.createCredential(ownerId, { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or-test' });
+      modelProfiles.createProfile(ownerId, {
+        profileId: ModelProfileIdSchema.parse('cached'),
+        displayName: 'Cached',
+        credentialId: credential.id,
+        model: 'openai/gpt-5',
+        apiMode: 'chat-completions',
+        pricing: { inputMicrosPerMillionTokens: 3_000_000, outputMicrosPerMillionTokens: 15_000_000, cacheReadMicrosPerMillionTokens: 300_000 },
+        limits: { maxInputTokens: 10_000, maxOutputTokens: 2_000, maxCostMicros: 1_000_000 },
+        maxProxyOperations: ['files_read']
+      });
+      const launcher = new FakeLauncher();
+      const manager = new AgentManager(agentsConfig, store, {
+        repository: new AgentStateRepository(store.database, agentsConfig.limits),
+        launcher,
+        gateway: new FakeGateway(),
+        toolExecutor: vi.fn(async () => ({ ok: true as const, message: 'read', data: {}, truncated: false })),
+        modelProfiles
+      });
+      await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { profileId: 'cached' }));
+      // OpenRouter bills cache writes, so the unknown write price is twice the input price.
+      expect(await startRecordCost(launcher)).toEqual({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 6 });
+      await manager.stop();
+    });
   });
 });

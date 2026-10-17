@@ -1,8 +1,8 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ModelProfileIdSchema, ModelVerificationRefSchema } from '@cloud-harness/contracts';
+import { ModelProfileIdSchema, ModelVerificationRefSchema, type AgentModelPriceProvenance, type ModelCredentialId } from '@cloud-harness/contracts';
 import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
@@ -238,5 +238,151 @@ describe('ModelProfileStateRepository', () => {
     expect(repo.listProfiles(p1)[0]?.lastVerification).toBeUndefined();
     expect(repo.listCredentials(p1)[0]?.lastVerification).toBeUndefined();
     expect((store.database.prepare('SELECT count(*) AS count FROM model_verification_results').get() as { count: number }).count).toBe(0);
+  });
+  describe('revision pricing and provenance', () => {
+    const catalogProvenance: AgentModelPriceProvenance = {
+      source: 'openrouter', sourceModelId: 'openai/gpt-5', retrievedAt: 1_700_000_000_000, confidence: 'estimate', isOverride: false
+    };
+    const tiers = [
+      { minPromptTokens: 200_000, inputMicrosPerMillionTokens: 2_500, outputMicrosPerMillionTokens: 15_000, cacheReadMicrosPerMillionTokens: 625 }
+    ];
+    const pricedProfile = (credentialId: ModelCredentialId, profileId = 'priced') => ({
+      profileId: ModelProfileIdSchema.parse(profileId),
+      displayName: 'Priced',
+      credentialId,
+      model: 'gpt-5',
+      apiMode: 'chat-completions' as const,
+      pricing: { inputMicrosPerMillionTokens: 1_250, outputMicrosPerMillionTokens: 10_000, cacheReadMicrosPerMillionTokens: 125, tiers },
+      limits: { maxInputTokens: 300_000, maxOutputTokens: 4_000, maxCostMicros: 900_000 },
+      maxProxyOperations: ['files_read' as const]
+    });
+
+    it('round-trips cache prices, tiers, and service-supplied provenance', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-priced' });
+      const created = repo.createProfile(p1, pricedProfile(cred.id), { priceProvenance: catalogProvenance });
+      expect(created.activeRevision?.priceProvenance).toEqual(catalogProvenance);
+      expect(created.activeRevision?.pricing).toEqual(pricedProfile(cred.id).pricing);
+
+      const [listed] = repo.listProfiles(p1);
+      expect(listed?.activeRevision).toEqual(created.activeRevision);
+    });
+
+    it('records prices without a service-supplied source as a user override and stores unknown cache prices as absent', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-user' });
+      const created = repo.createProfile(p1, {
+        ...pricedProfile(cred.id),
+        pricing: { inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000, cacheReadMicrosPerMillionTokens: null, cacheWriteMicrosPerMillionTokens: null }
+      });
+      expect(created.activeRevision?.priceProvenance).toEqual({ source: 'user', sourceModelId: null, retrievedAt: null, confidence: 'unknown', isOverride: true });
+      expect(created.activeRevision?.pricing).toEqual({ inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000 });
+      expect(repo.listProfiles(p1)[0]?.activeRevision).toEqual(created.activeRevision);
+    });
+
+    it('pins prices, tiers, provenance, and limits when an edit omits pricing', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-pin' });
+      const created = repo.createProfile(p1, pricedProfile(cred.id), { priceProvenance: catalogProvenance });
+      // Provenance offered without prices does not replace the pinned source.
+      const edited = repo.updateProfile(p1, created.id, { displayName: 'Renamed', model: 'gpt-5-mini', expectedGeneration: 1 }, {
+        priceProvenance: { ...catalogProvenance, source: 'provider', confidence: 'exact' }
+      });
+      expect(edited.activeRevisionId).not.toBe(created.activeRevisionId);
+      expect(edited.activeRevision?.model).toBe('gpt-5-mini');
+      expect(edited.activeRevision?.pricing).toEqual(created.activeRevision?.pricing);
+      expect(edited.activeRevision?.priceProvenance).toEqual(catalogProvenance);
+      expect(edited.activeRevision?.limits).toEqual(created.activeRevision?.limits);
+      expect(repo.listProfiles(p1)[0]?.activeRevision).toEqual(edited.activeRevision);
+    });
+
+    it('marks an edit that submits pricing as an override unless the service names a catalog source', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-override' });
+      const created = repo.createProfile(p1, pricedProfile(cred.id), { priceProvenance: catalogProvenance });
+      const typed = repo.updateProfile(p1, created.id, {
+        pricing: { inputMicrosPerMillionTokens: 1_300, outputMicrosPerMillionTokens: 10_000 },
+        expectedGeneration: 1
+      });
+      expect(typed.activeRevision?.priceProvenance).toEqual({ source: 'user', sourceModelId: null, retrievedAt: null, confidence: 'unknown', isOverride: true });
+      // Tiers and cache prices are part of the submitted pricing, so omitting them drops them.
+      expect(typed.activeRevision?.pricing).toEqual({ inputMicrosPerMillionTokens: 1_300, outputMicrosPerMillionTokens: 10_000 });
+
+      const fromCatalog = repo.updateProfile(p1, created.id, { pricing: pricedProfile(cred.id).pricing, expectedGeneration: 2 }, { priceProvenance: catalogProvenance });
+      expect(fromCatalog.activeRevision?.priceProvenance).toEqual(catalogProvenance);
+      expect(repo.listProfiles(p1)[0]?.activeRevision?.priceProvenance).toEqual(catalogProvenance);
+    });
+
+    it('exports effective prices to the gateway in the snapshot shape it charges from', () => {
+      const { repo, p1 } = setup();
+      const openai = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-snap' });
+      const openrouter = repo.createCredential(p1, { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or' });
+      const direct = repo.createProfile(p1, pricedProfile(openai.id, 'direct'));
+      const routed = repo.createProfile(p1, {
+        ...pricedProfile(openrouter.id, 'routed'),
+        pricing: { inputMicrosPerMillionTokens: 3_000, outputMicrosPerMillionTokens: 15_000 }
+      });
+
+      const snapshot = repo.getExportSnapshot(p1);
+      // Unknown cache writes cost the input price where the provider bills no write premium.
+      expect(snapshot.profiles[direct.activeRevisionId!]?.pricing).toEqual({
+        inputMicrosPerMillionTokens: 1_250,
+        outputMicrosPerMillionTokens: 10_000,
+        cacheReadMicrosPerMillionTokens: 125,
+        cacheWriteMicrosPerMillionTokens: 1_250,
+        tiers: [{
+          minPromptTokens: 200_000,
+          inputMicrosPerMillionTokens: 2_500,
+          outputMicrosPerMillionTokens: 15_000,
+          cacheReadMicrosPerMillionTokens: 625,
+          cacheWriteMicrosPerMillionTokens: 2_500
+        }]
+      });
+      // Providers that bill cache writes default an unknown write price to twice the input.
+      expect(snapshot.profiles[routed.activeRevisionId!]?.pricing).toEqual({
+        inputMicrosPerMillionTokens: 3_000,
+        outputMicrosPerMillionTokens: 15_000,
+        cacheReadMicrosPerMillionTokens: 3_000,
+        cacheWriteMicrosPerMillionTokens: 6_000
+      });
+      expect(snapshot.profiles[routed.activeRevisionId!]?.priceProvenance.isOverride).toBe(true);
+      for (const revision of Object.values(snapshot.profiles)) {
+        const prices = [revision.pricing, ...(revision.pricing.tiers ?? [])].flatMap((level) => [
+          level.inputMicrosPerMillionTokens, level.outputMicrosPerMillionTokens,
+          level.cacheReadMicrosPerMillionTokens, level.cacheWriteMicrosPerMillionTokens
+        ]);
+        for (const price of prices) expect(Number.isSafeInteger(price) && (price as number) >= 0).toBe(true);
+      }
+      // Listing still shows the pinned prices, not the resolved ones.
+      expect(repo.listProfiles(p1).find((profile) => profile.id === 'routed')?.activeRevision?.pricing)
+        .toEqual({ inputMicrosPerMillionTokens: 3_000, outputMicrosPerMillionTokens: 15_000 });
+    });
+
+    it('keeps the legacy digest for legacy-shaped pricing and covers cache prices and tiers when present', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-digest' });
+      const legacyInput = { ...pricedProfile(cred.id, 'legacy-shape'), pricing: { inputMicrosPerMillionTokens: 1_250, outputMicrosPerMillionTokens: 10_000 } };
+      const legacy = repo.createProfile(p1, legacyInput);
+      const fields = {
+        profileId: legacyInput.profileId,
+        credentialId: legacyInput.credentialId,
+        model: legacyInput.model,
+        apiMode: legacyInput.apiMode,
+        downstreamPath: '/v1/chat/completions',
+        upstreamUrl: 'https://api.openai.com/v1/chat/completions',
+        pricing: legacyInput.pricing,
+        limits: legacyInput.limits,
+        maxProxyOperations: legacyInput.maxProxyOperations
+      };
+      const legacyDigest = `sha256:${createHash('sha256').update(JSON.stringify(fields, Object.keys(fields).sort()), 'utf8').digest('hex')}`;
+      expect(legacy.activeRevision?.digest).toBe(legacyDigest);
+
+      const withCache = repo.updateProfile(p1, legacy.id, { pricing: { ...legacyInput.pricing, cacheReadMicrosPerMillionTokens: 125 }, expectedGeneration: 1 });
+      const withOtherCache = repo.updateProfile(p1, legacy.id, { pricing: { ...legacyInput.pricing, cacheReadMicrosPerMillionTokens: 126 }, expectedGeneration: 2 });
+      const withTiers = repo.updateProfile(p1, legacy.id, { pricing: { ...legacyInput.pricing, tiers }, expectedGeneration: 3 });
+      const withOtherTiers = repo.updateProfile(p1, legacy.id, { pricing: { ...legacyInput.pricing, tiers: [{ ...tiers[0]!, minPromptTokens: 128_000 }] }, expectedGeneration: 4 });
+      const digests = [legacy, withCache, withOtherCache, withTiers, withOtherTiers].map((profile) => profile.activeRevision?.digest);
+      expect(new Set(digests).size).toBe(digests.length);
+    });
   });
 });

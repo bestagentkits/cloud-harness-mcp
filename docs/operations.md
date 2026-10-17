@@ -365,6 +365,24 @@ runner rebuilds from providers, so the bounded `downgradeStateSchemaToV13` in
 [`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts)
 drops the table without a data-loss guard; the next search refetches.
 
+## Revision pricing columns rollback
+
+Revision cache prices, long-prompt tiers, and price provenance are columns added in place
+to `agent_model_profile_revisions` by `initializeModelProfilePricingColumns` in
+[`apps/runner/src/model-profile-state-repository.ts`](../apps/runner/src/model-profile-state-repository.ts),
+without a state schema version bump. Every column is nullable or defaulted, so existing
+revisions read as user overrides of unknown confidence, and a rolled-back runner keeps
+reading and writing revisions by column name; its new revisions take the defaults. No data
+change is needed to roll back, and the columns stay in place for the next upgrade.
+
+A rolled-back runner ignores the new prices when it sends revisions to the model gateway:
+
+- Cache usage is billed at the input price, which over-charges models with cheaper cached
+  reads.
+- Long prompts on a revision with tiers are billed at the base prices, which under-charges.
+  Tiers exist only on revisions saved after the upgrade; while running the older release,
+  lower the per-run cost caps of tiered profiles or avoid long prompts on them.
+
 ## MCP Events deployment verification
 
 Automated tests prove [MCP Events](mcp-api.md#mcp-events-webhook-delivery)
