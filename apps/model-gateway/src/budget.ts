@@ -15,6 +15,17 @@ function costMicros(tokens: number, pricePerMillion: number): number {
   return Number((numerator + 999_999n) / 1_000_000n);
 }
 
+/**
+ * OpenAI reasoning models reject `max_tokens` on Chat Completions, while every
+ * OpenAI chat model accepts `max_completion_tokens`; other OpenAI-compatible
+ * providers keep the widely supported `max_tokens`. The unused alias is removed
+ * so the reserved cap is the only output limit sent upstream.
+ */
+function outputTokenField(profile: GatewayProfile): string {
+  if (profile.downstreamPath === '/v1/responses') return 'max_output_tokens';
+  return profile.provider === 'openai' ? 'max_completion_tokens' : 'max_tokens';
+}
+
 function requestedOutputTokens(body: Record<string, unknown>, profile: GatewayProfile): number {
   const fields = profile.downstreamPath === '/v1/responses'
     ? ['max_output_tokens']
@@ -26,7 +37,6 @@ function requestedOutputTokens(body: Record<string, unknown>, profile: GatewayPr
     if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`${field} must be a positive integer`);
     requested.push(value as number);
   }
-  delete body.max_completion_tokens;
   return requested.length === 0 ? profile.limits.maxOutputTokens : Math.min(...requested);
 }
 
@@ -49,13 +59,14 @@ export function reserveBudget(
   }
   const outputTokens = Math.min(requested, affordableOutput);
   if (outputTokens < 1) throw new Error('output cost budget exhausted');
-  const field = profile.downstreamPath === '/v1/responses' ? 'max_output_tokens' : 'max_tokens';
-  body[field] = outputTokens;
-  body.model = profile.model;
-  body.stream = true;
   if (profile.downstreamPath === '/v1/chat/completions') {
+    delete body.max_tokens;
+    delete body.max_completion_tokens;
     body.stream_options = { include_usage: true };
   }
+  body[outputTokenField(profile)] = outputTokens;
+  body.model = profile.model;
+  body.stream = true;
   const reservation: BudgetReservation = {
     lease,
     inputTokens,

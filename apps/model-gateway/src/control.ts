@@ -89,6 +89,7 @@ export async function startControlServer(options: {
 
             // Update credentials
             for (const [credId, credData] of Object.entries(credentials)) {
+              if (typeof credData.provider !== 'string') throw new Error(`invalid provider for credential ${credId}`);
               const authMode = credData.authMode === 'x-api-key' ? 'x-api-key' : 'authorization';
               registry.credentials.set(credId, {
                 provider: credData.provider,
@@ -120,7 +121,7 @@ export async function startControlServer(options: {
 
               const profile: GatewayProfile = {
                 id: revId,
-                provider: revData.model ?? 'default',
+                provider: cred.provider,
                 model: revData.model ?? 'default',
                 downstreamPath: revData.downstreamPath ?? '/v1/chat/completions',
                 upstream: upstreamUrl,

@@ -5,6 +5,8 @@ import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createGatewayRuntime } from '../src/gateway.js';
 import { loadGatewayConfig } from '../src/config.js';
+import { startControlServer, type DynamicGatewayRegistry } from '../src/control.js';
+import { LeaseRegistry } from '../src/lease-registry.js';
 import type { GatewayConfig } from '../src/types.js';
 
 const tempSocketPath = () =>
@@ -150,6 +152,27 @@ describe('Model Gateway Dynamic Control & Hot Reload', () => {
     expect(applied.ok).toBe(true);
     const ack = applied.ack as { activeProfileCount: number };
     expect(ack.activeProfileCount).toBe(1);
+  });
+
+  it('carries the credential provider into the dynamic profile', async () => {
+    const socketPath = tempSocketPath();
+    const config: GatewayConfig = {
+      mode: 'production', host: '127.0.0.1', port: 0, controlSocket: socketPath, profiles: new Map()
+    };
+    const registry: DynamicGatewayRegistry = {
+      profiles: new Map(), credentials: new Map(), snapshotDigest: '', gatewayBootId: 'boot_test'
+    };
+    const server = await startControlServer({
+      config, leases: new LeaseRegistry(), cancelRequest: async () => false, revokeLease: async () => false, registry
+    });
+    runtimes.push({ close: () => new Promise<void>((resolve) => server.close(() => resolve())) });
+
+    const applied = await sendControl(socketPath, productionSnapshot(
+      'https://api.openai.com/v1/chat/completions', 'rev_production_provider'
+    ));
+
+    expect(applied.ok).toBe(true);
+    expect(registry.profiles.get('rev_production_provider')).toMatchObject({ provider: 'openai', model: 'gpt-5.2-codex' });
   });
 
   it('refuses an address-literal upstream for a dynamic profile in production mode', async () => {

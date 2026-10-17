@@ -178,6 +178,30 @@ describe('model gateway security boundary', () => {
     }
   });
 
+  it('writes the output cap as max_completion_tokens for OpenAI chat profiles', () => {
+    const configured = { ...profile(new URL('https://localhost:443/v1/chat/completions')), provider: 'openai' };
+    const body: Record<string, unknown> = { max_tokens: 40, max_completion_tokens: 30, messages: [] };
+    const reservation = reserveBudget(body, 100, {
+      agentId: issue().agentId, profileId: configured.id, expiresAt: Date.now() + 1_000,
+      remainingInputTokens: 100, remainingOutputTokens: 500, remainingCostMicros: 1_000
+    }, configured);
+    expect(reservation.outputTokens).toBe(30);
+    expect(body).toMatchObject({ max_completion_tokens: 30, stream: true });
+    expect(body).not.toHaveProperty('max_tokens');
+  });
+
+  it('writes the output cap as max_tokens for other chat providers', () => {
+    const configured = profile(new URL('https://localhost:443/v1/chat/completions'));
+    const body: Record<string, unknown> = { max_tokens: 40, max_completion_tokens: 30, messages: [] };
+    const reservation = reserveBudget(body, 100, {
+      agentId: issue().agentId, profileId: configured.id, expiresAt: Date.now() + 1_000,
+      remainingInputTokens: 100, remainingOutputTokens: 500, remainingCostMicros: 1_000
+    }, configured);
+    expect(reservation.outputTokens).toBe(30);
+    expect(body).toMatchObject({ max_tokens: 30, stream: true });
+    expect(body).not.toHaveProperty('max_completion_tokens');
+  });
+
   it('clamps model and output tokens before reserving cost', () => {
     const configured = profile(new URL('https://localhost:443/v1/chat/completions'));
     const body: Record<string, unknown> = { model: 'caller-model', max_tokens: 999_999, messages: [] };
