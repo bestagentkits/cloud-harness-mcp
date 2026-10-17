@@ -1,3 +1,10 @@
+# [0.66.0-beta.15](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.14...v0.66.0-beta.15) (2026-10-17)
+
+
+### Bug Fixes
+
+* **model-gateway:** OpenAI output cap field and IPv6 translation address hardening ([#368](https://github.com/bestagentkits/cloud-harness-mcp/issues/368)) ([8a2e791](https://github.com/bestagentkits/cloud-harness-mcp/commit/8a2e7917de35a507b1e91eabc0486a182c5aaeb2))
+
 # [0.66.0-beta.14](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.13...v0.66.0-beta.14) (2026-10-17)
 
 
