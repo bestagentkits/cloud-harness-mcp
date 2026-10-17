@@ -8,6 +8,7 @@ import {
   AgentModelProfileUpdateInputSchema,
   ProviderCredentialInputSchema
 } from './model-profile-schemas.js';
+import { ModelCatalogRefreshInputSchema, ModelCatalogSearchInputSchema } from './model-catalog-schemas.js';
 import { RunnerPrincipalSelectorSchema } from './runner-api.js';
 import { SecretDescriptionSchema, SecretNameSchema, SecretNameShapeSchema, SecretPurposeSchema, SecretValueSchema } from './secret-policy.js';
 import { ToolkitSelectionSchema } from './tool-schemas.js';
@@ -37,6 +38,7 @@ import {
   McpGatewayUpdateInputSchema
 } from './mcp-gateway-schemas.js';
 import { OAuthGrantSettingsUpdateInputSchema } from './oauth-grant-settings.js';
+import { ModelConnectionVerifyInputSchema } from './model-verification-schemas.js';
 import {
   PackageOverviewInputSchema, PackagePlanApproveInputSchema, PackagePlanListInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema
 } from './package-schemas.js';
@@ -192,6 +194,8 @@ export const MetadataRunnerOperationSchema = z.enum([
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
   'model_profile_list', 'model_profile_create', 'model_profile_update', 'model_profile_activate', 'model_profile_disable', 'model_profile_delete',
   'model_config_status', 'model_provider_list',
+  'model_catalog_search', 'model_catalog_refresh',
+  'model_connection_verify',
   'knowledge_dashboard_list', 'knowledge_dashboard_get', 'knowledge_dashboard_create', 'knowledge_dashboard_update',
   'knowledge_dashboard_delete', 'knowledge_dashboard_search', 'knowledge_dashboard_graph',
   'knowledge_dashboard_link_create', 'knowledge_dashboard_link_delete',
@@ -319,6 +323,9 @@ const metadataInputs = {
   model_profile_delete: z.object({ profileId: ModelProfileIdSchema, expectedGeneration: generation }).strict(),
   model_config_status: z.object({}).strict(),
   model_provider_list: z.object({}).strict(),
+  model_catalog_search: ModelCatalogSearchInputSchema,
+  model_catalog_refresh: ModelCatalogRefreshInputSchema,
+  model_connection_verify: ModelConnectionVerifyInputSchema,
   knowledge_dashboard_list: z.object({
     kind: KnowledgeKindSchema.optional(),
     scope: KnowledgeScopeSchema.optional(),
@@ -608,6 +615,8 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('model_credential_list'), metadataRequest('model_credential_create'), metadataRequest('model_credential_rotate'), metadataRequest('model_credential_delete'),
   metadataRequest('model_profile_list'), metadataRequest('model_profile_create'), metadataRequest('model_profile_update'), metadataRequest('model_profile_activate'), metadataRequest('model_profile_disable'), metadataRequest('model_profile_delete'),
   metadataRequest('model_config_status'), metadataRequest('model_provider_list'),
+  metadataRequest('model_catalog_search'), metadataRequest('model_catalog_refresh'),
+  metadataRequest('model_connection_verify'),
   metadataRequest('knowledge_dashboard_list'), metadataRequest('knowledge_dashboard_get'), metadataRequest('knowledge_dashboard_create'), metadataRequest('knowledge_dashboard_update'),
   metadataRequest('knowledge_dashboard_delete'), metadataRequest('knowledge_dashboard_search'), metadataRequest('knowledge_dashboard_graph'),
   metadataRequest('knowledge_dashboard_link_create'), metadataRequest('knowledge_dashboard_link_delete'),

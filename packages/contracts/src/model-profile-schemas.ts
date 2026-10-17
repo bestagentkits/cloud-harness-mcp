@@ -12,6 +12,26 @@ export const ModelProviderKindSchema = z.enum([
 ]);
 export type ModelProviderKind = z.infer<typeof ModelProviderKindSchema>;
 
+// A connection check runs from the runner against the provider the operator
+// configured. `limited` means the connection could not be fully proven for a
+// transient or account reason (rate limit, quota, timeout, network, provider
+// outage, or a model that does not support tool calls); it never means the
+// model is unsupported. `failed` is reserved for answers that prove the
+// configuration is wrong (bad key, no access, unknown model, wrong protocol).
+// The full check contract lives in model-verification-schemas.ts.
+export const ModelVerificationOutcomeSchema = z.enum(['verified', 'limited', 'failed', 'not_tested']);
+export type ModelVerificationOutcome = z.infer<typeof ModelVerificationOutcomeSchema>;
+
+// The latest stored verification of a credential or saved profile. A profile
+// result is tied to the revision it checked, so a new revision reads as not
+// verified; a credential result is tied to the key version it checked.
+export const ModelLastVerificationSchema = z.object({
+  outcome: ModelVerificationOutcomeSchema,
+  checkedAt: z.number().int(),
+  revisionId: ModelRevisionIdSchema.nullable()
+}).strict();
+export type ModelLastVerification = z.infer<typeof ModelLastVerificationSchema>;
+
 export const ProviderAuthModeSchema = z.enum(['bearer', 'x-api-key']);
 export type ProviderAuthMode = z.infer<typeof ProviderAuthModeSchema>;
 
@@ -47,7 +67,8 @@ export const ProviderCredentialMetadataSchema = z.object({
   status: ProviderCredentialStatusSchema,
   syncStatus: ProviderCredentialSyncStatusSchema,
   createdAt: z.number().int(),
-  updatedAt: z.number().int()
+  updatedAt: z.number().int(),
+  lastVerification: ModelLastVerificationSchema.optional()
 }).strict();
 export type ProviderCredentialMetadata = z.infer<typeof ProviderCredentialMetadataSchema>;
 
@@ -124,7 +145,8 @@ export const AgentModelProfileMetadataSchema = z.object({
   status: AgentModelProfileStatusSchema,
   activeRevision: AgentModelProfileRevisionSchema.nullable(),
   createdAt: z.number().int(),
-  updatedAt: z.number().int()
+  updatedAt: z.number().int(),
+  lastVerification: ModelLastVerificationSchema.optional()
 }).strict();
 export type AgentModelProfileMetadata = z.infer<typeof AgentModelProfileMetadataSchema>;
 

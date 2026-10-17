@@ -91,9 +91,9 @@ const deliveries = (store: StateStore) => store.database.prepare('SELECT * FROM 
 }[];
 
 describe('MCP event store schema', () => {
-  it('migrates to v13 and refuses a lossy downgrade while events are retained', () => {
+  it('migrates past v13 and refuses a lossy downgrade while events are retained', () => {
     const { store, events, owner } = setup();
-    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(13);
+    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(14);
     subscribe(events, owner, 'cloudharness.task.completed');
     expect(() => downgradeStateSchemaToV12(store.database)).toThrow('allowDataLoss required');
     downgradeStateSchemaToV12(store.database, true);
