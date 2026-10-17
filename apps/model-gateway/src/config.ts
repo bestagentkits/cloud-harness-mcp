@@ -307,25 +307,35 @@ async function parseProfile(raw: unknown, mode: GatewayMode, index: number): Pro
   };
 }
 
+// Headers the gateway sets itself, plus hop-by-hop, framing, encoding, proxy and cookie
+// headers a session header must never be able to set or override.
 const RESERVED_UPSTREAM_HEADERS: Record<string, true> = {
   accept: true, 'content-type': true, 'content-length': true, host: true,
-  'user-agent': true, authorization: true, 'x-api-key': true
+  'user-agent': true, authorization: true, 'x-api-key': true,
+  'transfer-encoding': true, te: true, connection: true, 'keep-alive': true, upgrade: true,
+  trailer: true, expect: true, 'proxy-authorization': true, 'proxy-connection': true,
+  cookie: true, 'accept-encoding': true, 'content-encoding': true
 };
 
 /**
- * `MODEL_GATEWAY_SESSION_HEADER` names the optional provider session header the
- * gateway fills with the calling agent id. It must be a plain lowercase header
- * name and must not collide with a header the gateway sets itself.
+ * Validates a provider session header name, which the gateway fills with the calling
+ * agent id. It must be a plain lowercase header name and must not collide with a
+ * header the gateway sets itself. `source` names the setting in the error message.
  */
-function parseSessionHeader(value: string | undefined): string | undefined {
-  if (value === undefined || value === '') return undefined;
+export function assertSessionHeaderName(value: string, source: string): string {
   if (!/^[a-z0-9][a-z0-9-]{1,62}$/u.test(value)) {
-    throw new Error('MODEL_GATEWAY_SESSION_HEADER must be a lowercase header name');
+    throw new Error(`${source} must be a lowercase header name`);
   }
   if (RESERVED_UPSTREAM_HEADERS[value] === true) {
-    throw new Error(`MODEL_GATEWAY_SESSION_HEADER must not be ${value}`);
+    throw new Error(`${source} must not be ${value}`);
   }
   return value;
+}
+
+/** `MODEL_GATEWAY_SESSION_HEADER` is the instance-wide fallback session header. */
+function parseSessionHeader(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  return assertSessionHeaderName(value, 'MODEL_GATEWAY_SESSION_HEADER');
 }
 
 export async function loadGatewayConfig(env: NodeJS.ProcessEnv = process.env): Promise<GatewayConfig> {

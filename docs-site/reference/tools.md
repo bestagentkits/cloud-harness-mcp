@@ -1204,7 +1204,7 @@ List the supported model providers (auth header modes, API modes and endpoints, 
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `provider` | `"openai"` \| `"anthropic"` \| `"openrouter"` \| `"google"` \| `"deepseek"` \| `"custom"` | No | — |
+| `provider` | `"openai"` \| `"anthropic"` \| `"openrouter"` \| `"google"` \| `"deepseek"` \| `"opencode-go"` \| `"custom"` | No | — |
 
 ### `model_catalog_search`
 
@@ -1216,7 +1216,7 @@ Search the cached model catalog for one provider, optionally through your creden
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `provider` | `"openai"` \| `"anthropic"` \| `"openrouter"` \| `"google"` \| `"deepseek"` \| `"custom"` | **Yes** | — |
+| `provider` | `"openai"` \| `"anthropic"` \| `"openrouter"` \| `"google"` \| `"deepseek"` \| `"opencode-go"` \| `"custom"` | **Yes** | — |
 | `credentialId` | `string` | No | pattern: `^cred_[A-Za-z0-9_-]{20,80}$` |
 | `query` | `string` | No | max length: 200 |
 | `cursor` | `string` | No | length: 1–256 |

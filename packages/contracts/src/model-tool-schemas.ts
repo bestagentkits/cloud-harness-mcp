@@ -126,7 +126,9 @@ export const ModelProviderDefinitionSchema = z.object({
   catalogStrategy: z.enum(['provider-models', 'openrouter', 'none']),
   openRouterVendor: z.string().nullable(),
   requiresCustomUpstream: z.boolean(),
-  billsCacheWrites: z.boolean()
+  billsCacheWrites: z.boolean(),
+  // The header the harness fills with a session id for this provider; not a secret.
+  sessionHeader: z.string().nullable()
 }).strict();
 
 export const ModelProviderListToolResultSchema = z.object({

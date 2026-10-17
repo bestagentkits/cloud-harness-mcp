@@ -173,6 +173,24 @@ describe('provider model listing', () => {
     expect(calls[0]?.method).toBe('GET');
   });
 
+  it('sends the OpenCode Go session header with a fresh id on each listing, and no such header elsewhere', async () => {
+    const { client, calls } = fakeHttp(() => json({ data: [{ id: 'kimi-k2.5' }] }));
+    expect(await fetchProviderModels(client, 'opencode-go', BEARER)).toEqual([
+      { id: 'kimi-k2.5', displayName: null, contextWindow: null, maxOutputTokens: null }
+    ]);
+    await fetchProviderModels(client, 'opencode-go', BEARER);
+    await fetchProviderModels(client, 'openai', BEARER);
+    expect(calls.map((call) => call.url)).toEqual([
+      'https://opencode.ai/inference/go/v1/models', 'https://opencode.ai/inference/go/v1/models', 'https://api.openai.com/v1/models'
+    ]);
+    const [first, second] = calls.map((call) => call.headers?.['x-opencode-session']);
+    expect(first).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(second).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(second).not.toBe(first);
+    expect(calls[0]?.headers).toEqual({ authorization: `Bearer ${SECRET}`, 'x-opencode-session': first });
+    expect(calls[2]?.headers).toEqual({ authorization: `Bearer ${SECRET}` });
+  });
+
   it('strips the Gemini models/ prefix so the chat endpoint receives a bare ID', async () => {
     const { client } = fakeHttp(() => json({ object: 'list', data: [{ id: 'models/gemini-2.5-pro', object: 'model' }, { id: 'gemini-2.5-flash' }] }));
     const models = await fetchProviderModels(client, 'google', BEARER);

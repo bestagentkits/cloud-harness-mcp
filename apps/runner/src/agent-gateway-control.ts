@@ -95,7 +95,7 @@ export function isDefiniteIssueRefusal(error: unknown): boolean {
 const BootIdSchema = z.string().min(1).max(256);
 const IssueResponseSchema = z.object({ gatewayBootId: BootIdSchema.optional() });
 export type GatewaySnapshot = {
-  credentials: Record<string, { provider: string; authMode?: string; secret: string }>;
+  credentials: Record<string, { provider: string; authMode?: string; secret: string; sessionHeader?: string }>;
   profiles: Record<string, unknown>;
   generation?: number;
   sequence?: number;

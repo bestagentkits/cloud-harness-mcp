@@ -32,6 +32,43 @@ describe('model provider registry', () => {
     expect(resolveProviderUpstreamUrl('openrouter', 'chat-completions')).toBe('https://openrouter.ai/api/v1/chat/completions');
     expect(resolveProviderUpstreamUrl('anthropic', 'chat-completions')).toBe('https://api.anthropic.com/v1/chat/completions');
     expect(resolveProviderUpstreamUrl('deepseek', 'chat-completions')).toBe('https://api.deepseek.com/chat/completions');
+    expect(resolveProviderUpstreamUrl('opencode-go', 'chat-completions')).toBe('https://opencode.ai/inference/go/openai/v1/chat/completions');
+    expect(resolveProviderUpstreamUrl('opencode-go', 'responses')).toBe('https://opencode.ai/inference/go/openai/v1/responses');
+  });
+
+  it('defines OpenCode Go as a bearer provider on opencode.ai that requires its session header', () => {
+    const provider = getModelProvider('opencode-go');
+    expect(provider.authModes).toEqual(['bearer']);
+    expect(provider.requiresCustomUpstream).toBe(false);
+    expect(provider.catalogStrategy).toBe('provider-models');
+    expect(provider.openRouterVendor).toBeNull();
+    expect(provider.modelsEndpoint).toEqual({ url: 'https://opencode.ai/inference/go/v1/models', auth: 'bearer' });
+    for (const url of [...Object.values(provider.endpoints), provider.modelsEndpoint!.url, provider.docsUrl!, provider.apiKeyUrl!]) {
+      expect(new URL(url).protocol).toBe('https:');
+      expect(new URL(url).hostname).toBe('opencode.ai');
+    }
+    expect(provider.sessionHeader).toBe('x-opencode-session');
+  });
+
+  it('names only session headers the gateway accepts', () => {
+    // Mirrors the gateway's reserved names (apps/model-gateway/src/config.ts), which contracts cannot import.
+    const reserved = [
+      'accept', 'content-type', 'content-length', 'host', 'user-agent', 'authorization', 'x-api-key',
+      'transfer-encoding', 'te', 'connection', 'keep-alive', 'upgrade', 'trailer', 'expect',
+      'proxy-authorization', 'proxy-connection', 'cookie', 'accept-encoding', 'content-encoding'
+    ];
+    for (const provider of listModelProviders()) {
+      if (provider.sessionHeader === null) continue;
+      expect(provider.sessionHeader, provider.id).toMatch(/^[a-z0-9][a-z0-9-]{1,62}$/u);
+      expect(reserved, provider.id).not.toContain(provider.sessionHeader);
+    }
+  });
+
+  it('names a session header only for providers that ask for one', () => {
+    for (const provider of listModelProviders()) {
+      if (provider.id === 'opencode-go') continue;
+      expect(provider.sessionHeader, provider.id).toBeNull();
+    }
   });
 
   it('rejects API modes and custom URLs a provider cannot serve', () => {

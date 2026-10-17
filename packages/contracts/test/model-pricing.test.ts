@@ -74,7 +74,7 @@ function gatewayParsePricing(value: unknown): void {
 describe('resolveEffectivePricing', () => {
   it('declares which providers bill cache writes', () => {
     const expected: Record<ModelProviderKind, boolean> = {
-      openai: false, anthropic: false, google: false, deepseek: false, openrouter: true, custom: true
+      openai: false, anthropic: false, google: false, deepseek: false, openrouter: true, 'opencode-go': true, custom: true
     };
     for (const provider of ModelProviderKindSchema.options) {
       expect(getModelProvider(provider).billsCacheWrites, provider).toBe(expected[provider]);

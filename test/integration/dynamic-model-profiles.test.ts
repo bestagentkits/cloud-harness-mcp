@@ -1280,6 +1280,111 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       await manager.stop();
     }
   });
+
+  it('sends the OpenCode Go session header with the agent id through a synced snapshot', async () => {
+    const { repo, p } = setup();
+    const { certFile, keyFile } = await ensureTlsFixtures();
+    const received: Array<{ path: string; session: string | undefined; authorization: string | undefined; custom: string | undefined }> = [];
+    const upstreamServer: TlsServer = createTlsServer({ cert: readFileSync(certFile), key: readFileSync(keyFile) }, (req, res) => {
+      const session = req.headers['x-opencode-session'];
+      received.push({
+        path: req.url ?? '',
+        session: typeof session === 'string' ? session : undefined,
+        authorization: req.headers.authorization,
+        custom: typeof req.headers['x-custom'] === 'string' ? req.headers['x-custom'] : undefined
+      });
+      if (typeof session !== 'string' || session === '') {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end('{"error":{"type":"MissingSessionID"}}');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: {"choices":[{"delta":{"content":"opencode"}}],"usage":{"prompt_tokens":5,"completion_tokens":3}}\n\n');
+      res.end('data: [DONE]\n\n');
+    });
+    await new Promise<void>((res) => upstreamServer.listen(0, '127.0.0.1', res));
+    const upstreamAddress = upstreamServer.address() as AddressInfo;
+
+    const controlSocket = process.platform === 'win32'
+      ? `\\\\.\\pipe\\gw-opencode-${randomBytes(6).toString('hex')}`
+      : join(tmpdir(), `gw-opencode-${randomBytes(6).toString('hex')}.sock`);
+    // The instance-wide header stays set to show that the provider's own header takes precedence.
+    const gwRuntime = createGatewayRuntime(await loadGatewayConfig({
+      MODEL_GATEWAY_MODE: 'test',
+      MODEL_GATEWAY_CONTROL_SOCKET: controlSocket,
+      MODEL_GATEWAY_HOST: '127.0.0.1',
+      MODEL_GATEWAY_PORT: '3210',
+      MODEL_GATEWAY_PROFILES_JSON: '[]',
+      MODEL_GATEWAY_TEST_TLS_CA_FILE: certFile,
+      MODEL_GATEWAY_SESSION_HEADER: 'x-custom'
+    }));
+    await gwRuntime.listen();
+    const gwAddress = gwRuntime.httpServer.address() as AddressInfo;
+
+    try {
+      const cred = repo.createCredential(p, { label: 'OpenCode Go', provider: 'opencode-go', apiKey: 'sk-opencode-go-445566' });
+      const profile = repo.createProfile(p, {
+        profileId: ModelProfileIdSchema.parse('opencode-go-coding'),
+        displayName: 'OpenCode Go coding',
+        credentialId: cred.id,
+        model: 'kimi-k2.5',
+        apiMode: 'chat-completions',
+        pricing: { inputMicrosPerMillionTokens: 600_000, outputMicrosPerMillionTokens: 2_500_000 },
+        limits: { maxInputTokens: 50_000, maxOutputTokens: 2_000, maxCostMicros: 100_000 },
+        maxProxyOperations: ['files_read']
+      });
+      const revisionId = profile.activeRevisionId!;
+
+      const snapshot = repo.getExportSnapshot(p);
+      expect(snapshot.credentials[cred.id]?.sessionHeader).toBe('x-opencode-session');
+      expect(snapshot.profiles[revisionId]?.upstreamUrl).toBe('https://opencode.ai/inference/go/openai/v1/chat/completions');
+      // The test upstream stands in for opencode.ai; no request leaves the host.
+      snapshot.profiles[revisionId]!.upstreamUrl = `https://127.0.0.1:${upstreamAddress.port}/inference/go/openai/v1/chat/completions`;
+
+      const controlClient = connect(controlSocket);
+      const applied = await new Promise<{ ok: boolean; ack?: { activeProfileCount: number } }>((res, rej) => {
+        let buf = '';
+        controlClient.on('data', (d) => { buf += d.toString(); });
+        controlClient.on('end', () => res(JSON.parse(buf)));
+        controlClient.on('error', rej);
+        controlClient.end(JSON.stringify({ operation: 'apply_snapshot', sequence: 1, generation: 1, credentials: snapshot.credentials, profiles: snapshot.profiles }) + '\n');
+      });
+      expect(applied).toMatchObject({ ok: true, ack: { activeProfileCount: 1 } });
+
+      const agentId = 'agent_opencode_go_0123456789';
+      const lease = gwRuntime.issueLease({
+        leaseId: 'lease_opencode_1', agentId, profileId: revisionId,
+        ttlMs: 60_000, maxInputTokens: 10_000, maxOutputTokens: 1_000, maxCostMicros: 50_000
+      });
+      const request = httpRequest({
+        host: '127.0.0.1', port: gwAddress.port, path: '/v1/chat/completions', method: 'POST',
+        headers: {
+          'content-type': 'application/json', authorization: `Bearer ${lease}`, 'x-model-profile': revisionId,
+          'x-agent-id': agentId, 'x-request-id': 'req_opencode_1'
+        }
+      });
+      const response = await new Promise<{ status: number; body: string }>((res, rej) => {
+        request.on('response', (r) => {
+          let body = '';
+          r.on('data', (chunk) => { body += chunk; });
+          r.on('end', () => res({ status: r.statusCode ?? 500, body }));
+        });
+        request.on('error', rej);
+        request.end(JSON.stringify({ model: 'kimi-k2.5', stream: true, max_tokens: 100, messages: [{ role: 'user', content: 'hello' }] }));
+      });
+      expect(response.status).toBe(200);
+      expect(response.body).toContain('opencode');
+      expect(received).toEqual([{
+        path: '/inference/go/openai/v1/chat/completions',
+        session: agentId,
+        authorization: 'Bearer sk-opencode-go-445566',
+        custom: undefined
+      }]);
+    } finally {
+      await gwRuntime.close();
+      await new Promise<void>((res) => upstreamServer.close(() => res()));
+    }
+  });
 });
 
 describe('model spend policies over the dashboard API', () => {

@@ -223,6 +223,8 @@ export function createGatewayRuntime(
         reservation = reserveBudget(parsed, rawBody.byteLength, grant, profile);
         await hooks.reserve(reservation);
         const outboundBody = Buffer.from(JSON.stringify(parsed));
+        // The provider's own session header wins; the instance-wide one is the fallback.
+        const sessionHeader = profile.sessionHeader ?? config.sessionHeader;
         if (outboundBody.byteLength > profile.limits.maxRequestBytes) throw new Error('clamped request body is too large');
         current.handle = await startUpstreamRequest({
           profile,
@@ -230,7 +232,7 @@ export function createGatewayRuntime(
           downstream: response,
           requestId,
           maxOutputTokens: reservation.outputTokens,
-          ...(config.sessionHeader === undefined ? {} : { sessionHeader: config.sessionHeader, sessionId: agentId })
+          ...(sessionHeader === undefined ? {} : { sessionHeader, sessionId: agentId })
         });
         current.markReady();
         if (current.cancelled) await current.handle.abort(current.cancelled);
