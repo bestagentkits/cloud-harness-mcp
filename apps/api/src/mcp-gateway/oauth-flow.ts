@@ -60,12 +60,17 @@ export class McpOAuthCoordinator {
     return this.options.redirectUrl;
   }
 
-  /** Safe status projection. The redirect URL comes from deployment config, never from storage. */
+  /**
+   * Safe status projection. The redirect URL comes from deployment config, never from storage.
+   * Without a redirect URL no interactive step can run, so every state that would offer
+   * Connect reads `not_configured`; a connected grant keeps working in the background.
+   */
   async status(principal: RunnerPrincipalSelector, serverId: string, signal?: AbortSignal) {
     const response = await this.runner.callInternal('mcp_oauth_status', { serverId }, principal, signal);
     if (!response.ok) throw new HarnessError(response.error?.code ?? 'UNAVAILABLE', response.error?.message ?? response.message, 502, false);
     const status = (response.data as { status: Record<string, unknown> }).status;
-    return { ...status, redirectUrl: this.options.redirectUrl ?? null };
+    const state = !this.configured && status.enabled === true && status.state !== 'connected' ? 'not_configured' : status.state;
+    return { ...status, state, redirectUrl: this.options.redirectUrl ?? null };
   }
 
   /** Background provider for Test, Refresh and Execute. Never navigates a browser. */

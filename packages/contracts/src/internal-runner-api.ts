@@ -1,15 +1,19 @@
 import { z } from 'zod';
-import { ExecutorNetworkProfileSchema, IntegrationCredentialIdSchema, ModelCredentialIdSchema, ModelProfileIdSchema, SkillImportJobIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, SkillSourceIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { IntegrationCredentialIdSchema, ModelCredentialIdSchema, ModelProfileIdSchema, SkillImportJobIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, SkillSourceIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { IntegrationCredentialCreateInputSchema, IntegrationCredentialRotateInputSchema, SkillSuggestInputSchema } from './typesafe-schemas.js';
 import { ToolResultSchema } from './mcp-results.js';
+import { DecisionRerankToolsInputSchema } from './decision-plane.js';
 import {
   AgentModelProfileInputSchema,
   AgentModelProfileUpdateInputSchema,
+  ModelProfileValidateInputSchema,
   ProviderCredentialInputSchema
 } from './model-profile-schemas.js';
+import { ModelCatalogRefreshInputSchema, ModelCatalogSearchInputSchema } from './model-catalog-schemas.js';
 import { RunnerPrincipalSelectorSchema } from './runner-api.js';
 import { SecretDescriptionSchema, SecretNameSchema, SecretNameShapeSchema, SecretPurposeSchema, SecretValueSchema } from './secret-policy.js';
 import { ToolkitSelectionSchema } from './tool-schemas.js';
+import { InstanceSettingsUpdateInputSchema } from './workspace-lifecycle.js';
 import {
   JournalTypeSchema,
   KnowledgeItemIdSchema,
@@ -35,7 +39,20 @@ import {
   McpGatewayUpdateInputSchema
 } from './mcp-gateway-schemas.js';
 import { OAuthGrantSettingsUpdateInputSchema } from './oauth-grant-settings.js';
+import { ModelConnectionVerifyInputSchema } from './model-verification-schemas.js';
+import { ModelSpendPolicyDeleteInputSchema, ModelSpendPolicyInputSchema } from './model-spend-schemas.js';
+import {
+  PackageOverviewInputSchema, PackagePlanApproveInputSchema, PackagePlanListInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema
+} from './package-schemas.js';
 import { SkillsExtGetInputSchema, SkillsExtListInputSchema, SkillsExtReadInputSchema } from './skills-extension.js';
+import {
+  TerminalCloseInputSchema,
+  TerminalInputInputSchema,
+  TerminalListInputSchema,
+  TerminalOpenInputSchema,
+  TerminalReadInputSchema,
+  TerminalResizeInputSchema
+} from './terminal-schemas.js';
 
 export const InternalRunnerOperationSchema = z.enum([
   'workspace_detail',
@@ -46,7 +63,13 @@ export const InternalRunnerOperationSchema = z.enum([
   'settings_update',
   'settings_network_check',
   'oauth_settings_get',
-  'oauth_settings_update'
+  'oauth_settings_update',
+  'terminal_open',
+  'terminal_read',
+  'terminal_input',
+  'terminal_resize',
+  'terminal_close',
+  'terminal_list'
 ]);
 
 const workspaceDetailRequest = z.object({
@@ -92,9 +115,7 @@ const settingsUpdateRequest = z.object({
   version: z.literal(2),
   principal: RunnerPrincipalSelectorSchema,
   operation: z.literal('settings_update'),
-  input: z.object({
-    defaultNetworkProfile: z.union([ExecutorNetworkProfileSchema, z.null()])
-  }).strict()
+  input: InstanceSettingsUpdateInputSchema
 }).strict();
 
 const settingsNetworkCheckRequest = z.object({
@@ -118,6 +139,20 @@ const oauthSettingsUpdateRequest = z.object({
   input: OAuthGrantSettingsUpdateInputSchema
 }).strict();
 
+const terminalRequest = <Operation extends string, Input extends z.ZodTypeAny>(operation: Operation, input: Input) => z.object({
+  version: z.literal(2),
+  principal: RunnerPrincipalSelectorSchema,
+  operation: z.literal(operation),
+  input
+}).strict();
+
+const terminalOpenRequest = terminalRequest('terminal_open', TerminalOpenInputSchema);
+const terminalReadRequest = terminalRequest('terminal_read', TerminalReadInputSchema);
+const terminalInputRequest = terminalRequest('terminal_input', TerminalInputInputSchema);
+const terminalResizeRequest = terminalRequest('terminal_resize', TerminalResizeInputSchema);
+const terminalCloseRequest = terminalRequest('terminal_close', TerminalCloseInputSchema);
+const terminalListRequest = terminalRequest('terminal_list', TerminalListInputSchema);
+
 export const InternalRunnerRequestSchema = z.discriminatedUnion('operation', [
   workspaceDetailRequest,
   workspaceCloseFencedRequest,
@@ -127,7 +162,13 @@ export const InternalRunnerRequestSchema = z.discriminatedUnion('operation', [
   settingsUpdateRequest,
   settingsNetworkCheckRequest,
   oauthSettingsGetRequest,
-  oauthSettingsUpdateRequest
+  oauthSettingsUpdateRequest,
+  terminalOpenRequest,
+  terminalReadRequest,
+  terminalInputRequest,
+  terminalResizeRequest,
+  terminalCloseRequest,
+  terminalListRequest
 ]);
 
 export const InternalRunnerResponseSchema = ToolResultSchema;
@@ -151,9 +192,14 @@ export const MetadataRunnerOperationSchema = z.enum([
   'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
   'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
   'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject',
+  'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove',
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
   'model_profile_list', 'model_profile_create', 'model_profile_update', 'model_profile_activate', 'model_profile_disable', 'model_profile_delete',
-  'model_config_status',
+  'model_profile_validate',
+  'model_config_status', 'model_provider_list',
+  'model_catalog_search', 'model_catalog_refresh',
+  'model_connection_verify',
+  'model_spend_summary', 'model_spend_policy_list', 'model_spend_policy_set', 'model_spend_policy_delete',
   'knowledge_dashboard_list', 'knowledge_dashboard_get', 'knowledge_dashboard_create', 'knowledge_dashboard_update',
   'knowledge_dashboard_delete', 'knowledge_dashboard_search', 'knowledge_dashboard_graph',
   'knowledge_dashboard_link_create', 'knowledge_dashboard_link_delete',
@@ -169,6 +215,7 @@ export const MetadataRunnerOperationSchema = z.enum([
   'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
   'toolkit_registry_list', 'toolkit_registry_update', 'toolkit_registry_refresh',
   'skill_suggest', 'typesafe_status',
+  'decision_rerank_tools', 'decision_plane_status',
   'integration_credential_list', 'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete'
 ]);
 
@@ -182,6 +229,8 @@ const skillVersion = z.string().max(64).regex(
 const metadataInputs = {
   skill_suggest: SkillSuggestInputSchema,
   typesafe_status: z.object({}).strict(),
+  decision_rerank_tools: DecisionRerankToolsInputSchema,
+  decision_plane_status: z.object({}).strict(),
   integration_credential_list: z.object({}).strict(),
   integration_credential_create: IntegrationCredentialCreateInputSchema,
   integration_credential_rotate: IntegrationCredentialRotateInputSchema,
@@ -255,6 +304,12 @@ const metadataInputs = {
   privilege_grant_list: z.object({ workspaceId: WorkspaceIdSchema.optional() }).strict(),
   privilege_grant_approve: z.object({ grantId: z.string().min(1).max(128) }).strict(),
   privilege_grant_reject: z.object({ grantId: z.string().min(1).max(128) }).strict(),
+  package_overview: PackageOverviewInputSchema,
+  package_plan_list: PackagePlanListInputSchema,
+  package_plan_approve: PackagePlanApproveInputSchema,
+  package_plan_reject: PackagePlanRejectInputSchema,
+  package_rollback: PackageRollbackInputSchema,
+  package_remove: PackageRemoveInputSchema,
   model_credential_list: z.object({}).strict(),
   model_credential_create: ProviderCredentialInputSchema,
   model_credential_rotate: z.object({
@@ -270,7 +325,16 @@ const metadataInputs = {
   model_profile_activate: z.object({ profileId: ModelProfileIdSchema, expectedGeneration: generation }).strict(),
   model_profile_disable: z.object({ profileId: ModelProfileIdSchema, expectedGeneration: generation }).strict(),
   model_profile_delete: z.object({ profileId: ModelProfileIdSchema, expectedGeneration: generation }).strict(),
+  model_profile_validate: ModelProfileValidateInputSchema,
   model_config_status: z.object({}).strict(),
+  model_provider_list: z.object({}).strict(),
+  model_catalog_search: ModelCatalogSearchInputSchema,
+  model_catalog_refresh: ModelCatalogRefreshInputSchema,
+  model_connection_verify: ModelConnectionVerifyInputSchema,
+  model_spend_summary: z.object({}).strict(),
+  model_spend_policy_list: z.object({}).strict(),
+  model_spend_policy_set: ModelSpendPolicyInputSchema,
+  model_spend_policy_delete: ModelSpendPolicyDeleteInputSchema,
   knowledge_dashboard_list: z.object({
     kind: KnowledgeKindSchema.optional(),
     scope: KnowledgeScopeSchema.optional(),
@@ -555,9 +619,16 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('artifact_read'), metadataRequest('artifact_restore'), metadataRequest('artifact_delete'),
   metadataRequest('github_status'), metadataRequest('github_setup_begin'), metadataRequest('github_setup_complete'), metadataRequest('github_reconcile'), metadataRequest('github_disconnect'),
   metadataRequest('privilege_grant_list'), metadataRequest('privilege_grant_approve'), metadataRequest('privilege_grant_reject'),
+  metadataRequest('package_overview'), metadataRequest('package_plan_list'), metadataRequest('package_plan_approve'),
+  metadataRequest('package_plan_reject'), metadataRequest('package_rollback'), metadataRequest('package_remove'),
   metadataRequest('model_credential_list'), metadataRequest('model_credential_create'), metadataRequest('model_credential_rotate'), metadataRequest('model_credential_delete'),
   metadataRequest('model_profile_list'), metadataRequest('model_profile_create'), metadataRequest('model_profile_update'), metadataRequest('model_profile_activate'), metadataRequest('model_profile_disable'), metadataRequest('model_profile_delete'),
-  metadataRequest('model_config_status'),
+  metadataRequest('model_profile_validate'),
+  metadataRequest('model_config_status'), metadataRequest('model_provider_list'),
+  metadataRequest('model_catalog_search'), metadataRequest('model_catalog_refresh'),
+  metadataRequest('model_connection_verify'),
+  metadataRequest('model_spend_summary'), metadataRequest('model_spend_policy_list'),
+  metadataRequest('model_spend_policy_set'), metadataRequest('model_spend_policy_delete'),
   metadataRequest('knowledge_dashboard_list'), metadataRequest('knowledge_dashboard_get'), metadataRequest('knowledge_dashboard_create'), metadataRequest('knowledge_dashboard_update'),
   metadataRequest('knowledge_dashboard_delete'), metadataRequest('knowledge_dashboard_search'), metadataRequest('knowledge_dashboard_graph'),
   metadataRequest('knowledge_dashboard_link_create'), metadataRequest('knowledge_dashboard_link_delete'),
@@ -579,6 +650,7 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('skill_set_update'), metadataRequest('skill_set_delete'), metadataRequest('skill_set_preview'),
   metadataRequest('toolkit_registry_list'), metadataRequest('toolkit_registry_update'), metadataRequest('toolkit_registry_refresh'),
   metadataRequest('skill_suggest'), metadataRequest('typesafe_status'),
+  metadataRequest('decision_rerank_tools'), metadataRequest('decision_plane_status'),
   metadataRequest('integration_credential_list'), metadataRequest('integration_credential_create'),
   metadataRequest('integration_credential_rotate'), metadataRequest('integration_credential_delete')
 ]);

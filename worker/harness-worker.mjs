@@ -119,7 +119,7 @@ async function safeRecursiveCreatePath(input) {
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
-async function command(program, args, { cwd = getWorkspaceRoot(), env = process.env, stdin, timeoutMs = 60_000, maxBytes = MAX_INTERNAL_OUTPUT } = {}) {
+async function command(program, args, { cwd = getWorkspaceRoot(), env = process.env, stdin, timeoutMs = 60_000, maxBytes = MAX_INTERNAL_OUTPUT, includeStderr = true } = {}) {
   return await new Promise((resolvePromise) => {
     const child = spawn(program, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
     if (process.env.CH_OPERATION_PID_FILE) {
@@ -136,7 +136,8 @@ async function command(program, args, { cwd = getWorkspaceRoot(), env = process.
       }
     };
     child.stdout.on('data', append);
-    child.stderr.on('data', append);
+    if (includeStderr) child.stderr.on('data', append);
+    else child.stderr.resume();
     const timer = setTimeout(() => {
       try { process.kill(-child.pid, 'SIGTERM'); } catch { /* process already exited */ }
       setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* process already exited */ } }, 1_000).unref();
@@ -1669,6 +1670,93 @@ const handlers = {
         headCommitSha: headRes.output.trim(),
         committedChanges: hasChanges
       });
+    }
+    if (mode === 'close_check') {
+      // Counts the work an automatic close would discard. Any git failure is reported as a failure so the
+      // caller keeps the workspace instead of guessing that it is clean. Only stdout is counted, so a git
+      // warning on stderr cannot pass for a path, a stash, or a count.
+      const quiet = { includeStderr: false };
+      // Linked worktrees live under `.worktrees/` inside the checkout. Each is checked on its own, so a
+      // clean one does not count as an untracked directory and the paths inside a dirty one are counted.
+      // NUL-separated, so a path containing a newline is read whole.
+      const worktreeRes = await git(['worktree', 'list', '--porcelain', '-z'], quiet);
+      if (worktreeRes.exitCode !== 0 || worktreeRes.truncated) return fail('INTERNAL_ERROR', 'git worktree list failed');
+      const worktreeBlocks = worktreeRes.output.split('\0\0').filter(Boolean);
+      const mainPath = worktreeBlocks[0]?.split('\0').find((line) => line.startsWith('worktree '))?.slice('worktree '.length);
+      if (!mainPath) return fail('INTERNAL_ERROR', 'git worktree list returned no main worktree');
+      const linkedWorktrees = worktreeBlocks.slice(1).map((block) => {
+        const lines = block.split('\0');
+        const path = lines.find((line) => line.startsWith('worktree '))?.slice('worktree '.length);
+        const head = lines.find((line) => line.startsWith('HEAD '))?.slice('HEAD '.length);
+        return { path, head, prunable: lines.some((line) => line === 'prunable' || line.startsWith('prunable ')) };
+      }).filter((worktree) => worktree.path);
+      const statusArgs = ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'];
+      // Only the live linked worktrees checked below are excluded, so files a repository keeps elsewhere, and
+      // whatever is left in a prunable worktree's directory, are still counted by the main status.
+      const worktreeExclusions = linkedWorktrees
+        .filter((worktree) => !worktree.prunable)
+        .map((worktree) => relative(mainPath, worktree.path))
+        .filter((path) => path && !path.startsWith('..') && !isAbsolute(path))
+        .map((path) => `:(exclude,literal)${path}`);
+      const statusRes = await git([...statusArgs, '--', '.', ...worktreeExclusions], quiet);
+      if (statusRes.exitCode !== 0 || statusRes.truncated) return fail('INTERNAL_ERROR', 'git status failed');
+      const worktreeStatuses = [];
+      // A prunable worktree has lost its link to the repository, so the main status covers its directory instead.
+      for (const worktree of linkedWorktrees.filter((candidate) => !candidate.prunable)) {
+        const result = await git(['-C', worktree.path, ...statusArgs], quiet);
+        if (result.exitCode !== 0 || result.truncated) return fail('INTERNAL_ERROR', 'git status failed in a linked worktree');
+        worktreeStatuses.push(result.output);
+      }
+      const stashRes = await git(['--no-optional-locks', 'stash', 'list'], quiet);
+      if (stashRes.exitCode !== 0 || stashRes.truncated) return fail('INTERNAL_ERROR', 'git stash list failed');
+      // Commits reachable from HEAD or any local branch but from no remote-tracking ref, so work on other
+      // local branches counts too. The commit the workspace was cloned at is on the remote even when the
+      // clone made no remote-tracking ref, as a clone of a tag does.
+      const tips = ['--branches'];
+      const headRes = await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], quiet);
+      if (headRes.exitCode === 0) tips.push('HEAD');
+      // A linked worktree's detached HEAD can hold commits no branch contains.
+      for (const worktree of linkedWorktrees) {
+        if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(worktree.head ?? '') && !/^0+$/.test(worktree.head)) tips.push(worktree.head);
+      }
+      const exclusions = ['--remotes'];
+      const cloneRef = typeof input.cloneRef === 'string' ? input.cloneRef : '';
+      if (/^[A-Za-z0-9._/-]{1,255}$/.test(cloneRef) && !cloneRef.includes('..') && !cloneRef.startsWith('-')) {
+        const candidates = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(cloneRef) ? [cloneRef] : [`refs/tags/${cloneRef}`];
+        for (const candidate of candidates) {
+          const baseRes = await git(['rev-parse', '--verify', '--quiet', `${candidate}^{commit}`], quiet);
+          if (baseRes.exitCode === 0 && /^[0-9a-f]{40,64}$/.test(baseRes.output.trim())) exclusions.push(baseRes.output.trim());
+        }
+      }
+      const unpushedRes = await git(['rev-list', '--count', ...tips, '--not', ...exclusions], quiet);
+      if (unpushedRes.exitCode !== 0) return fail('INTERNAL_ERROR', 'git rev-list failed');
+      const unpushedCommits = Number(unpushedRes.output.trim());
+      if (!Number.isSafeInteger(unpushedCommits) || unpushedCommits < 0) return fail('INTERNAL_ERROR', 'git rev-list returned an unexpected count');
+      const countLines = (output) => output.split('\n').filter((line) => line.trim()).length;
+      return ok('Workspace close check', {
+        uncommittedPaths: [statusRes.output, ...worktreeStatuses].reduce((total, output) => total + countLines(output), 0),
+        stashes: countLines(stashRes.output),
+        unpushedCommits
+      });
+    }
+    if (mode === 'track_push') {
+      // A push sent from a separate transfer repository leaves this checkout's remote-tracking ref behind,
+      // so record what the remote branch now holds the way `git push` itself would.
+      const branch = typeof input.branch === 'string' ? input.branch : '';
+      const commit = input.commit;
+      if (!/^[A-Za-z0-9._/-]{1,255}$/.test(branch) || branch.includes('..') || branch.startsWith('-')) return fail('INVALID_INPUT', 'invalid branch');
+      if (commit !== null && (typeof commit !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit))) return fail('INVALID_INPUT', 'invalid commit');
+      // `origin/HEAD` is the symbolic ref naming the remote default branch; writing through it would move
+      // that branch's tracking ref instead, so a push to a branch named HEAD is not tracked.
+      if (branch === 'HEAD') return fail('INVALID_INPUT', 'invalid branch');
+      const ref = `refs/remotes/origin/${branch}`;
+      const formatRes = await git(['check-ref-format', ref]);
+      if (formatRes.exitCode !== 0) return fail('INVALID_INPUT', 'invalid branch');
+      const updateRes = commit === null
+        ? await git(['update-ref', '--no-deref', '-d', ref])
+        : await git(['update-ref', '--no-deref', ref, commit]);
+      if (updateRes.exitCode !== 0) return fail('INTERNAL_ERROR', 'remote-tracking ref could not be updated');
+      return ok('Remote-tracking ref updated', { ref, commit });
     }
     return fail('INVALID_INPUT', `unsupported recovery mode ${mode}`);
   },

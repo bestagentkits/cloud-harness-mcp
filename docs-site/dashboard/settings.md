@@ -1,11 +1,11 @@
 ---
 title: Instance Settings
-description: Instance-wide workspace defaults, network egress readiness, the credential-exfiltration tradeoff, and MCP OAuth session lifetimes.
+description: Instance-wide workspace defaults, workspace limits and lifecycle, network egress readiness, the credential-exfiltration tradeoff, MCP OAuth session lifetimes, and the TypeSafe integration key.
 ---
 
 # Instance Settings
 
-The Settings page (`/dashboard/settings`) owns the instance-wide defaults that apply to workspaces opened without an explicit override. It exposes the default executor network profile and the MCP OAuth session lifetimes.
+The Settings page (`/dashboard/settings`) owns the instance-wide defaults that apply to workspaces opened without an explicit override. It exposes the default executor network profile, the workspace quota and lifetimes, the MCP OAuth session lifetimes, and your TypeSafe integration key.
 
 ## Default Network Profile
 
@@ -46,6 +46,27 @@ A deployment whose `.env` still pins `WORKSPACE_NETWORK_PROFILE` keeps that valu
 
 Enabling egress on a host without the firewall makes every dependency-access open fail with `DEPENDENCY_EGRESS_UNAVAILABLE` rather than silently downgrading. Provision the firewall, or select `network-none` and **Save** to keep opening workspaces without egress. **Reset to runner default** is not an opt-out: it clears the instance setting, so a host whose runner default is `dependency-access` goes back to requiring egress.
 
+## Workspace limits & lifecycle
+
+This panel changes the workspace quota and lifetimes without a redeploy. Each value resolves in this order: the override saved here, then the runner environment variable, then the built-in default. The panel shows the effective value, its source (**Dashboard override**, **Runner environment**, or **Built-in default**), the runner value a reset would restore, and the allowed range.
+
+| Setting | Runner variable | Built-in default | What it decides |
+| :--- | :--- | :--- | :--- |
+| **Max active workspaces per principal** | `MAX_ACTIVE_WORKSPACES_PER_OWNER` | 3 | How many counted workspaces (`CREATING`, `ACTIVE`, `NETWORK_QUARANTINED`) one principal may hold. |
+| **Idle timeout** | `WORKSPACE_IDLE_TTL_SECONDS` | 5 min | How long a workspace may go without workspace activity before it expires. `workspace_list`, `workspace_status`, and Dashboard polling do not count as activity. |
+| **Maximum workspace lifetime** | `WORKSPACE_WALL_TTL_SECONDS` | 15 min | A hard deadline from creation that activity never extends. The idle timeout may not exceed it. |
+| **Recoverable grace before auto-close** | `WORKSPACE_RECOVERABLE_GRACE_SECONDS` | 60 min | How long an expired workspace stays recoverable with `workspace_recover` before the reaper may close it. |
+
+The durations are edited in whole minutes. The exact ranges are in the panel; the overrides' bounds are owned by `packages/contracts/src/workspace-lifecycle.ts`.
+
+**Not retroactive.** Idle timeout, lifetime, and grace are fixed on each workspace when it opens, so a change applies only to workspaces opened afterwards. The quota is checked at the next open, recover, or lease renew; lowering it below current usage blocks new opens but never closes an existing workspace.
+
+**Auto-close keeps unsaved work.** An expired workspace is closed at about expiry + grace + one reaper interval (the panel shows the interval), but only if nothing would be lost. Running agents (until their time limit passes), uncommitted or untracked files in the workspace or any of its worktrees, stashes, or commits that are not on any remote keep it recoverable (commits sent with `git_push` count as on the remote; Git-ignored files are not checked and are deleted with the workspace); its `error` then starts with `auto-close deferred:` and the panel counts it under **Retained by auto-close**. Recover and push or export the work, then close it with `workspace_close`. A grace of 0 closes clean expired workspaces on the next reaper pass, so saving it requires ticking the acknowledgement.
+
+**Capacity.** The panel shows your own counted and recoverable workspaces. Each executor is capped at 1 GiB of memory, one CPU, and 256 pids. These are ceilings, not reservations, and they multiply with every concurrent workspace, so size the host before raising the quota.
+
+**Save lifecycle settings** sends only the fields you changed; **Reset to runner values** clears every override. If someone else saved the panel after you loaded it, the save is refused; reload and try again. Changes apply to the whole instance and are recorded in the [Audit log](/dashboard/audit) as `settings.workspace_lifecycle.changed`. These settings are separate from the MCP OAuth session lifetime below and from agent task TTLs, and no MCP tool can read or change them.
+
 ## MCP OAuth sessions
 
 This panel controls how long an MCP client on the Managed OAuth lane, such as ChatGPT or Claude, stays signed in after one browser login. It manages two values of the Cloudflare Access application that protects `/mcp`:
@@ -69,3 +90,7 @@ The panel always shows what Cloudflare reports, not what was last typed:
 On a new install whose grant duration was never set, Cloud Harness applies the provider maximum at startup; **Management** then says the default was applied automatically at first start. It never overwrites a value someone already set in Cloudflare, including an access-token lifetime outside 1–60 minutes; instead the panel offers **Adopt default** to switch to the provider maximum with 15-minute tokens.
 
 The panel is read-only, with the reason shown, when no integration is configured, the integration is read-only, Managed OAuth is off for the application, or the application uses SCIM provisioning or is not self-hosted. In those cases change the values in Cloudflare Zero Trust under **Advanced settings → Managed OAuth**. Operators enable the integration with the runner-only `CLOUDFLARE_ACCESS_*` API variables in the [environment-variable reference](/reference/environment-variables), using a Cloudflare API token limited to one account with **Access: Apps and Policies Write** (or **Read** for a read-only panel). The token never reaches the API, the browser, or a workspace. For sync errors, see [Troubleshooting](/troubleshooting#_21-mcp-oauth-sessions-panel-is-read-only-or-shows-a-sync-error).
+
+## TypeSafe integration
+
+The last panel stores your write-only TypeSafe API key and shows whether it is configured, whether the operator left TypeSafe egress on, and the endpoint and model in use. The key is per owner, unlike the instance-wide values above. See [TypeSafe Integration](/dashboard/typesafe).

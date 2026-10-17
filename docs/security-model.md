@@ -121,6 +121,15 @@ no positive cache. Treat disclosure as full account compromise: revoke the key,
 inspect redacted audit and request metadata, and create a replacement only
 after the leak path is closed.
 
+That authority includes model setup. A principal-bound API key, like an OAuth
+MCP client or the owner bearer, can create and update its principal's agent
+model profiles through the public `model_*` tools, within the guards described
+under Model Setup over MCP: a created profile is saved `DISABLED` until the
+owner activates it on the Dashboard, an update that escalates spend, permissions,
+or the credential is refused, and a Custom key can reach only an upstream URL
+already bound to that credential. A key cannot read, create, or rotate a
+provider key, activate a profile, or change a spend policy.
+
 In owner-bearer mode, rotate `MCP_BEARER_TOKEN` after suspected disclosure and
 restart the API. In Access mode, revoke at Access/IdP and verify the edge no
 longer forwards an accepted assertion. Rotate `RUNNER_TOKEN` independently and
@@ -270,6 +279,50 @@ path in this system. Three facts define its boundary.
    to a running API, and rotate the referenced secrets if that boundary is
    crossed.
 
+## MCP Events webhook egress
+
+[MCP Events](mcp-api.md#mcp-events-webhook-delivery) add a second
+principal-chosen API egress destination: the webhook callback URL a client
+passes to `events/subscribe`. The boundary reuses the gateway's address policy
+and adds these decisions:
+
+- **The API dials; the runner never does.** The runner records events in its
+  state database and leases due deliveries, with their unsealed signing
+  secrets, to the API over the service-token channel. Only the API's egress
+  network reaches a callback.
+- **Callback URLs are public HTTPS only.** No embedded credentials, no
+  fragment, and no loopback, private, link-local, CGNAT, or metadata target.
+  The URL is validated at subscribe time and re-resolved and re-validated
+  before every attempt, with the socket pinned to the validated addresses, so
+  a hostname that later rebinds inward is never dialled. Redirects are not
+  followed (a `3xx` counts as a failed attempt), and resolution, request time,
+  and response size share one bound.
+- **Proof of control before delivery.** A signed verification challenge must
+  be echoed before a principal's first subscription to a callback URL, so a
+  client cannot direct signed traffic at an endpoint it does not control.
+- **Minimal payloads.** Events carry identifiers, statuses, codes, and
+  timestamps, never command text, output, prompts, or messages. Recorded
+  failure reasons are server-generated categories, never the receiver's
+  response body; the dashboard shows only the callback origin, because a path
+  can carry receiver routing tokens.
+- **Sealed secrets.** Webhook secrets are encrypted with the runner keyring,
+  bound to the subscription and secret generation, never returned by any
+  listing, and re-sealed by the `secrets:rekey` entry point.
+- **Revocation tracks the credential.** A subscription created over a managed
+  API key is revoked when the next delivery is claimed after that key is
+  revoked or expires. Dashboard revocation is not a block list: the client can
+  re-subscribe while its credential stays valid. Subscribe, rotation,
+  unsubscribe, and revoke actions are recorded in the audit log as
+  `mcp_event.*` entries.
+
+Residual risk: a principal can make the API send small signed requests to any
+public HTTPS endpoint that answers the challenge. That is accepted for this
+single-owner harness and is bounded by the per-principal subscription quota.
+The executable owners are
+[`apps/api/src/events/webhook-sender.ts`](../apps/api/src/events/webhook-sender.ts),
+[`apps/api/src/mcp-gateway/url-policy.ts`](../apps/api/src/mcp-gateway/url-policy.ts),
+and [`apps/runner/src/mcp-event-service.ts`](../apps/runner/src/mcp-event-service.ts).
+
 ## Downstream MCP OAuth client
 
 The gateway can also hold an OAuth grant for a downstream MCP server. This is
@@ -338,9 +391,16 @@ repository commands. The dashboard Settings page owns that instance-wide default
 through dashboard-only internal runner operations; it is instance state rather
 than principal state, so in a deployment that serves more than one principal any
 authenticated dashboard principal can change the posture of future workspaces.
-That matches the single-owner threat model this harness is built for; a
-multi-tenant deployment needs an admin gate on the settings mutation before it
-can rely on per-principal policy. The `dependency-access` profile is enforced below MCP
+The same boundary covers the **Workspace limits & lifecycle** settings (the
+per-principal active-workspace quota, idle and wall TTLs, and recoverable
+grace): any authenticated dashboard principal with a valid CSRF token can
+change them for the whole instance, each change is audited as
+`settings.workspace_lifecycle.changed`, and no MCP tool reads or writes them.
+Raising the quota multiplies the per-executor resource ceilings a principal can
+hold; a zero grace is accepted only with an explicit acknowledgement, and
+auto-close still retains unsaved work. That matches the single-owner threat
+model this harness is built for; a multi-tenant deployment needs an admin gate
+on the settings mutation before it can rely on per-principal policy. The `dependency-access` profile is enforced below MCP
 tool policy: the executor attaches only to a dedicated managed Docker bridge
 (`chm-egress0`) with inter-container communication disabled and Docker's
 default masquerade off, and a transactional host firewall (installed via a
@@ -415,7 +475,7 @@ When repository caching is enabled (`enableRepoCache: true`):
 
 ### Brokered GitHub actions
 
-Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `pr_update`, `pr_comment`, `pr_review_threads`, the review, reviewer, draft/ready, and merge actions listed in `docs/mcp-api.md`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`, `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`, `issue_update`, `issue_publish`) are executed through the `github_action` tool using an ephemeral helper container (`worker/gh-helper.sh`). Action-scoped tokens (`pull_requests: read|write`, `issues: read|write`, each also carrying `contents: read`) are minted by the runner from the trusted GitHub App installation, or resolved from the operator fallback described above when no App token is available, and passed exclusively via `stdin`. `pr_merge` and `pr_auto_merge_enable` additionally mint `contents: write`, and are refused with `GITHUB_PERMISSION_MISSING` naming both scopes when the token GitHub reports lacks it; they never widen any other action. The accompanying `contents: read` is required for the action to work at all: `gh` resolves repository metadata (such as `defaultBranchRef`) over the GraphQL API, and GitHub refuses those fields for a token narrowed to the action scope alone. The helper container runs read-only with dropped capabilities, and is forcibly removed on all exit paths in a `try/finally` block. Credentials resolved this way never enter the helper environment, workspace filesystem, workspace environment, client result, or audit payload.
+Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `pr_update`, `pr_comment`, `pr_review_threads`, the review, reviewer, draft/ready, and merge actions listed in `docs/mcp-api.md`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`, `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`, `issue_update`, `issue_publish`) are executed through the `github_action` tool using an ephemeral helper container (`worker/gh-helper.sh`). Action-scoped tokens (`pull_requests: read|write`, `issues: read|write`, each also carrying `contents: read`) are minted by the runner from the trusted GitHub App installation, or resolved from the operator fallback described above when no App token is available, and passed exclusively via `stdin`. `pr_merge` and `pr_auto_merge_enable` additionally mint `contents: write`, and are refused with `GITHUB_PERMISSION_MISSING` naming both scopes when the token GitHub reports lacks it; they never widen any other action. Issue actions that take a number (`issue_view`, `issue_comment`, `issue_update`, `issue_labels_add`, `issue_labels_remove`, `issue_publish`) also ask for `pull_requests` at the same level, because every pull request is also an issue and `gh` resolves the number through `issueOrPullRequest`, which GitHub refuses for a pull request without that permission. That scope is optional: when the installation does not grant it, the runner mints the issues-only token instead, and GitHub's refusal on a pull request number (`Resource not accessible by integration`) is reported as `GITHUB_PERMISSION_MISSING` naming `pull_requests` and the matching `pr_*` action. The accompanying `contents: read` is required for the action to work at all: `gh` resolves repository metadata (such as `defaultBranchRef`) over the GraphQL API, and GitHub refuses those fields for a token narrowed to the action scope alone. The helper container runs read-only with dropped capabilities, and is forcibly removed on all exit paths in a `try/finally` block. Credentials resolved this way never enter the helper environment, workspace filesystem, workspace environment, client result, or audit payload.
 
 The merge-train actions follow the same model with their own GitHub permission: `commit_status_get`/`commit_status_create` mint `statuses: read|write`, `check_runs_list` mints `checks: read`, and `workflow_runs_list`, `workflow_run_view`, `workflow_dispatch`, and `workflow_run_rerun_failed` mint `actions: read|write`, each beside `contents: read`. A dispatch runs workflow code the repository already holds on the named ref; it passes only string inputs and never a harness credential. The helper validates SHAs, refs, workflow identifiers, and run IDs before placing them in a REST path.
 
@@ -505,6 +565,34 @@ When `exec_run` is invoked with `privileged: true`:
 2. In `cloudflare-access` mode, an unapproved request is rejected with `PRIVILEGE_APPROVAL_REQUIRED` and returns a single-use `grantId` bound to the command and working directory with a 60-second TTL.
 3. The operator must explicitly approve the grant via the authenticated Dashboard BFF API (`POST /api/v1/privilege-grants/:grantId/approve`). MCP clients cannot self-approve.
 4. The caller provides the `approvalGrantToken`. The runner validates the grant and command/cwd hash, atomically consumes it (single-use), and executes the command in an isolated ephemeral container with `try/finally` cleanup. The standard executor container remains permanently hardened and unmodified.
+
+The Dashboard Approvals page lists grants in every state the runner returns,
+labelled with their real status, and offers Approve and Reject only for an
+unexpired pending grant; only those count toward the rail badge. A decided,
+consumed, or expired grant is shown without actions, so the page never invites
+a decision the runner would refuse. The owner is `grantIsActionable` in
+[`apps/api/dashboard/dashboard-render.js`](../apps/api/dashboard/dashboard-render.js).
+
+The `bash` tool has no privileged path: its `workspace` target delegates to
+unprivileged `exec_run`, and privileged commands stay on `exec_run` with the
+grant flow above. Its `toolbox` target, off unless the operator sets
+`PACKAGES_ENABLED=true`, runs each command in a fresh executor-image container
+with the same hardening flags, `--network none`, no mounts, no secrets, and no
+Docker socket. The container is created before it is started, so it exists by
+name before any stop decision; on exit, timeout, output bound, or abort the
+runner removes it by that exact name and retries for about 10 seconds until
+Docker reports it gone. Two backstops cover a runner that dies or a removal
+that keeps failing: an in-container `timeout` deadline slightly beyond the
+caller's timeout, and the periodic reaper, which removes this instance's
+toolbox-labelled containers older than the longest command timeout plus a
+margin. `TOOLBOX_MAX_CONCURRENT` caps how many toolbox containers run at once,
+so toolbox calls cannot take more than that many executor-sized memory, CPU,
+and pid budgets from the host. The
+executable owner is
+[`apps/runner/src/toolbox-runner.ts`](../apps/runner/src/toolbox-runner.ts),
+with evidence in
+[`test/integration/bash-toolbox.docker.test.ts`](../test/integration/bash-toolbox.docker.test.ts).
+
 The public contract fixes remote transfers to `origin`, permits only branch
 push refspecs, rejects raw deletion refspecs, and permits force and deletion only
 through a lease: an expected object ID (compare-and-swap or delete-if-match) or
@@ -555,6 +643,164 @@ execute with the same unprivileged executor environment and network mode as
 other repository commands; the harness does not inject host or deployment
 credentials. Their manifest parsing and execution owner is
 [`worker/harness-worker.mjs`](../worker/harness-worker.mjs).
+
+### Dashboard Terminal
+
+The Dashboard Terminal gives the operator an interactive PTY without adding a
+new place where commands run. The decision and its rejected alternatives are
+recorded in
+[ADR 0003](adr/0003-terminal-bash-and-managed-toolbox.md); this section records
+the boundary it keeps.
+
+- **Same executor, no new authority.** The runner opens the PTY through the
+  Docker Engine API exec call on the socket it already holds, inside the
+  workspace's existing hardened executor, as uid 10001. Nothing runs in the
+  API, the runner, or on the host, and the executor gains no capability, mount,
+  or credential. Because the exec needs the Engine API directly, terminals
+  require a unix `DOCKER_HOST`; any other value makes them unavailable rather
+  than falling back to another transport. Owner:
+  [`apps/runner/src/docker-pty.ts`](../apps/runner/src/docker-pty.ts).
+- **Dashboard-only, re-authorized per call.** Terminal operations are internal
+  runner operations, not MCP tools; agents keep `shell_*` and `sessions_*`. The
+  browser reaches them only through the dashboard BFF, under the same session
+  principal, Origin, and CSRF checks as every other dashboard mutation, and
+  request bodies cannot name a workspace, terminal, or principal. The runner
+  re-checks that the workspace is owned and active on every call. Owners:
+  [`packages/contracts/src/terminal-schemas.ts`](../packages/contracts/src/terminal-schemas.ts),
+  [`apps/api/src/dashboard-terminal-router.ts`](../apps/api/src/dashboard-terminal-router.ts),
+  and the `terminal_*` dispatch in `executeInternal` of
+  [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts).
+- **Bounded in memory.** A per-workspace terminal limit, an idle timeout, a
+  maximum lifetime, an input size cap with backpressure, and a retained output
+  window addressed by absolute cursors bound what one browser can hold open.
+  A reader that fell behind is told how many bytes it missed instead of
+  receiving a silently incomplete screen. Long-poll reads are capped and end
+  when the browser disconnects, so an abandoned tab does not park a runner
+  wait. Limits are configured as described in
+  [configuration](configuration.md#dashboard-terminal) and enforced in
+  [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts).
+- **Redaction and audit.** PTY output passes through the workspace's streaming
+  secret redactor before it is retained, so an injected secret value is neither
+  kept nor sent to the browser; the redaction limits in the previous section
+  still apply. The audit log records only `terminal.opened` and
+  `terminal.closed` with lifecycle metadata (status, end reason, exit code);
+  keystrokes and output are never audited, and the PTY transport never logs
+  payloads.
+- **No resumption.** PTYs live in runner memory. A runner restart forgets
+  them, the dashboard reports them as lost, and nothing is resumed. Close ends
+  the whole PTY session, including job-control children.
+- **Browser posture.** The emulator is the vendored `@xterm/xterm` and
+  `@xterm/addon-fit`, served same-origin from an explicit allow-list in
+  [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts)
+  from the pinned dependency, never from a CDN. The dashboard CSP is unchanged.
+  xterm writes styles from script, which `style-src 'self'` blocks, so
+  [`apps/api/dashboard/dashboard-terminal.js`](../apps/api/dashboard/dashboard-terminal.js)
+  installs a CSSOM adapter that turns script-created `<style>` elements and
+  `style` attributes into constructed stylesheets and `style.cssText`.
+  Markup-delivered styles stay blocked and no nonce or `'unsafe-inline'` is
+  introduced. The asset confinement is asserted by
+  [`apps/api/test/dashboard-ui-contract.test.ts`](../apps/api/test/dashboard-ui-contract.test.ts).
+
+### Managed toolbox packages
+
+Managed packages let an agent keep a CLI tool across workspaces and redeploys
+without changing the executor image. They are off unless the operator sets
+`PACKAGES_ENABLED`, and they stay inside the trust domain the owner already
+accepts: a package runs with exactly the authority of any other command in a
+workspace executor, never more. The decision and rejected alternatives are in
+[ADR 0003](adr/0003-terminal-bash-and-managed-toolbox.md).
+
+- **Plan, then digest-bound approval.** `packages_plan` resolves an exact
+  version, lock, dependency count, size, and binaries without writing a release.
+  `packages_apply` accepts only that plan's digest. With
+  `PACKAGES_APPROVAL_MODE=required` the plan must first be approved on the
+  Dashboard; any change to the plan changes the digest and invalidates the
+  approval. Owner-bearer deployments have no Dashboard approver, so the runner
+  refuses applies in that mode until the operator chooses `none` explicitly.
+- **Isolated builder.** Resolution and builds run in a short-lived container
+  from the pinned executor image with the same hardening as an executor
+  (non-root, dropped capabilities, read-only root, resource bounds). Its only
+  network is the provisioning network. The provisioning proxy is shared with
+  toolkit acquisition helpers and has one allow-list: its `ALLOWED_HOSTS`
+  (the Git and toolkit hosts set in Compose) plus the registry hosts the
+  operator lists in `PACKAGES_PROXY_HOSTS`, each including its subdomains. A
+  builder can therefore reach those Git and toolkit hosts too, and toolkit
+  helpers can reach the opted-in registries. Before resolving, the runner
+  probes the ecosystem's registry hosts through the proxy, and a refused host
+  fails the plan as `UNAVAILABLE` naming that host. The builder receives no
+  control-plane credential, workspace secret, or GitHub token, and user values
+  reach it only as positional arguments. Resolution happens before approval,
+  so it must not run package code: uv runs with `--no-build` (wheels only, no
+  source-distribution build backend), and npm lifecycle scripts stay off
+  unless `PACKAGES_NPM_LIFECYCLE_SCRIPTS` allows them.
+- **Verified, immutable releases.** After the build the runner removes the
+  builder, walks the staged tree (rejecting links that leave it, special files,
+  and trees over `PACKAGES_MAX_RELEASE_BYTES`), records its digest and SBOM,
+  and launch-checks every binary in a container with no network. Only then is
+  the release published and bound. Executors and toolbox containers mount
+  releases read-only under `/opt/chm-packages/<releaseId>`, so a workspace
+  cannot alter a release another workspace uses.
+- **PATH order.** Managed `bin` directories come after the workspace user's
+  own `~/.local/bin` and before the image's system directories, so a managed
+  package can add a command but a binary-name conflict between bindings is
+  refused at plan and again at publish.
+- **Crash recovery and cleanup.** Applies are durable rows; plan
+  resolutions in progress are runner memory and are lost on restart. On
+  startup the runner fails applies a crash interrupted, removes their staging
+  trees, and marks releases whose tree is missing; an absent packages root
+  marks and removes nothing, and a reconcile failure is logged without
+  blocking startup. A missing release whose directory returns is restored only
+  if its tree digest still matches, and its directory is removed otherwise.
+  Uninstalling a binding and hourly garbage collection remove only releases no
+  binding, profile, or retained history references, under the packages root.
+  Profiles record which releases each running workspace mounts.
+- **Residual risk.** A malicious or compromised package runs with workspace
+  authority in every workspace bound to it. Approval, pinning, the network
+  boundary, and rollback narrow that risk; they do not make untrusted packages
+  safe.
+
+Owners:
+[`apps/runner/src/package-service.ts`](../apps/runner/src/package-service.ts),
+[`apps/runner/src/package-store.ts`](../apps/runner/src/package-store.ts),
+[`apps/runner/src/package-builder.ts`](../apps/runner/src/package-builder.ts),
+and [`deploy/provisioning-proxy.mjs`](../deploy/provisioning-proxy.mjs).
+Configuration is described in
+[configuration](configuration.md#managed-toolbox).
+
+## Decision plane
+
+The Decision Plane ([ADR 0004](adr/0004-decision-plane.md)) is a second path,
+after the skill suggester, by which harness state can reach the TypeSafe
+endpoint. It is closed unless `DECISION_PLANE_PURPOSES` names a purpose *and*
+the owner has stored a TypeSafe integration key.
+
+- **Advisory only.** It can reorder MCP gateway search results that permission
+  filtering already allowed, and it can attach `data.diagnosis` to a generic
+  GitHub failure. It cannot add a tool, change an error code or `retryable`,
+  retry anything, or grant access. The API rejects an ordering that is not an
+  exact permutation of the candidates it sent.
+- **What leaves the runner.** For `mcp-routing`: the search query plus the
+  names and shortened descriptions of the allowed candidate tools. For
+  `failure-classification`: the action name, exit code, network profile, and a
+  tail of the stderr and stdout. Repository contents are never sent.
+- **Redaction fails closed, and comes before any cut.** Output and
+  descriptions are redacted whole and only then shortened, so a secret that
+  straddles the cut is replaced, never left as an unrecognised fragment. Every
+  purpose removes the TypeSafe key, model-provider credentials, and known
+  credential patterns (bearer tokens, prefixed API keys, JWTs).
+  `failure-classification` also removes the workspace secret snapshot and the
+  transient GitHub action token. If any of those cannot be read, nothing is
+  sent. The key and endpoint allowlist stay in
+  [`apps/runner/src/decision-plane/jev-provider.ts`](../apps/runner/src/decision-plane/jev-provider.ts),
+  inside the runner.
+- **Bounded and auditable.** Timeout, body size, and per-owner rate limits are
+  owned by
+  [`apps/runner/src/decision-plane/decision-plane.ts`](../apps/runner/src/decision-plane/decision-plane.ts).
+  Each evaluation leaves one scalar-only `decision.evaluated` audit row; a
+  burst refused by the rate limit is audited once per owner per minute and
+  counted in full in the metrics. Prompt text and answers are not stored. The
+  metrics at `GET /api/v1/decision-plane/status` are in-memory, instance-wide
+  aggregates, not per owner, and reset when the runner restarts.
 
 ## Storage and state limits
 
@@ -754,8 +1000,14 @@ the boundary is explicit; the composer is
 
 ### Subagent Model Provider Credential Isolation & Gateway Control
 
-- **Zero Credential Exposure:** Provider API keys (OpenAI, Anthropic, OpenRouter, Google, Custom) are write-only, encrypted in StateStore (schema v9) via `SecretKeyring` (AES-256-GCM) with domain-separated AAD (`purpose: "model_provider_credential"`). Keys are never injected into workspace environment variables, executor containers, or Pi subagent containers.
+- **Zero Credential Exposure:** Provider API keys (every provider in `packages/contracts/src/model-provider-registry.ts`) are write-only, encrypted in StateStore (schema v9) via `SecretKeyring` (AES-256-GCM) with domain-separated AAD (`purpose: "model_provider_credential"`). Keys are never injected into workspace environment variables, executor containers, or Pi subagent containers.
+- **Runner-only Provider Requests:** Model catalog discovery (`apps/runner/src/model-catalog/`) is the runner's only outbound use of a decrypted provider key outside the gateway. Requests go through `apps/runner/src/model-provider-http.ts`: registry hosts only (or the operator's custom upstream host), credential-free HTTPS on port 443, the resolved address checked against private and reserved ranges and pinned for the connection, no redirects, and bounded time and response size. Only an active credential is decrypted, for one listing, and the key is sent only in that provider's auth header in the credential's stored auth mode. For a provider whose registry entry names a session header (OpenCode Go's `x-opencode-session`), each listing also sends that header with a fresh random id, which identifies nothing; failures are reduced to fixed error categories, so neither the key nor provider response text reaches logs or the dashboard. Credential-backed catalog snapshots are keyed by principal, credential, and key version and are deleted with the credential; only OpenRouter's public, credential-free catalog is shared across principals.
 - **Framed Stdin Control Transport:** Gateway configuration snapshots and credentials travel strictly over stdin via `docker exec -i` to the Gateway's internal Unix domain socket (`mode 0600`), ensuring secrets never appear in command-line arguments, environment variables, or disk logs.
-- **RAM-Only Active Projections:** Model Gateway retains active credentials and profile revisions exclusively in memory. When rotating a credential, an atomic swap updates the active slot while in-flight requests safely complete with the prior key reference before it is zeroed.
-- **Strict SSRF Guard on Custom Endpoints:** Custom upstream endpoints are strictly validated for public HTTPS origins on default port 443. Private IPv4/IPv6, loopback, link-local, AWS metadata (`169.254.169.254`), query strings, userinfo, and redirects are blocked at apply-time and request socket connection.
+- **RAM-Only Active Projections:** Model Gateway retains active credentials and profile revisions exclusively in memory. Each accepted snapshot replaces every credential and revision an earlier snapshot loaded, so a deleted credential or a revision the runner no longer exports is dropped from the gateway's registry on the next push instead of staying loaded until the gateway restarts. Profiles configured at gateway startup are kept: a snapshot revision that reuses one of their IDs is rejected. A snapshot is validated whole before it is applied, so a rejected one leaves the previous set active. A request already in flight completes with the key it started with, and a lease whose revision was evicted is refused as an invalid lease rather than falling back to another route ([`apps/model-gateway/src/control.ts`](../apps/model-gateway/src/control.ts)). The runner pushes one snapshot at a time, each built after the previous push landed ([`apps/runner/src/agent-gateway-control.ts`](../apps/runner/src/agent-gateway-control.ts)), and reconciles again after reserving the agent and before issuing its lease, so a snapshot built before the agent existed cannot leave its revision missing once the agent runs ([`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts)).
+- **Strict SSRF Guard on Custom Endpoints:** Custom upstream endpoints are strictly validated for public HTTPS origins on default port 443. Query strings, fragments, userinfo, encoded path separators, and directory-only paths are refused when a profile revision is created or edited (`resolveProviderUpstreamUrl` in `packages/contracts/src/model-provider-registry.ts`); private IPv4/IPv6, loopback, link-local, AWS metadata (`169.254.169.254`), and IPv6 forms that embed or translate IPv4 (IPv4-mapped and -compatible, SIIT, NAT64, 6to4, Teredo) are refused as address literals at gateway apply-time and as resolved addresses, which are pinned, at request socket connection (`isUnsafeAddress` in `apps/model-gateway/src/config.ts`), and redirects are not followed. Revisions stored before that create/edit check keep applying unchanged and meet it on their next edit.
+- **Bounded Model Requests:** Each agent model request must stay within what the gateway can meter and what the workspace's network profile allows. The gateway never asks the provider to fetch or run anything for the agent, so it refuses: any tool type other than the caller-executed `function` and `custom` tools; the fields `plugins` and `web_search_options` on every path; stored Responses context (`previous_response_id`, `conversation`, an object-valued `prompt`); and any image, audio, video, or file part that names a provider file ID or a URL other than a `data:` URL. A provider-hosted web search, code interpreter, or remote MCP tool, or a remote media URL the provider downloads, would let an agent in a `network-none` workspace reach the network or remote MCP servers through the provider, and stored context or files would add tokens the per-request reservation cannot bound. Each refusal is a `400 invalid_model_request` that names the refused field, tool type, or media part type and field. Media carried inline as a `data:` URL or base64 stays allowed and is reserved with a per-part surcharge; an agent can still inline content it has read itself, within its own workspace's network profile. The rules are in [`apps/model-gateway/src/budget.ts`](../apps/model-gateway/src/budget.ts).
+- **Connection Verification Boundary:** `model_connection_verify` runs in the runner, the only service that can decrypt a provider key, and only for an `ACTIVE` credential the requesting principal owns. Requests go through the pinned provider client in [`apps/runner/src/model-provider-http.ts`](../apps/runner/src/model-provider-http.ts): each registry provider only to its own hosts (a custom provider only to its upstream's own public host), NAT64/6to4 and other private or reserved addresses refused, the address checked and pinned per connection, no redirects, and one deadline that includes name resolution plus a response size bound. Checks are rate limited per principal and audited as `model_connection.verified` with the actor (`dashboard` or `mcp`), the outcome, target kind and ID, credential ID and key version, model, API mode, elapsed time, and token counts; the key is never recorded. A draft check from the Dashboard for a Custom credential sends the key to the submitted HTTPS upstream, the same trust the owner extends when saving a profile with that upstream; this is an accepted owner decision. Over MCP that decision is narrowed: a draft check may use only an upstream the principal's profiles on that credential already use (see Model Setup over MCP below). For a provider whose registry entry names a session header (OpenCode Go's `x-opencode-session`), every request of one check carries that header with one random id generated for that check. Result messages are provider text with the key and key-like fragments removed, a rejected key gets fixed wording, and request headers are never echoed. A draft result can be kept on the profile revision a later save creates, but the browser never supplies the result: the runner holds it in memory behind a random, principal-bound, single-use, short-lived reference and attaches it only when the save's credential, key version, model, API mode, and resolved upstream all match. The owner is [`apps/runner/src/model-verification/`](../apps/runner/src/model-verification/).
+- **Provider Session Header:** A registry provider may name a session header that its docs ask clients to send (OpenCode Go asks for `x-opencode-session`). The runner exports the name with the credential in the gateway snapshot, and the gateway accepts it only if it is a lowercase header name outside the headers it sets itself and the hop-by-hop, framing, encoding, proxy, and cookie headers; otherwise the whole snapshot is rejected. The header value is always the calling agent's id, never snapshot data. That id is random and not a secret, but it is stable for one agent, so for OpenCode Go the gateway now sends it to `opencode.ai` by default; before, only an operator who set `MODEL_GATEWAY_SESSION_HEADER` sent any agent id upstream. The variable remains the fallback for every provider without its own header. The owners are `assertSessionHeaderName` in [`apps/model-gateway/src/config.ts`](../apps/model-gateway/src/config.ts) and the snapshot handling in [`apps/model-gateway/src/control.ts`](../apps/model-gateway/src/control.ts).
+- **Profile Change Guard and Audit:** A profile create or update can be checked without writing it: `model_profile_validate` (Dashboard route `POST /api/v1/agent-model-profiles/validate`) runs the same runner-side plan step as the save, so the dry run refuses exactly what the save refuses and reports the revision the save would write, without sending any provider request or consuming a draft verification reference. It also reports the changes that widen what an agent may spend, use, or reach: a move to another credential, raised limits, prices lowered below what the gateway would charge today (unless the runner matched the new price against a catalog), override prices carried to another model or credential, proxy operations outside the current set, and a custom upstream that no revision of an existing profile on that credential uses (superseded revisions still count, so a URL the owner once saved stays bound until its profile is deleted). An update whose current revision cannot be read fails closed and reports every escalation the new revision carries. Dashboard saves are the owner acting directly and are not blocked by these findings. Every profile create, update, activation, disable, and delete is audited in the same transaction as the change as `model_profile.<action>` with the actor, status, credential, provider, model, API mode, limits, and price source; the `model_profile.change_refused` event records an MCP save the guard refused. A save plans its revision under its transaction's write lock and commits exactly that plan, so a check run on the plan sees what is written. Prices, URL paths, and keys are never recorded, and a custom upstream is named by its host only. The classifier is [`apps/runner/src/model-profile-guard.ts`](../apps/runner/src/model-profile-guard.ts); the plan and write steps are in [`apps/runner/src/model-profile-state-repository.ts`](../apps/runner/src/model-profile-state-repository.ts).
+- **Model Setup over MCP:** The public `model_*` tools let an MCP client, which may act on instructions from repository content or a model, prepare profiles without gaining the owner's spending or key-routing authority. They run in the runner on the Dashboard's control service, scoped to the calling principal, and no tool creates, reads, or rotates a key, activates, disables, or deletes a profile, refreshes the catalog, or changes a spend policy (`packages/contracts/test/internal-runner-api.test.ts` keeps those operations internal). A created profile is always saved `DISABLED`, so the gateway serves nothing an MCP client saved until the owner activates it. Every escalation the Profile Change Guard reports refuses an MCP create or update inside the save's transaction with `OWNER_APPROVAL_REQUIRED`, whatever the profile's status; the transaction rolls back, and the refusal is audited afterwards as `model_profile.change_refused` with the actor `mcp`. An update that moves a profile to another credential (`credential_changed`) is refused even with catalog prices, so nothing over MCP can redirect a profile's spend to another provider account. A create has no approved baseline to compare with, so only an unbound Custom upstream can refuse it: its limits, override prices, and proxy operations are whatever the client chose. Activating it on the Dashboard approves that whole MCP-authored revision, so the owner reviews its limits, prices, and proxy operations before **Activate**. A draft `model_connection_verify` naming a Custom upstream that no profile of the principal on that credential uses is refused before any request, audited as `model_connection.refused`, so an MCP client cannot send a stored key to a new host. Every result, including a replay, is parsed against its strict schema before it leaves the runner. The idempotency records (keyed by principal, tool, and key, with a SHA-256 input fingerprint, kept 24 hours) hold the saved profile's metadata, which carries no key. The owners are `executeModelTool` in [`apps/runner/src/dashboard-control-service.ts`](../apps/runner/src/dashboard-control-service.ts), [`apps/runner/src/model-tool-operations.ts`](../apps/runner/src/model-tool-operations.ts), and [`apps/runner/src/model-tool-idempotency.ts`](../apps/runner/src/model-tool-idempotency.ts); the evidence is `apps/runner/test/model-tool-operations.test.ts` and `test/integration/mcp-model-tools-http.test.ts`.
 - **Read-only Owner Injection:** Toolkits selected under `owner` scope are projected to `/job/toolkit-projection/owner-skills/` and mounted read-only at `/opt/cloud-harness/owner-skills:ro`, keeping `git status --porcelain` 100% clean.

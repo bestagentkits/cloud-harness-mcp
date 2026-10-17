@@ -27,7 +27,9 @@ A unique client-generated string (8–128 characters) passed to mutating lifecyc
 ### Time-To-Live (TTL)
 Every workspace enforces two hard lifetime boundaries:
 1. **Wall TTL (default 900s / 15 min):** The maximum total duration a workspace may exist before automatic termination.
-2. **Idle TTL (default 300s / 5 min):** The maximum period of inactivity between MCP tool calls before cleanup.
+2. **Idle TTL (default 300s / 5 min):** The maximum period without workspace activity before the workspace expires.
+
+An expired workspace loses its container but stays `EXPIRED_RECOVERABLE` for a **recoverable grace** (default 3600s / 60 min), during which `workspace_recover` restores it. After the grace the reaper closes it unless it still holds unsaved or unpushed work. Operators can change all three values and the per-principal quota in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle); each workspace keeps the values it was opened with.
 
 ### Artifact
 Output files generated during workspace execution (logs, test reports, build outputs) that exceed inline MCP message bounds or need to survive container termination. Managed under `/var/lib/cloud-harness/artifacts`.

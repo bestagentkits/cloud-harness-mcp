@@ -57,6 +57,7 @@ vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
 import type * as GitHubAppBroker from '../src/github-app-broker.js';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
 import { WorkspaceService } from '../src/workspace-service.js';
+import { EXECUTOR_HARDENING_ARGS } from '../src/toolbox-runner.js';
 
 const temporaryDirectories: string[] = [];
 const openStores: StateStore[] = [];
@@ -208,6 +209,10 @@ describe('Concurrent workspaces per owner (Issue #216)', () => {
     const createCalls = docker.runDocker.mock.calls.map((call) => call[0]).filter((args) => args[0] === 'create');
     expect(createCalls.some((args) => args.includes(`cloud-harness.workspace=${first}`) && args.includes(containerNameFor(first)))).toBe(true);
     expect(createCalls.some((args) => args.includes(`cloud-harness.workspace=${second}`) && args.includes(containerNameFor(second)))).toBe(true);
+    // Executors and toolbox containers share one hardening list, so neither can drift from the other.
+    for (const args of createCalls) {
+      expect(args.join('\n')).toContain([...EXECUTOR_HARDENING_ARGS, '--workdir', '/workspace'].join('\n'));
+    }
   });
 
   it('refuses an omitted workspaceId with two active workspaces and no preference', async () => {

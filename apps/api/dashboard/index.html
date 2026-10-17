@@ -125,6 +125,8 @@
         <option value="anthropic">Anthropic (OpenAI-compatible)</option>
         <option value="openrouter">OpenRouter</option>
         <option value="google">Google Gemini (OpenAI-compatible)</option>
+        <option value="deepseek">DeepSeek</option>
+        <option value="opencode-go">OpenCode Go</option>
         <option value="custom">Custom (OpenAI-compatible)</option>
       </select>
       <label for="model-credential-auth-mode">Auth header mode</label>
@@ -134,7 +136,7 @@
       </select>
       <label for="model-credential-key">API Key (Write-only)</label>
       <input id="model-credential-key" name="apiKey" type="password" autocomplete="new-password" placeholder="sk-..." required spellcheck="false">
-      <p id="model-credential-status" class="status-message" aria-live="polite"></p>
+      <p id="model-credential-status" class="form-status" aria-live="polite"></p>
       <div class="dialog-actions">
         <button type="button" id="cancel-model-credential">Cancel</button>
         <button type="submit" id="submit-model-credential" class="accent-btn">Save credential</button>
@@ -143,67 +145,15 @@
   </dialog>
   <dialog id="model-profile-dialog" aria-labelledby="model-profile-title" aria-describedby="model-profile-description">
     <h2 id="model-profile-title">Add model profile</h2>
-    <p id="model-profile-description">Configure model routing, token pricing, budget limits, and allowed proxy tools for Pi subagents.</p>
-    <form id="model-profile-form" class="stack-form">
-      <input type="hidden" id="model-profile-edit-mode" name="isEdit" value="false">
-      <input type="hidden" id="model-profile-generation" name="expectedGeneration" value="1">
-      <label for="model-profile-id">Profile ID</label>
-      <input id="model-profile-id" name="profileId" placeholder="e.g. coding-fast" required pattern="^[A-Za-z0-9._-]+$">
-      <label for="model-profile-display-name">Display name</label>
-      <input id="model-profile-display-name" name="displayName" placeholder="e.g. Fast Coding Agent" required>
-      <label for="model-profile-credential">Credential</label>
-      <select id="model-profile-credential" name="credentialId" required></select>
-      <label for="model-profile-model">Model name</label>
-      <input id="model-profile-model" name="model" placeholder="e.g. gpt-5.2-codex" required>
-      <label for="model-profile-api-mode">API Mode</label>
-      <select id="model-profile-api-mode" name="apiMode">
-        <option value="chat-completions" selected>Chat Completions (/v1/chat/completions)</option>
-      </select>
-      <div id="model-profile-custom-url-group" hidden>
-        <label for="model-profile-custom-url">Custom Upstream HTTPS URL</label>
-        <input id="model-profile-custom-url" name="customUpstreamUrl" type="url" placeholder="https://api.example.com/v1/chat/completions">
-      </div>
-      <div class="form-row">
-        <div>
-          <label for="model-profile-pricing-input">Input $/1M Tokens</label>
-          <input id="model-profile-pricing-input" name="pricingInput" type="number" step="0.000001" min="0" value="1.75" required>
-        </div>
-        <div>
-          <label for="model-profile-pricing-output">Output $/1M Tokens</label>
-          <input id="model-profile-pricing-output" name="pricingOutput" type="number" step="0.000001" min="0" value="14.00" required>
-        </div>
-      </div>
-      <div class="form-row">
-        <div>
-          <label for="model-profile-max-input">Max input tokens</label>
-          <input id="model-profile-max-input" name="maxInputTokens" type="number" min="1" value="200000" required>
-        </div>
-        <div>
-          <label for="model-profile-max-output">Max output tokens</label>
-          <input id="model-profile-max-output" name="maxOutputTokens" type="number" min="1" value="32000" required>
-        </div>
-        <div>
-          <label for="model-profile-max-cost">Max cost ($)</label>
-          <input id="model-profile-max-cost" name="maxCost" type="number" step="0.000001" min="0.01" value="5.00" required>
-        </div>
-      </div>
-      <div class="form-section-title">Allowed Proxy Operations</div>
-      <div class="tools-checkbox-grid">
-        <label><input type="checkbox" name="proxyOps" value="files_list" checked> files_list</label>
-        <label><input type="checkbox" name="proxyOps" value="files_read" checked> files_read</label>
-        <label><input type="checkbox" name="proxyOps" value="files_write"> files_write</label>
-        <label><input type="checkbox" name="proxyOps" value="files_apply_patch"> files_apply_patch</label>
-        <label><input type="checkbox" name="proxyOps" value="files_delete"> files_delete</label>
-        <label><input type="checkbox" name="proxyOps" value="files_move"> files_move</label>
-        <label><input type="checkbox" name="proxyOps" value="files_mkdir"> files_mkdir</label>
-        <label><input type="checkbox" name="proxyOps" value="grep_search" checked> grep_search</label>
-        <label><input type="checkbox" name="proxyOps" value="symbols_search" checked> symbols_search</label>
-        <label><input type="checkbox" name="proxyOps" value="symbols_references" checked> symbols_references</label>
-      </div>
-      <p id="model-profile-status" class="status-message" aria-live="polite"></p>
-      <div class="dialog-actions">
+    <p id="model-profile-description">Pick a provider, connect a key, choose a model, check the connection, and save.</p>
+    <ol id="model-wizard-steps" class="wizard-steps" aria-label="Profile setup steps"></ol>
+    <form id="model-profile-form" class="stack-form wizard-form" novalidate>
+      <div id="model-wizard-body" class="wizard-body"></div>
+      <p id="model-wizard-status" class="form-status" aria-live="polite"></p>
+      <div class="dialog-actions wizard-actions">
         <button type="button" id="cancel-model-profile">Cancel</button>
-        <button type="submit" id="submit-model-profile" class="accent-btn">Save profile</button>
+        <button type="button" id="model-wizard-back" hidden>Back</button>
+        <button type="submit" id="submit-model-profile" class="accent-btn">Continue</button>
       </div>
     </form>
   </dialog>

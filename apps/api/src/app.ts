@@ -11,12 +11,17 @@ import { createMcpGateway } from './mcp-gateway/index.js';
 import type { McpGatewayService } from './mcp-gateway/service.js';
 import { preAuthRequestLimits, principalRequestLimits, requestSecurity } from './request-security.js';
 import { RunnerClient } from './runner-client.js';
+import { EventDeliveryWorker } from './events/event-delivery-worker.js';
+import { createWebhookSender, type WebhookSender } from './events/webhook-sender.js';
+import { apiLogger } from './logging.js';
 
 export type ApiRuntime = {
   app: Express;
   close: () => Promise<void>;
   runnerClient: RunnerClient;
   gateway: McpGatewayService;
+  /** Starts the MCP Events delivery worker; the remote entrypoint calls it once it is listening. */
+  startEventDelivery: () => void;
 };
 
 /**
@@ -28,14 +33,21 @@ export type ApiAppOverrides = {
   runnerClient?: RunnerClient;
   gatewayFetchImpl?: FetchLike;
   accessVerifier?: VerifierOverrides;
+  webhookSender?: WebhookSender;
 };
 
 export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {}): ApiRuntime {
   const app = express();
   const runnerClient = overrides.runnerClient ?? new RunnerClient(config);
-  const handler = createMcpHandler(createCloudHarnessServerFactory(runnerClient), { legacy: 'stateless', responseMode: 'auto' });
+  const events = { sender: overrides.webhookSender ?? createWebhookSender() };
+  const deliveryWorker = new EventDeliveryWorker({
+    callRunner: (request, signal) => runnerClient.callEvents(request, signal),
+    sender: events.sender,
+    onError: (stage, reason) => apiLogger.warn({ stage, reason }, 'MCP event delivery pass failed')
+  });
+  const handler = createMcpHandler(createCloudHarnessServerFactory(runnerClient, events), { legacy: 'stateless', responseMode: 'auto' });
   const nodeHandler = toNodeHandler(handler);
-  const boundHandler = createMcpHandler(createWorkspaceBoundServerFactory(runnerClient), { legacy: 'stateless', responseMode: 'auto' });
+  const boundHandler = createMcpHandler(createWorkspaceBoundServerFactory(runnerClient, events), { legacy: 'stateless', responseMode: 'auto' });
   const boundNodeHandler = toNodeHandler(boundHandler);
   const gateway = createMcpGateway(config, runnerClient, {
     ...(overrides.gatewayFetchImpl ? { fetchImpl: overrides.gatewayFetchImpl } : {})
@@ -130,8 +142,9 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
   return {
     app,
     close: async () => {
-      await Promise.all([handler.close(), boundHandler.close(), gatewayHandler.close(), gateway.service.close()]);
+      await Promise.all([deliveryWorker.stop(), handler.close(), boundHandler.close(), gatewayHandler.close(), gateway.service.close()]);
     },
+    startEventDelivery: () => deliveryWorker.start(),
     runnerClient,
     gateway: gateway.service
   };

@@ -5,7 +5,10 @@ import { join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
   DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
+  DEFAULT_RECOVERABLE_GRACE_SECONDS,
   GITHUB_READ_ACTIONS,
+  WORKSPACE_LIFECYCLE_BOUNDS,
+  WORKSPACE_LIFECYCLE_SETTING_NAMES,
   GITHUB_WRITE_ACTIONS,
   HarnessError,
   InternalRunnerRequestSchema,
@@ -25,21 +28,31 @@ import {
   type RunnerOperation,
   type RunnerResponse,
   type WorkspaceCapabilityResult,
-  type ToolkitSelection
+  type ToolkitSelection,
+  type WorkspaceLifecycleSettingName,
+  type WorkspaceLifecycleSettingsUpdate,
+  type WorkspaceLifecycleSettingsView,
+  TERMINAL_MAX_INPUT_BYTES
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
+import { EXECUTOR_HARDENING_ARGS, EXECUTOR_RESOURCE_CEILINGS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
+import { PackageBuilder } from './package-builder.js';
+import { PACKAGE_OPERATIONS, PackageService, databaseWorkspaceDirectory, type PackageOperation } from './package-service.js';
+import { PackageStore } from './package-store.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
 import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken, requiredGitHubPermissions, type GitHubPermissionScope } from './github-app-broker.js';
 import type { GitHubBindingService } from './github-binding-service.js';
 import { ArtifactStoreError, type ArtifactMetadata, type ArtifactStore } from './artifact-store.js';
 import type { GitHubInstallationRecord, GitHubInstallationStore } from './github-installation-store.js';
 import type { MetadataStore } from './metadata-store.js';
-import { OperationManager } from './operation-manager.js';
+import { OperationManager, type TrackedOperation } from './operation-manager.js';
 import { validateRepositoryUrl } from './repository-policy.js';
 import { cloneHistorySpec, fetchHistorySpec } from './git-history-spec.js';
 import {
   ActiveWorkspaceLimitReachedError,
   COUNTED_WORKSPACE_STATUSES,
+  SettingsRevisionConflictError,
+  type WorkspaceLifecycleOverrides,
   type GitOperationStatus,
   type PrincipalSelector,
   type StateStore,
@@ -55,6 +68,8 @@ import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
+import { FailureIntelligence } from './decision-plane/failure-intelligence.js';
+import type { DecisionPlane } from './decision-plane/decision-plane.js';
 import {
   hasGitHubFallbackCredential,
   resolveGitHubFallbackCredential,
@@ -62,6 +77,37 @@ import {
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
+/** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
+const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+const PACKAGE_OPERATION_SET: ReadonlySet<string> = new Set(PACKAGE_OPERATIONS);
+
+function isPackageOperation(operation: RunnerOperation): operation is PackageOperation {
+  return PACKAGE_OPERATION_SET.has(operation);
+}
+
+function packageMessage(operation: PackageOperation, data: unknown): string {
+  const record = data as Record<string, unknown>;
+  switch (operation) {
+    case 'packages_plan':
+      if (record.state === 'RESOLVING') return `Package resolution ${String(record.resolutionId)} is still running; poll packages_status with its resolutionId`;
+      if (record.approval === 'not_required') return 'Package plan created; call packages_apply with its planId and planDigest';
+      if (record.approval === 'required') return 'Package plan created; approve it on the Dashboard, then call packages_apply with its planId and planDigest';
+      return 'Package plan created, but this instance has no Dashboard approver, so packages_apply is refused';
+    case 'packages_apply':
+      return `Package apply ${String(record.applyId)} is ${String(record.state)}; poll packages_status with its applyId`;
+    case 'packages_list':
+      return `${(record.bindings as unknown[]).length} package bindings`;
+    case 'packages_status':
+      if ('apply' in record) return `Package apply is ${String((record.apply as { state?: string }).state)}`;
+      if ('resolution' in record) return `Package resolution is ${String((record.resolution as { state?: string }).state)}`;
+      return 'Package status';
+    case 'packages_rollback':
+      return 'Package binding rolled back; workspaces pick it up when their executor is recreated';
+    case 'packages_remove':
+      return `Package binding removed; ${String(record.collectedReleases)} releases collected; workspaces drop it when their executor is recreated`;
+  }
+}
+
 const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING', 'NETWORK_QUARANTINED']);
 /**
  * Statuses that occupy a counted capacity slot. `REAPING` is excluded because it
@@ -70,6 +116,12 @@ const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', '
  * `activeStatus` remains the enumeration superset for sweeps and container cleanup.
  */
 const countedStatus = new Set<WorkspaceRecord['status']>(COUNTED_WORKSPACE_STATUSES);
+/**
+ * The shortest wait before the reaper retries an auto-close it deferred or that failed. A deferral needs
+ * an operator or agent to act, and every check starts a short-lived helper container.
+ */
+const AUTO_CLOSE_RETRY_MS = 3_600_000;
+const AUTO_CLOSE_DEFERRED_PREFIX = 'auto-close deferred: ';
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
 ]);
@@ -101,7 +153,9 @@ export function computeWorkspaceOpenFingerprint(input: {
     repositoryUrl: String(input.repositoryUrl),
     ref: input.ref ?? null,
     environmentId: input.environmentId ?? null,
-    networkProfile: input.networkProfile ?? 'network-none',
+    // An omitted profile resolves through the instance default at open time, so it is a distinct
+    // request from an explicit `network-none` and must not replay a workspace opened with one.
+    networkProfile: input.networkProfile ?? null,
     toolkits: canonicalToolkits,
     allowToolkitWorkspaceChanges: input.allowToolkitWorkspaceChanges ?? false,
     // History options join the fingerprint only when set, so replays of earlier requests keep matching.
@@ -109,6 +163,23 @@ export function computeWorkspaceOpenFingerprint(input: {
     ...(input.shallowSince !== undefined ? { shallowSince: input.shallowSince } : {})
   };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
+/**
+ * Whether a stored workspace may be replayed for this open request. An explicit profile must also
+ * match the profile the stored workspace resolved: records persisted before omitted and explicit
+ * `network-none` were fingerprinted apart share the explicit request's fingerprint, and must not
+ * answer it with a workspace opened under another profile. An omitted profile accepts whatever the
+ * instance default resolved to at open time, so it is never compared with the current default.
+ */
+function workspaceOpenReplayMatches(
+  prior: Pick<WorkspaceRecord, 'requestFingerprint' | 'networkProfile'>,
+  parsed: { networkProfile?: string | undefined },
+  requestFingerprint: string
+): boolean {
+  if (!prior.requestFingerprint) return true;
+  return prior.requestFingerprint === requestFingerprint
+    && (parsed.networkProfile === undefined || prior.networkProfile === parsed.networkProfile);
 }
 
 
@@ -185,6 +256,36 @@ function publicRecord(record: WorkspaceRecord, capabilities?: WorkspaceCapabilit
   };
 }
 
+/**
+ * A renewal never passes hardExpiresAt. When the requested extension reaches it, the
+ * result says so (leaseCapped, the requested expiry and a lease warning) so a caller
+ * that renews before a long step learns the workspace will still end at the deadline.
+ */
+function renewedLeaseResult(updated: WorkspaceRecord, previousExpiresAt: number, requestedExpiresAt: number) {
+  const data = publicRecord(updated);
+  if (requestedExpiresAt <= updated.hardExpiresAt) {
+    return { ok: true, message: 'Workspace lease renewed', data: { ...data, leaseCapped: false }, truncated: false };
+  }
+  const deadline = new Date(updated.hardExpiresAt).toISOString();
+  const extended = updated.expiresAt > previousExpiresAt;
+  const message = extended
+    ? `Workspace lease renewed only until the hard deadline ${deadline}; renewal cannot extend past hardExpiresAt`
+    : `Workspace lease not extended: it already ends at the hard deadline ${deadline}, which renewal cannot pass`;
+  const warning = `Requested lease end ${new Date(requestedExpiresAt).toISOString()} is past the hard deadline ${deadline}. `
+    + 'The workspace expires then regardless of renewals: push or finalize work before it, or open a new workspace for later steps.';
+  return {
+    ok: true,
+    message,
+    data: {
+      ...data,
+      leaseCapped: true,
+      requestedExpiresAt: new Date(requestedExpiresAt).toISOString(),
+      leaseWarnings: [...(data.leaseWarnings ?? []), warning]
+    },
+    truncated: false
+  };
+}
+
 function internalWorkspaceDetail(record: WorkspaceRecord) {
   return { ...publicRecord(record), generation: record.generation };
 }
@@ -203,12 +304,16 @@ export class WorkspaceService {
   private readonly guidanceCache = new Map<string, { generation: number; fingerprint: string; snapshot: RepositoryGuidanceSnapshot }>();
   private reaper?: NodeJS.Timeout | undefined;
   private reaperRunning = false;
+  /** Toolbox containers this runner is running now; the semaphore count and the sweep's exclusion list. */
+  private readonly liveToolboxContainers = new Set<string>();
   readonly toolkitCacheManager: ToolkitCacheManager;
   readonly toolkitService: ToolkitService;
+  private packageService?: PackageService | undefined;
 
   public readonly networkProfileManager: NetworkProfileManager;
   private readonly agentManager?: AgentManager | undefined;
   private readonly metadata?: MetadataStore | undefined;
+  private failureIntelligence?: FailureIntelligence | undefined;
   constructor(
     private readonly config: RunnerConfig,
     private readonly store: StateStore,
@@ -244,8 +349,37 @@ export class WorkspaceService {
     this.instanceId = store.instanceId();
     this.store.reconcileRunningTasks(this.bootId, Date.now());
     this.store.reconcilePendingGitOperations(Date.now());
-    this.operations = new OperationManager(this.store, this.bootId);
+    this.operations = new OperationManager(this.store, this.bootId, {
+      limits: {
+        maxPerWorkspace: this.config.terminalMaxPerWorkspace,
+        retainedBytes: this.config.terminalRetainedBytes,
+        idleTimeoutMs: this.config.terminalIdleTimeoutMs,
+        maxLifetimeMs: this.config.terminalMaxLifetimeMs
+      }
+    });
     this.operations.redactorProvider = (wsId) => this.getRedactor(wsId);
+    // A running terminal is active work: reads, input, and resizes refresh the lease (throttled by the
+    // operation manager). `touch` keeps the existing wall-clock cap, so a terminal never outlives it.
+    this.operations.onTerminalActivity = (wsId) => {
+      const workspace = this.store.byId(wsId);
+      if (workspace) this.touch(workspace);
+    };
+    this.operations.terminalWorkspaceLease = (wsId) => {
+      const workspace = this.store.byId(wsId);
+      return workspace ? { expiresAt: workspace.expiresAt, hardExpiresAt: workspace.hardExpiresAt } : undefined;
+    };
+    // Metadata only: terminal input and output bytes never reach the audit log.
+    this.operations.onTerminalEnd = ({ ownerId, view }) => {
+      const workspace = this.store.byId(view.workspaceId);
+      if (!workspace) return;
+      this.auditWorkspaceMutation(ownerId, 'terminal.closed', workspace, {
+        terminalId: view.terminalId,
+        workspaceId: view.workspaceId,
+        status: view.status,
+        reason: view.endReason ?? view.status,
+        ...(view.exitCode !== undefined ? { exitCode: view.exitCode } : {})
+      });
+    };
     this.networkProfileManager = new NetworkProfileManager(this.config);
     this.repoCacheManager = new RepositoryCacheManager(this.config.repoCacheRoot, this.store, this.config.allowedGitHosts, this.config.executorImage, this.instanceId);
     const cacheRoot = this.config.toolkitCacheRoot || (this.config.jobsRoot && !this.config.jobsRoot.startsWith('/var/lib') ? join(this.config.jobsRoot, 'toolkit-cache') : '/var/lib/cloud-harness/cache/toolkits');
@@ -281,6 +415,11 @@ export class WorkspaceService {
     };
   }
 
+  /** Attaches the Decision Plane. Without it every failure keeps only its deterministic classification. */
+  useDecisionPlane(plane: DecisionPlane): void {
+    this.failureIntelligence = new FailureIntelligence(plane);
+  }
+
   /**
    * The workspace and owner secret values. It is named separately from the redactor because the
    * suggestion engine has to name both value sources explicitly: these are the workspace secrets, and a
@@ -306,7 +445,9 @@ export class WorkspaceService {
       principalId: record.ownerId,
       metadata: this.metadata
     });
-    if (fallbackToken) values['GH_TOKEN'] = fallbackToken;
+    // A reserved name, so a workspace secret called GH_TOKEN (the token the executor really holds)
+    // keeps its own entry and both values stay redacted.
+    if (fallbackToken) values['CLOUD_HARNESS_GITHUB_FALLBACK_TOKEN'] = fallbackToken;
     return values;
   }
 
@@ -430,6 +571,8 @@ export class WorkspaceService {
     }
     await this.toolkitCacheManager.reconcileStartup().catch(() => undefined);
     await this.reconcileContainers();
+    // After leftover containers are gone, so no builder can still be writing below the packages root.
+    if (this.config.packagesEnabled === true) await this.packages.reconcileStartup();
     await this.reconcileJobDirectories();
     await this.agentManager?.start();
     this.reaper = setInterval(() => {
@@ -440,6 +583,32 @@ export class WorkspaceService {
     this.reaper.unref();
   }
 
+  /**
+   * Managed toolbox packages: plans, durable applies, releases, and the per-workspace mount profiles.
+   * Built on first use so a runner with managed packages off never validates their paths.
+   */
+  get packages(): PackageService {
+    if (!this.packageService) {
+      const builder = new PackageBuilder({
+        executorImage: this.config.executorImage,
+        instanceId: this.instanceId,
+        packagesRoot: this.config.packagesRoot,
+        provisioningNetwork: this.config.provisioningNetwork || 'cloud-harness-mcp_provisioning',
+        proxy: this.config.toolkitEgressProxy,
+        planTimeoutMs: this.config.packagesBuildTimeoutMs
+      });
+      this.packageService = new PackageService({
+        database: this.store.database,
+        config: this.config,
+        builder,
+        ...(this.metadata ? { audit: this.metadata.recordAuditInTransaction.bind(this.metadata) } : {}),
+        instanceId: this.instanceId,
+        workspaces: databaseWorkspaceDirectory(this.store.database, new PackageStore(this.store.database))
+      });
+    }
+    return this.packageService;
+  }
+
   beginShutdown(): void {
     this.agentManager?.fence();
   }
@@ -448,6 +617,7 @@ export class WorkspaceService {
     this.beginShutdown();
     clearInterval(this.reaper);
     await this.agentManager?.stop();
+    await this.packageService?.shutdown();
   }
   private async reconcileContainers(): Promise<void> {
     const managed = await runDocker([
@@ -482,13 +652,69 @@ export class WorkspaceService {
   }
 
   /**
-   * Concurrent counted workspaces this owner may hold. The `??` fallback mirrors
-   * the existing `dependencyNetworkName` pattern and exists because several tests
+   * The runner-configured per-principal limit. The `??` fallback mirrors the
+   * existing `dependencyNetworkName` pattern and exists because several tests
    * build partial `RunnerConfig` literals; production values always come from the
-   * validated schema.
+   * validated schema. Admission passes this to the store, which applies a
+   * Dashboard override inside its own transaction.
    */
-  private activeWorkspaceLimit(): number {
+  private configuredActiveWorkspaceLimit(): number {
     return this.config.maxActiveWorkspacesPerOwner ?? DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER;
+  }
+
+  /** Concurrent counted workspaces this owner may hold now: the Dashboard override, else the runner value. */
+  private activeWorkspaceLimit(): number {
+    return this.store.effectiveActiveWorkspaceLimit(this.configuredActiveWorkspaceLimit());
+  }
+
+  /** The runner-configured lifecycle values a cleared Dashboard override falls back to. */
+  private runnerLifecycleValues(): Record<WorkspaceLifecycleSettingName, number> {
+    return {
+      maxActiveWorkspacesPerOwner: this.configuredActiveWorkspaceLimit(),
+      idleTtlSeconds: this.config.idleTtlSeconds,
+      wallTtlSeconds: this.config.wallTtlSeconds,
+      recoverableGraceSeconds: this.config.recoverableGraceSeconds ?? DEFAULT_RECOVERABLE_GRACE_SECONDS
+    };
+  }
+
+  /** The lifecycle policy a workspace opened now receives: each Dashboard override, else the runner value. */
+  private effectiveLifecyclePolicy(overrides: WorkspaceLifecycleOverrides = this.store.getWorkspaceLifecycleOverrides()): Record<WorkspaceLifecycleSettingName, number> {
+    const runner = this.runnerLifecycleValues();
+    return {
+      maxActiveWorkspacesPerOwner: overrides.maxActiveWorkspacesPerOwner ?? runner.maxActiveWorkspacesPerOwner,
+      idleTtlSeconds: overrides.idleTtlSeconds ?? runner.idleTtlSeconds,
+      wallTtlSeconds: overrides.wallTtlSeconds ?? runner.wallTtlSeconds,
+      recoverableGraceSeconds: overrides.recoverableGraceSeconds ?? runner.recoverableGraceSeconds
+    };
+  }
+
+  /** The idle timeout this workspace was opened with; a row from before the snapshot uses the runner value. */
+  private idleTtlSecondsFor(record: WorkspaceRecord): number {
+    return record.idleTtlSeconds ?? this.config.idleTtlSeconds;
+  }
+
+  /** The recoverable grace this workspace was opened with; a row from before the snapshot keeps the former hour. */
+  private recoverableGraceSecondsFor(record: WorkspaceRecord): number {
+    return record.recoverableGraceSeconds ?? DEFAULT_RECOVERABLE_GRACE_SECONDS;
+  }
+
+  /**
+   * Finishes an expiry claimed with `claimForExpiry`: the executor is already gone, the slot is released,
+   * and the recoverable window opens from the expiry itself rather than from the last tool activity.
+   */
+  private markExpiredRecoverable(claimed: WorkspaceRecord, now: number): WorkspaceRecord | undefined {
+    return this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
+      status: 'EXPIRED_RECOVERABLE',
+      containerName: null,
+      lastActivityAt: now,
+      expiredAt: now,
+      recoverableUntil: now + this.recoverableGraceSecondsFor(claimed) * 1_000
+    });
+  }
+
+  /** The window a failed close leaves before the reaper tries again, so a failing close is not retried every pass. */
+  private failedCloseWindow(claimed: WorkspaceRecord, now: number): Pick<WorkspaceRecord, 'expiredAt' | 'recoverableUntil'> {
+    return { expiredAt: claimed.expiredAt ?? now, recoverableUntil: now + AUTO_CLOSE_RETRY_MS };
   }
 
   /**
@@ -513,14 +739,11 @@ export class WorkspaceService {
       if (record.status === 'ACTIVE' && (record.expiresAt <= now || record.hardExpiresAt <= now)) {
         const claimed = this.store.claimForExpiry(record.id, record.generation);
         if (claimed) {
+          this.operations.stopWorkspaceTerminals(claimed.id, 'workspace expired');
           if (claimed.containerName) {
             await removeContainer(claimed.containerName).catch(() => undefined);
           }
-          this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
-            status: 'EXPIRED_RECOVERABLE',
-            containerName: null,
-            lastActivityAt: now
-          });
+          this.markExpiredRecoverable(claimed, now);
         }
       }
     }
@@ -588,8 +811,9 @@ export class WorkspaceService {
     throw new HarnessError('LIMIT_EXCEEDED', `${violation}; workspace was closed`, 507, false);
   }
 
-  private expiry(createdAt: number, activityAt: number): number {
-    return Math.min(createdAt + this.config.wallTtlSeconds * 1_000, activityAt + this.config.idleTtlSeconds * 1_000);
+  /** The idle deadline after activity at `activityAt`, never past the hard deadline fixed at open. */
+  private expiry(record: Pick<WorkspaceRecord, 'hardExpiresAt' | 'idleTtlSeconds'>, activityAt: number): number {
+    return Math.min(record.hardExpiresAt, activityAt + (record.idleTtlSeconds ?? this.config.idleTtlSeconds) * 1_000);
   }
 
   private async clone(record: WorkspaceRecord, repositoryUrl: URL, ref?: string, historySpec = ''): Promise<string> {
@@ -720,6 +944,10 @@ export class WorkspaceService {
     const name = `cloud-harness-ws-${record.id.slice(3, 19).toLowerCase()}`;
     await removeContainer(name).catch(() => undefined);
     const { toolsPath, cachePath, ownerSkillsPath } = await this.provisionMountDirectories(record);
+    // Recorded as the workspace's profile; later binding changes apply only when the executor is recreated.
+    const packageProfile = this.config.packagesEnabled === true
+      ? this.packages.profileFor(record.ownerId, record.id)
+      : { mounts: [], binDirs: [] };
     const envEntries = Object.entries(environment);
     const envFilePath = join(record.workspacePath, `.env.injected-${randomBytes(6).toString('hex')}`);
     let useEnvFile = false;
@@ -735,16 +963,14 @@ export class WorkspaceService {
         'create', '--name', name,
         '--label', 'cloud-harness.managed=true', '--label', `cloud-harness.instance=${this.instanceId}`,
         '--label', `cloud-harness.workspace=${record.id}`,
-        '--user', '10001:10001', '--workdir', '/workspace', '--read-only',
-        '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=128m', '--tmpfs', '/run:rw,nosuid,nodev,size=8m',
-        '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '256',
-        '--memory', '1g', '--memory-swap', '1g', '--cpus', '1', '--ulimit', 'nofile=1024:1024',
+        ...EXECUTOR_HARDENING_ARGS, '--workdir', '/workspace',
         ...networkArgs,
         '--volume', `${repositoryPath}:/workspace:rw`,
         '--volume', `${toolsPath}:/opt/user-tools:rw`,
         '--volume', `${cachePath}:/var/cache/harness:rw`,
         '--volume', `${ownerSkillsPath}:/opt/cloud-harness/owner-skills:ro`,
         ...builtinSkillsMountArgs(this.config.builtinSkillsRoot),
+        ...packageProfile.mounts.flatMap((mount) => ['--volume', `${mount.source}:${mount.target}:ro`]),
         '--env', 'HOME=/tmp/cloud-harness-home',
         '--env', 'GIT_CONFIG_NOSYSTEM=1',
         '--env', 'XDG_CONFIG_HOME=/tmp/cloud-harness-home/.config',
@@ -756,7 +982,8 @@ export class WorkspaceService {
         '--env', 'BUN_INSTALL=/opt/user-tools/bun',
         '--env', 'PNPM_HOME=/opt/user-tools/pnpm',
         '--env', 'UV_TOOL_BIN_DIR=/opt/user-tools/bin',
-        '--env', 'PATH=/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        '--env', `PATH=${withManagedBins(EXECUTOR_PATH, packageProfile.binDirs)}`,
+        ...managedPathEnvArgs(packageProfile.binDirs),
         ...(useEnvFile ? ['--env-file', envFilePath] : []),
         this.config.executorImage
       ];
@@ -826,7 +1053,7 @@ export class WorkspaceService {
         record.generation,
         ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'],
         { containerName, status: 'ACTIVE', error: null },
-        this.activeWorkspaceLimit()
+        this.configuredActiveWorkspaceLimit()
       );
     } catch (error) {
       await removeContainer(containerName).catch(() => undefined);
@@ -847,7 +1074,7 @@ export class WorkspaceService {
     const requestFingerprint = computeWorkspaceOpenFingerprint(parsed);
     const prior = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
     if (prior) {
-      if (prior.requestFingerprint && prior.requestFingerprint !== requestFingerprint) {
+      if (!workspaceOpenReplayMatches(prior, parsed, requestFingerprint)) {
         throw new HarnessError('CONFLICT', 'idempotency key reused with mismatched request parameters', 409, true);
       }
       return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(prior), truncated: false };
@@ -857,7 +1084,10 @@ export class WorkspaceService {
     if (parsed.ref?.startsWith('-')) throw new HarnessError('INVALID_INPUT', 'ref cannot start with a dash');
     const now = Date.now();
     const workspaceId = opaqueId('ws');
-    const hardExpiresAt = now + this.config.wallTtlSeconds * 1_000;
+    // The lifecycle policy is snapshotted here: a later Settings change applies to workspaces opened after
+    // it and never shortens or extends this one. The hard deadline is the wall-TTL snapshot.
+    const policy = this.effectiveLifecyclePolicy();
+    const hardExpiresAt = now + policy.wallTtlSeconds * 1_000;
     const record: WorkspaceRecord = {
       id: workspaceId, ownerId, idempotencyKey: parsed.idempotencyKey, repositoryUrl: url.toString(),
       repositoryRef: parsed.ref ?? null, containerName: null, workspacePath: join(this.config.jobsRoot, workspaceId),
@@ -865,15 +1095,16 @@ export class WorkspaceService {
       // Resolution order: explicit request, then the operator's persisted instance
       // default, then the runner configuration (shipped default: dependency-access).
       status: 'CREATING', networkProfile: parsed.networkProfile ?? this.store.getWorkspaceDefaultNetworkProfile() ?? this.config.networkProfile, createdAt: now,
-      lastActivityAt: now, expiresAt: this.expiry(now, now), hardExpiresAt, gitAuthorName: null, gitAuthorEmail: null,
-      mutationLockedUntil: null, generation: 1, error: null, requestFingerprint
+      lastActivityAt: now, expiresAt: Math.min(hardExpiresAt, now + policy.idleTtlSeconds * 1_000), hardExpiresAt, gitAuthorName: null, gitAuthorEmail: null,
+      mutationLockedUntil: null, generation: 1, error: null, requestFingerprint,
+      idleTtlSeconds: policy.idleTtlSeconds, recoverableGraceSeconds: policy.recoverableGraceSeconds, expiredAt: null, recoverableUntil: null
     };
     try {
-      this.store.admit(record, this.activeWorkspaceLimit());
+      this.store.admit(record, this.configuredActiveWorkspaceLimit());
     } catch (error) {
       const replay = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
       if (replay) {
-        if (replay.requestFingerprint && replay.requestFingerprint !== requestFingerprint) {
+        if (!workspaceOpenReplayMatches(replay, parsed, requestFingerprint)) {
           throw new HarnessError('CONFLICT', 'idempotency key reused with mismatched request parameters', 409, true);
         }
         return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(replay), truncated: false };
@@ -1384,10 +1615,11 @@ export class WorkspaceService {
       const now = Date.now();
       const claimed = this.store.claimForExpiry(record.id, record.generation);
       if (claimed) {
+        this.operations.stopWorkspaceTerminals(claimed.id, 'workspace expired');
         if (claimed.containerName) {
           void removeContainer(claimed.containerName).catch(() => undefined);
         }
-        this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], { status: 'EXPIRED_RECOVERABLE', containerName: null, lastActivityAt: now });
+        this.markExpiredRecoverable(claimed, now);
         throw new HarnessError('EXPIRED', 'workspace expired', 410);
       }
       return this.store.byId(record.id) ?? record;
@@ -1398,9 +1630,10 @@ export class WorkspaceService {
   private touch(record: WorkspaceRecord): WorkspaceRecord {
     if (record.status === 'EXPIRED_RECOVERABLE' || record.status === 'NETWORK_QUARANTINED') return record;
     const now = Date.now();
+    // Activity extends the idle lease but never shortens one that workspace_lease_renew already extended.
     const touched = this.store.updateFenced(record.id, record.generation, ['ACTIVE'], {
       lastActivityAt: now,
-      expiresAt: this.expiry(record.createdAt, now)
+      expiresAt: Math.min(record.hardExpiresAt, Math.max(record.expiresAt, this.expiry(record, now)))
     });
     if (!touched) throw new HarnessError('EXPIRED', 'workspace lifecycle changed', 410);
     return touched;
@@ -1780,6 +2013,18 @@ export class WorkspaceService {
       await removeContainer(helperName);
     }
   }
+  /**
+   * Moves the checkout's remote-tracking ref to what a successful push left on the remote. The push runs
+   * from a separate transfer repository, so without this the checkout keeps reporting pushed commits as
+   * not on any remote. It is best-effort: a stale ref only makes the auto-close check keep the workspace.
+   */
+  private async trackPushedBranch(record: WorkspaceRecord, refspec: string, commit: string | null, signal?: AbortSignal): Promise<void> {
+    const destination = refspec.split(':')[1] ?? '';
+    if (!destination.startsWith('refs/heads/')) return;
+    const branch = destination.slice('refs/heads/'.length);
+    await this.runRecoveryWorker(record, 'workspace_recover', { mode: 'track_push', branch, commit }, signal, true).catch(() => undefined);
+  }
+
   private async currentHead(record: WorkspaceRecord, signal?: AbortSignal, revision = 'HEAD'): Promise<string> {
     const revParse = revision === 'HEAD' ? ['rev-parse', 'HEAD'] : ['rev-parse', '--verify', '--quiet', `${revision}^{commit}`];
     const unresolved = revision === 'HEAD' ? 'current Git HEAD could not be determined' : `Git revision ${revision} could not be resolved`;
@@ -2032,6 +2277,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       if (idempotencyKey) {
         this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'SUCCEEDED', JSON.stringify(response), null, currentLocalHead);
       }
+      await this.trackPushedBranch(record, refspec, deleteRef ? null : currentLocalHead, signal);
       return response;
     } catch (err: unknown) {
       if (err instanceof HarnessError && idempotencyKey) {
@@ -2044,7 +2290,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
   }
 
-  private async handleExecRun(record: WorkspaceRecord, validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  /** `resultTarget` labels the stored async result for the `bash` workspace target, as its sync result is. */
+  private async handleExecRun(record: WorkspaceRecord, validated: Record<string, unknown>, signal?: AbortSignal, resultTarget?: 'workspace'): Promise<RunnerResponse> {
     const command = validated.command as string;
     const cwd = ((validated.cwd as string) || '.').replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '') || '.';
     const timeoutMs = (validated.timeoutMs as number) || 60_000;
@@ -2136,7 +2383,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           if (!timedOut) {
             this.operations.updateGenericOperation(operationId, {
               status: result.ok ? 'completed' : 'failed',
-              result: result.data,
+              result: resultTarget ? dataWithTarget(result.data, resultTarget) : result.data,
               error: result.error
             });
           }
@@ -2162,6 +2409,66 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
     return await this.runWorker(record, 'exec_run', validated, signal);
   }
+  /**
+   * The `bash` toolbox target: one command in a disposable, no-network executor-image container with no
+   * checkout, secrets, or Docker socket. The operator flag is the only authorization; the target the
+   * caller asked for grants nothing by itself. A runner-wide cap bounds how many run at once, and an async
+   * call returns an operation handle scoped to the calling owner.
+   */
+  private async runToolbox(ownerId: string, validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+    if (this.config.packagesEnabled !== true) {
+      throw new HarnessError('FORBIDDEN', 'The bash toolbox target is disabled on this instance (the operator enables it with PACKAGES_ENABLED=true); use target "workspace" to run in a workspace', 403, false);
+    }
+    // Partial test configs omit the key; production values always come from the validated schema.
+    const limit = this.config.toolboxMaxConcurrent ?? 2;
+    if (this.liveToolboxContainers.size >= limit) {
+      throw new HarnessError('LIMIT_EXCEEDED', `toolbox concurrency limit reached: ${limit} toolbox commands are already running on this instance; retry after one finishes`, 429, true);
+    }
+    const name = toolboxContainerName();
+    const timeoutMs = validated.timeoutMs as number;
+    const run = (runSignal?: AbortSignal) => {
+      // Held until the container is gone, so an uninstall cannot remove a release the command still reads.
+      const held = this.packages.holdToolboxMounts(ownerId);
+      const toolboxPackages = held.profile;
+      this.liveToolboxContainers.add(name);
+      return runToolboxCommand({
+        name,
+        image: this.config.executorImage,
+        instanceId: this.instanceId,
+        command: validated.command as string,
+        mounts: toolboxPackages.mounts,
+        binDirs: toolboxPackages.binDirs
+      }, {
+        timeoutMs,
+        maxOutputBytes: Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes)
+      }, runSignal).finally(() => {
+        held.release();
+        this.liveToolboxContainers.delete(name);
+      });
+    };
+    if (validated.async !== true) return toolboxResponse(await run(signal));
+
+    const operationId = opaqueId('op');
+    const abortController = new AbortController();
+    this.operations.registerGenericOperation({ id: operationId, ownerId, kind: 'bash', deadlineMs: Date.now() + timeoutMs, abortController });
+    const settle = (patch: Parameters<OperationManager['updateGenericOperation']>[1]) => {
+      // A cancelled handle keeps its cancelled status; the run only reports into a handle still running.
+      if (this.operations.getGenericOperation(operationId)?.status === 'running') this.operations.updateGenericOperation(operationId, patch);
+    };
+    const completion = run(abortController.signal).then((result) => {
+      const response = toolboxResponse(result);
+      settle({ status: response.ok ? 'completed' : 'failed', result: response.data, error: response.error });
+    }, (error: unknown) => {
+      const harness = error instanceof HarnessError ? error : undefined;
+      settle({
+        status: harness?.code === 'CANCELLED' ? 'cancelled' : 'failed',
+        error: { code: harness?.code ?? 'INTERNAL_ERROR', message: error instanceof Error ? error.message : 'toolbox command failed', retryable: harness?.retryable ?? false }
+      });
+    });
+    this.operations.updateGenericOperation(operationId, { completion });
+    return { ok: true, message: 'Command started in background', data: { operationId, status: 'running', target: 'toolbox' }, truncated: false };
+  }
+
   private async runPrivilegedEphemeralExec(
     record: WorkspaceRecord,
     input: {
@@ -2260,7 +2567,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         installations: this.githubInstallations,
         permissionScope,
         requiredPermission: isWrite ? 'write' : 'read',
-        ...(requirement.alsoWrite?.includes('contents') ? { contentsPermission: 'write' as const } : {})
+        ...(requirement.alsoWrite?.includes('contents') ? { contentsPermission: 'write' as const } : {}),
+        ...(requirement.optionalScope ? { optionalScope: requirement.optionalScope } : {})
       });
       appToken = minted?.token;
       appPermissions = minted?.permissions;
@@ -2387,12 +2695,39 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         };
       }
 
-      const classified = classifyGitHubFailure(result.stderr, result.stdout, action);
+      let classified = classifyGitHubFailure(result.stderr, result.stdout, action);
+      const optionalScope = requirement.optionalScope;
+      const optionalLevel = isWrite ? 'write' : 'read';
+      const optionalGranted = optionalScope !== undefined
+        && (appPermissions?.[optionalScope] === 'write' || appPermissions?.[optionalScope] === optionalLevel);
+      if (classified.code === 'GITHUB_PERMISSION_MISSING' && optionalScope && credentialSource === 'app' && !optionalGranted
+        && /Resource not accessible by integration/i.test(`${result.stderr}\n${result.stdout}`)) {
+        // The App token holds the action's own scope, so a refusal here means the number names a
+        // pull request the installation cannot reach: say which permission that is, not a generic hint.
+        const hint = `GitHub ${action} was refused: the number most likely names a pull request, and this GitHub App installation does not grant ${optionalScope}:${optionalLevel}, which an issue action on a pull request needs. Use the matching pr_* action (pr_view, pr_comment), or add the Pull requests permission to the GitHub App and approve the installation change.`;
+        classified = { ...classified, message: `${hint} Detail: ${result.stderr || result.stdout}`.trim().slice(0, 2_000) };
+      }
+      // Known errors stay authoritative; only the generic fallback gains an advisory diagnosis, and
+      // the deterministic code and retryability are returned unchanged either way.
+      const diagnosis = classified.code === 'GITHUB_ACTION_FAILED'
+        ? await this.failureIntelligence?.diagnose({
+          ownerId: record.ownerId,
+          workspaceId: record.id,
+          operation: `github ${action}`,
+          deterministicCode: classified.code,
+          exitCode: result.exitCode,
+          stderr: result.stderr,
+          stdout: result.stdout,
+          networkProfile: record.networkProfile,
+          secrets: () => ({ ...this.redactionSecrets(record.id), GITHUB_ACTION_TOKEN: token }),
+          ...(signal ? { signal } : {})
+        }).catch(() => undefined)
+        : undefined;
       return {
         result: {
           ok: false,
           message: classified.message,
-          data: { output: result.stdout || result.stderr },
+          data: { output: result.stdout || result.stderr, ...(diagnosis ? { diagnosis } : {}) },
           error: {
             code: classified.code,
             message: classified.message,
@@ -2408,6 +2743,24 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
   }
 
+  private async runPackageOperation(ownerId: string, operation: PackageOperation, validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+    const data = await this.packages.execute(ownerId, operation, validated, signal);
+    return { ok: true, message: packageMessage(operation, data), data, truncated: false };
+  }
+
+  /**
+   * An operation handle is visible only to its owner: through its workspace's owner, or through the owner
+   * recorded on a workspace-less (toolbox) handle. Any other handle reads as not found.
+   */
+  private ownedOperation(ownerId: string, operationId: string): TrackedOperation {
+    const op = this.operations.getGenericOperation(operationId);
+    const owned = op !== undefined && (op.workspaceId
+      ? this.store.byOwnerAndId(ownerId, op.workspaceId) !== undefined
+      : op.ownerId !== undefined && op.ownerId === ownerId);
+    if (!owned) throw new HarnessError('NOT_FOUND', `operation ${operationId} not found`);
+    return op;
+  }
+
   async execute(principal: PrincipalSelector | string, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     const ownerId = this.store.resolvePrincipal(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal);
     RunnerOperationSchema.parse(operation);
@@ -2415,14 +2768,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (operation === 'workspace_open') return await this.open(ownerId, validated);
     if (operation === 'workspace_list') return this.list(ownerId, validated);
     if (operation === 'secrets_list') return this.secretsList(ownerId, validated);
+    if (operation === 'bash' && validated.target === 'toolbox') return await this.runToolbox(ownerId, validated, signal);
+    // Package operations are owner-scoped and never take a workspace mutation lock.
+    if (isPackageOperation(operation)) return await this.runPackageOperation(ownerId, operation, validated, signal);
     if (operation === 'operation_status') {
-      const opId = validated.operationId as string;
-      const op = this.operations.getGenericOperation(opId);
-      if (!op) throw new HarnessError('NOT_FOUND', `operation ${opId} not found`);
-      if (op.workspaceId) {
-        const ws = this.store.byOwnerAndId(ownerId, op.workspaceId);
-        if (!ws) throw new HarnessError('NOT_FOUND', `operation ${opId} not found`);
-      }
+      const op = this.ownedOperation(ownerId, validated.operationId as string);
       const offset = validated.cursor ? Number(validated.cursor) : 0;
       if (!Number.isSafeInteger(offset) || offset < 0) throw new HarnessError('INVALID_INPUT', 'invalid operation output cursor');
       const total = op.output.length;
@@ -2450,13 +2800,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       };
     }
     if (operation === 'operation_cancel') {
-      const opId = validated.operationId as string;
-      const existing = this.operations.getGenericOperation(opId);
-      if (!existing) throw new HarnessError('NOT_FOUND', `operation ${opId} not found`);
-      if (existing.workspaceId) {
-        const ws = this.store.byOwnerAndId(ownerId, existing.workspaceId);
-        if (!ws) throw new HarnessError('NOT_FOUND', `operation ${opId} not found`);
-      }
+      const opId = this.ownedOperation(ownerId, validated.operationId as string).id;
       const op = await this.operations.cancelGenericOperation(opId);
       return {
         ok: true,
@@ -2469,13 +2813,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       };
     }
     if (operation === 'operation_wait') {
-      const opId = validated.operationId as string;
-      const existing = this.operations.getGenericOperation(opId);
-      if (!existing) throw new HarnessError('NOT_FOUND', `operation ${opId} not found`);
-      if (existing.workspaceId) {
-        const ws = this.store.byOwnerAndId(ownerId, existing.workspaceId);
-        if (!ws) throw new HarnessError('NOT_FOUND', `operation ${opId} not found`);
-      }
+      const opId = this.ownedOperation(ownerId, validated.operationId as string).id;
       const timeoutMs = (validated.timeoutMs as number) || 60_000;
       const startTime = Date.now();
       while (Date.now() - startTime < timeoutMs) {
@@ -2662,8 +3000,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         }
       }
       try {
-        const extSec = (validated.extensionSeconds as number) ?? this.config.idleTtlSeconds;
-        const newExpires = Math.min(rec.hardExpiresAt, now + extSec * 1000);
+        const extSec = (validated.extensionSeconds as number) ?? this.idleTtlSecondsFor(rec);
+        const requestedExpires = now + extSec * 1000;
+        const newExpires = Math.min(rec.hardExpiresAt, requestedExpires);
         let activeRecord = rec;
         if (isRecoverable) {
           activeRecord = await this.ensureActiveExecutor(rec);
@@ -2675,7 +3014,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             activeRecord.generation,
             ['ACTIVE', 'EXPIRED_RECOVERABLE'],
             { status: 'ACTIVE', lastActivityAt: now, expiresAt: newExpires },
-            this.activeWorkspaceLimit()
+            this.configuredActiveWorkspaceLimit()
           );
         } catch (error) {
           if (error instanceof ActiveWorkspaceLimitReachedError) {
@@ -2686,7 +3025,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         if (!updated) {
           throw new HarnessError('CONFLICT', 'workspace lifecycle changed or was reaped during renewal', 409);
         }
-        return { ok: true, message: 'Workspace lease renewed', data: publicRecord(updated), truncated: false };
+        return renewedLeaseResult(updated, rec.expiresAt, requestedExpires);
       } finally {
         if (isRecoverable) {
           this.store.releaseMutationLease(rec.id, rec.generation);
@@ -2723,7 +3062,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         }
         try {
           const activeRecord = await this.ensureActiveExecutor(rec);
-          const extSec = this.config.idleTtlSeconds;
+          const extSec = this.idleTtlSecondsFor(activeRecord);
           const newExpires = Math.min(activeRecord.hardExpiresAt, now + extSec * 1000);
           let updated: WorkspaceRecord | undefined;
           try {
@@ -2732,7 +3071,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               activeRecord.generation,
               ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'],
               { status: 'ACTIVE', lastActivityAt: now, expiresAt: newExpires, error: null },
-              this.activeWorkspaceLimit()
+              this.configuredActiveWorkspaceLimit()
             );
           } catch (error) {
             if (error instanceof ActiveWorkspaceLimitReachedError) {
@@ -3625,11 +3964,13 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       return response;
     }
-    if (operation === 'exec_run') {
+    if (operation === 'exec_run' || operation === 'bash') {
       validated.maxOutputBytes = Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes);
-      const result = await this.handleExecRun(record, validated, signal);
+      const result = operation === 'bash'
+        ? await this.handleExecRun(record, execRunInputFromBash(validated), signal, 'workspace')
+        : await this.handleExecRun(record, validated, signal);
       await this.enforceActiveLimits(record);
-      return result;
+      return operation === 'bash' ? { ...result, data: dataWithTarget(result.data, 'workspace') } : result;
     }
     if (operation === 'github_action' || operation === 'github_read') {
       const action = validated.action as string;
@@ -4243,7 +4584,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   async executeInternal(
     principal: PrincipalSelector,
     operation: InternalRunnerOperation,
-    input: Record<string, unknown>
+    input: Record<string, unknown>,
+    signal?: AbortSignal
   ): Promise<RunnerResponse> {
     const parsed = InternalRunnerRequestSchema.parse({ version: 2, principal, operation, input });
     const ownerId = this.store.resolvePrincipal(parsed.principal);
@@ -4272,7 +4614,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       };
     }
     if (parsed.operation === 'settings_get' || parsed.operation === 'settings_update') {
-      if (parsed.operation === 'settings_update') {
+      if (parsed.operation === 'settings_update' && parsed.input.workspaceLifecycle !== undefined) {
+        // Applied first: a lifecycle conflict or validation error then leaves the network default untouched.
+        this.updateWorkspaceLifecycle(ownerId, parsed.input.workspaceLifecycle);
+      }
+      if (parsed.operation === 'settings_update' && parsed.input.defaultNetworkProfile !== undefined) {
         const previous = this.store.getWorkspaceDefaultNetworkProfile();
         this.store.setWorkspaceDefaultNetworkProfile(parsed.input.defaultNetworkProfile, Date.now());
         // An instance-wide security posture change is operator-visible state: record
@@ -4297,7 +4643,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           defaultNetworkProfile: {
             value: stored ?? this.config.networkProfile,
             source: stored === undefined ? 'environment' : 'setting'
-          }
+          },
+          workspaceLifecycle: this.workspaceLifecycleView(ownerId)
         },
         truncated: false
       };
@@ -4310,6 +4657,54 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         data: { ready: readiness.ok, reason: readiness.reason ?? null },
         truncated: false
       };
+    }
+    if (parsed.operation === 'terminal_list') {
+      if (parsed.input.workspaceId !== undefined) this.requireWorkspace(ownerId, parsed.input.workspaceId);
+      return { ok: true, message: 'Terminals', data: { terminals: this.operations.listTerminals(ownerId, parsed.input.workspaceId) }, truncated: false };
+    }
+    if (parsed.operation === 'terminal_open') {
+      // Mirrors the shell_open path of execute(): an active, owned workspace with a live executor.
+      const record = this.touch(this.requireWorkspace(ownerId, parsed.input.workspaceId, true, false));
+      await this.enforceActiveLimits(record);
+      if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
+      const terminal = await this.operations.openTerminal({
+        ownerId,
+        workspaceId: record.id,
+        container: record.containerName,
+        cwd: parsed.input.cwd,
+        cols: parsed.input.cols,
+        rows: parsed.input.rows
+      });
+      this.auditWorkspaceMutation(ownerId, 'terminal.opened', record, {
+        terminalId: terminal.terminalId,
+        workspaceId: record.id,
+        cwd: terminal.cwd,
+        cols: terminal.cols,
+        rows: terminal.rows
+      });
+      return { ok: true, message: 'Terminal opened', data: terminal, truncated: false };
+    }
+    if (parsed.operation === 'terminal_read') {
+      const record = this.requireWorkspace(ownerId, parsed.input.workspaceId);
+      const page = await this.operations.readTerminal(ownerId, record.id, parsed.input.terminalId, parsed.input.cursor, parsed.input.waitMs, signal);
+      return { ok: true, message: 'Terminal output', data: page, truncated: false };
+    }
+    if (parsed.operation === 'terminal_input') {
+      const record = this.requireWorkspace(ownerId, parsed.input.workspaceId);
+      const bytes = Buffer.from(parsed.input.data, 'base64');
+      if (bytes.length > TERMINAL_MAX_INPUT_BYTES) throw new HarnessError('INVALID_INPUT', 'terminal input is too large', 400, false);
+      const terminal = this.operations.writeTerminal(ownerId, record.id, parsed.input.terminalId, bytes);
+      return { ok: true, message: 'Terminal input accepted', data: terminal, truncated: false };
+    }
+    if (parsed.operation === 'terminal_resize') {
+      const record = this.requireWorkspace(ownerId, parsed.input.workspaceId);
+      const terminal = await this.operations.resizeTerminal(ownerId, record.id, parsed.input.terminalId, parsed.input.cols, parsed.input.rows);
+      return { ok: true, message: 'Terminal resized', data: terminal, truncated: false };
+    }
+    if (parsed.operation === 'terminal_close') {
+      const record = this.requireWorkspace(ownerId, parsed.input.workspaceId);
+      const terminal = await this.operations.closeTerminal(ownerId, record.id, parsed.input.terminalId);
+      return { ok: true, message: 'Terminal closed', data: terminal, truncated: false };
     }
     const workspaceInput = parsed.input as { workspaceId: string; expectedGeneration?: number };
     const record = this.requireWorkspace(ownerId, workspaceInput.workspaceId, false, true);
@@ -4418,6 +4813,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
         status: 'EXPIRED_RECOVERABLE',
         lastActivityAt: Date.now(),
+        ...this.failedCloseWindow(claimed, Date.now()),
         error: `Workspace stop failed: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`
       });
       throw stopErr;
@@ -4450,6 +4846,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
                 status: 'EXPIRED_RECOVERABLE',
                 lastActivityAt: Date.now(),
+                ...this.failedCloseWindow(claimed, Date.now()),
                 error: `Artifact spool failed: ${spoolErr instanceof Error ? spoolErr.message : String(spoolErr)}`
               });
               throw new HarnessError('UNAVAILABLE', `Failed to archive task output for task ${t.id} during close: ${spoolErr instanceof Error ? spoolErr.message : String(spoolErr)}`, 503, true);
@@ -4472,8 +4869,146 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
   }
 
+  /**
+   * Why a due recoverable workspace must not be deleted yet, or undefined when nothing would be lost.
+   * Running agents and anything not on a remote (uncommitted or untracked files, stashes, local commits)
+   * defer the close; a check that cannot run defers it too, because unknown work is never discarded.
+   */
+  private async autoCloseBlocker(record: WorkspaceRecord): Promise<string | undefined> {
+    if (this.agentManager?.hasActiveAgents(record.ownerId, record.id)) return 'agents are still running';
+    let check: RunnerResponse;
+    try {
+      check = await this.runRecoveryWorker(record, 'workspace_recover', { mode: 'close_check', cloneRef: record.repositoryRef ?? '' });
+    } catch {
+      return 'the unsaved-work check could not run';
+    }
+    const data = check.data as { uncommittedPaths?: unknown; stashes?: unknown; unpushedCommits?: unknown } | undefined;
+    const counts = [data?.uncommittedPaths, data?.stashes, data?.unpushedCommits];
+    if (!check.ok || !counts.every((value) => typeof value === 'number' && Number.isInteger(value) && value >= 0)) {
+      return 'the unsaved-work check could not run';
+    }
+    const [uncommitted, stashes, unpushed] = counts as number[];
+    const reasons = [
+      uncommitted ? `${uncommitted} uncommitted or untracked path(s)` : '',
+      stashes ? `${stashes} stash(es)` : '',
+      unpushed ? `${unpushed} commit(s) not on any remote` : ''
+    ].filter(Boolean);
+    return reasons.length > 0 ? reasons.join(', ') : undefined;
+  }
+
+  /**
+   * Closes one recoverable workspace whose window passed, unless closing it would lose work. The check
+   * holds a recoverable mutation lease so no recovery or export changes the checkout underneath it, and
+   * the claim afterwards is fenced on generation, status, lease, and window, so a workspace recovered or
+   * deferred meanwhile is never taken.
+   */
+  private async autoCloseRecoverable(id: string, generation: number): Promise<void> {
+    const record = this.store.byId(id);
+    if (!record || record.generation !== generation || record.status !== 'EXPIRED_RECOVERABLE') return;
+    try {
+      this.store.acquireRecoverableMutationLease(id, generation, Date.now() + 120_000);
+    } catch {
+      return;
+    }
+    let blocker: string | undefined;
+    try {
+      blocker = await this.autoCloseBlocker(record);
+    } finally {
+      this.store.releaseMutationLease(id, generation);
+    }
+    const now = Date.now();
+    if (blocker) {
+      const error = `${AUTO_CLOSE_DEFERRED_PREFIX}${blocker}`;
+      const deferred = this.store.updateFenced(id, generation, ['EXPIRED_RECOVERABLE'], {
+        error,
+        recoverableUntil: now + Math.max(this.recoverableGraceSecondsFor(record) * 1_000, AUTO_CLOSE_RETRY_MS)
+      });
+      // A repeated deferral for the same reason is not new information, so only a change is audited.
+      if (deferred && record.error !== error) {
+        try {
+          this.metadata?.recordAudit(record.ownerId, 'workspace.auto_close_deferred', 'workspace', id, generation, { reason: blocker });
+        } catch { /* audit is best-effort; the workspace stays retained either way */ }
+      }
+      return;
+    }
+    if (!this.store.claimRecoverableForAutoClose(id, generation, now)) return;
+    const claimed = this.store.byId(id);
+    if (!claimed) return;
+    await this.closeRecord(claimed, 'recoverable grace period expired');
+    try {
+      this.metadata?.recordAudit(record.ownerId, 'workspace.auto_closed', 'workspace', id, claimed.generation, {
+        reason: 'recoverable grace period expired',
+        expiredAt: new Date(record.expiredAt ?? record.lastActivityAt).toISOString(),
+        graceSeconds: this.recoverableGraceSecondsFor(record)
+      });
+    } catch { /* the close already happened; audit is best-effort */ }
+  }
+
+  /** The Settings view of the lifecycle policy: each effective value, its source, and the caller's usage. */
+  private workspaceLifecycleView(ownerId: string): WorkspaceLifecycleSettingsView {
+    const overrides = this.store.getWorkspaceLifecycleOverrides();
+    const runner = this.runnerLifecycleValues();
+    const effective = this.effectiveLifecyclePolicy(overrides);
+    const environmentKeys: readonly string[] = this.config.lifecycleEnvironmentKeys ?? [];
+    const settings = Object.fromEntries(WORKSPACE_LIFECYCLE_SETTING_NAMES.map((name) => [name, {
+      value: effective[name],
+      source: overrides[name] !== null ? 'setting' : environmentKeys.includes(name) ? 'environment' : 'default',
+      runnerValue: runner[name],
+      min: WORKSPACE_LIFECYCLE_BOUNDS[name].min,
+      max: WORKSPACE_LIFECYCLE_BOUNDS[name].max
+    }])) as WorkspaceLifecycleSettingsView['settings'];
+    return {
+      revision: overrides.revision,
+      updatedAt: overrides.updatedAt === null ? null : new Date(overrides.updatedAt).toISOString(),
+      settings,
+      reaperIntervalSeconds: this.config.reaperIntervalSeconds,
+      usage: { ...this.store.workspaceLifecycleUsage(ownerId), limit: effective.maxActiveWorkspacesPerOwner },
+      executorCeilings: { ...EXECUTOR_RESOURCE_CEILINGS }
+    };
+  }
+
+  /**
+   * Saves a field-scoped lifecycle change. The idle-within-lifetime rule is checked on the merged effective
+   * values inside the store transaction, and the change is audited with both sides of every field.
+   */
+  private updateWorkspaceLifecycle(ownerId: string, update: WorkspaceLifecycleSettingsUpdate): void {
+    const changes = Object.fromEntries(
+      WORKSPACE_LIFECYCLE_SETTING_NAMES.filter((name) => update[name] !== undefined).map((name) => [name, update[name]])
+    ) as Partial<Record<WorkspaceLifecycleSettingName, number | null>>;
+    let result: { previous: WorkspaceLifecycleOverrides; next: WorkspaceLifecycleOverrides };
+    try {
+      result = this.store.updateWorkspaceLifecycleOverrides(update.expectedRevision, changes, Date.now(), (next) => {
+        const effective = this.effectiveLifecyclePolicy(next);
+        if (effective.idleTtlSeconds > effective.wallTtlSeconds) {
+          throw new HarnessError(
+            'INVALID_INPUT',
+            `the idle timeout (${effective.idleTtlSeconds}s) cannot exceed the maximum workspace lifetime (${effective.wallTtlSeconds}s)`,
+            400,
+            false
+          );
+        }
+      });
+    } catch (error) {
+      if (error instanceof SettingsRevisionConflictError) {
+        throw new HarnessError('CONFLICT', 'workspace lifecycle settings changed since they were loaded; reload them and try again', 409, true);
+      }
+      throw error;
+    }
+    const details: Record<string, string | number | boolean> = { revision: result.next.revision };
+    for (const name of WORKSPACE_LIFECYCLE_SETTING_NAMES) {
+      if (result.previous[name] === result.next[name]) continue;
+      details[`${name}.previous`] = result.previous[name] ?? 'runner-default';
+      details[`${name}.next`] = result.next[name] ?? 'runner-default';
+    }
+    try {
+      this.metadata?.recordAudit(ownerId, 'settings.workspace_lifecycle.changed', 'instance', 'instance_settings', result.next.revision, details);
+    } catch { /* the change is committed; a failed audit write must not report the save as failed */ }
+  }
+
   private async reapExpired(): Promise<void> {
     const now = Date.now();
+    await reapStaleToolboxContainers(this.instanceId, this.liveToolboxContainers, now).catch(() => undefined);
+    if (this.config.packagesEnabled === true) await this.packages.collectGarbage(now).catch(() => undefined);
     const hasDependencyWorkspaces = this.store.active().some((r) => r.status === 'ACTIVE' && r.networkProfile === 'dependency-access');
     if (hasDependencyWorkspaces) {
       const attestation = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
@@ -4487,6 +5022,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               error: `host firewall policy drift detected: ${attestation.reason}`
             });
             if (!fenced) continue;
+            this.operations.stopWorkspaceTerminals(fenced.id, 'workspace quarantined');
 
             // 2. Stop and remove all containers carrying this workspace's label, including privileged ephemerals
             const labeled = await runDocker([
@@ -4549,28 +5085,19 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       if (record.status === 'ACTIVE' && (record.expiresAt <= now || record.hardExpiresAt <= now)) {
         const claimed = this.store.claimForExpiry(record.id, record.generation);
         if (claimed) {
+          this.operations.stopWorkspaceTerminals(claimed.id, 'workspace expired');
           if (claimed.containerName) {
             await removeContainer(claimed.containerName).catch(() => undefined);
           }
-          this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
-            status: 'EXPIRED_RECOVERABLE',
-            containerName: null,
-            lastActivityAt: now
-          });
+          this.markExpiredRecoverable(claimed, now);
         }
       } else if (record.status === 'ACTIVE') {
         const violation = await this.resourceViolation(record).catch(() => undefined);
         if (violation) await this.closeRecord(record, violation).catch(() => undefined);
       }
     }
-    const recoverableRows = this.store.database.prepare(
-      "SELECT id, generation, last_activity_at FROM workspaces WHERE status = 'EXPIRED_RECOVERABLE' AND (mutation_locked_until IS NULL OR mutation_locked_until <= ?) AND (last_activity_at + 3600000 <= ?)"
-    ).all(now, now) as { id: string; generation: number; last_activity_at: number }[];
-    for (const row of recoverableRows) {
-      if (this.store.claimForReaping(row.id, row.generation, false)) {
-        const fullRec = this.store.byId(row.id);
-        if (fullRec) await this.closeRecord(fullRec, 'recoverable grace period expired').catch(() => undefined);
-      }
+    for (const due of this.store.listAutoCloseDue(now)) {
+      await this.autoCloseRecoverable(due.id, due.generation).catch(() => undefined);
     }
     if (this.artifacts) {
       try {
@@ -4708,6 +5235,9 @@ const GITHUB_SCOPE_CAPABILITY: Record<Exclude<GitHubPermissionScope, 'contents'>
 };
 
 function isMutationOperation(operation: RunnerOperation, validated: Record<string, unknown>): boolean {
+  if (operation === 'bash') {
+    return validated.target === 'workspace' && validated.async !== true;
+  }
   if (operation === 'exec_run') {
     if (validated.privileged === true) return true;
     return validated.async !== true;
@@ -4731,6 +5261,38 @@ function isMutationOperation(operation: RunnerOperation, validated: Record<strin
     return (GITHUB_WRITE_ACTIONS as readonly string[]).includes(action);
   }
   return false;
+}
+
+/** The `bash` workspace target is `exec_run` without privilege: it never carries an approval grant. */
+function execRunInputFromBash(validated: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...(validated.workspaceId === undefined ? {} : { workspaceId: validated.workspaceId }),
+    command: validated.command,
+    cwd: validated.cwd,
+    timeoutMs: validated.timeoutMs,
+    maxOutputBytes: validated.maxOutputBytes,
+    privileged: false,
+    async: validated.async === true
+  };
+}
+
+/** Every `bash` result, synchronous or read through an operation handle, names the target that ran it. */
+function dataWithTarget(data: unknown, target: 'workspace' | 'toolbox'): Record<string, unknown> {
+  return data !== null && typeof data === 'object' && !Array.isArray(data)
+    ? { ...(data as Record<string, unknown>), target }
+    : { target };
+}
+
+function toolboxResponse(result: ToolboxRunResult): RunnerResponse {
+  const data = dataWithTarget({ output: result.output, exitCode: result.exitCode, signal: result.signal, truncated: result.truncated }, 'toolbox');
+  if (result.timedOut) {
+    const message = 'Toolbox command exceeded its timeout and was stopped';
+    return { ok: false, message, data, error: { code: 'TIMEOUT', message, retryable: false }, truncated: result.truncated };
+  }
+  const message = result.exitCode !== null
+    ? `Command exited with ${result.exitCode}`
+    : `Command was stopped with ${result.signal ?? 'a signal'}${result.truncated ? ' after its output reached maxOutputBytes' : ''}`;
+  return { ok: true, message, data, truncated: result.truncated };
 }
 
 /**

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { MODEL_TOOL_OPERATIONS } from '@cloud-harness/contracts';
 import { LocalWorkspaceBackend } from '../../src/local/local-workspace-backend.js';
 import type { CliOptions } from '../../src/cli-options.js';
 
@@ -176,6 +177,48 @@ describe('LocalWorkspaceBackend', () => {
     const execData = ExecRunDataSchema.parse(res.data);
     expect(execData.exitCode).toBe(0);
     expect(execData.output).toContain('hello');
+  });
+
+  it('runs bash with the workspace target through exec_run and refuses the toolbox target', async () => {
+    const res = await backend.call('bash', {
+      workspaceId: backend.workspaceId,
+      target: 'workspace',
+      command: process.platform === 'win32' ? 'echo hello' : 'echo "hello from local bash"'
+    });
+    expect(res.ok).toBe(true);
+    expect(ExecRunDataSchema.parse(res.data).output).toContain('hello');
+    expect(res.data).toMatchObject({ target: 'workspace', exitCode: 0 });
+
+    const toolbox = await backend.call('bash', { target: 'toolbox', command: 'echo hello' });
+    expect(toolbox.ok).toBe(false);
+    expect(toolbox.error?.code).toBe('INVALID_INPUT');
+    expect(toolbox.message).toContain('toolbox target is unsupported in local mode');
+  });
+
+  it('refuses every managed package tool in local mode', async () => {
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ['packages_plan', { ecosystem: 'npm', name: 'prettier' }],
+      ['packages_apply', { planId: 'pkp_0123456789abcdefghijklmn', planDigest: 'a'.repeat(64) }],
+      ['packages_list', {}],
+      ['packages_status', {}],
+      ['packages_rollback', { bindingId: 'pkb_0123456789abcdefghijklmn', releaseId: 'pkr_0123456789abcdefghijklmn', expectedGeneration: 1 }],
+      ['packages_remove', { bindingId: 'pkb_0123456789abcdefghijklmn', expectedGeneration: 1 }]
+    ];
+    for (const [operation, input] of calls) {
+      const res = await backend.call(operation as Parameters<typeof backend.call>[0], input);
+      expect(res.ok, operation).toBe(false);
+      expect(res.error?.code, operation).toBe('INVALID_INPUT');
+      expect(res.message, operation).toContain('unsupported in local mode');
+    }
+  });
+
+  it('refuses every model tool in local mode because profiles live in the remote runner', async () => {
+    for (const operation of MODEL_TOOL_OPERATIONS) {
+      const res = await backend.call(operation, { workspaceId: backend.workspaceId });
+      expect(res.ok, operation).toBe(false);
+      expect(res.error?.code, operation).toBe('INVALID_INPUT');
+      expect(res.message, operation).toContain(`${operation} is unsupported in local mode`);
+    }
   });
 
   it('gates network Git and push according to startup options', async () => {

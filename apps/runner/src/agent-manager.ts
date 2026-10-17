@@ -3,6 +3,7 @@ import {
   AgentProxyOperationSchema,
   HarnessError,
   composeAgentBootstrapPrompt,
+  resolveEffectivePricing,
   TOOL_SCHEMA_BY_NAME,
   type AgentBudget,
   type AgentModelProfile,
@@ -22,7 +23,18 @@ import {
   type AgentTombstone
 } from './agent-state-repository.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
-import { DockerAgentGatewayControl, type AgentGatewayControl } from './agent-gateway-control.js';
+import {
+  DockerAgentGatewayControl,
+  isDefiniteIssueRefusal,
+  type AgentGatewayControl,
+  type AgentLeaseRevocation
+} from './agent-gateway-control.js';
+import {
+  ModelSpendLedger,
+  savedProfileSpendKey,
+  staticProfileSpendKey,
+  type ModelSpendThresholdCrossing
+} from './model-spend-ledger.js';
 import {
   AgentProtocolChannel,
   MAX_TOOL_RESULT_RECORD_BYTES,
@@ -32,6 +44,19 @@ import {
 } from './agent-protocol.js';
 import { DockerAgentLauncher, type AgentLaunchSpec, type AgentLauncher, type AgentRuntimeProcess } from './agent-launcher.js';
 import type { StateStore, WorkspaceRecord } from './state-store.js';
+
+/** A profile whose cache prices are resolved to the concrete prices the agent reports. */
+type PricedAgentModelProfile = AgentModelProfile & {
+  cacheReadMicrosPerMillionTokens: number;
+  cacheWriteMicrosPerMillionTokens: number;
+  /** The ledger key of the stable profile: a saved profile's id, or the static profile's id, namespaced. */
+  spendProfileKey: string;
+  revisionId: string | null;
+};
+
+/** How often, and after how long, open spend ledger rows are swept for settlement. */
+const SPEND_SWEEP_INTERVAL_MS = 60_000;
+const SPEND_SWEEP_MIN_AGE_MS = 60_000;
 
 const AGENT_OPERATIONS: Readonly<Partial<Record<RunnerOperation, true>>> = {
   agent_spawn: true,
@@ -91,6 +116,7 @@ export type AgentManagerDependencies = {
   toolExecutor: AgentToolExecutor;
   repositoryGuidance?: AgentRepositoryGuidance | undefined;
   modelProfiles?: ModelProfileStateRepository | undefined;
+  spendLedger?: ModelSpendLedger | undefined;
   now?: (() => number) | undefined;
 };
 
@@ -99,13 +125,16 @@ export class AgentManager {
   private readonly gateway: AgentGatewayControl;
   private readonly launcher: AgentLauncher;
   private readonly modelProfiles?: ModelProfileStateRepository | undefined;
+  private readonly spendLedger: ModelSpendLedger;
+  private lastSpendSweepAt = 0;
+  private spendSweep?: Promise<void> | undefined;
   private readonly runtimes = new Map<string, RuntimeContext>();
   private readonly launches = new Map<string, Promise<void>>();
   private readonly cleanupTargets = new Map<string, TerminalAgentStatus>();
-  private lastSyncedBootId?: string | undefined;
-  private lastSyncedDigest?: string | undefined;
   private readonly now: () => number;
   private accepting = true;
+  /** Set while stopping, so a reap already in flight cannot start a spend sweep after stop() returns. */
+  private stopping = false;
   private epoch = 0;
   private reaper?: NodeJS.Timeout;
   constructor(
@@ -118,6 +147,8 @@ export class AgentManager {
     this.gateway = dependencies.gateway ?? new DockerAgentGatewayControl();
     this.launcher = dependencies.launcher ?? new DockerAgentLauncher(this.gateway, store.instanceId());
     this.now = dependencies.now ?? Date.now;
+    // The ledger shares the state database so that admission commits atomically with the spawn.
+    this.spendLedger = dependencies.spendLedger ?? new ModelSpendLedger(store.database);
     this.epoch = this.repository.currentEpoch(store.instanceId());
     if (this.epoch === 0) {
       this.epoch = this.repository.bumpEpoch(store.instanceId(), this.now());
@@ -126,22 +157,20 @@ export class AgentManager {
 
 
   async ensureGatewaySynced(): Promise<void> {
-    if (!this.modelProfiles || !this.gateway.applySnapshot || !this.gateway.queryDigest) return;
+    const modelProfiles = this.modelProfiles;
+    if (!modelProfiles || !this.hasSnapshotSync()) return;
     try {
-      const snapshot = this.modelProfiles.getExportSnapshot();
-      const digestResult = await this.gateway.queryDigest();
-      if (
-        digestResult.gatewayBootId !== this.lastSyncedBootId
-        || (Object.keys(snapshot.profiles).length > 0 && digestResult.activeProfileCount === 0)
-        || (this.lastSyncedDigest !== undefined && digestResult.snapshotDigest !== this.lastSyncedDigest)
-      ) {
-        const ack = await this.gateway.applySnapshot(snapshot);
-        this.lastSyncedBootId = ack.gatewayBootId;
-        this.lastSyncedDigest = ack.snapshotDigest;
-      }
+      // Compare with the snapshot as it is now, built after any earlier push landed: it changes
+      // without a push when an agent pinned to an older revision ends, and a restarted gateway
+      // reports an empty digest.
+      await this.gateway.syncSnapshot(() => modelProfiles.getExportSnapshot(), { onlyIfMismatch: true });
     } catch (err) {
       throw new HarnessError('UNAVAILABLE', `model gateway reconciliation failed: ${err instanceof Error ? err.message : 'unreachable'}`, 503, true);
     }
+  }
+  /** Lease-only gateway doubles built with a cast have no snapshot surface; there is nothing to reconcile. */
+  private hasSnapshotSync(): boolean {
+    return typeof (this.gateway as Partial<AgentGatewayControl>).syncSnapshot === 'function';
   }
   static isPublicOperation(operation: RunnerOperation): boolean {
     return AGENT_OPERATIONS[operation] === true;
@@ -152,14 +181,13 @@ export class AgentManager {
 
   async start(): Promise<void> {
     this.accepting = false;
+    this.stopping = false;
     this.epoch = this.repository.bumpEpoch(this.store.instanceId(), this.now());
     await this.launcher.reconcile?.();
-    if (this.modelProfiles && this.gateway.applySnapshot) {
+    const modelProfiles = this.modelProfiles;
+    if (modelProfiles && this.hasSnapshotSync()) {
       try {
-        const snapshot = this.modelProfiles.getExportSnapshot();
-        const ack = await this.gateway.applySnapshot(snapshot);
-        this.lastSyncedBootId = ack.gatewayBootId;
-        this.lastSyncedDigest = ack.snapshotDigest;
+        await this.gateway.syncSnapshot(() => modelProfiles.getExportSnapshot(), { onlyIfMismatch: false });
       } catch {
         // Gateway will be reconciled upon spawn or status check
       }
@@ -180,16 +208,23 @@ export class AgentManager {
     }
     this.repository.maintainClosedWorkspaces(this.now());
     this.accepting = true;
+    // Every agent of the previous runner has been reconciled, so any row still open is an orphan.
+    // The sweep may wait on the gateway for each row, so it runs in the background, never
+    // delaying admission or failing startup.
+    void this.sweepSpend(0);
     this.reaper = setInterval(() => { void this.reap().catch(() => undefined); }, 1_000);
     this.reaper.unref();
   }
 
   async stop(): Promise<void> {
     this.fence();
+    this.stopping = true;
     clearInterval(this.reaper);
     // Promise.allSettled keeps teardown non-throwing: one workspace failing to stop must not abort
     // the rest. The callback returns the promise explicitly so that intent is unambiguous.
     await Promise.allSettled(this.store.active().map((workspace) => this.stopWorkspaceForShutdown(workspace)));
+    // A sweep never rejects; waiting keeps it from touching the store after shutdown.
+    await this.spendSweep;
   }
 
   private async stopWorkspaceForShutdown(workspace: WorkspaceRecord): Promise<void> {
@@ -224,6 +259,14 @@ export class AgentManager {
     }
   }
 
+  /** Whether any agent of this workspace is still running, which keeps the reaper from auto-closing it. */
+  hasActiveAgents(ownerId: string, workspaceId: string): boolean {
+    // The agent reaper skips expired workspaces, so an agent past its TTL is never timed out there and
+    // must not hold the close forever; closing the workspace stops it.
+    const now = this.now();
+    return this.repository.listActiveAgents(ownerId, workspaceId).some((agent) => agent.expiresAt > now);
+  }
+
   async stopWorkspace(ownerId: string, workspaceId: string, reason: string, generation?: number): Promise<void> {
     this.repository.closeWorkspaceAdmission(ownerId, workspaceId, this.now(), generation);
     const active = this.repository.listActiveAgents(ownerId, workspaceId, generation);
@@ -255,9 +298,9 @@ export class AgentManager {
       throw new HarnessError('CONFLICT', 'agents require a network-disabled workspace; open a separate workspace with networkProfile "network-none"', 409, false);
     }
     const profile = this.profile(input.profileId as string, ownerId);
-    if (this.modelProfiles && (profile.id.startsWith('rev_') || this.config.profiles.every((p) => p.id !== profile.id))) {
-      await this.ensureGatewaySynced();
-    }
+    const dashboardManaged = this.modelProfiles !== undefined
+      && (profile.id.startsWith('rev_') || this.config.profiles.every((p) => p.id !== profile.id));
+    if (dashboardManaged) await this.ensureGatewaySynced();
     const tools = AgentProxyOperationSchema.array().parse(input.proxyOperations);
     if (tools.some((operation) => !profile.maxProxyOperations.includes(operation))) {
       throw new HarnessError('INVALID_INPUT', 'requested proxy operation exceeds the selected profile');
@@ -283,6 +326,7 @@ export class AgentManager {
     const suffix = createHash('sha256').update(agentId).digest('hex').slice(0, 20);
     const payloadHash = digest({ ...input, workspaceId: workspace.id, proxyOperations: tools });
     const gatewayLeaseId = `lease_${randomBytes(24).toString('base64url')}`;
+    let crossings: ModelSpendThresholdCrossing[] = [];
     const reservation = this.repository.reserveSpawn({
       id: agentId,
       ownerId,
@@ -300,13 +344,28 @@ export class AgentManager {
       gatewayLeaseId,
       runtimeEpoch: this.epoch,
       now,
-      expiresAt: Math.min(workspace.expiresAt, now + budget.ttlSeconds * 1_000)
+      expiresAt: Math.min(workspace.expiresAt, now + budget.ttlSeconds * 1_000),
+      // The run's whole cost cap is reserved against every applicable spend policy. The gateway
+      // still enforces the cap itself; a policy only bounds how many caps may be outstanding.
+      admit: () => {
+        crossings = this.spendLedger.admit({
+          leaseId: gatewayLeaseId,
+          principalId: ownerId,
+          profileKey: profile.spendProfileKey,
+          revisionId: profile.revisionId,
+          agentId,
+          workspaceId: workspace.id,
+          reservedMicros: budget.maxCostMicros,
+          now
+        });
+      }
     });
+    this.spendLedger.reportThresholds(crossings);
     if (reservation.replayed) {
       return success('Agent spawn replayed', spawnData(reservation.record, true));
     }
     const repositoryContext = (input.repositoryContext as AgentRepositoryContext | undefined) ?? 'codex';
-    const launch = this.launch(reservation.record, prompt, profile, repositoryContext)
+    const launch = this.launch(reservation.record, prompt, profile, repositoryContext, dashboardManaged)
       .finally(() => this.launches.delete(reservation.record.id));
     this.launches.set(reservation.record.id, launch);
     void launch.catch(() => undefined);
@@ -363,24 +422,52 @@ export class AgentManager {
     return composed.prompt;
   }
 
-  private async launch(record: AgentRecord, prompt: string, profile: AgentModelProfile, repositoryContext: AgentRepositoryContext): Promise<void> {
+  private async launch(
+    record: AgentRecord,
+    prompt: string,
+    profile: PricedAgentModelProfile,
+    repositoryContext: AgentRepositoryContext,
+    reconcileGateway: boolean
+  ): Promise<void> {
     const spec = this.launchSpec(record);
+    let leaseMayExist = false;
     try {
       if (this.epoch !== this.repository.currentEpoch(this.store.instanceId())) {
         throw new HarnessError('CONFLICT', 'agent launch lost its runtime epoch fence', 409, true);
       }
+      if (reconcileGateway) {
+        // The revision was resolved before the agent row existed, so a snapshot built in that gap
+        // (a profile edit's push) may omit it, and the gateway replaces its set with each snapshot.
+        // Every snapshot built from now on includes the revision; reconcile once before the lease.
+        await this.ensureGatewaySynced();
+      }
+      // A cancel that landed while this launch waited owns the cleanup; it waits for this launch,
+      // so stop before any lease or container exists.
+      if (!this.stillSpawning(record)) return;
       // Guidance is composed before any lease or container exists, so an agent never starts its
       // first turn without the repository's applicable guidance, and a failed scan costs nothing.
       const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext);
-      const grant = await this.gateway.issue({
-        leaseId: record.gatewayLeaseId,
-        agentId: record.id,
-        profileId: record.profileId,
-        ttlMs: Math.max(1_000, record.expiresAt - this.now()),
-        maxInputTokens: record.budget.maxInputTokens,
-        maxOutputTokens: record.budget.maxOutputTokens,
-        maxCostMicros: record.budget.maxCostMicros
-      });
+      if (!this.stillSpawning(record)) return;
+      // From here the lease may exist in the gateway, so an unsettled row is charged its whole cap.
+      leaseMayExist = true;
+      this.spendLedger.markIssuing(record.gatewayLeaseId);
+      let grant: Awaited<ReturnType<AgentGatewayControl['issue']>>;
+      try {
+        grant = await this.gateway.issue({
+          leaseId: record.gatewayLeaseId,
+          agentId: record.id,
+          profileId: record.profileId,
+          ttlMs: Math.max(1_000, record.expiresAt - this.now()),
+          maxInputTokens: record.budget.maxInputTokens,
+          maxOutputTokens: record.budget.maxOutputTokens,
+          maxCostMicros: record.budget.maxCostMicros
+        });
+      } catch (error) {
+        // An explicit refusal means no lease exists; any other failure may have issued one.
+        if (isDefiniteIssueRefusal(error)) this.spendLedger.releaseRefusedIssue(record.gatewayLeaseId, this.now());
+        throw error;
+      }
+      if (grant.gatewayBootId !== undefined) this.spendLedger.recordGatewayBoot(record.gatewayLeaseId, grant.gatewayBootId);
       const runtime = await this.launcher.launch(spec);
       const lease = grant.lease;
       const contextRef: { current?: RuntimeContext } = {};
@@ -424,21 +511,39 @@ export class AgentManager {
         if (!context.terminalSeen) void this.interrupt(running, `agent runtime exited before terminal record (${code ?? 'signal'})`);
       }).catch((error: unknown) => { void this.interrupt(running, error instanceof Error ? error.message : 'agent runtime failed'); });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'agent launch failed';
-      const current = this.repository.findAgent(record.ownerId, record.workspaceId, record.id);
-      if (!current || current.status === 'CANCELLING' || terminalStatuses.has(current.status)) return;
-      const cancelling = this.repository.transitionStatus({
-        ownerId: current.ownerId, workspaceId: current.workspaceId, agentId: current.id, generation: current.generation,
-        runtimeEpoch: this.epoch,
-        expectedStatuses: [current.status], status: 'CANCELLING', now: this.now(), cleanupReason: message.slice(0, 2_000)
-      });
-      if (!cancelling) return;
-      await this.cancelDescendants(cancelling, message);
-      const context = this.runtimes.get(record.id);
-      const cleanup = this.cleanup(cancelling, context, message, 'FAILED');
-      if (context) context.cleanup = cleanup;
-      await cleanup;
+      if (!leaseMayExist) {
+        // No lease can exist, so the reservation is released at zero now instead of waiting for a
+        // cleanup that may need the same unreachable gateway. A failure here leaves the row open for
+        // the cleanup retry or the spend sweep, and must not keep the agent from ending.
+        try {
+          this.spendLedger.settle(record.gatewayLeaseId, undefined, this.now());
+        } catch {
+          // The open row is settled later; ending the agent below matters more.
+        }
+      }
+      await this.failLaunch(record, error instanceof Error ? error.message : 'agent launch failed');
     }
+  }
+
+  private stillSpawning(record: AgentRecord): boolean {
+    return this.repository.findAgent(record.ownerId, record.workspaceId, record.id)?.status === 'SPAWNING';
+  }
+
+  /** Ends an agent whose launch failed: cancels its descendants, releases its lease, and records it FAILED. */
+  private async failLaunch(record: AgentRecord, message: string): Promise<void> {
+    const current = this.repository.findAgent(record.ownerId, record.workspaceId, record.id);
+    if (!current || current.status === 'CANCELLING' || terminalStatuses.has(current.status)) return;
+    const cancelling = this.repository.transitionStatus({
+      ownerId: current.ownerId, workspaceId: current.workspaceId, agentId: current.id, generation: current.generation,
+      runtimeEpoch: this.epoch,
+      expectedStatuses: [current.status], status: 'CANCELLING', now: this.now(), cleanupReason: message.slice(0, 2_000)
+    });
+    if (!cancelling) return;
+    await this.cancelDescendants(cancelling, message);
+    const context = this.runtimes.get(record.id);
+    const cleanup = this.cleanup(cancelling, context, message, 'FAILED');
+    if (context) context.cleanup = cleanup;
+    await cleanup;
   }
   private status(ownerId: string, workspaceId: string, input: Record<string, unknown>): RunnerResponse {
     const record = this.lookup(ownerId, workspaceId, input);
@@ -699,8 +804,10 @@ export class AgentManager {
     try {
       const drainErrors: unknown[] = [];
       try {
-        await this.gateway.revokeAndDrain(record.gatewayLeaseId);
+        const revocation = revocationOf(await this.gateway.revokeAndDrain(record.gatewayLeaseId));
+        this.spendLedger.settle(record.gatewayLeaseId, revocation, this.now());
       } catch (error) {
+        // The ledger row stays open, so the cleanup retry or the spend sweep settles it later.
         drainErrors.push(error);
       }
       if (runtime) {
@@ -823,6 +930,54 @@ export class AgentManager {
       }
     }
     this.repository.maintainClosedWorkspaces(now);
+    if (now - this.lastSpendSweepAt >= SPEND_SWEEP_INTERVAL_MS) void this.sweepSpend(SPEND_SWEEP_MIN_AGE_MS);
+  }
+
+  /**
+   * Settles spend ledger rows whose agent is terminal or gone but whose lease was never
+   * settled, for example after a crash between issue and revoke. Revoke is idempotent and
+   * the gateway keeps settlements for a day, so retrying it either finds the settlement or
+   * closes the row by the conservative rules in ModelSpendLedger.settle. A revoke that fails
+   * leaves the row open, still committed at its cap, for the next sweep.
+   */
+  private async sweepSpend(minAgeMs: number): Promise<void> {
+    if (this.stopping) return;
+    this.spendSweep ??= this.runSpendSweep(minAgeMs).finally(() => { this.spendSweep = undefined; });
+    await this.spendSweep;
+  }
+
+  /** Never rejects: a row that cannot be read, revoked, or settled simply stays open, committed at its cap. */
+  private async runSpendSweep(minAgeMs: number): Promise<void> {
+    const now = this.now();
+    this.lastSpendSweepAt = now;
+    let open: ReturnType<ModelSpendLedger['listOpen']>;
+    try {
+      open = this.spendLedger.listOpen(now - minAgeMs, this.config.limits.globalActive + 100);
+    } catch (error) {
+      reportSpendSweepFailure('list', error);
+      return;
+    }
+    for (const entry of open) {
+      try {
+        const agent = this.repository.findAgent(entry.principalId, entry.workspaceId, entry.agentId);
+        if (agent && !terminalStatuses.has(agent.status)) continue;
+        let revocation: AgentLeaseRevocation | undefined;
+        try {
+          revocation = revocationOf(await this.gateway.revokeAndDrain(entry.leaseId));
+        } catch {
+          // The gateway is unreachable; the next sweep retries.
+          continue;
+        }
+        this.spendLedger.settle(entry.leaseId, revocation, this.now());
+      } catch (error) {
+        reportSpendSweepFailure('settle', error);
+      }
+    }
+    try {
+      this.spendLedger.prune(now);
+    } catch (error) {
+      reportSpendSweepFailure('prune', error);
+    }
   }
 
   private reconcileUsage(context: RuntimeContext, usage: { input: number; output: number; cost: number }): void {
@@ -882,20 +1037,30 @@ export class AgentManager {
     return record;
   }
 
-  private profile(id: string, ownerId?: string): AgentModelProfile {
+  // Cache prices resolve through the same defaults the gateway snapshot uses, so the
+  // agent's self-reported cost never treats cached usage as free. The agent reports
+  // base-tier prices only; the gateway charges long-prompt tiers.
+  private profile(id: string, ownerId?: string): PricedAgentModelProfile {
     if (ownerId && this.modelProfiles) {
       const activeProfiles = this.modelProfiles.listProfiles(ownerId);
       const matched = activeProfiles.find((p: AgentModelProfileMetadata) => (p.id === id || p.activeRevisionId === id) && p.status === 'ACTIVE');
       if (matched && matched.activeRevision) {
         const rev = matched.activeRevision;
+        // A missing credential resolves as `custom`, the most conservative defaults.
+        const provider = this.modelProfiles.getCredentialProvider(ownerId, rev.credentialId) ?? 'custom';
+        const pricing = resolveEffectivePricing(rev.pricing, provider);
         return {
           id: rev.id,
+          spendProfileKey: savedProfileSpendKey(matched.id),
+          revisionId: rev.id,
           displayName: matched.displayName,
           provider: rev.model,
           model: rev.model,
           apiMode: rev.apiMode,
-          inputMicrosPerMillionTokens: rev.pricing.inputMicrosPerMillionTokens,
-          outputMicrosPerMillionTokens: rev.pricing.outputMicrosPerMillionTokens,
+          inputMicrosPerMillionTokens: pricing.inputMicrosPerMillionTokens,
+          outputMicrosPerMillionTokens: pricing.outputMicrosPerMillionTokens,
+          cacheReadMicrosPerMillionTokens: pricing.cacheReadMicrosPerMillionTokens,
+          cacheWriteMicrosPerMillionTokens: pricing.cacheWriteMicrosPerMillionTokens,
           maxInputTokens: rev.limits.maxInputTokens,
           maxOutputTokens: rev.limits.maxOutputTokens,
           maxCostMicros: rev.limits.maxCostMicros,
@@ -905,7 +1070,16 @@ export class AgentManager {
     }
     const staticProfile = this.config.profiles.find((candidate) => candidate.id === id);
     if (!staticProfile) throw new HarnessError('INVALID_INPUT', 'unknown agent model profile');
-    return staticProfile;
+    // The gateway charges a static profile's unknown cache prices at its input
+    // price, whatever the provider, so the agent reports the same prices.
+    const pricing = resolveEffectivePricing(staticProfile, { billsCacheWrites: false });
+    return {
+      ...staticProfile,
+      cacheReadMicrosPerMillionTokens: pricing.cacheReadMicrosPerMillionTokens,
+      cacheWriteMicrosPerMillionTokens: pricing.cacheWriteMicrosPerMillionTokens,
+      spendProfileKey: staticProfileSpendKey(staticProfile.id),
+      revisionId: null
+    };
   }
 
   private publicStatus(record: AgentRecord) {
@@ -948,7 +1122,7 @@ export class AgentManager {
     };
   }
 
-  private startRecord(record: AgentRecord, prompt: string, profile: AgentModelProfile, lease: string): AgentInputRecord {
+  private startRecord(record: AgentRecord, prompt: string, profile: PricedAgentModelProfile, lease: string): AgentInputRecord {
     const contextWindow = Math.min(2_000_000, profile.maxInputTokens + profile.maxOutputTokens);
     return {
       type: 'start', requestId: randomUUID(), agentId: record.id, prompt, tools: record.proxyOperations,
@@ -959,8 +1133,8 @@ export class AgentManager {
         cost: {
           input: profile.inputMicrosPerMillionTokens / 1_000_000,
           output: profile.outputMicrosPerMillionTokens / 1_000_000,
-          cacheRead: 0,
-          cacheWrite: 0
+          cacheRead: profile.cacheReadMicrosPerMillionTokens / 1_000_000,
+          cacheWrite: profile.cacheWriteMicrosPerMillionTokens / 1_000_000
         }
       },
       limits: {
@@ -995,6 +1169,15 @@ function toolError(requestId: string, message: string): AgentInputRecord {
     type: 'tool_result', requestId, final: true, isError: true,
     content: [{ type: 'text', text: JSON.stringify({ ok: false, message, error: { code: 'TOOL_ERROR', message, retryable: false }, truncated: false }) }]
   };
+}
+
+function reportSpendSweepFailure(stage: 'list' | 'settle' | 'prune', error: unknown): void {
+  process.stderr.write(`${JSON.stringify({ level: 'warn', time: Date.now(), msg: 'model spend sweep failed', stage, error: safeError(error).slice(0, 500) })}\n`);
+}
+
+/** An older gateway, or a test double, returns nothing from a revoke. */
+function revocationOf(value: AgentLeaseRevocation | void): AgentLeaseRevocation | undefined {
+  return typeof value === 'object' && value !== null ? value : undefined;
 }
 
 function safeError(error: unknown): string {

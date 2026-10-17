@@ -1,5 +1,5 @@
 import express, { Router, type NextFunction, type Response } from 'express';
-import { OAuthGrantSettingsUpdateInputSchema, TOOL_SCHEMA_BY_NAME, type ApiConfig, type RunnerOperation, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
+import { InstanceSettingsUpdateInputSchema, OAuthGrantSettingsUpdateInputSchema, TOOL_SCHEMA_BY_NAME, type ApiConfig, type RunnerOperation, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { principalFromAuthInfo } from './auth.js';
 import { agentNeedsAttention, buildActivityProjection, buildMetricsProjection, buildOverviewProjection, buildReliabilityProjection, METRIC_WINDOWS, mapDashboardData, sendRunnerResponse, type DashboardResponseOperation } from './dashboard-response.js';
@@ -8,6 +8,7 @@ import { createDashboardSessions } from './dashboard-session.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
 import { registerDashboardControlRoutes } from './dashboard-control-router.js';
 import { registerDashboardGatewayRoutes } from './dashboard-gateway-router.js';
+import { registerDashboardTerminalRoutes } from './dashboard-terminal-router.js';
 import type { McpGatewayService } from './mcp-gateway/service.js';
 import { serverVersion } from './version.js';
 
@@ -51,9 +52,6 @@ const agentStatus = z.enum(['SPAWNING', 'RUNNING', 'CANCELLING', 'SUCCEEDED', 'F
 const pageQuery = z.object({ cursor: z.string().max(256).optional(), limit: z.coerce.number().int().min(1).max(100).default(100) });
 const fileQuery = pageQuery.extend({ path: z.string().min(1).max(1_024).default('.') });
 const readQuery = z.object({ path: z.string().min(1).max(1_024), offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(262_144).default(65_536) });
-const settingsUpdateSchema = z.object({
-  defaultNetworkProfile: z.union([z.enum(['network-none', 'dependency-access']), z.null()])
-}).strict();
 
 function principal(request: DashboardRequest, response: Response): RunnerPrincipalSelector | undefined {
   const selected = principalFromAuthInfo(request.auth);
@@ -123,6 +121,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   });
   registerDashboardControlRoutes(router, runner, principal, config, gateway);
   if (gateway) registerDashboardGatewayRoutes(router, gateway, principal, config);
+  registerDashboardTerminalRoutes(router, runner, principal, config.requestTimeoutMs);
 
   router.get('/api/v1/profile', (request: DashboardRequest, response) => {
     const selected = principal(request, response);
@@ -241,7 +240,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
         response.status(503).json({ error: 'settings_unavailable', message: 'Settings are temporarily unavailable.' });
         return;
       }
-      sendRunnerResponse(response, 'settings_update', await runner.callInternal('settings_update', settingsUpdateSchema.parse(request.body), selected));
+      sendRunnerResponse(response, 'settings_update', await runner.callInternal('settings_update', InstanceSettingsUpdateInputSchema.parse(request.body), selected));
     } catch (error) { next(error); }
   });
 

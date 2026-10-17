@@ -10,8 +10,9 @@ import { DASHBOARD_RESPONSE_OPERATIONS } from '../src/dashboard-response.js';
 // Every metadata operation now has a mapping branch, so this list is empty on purpose: the totality test
 // below fails if a future operation is added without one, which is the failure mode it exists to close.
 const PENDING_DASHBOARD_MAPPING: readonly string[] = [];
-// Metadata operations that back the Skills over MCP extension; the MCP endpoint serves them, never the dashboard.
-const MCP_ONLY_OPERATIONS: readonly string[] = ['skills_ext_list', 'skills_ext_get', 'skills_ext_read'];
+// Metadata operations that back the Skills over MCP extension and the MCP Gateway's semantic rerank;
+// the MCP endpoints serve them, never the dashboard.
+const MCP_ONLY_OPERATIONS: readonly string[] = ['skills_ext_list', 'skills_ext_get', 'skills_ext_read', 'decision_rerank_tools'];
 
 describe('dashboard response totality', () => {
   it('accounts for every metadata operation, either mapped or explicitly pending', () => {

@@ -1,0 +1,62 @@
+{
+  "description": "Golden GitHub action failures whose output matches no deterministic classifier rule, so the classifier returns its generic GITHUB_ACTION_FAILED fallback. The expected kind is what an operator would conclude from the output.",
+  "cases": [
+    {
+      "action": "pr_create",
+      "stderr": "error connecting to api.github.com: dial tcp: lookup api.github.com on 10.0.0.2:53: i/o timeout",
+      "expected": "transient_network"
+    },
+    {
+      "action": "pr_create",
+      "stderr": "Post \"https://api.github.com/graphql\": read tcp 172.18.0.4:51022->140.82.112.6:443: read: connection reset by peer",
+      "expected": "transient_network"
+    },
+    {
+      "action": "pr_create",
+      "stderr": "fatal: unable to write new index file: No space left on device",
+      "expected": "resource_exhaustion"
+    },
+    {
+      "action": "pr_merge",
+      "stderr": "runtime: out of memory: cannot allocate 268435456-byte block (1073741824 in use)\nfatal error: out of memory",
+      "expected": "resource_exhaustion"
+    },
+    {
+      "action": "pr_create",
+      "stderr": "gh-extension: exec: \"jq\": executable file missing from $PATH; install jq to use this extension",
+      "expected": "dependency"
+    },
+    {
+      "action": "issue_publish",
+      "stderr": "error: extension 'gh-issue-publish' failed to load: cannot find module 'yaml'",
+      "expected": "dependency"
+    },
+    {
+      "action": "pr_checks",
+      "stdout": "FAIL src/cart.test.ts > applies discount\nAssertionError: expected 90 to equal 81\nTests: 1 failed, 214 passed",
+      "stderr": "some checks were not successful",
+      "expected": "test_failure"
+    },
+    {
+      "action": "pr_create",
+      "stderr": "panic: runtime error: invalid memory address or nil pointer dereference\n[signal SIGSEGV: segmentation violation code=0x1 addr=0x18 pc=0x9c2f1d]\ngoroutine 1 [running]:\nmain.buildBody(...)",
+      "expected": "code_error"
+    },
+    {
+      "action": "issue_publish",
+      "stderr": "TypeError: Cannot read properties of undefined (reading 'title')\n    at renderIssue (/ext/index.js:42:17)",
+      "expected": "code_error"
+    },
+    {
+      "action": "pr_checks",
+      "stdout": "e2e/checkout.spec.ts passed on retry 2 of 3 (timing-dependent assertion)\nTests: 1 flaky, 87 passed",
+      "stderr": "some checks were not successful",
+      "expected": "flaky_test"
+    },
+    {
+      "action": "pr_create",
+      "stderr": "error: the operation was interrupted",
+      "expected": "unknown"
+    }
+  ]
+}

@@ -24,10 +24,17 @@ See [files and search](files-and-search.md).
 
 See [execution and tasks](execution-and-tasks.md).
 
-`exec_run` `shell_open` `shell_io` `shell_close` `sessions_list`
+`exec_run` `bash` `shell_open` `shell_io` `shell_close` `sessions_list`
 `sessions_open` `sessions_io` `sessions_close` `tasks_list` `tasks_run`
 `tasks_status` `tasks_cancel` `tasks_graph` `operation_status`
 `operation_cancel` `operation_wait`
+
+## Managed toolbox packages
+
+See [managed packages](managed-packages.md).
+
+`packages_plan` `packages_apply` `packages_status` `packages_list`
+`packages_rollback` `packages_remove`
 
 ## Git and worktrees
 
@@ -51,6 +58,17 @@ See [repository automation](repository-automation.md).
 
 Not tools: `skills/list`, `skills/get`, and `resources/read` belong to the
 MCP Skills extension; see [native MCP skills](../SKILL.md#native-mcp-skills).
+
+## Models and spend
+
+See [models and spend](models-and-spend.md).
+
+`model_provider_list` `model_catalog_search` `model_connection_verify`
+`model_profile_list` `model_profile_validate` `model_profile_create`
+`model_profile_update` `model_spend_summary`
+
+Profiles created here arrive disabled; keys, activation, deletion, and spend
+policies stay with the owner on the Dashboard.
 
 ## Retained artifacts
 

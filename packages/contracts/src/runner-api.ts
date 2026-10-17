@@ -7,7 +7,7 @@ export const RunnerOperationSchema = z.enum([
   'workspace_finalize',
   'files_list', 'files_read', 'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir', 'grep_search',
   'symbols_search', 'symbols_references',
-  'exec_run', 'shell_open', 'shell_io', 'shell_close',
+  'exec_run', 'bash', 'shell_open', 'shell_io', 'shell_close',
   'sessions_list', 'sessions_open', 'sessions_io', 'sessions_close',
   'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph',
   'operation_status', 'operation_cancel', 'operation_wait',
@@ -22,7 +22,11 @@ export const RunnerOperationSchema = z.enum([
   'artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete',
   'github_action', 'github_read',
   'secrets_list',
-  'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list'
+  'packages_plan', 'packages_apply', 'packages_list', 'packages_status', 'packages_rollback', 'packages_remove',
+  'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list',
+  'model_provider_list', 'model_catalog_search', 'model_connection_verify',
+  'model_profile_list', 'model_profile_validate', 'model_profile_create', 'model_profile_update',
+  'model_spend_summary'
 ]);
 
 export const ExternalPrincipalSchema = z.object({

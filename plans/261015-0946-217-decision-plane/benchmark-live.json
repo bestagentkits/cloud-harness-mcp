@@ -1,0 +1,219 @@
+{
+  "timestamp": "2026-10-15T10:04:51.298Z",
+  "provider": "typesafe-jev",
+  "routing": {
+    "cases": 16,
+    "lexicalTop1": 0.688,
+    "semanticTop1": 1,
+    "lexicalTop3": 0.875,
+    "semanticTop3": 1,
+    "applied": 0.938,
+    "rows": [
+      {
+        "expected": "cloud.pages_publish",
+        "lexicalRank": 1,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "cloud.pages_preview",
+        "lexicalRank": 4,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "cloud.deployment_rollback",
+        "lexicalRank": 1,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "cloud.logs_tail",
+        "lexicalRank": 1,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "cloud.dns_record_create",
+        "lexicalRank": 3,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "cloud.certificate_status",
+        "lexicalRank": 1,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "tracker.issue_create",
+        "lexicalRank": 7,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "tracker.issue_search",
+        "lexicalRank": 1,
+        "semanticRank": 1,
+        "applied": false,
+        "reason": "single_candidate"
+      },
+      {
+        "expected": "tracker.issue_close",
+        "lexicalRank": 1,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "db.query_run",
+        "lexicalRank": 1,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "db.table_describe",
+        "lexicalRank": 1,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "db.backup_create",
+        "lexicalRank": 1,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "mail.message_send",
+        "lexicalRank": 3,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "chat.channel_post",
+        "lexicalRank": 1,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "cloud.container_run",
+        "lexicalRank": 1,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      },
+      {
+        "expected": "cloud.deployment_list",
+        "lexicalRank": 2,
+        "semanticRank": 1,
+        "applied": true,
+        "reason": null
+      }
+    ]
+  },
+  "failureClassification": {
+    "cases": 11,
+    "deterministicUnknownRate": 1,
+    "semanticUnknownRate": 0.182,
+    "semanticAccuracyOnNamedCases": 0.9,
+    "rows": [
+      {
+        "expected": "transient_network",
+        "diagnosed": "transient_network",
+        "confidence": 1
+      },
+      {
+        "expected": "transient_network",
+        "diagnosed": "transient_network",
+        "confidence": 0.99
+      },
+      {
+        "expected": "resource_exhaustion",
+        "diagnosed": "resource_exhaustion",
+        "confidence": 1
+      },
+      {
+        "expected": "resource_exhaustion",
+        "diagnosed": "resource_exhaustion",
+        "confidence": 1
+      },
+      {
+        "expected": "dependency",
+        "diagnosed": "dependency",
+        "confidence": 1
+      },
+      {
+        "expected": "dependency",
+        "diagnosed": "dependency",
+        "confidence": 1
+      },
+      {
+        "expected": "test_failure",
+        "diagnosed": "test_failure",
+        "confidence": 1
+      },
+      {
+        "expected": "code_error",
+        "diagnosed": "code_error",
+        "confidence": 0.91
+      },
+      {
+        "expected": "code_error",
+        "diagnosed": "code_error",
+        "confidence": 1
+      },
+      {
+        "expected": "flaky_test",
+        "diagnosed": "unknown",
+        "confidence": 0.42
+      },
+      {
+        "expected": "unknown",
+        "diagnosed": "unknown",
+        "confidence": 0.78
+      }
+    ]
+  },
+  "metrics": {
+    "mcp-routing": {
+      "evaluations": 15,
+      "decided": 15,
+      "fallback": 0,
+      "fallbackRate": 0,
+      "fallbackReasons": {},
+      "lowConfidence": 0,
+      "latencyP50Ms": 101,
+      "latencyP95Ms": 294,
+      "inputTokens": 10891,
+      "outputTokens": 3938
+    },
+    "failure-classification": {
+      "evaluations": 11,
+      "decided": 11,
+      "fallback": 0,
+      "fallbackRate": 0,
+      "fallbackReasons": {},
+      "lowConfidence": 1,
+      "latencyP50Ms": 100,
+      "latencyP95Ms": 120,
+      "inputTokens": 7631,
+      "outputTokens": 2096
+    }
+  },
+  "latencyMs": {
+    "p50": 100,
+    "p95": 294
+  }
+}

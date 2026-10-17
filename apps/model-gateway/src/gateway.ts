@@ -4,11 +4,12 @@ import type { DynamicGatewayRegistry } from './control.js';
 import type { Server as NetServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
-import { noOpBudgetHooks, reconcileBudget, reserveBudget, type BudgetHooks } from './budget.js';
+import { ModelRequestError, noOpBudgetHooks, reconcileBudget, reserveBudget, settleFailedRequest, type BudgetHooks, type ReconcileResult } from './budget.js';
 import { startControlServer } from './control.js';
 import { LeaseRegistry } from './lease-registry.js';
-import { startUpstreamRequest, type UpstreamHandle } from './upstream.js';
+import { startUpstreamRequest, UpstreamError, type UpstreamHandle } from './upstream.js';
 import type {
+  BudgetReservation,
   GatewayConfig,
   GatewayLogger,
   LeaseGrant,
@@ -45,12 +46,12 @@ export interface GatewayRuntime {
   close(): Promise<void>;
 }
 
-function errorResponse(response: ServerResponse, status: number, code: string): void {
+function errorResponse(response: ServerResponse, status: number, code: string, message = code.replaceAll('_', ' ')): void {
   if (response.headersSent || response.destroyed) {
     response.destroy();
     return;
   }
-  const body = Buffer.from(JSON.stringify({ error: { code, message: code.replaceAll('_', ' ') } }));
+  const body = Buffer.from(JSON.stringify({ error: { code, message } }));
   response.writeHead(status, {
     'content-type': 'application/json',
     'content-length': String(body.byteLength),
@@ -206,6 +207,12 @@ export function createGatewayRuntime(
         markReady: () => readyResolve?.()
       };
       active.set(requestId, current);
+      let reservation: BudgetReservation | undefined;
+      let settled = false;
+      const settle = (result: ReconcileResult): void => {
+        settled = true;
+        if (result.overrunCostMicros > 0) logger.warn({ requestId, agentId, profileId }, 'provider usage exceeded reservation');
+      };
       const requestDeadline = setTimeout(() => {
         request.destroy(new Error('gateway request deadline exceeded'));
         response.destroy();
@@ -213,9 +220,11 @@ export function createGatewayRuntime(
       try {
         const rawBody = await readBoundedBody(request, profile.limits.maxRequestBytes);
         const parsed = parseObjectBody(rawBody);
-        const reservation = reserveBudget(parsed, rawBody.byteLength, grant, profile);
+        reservation = reserveBudget(parsed, rawBody.byteLength, grant, profile);
         await hooks.reserve(reservation);
         const outboundBody = Buffer.from(JSON.stringify(parsed));
+        // The provider's own session header wins; the instance-wide one is the fallback.
+        const sessionHeader = profile.sessionHeader ?? config.sessionHeader;
         if (outboundBody.byteLength > profile.limits.maxRequestBytes) throw new Error('clamped request body is too large');
         current.handle = await startUpstreamRequest({
           profile,
@@ -223,15 +232,26 @@ export function createGatewayRuntime(
           downstream: response,
           requestId,
           maxOutputTokens: reservation.outputTokens,
-          ...(config.sessionHeader === undefined ? {} : { sessionHeader: config.sessionHeader, sessionId: agentId })
+          ...(sessionHeader === undefined ? {} : { sessionHeader, sessionId: agentId })
         });
         current.markReady();
         if (current.cancelled) await current.handle.abort(current.cancelled);
         const result = await current.handle.result;
-        await hooks.reconcile(reservation, reconcileBudget(reservation, result.usage));
+        const reconciled = reconcileBudget(reservation, result.usage);
+        settle(reconciled);
+        await hooks.reconcile(reservation, reconciled.charged);
         logger.info({ requestId, agentId, profileId, status: result.status, responseBytes: result.responseBytes, durationMs: Date.now() - startedAt }, 'model request completed');
       } catch (error) {
         current.markReady();
+        // A failed or cancelled request keeps its whole reservation.
+        if (reservation !== undefined && !settled) {
+          settle(settleFailedRequest(reservation, error instanceof UpstreamError ? error.usage : undefined));
+        }
+        if (error instanceof ModelRequestError) {
+          errorResponse(response, 400, 'invalid_model_request', error.message);
+          logger.warn({ requestId, agentId, profileId, status: 400, durationMs: Date.now() - startedAt, reasonCode: 400 }, 'model request failed');
+          return;
+        }
         const reason = error instanceof Error ? error.message : 'gateway request failed';
         const status = reason.includes('too large') || reason.includes('limit exceeded') ? 413 :
           reason.includes('budget') || reason.includes('cost') ? 429 :

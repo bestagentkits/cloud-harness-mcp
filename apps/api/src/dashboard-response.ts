@@ -3,7 +3,7 @@ import type { RunnerResponse } from '@cloud-harness/contracts';
 
 const statuses: Record<string, number> = {
   AUTHENTICATION_FAILED: 401, FORBIDDEN: 404, INVALID_INPUT: 400, NOT_FOUND: 404,
-  CONFLICT: 409, EXPIRED: 410, LIMIT_EXCEEDED: 429, TIMEOUT: 504,
+  CONFLICT: 409, STALE_GENERATION: 409, EXPIRED: 410, LIMIT_EXCEEDED: 429, TIMEOUT: 504,
   CANCELLED: 409, UNAVAILABLE: 503, DEPENDENCY_EGRESS_UNAVAILABLE: 503, INTERNAL_ERROR: 500
 };
 
@@ -13,6 +13,7 @@ const messages: Record<string, string> = {
   INVALID_INPUT: 'The request could not be processed.',
   NOT_FOUND: 'Workspace not found or no longer available.',
   CONFLICT: 'This item changed after you opened it.',
+  STALE_GENERATION: 'This item changed after you opened it.',
   EXPIRED: 'Workspace expired.',
   LIMIT_EXCEEDED: 'Too many requests. Try again later.',
   TIMEOUT: 'The workspace service took too long to respond.',
@@ -28,6 +29,7 @@ function cleanWorkspace(value: unknown): Record<string, unknown> {
   const clean = Object.fromEntries(allowed.filter((key) => item[key] !== undefined).map((key) => [key, item[key]]));
   if (typeof item.generation === 'number') clean.version = item.generation;
   if (typeof item.canRenewLease === 'boolean') clean.canRenewLease = item.canRenewLease;
+  if (typeof item.leaseCapped === 'boolean') clean.leaseCapped = item.leaseCapped;
   if (typeof item.leaseState === 'string') clean.leaseState = item.leaseState;
   if (Array.isArray(item.availableActions)) {
     clean.availableActions = item.availableActions.filter((action): action is string => typeof action === 'string').slice(0, 16);
@@ -182,6 +184,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'sessions_open',
   'sessions_io',
   'sessions_close',
+  'terminal_open', 'terminal_read', 'terminal_input', 'terminal_resize', 'terminal_close', 'terminal_list',
   'git_status',
   'git_diff',
   'git_log',
@@ -224,9 +227,14 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
   'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
   'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject',
+  'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove',
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
   'model_profile_list', 'model_profile_create', 'model_profile_update', 'model_profile_activate', 'model_profile_disable', 'model_profile_delete',
-  'model_config_status',
+  'model_profile_validate',
+  'model_config_status', 'model_provider_list',
+  'model_catalog_search', 'model_catalog_refresh',
+  'model_connection_verify',
+  'model_spend_summary', 'model_spend_policy_list', 'model_spend_policy_set', 'model_spend_policy_delete',
   'knowledge_dashboard_list', 'knowledge_dashboard_get', 'knowledge_dashboard_create', 'knowledge_dashboard_update', 'knowledge_dashboard_delete', 'knowledge_dashboard_search', 'knowledge_dashboard_graph', 'knowledge_dashboard_link_create', 'knowledge_dashboard_link_delete',
   'mcp_server_list', 'mcp_server_get', 'mcp_server_create', 'mcp_server_update', 'mcp_server_delete',
   'mcp_server_set_enabled', 'mcp_server_set_permissions', 'mcp_server_replace_tools',
@@ -239,7 +247,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'skill_revision_list', 'skill_revision_get', 'skill_revision_diff',
   'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
   'toolkit_registry_list', 'toolkit_registry_update', 'toolkit_registry_refresh',
-  'skill_suggest', 'typesafe_status',
+  'skill_suggest', 'typesafe_status', 'decision_plane_status',
   'skill_revision_fork',
   'skill_revision_create',
   'skill_archive_import',
@@ -260,13 +268,15 @@ const metadataKeys = ['id', 'name', 'state', 'generation', 'createdAt', 'updated
 const environmentKeys = [...metadataKeys, 'projectId'] as const;
 const secretKeys = ['id', 'environmentId', 'name', 'description', 'state', 'version', 'generation', 'createdAt', 'updatedAt', 'deletedAt'] as const;
 const artifactKeys = ['artifactId', 'logicalName', 'sha256', 'sizeBytes', 'projectId', 'environmentId', 'workspaceId', 'createdAt', 'updatedAt', 'expiresAt', 'retentionMs', 'generation'] as const;
-const privilegeGrantKeys = ['id', 'ownerId', 'workspaceId', 'command', 'cwd', 'commandSha256', 'status', 'createdAt', 'expiresAt', 'consumedAt'] as const;
+const privilegeGrantKeys = ['id', 'workspaceId', 'command', 'cwd', 'commandSha256', 'status', 'createdAt', 'expiresAt', 'consumedAt'] as const;
 const knowledgeItemKeys = ['id', 'kind', 'scope', 'projectId', 'workspaceId', 'title', 'content', 'contentSha256', 'journalType', 'occurredAt', 'generation', 'createdAt', 'updatedAt', 'expiresAt', 'tags', 'provenance', 'outboundLinks', 'backlinks'] as const;
 const mcpServerKeys = ['id', 'name', 'description', 'transport', 'endpoint', 'headers', 'oauth', 'enabled', 'status', 'toolCount', 'lastConnectedAt', 'lastError', 'lastCheckedAt', 'permissionDefault', 'generation', 'createdAt', 'updatedAt'] as const;
 const mcpToolKeys = ['id', 'serverId', 'qualifiedName', 'upstreamName', 'description', 'inputSchema', 'annotations', 'availability', 'permission', 'discoveredAt'] as const;
 const mcpTraceKeys = ['id', 'serverId', 'serverName', 'tool', 'operation', 'clientId', 'durationMs', 'status', 'errorCode', 'errorMessage', 'requestBytes', 'responseBytes', 'createdAt'] as const;
 const mcpCredentialKeys = ['allowed', 'reason'] as const;
 const mcpConnectionKeys = ['status', 'toolCount', 'error'] as const;
+/** The contract's TerminalView. No executor, container, or host-path field exists here to leak. */
+const terminalKeys = ['terminalId', 'workspaceId', 'status', 'cwd', 'cols', 'rows', 'createdAt', 'lastActivityAt', 'idleExpiresAt', 'hardExpiresAt', 'exitCode', 'endedAt', 'endReason'] as const;
 
 /** Projected from the `skill_sources` and `skill_revisions` columns Phase 1 created. */
 const skillKeys = ['id', 'slug', 'displayName', 'description', 'kind', 'provider', 'sourceRef', 'currentRevisionId', 'state', 'tags', 'generation', 'createdAt', 'updatedAt', 'version'] as const;
@@ -321,6 +331,63 @@ function mcpServerResult(data: Record<string, unknown>): Record<string, unknown>
 }
 
 const knowledgeLinkKeys = ['id', 'sourceId', 'targetId', 'relation', 'origin', 'generation', 'createdAt'] as const;
+
+/*
+ * Managed packages. Every level is re-picked, so an owner identity, a host path, or an executor image
+ * reference the runner might attach never reaches the browser.
+ */
+const packageRuntimeKeys = ['node', 'npm', 'uv', 'python'] as const;
+const packageReleaseKeys = ['releaseId', 'ecosystem', 'name', 'version', 'treeDigest', 'sizeBytes', 'fileCount', 'binaries', 'createdAt', 'status', 'stale', 'dependencyCount', 'lifecycleScripts', 'integrity'] as const;
+const packageHistoryKeys = ['generation', 'releaseId', 'version', 'reason', 'actor', 'createdAt', 'available'] as const;
+const packageBindingKeys = ['bindingId', 'scope', 'workspaceId', 'ecosystem', 'name', 'generation', 'affectedWorkspaces'] as const;
+const packageApplyKeys = ['applyId', 'planId', 'bindingId', 'releaseId', 'state', 'errorCode', 'errorMessage', 'createdAt', 'updatedAt', 'finishedAt', 'scope', 'ecosystem', 'name', 'version'] as const;
+const packageConflictKeys = ['binary', 'scope', 'workspaceId', 'ecosystem', 'name'] as const;
+const packagePlanKeys = [
+  'planId', 'planDigest', 'status', 'scope', 'workspaceId', 'ecosystem', 'name', 'version', 'requestedSpec', 'integrity',
+  'dependencyCount', 'sizeEstimateBytes', 'binaries', 'lifecycleScripts', 'bindingGeneration', 'stale', 'affectedWorkspaces',
+  'createdAt', 'expiresAt', 'decidedAt', 'decidedBy', 'applyId'
+] as const;
+const packageSourceKeys = ['registry', 'resolved'] as const;
+const objectOrNull = (value: unknown, keys: readonly string[]) => value !== null && typeof value === 'object' ? pick(value, keys) : null;
+
+function packageRelease(value: unknown): Record<string, unknown> {
+  const release = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return { ...pick(release, packageReleaseKeys), runtime: objectOrNull(release.runtime, packageRuntimeKeys), source: objectOrNull(release.source, packageSourceKeys) };
+}
+
+function packagePlan(value: unknown): Record<string, unknown> {
+  const plan = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    ...pick(plan, packagePlanKeys),
+    source: objectOrNull(plan.source, packageSourceKeys),
+    runtime: objectOrNull(plan.runtime, packageRuntimeKeys),
+    conflicts: listOf(plan.conflicts, packageConflictKeys),
+    currentRelease: objectOrNull(plan.currentRelease, ['releaseId', 'version', 'generation'])
+  };
+}
+
+const packageSettingKeys = ['enabled', 'approvalMode', 'ecosystems', 'lifecycleScripts'] as const;
+
+function packageOverview(data: Record<string, unknown>): Record<string, unknown> {
+  const bindings = Array.isArray(data.bindings) ? data.bindings : [];
+  return {
+    ...pick(data, packageSettingKeys),
+    quotas: pick(data.quotas, ['maxReleaseBytes', 'maxOwnerBytes', 'maxBindings']),
+    usage: pick(data.usage, ['ownerBytes', 'bindings']),
+    bindings: bindings.map((value) => {
+      const binding = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+      return {
+        ...pick(binding, packageBindingKeys),
+        release: binding.release ? packageRelease(binding.release) : null,
+        history: listOf(binding.history, packageHistoryKeys)
+      };
+    }),
+    releases: Array.isArray(data.releases) ? data.releases.map(packageRelease) : [],
+    inFlight: listOf(data.inFlight, packageApplyKeys),
+    recentApplies: listOf(data.recentApplies, packageApplyKeys),
+    pendingPlans: Array.isArray(data.pendingPlans) ? data.pendingPlans.map(packagePlan) : []
+  };
+}
 const list = (data: Record<string, unknown>, key: string, keys: readonly string[]) => ({
   [key]: Array.isArray(data[key]) ? data[key].map((record) => pick(record, keys)) : []
 });
@@ -381,6 +448,9 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'sessions_io') {
     return { session: sessionProjection(data.session ?? data), ...(data.cursor !== undefined ? { cursor: data.cursor } : {}), truncated: data.truncated === true };
   }
+  if (operation === 'terminal_open' || operation === 'terminal_input' || operation === 'terminal_resize' || operation === 'terminal_close') return { terminal: pick(data, terminalKeys) };
+  if (operation === 'terminal_read') return { terminal: pick(data.terminal, terminalKeys), ...pick(data, ['data', 'cursor', 'nextCursor', 'missedBytes', 'more']) };
+  if (operation === 'terminal_list') return list(data, 'terminals', terminalKeys);
   if (operation === 'git_status') {
     return { ...parseGitStatus(data.output), output: boundedOutput(data.output) ?? '' };
   }
@@ -458,6 +528,22 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (['github_status', 'github_setup_complete', 'github_reconcile', 'github_disconnect'].includes(operation)) return githubStatus(data);
   if (operation === 'privilege_grant_list') return list(data, 'grants', privilegeGrantKeys);
   if (operation === 'privilege_grant_approve' || operation === 'privilege_grant_reject') return { grant: pick(data.grant, privilegeGrantKeys) };
+  if (operation === 'package_overview') return packageOverview(data);
+  if (operation === 'package_plan_list') {
+    return { ...pick(data, ['enabled', 'approvalMode']), plans: Array.isArray(data.plans) ? data.plans.map(packagePlan) : [] };
+  }
+  if (operation === 'package_plan_approve' || operation === 'package_plan_reject') return { plan: packagePlan(data.plan) };
+  if (operation === 'package_rollback') {
+    return { binding: pick(data.binding, ['bindingId', 'scope', 'workspaceId', 'ecosystem', 'name', 'generation', 'releaseId']), replayed: data.replayed === true };
+  }
+  if (operation === 'package_remove') {
+    return {
+      ...pick(data, ['bindingId', 'collectedReleases']),
+      removed: data.removed === true,
+      releaseIds: Array.isArray(data.releaseIds) ? data.releaseIds.filter((id) => typeof id === 'string') : [],
+      affectedWorkspaces: Array.isArray(data.affectedWorkspaces) ? data.affectedWorkspaces.filter((id) => typeof id === 'string') : []
+    };
+  }
   if (operation === 'knowledge_dashboard_list') return { items: Array.isArray(data.items) ? data.items.map((item) => pick(item, knowledgeItemKeys)) : [] };
   if (operation === 'knowledge_dashboard_get' || operation === 'knowledge_dashboard_create' || operation === 'knowledge_dashboard_update') return pick(data, knowledgeItemKeys);
   if (operation === 'knowledge_dashboard_delete') return pick(data, ['deleted']);
@@ -546,6 +632,8 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
     };
   }
   if (operation === 'typesafe_status') return pick(data, ['configured', 'enabled', 'endpoint', 'model']);
+  // Status is counters and latency per purpose; there is no state text or answer to leak.
+  if (operation === 'decision_plane_status') return pick(data, ['enabled', 'purposes', 'provider', 'configured', 'metrics']);
   if (operation === 'integration_credential_list') return list(data, 'credentials', integrationCredentialKeys);
   if (operation === 'integration_credential_delete') return pick(data, ['id', 'deleted']);
   if (operation === 'integration_credential_create' || operation === 'integration_credential_rotate') return pick(data, integrationCredentialKeys);
@@ -580,10 +668,22 @@ const descriptiveOperations = new Set<string>([
   'skill_import_start', 'skill_import_cancel',
   'skill_set_create', 'skill_set_update', 'skill_set_delete',
   'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete',
-  'skill_suggest'
+  'skill_suggest',
+  // Model setup refusals come from the provider registry (unsupported API or auth mode, custom URL rules)
+  // and name the supported values without echoing a credential or URL.
+  'model_credential_create', 'model_profile_create', 'model_profile_update', 'model_profile_validate',
+  // The runner composes credential-free check refusals (unknown or disabled credential, rate limit).
+  'model_connection_verify',
+  // Spend policy refusals say whether the profile or the policy is missing, or that the policy changed
+  // or was replaced; they carry no credential.
+  'model_spend_policy_set', 'model_spend_policy_delete',
+  // Package decisions answer with the store's plain refusal (digest mismatch, expired, rollback target gone,
+  // stale generation, apply in flight).
+  'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove'
 ]);
 
 const githubUnavailable = 'GitHub authorization is unavailable. Check the GitHub App credentials in the runner configuration, then retry.';
+const packagesDisabled = 'Managed packages are off. Operators enable them with PACKAGES_ENABLED=true.';
 
 /** Gateway operations need gateway wording; the shared table is workspace-oriented. */
 const operationMessages: Partial<Record<DashboardResponseOperation, Record<string, string>>> = {
@@ -603,6 +703,19 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
     NOT_FOUND: 'GitHub installation not found.'
   },
   github_disconnect: { NOT_FOUND: 'GitHub installation not found.' },
+  package_plan_approve: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
+  package_plan_reject: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
+  package_rollback: { FORBIDDEN: packagesDisabled },
+  package_remove: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package binding not found.' },
+  model_catalog_search: { NOT_FOUND: 'Provider credential not found.' },
+  model_catalog_refresh: { NOT_FOUND: 'Provider credential not found.' },
+  model_spend_policy_delete: { NOT_FOUND: 'Model spend policy not found.' },
+  // A terminal the runner no longer knows about, including every terminal from before a runner
+  // restart, answers NOT_FOUND. The browser turns that into its "no longer available" state.
+  terminal_read: { NOT_FOUND: 'This terminal is no longer available.' },
+  terminal_input: { NOT_FOUND: 'This terminal is no longer available.' },
+  terminal_resize: { NOT_FOUND: 'This terminal is no longer available.' },
+  terminal_close: { NOT_FOUND: 'This terminal is no longer available.' },
   mcp_server_list: { UNAVAILABLE: 'The MCP registry is temporarily unavailable.' },
   mcp_server_get: { NOT_FOUND: 'MCP server not found.' },
   mcp_gateway_trace_list: { NOT_FOUND: 'MCP server not found.' },
@@ -611,7 +724,11 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
   mcp_server_delete: { CONFLICT: 'This MCP server changed after you opened it.' },
   mcp_server_set_enabled: { CONFLICT: 'This MCP server changed after you opened it.' },
   settings_get: { UNAVAILABLE: 'Instance settings are temporarily unavailable.' },
-  settings_update: { UNAVAILABLE: 'Instance settings are temporarily unavailable.', INVALID_INPUT: 'The default network profile must be network-none or dependency-access.' },
+  settings_update: {
+    UNAVAILABLE: 'Instance settings are temporarily unavailable.',
+    INVALID_INPUT: 'The runner rejected these settings. Check each value against its allowed range and keep the idle timeout no longer than the hard lifetime.',
+    CONFLICT: 'Instance settings changed after you opened them. Reload and try again.'
+  },
   settings_network_check: { UNAVAILABLE: 'The egress readiness check is temporarily unavailable.' },
   skill_list: { UNAVAILABLE: 'The skill registry is temporarily unavailable.' },
   skill_get: { NOT_FOUND: 'Skill not found.' },

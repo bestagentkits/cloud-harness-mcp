@@ -14,6 +14,8 @@ export const AgentMessageIdSchema = opaqueId('msg').brand<'AgentMessageId'>();
 export const ModelCredentialIdSchema = opaqueId('cred').brand<'ModelCredentialId'>();
 export const ModelProfileIdSchema = z.string().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/, 'invalid profile identifier').brand<'ModelProfileId'>();
 export const ModelRevisionIdSchema = opaqueId('rev').brand<'ModelRevisionId'>();
+// An opaque, runner-held handle to a draft connection check; it carries no result itself.
+export const ModelVerificationRefSchema = opaqueId('vref').brand<'ModelVerificationRef'>();
 export const SkillSourceIdSchema = opaqueId('sk').brand<'SkillSourceId'>();
 export const SkillRevisionIdSchema = opaqueId('skrev').brand<'SkillRevisionId'>();
 export const SkillSetIdSchema = opaqueId('skset').brand<'SkillSetId'>();
@@ -32,6 +34,7 @@ export type AgentMessageId = z.infer<typeof AgentMessageIdSchema>;
 export type ModelCredentialId = z.infer<typeof ModelCredentialIdSchema>;
 export type ModelProfileId = z.infer<typeof ModelProfileIdSchema>;
 export type ModelRevisionId = z.infer<typeof ModelRevisionIdSchema>;
+export type ModelVerificationRef = z.infer<typeof ModelVerificationRefSchema>;
 export type SkillSourceId = z.infer<typeof SkillSourceIdSchema>;
 export type SkillRevisionId = z.infer<typeof SkillRevisionIdSchema>;
 export type SkillSetId = z.infer<typeof SkillSetIdSchema>;

@@ -11,19 +11,25 @@ type GitHubActionPermissions = {
   write: boolean;
   /** Further scopes the same token must hold at `write`, such as `contents` for merging a pull request. */
   alsoWrite?: readonly GitHubPermissionScope[];
+  /**
+   * A scope the token also carries at the action's level when the installation grants it.
+   * Every pull request is also an issue and `gh` resolves the number through
+   * `issueOrPullRequest`, so an issue action on a pull request number needs `pull_requests`.
+   */
+  optionalScope?: GitHubPermissionScope;
 };
 
 const GITHUB_ACTION_PERMISSIONS: Record<string, GitHubActionPermissions> = {
   issue_list: { scope: 'issues', write: false },
-  issue_view: { scope: 'issues', write: false },
+  issue_view: { scope: 'issues', write: false, optionalScope: 'pull_requests' },
   issue_create: { scope: 'issues', write: true },
-  issue_comment: { scope: 'issues', write: true },
+  issue_comment: { scope: 'issues', write: true, optionalScope: 'pull_requests' },
   issue_comment_update: { scope: 'issues', write: true },
-  issue_update: { scope: 'issues', write: true },
-  issue_publish: { scope: 'issues', write: true },
+  issue_update: { scope: 'issues', write: true, optionalScope: 'pull_requests' },
+  issue_publish: { scope: 'issues', write: true, optionalScope: 'pull_requests' },
   label_create: { scope: 'issues', write: true },
-  issue_labels_add: { scope: 'issues', write: true },
-  issue_labels_remove: { scope: 'issues', write: true },
+  issue_labels_add: { scope: 'issues', write: true, optionalScope: 'pull_requests' },
+  issue_labels_remove: { scope: 'issues', write: true, optionalScope: 'pull_requests' },
   pr_list: { scope: 'pull_requests', write: false },
   pr_view: { scope: 'pull_requests', write: false },
   pr_create: { scope: 'pull_requests', write: true },
@@ -117,6 +123,8 @@ export async function mintPrincipalRepositoryScopedToken(input: {
   requiredPermission: 'read' | 'write';
   /** Level of the `contents` permission to carry beside the action scope; `read` unless the action merges. */
   contentsPermission?: 'read' | 'write';
+  /** Scope requested at the same level as the action scope and dropped when the installation does not grant it. */
+  optionalScope?: GitHubPermissionScope | undefined;
 }): Promise<MintedInstallationToken | undefined> {
   if (!input.config.githubApp || input.repositoryUrl.hostname.toLowerCase() !== 'github.com') return undefined;
   const { owner, repository } = parseGitHubRepository(input.repositoryUrl);
@@ -152,7 +160,8 @@ export async function mintPrincipalRepositoryScopedToken(input: {
       repository,
       input.permissionScope,
       input.requiredPermission,
-      input.contentsPermission
+      input.contentsPermission,
+      input.optionalScope
     );
   }
 
@@ -163,7 +172,8 @@ export async function mintPrincipalRepositoryScopedToken(input: {
       repository,
       input.permissionScope,
       input.requiredPermission,
-      input.contentsPermission
+      input.contentsPermission,
+      input.optionalScope
     );
   }
 
@@ -185,7 +195,31 @@ async function mintForInstallationScoped(
   repositoryName: string,
   permissionScope: GitHubPermissionScope,
   requiredPermission: 'read' | 'write',
-  contentsPermission: 'read' | 'write' = 'read'
+  contentsPermission: 'read' | 'write' = 'read',
+  optionalScope?: GitHubPermissionScope
+): Promise<MintedInstallationToken> {
+  if (optionalScope && optionalScope !== permissionScope && optionalScope !== 'contents') {
+    try {
+      return await mintScopedOnce(githubApp, installationId, repositoryName, permissionScope, requiredPermission, contentsPermission, {
+        [optionalScope]: requiredPermission
+      });
+    } catch (error) {
+      // GitHub refuses the whole token when one requested permission is not granted, so an
+      // installation without the optional scope still gets the token the action itself needs.
+      if (!(error instanceof HarnessError && error.code === 'FORBIDDEN')) throw error;
+    }
+  }
+  return mintScopedOnce(githubApp, installationId, repositoryName, permissionScope, requiredPermission, contentsPermission, {});
+}
+
+async function mintScopedOnce(
+  githubApp: NonNullable<RunnerConfig['githubApp']>,
+  installationId: string | number,
+  repositoryName: string,
+  permissionScope: GitHubPermissionScope,
+  requiredPermission: 'read' | 'write',
+  contentsPermission: 'read' | 'write',
+  extraPermissions: Record<string, 'read' | 'write'>
 ): Promise<MintedInstallationToken> {
   try {
     const auth = createAppAuth({
@@ -203,8 +237,8 @@ async function mintForInstallationScoped(
       // beside the action scope; a contents-scoped token already asks for the level the
       // action needs.
       permissions: permissionScope === 'contents'
-        ? { contents: requiredPermission }
-        : { [permissionScope]: requiredPermission, contents: contentsPermission }
+        ? { contents: requiredPermission, ...extraPermissions }
+        : { [permissionScope]: requiredPermission, ...extraPermissions, contents: contentsPermission }
     });
     return { token: authentication.token, permissions: authentication.permissions };
   } catch (error) {

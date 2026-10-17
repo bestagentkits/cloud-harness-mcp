@@ -29,8 +29,9 @@ Closing a workspace unmounts the Docker filesystem and recursively deletes the j
 Opening a workspace gives you a cockpit rather than a metadata page. The header carries
 the repository, status, branch, network profile and remaining lease, with **Renew lease**
 as the primary action, **Finalize workspace** beside it, and recover/close behind **More
-actions**. Nine contextual sections follow: **Summary**, **Agents**, **Runtime**,
-**Files**, **Git**, **Automation**, **Deploy**, **Artifacts**, and **Activity**.
+actions**. Contextual sections follow: **Summary**, **Agents**, **Runtime**,
+**Terminal**, **Files**, **Git**, **Automation**, **Deploy**, **Artifacts**, and
+**Activity**.
 
 - **Summary** shows health, observable state (branch, attributable repository items,
   capabilities, network posture) and a **Needs attention** panel for the reasons the
@@ -42,6 +43,8 @@ dashboard can read: a lease inside its threshold, a failed workspace, a quaranti
 - **Runtime** shows tasks (status, duration, exit code, dependencies, bounded output,
   cancel), the task dependency graph as accessible SVG with a table fallback, and
   sessions whose output is read-only and bounded. See [Runtime](#runtime).
+- **Terminal** opens an interactive shell inside the workspace; see
+  [Terminal](/dashboard/terminal).
 - **Git** keeps **Finalize** as the happy path and stays collapsed for everything else:
   branch, ahead/behind, staged/modified/untracked counts, the changed-file list, a
   bounded staged or unstaged diff, recent commits, worktrees, and advanced operations
@@ -63,4 +66,5 @@ Tasks and sessions are volatile — they disappear when the workspace is reaped,
 retained artifacts. Task cancellation asks for confirmation, the dependency graph
 renders state as text inside each node (never colour alone) and is keyboard-focusable,
 and session output is fetched through a read-only, bounded call: the dashboard never
-sends input to a session, so this page cannot become a terminal.
+sends input to an agent's session. For an interactive shell, use the
+[Terminal](/dashboard/terminal) section instead.

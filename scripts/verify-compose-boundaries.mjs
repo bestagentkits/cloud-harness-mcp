@@ -1,12 +1,16 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { parse as parseYaml } from 'yaml';
 
+// The provisioning proxy's optional opt-in file is pointed at a path that never exists, so the rendered
+// configuration is the shipped default rather than whatever this host has in /etc.
+const ABSENT_PROXY_ENV_FILE = '.cloud-harness-verify-compose/absent-provisioning-proxy.env';
 const result = spawnSync('docker', [
   'compose', '--profile', 'gateway-test', '-f', 'compose.yaml', '-f', 'compose.production.yaml', 'config', '--format', 'json'
 ], {
   cwd: process.cwd(),
   encoding: 'utf8',
-  env: { ...process.env, CLOUD_HARNESS_ENV_FILE: '.env.example' }
+  env: { ...process.env, CLOUD_HARNESS_ENV_FILE: '.env.example', PROVISIONING_PROXY_ENV_FILE: ABSENT_PROXY_ENV_FILE }
 });
 
 if (result.status !== 0) throw new Error(result.stderr || 'production Compose config failed');
@@ -63,6 +67,32 @@ requireBoundary(networks['model-gateway-test-agent'].internal === true && networ
 requireBoundary(!testGateway.ports?.length && !fakeProvider.ports?.length, 'test topology must not publish host ports');
 requireBoundary(!(testGateway.volumes ?? []).some((mount) => mount.target.includes('/run/model-gateway-secrets/provider-api-key')), 'test topology must not mount the production provider secret');
 
+// The agent image's entrypoint runs the agent runtime, so a keepalive `command` would only become runtime
+// arguments and the container would exit and restart forever; its entrypoint itself must idle.
+const agentKeepalive = services['agent-image-keepalive'];
+requireBoundary(
+  JSON.stringify(agentKeepalive.entrypoint) === JSON.stringify(['/sbin/tini', '--', 'sleep', 'infinity']) && !agentKeepalive.command?.length,
+  'agent image keepalive must replace the agent runtime entrypoint with an idle sleep'
+);
+requireBoundary(
+  JSON.stringify(services['executor-image-keepalive'].command) === JSON.stringify(['sleep', 'infinity']) && !services['executor-image-keepalive'].entrypoint,
+  'executor image keepalive must idle under the executor tini entrypoint'
+);
+for (const name of ['executor-image-keepalive', 'agent-image-keepalive']) {
+  const keepalive = services[name];
+  requireBoundary(
+    keepalive.read_only === true &&
+      keepalive.network_mode === 'none' &&
+      sameNames(keepalive.cap_drop ?? [], ['ALL']) &&
+      (keepalive.security_opt ?? []).includes('no-new-privileges:true') &&
+      keepalive.user === '10001:10001' &&
+      !keepalive.volumes?.length &&
+      !keepalive.ports?.length &&
+      !Object.keys(keepalive.environment ?? {}).length,
+    `${name} must stay an unprivileged, offline, mount-free idle holder`
+  );
+}
+
 const published = services.ingress.ports ?? [];
 requireBoundary(published.length === 1, 'ingress must publish exactly one port');
 requireBoundary(published[0].host_ip === '127.0.0.1' && Number(published[0].target) === 3100, 'ingress must bind only loopback port 3100');
@@ -77,6 +107,40 @@ requireBoundary(runnerMounts.some((mount) => mount.target === '/var/lib/cloud-ha
 requireBoundary(runnerMounts.some((mount) => mount.target === '/var/lib/cloud-harness/cache/toolkits'), 'runner toolkit cache persistence mount is missing');
 requireBoundary(!runnerMounts.some((mount) => /model-gateway|provider-api-key/u.test(`${mount.source}:${mount.target}`)), 'runner must not receive model gateway secrets');
 requireBoundary(!runnerMounts.some((mount) => mount.source.includes('cloud-harness-model-gateway')), 'runner must not mount model gateway secret directory');
+const packagesMount = runnerMounts.find((mount) => mount.target === '/var/lib/cloud-harness/packages');
+requireBoundary(packagesMount?.source === '/var/lib/cloud-harness/packages' && packagesMount.read_only !== true, 'runner managed-toolbox packages mount is missing or its host path differs from the runner path');
+requireBoundary(Object.entries(services).every(([name, service]) => name === 'runner' || !(service.volumes ?? []).some((mount) => mount.target.includes('/packages') || String(mount.source ?? '').includes('/cloud-harness/packages'))), 'only the runner may mount the managed-toolbox packages root');
+
+// The provisioning proxy gets only its own static settings, never the runtime env file, and its default
+// allow-list reaches no package registry: npm and PyPI egress is an explicit operator opt-in.
+const proxy = services['provisioning-proxy'];
+requireBoundary(sameNames(environmentNames(proxy), ['ALLOWED_HOSTS', 'PROVISIONING_PROXY_HOST', 'PROVISIONING_PROXY_PORT']), 'provisioning-proxy environment allowlist changed');
+const defaultProxyHosts = String(proxy.environment.ALLOWED_HOSTS ?? '').split(',').map((host) => host.trim().toLowerCase()).filter(Boolean);
+requireBoundary(defaultProxyHosts.length > 0, 'provisioning-proxy default allow-list is empty');
+requireBoundary(!defaultProxyHosts.some((host) => /npmjs|yarnpkg|pypi|pythonhosted/u.test(host)), 'provisioning-proxy default allow-list must not contain an npm or PyPI host');
+
+// Compose drops env_file from rendered output, so the env-file boundary is checked on the source files.
+// Later files override earlier ones per service, as Compose merges them.
+const rawServices = {};
+for (const file of ['compose.yaml', 'compose.production.yaml']) {
+  for (const [name, service] of Object.entries(parseYaml(readFileSync(file, 'utf8')).services ?? {})) {
+    rawServices[name] = { ...rawServices[name], ...service };
+  }
+}
+const envFileEntries = (service) => {
+  const entries = service.env_file ?? [];
+  return Array.isArray(entries) ? entries : [entries];
+};
+const envFilePaths = (service) => envFileEntries(service).map((entry) => (typeof entry === 'string' ? entry : entry.path));
+const proxyEnvFiles = envFileEntries(rawServices['provisioning-proxy']);
+requireBoundary(proxyEnvFiles.length === 1 && proxyEnvFiles[0].required === false, 'provisioning-proxy must have exactly one optional env file');
+const proxyEnvFile = envFilePaths(rawServices['provisioning-proxy'])[0];
+requireBoundary(proxyEnvFile.includes('${PROVISIONING_PROXY_ENV_FILE:-/etc/cloud-harness-mcp/provisioning-proxy.env}'), 'provisioning-proxy env file must be the dedicated provisioning-proxy.env');
+requireBoundary(!/CLOUD_HARNESS_ENV_FILE|runtime\.env/u.test(proxyEnvFile), 'provisioning-proxy must not receive the runtime env file');
+for (const name of ['api', 'runner']) {
+  requireBoundary(!envFilePaths(rawServices[name]).includes(proxyEnvFile), `${name} must not share the provisioning-proxy env file`);
+}
+
 for (const name of ['SECRET_KEYRING', 'SECRET_KEYRING_FILE', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_APP_PRIVATE_KEY_FILE', 'CLOUDFLARE_ACCESS_API_TOKEN', 'CLOUDFLARE_ACCESS_API_TOKEN_FILE']) {
   requireBoundary(!services.api.environment?.[name], `API must not receive ${name}`);
 }
@@ -136,6 +200,12 @@ requireBoundary(
   'nginx API-key MCP gateway route must preserve its hidden upstream path under the API-key Access scope'
 );
 
+const oauthCallback = locationBlock(/location = \/dashboard\/mcp-oauth\/callback \{[^}]+\}/s);
+requireBoundary(
+  oauthCallback.includes('access_log off;') && oauthCallback.includes('proxy_pass http://127.0.0.1:3100/dashboard/mcp-oauth/callback;'),
+  'nginx MCP OAuth callback route must keep its one-time code and state out of the access log'
+);
+
 const nginxUpgrade = readFileSync('deploy/scripts/upgrade-nginx-dashboard.sh', 'utf8');
 requireBoundary(
   nginxUpgrade.includes('dashboard_installed -eq 1 && $api_key_installed -eq 1 && $gateway_installed -eq 1'),
@@ -158,8 +228,13 @@ requireBoundary(
   nginxUpgrade.includes('location = /mcp-api-key/gateway {') &&
     nginxUpgrade.includes('proxy_pass http://127.0.0.1:3100/mcp-api-key/gateway;') &&
     nginxUpgrade.includes('add_api_key_gateway="$((1 - api_key_gateway_installed))"') &&
-    nginxUpgrade.includes('$api_key_gateway_installed -eq 1 ]]'),
+    nginxUpgrade.includes('$api_key_gateway_installed -eq 1 && $oauth_callback_installed -eq 1 ]]'),
   'nginx upgrade must install the hidden API-key MCP gateway route when it is absent'
+);
+requireBoundary(
+  nginxUpgrade.includes('location = /dashboard/mcp-oauth/callback {') &&
+    nginxUpgrade.includes('add_oauth_callback="$((1 - oauth_callback_installed))"'),
+  'nginx upgrade must install the access-log-free MCP OAuth callback route when it is absent'
 );
 requireBoundary(
   nginxUpgrade.includes('location ^~ /mcp/workspaces/ {') &&

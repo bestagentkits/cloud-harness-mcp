@@ -92,6 +92,7 @@ export const WORKSPACE_TABS = [
   { id: 'summary', label: 'Summary' },
   { id: 'agents', label: 'Agents' },
   { id: 'runtime', label: 'Runtime' },
+  { id: 'terminal', label: 'Terminal' },
   { id: 'files', label: 'Files' },
   { id: 'git', label: 'Git' },
   { id: 'automation', label: 'Automation' },
@@ -100,7 +101,7 @@ export const WORKSPACE_TABS = [
   { id: 'activity', label: 'Activity' }
 ];
 
-const LIVE_WORKSPACE_TABS = new Set(['runtime', 'files', 'git', 'automation', 'deploy']);
+const LIVE_WORKSPACE_TABS = new Set(['runtime', 'terminal', 'files', 'git', 'automation', 'deploy']);
 
 /** The runner is the source of truth for lifecycle actions exposed to the browser. */
 export function workspaceHasAction(workspace, action) {
@@ -482,6 +483,88 @@ export function renderRuntimePanel({ tasks = [], graph = {}, sessions = [], io }
   })}${renderSessionsPanel({ sessions, io })}`;
 }
 
+/**
+ * Dashboard Terminal states, in the words the status line uses. The runner's lifecycle states map one to
+ * one; `connecting`, `lost` and `error` are browser-side states. `lost` is the runner answering NOT_FOUND:
+ * the PTY is gone (closed, timed out, or lost to a runner restart) and is never silently reconnected.
+ */
+export const TERMINAL_LOST_MESSAGE = 'This terminal is no longer available — it was closed, timed out, or the runner restarted. Terminals are not resumed after a runner restart.';
+/** Moves keyboard focus out of the emulator; Tab and Escape themselves belong to the shell. */
+export const TERMINAL_RELEASE_SHORTCUT = 'Ctrl+Shift+F6';
+
+export function terminalStatusLabel(state = {}) {
+  const phase = String(state.phase ?? state.status ?? 'idle');
+  if (phase === 'connecting') return 'Connecting…';
+  if (phase === 'running') return 'Running';
+  if (phase === 'exited') return Number.isInteger(state.exitCode) ? `Exited (code ${state.exitCode})` : 'Exited';
+  if (phase === 'closed') return 'Closed';
+  if (phase === 'timed_out') return 'Timed out';
+  if (phase === 'failed') return 'Failed';
+  if (phase === 'lost') return 'No longer available';
+  if (phase === 'error') return 'Could not connect';
+  return 'Not started';
+}
+
+/** The sentence under the pill: what happened and what the operator can do next. */
+export function terminalStatusDetail(state = {}) {
+  const phase = String(state.phase ?? 'idle');
+  if (phase === 'lost') return state.message ?? TERMINAL_LOST_MESSAGE;
+  if (phase === 'timed_out') return 'The terminal reached its idle or lifetime limit and was ended. Start a new session to continue.';
+  if (phase === 'failed') return `The terminal could not be kept running${state.terminal?.endReason ? `: ${state.terminal.endReason}` : '.'} Start a new session to continue.`;
+  if (phase === 'exited') return 'The shell ended. Start a new session to continue.';
+  if (phase === 'closed') return 'This terminal was closed. Start a new session to continue.';
+  if (phase === 'error') return state.message ? `${state.message}` : 'The terminal could not be opened.';
+  if (phase === 'connecting') return 'Opening a shell in this workspace.';
+  if (phase === 'running') return state.message ?? '';
+  return 'Open a terminal to run commands in this workspace.';
+}
+
+const terminalAge = (value, now) => {
+  const started = Date.parse(value ?? '');
+  if (!Number.isFinite(started)) return 'Unknown';
+  const minutes = Math.max(0, Math.round((now - started) / 60_000));
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+};
+const terminalTime = (value) => (typeof value === 'string' && Number.isFinite(Date.parse(value)) ? time(value) : 'Unknown');
+const terminalSize = (terminal) => (Number.isInteger(terminal?.cols) && Number.isInteger(terminal?.rows) ? `${terminal.cols}×${terminal.rows}` : 'Unknown');
+
+/**
+ * The cockpit Terminal tab. The emulator mounts into `#terminal-surface` only after the operator opens or
+ * re-attaches a session, so visiting the tab never starts a shell by itself. Running terminals of this
+ * workspace are offered for re-attach: output is replayed from the runner's bounded retention.
+ */
+export function renderTerminalPanel({ workspaceId = '', terminals = [], now = Date.now() } = {}) {
+  const running = terminals.filter((terminal) => terminal?.status === 'running');
+  const offers = running.length
+    ? `<div id="terminal-reattach" class="terminal-reattach"><h3 id="terminal-reattach-heading">Running terminals</h3><p class="page-note">These shells are still running in this workspace. Re-attach to continue one; recent output is replayed.</p><ul class="record-list" aria-labelledby="terminal-reattach-heading">${running.map((terminal) => `<li><span><span class="mono">${escape(terminal.terminalId)}</span> <small>${escape(terminalSize(terminal))} · started ${escape(terminalAge(terminal.createdAt, now))} ago · idle expiry ${terminalTime(terminal.idleExpiresAt)}</small></span><button class="reattach-terminal" type="button" data-terminal-id="${escape(terminal.terminalId)}">Re-attach</button></li>`).join('')}</ul></div>`
+    : '';
+  return `<section id="terminal-panel" class="panel terminal-panel" aria-labelledby="terminal-heading" data-workspace-id="${escape(workspaceId)}">`
+    + '<h2 id="terminal-heading">Terminal</h2>'
+    + `<p class="page-note">An interactive shell inside this workspace's executor, with the same limits as agent commands. Keys typed in the terminal go to the shell, including Tab and Escape; press <kbd>${escape(TERMINAL_RELEASE_SHORTCUT)}</kbd> to move focus out of the terminal. <a href="/dashboard/terminals">All terminals</a></p>`
+    + '<div class="terminal-toolbar">'
+    + `<p class="terminal-status" role="status" aria-live="polite"><span id="terminal-state" class="status idle">${escape(terminalStatusLabel({ phase: 'idle' }))}</span> <span id="terminal-detail">${escape(terminalStatusDetail({ phase: 'idle' }))}</span></p>`
+    + '<div class="row-actions"><button id="terminal-close" class="danger" type="button" disabled>Close</button><button id="terminal-new" class="accent-btn" type="button">New session</button></div>'
+    + '</div>'
+    + offers
+    + '<div id="terminal-surface" class="terminal-surface" role="group" aria-label="Terminal" hidden></div>'
+    + '</section>';
+}
+
+/**
+ * The operator view: every live terminal across the principal's workspaces. Close confirms in the shared
+ * dialog first; only a running terminal can be closed.
+ */
+export function renderTerminalsIndex({ terminals = [], workspaces = [], now = Date.now() } = {}) {
+  const names = new Map(workspaces.map((workspace) => [workspace.workspaceId, repositoryName(workspace.repositoryUrl)]));
+  if (!terminals.length) return '<section class="panel" aria-labelledby="terminals-heading"><h2 id="terminals-heading">Terminals</h2><div class="empty"><h3>No terminals are running.</h3><p>Open one from a workspace\'s Terminal tab.</p></div></section>';
+  const workspaceLink = (terminal) => `<a href="/dashboard/workspaces/${encodeURIComponent(terminal.workspaceId)}/terminal">${escape(names.get(terminal.workspaceId) ?? terminal.workspaceId)}</a>`;
+  const closeButton = (terminal) => `<button class="danger close-terminal" type="button" data-terminal-id="${escape(terminal.terminalId)}" data-workspace-id="${escape(terminal.workspaceId)}"${terminal.status === 'running' ? '' : ' disabled'}>Close</button>`;
+  const pill = (terminal) => `<span class="status ${escape(String(terminal.status ?? 'unknown'))}">${escape(terminalStatusLabel({ phase: terminal.status, exitCode: terminal.exitCode }))}</span>`;
+  const rows = terminals.map((terminal) => `<tr><th scope="row">${workspaceLink(terminal)}<small class="mono">${escape(terminal.terminalId)}</small></th><td>${pill(terminal)}</td><td>${escape(terminalSize(terminal))}</td><td>${escape(terminalAge(terminal.createdAt, now))}</td><td>${terminalTime(terminal.idleExpiresAt)}</td><td><div class="row-actions">${closeButton(terminal)}</div></td></tr>`).join('');
+  const cards = terminals.map((terminal) => `<li><h3>${workspaceLink(terminal)}</h3><p class="mono">${escape(terminal.terminalId)}</p><dl><dt>Status</dt><dd>${pill(terminal)}</dd><dt>Size</dt><dd>${escape(terminalSize(terminal))}</dd><dt>Age</dt><dd>${escape(terminalAge(terminal.createdAt, now))}</dd><dt>Idle expiry</dt><dd>${terminalTime(terminal.idleExpiresAt)}</dd></dl><div class="row-actions">${closeButton(terminal)}</div></li>`).join('');
+  return `<section class="panel" aria-labelledby="terminals-heading"><h2 id="terminals-heading">Terminals</h2><p class="page-note">Terminals live in runner memory: they end on idle expiry, at their lifetime limit, or when the runner restarts, and are never resumed. Ended terminals stay listed briefly so their final status can be read.</p><div class="desktop-table"><table><caption>${terminals.length} terminal(s)</caption><thead><tr><th>Workspace</th><th>Status</th><th>Size</th><th>Age</th><th>Idle expiry</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`;
+}
+
 /** Git posture: branch, upstream, ahead/behind, and the index/working-tree summary. */
 export function renderGitStatus(status = {}) {
   const entries = Array.isArray(status.entries) ? status.entries : [];
@@ -634,17 +717,242 @@ export function renderActivityCenter({ events = [], filter = 'all' } = {}) {
 }
 
 /** Pending privilege grants as an inbox: context, requested capability, decision. */
-export function renderApprovals({ grants = [] } = {}) {
+/**
+ * The runner lists grants in every state with uppercase statuses. Only an unexpired PENDING grant
+ * can still be decided, so only it reads as pending, offers the two decisions, and counts toward the badge.
+ */
+const GRANT_STATUS_LABELS = { PENDING: ['Pending', 'pending'], APPROVED: ['Approved', 'approved'], REJECTED: ['Rejected', 'rejected'], CONSUMED: ['Used', 'consumed'], EXPIRED: ['Expired', 'expired'] };
+export function grantIsActionable(grant, now = Date.now()) {
+  if (String(grant?.status ?? '').toUpperCase() !== 'PENDING') return false;
+  const expiresAt = Date.parse(String(grant?.expiresAt ?? ''));
+  return Number.isNaN(expiresAt) || expiresAt > now;
+}
+export function renderApprovals({ grants = [], plans = [], packages = { enabled: false }, now = Date.now() } = {}) {
   const rows = grants.length
     ? grants.map((grant) => {
       const id = String(grant.id ?? '');
-      return `<li class="panel approval-row"><div class="record-heading"><div><h3>${escape(String(grant.command ?? 'Requested operation'))}</h3><p class="mono wrap">${escape(String(grant.workspaceId ?? 'Workspace not reported'))}</p></div><span class="status reaping">Pending</span></div><dl class="facts"><dt>Requested</dt><dd>${grant.createdAt ? time(grant.createdAt) : 'Not reported'}</dd><dt>Expires</dt><dd>${grant.expiresAt ? time(grant.expiresAt) : 'Not reported'}</dd><dt>Working directory</dt><dd class="mono wrap">${escape(String(grant.cwd ?? 'Not reported'))}</dd><dt>Command digest</dt><dd class="mono wrap">${escape(String(grant.commandSha256 ?? 'Not reported'))}</dd></dl><div class="row-actions"><button class="accent-btn approve-grant" type="button" data-grant-id="${escape(id)}">Approve</button><button class="danger reject-grant" type="button" data-grant-id="${escape(id)}">Reject</button></div></li>`;
+      const actionable = grantIsActionable(grant, now);
+      const status = String(grant.status ?? '').toUpperCase();
+      const [label, tone] = actionable ? GRANT_STATUS_LABELS.PENDING : status === 'PENDING' ? GRANT_STATUS_LABELS.EXPIRED : GRANT_STATUS_LABELS[status] ?? ['Unknown', 'unknown'];
+      const actions = actionable ? `<div class="row-actions"><button class="accent-btn approve-grant" type="button" data-grant-id="${escape(id)}">Approve</button><button class="danger reject-grant" type="button" data-grant-id="${escape(id)}">Reject</button></div>` : '';
+      return `<li class="panel approval-row"><div class="record-heading"><div><h3>${escape(String(grant.command ?? 'Requested operation'))}</h3><p class="mono wrap">${escape(String(grant.workspaceId ?? 'Workspace not reported'))}</p></div><span class="status ${tone}">${label}</span></div><dl class="facts"><dt>Requested</dt><dd>${grant.createdAt ? time(grant.createdAt) : 'Not reported'}</dd><dt>Expires</dt><dd>${grant.expiresAt ? time(grant.expiresAt) : 'Not reported'}</dd><dt>Working directory</dt><dd class="mono wrap">${escape(String(grant.cwd ?? 'Not reported'))}</dd><dt>Command digest</dt><dd class="mono wrap">${escape(String(grant.commandSha256 ?? 'Not reported'))}</dd></dl>${actions}</li>`;
     }).join('')
-    : '<li class="empty"><h3>No approvals are waiting.</h3><p>Privilege requests appear here while they are pending and leave once you decide.</p></li>';
+    : '<li class="empty"><h3>No approvals are waiting.</h3><p>Privilege requests appear here while they are pending. Decided and expired requests stay listed briefly, without actions.</p></li>';
   return `${renderResourcePage({
     note: '<div class="page-note"><strong>Privilege grants.</strong> Approving lets one command run in a workspace under your identity. Both decisions are audited.</div>',
-    body: `<section aria-labelledby="approvals-heading"><h2 id="approvals-heading">Pending requests</h2><ul class="record-list approval-list">${rows}</ul></section>`
+    body: `<section aria-labelledby="approvals-heading"><h2 id="approvals-heading">Privilege requests</h2><ul class="record-list approval-list">${rows}</ul></section>${renderPackagePlans({ plans, enabled: packages.enabled === true, approvalMode: packages.approvalMode, now })}`
   })}`;
+}
+
+/*
+ * Managed toolbox packages. Plans are decided on the Approvals page; installed releases, applies,
+ * and rollback live on the Packages page. A plan approval is bound to its digest, so the digest the
+ * operator sees is the one the approve action posts.
+ */
+export const PACKAGES_DISABLED_COPY = 'Managed packages are off. Operators enable them with PACKAGES_ENABLED=true.';
+const PLAN_STATUS_LABELS = {
+  PENDING_APPROVAL: ['Pending', 'pending'], APPROVED: ['Approved, awaiting apply', 'approved'], REJECTED: ['Rejected', 'rejected'],
+  EXPIRED: ['Expired', 'expired'], CONSUMED: ['Applied', 'consumed']
+};
+const APPLY_STEPS = ['QUEUED', 'BUILDING', 'VERIFYING', 'PUBLISHING'];
+const APPLY_STEP_LABELS = { QUEUED: 'Queued', BUILDING: 'Building', VERIFYING: 'Verifying', PUBLISHING: 'Publishing', SUCCEEDED: 'Succeeded', FAILED: 'Failed' };
+const ECOSYSTEM_LABELS = { npm: 'npm', uv: 'Python (uv)' };
+
+/** Binary units, because quotas are configured in powers of two. */
+export function formatPackageBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return 'Unknown';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let amount = bytes;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
+  return `${unit === 0 ? amount : amount.toFixed(amount >= 10 ? 0 : 1)} ${units[unit]}`;
+}
+
+/** The leading and trailing characters identify a digest at a glance; the full value stays one focus away. */
+export function shortDigest(value) {
+  const digest = String(value ?? '');
+  return digest.length > 20 ? `${digest.slice(0, 12)}…${digest.slice(-6)}` : digest;
+}
+
+function digestMarkup(value, label) {
+  const digest = String(value ?? '');
+  if (!digest) return 'Not reported';
+  return `<code class="digest" tabindex="0" title="${escape(`${label}: ${digest}`)}"><span class="digest-short" aria-hidden="true">${escape(shortDigest(digest))}</span><span class="digest-full">${escape(digest)}</span></code>`;
+}
+
+const scopeLabel = (scope, workspaceId) => scope === 'workspace'
+  ? `Workspace <span class="mono wrap">${escape(String(workspaceId ?? 'not reported'))}</span>`
+  : 'Owner (every workspace)';
+const workspaceCount = (ids) => {
+  const count = Array.isArray(ids) ? ids.length : 0;
+  return `${count} ${count === 1 ? 'workspace' : 'workspaces'}`;
+};
+const runtimeText = (runtime) => {
+  if (!runtime || typeof runtime !== 'object') return 'Not reported';
+  const parts = [['Node', runtime.node], ['npm', runtime.npm], ['Python', runtime.python], ['uv', runtime.uv]]
+    .filter(([, version]) => typeof version === 'string' && version)
+    .map(([name, version]) => `${name} ${version}`);
+  return parts.length ? parts.join(' · ') : 'Not reported';
+};
+const listText = (values, empty) => Array.isArray(values) && values.length ? values.map((value) => escape(String(value))).join(', ') : empty;
+
+/** Only an unexpired plan still waiting for a decision offers Approve and counts toward the badge. */
+export function planIsActionable(plan, now = Date.now()) {
+  if (String(plan?.status ?? '') !== 'PENDING_APPROVAL') return false;
+  const expiresAt = Date.parse(String(plan?.expiresAt ?? ''));
+  return Number.isNaN(expiresAt) || expiresAt > now;
+}
+
+/** An approved plan that is not yet applied can still be withdrawn. */
+const planIsWithdrawable = (plan, now) => String(plan?.status ?? '') === 'APPROVED'
+  && (Number.isNaN(Date.parse(String(plan?.expiresAt ?? ''))) || Date.parse(String(plan.expiresAt)) > now);
+
+function planRisks(plan) {
+  const risks = [];
+  if (plan.lifecycleScripts) risks.push('Runs npm lifecycle scripts while building. Install scripts execute package code in the builder.');
+  const conflicts = Array.isArray(plan.conflicts) ? plan.conflicts : [];
+  if (conflicts.length) {
+    risks.push(`Binary name collisions: ${conflicts.map((conflict) => `${conflict.binary} (already provided by ${conflict.name}${conflict.scope === 'workspace' ? ' in a workspace' : ''})`).join(', ')}. The apply is refused until they are resolved.`);
+  }
+  if (plan.stale) risks.push('The package changed after this plan was made. Approval will be refused; create a new plan.');
+  return risks;
+}
+
+function renderPlanRow(plan, now) {
+  const planId = String(plan.planId ?? '');
+  const actionable = planIsActionable(plan, now);
+  const status = String(plan.status ?? '');
+  const expiredOpen = (status === 'PENDING_APPROVAL' || status === 'APPROVED') && !actionable && !planIsWithdrawable(plan, now);
+  const [label, tone] = expiredOpen ? PLAN_STATUS_LABELS.EXPIRED : PLAN_STATUS_LABELS[status] ?? ['Unknown', 'unknown'];
+  const name = String(plan.name ?? 'package');
+  const version = String(plan.version ?? '');
+  const current = plan.currentRelease;
+  const compare = current
+    ? `<p class="package-compare"><span>Current <strong>${escape(String(current.version ?? 'unknown'))}</strong></span><span aria-hidden="true">→</span><span>Planned <strong>${escape(version)}</strong></span></p>`
+    : `<p class="package-compare"><span>New install</span><span aria-hidden="true">→</span><span>Planned <strong>${escape(version)}</strong></span></p>`;
+  const risks = planRisks(plan);
+  const riskMarkup = risks.length ? `<ul class="package-risks" aria-label="Risks for ${escape(name)}">${risks.map((risk) => `<li>${escape(risk)}</li>`).join('')}</ul>` : '';
+  const source = plan.source && typeof plan.source === 'object' ? plan.source : {};
+  const actionData = `data-plan-id="${escape(planId)}" data-plan-digest="${escape(String(plan.planDigest ?? ''))}" data-plan-name="${escape(`${name}@${version}`)}"`;
+  const actions = actionable
+    ? `<div class="row-actions"><button class="accent-btn approve-plan" type="button" ${actionData}>Approve</button><button class="danger reject-plan" type="button" ${actionData}>Reject</button></div>`
+    : planIsWithdrawable(plan, now) ? `<div class="row-actions"><button class="danger reject-plan" type="button" ${actionData}>Withdraw approval</button></div>` : '';
+  return `<li class="panel approval-row package-plan"><div class="record-heading"><div><h3>${escape(name)}<span class="package-version">@${escape(version)}</span></h3><p>${escape(ECOSYSTEM_LABELS[plan.ecosystem] ?? String(plan.ecosystem ?? ''))} · ${scopeLabel(plan.scope, plan.workspaceId)}</p></div><span class="status ${tone}">${escape(label)}</span></div>${compare}${riskMarkup}<dl class="facts"><dt>Plan digest</dt><dd>${digestMarkup(plan.planDigest, 'Plan digest')}</dd><dt>Requested</dt><dd class="mono wrap">${escape(String(plan.requestedSpec ?? version))}</dd><dt>Source</dt><dd class="mono wrap">${escape(String(source.resolved ?? source.registry ?? 'Not reported'))}</dd><dt>Integrity</dt><dd>${plan.integrity ? digestMarkup(plan.integrity, 'Integrity') : 'Not reported by the registry'}</dd><dt>Dependencies</dt><dd>${escape(String(plan.dependencyCount ?? 'Not reported'))}</dd><dt>Estimated size</dt><dd>${escape(formatPackageBytes(plan.sizeEstimateBytes))}</dd><dt>Binaries</dt><dd class="mono wrap">${listText(plan.binaries, 'None')}</dd><dt>Lifecycle scripts</dt><dd>${plan.lifecycleScripts ? 'Allowed' : 'Not run'}</dd><dt>Affected</dt><dd>${escape(workspaceCount(plan.affectedWorkspaces))}</dd><dt>Runtime</dt><dd>${escape(runtimeText(plan.runtime))}</dd><dt>Created</dt><dd>${plan.createdAt ? time(plan.createdAt) : 'Not reported'}</dd><dt>Expires</dt><dd>${plan.expiresAt ? time(plan.expiresAt) : 'Not reported'}</dd>${plan.decidedBy ? `<dt>Decided by</dt><dd>${plan.decidedBy === 'policy' ? 'Policy (approval not required)' : 'Dashboard'}</dd>` : ''}</dl>${actions}</li>`;
+}
+
+/** The "Package plans" section of the Approvals page. */
+export function renderPackagePlans({ plans = [], enabled = true, approvalMode = 'required', now = Date.now() } = {}) {
+  if (!enabled) {
+    return `<section aria-labelledby="package-plans-heading"><h2 id="package-plans-heading">Package plans</h2><p class="empty-note">${escape(PACKAGES_DISABLED_COPY)}</p></section>`;
+  }
+  const modeNote = approvalMode === 'not_required'
+    ? '<div class="page-note"><strong>Approval not required.</strong> PACKAGES_APPROVAL_MODE=none, so plans are approved by policy and listed here for the record.</div>'
+    : approvalMode === 'unavailable'
+      ? '<div class="page-note"><strong>Approval unavailable.</strong> This runner cannot record Dashboard approvals, so applies are refused until PACKAGES_APPROVAL_MODE=none.</div>'
+      : '<div class="page-note"><strong>Package plans.</strong> Approving lets an agent apply exactly the plan whose digest is shown. A changed plan is refused. Both decisions are audited.</div>';
+  const rows = plans.length
+    ? plans.map((plan) => renderPlanRow(plan, now)).join('')
+    : '<li class="empty"><h3>No package plans are waiting.</h3><p>An agent creates a plan with packages_plan. It appears here until it is decided, applied, or expires.</p></li>';
+  return `<section aria-labelledby="package-plans-heading"><h2 id="package-plans-heading">Package plans</h2>${modeNote}<ul class="record-list approval-list">${rows}</ul></section>`;
+}
+
+function releaseHealth(release) {
+  if (!release) return ['Missing release', 'failed'];
+  if (release.status === 'MISSING') return ['Missing on disk', 'failed'];
+  if (release.stale) return ['Stale image', 'stale'];
+  if (release.status === 'VERIFIED') return ['Verified', 'healthy'];
+  return [String(release.status ?? 'Unknown'), 'unknown'];
+}
+
+function applySteps(state) {
+  const failed = state === 'FAILED';
+  const reached = state === 'SUCCEEDED' ? APPLY_STEPS.length : APPLY_STEPS.indexOf(state);
+  return `<ol class="package-steps" aria-label="Apply progress">${APPLY_STEPS.map((step, index) => {
+    const done = index < reached;
+    const currentStep = index === reached && !failed;
+    return `<li class="${done ? 'done' : currentStep ? 'current' : ''}"${currentStep ? ' aria-current="step"' : ''}>${escape(APPLY_STEP_LABELS[step])}</li>`;
+  }).join('')}</ol>`;
+}
+
+function applyRow(apply, live) {
+  const state = String(apply.state ?? '');
+  const tone = state === 'SUCCEEDED' ? 'succeeded' : state === 'FAILED' ? 'failed' : 'running';
+  const title = apply.name ? `${apply.name}@${apply.version ?? ''}` : String(apply.applyId ?? 'Apply');
+  const error = state === 'FAILED' ? `<p class="status-error">${escape(String(apply.errorCode ?? 'FAILED'))}${apply.errorMessage ? `: ${escape(String(apply.errorMessage))}` : ''}</p>` : '';
+  return `<li class="panel package-apply"><div class="record-heading"><div><h3>${escape(title)}</h3><p class="mono wrap">${escape(String(apply.applyId ?? ''))}</p></div><span class="status ${tone}">${escape(APPLY_STEP_LABELS[state] ?? state)}</span></div>${live ? applySteps(state) : ''}${error}<dl class="facts"><dt>Started</dt><dd>${apply.createdAt ? time(apply.createdAt) : 'Not reported'}</dd><dt>${apply.finishedAt ? 'Finished' : 'Updated'}</dt><dd>${time(apply.finishedAt ?? apply.updatedAt ?? apply.createdAt)}</dd></dl></li>`;
+}
+
+function historyTable(binding) {
+  const history = Array.isArray(binding.history) ? binding.history : [];
+  if (!history.length) return '<p class="empty-note">No history yet.</p>';
+  const currentId = binding.release?.releaseId;
+  const rows = history.map((entry) => {
+    const isCurrent = entry.releaseId === currentId;
+    const action = isCurrent
+      ? '<span class="status active">Current</span>'
+      : entry.available
+        ? `<button class="danger rollback-package" type="button" data-binding-id="${escape(String(binding.bindingId ?? ''))}" data-release-id="${escape(String(entry.releaseId ?? ''))}" data-generation="${escape(String(binding.generation ?? ''))}" data-package="${escape(String(binding.name ?? ''))}" data-from-version="${escape(String(binding.release?.version ?? 'unknown'))}" data-to-version="${escape(String(entry.version ?? 'unknown'))}" data-affected="${escape(String(Array.isArray(binding.affectedWorkspaces) ? binding.affectedWorkspaces.length : 0))}">Roll back to ${escape(String(entry.version ?? 'this release'))}</button>`
+        : '<span class="status">Unavailable</span>';
+    return `<tr><th scope="row">${escape(String(entry.version ?? 'Unknown'))}<small class="mono wrap">${escape(String(entry.releaseId ?? ''))}</small></th><td>${escape(String(entry.generation ?? ''))}</td><td>${entry.reason === 'rollback' ? 'Rollback' : 'Apply'} · ${entry.actor === 'dashboard' ? 'Dashboard' : 'Agent'}</td><td>${entry.createdAt ? time(entry.createdAt) : 'Not reported'}</td><td>${action}</td></tr>`;
+  }).join('');
+  return `<div class="package-table package-history"><table><caption>History of ${escape(String(binding.name ?? 'this package'))}</caption><thead><tr><th scope="col">Version</th><th scope="col">Generation</th><th scope="col">Change</th><th scope="col">When</th><th scope="col">Action</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function bindingRow(binding, releases) {
+  const release = binding.release ?? null;
+  const detail = releases.find((candidate) => candidate.releaseId === release?.releaseId) ?? release ?? {};
+  const [health, tone] = releaseHealth(release);
+  const risks = [];
+  if (detail.lifecycleScripts) risks.push('Built with npm lifecycle scripts enabled.');
+  if (release?.status === 'MISSING') risks.push('The release directory is missing. New workspaces start without this tool until it is re-applied or rolled back.');
+  if (release?.stale) risks.push('Built against an older executor image. Re-plan and apply to rebuild it.');
+  const riskMarkup = risks.length ? `<ul class="package-risks" aria-label="Risks for ${escape(String(binding.name ?? ''))}">${risks.map((risk) => `<li>${escape(risk)}</li>`).join('')}</ul>` : '';
+  return `<li class="panel package-binding"><div class="record-heading"><div><h3>${escape(String(binding.name ?? 'package'))}<span class="package-version">@${escape(String(release?.version ?? 'unknown'))}</span></h3><p>${escape(ECOSYSTEM_LABELS[binding.ecosystem] ?? String(binding.ecosystem ?? ''))} · ${scopeLabel(binding.scope, binding.workspaceId)}</p></div><span class="status ${tone}">${escape(health)}</span></div>${riskMarkup}<dl class="facts"><dt>Active release</dt><dd class="mono wrap">${escape(String(release?.releaseId ?? 'None'))}</dd><dt>Generation</dt><dd>${escape(String(binding.generation ?? ''))}</dd><dt>Disk usage</dt><dd>${escape(formatPackageBytes(detail.sizeBytes))}${Number.isFinite(detail.fileCount) && detail.fileCount > 0 ? ` · ${escape(String(detail.fileCount))} files` : ''}</dd><dt>Dependencies</dt><dd>${escape(String(detail.dependencyCount ?? 'Not reported'))}</dd><dt>Binaries</dt><dd class="mono wrap">${listText(release?.binaries, 'None')}</dd><dt>Source</dt><dd class="mono wrap">${escape(String(detail.source?.resolved ?? detail.source?.registry ?? 'Not reported'))}</dd><dt>Tree digest</dt><dd>${digestMarkup(release?.treeDigest, 'Tree digest')}</dd><dt>Runtime</dt><dd>${escape(runtimeText(detail.runtime))}</dd><dt>Affected</dt><dd>${escape(workspaceCount(binding.affectedWorkspaces))}</dd><dt>Installed</dt><dd>${release?.createdAt ? time(release.createdAt) : 'Not reported'}</dd></dl><div class="row-actions"><button class="danger remove-package" type="button" data-binding-id="${escape(String(binding.bindingId ?? ''))}" data-generation="${escape(String(binding.generation ?? ''))}" data-package="${escape(String(binding.name ?? ''))}" data-scope="${escape(String(binding.scope ?? ''))}" data-affected="${escape(String(Array.isArray(binding.affectedWorkspaces) ? binding.affectedWorkspaces.length : 0))}">Uninstall ${escape(String(binding.name ?? 'package'))}</button></div>${historyTable(binding)}</li>`;
+}
+
+export function renderPackages({ overview = {}, now = Date.now() } = {}) {
+  if (!overview.enabled) {
+    return renderResourcePage({
+      note: `<div class="page-note"><strong>Managed packages are off.</strong> Operators enable them with PACKAGES_ENABLED=true.</div>`,
+      body: '<ul class="record-list"><li class="empty"><h3>No managed packages.</h3><p>When the feature is on, agents plan installs with packages_plan and you approve them on the Approvals page.</p></li></ul>'
+    });
+  }
+  const bindings = Array.isArray(overview.bindings) ? overview.bindings : [];
+  const releases = Array.isArray(overview.releases) ? overview.releases : [];
+  const inFlight = Array.isArray(overview.inFlight) ? overview.inFlight : [];
+  const recent = Array.isArray(overview.recentApplies) ? overview.recentApplies : [];
+  const pending = (Array.isArray(overview.pendingPlans) ? overview.pendingPlans : []).filter((plan) => planIsActionable(plan, now));
+  const quotas = overview.quotas ?? {};
+  const usage = overview.usage ?? {};
+  const approval = overview.approvalMode === 'not_required' ? 'Not required (policy)' : overview.approvalMode === 'unavailable' ? 'Unavailable' : 'Required';
+  const tiles = [
+    ['Installed', `${Number(usage.bindings ?? bindings.length)} / ${escape(String(quotas.maxBindings ?? '?'))}`, 'Bindings in use'],
+    ['Disk used', escape(formatPackageBytes(usage.ownerBytes)), `of ${escape(formatPackageBytes(quotas.maxOwnerBytes))} quota`],
+    ['Applies running', String(inFlight.length), 'Builds in progress'],
+    ['Plans waiting', String(pending.length), pending.length ? 'Review on Approvals' : 'Nothing to decide', pending.length ? '/dashboard/approvals' : '']
+  ].map(([label, value, note, href]) => {
+    const body = `<span class="metric-label">${escape(label)}</span><span class="metric-value">${value}</span><span class="metric-note">${note}</span>`;
+    return `<li class="metric">${href ? `<a href="${href}">${body}</a>` : body}</li>`;
+  }).join('');
+  const note = `<div class="page-note"><strong>Managed packages.</strong> Approval: ${escape(approval)}. Ecosystems: ${escape((overview.ecosystems ?? []).join(', ') || 'none')}. npm lifecycle scripts: ${overview.lifecycleScripts === 'allow' ? 'allowed on request' : 'denied'}. Per-release limit ${escape(formatPackageBytes(quotas.maxReleaseBytes))}. A change reaches a running workspace only when it is recreated.</div>`;
+  const inFlightSection = `<section aria-labelledby="package-applies-heading"><h2 id="package-applies-heading">Applies</h2><ul class="record-list">${inFlight.length || recent.length
+    ? `${inFlight.map((apply) => applyRow(apply, true)).join('')}${recent.map((apply) => applyRow(apply, false)).join('')}`
+    : '<li class="empty"><h3>No applies yet.</h3><p>An approved plan is applied by an agent with packages_apply; its progress appears here.</p></li>'}</ul></section>`;
+  const installed = `<section aria-labelledby="package-bindings-heading"><h2 id="package-bindings-heading">Installed packages</h2><ul class="record-list">${bindings.length
+    ? bindings.map((binding) => bindingRow(binding, releases)).join('')
+    : '<li class="empty"><h3>No packages installed.</h3><p>Installed releases, their health, and their rollback history appear here.</p></li>'}</ul></section>`;
+  const releaseRows = releases.map((release) => {
+    const [health, tone] = releaseHealth(release);
+    return `<tr><th scope="row">${escape(String(release.name ?? ''))}<small class="mono wrap">${escape(String(release.releaseId ?? ''))}</small></th><td>${escape(String(release.version ?? ''))}</td><td>${escape(formatPackageBytes(release.sizeBytes))}</td><td><span class="status ${tone}">${escape(health)}</span></td><td>${release.createdAt ? time(release.createdAt) : 'Not reported'}</td></tr>`;
+  }).join('');
+  const releaseSection = releases.length
+    ? `<section aria-labelledby="package-releases-heading"><h2 id="package-releases-heading">Retained releases</h2><div class="package-table"><table><caption class="sr-only">Retained package releases</caption><thead><tr><th scope="col">Package</th><th scope="col">Version</th><th scope="col">Size</th><th scope="col">Health</th><th scope="col">Built</th></tr></thead><tbody>${releaseRows}</tbody></table></div></section>`
+    : '';
+  return renderResourcePage({
+    note,
+    body: `<div class="packages-page"><ul class="metric-grid">${tiles}</ul>${inFlightSection}${installed}${releaseSection}</div>`
+  });
 }
 
 /**
@@ -952,7 +1260,100 @@ export function renderOAuthSettings(view, loadError) {
   return `<section class="panel" aria-labelledby="settings-oauth-heading"><h2 id="settings-oauth-heading">MCP OAuth sessions</h2>${intro}${facts}${notice}${form}<p id="settings-oauth-status" class="status-message" aria-live="polite"></p></section>`;
 }
 
-export function renderSettings(data, readiness, oauth) {
+/**
+ * The four workspace lifecycle settings in display order. `unit` is the unit the operator edits:
+ * the quota is a count and the durations are whole minutes over the runner's integer seconds.
+ */
+export const WORKSPACE_LIFECYCLE_FIELDS = [
+  { name: 'maxActiveWorkspacesPerOwner', id: 'settings-lifecycle-max-active', label: 'Max active workspaces per principal', unit: 'count' },
+  { name: 'idleTtlSeconds', id: 'settings-lifecycle-idle', label: 'Idle timeout (minutes)', unit: 'minutes' },
+  { name: 'wallTtlSeconds', id: 'settings-lifecycle-wall', label: 'Maximum workspace lifetime (minutes)', unit: 'minutes' },
+  { name: 'recoverableGraceSeconds', id: 'settings-lifecycle-grace', label: 'Recoverable grace before auto-close (minutes)', unit: 'minutes' }
+];
+
+const LIFECYCLE_SOURCE_LABELS = { setting: 'Dashboard override', environment: 'Runner environment', default: 'Built-in default' };
+
+const isCount = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+
+/** A view from a runner that predates the lifecycle settings, or a malformed one, renders no panel. */
+export function isWorkspaceLifecycleView(view) {
+  if (!view || typeof view !== 'object' || !Number.isInteger(view.revision) || !view.settings || typeof view.settings !== 'object') return false;
+  return WORKSPACE_LIFECYCLE_FIELDS.every(({ name }) => {
+    const setting = view.settings[name];
+    return setting && isCount(setting.value) && isCount(setting.runnerValue) && isCount(setting.min) && isCount(setting.max);
+  });
+}
+
+/** The editable bounds of a field in its display unit; minute bounds stay inside the runner's second bounds. */
+export function workspaceLifecycleFieldBounds(field, setting) {
+  if (field.unit === 'count') return { min: setting.min, max: setting.max };
+  return { min: Math.ceil(setting.min / 60), max: Math.floor(setting.max / 60) };
+}
+
+/** A runner value that is not a whole minute (the environment allows 30 s idle) shows as a decimal and is only sent if edited. */
+export function workspaceLifecycleDisplayValue(field, seconds) {
+  return field.unit === 'count' ? String(seconds) : String(Math.round((seconds / 60) * 100) / 100);
+}
+
+/** A duration in seconds as the operator reads it. */
+export function lifecycleDurationLabel(seconds) {
+  if (!isCount(seconds)) return 'unknown';
+  if (seconds % 60 !== 0) return `${seconds} s`;
+  const minutes = seconds / 60;
+  return minutes >= 120 && minutes % 60 === 0 ? `${minutes} min (${minutes / 60} h)` : `${minutes} min`;
+}
+
+const bytesLabel = (bytes) => {
+  if (!isCount(bytes)) return 'unknown memory';
+  const gib = bytes / 1024 ** 3;
+  return gib >= 1 ? `${Math.round(gib * 100) / 100} GiB` : `${Math.round(bytes / 1024 ** 2)} MiB`;
+};
+
+const lifecycleValueLabel = (field, seconds) => field.unit === 'count' ? String(seconds) : lifecycleDurationLabel(seconds);
+
+/**
+ * Workspace limits and lifecycle. Every value shown as effective is the runner's read-back; the form edits
+ * the Dashboard overrides and a reset hands each field back to the runner value printed beside it.
+ */
+export function renderWorkspaceLifecycleSettings(view) {
+  if (!isWorkspaceLifecycleView(view)) return '';
+  const { settings } = view;
+  const usage = view.usage ?? {};
+  const ceilings = view.executorCeilings ?? {};
+  const reaper = lifecycleDurationLabel(view.reaperIntervalSeconds);
+  const quota = settings.maxActiveWorkspacesPerOwner.value;
+  const idle = settings.idleTtlSeconds.value;
+  const wall = settings.wallTtlSeconds.value;
+  const grace = settings.recoverableGraceSeconds.value;
+
+  const field = (definition, help) => {
+    const setting = settings[definition.name];
+    const bounds = workspaceLifecycleFieldBounds(definition, setting);
+    const value = workspaceLifecycleDisplayValue(definition, setting.value);
+    const source = LIFECYCLE_SOURCE_LABELS[setting.source] ?? 'Unknown';
+    const range = definition.unit === 'count' ? `${bounds.min}–${bounds.max}` : `${bounds.min}–${bounds.max} min`;
+    return `<div class="lifecycle-field"><label for="${definition.id}">${escape(definition.label)}</label><input id="${definition.id}" name="${definition.name}" type="number" inputmode="numeric" step="1" min="${escape(bounds.min)}" max="${escape(bounds.max)}" value="${escape(value)}" data-initial="${escape(value)}" required aria-describedby="${definition.id}-meta ${definition.id}-error"><p id="${definition.id}-meta" class="field-meta">Source: ${escape(source)} · Runner value: ${escape(lifecycleValueLabel(definition, setting.runnerValue))} · Allowed: ${escape(range)}</p><p id="${definition.id}-error" class="field-error"></p>${help}</div>`;
+  };
+
+  const ceilingText = `${bytesLabel(ceilings.memoryBytes)} memory, ${escape(ceilings.cpus ?? 'unknown')} CPU, ${escape(ceilings.pids ?? 'unknown')} pids`;
+  const atLimit = isCount(ceilings.memoryBytes) && isCount(ceilings.cpus) && isCount(ceilings.pids)
+    ? ` At the current limit of ${escape(quota)}, one principal alone could reach ${escape(bytesLabel(ceilings.memoryBytes * quota))} memory, ${escape(Math.round(ceilings.cpus * quota * 100) / 100)} CPU and ${escape(ceilings.pids * quota)} pids.`
+    : '';
+  const quotaHelp = `<dl class="facts"><dt>Your active workspaces</dt><dd><span class="mono">${escape(usage.counted ?? 0)} / ${escape(usage.limit ?? quota)}</span> counted against the effective limit</dd><dt>Expired, recoverable</dt><dd>${escape(usage.recoverable ?? 0)} (not counted; their checkouts still use disk)</dd></dl><p class="warning">Each executor is capped at ${ceilingText}. These are ceilings, not reservations, and they multiply with every concurrent workspace, so this per-principal quota does not guarantee the host has capacity.${atLimit}</p><p class="field-help">The limit is enforced at the next open, recover, or lease renew. Lowering it below current usage blocks new opens but never closes an existing workspace.</p>`;
+  const idleHelp = '<p class="field-help">A workspace expires after this long without activity. Tool calls that operate on the workspace refresh the idle lease: exec, files, git, shell, session, and task operations, <span class="mono">workspace_lease_renew</span>, and resuming with <span class="mono">workspace_recover</span>. <span class="mono">workspace_list</span>, <span class="mono">workspace_status</span>, and Dashboard polling or metadata reads do not keep a workspace alive.</p>';
+  const wallHelp = `<p class="field-help">A hard deadline counted from creation; activity never extends it. The effective active lifetime is the earlier of the idle expiry and this deadline (now: idle ${escape(lifecycleDurationLabel(idle))}, hard deadline ${escape(lifecycleDurationLabel(wall))}). The idle timeout may not exceed the lifetime.</p>`;
+  const graceHelp = `<p class="field-help">How long an expired workspace stays recoverable before the reaper may close it. It closes at about expiry + grace + up to one reaper interval (${escape(reaper)}).</p><div id="settings-lifecycle-ack-block" class="lifecycle-ack"${grace === 0 ? '' : ' hidden'}><p><strong>A grace of 0 closes clean expired workspaces on the next reaper pass.</strong> There is no window to recover them after expiry.</p><label class="checkbox-label" for="settings-lifecycle-ack"><input id="settings-lifecycle-ack" name="acknowledgeImmediateClose" type="checkbox" aria-describedby="settings-lifecycle-ack-error"><span>I understand expired workspaces close without a recovery window</span></label><p id="settings-lifecycle-ack-error" class="field-error"></p></div>`;
+
+  const timeline = `<ol class="lifecycle lifecycle-states" aria-label="Workspace lifecycle states"><li><strong class="mono">ACTIVE</strong>Counts against the quota. Expires at the earlier of ${escape(lifecycleDurationLabel(idle))} idle or ${escape(lifecycleDurationLabel(wall))} after creation.</li><li><strong class="mono">EXPIRED_RECOVERABLE</strong>Frees its active slot, but its checkout still uses disk. Recoverable with <span class="mono">workspace_recover</span> for ${escape(lifecycleDurationLabel(grace))}.</li><li><strong class="mono">CLOSED</strong>Auto-closed at about expiry + ${escape(lifecycleDurationLabel(grace))} + up to ${escape(reaper)}. Auto-close never deletes uncommitted, untracked, stashed, or unpushed work, nor a workspace with running agents (Git-ignored files are not checked): those stay recoverable until closed explicitly with <span class="mono">workspace_close</span> or recovered.</li></ol><dl class="facts"><dt>Retained by auto-close</dt><dd>${escape(usage.autoCloseDeferred ?? 0)} of your workspaces</dd><dt>Last changed</dt><dd>${view.updatedAt ? time(view.updatedAt) : 'Never changed in this dashboard'} <span class="mono">rev ${escape(view.revision)}</span></dd></dl>`;
+
+  const disclosure = '<p class="page-note"><strong>Not retroactive.</strong> Idle timeout, lifetime, and grace changes apply only to newly opened workspaces; open workspaces keep the policy they were opened with. The quota applies to the next open, recover, or renew. These are separate from the MCP OAuth session lifetime and from agent task TTLs.</p>';
+
+  const form = `<form id="settings-lifecycle-form" class="stack-form lifecycle-form" novalidate>${field(WORKSPACE_LIFECYCLE_FIELDS[0], quotaHelp)}${field(WORKSPACE_LIFECYCLE_FIELDS[1], idleHelp)}${field(WORKSPACE_LIFECYCLE_FIELDS[2], wallHelp)}${field(WORKSPACE_LIFECYCLE_FIELDS[3], graceHelp)}<div class="form-row-actions"><button id="save-settings-lifecycle" class="accent-btn" type="submit">Save lifecycle settings</button><button id="reset-settings-lifecycle" type="button">Reset to runner values</button></div></form>`;
+
+  return `<section id="settings-lifecycle-panel" class="panel" aria-labelledby="settings-lifecycle-heading"><h2 id="settings-lifecycle-heading">Workspace limits &amp; lifecycle</h2><p>Instance-wide quota and lifetimes for workspaces. Effective values below are what the runner reports.</p>${disclosure}${timeline}${form}<p id="settings-lifecycle-status" class="status-message" aria-live="polite"></p></section>`;
+}
+
+export function renderSettings(data, readiness, oauth, typesafe) {
   const profile = data?.defaultNetworkProfile ?? {};
   const value = profile.value === 'network-none' ? 'network-none' : 'dependency-access';
   const stored = profile.source === 'setting';
@@ -964,7 +1365,7 @@ export function renderSettings(data, readiness, oauth) {
   const readinessFact = readiness
     ? `<dt>Egress readiness</dt><dd>${readiness.ready === true ? 'Ready' : `Not ready: ${escape(readiness.reason ?? 'the readiness probe reported no reason')}`}</dd>`
     : '';
-  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>${oauth ? renderOAuthSettings(oauth.view, oauth.error) : ''}${renderTypesafeSkeleton()}`;
+  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>${renderWorkspaceLifecycleSettings(data?.workspaceLifecycle)}${oauth ? renderOAuthSettings(oauth.view, oauth.error) : ''}${typesafe ? renderTypesafeSettings(typesafe) : ''}`;
 }
 
 export function renderRuntime(data) {
@@ -1245,33 +1646,27 @@ export function launchBlockedByConflicts(conflicts, overrides = {}) {
 }
 
 /**
- * The TypeSafe panel. The key field is a password input that is never rendered back, the kill switch is
- * an ordinary checkbox, and the usage list shows scores rather than prompts, because prompt text never
- * belongs on this page.
+ * The TypeSafe panel shows only what the server backs: the per-owner key (write-only, so the field is a
+ * password input that never renders a stored value back), its removal, and the read-only status the
+ * runner reports. `view` is `{ status, credential, error }`, where `credential` is the owner's
+ * TypeSafe credential metadata (never a value). When a read failed, `error` is shown and the key form is
+ * withheld, because without the credential list the panel cannot tell a first save from a rotation.
  */
-export function renderTypesafeSkeleton() {
-  return `<section id="typesafe-panel" class="panel" aria-labelledby="typesafe-heading">
-      <h2 id="typesafe-heading">TypeSafe skill suggestions</h2>
-      <p id="typesafe-egress" role="status" aria-live="polite"></p>
-      <form class="stack-form" id="typesafe-form">
-        <label for="typesafe-key">API key (write-only, never shown again)</label>
-        <input id="typesafe-key" name="value" type="password" autocomplete="new-password">
-        <label for="typesafe-model">Model</label>
-        <input id="typesafe-model" name="model" value="jev-latest">
-        <label for="typesafe-gate-threshold">Gate threshold</label>
-        <input id="typesafe-gate-threshold" name="gateThreshold" type="number" min="0" max="1" step="0.05">
-        <label for="typesafe-fit-threshold">Fit threshold</label>
-        <input id="typesafe-fit-threshold" name="fitThreshold" type="number" min="0" max="1" step="0.05">
-        <label for="typesafe-max-egress-bytes">Maximum egress bytes</label>
-        <input id="typesafe-max-egress-bytes" name="maxEgressBytes" type="number" min="256" max="8192">
-        <label for="typesafe-cache-ttl">Cache lifetime (minutes)</label>
-        <input id="typesafe-cache-ttl" name="cacheTtlMinutes" type="number" min="1" max="1440">
-        <label for="typesafe-enabled"><input id="typesafe-enabled" name="enabled" type="checkbox"> Send suggestions</label>
-        <div class="form-row-actions"><button type="submit" id="typesafe-save" class="accent-btn">Save</button><button type="button" id="typesafe-test">Test connection</button></div>
-        <span id="typesafe-status" role="status" aria-live="polite"></span>
-      </form>
-      <table id="typesafe-usage" class="data-table desktop-table"><caption class="sr-only">Recent suggestions</caption><thead><tr><th scope="col">Skill</th><th scope="col">Gate</th><th scope="col">Fit</th><th scope="col">Latency</th><th scope="col">Redactions</th><th scope="col">Cached</th></tr></thead><tbody></tbody></table>
-    </section>`;
+export function renderTypesafeSettings(view = {}) {
+  const status = view.status;
+  const credential = view.credential;
+  const configured = Boolean(credential) || status?.configured === true;
+  const facts = status
+    ? `<dl class="facts"><dt>API key</dt><dd>${configured ? 'Configured' : 'Not configured'}</dd><dt>Egress</dt><dd>${status.enabled === true ? 'Enabled' : 'Off'}</dd><dt>Endpoint</dt><dd class="mono">${escape(status.endpoint ?? '')}</dd><dt>Model</dt><dd class="mono">${escape(status.model ?? '')}</dd>${credential ? `<dt>Key version</dt><dd>${escape(credential.activeVersion)}</dd>` : ''}</dl>`
+    : '';
+  const unavailable = view.error ? `<p class="warning">${escape(view.error)}</p>` : '';
+  const egressOff = status && status.enabled !== true
+    ? '<p class="warning"><strong>The operator turned TypeSafe egress off instance-wide</strong> with <span class="mono">TYPESAFE_EGRESS=off</span>. A stored key is kept, but nothing is sent until the operator removes that setting.</p>'
+    : '';
+  const remove = credential
+    ? `<button type="button" id="typesafe-remove" class="danger" data-credential-id="${escape(credential.id)}" data-generation="${escape(credential.generation)}">Remove key</button>`
+    : '';
+  return `<section id="typesafe-panel" class="panel" aria-labelledby="typesafe-heading"><h2 id="typesafe-heading">TypeSafe integration</h2><p>Your TypeSafe API key enables skill suggestions and the optional Decision Plane. The key is write-only: it is encrypted by the runner and never shown again.</p>${unavailable}${facts}${egressOff}${view.error ? '' : `<form class="stack-form" id="typesafe-form" novalidate><label for="typesafe-key">${credential ? 'Replacement API key' : 'API key'} (write-only, never shown again)</label><input id="typesafe-key" name="value" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" required><div class="form-row-actions"><button type="submit" id="typesafe-save" class="accent-btn"${credential ? ` data-credential-id="${escape(credential.id)}" data-generation="${escape(credential.generation)}"` : ''}>${credential ? 'Replace key' : 'Save key'}</button>${remove}</div></form>`}<p id="typesafe-status" class="status-message" aria-live="polite"></p></section>`;
 }
 
 /** Chips for the selected skill sets, so the launch dialog names what is about to be bound. */
@@ -1417,108 +1812,6 @@ export function renderOverview({ overview = {}, access = {}, server, metrics = {
   return `<div class="overview">${metricTiles}<div class="overview-columns"><section class="panel" aria-labelledby="overview-attention-heading"><h2 id="overview-attention-heading">Needs attention</h2>${attentionList}</section><section class="panel" aria-labelledby="overview-expiry-heading"><h2 id="overview-expiry-heading">Expiring soon</h2>${expiryBuckets}</section></div>${renderAnalyticsSection({ overview, metrics, reliability })}<div class="overview-columns overview-meta"><section class="panel" aria-labelledby="overview-access-heading"><h2 id="overview-access-heading">Access</h2><dl class="facts"><dt>Signed in as</dt><dd class="wrap">${escape(access.name ?? 'Not provided')}</dd><dt>Email</dt><dd class="wrap">${escape(access.email ?? 'Not provided')}</dd><dt>Session expires</dt><dd>${optionalTime(access.sessionExpiresAt)}</dd>${endpoint}</dl></section>${renderServerPanel(server)}</div></div>`;
 }
 
-export function renderModelsPage(profiles = [], credentials = [], status = null) {
-  const syncLabel = status?.gatewaySynced ? 'Gateway synchronized' : 'Gateway sync pending';
-  const syncClass = status?.gatewaySynced ? 'active' : 'reaping';
-
-  const profileRows = profiles.length ? profiles.map((p) => {
-    const rev = p.activeRevision;
-    const modelInfo = rev ? `${escape(rev.model)} · ${escape(rev.apiMode)}` : 'No active revision';
-    const pricing = rev ? `$${(rev.pricing.inputMicrosPerMillionTokens / 1_000_000).toFixed(4)} / $${(rev.pricing.outputMicrosPerMillionTokens / 1_000_000).toFixed(4)}` : '-';
-    const statusPill = `<span class="status ${escape(p.status.toLowerCase())}">${escape(p.status)}</span>`;
-    const actionBtn = p.status === 'ACTIVE'
-      ? `<button class="disable-model-profile" data-profile-id="${escape(p.id)}" data-generation="${escape(p.generation)}">Disable</button>`
-      : `<button class="activate-model-profile" data-profile-id="${escape(p.id)}" data-generation="${escape(p.generation)}">Activate</button>`;
-
-    return `<tr>
-      <th scope="row">
-        <strong>${escape(p.displayName)}</strong>
-        <small class="mono wrap">${escape(p.id)}</small>
-      </th>
-      <td>${statusPill}</td>
-      <td>${modelInfo}</td>
-      <td>${pricing}</td>
-      <td>
-        <div class="row-actions">
-          <button class="edit-model-profile" data-profile-json="${escape(JSON.stringify(p))}">Edit</button>
-          ${actionBtn}
-          <button class="danger delete-model-profile" data-profile-id="${escape(p.id)}" data-generation="${escape(p.generation)}">Delete</button>
-        </div>
-      </td>
-    </tr>`;
-  }).join('') : '<tr><td colspan="5" class="empty">No model profiles configured yet.</td></tr>';
-
-  const credentialRows = credentials.length ? credentials.map((c) => {
-    const statusPill = `<span class="status ${escape(c.status.toLowerCase())}">${escape(c.status)}</span>`;
-    return `<tr>
-      <th scope="row">
-        <strong>${escape(c.label)}</strong>
-        <small class="mono wrap">${escape(c.id)}</small>
-      </th>
-      <td>${escape(c.provider)}</td>
-      <td><span class="mono">Configured · v${escape(c.activeVersion)}</span></td>
-      <td>${statusPill}</td>
-      <td>
-        <div class="row-actions">
-          <button class="rotate-model-credential" data-credential-id="${escape(c.id)}" data-label="${escape(c.label)}" data-generation="${escape(c.generation ?? 1)}">Rotate</button>
-          <button class="danger delete-model-credential" data-credential-id="${escape(c.id)}" data-generation="${escape(c.generation ?? 1)}">Delete</button>
-        </div>
-      </td>
-    </tr>`;
-  }).join('') : '<tr><td colspan="5" class="empty">No provider credentials configured yet.</td></tr>';
-
-  return `
-    <div class="page-note">
-      <strong>Subagent Model Control Plane.</strong> Manage model profiles and write-only provider credentials for Pi subagents.
-      Credentials are encrypted in StateStore and projected dynamically to Model Gateway without container restart.
-    </div>
-    <div class="record-heading">
-      <div>
-        <h2>Model Profiles & Credentials</h2>
-        <p>Configured provider credentials and agent routing profiles.</p>
-      </div>
-      <div class="row-actions">
-        <span class="status ${syncClass}">${syncLabel}</span>
-      </div>
-    </div>
-    <section class="panel" aria-labelledby="model-profiles-heading">
-      <h3 id="model-profiles-heading">Model Profiles</h3>
-      <div class="desktop-table">
-        <table>
-          <caption>Active and configured model profiles for subagents</caption>
-          <thead>
-            <tr>
-              <th>Profile</th>
-              <th>Status</th>
-              <th>Model / API</th>
-              <th>Pricing ($/1M in/out)</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>${profileRows}</tbody>
-        </table>
-      </div>
-    </section>
-    <section class="panel" aria-labelledby="model-credentials-heading">
-      <h3 id="model-credentials-heading">Provider Credentials</h3>
-      <div class="desktop-table">
-        <table>
-          <caption>Configured provider API keys and credentials</caption>
-          <thead>
-            <tr>
-              <th>Credential</th>
-              <th>Provider</th>
-              <th>Secret Key</th>
-              <th>Status</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>${credentialRows}</tbody>
-        </table>
-      </div>
-    </section>
-  `;
-}
 export function renderMarkdown(markdown = '') {
   if (!markdown) return '<p class="empty">No content.</p>';
   const lines = String(markdown).split('\n');
@@ -2038,18 +2331,23 @@ function renderMcpOAuthSection(server, status) {
         ${status.redirectUrl ? `<dt>Redirect URL</dt><dd class="mono wrap">${escape(status.redirectUrl)}</dd>` : ''}
       </dl>` : '';
   const error = status?.lastError ? `<p class="warning wrap">${escape(status.lastError)}</p>` : '';
-  const disconnect = status && state !== 'authorization_required' && state !== 'not_configured'
+  // Without a redirect URL an interactive step cannot complete, so Connect is not offered.
+  const interactive = !status || Boolean(status.redirectUrl);
+  const setup = interactive ? '' : '<p class="wrap">Connecting needs <code>MCP_DOWNSTREAM_OAUTH_REDIRECT_URL</code> set to this dashboard\'s <code>/dashboard/mcp-oauth/callback</code> URL.</p>';
+  const connect = interactive
+    ? `<button class="accent-btn" type="button" data-mcp-oauth-connect="${escape(server.id)}">${escape(connectLabel)}</button>` : '';
+  // A stored grant can always be disconnected, even when Connect is unavailable.
+  const disconnect = status && (status.issuer || (state !== 'authorization_required' && state !== 'not_configured'))
     ? `<button class="danger" type="button" data-mcp-oauth-disconnect="${escape(server.id)}">Disconnect</button>` : '';
+  const actions = connect || disconnect ? `<div class="row-actions">${connect}${disconnect}</div>` : '';
   return `
     <section class="panel" aria-labelledby="mcp-oauth-heading">
       <h2 id="mcp-oauth-heading">OAuth</h2>
       <p><span class="status${connected ? ' connected' : ''}">${escape(label)}</span></p>
       ${error}
+      ${setup}
       ${facts}
-      <div class="row-actions">
-        <button class="accent-btn" type="button" data-mcp-oauth-connect="${escape(server.id)}">${escape(connectLabel)}</button>
-        ${disconnect}
-      </div>
+      ${actions}
     </section>`;
 }
 

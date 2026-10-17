@@ -36,6 +36,12 @@ export const createModelCredential = (payload) => api('/provider-credentials', {
 export const rotateModelCredential = (id, payload) => api(`/provider-credentials/${encodeURIComponent(id)}/rotate`, { method: 'PUT', body: JSON.stringify(payload) });
 export const deleteModelCredential = (id, expectedGeneration) => api(`/provider-credentials/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
 
+export const listIntegrationCredentials = () => api('/integration-credentials');
+export const createIntegrationCredential = (payload) => api('/integration-credentials', { method: 'POST', body: JSON.stringify(payload) });
+export const rotateIntegrationCredential = (id, payload) => api(`/integration-credentials/${encodeURIComponent(id)}/rotate`, { method: 'PUT', body: JSON.stringify(payload) });
+export const deleteIntegrationCredential = (id, expectedGeneration) => api(`/integration-credentials/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
+export const getTypesafeStatus = () => api('/typesafe/status');
+
 export const listModelProfiles = () => api('/agent-model-profiles');
 export const createModelProfile = (payload) => api('/agent-model-profiles', { method: 'POST', body: JSON.stringify(payload) });
 export const updateModelProfile = (id, payload) => api(`/agent-model-profiles/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
@@ -43,6 +49,19 @@ export const activateModelProfile = (id, expectedGeneration) => api(`/agent-mode
 export const disableModelProfile = (id, expectedGeneration) => api(`/agent-model-profiles/${encodeURIComponent(id)}/disable`, { method: 'POST', body: JSON.stringify({ expectedGeneration }) });
 export const deleteModelProfile = (id, expectedGeneration) => api(`/agent-model-profiles/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
 export const getModelConfigStatus = () => api('/agent-model-config-status');
+export const listModelProviders = () => api('/model-providers');
+export const searchModelCatalog = ({ provider, credentialId, q, limit } = {}) => {
+  const query = new URLSearchParams({ provider: String(provider ?? '') });
+  if (credentialId) query.set('credentialId', credentialId);
+  if (q) query.set('q', q);
+  if (limit) query.set('limit', String(limit));
+  return api(`/model-catalog?${query}`);
+};
+export const refreshModelCatalog = (payload) => api('/model-catalog/refresh', { method: 'POST', body: JSON.stringify(payload) });
+export const getModelSpend = () => api('/model-spend');
+export const setModelSpendPolicy = (payload) => api('/model-spend/policies', { method: 'PUT', body: JSON.stringify(payload) });
+export const deleteModelSpendPolicy = (id, expectedGeneration) => api(`/model-spend/policies/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
+export const verifyModelConnection = (payload) => api('/model-connection/verify', { method: 'POST', body: JSON.stringify(payload) });
 export const listKnowledge = (params = {}) => {
   const query = new URLSearchParams();
   if (params.kind) query.set('kind', params.kind);

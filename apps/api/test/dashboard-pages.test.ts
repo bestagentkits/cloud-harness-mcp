@@ -60,6 +60,7 @@ describe('dashboard page registry', () => {
       'agents',
       'activity',
       'approvals',
+      'packages',
       'projects',
       'secrets',
       'models',

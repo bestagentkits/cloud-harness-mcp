@@ -73,6 +73,26 @@ describe('MultiLocalWorkspaceBackend', () => {
     expect((result.data as { output: string }).output.trim()).toBe(join(base, 'isekai'));
   });
 
+  it('runs bash in the selected root and refuses the toolbox target without needing a workspace', async () => {
+    const result = await router.call('bash', { workspaceId: id('netforge'), target: 'workspace', command: 'pwd' });
+    expect(result.ok).toBe(true);
+    expect(result.data).toMatchObject({ target: 'workspace' });
+    expect((result.data as { output: string }).output.trim()).toBe(join(base, 'netforge'));
+
+    const toolbox = await router.call('bash', { target: 'toolbox', command: 'pwd' });
+    expect(toolbox.error?.code).toBe('INVALID_INPUT');
+    expect(toolbox.message).toContain('toolbox target is unsupported in local mode');
+
+    const packages = await router.call('packages_plan', { ecosystem: 'npm', name: 'prettier', scope: 'workspace', workspaceId: id('netforge') });
+    expect(packages.error?.code).toBe('INVALID_INPUT');
+    expect(packages.message).toContain('packages_plan is unsupported in local mode');
+
+    // Model tools name no workspace and need the remote runner, so a member refuses them instead of a routing error.
+    const model = await router.call('model_profile_list', {});
+    expect(model.error?.code).toBe('INVALID_INPUT');
+    expect(model.message).toContain('model_profile_list is unsupported in local mode');
+  });
+
   it('fails closed on a missing ID with multiple workspaces and on an unknown ID', async () => {
     const missing = await router.call('files_list', { path: '.' });
     expect(missing.error?.code).toBe('CONFLICT');

@@ -1,25 +1,46 @@
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import { randomBytes } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
-import { ModelProfileIdSchema } from '@cloud-harness/contracts';
-import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  HarnessError,
+  ModelProfileIdSchema,
+  ModelVerificationRefSchema,
+  type AgentModelPriceProvenance,
+  type AgentModelProfileMetadata,
+  type MetadataRunnerRequest,
+  type ModelCatalogSearchResult,
+  type ModelCredentialId,
+  type ModelProviderKind,
+  type RunnerConfig
+} from '@cloud-harness/contracts';
+import { ArtifactStore } from '../src/artifact-store.js';
+import { CatalogSnapshotStore } from '../src/model-catalog/catalog-snapshot-store.js';
+import { DashboardControlService } from '../src/dashboard-control-service.js';
+import { MetadataStore } from '../src/metadata-store.js';
+import { ModelProfileStateRepository, type ProfileRevisionPlan } from '../src/model-profile-state-repository.js';
+import type { ProviderHttpClient } from '../src/model-provider-http.js';
+import type { WorkspaceService } from '../src/workspace-service.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
 
-const tempDbPath = () => join(tmpdir(), `test-model-profiles-${randomBytes(8).toString('hex')}.sqlite`);
-
 describe('ModelProfileStateRepository', () => {
   const openStores: StateStore[] = [];
+  const directories: string[] = [];
 
   afterEach(() => {
     for (const store of openStores.splice(0)) {
       try { store.close(); } catch { /* ignore */ }
     }
+    for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
   });
 
   function setup() {
-    const dbPath = tempDbPath();
+    const directory = mkdtempSync(join(tmpdir(), 'model-profiles-'));
+    directories.push(directory);
+    const dbPath = join(directory, 'state.sqlite');
     const store = new StateStore(dbPath);
     openStores.push(store);
     const keyring = new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]);
@@ -126,5 +147,847 @@ describe('ModelProfileStateRepository', () => {
     // Delete profile
     repo.deleteProfile(p1, profile.id, 4);
     expect(repo.listProfiles(p1)).toHaveLength(0);
+  });
+  it('exports the gateway snapshot in id order, so the same state always yields the same record', () => {
+    const { repo, p1, p2 } = setup();
+    const profiles: Array<{ id: string; activeRevisionId: string | null }> = [];
+    for (const [index, slug] of ['order-c', 'order-a', 'order-e', 'order-b', 'order-f', 'order-d'].entries()) {
+      const owner = index % 2 === 0 ? p1 : p2;
+      const credential = repo.createCredential(owner, { label: `Key ${index}`, provider: 'openai', apiKey: `sk-order-${index}` });
+      profiles.push(repo.createProfile(owner, {
+        profileId: ModelProfileIdSchema.parse(slug),
+        displayName: `Order ${index}`,
+        credentialId: credential.id,
+        model: 'gpt-5.2-codex',
+        apiMode: 'chat-completions',
+        pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+        limits: { maxInputTokens: 10000, maxOutputTokens: 2000, maxCostMicros: 50000 },
+        maxProxyOperations: ['files_read']
+      }));
+    }
+    const snapshot = repo.getExportSnapshot();
+    const credentialIds = Object.keys(snapshot.credentials);
+    expect(credentialIds).toEqual([...credentialIds].sort());
+    const byProfileId = [...profiles].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    expect(Object.keys(snapshot.profiles)).toEqual(byProfileId.map((profile) => profile.activeRevisionId));
+    // Insertion order differs from id order, so the test proves the ordering rather than echoing inserts.
+    expect(profiles.map((profile) => profile.id)).not.toEqual(byProfileId.map((profile) => profile.id));
+  });
+
+  it('routes each provider to its registry endpoint and rejects API modes the provider lacks', () => {
+    const { repo, p1 } = setup();
+    const base = {
+      displayName: 'Profile',
+      pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { maxInputTokens: 1000, maxOutputTokens: 100, maxCostMicros: 1000 },
+      maxProxyOperations: ['files_read' as const]
+    };
+    const gemini = repo.createCredential(p1, { label: 'Gemini', provider: 'google', apiKey: 'gm-key' });
+    const geminiProfile = repo.createProfile(p1, { ...base, profileId: ModelProfileIdSchema.parse('gemini'), credentialId: gemini.id, model: 'gemini-2.5-flash', apiMode: 'chat-completions' });
+    expect(geminiProfile.activeRevision?.upstreamUrl).toBe('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions');
+    expect(() => repo.createProfile(p1, { ...base, profileId: ModelProfileIdSchema.parse('gemini-responses'), credentialId: gemini.id, model: 'gemini-2.5-flash', apiMode: 'responses' }))
+      .toThrow('does not support the responses API mode');
+
+    const deepseek = repo.createCredential(p1, { label: 'DeepSeek', provider: 'deepseek', apiKey: 'ds-key' });
+    const deepseekProfile = repo.createProfile(p1, { ...base, profileId: ModelProfileIdSchema.parse('deepseek'), credentialId: deepseek.id, model: 'deepseek-chat', apiMode: 'chat-completions' });
+    expect(deepseekProfile.activeRevision?.upstreamUrl).toBe('https://api.deepseek.com/chat/completions');
+    expect(deepseek.authMode).toBe('bearer');
+
+    expect(() => repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', authMode: 'x-api-key', apiKey: 'sk-key' }))
+      .toThrow('does not accept the x-api-key auth mode');
+  });
+
+  it('refuses to bind a profile to a stored credential whose auth mode the provider no longer accepts', () => {
+    const { store, repo, p1 } = setup();
+    const base = {
+      displayName: 'Profile',
+      model: 'gemini-2.5-flash',
+      apiMode: 'chat-completions' as const,
+      pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { maxInputTokens: 1000, maxOutputTokens: 100, maxCostMicros: 1000 },
+      maxProxyOperations: ['files_read' as const]
+    };
+    const gemini = repo.createCredential(p1, { label: 'Gemini', provider: 'google', apiKey: 'gm-key' });
+    const profile = repo.createProfile(p1, { ...base, profileId: ModelProfileIdSchema.parse('gemini'), credentialId: gemini.id });
+    // Simulates a credential saved before Gemini was limited to bearer auth.
+    store.database.prepare('UPDATE model_provider_credentials SET auth_mode = ? WHERE id = ?').run('x-api-key', gemini.id);
+
+    expect(() => repo.createProfile(p1, { ...base, profileId: ModelProfileIdSchema.parse('gemini-2'), credentialId: gemini.id }))
+      .toThrow('add a new credential with bearer auth');
+    expect(() => repo.updateProfile(p1, profile.id, { displayName: 'Gemini v2', expectedGeneration: 1 }))
+      .toThrow('which Google Gemini does not accept');
+
+    const replacement = repo.createCredential(p1, { label: 'Gemini bearer', provider: 'google', apiKey: 'gm-key-2' });
+    const moved = repo.updateProfile(p1, profile.id, { credentialId: replacement.id, expectedGeneration: 1 });
+    expect(moved.credentialId).toBe(replacement.id);
+  });
+
+  it('keeps a custom profile\'s upstream URL when an edit does not resubmit it', () => {
+    const { repo, p1 } = setup();
+    const cred = repo.createCredential(p1, { label: 'Custom', provider: 'custom', apiKey: 'custom-key' });
+    const profile = repo.createProfile(p1, {
+      profileId: ModelProfileIdSchema.parse('custom'),
+      displayName: 'Custom',
+      credentialId: cred.id,
+      model: 'my-model',
+      apiMode: 'chat-completions',
+      customUpstreamUrl: 'https://llm.example.com/v1/chat/completions',
+      pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { maxInputTokens: 1000, maxOutputTokens: 100, maxCostMicros: 1000 },
+      maxProxyOperations: ['files_read']
+    });
+    const updated = repo.updateProfile(p1, profile.id, { displayName: 'Custom v2', expectedGeneration: 1 });
+    expect(updated.activeRevision?.upstreamUrl).toBe('https://llm.example.com/v1/chat/completions');
+    const moved = repo.updateProfile(p1, profile.id, { customUpstreamUrl: 'https://llm2.example.com/v1/chat/completions', expectedGeneration: 2 });
+    expect(moved.activeRevision?.upstreamUrl).toBe('https://llm2.example.com/v1/chat/completions');
+    expect(() => repo.updateProfile(p1, profile.id, { apiMode: 'responses', expectedGeneration: 3 }))
+      .toThrow('customUpstreamUrl is required');
+    const switched = repo.updateProfile(p1, profile.id, { apiMode: 'responses', customUpstreamUrl: 'https://llm2.example.com/v1/responses', expectedGeneration: 3 });
+    expect(switched.activeRevision?.upstreamUrl).toBe('https://llm2.example.com/v1/responses');
+  });
+
+  it('decrypts one credential\'s active version only for its own principal', () => {
+    const { repo, p1, p2 } = setup();
+    const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-first-secret' });
+    expect(repo.decryptCredentialSecret(p1, cred.id)).toEqual({ activeVersion: 1, secret: 'sk-first-secret' });
+    repo.rotateCredential(p1, cred.id, { apiKey: 'sk-second-secret', expectedGeneration: 1 });
+    expect(repo.decryptCredentialSecret(p1, cred.id)).toEqual({ activeVersion: 2, secret: 'sk-second-secret' });
+    expect(repo.getCredential(p1, cred.id)?.activeVersion).toBe(2);
+    expect(repo.getCredential(p2, cred.id)).toBeUndefined();
+    expect(() => repo.decryptCredentialSecret(p2, cred.id)).toThrow('was not found');
+  });
+
+  it('refuses to decrypt a credential that is not active', () => {
+    const { store, repo, p1 } = setup();
+    const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-inactive-secret' });
+    const setStatus = store.database.prepare('UPDATE model_provider_credentials SET status = ? WHERE id = ?');
+    for (const status of ['DISABLED', 'REVOKED']) {
+      setStatus.run(status, cred.id);
+      expect(() => repo.decryptCredentialSecret(p1, cred.id)).toThrow('was not found');
+    }
+    setStatus.run('ACTIVE', cred.id);
+    expect(repo.decryptCredentialSecret(p1, cred.id).secret).toBe('sk-inactive-secret');
+  });
+
+  it('stores nothing for a verification reference on its own; only the runner\'s attach step keeps a result', () => {
+    const { store, repo, p1 } = setup();
+    const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-ref-secret' });
+    const verificationRef = ModelVerificationRefSchema.parse('vref_0123456789abcdef0123456789abcdef');
+    const created = repo.createProfile(p1, {
+      profileId: ModelProfileIdSchema.parse('coding'), displayName: 'Coding', credentialId: cred.id, model: 'gpt-test', apiMode: 'chat-completions',
+      pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { maxInputTokens: 10, maxOutputTokens: 10, maxCostMicros: 10 },
+      maxProxyOperations: ['files_read'], verificationRef
+    });
+    const updated = repo.updateProfile(p1, created.id, { model: 'gpt-other', expectedGeneration: created.generation, verificationRef });
+    expect(created.lastVerification).toBeUndefined();
+    expect(updated.lastVerification).toBeUndefined();
+    expect(repo.listProfiles(p1)[0]?.lastVerification).toBeUndefined();
+    expect(repo.listCredentials(p1)[0]?.lastVerification).toBeUndefined();
+    expect((store.database.prepare('SELECT count(*) AS count FROM model_verification_results').get() as { count: number }).count).toBe(0);
+  });
+  describe('revision pricing and provenance', () => {
+    const catalogProvenance: AgentModelPriceProvenance = {
+      source: 'openrouter', sourceModelId: 'openai/gpt-5', retrievedAt: 1_700_000_000_000, confidence: 'estimate', isOverride: false
+    };
+    const tiers = [
+      { minPromptTokens: 200_000, inputMicrosPerMillionTokens: 2_500, outputMicrosPerMillionTokens: 15_000, cacheReadMicrosPerMillionTokens: 625 }
+    ];
+    const pricedProfile = (credentialId: ModelCredentialId, profileId = 'priced') => ({
+      profileId: ModelProfileIdSchema.parse(profileId),
+      displayName: 'Priced',
+      credentialId,
+      model: 'gpt-5',
+      apiMode: 'chat-completions' as const,
+      pricing: { inputMicrosPerMillionTokens: 1_250, outputMicrosPerMillionTokens: 10_000, cacheReadMicrosPerMillionTokens: 125, tiers },
+      limits: { maxInputTokens: 300_000, maxOutputTokens: 4_000, maxCostMicros: 900_000 },
+      maxProxyOperations: ['files_read' as const]
+    });
+
+    it('round-trips cache prices, tiers, and service-supplied provenance', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-priced' });
+      const created = repo.createProfile(p1, pricedProfile(cred.id), { priceProvenance: catalogProvenance });
+      expect(created.activeRevision?.priceProvenance).toEqual(catalogProvenance);
+      expect(created.activeRevision?.pricing).toEqual(pricedProfile(cred.id).pricing);
+
+      const [listed] = repo.listProfiles(p1);
+      expect(listed?.activeRevision).toEqual(created.activeRevision);
+    });
+
+    it('records prices without a service-supplied source as a user override and stores unknown cache prices as absent', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-user' });
+      const created = repo.createProfile(p1, {
+        ...pricedProfile(cred.id),
+        pricing: { inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000, cacheReadMicrosPerMillionTokens: null, cacheWriteMicrosPerMillionTokens: null }
+      });
+      expect(created.activeRevision?.priceProvenance).toEqual({ source: 'user', sourceModelId: null, retrievedAt: null, confidence: 'unknown', isOverride: true });
+      expect(created.activeRevision?.pricing).toEqual({ inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000 });
+      expect(repo.listProfiles(p1)[0]?.activeRevision).toEqual(created.activeRevision);
+    });
+
+    it('pins prices, tiers, provenance, and limits when an edit omits pricing', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-pin' });
+      const created = repo.createProfile(p1, pricedProfile(cred.id), { priceProvenance: catalogProvenance });
+      // Provenance offered without prices does not replace the pinned source.
+      const edited = repo.updateProfile(p1, created.id, { displayName: 'Renamed', expectedGeneration: 1 }, {
+        priceProvenance: { ...catalogProvenance, source: 'provider', confidence: 'exact' }
+      });
+      expect(edited.activeRevisionId).not.toBe(created.activeRevisionId);
+      expect(edited.activeRevision?.pricing).toEqual(created.activeRevision?.pricing);
+      expect(edited.activeRevision?.priceProvenance).toEqual(catalogProvenance);
+      expect(edited.activeRevision?.limits).toEqual(created.activeRevision?.limits);
+      expect(repo.listProfiles(p1)[0]?.activeRevision).toEqual(edited.activeRevision);
+    });
+
+    it('marks kept prices as an override of unknown confidence when the model or credential changes', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-carry' });
+      const other = repo.createCredential(p1, { label: 'OpenAI 2', provider: 'openai', apiKey: 'sk-carry-2' });
+      const created = repo.createProfile(p1, pricedProfile(cred.id), { priceProvenance: catalogProvenance });
+      const carriedOver = { ...catalogProvenance, isOverride: true, confidence: 'unknown' };
+
+      const newModel = repo.updateProfile(p1, created.id, { model: 'gpt-5-mini', expectedGeneration: 1 }, {
+        priceProvenance: { ...catalogProvenance, source: 'provider', confidence: 'exact' }
+      });
+      expect(newModel.activeRevision?.model).toBe('gpt-5-mini');
+      expect(newModel.activeRevision?.pricing).toEqual(created.activeRevision?.pricing);
+      expect(newModel.activeRevision?.priceProvenance).toEqual(carriedOver);
+
+      const restored = repo.updateProfile(p1, created.id, { model: 'gpt-5', pricing: pricedProfile(cred.id).pricing, expectedGeneration: 2 }, {
+        priceProvenance: catalogProvenance
+      });
+      const newCredential = repo.updateProfile(p1, created.id, { credentialId: other.id, expectedGeneration: restored.generation });
+      expect(newCredential.activeRevision?.pricing).toEqual(created.activeRevision?.pricing);
+      expect(newCredential.activeRevision?.priceProvenance).toEqual(carriedOver);
+      expect(repo.listProfiles(p1)[0]?.activeRevision?.priceProvenance).toEqual(carriedOver);
+    });
+
+    it('treats a two-price edit that repeats the stored prices as no price change', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-same' });
+      const created = repo.createProfile(p1, pricedProfile(cred.id), { priceProvenance: catalogProvenance });
+      const same = { inputMicrosPerMillionTokens: 1_250, outputMicrosPerMillionTokens: 10_000 };
+      const edited = repo.updateProfile(p1, created.id, { displayName: 'Renamed', pricing: same, expectedGeneration: 1 });
+      expect(edited.activeRevision?.pricing).toEqual(created.activeRevision?.pricing);
+      expect(edited.activeRevision?.priceProvenance).toEqual(catalogProvenance);
+
+      // A changed price, or any cache price or tier list, is new pricing.
+      const changed = repo.updateProfile(p1, created.id, { pricing: { ...same, outputMicrosPerMillionTokens: 10_001 }, expectedGeneration: 2 });
+      expect(changed.activeRevision?.pricing).toEqual({ ...same, outputMicrosPerMillionTokens: 10_001 });
+      expect(changed.activeRevision?.priceProvenance.isOverride).toBe(true);
+      const restated = repo.updateProfile(p1, created.id, { pricing: { ...same, outputMicrosPerMillionTokens: 10_001, tiers: [] }, expectedGeneration: 3 });
+      expect(restated.activeRevision?.pricing).toEqual({ ...same, outputMicrosPerMillionTokens: 10_001 });
+    });
+
+    it('refuses an edit without pricing when there is no current revision to copy prices from', () => {
+      const { store, repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-none' });
+      const created = repo.createProfile(p1, pricedProfile(cred.id));
+      store.database.prepare('UPDATE agent_model_profiles SET active_revision_id = NULL WHERE id = ?').run(created.id);
+      let caught: unknown;
+      try {
+        repo.updateProfile(p1, created.id, { displayName: 'No prices', expectedGeneration: 1 });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(HarnessError);
+      expect((caught as HarnessError).code).toBe('INVALID_INPUT');
+      expect(repo.listProfiles(p1)[0]?.generation).toBe(1);
+    });
+
+    it('refuses tiers whose prices resolve below the level beneath them for the credential\'s provider', () => {
+      const { repo, p1 } = setup();
+      const credential = (provider: ModelProviderKind) => repo.createCredential(p1, { label: provider, provider, apiKey: `sk-${provider}` }).id;
+      const tier = { minPromptTokens: 200_000, inputMicrosPerMillionTokens: 2_500, outputMicrosPerMillionTokens: 15_000 };
+      const refused = [
+        // The base's unstated read resolves to its input price, above the tier's stated read.
+        { provider: 'google' as const, pricing: { inputMicrosPerMillionTokens: 1_250, outputMicrosPerMillionTokens: 10_000, tiers: [{ ...tier, cacheReadMicrosPerMillionTokens: 625 }] } },
+        // OpenRouter doubles the base's unstated write above the tier's stated write.
+        { provider: 'openrouter' as const, pricing: { inputMicrosPerMillionTokens: 2_000, outputMicrosPerMillionTokens: 10_000, tiers: [{ ...tier, cacheWriteMicrosPerMillionTokens: 3_125 }] } },
+        // The tier's unstated write resolves to its input price, below the base's stated write.
+        { provider: 'anthropic' as const, pricing: { inputMicrosPerMillionTokens: 2_000, outputMicrosPerMillionTokens: 10_000, cacheWriteMicrosPerMillionTokens: 3_000, tiers: [tier] } }
+      ];
+      refused.forEach(({ provider, pricing }, index) => {
+        const input = { ...pricedProfile(credential(provider), `refused-${index}`), pricing };
+        expect(() => repo.createProfile(p1, input), provider).toThrow(expect.objectContaining({ code: 'INVALID_INPUT' }));
+      });
+      expect(repo.listProfiles(p1)).toEqual([]);
+
+      const cred = credential('openai');
+      const created = repo.createProfile(p1, pricedProfile(cred, 'accepted'));
+      expect(() => repo.updateProfile(p1, created.id, { pricing: refused[0]!.pricing, expectedGeneration: 1 }))
+        .toThrow(expect.objectContaining({ code: 'INVALID_INPUT', message: expect.stringContaining('tiers[0].cacheReadMicrosPerMillionTokens') }));
+      expect(repo.listProfiles(p1)[0]?.activeRevisionId).toBe(created.activeRevisionId);
+    });
+
+    it('refuses a credential change that leaves kept tiers below the level beneath them', () => {
+      const { repo, p1 } = setup();
+      const custom = repo.createCredential(p1, { label: 'Custom', provider: 'custom', apiKey: 'sk-custom' });
+      const openai = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-switch' });
+      // On custom the tier's unstated write doubles to 200; on OpenAI it is 100, below the base's 150.
+      const created = repo.createProfile(p1, {
+        ...pricedProfile(custom.id, 'switch'),
+        customUpstreamUrl: 'https://llm.example.com/v1/chat/completions',
+        pricing: {
+          inputMicrosPerMillionTokens: 100, outputMicrosPerMillionTokens: 100, cacheWriteMicrosPerMillionTokens: 150,
+          tiers: [{ minPromptTokens: 1_000, inputMicrosPerMillionTokens: 100, outputMicrosPerMillionTokens: 100 }]
+        }
+      });
+      const switchTo = (pricing?: { inputMicrosPerMillionTokens: number; outputMicrosPerMillionTokens: number }) => () =>
+        repo.updateProfile(p1, created.id, { credentialId: openai.id, ...(pricing ? { pricing } : {}), expectedGeneration: 1 });
+      for (const attempt of [switchTo(), switchTo({ inputMicrosPerMillionTokens: 100, outputMicrosPerMillionTokens: 100 })]) {
+        expect(attempt).toThrow(expect.objectContaining({ code: 'INVALID_INPUT', message: expect.stringContaining('tiers[0].cacheWriteMicrosPerMillionTokens') }));
+      }
+      expect(repo.listProfiles(p1)[0]?.activeRevisionId).toBe(created.activeRevisionId);
+    });
+
+    it('gives revisions that differ only in price provenance different digests', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-prov-digest' });
+      const input = pricedProfile(cred.id, 'provenance-digest');
+      const fromCatalog = repo.createProfile(p1, input, { priceProvenance: catalogProvenance });
+      const typed = repo.updateProfile(p1, fromCatalog.id, { pricing: input.pricing, expectedGeneration: 1 });
+      expect(typed.activeRevision?.pricing).toEqual(fromCatalog.activeRevision?.pricing);
+      expect(typed.activeRevision?.priceProvenance).not.toEqual(fromCatalog.activeRevision?.priceProvenance);
+      expect(typed.activeRevision?.digest).not.toBe(fromCatalog.activeRevision?.digest);
+    });
+
+    it('reads stored tiers that carry keys this runner does not know', () => {
+      const { store, repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-newer' });
+      const created = repo.createProfile(p1, pricedProfile(cred.id));
+      store.database.prepare('UPDATE agent_model_profile_revisions SET price_tiers_json = ? WHERE id = ?')
+        .run(JSON.stringify([{ ...tiers[0], reasoningMicrosPerMillionTokens: 9_000 }]), created.activeRevisionId);
+      expect(repo.listProfiles(p1)[0]?.activeRevision?.pricing.tiers).toEqual(tiers);
+      expect(repo.getExportSnapshot(p1).profiles[created.activeRevisionId!]?.pricing.tiers).toHaveLength(1);
+    });
+
+    it('stores an empty tier list as flat pricing', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-flat' });
+      const created = repo.createProfile(p1, { ...pricedProfile(cred.id), pricing: { inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000, tiers: [] } });
+      expect(created.activeRevision?.pricing).toEqual({ inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000 });
+      expect(repo.listProfiles(p1)[0]?.activeRevision?.pricing).toEqual(created.activeRevision?.pricing);
+    });
+
+    it('looks up one credential\'s provider for its own principal only', () => {
+      const { repo, p1, p2 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-provider' });
+      expect(repo.getCredentialProvider(p1, cred.id)).toBe('openrouter');
+      expect(repo.getCredentialProvider(p2, cred.id)).toBeUndefined();
+      expect(repo.getCredentialProvider(p1, 'cred_00000000000000000000000000000000')).toBeUndefined();
+    });
+
+    it('marks an edit that submits pricing as an override unless the service names a catalog source', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-override' });
+      const created = repo.createProfile(p1, pricedProfile(cred.id), { priceProvenance: catalogProvenance });
+      const typed = repo.updateProfile(p1, created.id, {
+        pricing: { inputMicrosPerMillionTokens: 1_300, outputMicrosPerMillionTokens: 10_000 },
+        expectedGeneration: 1
+      });
+      expect(typed.activeRevision?.priceProvenance).toEqual({ source: 'user', sourceModelId: null, retrievedAt: null, confidence: 'unknown', isOverride: true });
+      // Tiers and cache prices are part of the submitted pricing, so omitting them drops them.
+      expect(typed.activeRevision?.pricing).toEqual({ inputMicrosPerMillionTokens: 1_300, outputMicrosPerMillionTokens: 10_000 });
+
+      const fromCatalog = repo.updateProfile(p1, created.id, { pricing: pricedProfile(cred.id).pricing, expectedGeneration: 2 }, { priceProvenance: catalogProvenance });
+      expect(fromCatalog.activeRevision?.priceProvenance).toEqual(catalogProvenance);
+      expect(repo.listProfiles(p1)[0]?.activeRevision?.priceProvenance).toEqual(catalogProvenance);
+    });
+
+    it('exports effective prices to the gateway in the snapshot shape it charges from', () => {
+      const { repo, p1 } = setup();
+      const openai = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-snap' });
+      const openrouter = repo.createCredential(p1, { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or' });
+      const direct = repo.createProfile(p1, pricedProfile(openai.id, 'direct'));
+      const routed = repo.createProfile(p1, {
+        ...pricedProfile(openrouter.id, 'routed'),
+        pricing: { inputMicrosPerMillionTokens: 3_000, outputMicrosPerMillionTokens: 15_000 }
+      });
+
+      const snapshot = repo.getExportSnapshot(p1);
+      // Unknown cache writes cost the input price where the provider bills no write premium.
+      expect(snapshot.profiles[direct.activeRevisionId!]?.pricing).toEqual({
+        inputMicrosPerMillionTokens: 1_250,
+        outputMicrosPerMillionTokens: 10_000,
+        cacheReadMicrosPerMillionTokens: 125,
+        cacheWriteMicrosPerMillionTokens: 1_250,
+        tiers: [{
+          minPromptTokens: 200_000,
+          inputMicrosPerMillionTokens: 2_500,
+          outputMicrosPerMillionTokens: 15_000,
+          cacheReadMicrosPerMillionTokens: 625,
+          cacheWriteMicrosPerMillionTokens: 2_500
+        }]
+      });
+      // Providers that bill cache writes default an unknown write price to twice the input.
+      expect(snapshot.profiles[routed.activeRevisionId!]?.pricing).toEqual({
+        inputMicrosPerMillionTokens: 3_000,
+        outputMicrosPerMillionTokens: 15_000,
+        cacheReadMicrosPerMillionTokens: 3_000,
+        cacheWriteMicrosPerMillionTokens: 6_000
+      });
+      expect(snapshot.profiles[routed.activeRevisionId!]?.priceProvenance.isOverride).toBe(true);
+      for (const revision of Object.values(snapshot.profiles)) {
+        const prices = [revision.pricing, ...(revision.pricing.tiers ?? [])].flatMap((level) => [
+          level.inputMicrosPerMillionTokens, level.outputMicrosPerMillionTokens,
+          level.cacheReadMicrosPerMillionTokens, level.cacheWriteMicrosPerMillionTokens
+        ]);
+        for (const price of prices) expect(Number.isSafeInteger(price) && (price as number) >= 0).toBe(true);
+      }
+      // Listing still shows the pinned prices, not the resolved ones.
+      expect(repo.listProfiles(p1).find((profile) => profile.id === 'routed')?.activeRevision?.pricing)
+        .toEqual({ inputMicrosPerMillionTokens: 3_000, outputMicrosPerMillionTokens: 15_000 });
+    });
+
+    it('gives revisions that differ in any price, tier, or limit different digests', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-digest' });
+      const input = { ...pricedProfile(cred.id, 'digest-shape'), pricing: { inputMicrosPerMillionTokens: 1_250, outputMicrosPerMillionTokens: 10_000 } };
+      const flatTier = { minPromptTokens: 200_000, inputMicrosPerMillionTokens: 2_500, outputMicrosPerMillionTokens: 15_000 };
+      const base = repo.createProfile(p1, input);
+      const update = (changes: Record<string, unknown>, generation: number) => repo.updateProfile(p1, base.id, { ...changes, expectedGeneration: generation });
+      const revisions = [
+        base,
+        update({ pricing: { ...input.pricing, inputMicrosPerMillionTokens: 1_251 } }, 1),
+        update({ pricing: { ...input.pricing, outputMicrosPerMillionTokens: 10_001 } }, 2),
+        update({ pricing: { ...input.pricing, cacheReadMicrosPerMillionTokens: 125 } }, 3),
+        update({ pricing: { ...input.pricing, cacheReadMicrosPerMillionTokens: 126 } }, 4),
+        update({ pricing: { ...input.pricing, tiers: [flatTier] } }, 5),
+        update({ pricing: { ...input.pricing, tiers: [{ ...flatTier, minPromptTokens: 128_000 }] } }, 6),
+        update({ pricing: input.pricing, limits: { ...input.limits, maxCostMicros: input.limits.maxCostMicros + 1 } }, 7)
+      ];
+      const digests = revisions.map((profile) => profile.activeRevision?.digest);
+      expect(new Set(digests).size).toBe(digests.length);
+      // The same settings always hash the same.
+      const repeated = update({ limits: { ...input.limits, maxCostMicros: input.limits.maxCostMicros + 1 } }, 8);
+      expect(repeated.activeRevisionId).not.toBe(revisions[7]?.activeRevisionId);
+      expect(repeated.activeRevision?.digest).toBe(revisions[7]?.activeRevision?.digest);
+    });
+  });
+});
+
+describe('profile pricing provenance and repricing review through the dashboard service', () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+    vi.restoreAllMocks();
+  });
+
+  const MODEL = 'anthropic/claude-sonnet-4.5';
+  const flatModel = (id: string, prompt: string, completion: string) => ({ id, name: id, pricing: { prompt, completion } });
+  const OTHER_MODELS = [
+    flatModel('openai/cheap', '0.000001', '0.000002'),
+    flatModel('openai/expensive', '0.00001', '0.00002'),
+    flatModel('anthropic/claude-haiku-x', '0.000001', '0.000005'),
+    flatModel('anthropic/claude-opus-x', '0.000015', '0.000075')
+  ];
+  const openRouterModel = (prompt: string, completion: string) => ({
+    id: MODEL, name: 'Claude Sonnet 4.5',
+    pricing: {
+      prompt, completion, input_cache_read: '0.0000003', input_cache_write: '0.00000375', input_cache_write_1h: '0.000006',
+      overrides: [{ min_prompt_tokens: 200_000, prompt: '0.000006', completion: '0.0000225', input_cache_read: '0.0000006', input_cache_write_1h: '0.000012' }]
+    }
+  });
+
+  function setup() {
+    const root = mkdtempSync(join(tmpdir(), 'model-profile-pricing-'));
+    const databasePath = join(root, 'state.db');
+    const principals = new StateStore(databasePath);
+    const keyring = new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]);
+    const metadata = new MetadataStore(databasePath, keyring);
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    cleanups.push(() => { metadata.database.close(); principals.close(); });
+    const artifacts = new ArtifactStore(principals.database, {
+      root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000
+    });
+    const repo = new ModelProfileStateRepository(principals.database, keyring);
+    const upstream = { models: [openRouterModel('0.000003', '0.000015'), ...OTHER_MODELS], requests: 0 };
+    const http: ProviderHttpClient = {
+      request: async (request) => {
+        upstream.requests += 1;
+        if (new URL(request.url).hostname !== 'openrouter.ai') throw new Error(`unexpected request to ${request.url}`);
+        return { status: 200, headers: {}, body: JSON.stringify({ data: upstream.models }), truncated: false };
+      }
+    };
+    const controls = new DashboardControlService(
+      { artifactRetentionSeconds: 60 } as RunnerConfig, principals, metadata, artifacts, {} as WorkspaceService,
+      undefined, undefined, repo, undefined, keyring, undefined, http
+    );
+    const principal = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'operator-a' };
+    const call = async (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>) =>
+      (await controls.execute({ version: 2, principal, operation, input } as MetadataRunnerRequest)).data;
+    return { principals, upstream, call };
+  }
+
+  const LIMITS = { maxInputTokens: 300_000, maxOutputTokens: 10_000, maxCostMicros: 5_000_000 };
+
+  async function catalogPricing(call: ReturnType<typeof setup>['call']) {
+    const result = await call('model_catalog_search', { provider: 'openrouter', query: 'claude' }) as ModelCatalogSearchResult;
+    const pricing = result.entries.find((entry) => entry.providerModelId === MODEL)!.pricing;
+    return {
+      fetchedAt: pricing.provenance.retrievedAt,
+      pricing: {
+        inputMicrosPerMillionTokens: pricing.inputMicrosPerMillionTokens, outputMicrosPerMillionTokens: pricing.outputMicrosPerMillionTokens,
+        cacheReadMicrosPerMillionTokens: pricing.cacheReadMicrosPerMillionTokens, cacheWriteMicrosPerMillionTokens: pricing.cacheWriteMicrosPerMillionTokens,
+        tiers: pricing.tiers
+      }
+    };
+  }
+
+  async function createProfile(call: ReturnType<typeof setup>['call'], profileId: string, credentialId: string, extra: Record<string, unknown>) {
+    return await call('model_profile_create', {
+      profileId, displayName: profileId, credentialId, model: MODEL, apiMode: 'chat-completions', limits: LIMITS, maxProxyOperations: ['files_read'], ...extra
+    }) as AgentModelProfileMetadata;
+  }
+
+  const listProfiles = async (call: ReturnType<typeof setup>['call']) =>
+    ((await call('model_profile_list', {})) as { profiles: AgentModelProfileMetadata[] }).profiles;
+
+  it('records catalog provenance only for an unchanged catalog price', async () => {
+    const { call } = setup();
+    const credential = await call('model_credential_create', { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or-secret' }) as { id: string };
+    const { pricing, fetchedAt } = await catalogPricing(call);
+    const ref = { sourceModelId: MODEL };
+
+    const accepted = await createProfile(call, 'catalog', credential.id, { pricing, catalogPriceRef: ref });
+    expect(accepted.activeRevision?.pricing).toEqual(pricing);
+    expect(accepted.activeRevision?.priceProvenance).toEqual({ source: 'openrouter', sourceModelId: MODEL, retrievedAt: fetchedAt, confidence: 'exact', isOverride: false });
+
+    const edited = await createProfile(call, 'edited', credential.id, { pricing: { ...pricing, outputMicrosPerMillionTokens: 14_000_000 }, catalogPriceRef: ref });
+    expect(edited.activeRevision?.priceProvenance).toEqual({ source: 'user', sourceModelId: MODEL, retrievedAt: fetchedAt, confidence: 'unknown', isOverride: true });
+
+    // A reference the runner has no cached price for, and a save without one, are the operator's prices.
+    const unknownRef = await createProfile(call, 'unknown-ref', credential.id, { pricing, catalogPriceRef: { sourceModelId: 'vendor/not-listed' } });
+    expect(unknownRef.activeRevision?.priceProvenance).toEqual({ source: 'user', sourceModelId: null, retrievedAt: null, confidence: 'unknown', isOverride: true });
+    const noRef = await createProfile(call, 'no-ref', credential.id, { pricing });
+    expect(noRef.activeRevision?.priceProvenance.isOverride).toBe(true);
+
+    // A client cannot state provenance or confidence itself.
+    await expect(createProfile(call, 'asserted', credential.id, {
+      pricing, priceProvenance: { source: 'openrouter', sourceModelId: MODEL, retrievedAt: fetchedAt, confidence: 'exact', isOverride: false }
+    })).rejects.toThrow();
+    await expect(createProfile(call, 'asserted-ref', credential.id, { pricing, catalogPriceRef: { ...ref, confidence: 'exact' } })).rejects.toThrow();
+
+    // An edit applies the same rule; an edit that only renames keeps the stored prices and provenance.
+    const updated = await call('model_profile_update', {
+      profileId: 'edited', expectedGeneration: edited.generation, pricing, catalogPriceRef: ref
+    }) as AgentModelProfileMetadata;
+    expect(updated.activeRevision?.priceProvenance).toMatchObject({ source: 'openrouter', isOverride: false });
+    const reedited = await call('model_profile_update', {
+      profileId: 'edited', expectedGeneration: updated.generation, pricing: { ...pricing, tiers: [] }, catalogPriceRef: ref
+    }) as AgentModelProfileMetadata;
+    expect(reedited.activeRevision?.priceProvenance).toMatchObject({ source: 'user', sourceModelId: MODEL, isOverride: true });
+    const renamed = await call('model_profile_update', {
+      profileId: 'catalog', expectedGeneration: accepted.generation, displayName: 'Renamed', catalogPriceRef: { sourceModelId: 'vendor/other' }
+    }) as AgentModelProfileMetadata;
+    expect(renamed.activeRevision?.priceProvenance).toEqual(accepted.activeRevision?.priceProvenance);
+  });
+
+  it('flags a repriced catalog on list without ever changing saved prices, provenance, or limits', async () => {
+    const { principals, upstream, call } = setup();
+    const credential = await call('model_credential_create', { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or-secret' }) as { id: string };
+    const { pricing } = await catalogPricing(call);
+    await createProfile(call, 'catalog', credential.id, { pricing, catalogPriceRef: { sourceModelId: MODEL } });
+    // A profile saved before provenance existed is matched to the catalog by its model ID.
+    await createProfile(call, 'legacy', credential.id, { pricing: { inputMicrosPerMillionTokens: 3_000_000, outputMicrosPerMillionTokens: 15_000_000 } });
+
+    const requestsBeforeList = upstream.requests;
+    const before = await listProfiles(call);
+    expect(upstream.requests).toBe(requestsBeforeList);
+    const reviewOf = (profiles: AgentModelProfileMetadata[], id: string) => profiles.find((profile) => profile.id === id)?.pricingReview;
+    expect(reviewOf(before, 'catalog')).toMatchObject({ state: 'current', changes: [], isOverride: false });
+    // The legacy profile lacks the catalog's long-prompt tier.
+    expect(reviewOf(before, 'legacy')).toMatchObject({ state: 'repriced', isOverride: true, changes: [{ field: 'tier', minPromptTokens: 200_000 }] });
+
+    const revisionRows = () => principals.database.prepare('SELECT * FROM agent_model_profile_revisions ORDER BY id').all();
+    const rowsBefore = JSON.stringify(revisionRows());
+    upstream.models = [openRouterModel('0.0000036', '0.000015'), ...OTHER_MODELS];
+    await call('model_catalog_refresh', { provider: 'openrouter' });
+    const after = await listProfiles(call);
+
+    const pinned = (profiles: AgentModelProfileMetadata[]) => JSON.stringify(profiles.map((profile) => ({ ...profile, pricingReview: undefined })));
+    expect(pinned(after)).toBe(pinned(before));
+    expect(JSON.stringify(revisionRows())).toBe(rowsBefore);
+    expect(reviewOf(after, 'catalog')).toMatchObject({
+      state: 'repriced', isOverride: false,
+      changes: [{ field: 'input', minPromptTokens: null, pinned: 3_000_000, catalog: 3_600_000, percent: 20 }]
+    });
+
+    // Only the list attaches a review, and nothing stores it.
+    const mutated = await call('model_profile_disable', { profileId: 'catalog', expectedGeneration: before.find((profile) => profile.id === 'catalog')!.generation });
+    expect(mutated).not.toHaveProperty('pricingReview');
+    expect(JSON.stringify(revisionRows())).not.toContain('pricingReview');
+  });
+
+  it('accepts a catalog reference only for the model the revision routes to', async () => {
+    const { call } = setup();
+    const openRouter = await call('model_credential_create', { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or-secret' }) as { id: string };
+    const anthropic = await call('model_credential_create', { label: 'Anthropic', provider: 'anthropic', apiKey: 'sk-ant-secret' }) as { id: string };
+    await call('model_catalog_search', { provider: 'openrouter' });
+    const flat = (input: number, output: number) => ({ inputMicrosPerMillionTokens: input, outputMicrosPerMillionTokens: output });
+    const save = async (profileId: string, credentialId: string, model: string, pricing: unknown, sourceModelId: string) =>
+      await call('model_profile_create', {
+        profileId, displayName: profileId, credentialId, model, apiMode: 'chat-completions', limits: LIMITS, maxProxyOperations: ['files_read'],
+        pricing, catalogPriceRef: { sourceModelId }
+      }) as AgentModelProfileMetadata;
+
+    // The cheap model's exact prices, saved for the expensive model, are the operator's override.
+    const openRouterMismatch = await save('or-mismatch', openRouter.id, 'openai/expensive', flat(1_000_000, 2_000_000), 'openai/cheap');
+    expect(openRouterMismatch.activeRevision?.priceProvenance).toEqual({ source: 'user', sourceModelId: null, retrievedAt: null, confidence: 'unknown', isOverride: true });
+    const vendorMismatch = await save('vendor-mismatch', anthropic.id, 'claude-opus-x', flat(1_000_000, 5_000_000), 'anthropic/claude-haiku-x');
+    expect(vendorMismatch.activeRevision?.priceProvenance).toMatchObject({ source: 'user', sourceModelId: null, isOverride: true });
+    // The routed model's own reference still counts.
+    const vendorMatch = await save('vendor-match', anthropic.id, 'claude-opus-x', flat(15_000_000, 75_000_000), 'anthropic/claude-opus-x');
+    expect(vendorMatch.activeRevision?.priceProvenance).toMatchObject({ source: 'openrouter', sourceModelId: 'anthropic/claude-opus-x', confidence: 'estimate', isOverride: false });
+
+    // The review prices the routed model, so both mismatched saves read as repriced.
+    const profiles = await listProfiles(call);
+    const review = (id: string) => profiles.find((profile) => profile.id === id)?.pricingReview;
+    expect(review('or-mismatch')).toMatchObject({ state: 'repriced', isOverride: true, changes: [{ field: 'input', pinned: 1_000_000, catalog: 10_000_000 }, { field: 'output' }] });
+    expect(review('vendor-mismatch')).toMatchObject({ state: 'repriced', isOverride: true, changes: [{ field: 'input', pinned: 1_000_000, catalog: 15_000_000 }, { field: 'output' }] });
+    expect(review('vendor-match')).toMatchObject({ state: 'current', isOverride: false });
+
+    // An edit checks the reference against the model and credential it leaves the profile routed to.
+    const moved = await save('or-moved', openRouter.id, 'openai/cheap', flat(1_000_000, 2_000_000), 'openai/cheap');
+    expect(moved.activeRevision?.priceProvenance).toMatchObject({ source: 'openrouter', sourceModelId: 'openai/cheap', isOverride: false });
+    const remodeled = await call('model_profile_update', {
+      profileId: 'or-moved', expectedGeneration: moved.generation, model: 'openai/expensive',
+      pricing: { ...flat(1_000_000, 2_000_000), cacheReadMicrosPerMillionTokens: 100_000 }, catalogPriceRef: { sourceModelId: 'openai/cheap' }
+    }) as AgentModelProfileMetadata;
+    expect(remodeled.activeRevision?.priceProvenance).toMatchObject({ source: 'user', sourceModelId: null, isOverride: true });
+    const switched = await call('model_profile_update', {
+      profileId: 'or-mismatch', expectedGeneration: openRouterMismatch.generation, credentialId: anthropic.id, model: 'claude-opus-x',
+      pricing: flat(15_000_000, 75_000_000), catalogPriceRef: { sourceModelId: 'anthropic/claude-opus-x' }
+    }) as AgentModelProfileMetadata;
+    expect(switched.activeRevision?.priceProvenance).toMatchObject({ source: 'openrouter', sourceModelId: 'anthropic/claude-opus-x', confidence: 'estimate', isOverride: false });
+  });
+
+  it('reads the persisted catalog snapshot at most once while listing, even when it is rejected', async () => {
+    const { principals, call } = setup();
+    // A snapshot in an older format no longer parses and is treated as absent.
+    principals.database.prepare(`
+      INSERT INTO model_catalog_snapshots (cache_key, source, provider, entries_json, fetched_at)
+      VALUES ('openrouter:public', 'openrouter', 'openrouter', ?, 1)
+    `).run(JSON.stringify([{ id: MODEL }]));
+    const loads = vi.spyOn(CatalogSnapshotStore.prototype, 'loadOpenRouter');
+    const credential = await call('model_credential_create', { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or-secret' }) as { id: string };
+    for (const profileId of ['one', 'two', 'three']) {
+      await createProfile(call, profileId, credential.id, { pricing: { inputMicrosPerMillionTokens: 3_000_000, outputMicrosPerMillionTokens: 15_000_000 } });
+    }
+    for (let index = 0; index < 3; index += 1) {
+      expect((await listProfiles(call)).map((profile) => profile.pricingReview?.state)).toEqual(['unknown', 'unknown', 'unknown']);
+    }
+    expect(loads).toHaveBeenCalledTimes(1);
+
+    // The next catalog search replaces the rejected snapshot, and listing reviews against it.
+    await call('model_catalog_search', { provider: 'openrouter' });
+    expect((await listProfiles(call)).map((profile) => profile.pricingReview?.state)).toEqual(['repriced', 'repriced', 'repriced']);
+    expect(loads).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps catalog code free of revision writes', () => {
+    const directory = new URL('../src/model-catalog/', import.meta.url);
+    const sources = readdirSync(directory).filter((name) => name.endsWith('.ts'));
+    expect(sources.length).toBeGreaterThan(0);
+    for (const name of sources) {
+      expect(readFileSync(new URL(name, directory), 'utf8'), name).not.toMatch(/agent_model_profile|\.(?:create|update|activate)Profile\(/u);
+    }
+  });
+});
+
+describe('ModelProfileStateRepository single-profile route read', () => {
+  it('returns one profile\'s credential and active model, scoped to its principal', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'model-profile-route-'));
+    const store = new StateStore(join(directory, 'state.sqlite'));
+    try {
+      const repo = new ModelProfileStateRepository(store.database, new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]));
+      const p1 = store.resolvePrincipal({ kind: 'owner', ownerId: 'user-1' });
+      const p2 = store.resolvePrincipal({ kind: 'owner', ownerId: 'user-2' });
+      const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-route-secret' });
+      repo.createProfile(p1, {
+        profileId: ModelProfileIdSchema.parse('route'), displayName: 'Route', credentialId: credential.id, model: 'gpt-route', apiMode: 'chat-completions',
+        pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+        limits: { maxInputTokens: 1, maxOutputTokens: 1, maxCostMicros: 1 }, maxProxyOperations: ['files_read']
+      });
+      expect(repo.getProfileRoute(p1, 'route')).toEqual({ credentialId: credential.id, model: 'gpt-route' });
+      expect(repo.getProfileRoute(p2, 'route')).toBeUndefined();
+      expect(repo.getProfileRoute(p1, 'missing')).toBeUndefined();
+    } finally {
+      store.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ModelProfileStateRepository plan and write steps', () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+  });
+
+  function setup() {
+    const directory = mkdtempSync(join(tmpdir(), 'model-profile-plan-'));
+    const store = new StateStore(join(directory, 'state.sqlite'));
+    cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+    cleanups.push(() => store.close());
+    const repo = new ModelProfileStateRepository(store.database, new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]));
+    const p1 = store.resolvePrincipal({ kind: 'owner', ownerId: 'user-1' });
+    const p2 = store.resolvePrincipal({ kind: 'owner', ownerId: 'user-2' });
+    const rows = () => ({
+      profiles: (store.database.prepare('SELECT count(*) AS count FROM agent_model_profiles').get() as { count: number }).count,
+      revisions: (store.database.prepare('SELECT count(*) AS count FROM agent_model_profile_revisions').get() as { count: number }).count
+    });
+    return { store, repo, p1, p2, rows };
+  }
+
+  const input = (credentialId: ModelCredentialId, profileId = 'planned', extra: Record<string, unknown> = {}) => ({
+    profileId: ModelProfileIdSchema.parse(profileId),
+    displayName: 'Planned',
+    credentialId,
+    model: 'gpt-plan',
+    apiMode: 'chat-completions' as const,
+    pricing: { inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000 },
+    limits: { maxInputTokens: 1_000, maxOutputTokens: 500, maxCostMicros: 10_000 },
+    maxProxyOperations: ['files_read' as const],
+    ...extra
+  });
+
+  it('plans a create and an update without writing a row', () => {
+    const { repo, p1, rows } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const before = rows();
+    const created = repo.planCreateRevision(p1, input(credential.id));
+    expect(rows()).toEqual(before);
+    expect(created).toMatchObject({ displayName: 'Planned', provider: 'openai', current: null });
+    expect(created.revision).toMatchObject({ model: 'gpt-plan', upstreamUrl: 'https://api.openai.com/v1/chat/completions' });
+
+    const saved = repo.createProfile(p1, input(credential.id));
+    const afterCreate = rows();
+    const planned = repo.planUpdateRevision(p1, saved.id, { model: 'gpt-next', expectedGeneration: saved.generation });
+    expect(rows()).toEqual(afterCreate);
+    expect(planned.current).toEqual({ generation: 1, status: 'ACTIVE', activeRevision: saved.activeRevision, createdAt: saved.createdAt });
+    expect(repo.listProfiles(p1)[0]?.activeRevision?.model).toBe('gpt-plan');
+  });
+
+  it('plans exactly the revision the save then writes', () => {
+    const { repo, p1 } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const saved = repo.createProfile(p1, input(credential.id));
+    const update = { model: 'gpt-next', limits: { maxInputTokens: 2_000, maxOutputTokens: 500, maxCostMicros: 10_000 }, expectedGeneration: 1 };
+    const { revision: planned } = repo.planUpdateRevision(p1, saved.id, update);
+    const { activeRevision: written } = repo.updateProfile(p1, saved.id, update);
+    // The id, digest, and creation time are assigned when the revision is written.
+    const routeFields = (revision: object) => Object.fromEntries(Object.entries(revision).filter(([key]) => !['id', 'digest', 'createdAt'].includes(key)));
+    expect(routeFields(written!)).toEqual(routeFields(planned));
+  });
+
+  it('refuses in the plan step what the save refuses', () => {
+    const { repo, p1, p2, rows } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const saved = repo.createProfile(p1, input(credential.id));
+    const before = rows();
+    const refusal = (action: () => unknown) => {
+      try {
+        action();
+      } catch (error) {
+        return error instanceof HarnessError ? error.code : 'not a HarnessError';
+      }
+      return 'accepted';
+    };
+    expect(refusal(() => repo.planCreateRevision(p2, input(credential.id, 'other')))).toBe('NOT_FOUND');
+    expect(refusal(() => repo.planUpdateRevision(p1, saved.id, { expectedGeneration: 9 }))).toBe('CONFLICT');
+    expect(refusal(() => repo.planUpdateRevision(p2, saved.id, { expectedGeneration: 1 }))).toBe('NOT_FOUND');
+    // A taken profile id is a conflict, not a failed insert, for the save as well.
+    expect(refusal(() => repo.planCreateRevision(p1, input(credential.id)))).toBe('CONFLICT');
+    expect(refusal(() => repo.createProfile(p1, input(credential.id)))).toBe('CONFLICT');
+    // A registry provider has a fixed endpoint, so a custom URL is refused rather than ignored.
+    const customUrl = { customUpstreamUrl: 'https://llm.example.org/v1/chat/completions' };
+    expect(refusal(() => repo.planCreateRevision(p1, input(credential.id, 'custom-url', customUrl)))).toBe('INVALID_INPUT');
+    expect(refusal(() => repo.updateProfile(p1, saved.id, { ...customUrl, expectedGeneration: 1 }))).toBe('INVALID_INPUT');
+    expect(rows()).toEqual(before);
+  });
+
+  it('creates a DISABLED profile on request and leaves it out of the gateway snapshot', () => {
+    const { repo, p1 } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const disabled = repo.createProfile(p1, input(credential.id, 'starts-disabled'), { initialStatus: 'DISABLED' });
+    const active = repo.createProfile(p1, input(credential.id, 'starts-active'));
+    expect(disabled.status).toBe('DISABLED');
+    expect(active.status).toBe('ACTIVE');
+    expect(repo.listProfiles(p1).find((profile) => profile.id === disabled.id)?.status).toBe('DISABLED');
+    const snapshot = repo.getExportSnapshot();
+    expect(Object.keys(snapshot.profiles)).toEqual([active.activeRevisionId]);
+  });
+
+  it('records a change inside the write and rolls the write back when recording fails', () => {
+    const { store, repo, p1, rows } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const recorded: string[] = [];
+    const record = (database: DatabaseSync, profile: AgentModelProfileMetadata) => {
+      // The recorder writes on the handle that holds the transaction.
+      expect(database).toBe(store.database);
+      expect(database.isTransaction).toBe(true);
+      recorded.push(`${profile.id}@${profile.generation}:${profile.status}`);
+    };
+    const saved = repo.createProfile(p1, input(credential.id), { record });
+    repo.updateProfile(p1, saved.id, { model: 'gpt-next', expectedGeneration: 1 }, { record });
+    repo.disableProfile(p1, saved.id, 2, record);
+    repo.activateProfile(p1, saved.id, 3, record);
+    repo.deleteProfile(p1, saved.id, 4, record);
+    expect(recorded).toEqual(['planned@1:ACTIVE', 'planned@2:ACTIVE', 'planned@3:DISABLED', 'planned@4:ACTIVE', 'planned@4:ACTIVE']);
+
+    const before = rows();
+    const failing = () => { throw new Error('audit unavailable'); };
+    expect(() => repo.createProfile(p1, input(credential.id, 'unrecorded'), { record: failing })).toThrow('audit unavailable');
+    expect(rows()).toEqual(before);
+  });
+
+  it('commits exactly the plan the guard saw', () => {
+    const { repo, p1 } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const guarded: ProfileRevisionPlan[] = [];
+    const guard = (plan: ProfileRevisionPlan) => { guarded.push(plan); };
+
+    const created = repo.createProfile(p1, input(credential.id), { guard });
+    const updated = repo.updateProfile(p1, created.id, { model: 'gpt-next', expectedGeneration: 1 }, { guard });
+    expect(guarded.map((plan) => plan.revision)).toEqual([created.activeRevision, updated.activeRevision]);
+    expect(guarded[1]?.current).toMatchObject({ generation: 1, activeRevision: created.activeRevision });
+    // The stored revision is the guarded one, down to its id, digest, and timestamp.
+    expect(repo.listProfiles(p1).find((profile) => profile.id === created.id)?.activeRevision).toEqual(guarded[1]?.revision);
+  });
+
+  it('writes nothing when the guard refuses the plan', () => {
+    const { repo, p1, rows } = setup();
+    const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-plan-secret' });
+    const saved = repo.createProfile(p1, input(credential.id));
+    const before = rows();
+    const refuse = () => { throw new HarnessError('CONFLICT', 'owner approval required', 409, false); };
+    const record = vi.fn();
+    expect(() => repo.createProfile(p1, input(credential.id, 'refused'), { guard: refuse, record })).toThrow('owner approval required');
+    expect(() => repo.updateProfile(p1, saved.id, { model: 'gpt-next', expectedGeneration: 1 }, { guard: refuse, record })).toThrow('owner approval required');
+    expect(rows()).toEqual(before);
+    expect(record).not.toHaveBeenCalled();
+    expect(repo.listProfiles(p1).map((profile) => [profile.id, profile.generation])).toEqual([[saved.id, 1]]);
+  });
+
+  it('lists the upstream URLs bound to one credential of one principal', () => {
+    const { repo, p1, p2 } = setup();
+    const custom = repo.createCredential(p1, { label: 'Custom', provider: 'custom', apiKey: 'sk-plan-secret' });
+    const other = repo.createCredential(p1, { label: 'Custom 2', provider: 'custom', apiKey: 'sk-plan-secret' });
+    const first = 'https://llm.example.org/v1/chat/completions';
+    const second = 'https://llm.example.org/v2/chat/completions';
+    const saved = repo.createProfile(p1, input(custom.id, 'custom-a', { customUpstreamUrl: first }));
+    repo.updateProfile(p1, saved.id, { customUpstreamUrl: second, expectedGeneration: 1 });
+    repo.createProfile(p1, input(other.id, 'custom-b', { customUpstreamUrl: 'https://elsewhere.example.org/v1/chat/completions' }));
+    // Earlier revisions of a profile stay bound; another credential's URLs never are.
+    expect(repo.listBoundCustomUpstreams(p1, custom.id)).toEqual([first, second]);
+    expect(repo.listBoundCustomUpstreams(p2, custom.id)).toEqual([]);
+    // A deleted profile no longer binds its URLs.
+    repo.deleteProfile(p1, saved.id, 2);
+    expect(repo.listBoundCustomUpstreams(p1, custom.id)).toEqual([]);
   });
 });

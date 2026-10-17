@@ -206,15 +206,9 @@ describe('GitHub App broker', () => {
 
   it.each([
     ['issue_list', 'issues', false],
-    ['issue_view', 'issues', false],
     ['issue_create', 'issues', true],
-    ['issue_comment', 'issues', true],
     ['issue_comment_update', 'issues', true],
-    ['issue_update', 'issues', true],
-    ['issue_publish', 'issues', true],
     ['label_create', 'issues', true],
-    ['issue_labels_add', 'issues', true],
-    ['issue_labels_remove', 'issues', true],
     ['pr_list', 'pull_requests', false],
     ['pr_view', 'pull_requests', false],
     ['pr_create', 'pull_requests', true],
@@ -233,6 +227,79 @@ describe('GitHub App broker', () => {
     ['pr_auto_merge_disable', 'pull_requests', true]
   ])('requires the exact GitHub permission for %s', (action, scope, write) => {
     expect(requiredGitHubPermissions(action)).toEqual({ scope, write });
+  });
+
+  it.each([
+    ['issue_view', false],
+    ['issue_comment', true],
+    ['issue_update', true],
+    ['issue_publish', true],
+    ['issue_labels_add', true],
+    ['issue_labels_remove', true]
+  ])('also asks for pull_requests on %s because the number may name a pull request', (action, write) => {
+    expect(requiredGitHubPermissions(action as string)).toEqual({ scope: 'issues', write, optionalScope: 'pull_requests' });
+  });
+
+  it('carries the optional scope at the action level when the installation grants it', async () => {
+    authMocks.installationAuth.mockClear();
+    const installations = new InMemoryGitHubInstallationStore();
+    installations.replaceVerified('principal-a', activeInstallation({ issues: 'write', pullRequests: 'write' }), 1_000);
+
+    await expect(mintPrincipalRepositoryScopedToken({
+      config: { ...config, authMode: 'owner-bearer' as const }, principalId: 'principal-a',
+      repositoryUrl: new URL('https://github.com/octocat/hello-world.git'),
+      installations,
+      permissionScope: 'issues',
+      requiredPermission: 'write',
+      optionalScope: 'pull_requests'
+    })).resolves.toEqual({ token: 'repository-scoped-token', permissions: { issues: 'write', pull_requests: 'write' } });
+    expect(authMocks.installationAuth).toHaveBeenCalledTimes(1);
+    expect(authMocks.installationAuth).toHaveBeenLastCalledWith({
+      type: 'installation',
+      repositoryNames: ['hello-world'],
+      permissions: { issues: 'write', pull_requests: 'write', contents: 'read' }
+    });
+  });
+
+  it('drops the optional scope when the installation refuses it and keeps the action scope', async () => {
+    authMocks.installationAuth.mockClear();
+    authMocks.installationAuth.mockRejectedValueOnce({ status: 422 });
+    authMocks.installationAuth.mockResolvedValueOnce({ token: 'issues-only-token', permissions: { issues: 'read', contents: 'read' } });
+    const installations = new InMemoryGitHubInstallationStore();
+    installations.replaceVerified('principal-a', activeInstallation({ issues: 'read', pullRequests: 'none' }), 1_000);
+
+    await expect(mintPrincipalRepositoryScopedToken({
+      config: { ...config, authMode: 'owner-bearer' as const }, principalId: 'principal-a',
+      repositoryUrl: new URL('https://github.com/octocat/hello-world.git'),
+      installations,
+      permissionScope: 'issues',
+      requiredPermission: 'read',
+      optionalScope: 'pull_requests'
+    })).resolves.toEqual({ token: 'issues-only-token', permissions: { issues: 'read', contents: 'read' } });
+    expect(authMocks.installationAuth).toHaveBeenCalledTimes(2);
+    expect(authMocks.installationAuth).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      permissions: { issues: 'read', pull_requests: 'read', contents: 'read' }
+    }));
+    expect(authMocks.installationAuth).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      permissions: { issues: 'read', contents: 'read' }
+    }));
+  });
+
+  it('does not retry an infrastructure mint failure without the optional scope', async () => {
+    authMocks.installationAuth.mockClear();
+    authMocks.installationAuth.mockRejectedValueOnce({ status: 500 });
+    const installations = new InMemoryGitHubInstallationStore();
+    installations.replaceVerified('principal-a', activeInstallation({ issues: 'write', pullRequests: 'write' }), 1_000);
+
+    await expect(mintPrincipalRepositoryScopedToken({
+      config: { ...config, authMode: 'owner-bearer' as const }, principalId: 'principal-a',
+      repositoryUrl: new URL('https://github.com/octocat/hello-world.git'),
+      installations,
+      permissionScope: 'issues',
+      requiredPermission: 'write',
+      optionalScope: 'pull_requests'
+    })).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+    expect(authMocks.installationAuth).toHaveBeenCalledTimes(1);
   });
 
   it.each(['pr_merge', 'pr_auto_merge_enable'])('also requires contents:write for %s', (action) => {

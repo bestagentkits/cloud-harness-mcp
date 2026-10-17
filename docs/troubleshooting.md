@@ -38,6 +38,7 @@ URLs, or raw command content into tickets or shared logs.
 | Workspace-bound `/mcp/workspaces/<workspaceId>` returns an nginx HTML `404` while `/mcp` works | The host's nginx site predates the managed `^~ /mcp/workspaces/` prefix route. Run `sudo /usr/local/sbin/cloud-harness-upgrade-nginx` (Access-mode release deploys run it; owner-bearer deploys do not). A `404` that reaches the API instead means the path is wrong: JSON `not_found` for a segment that is not a well-formed workspace ID, or no route for extra path segments after it. The static API-key lane forwards only exact `/mcp` and `/mcp-gateway`, so it cannot reach this endpoint. |
 | `https://api.harness.zuey.me/mcp-gateway` returns an nginx HTML `404` while `https://api.harness.zuey.me/mcp` works | The Worker forwards to the hidden origin route `/mcp-api-key/gateway`, but the host's nginx site predates that exact location (or the Worker was redeployed before the origin release). Run `sudo /usr/local/sbin/cloud-harness-upgrade-nginx` and confirm the origin release serves the route; the Access application needs no change. If `/mcp` on the same hostname also fails, the lane itself is disabled or misrouted; use the API-key rows above. |
 | `cloud-harness-upgrade-nginx` exits `10` | The selected server block already proxies something to `127.0.0.1:3100/mcp-api-key/` that is not the managed `/mcp-api-key/gateway` block, so the command refused to change the site. Reconcile it with `deploy/nginx/cloud-harness-mcp.conf` by hand and rerun; see [deployment](deployment.md). |
+| `cloud-harness-upgrade-nginx` exits `11` | The selected server block already has a location mentioning `/dashboard/mcp-oauth` that is not the managed callback block (which sets `access_log off`), so the command refused to change the site. Reconcile it with `deploy/nginx/cloud-harness-mcp.conf` by hand and rerun; see [deployment](deployment.md). |
 | `cloud-harness-upgrade-nginx` exits `9` | The selected server block already has a location or `proxy_pass` under `/mcp/` that is not the managed workspace-bound block, so the command refused to change the site. Reconcile that block with `deploy/nginx/cloud-harness-mcp.conf` by hand and rerun; see [deployment](deployment.md). |
 | Dashboard skill ZIP upload returns `413` for an archive below 8 MiB | The application accepts skill archives up to 8 MiB, but an older managed nginx dashboard route can still inherit the server's 1 MiB request cap. Run the current `deploy/scripts/upgrade-nginx-dashboard.sh` (or the normal release deployment, which runs it) so `/dashboard/` gets `client_max_body_size 8m`; archives above 8 MiB remain intentionally rejected by the API and runner. |
 | Dashboard skill ZIP upload is rejected with `INVALID_INPUT` | The archive broke a reader bound in `apps/runner/src/skill-archive.ts`: 8 MiB archive, 200 `SKILL.md` documents, 20,000 files in total, and 64 Ki characters per `SKILL.md`. Only `SKILL.md` documents are imported; bundled assets are ignored and never expanded. Split a larger library into several archives. |
@@ -88,7 +89,8 @@ MCP server. Inbound Managed OAuth problems are in the table above.
 
 | Symptom | Meaning and next check |
 |---|---|
-| Connect returns `503 unavailable` | `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` is unset on the API. Set it as described in [deployment](deployment.md#downstream-mcp-oauth-redirect). |
+| OAuth panel reads **Not configured** with no Connect, or Connect returns `503 unavailable` | `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` is unset on the API. Set it as described in [deployment](deployment.md#downstream-mcp-oauth-redirect). A grant connected before it was unset keeps working and can still be disconnected. |
+| A Reconnect failed but the panel still reads **Connected** with a warning | Expected: a failed or declined interactive attempt keeps the working grant and records the cause as `lastError`, which clears on the next successful Connect or refresh. |
 | Test or Refresh returns `409` / a gateway call returns `AUTHORIZATION_REQUIRED` | The server has OAuth configured but no usable grant for this principal: never connected, disconnected, discarded after an endpoint or client change, or the refresh was rejected. Use Connect or Reauthorize on the server's Overview tab. Background calls intentionally never start an authorization. |
 | Callback returns to the server page with `oauth=error&reason=invalid_state` or `expired` | The one-time flow was already used, superseded by a newer Connect, started by another principal, or older than its short lifetime. Start Connect again from the same browser session. |
 | `reason=denied` | The user or the authorization server declined the request. Check the requested scopes and the account used at the provider. |
@@ -108,9 +110,10 @@ Never paste tokens, authorization codes, or callback URLs carrying `code` or
 - `LIMIT_EXCEEDED` with `active workspace limit reached: N active of a maximum M`
   means the principal already holds `M` counted workspaces (`CREATING`, `ACTIVE`,
   `NETWORK_QUARANTINED`). Call `workspace_list` to see them and `workspace_close`
-  to free a slot, or raise `MAX_ACTIVE_WORKSPACES_PER_OWNER` on the runner.
-  Lowering the limit never reaps an existing workspace; it only blocks new
-  admission. A record in `REAPING` is in flight to teardown and holds no slot, so it
+  to free a slot, or raise the quota in Dashboard → Settings → **Workspace
+  limits & lifecycle** (or `MAX_ACTIVE_WORKSPACES_PER_OWNER` on the runner when
+  no override is set). Lowering the limit never reaps an existing workspace; it
+  only blocks new admission. A record in `REAPING` is in flight to teardown and holds no slot, so it
   never appears in this count.
 - A workspace whose lease is `ACTIVE` also frees its slot when its idle or wall TTL
   expires. A `NETWORK_QUARANTINED` record does not expire, so close it explicitly.
@@ -138,14 +141,64 @@ a lost response; do not create a second key until the first result is resolved.
 
 ## Tool behavior
 
+- An agent's model request fails with `400 invalid_model_request` naming a
+  field or tool type: the Model Gateway refuses requests it cannot bound or
+  that would let the provider act on the agent's behalf. These are stored
+  Responses context (`previous_response_id`, `conversation`, an object-valued
+  `prompt`), any tool type other than `function` and `custom`, the fields
+  `plugins` and `web_search_options`, and media parts (image, audio, video,
+  file) with a `file_id` or a URL that is not a `data:` URL. Hosted tools and
+  remote media would give an agent in a `network-none` workspace network or
+  remote MCP access through the provider. The runtime must resend the full
+  input, run tools itself, and send media inline as a `data:` URL or base64;
+  see the
+  [security model](security-model.md#subagent-model-provider-credential-isolation--gateway-control) and
+  [`apps/model-gateway/src/budget.ts`](../apps/model-gateway/src/budget.ts).
+- `agent_spawn` fails with `LIMIT_EXCEEDED` and `model spend policy (...)
+  would be exceeded`: the owner's daily or monthly spend policy, for the
+  principal or the model profile, cannot fit this run's whole `maxCostMicros`
+  on top of the estimated spend already committed in that UTC window. Open
+  runs count at their full cap until their lease settles, and a lease lost to
+  a gateway restart counts at its cap as `unreconciled`. Nothing was created,
+  so lower `maxCostMicros` or wait for running agents to end, then retry; the
+  owner can also raise or remove the policy through the dashboard spend routes
+  (see [Spend policies](../docs-site/dashboard/models.md#spend-policies)). A `model spend threshold reached`
+  runner log line marks the first time a window reaches the policy's warning
+  percentage. All of these figures are estimates: a run counts entirely in
+  the window it was admitted in, so spend near a window boundary can exceed
+  one window's limit. "Not retryable" means an unchanged retry right away
+  fails the same way. The per-run cap is enforced by the gateway as before. The rules are in
+  [`apps/runner/src/model-spend-ledger.ts`](../apps/runner/src/model-spend-ledger.ts).
 - `files_apply_patch` conflict: read the file again, choose an exact unique
   `oldText`, and pass the latest SHA when concurrency matters. It is not a
   unified diff.
 - `EXPIRED` or a closed workspace: open a new workspace. The old job directory
   is intentionally removed.
-- Missing shell/session handle after a runner restart: interactive PTY streams
-  are in memory and cannot be reconnected. Background task metadata and output
-  logs persist across restarts and can be inspected via `tasks_status` or `tasks_list`.
+- Missing shell/session handle after a runner restart: interactive shell and
+  session streams are in memory and cannot be reconnected. Background task
+  metadata and output logs persist across restarts and can be inspected via
+  `tasks_status` or `tasks_list`.
+- Dashboard Terminal shows "no longer available" (the runner answered
+  `NOT_FOUND`): the runner restarted, or the terminal was closed, timed out, or
+  pruned after ending. Terminals are never resumed; open a new session. See
+  [operations](operations.md#dashboard-terminals). If it says the terminal
+  ended with its workspace (the runner answered `410`), the workspace was
+  closed or expired; renew or recover it, then open a new session.
+- Dashboard Terminal echo lags by one key (for example `g` appears only after
+  the next key): the typed text matches the start of an injected secret value,
+  and the redactor holds it until the next bytes rule a secret out. This is
+  intended; see [ADR 0003](adr/0003-terminal-bash-and-managed-toolbox.md).
+- Opening a Dashboard Terminal returns `429` with "too many open terminals":
+  the workspace already holds the configured number of live terminals. Close
+  one from the workspace tab or `/dashboard/terminals`, or raise the limit
+  described in [configuration](configuration.md#dashboard-terminal). A `429`
+  while typing means input is arriving faster than the PTY drains; the
+  dashboard retries in order, then reports dropped keystrokes rather than
+  queueing them without bound.
+- Opening a Dashboard Terminal returns `503` while other workspace actions
+  work: check that the workspace executor is running, and that the runner's
+  `DOCKER_HOST` is unset or a `unix://` path. Terminals use the Docker Engine
+  API over a unix socket and are unavailable with any other Docker host.
 - `workspace_open` fails with `DEPENDENCY_EGRESS_UNAVAILABLE` (HTTP 503): the
   effective profile is `dependency-access` — the shipped default — but the Linux
   host firewall is missing or drifted. Provision it with
@@ -207,6 +260,25 @@ a lost response; do not create a second key until the first result is resolved.
   and the configured artifact root; a database row without its matching
   payload indicates an incoherent restore.
 
+## MCP Events
+
+The error mapping is owned by
+[`apps/api/src/events/events-extension.ts`](../apps/api/src/events/events-extension.ts);
+inspect delivery state with `GET /dashboard/api/v1/event-subscriptions`, which
+shows each subscription's state, callback origin, last error category, and
+recent deliveries.
+
+| Symptom | Meaning and next check |
+|---|---|
+| `server/discover` has no `events` capability | The client is on local stdio, local HTTP, or `/mcp-gateway`, or the release predates events. Use the remote `/mcp` endpoint. |
+| `-32602` on `events/subscribe` | The `delivery.url` is not a public `https` URL without credentials or fragment, the secret is not `whsec_` plus base64 of 24–64 bytes, or the filter arguments have an unknown key. |
+| `-32011` / `-32012` / `-32013` / `-32014` | Unknown event name; unauthenticated request or a filter naming a workspace, task, or agent the caller does not own; per-principal active or retained subscription quota reached (revoked and expired rows count until retention purges them); a delivery mode other than `webhook`. |
+| `-32015` with `reason` | The callback failed the signed verification challenge: it was unreachable, timed out, failed TLS, answered non-`2xx` or a redirect, or did not echo the exact `challenge`. Fix the receiver; nothing was stored. |
+| `-32603` "Events are temporarily unavailable" | The runner is unreachable or has no secret keyring configured. Check `/readyz` and the runner keyring. |
+| Subscription `REVOKED` without a dashboard action | It was created over a managed API key that was revoked or expired; the audit entry carries `reason: credential_revoked`. Subscribe again with a valid credential. |
+| Deliveries `ABANDONED` | The receiver kept failing past the retry window, answered `410` or `413`, or the subscription lapsed or was revoked first. Events are not replayed; fix the receiver and wait for the next transition. |
+| Duplicate deliveries at the receiver | Expected under at-least-once delivery. Deduplicate on `webhook-id`. |
+
 ## Containers and cleanup
 
 Inspect before acting:
@@ -216,6 +288,14 @@ sudo docker ps -a --filter label=cloud-harness.managed=true \
   --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Label "cloud-harness.workspace"}}'
 df -h /var/lib/cloud-harness
 ```
+
+An `EXPIRED_RECOVERABLE` workspace that outlives its grace, with `error`
+starting `auto-close deferred:`, is retained on purpose: the reaper found
+running agents, uncommitted or untracked files, stashes, or unpushed commits,
+or could not run the check. Earlier releases deleted it after an hour
+regardless. Recover or export the work, then `workspace_close`; the Settings
+panel counts these as retained by auto-close. See
+[expired workspaces and auto-close](operations.md#expired-workspaces-and-auto-close).
 
 Prefer `workspace_close`. If manual recovery is unavoidable, match the opaque
 workspace ID in SQLite, the Docker label, and the exact job directory first.

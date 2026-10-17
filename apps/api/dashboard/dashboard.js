@@ -12,6 +12,18 @@ import {
   disableModelProfile,
   deleteModelProfile,
   getModelConfigStatus,
+  listModelProviders,
+  searchModelCatalog,
+  refreshModelCatalog,
+  verifyModelConnection,
+  getModelSpend,
+  setModelSpendPolicy,
+  deleteModelSpendPolicy,
+  listIntegrationCredentials,
+  createIntegrationCredential,
+  rotateIntegrationCredential,
+  deleteIntegrationCredential,
+  getTypesafeStatus,
   listKnowledge,
   getKnowledgeItem,
   createKnowledgeItem,
@@ -38,7 +50,7 @@ import {
 import {
   escapeHtml,
   launchBlockedByConflicts,
-  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
+  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderOverview, renderOverviewSkeleton,
   renderProjectDetail, renderProfile, renderProjectIndex, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
   renderMcpServersIndex, renderMcpServerDetail,
@@ -56,8 +68,12 @@ import {
   renderAgentsIndex, renderAgentDetail,
   renderRuntimePanel, renderGitPanel,
   renderAutomationPanel, renderDeployPanel,
-  renderActivityCenter, renderApprovals
+  renderActivityCenter, renderApprovals, grantIsActionable, planIsActionable, renderPackages,
+  renderTerminalPanel, renderTerminalsIndex,
+  WORKSPACE_LIFECYCLE_FIELDS, isWorkspaceLifecycleView, lifecycleDurationLabel, workspaceLifecycleDisplayValue, workspaceLifecycleFieldBounds
 } from './dashboard-render.js';
+import { mountTerminalPane } from './dashboard-terminal.js';
+import { createModelWizard, createSpendPanel, renderModelsPage, verificationLabel } from './dashboard-models.js';
 import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -152,6 +168,62 @@ export function githubCallbackParameters(search) {
 
 export function resetWriteOnlyFields(form) {
   for (const field of form.querySelectorAll('input[data-write-only]')) field.value = '';
+}
+
+/**
+ * The workspace lifecycle write for the edited panel values, or the field errors that block it. Only fields
+ * whose value changed are sent, in seconds, with the revision the panel loaded so a concurrent save from
+ * elsewhere surfaces as a conflict instead of being overwritten. The runner re-validates every rule here.
+ */
+export function workspaceLifecycleUpdateInput(view, values, acknowledged) {
+  const errors = {};
+  const update = { expectedRevision: view.revision };
+  const effective = {};
+  for (const field of WORKSPACE_LIFECYCLE_FIELDS) {
+    const setting = view.settings[field.name];
+    effective[field.name] = setting.value;
+    const raw = String(values?.[field.name] ?? '').trim();
+    if (raw === workspaceLifecycleDisplayValue(field, setting.value)) continue;
+    const number = raw === '' ? Number.NaN : Number(raw);
+    const bounds = workspaceLifecycleFieldBounds(field, setting);
+    if (!Number.isInteger(number) || number < bounds.min || number > bounds.max) {
+      errors[field.name] = field.unit === 'count'
+        ? `Enter a whole number from ${bounds.min} to ${bounds.max}.`
+        : `Enter whole minutes from ${bounds.min} to ${bounds.max}.`;
+      continue;
+    }
+    const next = field.unit === 'count' ? number : number * 60;
+    if (next === setting.value) continue;
+    update[field.name] = next;
+    effective[field.name] = next;
+  }
+  if (!errors.idleTtlSeconds && !errors.wallTtlSeconds && effective.idleTtlSeconds > effective.wallTtlSeconds) {
+    const field = update.wallTtlSeconds !== undefined && update.idleTtlSeconds === undefined ? 'wallTtlSeconds' : 'idleTtlSeconds';
+    errors[field] = `The idle timeout (${lifecycleDurationLabel(effective.idleTtlSeconds)}) cannot exceed the maximum lifetime (${lifecycleDurationLabel(effective.wallTtlSeconds)}).`;
+  }
+  if (update.recoverableGraceSeconds === 0) {
+    if (acknowledged === true) update.acknowledgeImmediateClose = true;
+    else errors.acknowledgeImmediateClose = 'Confirm that a grace of 0 closes expired workspaces without a recovery window.';
+  }
+  const changed = WORKSPACE_LIFECYCLE_FIELDS.some((field) => update[field.name] !== undefined);
+  return { errors, body: Object.keys(errors).length || !changed ? undefined : update };
+}
+
+/** Clears every override so each field falls back to the runner value the panel shows beside it. */
+export function workspaceLifecycleResetInput(view) {
+  const idle = view.settings.idleTtlSeconds.runnerValue;
+  const wall = view.settings.wallTtlSeconds.runnerValue;
+  if (idle > wall) {
+    return { error: `The runner values cannot be restored: the runner idle timeout (${lifecycleDurationLabel(idle)}) exceeds its maximum lifetime (${lifecycleDurationLabel(wall)}). Fix the runner environment, or keep a Dashboard override.` };
+  }
+  return { body: { expectedRevision: view.revision, ...Object.fromEntries(WORKSPACE_LIFECYCLE_FIELDS.map((field) => [field.name, null])) } };
+}
+
+/** The read-back the status line announces after a save, so the operator hears what the runner stored. */
+export function workspaceLifecycleSummary(view) {
+  if (!isWorkspaceLifecycleView(view)) return '';
+  const { settings } = view;
+  return `Effective: up to ${settings.maxActiveWorkspacesPerOwner.value} active per principal, idle ${lifecycleDurationLabel(settings.idleTtlSeconds.value)}, lifetime ${lifecycleDurationLabel(settings.wallTtlSeconds.value)}, grace ${lifecycleDurationLabel(settings.recoverableGraceSeconds.value)}.`;
 }
 
 export function apiKeyCreateInput(form) {
@@ -946,19 +1018,19 @@ export function initializeDashboard() {
     const lines = [];
     for (const item of parsed) {
       const err = validateSecretClient(item.name, item.value);
-      const descHint = item.description ? ` (${escape(item.description)})` : '';
+      const descHint = item.description ? ` (${escapeHtml(item.description)})` : '';
       if (err) {
-        lines.push(`<span class="diff-err">&times; REJECTED: ${escape(item.name)} (${escape(err)})</span>`);
+        lines.push(`<span class="diff-err">&times; REJECTED: ${escapeHtml(item.name)} (${escapeHtml(err)})</span>`);
       } else if (seenInBatch.has(item.name)) {
-        lines.push(`<span class="diff-err">&times; DUPLICATE: ${escape(item.name)} (duplicate in pasted batch)</span>`);
+        lines.push(`<span class="diff-err">&times; DUPLICATE: ${escapeHtml(item.name)} (duplicate in pasted batch)</span>`);
       } else {
         seenInBatch.add(item.name);
         const isExisting = existing.has(item.name);
         if (isExisting) {
           const prev = existing.get(item.name);
-          lines.push(`<span class="diff-rot">&#8635; ROTATE: ${escape(item.name)}${descHint} (v${escape(prev.version ?? prev.generation)} &rarr; v${escape((prev.version ?? prev.generation) + 1)})</span>`);
+          lines.push(`<span class="diff-rot">&#8635; ROTATE: ${escapeHtml(item.name)}${descHint} (v${escapeHtml(prev.version ?? prev.generation)} &rarr; v${escapeHtml((prev.version ?? prev.generation) + 1)})</span>`);
         } else {
-          lines.push(`<span class="diff-add">+ CREATE: ${escape(item.name)}${descHint}</span>`);
+          lines.push(`<span class="diff-add">+ CREATE: ${escapeHtml(item.name)}${descHint}</span>`);
         }
       }
     }
@@ -1133,6 +1205,8 @@ export function initializeDashboard() {
     agents: loadAgents,
     activity: loadActivity,
     approvals: loadApprovals,
+    packages: loadPackages,
+    terminals: loadTerminals,
     artifacts: loadArtifacts,
     'api-keys': loadApiKeys,
     settings: loadSettings,
@@ -1142,6 +1216,7 @@ export function initializeDashboard() {
   let loadController;
   function load() {
     loadController?.abort();
+    disposeTerminalPane();
     const controller = new globalThis.AbortController();
     loadController = controller;
     const queued = loadQueue.catch(() => undefined).then(async () => {
@@ -1156,7 +1231,7 @@ export function initializeDashboard() {
     alertBox.hidden = true; setBusy(true);
     try {
       const pathname = location.pathname;
-      const pathMatch = pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(summary|agents|runtime|files|git|automation|deploy|artifacts|activity))?$/);
+      const pathMatch = pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(summary|agents|runtime|terminal|files|git|automation|deploy|artifacts|activity))?$/);
       const projectMatch = pathname.match(/^\/dashboard\/projects\/(prj_[A-Za-z0-9_-]{20,80})$/);
       const knowledgeMatch = pathname.match(/^\/dashboard\/knowledge\/(kn_[A-Za-z0-9_-]{10,80})$/);
       const mcpServerMatch = pathname.match(/^\/dashboard\/mcp-servers\/(mcps_[A-Za-z0-9_-]{20,80})$/);
@@ -1964,276 +2039,177 @@ export function initializeDashboard() {
       }
     }, event.currentTarget));
   }
+  // Models & Budgets. The profile wizard and the credential dialog live in the static shell, so each
+  // is bound once; the page body is re-rendered per load and wired through one delegated listener.
+  let modelWizard;
+  let modelCredentialDialog;
+  // Each load renders new rows; a pricing check from an earlier load must not mark them.
+  let modelsLoadToken = 0;
   async function loadModels() {
+    const token = ++modelsLoadToken;
     selectNavigation('models');
     document.querySelector('#command-surface').hidden = true;
     setPageActions(renderModelsActions());
-
-    const [profilesRes, credsRes, statusRes] = await Promise.all([
-      listModelProfiles().catch(() => ({ data: { profiles: [] } })),
-      listModelCredentials().catch(() => ({ data: { credentials: [] } })),
-      getModelConfigStatus().catch(() => ({ data: { status: null } }))
+    // Profiles and keys are the page, so their failure is a failed load rather than an empty list.
+    // Gateway status and the provider registry only enrich it.
+    const [profilesRes, credentialsRes, statusRes, providersRes] = await Promise.all([
+      listModelProfiles(),
+      listModelCredentials(),
+      getModelConfigStatus().catch(() => null),
+      listModelProviders().catch(() => null)
     ]);
+    const page = {
+      profiles: profilesRes.data?.profiles ?? [],
+      credentials: credentialsRes.data?.credentials ?? [],
+      status: statusRes?.data?.status ?? null,
+      providers: providersRes?.data?.providers ?? []
+    };
+    if (token !== modelsLoadToken) return;
+    insertRendered(content, renderModelsPage(page));
+    bindModelsPage(page);
+    // Spend enriches the page: the panel loads on its own and reports its own failure.
+    const spendSection = content.querySelector('#model-spend');
+    if (spendSection) {
+      void createSpendPanel({
+        section: spendSection,
+        insert: insertRendered,
+        announce,
+        confirm: confirmAction,
+        profiles: page.profiles,
+        api: { getSpend: getModelSpend, setPolicy: setModelSpendPolicy, deletePolicy: deleteModelSpendPolicy }
+      }).load();
+    }
+  }
+  const reloadModels = () => loadModels().catch(showError);
 
-    const profiles = profilesRes.data?.profiles ?? [];
-    const credentials = credsRes.data?.credentials ?? [];
-    const status = statusRes.data?.status ?? null;
-
-    insertRendered(content, renderModelsPage(profiles, credentials, status));
-    bindModelsControls(credentials);
+  function bindModelCredentialDialog() {
+    if (modelCredentialDialog) return modelCredentialDialog;
+    const dialog = document.querySelector('#model-credential-dialog');
+    const form = document.querySelector('#model-credential-form');
+    const providerSelect = document.querySelector('#model-credential-provider');
+    const authSelect = document.querySelector('#model-credential-auth-mode');
+    let providers = [];
+    let invoker;
+    // The registry, when it loaded, owns which auth headers a provider accepts.
+    function syncAuthModes() {
+      const definition = providers.find((entry) => entry.id === providerSelect.value);
+      const modes = definition?.authModes ?? ['bearer', 'x-api-key'];
+      insertRendered(authSelect, modes.map((mode) => `<option value="${escapeHtml(mode)}"${mode === (definition?.defaultAuthMode ?? 'bearer') ? ' selected' : ''}>${mode === 'bearer' ? 'Authorization: Bearer &lt;key&gt;' : 'X-API-Key: &lt;key&gt;'}</option>`).join(''));
+    }
+    providerSelect.addEventListener('change', syncAuthModes);
+    document.querySelector('#cancel-model-credential')?.addEventListener('click', () => dialog.close());
+    dialog.addEventListener('close', () => {
+      form.reset();
+      document.querySelector('#model-credential-key').value = '';
+      invoker?.focus?.({ preventScroll: true });
+    });
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      const credentialId = String(values.get('credentialId') ?? '');
+      const apiKey = String(values.get('apiKey') ?? '').trim();
+      const expectedGeneration = Number(values.get('expectedGeneration') ?? 1);
+      const payload = { label: String(values.get('label') ?? '').trim(), provider: values.get('provider'), authMode: values.get('authMode'), apiKey };
+      // The key leaves the field as soon as it is read; a failed save asks for it again.
+      document.querySelector('#model-credential-key').value = '';
+      const rotate = Boolean(credentialId);
+      void submitForm(form, rotate ? 'Rotating…' : 'Saving…', async () => (rotate ? rotateModelCredential(credentialId, { apiKey, expectedGeneration }) : createModelCredential(payload)), async () => {
+        dialog.close();
+        announce(rotate ? 'Provider credential rotated.' : 'Provider credential saved.');
+        await reloadModels();
+      });
+    });
+    modelCredentialDialog = {
+      open({ credential = null, providerList = [], trigger } = {}) {
+        providers = providerList;
+        invoker = trigger;
+        form.reset();
+        document.querySelector('#model-credential-id').value = credential?.id ?? '';
+        document.querySelector('#model-credential-generation').value = String(credential?.generation ?? 1);
+        const label = document.querySelector('#model-credential-label');
+        label.value = credential?.label ?? '';
+        label.disabled = Boolean(credential);
+        providerSelect.disabled = Boolean(credential);
+        if (credential) providerSelect.value = credential.provider;
+        syncAuthModes();
+        authSelect.disabled = Boolean(credential);
+        document.querySelector('#model-credential-title').textContent = credential ? `Rotate credential (${credential.label})` : 'Add provider credential';
+        dialog.showModal();
+        (credential ? document.querySelector('#model-credential-key') : label).focus();
+      }
+    };
+    return modelCredentialDialog;
   }
 
-  function bindModelsControls(credentials = []) {
-    const credDialog = document.querySelector('#model-credential-dialog');
-    const credForm = document.querySelector('#model-credential-form');
-    const cancelCred = document.querySelector('#cancel-model-credential');
-    const profileDialog = document.querySelector('#model-profile-dialog');
-    const profileForm = document.querySelector('#model-profile-form');
-    const cancelProfile = document.querySelector('#cancel-model-profile');
-
-    const providerSelect = document.querySelector('#model-credential-provider');
-    const authModeGroup = document.querySelector('#model-credential-auth-mode');
-    providerSelect?.addEventListener('change', () => {
-      authModeGroup.value = providerSelect.value === 'custom' ? 'bearer' : 'bearer';
-    });
-
-    const customUrlGroup = document.querySelector('#model-profile-custom-url-group');
-    const credentialSelect = document.querySelector('#model-profile-credential');
-
-    function syncCustomUrlVisibility() {
-      const selectedCred = credentials.find((c) => c.id === credentialSelect.value);
-      if (customUrlGroup) {
-        customUrlGroup.hidden = selectedCred?.provider !== 'custom';
-      }
-    }
-    credentialSelect?.addEventListener('change', syncCustomUrlVisibility);
-
-    document.querySelector('#open-add-credential-btn')?.addEventListener('click', () => {
-      credForm.reset();
-      document.querySelector('#model-credential-id').value = '';
-      document.querySelector('#model-credential-title').textContent = 'Add provider credential';
-      document.querySelector('#model-credential-label').disabled = false;
-      document.querySelector('#model-credential-provider').disabled = false;
-      credDialog.showModal();
-      document.querySelector('#model-credential-label').focus();
-    });
-
-    cancelCred?.addEventListener('click', () => {
-      credForm.reset();
-      credDialog.close();
-    });
-
-    credForm?.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const values = new FormData(form);
-      const credentialId = values.get('credentialId');
-      const apiKey = String(values.get('apiKey') ?? '').trim();
-      const label = String(values.get('label') ?? '').trim();
-      const provider = values.get('provider');
-      const authMode = values.get('authMode');
-      const expectedGeneration = Number(values.get('expectedGeneration') ?? 1);
-
-      form.querySelector('#model-credential-key').value = '';
-
-      if (credentialId) {
-        void submitForm(form, 'Rotating…', async () => rotateModelCredential(credentialId, { apiKey, expectedGeneration }), async () => {
-          credDialog.close();
-          announce('Provider credential rotated.');
-          await loadModels();
-        });
-      } else {
-        void submitForm(form, 'Saving…', async () => createModelCredential({ label, provider, authMode, apiKey }), async () => {
-          credDialog.close();
-          announce('Provider credential saved.');
-          await loadModels();
-        });
+  function bindModelsPage(page) {
+    const credentialDialog = bindModelCredentialDialog();
+    modelWizard ??= createModelWizard({
+      dialog: document.querySelector('#model-profile-dialog'),
+      insert: insertRendered,
+      announce,
+      onSaved: reloadModels,
+      api: {
+        listProviders: listModelProviders,
+        createCredential: createModelCredential,
+        searchCatalog: searchModelCatalog,
+        refreshCatalog: refreshModelCatalog,
+        verify: verifyModelConnection,
+        createProfile: createModelProfile,
+        updateProfile: updateModelProfile
       }
     });
-
-    for (const btn of document.querySelectorAll('.rotate-model-credential')) {
-      btn.addEventListener('click', (event) => {
-        const id = event.currentTarget.dataset.credentialId;
-        const label = event.currentTarget.dataset.label;
-        const gen = event.currentTarget.dataset.generation;
-        credForm.reset();
-        document.querySelector('#model-credential-id').value = id;
-        document.querySelector('#model-credential-generation').value = gen;
-        document.querySelector('#model-credential-label').value = label;
-        document.querySelector('#model-credential-label').disabled = true;
-        document.querySelector('#model-credential-provider').disabled = true;
-        document.querySelector('#model-credential-title').textContent = `Rotate credential (${label})`;
-        credDialog.showModal();
-        document.querySelector('#model-credential-key').focus();
-      });
-    }
-
-    for (const btn of document.querySelectorAll('.delete-model-credential')) {
-      btn.addEventListener('click', (event) => {
-        const id = event.currentTarget.dataset.credentialId;
-        const gen = Number(event.currentTarget.dataset.generation ?? 1);
-        confirmAction.open({
-          label: 'Delete credential',
-          pendingLabel: 'Deleting…',
-          target: id,
+    const openWizard = (mode, profile, trigger, options = {}) => modelWizard.open({ mode, profile, profiles: page.profiles, credentials: page.credentials, providers: page.providers, trigger, ...options });
+    document.querySelector('#open-add-profile-btn')?.addEventListener('click', (event) => openWizard('create', null, event.currentTarget));
+    document.querySelector('#open-add-credential-btn')?.addEventListener('click', (event) => credentialDialog.open({ providerList: page.providers, trigger: event.currentTarget }));
+    document.querySelector('#models-page')?.addEventListener('click', (event) => {
+      const button = event.target?.closest?.('[data-model-action]');
+      if (!button) return;
+      const action = button.dataset.modelAction;
+      const profile = page.profiles.find((entry) => entry.id === button.dataset.profileId);
+      const credential = page.credentials.find((entry) => entry.id === button.dataset.credentialId);
+      if (action === 'add') openWizard('create', null, button);
+      else if ((action === 'edit' || action === 'duplicate') && profile) openWizard(action, profile, button);
+      // The repricing warning's action: an edit pre-filled with the catalog price, saved only by the operator.
+      else if (action === 'review-price' && profile) openWizard('edit', profile, button, { useCatalogPrice: true });
+      else if (action === 'verify' && profile) void verifyModelProfile(profile, button);
+      else if ((action === 'activate' || action === 'disable') && profile) {
+        void (async () => {
+          button.disabled = true;
+          try {
+            await (action === 'activate' ? activateModelProfile : disableModelProfile)(profile.id, profile.generation);
+            announce(action === 'activate' ? 'Model profile activated.' : 'Model profile disabled.');
+            await reloadModels();
+          } catch (error) { button.disabled = false; showError(error); }
+        })();
+      } else if (action === 'delete' && profile) {
+        confirmAction({
+          title: 'Delete model profile?', label: 'Delete profile', pendingLabel: 'Deleting…', target: profile.id,
+          description: 'Permanently delete this subagent model profile and its verification results.',
+          action: async () => { await deleteModelProfile(profile.id, profile.generation); announce('Model profile deleted.'); await reloadModels(); }
+        }, button);
+      } else if (action === 'rotate-credential' && credential) credentialDialog.open({ credential, providerList: page.providers, trigger: button });
+      else if (action === 'delete-credential' && credential) {
+        confirmAction({
+          title: 'Delete provider credential?', label: 'Delete credential', pendingLabel: 'Deleting…', target: credential.id,
           description: 'Permanently delete this provider credential. Referenced profiles must be deleted first.',
-          action: async () => {
-            await deleteModelCredential(id, gen);
-            announce('Provider credential deleted.');
-            await loadModels();
-          }
-        }, event.currentTarget);
-      });
-    }
-
-    document.querySelector('#open-add-profile-btn')?.addEventListener('click', () => {
-      profileForm.reset();
-      document.querySelector('#model-profile-id').disabled = false;
-      document.querySelector('#model-profile-edit-mode').value = 'false';
-      document.querySelector('#model-profile-title').textContent = 'Add model profile';
-
-      insertRendered(credentialSelect, credentials.length
-        ? credentials.map((c) => `<option value="${escape(c.id)}">${escape(c.label)} (${escape(c.provider)})</option>`).join('')
-        : '<option value="">No credentials available (create one first)</option>');
-
-      syncCustomUrlVisibility();
-      profileDialog.showModal();
-      document.querySelector('#model-profile-id').focus();
-    });
-
-    cancelProfile?.addEventListener('click', () => {
-      profileForm.reset();
-      profileDialog.close();
-    });
-
-    for (const btn of document.querySelectorAll('.edit-model-profile')) {
-      btn.addEventListener('click', (event) => {
-        let profile;
-        try {
-          profile = JSON.parse(event.currentTarget.dataset.profileJson);
-        } catch {
-          // A malformed dataset value must not take the whole page down with it.
-          announce('This profile could not be opened. Reload the page and try again.');
-          return;
-        }
-        profileForm.reset();
-        document.querySelector('#model-profile-edit-mode').value = 'true';
-        document.querySelector('#model-profile-generation').value = String(profile.generation);
-        document.querySelector('#model-profile-id').value = profile.id;
-        document.querySelector('#model-profile-id').disabled = true;
-        document.querySelector('#model-profile-display-name').value = profile.displayName;
-        document.querySelector('#model-profile-title').textContent = `Edit profile (${profile.displayName})`;
-
-        insertRendered(credentialSelect, credentials.map((c) => `<option value="${escape(c.id)}" ${c.id === profile.credentialId ? 'selected' : ''}>${escape(c.label)} (${escape(c.provider)})</option>`).join(''));
-
-        if (profile.activeRevision) {
-          document.querySelector('#model-profile-model').value = profile.activeRevision.model;
-          document.querySelector('#model-profile-api-mode').value = profile.activeRevision.apiMode;
-          document.querySelector('#model-profile-pricing-input').value = (profile.activeRevision.pricing.inputMicrosPerMillionTokens / 1_000_000).toFixed(6);
-          document.querySelector('#model-profile-pricing-output').value = (profile.activeRevision.pricing.outputMicrosPerMillionTokens / 1_000_000).toFixed(6);
-          document.querySelector('#model-profile-max-input').value = String(profile.activeRevision.limits.maxInputTokens);
-          document.querySelector('#model-profile-max-output').value = String(profile.activeRevision.limits.maxOutputTokens);
-          document.querySelector('#model-profile-max-cost').value = (profile.activeRevision.limits.maxCostMicros / 1_000_000).toFixed(6);
-
-          const ops = new Set(profile.activeRevision.maxProxyOperations);
-          for (const chk of profileForm.querySelectorAll('input[name="proxyOps"]')) {
-            chk.checked = ops.has(chk.value);
-          }
-        }
-
-        syncCustomUrlVisibility();
-        profileDialog.showModal();
-        document.querySelector('#model-profile-display-name').focus();
-      });
-    }
-
-    profileForm?.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const values = new FormData(form);
-      const isEdit = values.get('isEdit') === 'true';
-      const profileId = String(values.get('profileId') ?? '').trim();
-      const displayName = String(values.get('displayName') ?? '').trim();
-      const credentialId = String(values.get('credentialId') ?? '').trim();
-      const model = String(values.get('model') ?? '').trim();
-      const apiMode = String(values.get('apiMode') ?? 'chat-completions');
-      const customUpstreamUrl = String(values.get('customUpstreamUrl') ?? '').trim() || undefined;
-      const expectedGeneration = Number(values.get('expectedGeneration') ?? 1);
-
-      const pricingInputMicros = Math.round(Number(values.get('pricingInput') ?? 0) * 1_000_000);
-      const pricingOutputMicros = Math.round(Number(values.get('pricingOutput') ?? 0) * 1_000_000);
-      const maxInputTokens = Number(values.get('maxInputTokens') ?? 200000);
-      const maxOutputTokens = Number(values.get('maxOutputTokens') ?? 32000);
-      const maxCostMicros = Math.round(Number(values.get('maxCost') ?? 5) * 1_000_000);
-
-      const maxProxyOperations = [...form.querySelectorAll('input[name="proxyOps"]:checked')].map((c) => c.value);
-
-      const payload = {
-        displayName,
-        credentialId,
-        model,
-        apiMode,
-        ...(customUpstreamUrl ? { customUpstreamUrl } : {}),
-        pricing: { inputMicrosPerMillionTokens: pricingInputMicros, outputMicrosPerMillionTokens: pricingOutputMicros },
-        limits: { maxInputTokens, maxOutputTokens, maxCostMicros },
-        maxProxyOperations
-      };
-
-      if (isEdit) {
-        void submitForm(form, 'Updating…', async () => updateModelProfile(profileId, { ...payload, expectedGeneration }), async () => {
-          profileDialog.close();
-          announce('Model profile updated.');
-          await loadModels();
-        });
-      } else {
-        void submitForm(form, 'Creating…', async () => createModelProfile({ profileId, ...payload }), async () => {
-          profileDialog.close();
-          announce('Model profile created.');
-          await loadModels();
-        });
+          action: async () => { await deleteModelCredential(credential.id, credential.generation ?? 1); announce('Provider credential deleted.'); await reloadModels(); }
+        }, button);
       }
     });
+  }
 
-    for (const btn of document.querySelectorAll('.activate-model-profile')) {
-      btn.addEventListener('click', async (event) => {
-        const id = event.currentTarget.dataset.profileId;
-        const gen = Number(event.currentTarget.dataset.generation ?? 1);
-        try {
-          await activateModelProfile(id, gen);
-          announce('Model profile activated.');
-          await loadModels();
-        } catch (err) { showError(err); }
-      });
-    }
-
-    for (const btn of document.querySelectorAll('.disable-model-profile')) {
-      btn.addEventListener('click', async (event) => {
-        const id = event.currentTarget.dataset.profileId;
-        const gen = Number(event.currentTarget.dataset.generation ?? 1);
-        try {
-          await disableModelProfile(id, gen);
-          announce('Model profile disabled.');
-          await loadModels();
-        } catch (err) { showError(err); }
-      });
-    }
-
-    for (const btn of document.querySelectorAll('.delete-model-profile')) {
-      btn.addEventListener('click', (event) => {
-        const id = event.currentTarget.dataset.profileId;
-        const gen = Number(event.currentTarget.dataset.generation ?? 1);
-        confirmAction.open({
-          label: 'Delete profile',
-          pendingLabel: 'Deleting…',
-          target: id,
-          description: 'Permanently delete this subagent model profile.',
-          action: async () => {
-            await deleteModelProfile(id, gen);
-            announce('Model profile deleted.');
-            await loadModels();
-          }
-        }, event.currentTarget);
-      });
+  async function verifyModelProfile(profile, button) {
+    const label = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Verifying…';
+    try {
+      const result = await verifyModelConnection({ profileId: profile.id });
+      announce(`${profile.displayName}: connection ${verificationLabel(result?.data?.outcome).toLowerCase()}.`);
+      await reloadModels();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = label;
+      showError(error);
     }
   }
   async function loadArtifacts() {
@@ -2384,6 +2360,7 @@ export function initializeDashboard() {
   let settingsPageData;
   let settingsReadiness;
   let settingsOAuth;
+  let settingsTypesafe;
   // A provider outage must not hide the rest of Settings, so the OAuth read fails
   // into its own panel rather than the page.
   async function fetchOAuthSettings() {
@@ -2394,20 +2371,93 @@ export function initializeDashboard() {
       return { view: undefined, error: error?.message ?? 'OAuth session settings are temporarily unavailable.' };
     }
   }
+  // The TypeSafe panel needs both reads: status for the facts, and the credential list for the id and
+  // generation a rotation or removal must name. Either failing fails into the panel, not the page.
+  async function fetchTypesafeSettings() {
+    const [status, credentials] = await Promise.allSettled([getTypesafeStatus(), listIntegrationCredentials()]);
+    const view = status.status === 'fulfilled' ? { status: status.value.data } : {};
+    if (status.status === 'rejected') return { ...view, error: `TypeSafe status is unavailable: ${status.reason?.message ?? 'the request failed.'}` };
+    if (credentials.status === 'rejected') return { ...view, error: `TypeSafe key storage is unavailable: ${credentials.reason?.message ?? 'the request failed.'}` };
+    const list = Array.isArray(credentials.value.data?.credentials) ? credentials.value.data.credentials : [];
+    return { ...view, credential: list.find((credential) => credential.integration === 'typesafe') };
+  }
   async function loadSettings() {
     selectNavigation('settings');
     document.querySelector('#command-surface').hidden = true;
     insertRendered(content, '<div class="skeleton tile" aria-hidden="true"></div>');
-    const [{ data }, oauth] = await Promise.all([api('/settings'), fetchOAuthSettings()]);
+    const [{ data }, oauth, typesafe] = await Promise.all([api('/settings'), fetchOAuthSettings(), fetchTypesafeSettings()]);
     settingsPageData = data;
     settingsOAuth = oauth;
+    settingsTypesafe = typesafe;
     settingsReadiness = undefined;
     renderSettingsView();
   }
   function renderSettingsView() {
-    insertRendered(content, renderSettings(settingsPageData, settingsReadiness, settingsOAuth));
+    insertRendered(content, renderSettings(settingsPageData, settingsReadiness, settingsOAuth, settingsTypesafe));
     bindSettingsControls();
+    bindLifecycleSettingsControls();
     bindOAuthSettingsControls();
+    bindTypesafeSettingsControls();
+  }
+  function typesafeStatus(message) {
+    const status = document.querySelector('#typesafe-status');
+    if (status) status.textContent = message;
+  }
+  /** Re-read both sources after any change, so the panel shows what the runner stored, not what was sent. */
+  async function refreshTypesafeSettings(message) {
+    settingsTypesafe = await fetchTypesafeSettings();
+    renderSettingsView();
+    typesafeStatus(message);
+  }
+  function bindTypesafeSettingsControls() {
+    const form = document.querySelector('#typesafe-form');
+    if (!form) return;
+    const key = form.querySelector('#typesafe-key');
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const value = key.value;
+      if (value.trim() === '') {
+        typesafeStatus('Enter the TypeSafe API key to save.');
+        key.focus();
+        return;
+      }
+      const button = form.querySelector('#typesafe-save');
+      const credential = settingsTypesafe?.credential;
+      const original = button.textContent;
+      button.disabled = true; button.textContent = 'Saving…';
+      typesafeStatus('Saving…');
+      void (async () => {
+        try {
+          if (credential) await rotateIntegrationCredential(credential.id, { value, expectedGeneration: credential.generation });
+          else await createIntegrationCredential({ integration: 'typesafe', label: 'TypeSafe', value, expectedGeneration: 0 });
+          key.value = '';
+          await refreshTypesafeSettings(credential ? 'TypeSafe key replaced.' : 'TypeSafe key saved.');
+        } catch (error) {
+          // The value never stays in the field after a failure either, so it cannot be resubmitted by accident.
+          key.value = '';
+          if (error?.status === 409) await refreshTypesafeSettings('The TypeSafe key changed after you opened Settings. The panel now shows the current state; enter the key again.');
+          else typesafeStatus(error?.message ?? 'The TypeSafe key could not be saved.');
+        } finally {
+          if (button.isConnected) { button.disabled = false; button.textContent = original; }
+        }
+      })();
+    });
+    document.querySelector('#typesafe-remove')?.addEventListener('click', (event) => {
+      const credential = settingsTypesafe?.credential;
+      if (!credential) return;
+      confirmAction({
+        title: 'Remove TypeSafe key?',
+        description: 'Delete the stored TypeSafe API key. Skill suggestions and the Decision Plane stop calling TypeSafe for your account until you save a new key.',
+        target: credential.label,
+        label: 'Remove key',
+        pendingLabel: 'Removing…',
+        action: async () => {
+          await deleteIntegrationCredential(credential.id, credential.generation);
+          announce('TypeSafe key removed.');
+          await refreshTypesafeSettings('TypeSafe key removed.');
+        }
+      }, event.currentTarget);
+    });
   }
   function oauthStatus(message) {
     const status = document.querySelector('#settings-oauth-status');
@@ -2475,6 +2525,81 @@ export function initializeDashboard() {
     });
     document.querySelector('#adopt-settings-oauth')?.addEventListener('click', (event) => {
       void saveOAuthSettings(event.currentTarget, { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: bounds.defaultSeconds, expectedRevision: view.revision }, 'Default adopted: clients stay signed in for the provider maximum.');
+    });
+  }
+  function lifecycleStatus(message) {
+    const status = document.querySelector('#settings-lifecycle-status');
+    if (status) status.textContent = message;
+  }
+  async function reloadLifecycleSettings(message) {
+    try {
+      const { data } = await api('/settings');
+      settingsPageData = data;
+      renderSettingsView();
+      lifecycleStatus(message);
+    } catch (error) {
+      lifecycleStatus(`${message} Reloading failed: ${error?.message ?? 'the request failed.'} Reload the page.`);
+    }
+  }
+  /** Save, then re-render from the runner's read-back; a stale revision reloads the panel instead of retrying. */
+  async function saveLifecycleSettings(button, workspaceLifecycle, savedMessage) {
+    const original = button.textContent;
+    button.disabled = true; button.textContent = 'Saving…';
+    lifecycleStatus('Saving…');
+    try {
+      const { data } = await api('/settings', { method: 'POST', body: requestBody({ workspaceLifecycle }) });
+      settingsPageData = data;
+      renderSettingsView();
+      lifecycleStatus(`${savedMessage} ${workspaceLifecycleSummary(data?.workspaceLifecycle)}`.trim());
+    } catch (error) {
+      if (error?.status === 409) await reloadLifecycleSettings('These settings changed elsewhere after you opened Settings. The panel now shows the current values; review them and save again.');
+      else lifecycleStatus(error?.message ?? 'The workspace lifecycle settings could not be saved.');
+    } finally {
+      if (button.isConnected) { button.disabled = false; button.textContent = original; }
+    }
+  }
+  function bindLifecycleSettingsControls() {
+    const view = settingsPageData?.workspaceLifecycle;
+    const form = document.querySelector('#settings-lifecycle-form');
+    if (!form || !isWorkspaceLifecycleView(view)) return;
+    const grace = form.querySelector('#settings-lifecycle-grace');
+    const acknowledge = form.querySelector('#settings-lifecycle-ack');
+    const acknowledgeBlock = form.querySelector('#settings-lifecycle-ack-block');
+    const values = () => Object.fromEntries(WORKSPACE_LIFECYCLE_FIELDS.map((field) => [field.name, form.querySelector(`#${field.id}`).value]));
+    const targets = [...WORKSPACE_LIFECYCLE_FIELDS.map((field) => ({ key: field.name, id: field.id })), { key: 'acknowledgeImmediateClose', id: 'settings-lifecycle-ack' }];
+    const showErrors = (errors) => {
+      for (const { key, id } of targets) {
+        const input = form.querySelector(`#${id}`);
+        const message = form.querySelector(`#${id}-error`);
+        if (errors[key]) input.setAttribute('aria-invalid', 'true');
+        else input.removeAttribute('aria-invalid');
+        if (message) message.textContent = errors[key] ?? '';
+      }
+    };
+    form.addEventListener('input', () => {
+      // Any spelling of zero (0, 00, 0.0) needs the acknowledgement, so it must be visible for all of them.
+      acknowledgeBlock.hidden = !(grace.value.trim() !== '' && Number(grace.value.trim()) === 0);
+      // The acknowledgement is asked for at save time, not while the operator is still typing.
+      const { errors } = workspaceLifecycleUpdateInput(view, values(), true);
+      showErrors(errors);
+    });
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const { errors, body } = workspaceLifecycleUpdateInput(view, values(), acknowledge.checked);
+      showErrors(errors);
+      const invalid = targets.find(({ key }) => errors[key]);
+      if (invalid) {
+        lifecycleStatus('Fix the highlighted fields before saving.');
+        form.querySelector(`#${invalid.id}`).focus();
+        return;
+      }
+      if (!body) { lifecycleStatus('No changes to save.'); return; }
+      void saveLifecycleSettings(form.querySelector('#save-settings-lifecycle'), body, 'Workspace lifecycle settings saved.');
+    });
+    document.querySelector('#reset-settings-lifecycle').addEventListener('click', (event) => {
+      const reset = workspaceLifecycleResetInput(view);
+      if (reset.error) { lifecycleStatus(reset.error); return; }
+      void saveLifecycleSettings(event.currentTarget, reset.body, 'Runner values restored.');
     });
   }
   function settingsStatus(message) {
@@ -2565,7 +2690,7 @@ export function initializeDashboard() {
           insertRendered(graphMount, renderKnowledgeGraph(graphRes.data));
           bindKnowledgeGraphControls();
         } catch (err) {
-          insertRendered(graphMount, `<p class="form-status status-error">Graph error: ${escape(err.message)}</p>`);
+          insertRendered(graphMount, `<p class="form-status status-error">Graph error: ${escapeHtml(err.message)}</p>`);
         }
       }
     }
@@ -2599,7 +2724,7 @@ export function initializeDashboard() {
           const projects = prjRes.data?.projects ?? [];
           if (projectSelect) {
             insertRendered(projectSelect, projects.length
-              ? projects.map((p) => `<option value="${escape(p.id)}">${escape(p.name)}</option>`).join('')
+              ? projects.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('')
               : '<option value="">No projects available (create one first)</option>');
           }
         } catch {
@@ -3232,13 +3357,14 @@ export function initializeDashboard() {
   async function loadWorkspace(id, tab = 'summary', io) {
     selectNavigation('workspaces');
     document.querySelector('#command-surface').hidden = true; detail.hidden = true;
+    disposeTerminalPane();
     const item = await workspace(id);
     // Context is an executor-backed operation. Terminal workspaces must not emit
     // predictable 409s merely because the cockpit shell rendered.
     const contextResult = workspaceHasAction(item, 'workspace_context')
       ? await api(`/workspaces/${encodeURIComponent(id)}/context`).catch(() => undefined)
       : undefined;
-    setTitle(repositoryName(item.repositoryUrl), 'Workspace cockpit: summary, agents, runtime, files, git, automation, deploy, artifacts, and activity.');
+    setTitle(repositoryName(item.repositoryUrl), 'Workspace cockpit: summary, agents, runtime, terminal, files, git, automation, deploy, artifacts, and activity.');
     const body = await cockpitTabBody(id, tab, item, contextResult?.data, io);
     // A tab body may need to bind controls once it is in the document, so the Files tab
     // returns its markup plus that hook instead of reaching into the DOM early.
@@ -3258,6 +3384,7 @@ export function initializeDashboard() {
     if (tab === 'agents') return renderWorkspaceAgents(workspaceId);
     if (!workspaceTabAvailable(workspace, tab)) return renderWorkspaceUnavailableTab(workspace, tab);
     if (tab === 'runtime') return runtimePanel(workspaceId, io);
+    if (tab === 'terminal') return terminalPanel(workspaceId);
     if (tab === 'files') return filesPanel(workspaceId);
     // The diff toggle is a URL parameter, so a staged/unstaged view is shareable and
     // the back button behaves.
@@ -3279,6 +3406,55 @@ export function initializeDashboard() {
     }
     const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/files?path=${encodeURIComponent(path)}`);
     return { markup: renderFileList(workspaceId, result.data), afterRender: () => bindFileOperations(workspaceId) };
+  }
+  /**
+   * The Terminal tab. Running terminals of this workspace are offered for re-attach (their retained
+   * output replays from the start); nothing opens until the operator asks, so visiting the tab never
+   * starts a shell. The pane is disposed on navigation, which stops its loops but leaves the PTY running.
+   */
+  let activeTerminalPane;
+  function disposeTerminalPane() {
+    activeTerminalPane?.dispose();
+    activeTerminalPane = undefined;
+  }
+  async function terminalPanel(workspaceId) {
+    const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/terminals`).catch(() => undefined);
+    const terminals = Array.isArray(result?.data?.terminals) ? result.data.terminals : [];
+    return {
+      markup: renderTerminalPanel({ workspaceId, terminals }),
+      afterRender: () => {
+        const root = content.querySelector('#terminal-panel');
+        if (!root) return;
+        disposeTerminalPane();
+        activeTerminalPane = mountTerminalPane({ root, workspaceId, api, announce, onError: showError, terminals });
+      }
+    };
+  }
+  /** Operator view of every live terminal; closing one ends its shell after a confirm. */
+  async function loadTerminals() {
+    selectNavigation('terminals');
+    document.querySelector('#command-surface').hidden = true;
+    const [terminalsResult, workspacesResult] = await Promise.all([
+      api('/terminals'),
+      api('/workspaces').catch(() => undefined)
+    ]);
+    const terminals = Array.isArray(terminalsResult?.data?.terminals) ? terminalsResult.data.terminals : [];
+    const workspaces = Array.isArray(workspacesResult?.data?.workspaces) ? workspacesResult.data.workspaces : [];
+    insertRendered(content, renderTerminalsIndex({ terminals, workspaces }));
+    for (const button of content.querySelectorAll('.close-terminal')) button.addEventListener('click', (event) => {
+      const terminalId = button.dataset.terminalId ?? '';
+      const workspaceId = button.dataset.workspaceId ?? '';
+      void confirmAction({
+        title: 'Close this terminal?',
+        description: 'The shell and every process it started end now. Unsaved work in that shell is lost; the workspace itself is unchanged.',
+        target: terminalId, label: 'Close terminal', pendingLabel: 'Closing…',
+        action: async () => {
+          await api(`/workspaces/${encodeURIComponent(workspaceId)}/terminals/${encodeURIComponent(terminalId)}/close`, { method: 'POST', body: requestBody({}) });
+          announce('Terminal closed.');
+          await loadTerminals();
+        }
+      }, event.currentTarget);
+    });
   }
   /** The workspace's retained snapshots, scoped by each record's own workspaceId. */
   async function artifactsPanel(workspaceId) {
@@ -3413,7 +3589,9 @@ export function initializeDashboard() {
   /** Renew, recover, finalize, and close, each with pending state and live feedback. */
   function bindCockpitActions(item) {
     const id = item.workspaceId;
-    document.querySelector('#renew-workspace-lease')?.addEventListener('click', (event) => void cockpitAction(event.currentTarget, 'Renewing…', () => api(`/workspaces/${encodeURIComponent(id)}/lease-renew`, { method: 'POST', body: requestBody({}) }), 'Workspace lease renewed.'));
+    document.querySelector('#renew-workspace-lease')?.addEventListener('click', (event) => void cockpitAction(event.currentTarget, 'Renewing…', () => api(`/workspaces/${encodeURIComponent(id)}/lease-renew`, { method: 'POST', body: requestBody({}) }), (result) => result?.data?.leaseCapped === true
+      ? 'Lease renewed only until the maximum workspace lifetime; the workspace still expires then.'
+      : 'Workspace lease renewed.'));
     document.querySelector('#recover-workspace')?.addEventListener('click', (event) => void cockpitAction(event.currentTarget, 'Recovering…', () => api(`/workspaces/${encodeURIComponent(id)}/recover`, { method: 'POST', body: requestBody({ mode: 'resume' }) }), 'Workspace recovery requested.'));
     const form = document.querySelector('#finalize-workspace-form');
     form?.addEventListener('submit', (event) => {
@@ -3436,8 +3614,8 @@ export function initializeDashboard() {
     const original = button.textContent;
     button.disabled = true; button.textContent = pendingLabel;
     try {
-      await action();
-      announce(successMessage);
+      const result = await action();
+      announce(typeof successMessage === 'function' ? successMessage(result) : successMessage);
       const id = location.pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})/)?.[1];
       if (id) await loadWorkspace(id, 'summary');
     } catch (error) { showError(error); }
@@ -3456,14 +3634,28 @@ export function initializeDashboard() {
     insertRendered(content, renderActivityCenter({ events, filter }));
     await refreshApprovalsBadge();
   }
-  /** The approvals inbox: pending privilege grants and the two decisions. */
+  /**
+   * Package plans are read alongside the grants. A failed plan read leaves the grants usable and
+   * renders the section as off rather than hiding the whole inbox.
+   */
+  async function readPackagePlans() {
+    const result = await api('/package-plans').catch(() => undefined);
+    const data = result?.data ?? {};
+    return {
+      plans: Array.isArray(data.plans) ? data.plans : [],
+      packages: { enabled: data.enabled === true, approvalMode: typeof data.approvalMode === 'string' ? data.approvalMode : 'required' }
+    };
+  }
+  const pendingApprovals = (grants, plans) => grants.filter((grant) => grantIsActionable(grant)).length
+    + plans.filter((plan) => planIsActionable(plan)).length;
+  /** The approvals inbox: pending privilege grants, package plans, and their decisions. */
   async function loadApprovals() {
     selectNavigation('approvals');
     document.querySelector('#command-surface').hidden = true;
-    const result = await api('/privilege-grants');
+    const [result, { plans, packages }] = await Promise.all([api('/privilege-grants'), readPackagePlans()]);
     const grants = Array.isArray(result?.data?.grants) ? result.data.grants : [];
-    insertRendered(content, renderApprovals({ grants }));
-    updateApprovalsBadge(grants.length);
+    insertRendered(content, renderApprovals({ grants, plans, packages }));
+    updateApprovalsBadge(pendingApprovals(grants, plans));
     for (const button of document.querySelectorAll('.approve-grant, .reject-grant')) button.addEventListener('click', (event) => {
       const approving = button.classList.contains('approve-grant');
       const grantId = button.dataset.grantId ?? '';
@@ -3478,6 +3670,67 @@ export function initializeDashboard() {
         }
       }, event.currentTarget);
     });
+    for (const button of document.querySelectorAll('.approve-plan, .reject-plan')) button.addEventListener('click', (event) => {
+      const approving = button.classList.contains('approve-plan');
+      const planId = button.dataset.planId ?? '';
+      // The digest is the one rendered on this row, so an approval can never cover a plan the operator did not see.
+      const planDigest = button.dataset.planDigest ?? '';
+      const name = button.dataset.planName ?? 'this package';
+      void confirmAction({
+        title: approving ? `Approve the plan for ${name}?` : `Reject the plan for ${name}?`,
+        description: approving
+          ? 'An agent may then apply exactly this plan. The runner refuses the approval if the plan digest no longer matches. The decision is audited.'
+          : 'The plan can no longer be applied; an agent must create a new plan. The decision is audited.',
+        target: `Plan digest ${planDigest}`, label: approving ? 'Approve plan' : 'Reject plan', pendingLabel: approving ? 'Approving…' : 'Rejecting…',
+        action: async () => {
+          await api(`/package-plans/${encodeURIComponent(planId)}/${approving ? 'approve' : 'reject'}`, {
+            method: 'POST', body: requestBody(approving ? { planDigest } : {})
+          });
+          announce(approving ? `Plan for ${name} approved.` : `Plan for ${name} rejected.`);
+          await loadApprovals();
+        }
+      }, event.currentTarget);
+    });
+  }
+  /** Installed toolbox packages, apply progress, rollback to a release from the history, and uninstall. */
+  async function loadPackages() {
+    selectNavigation('packages');
+    document.querySelector('#command-surface').hidden = true;
+    const result = await api('/packages');
+    const overview = result?.data ?? {};
+    insertRendered(content, renderPackages({ overview }));
+    for (const button of document.querySelectorAll('.rollback-package')) button.addEventListener('click', (event) => {
+      const { bindingId = '', releaseId = '', generation = '', fromVersion = 'unknown', toVersion = 'unknown' } = button.dataset;
+      const name = button.dataset.package ?? 'this package';
+      const affected = Number(button.dataset.affected ?? 0);
+      const expectedGeneration = Number(generation);
+      void confirmAction({
+        title: `Roll back ${name} from ${fromVersion} to ${toVersion}?`,
+        description: `This replaces the active release for ${affected} ${affected === 1 ? 'workspace' : 'workspaces'}. Workspaces created or recreated afterwards get ${toVersion}; running workspaces keep ${fromVersion} until they are recreated. The rollback is refused if the package changed after this page loaded (expected generation ${expectedGeneration}). It is audited.`,
+        target: `${name} ${toVersion} · ${releaseId}`, label: 'Roll back', pendingLabel: 'Rolling back…',
+        action: async () => {
+          await api('/packages/rollback', { method: 'POST', body: requestBody({ bindingId, releaseId, expectedGeneration }) });
+          announce(`${name} rolled back to ${toVersion}.`);
+          await loadPackages();
+        }
+      }, event.currentTarget);
+    });
+    for (const button of document.querySelectorAll('.remove-package')) button.addEventListener('click', (event) => {
+      const { bindingId = '', generation = '', scope = '' } = button.dataset;
+      const name = button.dataset.package ?? 'this package';
+      const affected = Number(button.dataset.affected ?? 0);
+      const expectedGeneration = Number(generation);
+      void confirmAction({
+        title: `Uninstall ${name}?`,
+        description: `This removes the ${scope === 'workspace' ? 'workspace' : 'owner'} binding and its release history for ${affected} ${affected === 1 ? 'workspace' : 'workspaces'}. Workspaces created or recreated afterwards start without ${name}; running workspaces keep it until they are recreated, and releases they still mount are collected later. Installing it again needs a new plan and apply. The uninstall is refused while an apply is running or if the package changed after this page loaded (expected generation ${expectedGeneration}). It is audited.`,
+        target: `${name} · ${bindingId}`, label: 'Uninstall', pendingLabel: 'Uninstalling…',
+        action: async () => {
+          await api('/packages/remove', { method: 'POST', body: requestBody({ bindingId, expectedGeneration }) });
+          announce(`${name} uninstalled.`);
+          await loadPackages();
+        }
+      }, event.currentTarget);
+    });
   }
   /** The badge appears only while something is pending. */
   function updateApprovalsBadge(count) {
@@ -3487,9 +3740,9 @@ export function initializeDashboard() {
     badge.hidden = count === 0;
   }
   async function refreshApprovalsBadge() {
-    const result = await api('/privilege-grants').catch(() => undefined);
+    const [result, { plans }] = await Promise.all([api('/privilege-grants').catch(() => undefined), readPackagePlans()]);
     const grants = Array.isArray(result?.data?.grants) ? result.data.grants : [];
-    updateApprovalsBadge(grants.filter((grant) => !['approved', 'rejected'].includes(String(grant.status ?? ''))).length);
+    updateApprovalsBadge(pendingApprovals(grants, plans));
   }
   /**
    * Global Agents page and the workspace-scoped tab share one renderer and one
@@ -3768,6 +4021,8 @@ export function initializeDashboard() {
   openPaletteButton.addEventListener('click', (event) => openPalette(event.currentTarget));
   document.addEventListener('keydown', (event) => {
     if (!isPaletteHotkey(event)) return;
+    // Inside the terminal, Ctrl+K belongs to the shell (kill to end of line); the release chord leaves it first.
+    if (event.target?.closest?.('.terminal-surface')) return;
     event.preventDefault();
     if (paletteDialog.open) { closePalette(); return; }
     openPalette(openPaletteButton);

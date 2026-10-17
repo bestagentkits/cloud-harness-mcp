@@ -40,6 +40,26 @@ still runs only through `skills_run`. Other clients keep using the `skills_list`
 
 ---
 
+## Model Setup from Your AI Tool
+
+Any connected client can prepare the model profiles your subagents use, so you can ask it to
+"pick a cheap model for reviews and set up a profile". The `model_*` tools list providers and
+your connected keys, search the catalog, check a connection, dry-run and save profiles, and read
+estimated spend. Three things stay with you on the Dashboard [Models page](/dashboard/models):
+
+- **Keys.** Add provider keys on the Dashboard. No tool accepts or returns a key.
+- **Activation.** A profile your AI tool creates arrives **Disabled**. Review it and click
+  **Activate** before `agent_spawn` can use it.
+- **Escalations.** Raising a limit or lowering a price, widening an agent's proxy tools, or
+  pointing a Custom key at a new URL returns `OWNER_APPROVAL_REQUIRED`; make that change on the
+  Dashboard. See [Troubleshooting](/troubleshooting#_31-model-profile-create-model-profile-update-or-model-connection-verify-returns-owner-approval-required).
+
+`model_profile_update` is marked destructive, and `model_connection_verify` spends a few
+provider tokens, so a client that asks before such tools will prompt for them. The full flow is
+in [Model Providers](/reference/model-providers#api-and-mcp-examples).
+
+---
+
 ## Security Best Practices for Clients
 
 1. **Keep Secrets Local:** Never paste API keys into prompts, git commits, or shared project configs.

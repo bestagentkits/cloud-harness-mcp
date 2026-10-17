@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   InternalRunnerRequestSchema,
+  MODEL_TOOL_OPERATIONS,
   InternalRunnerOperationSchema,
   MetadataRunnerOperationSchema,
   MetadataRunnerRequestSchema,
@@ -20,8 +21,13 @@ describe('internal runner API contract', () => {
     expect(InternalRunnerOperationSchema.options).toEqual([
       'workspace_detail', 'workspace_close_fenced', 'toolkits_list', 'toolkits_preview',
       'settings_get', 'settings_update', 'settings_network_check',
-      'oauth_settings_get', 'oauth_settings_update'
+      'oauth_settings_get', 'oauth_settings_update',
+      'terminal_open', 'terminal_read', 'terminal_input', 'terminal_resize', 'terminal_close', 'terminal_list'
     ]);
+    for (const operation of InternalRunnerOperationSchema.options.filter((name) => name.startsWith('terminal_'))) {
+      expect(RunnerOperationSchema.options).not.toContain(operation);
+      expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain(operation);
+    }
     expect(RunnerOperationSchema.options).not.toContain('workspace_detail');
     expect(RunnerOperationSchema.options).not.toContain('workspace_close_fenced');
     expect(RunnerOperationSchema.options).not.toContain('toolkits_list');
@@ -58,6 +64,23 @@ describe('internal runner API contract', () => {
     })).toThrow();
   });
 
+  it('accepts a revisioned, field-scoped workspace lifecycle change and refuses unsafe or empty ones', () => {
+    const update = (workspaceLifecycle: Record<string, unknown>) => InternalRunnerRequestSchema.safeParse({
+      version: 2, principal, operation: 'settings_update', input: { workspaceLifecycle }
+    });
+    expect(update({ expectedRevision: 0, idleTtlSeconds: 600, maxActiveWorkspacesPerOwner: null }).success).toBe(true);
+    expect(update({ expectedRevision: 2, recoverableGraceSeconds: 0, acknowledgeImmediateClose: true }).success).toBe(true);
+    expect(update({ expectedRevision: 2, recoverableGraceSeconds: 0 }).success).toBe(false);
+    expect(update({ expectedRevision: 0 }).success).toBe(false);
+    expect(update({ idleTtlSeconds: 600 }).success).toBe(false);
+    expect(update({ expectedRevision: 0, idleTtlSeconds: 59 }).success).toBe(false);
+    expect(update({ expectedRevision: 0, idleTtlSeconds: 600.5 }).success).toBe(false);
+    expect(update({ expectedRevision: 0, maxActiveWorkspacesPerOwner: 65 }).success).toBe(false);
+    expect(update({ expectedRevision: 0, wallTtlSeconds: 86_401 }).success).toBe(false);
+    expect(update({ expectedRevision: 0, idleTtlSeconds: 600, unknown: 1 }).success).toBe(false);
+    expect(InternalRunnerRequestSchema.safeParse({ version: 2, principal, operation: 'settings_update', input: {} }).success).toBe(false);
+  });
+
   it('requires the v2 principal selector and generation fence', () => {
     const workspaceId = `ws_${'a'.repeat(24)}`;
     expect(InternalRunnerRequestSchema.parse({
@@ -85,8 +108,19 @@ describe('internal runner API contract', () => {
     expect(MetadataRunnerOperationSchema.options).toContain('audit_list');
     // `skill_suggest` is deliberately both. It is a metadata operation because it reads
     // principal-scoped state and writes an audit row, and it is a public tool because a caller submits a
-    // prompt rather than administering the instance. Every other metadata operation stays internal.
-    const deliberatelyPublic = new Set(['skill_suggest']);
+    // prompt rather than administering the instance. The model tools share their names with the
+    // Dashboard operations of the same meaning but run behind the owner-approval guard, which is
+    // why credential, activation, deletion, and spend-policy operations stay internal. Every other
+    // metadata operation stays internal.
+    const deliberatelyPublic = new Set<string>(['skill_suggest', ...MODEL_TOOL_OPERATIONS]);
+    for (const internal of [
+      'model_credential_create', 'model_credential_rotate', 'model_credential_delete', 'model_credential_list',
+      'model_profile_activate', 'model_profile_disable', 'model_profile_delete', 'model_catalog_refresh',
+      'model_spend_policy_list', 'model_spend_policy_set', 'model_spend_policy_delete'
+    ]) {
+      expect(MetadataRunnerOperationSchema.options).toContain(internal);
+      expect(deliberatelyPublic.has(internal)).toBe(false);
+    }
     for (const operation of MetadataRunnerOperationSchema.options) {
       if (deliberatelyPublic.has(operation)) continue;
       expect(RunnerOperationSchema.options).not.toContain(operation);

@@ -1,0 +1,6 @@
+{
+  "name": "chm-clash",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": { "chm-hello": "bin/chm-hello.mjs" }
+}

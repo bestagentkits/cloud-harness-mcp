@@ -24,6 +24,32 @@ const config: ApiConfig = {
   mcpGatewayMaxConnections: 32, mcpGatewayAllowInsecureHttp: false, mcpGatewayAllowPrivateEndpoints: false
 };
 
+const STALE_LIFECYCLE_REVISION = 99;
+const RUNNER_LIFECYCLE = { maxActiveWorkspacesPerOwner: 3, idleTtlSeconds: 300, wallTtlSeconds: 900, recoverableGraceSeconds: 3_600 } as const;
+const LIFECYCLE_BOUNDS = {
+  maxActiveWorkspacesPerOwner: { min: 1, max: 64 }, idleTtlSeconds: { min: 60, max: 43_200 },
+  wallTtlSeconds: { min: 60, max: 86_400 }, recoverableGraceSeconds: { min: 0, max: 86_400 }
+} as const;
+
+/** The runner read-back after an optional lifecycle write: a number is an override, `null` restores the runner value. */
+function lifecycleView(update?: Record<string, number | null | true>) {
+  const settings = Object.fromEntries((Object.keys(RUNNER_LIFECYCLE) as Array<keyof typeof RUNNER_LIFECYCLE>).map((name) => {
+    const override = update?.[name];
+    return [name, {
+      value: typeof override === 'number' ? override : RUNNER_LIFECYCLE[name],
+      source: typeof override === 'number' ? 'setting' : name === 'idleTtlSeconds' ? 'environment' : 'default',
+      runnerValue: RUNNER_LIFECYCLE[name], ...LIFECYCLE_BOUNDS[name]
+    }];
+  }));
+  return {
+    revision: update ? Number(update.expectedRevision) + 1 : 4,
+    updatedAt: update ? '2026-10-15T00:00:00.000Z' : null,
+    settings, reaperIntervalSeconds: 60,
+    usage: { counted: 2, limit: settings.maxActiveWorkspacesPerOwner.value, recoverable: 1, autoCloseDeferred: 1 },
+    executorCeilings: { memoryBytes: 1_073_741_824, cpus: 1, pids: 256 }
+  };
+}
+
 type Reply = { status: number; headers: Record<string, string | string[] | undefined>; text: string; json: any };
 let server: Server;
 let port: number;
@@ -74,10 +100,14 @@ beforeEach(async () => {
       calls.push({ operation, input, principal: selected });
       if (operation === 'settings_get' || operation === 'settings_update') {
         const chosen = input.defaultNetworkProfile as string | null | undefined;
+        const lifecycle = input.workspaceLifecycle as Record<string, number | null | true> | undefined;
+        if (lifecycle?.expectedRevision === STALE_LIFECYCLE_REVISION) {
+          return { ok: false, message: 'conflict', truncated: false, error: { code: 'CONFLICT', message: 'The workspace lifecycle settings changed.', retryable: false } };
+        }
         return { ok: true, message: 'Instance workspace settings', truncated: false, data: { defaultNetworkProfile: {
           value: chosen ?? 'dependency-access',
           source: chosen === undefined || chosen === null ? 'environment' : 'setting'
-        } } };
+        }, workspaceLifecycle: lifecycleView(lifecycle) } };
       }
       if (operation === 'settings_network_check') return { ok: true, message: 'Dependency egress readiness', truncated: false, data: { ready: true, reason: null } };
       if (operation === 'oauth_settings_get' || operation === 'oauth_settings_update') {
@@ -96,6 +126,14 @@ beforeEach(async () => {
       if (operation === 'api_key_list') return { ok: true as const, operation, data: { keys: [key] }, truncated: false as const };
       if (operation === 'api_key_create') return { ok: true as const, operation, data: { key, apiKey: `chm_key_apk_${'k'.repeat(24)}.${'s'.repeat(43)}` }, truncated: false as const };
       return { ok: true as const, operation, data: { key: { ...key, state: 'REVOKED' as const, generation: 2, revokedAt: 2 } }, truncated: false as const };
+    }),
+    callEvents: vi.fn(async (request) => {
+      if (request.operation === 'events_subscriptions_list') return { ok: true as const, data: { subscriptions: [{
+        id: `sub_${'e'.repeat(32)}`, name: 'cloudharness.task.completed' as const, arguments: { workspaceId }, callbackOrigin: 'https://hooks.example',
+        viaApiKey: false, state: 'ACTIVE' as const, createdAt: '2026-08-17T00:00:00.000Z', refreshBefore: '2026-08-18T00:00:00.000Z',
+        deliveryStatus: { active: true, lastDeliveryAt: null, lastError: null }, recentDeliveries: []
+      }], truncated: false } };
+      return { ok: true as const, data: { revoked: true } };
     })
   };
   const app = express();
@@ -225,7 +263,7 @@ describe('dashboard BFF', () => {
     const fixtures: Record<DashboardResponseOperation, unknown> = {
       workspace_list: { workspaces: [{ workspaceId, repositoryUrl: 'https://github.com/example/project.git', status: 'ACTIVE', ...hostile }], ...hostile },
       workspace_status: { workspaceId, status: 'ACTIVE', ...hostile },
-      workspace_detail: { workspaceId, status: 'ACTIVE', generation: 3, canRenewLease: true, leaseState: 'WARNING', availableActions: ['workspace_lease_renew', 'workspace_close', 'workspace_context', 'workspace_finalize'], ...hostile },
+      workspace_detail: { workspaceId, status: 'ACTIVE', generation: 3, canRenewLease: true, leaseCapped: true, leaseState: 'WARNING', availableActions: ['workspace_lease_renew', 'workspace_close', 'workspace_context', 'workspace_finalize'], ...hostile },
       workspace_close: { workspaceId, status: 'CLOSED', generation: 4, ...hostile },
       files_list: { path: '.', entries: [{ name: 'README.md', type: 'file', ...hostile }], ...hostile },
       files_read: { path: 'README.md', content: 'safe', sha256: 'a'.repeat(64), bytes: 4, ...hostile },
@@ -248,6 +286,7 @@ describe('dashboard BFF', () => {
       status: 'ACTIVE',
       version: 3,
       canRenewLease: true,
+      leaseCapped: true,
       leaseState: 'WARNING',
       availableActions: ['workspace_lease_renew', 'workspace_close', 'workspace_context', 'workspace_finalize']
     });
@@ -523,6 +562,25 @@ describe('dashboard BFF', () => {
     expect(revoked.text).not.toContain('.ssss');
   });
 
+  it('lists MCP event subscriptions by origin only and revokes one with CSRF', async () => {
+    const listed = await send('/api/v1/event-subscriptions');
+    expect(listed.status).toBe(200);
+    expect(listed.json.data.subscriptions[0]).toMatchObject({ callbackOrigin: 'https://hooks.example', state: 'ACTIVE' });
+    expect(runner.callEvents).toHaveBeenCalledWith({ version: 1, principal, operation: 'events_subscriptions_list', input: {} });
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const withoutCsrf = await send(`/api/v1/event-subscriptions/sub_${'e'.repeat(32)}/revoke`, { method: 'POST', headers: { ...headers, 'x-csrf-token': 'wrong' }, body: '{}' });
+    expect(withoutCsrf.status).toBe(403);
+    const malformed = await send('/api/v1/event-subscriptions/sub_bad/revoke', { method: 'POST', headers, body: '{}' });
+    expect(malformed.status).toBe(400);
+    const revoked = await send(`/api/v1/event-subscriptions/sub_${'e'.repeat(32)}/revoke`, { method: 'POST', headers, body: '{}' });
+    expect(revoked.status).toBe(200);
+    expect(revoked.json.data).toEqual({ revoked: true });
+    expect(runner.callEvents).toHaveBeenLastCalledWith({ version: 1, principal, operation: 'events_subscription_revoke', input: { id: `sub_${'e'.repeat(32)}` } });
+  });
+
   it('exposes safe server configuration and status without control-plane fields', async () => {
     const response = await send('/api/v1/server');
     expect(response.status).toBe(200);
@@ -740,6 +798,70 @@ describe('dashboard BFF', () => {
     expect(calls.some((call) => call.operation === 'settings_update')).toBe(false);
   });
 
+  it('forwards a lifecycle-only write to the runner intact and keeps network-only writes working', async () => {
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+
+    const lifecycle = { expectedRevision: 4, maxActiveWorkspacesPerOwner: 5, idleTtlSeconds: 600, wallTtlSeconds: null, recoverableGraceSeconds: 0, acknowledgeImmediateClose: true };
+    const saved = await send('/api/v1/settings', { method: 'POST', headers, body: JSON.stringify({ workspaceLifecycle: lifecycle }) });
+    expect(saved.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'settings_update', input: { workspaceLifecycle: lifecycle }, principal });
+    expect(saved.json.data.workspaceLifecycle.revision).toBe(5);
+    expect(saved.json.data.workspaceLifecycle.settings.maxActiveWorkspacesPerOwner).toMatchObject({ value: 5, source: 'setting', runnerValue: 3 });
+    expect(saved.json.data.workspaceLifecycle.executorCeilings).toEqual({ memoryBytes: 1_073_741_824, cpus: 1, pids: 256 });
+
+    const network = await send('/api/v1/settings', { method: 'POST', headers, body: JSON.stringify({ defaultNetworkProfile: 'network-none' }) });
+    expect(network.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'settings_update', input: { defaultNetworkProfile: 'network-none' }, principal });
+
+    const conflict = await send('/api/v1/settings', { method: 'POST', headers, body: JSON.stringify({ workspaceLifecycle: { expectedRevision: STALE_LIFECYCLE_REVISION, idleTtlSeconds: 600 } }) });
+    expect(conflict.status).toBe(409);
+    expect(conflict.json.message).toBe('Instance settings changed after you opened them. Reload and try again.');
+  });
+
+  it('rejects invalid lifecycle writes before they reach the runner', async () => {
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+
+    const before = calls.length;
+    for (const workspaceLifecycle of [
+      { expectedRevision: 4, idleTtlSeconds: 90.5 },
+      { expectedRevision: 4, maxActiveWorkspacesPerOwner: 1.5 },
+      { expectedRevision: 4, maxActiveWorkspacesPerOwner: 0 },
+      { expectedRevision: 4, maxActiveWorkspacesPerOwner: 65 },
+      { expectedRevision: 4, idleTtlSeconds: 59 },
+      { expectedRevision: 4, idleTtlSeconds: 43_201 },
+      { expectedRevision: 4, wallTtlSeconds: 86_401 },
+      { expectedRevision: 4, recoverableGraceSeconds: -1 },
+      { expectedRevision: 4, recoverableGraceSeconds: 0 },
+      { expectedRevision: 4, recoverableGraceSeconds: 0, acknowledgeImmediateClose: false },
+      { expectedRevision: 4, idleTtlSeconds: '600' },
+      { expectedRevision: 4, idleTtlSeconds: 600, workspaceDeletes: true },
+      { expectedRevision: 4 },
+      { idleTtlSeconds: 600 },
+      {}
+    ]) {
+      const body = JSON.stringify({ workspaceLifecycle });
+      const rejected = await send('/api/v1/settings', { method: 'POST', headers, body });
+      expect(rejected.status, body).toBe(400);
+      expect(rejected.json.error, body).toBe('invalid_request');
+    }
+    for (const body of [JSON.stringify({ workspaceLifecycle: { expectedRevision: 4, idleTtlSeconds: 600 }, quota: 3 }), JSON.stringify({ maxActiveWorkspacesPerOwner: 3 })]) {
+      const rejected = await send('/api/v1/settings', { method: 'POST', headers, body });
+      expect(rejected.status, body).toBe(400);
+    }
+    expect(calls.length).toBe(before);
+
+    // The same-origin and CSRF boundary is unchanged for the new field.
+    const forged = await send('/api/v1/settings', { method: 'POST', headers: { ...headers, 'x-csrf-token': 'wrong' }, body: JSON.stringify({ workspaceLifecycle: { expectedRevision: 4, idleTtlSeconds: 600 } }) });
+    expect(forged.status).toBe(403);
+    const crossOrigin = await send('/api/v1/settings', { method: 'POST', headers: { ...headers, origin: 'https://evil.example' }, body: JSON.stringify({ workspaceLifecycle: { expectedRevision: 4, idleTtlSeconds: 600 } }) });
+    expect(crossOrigin.status).toBe(403);
+    expect(calls.length).toBe(before);
+  });
+
   it('round-trips the settings page through the BFF and the shipped renderer', async () => {
     // DOM+BFF wiring for /dashboard/settings: the BFF responses below are the
     // exact shapes the shipped dashboard.js handlers consume, and renderSettings
@@ -754,6 +876,9 @@ describe('dashboard BFF', () => {
     expect(initial).toContain('id="reset-settings-network-profile"');
     expect(initial).toContain('id="check-settings-network"');
     expect(initial).toContain('id="settings-status"');
+    for (const selector of ['id="settings-lifecycle-form"', 'id="settings-lifecycle-max-active"', 'id="settings-lifecycle-idle"', 'id="settings-lifecycle-wall"', 'id="settings-lifecycle-grace"', 'id="save-settings-lifecycle"', 'id="reset-settings-lifecycle"', 'id="settings-lifecycle-status"']) {
+      expect(initial, selector).toContain(selector);
+    }
 
     const session = await send('/api/v1/session');
     const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
@@ -779,6 +904,16 @@ describe('dashboard BFF', () => {
     const checkedHtml = renderSettings(reset.json.data, checked.json.data);
     expect(checkedHtml).toContain('Egress readiness');
     expect(checkedHtml).toContain('Ready');
+
+    // Lifecycle save and reset: what dashboard.js posts from #settings-lifecycle-form and #reset-settings-lifecycle.
+    const lifecycle = await send('/api/v1/settings', { method: 'POST', headers, body: JSON.stringify({ workspaceLifecycle: { expectedRevision: 4, idleTtlSeconds: 600 } }) });
+    expect(lifecycle.status).toBe(200);
+    const lifecycleHtml = renderSettings(lifecycle.json.data);
+    expect(lifecycleHtml).toMatch(/id="settings-lifecycle-idle"[^>]*value="10"/);
+    expect(lifecycleHtml).toContain('Source: Dashboard override · Runner value: 5 min');
+    const restored = await send('/api/v1/settings', { method: 'POST', headers, body: JSON.stringify({ workspaceLifecycle: { expectedRevision: 5, maxActiveWorkspacesPerOwner: null, idleTtlSeconds: null, wallTtlSeconds: null, recoverableGraceSeconds: null } }) });
+    expect(restored.status).toBe(200);
+    expect(renderSettings(restored.json.data)).toContain('Source: Runner environment · Runner value: 5 min');
   });
 });
 

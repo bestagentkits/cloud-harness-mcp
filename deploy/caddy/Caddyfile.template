@@ -18,7 +18,17 @@
             roll_size 10MB
             roll_keep 3
         }
-        format json
+        # The downstream MCP OAuth callback carries a one-time authorization code and
+        # state in its query string; keep both out of the access log.
+        format filter {
+            wrap json
+            fields {
+                request>uri query {
+                    delete code
+                    delete state
+                }
+            }
+        }
     }
 
     # Reverse proxy to loopback ingress proxy

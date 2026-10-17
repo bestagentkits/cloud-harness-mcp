@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  ACTIVITY_FILTERS, activityEvent, renderActivityCenter, renderApprovals
+  ACTIVITY_FILTERS, activityEvent, renderActivityCenter, renderApprovals, grantIsActionable
 } from '../dashboard/dashboard-render.js';
 
 const grant = (overrides: Record<string, unknown> = {}) => ({
@@ -9,9 +9,9 @@ const grant = (overrides: Record<string, unknown> = {}) => ({
   command: 'npm run migrate',
   cwd: '.',
   commandSha256: 'c'.repeat(64),
-  status: 'pending',
+  status: 'PENDING',
   createdAt: '2026-08-17T00:00:00.000Z',
-  expiresAt: '2026-08-17T01:00:00.000Z',
+  expiresAt: '2099-01-01T00:00:00.000Z',
   ...overrides
 });
 
@@ -69,7 +69,31 @@ describe('approvals inbox', () => {
   it('states the empty inbox and its meaning', () => {
     const markup = renderApprovals({ grants: [] });
     expect(markup).toContain('No approvals are waiting.');
-    expect(markup).toContain('leave once you decide');
+    expect(markup).toContain('stay listed briefly, without actions');
+  });
+
+  it('offers decisions only for an unexpired pending grant and labels every other state truthfully', () => {
+    const now = Date.parse('2026-10-13T08:00:00.000Z');
+    const future = '2026-10-13T08:01:00.000Z';
+    const past = '2026-10-13T07:59:00.000Z';
+    const cases = [
+      { status: 'APPROVED', expiresAt: future, label: 'Approved', tone: 'approved' },
+      { status: 'REJECTED', expiresAt: future, label: 'Rejected', tone: 'rejected' },
+      { status: 'CONSUMED', expiresAt: future, label: 'Used', tone: 'consumed' },
+      { status: 'EXPIRED', expiresAt: past, label: 'Expired', tone: 'expired' },
+      { status: 'PENDING', expiresAt: past, label: 'Expired', tone: 'expired' }
+    ];
+    for (const { status, expiresAt, label, tone } of cases) {
+      const markup = renderApprovals({ grants: [grant({ status, expiresAt })], now });
+      expect(markup).toContain(`<span class="status ${tone}">${label}</span>`);
+      expect(markup).not.toContain('approve-grant');
+      expect(markup).not.toContain('reject-grant');
+      expect(grantIsActionable({ status, expiresAt }, now)).toBe(false);
+    }
+    const pending = renderApprovals({ grants: [grant({ status: 'PENDING', expiresAt: future })], now });
+    expect(pending).toContain('<span class="status pending">Pending</span>');
+    expect(pending).toContain('approve-grant');
+    expect(grantIsActionable({ status: 'PENDING', expiresAt: future }, now)).toBe(true);
   });
 
   it('degrades a missing field to Not reported instead of a blank', () => {

@@ -1,0 +1,342 @@
+{
+  "data": [
+    {
+      "id": "anthropic/claude-sonnet-4.5",
+      "canonical_slug": "anthropic/claude-4.5-sonnet-20250929",
+      "hugging_face_id": "",
+      "name": "Anthropic: Claude Sonnet 4.5",
+      "created": 1759161676,
+      "description": "Claude Sonnet 4.5 is Anthropic\u2019s most advanced Sonnet model to date, optimized for real-world agents and coding workflows. It delivers state-of-the-art performance on coding benchmarks such as SWE-bench Verified, with...",
+      "context_length": 1000000,
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Claude",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.000003",
+        "completion": "0.000015",
+        "web_search": "0.01",
+        "input_cache_read": "0.0000003",
+        "input_cache_write": "0.00000375",
+        "input_cache_write_1h": "0.000006",
+        "overrides": [
+          {
+            "min_prompt_tokens": 200000,
+            "prompt": "0.000006",
+            "completion": "0.0000225",
+            "input_cache_read": "0.0000006",
+            "input_cache_write": "0.0000075",
+            "input_cache_write_1h": "0.000012"
+          }
+        ]
+      },
+      "top_provider": {
+        "context_length": 1000000,
+        "max_completion_tokens": 64000,
+        "is_moderated": true
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "response_format",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1,
+        "top_k": null,
+        "frequency_penalty": null,
+        "presence_penalty": null,
+        "repetition_penalty": null
+      },
+      "supported_voices": null,
+      "knowledge_cutoff": "2025-01-31",
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/anthropic/claude-4.5-sonnet-20250929/endpoints"
+      },
+      "benchmarks": {
+        "design_arena": [
+          {
+            "arena": "models",
+            "category": "3d",
+            "elo": 1158,
+            "win_rate": 51,
+            "rank": 65
+          },
+          {
+            "arena": "models",
+            "category": "asciiart",
+            "elo": 1207,
+            "win_rate": 56.1,
+            "rank": 22
+          },
+          {
+            "arena": "models",
+            "category": "codecategories",
+            "elo": 1184,
+            "win_rate": 51.5,
+            "rank": 62
+          },
+          {
+            "arena": "models",
+            "category": "dataviz",
+            "elo": 1167,
+            "win_rate": 47.4,
+            "rank": 71
+          },
+          {
+            "arena": "models",
+            "category": "gamedev",
+            "elo": 1169,
+            "win_rate": 51.1,
+            "rank": 65
+          },
+          {
+            "arena": "models",
+            "category": "svg",
+            "elo": 1113,
+            "win_rate": 52.2,
+            "rank": 56
+          },
+          {
+            "arena": "models",
+            "category": "uicomponent",
+            "elo": 1172,
+            "win_rate": 49.5,
+            "rank": 66
+          },
+          {
+            "arena": "models",
+            "category": "website",
+            "elo": 1191,
+            "win_rate": 51.8,
+            "rank": 66
+          },
+          {
+            "arena": "agents",
+            "category": "fullstack",
+            "elo": 1050,
+            "win_rate": 43.7,
+            "rank": 35
+          },
+          {
+            "arena": "agents",
+            "category": "mobileapps",
+            "elo": 1134,
+            "win_rate": 52.9,
+            "rank": 31
+          },
+          {
+            "arena": "agents",
+            "category": "webapps",
+            "elo": 1051,
+            "win_rate": 43.2,
+            "rank": 38
+          }
+        ],
+        "artificial_analysis": {
+          "intelligence_index": 20.7,
+          "coding_index": 52.1,
+          "agentic_index": 15.8
+        }
+      },
+      "reasoning": {
+        "mandatory": false
+      }
+    },
+    {
+      "id": "deepseek/deepseek-chat",
+      "canonical_slug": "deepseek/deepseek-chat-v3",
+      "hugging_face_id": "deepseek-ai/DeepSeek-V3",
+      "name": "DeepSeek: DeepSeek V3",
+      "created": 1735241320,
+      "description": "DeepSeek-V3 is the latest model from the DeepSeek team, building upon the instruction following and coding abilities of the previous versions. Pre-trained on nearly 15 trillion tokens, the reported evaluations...",
+      "context_length": 163840,
+      "architecture": {
+        "modality": "text->text",
+        "input_modalities": [
+          "text"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "DeepSeek",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.00000032",
+        "completion": "0.00000089"
+      },
+      "top_provider": {
+        "context_length": 163840,
+        "max_completion_tokens": 16384,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "frequency_penalty",
+        "logit_bias",
+        "max_tokens",
+        "min_p",
+        "presence_penalty",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": "2024-07-31",
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/deepseek/deepseek-chat-v3/endpoints"
+      },
+      "benchmarks": {
+        "design_arena": [
+          {
+            "arena": "models",
+            "category": "3d",
+            "elo": 1087,
+            "win_rate": 50.5,
+            "rank": 89
+          },
+          {
+            "arena": "models",
+            "category": "codecategories",
+            "elo": 1110,
+            "win_rate": 48.4,
+            "rank": 100
+          },
+          {
+            "arena": "models",
+            "category": "dataviz",
+            "elo": 1090,
+            "win_rate": 50,
+            "rank": 101
+          },
+          {
+            "arena": "models",
+            "category": "gamedev",
+            "elo": 1055,
+            "win_rate": 43.7,
+            "rank": 106
+          },
+          {
+            "arena": "models",
+            "category": "svg",
+            "elo": 976,
+            "win_rate": 38.8,
+            "rank": 87
+          },
+          {
+            "arena": "models",
+            "category": "uicomponent",
+            "elo": 1092,
+            "win_rate": 52.7,
+            "rank": 94
+          },
+          {
+            "arena": "models",
+            "category": "website",
+            "elo": 1122,
+            "win_rate": 48.5,
+            "rank": 99
+          }
+        ]
+      }
+    },
+    {
+      "id": "openai/gpt-4o-mini",
+      "canonical_slug": "openai/gpt-4o-mini",
+      "hugging_face_id": null,
+      "name": "OpenAI: GPT-4o-mini",
+      "created": 1721260800,
+      "description": "GPT-4o mini is OpenAI's newest model after [GPT-4 Omni](/models/openai/gpt-4o), supporting both text and image inputs with text outputs. As their most advanced small model, it is many multiples more affordable...",
+      "context_length": 128000,
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.00000015",
+        "completion": "0.0000006",
+        "input_cache_read": "0.000000075"
+      },
+      "top_provider": {
+        "context_length": 128000,
+        "max_completion_tokens": 16384,
+        "is_moderated": true
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "frequency_penalty",
+        "logit_bias",
+        "logprobs",
+        "max_completion_tokens",
+        "max_tokens",
+        "prediction",
+        "presence_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_logprobs",
+        "top_p",
+        "web_search_options"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": "2023-10-31",
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/openai/gpt-4o-mini/endpoints"
+      },
+      "benchmarks": {
+        "design_arena": [],
+        "artificial_analysis": {
+          "intelligence_index": 6.7,
+          "coding_index": 11.4,
+          "agentic_index": null
+        }
+      }
+    }
+  ],
+  "_note": "trimmed sample of 469 models fetched 2026-10-17"
+}

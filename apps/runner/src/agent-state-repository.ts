@@ -11,6 +11,7 @@ import {
   type AgentUsage,
   type RunnerAgentLimits
 } from '@cloud-harness/contracts';
+import { emitAgentTerminalEvent, withEventSavepoint } from './event-outbox.js';
 
 const ACTIVE_STATUSES: AgentStatus[] = ['SPAWNING', 'RUNNING', 'CANCELLING'];
 const TERMINAL_STATUSES: AgentStatus[] = ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED'];
@@ -146,6 +147,13 @@ export type AgentSpawnReservation = {
   runtimeEpoch?: number;
   now: number;
   expiresAt: number;
+  /**
+   * Runs inside the spawn transaction after the replay, capacity, and TTL checks
+   * and before the agent row is written, so a replay never calls it and
+   * concurrent spawns are serialised. Throwing refuses the spawn and rolls back
+   * whatever it wrote.
+   */
+  admit?: () => void;
 };
 export type AgentStatusTransition = {
   ownerId: string;
@@ -568,6 +576,7 @@ export class AgentStateRepository {
       if (new Set(proxyOperations).size !== proxyOperations.length) {
         throw new HarnessError('INVALID_INPUT', 'agent proxy operations must be unique');
       }
+      input.admit?.();
 
       this.database.prepare(`INSERT INTO agents
         (id, owner_id, workspace_id, workspace_generation, parent_agent_id, parent_generation,
@@ -617,7 +626,7 @@ export class AgentStateRepository {
     const placeholders = input.expectedStatuses.map(() => '?').join(',');
     const epochPredicate = input.runtimeEpoch !== undefined ? 'AND runner_epoch=?' : '';
     const epochArgs = input.runtimeEpoch !== undefined ? [input.runtimeEpoch] : [];
-    const result = this.database.prepare(`UPDATE agents SET status=?,
+    const update = () => this.database.prepare(`UPDATE agents SET status=?,
       started_at=CASE WHEN ?='RUNNING' AND started_at IS NULL THEN ? ELSE started_at END,
       terminal_at=CASE WHEN ?=1 THEN ? ELSE terminal_at END,
       terminal_reason=COALESCE(?, terminal_reason), cleanup_reason=COALESCE(?, cleanup_reason),
@@ -632,7 +641,15 @@ export class AgentStateRepository {
         closesAdmission ? 1 : 0, closesAdmission ? 1 : 0,
         input.ownerId, input.workspaceId, input.agentId, input.generation, ...epochArgs, ...input.expectedStatuses
       );
-    return result.changes === 1 ? this.findAgent(input.ownerId, input.workspaceId, input.agentId) : undefined;
+    const changed = terminal
+      // A terminal record and its MCP event commit together; the outbox keys the event by agent id.
+      ? withEventSavepoint(this.database, () => {
+        if (Number(update().changes) !== 1) return false;
+        emitAgentTerminalEvent(this.database, input.ownerId, input.workspaceId, input.agentId, input.now);
+        return true;
+      })
+      : Number(update().changes) === 1;
+    return changed ? this.findAgent(input.ownerId, input.workspaceId, input.agentId) : undefined;
   }
 
   closeWorkspaceAdmission(ownerId: string, workspaceId: string, now: number, workspaceGeneration?: number): boolean {

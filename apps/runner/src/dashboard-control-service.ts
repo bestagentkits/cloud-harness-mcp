@@ -1,9 +1,15 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import {
-  HarnessError, MetadataRunnerRequestSchema, qualifiedToolName,
-  type MetadataRunnerRequest, type RunnerConfig, type RunnerResponse
+  HarnessError, MetadataRunnerRequestSchema, ModelCatalogRefreshResultSchema, ModelCatalogSearchResultSchema,
+  ModelProfileValidateResultSchema, TOOL_SCHEMA_BY_NAME, listModelProviders, qualifiedToolName,
+  type AgentModelPricing, type AgentModelProfileInput, type AgentModelProfileMetadata, type AgentModelProfileUpdateInput,
+  type MetadataRunnerRequest, type ModelCatalogPriceRef, type ModelConnectionVerifyInput, type ModelProfileCreateToolInput,
+  type ModelProfileEscalation, type ModelProfileUpdateToolInput, type ModelProfileValidateInput,
+  type ModelProfileValidateResult, type ModelSpendSummaryToolResult, type ModelToolOperation, type RunnerConfig,
+  type RunnerPrincipalSelector, type RunnerResponse
 } from '@cloud-harness/contracts';
 import { ArtifactStoreError, type ArtifactStore } from './artifact-store.js';
 import type { GitHubBindingService } from './github-binding-service.js';
@@ -15,7 +21,7 @@ import { readSkillArchive } from './skill-archive.js';
 import { SkillExtensionService } from './skill-extension-service.js';
 import { SkillRegistryError, type PrivilegeGrantRecord, type StateStore } from './state-store.js';
 import { compareSemver, isSemver, parseSkillVersion, trustedSkillVersion } from './skill-version.js';
-import { IntegrationCredentialRepository } from './integration-credential-repository.js';
+import { IntegrationCredentialError, IntegrationCredentialRepository } from './integration-credential-repository.js';
 import type { SecretKeyring } from './secret-keyring.js';
 import { FITS_THRESHOLD, GATE_THRESHOLD, TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
 
@@ -41,6 +47,9 @@ function skillVersionDriftWarning(previous: string | null, next: string | null):
   return `declared version ${next} does not advance the current revision's ${previous}`;
 }
 import { TypesafeSkillSuggester, type RosterEntry } from './typesafe-skill-suggester.js';
+import type { DecisionPlane } from './decision-plane/decision-plane.js';
+import { providerCredentialSecrets } from './decision-plane/runner-decision-plane.js';
+import { rerankTools } from './decision-plane/tool-router.js';
 import { TOOLKIT_CATALOG } from './toolkit-service.js';
 import { diffRevisionText, formatRevisionDiff } from './revision-diff.js';
 import { fetchRegistrySearch } from './adapters/registry-search.js';
@@ -51,11 +60,28 @@ import { parseSkillXSearchResults } from './adapters/skillx-adapter.js';
 const MAX_REVISION_BYTES = 262_144;
 import { resolveWorkspaceSkills, type SkillCandidate, type SkillTier } from './skill-resolver.js';
 import type { WorkspaceService } from './workspace-service.js';
-import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
+import type {
+  ModelProfileStateRepository, ProfileChangeRecorder, ProfileRevisionOptions, ProfileRevisionPlan
+} from './model-profile-state-repository.js';
+import {
+  customUpstreamBound, profileAuditDetails, profileChangeRefusedDetails, profileEscalations, type ModelChangeActor
+} from './model-profile-guard.js';
+import { ModelToolIdempotencyStore, modelToolFingerprint } from './model-tool-idempotency.js';
+import { ProfileChangeRefusal, modelToolResult, ownerApprovalRequired } from './model-tool-operations.js';
+import { ModelCatalogService } from './model-catalog/model-catalog-service.js';
+import { reviewPricing, savedPriceProvenance } from './model-catalog/pricing-review.js';
+import { createProviderHttpClient, type ProviderHttpClient } from './model-provider-http.js';
+import { ModelConnectionVerifier } from './model-verification/model-connection-verifier.js';
 import type { AgentGatewayControl } from './agent-gateway-control.js';
+import { ModelSpendLedger, type ModelSpendPolicyHooks } from './model-spend-ledger.js';
+import { packageApprovalUnavailable } from './config.js';
+import {
+  PACKAGE_HISTORY_DEPTH, PackageStore, packageApplyView, packagePlanSummary,
+  type PackageApplyRecord, type PackagePlanRecord, type PackageReleaseRecord
+} from './package-store.js';
 
 export class DashboardControlService {
-  private lastGatewaySync?: { synced: boolean; bootId: string | null; time: number; error: string | null };
+  private connectionVerifier?: ModelConnectionVerifier;
 
   constructor(
     private readonly config: RunnerConfig,
@@ -67,7 +93,10 @@ export class DashboardControlService {
     private readonly githubBinding?: GitHubBindingService,
     private readonly modelProfiles?: ModelProfileStateRepository,
     private readonly gatewayControl?: AgentGatewayControl,
-    private readonly keyring?: SecretKeyring
+    private readonly keyring?: SecretKeyring,
+    private readonly decisionPlane?: DecisionPlane,
+    private readonly providerHttp?: ProviderHttpClient,
+    private spendLedger?: ModelSpendLedger
   ) {}
 
   /**
@@ -203,6 +232,7 @@ export class DashboardControlService {
   private suggester(ownerId: string, workspaceId: string, apiKey: string): TypesafeSkillSuggester {
     return new TypesafeSkillSuggester({
       apiKey: () => apiKey,
+      enabled: () => this.config.typesafeEgress !== 'off',
       secrets: () => ({
         ...this.workspaces.redactionSecrets(workspaceId),
         ...this.providerCredentialSecrets(ownerId)
@@ -211,15 +241,7 @@ export class DashboardControlService {
   }
 
   private providerCredentialSecrets(ownerId: string): Record<string, string> {
-    const snapshot = this.modelProfiles?.getExportSnapshot(ownerId);
-    if (!snapshot) return {};
-    const values: Record<string, string> = {};
-    for (const [id, credential] of Object.entries(snapshot.credentials)) {
-      if (typeof credential === 'object' && credential !== null && typeof (credential as { secret?: unknown }).secret === 'string') {
-        values[`MODEL_PROVIDER_${id}`] = (credential as { secret: string }).secret;
-      }
-    }
-    return values;
+    return providerCredentialSecrets(this.modelProfiles, ownerId);
   }
 
   /**
@@ -434,6 +456,42 @@ export class DashboardControlService {
           }
           return ok('Privilege grant rejected', { grant: rejectedGrant });
         }
+        case 'package_overview': return ok('Managed packages listed', this.packageOverview(principalId, await this.currentPackageImageId()));
+        case 'package_plan_list': return ok('Package plans listed', this.packagePlanList(principalId));
+        case 'package_plan_approve': {
+          const plan = this.requirePackages().approvePlan({
+            ownerId: principalId, planId: parsed.input.planId, planDigest: parsed.input.planDigest,
+            decidedBy: principalId, now: Date.now()
+          });
+          return ok('Package plan approved', { plan: this.packagePlanView(principalId, plan, Date.now()) });
+        }
+        case 'package_plan_reject': {
+          const plan = this.requirePackages().rejectPlan({
+            ownerId: principalId, planId: parsed.input.planId, decidedBy: principalId, now: Date.now()
+          });
+          return ok('Package plan rejected', { plan: this.packagePlanView(principalId, plan, Date.now()) });
+        }
+        case 'package_rollback': {
+          const { binding, replayed } = this.requirePackages().rollback({
+            ownerId: principalId, bindingId: parsed.input.bindingId, releaseId: parsed.input.releaseId,
+            expectedGeneration: parsed.input.expectedGeneration, actor: 'dashboard', now: Date.now(),
+            releasePresent: (release) => this.packageReleasePresent(release)
+          });
+          return ok(replayed ? 'Package rollback already applied' : 'Package rolled back', {
+            binding: {
+              bindingId: binding.id, scope: binding.scope, ...(binding.workspaceId ? { workspaceId: binding.workspaceId } : {}),
+              ecosystem: binding.ecosystem, name: binding.packageName, generation: binding.generation, releaseId: binding.releaseId
+            },
+            replayed
+          });
+        }
+        case 'package_remove': {
+          this.requirePackages();
+          const removed = await this.workspaces.packages.removeBinding(principalId, {
+            bindingId: parsed.input.bindingId, expectedGeneration: parsed.input.expectedGeneration
+          }, 'dashboard');
+          return ok('Package uninstalled', removed);
+        }
         case 'model_credential_list': return ok('Model provider credentials listed', { credentials: this.models().listCredentials(principalId) });
         case 'model_credential_create': {
           const created = this.models().createCredential(principalId, parsed.input);
@@ -450,64 +508,94 @@ export class DashboardControlService {
           await this.syncGateway();
           return ok('Model provider credential deleted', { deleted: true });
         }
-        case 'model_profile_list': return ok('Agent model profiles listed', { profiles: this.models().listProfiles(principalId) });
+        case 'model_profile_list': return ok('Agent model profiles listed', { profiles: this.reviewedProfiles(principalId) });
         case 'model_profile_create': {
-          const created = this.models().createProfile(principalId, parsed.input);
+          const { input } = parsed;
+          const created = this.verifier().attachDraftVerification(principalId, input.verificationRef, this.models().createProfile(principalId, input, {
+            ...this.createRevisionOptions(principalId, input), record: this.profileRecorder(principalId, 'created', 'dashboard')
+          }));
           await this.syncGateway();
           return mutation('Agent model profile created', created);
         }
         case 'model_profile_update': {
-          const updated = this.models().updateProfile(principalId, parsed.input.profileId, parsed.input);
+          const { input } = parsed;
+          const updated = this.verifier().attachDraftVerification(principalId, input.verificationRef, this.models().updateProfile(principalId, input.profileId, input, {
+            ...this.updateRevisionOptions(principalId, input), record: this.profileRecorder(principalId, 'updated', 'dashboard')
+          }));
           await this.syncGateway();
           return mutation('Agent model profile updated', updated);
         }
+        case 'model_profile_validate': return ok('Agent model profile validated', this.validateProfile(principalId, parsed.input));
         case 'model_profile_activate': {
-          const activated = this.models().activateProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration);
+          const activated = this.models().activateProfile(
+            principalId, parsed.input.profileId, parsed.input.expectedGeneration, this.profileRecorder(principalId, 'activated', 'dashboard')
+          );
           await this.syncGateway();
           return mutation('Agent model profile activated', activated);
         }
         case 'model_profile_disable': {
-          const disabled = this.models().disableProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration);
+          const disabled = this.models().disableProfile(
+            principalId, parsed.input.profileId, parsed.input.expectedGeneration, this.profileRecorder(principalId, 'disabled', 'dashboard')
+          );
           await this.syncGateway();
           return mutation('Agent model profile disabled', disabled);
         }
         case 'model_profile_delete': {
-          this.models().deleteProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration);
+          this.models().deleteProfile(
+            principalId, parsed.input.profileId, parsed.input.expectedGeneration, this.profileRecorder(principalId, 'deleted', 'dashboard')
+          );
           await this.syncGateway();
           return ok('Agent model profile deleted', { deleted: true });
         }
+        case 'model_provider_list': return ok('Model providers listed', { providers: listModelProviders() });
+        case 'model_catalog_search': return ok('Model catalog searched', ModelCatalogSearchResultSchema.parse(await this.catalog().search(principalId, parsed.input)));
+        case 'model_catalog_refresh': return ok('Model catalog refreshed', ModelCatalogRefreshResultSchema.parse(await this.catalog().refresh(principalId, parsed.input)));
+        case 'model_connection_verify': return ok('Model connection checked', await this.verifier().verify(principalId, parsed.input, 'dashboard'));
+        case 'model_spend_summary': return ok('Model spend summarized', this.spendSummary(principalId));
+        case 'model_spend_policy_list': return ok('Model spend policies listed', { policies: this.spend().listPolicies(principalId) });
+        case 'model_spend_policy_set': return mutation('Model spend policy saved', this.spend().setPolicy(principalId, parsed.input, Date.now(), {
+          // A policy can name only one of the principal's saved profiles when it is created.
+          profileExists: (profileId) => this.modelProfiles?.getProfileRoute(principalId, profileId) !== undefined,
+          record: this.recordSpendPolicyChange(principalId)
+        }));
+        case 'model_spend_policy_delete': return mutation('Model spend policy deleted', this.spend().deletePolicy(principalId, parsed.input, {
+          record: this.recordSpendPolicyChange(principalId)
+        }));
         case 'model_config_status': {
-          const activeProfiles = this.models().listProfiles(principalId).filter((p) => p.status === 'ACTIVE').length;
-          const activeCreds = this.models().listCredentials(principalId).filter((c) => c.status === 'ACTIVE').length;
           let gatewaySynced = false;
           let gatewayBootId: string | null = null;
-          let syncError: string | null = null;
-          if (this.gatewayControl?.queryDigest) {
+          let gatewayError: string | null = null;
+          const control = this.gatewayControl;
+          const models = this.models();
+          if (control) {
             try {
-              const digest = await this.gatewayControl.queryDigest();
-              gatewayBootId = digest.gatewayBootId;
-              if (activeProfiles > 0 && digest.activeProfileCount === 0 && this.gatewayControl.applySnapshot) {
-                const snapshot = this.models().getExportSnapshot();
-                const ack = await this.gatewayControl.applySnapshot(snapshot);
-                gatewayBootId = ack.gatewayBootId;
-                gatewaySynced = true;
-                this.lastGatewaySync = { synced: true, bootId: ack.gatewayBootId, time: Date.now(), error: null };
-              } else {
-                gatewaySynced = true;
-              }
+              // One serialized section: query the gateway, build the whole-instance snapshot the
+              // runner pushes, and repair a mismatch with one push. The expected digest comes from
+              // a snapshot built after any earlier push landed, and a repair never overwrites a newer push.
+              const sync = await control.syncSnapshot(() => models.getExportSnapshot(), {
+                onlyIfMismatch: true,
+                onQueried: (digest) => { gatewayBootId = digest.gatewayBootId; }
+              });
+              gatewayBootId = sync.gatewayBootId;
+              gatewaySynced = sync.gatewayDigest === sync.expectedDigest;
             } catch (err) {
-              gatewaySynced = false;
-              syncError = err instanceof Error ? err.message : 'gateway unreachable';
+              gatewayError = err instanceof Error ? err.message : 'gateway unreachable';
             }
           }
+          // Every push, from this service or the agent manager, is recorded on the shared control.
+          const push = control?.snapshotPushState?.() ?? { lastSuccessAt: null, lastError: null };
+          // Counted after the sync, so they describe the same state the expected digest does.
+          const activeProfiles = models.listProfiles(principalId).filter((p) => p.status === 'ACTIVE').length;
+          const activeCreds = models.listCredentials(principalId).filter((c) => c.status === 'ACTIVE').length;
           return ok('Model configuration status', {
             status: {
               gatewaySynced,
               gatewayBootId,
-              lastSyncTime: this.lastGatewaySync?.time ?? Date.now(),
+              lastSyncTime: push.lastSuccessAt,
               activeProfileCount: activeProfiles,
               activeCredentialCount: activeCreds,
-              error: syncError
+              // Once the gateway's last applied snapshot matches, an earlier failed push is moot.
+              error: gatewayError ?? (gatewaySynced ? null : push.lastError)
             }
           });
         }
@@ -1164,9 +1252,30 @@ export class DashboardControlService {
           const credentials = this.keyring ? this.integrationCredentials().list(principalId) : [];
           return ok('TypeSafe status', {
             configured: credentials.some((credential) => credential.integration === 'typesafe' && credential.status === 'ACTIVE'),
-            enabled: true,
+            enabled: this.config.typesafeEgress !== 'off',
             endpoint: TYPESAFE_DEFAULT_ENDPOINT,
             model: TYPESAFE_DEFAULT_MODEL
+          });
+        }
+        case 'decision_rerank_tools': {
+          // The plane can only reorder the candidates it was given; the gateway validates that the
+          // ordering is a permutation of its own pool before it uses any of it.
+          if (!this.decisionPlane) {
+            return ok('Lexical ranking kept', { applied: false, decisionId: null, ordering: [], relevance: {}, reason: 'purpose_disabled' });
+          }
+          const reranked = await rerankTools(this.decisionPlane, principalId, parsed.input);
+          return ok(reranked.applied ? 'Semantic ranking applied' : 'Lexical ranking kept', reranked);
+        }
+        case 'decision_plane_status': {
+          // Counters and latency only: no state text, answer, or credential is ever part of status.
+          const status = this.decisionPlane?.status() ?? { purposes: [], metrics: {} };
+          const credentials = this.keyring ? this.integrationCredentials().list(principalId) : [];
+          return ok('Decision Plane status', {
+            enabled: status.purposes.length > 0,
+            purposes: status.purposes,
+            provider: 'typesafe-jev',
+            configured: credentials.some((credential) => credential.integration === 'typesafe' && credential.status === 'ACTIVE'),
+            metrics: status.metrics
           });
         }
         case 'skill_suggest': {
@@ -1255,6 +1364,8 @@ export class DashboardControlService {
       // The skill registry raises its own error type so the store stays free of HTTP concerns; the
       // service is where it becomes a status the control plane and the dashboard mapper understand.
       if (error instanceof SkillRegistryError) throw new HarnessError(error.code, error.message, statusFor(error.code), false);
+      // A stale generation or a second create is a conflict the dashboard recovers from, not a 500.
+      if (error instanceof IntegrationCredentialError) throw new HarnessError(error.code, error.message, statusFor(error.code), false);
       throw error;
     }
   }
@@ -1379,18 +1490,620 @@ export class DashboardControlService {
     }
     return this.modelProfiles;
   }
-  private async syncGateway(): Promise<void> {
-    if (this.modelProfiles && this.gatewayControl?.applySnapshot) {
-      try {
-        const snapshot = this.modelProfiles.getExportSnapshot();
-        const ack = await this.gatewayControl.applySnapshot(snapshot);
-        this.lastGatewaySync = { synced: true, bootId: ack.gatewayBootId, time: Date.now(), error: null };
-      } catch (err) {
-        this.lastGatewaySync = { synced: false, bootId: null, time: Date.now(), error: err instanceof Error ? err.message : 'sync failed' };
+  /**
+   * Profiles with each active revision's prices reviewed against the cached
+   * catalog price of the model it routes to. The cache is peeked once per list, so
+   * listing never makes a provider request, and the review is never stored.
+   */
+  private reviewedProfiles(principalId: string): AgentModelProfileMetadata[] {
+    const providers = new Map(this.models().listCredentials(principalId).map((credential) => [credential.id, credential.provider]));
+    const cachedPrice = this.catalog().cachedPrices();
+    return this.models().listProfiles(principalId).map((profile) => {
+      const revision = profile.activeRevision;
+      if (!revision) return profile;
+      const provider = providers.get(revision.credentialId);
+      const catalogPrice = provider ? cachedPrice(provider, revision.model) : undefined;
+      return { ...profile, pricingReview: reviewPricing(revision, catalogPrice) };
+    });
+  }
+
+  /**
+   * Provenance for submitted prices that name a catalog model. The runner looks up
+   * its own cached price for the model the revision routes to and accepts the
+   * reference only when it names that model; without a reference, or for a
+   * credential it cannot find, the repository records the operator's override.
+   */
+  private submittedPriceProvenance(
+    principalId: string,
+    credentialId: string,
+    model: string,
+    pricing: AgentModelPricing | undefined,
+    ref: ModelCatalogPriceRef | undefined
+  ): ProfileRevisionOptions {
+    if (!pricing || !ref) return {};
+    const credential = this.models().getCredential(principalId, credentialId);
+    if (!credential) return {};
+    return { priceProvenance: savedPriceProvenance(pricing, ref, this.catalog().cachedPrice(credential.provider, model)) };
+  }
+
+  /** Price provenance for a create: the submitted catalog reference is checked against the route's model. */
+  private createRevisionOptions(principalId: string, input: AgentModelProfileInput): ProfileRevisionOptions {
+    return this.submittedPriceProvenance(principalId, input.credentialId, input.model, input.pricing, input.catalogPriceRef);
+  }
+
+  /** Price provenance for an update, checked against the model the updated revision will route to. */
+  private updateRevisionOptions(principalId: string, input: AgentModelProfileUpdateInput & { profileId: string }): ProfileRevisionOptions {
+    const current = input.pricing && input.catalogPriceRef ? this.models().getProfileRoute(principalId, input.profileId) : undefined;
+    // An unknown profile gets no provenance here; the repository reports it as not found.
+    return current
+      ? this.submittedPriceProvenance(
+        principalId, input.credentialId ?? current.credentialId, input.model ?? current.model ?? 'default', input.pricing, input.catalogPriceRef
+      )
+      : {};
+  }
+
+  /**
+   * A dry run of a profile save. It runs the same plan as the save, so it refuses
+   * what the save refuses and reports the revision the save would write, then adds
+   * what a caller needs before saving: the pricing review against the cached
+   * catalog, whether the draft check would attach, and the changes that need the
+   * owner's approval outside the Dashboard. It writes nothing, spends no draft
+   * reference, makes no provider request, and records no audit entry.
+   */
+  private validateProfile(principalId: string, input: ModelProfileValidateInput): ModelProfileValidateResult {
+    const statusAfterSaveOverMcp = input.action === 'create' ? 'DISABLED' as const : 'unchanged' as const;
+    const refused = (code: 'INVALID_INPUT' | 'NOT_FOUND' | 'CONFLICT', message: string): ModelProfileValidateResult => ({
+      valid: false, action: input.action, profileId: input.profileId,
+      issues: [{ code, message: message.slice(0, 1000) }],
+      revision: null, pricingReview: null, verificationAttachable: false,
+      escalations: [], ownerApprovalRequiredOverMcp: false, statusAfterSaveOverMcp, currentGeneration: null
+    });
+
+    let plan: ProfileRevisionPlan;
+    try {
+      plan = input.action === 'create'
+        ? this.models().planCreateRevision(principalId, input, this.createRevisionOptions(principalId, input))
+        : this.models().planUpdateRevision(principalId, input.profileId, input, this.updateRevisionOptions(principalId, input));
+    } catch (error) {
+      if (error instanceof HarnessError && (error.code === 'INVALID_INPUT' || error.code === 'NOT_FOUND' || error.code === 'CONFLICT')) {
+        return refused(error.code, error.message);
+      }
+      throw error;
+    }
+
+    const { revision, provider, current } = plan;
+    const escalations = this.planEscalations(principalId, input.action, plan);
+    return ModelProfileValidateResultSchema.parse({
+      valid: true,
+      action: input.action,
+      profileId: input.profileId,
+      issues: [],
+      revision: {
+        credentialId: revision.credentialId,
+        provider,
+        model: revision.model,
+        apiMode: revision.apiMode,
+        upstreamUrl: revision.upstreamUrl,
+        pricing: revision.pricing,
+        priceProvenance: revision.priceProvenance,
+        limits: revision.limits,
+        maxProxyOperations: revision.maxProxyOperations
+      },
+      pricingReview: reviewPricing(revision, this.catalog().cachedPrice(provider, revision.model)),
+      verificationAttachable: this.verifier().draftVerificationAttachable(principalId, input.verificationRef, revision),
+      escalations,
+      ownerApprovalRequiredOverMcp: escalations.length > 0,
+      statusAfterSaveOverMcp,
+      currentGeneration: current?.generation ?? null
+    });
+  }
+
+  /**
+   * The changes in a planned save that need the owner's approval outside the
+   * Dashboard. Reads go through the repository's handle, so a guard running inside
+   * the save's transaction classifies the state the save commits against.
+   */
+  private planEscalations(principalId: string, action: 'create' | 'update', plan: ProfileRevisionPlan): ModelProfileEscalation[] {
+    const { revision, provider, current } = plan;
+    const currentRevision = current?.activeRevision ?? null;
+    const currentProvider = currentRevision ? this.models().getCredentialProvider(principalId, currentRevision.credentialId) : undefined;
+    return profileEscalations({
+      action,
+      current: currentRevision,
+      next: revision,
+      provider,
+      ...(currentProvider ? { currentProvider } : {}),
+      boundCustomUrls: this.models().listBoundCustomUpstreams(principalId, revision.credentialId)
+    });
+  }
+
+  /**
+   * Records a profile change in the transaction that commits it. Details name the
+   * actor, route, limits, and price source, never prices, URL paths, or keys.
+   */
+  private profileRecorder(
+    principalId: string,
+    action: 'created' | 'updated' | 'activated' | 'disabled' | 'deleted',
+    actor: ModelChangeActor
+  ): ProfileChangeRecorder {
+    return (database, profile) => this.auditProfile(database, principalId, action, profile, actor);
+  }
+
+  private auditProfile(
+    database: DatabaseSync,
+    principalId: string,
+    action: 'created' | 'updated' | 'activated' | 'disabled' | 'deleted',
+    profile: AgentModelProfileMetadata,
+    actor: ModelChangeActor
+  ): void {
+    const provider = this.models().getCredentialProvider(principalId, profile.activeRevision?.credentialId ?? profile.credentialId);
+    this.metadata.recordAuditInTransaction(
+      database, principalId, `model_profile.${action}`, 'model_profile', profile.id, profile.generation,
+      profileAuditDetails(profile, provider, actor)
+    );
+  }
+
+  /**
+   * Records a profile change the guard refused. Nothing was written, so the entry
+   * carries the generation the caller saw: 0 for a create.
+   */
+  private auditProfileChangeRefused(
+    principalId: string,
+    profileId: string,
+    generation: number,
+    actor: ModelChangeActor,
+    attempted: 'create' | 'update',
+    escalations: readonly ModelProfileEscalation[]
+  ): void {
+    this.metadata.recordAudit(
+      principalId, 'model_profile.change_refused', 'model_profile', profileId, generation,
+      profileChangeRefusedDetails(actor, attempted, escalations)
+    );
+  }
+
+  /* Public MCP model tools. They reuse the Dashboard's helpers on this one instance, so the
+   * plan, prices, catalog cache, verification rate limit, and gateway sync are shared; only
+   * the actor and the owner-approval guard differ. */
+
+  /**
+   * Runs one public model tool for a principal. Reads are not audited. A create is
+   * saved DISABLED, an update keeps the profile's status, and either is refused with
+   * OWNER_APPROVAL_REQUIRED, writing nothing but the refusal's audit entry, when it
+   * would raise spend capacity, widen agent permissions, or send a key to a new host.
+   */
+  async executeModelTool(principal: RunnerPrincipalSelector, operation: ModelToolOperation, input: Record<string, unknown>): Promise<RunnerResponse> {
+    const principalId = this.principals.resolvePrincipal(principal);
+    switch (operation) {
+      case 'model_provider_list': {
+        const { provider } = TOOL_SCHEMA_BY_NAME.model_provider_list.parse(input);
+        return modelToolResult(operation, 'Model providers listed', {
+          providers: listModelProviders().filter((definition) => provider === undefined || definition.id === provider),
+          credentials: this.models().listCredentials(principalId).filter((credential) => provider === undefined || credential.provider === provider)
+        });
+      }
+      case 'model_catalog_search':
+        return modelToolResult(operation, 'Model catalog searched', await this.catalog().search(principalId, TOOL_SCHEMA_BY_NAME.model_catalog_search.parse(input)));
+      case 'model_connection_verify': {
+        const parsed = TOOL_SCHEMA_BY_NAME.model_connection_verify.parse(input);
+        this.assertDraftUpstreamBound(principalId, parsed);
+        return modelToolResult(operation, 'Model connection checked', await this.verifier().verify(principalId, parsed, 'mcp'));
+      }
+      case 'model_profile_list': {
+        const { profileId } = TOOL_SCHEMA_BY_NAME.model_profile_list.parse(input);
+        return modelToolResult(operation, 'Agent model profiles listed', {
+          profiles: this.reviewedProfiles(principalId).filter((profile) => profileId === undefined || profile.id === profileId)
+        });
+      }
+      case 'model_profile_validate':
+        return modelToolResult(operation, 'Agent model profile validated', this.validateProfile(principalId, TOOL_SCHEMA_BY_NAME.model_profile_validate.parse(input)));
+      case 'model_profile_create':
+        return this.createProfileOverMcp(principalId, TOOL_SCHEMA_BY_NAME.model_profile_create.parse(input));
+      case 'model_profile_update':
+        return await this.updateProfileOverMcp(principalId, TOOL_SCHEMA_BY_NAME.model_profile_update.parse(input));
+      case 'model_spend_summary': {
+        const { period } = TOOL_SCHEMA_BY_NAME.model_spend_summary.parse(input);
+        const { summary, policies } = this.spendSummary(principalId);
+        return modelToolResult(operation, 'Model spend summarized', period === undefined
+          ? { summary, policies }
+          : {
+            summary: { ...summary, windows: summary.windows.filter((window) => window.period === period) },
+            policies: policies.filter((policy) => policy.period === period)
+          });
+      }
+      default: {
+        // Reached only by a caller that bypassed the operation type: no other operation runs here.
+        const unknown: never = operation;
+        throw new HarnessError('INVALID_INPUT', `${String(unknown)} is not a model tool`, 400, false);
       }
     }
   }
+
+  /**
+   * Creates a DISABLED profile. The lookup, plan, guard, write, audit, and idempotency
+   * record all run synchronously, with the last three in one transaction, so two
+   * identical calls cannot both write and a crash cannot keep a change without its
+   * record.
+   */
+  private createProfileOverMcp(principalId: string, input: ModelProfileCreateToolInput): RunnerResponse {
+    const operation = 'model_profile_create';
+    const { idempotencyKey, ...profileInput } = input;
+    const fingerprint = modelToolFingerprint(input);
+    const idempotency = this.modelToolIdempotency();
+    const replayed = idempotency.lookup(principalId, operation, idempotencyKey, fingerprint);
+    if (replayed !== undefined) return modelToolResult(operation, 'Agent model profile already created', { ...(replayed as object), replayed: true });
+
+    let created: AgentModelProfileMetadata;
+    try {
+      created = this.models().createProfile(principalId, profileInput, {
+        ...this.createRevisionOptions(principalId, profileInput),
+        initialStatus: 'DISABLED',
+        guard: (plan) => {
+          const escalations = this.planEscalations(principalId, 'create', plan);
+          if (escalations.length > 0) throw new ProfileChangeRefusal(escalations);
+        },
+        record: (database, profile) => {
+          this.auditProfile(database, principalId, 'created', profile, 'mcp');
+          idempotency.record(database, principalId, operation, idempotencyKey, fingerprint, { profile, activation: 'dashboard_required' });
+        }
+      });
+    } catch (error) {
+      if (!(error instanceof ProfileChangeRefusal)) throw error;
+      // The save's transaction rolled back, so the refusal is recorded on its own.
+      this.auditProfileChangeRefused(principalId, profileInput.profileId, 0, 'mcp', 'create', error.escalations);
+      throw ownerApprovalRequired('create', error.escalations);
+    }
+
+    const data = { profile: this.attachDraftVerificationOverMcp(principalId, operation, idempotencyKey, profileInput.verificationRef, created), activation: 'dashboard_required' };
+    // A DISABLED profile is not in the gateway snapshot, so there is nothing to sync.
+    return modelToolResult(operation, 'Agent model profile created disabled; the owner activates it on the Dashboard', { ...data, replayed: false });
+  }
+
+  /** Writes a new revision, keeping the profile's status. Ordered as a create; see createProfileOverMcp. */
+  private async updateProfileOverMcp(principalId: string, input: ModelProfileUpdateToolInput): Promise<RunnerResponse> {
+    const operation = 'model_profile_update';
+    const { idempotencyKey, profileId, ...change } = input;
+    const fingerprint = modelToolFingerprint(input);
+    const idempotency = this.modelToolIdempotency();
+    const replayed = idempotency.lookup(principalId, operation, idempotencyKey, fingerprint) as UpdateResultRecord | undefined;
+    if (replayed !== undefined) {
+      // A crash between the commit and the sync leaves the gateway behind; the retry heals it.
+      if (replayed.profile.status === 'ACTIVE') await this.syncGateway({ onlyIfMismatch: true });
+      return modelToolResult(operation, 'Agent model profile already updated', { ...replayed, replayed: true });
+    }
+
+    let refusedGeneration = change.expectedGeneration;
+    let updated: AgentModelProfileMetadata;
+    try {
+      updated = this.models().updateProfile(principalId, profileId, change, {
+        ...this.updateRevisionOptions(principalId, { ...change, profileId }),
+        guard: (plan) => {
+          const escalations = this.planEscalations(principalId, 'update', plan);
+          if (escalations.length === 0) return;
+          refusedGeneration = plan.current?.generation ?? refusedGeneration;
+          throw new ProfileChangeRefusal(escalations);
+        },
+        record: (database, profile) => {
+          this.auditProfile(database, principalId, 'updated', profile, 'mcp');
+          idempotency.record(database, principalId, operation, idempotencyKey, fingerprint, { profile });
+        }
+      });
+    } catch (error) {
+      if (error instanceof ProfileChangeRefusal) {
+        this.auditProfileChangeRefused(principalId, profileId, refusedGeneration, 'mcp', 'update', error.escalations);
+        throw ownerApprovalRequired('update', error.escalations);
+      }
+      if (error instanceof HarnessError && error.code === 'CONFLICT') {
+        throw new HarnessError('CONFLICT', 'profile generation conflict: the profile changed since you read it; re-read it with model_profile_list and retry with its generation', 409, false);
+      }
+      throw error;
+    }
+
+    const data = { profile: this.attachDraftVerificationOverMcp(principalId, operation, idempotencyKey, change.verificationRef, updated) };
+    // The gateway serves only ACTIVE profiles. A failed sync keeps the saved state and is
+    // reported by model_config_status, as it is for the Dashboard.
+    if (updated.status === 'ACTIVE') await this.syncGateway();
+    return modelToolResult(operation, 'Agent model profile updated', { ...data, replayed: false });
+  }
+
+  /**
+   * Keeps a matching draft check on the saved revision and on the replayable result.
+   * The save has already committed, so a failure here never fails the call: it
+   * returns the committed profile without `lastVerification`, which is also what a
+   * replay returns, since the recorded result was not replaced. The check itself may
+   * still have been attached to the revision, and model_profile_list then shows it.
+   */
+  private attachDraftVerificationOverMcp(
+    principalId: string,
+    operation: 'model_profile_create' | 'model_profile_update',
+    idempotencyKey: string,
+    verificationRef: string | undefined,
+    profile: AgentModelProfileMetadata
+  ): AgentModelProfileMetadata {
+    try {
+      const attached = this.verifier().attachDraftVerification(principalId, verificationRef, profile);
+      if (attached !== profile) {
+        this.modelToolIdempotency().replace(principalId, operation, idempotencyKey, operation === 'model_profile_create'
+          ? { profile: attached, activation: 'dashboard_required' }
+          : { profile: attached });
+      }
+      return attached;
+    } catch (error) {
+      // Only the error class: the message can carry the draft ref.
+      console.warn('[runner] attaching a draft check after a model tool save failed', error instanceof Error ? error.name : 'unknown');
+      return profile;
+    }
+  }
+
+  /**
+   * Over MCP a draft check may send a Custom key only to an upstream URL one of the
+   * principal's profiles on that credential already uses. A saved profile is checked
+   * at its saved URL, which is bound by definition. An unknown credential, and a URL
+   * on a provider with fixed endpoints, are left to the verifier to refuse.
+   */
+  private assertDraftUpstreamBound(principalId: string, input: ModelConnectionVerifyInput): void {
+    if ('profileId' in input || input.customUpstreamUrl === undefined) return;
+    if (this.models().getCredentialProvider(principalId, input.credentialId) !== 'custom') return;
+    if (customUpstreamBound(input.customUpstreamUrl, this.models().listBoundCustomUpstreams(principalId, input.credentialId))) return;
+    const details: Record<string, string> = {
+      actor: 'mcp', target: 'draft', credentialId: input.credentialId, provider: 'custom', escalations: 'custom_upstream_unbound'
+    };
+    try {
+      details.upstreamHost = new URL(input.customUpstreamUrl).hostname;
+    } catch {
+      // The schema accepted the URL; an unreadable one is simply not named.
+    }
+    // Nothing was sent or written. Like a refused create, the entry carries generation 0.
+    this.metadata.recordAudit(principalId, 'model_connection.refused', 'model_credential', input.credentialId, 0, details);
+    throw ownerApprovalRequired('verify', ['custom_upstream_unbound']);
+  }
+
+  private modelToolIdempotencyStore?: ModelToolIdempotencyStore;
+  /** The records share the state database with the profiles, so they commit in the save's transaction. */
+  private modelToolIdempotency(): ModelToolIdempotencyStore {
+    this.modelToolIdempotencyStore ??= new ModelToolIdempotencyStore(this.principals.database);
+    return this.modelToolIdempotencyStore;
+  }
+
+  /**
+   * The principal's spend windows and the policies that bound them. Every policy has
+   * a window, so the list is built from the same read as the windows and can never
+   * disagree with them.
+   */
+  private spendSummary(principalId: string): ModelSpendSummaryToolResult {
+    const summary = this.spend().summary(principalId, Date.now());
+    return { summary, policies: summary.windows.flatMap((window) => (window.policy ? [window.policy] : [])) };
+  }
+
+  /** The ledger shares the state database, so it is created on first use rather than wired by the caller. */
+  private spend(): ModelSpendLedger {
+    this.spendLedger ??= new ModelSpendLedger(this.principals.database);
+    return this.spendLedger;
+  }
+
+  /** Audits a policy change in the same transaction as the change, with ids, the period, and the limit only. */
+  private recordSpendPolicyChange(principalId: string): NonNullable<ModelSpendPolicyHooks['record']> {
+    return (action, policy) => this.metadata.recordAuditInTransaction(
+      this.principals.database, principalId, `model_spend_policy.${action}`, 'model_spend_policy', policy.id, policy.generation,
+      {
+        ...(policy.profileId === null ? {} : { profileId: policy.profileId }),
+        period: policy.period,
+        limitMicros: policy.limitMicros,
+        warnPercent: policy.warnPercent
+      }
+    );
+  }
+
+  private catalogService?: ModelCatalogService;
+  private catalog(): ModelCatalogService {
+    this.catalogService ??= new ModelCatalogService({
+      database: this.principals.database, credentials: this.models(), http: this.providerHttp ?? createProviderHttpClient()
+    });
+    return this.catalogService;
+  }
+
+  private verifier(): ModelConnectionVerifier {
+    this.connectionVerifier ??= new ModelConnectionVerifier({
+      repository: this.models(),
+      http: this.providerHttp ?? createProviderHttpClient(),
+      audit: (principalId, action, subjectType, subjectId, generation, details) =>
+        this.metadata.recordAudit(principalId, action, subjectType, subjectId, generation, details)
+    });
+    return this.connectionVerifier;
+  }
+
+  private async syncGateway({ onlyIfMismatch = false }: { onlyIfMismatch?: boolean } = {}): Promise<void> {
+    const control = this.gatewayControl;
+    const modelProfiles = this.modelProfiles;
+    if (!modelProfiles || !control) return;
+    try {
+      // Built inside the push queue, so the push carries the state as of the push, not of this call.
+      await control.syncSnapshot(() => modelProfiles.getExportSnapshot(), { onlyIfMismatch });
+    } catch {
+      // The gateway control records the failure; model_config_status reports it instead of failing the mutation.
+    }
+  }
+
+  /* Managed toolbox packages. The store shares the state database with the MCP package tools. */
+
+  private packageStoreInstance?: PackageStore;
+
+  private packageStore(): PackageStore {
+    this.packageStoreInstance ??= new PackageStore(
+      this.principals.database,
+      (database, principalId, action, subjectType, subjectId, generation, details) => this.metadata.recordAuditInTransaction(
+        database, principalId, action, subjectType, subjectId, generation, details
+      )
+    );
+    return this.packageStoreInstance;
+  }
+
+  /** A decision or rollback while the feature is off is refused rather than silently recorded. */
+  private requirePackages(): PackageStore {
+    if (!this.config.packagesEnabled) throw new HarnessError('FORBIDDEN', PACKAGES_DISABLED_MESSAGE, 403, false);
+    return this.packageStore();
+  }
+
+  /** A release is usable only while its verified tree is still on disk under the packages root. */
+  private packageReleasePresent(release: PackageReleaseRecord): boolean {
+    try {
+      return statSync(join(this.config.packagesRoot, release.relPath)).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
+  private packageSettings() {
+    const approvalMode = packageApprovalUnavailable(this.config)
+      ? 'unavailable'
+      : this.config.packagesApprovalMode === 'none' ? 'not_required' : 'required';
+    return {
+      enabled: this.config.packagesEnabled,
+      approvalMode,
+      ecosystems: [...(this.config.packagesEcosystems ?? [])],
+      lifecycleScripts: this.config.packagesNpmLifecycleScripts,
+      quotas: {
+        maxReleaseBytes: this.config.packagesMaxReleaseBytes,
+        maxOwnerBytes: this.config.packagesMaxOwnerBytes,
+        maxBindings: this.config.packagesMaxBindings
+      }
+    };
+  }
+
+  /** An owner-scoped package reaches every retained workspace; a workspace-scoped one reaches only its own. */
+  private packageAffectedWorkspaces(ownerId: string, scope: string, workspaceId: string | null, retained?: string[]): string[] {
+    if (scope === 'workspace') return workspaceId ? [workspaceId] : [];
+    return retained ?? this.packageStore().retainedWorkspaceIds(ownerId);
+  }
+
+  /**
+   * The plan as an operator reviews it. The owner identity is never projected, and a decision is shown in
+   * role terms (`policy` or `dashboard`) rather than as the raw principal.
+   */
+  private packagePlanView(ownerId: string, plan: PackagePlanRecord, now: number, retained?: string[]) {
+    const store = this.packageStore();
+    const binding = store.findBinding(ownerId, plan.scope, plan.workspaceId, plan.ecosystem, plan.packageName);
+    const current = binding?.releaseId ? store.getRelease(ownerId, binding.releaseId) : undefined;
+    const open = plan.status === 'PENDING_APPROVAL' || plan.status === 'APPROVED';
+    const bindingMoved = (binding?.generation ?? 0) !== plan.bindingGeneration
+      || (plan.bindingId !== null && binding !== undefined && binding.id !== plan.bindingId);
+    const body = plan.body;
+    return {
+      ...packagePlanSummary(plan),
+      status: open && plan.expiresAt <= now ? 'EXPIRED' : plan.status,
+      requestedSpec: plan.requestedSpec,
+      source: body.source,
+      integrity: body.integrity,
+      dependencyCount: body.dependencyCount,
+      sizeEstimateBytes: body.sizeEstimateBytes,
+      binaries: body.binaries,
+      conflicts: body.conflicts.map((conflict) => ({
+        binary: conflict.binary, scope: conflict.scope, ...(conflict.workspaceId ? { workspaceId: conflict.workspaceId } : {}),
+        ecosystem: conflict.ecosystem, name: conflict.name
+      })),
+      lifecycleScripts: body.lifecycleScripts,
+      runtime: { node: body.runtime.node, npm: body.runtime.npm, uv: body.runtime.uv, python: body.runtime.python },
+      bindingGeneration: plan.bindingGeneration,
+      currentRelease: binding && current ? { releaseId: current.id, version: current.version, generation: binding.generation } : null,
+      stale: open && bindingMoved,
+      affectedWorkspaces: this.packageAffectedWorkspaces(ownerId, plan.scope, plan.workspaceId, retained),
+      ...(plan.decidedAt !== null ? { decidedAt: new Date(plan.decidedAt).toISOString() } : {}),
+      ...(plan.decidedBy !== null ? { decidedBy: plan.decidedBy === 'policy' ? 'policy' : 'dashboard' } : {}),
+      ...(plan.applyId ? { applyId: plan.applyId } : {})
+    };
+  }
+
+  private packagePlanList(ownerId: string) {
+    const settings = this.packageSettings();
+    if (!settings.enabled) return { enabled: false, approvalMode: settings.approvalMode, plans: [] };
+    const now = Date.now();
+    const retained = this.packageStore().retainedWorkspaceIds(ownerId);
+    const plans = this.packageStore().listPlans(ownerId, undefined, PACKAGE_DASHBOARD_PLAN_LIMIT)
+      .map((plan) => this.packagePlanView(ownerId, plan, now, retained));
+    return { enabled: true, approvalMode: settings.approvalMode, plans };
+  }
+
+  /** The executor image releases are compared with; undefined when it cannot be read, so nothing is marked stale. */
+  private async currentPackageImageId(): Promise<string | undefined> {
+    if (!this.config.packagesEnabled) return undefined;
+    return await this.workspaces.packages.currentImageId();
+  }
+
+  private packageOverview(ownerId: string, currentImageId?: string) {
+    const settings = this.packageSettings();
+    if (!settings.enabled) {
+      return {
+        ...settings, usage: { ownerBytes: 0, bindings: 0 },
+        bindings: [], releases: [], inFlight: [], recentApplies: [], pendingPlans: []
+      };
+    }
+    const store = this.packageStore();
+    const now = Date.now();
+    const retained = store.retainedWorkspaceIds(ownerId);
+    const listed = store.overview(ownerId, { includeHistory: true, ...(currentImageId !== undefined ? { currentImageId } : {}) });
+    const records = new Map<string, PackageReleaseRecord>();
+    const record = (releaseId: string) => {
+      if (!records.has(releaseId)) {
+        const found = store.getRelease(ownerId, releaseId);
+        if (found) records.set(releaseId, found);
+      }
+      return records.get(releaseId);
+    };
+    const bindings = listed.bindings.map((binding) => ({
+      ...binding,
+      affectedWorkspaces: this.packageAffectedWorkspaces(ownerId, binding.scope, binding.workspaceId ?? null, retained),
+      history: store.history(ownerId, binding.bindingId).slice(0, PACKAGE_HISTORY_DEPTH).map((entry) => {
+        const release = record(entry.releaseId);
+        return {
+          generation: entry.generation, releaseId: entry.releaseId, version: release?.version ?? null,
+          reason: entry.reason, actor: entry.actor, createdAt: new Date(entry.createdAt).toISOString(),
+          available: release?.status === 'VERIFIED'
+        };
+      })
+    }));
+    const releases = listed.releases.map((release) => {
+      const stored = record(release.releaseId);
+      const plan = stored ? store.getPlan(ownerId, stored.planId) : undefined;
+      return {
+        releaseId: release.releaseId, ecosystem: release.ecosystem, name: release.name, version: release.version,
+        treeDigest: release.treeDigest, sizeBytes: release.sizeBytes, fileCount: stored?.fileCount ?? 0,
+        binaries: release.binaries, createdAt: release.createdAt, status: release.status, stale: release.stale,
+        runtime: { node: release.runtime.node, npm: release.runtime.npm, uv: release.runtime.uv, python: release.runtime.python },
+        dependencyCount: plan?.body.dependencyCount ?? null,
+        lifecycleScripts: plan?.body.lifecycleScripts ?? false,
+        source: plan?.body.source ?? null,
+        integrity: plan?.body.integrity ?? null
+      };
+    });
+    const describeApply = (apply: PackageApplyRecord) => {
+      const plan = store.getPlan(ownerId, apply.planId);
+      return {
+        ...packageApplyView(apply),
+        ...(plan ? { scope: plan.scope, ecosystem: plan.ecosystem, name: plan.packageName, version: plan.version } : {})
+      };
+    };
+    const inFlight = store.inFlightApplies(ownerId).map(describeApply);
+    const inFlightIds = new Set(inFlight.map((apply) => apply.applyId));
+    const recentApplies = store.listPlans(ownerId, ['CONSUMED'], PACKAGE_DASHBOARD_RECENT_APPLIES).flatMap((plan) => {
+      const apply = plan.applyId ? store.getApply(ownerId, plan.applyId) : undefined;
+      return apply && !inFlightIds.has(apply.id) ? [describeApply(apply)] : [];
+    });
+    const pendingPlans = store.pendingPlans(ownerId, now).map((plan) => this.packagePlanView(ownerId, plan, now, retained));
+    const used = this.principals.database.prepare(`SELECT COALESCE(SUM(size_bytes), 0) AS bytes FROM package_releases
+      WHERE owner_id = ? AND status = 'VERIFIED'`).get(ownerId) as { bytes: number | bigint };
+    return {
+      ...settings,
+      usage: { ownerBytes: Number(used.bytes), bindings: store.listBindings(ownerId).length },
+      bindings, releases, inFlight, recentApplies, pendingPlans
+    };
+  }
 }
+
+const PACKAGES_DISABLED_MESSAGE = 'Managed packages are off. Operators enable them with PACKAGES_ENABLED=true.';
+const PACKAGE_DASHBOARD_PLAN_LIMIT = 100;
+const PACKAGE_DASHBOARD_RECENT_APPLIES = 20;
+
+/** The result an MCP profile update records for replay; modelToolResult parses it again on the way out. */
+type UpdateResultRecord = { profile: AgentModelProfileMetadata };
 
 const ok = (message: string, data: unknown, cursor?: string): RunnerResponse => ({ ok: true, message, data, truncated: false, ...(cursor ? { cursor } : {}) });
 
@@ -1415,4 +2128,4 @@ function storedMcpHeaders(
     ? { name: header.name, value: header.value }
     : { name: header.name, secretRef: header.value.secretRef });
 }
-const statusFor = (code: ArtifactStoreError['code'] | SkillRegistryError['code']) => code === 'NOT_FOUND' ? 404 : code === 'CONFLICT' ? 409 : code === 'LIMIT_EXCEEDED' ? 413 : 400;
+const statusFor = (code: ArtifactStoreError['code'] | SkillRegistryError['code'] | IntegrationCredentialError['code']) => code === 'NOT_FOUND' ? 404 : code === 'CONFLICT' ? 409 : code === 'LIMIT_EXCEEDED' ? 413 : 400;

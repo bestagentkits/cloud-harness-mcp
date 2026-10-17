@@ -29,8 +29,13 @@ const CATEGORIES = [
   },
   {
     title: 'Commands and Shells',
-    description: 'Tools for running isolated non-root commands, operations, and persistent interactive PTY shell sessions.',
-    names: ['exec_run', 'shell_open', 'shell_io', 'shell_close', 'operation_status', 'operation_cancel', 'operation_wait']
+    description: 'Tools for running isolated non-root commands, operations, and persistent interactive pipe shell sessions.',
+    names: ['exec_run', 'bash', 'shell_open', 'shell_io', 'shell_close', 'operation_status', 'operation_cancel', 'operation_wait']
+  },
+  {
+    title: 'Managed Packages',
+    description: 'Plan, approve, apply, inspect, roll back, and uninstall pinned CLI packages kept across workspaces and redeploys (off unless the operator enables managed packages).',
+    names: ['packages_plan', 'packages_apply', 'packages_list', 'packages_status', 'packages_rollback', 'packages_remove']
   },
   {
     title: 'Sessions and Tasks',
@@ -46,6 +51,11 @@ const CATEGORIES = [
     title: 'Repository Extensions',
     description: 'Skills execution, workspace hooks, persistent memory, and repository-defined deployment operations.',
     names: ['skills_list', 'skills_read', 'skills_run', 'hooks_list', 'hooks_run', 'memories_list', 'memories_read', 'memories_write', 'deployments_list', 'deployments_run']
+  },
+  {
+    title: 'Models and Spend',
+    description: 'Choose a provider and model, check a connection, save agent model profiles (created disabled; the owner activates them on the Dashboard), and read estimated model spend. Keys, activation, deletion, and spend policies stay on the Dashboard.',
+    names: ['model_provider_list', 'model_catalog_search', 'model_connection_verify', 'model_profile_list', 'model_profile_validate', 'model_profile_create', 'model_profile_update', 'model_spend_summary']
   },
   {
     title: 'Retained Artifacts',
@@ -345,7 +355,7 @@ const llmsTxt = `# Cloud Harness MCP Documentation
 - [Tools Reference](https://docs.harness.agentkit.best/reference/tools.md): Complete catalog of ${toolCount} MCP tools.
 - [Environment Variables](https://docs.harness.agentkit.best/reference/environment-variables.md): Configuration reference.
 - [Git Transfer Semantics](https://docs.harness.agentkit.best/reference/git-transfer.md): Origin-only push/fetch/pull helper.
-- [Sessions & Tasks](https://docs.harness.agentkit.best/reference/sessions-and-tasks.md): PTY shells, sessions, and task DAGs.
+- [Sessions & Tasks](https://docs.harness.agentkit.best/reference/sessions-and-tasks.md): pipe shells, sessions, and task DAGs.
 - [Limits & Bounds](https://docs.harness.agentkit.best/reference/limits.md): Buffer limits, pagination, and timeouts.
 - [Troubleshooting](https://docs.harness.agentkit.best/troubleshooting.md): Diagnosis and recovery playbooks.
 - [Agent Skill (cloudharness)](https://docs.harness.agentkit.best/agent-skill.md): Installing and using the companion skill.

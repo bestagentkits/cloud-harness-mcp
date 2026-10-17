@@ -7,9 +7,10 @@ import {
   validateSecretClient
 } from '../dashboard/dashboard.js';
 
-import { renderSkillsSkeleton, renderTypesafeSkeleton } from '../dashboard/dashboard-render.js';
+import { renderSettings, renderSkillsSkeleton, renderTypesafeSettings, renderWorkspaceLifecycleSettings } from '../dashboard/dashboard-render.js';
 import { DASHBOARD_PAGES } from '../dashboard/dashboard-pages.js';
 import { renderSkillRevisions, renderSkillsLibraryRows } from '../dashboard/dashboard-render.js';
+import { planIsActionable, renderApprovals, renderPackages, shortDigest } from '../dashboard/dashboard-render.js';
 
 describe('skills version surfacing', () => {
   const skill = (overrides = {}) => ({
@@ -105,7 +106,7 @@ function containerDepth(markup: string, ownerId: string, id: string): number {
 describe('dashboard static UI contract', () => {
   const html = asset('index.html');
   const css = asset('dashboard.css');
-  const script = `${asset('dashboard.js')}\n${asset('dashboard-api.js')}\n${asset('dashboard-render.js')}\n${asset('dashboard-pages.js')}`;
+  const script = `${asset('dashboard.js')}\n${asset('dashboard-api.js')}\n${asset('dashboard-render.js')}\n${asset('dashboard-pages.js')}\n${asset('dashboard-models.js')}`;
   const squishedCss = squish(css);
 
   it('provides native landmarks, focus entry, live status, and destructive confirmation', () => {
@@ -181,6 +182,23 @@ describe('dashboard static UI contract', () => {
     expect([...script.matchAll(/\.style\.[A-Za-z]+/g)].map((m) => m[0])).toEqual(['.style.transform', '.style.transform', '.style.transform']);
   });
 
+  it('confines the terminal emulator to local assets and one audited CSSOM adapter', () => {
+    // The emulator is served from this release's asset namespace: no CDN, no font, no remote stylesheet.
+    const terminal = asset('dashboard-terminal.js');
+    expect(terminal).not.toMatch(/https?:\/\//);
+    expect([...terminal.matchAll(/import\('([^']+)'\)/g)].map((m) => m[1])).toEqual(['./xterm.mjs', './xterm-addon-fit.mjs']);
+    expect([...terminal.matchAll(/new URL\('([^']+)', import\.meta\.url\)/g)].map((m) => m[1])).toEqual(['./xterm.css']);
+    // xterm writes its theme into script-created <style> elements and true-colour cells through
+    // setAttribute('style'); both are blocked by `style-src 'self'`. The adapter reroutes exactly those
+    // script paths through CSSOM, so the only inline-style write in this file is that one cssText.
+    expect([...terminal.matchAll(/\.style\.[A-Za-z]+/g)].map((m) => m[0])).toEqual(['.style.cssText']);
+    expect(terminal).toContain('replaceSync');
+    expect(terminal).toContain('adoptedStyleSheets');
+    // The terminal never borrows a nonce to slip inline styles past the policy, and renders no style markup.
+    expect(terminal).not.toMatch(/\.nonce\b|'nonce'/);
+    expect(terminal).not.toMatch(/style=/);
+  });
+
   it('keeps every spacing step on the marketing 4px rhythm', () => {
     const steps = [...css.matchAll(/--space-(\d+):\s*([\d.]+)rem;/g)].map((m) => [Number(m[1]), Number(m[2])]);
     expect(steps.length).toBeGreaterThan(0);
@@ -210,18 +228,26 @@ describe('dashboard static UI contract', () => {
     expect(script).toContain('No named sessions.');
   });
 
-  it('renders the typename panel with a write-only key and no prompt surface', () => {
-    const skeleton = renderTypesafeSkeleton();
-    for (const selector of [
-      'id="typesafe-panel"', 'id="typesafe-key"', 'id="typesafe-model"', 'id="typesafe-gate-threshold"',
-      'id="typesafe-fit-threshold"', 'id="typesafe-max-egress-bytes"', 'id="typesafe-cache-ttl"',
-      'id="typesafe-enabled"', 'id="typesafe-egress"', 'id="typesafe-test"', 'id="typesafe-status"', 'id="typesafe-usage"'
-    ]) expect(skeleton, selector).toContain(selector);
+  it('renders the TypeSafe panel with only server-backed controls and a write-only key', () => {
+    const credential = { id: 'icr_12345678901234567890', integration: 'typesafe', label: 'TypeSafe', status: 'ACTIVE', activeVersion: 2, generation: 3 };
+    const panel = renderTypesafeSettings({ status: { configured: true, enabled: true, endpoint: 'https://typesafe.example/v1', model: 'jev-latest' }, credential });
+    for (const selector of ['id="typesafe-panel"', 'id="typesafe-form"', 'id="typesafe-key"', 'id="typesafe-save"', 'id="typesafe-remove"', 'id="typesafe-status"']) expect(panel, selector).toContain(selector);
 
-    // The key field never renders a stored value back, and the usage surface has no prompt column.
-    expect(skeleton).toMatch(/id="typesafe-key"[^>]*type="password"/);
-    expect(skeleton).not.toMatch(/prompt/i);
-    expect(skeleton).toContain('aria-live="polite"');
+    // The key field never renders a stored value back, and nothing the server cannot persist is offered.
+    expect(panel).toMatch(/id="typesafe-key"[^>]*type="password"/);
+    expect(panel).not.toMatch(/id="typesafe-key"[^>]*\svalue=/);
+    for (const unbacked of ['typesafe-model', 'gate-threshold', 'fit-threshold', 'max-egress-bytes', 'cache-ttl', 'typesafe-enabled', 'typesafe-test', 'typesafe-usage', 'Send suggestions', 'Test connection']) {
+      expect(panel, unbacked).not.toContain(unbacked);
+    }
+    expect(panel).not.toMatch(/prompt/i);
+    expect(panel).toContain('aria-live="polite"');
+    // Rotation and removal carry the generation the runner checks.
+    expect(panel).toContain('data-credential-id="icr_12345678901234567890" data-generation="3"');
+
+    // The shipped client reads status and the credential list, and saves through create or rotate.
+    for (const wiring of ["'/typesafe/status'", "'/integration-credentials'", '/integration-credentials/${encodeURIComponent(id)}/rotate', 'fetchTypesafeSettings()', 'bindTypesafeSettingsControls()']) expect(script, wiring).toContain(wiring);
+    // Settings mounts the panel when its view is supplied.
+    expect(renderSettings({ defaultNetworkProfile: { value: 'network-none', source: 'setting' } }, undefined, undefined, { status: { configured: false, enabled: true, endpoint: 'https://typesafe.example/v1', model: 'jev-latest' } })).toContain('id="typesafe-panel"');
   });
 
   it('renders every skills selector the UI contract names', () => {
@@ -385,6 +411,65 @@ describe('dashboard static UI contract', () => {
     ]) expect(script).toContain(contract);
   });
 
+  it('renders the workspace limits and lifecycle panel from the runner view and wires its save, reset, and conflict paths', () => {
+    const setting = (value: number, source: string, runnerValue: number, min: number, max: number) => ({ value, source, runnerValue, min, max });
+    const view = {
+      revision: 7, updatedAt: '2026-10-15T00:00:00.000Z', reaperIntervalSeconds: 60,
+      settings: {
+        maxActiveWorkspacesPerOwner: setting(5, 'setting', 3, 1, 64),
+        idleTtlSeconds: setting(300, 'environment', 300, 60, 43_200),
+        wallTtlSeconds: setting(900, 'default', 900, 60, 86_400),
+        recoverableGraceSeconds: setting(3_600, 'default', 3_600, 0, 86_400)
+      },
+      usage: { counted: 2, limit: 5, recoverable: 1, autoCloseDeferred: 4 },
+      executorCeilings: { memoryBytes: 1_073_741_824, cpus: 1, pids: 256 }
+    };
+    const page = renderSettings({ defaultNetworkProfile: { value: 'network-none', source: 'setting' }, workspaceLifecycle: view });
+    // The network panel is unchanged and the lifecycle panel follows it.
+    expect(page.indexOf('id="settings-network-heading"')).toBeGreaterThan(-1);
+    expect(page.indexOf('id="settings-lifecycle-panel"')).toBeGreaterThan(page.indexOf('id="settings-status"'));
+
+    const panel = renderWorkspaceLifecycleSettings(view);
+    for (const selector of [
+      'aria-labelledby="settings-lifecycle-heading"', 'id="settings-lifecycle-form"', 'id="settings-lifecycle-max-active"', 'id="settings-lifecycle-idle"',
+      'id="settings-lifecycle-wall"', 'id="settings-lifecycle-grace"', 'id="settings-lifecycle-ack"', 'id="save-settings-lifecycle"',
+      'id="reset-settings-lifecycle"', 'id="settings-lifecycle-status"'
+    ]) expect(panel, selector).toContain(selector);
+    expect(panel).toMatch(/id="settings-lifecycle-status" class="status-message" aria-live="polite"/);
+    // Fields edit whole minutes inside the contract bounds and carry their provenance and error slots.
+    expect(panel).toMatch(/id="settings-lifecycle-max-active"[^>]*min="1" max="64" value="5"/);
+    expect(panel).toMatch(/id="settings-lifecycle-idle"[^>]*step="1" min="1" max="720" value="5"/);
+    expect(panel).toMatch(/id="settings-lifecycle-wall"[^>]*min="1" max="1440" value="15"/);
+    expect(panel).toMatch(/id="settings-lifecycle-grace"[^>]*min="0" max="1440" value="60"/);
+    expect(panel).toMatch(/id="settings-lifecycle-idle"[^>]*aria-describedby="settings-lifecycle-idle-meta settings-lifecycle-idle-error"/);
+    expect(panel).toContain('Source: Dashboard override · Runner value: 3');
+    expect(panel).toContain('Source: Runner environment · Runner value: 5 min');
+    expect(panel).toContain('Source: Built-in default · Runner value: 15 min');
+    expect(panel).toContain('2 / 5');
+    expect(panel).toContain('4 of your workspaces');
+    // Resource ceilings, timeline, retention, and the non-retroactive disclosure are stated, not implied.
+    for (const text of ['1 GiB memory, 1 CPU, 256 pids', 'ceilings, not reservations', 'never closes an existing workspace', 'ACTIVE', 'EXPIRED_RECOVERABLE', 'CLOSED',
+      'up to 1 min', 'workspace_close', 'workspace_lease_renew', 'do not keep a workspace alive', 'only to newly opened workspaces', 'MCP OAuth session lifetime', 'agent task TTLs', 'earlier of']) {
+      expect(panel, text).toContain(text);
+    }
+    // The grace-0 acknowledgement stays hidden until grace is 0, and shows when the stored grace is already 0.
+    expect(panel).toMatch(/id="settings-lifecycle-ack-block" class="lifecycle-ack" hidden/);
+    expect(renderWorkspaceLifecycleSettings({ ...view, settings: { ...view.settings, recoverableGraceSeconds: setting(0, 'setting', 3_600, 0, 86_400) } }))
+      .toMatch(/id="settings-lifecycle-ack-block" class="lifecycle-ack">/);
+    // An older runner without the view, or a malformed view, renders no panel and leaves the page intact.
+    expect(renderSettings({ defaultNetworkProfile: { value: 'network-none', source: 'setting' } })).not.toContain('settings-lifecycle');
+    expect(renderWorkspaceLifecycleSettings({ revision: 1, settings: { idleTtlSeconds: setting(300, 'default', 300, 60, 43_200) } })).toBe('');
+    expect(renderWorkspaceLifecycleSettings(undefined)).toBe('');
+    // Runner-supplied text is escaped.
+    expect(renderWorkspaceLifecycleSettings({ ...view, executorCeilings: { memoryBytes: 1, cpus: '<b>', pids: 1 } })).not.toContain('<b>');
+
+    // The shipped client saves through the BFF with the loaded revision and reloads on a conflict.
+    for (const wiring of [
+      'bindLifecycleSettingsControls()', 'workspaceLifecycleUpdateInput(view, values(), acknowledge.checked)', 'workspaceLifecycleResetInput(view)',
+      "requestBody({ workspaceLifecycle })", 'error?.status === 409', 'reloadLifecycleSettings(', "api('/settings')", "setAttribute('aria-invalid', 'true')"
+    ]) expect(script, wiring).toContain(wiring);
+  });
+
   it('offers only the contract network profiles and drops the retired networkMode markup', () => {
     expect(html).toContain('<label for="open-network-profile">Network profile (optional)</label>');
     expect(html).toContain('<select id="open-network-profile" name="networkProfile">');
@@ -523,5 +608,150 @@ describe('dashboard secret-name policy parity', () => {
       expect(validateSecretClient(name, 'ghp_example_value'), name).not.toBeNull();
       expect(validateSecretName(name).ok, name).toBe(false);
     }
+  });
+});
+
+describe('managed packages surfaces', () => {
+  const now = Date.parse('2026-10-14T00:10:00.000Z');
+  const digest = '0123456789abcdef'.repeat(4);
+  const plan = (overrides = {}) => ({
+    planId: `pkp_${'a'.repeat(24)}`, planDigest: digest, status: 'PENDING_APPROVAL', scope: 'owner', ecosystem: 'npm',
+    name: 'chm-hello', version: '1.1.0', requestedSpec: '^1.1.0',
+    source: { registry: 'https://registry.npmjs.org/', resolved: 'https://registry.npmjs.org/chm-hello/-/chm-hello-1.1.0.tgz' },
+    integrity: 'sha512-abc', dependencyCount: 2, sizeEstimateBytes: 8_192, binaries: ['hello'], conflicts: [], lifecycleScripts: false,
+    runtime: { node: 'v24.11.0', npm: '11.6.0', uv: null, python: null }, bindingGeneration: 1, stale: false,
+    affectedWorkspaces: ['ws_1', 'ws_2'], currentRelease: { releaseId: `pkr_${'d'.repeat(24)}`, version: '1.0.0', generation: 1 },
+    createdAt: '2026-10-14T00:00:00.000Z', expiresAt: '2026-10-14T00:30:00.000Z', ...overrides
+  });
+  const binding = {
+    bindingId: `pkb_${'c'.repeat(24)}`, scope: 'owner', ecosystem: 'npm', name: 'chm-hello', generation: 2, affectedWorkspaces: ['ws_1'],
+    release: { releaseId: `pkr_${'e'.repeat(24)}`, version: '1.1.0', treeDigest: digest, sizeBytes: 2_048, binaries: ['hello'], status: 'VERIFIED', stale: false, createdAt: '2026-10-14T00:00:00.000Z' },
+    history: [
+      { generation: 2, releaseId: `pkr_${'e'.repeat(24)}`, version: '1.1.0', reason: 'apply', actor: 'mcp', createdAt: '2026-10-14T00:05:00.000Z', available: true },
+      { generation: 1, releaseId: `pkr_${'d'.repeat(24)}`, version: '1.0.0', reason: 'apply', actor: 'mcp', createdAt: '2026-10-14T00:00:00.000Z', available: true },
+      { generation: 0, releaseId: `pkr_${'f'.repeat(24)}`, version: '0.9.0', reason: 'apply', actor: 'mcp', createdAt: '2026-10-13T00:00:00.000Z', available: false }
+    ]
+  };
+
+  it('shows a plan digest shortened with the full value kept for focus, and posts that digest on approve', () => {
+    const markup = renderApprovals({ grants: [], plans: [plan()], packages: { enabled: true, approvalMode: 'required' }, now });
+    expect(markup).toContain('Package plans');
+    expect(markup).toContain(shortDigest(digest));
+    expect(shortDigest(digest).length).toBeLessThan(digest.length);
+    expect(markup).toContain(`<span class="digest-full">${digest}</span>`);
+    expect(markup).toContain(`title="Plan digest: ${digest}"`);
+    expect(markup).toContain(`data-plan-digest="${digest}"`);
+    expect(markup).toContain('approve-plan');
+    expect(markup).toContain('reject-plan');
+    for (const fact of ['Current <strong>1.0.0</strong>', 'Planned <strong>1.1.0</strong>', 'sha512-abc', '8.0 KiB', '2 workspaces', 'Node v24.11.0']) expect(markup).toContain(fact);
+    expect(markup).not.toMatch(/\sstyle=/);
+  });
+
+  it('warns about lifecycle scripts, binary collisions, and a moved binding', () => {
+    const markup = renderApprovals({
+      plans: [plan({ lifecycleScripts: true, stale: true, conflicts: [{ binary: 'hello', scope: 'owner', ecosystem: 'npm', name: 'other' }] })],
+      packages: { enabled: true, approvalMode: 'required' }, now
+    });
+    expect(markup).toContain('package-risks');
+    expect(markup).toContain('lifecycle scripts');
+    expect(markup).toContain('hello (already provided by other)');
+    expect(markup).toContain('changed after this plan was made');
+  });
+
+  it('offers decisions only on an unexpired pending plan', () => {
+    expect(planIsActionable(plan(), now)).toBe(true);
+    expect(planIsActionable(plan({ expiresAt: '2026-10-14T00:05:00.000Z' }), now)).toBe(false);
+    expect(planIsActionable(plan({ status: 'APPROVED' }), now)).toBe(false);
+    const expired = renderApprovals({ plans: [plan({ expiresAt: '2026-10-14T00:05:00.000Z' })], packages: { enabled: true }, now });
+    expect(expired).toContain('<span class="status expired">Expired</span>');
+    expect(expired).not.toContain('approve-plan');
+    const approved = renderApprovals({ plans: [plan({ status: 'APPROVED', decidedBy: 'dashboard' })], packages: { enabled: true }, now });
+    expect(approved).not.toContain('approve-plan');
+    expect(approved).toContain('Withdraw approval');
+  });
+
+  it('states the disabled copy on both surfaces', () => {
+    const copy = 'Managed packages are off. Operators enable them with PACKAGES_ENABLED=true.';
+    expect(renderApprovals({ grants: [], packages: { enabled: false } })).toContain(copy);
+    expect(renderPackages({ overview: { enabled: false } })).toContain('Operators enable them with PACKAGES_ENABLED=true.');
+  });
+
+  it('renders health, apply progress, quotas, and a rollback that carries the expected generation', () => {
+    const markup = renderPackages({
+      now,
+      overview: {
+        enabled: true, approvalMode: 'required', ecosystems: ['npm', 'uv'], lifecycleScripts: 'deny',
+        quotas: { maxReleaseBytes: 536_870_912, maxOwnerBytes: 4_294_967_296, maxBindings: 32 }, usage: { ownerBytes: 2_048, bindings: 1 },
+        bindings: [binding], releases: [{ ...binding.release, ecosystem: 'npm', name: 'chm-hello', fileCount: 4, dependencyCount: 2 }],
+        inFlight: [{ applyId: `pka_${'b'.repeat(24)}`, state: 'VERIFYING', name: 'chm-hello', version: '1.2.0', createdAt: '2026-10-14T00:09:00.000Z', updatedAt: '2026-10-14T00:09:30.000Z' }],
+        recentApplies: [], pendingPlans: [plan()]
+      }
+    });
+    expect(markup).toContain('<span class="status healthy">Verified</span>');
+    expect(markup).toContain('aria-current="step">Verifying</li>');
+    expect(markup).toContain('2.0 KiB');
+    expect(markup).toContain('4.0 GiB');
+    expect(markup).toContain('1 / 32');
+    expect(markup).toContain('href="/dashboard/approvals"');
+    expect(markup).toContain(`data-release-id="pkr_${'d'.repeat(24)}"`);
+    expect(markup).toContain('data-generation="2"');
+    expect(markup).toContain('Roll back to 1.0.0');
+    // The current release and a release that left the disk offer no rollback.
+    expect(markup).not.toContain('Roll back to 1.1.0');
+    expect(markup).not.toContain('Roll back to 0.9.0');
+    expect(markup).toContain('Unavailable');
+    expect(markup).toContain('class="danger remove-package"');
+    expect(markup).toContain('Uninstall chm-hello');
+    expect(markup).toMatch(/class="danger remove-package"[^>]*data-generation="2"/);
+    const missing = renderPackages({ overview: { enabled: true, bindings: [{ ...binding, release: { ...binding.release, status: 'MISSING' } }] } });
+    expect(missing).toContain('Missing on disk');
+    const stale = renderPackages({ overview: { enabled: true, bindings: [{ ...binding, release: { ...binding.release, stale: true } }] } });
+    expect(stale).toContain('Stale image');
+  });
+
+  it('routes the Packages page through the registry and wires decisions to the shown values', () => {
+    const page = DASHBOARD_PAGES.find((candidate) => candidate.id === 'packages');
+    expect(page).toMatchObject({ route: '/dashboard/packages', group: 'operate', nav: true });
+    const script = readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8');
+    expect(script).toContain('packages: loadPackages');
+    expect(script).toContain("api('/packages/rollback'");
+    expect(script).toContain("api('/packages/remove', { method: 'POST', body: requestBody({ bindingId, expectedGeneration }) })");
+    expect(script).toContain('requestBody(approving ? { planDigest } : {})');
+    expect(script).toContain('pendingApprovals(grants, plans)');
+  });
+});
+
+describe('destructive confirmation wiring', () => {
+  const client = readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8');
+
+  it('calls the confirmAction function directly, never a nonexistent .open method', () => {
+    expect(client).toMatch(/function confirmAction\(options, invoker\)/);
+    expect(client).not.toMatch(/confirmAction\.open\(/);
+  });
+});
+
+describe('model pricing and spend surfaces', () => {
+  const read = (name: string) => readFileSync(new URL(`../dashboard/${name}`, import.meta.url), 'utf8');
+  const apiClient = read('dashboard-api.js');
+  const client = read('dashboard.js');
+  const models = read('dashboard-models.js');
+
+  it('sends spend policy changes through the shared API helper, with the generation on delete', () => {
+    expect(apiClient).toContain("export const getModelSpend = () => api('/model-spend');");
+    expect(apiClient).toContain("export const setModelSpendPolicy = (payload) => api('/model-spend/policies', { method: 'PUT', body: JSON.stringify(payload) });");
+    expect(apiClient).toContain("api(`/model-spend/policies/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) })");
+    expect(client).toMatch(/createSpendPanel\(\{[\s\S]*?confirm: confirmAction,[\s\S]*?getSpend: getModelSpend, setPolicy: setModelSpendPolicy, deletePolicy: deleteModelSpendPolicy/);
+  });
+
+  it('takes repricing from the runner review, and opens the review as an edit', () => {
+    // The list no longer searches the catalog per profile; the runner's pricingReview is the one source.
+    expect(client).not.toContain('checkProfilePricing');
+    expect(models).not.toContain('pricing-drift');
+    expect(client).toContain("openWizard('edit', profile, button, { useCatalogPrice: true })");
+  });
+
+  it('never shows an unknown saved price as zero', () => {
+    expect(models).toContain("export const UNKNOWN_SAVED_PRICE = 'Unknown (charged conservatively)';");
+    expect(models).not.toMatch(/\?\?\s*['"]\$0/);
   });
 });

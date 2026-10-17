@@ -145,9 +145,10 @@ if (options.transport === 'stdio') {
   const config = loadApiConfig();
   const runtime = createApiApp(config);
   const server = createServer(runtime.app);
-  server.listen(config.port, config.host, () =>
-    apiLogger.info({ host: config.host, port: config.port }, 'API listening')
-  );
+  server.listen(config.port, config.host, () => {
+    apiLogger.info({ host: config.host, port: config.port }, 'API listening');
+    runtime.startEventDelivery();
+  });
 
   async function shutdown(signal: string) {
     apiLogger.info({ signal }, 'API shutting down');
