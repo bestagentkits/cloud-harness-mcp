@@ -148,6 +148,11 @@ export class LocalWorkspaceBackend implements OperationBackend {
       };
     }
 
+    if (operation === 'workspace_repos_list' || operation === 'workspace_repo_status' || input.repositoryId !== undefined) {
+      const message = `${input.repositoryId !== undefined ? 'repositoryId' : operation} is unsupported in local mode because a local workspace is one directory chosen at startup; multi-repository workspaces need the remote runner`;
+      return { ok: false, message, error: { code: 'INVALID_INPUT', message, retryable: false }, truncated: false };
+    }
+
     if (operation === 'bash' && input.target === 'toolbox') {
       const message = 'the bash toolbox target is unsupported in local mode because it needs the remote runner\'s disposable containers; use target "workspace"';
       return { ok: false, message, error: { code: 'INVALID_INPUT', message, retryable: false }, truncated: false };
