@@ -108,6 +108,7 @@ gateway_count=$(grep -Fxc '    location = /mcp-gateway {' "$block_file" || true)
 api_key_gateway_count=$(grep -Fxc '    location = /mcp-api-key/gateway {' "$block_file" || true)
 workspace_count=$(grep -Fxc '    location ^~ /mcp/workspaces/ {' "$block_file" || true)
 oauth_callback_count=$(grep -Fxc '    location = /dashboard/mcp-oauth/callback {' "$block_file" || true)
+webhook_count=$(grep -Fxc '    location ^~ /integrations/webhooks/ {' "$block_file" || true)
 dashboard_entry_block=$(sed -n '/^    location = \/dashboard {$/,/^    }$/p' "$block_file")
 dashboard_prefix_block=$(sed -n '/^    location \^~ \/dashboard\/ {$/,/^    }$/p' "$block_file")
 api_key_block=$(sed -n '/^    location = \/mcp-api-key {$/,/^    }$/p' "$block_file")
@@ -115,6 +116,7 @@ gateway_block=$(sed -n '/^    location = \/mcp-gateway {$/,/^    }$/p' "$block_f
 api_key_gateway_block=$(sed -n '/^    location = \/mcp-api-key\/gateway {$/,/^    }$/p' "$block_file")
 workspace_block=$(sed -n '/^    location \^~ \/mcp\/workspaces\/ {$/,/^    }$/p' "$block_file")
 oauth_callback_block=$(sed -n '/^    location = \/dashboard\/mcp-oauth\/callback {$/,/^    }$/p' "$block_file")
+webhook_block=$(sed -n '/^    location \^~ \/integrations\/webhooks\/ {$/,/^    }$/p' "$block_file")
 normalize_block() {
   sed -E \
     -e 's/[[:space:]]*#.*$//' \
@@ -132,6 +134,8 @@ expected_workspace=$'location ^~ /mcp/workspaces/ {\nproxy_pass http://127.0.0.1
 # The downstream MCP OAuth callback carries a one-time code and state in its query string,
 # so its exact route keeps the request out of the access log.
 expected_oauth_callback=$'location = /dashboard/mcp-oauth/callback {\naccess_log off;\nproxy_pass http://127.0.0.1:3100/dashboard/mcp-oauth/callback;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\n}'
+# The public automation webhook ingress keeps the 1m body cap the runner's signature check expects.
+expected_webhook=$'location ^~ /integrations/webhooks/ {\nclient_max_body_size 1m;\nproxy_pass http://127.0.0.1:3100/integrations/webhooks/;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\n}'
 
 dashboard_installed=0
 dashboard_legacy=0
@@ -167,11 +171,15 @@ oauth_callback_installed=0
 if [[ $oauth_callback_count -eq 1 && $(normalize_block <<< "$oauth_callback_block") == "$expected_oauth_callback" ]]; then
   oauth_callback_installed=1
 fi
+webhook_installed=0
+if [[ $webhook_count -eq 1 && $(normalize_block <<< "$webhook_block") == "$expected_webhook" ]]; then
+  webhook_installed=1
+fi
 
 if [[ $dashboard_installed -eq 1 && $api_key_installed -eq 1 && $gateway_installed -eq 1 && $workspace_installed -eq 1 &&
-      $api_key_gateway_installed -eq 1 && $oauth_callback_installed -eq 1 ]]; then
+      $api_key_gateway_installed -eq 1 && $oauth_callback_installed -eq 1 && $webhook_installed -eq 1 ]]; then
   "$nginx_command" -t
-  echo "Cloud Harness dashboard, OAuth callback, API-key, gateway, API-key gateway, and workspace MCP nginx routes are already installed"
+  echo "Cloud Harness dashboard, OAuth callback, API-key, gateway, API-key gateway, workspace MCP, and webhook nginx routes are already installed"
   exit 0
 fi
 if [[ $dashboard_present -eq 0 ]] &&
@@ -209,8 +217,13 @@ if [[ $oauth_callback_installed -eq 0 ]] &&
   echo "existing MCP OAuth callback nginx routing is not the managed shape; refusing to overwrite it" >&2
   exit 11
 fi
+if [[ $webhook_installed -eq 0 ]] &&
+   { [[ $webhook_count -ne 0 ]] || grep -Fq '/integrations/' "$block_file"; }; then
+  echo "existing automation webhook nginx routing is not the managed shape; refusing to overwrite it" >&2
+  exit 12
+fi
 
-awk -v opening="$start_line" -v closing="$end_line" -v add_dashboard="$((1 - dashboard_present))" -v upgrade_dashboard="$dashboard_legacy" -v add_api_key="$((1 - api_key_installed))" -v add_gateway="$((1 - gateway_installed))" -v add_api_key_gateway="$((1 - api_key_gateway_installed))" -v add_workspace="$((1 - workspace_installed))" -v add_oauth_callback="$((1 - oauth_callback_installed))" '
+awk -v opening="$start_line" -v closing="$end_line" -v add_dashboard="$((1 - dashboard_present))" -v upgrade_dashboard="$dashboard_legacy" -v add_api_key="$((1 - api_key_installed))" -v add_gateway="$((1 - gateway_installed))" -v add_api_key_gateway="$((1 - api_key_gateway_installed))" -v add_workspace="$((1 - workspace_installed))" -v add_oauth_callback="$((1 - oauth_callback_installed))" -v add_webhook="$((1 - webhook_installed))" '
   upgrade_dashboard && NR >= opening && NR <= closing && $0 == "    location ^~ /dashboard/ {" {
     print
     print "        client_max_body_size 8m;"
@@ -277,6 +290,15 @@ awk -v opening="$start_line" -v closing="$end_line" -v add_dashboard="$((1 - das
       print "    }"
       print ""
     }
+    if (add_webhook) {
+      print "    location ^~ /integrations/webhooks/ {"
+      print "        client_max_body_size 1m;"
+      print "        proxy_pass http://127.0.0.1:3100/integrations/webhooks/;"
+      print "        proxy_set_header Host $host;"
+      print "        proxy_set_header X-Forwarded-Proto $scheme;"
+      print "    }"
+      print ""
+    }
     if (add_oauth_callback) {
       print "    location = /dashboard/mcp-oauth/callback {"
       print "        access_log off;"
@@ -324,4 +346,4 @@ fi
 "$nginx_command" -t
 "$systemctl_command" reload nginx
 trap 'rm -f -- "$block_file" "$rendered"' EXIT
-echo "installed Cloud Harness dashboard, OAuth callback, API-key, gateway, API-key gateway, and workspace MCP nginx routes; backup: $backup"
+echo "installed Cloud Harness dashboard, OAuth callback, API-key, gateway, API-key gateway, workspace MCP, and webhook nginx routes; backup: $backup"

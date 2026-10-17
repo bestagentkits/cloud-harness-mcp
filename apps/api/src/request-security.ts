@@ -67,6 +67,31 @@ export function preAuthRequestLimits() {
   };
 }
 
+/**
+ * The public automation webhook ingress has no caller identity before the runner verifies the
+ * signature, so it gets its own windows, keyed by the connection id in the path: traffic aimed at
+ * other (or made-up) connection ids cannot exhaust the budget of a real connection and make GitHub
+ * deliveries fail, and a webhook burst cannot consume the MCP pre-auth budget. The caller rejects a
+ * malformed id before this runs, so keys are bounded and the map evicts the least recently seen.
+ */
+export function webhookIngressLimits(maxRequests = 300, maxActive = 16, maxConnections = 1_000) {
+  const windows = new Map<string, LimitWindow>();
+
+  return (request: Request, response: Response, next: NextFunction): void => {
+    const key = String(request.params.connectionId);
+    let window = windows.get(key);
+    if (!window) {
+      if (windows.size >= maxConnections) {
+        const oldest = [...windows].sort((left, right) => left[1].lastSeenAt - right[1].lastSeenAt)[0];
+        if (oldest) windows.delete(oldest[0]);
+      }
+      window = { startedAt: Date.now(), requests: 0, active: 0, lastSeenAt: Date.now() };
+      windows.set(key, window);
+    }
+    enforceLimit(window, response, next, maxRequests, maxActive);
+  };
+}
+
 export function principalRequestLimits(maxPrincipals = 1_000) {
   const windows = new Map<string, LimitWindow>();
 

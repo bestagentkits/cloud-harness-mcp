@@ -372,3 +372,17 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 1. Run `model_profile_validate` with the same change: its `escalations` list shows exactly what a save would refuse. Drop those fields to save the rest over MCP.
 2. Otherwise, ask the owner to make the change on the Dashboard [Models page](/dashboard/models), where the same change is saved. Once the owner has saved a profile on a Custom upstream URL, MCP calls may use that URL with that credential.
 3. A profile created over MCP starts **Disabled**. `agent_spawn` cannot use it until the owner activates it on the Models page; no MCP tool activates, disables, or deletes a profile.
+
+---
+
+### 32. GitHub automation deliveries fail, or no run starts
+**Cause:** A [webhook automation](/dashboard/automations) delivery is refused before it reaches a rule, or it reaches the rules and none of them starts a run. GitHub's webhook **Recent Deliveries** view shows the response; the Dashboard **Automations → Deliveries** view shows what happened next.
+**Fix:**
+1. `404` or an nginx page: automations are off on the API (`AUTOMATIONS_ENABLED`), or the server is missing the managed `/integrations/webhooks/` nginx route. A Cloudflare Access login page means Access is protecting the path; the operator must add an Access bypass for `/integrations/webhooks/` only.
+2. `401`: the connection id in the URL is wrong, the connection is disabled or deleted, or the secret does not match. The response is the same for all of these on purpose. After **Rotate secret**, paste the new secret into GitHub; old signatures are refused immediately.
+3. `415`: set the GitHub webhook content type to `application/json`.
+4. `429`: too many deliveries in a minute. GitHub does not retry by itself; use **Redeliver** in GitHub after a minute.
+5. `503`: the runner is not answering, has automations off while the API has them on, or has no secret keyring. Ask the operator to check both services.
+6. `202` with `ignored`: the event is not a label addition on an issue or pull request (GitHub's `ping` is always ignored), or the body was malformed (listed as quarantined).
+7. Processed but no run: the delivery's outcome names the reason, such as `no_matching_rule`, `bot_sender`, `self_trigger`, `actor_not_allowed`, `coalesced` (a run for that issue is already active), or `cooldown`. Check that the rule is enabled and use **Test event** on it.
+8. A run ends `FAILED`, `EXPIRED`, or with **Publish failed**: its error code names the step. A private repository or a comment needs the [GitHub App](/dashboard/github) to have access to that repository (and issue write access for comments).

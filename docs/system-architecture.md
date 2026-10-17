@@ -34,6 +34,14 @@ MCP Events webhook delivery
   -> client-registered public HTTPS callback over an API-owned, address-pinned
      outbound socket (Standard Webhooks signature)
 
+GitHub webhook automation (optional)
+  -> existing nginx /integrations/webhooks/ (no Access, no bearer)
+  -> credential-free TCP ingress proxy -> API (host check, own rate window,
+     raw bytes forwarded unparsed)
+  -> runner internal automations channel (signature, dedupe, rule matching)
+  -> runner automation engine -> the runner's own workspace and agent
+     operations -> optional brokered GitHub comment
+
 Dashboard Terminal (browser)
   -> /dashboard BFF on the API (session cookie, Origin, CSRF)
   -> runner internal terminal operation (service bearer, not an MCP tool)
@@ -165,6 +173,28 @@ service asks it for an advisory diagnosis of generic GitHub failures. The API's
 gateway `search` reaches it only through the internal `decision_rerank_tools`
 operation, and checks the returned ordering against its own candidate pool. The
 API never holds the provider credential.
+
+Webhook automations live in the runner under
+[`apps/runner/src/automation-service.ts`](../apps/runner/src/automation-service.ts).
+The API owns only the public ingress
+([`apps/api/src/automations/webhook-ingress.ts`](../apps/api/src/automations/webhook-ingress.ts))
+and the Dashboard BFF routes; both reach the runner over the internal
+automations channel whose schema is
+[`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
+Ingest only verifies, deduplicates, and stores a normalized delivery, so a
+webhook returns quickly; an in-process engine tick, outside any request path,
+matches deliveries to rules and drives each workflow through the same
+`workspace_open`, `agent_spawn`, `agent_status`, `agent_logs`, `github_action`,
+and `workspace_close` operations an MCP client uses, under the rule owner's
+principal. Every step carries an idempotency key derived from the workflow id,
+so a runner restart resumes rather than duplicates a workspace, agent, or
+comment. Success is the agent's authoritative status, never log scraping; the
+logs supply only the final answer text. The terminal transition and its
+[MCP event](mcp-api.md#mcp-events-webhook-delivery) commit together. The
+tables are additive and unversioned
+([`apps/runner/src/automation-schema.ts`](../apps/runner/src/automation-schema.ts)),
+and the trust decisions are in the
+[security model](security-model.md#webhook-automation-ingress).
 
 Third-party agent toolkits are acquired and normalized via disposable clone helpers running on a dedicated internal Docker network (`cloud-harness-provisioning`). All helper egress routes through the dual-homed `provisioning-proxy` (port 3128) with DNS destination allowlists. Normalized bundles are published to runner Content-Addressed Storage (`TOOLKIT_CACHE_ROOT`) and mounted into executors read-only at `/opt/cloud-harness/owner-skills:ro` or staged into `.cloud-harness/skills` under explicit confirmation.
 

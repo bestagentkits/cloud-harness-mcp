@@ -11,6 +11,8 @@ import { GitHubBindingService, GitHubSetupStateStore } from './github-binding-se
 import { SqliteGitHubInstallationStore } from './github-installation-sqlite-store.js';
 import { MetadataStore } from './metadata-store.js';
 import { McpEventService } from './mcp-event-service.js';
+import { AutomationService } from './automation-service.js';
+import { HarnessError } from '@cloud-harness/contracts';
 import { SecretKeyring } from './secret-keyring.js';
 import { createRunnerDecisionPlane } from './decision-plane/runner-decision-plane.js';
 import { StateStore } from './state-store.js';
@@ -80,6 +82,30 @@ const oauthGrantSettings = new OAuthGrantSettingsService(
   (ownerId, action, details) => metadata.recordAudit(ownerId, action, 'instance', 'oauth_grant_settings', 1, details)
 );
 await service.start();
+const automations = new AutomationService({
+  database: store.database,
+  enabled: config.automationsEnabled,
+  maxConcurrentWorkflows: config.automationsMaxConcurrentWorkflows,
+  resolvePrincipal: (principal) => store.resolvePrincipal(principal),
+  keyring,
+  selfLogin: config.githubApp?.appSlug ? `${config.githubApp.appSlug}[bot]` : undefined,
+  operations: {
+    execute: async (ownerId, operation, input) => {
+      try {
+        const result = await service.execute(ownerId, operation, input);
+        return { ok: result.ok, data: result.data, error: result.error ? { code: result.error.code, retryable: result.error.retryable } : undefined };
+      } catch (error) {
+        if (error instanceof HarnessError) return { ok: false, error: { code: error.code, retryable: error.retryable } };
+        throw error;
+      }
+    }
+  },
+  audit: (database, principalId, action, subjectType, subjectId, generation, details) => {
+    metadata.recordAuditInTransaction(database, principalId, action, subjectType, subjectId, generation, details);
+  },
+  log: (record) => logger.warn(record, 'automation')
+});
+automations.start();
 // New installs default to the provider-maximum grant. This never blocks startup and
 // never overwrites a value an operator set explicitly; failures surface in Settings.
 void oauthGrantSettings.reconcileDefault().then(
@@ -89,12 +115,13 @@ void oauthGrantSettings.reconcileDefault().then(
 const server = createServer(createRunnerApp(config, service, controls, apiKeys, {
   settings: oauthGrantSettings,
   resolvePrincipal: (principal) => store.resolvePrincipal(principal)
-}, events));
+}, events, automations));
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));
 
 async function shutdown(signal: string) {
   logger.info({ signal }, 'runner shutting down');
   server.close();
+  await automations.stop();
   await service.stop();
   metadata.close();
   keyring?.close();

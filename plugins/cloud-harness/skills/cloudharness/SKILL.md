@@ -72,10 +72,13 @@ Details: [Repository automation](references/repository-automation.md#skills).
 ## MCP Events
 
 The remote HTTP endpoint also advertises MCP Events (`events/list`,
-`events/subscribe`, `events/unsubscribe`, webhook delivery only) for four
+`events/subscribe`, `events/unsubscribe`, webhook delivery only) for
 terminal-state notifications: `cloudharness.task.completed`,
-`cloudharness.task.failed`, `cloudharness.agent.settled`, and
-`cloudharness.agent.failed`. These are client-side protocol subscriptions, not
+`cloudharness.task.failed`, `cloudharness.agent.settled`,
+`cloudharness.agent.failed`, and, for owner-configured webhook automations,
+`cloudharness.automation.completed` and `cloudharness.automation.failed`
+(filter by `ruleId` or `workflowId`; no MCP tool manages automations, so read
+their results on the Dashboard). These are client-side protocol subscriptions, not
 tools: only the host client subscribes, with its own HTTPS callback and secret,
 so never try to create one through a tool call or a workspace command. An event
 carries ids, status, codes, and timestamps only, so after one arrives call

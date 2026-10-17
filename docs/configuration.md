@@ -596,6 +596,24 @@ the call bounds by
 and the rationale by [ADR 0004](adr/0004-decision-plane.md). Live counters are
 at `GET /api/v1/decision-plane/status`.
 
+## Webhook automations
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AUTOMATIONS_ENABLED` | off | Read by both services. On the API it mounts the public GitHub webhook route; on the runner it admits deliveries, workflows, and Dashboard management. Set the same value for both. The shared environment file does this; a mismatch leaves the route answering `503` (API on, runner off) or absent (API off). |
+| `AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS` | see schema | Runner only. Instance-wide ceiling on automation workflows holding a workspace at once, above each rule's own `maxConcurrent`. Workflows over the ceiling wait queued and expire if they cannot start in time. |
+
+The feature also needs the runner secret keyring, because connection secrets
+are sealed with it. The GitHub App slug, when configured, is how the runner
+recognizes and ignores the harness's own comments. Code defaults and ranges are
+owned by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts);
+per-rule limits, budgets, and retention by
+[`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
+The public route needs the managed nginx location and, in Access mode, an
+Access bypass for that path only; see
+[deployment](deployment.md#webhook-automations-rollout).
+
 ## Compose and logging overrides
 
 `CLOUD_HARNESS_ENV_FILE` selects the runtime environment file. `API_HOST_PORT`

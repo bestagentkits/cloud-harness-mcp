@@ -45,7 +45,21 @@ import {
   startMcpServerOAuth,
   disconnectMcpServerOAuth,
   getMcpGatewayEndpoint,
-  listGlobalSecrets
+  listGlobalSecrets,
+  listAutomationConnections,
+  createAutomationConnection,
+  updateAutomationConnection,
+  rotateAutomationConnectionSecret,
+  deleteAutomationConnection,
+  listAutomationRules,
+  createAutomationRule,
+  updateAutomationRule,
+  deleteAutomationRule,
+  previewAutomationRule,
+  listAutomationWorkflows,
+  getAutomationWorkflow,
+  cancelAutomationWorkflow,
+  listAutomationDeliveries
 } from './dashboard-api.js';
 import {
   escapeHtml,
@@ -70,7 +84,11 @@ import {
   renderAutomationPanel, renderDeployPanel,
   renderActivityCenter, renderApprovals, grantIsActionable, planIsActionable, renderPackages,
   renderTerminalPanel, renderTerminalsIndex,
-  WORKSPACE_LIFECYCLE_FIELDS, isWorkspaceLifecycleView, lifecycleDurationLabel, workspaceLifecycleDisplayValue, workspaceLifecycleFieldBounds
+  WORKSPACE_LIFECYCLE_FIELDS, isWorkspaceLifecycleView, lifecycleDurationLabel, workspaceLifecycleDisplayValue, workspaceLifecycleFieldBounds,
+  AUTOMATION_GITHUB_EVENTS, AUTOMATION_PROXY_OPERATIONS, AUTOMATION_SENDER_TYPES, AUTOMATION_WORKFLOW_STATES,
+  automationBlockedState, automationSectionForPath, renderAutomationBlocked, renderAutomationConnections, renderAutomationDeliveries,
+  renderAutomationLoading, renderAutomationPreviewDialog, renderAutomationPreviewResult, renderAutomationRuleDialog, renderAutomationRules,
+  renderAutomationRunDetail, renderAutomationRuns, renderAutomationSecretPanel, renderAutomationTabs
 } from './dashboard-render.js';
 import { mountTerminalPane } from './dashboard-terminal.js';
 import { createModelWizard, createSpendPanel, renderModelsPage, verificationLabel } from './dashboard-models.js';
@@ -168,6 +186,134 @@ export function githubCallbackParameters(search) {
 
 export function resetWriteOnlyFields(form) {
   for (const field of form.querySelectorAll('input[data-write-only]')) field.value = '';
+}
+
+/*
+ * Automation form checks mirror `packages/contracts/src/automations-api.ts` so an operator
+ * sees a field-level message before a round trip. The runner re-validates every field;
+ * these are guidance, not the boundary.
+ */
+const AUTOMATION_REPOSITORY = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
+const AUTOMATION_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/;
+const AUTOMATION_PROFILE_ID = /^[A-Za-z0-9._-]{1,80}$/;
+const AUTOMATION_CONNECTION_ID = /^whc_[a-f0-9]{32}$/;
+const automationRepositoryValid = (value) => AUTOMATION_REPOSITORY.test(value) && !value.endsWith('.git') && !value.split('/')[1].startsWith('.');
+const automationLabelValid = (value) => value.length >= 1 && value.length <= 100 && !/[\0\r\n]/.test(value);
+const automationInteger = (raw, min, max) => {
+  const text = String(raw ?? '').trim();
+  if (!/^\d+$/.test(text)) return undefined;
+  const value = Number(text);
+  return Number.isSafeInteger(value) && value >= min && value <= max ? value : undefined;
+};
+const automationField = (values, name) => String(values.get(name) ?? '');
+
+/**
+ * The rule create body for a form's values (`FormData` or anything with `get`, `getAll`
+ * and `has`), or the field errors that block it. Keys of `errors` are form field names.
+ */
+export function automationRuleInput(values) {
+  const errors = {};
+  const name = automationField(values, 'name').trim();
+  if (!name || name.length > 100) errors.name = 'Enter a rule name of 1 to 100 characters.';
+  const connectionId = automationField(values, 'connectionId');
+  if (!AUTOMATION_CONNECTION_ID.test(connectionId)) errors.connectionId = 'Choose a connection.';
+  const repository = automationField(values, 'repository').trim();
+  if (!automationRepositoryValid(repository)) errors.repository = 'Enter the repository as owner/name, without .git.';
+  const knownEvents = AUTOMATION_GITHUB_EVENTS.map(([id]) => id);
+  const events = [...new Set(values.getAll('events').map(String))].filter((event) => knownEvents.includes(event));
+  if (!events.length) errors.events = 'Choose at least one event.';
+  const label = automationField(values, 'label').trim();
+  if (!automationLabelValid(label)) errors.label = 'Enter the label name, up to 100 characters on one line.';
+  const actors = automationField(values, 'actorAllowlist').split(/[\s,]+/).filter(Boolean);
+  if (actors.length > 50 || actors.some((login) => !AUTOMATION_LOGIN.test(login))) errors.actorAllowlist = 'List up to 50 GitHub logins separated by commas.';
+  const ref = automationField(values, 'ref').trim();
+  if (ref && (ref.length > 200 || !/^[A-Za-z0-9._/-]+$/.test(ref) || ref.startsWith('-') || ref.includes('..'))) errors.ref = 'Enter a branch or tag name, or leave it empty for the default branch.';
+  const profileId = automationField(values, 'profileId');
+  if (!AUTOMATION_PROFILE_ID.test(profileId)) errors.profileId = 'Choose a model profile.';
+  const instructions = automationField(values, 'instructions');
+  if (!instructions.trim() || instructions.length > 16_000 || instructions.includes('\0')) errors.instructions = 'Enter instructions of up to 16,000 characters.';
+  const proxyOperations = [...new Set(values.getAll('proxyOperations').map(String))].filter((operation) => AUTOMATION_PROXY_OPERATIONS.includes(operation));
+  if (!proxyOperations.length) errors.proxyOperations = 'Allow at least one operation.';
+  const ttlSeconds = automationInteger(values.get('ttlSeconds'), 60, 7_200);
+  if (ttlSeconds === undefined) errors.ttlSeconds = 'Enter a time limit from 60 to 7200 seconds.';
+  const maxInputTokens = automationInteger(values.get('maxInputTokens'), 1, 2_000_000);
+  if (maxInputTokens === undefined) errors.maxInputTokens = 'Enter an input token limit from 1 to 2,000,000.';
+  const maxOutputTokens = automationInteger(values.get('maxOutputTokens'), 1, 2_000_000);
+  if (maxOutputTokens === undefined) errors.maxOutputTokens = 'Enter an output token limit from 1 to 2,000,000.';
+  const costText = automationField(values, 'maxCostUsd').trim();
+  const costUsd = Number(costText);
+  const maxCostMicros = costText !== '' && Number.isFinite(costUsd) ? Math.round(costUsd * 1_000_000) : Number.NaN;
+  if (!(maxCostMicros >= 0 && maxCostMicros <= 100_000_000)) errors.maxCostUsd = 'Enter a cost limit from 0 to 100 USD.';
+  const cooldownSeconds = automationInteger(values.get('cooldownSeconds'), 0, 86_400);
+  if (cooldownSeconds === undefined) errors.cooldownSeconds = 'Enter a cooldown from 0 to 86400 seconds.';
+  const maxConcurrent = automationInteger(values.get('maxConcurrent'), 1, 5);
+  if (maxConcurrent === undefined) errors.maxConcurrent = 'Enter from 1 to 5 concurrent runs.';
+  if (Object.keys(errors).length) return { errors };
+  return {
+    errors: {},
+    body: {
+      connectionId,
+      name,
+      enabled: values.has('enabled'),
+      match: { repository, events, label, ignoreBots: values.has('ignoreBots'), ...(actors.length ? { actorAllowlist: actors } : {}) },
+      action: {
+        ...(ref ? { ref } : {}),
+        profileId,
+        instructions,
+        proxyOperations,
+        budget: { ttlSeconds, maxInputTokens, maxOutputTokens, maxCostMicros },
+        publishComment: values.has('publishComment'),
+        cooldownSeconds,
+        maxConcurrent
+      }
+    }
+  };
+}
+
+/** The rule update body: the full replacement match and action plus the generation the form loaded. */
+export function automationRuleUpdateInput(rule, body) {
+  return { expectedGeneration: Number(rule.generation), name: body.name, enabled: body.enabled, match: body.match, action: body.action };
+}
+
+/** The sample delivery a "Test event" form describes, or the field errors that block it. */
+export function automationPreviewSample(values) {
+  const errors = {};
+  const event = automationField(values, 'event');
+  if (!AUTOMATION_GITHUB_EVENTS.some(([id]) => id === event)) errors.event = 'Choose an event.';
+  const repository = automationField(values, 'repository').trim();
+  if (!automationRepositoryValid(repository)) errors.repository = 'Enter the repository as owner/name, without .git.';
+  const label = automationField(values, 'label').trim();
+  if (!automationLabelValid(label)) errors.label = 'Enter the label name, up to 100 characters on one line.';
+  const senderLogin = automationField(values, 'senderLogin').trim();
+  if (!AUTOMATION_LOGIN.test(senderLogin)) errors.senderLogin = 'Enter a GitHub login.';
+  const senderType = automationField(values, 'senderType') || 'User';
+  if (!AUTOMATION_SENDER_TYPES.includes(senderType)) errors.senderType = 'Choose a sender type.';
+  if (Object.keys(errors).length) return { errors };
+  return { errors: {}, sample: { event, repository, label, senderLogin, senderType } };
+}
+
+/**
+ * Wires the one-time signing-secret reveal. The secret is written into the read-only
+ * field here, never rendered as markup, and cleared when the operator dismisses it.
+ */
+export function bindAutomationSecretReveal({ secret, secretField, urlField, copySecretButton, copyUrlButton, dismissButton, status, clipboard, onDismiss }) {
+  if (typeof secret !== 'string' || !secret) throw new Error('The signing secret was unavailable. Rotate the secret to get a new one.');
+  secretField.value = secret;
+  const copy = async (field, label) => {
+    try {
+      await clipboard.writeText(field.value);
+      status.textContent = `${label} copied.`;
+    } catch {
+      status.textContent = `${label} could not be copied. Select it and copy it manually.`;
+    }
+  };
+  copySecretButton.addEventListener('click', () => void copy(secretField, 'Secret'));
+  copyUrlButton.addEventListener('click', () => void copy(urlField, 'Webhook URL'));
+  dismissButton.addEventListener('click', () => {
+    secretField.value = '';
+    status.textContent = '';
+    onDismiss?.();
+  });
 }
 
 /**
@@ -1201,6 +1347,7 @@ export function initializeDashboard() {
     skills: loadSkills,
     integrations: loadGitHub,
     'mcp-servers': loadMcpServers,
+    automations: () => loadAutomations(),
     knowledge: loadKnowledge,
     agents: loadAgents,
     activity: loadActivity,
@@ -1236,6 +1383,7 @@ export function initializeDashboard() {
       const knowledgeMatch = pathname.match(/^\/dashboard\/knowledge\/(kn_[A-Za-z0-9_-]{10,80})$/);
       const mcpServerMatch = pathname.match(/^\/dashboard\/mcp-servers\/(mcps_[A-Za-z0-9_-]{20,80})$/);
       const agentMatch = pathname.match(/^\/dashboard\/agents\/(agent_[A-Za-z0-9_-]{20,80})$/);
+      const automationRunMatch = pathname.match(/^\/dashboard\/automations\/runs\/(wfl_[a-f0-9]{32})$/);
       const page = pageForPath(pathname);
       if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
       else if (pathMatch?.[2] === 'runtime') await loadRuntime(pathMatch[1]);
@@ -1244,6 +1392,7 @@ export function initializeDashboard() {
       else if (knowledgeMatch) await loadKnowledgeDetailView(knowledgeMatch[1]);
       else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
       else if (agentMatch) await loadAgentDetail(agentMatch[1]);
+      else if (automationRunMatch) await loadAutomations(automationRunMatch[1]);
       else if (page && PAGE_LOADERS[page.id]) await PAGE_LOADERS[page.id]();
       else throw Object.assign(new Error('Dashboard page not found.'), { status: 404 });
       if (signal.aborted) return;
@@ -2964,6 +3113,273 @@ export function initializeDashboard() {
         } else { detail.hidden = false; heading.focus({ preventScroll: true }); }
       } catch (error) { showError(error); }
     });
+  }
+  /*
+   * Webhook automations. Each section is its own path so a tab is linkable, and a run
+   * detail keeps the Runs tab current. A 403 or 503 from any read turns the page into
+   * its permission-denied or disabled state instead of the generic load failure.
+   */
+  const automationArray = (value) => (Array.isArray(value) ? value : []);
+  let automationPage = { connections: [], rules: [], profiles: [] };
+  async function loadAutomations(workflowId) {
+    selectNavigation('automations');
+    document.querySelector('#command-surface').hidden = true;
+    const section = workflowId ? 'runs' : automationSectionForPath(location.pathname);
+    if (!section) throw Object.assign(new Error('Dashboard page not found.'), { status: 404 });
+    insertRendered(document.querySelector('#context-nav'), renderAutomationTabs(section));
+    insertRendered(content, renderAutomationLoading());
+    try {
+      if (workflowId) await loadAutomationRunDetail(workflowId);
+      else if (section === 'rules') await loadAutomationRules();
+      else if (section === 'connections') await loadAutomationConnections();
+      else if (section === 'deliveries') await loadAutomationDeliveries();
+      else await loadAutomationRuns();
+    } catch (error) {
+      const state = automationBlockedState(error);
+      if (!state) throw error;
+      setPageActions('');
+      insertRendered(content, renderAutomationBlocked(state));
+      content.querySelector('[data-automation-retry]')?.addEventListener('click', () => { void load(); });
+    }
+  }
+  /** Applies a filter form as query parameters on the section's own path. */
+  function bindAutomationFilter(selector, route) {
+    content.querySelector(selector)?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const query = new URLSearchParams();
+      for (const [key, value] of new FormData(event.currentTarget)) if (value) query.set(key, String(value));
+      const search = query.toString();
+      navigateTo(`${route}${search ? `?${search}` : ''}`);
+    });
+  }
+  /** Shows a client-side field error in the form's live status line and moves focus to the field. */
+  function reportAutomationFieldErrors(form, errors) {
+    for (const field of form.querySelectorAll('[aria-invalid]')) field.removeAttribute('aria-invalid');
+    const [name, message] = Object.entries(errors)[0] ?? [];
+    if (!name) return false;
+    const status = form.querySelector('.form-status');
+    if (status) status.textContent = message;
+    const field = form.querySelector(`[name="${name}"]`);
+    field?.setAttribute('aria-invalid', 'true');
+    field?.focus?.();
+    return true;
+  }
+  async function loadAutomationRuns() {
+    const parameters = new URLSearchParams(location.search);
+    const requestedState = parameters.get('state') ?? '';
+    const requestedRule = parameters.get('ruleId') ?? '';
+    const filters = {
+      state: AUTOMATION_WORKFLOW_STATES.includes(requestedState) ? requestedState : '',
+      ruleId: /^arl_[a-f0-9]{32}$/.test(requestedRule) ? requestedRule : ''
+    };
+    const [workflowsResult, rulesResult] = await Promise.all([listAutomationWorkflows({ ...filters, limit: 100 }), listAutomationRules()]);
+    insertRendered(content, renderAutomationRuns({ workflows: automationArray(workflowsResult.data?.workflows), rules: automationArray(rulesResult.data?.rules), filters }));
+    setPageActions(renderSecondaryAction({ id: 'refresh-automation-runs', label: 'Refresh' }));
+    document.querySelector('#refresh-automation-runs')?.addEventListener('click', () => { void load().then(() => announce('Automation runs refreshed.')); });
+    bindAutomationFilter('#automation-runs-filter', '/dashboard/automations');
+  }
+  async function loadAutomationRunDetail(workflowId) {
+    const [detailResult, rulesResult] = await Promise.all([getAutomationWorkflow(workflowId), listAutomationRules().catch(() => undefined)]);
+    const { workflow, result, transitions } = detailResult.data ?? {};
+    if (!workflow) throw Object.assign(new Error('This automation run was not found.'), { status: 404 });
+    const rule = automationArray(rulesResult?.data?.rules).find((entry) => entry.id === workflow.ruleId);
+    setTitle(`${workflow.repository}#${workflow.resourceNumber}`, 'Automation run: state, transitions, and the agent result.');
+    insertRendered(content, renderAutomationRunDetail({ workflow, result, transitions, ruleName: rule?.name }));
+    content.querySelector('[data-automation-cancel]')?.addEventListener('click', (event) => confirmAction({
+      title: 'Cancel this run?',
+      description: 'The run stops and ends as cancelled. A cancelled run is not retried.',
+      target: `${workflow.repository}#${workflow.resourceNumber} · ${workflow.id}`,
+      label: 'Cancel run',
+      pendingLabel: 'Cancelling…',
+      action: async () => {
+        await cancelAutomationWorkflow(workflow.id);
+        announce('Automation run cancelled.');
+        await load();
+      }
+    }, event.currentTarget));
+  }
+  async function loadAutomationRules() {
+    // Profiles only fill the picker: a failed profile read must not hide the rules.
+    const [connectionsResult, rulesResult, profilesResult] = await Promise.all([listAutomationConnections(), listAutomationRules(), listModelProfiles().catch(() => undefined)]);
+    automationPage = {
+      connections: automationArray(connectionsResult.data?.connections),
+      rules: automationArray(rulesResult.data?.rules),
+      profiles: automationArray(profilesResult?.data?.profiles)
+    };
+    insertRendered(content, renderAutomationRules(automationPage));
+    setPageActions(renderPrimaryAction({ id: 'open-automation-rule', label: 'New rule', disabled: automationPage.connections.length === 0 }));
+    document.querySelector('#open-automation-rule')?.addEventListener('click', (event) => openAutomationRuleDialog(undefined, event.currentTarget));
+    const ruleFor = (id) => automationPage.rules.find((rule) => rule.id === id);
+    for (const button of content.querySelectorAll('[data-automation-rule-edit]')) button.addEventListener('click', (event) => {
+      const rule = ruleFor(event.currentTarget.dataset.automationRuleEdit);
+      if (rule) openAutomationRuleDialog(rule, event.currentTarget);
+    });
+    for (const button of content.querySelectorAll('[data-automation-rule-test]')) button.addEventListener('click', (event) => {
+      const rule = ruleFor(event.currentTarget.dataset.automationRuleTest);
+      if (rule) openAutomationPreviewDialog(rule, event.currentTarget);
+    });
+    for (const button of content.querySelectorAll('[data-automation-rule-toggle]')) button.addEventListener('click', async (event) => {
+      const target = event.currentTarget;
+      const enabled = target.dataset.nextEnabled === 'true';
+      target.disabled = true;
+      try {
+        await updateAutomationRule(target.dataset.automationRuleToggle, { expectedGeneration: Number(target.dataset.generation), enabled });
+        announce(enabled ? 'Rule enabled.' : 'Rule disabled.');
+        await loadAutomationRules();
+      } catch (error) { showError(error); target.disabled = false; }
+    });
+    for (const button of content.querySelectorAll('[data-automation-rule-delete]')) button.addEventListener('click', (event) => confirmAction({
+      title: 'Delete rule?',
+      description: 'Deliveries stop matching this rule. Runs it already started keep their history until retention purges them.',
+      target: button.dataset.ruleName ?? button.dataset.automationRuleDelete,
+      label: 'Delete rule',
+      pendingLabel: 'Deleting…',
+      action: async () => {
+        await deleteAutomationRule(button.dataset.automationRuleDelete, Number(button.dataset.generation));
+        announce('Rule deleted.');
+        await loadAutomationRules();
+      }
+    }, event.currentTarget));
+  }
+  /** Renders a per-open dialog into the page's host, so every open starts from the saved values. */
+  function openAutomationDialog(markup, invoker) {
+    const host = content.querySelector('#automation-dialog-host');
+    if (!host) return undefined;
+    insertRendered(host, markup);
+    const dialog = host.querySelector('dialog');
+    dialog.addEventListener('close', () => {
+      insertRendered(host, '');
+      invoker?.focus?.({ preventScroll: true });
+    });
+    dialog.showModal();
+    dialog.querySelector('input:not([type="hidden"]), select, textarea')?.focus();
+    return dialog;
+  }
+  function openAutomationRuleDialog(rule, invoker) {
+    const dialog = openAutomationDialog(renderAutomationRuleDialog({ rule, ...automationPage }), invoker);
+    const form = dialog?.querySelector('#automation-rule-form');
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      // A disabled select is not submitted, so an edit supplies the rule's own connection.
+      if (rule) values.set('connectionId', rule.connectionId);
+      const { errors, body } = automationRuleInput(values);
+      if (reportAutomationFieldErrors(form, errors)) return;
+      const action = rule ? () => updateAutomationRule(rule.id, automationRuleUpdateInput(rule, body)) : () => createAutomationRule(body);
+      void submitForm(form, 'Saving…', action, async () => {
+        dialog.close();
+        announce(rule ? 'Rule saved.' : 'Rule created.');
+        await loadAutomationRules();
+      });
+    });
+  }
+  function openAutomationPreviewDialog(rule, invoker) {
+    const dialog = openAutomationDialog(renderAutomationPreviewDialog(rule), invoker);
+    const form = dialog?.querySelector('#automation-preview-form');
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const { errors, sample } = automationPreviewSample(new FormData(form));
+      if (reportAutomationFieldErrors(form, errors)) return;
+      const resultRegion = form.querySelector('#automation-preview-result');
+      insertRendered(resultRegion, '');
+      let preview;
+      void submitForm(form, 'Testing…', async () => { preview = (await previewAutomationRule(rule.id, sample)).data; }, async () => {
+        insertRendered(resultRegion, renderAutomationPreviewResult(preview));
+      });
+    });
+  }
+  /**
+   * `rerender` marks a refresh after a mutation: the first render's shared wiring (dialog
+   * dismissal, copy chips) ran in `performLoad`, so a re-render wires its own.
+   */
+  async function loadAutomationConnections(reveal, rerender = Boolean(reveal)) {
+    const result = await listAutomationConnections();
+    const connections = automationArray(result.data?.connections);
+    const panel = reveal ? renderAutomationSecretPanel({ connection: reveal.connection, origin: location.origin, rotated: reveal.rotated }) : '';
+    insertRendered(content, `${panel}${renderAutomationConnections({ connections, origin: location.origin })}`);
+    setPageActions(renderPrimaryAction({ id: 'open-automation-connection', label: 'New connection', dialogId: 'automation-connection-dialog' }));
+    if (rerender) { bindDialogDismissal(content); bindCopyAffordances(content); }
+    if (reveal) {
+      const panelElement = content.querySelector('#automation-secret-panel');
+      bindAutomationSecretReveal({
+        secret: reveal.secret,
+        secretField: panelElement.querySelector('#automation-webhook-secret'),
+        urlField: panelElement.querySelector('#automation-webhook-url'),
+        copySecretButton: panelElement.querySelector('#copy-automation-webhook-secret'),
+        copyUrlButton: panelElement.querySelector('#copy-automation-webhook-url'),
+        dismissButton: panelElement.querySelector('#dismiss-automation-secret'),
+        status: panelElement.querySelector('#automation-secret-status'),
+        clipboard: globalThis.navigator.clipboard,
+        onDismiss: () => {
+          panelElement.remove();
+          announce('Signing secret cleared from the page.');
+          document.querySelector('#open-automation-connection')?.focus({ preventScroll: true });
+        }
+      });
+      // A confirm dialog may still be closing; focus the panel once it has.
+      globalThis.setTimeout(() => panelElement.focus({ preventScroll: false }), 0);
+    }
+    const form = content.querySelector('#automation-connection-form');
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const name = String(new FormData(form).get('name') ?? '').trim();
+      if (reportAutomationFieldErrors(form, !name || name.length > 100 ? { name: 'Enter a connection name of 1 to 100 characters.' } : {})) return;
+      let created;
+      void submitForm(form, 'Creating…', async () => {
+        created = (await createAutomationConnection(name)).data;
+        if (!created?.connection || typeof created.secret !== 'string' || !created.secret) {
+          throw new Error('The connection was created but its signing secret was unavailable. Rotate the secret to get a new one.');
+        }
+      }, async () => {
+        form.closest('dialog')?.close();
+        const next = { connection: created.connection, secret: created.secret, rotated: false };
+        created = undefined;
+        await loadAutomationConnections(next);
+        announce('Connection created. Copy the signing secret now; it is shown once.');
+      });
+    });
+    for (const button of content.querySelectorAll('[data-automation-connection-toggle]')) button.addEventListener('click', async (event) => {
+      const target = event.currentTarget;
+      const enabled = target.dataset.nextEnabled === 'true';
+      target.disabled = true;
+      try {
+        await updateAutomationConnection(target.dataset.automationConnectionToggle, { expectedGeneration: Number(target.dataset.generation), enabled });
+        announce(enabled ? 'Connection enabled.' : 'Connection disabled. Its deliveries are refused until it is enabled again.');
+        await loadAutomationConnections(undefined, true);
+      } catch (error) { showError(error); target.disabled = false; }
+    });
+    for (const button of content.querySelectorAll('[data-automation-connection-rotate]')) button.addEventListener('click', (event) => confirmAction({
+      title: 'Rotate signing secret?',
+      description: 'The current secret stops verifying deliveries immediately. The new secret is shown once; update the GitHub webhook with it.',
+      target: button.dataset.connectionName ?? button.dataset.automationConnectionRotate,
+      label: 'Rotate secret',
+      pendingLabel: 'Rotating…',
+      action: async () => {
+        const rotated = (await rotateAutomationConnectionSecret(button.dataset.automationConnectionRotate, Number(button.dataset.generation))).data;
+        if (!rotated?.connection || typeof rotated.secret !== 'string' || !rotated.secret) throw new Error('The new signing secret was unavailable. Rotate the secret again.');
+        await loadAutomationConnections({ connection: rotated.connection, secret: rotated.secret, rotated: true });
+        announce('Signing secret rotated. Copy the new secret now; it is shown once.');
+      }
+    }, event.currentTarget));
+    for (const button of content.querySelectorAll('[data-automation-connection-delete]')) button.addEventListener('click', (event) => confirmAction({
+      title: 'Delete connection?',
+      description: 'Its webhook URL stops accepting deliveries and its rules stop matching. This cannot be undone.',
+      target: button.dataset.connectionName ?? button.dataset.automationConnectionDelete,
+      label: 'Delete connection',
+      pendingLabel: 'Deleting…',
+      action: async () => {
+        await deleteAutomationConnection(button.dataset.automationConnectionDelete, Number(button.dataset.generation));
+        announce('Connection deleted.');
+        await loadAutomationConnections(undefined, true);
+      }
+    }, event.currentTarget));
+  }
+  async function loadAutomationDeliveries() {
+    const requested = new URLSearchParams(location.search).get('connectionId') ?? '';
+    const filters = { connectionId: /^whc_[a-f0-9]{32}$/.test(requested) ? requested : '' };
+    const [deliveriesResult, connectionsResult] = await Promise.all([listAutomationDeliveries({ ...filters, limit: 100 }), listAutomationConnections()]);
+    insertRendered(content, renderAutomationDeliveries({ deliveries: automationArray(deliveriesResult.data?.deliveries), connections: automationArray(connectionsResult.data?.connections), filters }));
+    bindAutomationFilter('#automation-deliveries-filter', '/dashboard/automations/deliveries');
   }
   let currentMcpServers = [];
   let currentMcpServer;

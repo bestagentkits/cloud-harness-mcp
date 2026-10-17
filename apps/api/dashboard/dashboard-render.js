@@ -2516,3 +2516,394 @@ export function renderPaletteResults(entries, activeIndex) {
     return `<li id="palette-opt-${index}" class="palette-option${selected ? ' selected' : ''}" role="option" aria-selected="${selected}" data-palette-index="${index}" data-href="${escape(entry.href)}"><span class="palette-option-label">${escape(entry.label)}</span><span class="palette-option-group">${escape(entry.group)}</span><span class="palette-option-hint mono wrap">${escape(entry.hint)}</span></li>`;
   }).join('');
 }
+
+/*
+ * Webhook automations. The data shapes are the Dashboard BFF payloads owned by
+ * `packages/contracts/src/automations-api.ts`. Repository, label, result, error and
+ * outcome strings come from a provider webhook or the agent, so every one is treated
+ * as untrusted text: escaped on output, and a provider URL becomes a link only when it
+ * parses as https.
+ */
+export const AUTOMATION_SECTIONS = [
+  { id: 'runs', label: 'Runs', route: '/dashboard/automations' },
+  { id: 'rules', label: 'Rules', route: '/dashboard/automations/rules' },
+  { id: 'connections', label: 'Connections', route: '/dashboard/automations/connections' },
+  { id: 'deliveries', label: 'Deliveries', route: '/dashboard/automations/deliveries' }
+];
+export const AUTOMATION_WORKFLOW_STATES = ['QUEUED', 'STARTING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED'];
+const AUTOMATION_TERMINAL_STATES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED']);
+/** Mirrors `AgentProxyOperationSchema`; the first five are the contract's read-only default. */
+// Mirrors the contract's read-only automation operation set; the runner rejects anything else.
+export const AUTOMATION_PROXY_OPERATIONS = ['files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references'];
+export const AUTOMATION_DEFAULT_PROXY_OPERATIONS = [...AUTOMATION_PROXY_OPERATIONS];
+export const AUTOMATION_GITHUB_EVENTS = [['issues', 'Issues'], ['pull_request', 'Pull requests']];
+export const AUTOMATION_SENDER_TYPES = ['User', 'Bot', 'Organization'];
+export const AUTOMATION_RULE_DEFAULTS = { ttlSeconds: 900, maxInputTokens: 200_000, maxOutputTokens: 32_000, maxCostMicros: 2_000_000, cooldownSeconds: 300, maxConcurrent: 1 };
+export const AUTOMATIONS_DISABLED_COPY = 'Automations are disabled on this instance (set AUTOMATIONS_ENABLED=true on api and runner).';
+
+const AUTOMATION_WORKFLOW_STATE = {
+  QUEUED: ['Queued', 'queued'], STARTING: ['Starting', 'creating'], RUNNING: ['Running', 'running'], COMPLETED: ['Completed', 'succeeded'],
+  FAILED: ['Failed', 'failed'], CANCELLED: ['Cancelled', ''], EXPIRED: ['Expired', 'expired']
+};
+const AUTOMATION_DELIVERY_STATE = { RECEIVED: ['Received', 'info'], PROCESSED: ['Processed', 'succeeded'], IGNORED: ['Ignored', ''], QUARANTINED: ['Quarantined', 'failed'] };
+const AUTOMATION_PUBLISH_STATE = { NONE: ['Not published', ''], PENDING: ['Publishing', 'pending'], DELIVERED: ['Comment posted', 'succeeded'], FAILED: ['Publish failed', 'failed'] };
+const automationPill = (table, value) => {
+  const [label, className] = table[value] ?? ['Unknown', ''];
+  return `<span class="status${className ? ` ${className}` : ''}">${escape(label)}</span>`;
+};
+const automationList = (value) => (Array.isArray(value) ? value : []);
+const automationText = (value, empty = '—') => (value === null || value === undefined || value === '' ? empty : escape(value));
+
+export function automationWorkflowStateLabel(state) {
+  return (AUTOMATION_WORKFLOW_STATE[state] ?? ['Unknown'])[0];
+}
+
+export function automationWorkflowIsTerminal(state) {
+  return AUTOMATION_TERMINAL_STATES.has(state);
+}
+
+/** The section a pathname selects, or `undefined` for a path this page does not own. */
+export function automationSectionForPath(pathname) {
+  const path = String(pathname ?? '').replace(/\/$/, '');
+  if (/^\/dashboard\/automations\/runs\/wfl_[a-f0-9]{32}$/.test(path)) return 'runs';
+  return AUTOMATION_SECTIONS.find((section) => section.route === path)?.id;
+}
+
+/**
+ * Which blocked state an error puts the page in. The BFF answers 503 both when the
+ * feature is switched off and when the runner is briefly unreachable; only the first
+ * is a configuration the operator must change, so the two read differently.
+ */
+export function automationBlockedState(error) {
+  if (error?.status === 403) return 'denied';
+  if (error?.status !== 503) return undefined;
+  const message = String(error.message ?? '').toLowerCase();
+  return message.startsWith('automations are disabled') || message.startsWith('automations are not available') ? 'disabled' : 'unavailable';
+}
+
+export function renderAutomationBlocked(state) {
+  if (state === 'disabled') {
+    return `<div class="empty automation-blocked" role="status"><h3>Automations are disabled on this instance</h3><p>${escape(AUTOMATIONS_DISABLED_COPY)}</p><p>Set <code>AUTOMATIONS_ENABLED=true</code> for both the api and runner services and restart them to create connections and rules.</p></div>`;
+  }
+  if (state === 'denied') {
+    return '<div class="empty automation-blocked" role="status"><h3>You cannot manage automations</h3><p>Your signed-in identity does not have permission to view or change webhook automations on this instance.</p></div>';
+  }
+  return '<div class="empty automation-blocked" role="status"><h3>Automations are temporarily unavailable</h3><p>The runner did not answer. Try again in a moment.</p><button type="button" data-automation-retry>Try again</button></div>';
+}
+
+export function renderAutomationLoading() {
+  return '<p class="empty-note" role="status">Loading automations…</p>';
+}
+
+/** Section links for the shell's `#context-nav`; the current section carries `aria-current`. */
+export function renderAutomationTabs(current) {
+  return AUTOMATION_SECTIONS.map((section) => `<a href="${escape(section.route)}"${section.id === current ? ' aria-current="page"' : ''}>${escape(section.label)}</a>`).join('');
+}
+
+/** A provider resource URL becomes a link only when it is a well-formed https URL. */
+export function automationResourceHref(value) {
+  try {
+    const url = new URL(String(value ?? ''));
+    return url.protocol === 'https:' ? url.toString() : undefined;
+  } catch { return undefined; }
+}
+
+/** The payload URL GitHub posts to: the dashboard's public origin plus the connection's relative path. */
+export function automationWebhookUrl(origin, webhookPath) {
+  const path = String(webhookPath ?? '');
+  if (!path.startsWith('/') || path.startsWith('//')) return path;
+  try { return new URL(path, String(origin ?? '')).toString(); } catch { return path; }
+}
+
+function automationResource(workflow) {
+  const text = `${workflow?.repository ?? 'Unknown repository'}#${workflow?.resourceNumber ?? '?'}`;
+  const href = automationResourceHref(workflow?.resourceUrl);
+  return href ? `<a class="mono" href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(text)}</a>` : `<span class="mono">${escape(text)}</span>`;
+}
+
+const automationWorkspacePath = (workspaceId) => `/dashboard/workspaces/${encodeURIComponent(workspaceId)}/agents`;
+/** Tables show a short id; the link's accessible name and the detail view carry the full one. */
+const automationIdText = (value, full) => (full ? String(value) : `${String(value).slice(0, 14)}…`);
+function automationWorkspaceLinks(workflow, full = false) {
+  if (!workflow?.workspaceId) return '<span>Not opened</span>';
+  const path = escape(automationWorkspacePath(workflow.workspaceId));
+  const agent = workflow.agentId ? `<br><a class="mono wrap" href="${path}" aria-label="Open agent ${escape(workflow.agentId)}">${escape(automationIdText(workflow.agentId, full))}</a>` : '';
+  return `<a class="mono wrap" href="${path}" aria-label="Open workspace ${escape(workflow.workspaceId)}">${escape(automationIdText(workflow.workspaceId, full))}</a>${agent}`;
+}
+
+function automationUsage(usage) {
+  if (!usage) return 'Not reported';
+  return `${escape(countOf(usage.inputTokens))} in · ${escape(countOf(usage.outputTokens))} out · ${escape(costOf(usage.costMicros))}`;
+}
+
+const automationRunPath = (id) => `/dashboard/automations/runs/${encodeURIComponent(id)}`;
+const automationShortId = (id) => String(id ?? '').slice(0, 12);
+
+export function renderAutomationRuns({ workflows = [], rules = [], filters = {} } = {}) {
+  const list = automationList(workflows);
+  const ruleNames = new Map(automationList(rules).map((rule) => [rule.id, rule.name]));
+  const ruleName = (workflow) => escape(ruleNames.get(workflow.ruleId) ?? workflow.ruleId);
+  const stateOptions = AUTOMATION_WORKFLOW_STATES.map((state) => `<option value="${state}"${filters.state === state ? ' selected' : ''}>${escape(automationWorkflowStateLabel(state))}</option>`).join('');
+  const ruleOptions = automationList(rules).map((rule) => `<option value="${escape(rule.id)}"${filters.ruleId === rule.id ? ' selected' : ''}>${escape(rule.name)}</option>`).join('');
+  const runLink = (workflow) => `<a class="mono" href="${escape(automationRunPath(workflow.id))}" aria-label="Open run ${escape(workflow.id)}">${escape(automationShortId(workflow.id))}</a>`;
+  const statePill = (workflow) => `${automationPill(AUTOMATION_WORKFLOW_STATE, workflow.state)}${workflow.agentStatus ? `<small class="mono">${escape(workflow.agentStatus)}</small>` : ''}`;
+  const rows = list.length ? list.map((workflow) => `<tr>
+        <th scope="row">${runLink(workflow)}</th>
+        <td>${statePill(workflow)}</td>
+        <td>${automationResource(workflow)}</td>
+        <td class="mono">${escape(workflow.label)}</td>
+        <td>${ruleName(workflow)}</td>
+        <td>${automationWorkspaceLinks(workflow)}</td>
+        <td class="mono wrap">${automationText(workflow.errorCode)}</td>
+        <td>${automationPill(AUTOMATION_PUBLISH_STATE, workflow.publishState)}</td>
+        <td class="nowrap">${automationUsage(workflow.usage)}</td>
+        <td>${time(workflow.createdAt)}<small>Updated ${time(workflow.updatedAt)}</small></td>
+      </tr>`).join('') : '<tr><td colspan="10">No automation runs yet.</td></tr>';
+  const cards = list.length ? list.map((workflow) => `<li><h3>${automationResource(workflow)}</h3><dl><dt>Run</dt><dd>${runLink(workflow)}</dd><dt>State</dt><dd>${statePill(workflow)}</dd><dt>Label</dt><dd class="mono wrap">${escape(workflow.label)}</dd><dt>Rule</dt><dd>${ruleName(workflow)}</dd><dt>Workspace</dt><dd>${automationWorkspaceLinks(workflow)}</dd><dt>Error</dt><dd class="mono wrap">${automationText(workflow.errorCode)}</dd><dt>Publish</dt><dd>${automationPill(AUTOMATION_PUBLISH_STATE, workflow.publishState)}</dd><dt>Usage</dt><dd>${automationUsage(workflow.usage)}</dd><dt>Created</dt><dd>${time(workflow.createdAt)}</dd></dl></li>`).join('')
+    : '<li class="empty"><h3>No automation runs yet.</h3><p>A run starts when a labeled GitHub delivery matches an enabled rule.</p></li>';
+  return renderResourcePage({
+    filters: `<form id="automation-runs-filter" aria-label="Filter runs"><label for="automation-runs-state">State</label><select id="automation-runs-state" name="state"><option value="">All states</option>${stateOptions}</select><label for="automation-runs-rule">Rule</label><select id="automation-runs-rule" name="ruleId"><option value="">All rules</option>${ruleOptions}</select><button type="submit">Apply filters</button></form>`,
+    body: `<section class="automation-runs" aria-labelledby="automation-runs-heading"><div class="record-heading"><div><h2 id="automation-runs-heading">Runs</h2><p>Each run opens one workspace and runs one agent for a matching labeled issue or pull request.</p></div></div><div class="desktop-table"><table><caption>${escape(list.length)} automation runs</caption><thead><tr><th>Run</th><th>State</th><th>Resource</th><th>Label</th><th>Rule</th><th>Workspace / agent</th><th>Error</th><th>Publish</th><th>Usage</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`
+  });
+}
+
+export function renderAutomationRunDetail({ workflow, result = null, transitions = [], ruleName } = {}) {
+  if (!workflow) return '<div class="empty"><h3>Automation run not found.</h3><p>It may have been purged after the retention window or belong to another identity.</p></div>';
+  const cancel = automationWorkflowIsTerminal(workflow.state) ? '' : `<div class="row-actions"><button class="danger" type="button" data-automation-cancel="${escape(workflow.id)}">Cancel run</button></div>`;
+  const resultBody = typeof result === 'string' && result
+    ? `<pre class="automation-result"><code>${escape(result)}</code></pre>`
+    : `<p class="empty-note">${automationWorkflowIsTerminal(workflow.state) ? 'This run recorded no result.' : 'The result appears here when the agent finishes.'}</p>`;
+  const steps = automationList(transitions);
+  const timeline = steps.length ? steps.map((step) => `<li class="activity-event"><div class="record-heading"><span class="mono">${time(step.at)}</span>${automationPill(AUTOMATION_WORKFLOW_STATE, step.toState)}</div><p><strong>${step.fromState ? `${escape(automationWorkflowStateLabel(step.fromState))} → ` : ''}${escape(automationWorkflowStateLabel(step.toState))}</strong></p><p class="activity-meta">${step.actor === 'owner' ? 'Owner' : 'System'}${step.code ? ` · <span class="mono wrap">${escape(step.code)}</span>` : ''}</p></li>`).join('')
+    : '<li class="empty">No transitions recorded.</li>';
+  return `
+    <nav aria-label="Breadcrumb"><a href="/dashboard/automations">Automations</a><span>Run ${escape(automationShortId(workflow.id))}</span></nav>
+    <div class="record-heading">
+      <div><h2 id="automation-run-heading">${automationResource(workflow)}</h2><p>${automationPill(AUTOMATION_WORKFLOW_STATE, workflow.state)} ${renderCopyChip({ value: workflow.id, label: 'Run ID' })}</p></div>
+      ${cancel}
+    </div>
+    <section class="panel" aria-labelledby="automation-run-facts-heading">
+      <h2 id="automation-run-facts-heading">Run</h2>
+      <dl class="facts">
+        <dt>Label</dt><dd class="mono wrap">${escape(workflow.label)}</dd>
+        <dt>Event</dt><dd class="mono">${escape(workflow.eventType)}</dd>
+        <dt>Rule</dt><dd>${escape(ruleName ?? workflow.ruleId)} <span class="mono">(generation ${escape(workflow.ruleGeneration)})</span></dd>
+        <dt>Delivery</dt><dd class="mono wrap">${escape(workflow.deliveryId)}</dd>
+        <dt>Workspace / agent</dt><dd>${automationWorkspaceLinks(workflow, true)}</dd>
+        <dt>Agent status</dt><dd class="mono">${automationText(workflow.agentStatus, 'Not started')}</dd>
+        <dt>Error</dt><dd class="mono wrap">${automationText(workflow.errorCode, 'None')}</dd>
+        <dt>Publish</dt><dd>${automationPill(AUTOMATION_PUBLISH_STATE, workflow.publishState)}</dd>
+        <dt>Usage</dt><dd>${automationUsage(workflow.usage)}</dd>
+        <dt>Created</dt><dd>${time(workflow.createdAt)}</dd>
+        <dt>Updated</dt><dd>${time(workflow.updatedAt)}</dd>
+        <dt>Finished</dt><dd>${workflow.terminalAt ? time(workflow.terminalAt) : 'Not finished'}</dd>
+      </dl>
+    </section>
+    <section class="panel" aria-labelledby="automation-result-heading">
+      <h2 id="automation-result-heading">Result</h2>
+      <p>The agent's answer, shown as plain text exactly as recorded.</p>
+      ${resultBody}
+    </section>
+    <section class="panel" aria-labelledby="automation-transitions-heading">
+      <h2 id="automation-transitions-heading">Transitions</h2>
+      <ol class="activity-list automation-transitions">${timeline}</ol>
+    </section>
+  `;
+}
+
+const automationEventsText = (events) => automationList(events).map((event) => (AUTOMATION_GITHUB_EVENTS.find(([id]) => id === event)?.[1] ?? event)).join(', ');
+
+function automationRuleActions(rule) {
+  const id = escape(rule.id);
+  const generation = escape(rule.generation);
+  return `<div class="row-actions">
+          <button type="button" data-automation-rule-edit="${id}">Edit</button>
+          <button type="button" data-automation-rule-toggle="${id}" data-next-enabled="${rule.enabled ? 'false' : 'true'}" data-generation="${generation}">${rule.enabled ? 'Disable' : 'Enable'}</button>
+          <button type="button" data-automation-rule-test="${id}">Test event</button>
+          <button class="danger" type="button" data-automation-rule-delete="${id}" data-generation="${generation}" data-rule-name="${escape(rule.name)}">Delete</button>
+        </div>`;
+}
+
+export function renderAutomationRules({ rules = [], connections = [], profiles = [] } = {}) {
+  const list = automationList(rules);
+  const connectionNames = new Map(automationList(connections).map((connection) => [connection.id, connection.name]));
+  const profileNames = new Map(automationList(profiles).map((profile) => [profile.id, profile.displayName]));
+  const enabledPill = (rule) => `<span class="status${rule.enabled ? ' enabled' : ''}">${rule.enabled ? 'Enabled' : 'Disabled'}</span>`;
+  const match = (rule) => `<span class="mono wrap">${escape(rule.match?.repository)}</span><small>${escape(automationEventsText(rule.match?.events))} · label <span class="mono">${escape(rule.match?.label)}</span>${rule.match?.ignoreBots === false ? ' · bots allowed' : ''}${automationList(rule.match?.actorAllowlist).length ? ` · ${escape(rule.match.actorAllowlist.length)} allowed actors` : ''}</small>`;
+  const agent = (rule) => `${escape(profileNames.get(rule.action?.profileId) ?? rule.action?.profileId)}<small>${rule.action?.publishComment ? 'Posts a comment' : 'No comment'} · ${escape(automationList(rule.action?.proxyOperations).length)} operations</small>`;
+  const connection = (rule) => escape(connectionNames.get(rule.connectionId) ?? rule.connectionId);
+  const rows = list.length ? list.map((rule) => `<tr>
+        <th scope="row">${escape(rule.name)}<small class="mono wrap">${escape(rule.id)}</small></th>
+        <td class="wrap">${connection(rule)}</td>
+        <td>${match(rule)}</td>
+        <td class="wrap">${agent(rule)}</td>
+        <td>${enabledPill(rule)}</td>
+        <td>${time(rule.updatedAt)}</td>
+        <td>${automationRuleActions(rule)}</td>
+      </tr>`).join('') : '<tr><td colspan="7">No rules yet.</td></tr>';
+  const cards = list.length ? list.map((rule) => `<li><h3>${escape(rule.name)}</h3><dl><dt>Connection</dt><dd>${connection(rule)}</dd><dt>Match</dt><dd>${match(rule)}</dd><dt>Agent</dt><dd>${agent(rule)}</dd><dt>Status</dt><dd>${enabledPill(rule)}</dd></dl>${automationRuleActions(rule)}</li>`).join('')
+    : '<li class="empty"><h3>No rules yet.</h3><p>A rule says which labeled issue or pull request starts an agent, and what that agent is told to do.</p></li>';
+  const note = automationList(connections).length
+    ? ''
+    : '<div class="page-note"><strong>Create a connection first.</strong> Rules listen to a GitHub webhook connection. <a href="/dashboard/automations/connections">Open Connections</a> to create one.</div>';
+  const profileNote = automationList(profiles).length
+    ? ''
+    : '<p class="warning" role="status">No model profiles are available. Add one on <a href="/dashboard/models">Models &amp; Budgets</a> before saving a rule.</p>';
+  return `${renderResourcePage({
+    note: `${note}${profileNote}`,
+    body: `<section class="automation-rules" aria-labelledby="automation-rules-heading"><div class="record-heading"><div><h2 id="automation-rules-heading">Rules</h2><p>Rules match exactly: one repository, one added label, and the chosen events. New rules start disabled until you enable them.</p></div></div><div class="desktop-table"><table><caption>${escape(list.length)} automation rules</caption><thead><tr><th>Name</th><th>Connection</th><th>Match</th><th>Agent</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`
+  })}<div id="automation-dialog-host"></div>`;
+}
+
+const automationChecked = (value) => (value ? ' checked' : '');
+const automationNumberField = ({ id, name, label, value, min, max, step = 1, help }) => `<label for="${id}">${escape(label)}<input id="${id}" name="${name}" type="number" inputmode="${step === 1 ? 'numeric' : 'decimal'}" min="${min}" max="${max}" step="${step}" value="${escape(value)}" required></label>${help ? `<p class="field-help">${escape(help)}</p>` : ''}`;
+
+/** The create/edit form for one rule. An edit cannot move a rule to another connection, so that field is fixed. */
+export function renderAutomationRuleDialog({ rule, connections = [], profiles = [] } = {}) {
+  const editing = Boolean(rule);
+  const match = rule?.match ?? {};
+  const action = rule?.action ?? {};
+  const budget = { ...AUTOMATION_RULE_DEFAULTS, ...(action.budget ?? {}) };
+  const events = automationList(match.events).length ? match.events : ['issues'];
+  const operations = automationList(action.proxyOperations).length ? action.proxyOperations : AUTOMATION_DEFAULT_PROXY_OPERATIONS;
+  const connectionOptions = automationList(connections).map((connection) => `<option value="${escape(connection.id)}"${rule?.connectionId === connection.id ? ' selected' : ''}>${escape(connection.name)}${connection.enabled ? '' : ' (disabled)'}</option>`).join('');
+  const profileList = automationList(profiles);
+  const missingProfile = action.profileId && !profileList.some((profile) => profile.id === action.profileId)
+    ? `<option value="${escape(action.profileId)}" selected>${escape(action.profileId)} (not found)</option>` : '';
+  const profileOptions = profileList.map((profile) => `<option value="${escape(profile.id)}"${action.profileId === profile.id ? ' selected' : ''}>${escape(profile.displayName)} (${escape(profile.id)})${profile.status && profile.status !== 'ACTIVE' ? ` - ${escape(String(profile.status).toLowerCase())}` : ''}</option>`).join('');
+  const eventBoxes = AUTOMATION_GITHUB_EVENTS.map(([id, label]) => `<label class="checkbox-label"><input type="checkbox" name="events" value="${id}"${automationChecked(events.includes(id))}><span>${escape(label)} <code class="mono">${id}</code></span></label>`).join('');
+  const operationBoxes = AUTOMATION_PROXY_OPERATIONS.map((operation) => `<label class="checkbox-label"><input type="checkbox" name="proxyOperations" value="${operation}"${automationChecked(operations.includes(operation))}><span><code class="mono">${operation}</code></span></label>`).join('');
+  const costUsd = Number.isFinite(budget.maxCostMicros) ? String(budget.maxCostMicros / 1_000_000) : '2';
+  const body = `
+    <input type="hidden" name="ruleId" value="${escape(rule?.id ?? '')}">
+    <input type="hidden" name="expectedGeneration" value="${escape(rule?.generation ?? '')}">
+    <label for="automation-rule-name">Rule name<input id="automation-rule-name" name="name" required maxlength="100" autocomplete="off" value="${escape(rule?.name ?? '')}"></label>
+    <label for="automation-rule-connection">Connection<select id="automation-rule-connection" name="connectionId" required${editing ? ' disabled' : ''}>${connectionOptions}</select></label>
+    ${editing ? '<p class="field-help">A rule stays on the connection it was created for.</p>' : ''}
+    <fieldset class="automation-fieldset"><legend>When</legend>
+      <label for="automation-rule-repository">Repository<input id="automation-rule-repository" name="repository" required maxlength="140" autocomplete="off" spellcheck="false" placeholder="owner/name" value="${escape(match.repository ?? '')}"></label>
+      <p class="field-help">Exact GitHub <code>owner/name</code>, without <code>.git</code>.</p>
+      <div role="group" aria-label="Events">${eventBoxes}</div>
+      <label for="automation-rule-label">Added label<input id="automation-rule-label" name="label" required maxlength="100" autocomplete="off" value="${escape(match.label ?? '')}"></label>
+      <label class="checkbox-label"><input type="checkbox" name="ignoreBots"${automationChecked(match.ignoreBots !== false)}><span>Ignore bot senders (this harness's own GitHub App is always ignored when its slug is configured)</span></label>
+      <label for="automation-rule-actors">Allowed actors (optional)<input id="automation-rule-actors" name="actorAllowlist" autocomplete="off" spellcheck="false" placeholder="octocat, hubot" value="${escape(automationList(match.actorAllowlist).join(', '))}"></label>
+      <p class="field-help">Comma-separated GitHub logins. Leave empty to let anyone who can label trigger the rule.</p>
+    </fieldset>
+    <fieldset class="automation-fieldset"><legend>Then</legend>
+      <label for="automation-rule-ref">Branch or tag (optional)<input id="automation-rule-ref" name="ref" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Default branch" value="${escape(action.ref ?? '')}"></label>
+      <label for="automation-rule-profile">Model profile<select id="automation-rule-profile" name="profileId" required>${missingProfile}${profileOptions}</select></label>
+      <label for="automation-rule-instructions">Instructions<textarea id="automation-rule-instructions" name="instructions" required maxlength="16000" spellcheck="true">${escape(action.instructions ?? '')}</textarea></label>
+      <p class="field-help">The agent also receives the issue or pull request title and body as untrusted context.</p>
+      <div role="group" aria-label="Allowed operations">${operationBoxes}</div>
+      <label class="checkbox-label"><input type="checkbox" name="publishComment"${automationChecked(action.publishComment === true)}><span>Post the agent's answer as one comment on the issue or pull request</span></label>
+    </fieldset>
+    <fieldset class="automation-fieldset"><legend>Limits</legend>
+      ${automationNumberField({ id: 'automation-rule-ttl', name: 'ttlSeconds', label: 'Time limit (seconds)', value: budget.ttlSeconds, min: 60, max: 7200 })}
+      ${automationNumberField({ id: 'automation-rule-input-tokens', name: 'maxInputTokens', label: 'Max input tokens', value: budget.maxInputTokens, min: 1, max: 2000000 })}
+      ${automationNumberField({ id: 'automation-rule-output-tokens', name: 'maxOutputTokens', label: 'Max output tokens', value: budget.maxOutputTokens, min: 1, max: 2000000 })}
+      ${automationNumberField({ id: 'automation-rule-cost', name: 'maxCostUsd', label: 'Max cost (USD)', value: costUsd, min: 0, max: 100, step: 0.000001 })}
+      ${automationNumberField({ id: 'automation-rule-cooldown', name: 'cooldownSeconds', label: 'Cooldown (seconds)', value: action.cooldownSeconds ?? AUTOMATION_RULE_DEFAULTS.cooldownSeconds, min: 0, max: 86400, help: 'A repeat trigger on the same issue or pull request is ignored for this long after a run ends.' })}
+      ${automationNumberField({ id: 'automation-rule-concurrency', name: 'maxConcurrent', label: 'Max concurrent runs', value: action.maxConcurrent ?? AUTOMATION_RULE_DEFAULTS.maxConcurrent, min: 1, max: 5 })}
+    </fieldset>
+    <label class="checkbox-label"><input type="checkbox" name="enabled"${automationChecked(rule?.enabled === true)}><span>Enabled</span></label>`;
+  return renderFormDialog({
+    id: 'automation-rule-dialog', title: editing ? 'Edit rule' : 'New rule',
+    description: 'A matching labeled delivery opens a workspace and runs one agent with these instructions.',
+    formId: 'automation-rule-form', submitId: 'automation-rule-submit', submitLabel: editing ? 'Save rule' : 'Create rule', body
+  });
+}
+
+/** A sample delivery checked against one saved rule without starting anything. */
+export function renderAutomationPreviewDialog(rule) {
+  const match = rule?.match ?? {};
+  const firstEvent = automationList(match.events)[0] ?? 'issues';
+  const eventOptions = AUTOMATION_GITHUB_EVENTS.map(([id, label]) => `<option value="${id}"${id === firstEvent ? ' selected' : ''}>${escape(label)}</option>`).join('');
+  const senderOptions = AUTOMATION_SENDER_TYPES.map((type) => `<option value="${type}">${type}</option>`).join('');
+  return renderFormDialog({
+    id: 'automation-preview-dialog', title: 'Test event',
+    description: `Check whether a sample delivery would match "${rule?.name ?? 'this rule'}". Nothing is started.`,
+    formId: 'automation-preview-form', submitId: 'automation-preview-submit', submitLabel: 'Test event',
+    body: `<input type="hidden" name="ruleId" value="${escape(rule?.id ?? '')}">
+      <label for="automation-preview-event">Event<select id="automation-preview-event" name="event">${eventOptions}</select></label>
+      <label for="automation-preview-repository">Repository<input id="automation-preview-repository" name="repository" required autocomplete="off" spellcheck="false" value="${escape(match.repository ?? '')}"></label>
+      <label for="automation-preview-label">Added label<input id="automation-preview-label" name="label" required maxlength="100" autocomplete="off" value="${escape(match.label ?? '')}"></label>
+      <label for="automation-preview-sender">Sender login<input id="automation-preview-sender" name="senderLogin" required maxlength="45" autocomplete="off" spellcheck="false" placeholder="octocat"></label>
+      <label for="automation-preview-sender-type">Sender type<select id="automation-preview-sender-type" name="senderType">${senderOptions}</select></label>
+      <div id="automation-preview-result" class="automation-preview-result" aria-live="polite"></div>`
+  });
+}
+
+export function renderAutomationPreviewResult(preview) {
+  const matched = preview?.matched === true;
+  return `<p><span class="status${matched ? ' succeeded' : ' failed'}">${matched ? 'Would match' : 'Would not match'}</span> <span class="wrap">${escape(preview?.reason ?? '')}</span></p>`;
+}
+
+function automationConnectionCard(connection, origin) {
+  const id = escape(connection.id);
+  const generation = escape(connection.generation);
+  const url = automationWebhookUrl(origin, connection.webhookPath);
+  return `<li class="panel automation-connection"><div class="record-heading"><div><h3>${escape(connection.name)}</h3><p><span class="status${connection.enabled ? ' enabled' : ''}">${connection.enabled ? 'Enabled' : 'Disabled'}</span> <span class="mono">${escape(connection.provider)}</span></p></div><div class="row-actions">
+        <button type="button" data-automation-connection-toggle="${id}" data-next-enabled="${connection.enabled ? 'false' : 'true'}" data-generation="${generation}">${connection.enabled ? 'Disable' : 'Enable'}</button>
+        <button type="button" data-automation-connection-rotate="${id}" data-generation="${generation}" data-connection-name="${escape(connection.name)}">Rotate secret</button>
+        <button class="danger" type="button" data-automation-connection-delete="${id}" data-generation="${generation}" data-connection-name="${escape(connection.name)}">Delete</button>
+      </div></div><dl class="facts"><dt>Webhook URL</dt><dd>${renderCopyChip({ value: url, label: 'Webhook URL' })}</dd><dt>Connection ID</dt><dd class="mono wrap">${id}</dd><dt>Secret rotated</dt><dd>${optionalTime(connection.secretRotatedAt)}</dd><dt>Last delivery</dt><dd>${optionalTime(connection.lastDeliveryAt)}</dd><dt>Created</dt><dd>${optionalTime(connection.createdAt)}</dd></dl></li>`;
+}
+
+export function renderAutomationConnections({ connections = [], origin = '' } = {}) {
+  const list = automationList(connections);
+  const items = list.length ? list.map((connection) => automationConnectionCard(connection, origin)).join('')
+    : '<li class="empty"><h3>No connections yet.</h3><p>Create a GitHub webhook connection to get a payload URL and a signing secret for your repository webhook.</p></li>';
+  return `${renderResourcePage({
+    body: `<section aria-labelledby="automation-connections-heading"><div class="record-heading"><div><h2 id="automation-connections-heading">Connections</h2><p>Each connection is one GitHub webhook endpoint with its own signing secret. Deliveries with a bad signature are refused.</p></div></div><ul class="record-list automation-connection-list">${items}</ul></section>`
+  })}${renderFormDialog({
+    id: 'automation-connection-dialog', title: 'New connection',
+    description: 'The signing secret is shown once after the connection is created and cannot be recovered.',
+    formId: 'automation-connection-form', submitId: 'automation-connection-submit', submitLabel: 'Create connection',
+    body: '<label for="automation-connection-name">Connection name<input id="automation-connection-name" name="name" required maxlength="100" autocomplete="off" placeholder="acme GitHub"></label>'
+  })}`;
+}
+
+/**
+ * The one-time reveal for a new or rotated signing secret. The secret itself is never
+ * rendered into markup: the loader writes it into the read-only field afterwards and
+ * clears it on dismissal, the same rule the API-key reveal follows.
+ */
+export function renderAutomationSecretPanel({ connection, origin = '', rotated = false } = {}) {
+  const url = automationWebhookUrl(origin, connection?.webhookPath);
+  return `<section id="automation-secret-panel" class="panel automation-secret-panel" aria-labelledby="automation-secret-heading" tabindex="-1">
+      <h2 id="automation-secret-heading">${rotated ? 'Copy the new signing secret now' : 'Copy the webhook secret now'}</h2>
+      <p class="warning"><strong>This secret is shown once.</strong> It cannot be recovered after you dismiss this panel or leave the page. ${rotated ? 'The previous secret no longer verifies deliveries, so update the GitHub webhook now.' : 'Rotate the secret if you lose it.'}</p>
+      <p>In GitHub, open the repository's <strong>Settings → Webhooks → Add webhook</strong> for <strong>${escape(connection?.name ?? 'this connection')}</strong>. Use content type <code>application/json</code> and select the <strong>Issues</strong> and/or <strong>Pull requests</strong> events.</p>
+      <label for="automation-webhook-url">Payload URL</label>
+      <div class="automation-copy-row"><input id="automation-webhook-url" class="mono" readonly value="${escape(url)}"><button type="button" id="copy-automation-webhook-url">Copy URL</button></div>
+      <label for="automation-webhook-secret">Secret</label>
+      <div class="automation-copy-row"><input id="automation-webhook-secret" class="mono" readonly autocomplete="off" spellcheck="false"><button type="button" id="copy-automation-webhook-secret">Copy secret</button></div>
+      <p id="automation-secret-status" class="form-status" aria-live="polite"></p>
+      <div class="row-actions"><button type="button" class="accent-btn" id="dismiss-automation-secret">I saved the secret</button></div>
+    </section>`;
+}
+
+export function renderAutomationDeliveries({ deliveries = [], connections = [], filters = {} } = {}) {
+  const list = automationList(deliveries);
+  const connectionNames = new Map(automationList(connections).map((connection) => [connection.id, connection.name]));
+  const connectionOptions = automationList(connections).map((connection) => `<option value="${escape(connection.id)}"${filters.connectionId === connection.id ? ' selected' : ''}>${escape(connection.name)}</option>`).join('');
+  const resource = (delivery) => (delivery.repository ? `<span class="mono wrap">${escape(delivery.repository)}${delivery.resourceNumber ? `#${escape(delivery.resourceNumber)}` : ''}</span>` : '—');
+  const event = (delivery) => `<span class="mono">${escape(delivery.providerEvent)}</span>${delivery.eventType ? `<small class="mono">${escape(delivery.eventType)}</small>` : ''}`;
+  const rows = list.length ? list.map((delivery) => `<tr>
+        <th scope="row">${time(delivery.receivedAt)}</th>
+        <td class="wrap">${escape(connectionNames.get(delivery.connectionId) ?? delivery.connectionId)}</td>
+        <td>${event(delivery)}</td>
+        <td>${resource(delivery)}</td>
+        <td class="mono wrap">${automationText(delivery.label)}</td>
+        <td>${automationPill(AUTOMATION_DELIVERY_STATE, delivery.state)}</td>
+        <td class="mono wrap">${automationText(delivery.outcome)}</td>
+        <td class="mono">${escape(countOf(delivery.workflowsCreated))}</td>
+        <td class="mono wrap">${escape(delivery.providerDeliveryId)}</td>
+      </tr>`).join('') : '<tr><td colspan="9">No deliveries received yet.</td></tr>';
+  const cards = list.length ? list.map((delivery) => `<li><h3>${time(delivery.receivedAt)}</h3><dl><dt>Event</dt><dd>${event(delivery)}</dd><dt>Resource</dt><dd>${resource(delivery)}</dd><dt>Label</dt><dd class="mono wrap">${automationText(delivery.label)}</dd><dt>State</dt><dd>${automationPill(AUTOMATION_DELIVERY_STATE, delivery.state)}</dd><dt>Outcome</dt><dd class="mono wrap">${automationText(delivery.outcome)}</dd><dt>Runs</dt><dd class="mono">${escape(countOf(delivery.workflowsCreated))}</dd></dl></li>`).join('')
+    : '<li class="empty"><h3>No deliveries received yet.</h3><p>Deliveries appear once GitHub posts to a connection\'s webhook URL with a valid signature.</p></li>';
+  return renderResourcePage({
+    filters: `<form id="automation-deliveries-filter" aria-label="Filter deliveries"><label for="automation-deliveries-connection">Connection</label><select id="automation-deliveries-connection" name="connectionId"><option value="">All connections</option>${connectionOptions}</select><button type="submit">Apply filter</button></form>`,
+    body: `<section aria-labelledby="automation-deliveries-heading"><div class="record-heading"><div><h2 id="automation-deliveries-heading">Recent deliveries</h2><p>Signed inbound webhooks, newest first. Deliveries are kept for 30 days.</p></div></div><div class="desktop-table"><table><caption>${escape(list.length)} deliveries</caption><thead><tr><th>Received</th><th>Connection</th><th>Event</th><th>Resource</th><th>Label</th><th>State</th><th>Outcome</th><th>Runs</th><th>Delivery ID</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`
+  });
+}

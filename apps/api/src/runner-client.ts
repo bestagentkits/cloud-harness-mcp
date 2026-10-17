@@ -1,4 +1,6 @@
 import {
+  AutomationsRunnerRequestSchema,
+  AutomationsRunnerResponseSchema,
   InternalRunnerRequestSchema,
   InternalRunnerResponseSchema,
   McpEventsRunnerRequestSchema,
@@ -14,6 +16,8 @@ import {
   type ApiKeyAuthenticationResponse,
   type ApiKeyManagementOperation,
   type ApiKeyManagementResponse,
+  type AutomationsRunnerRequest,
+  type AutomationsRunnerResponse,
   type InternalRunnerOperation,
   type McpEventsRunnerRequest,
   type McpEventsRunnerResponse,
@@ -61,6 +65,13 @@ export class RunnerClient {
   /** MCP Events subscription and delivery-queue operations; principal scoping travels in the request. */
   async callEvents(request: McpEventsRunnerRequest, signal?: AbortSignal): Promise<McpEventsRunnerResponse> {
     return await this.requestJson('/v1/internal/events', McpEventsRunnerRequestSchema.parse(request), McpEventsRunnerResponseSchema, () => ({
+      ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' }
+    }), signal);
+  }
+
+  /** Automation webhook ingest and owner-scoped management; principal scoping travels in the request. */
+  async callAutomations(request: AutomationsRunnerRequest, signal?: AbortSignal): Promise<AutomationsRunnerResponse> {
+    return await this.requestJson('/v1/internal/automations', AutomationsRunnerRequestSchema.parse(request), AutomationsRunnerResponseSchema, () => ({
       ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' }
     }), signal);
   }

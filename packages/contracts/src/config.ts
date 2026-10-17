@@ -144,6 +144,8 @@ export const ApiConfigSchema = z.object({
   accessAudience: z.string().min(1).max(512).optional(),
   accessJwksUrl: httpsUrl.optional(),
   apiKeyAuthEnabled: enabled,
+  /** Mounts the public webhook ingress for automations. Off by default; the runner flag must match. */
+  automationsEnabled: enabled,
   apiKeyGatewayAccessAudience: z.string().min(1).max(512).optional(),
   apiKeyGatewayServiceSubject: z.string().regex(/^cf-service:[A-Za-z0-9_-]+$/).max(512).optional(),
   apiKeyGatewayPublicUrl: httpsUrl.optional(),
@@ -353,7 +355,11 @@ export const RunnerConfigSchema = z.object({
     /** The provider's longest grant, in seconds. Defaults to the documented Cloudflare maximum. */
     maxGrantSeconds: z.coerce.number().int().min(3_600).max(315_360_000).optional()
   }).strict().optional(),
-  agents: RunnerAgentsConfigSchema.optional()
+  agents: RunnerAgentsConfigSchema.optional(),
+  /** Admits webhook-triggered automation workflows. Off by default. */
+  automationsEnabled: enabled,
+  /** Instance-wide ceiling on automation workflows holding a workspace at once. */
+  automationsMaxConcurrentWorkflows: positiveBoundedInteger(16, 2)
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
   if (config.packagesMaxReleaseBytes > config.packagesMaxOwnerBytes) {

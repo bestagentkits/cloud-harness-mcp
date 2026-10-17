@@ -41,6 +41,7 @@ export function loadApiConfig(): ApiConfig {
     ,apiKeyAuthEnabled: environment('API_KEY_AUTH_ENABLED'),
     apiKeyGatewayAccessAudience: environment('API_KEY_GATEWAY_ACCESS_AUDIENCE'),
     apiKeyGatewayServiceSubject: environment('API_KEY_GATEWAY_SERVICE_SUBJECT'),
-    apiKeyGatewayPublicUrl: environment('API_KEY_GATEWAY_PUBLIC_URL')
+    apiKeyGatewayPublicUrl: environment('API_KEY_GATEWAY_PUBLIC_URL'),
+    automationsEnabled: environment('AUTOMATIONS_ENABLED')
   });
 }

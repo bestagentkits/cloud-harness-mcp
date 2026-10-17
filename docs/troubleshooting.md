@@ -279,6 +279,30 @@ recent deliveries.
 | Deliveries `ABANDONED` | The receiver kept failing past the retry window, answered `410` or `413`, or the subscription lapsed or was revoked first. Events are not replayed; fix the receiver and wait for the next transition. |
 | Duplicate deliveries at the receiver | Expected under at-least-once delivery. Deduplicate on `webhook-id`. |
 
+## Webhook automations
+
+The status mapping is owned by
+[`apps/api/src/automations/webhook-ingress.ts`](../apps/api/src/automations/webhook-ingress.ts)
+and the delivery and workflow outcomes by
+[`apps/runner/src/automation-service.ts`](../apps/runner/src/automation-service.ts).
+GitHub's webhook **Recent Deliveries** view shows each response; the Dashboard
+Automations **Deliveries** and **Runs** views show what the runner did with it.
+
+| Symptom | Meaning and next check |
+|---|---|
+| GitHub delivery gets `404` or an nginx page | `AUTOMATIONS_ENABLED` is off on the API, or the managed `/integrations/webhooks/` nginx location is missing. Rerun the nginx upgrade; exit status `12` means an unmanaged route under `/integrations/` must be reconciled by hand. |
+| GitHub delivery gets an Access login page or `302` | Access is protecting the path. Add the path-scoped Bypass application for `/integrations/webhooks/` only ([deployment](deployment.md#webhook-automations-rollout)). |
+| `401 {"error":"unauthorized"}` | Unknown, disabled, or deleted connection, or a signature mismatch; the body is identical on purpose. Check the URL's connection id and that GitHub holds the current secret. After **Rotate secret**, every delivery signed with the old secret fails until GitHub is updated. |
+| `415` | The GitHub webhook content type is `application/x-www-form-urlencoded`. Change it to `application/json`. |
+| `429` with `Retry-After` | The API's ingress window for this connection id or the connection's per-minute delivery rate is exhausted. GitHub does not retry automatically; redeliver from GitHub after the window. |
+| `503 {"error":"unavailable"}` | The runner is unreachable, its `AUTOMATIONS_ENABLED` does not match the API's, or it has no secret keyring. Check `/readyz` and both services' environment. |
+| `202` with `status: "ignored"` | Verified, but not an admitted event (for example `ping`, or an action other than `labeled`), or the body was malformed (listed as quarantined). Only label additions on issues and pull requests start runs. |
+| `202` with `status: "duplicate"` | GitHub redelivered a `X-GitHub-Delivery` id already stored; nothing new runs. |
+| Delivery processed but no run | The delivery outcome names why: no enabled rule for that repository and label, `self_trigger`, `bot_sender`, `actor_not_allowed`, `coalesced` (a run for that rule and issue or pull request is already active), or `cooldown`. Use the rule's **Test event** to check a sample. |
+| Run `EXPIRED` or `CANCELLED` | It could not start within the queue window (instance or rule concurrency full, or workspace opens kept failing), or the rule was disabled or deleted while it waited. The transition code names the cause. |
+| Run `FAILED` | The error code names the step: `WORKSPACE_OPEN_FAILED:*` (for example a private repository without GitHub App access), `AGENT_SPAWN_FAILED:*` (profile or budget), `AGENT_<status>` (the agent's own terminal status), or `WORKSPACE_LOST`. |
+| Run shows **Publish failed** | The comment action kept failing after its retries or failed non-retryably (often a GitHub App without issue write access on that repository). The run state is unaffected and the answer is still on the run page. |
+
 ## Containers and cleanup
 
 Inspect before acting:

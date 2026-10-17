@@ -401,22 +401,29 @@ Decisions that are easy to misread:
   The event-specific JSON-RPC error codes follow the sketch revision ChatGPT
   implements (`-32011`…`-32015`). They live in one constant,
   `MCP_EVENTS_ERROR_CODES`, so a protocol renumbering is a single change.
-- **Four terminal-state events.** `cloudharness.task.completed`,
-  `cloudharness.task.failed`, `cloudharness.agent.settled`, and
-  `cloudharness.agent.failed`. Their filter arguments, payload schemas, and the
+- **Terminal-state events.** `cloudharness.task.completed`,
+  `cloudharness.task.failed`, `cloudharness.agent.settled`,
+  `cloudharness.agent.failed`, and the webhook-automation pair
+  `cloudharness.automation.completed` / `cloudharness.automation.failed`
+  ([security model](security-model.md#webhook-automation-ingress)). Their
+  filter arguments, payload schemas, and the
   status sets each one covers are owned by `MCP_EVENT_DEFINITIONS` and are
   returned verbatim by `events/list`. A task event fires once, on the task's
   first transition into a terminal status, including a task the runner marks
   `RUNNER_RESTARTED` after a restart. `agent.settled` means the agent reached
   its terminal `SUCCEEDED` record and released its runtime; a turn ending is
-  never settlement.
+  never settlement. An automation event is recorded in the same transaction as
+  the workflow's terminal transition, so a completed event can precede the
+  optional GitHub comment.
 - **Payloads are notifications, not results.** They carry identifiers, status,
   exit or error codes, and timestamps only, never command text, output,
   prompts, or messages. Read the result with `tasks_status` or `agent_status`
-  after the event arrives.
+  after the event arrives, or, for an automation whose workspace is already
+  closed, on the Dashboard Automations run page.
 - **Owner scoping.** Subscriptions belong to the authenticated principal, and
   a `workspaceId`, `taskId`, or `agentId` filter must name something that
-  principal owns. An unauthenticated request is refused before reaching the
+  principal owns. Automation `ruleId` and `workflowId` filters are not
+  existence-checked; they only narrow the principal's own events. An unauthenticated request is refused before reaching the
   runner. Events fan out only to the owner's matching, unexpired
   subscriptions.
 - **Subscriptions are leases.** A subscription is identified by principal,

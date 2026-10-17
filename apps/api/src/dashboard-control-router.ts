@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import express, { type NextFunction, type Response, type Router } from 'express';
-import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, McpEventSubscriptionIdSchema, McpEventsRunnerDataSchemas, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, PackagePlanApproveInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema, type ApiConfig, type ApiKeyManagementOperation, type McpEventsRunnerRequest, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, AutomationsRunnerDataSchemas, AutomationsRunnerRequestSchema, McpEventSubscriptionIdSchema, McpEventsRunnerDataSchemas, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, PackagePlanApproveInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema, type ApiConfig, type ApiKeyManagementOperation, type AutomationsRunnerErrorCode, type AutomationsRunnerOperation, type McpEventsRunnerRequest, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
 import { requireArchiveMediaType, SKILL_ARCHIVE_MEDIA_TYPES, SKILL_ARCHIVE_PATH } from './dashboard-security.js';
@@ -12,6 +12,27 @@ const internalId = (prefix: string) => z.string().regex(new RegExp(`^${prefix}_[
 const generation = z.object({ expectedGeneration: z.number().int().positive() }).strict();
 /** Only a single string query value is forwarded; a repeated or nested parameter becomes null and fails the runner schema. */
 const queryText = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+/**
+ * An optional query filter: absent or empty is omitted, a single value is forwarded, and a repeated
+ * or nested parameter becomes null so the operation schema rejects it.
+ */
+const optionalQuery = (value: unknown): Record<string, string | null> | undefined => {
+  if (value === undefined || value === '') return undefined;
+  return { value: queryText(value) };
+};
+const queryFields = (query: Record<string, unknown>, names: readonly string[]): Record<string, unknown> => Object.fromEntries(
+  names.flatMap((name) => { const entry = optionalQuery(query[name]); return entry ? [[name, entry.value]] : []; })
+);
+/** A decimal `limit` becomes a number; anything else is forwarded as-is so the schema rejects it. */
+const withNumericLimit = (fields: Record<string, unknown>): Record<string, unknown> => (
+  typeof fields.limit === 'string' && /^\d{1,6}$/u.test(fields.limit) ? { ...fields, limit: Number(fields.limit) } : fields
+);
+const jsonObject = (value: unknown): Record<string, unknown> => (
+  value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+);
+const AUTOMATION_ERROR_STATUS: Partial<Record<AutomationsRunnerErrorCode, number>> = {
+  NOT_FOUND: 404, INVALID_INPUT: 400, CONFLICT: 409, RESOURCE_EXHAUSTED: 429, UNAUTHORIZED: 403
+};
 const createName = z.object({ name: z.string().trim().min(1).max(100), expectedGeneration: z.literal(0) }).strict();
 /** Mirrors the runner's archive cap, so an oversized upload is refused before anything decodes it. */
 const SKILL_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;
@@ -228,6 +249,22 @@ export function registerDashboardControlRoutes(
   router.post('/api/v1/event-subscriptions/:subscriptionId/revoke', eventsEndpoint((request) => ({
     operation: 'events_subscription_revoke', input: { id: McpEventSubscriptionIdSchema.parse(request.params.subscriptionId) }
   })));
+  // Webhook automations. Every route validates the complete runner request before forwarding it;
+  // a connection's signing secret appears only in the create and rotate responses.
+  router.get('/api/v1/automations/connections', automationsEndpoint('connections_list', () => ({})));
+  router.post('/api/v1/automations/connections', automationsEndpoint('connection_create', (request) => jsonObject(request.body)));
+  router.patch('/api/v1/automations/connections/:id', automationsEndpoint('connection_update', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
+  router.post('/api/v1/automations/connections/:id/rotate-secret', automationsEndpoint('connection_rotate_secret', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
+  router.delete('/api/v1/automations/connections/:id', automationsEndpoint('connection_delete', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
+  router.get('/api/v1/automations/rules', automationsEndpoint('rules_list', (request) => queryFields(request.query, ['connectionId'])));
+  router.post('/api/v1/automations/rules', automationsEndpoint('rule_create', (request) => jsonObject(request.body)));
+  router.patch('/api/v1/automations/rules/:id', automationsEndpoint('rule_update', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
+  router.delete('/api/v1/automations/rules/:id', automationsEndpoint('rule_delete', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
+  router.post('/api/v1/automations/rules/:id/preview', automationsEndpoint('rule_preview', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
+  router.get('/api/v1/automations/workflows', automationsEndpoint('workflows_list', (request) => withNumericLimit(queryFields(request.query, ['ruleId', 'state', 'limit']))));
+  router.get('/api/v1/automations/workflows/:id', automationsEndpoint('workflow_get', (request) => ({ id: request.params.id })));
+  router.post('/api/v1/automations/workflows/:id/cancel', automationsEndpoint('workflow_cancel', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
+  router.get('/api/v1/automations/deliveries', automationsEndpoint('deliveries_list', (request) => withNumericLimit(queryFields(request.query, ['connectionId', 'limit']))));
   router.get('/api/v1/knowledge', endpoint('knowledge_dashboard_list', (request) => ({
     ...(request.query.kind ? { kind: String(request.query.kind) } : {}),
     ...(request.query.scope ? { scope: String(request.query.scope) } : {}),
@@ -353,6 +390,40 @@ export function registerDashboardControlRoutes(
           return;
         }
         response.json({ data: McpEventsRunnerDataSchemas[operation].parse(result.data) });
+      } catch (error) { next(error); }
+    };
+  }
+
+  function automationsEndpoint<O extends Exclude<AutomationsRunnerOperation, 'webhook_ingest'>>(operation: O, input: (request: DashboardRequest) => Record<string, unknown>) {
+    return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+      try {
+        const selected = principal(request, response);
+        if (!selected) return;
+        if (!runner.callAutomations) {
+          response.status(503).json({ error: 'unavailable', message: 'Automations are not available.' });
+          return;
+        }
+        const parsed = AutomationsRunnerRequestSchema.safeParse({ version: 1, principal: selected, operation, input: input(request) });
+        if (!parsed.success) {
+          response.status(400).json({ error: 'invalid_request', message: parsed.error.issues[0]?.message ?? 'The request could not be processed.' });
+          return;
+        }
+        const result = await runner.callAutomations(parsed.data);
+        if (!result.ok) {
+          const status = AUTOMATION_ERROR_STATUS[result.error.code] ?? 503;
+          const disabled = result.error.code === 'UNAVAILABLE' && result.error.message.toLowerCase().startsWith('automations are disabled');
+          const message = status === 403
+            ? 'You cannot manage this automation.'
+            : status === 503 && !disabled ? 'Automations are temporarily unavailable.' : result.error.message;
+          response.status(status).json({ error: result.error.code.toLowerCase(), message });
+          return;
+        }
+        const data = AutomationsRunnerDataSchemas[operation].safeParse(result.data);
+        if (!data.success) {
+          response.status(503).json({ error: 'unavailable', message: 'Automations are temporarily unavailable.' });
+          return;
+        }
+        response.json({ data: data.data });
       } catch (error) { next(error); }
     };
   }

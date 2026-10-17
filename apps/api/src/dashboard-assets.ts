@@ -105,6 +105,11 @@ export const DASHBOARD_SHELL_PATHS: string[] = [
   '/terminals',
   '/mcp-servers',
   '/mcp-servers/:serverId',
+  '/automations',
+  '/automations/rules',
+  '/automations/connections',
+  '/automations/deliveries',
+  '/automations/runs/:workflowId',
   '/settings',
   '/profile',
 ];

@@ -143,3 +143,27 @@ export function emitAgentTerminalEvent(database: DatabaseSync, ownerId: string, 
     ...base, status: row.status, outcomeUnknown: row.outcome_unknown === 1, terminalAt: iso(occurredAt)
   }, now);
 }
+
+type AutomationEventRow = {
+  id: string; owner_id: string; rule_id: string; state: string; workspace_id: string | null;
+  agent_id: string | null; error_code: string | null; terminal_at: number | null;
+};
+
+/** Emits the automation terminal event for a workflow that has just entered a terminal state. */
+export function emitAutomationTerminalEvent(database: DatabaseSync, workflowId: string, now: number): void {
+  const row = database.prepare(`SELECT id, owner_id, rule_id, state, workspace_id, agent_id, error_code, terminal_at
+    FROM automation_workflows WHERE id = ?`).get(workflowId) as AutomationEventRow | undefined;
+  if (!row) return;
+  const occurredAt = row.terminal_at ?? now;
+  const base = { workflowId: row.id, ruleId: row.rule_id, workspaceId: row.workspace_id, agentId: row.agent_id };
+  if (row.state === 'COMPLETED') {
+    recordEvent(database, row.owner_id, `automation:${row.id}:terminal`, 'cloudharness.automation.completed', occurredAt, {
+      ...base, status: 'COMPLETED', terminalAt: iso(occurredAt)
+    }, now);
+    return;
+  }
+  if (row.state !== 'FAILED' && row.state !== 'CANCELLED' && row.state !== 'EXPIRED') return;
+  recordEvent(database, row.owner_id, `automation:${row.id}:terminal`, 'cloudharness.automation.failed', occurredAt, {
+    ...base, status: row.state, errorCode: boundedCode(row.error_code), terminalAt: iso(occurredAt)
+  }, now);
+}
