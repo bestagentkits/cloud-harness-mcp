@@ -144,8 +144,11 @@ describe('saved price provenance and repricing', () => {
     expect(pricingReviewNotice(review({ changes: [{ field: 'input', minPromptTokens: null, pinned: 3, catalog: 4, percent: 12.5 }] }))?.text).toBe('Catalog price changed by 12.5% since saved');
     expect(renderSavedPricing(profile({ pricingReview: review({ state: 'current', changes: [] }) }))).not.toContain('data-pricing-review');
     const unknown = renderSavedPricing(profile({ pricingReview: review({ state: 'unknown', changes: [] }) }));
-    expect(unknown).toContain('data-pricing-review="unknown">No catalog price to compare with</small>');
+    expect(unknown).toContain('data-pricing-note="unknown">No catalog price to compare with</small>');
+    expect(unknown).not.toContain('data-pricing-review');
     expect(unknown).not.toContain('data-model-action="review-price"');
+    // A provider without a catalog never has a price to compare with, so the note would never clear.
+    expect(renderSavedPricing(profile({ pricingReview: review({ state: 'unknown', changes: [], catalogRetrievedAt: null }) }), { hasCatalog: false })).not.toContain('data-pricing-note');
     expect(renderSavedPricing(profile())).not.toContain('data-pricing-review');
   });
 
@@ -161,6 +164,17 @@ describe('saved price provenance and repricing', () => {
     expect(renderSavedPricing(profile({ pricingReview: review() }))).not.toContain('data-conditional-pricing');
     const conditional = renderSavedPricing(profile({ pricingReview: review({ state: 'current', changes: [], catalogHasConditionalPricing: true }) }));
     expect(conditional).toContain('data-conditional-pricing>The catalog also prices this model by conditions a saved price cannot express, so the charge can differ from this estimate.</small>');
+  });
+
+  it('hides the no-catalog-price note on the page only for a provider without a catalog', () => {
+    const credential = (provider: string) => ({ id: credentialId, label: 'Key', provider, activeVersion: 1, status: 'ACTIVE', lastVerification: null });
+    const providers = [
+      { id: 'openai', displayName: 'OpenAI', catalogStrategy: 'provider-models' },
+      { id: 'custom', displayName: 'Custom', catalogStrategy: 'none' }
+    ];
+    const profiles = [profile({ pricingReview: review({ state: 'unknown', changes: [], catalogRetrievedAt: null }) })];
+    expect(renderModelsPage({ profiles, credentials: [credential('openai')], providers })).toContain('data-pricing-note="unknown"');
+    expect(renderModelsPage({ profiles, credentials: [credential('custom')], providers })).not.toContain('data-pricing-note');
   });
 
   it('names the profile in the review action, escaped', () => {

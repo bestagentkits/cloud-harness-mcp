@@ -212,13 +212,14 @@ export const CONDITIONAL_PRICING_TEXT = 'The catalog also prices this model by c
  * What the list says beside the repricing warning: whether the catalog has no
  * price to compare with, when the catalog behind a repriced or unknown review was
  * retrieved (null when unknown or not shown), and whether the catalog prices the
- * model by conditions no saved price can express.
+ * model by conditions no saved price can express. A provider without a catalog
+ * never has a price to compare with, so `hasCatalog: false` drops that note.
  */
-export function pricingReviewContext(review) {
+export function pricingReviewContext(review, { hasCatalog = true } = {}) {
   const state = review?.state;
   const showsAge = state === 'repriced' || state === 'unknown';
   return {
-    unknown: state === 'unknown',
+    unknown: state === 'unknown' && hasCatalog,
     comparedAt: showsAge && Number.isFinite(review.catalogRetrievedAt) ? review.catalogRetrievedAt : null,
     conditional: review?.catalogHasConditionalPricing === true
   };
@@ -855,7 +856,7 @@ function profileFacts(profile, context) {
     provider: credential ? providerName(context.providers, credential.provider) : 'Unknown provider',
     model: revision ? `${revision.model} · ${revision.apiMode}` : 'No active revision',
     credential: credential?.label ?? 'Missing key',
-    pricingCell: revision ? renderSavedPricing(profile) : '-',
+    pricingCell: revision ? renderSavedPricing(profile, { hasCatalog: context.providers.find((entry) => entry.id === credential?.provider)?.catalogStrategy !== 'none' }) : '-',
     limit: revision ? `${formatPrice(revision.limits.maxCostMicros)} · ${revision.limits.maxInputTokens.toLocaleString()} in / ${revision.limits.maxOutputTokens.toLocaleString()} out` : '-',
     verificationCell
   };
@@ -867,9 +868,10 @@ const cachePrices = (level) => `cache read ${formatSavedPrice(level.cacheReadMic
 /**
  * A saved revision's prices as pinned: input and output, both cache prices, any
  * long-prompt tiers, where the prices came from, and the repricing warning with
- * its review action. Every value is escaped here; the result is markup.
+ * its review action. `hasCatalog` is false for a provider whose registry entry has
+ * no catalog. Every value is escaped here; the result is markup.
  */
-export function renderSavedPricing(profile) {
+export function renderSavedPricing(profile, { hasCatalog = true } = {}) {
   const revision = profile.activeRevision;
   const provenance = savedPriceProvenance(revision.priceProvenance);
   const tiers = (revision.pricing.tiers ?? []).map((tier) => `<small class="price-line">From ${escape(tier.minPromptTokens.toLocaleString())} prompt tokens: <span class="mono">${escape(priceLevel(tier))}</span>, ${escape(cachePrices(tier))}</small>`).join('');
@@ -877,8 +879,8 @@ export function renderSavedPricing(profile) {
   const review = notice
     ? `<span class="pricing-review" data-pricing-review="${notice.isOverride ? 'override' : 'repriced'}"><span>${escape(notice.text)}</span> <button type="button" data-model-action="review-price" data-profile-id="${escape(profile.id)}" aria-label="${escape(`Review catalog price for ${profile.displayName}`)}">Review catalog price</button></span>`
     : '';
-  const context = pricingReviewContext(profile.pricingReview);
-  const unknown = context.unknown ? `<small class="price-line" data-pricing-review="unknown">${escape(PRICING_UNKNOWN_TEXT)}</small>` : '';
+  const context = pricingReviewContext(profile.pricingReview, { hasCatalog });
+  const unknown = context.unknown ? `<small class="price-line" data-pricing-note="unknown">${escape(PRICING_UNKNOWN_TEXT)}</small>` : '';
   const compared = context.comparedAt === null ? '' : `<small class="price-line" data-catalog-compared>Compared with the catalog from ${timeText(context.comparedAt)}</small>`;
   const conditional = context.conditional ? `<small class="price-line" data-conditional-pricing>${escape(CONDITIONAL_PRICING_TEXT)}</small>` : '';
   return `<span class="mono">${escape(priceLevel(revision.pricing))}</span>`

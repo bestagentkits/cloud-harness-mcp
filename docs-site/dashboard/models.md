@@ -415,7 +415,10 @@ override). When the catalog has no current price for the model, the form says **
 has no current price for this model** and keeps the saved price; when the catalog cannot be
 read, the form shows the error and keeps the saved price.
 
-When the review reads `unknown`, the list says **No catalog price to compare with**. For a
+When the review reads `unknown`, the list says **No catalog price to compare with**. This
+note does not mean the saved price is wrong: the runner may not have loaded the catalog yet
+(for example just after a restart), or the catalog may not list the model. Profiles of a
+provider without a catalog, such as Custom, never show it. For a
 `repriced` or `unknown` review whose catalog has a retrieval time, the list adds **Compared
 with the catalog from** that time, so you can tell how old the comparison is. When the
 catalog also prices the model by conditions a saved price cannot express, the list adds
@@ -523,10 +526,10 @@ period, the form opens that limit instead; if none exists any more, the form tur
 **Add a spend limit** with your typed values kept.
 
 **Deleting a limit.** **Delete limit** asks for confirmation, naming the period and the
-scope (**All runs** or the profile's display name), then removes the limit. Recorded spend
-is kept. A limit that changed or was already deleted is refused with the server's message
-and the panel reloads. A delete confirmed while another limit change is still saving is
-not sent; the panel says so, and you can delete again once the save finishes.
+scope as the **Applies to** column does (**All runs**, the profile's display name followed by
+its ID in parentheses, or the ID followed by **(profile deleted)**), then removes the limit.
+Recorded spend is kept. A limit that changed or was already deleted is refused with the
+server's message and the panel reloads.
 
 ### Spend routes
 
