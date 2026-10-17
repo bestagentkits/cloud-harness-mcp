@@ -87,20 +87,26 @@ export async function startControlServer(options: {
             const credentials = (command.credentials ?? {}) as Record<string, { provider: string; authMode?: string; secret: string }>;
             const profiles = (command.profiles ?? {}) as Record<string, any>;
 
-            // Update credentials
+            // Validate and build the whole snapshot before touching the registry,
+            // so a rejected snapshot leaves the active credentials and profiles unchanged.
+            const stagedCredentials = new Map(registry.credentials);
             for (const [credId, credData] of Object.entries(credentials)) {
+              if (credData === null || typeof credData !== 'object' || typeof credData.provider !== 'string') {
+                throw new Error(`invalid provider for credential ${credId}`);
+              }
+              if (typeof credData.secret !== 'string' || credData.secret === '') throw new Error(`invalid secret for credential ${credId}`);
               const authMode = credData.authMode === 'x-api-key' ? 'x-api-key' : 'authorization';
-              registry.credentials.set(credId, {
+              stagedCredentials.set(credId, {
                 provider: credData.provider,
                 authMode,
                 secret: credData.secret
               });
             }
 
-            // Update profiles
+            const stagedProfiles = new Map<string, GatewayProfile>();
             for (const [revId, revData] of Object.entries(profiles)) {
               const credId = revData.credentialId;
-              const cred = typeof credId === 'string' ? registry.credentials.get(credId) : undefined;
+              const cred = typeof credId === 'string' ? stagedCredentials.get(credId) : undefined;
               if (!cred) {
                 throw new Error(`unresolved credential binding for profile revision ${revId}`);
               }
@@ -120,7 +126,7 @@ export async function startControlServer(options: {
 
               const profile: GatewayProfile = {
                 id: revId,
-                provider: revData.model ?? 'default',
+                provider: cred.provider,
                 model: revData.model ?? 'default',
                 downstreamPath: revData.downstreamPath ?? '/v1/chat/completions',
                 upstream: upstreamUrl,
@@ -136,8 +142,10 @@ export async function startControlServer(options: {
                 tlsCaFile: config.mode === 'test' ? config.tlsCaFile : undefined
               };
 
-              registry.profiles.set(revId, profile);
+              stagedProfiles.set(revId, profile);
             }
+            for (const [credId, cred] of stagedCredentials) registry.credentials.set(credId, cred);
+            for (const [revId, profile] of stagedProfiles) registry.profiles.set(revId, profile);
             const snapshotDigest = `sha256:${createHash('sha256').update(record, 'utf8').digest('hex')}`;
             registry.snapshotDigest = snapshotDigest;
 
