@@ -226,6 +226,8 @@ export type AgentModelProfileMetadata = z.infer<typeof AgentModelProfileMetadata
 // A change a profile save would make that only the owner may approve when it does not
 // come from the Dashboard, because it raises spend capacity, widens what an agent may
 // do, or sends a key to a new host:
+// - `credential_changed`: the profile moves to another credential, which redirects
+//   its spend to another provider account;
 // - `limits_raised`: a token or cost limit is higher than the current revision's;
 // - `price_lowered`: an effective price (cache prices and tiers resolved for the
 //   provider) is lower than the current one and is not a catalog-verified price;
@@ -235,6 +237,7 @@ export type AgentModelProfileMetadata = z.infer<typeof AgentModelProfileMetadata
 // - `custom_upstream_unbound`: a custom upstream URL none of the principal's
 //   revisions on that credential already uses.
 export const ModelProfileEscalationSchema = z.enum([
+  'credential_changed',
   'custom_upstream_unbound',
   'limits_raised',
   'price_lowered',

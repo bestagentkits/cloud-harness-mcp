@@ -47,13 +47,13 @@ export class ModelToolIdempotencyStore {
   }
 
   /**
-   * Records a committed result. Call it inside the transaction that commits the
-   * change, so the change and its record land together. Expired rows are swept
-   * first, so an expired key can be used again.
+   * Records a committed result through `database`, the handle of the transaction
+   * that commits the change, so the change and its record land together. Expired
+   * rows are swept first, so an expired key can be used again.
    */
-  record(principalId: string, operation: string, key: string, fingerprint: string, result: unknown): void {
-    this.database.prepare('DELETE FROM model_tool_idempotency WHERE created_at <= ?').run(this.now() - MODEL_TOOL_IDEMPOTENCY_TTL_MS);
-    this.database.prepare(`
+  record(database: DatabaseSync, principalId: string, operation: string, key: string, fingerprint: string, result: unknown): void {
+    database.prepare('DELETE FROM model_tool_idempotency WHERE created_at <= ?').run(this.now() - MODEL_TOOL_IDEMPOTENCY_TTL_MS);
+    database.prepare(`
       INSERT INTO model_tool_idempotency (principal_id, operation, idempotency_key, fingerprint, result_json, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(principalId, operation, key, fingerprint, JSON.stringify(result), this.now());

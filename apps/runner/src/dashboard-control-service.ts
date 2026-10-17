@@ -1743,7 +1743,7 @@ export class DashboardControlService {
         },
         record: (database, profile) => {
           this.auditProfile(database, principalId, 'created', profile, 'mcp');
-          idempotency.record(principalId, operation, idempotencyKey, fingerprint, { profile, activation: 'dashboard_required' });
+          idempotency.record(database, principalId, operation, idempotencyKey, fingerprint, { profile, activation: 'dashboard_required' });
         }
       });
     } catch (error) {
@@ -1764,8 +1764,12 @@ export class DashboardControlService {
     const { idempotencyKey, profileId, ...change } = input;
     const fingerprint = modelToolFingerprint(input);
     const idempotency = this.modelToolIdempotency();
-    const replayed = idempotency.lookup(principalId, operation, idempotencyKey, fingerprint);
-    if (replayed !== undefined) return modelToolResult(operation, 'Agent model profile already updated', { ...(replayed as object), replayed: true });
+    const replayed = idempotency.lookup(principalId, operation, idempotencyKey, fingerprint) as UpdateResultRecord | undefined;
+    if (replayed !== undefined) {
+      // A crash between the commit and the sync leaves the gateway behind; the retry heals it.
+      if (replayed.profile.status === 'ACTIVE') await this.syncGateway({ onlyIfMismatch: true });
+      return modelToolResult(operation, 'Agent model profile already updated', { ...replayed, replayed: true });
+    }
 
     let refusedGeneration = change.expectedGeneration;
     let updated: AgentModelProfileMetadata;
@@ -1780,7 +1784,7 @@ export class DashboardControlService {
         },
         record: (database, profile) => {
           this.auditProfile(database, principalId, 'updated', profile, 'mcp');
-          idempotency.record(principalId, operation, idempotencyKey, fingerprint, { profile });
+          idempotency.record(database, principalId, operation, idempotencyKey, fingerprint, { profile });
         }
       });
     } catch (error) {
@@ -1801,7 +1805,13 @@ export class DashboardControlService {
     return modelToolResult(operation, 'Agent model profile updated', { ...data, replayed: false });
   }
 
-  /** Keeps a matching draft check on the saved revision and on the replayable result. */
+  /**
+   * Keeps a matching draft check on the saved revision and on the replayable result.
+   * The save has already committed, so a failure here never fails the call: it
+   * returns the committed profile without `lastVerification`, which is also what a
+   * replay returns, since the recorded result was not replaced. The check itself may
+   * still have been attached to the revision, and model_profile_list then shows it.
+   */
   private attachDraftVerificationOverMcp(
     principalId: string,
     operation: 'model_profile_create' | 'model_profile_update',
@@ -1809,13 +1819,17 @@ export class DashboardControlService {
     verificationRef: string | undefined,
     profile: AgentModelProfileMetadata
   ): AgentModelProfileMetadata {
-    const attached = this.verifier().attachDraftVerification(principalId, verificationRef, profile);
-    if (attached !== profile) {
-      this.modelToolIdempotency().replace(principalId, operation, idempotencyKey, operation === 'model_profile_create'
-        ? { profile: attached, activation: 'dashboard_required' }
-        : { profile: attached });
+    try {
+      const attached = this.verifier().attachDraftVerification(principalId, verificationRef, profile);
+      if (attached !== profile) {
+        this.modelToolIdempotency().replace(principalId, operation, idempotencyKey, operation === 'model_profile_create'
+          ? { profile: attached, activation: 'dashboard_required' }
+          : { profile: attached });
+      }
+      return attached;
+    } catch {
+      return profile;
     }
-    return attached;
   }
 
   /**
@@ -1895,13 +1909,13 @@ export class DashboardControlService {
     return this.connectionVerifier;
   }
 
-  private async syncGateway(): Promise<void> {
+  private async syncGateway({ onlyIfMismatch = false }: { onlyIfMismatch?: boolean } = {}): Promise<void> {
     const control = this.gatewayControl;
     const modelProfiles = this.modelProfiles;
     if (!modelProfiles || !control) return;
     try {
       // Built inside the push queue, so the push carries the state as of the push, not of this call.
-      await control.syncSnapshot(() => modelProfiles.getExportSnapshot(), { onlyIfMismatch: false });
+      await control.syncSnapshot(() => modelProfiles.getExportSnapshot(), { onlyIfMismatch });
     } catch {
       // The gateway control records the failure; model_config_status reports it instead of failing the mutation.
     }
@@ -2085,6 +2099,9 @@ export class DashboardControlService {
 const PACKAGES_DISABLED_MESSAGE = 'Managed packages are off. Operators enable them with PACKAGES_ENABLED=true.';
 const PACKAGE_DASHBOARD_PLAN_LIMIT = 100;
 const PACKAGE_DASHBOARD_RECENT_APPLIES = 20;
+
+/** The result an MCP profile update records for replay; modelToolResult parses it again on the way out. */
+type UpdateResultRecord = { profile: AgentModelProfileMetadata };
 
 const ok = (message: string, data: unknown, cursor?: string): RunnerResponse => ({ ok: true, message, data, truncated: false, ...(cursor ? { cursor } : {}) });
 

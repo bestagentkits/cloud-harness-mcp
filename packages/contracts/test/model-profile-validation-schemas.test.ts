@@ -76,7 +76,7 @@ describe('model profile validation contracts', () => {
 
   it('names every escalation the guard can report', () => {
     expect(ModelProfileEscalationSchema.options).toEqual([
-      'custom_upstream_unbound', 'limits_raised', 'price_lowered', 'price_unverified_for_new_route', 'proxy_operations_widened'
+      'credential_changed', 'custom_upstream_unbound', 'limits_raised', 'price_lowered', 'price_unverified_for_new_route', 'proxy_operations_widened'
     ]);
   });
 });

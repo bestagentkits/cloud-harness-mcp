@@ -45,6 +45,7 @@ export class ProfileChangeRefusal extends Error {
 }
 
 const ESCALATION_TEXT: Record<ModelProfileEscalation, string> = {
+  credential_changed: 'a move to another provider credential',
   custom_upstream_unbound: 'a custom upstream URL that none of your profiles on this credential uses',
   limits_raised: 'a raised token or cost limit',
   price_lowered: 'a lower price that is not catalog-verified',

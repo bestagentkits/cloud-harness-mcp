@@ -90,10 +90,18 @@ describe('profile escalation classifier', () => {
 
   it('flags override prices carried to another model or credential, and not catalog ones', () => {
     expect(escalations(revision({ model: 'vendor/other' }))).toEqual(['price_unverified_for_new_route']);
-    expect(escalations(revision({ credentialId: 'cred_00000000000000000000000000000002' }))).toEqual(['price_unverified_for_new_route']);
+    expect(escalations(revision({ credentialId: 'cred_00000000000000000000000000000002' }))).toEqual(['credential_changed', 'price_unverified_for_new_route']);
     expect(escalations(revision({ model: 'vendor/other', priceProvenance: CATALOG }))).toEqual([]);
     // Override prices on the same route are the current route's own prices.
     expect(escalations(revision())).toEqual([]);
+  });
+
+  it('flags a move to another credential even with catalog prices, and not a model change on the same one', () => {
+    const other = 'cred_00000000000000000000000000000002';
+    expect(escalations(revision({ credentialId: other, priceProvenance: CATALOG }), revision({ priceProvenance: CATALOG }))).toEqual(['credential_changed']);
+    expect(escalations(revision({ model: 'vendor/other', priceProvenance: CATALOG }), revision({ priceProvenance: CATALOG }))).toEqual([]);
+    // Moving back to the first credential is a move as well.
+    expect(escalations(revision({ priceProvenance: CATALOG }), revision({ credentialId: other, priceProvenance: CATALOG }))).toEqual(['credential_changed']);
   });
 
   it('flags proxy operations outside the current set, and never a subset', () => {
@@ -132,25 +140,25 @@ describe('profile escalation classifier', () => {
       profileEscalations({ action: 'update', current, next, provider, ...(currentProvider ? { currentProvider } : {}), boundCustomUrls: [] });
 
     // Catalog prices are trusted, so a switch carrying them is not price-checked.
-    expect(guard(fromOpenRouter, toOpenAi, 'openai', 'openrouter')).toEqual([]);
+    expect(guard(fromOpenRouter, toOpenAi, 'openai', 'openrouter')).toEqual(['credential_changed']);
     const typed = (value: GuardedRevision) => ({ ...value, priceProvenance: { ...CATALOG, source: 'user' as const, isOverride: false } });
     // Moving off a provider that bills cache writes lowers the resolved write price.
-    expect(guard(typed(fromOpenRouter), typed(toOpenAi), 'openai', 'openrouter')).toEqual(['price_lowered']);
+    expect(guard(typed(fromOpenRouter), typed(toOpenAi), 'openai', 'openrouter')).toEqual(['credential_changed', 'price_lowered']);
     // Moving onto one raises it.
-    expect(guard(typed(toOpenAi), typed(fromOpenRouter), 'openrouter', 'openai')).toEqual([]);
+    expect(guard(typed(toOpenAi), typed(fromOpenRouter), 'openrouter', 'openai')).toEqual(['credential_changed']);
     // Without the current provider both sides resolve as the next one, which hides the drop.
-    expect(guard(typed(fromOpenRouter), typed(toOpenAi), 'openai')).toEqual([]);
+    expect(guard(typed(fromOpenRouter), typed(toOpenAi), 'openai')).toEqual(['credential_changed']);
   });
 
   it('fails closed for an update with no readable current revision', () => {
     const update = (next: GuardedRevision, provider: ModelProviderKind = 'openai') =>
       profileEscalations({ action: 'update', current: null, next, provider, boundCustomUrls: [] });
-    // Nothing is approved, so limits, operations, and typed prices all escalate.
-    expect(update(revision())).toEqual(['limits_raised', 'price_lowered', 'price_unverified_for_new_route', 'proxy_operations_widened']);
+    // Nothing is approved, so the credential, limits, operations, and typed prices all escalate.
+    expect(update(revision())).toEqual(['credential_changed', 'limits_raised', 'price_lowered', 'price_unverified_for_new_route', 'proxy_operations_widened']);
     // Catalog prices need no approval, even here.
-    expect(update(revision({ priceProvenance: CATALOG }))).toEqual(['limits_raised', 'proxy_operations_widened']);
+    expect(update(revision({ priceProvenance: CATALOG }))).toEqual(['credential_changed', 'limits_raised', 'proxy_operations_widened']);
     expect(update(revision({ upstreamUrl: CUSTOM_URL }), 'custom')).toEqual([
-      'custom_upstream_unbound', 'limits_raised', 'price_lowered', 'price_unverified_for_new_route', 'proxy_operations_widened'
+      'credential_changed', 'custom_upstream_unbound', 'limits_raised', 'price_lowered', 'price_unverified_for_new_route', 'proxy_operations_widened'
     ]);
     // A create has no current revision by definition and is not affected.
     expect(profileEscalations({ action: 'create', current: null, next: revision(), provider: 'openai', boundCustomUrls: [] })).toEqual([]);
@@ -158,13 +166,13 @@ describe('profile escalation classifier', () => {
 
   it('returns every escalation sorted and once', () => {
     const next = revision({
-      model: 'vendor/other', upstreamUrl: CUSTOM_URL,
+      credentialId: 'cred_00000000000000000000000000000002', model: 'vendor/other', upstreamUrl: CUSTOM_URL,
       pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
       limits: { maxInputTokens: 20_000, maxOutputTokens: 4_000, maxCostMicros: 2_000_000 },
       maxProxyOperations: ['files_read', 'files_list']
     });
     expect(escalations(next, revision(), 'custom')).toEqual([
-      'custom_upstream_unbound', 'limits_raised', 'price_lowered', 'price_unverified_for_new_route', 'proxy_operations_widened'
+      'credential_changed', 'custom_upstream_unbound', 'limits_raised', 'price_lowered', 'price_unverified_for_new_route', 'proxy_operations_widened'
     ]);
   });
 });

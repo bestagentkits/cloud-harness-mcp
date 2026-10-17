@@ -12,10 +12,11 @@ make them:
 - **Activation.** A profile you create arrives `DISABLED`. Tell the owner to
   review and **Activate** it; `agent_spawn` refuses it until then. No tool
   activates, disables, or deletes a profile.
-- **Escalations.** A save that raises a limit, lowers a price that is not
-  catalog-verified, carries override prices to another model or credential,
-  widens proxy operations, or points a Custom key at a new URL returns
-  `OWNER_APPROVAL_REQUIRED` and changes nothing. Do not retry it or work around
+- **Escalations.** A save that moves a profile to another credential, raises
+  a limit, lowers a price that is not catalog-verified, carries override prices
+  to another model or credential, widens proxy operations, or points a Custom
+  key at a new URL returns `OWNER_APPROVAL_REQUIRED` and changes nothing,
+  whatever the profile's status. Do not retry it or work around
   it: report the listed escalations and ask the owner to make the change on the
   Dashboard.
 
@@ -117,7 +118,9 @@ To change a profile: `model_profile_list` → `model_profile_validate` with
   `model`, `apiMode`, `pricing`, `limits`, and `maxProxyOperations`. Optional:
   `customUpstreamUrl` (Custom only), `catalogPriceRef`, `verificationRef`.
 - The result is `{profile, replayed, activation: "dashboard_required"}` and the
-  profile is always `DISABLED`. Tell the owner to activate it.
+  profile is always `DISABLED`. Tell the owner to review its limits, prices,
+  and proxy operations and activate it: a create is not checked against a
+  baseline, so activation is the owner's approval of the whole revision.
 - Retry an unknown outcome with the same key and identical input: you get the
   first result with `replayed: true` for 24 hours. The same key with other
   input returns `CONFLICT`; a refused call records nothing, so its key is free.
@@ -139,8 +142,9 @@ To change a profile: `model_profile_list` → `model_profile_validate` with
 - A moved generation returns `CONFLICT`: re-read with `model_profile_list`,
   re-check the change, and retry with a new key. Same-key replay works as for
   create.
-- Lowering limits, narrowing proxy operations, renaming, or moving to a
-  catalog-verified price is allowed. Everything listed under Escalations above
+- Lowering limits, narrowing proxy operations, renaming, changing the model on
+  the same credential with catalog-verified prices, or moving to a
+  catalog-verified price is allowed. Changing `credentialId` is not. Everything listed under Escalations above
   returns `OWNER_APPROVAL_REQUIRED`, whatever the profile status.
 
 <!-- cloudharness-example:model_profile_update

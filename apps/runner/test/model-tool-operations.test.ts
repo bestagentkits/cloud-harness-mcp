@@ -2,16 +2,18 @@ import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { DatabaseSync } from 'node:sqlite';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HarnessError, MODEL_TOOL_OPERATIONS, MODEL_TOOL_RESULT_SCHEMAS,
   type AgentModelProfileMetadata, type MetadataRunnerRequest, type ModelConnectionVerifyResult,
   type ModelToolOperation, type RunnerConfig
 } from '@cloud-harness/contracts';
-import type { AgentGatewayControl } from '../src/agent-gateway-control.js';
+import { gatewaySnapshotDigest, runSnapshotSync, type AgentGatewayControl, type GatewaySnapshot } from '../src/agent-gateway-control.js';
 import { ArtifactStore } from '../src/artifact-store.js';
 import { DashboardControlService } from '../src/dashboard-control-service.js';
 import { MetadataStore } from '../src/metadata-store.js';
+import { ModelConnectionVerifier } from '../src/model-verification/model-connection-verifier.js';
 import { MODEL_TOOL_IDEMPOTENCY_TTL_MS, ModelToolIdempotencyStore, modelToolFingerprint } from '../src/model-tool-idempotency.js';
 import { executeModelToolOperation, modelToolResult } from '../src/model-tool-operations.js';
 import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
@@ -23,6 +25,7 @@ import type { WorkspaceService } from '../src/workspace-service.js';
 const roots: string[] = [];
 const cleanups: (() => void)[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const cleanup of cleanups.splice(0)) {
     try { cleanup(); } catch { /* ignore cleanup error */ }
   }
@@ -67,12 +70,20 @@ function setup() {
       ].map((event) => `data: ${JSON.stringify(event)}`).concat('data: [DONE]', '').join('\n\n'));
     }
   };
-  const snapshots: Array<{ profiles: Record<string, unknown> }> = [];
+  // Every snapshot the gateway receives. The double acks and reports the digest a real
+  // gateway would, so a sync that finds the gateway in step pushes nothing.
+  const snapshots: GatewaySnapshot[] = [];
+  const queryDigest = async () => ({
+    gatewayBootId: 'boot', snapshotDigest: snapshots.length > 0 ? gatewaySnapshotDigest(snapshots.at(-1) as GatewaySnapshot) : '',
+    activeProfileCount: 0, activeCredentialCount: 0, activeLeaseCount: 0
+  });
   const gateway = {
-    applySnapshot: async (snapshot: { profiles: Record<string, unknown> }) => {
-      snapshots.push(snapshot);
-      return { gatewayBootId: 'boot', snapshotDigest: 'digest' };
-    }
+    queryDigest,
+    syncSnapshot: (build: Parameters<AgentGatewayControl['syncSnapshot']>[0], options: Parameters<AgentGatewayControl['syncSnapshot']>[1]) =>
+      runSnapshotSync(queryDigest, async (snapshot: GatewaySnapshot) => {
+        snapshots.push(snapshot);
+        return { gatewayBootId: 'boot', snapshotDigest: gatewaySnapshotDigest(snapshot) };
+      }, build, options)
   } as unknown as AgentGatewayControl;
   const controls = new DashboardControlService(
     { artifactRetentionSeconds: 60 } as RunnerConfig, principals, metadata, artifacts, {} as WorkspaceService,
@@ -104,7 +115,7 @@ function setup() {
     idempotency: count('model_tool_idempotency'), audit: count('audit_events')
   });
   const exported = () => Object.keys(repo.getExportSnapshot().profiles);
-  return { controls, tool, dashboard, credential, audit, rows, exported, snapshots, outputs, called, providerRequests, metadata, principals, root };
+  return { controls, gateway, tool, dashboard, credential, audit, rows, exported, snapshots, outputs, called, providerRequests, metadata, principals, root };
 }
 
 type Ctx = ReturnType<typeof setup>;
@@ -225,6 +236,7 @@ describe('MCP model profile saves', () => {
     ['a lowered override price', 'price_lowered', () => ({ pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 15_000_000 } })],
     ['override prices moved to another model', 'price_unverified_for_new_route', () => ({ model: 'gpt-other' })],
     ['override prices moved to another key', 'price_unverified_for_new_route', (other) => ({ credentialId: other })],
+    ['a move to another key', 'credential_changed', (other) => ({ credentialId: other })],
     ['a widened proxy operation list', 'proxy_operations_widened', () => ({ maxProxyOperations: ['files_read', 'grep_search'] })]
   ];
 
@@ -252,6 +264,27 @@ describe('MCP model profile saves', () => {
       expect(saved.profiles[0]).toMatchObject({ generation: current.generation, activeRevisionId: current.activeRevisionId });
     });
   }
+
+  it('refuses a move to another key on a disabled profile as well', async () => {
+    const ctx = setup();
+    const credentialId = await ctx.credential('openai');
+    const otherCredentialId = await ctx.credential('openai');
+    const created = (await ctx.tool<CreateResult>('model_profile_create', { ...body(credentialId), idempotencyKey: 'create-key-0001' })).profile;
+    const before = ctx.rows();
+    const refused = await refusal(ctx.controls.executeModelTool(ownerA, 'model_profile_update', {
+      profileId: 'coding', expectedGeneration: created.generation, idempotencyKey: 'update-key-0001', credentialId: otherCredentialId
+    }));
+    expect(refused).toMatchObject({ code: 'OWNER_APPROVAL_REQUIRED', status: 403 });
+    expect(refused.message).toContain('credential_changed');
+    expect(ctx.rows()).toEqual({ ...before, audit: before.audit + 1 });
+    const [event] = ctx.audit().filter((entry) => entry.action === 'model_profile.change_refused');
+    expect(String(event?.details.escalations).split(',')).toContain('credential_changed');
+    // The dry run reports the same refusal before any save.
+    const dryRun = await ctx.tool<{ escalations: string[] }>('model_profile_validate', {
+      action: 'update', profileId: 'coding', expectedGeneration: created.generation, credentialId: otherCredentialId
+    });
+    expect(dryRun.escalations).toContain('credential_changed');
+  });
 
   it('lets the Dashboard make the change MCP was refused', async () => {
     const ctx = setup();
@@ -369,6 +402,58 @@ describe('MCP model reads and checks', () => {
     expect(replay).toEqual({ ...created, replayed: true });
   });
 
+  it('returns a committed create when keeping its draft check fails, and replays the same result', async () => {
+    const ctx = setup();
+    const credentialId = await ctx.credential('openai');
+    const draft = await ctx.tool<ModelConnectionVerifyResult>('model_connection_verify', { credentialId, model: 'gpt-test' });
+    const replace = vi.spyOn(ModelToolIdempotencyStore.prototype, 'replace').mockImplementation(() => { throw new Error('disk full'); });
+    const input = { ...body(credentialId, 'coding', { verificationRef: draft.verificationRef }), idempotencyKey: 'create-key-0001' };
+    const created = await ctx.tool<CreateResult>('model_profile_create', input);
+    expect(replace).toHaveBeenCalledOnce();
+    expect(created).toMatchObject({ replayed: false, profile: { id: 'coding', status: 'DISABLED' } });
+    expect(created.profile.lastVerification).toBeUndefined();
+    replace.mockRestore();
+    expect(await ctx.tool<CreateResult>('model_profile_create', input)).toEqual({ ...created, replayed: true });
+    expect(ctx.rows()).toMatchObject({ profiles: 1, idempotency: 1 });
+  });
+
+  it('returns a committed update when attaching its draft check fails, and replays the same result', async () => {
+    const ctx = setup();
+    const credentialId = await ctx.credential('openai');
+    const active = await createActive(ctx, credentialId);
+    const draft = await ctx.tool<ModelConnectionVerifyResult>('model_connection_verify', { credentialId, model: 'gpt-test' });
+    const attach = vi.spyOn(ModelConnectionVerifier.prototype, 'attachDraftVerification').mockImplementation(() => { throw new Error('database locked'); });
+    ctx.snapshots.splice(0);
+    const input = { profileId: 'coding', expectedGeneration: active.generation, displayName: 'Renamed', verificationRef: draft.verificationRef, idempotencyKey: 'update-key-0001' };
+    const updated = await ctx.tool<UpdateResult>('model_profile_update', input);
+    expect(attach).toHaveBeenCalledOnce();
+    expect(updated).toMatchObject({ replayed: false, profile: { displayName: 'Renamed', generation: active.generation + 1, status: 'ACTIVE' } });
+    // The active profile's new revision still reaches the gateway.
+    expect(ctx.snapshots).toHaveLength(1);
+    attach.mockRestore();
+    expect(await ctx.tool<UpdateResult>('model_profile_update', input)).toEqual({ ...updated, replayed: true });
+  });
+
+  it('resyncs the gateway on a replayed update of an active profile only when it is behind', async () => {
+    const ctx = setup();
+    const credentialId = await ctx.credential('openai');
+    const active = await createActive(ctx, credentialId);
+    // The first sync after the commit is lost, as when the runner stops before it.
+    const sync = vi.spyOn(ctx.gateway, 'syncSnapshot').mockRejectedValueOnce(new Error('gateway unreachable'));
+    ctx.snapshots.splice(0);
+    const input = { profileId: 'coding', expectedGeneration: active.generation, displayName: 'Renamed', idempotencyKey: 'update-key-0001' };
+    const updated = await ctx.tool<UpdateResult>('model_profile_update', input);
+    expect(ctx.snapshots).toEqual([]);
+    const replay = await ctx.tool<UpdateResult>('model_profile_update', input);
+    expect(replay).toEqual({ ...updated, replayed: true });
+    expect(sync).toHaveBeenLastCalledWith(expect.any(Function), { onlyIfMismatch: true });
+    expect(ctx.snapshots).toHaveLength(1);
+    expect(Object.keys(ctx.snapshots[0]?.profiles ?? {})).toEqual(ctx.exported());
+    // In step, a further replay pushes nothing.
+    await ctx.tool<UpdateResult>('model_profile_update', input);
+    expect(ctx.snapshots).toHaveLength(1);
+  });
+
   it('never returns or audits key material from any tool', async () => {
     const ctx = setup();
     const credentialId = await ctx.credential('openai');
@@ -437,13 +522,25 @@ describe('model tool idempotency store', () => {
     const store = new ModelToolIdempotencyStore(ctx.principals.database, () => now);
     const fingerprint = modelToolFingerprint({ b: 1, a: { d: 2, c: 3 }, idempotencyKey: 'ignored' });
     expect(fingerprint).toBe(modelToolFingerprint({ a: { c: 3, d: 2 }, b: 1 }));
-    store.record('principal', 'model_profile_create', 'key-00000001', fingerprint, { value: 1 });
+    store.record(ctx.principals.database, 'principal', 'model_profile_create', 'key-00000001', fingerprint, { value: 1 });
     expect(store.lookup('principal', 'model_profile_create', 'key-00000001', fingerprint)).toEqual({ value: 1 });
     expect(() => store.lookup('principal', 'model_profile_create', 'key-00000001', 'other')).toThrow(/idempotency key reused/);
     now += MODEL_TOOL_IDEMPOTENCY_TTL_MS;
     expect(store.lookup('principal', 'model_profile_create', 'key-00000001', 'other')).toBeUndefined();
-    store.record('principal', 'model_profile_create', 'key-00000001', 'other', { value: 2 });
+    store.record(ctx.principals.database, 'principal', 'model_profile_create', 'key-00000001', 'other', { value: 2 });
     expect(store.lookup('principal', 'model_profile_create', 'key-00000001', 'other')).toEqual({ value: 2 });
+  });
+
+  it('records through the handle of the committing transaction', () => {
+    const own = new DatabaseSync(':memory:');
+    const committing = new DatabaseSync(':memory:');
+    const store = new ModelToolIdempotencyStore(own);
+    const other = new ModelToolIdempotencyStore(committing);
+    store.record(committing, 'principal', 'model_profile_create', 'key-00000001', 'fingerprint', { value: 1 });
+    expect(other.lookup('principal', 'model_profile_create', 'key-00000001', 'fingerprint')).toEqual({ value: 1 });
+    expect(store.lookup('principal', 'model_profile_create', 'key-00000001', 'fingerprint')).toBeUndefined();
+    own.close();
+    committing.close();
   });
 
   it('fails a result that carries a field outside its contract instead of returning it', () => {
