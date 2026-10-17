@@ -1,3 +1,10 @@
+# [0.66.0-beta.23](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.22...v0.66.0-beta.23) (2026-10-17)
+
+
+### Features
+
+* **dashboard:** show price provenance, model spend, and spend limits ([#386](https://github.com/bestagentkits/cloud-harness-mcp/issues/386)) ([adb77f5](https://github.com/bestagentkits/cloud-harness-mcp/commit/adb77f5a066e1bfa69747006103e80b0e09d2b02))
+
 # [0.66.0-beta.22](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.21...v0.66.0-beta.22) (2026-10-17)
 
 
