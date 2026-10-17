@@ -173,10 +173,17 @@ describe('provider model listing', () => {
     expect(calls[0]?.method).toBe('GET');
   });
 
-  it('sends the OpenCode Go session header with a fresh id on each listing, and no such header elsewhere', async () => {
-    const { client, calls } = fakeHttp(() => json({ data: [{ id: 'kimi-k2.5' }] }));
-    expect(await fetchProviderModels(client, 'opencode-go', BEARER)).toEqual([
-      { id: 'kimi-k2.5', displayName: null, contextWindow: null, maxOutputTokens: null }
+  it('lists the public OpenCode Go models without a key, with a fresh session id each time, and no such header elsewhere', async () => {
+    const { client, calls } = fakeHttp(() => json({
+      object: 'list',
+      data: [
+        { id: 'kimi-k2.5', object: 'model', created: 1_792_256_284, owned_by: 'opencode' },
+        { id: 'glm-5.1', object: 'model', created: 1_792_256_284, owned_by: 'opencode' }
+      ]
+    }));
+    expect(await fetchProviderModels(client, 'opencode-go', undefined)).toEqual([
+      { id: 'kimi-k2.5', displayName: null, contextWindow: null, maxOutputTokens: null },
+      { id: 'glm-5.1', displayName: null, contextWindow: null, maxOutputTokens: null }
     ]);
     await fetchProviderModels(client, 'opencode-go', BEARER);
     await fetchProviderModels(client, 'openai', BEARER);
@@ -187,8 +194,16 @@ describe('provider model listing', () => {
     expect(first).toMatch(/^[0-9a-f-]{36}$/u);
     expect(second).toMatch(/^[0-9a-f-]{36}$/u);
     expect(second).not.toBe(first);
-    expect(calls[0]?.headers).toEqual({ authorization: `Bearer ${SECRET}`, 'x-opencode-session': first });
+    // The key is never sent to the public list, even when one is supplied.
+    expect(calls[0]?.headers).toEqual({ 'x-opencode-session': first });
+    expect(calls[1]?.headers).toEqual({ 'x-opencode-session': second });
     expect(calls[2]?.headers).toEqual({ authorization: `Bearer ${SECRET}` });
+  });
+
+  it('refuses to list a keyed endpoint without a credential', async () => {
+    const { client, calls } = fakeHttp(() => json({ data: [] }));
+    expect(await categoryOf(fetchProviderModels(client, 'openai', undefined))).toBe('credential_unavailable');
+    expect(calls).toHaveLength(0);
   });
 
   it('strips the Gemini models/ prefix so the chat endpoint receives a bare ID', async () => {

@@ -68,31 +68,34 @@ export interface ProviderCatalogOptions {
   budgetMs?: number;
 }
 
-function authHeaders(endpointAuth: 'bearer' | 'anthropic' | 'none', credential: ProviderCatalogCredential): Record<string, string> {
+function authHeaders(endpointAuth: 'bearer' | 'anthropic' | 'none', credential: ProviderCatalogCredential | undefined): Record<string, string> {
+  if (endpointAuth === 'none') return {};
+  if (!credential) throw new CatalogSourceError('credential_unavailable');
   if (endpointAuth === 'anthropic') {
     const key = credential.authMode === 'x-api-key'
       ? { 'x-api-key': credential.secret }
       : { authorization: `Bearer ${credential.secret}` };
     return { ...key, 'anthropic-version': ANTHROPIC_VERSION };
   }
-  return endpointAuth === 'bearer' ? { authorization: `Bearer ${credential.secret}` } : {};
+  return { authorization: `Bearer ${credential.secret}` };
 }
 
 /**
  * Lists the models a provider serves to a credential, through the provider's own
- * models endpoint. Runs only in the runner: the secret is sent to the registry
- * host and nowhere else, and no failure carries it or the provider's response text.
+ * models endpoint. A public endpoint (`auth: 'none'`) is listed without one. Runs
+ * only in the runner: the secret is sent to the registry host and nowhere else,
+ * and no failure carries it or the provider's response text.
  */
 export async function fetchProviderModels(
   http: ProviderHttpClient,
   provider: ModelProviderKind,
-  credential: ProviderCatalogCredential,
+  credential: ProviderCatalogCredential | undefined,
   options: ProviderCatalogOptions = {}
 ): Promise<ProviderListedModel[]> {
   const definition = getModelProvider(provider);
   const endpoint = definition.modelsEndpoint;
   if (!endpoint || definition.catalogStrategy !== 'provider-models') throw new CatalogSourceError('upstream_error');
-  const { secret } = credential;
+  const secret = endpoint.auth === 'none' ? undefined : credential?.secret;
   // A provider that asks for a session header gets a fresh id per listing, as the connection check sends.
   const headers = definition.sessionHeader === null
     ? authHeaders(endpoint.auth, credential)

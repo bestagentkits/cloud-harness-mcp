@@ -42,7 +42,7 @@ describe('model provider registry', () => {
     expect(provider.requiresCustomUpstream).toBe(false);
     expect(provider.catalogStrategy).toBe('provider-models');
     expect(provider.openRouterVendor).toBeNull();
-    expect(provider.modelsEndpoint).toEqual({ url: 'https://opencode.ai/inference/go/v1/models', auth: 'bearer' });
+    expect(provider.modelsEndpoint).toEqual({ url: 'https://opencode.ai/inference/go/v1/models', auth: 'none' });
     for (const url of [...Object.values(provider.endpoints), provider.modelsEndpoint!.url, provider.docsUrl!, provider.apiKeyUrl!]) {
       expect(new URL(url).protocol).toBe('https:');
       expect(new URL(url).hostname).toBe('opencode.ai');

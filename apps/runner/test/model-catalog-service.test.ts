@@ -162,6 +162,28 @@ describe('ModelCatalogService', () => {
     expect(result.freshness.sources.map((source) => source.source)).toEqual(['openrouter']);
   });
 
+  it('lists OpenCode Go models from its public models endpoint, with or without a credential, and never sends the key there', async () => {
+    const { repo, p1, p2, http, service } = setup();
+    http.vendor = () => json({ object: 'list', data: [{ id: 'kimi-k2.6', object: 'model', owned_by: 'opencode' }, { id: 'glm-5.1', object: 'model', owned_by: 'opencode' }] });
+    const catalog = service();
+    const anonymous = await catalog.search(p1, search({ provider: 'opencode-go' }));
+    expect(anonymous.entries.map((entry) => [entry.providerModelId, entry.availability])).toEqual([
+      ['glm-5.1', 'public_catalog'], ['kimi-k2.6', 'public_catalog']
+    ]);
+    expect(anonymous.freshness.sources.map((source) => [source.source, source.state])).toEqual([['provider', 'fresh'], ['openrouter', 'fresh']]);
+
+    const credential = repo.createCredential(p2, { label: 'Go', provider: 'opencode-go', apiKey: 'sk-opencode-secret' });
+    const keyed = await catalog.search(p2, search({ provider: 'opencode-go', credentialId: credential.id }));
+    expect(keyed.entries.map((entry) => [entry.providerModelId, entry.availability])).toEqual([
+      ['glm-5.1', 'listed_for_credential'], ['kimi-k2.6', 'listed_for_credential']
+    ]);
+    // One shared listing serves every principal within its TTL.
+    const vendorCalls = http.calls.filter((call) => new URL(call.url).hostname === 'opencode.ai');
+    expect(vendorCalls.map((call) => call.url)).toEqual(['https://opencode.ai/inference/go/v1/models']);
+    expect(vendorCalls[0]?.headers?.authorization).toBeUndefined();
+    expect(JSON.stringify(http.calls)).not.toContain('sk-opencode-secret');
+  });
+
   it('falls back to public entries and reports the category when the listing fails', async () => {
     const { repo, p1, http, service } = setup();
     http.vendor = () => json({ error: { message: 'bad key sk-openai-secret' } }, 401);
