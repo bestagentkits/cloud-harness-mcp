@@ -1,3 +1,10 @@
+# [0.66.0-beta.27](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.26...v0.66.0-beta.27) (2026-10-17)
+
+
+### Features
+
+* expose model setup and spend tools over MCP ([#391](https://github.com/bestagentkits/cloud-harness-mcp/issues/391)) ([dac2ebe](https://github.com/bestagentkits/cloud-harness-mcp/commit/dac2ebe8cb8c499ea0c0d924dd74f6f00060b40a))
+
 # [0.66.0-beta.26](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.25...v0.66.0-beta.26) (2026-10-17)
 
 
