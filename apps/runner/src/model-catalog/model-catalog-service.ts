@@ -400,9 +400,13 @@ export class ModelCatalogService {
   ): Promise<{ entries: ModelCatalogEntry[]; freshness: ModelCatalogFreshness }> {
     const definition = getModelProvider(provider);
     if (definition.catalogStrategy === 'none') return { entries: [], freshness: overallFreshness([], false) };
-    const listingRequest = definition.catalogStrategy === 'provider-models' && credential
-      ? this.providerListing(principalId, provider, credential, force.provider)
-      : Promise.resolve(undefined);
+    // A public models list is the same for every key, so it is listed with or without a credential.
+    const publicListing = definition.catalogStrategy === 'provider-models' && definition.modelsEndpoint?.auth === 'none';
+    const listingRequest = publicListing
+      ? this.publicProviderListing(provider, force.provider)
+      : definition.catalogStrategy === 'provider-models' && credential
+        ? this.providerListing(principalId, provider, credential, force.provider)
+        : Promise.resolve(undefined);
     const [openRouter, listing] = await Promise.all([this.openRouter(force.openRouter), listingRequest]);
     const openRouterModels = openRouter.snapshot?.entries ?? [];
     const openRouterFetchedAt = openRouter.snapshot?.fetchedAt ?? null;
@@ -438,7 +442,8 @@ export class ModelCatalogService {
           maxOutputTokens: model.maxOutputTokens ?? metadata?.maxCompletionTokens ?? null,
           capabilities: vendorCapabilities(metadata),
           pricing: price(metadata, provider, 'estimate', openRouterFetchedAt),
-          availability: 'listed_for_credential',
+          // A public list proves the model ID, not that the selected key may use it.
+          availability: publicListing && !credential ? 'public_catalog' : 'listed_for_credential',
           expiresAt: metadata?.expiresAt ?? null
         };
       })
@@ -474,6 +479,22 @@ export class ModelCatalogService {
       fetch: () => fetchOpenRouterModels(this.options.http),
       save: (snapshot) => this.store.saveOpenRouter(snapshot)
     };
+  }
+
+  /**
+   * A provider's public models list, shared by every principal. It holds no
+   * private data and is cheap to refetch, so it is cached in memory only.
+   */
+  private async publicProviderListing(provider: ModelProviderKind, force: boolean): Promise<SourceResult<ProviderListedModel>> {
+    return await this.providerCache.get({
+      source: 'provider',
+      key: `public\u0000${provider}`,
+      ttlMs: PROVIDER_CATALOG_TTL_MS,
+      force,
+      load: () => undefined,
+      fetch: () => fetchProviderModels(this.options.http, provider, undefined, { now: this.now }),
+      save: () => undefined
+    });
   }
 
   /** Keyed by principal, credential, and active version, so a rotated key or another principal never reuses a listing. */

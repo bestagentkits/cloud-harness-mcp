@@ -24,7 +24,7 @@ same list, with their own key metadata, through `model_provider_list`.
 | OpenRouter | Bearer | Chat Completions, Responses | OpenRouter's public catalog | Yes | [openrouter.ai](https://openrouter.ai/settings/keys) |
 | Google Gemini | Bearer | Chat Completions (OpenAI-compatible endpoint) | Provider's models endpoint, with your key | No | [aistudio.google.com](https://aistudio.google.com/apikey) |
 | DeepSeek | Bearer | Chat Completions | Provider's models endpoint, with your key | No | [platform.deepseek.com](https://platform.deepseek.com/api_keys) |
-| OpenCode Go | Bearer | Chat Completions, Responses (OpenAI-compatible paths) | Provider's models endpoint, with your key | Yes | [opencode.ai/console](https://opencode.ai/console) |
+| OpenCode Go | Bearer | Chat Completions, Responses (OpenAI-compatible paths) | Provider's public models endpoint, without your key | Yes | [opencode.ai/console](https://opencode.ai/console) |
 | Custom (OpenAI-compatible) | Bearer or `x-api-key` | Chat Completions or Responses, at the one HTTPS URL you enter | None: you enter the model ID | Yes | Your provider's console |
 
 OpenCode asks clients to send a session header, and the harness always sends it for OpenCode
@@ -229,7 +229,9 @@ token refresh, and gateway request rewriting.
 OpenCode Go uses an API key, which fits the existing credential model, and documents
 OpenAI-compatible Chat Completions and Responses endpoints under
 `https://opencode.ai/inference/go/openai/v1/` and a models list at
-`https://opencode.ai/inference/go/v1/models`. Its docs address third-party coding agents
+`https://opencode.ai/inference/go/v1/models`. That list is public, so the catalog reads it
+without your key and shows the Go models even before you pick a credential; the connection
+check still sends your key there to confirm it is accepted. Its docs address third-party coding agents
 directly and ask them to send their own user agent and a stable `x-opencode-session`. The
 registry records that header for the provider, so the gateway and the connection check send
 it without an instance setting. The limits are listed under [OpenCode Go](#opencode-go)
