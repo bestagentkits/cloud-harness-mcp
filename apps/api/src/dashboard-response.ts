@@ -665,6 +665,9 @@ const descriptiveOperations = new Set<string>([
   'skill_set_create', 'skill_set_update', 'skill_set_delete',
   'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete',
   'skill_suggest',
+  // Model setup refusals come from the provider registry (unsupported API or auth mode, custom URL rules)
+  // and name the supported values without echoing a credential or URL.
+  'model_credential_create', 'model_profile_create', 'model_profile_update',
   // Package decisions answer with the store's plain refusal (digest mismatch, expired, rollback target gone,
   // stale generation, apply in flight).
   'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove'

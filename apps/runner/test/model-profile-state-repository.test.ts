@@ -150,6 +150,31 @@ describe('ModelProfileStateRepository', () => {
       .toThrow('does not accept the x-api-key auth mode');
   });
 
+  it('refuses to bind a profile to a stored credential whose auth mode the provider no longer accepts', () => {
+    const { store, repo, p1 } = setup();
+    const base = {
+      displayName: 'Profile',
+      model: 'gemini-2.5-flash',
+      apiMode: 'chat-completions' as const,
+      pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { maxInputTokens: 1000, maxOutputTokens: 100, maxCostMicros: 1000 },
+      maxProxyOperations: ['files_read' as const]
+    };
+    const gemini = repo.createCredential(p1, { label: 'Gemini', provider: 'google', apiKey: 'gm-key' });
+    const profile = repo.createProfile(p1, { ...base, profileId: ModelProfileIdSchema.parse('gemini'), credentialId: gemini.id });
+    // Simulates a credential saved before Gemini was limited to bearer auth.
+    store.database.prepare('UPDATE model_provider_credentials SET auth_mode = ? WHERE id = ?').run('x-api-key', gemini.id);
+
+    expect(() => repo.createProfile(p1, { ...base, profileId: ModelProfileIdSchema.parse('gemini-2'), credentialId: gemini.id }))
+      .toThrow('add a new credential with bearer auth');
+    expect(() => repo.updateProfile(p1, profile.id, { displayName: 'Gemini v2', expectedGeneration: 1 }))
+      .toThrow('which Google Gemini does not accept');
+
+    const replacement = repo.createCredential(p1, { label: 'Gemini bearer', provider: 'google', apiKey: 'gm-key-2' });
+    const moved = repo.updateProfile(p1, profile.id, { credentialId: replacement.id, expectedGeneration: 1 });
+    expect(moved.credentialId).toBe(replacement.id);
+  });
+
   it('keeps a custom profile\'s upstream URL when an edit does not resubmit it', () => {
     const { repo, p1 } = setup();
     const cred = repo.createCredential(p1, { label: 'Custom', provider: 'custom', apiKey: 'custom-key' });

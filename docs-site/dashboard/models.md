@@ -13,7 +13,7 @@ The **Subagent Models** dashboard (`/dashboard/models`) allows authenticated ope
 Operators can configure API keys for these providers. Endpoints, accepted auth headers, and
 supported API modes come from the provider registry
 ([`packages/contracts/src/model-provider-registry.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-provider-registry.ts)),
-which the dashboard and agents can read at `GET /api/v1/model-providers`.
+which authenticated dashboard sessions can read at `GET /api/v1/model-providers`.
 
 | Provider | Chat Completions | Responses | Auth header |
 | --- | --- | --- | --- |
@@ -26,10 +26,15 @@ which the dashboard and agents can read at `GET /api/v1/model-providers`.
 
 Saving a profile with an API mode its provider does not offer, or a credential with an auth
 header its provider does not accept, is refused with a message naming the supported values.
+A credential stored with an auth header its provider no longer accepts cannot back a profile:
+add a new credential with the supported header and select it on the profile.
 
 > **Gemini profiles created before this fix** were routed to a path Google does not serve and
 > failed with 404. Profile revisions are immutable, so edit and save each Gemini profile once:
-> the new revision uses the documented `v1beta/openai` endpoint.
+> the new revision uses the documented `v1beta/openai` endpoint. If the profile used the
+> Responses API mode, switch it to Chat Completions in the same edit. If its credential was
+> saved with the `x-api-key` header, add a new Gemini credential (Bearer) and select it, then
+> delete the old credential.
 
 ### Adding a Credential
 1. Navigate to **Configuration $\rightarrow$ Models** in the sidebar.
@@ -46,7 +51,8 @@ header its provider does not accept, is refused with a message naming the suppor
 
 Model profiles define how subagents interact with LLMs:
 - **Model Name:** The provider-specific model identifier (e.g. `gpt-5.2-codex`, `claude-3.7-sonnet`).
-- **API Mode:** `chat-completions` (`/v1/chat/completions`) or `responses` (`/v1/responses`).
+- **API Mode:** `chat-completions` (`/v1/chat/completions`) or `responses` (`/v1/responses`), limited to the modes the provider offers.
+- **Custom upstream URL:** Required for a Custom credential. Editing the profile keeps its current URL unless you enter a new one; switching to a different Custom credential requires entering the URL again.
 - **Token Pricing:** Input and output token pricing in USD per 1M tokens.
 - **Budget Limits:** Hard limits for maximum input tokens, output tokens, and cost per agent execution.
 - **Allowed Proxy Operations:** Hard ceiling on permitted file and search operations from the exact 10 safe tools (`files_list`, `files_read`, `files_write`, `files_apply_patch`, `files_delete`, `files_move`, `files_mkdir`, `grep_search`, `symbols_search`, `symbols_references`).

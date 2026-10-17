@@ -32,6 +32,15 @@ function resolveDownstreamPath(apiMode: string): string {
   throw new HarnessError('INVALID_INPUT', `unsupported apiMode ${apiMode}`);
 }
 
+// A credential stored before its provider narrowed the accepted auth modes would
+// fail every upstream call, so binding a profile to it is refused with the fix.
+function assertCredentialUsable(cred: { provider: ModelProviderKind; auth_mode: ProviderAuthMode }): void {
+  const definition = getModelProvider(cred.provider);
+  if (!definition.authModes.includes(cred.auth_mode)) {
+    throw new HarnessError('INVALID_INPUT', `This credential uses the ${cred.auth_mode} auth mode, which ${definition.displayName} does not accept; add a new credential with ${definition.authModes.join(' or ')} auth and select it`);
+  }
+}
+
 export class ModelProfileStateRepository {
   constructor(
     private readonly database: DatabaseSync,
@@ -238,10 +247,11 @@ export class ModelProfileStateRepository {
 
   createProfile(principalId: string, input: AgentModelProfileInput): AgentModelProfileMetadata {
     const cred = this.database.prepare(`
-      SELECT id, provider FROM model_provider_credentials WHERE id = ? AND principal_id = ?
-    `).get(input.credentialId, principalId) as { id: string; provider: ModelProviderKind } | undefined;
+      SELECT id, provider, auth_mode FROM model_provider_credentials WHERE id = ? AND principal_id = ?
+    `).get(input.credentialId, principalId) as { id: string; provider: ModelProviderKind; auth_mode: ProviderAuthMode } | undefined;
 
     if (!cred) throw new HarnessError('NOT_FOUND', 'referenced credential was not found', 404, false);
+    assertCredentialUsable(cred);
 
     const downstreamPath = resolveDownstreamPath(input.apiMode);
     const upstreamUrl = resolveProviderUpstreamUrl(cred.provider, input.apiMode, input.customUpstreamUrl);
@@ -446,9 +456,10 @@ export class ModelProfileStateRepository {
 
     const credentialId = input.credentialId ?? profile.credential_id;
     const cred = this.database.prepare(`
-      SELECT id, provider FROM model_provider_credentials WHERE id = ? AND principal_id = ?
-    `).get(credentialId, principalId) as { id: string; provider: ModelProviderKind } | undefined;
+      SELECT id, provider, auth_mode FROM model_provider_credentials WHERE id = ? AND principal_id = ?
+    `).get(credentialId, principalId) as { id: string; provider: ModelProviderKind; auth_mode: ProviderAuthMode } | undefined;
     if (!cred) throw new HarnessError('NOT_FOUND', 'referenced credential was not found', 404, false);
+    assertCredentialUsable(cred);
 
     const model = input.model ?? currentRev?.model ?? 'default';
     const apiMode = input.apiMode ?? currentRev?.api_mode ?? 'chat-completions';
