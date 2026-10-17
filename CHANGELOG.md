@@ -1,3 +1,10 @@
+# [0.66.0-beta.24](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.23...v0.66.0-beta.24) (2026-10-17)
+
+
+### Features
+
+* **runner:** dry-run model profile changes, guard escalations, and audit every profile save ([#388](https://github.com/bestagentkits/cloud-harness-mcp/issues/388)) ([5f1d309](https://github.com/bestagentkits/cloud-harness-mcp/commit/5f1d309a20d097cab9bfc701073d1717c288042f))
+
 # [0.66.0-beta.23](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.22...v0.66.0-beta.23) (2026-10-17)
 
 
