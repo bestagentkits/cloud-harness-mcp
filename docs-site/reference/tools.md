@@ -1303,7 +1303,7 @@ Create an agent model profile on one of your stored credentials. Profiles create
 
 **Update agent model profile**
 
-Create a new revision of one of your profiles, guarded by expectedGeneration (a moved generation returns CONFLICT: re-read it with model_profile_list) and an idempotencyKey. Omitted fields keep their current values. Raising a limit, lowering a price that is not catalog-verified, carrying override prices to another model or credential, widening proxy operations, or using an unbound custom upstream returns OWNER_APPROVAL_REQUIRED and changes nothing, whatever the profile status; the owner makes those changes on the Dashboard. Status is never changed here.
+Create a new revision of one of your profiles, guarded by expectedGeneration (a moved generation returns CONFLICT: re-read it with model_profile_list) and an idempotencyKey. Omitted fields keep their current values. Moving to another credentialId, raising a limit, lowering a price that is not catalog-verified, carrying override prices to another model or credential, widening proxy operations, or using an unbound custom upstream returns OWNER_APPROVAL_REQUIRED and changes nothing, whatever the profile status; the owner makes those changes on the Dashboard. Status is never changed here.
 
 **Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
 

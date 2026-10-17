@@ -361,6 +361,7 @@ Per-run caps are unchanged: a policy never raises or clamps an agent's own `maxC
 | :--- | :--- |
 | `limits_raised` | A token or cost limit above the current revision's. |
 | `price_lowered` | A lower price that is not pinned from the catalog (`catalogPriceRef`). |
+| `credential_changed` | An update that moves the profile to another provider credential. |
 | `price_unverified_for_new_route` | Override prices carried to another model or credential. |
 | `proxy_operations_widened` | A proxy operation the current revision does not allow. |
 | `custom_upstream_unbound` | A Custom credential's upstream URL that none of your profiles on that credential uses yet, on a create, an update, or a draft connection check. |

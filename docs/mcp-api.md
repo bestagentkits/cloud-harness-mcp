@@ -214,12 +214,13 @@ The Dashboard keeps the owner's decisions:
   profile (`activation: "dashboard_required"`), which the gateway does not
   serve until the owner activates it. `model_profile_update` keeps the
   profile's status.
-- **Escalations need the owner.** A save that would raise a token or cost
-  limit, lower a price that is not catalog-verified, carry override prices to
-  another model or credential, widen proxy operations, or use a Custom
-  upstream URL that none of the principal's profiles on that credential uses
-  is refused with `OWNER_APPROVAL_REQUIRED` (403, not retryable,
-  `resumeAction: "dashboard:models"`). The rules are owned by
+- **Escalations need the owner.** An update that would move the profile to
+  another credential, raise a token or cost limit, lower a price that is not
+  catalog-verified, carry override prices to another model or credential, or
+  widen proxy operations, and any save that would use a Custom upstream URL
+  that none of the principal's profiles on that credential uses, is refused
+  with `OWNER_APPROVAL_REQUIRED` (403, not retryable,
+  `resumeAction: "dashboard:models"`), whatever the profile's status. The rules are owned by
   [`apps/runner/src/model-profile-guard.ts`](../apps/runner/src/model-profile-guard.ts)
   and are applied inside the save's transaction, so nothing is written; the
   refusal is audited separately as `model_profile.change_refused` with the
@@ -227,13 +228,21 @@ The Dashboard keeps the owner's decisions:
   upstream URL is refused the same way before any request is sent, and audited
   as `model_connection.refused`. `model_profile_validate` reports the same
   escalations without writing, and the Dashboard can save every one of them.
+- **A create has no baseline.** The other rules compare a change with the
+  profile's current revision, so only an unbound Custom upstream can refuse a
+  create: its limits, override prices, and proxy operations are what the
+  client chose. Dashboard **Activate** approves that whole MCP-authored
+  revision, so the owner reviews them before activating.
 - **Idempotency and generations.** Create and update require an
   `idempotencyKey`. The record is keyed by principal, tool, and key, bound to
   a SHA-256 fingerprint of the rest of the input, written in the save's
   transaction, and kept for 24 hours: the same key and input return the first
   result with `replayed: true`, and the same key with other input returns
   `CONFLICT`. A refused or failed call records nothing, so its key can be
-  reused. Update also requires `expectedGeneration`; a moved generation
+  reused. Replaying an update of an `ACTIVE` profile also resyncs the gateway
+  when its snapshot is behind, so a retry heals a sync lost after the commit.
+  A save whose draft check could not be kept after the commit still succeeds;
+  its result, and every replay of it, then omits `lastVerification`. Update also requires `expectedGeneration`; a moved generation
   returns `CONFLICT`, recovered by re-reading `model_profile_list`.
 - **Audit.** Saves and connection checks are audited with the actor `mcp`;
   reads are not audited. Audit details name the route, limits, and price

@@ -391,9 +391,12 @@ the key it uses, its prices, and its per-run cost and token limits. Actions are 
 **Delete**.
 
 A profile created by an agent over MCP (`model_profile_create`) is always saved
-**Disabled**. It routes no subagent until you review it here and choose **Activate**. An
-MCP change that would raise spend or widen permissions is refused with
-`OWNER_APPROVAL_REQUIRED`; make that change here instead. See
+**Disabled**. It routes no subagent until you review it here and choose **Activate**. A new
+profile has nothing to compare with, so only a Custom URL the key has not used yet stops an
+MCP create: the limits, prices, and proxy operations are whatever the agent chose.
+**Activate** approves that whole revision, so check them before you activate it. An MCP
+update that would move the profile to another key, raise spend, or widen permissions is
+refused with `OWNER_APPROVAL_REQUIRED`; make that change here instead. See
 [API and MCP examples](/reference/model-providers#api-and-mcp-examples) for the MCP tools.
 
 The **Price per 1M (in / out)** column shows the revision's pinned prices as saved:
