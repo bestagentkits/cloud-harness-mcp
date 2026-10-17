@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { AgentModelProfileInputSchema } from '@cloud-harness/contracts';
+import { AgentModelPricingSchema, AgentModelProfileInputSchema } from '@cloud-harness/contracts';
 import './dashboard-test-dom.js';
 import {
   MUTATING_PROXY_OPERATIONS, PERMISSION_PRESETS, PROXY_OPERATIONS,
@@ -250,7 +250,7 @@ describe('model profile wizard rules', () => {
       kind: 'create',
       body: {
         profileId: 'gpt-5-mini', displayName: 'GPT-5 mini', credentialId, model: 'gpt-5-mini', apiMode: 'chat-completions',
-        pricing: { inputMicrosPerMillionTokens: 250_000, outputMicrosPerMillionTokens: 2_000_000 },
+        pricing: { inputMicrosPerMillionTokens: 250_000, outputMicrosPerMillionTokens: 2_000_000, cacheReadMicrosPerMillionTokens: null, cacheWriteMicrosPerMillionTokens: null, tiers: [] },
         catalogPriceRef: { sourceModelId: 'openai/gpt-5-mini' },
         limits: { maxInputTokens: 200_000, maxOutputTokens: 32_000, maxCostMicros: 5_000_000 },
         maxProxyOperations: [...PERMISSION_PRESETS.read.operations].sort((a, b) => PROXY_OPERATIONS.indexOf(a) - PROXY_OPERATIONS.indexOf(b))
@@ -280,7 +280,8 @@ describe('model profile wizard rules', () => {
     const state = createDraft();
     applyCatalogEntry(state, tiered);
     const accepted = buildProfileRequest(state, openai).request.body;
-    expect(accepted.pricing).toEqual({ inputMicrosPerMillionTokens: 250_000, outputMicrosPerMillionTokens: 2_000_000, cacheReadMicrosPerMillionTokens: 25_000, tiers: [tier] });
+    // An unpublished cache price is sent as null, so the save replaces any saved cache price.
+    expect(accepted.pricing).toEqual({ inputMicrosPerMillionTokens: 250_000, outputMicrosPerMillionTokens: 2_000_000, cacheReadMicrosPerMillionTokens: 25_000, cacheWriteMicrosPerMillionTokens: null, tiers: [tier] });
     expect(accepted.catalogPriceRef).toEqual({ sourceModelId: 'openai/gpt-5-mini' });
     expect(AgentModelProfileInputSchema.safeParse(accepted).success).toBe(true);
 
@@ -944,7 +945,25 @@ describe('model wizard controller', () => {
     await view.submit();
     const [, body] = view.api.updateProfile.mock.calls[0] as unknown as [string, Record<string, unknown>];
     expect(body.catalogPriceRef).toEqual({ sourceModelId: 'openai/gpt-5' });
-    expect(body.pricing).toEqual({ inputMicrosPerMillionTokens: 1_500_000, outputMicrosPerMillionTokens: 12_000_000, cacheReadMicrosPerMillionTokens: 150_000 });
+    expect(body.pricing).toEqual({ inputMicrosPerMillionTokens: 1_500_000, outputMicrosPerMillionTokens: 12_000_000, cacheReadMicrosPerMillionTokens: 150_000, cacheWriteMicrosPerMillionTokens: null, tiers: [] });
+  });
+
+  it('clears a saved cache price and tiers the catalog no longer publishes when accepting the catalog price', async () => {
+    // The input and output prices already match the catalog; only the saved cache price and tier differ.
+    const catalogEntry = entry({ providerModelId: 'gpt-5', displayName: 'GPT-5', pricing: { ...entry().pricing, inputMicrosPerMillionTokens: 1_250_000, outputMicrosPerMillionTokens: 10_000_000, cacheReadMicrosPerMillionTokens: null, cacheWriteMicrosPerMillionTokens: null, provenance: { source: 'openrouter', sourceModelId: 'openai/gpt-5', retrievedAt: 1_760_000_000_000, confidence: 'estimate' } } });
+    const view = mount({ searchCatalog: vi.fn(async () => catalogResult([catalogEntry])) });
+    const tier = { minPromptTokens: 272_000, inputMicrosPerMillionTokens: 2_500_000, outputMicrosPerMillionTokens: 20_000_000 };
+    const saved = profile({ activeRevision: { ...profile().activeRevision, pricing: { inputMicrosPerMillionTokens: 1_250_000, outputMicrosPerMillionTokens: 10_000_000, cacheReadMicrosPerMillionTokens: 125_000, tiers: [tier] } } });
+    view.wizard.open({ mode: 'edit', profile: saved, profiles: [saved], credentials, providers, useCatalogPrice: true });
+    await flush();
+    expect(view.q('[data-price-save]')!.textContent).toBe('Catalog price');
+    await view.submit();
+    await view.submit();
+    const [, body] = view.api.updateProfile.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(body.catalogPriceRef).toEqual({ sourceModelId: 'openai/gpt-5' });
+    // Explicit nulls and an empty tier list: a body with only input and output would let the runner keep the saved cache price and tier.
+    expect(body.pricing).toEqual({ inputMicrosPerMillionTokens: 1_250_000, outputMicrosPerMillionTokens: 10_000_000, cacheReadMicrosPerMillionTokens: null, cacheWriteMicrosPerMillionTokens: null, tiers: [] });
+    expect(AgentModelPricingSchema.safeParse(body.pricing).success).toBe(true);
   });
 
   it('labels an edited price as a custom override and sends it without a catalog reference', async () => {
@@ -964,8 +983,18 @@ describe('model wizard controller', () => {
     expect(body.pricing).toEqual({ inputMicrosPerMillionTokens: 250_000, outputMicrosPerMillionTokens: 2_100_000 });
   });
 
-  it('keeps the saved price when the catalog has none, and says so', async () => {
+  it('keeps the saved price and shows the error when the catalog lookup fails', async () => {
     const view = mount({ searchCatalog: vi.fn(async () => { throw new Error('The catalog is unavailable.'); }) });
+    const saved = profile();
+    view.wizard.open({ mode: 'edit', profile: saved, profiles: [saved], credentials, providers, useCatalogPrice: true });
+    await flush();
+    expect(view.wizard.state).toMatchObject({ pricingInput: '1.25', pricingOutput: '10.00', selectedEntry: null });
+    expect(view.status.textContent).toBe('The catalog is unavailable. The saved price is unchanged.');
+    expect(view.q('[data-price-save]')!.textContent).toBe('Saved price (unchanged)');
+  });
+
+  it('keeps the saved price when the catalog has none, and says so', async () => {
+    const view = mount({ searchCatalog: vi.fn(async () => catalogResult([entry()])) });
     const saved = profile();
     view.wizard.open({ mode: 'edit', profile: saved, profiles: [saved], credentials, providers, useCatalogPrice: true });
     await flush();

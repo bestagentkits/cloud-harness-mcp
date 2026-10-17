@@ -72,6 +72,18 @@ describe('spend amounts typed in US dollars', () => {
     expect(parseSpendLimit('$25')).toEqual({ micros: 25_000_000 });
     expect(parseSpendLimit('1000000')).toEqual({ micros: 1_000_000_000_000 });
     expect(parseSpendLimit('10.')).toEqual({ micros: 10_000_000 });
+    expect(parseSpendLimit('.5')).toEqual({ micros: 500_000 });
+    expect(parseSpendLimit('$.000001')).toEqual({ micros: 1 });
+  });
+
+  it('ignores surrounding whitespace and leading zeros', () => {
+    expect(parseSpendLimit('  25.5 \t')).toEqual({ micros: 25_500_000 });
+    expect(parseSpendLimit('$ 7')).toEqual({ micros: 7_000_000 });
+    expect(parseSpendLimit('007.50')).toEqual({ micros: 7_500_000 });
+    expect(parseSpendLimit('0001000000')).toEqual({ micros: 1_000_000_000_000 });
+    expect(parseSpendLimit('00.000001')).toEqual({ micros: 1 });
+    expect(parseSpendLimit('2 5').error).toBeDefined();
+    expect(parseSpendLimit('   ').error).toBe('Enter a limit in US dollars.');
   });
 
   it('rejects more than six decimals, negative, zero, oversized, and garbled amounts', () => {
@@ -81,6 +93,9 @@ describe('spend amounts typed in US dollars', () => {
     expect(parseSpendLimit('1000000.000001')).toEqual({ error: 'Keep the limit at or below $1,000,000.' });
     expect(parseSpendLimit('1e3').error).toBeDefined();
     expect(parseSpendLimit('12,50').error).toBeDefined();
+    expect(parseSpendLimit('.')).toEqual({ error: 'Enter a dollar amount such as 25 or 12.50.' });
+    expect(parseSpendLimit('$')).toEqual({ error: 'Enter a limit in US dollars.' });
+    expect(parseSpendLimit('.0')).toEqual({ error: 'Enter an amount above $0.' });
     expect(parseSpendLimit('').error).toBe('Enter a limit in US dollars.');
     expect(parseWarnPercent('80')).toEqual({ percent: 80 });
     expect(parseWarnPercent('0').error).toBeDefined();
@@ -118,7 +133,7 @@ describe('saved price provenance and repricing', () => {
     const repriced = renderModelsPage({ profiles: [profile({ pricingReview: review() })], credentials: [], providers: [] });
     expect(repriced).toContain('data-pricing-review="repriced"><span>Catalog price changed by 25% since saved</span>');
     // Both the table row and the phone card carry the action, which only opens the edit form.
-    expect(repriced.match(/data-model-action="review-price" data-profile-id="gpt-5">Review catalog price<\/button>/g)).toHaveLength(2);
+    expect(repriced.match(/data-model-action="review-price" data-profile-id="gpt-5" aria-label="Review catalog price for GPT 5">Review catalog price<\/button>/g)).toHaveLength(2);
 
     const override = renderSavedPricing(profile({ pricingReview: review({ isOverride: true }) }, { priceProvenance: overrideProvenance }));
     expect(override).toContain('data-pricing-review="override"><span>Differs from catalog</span>');
@@ -127,10 +142,30 @@ describe('saved price provenance and repricing', () => {
 
     expect(pricingReviewNotice(review({ changes: [{ field: 'tier', minPromptTokens: 200_000, pinned: null, catalog: 3_000_000, percent: null }] }))?.text).toBe('Catalog price changed since saved');
     expect(pricingReviewNotice(review({ changes: [{ field: 'input', minPromptTokens: null, pinned: 3, catalog: 4, percent: 12.5 }] }))?.text).toBe('Catalog price changed by 12.5% since saved');
-    for (const state of ['current', 'unknown']) {
-      expect(renderSavedPricing(profile({ pricingReview: review({ state, changes: [] }) }))).not.toContain('data-pricing-review');
-    }
+    expect(renderSavedPricing(profile({ pricingReview: review({ state: 'current', changes: [] }) }))).not.toContain('data-pricing-review');
+    const unknown = renderSavedPricing(profile({ pricingReview: review({ state: 'unknown', changes: [] }) }));
+    expect(unknown).toContain('data-pricing-review="unknown">No catalog price to compare with</small>');
+    expect(unknown).not.toContain('data-model-action="review-price"');
     expect(renderSavedPricing(profile())).not.toContain('data-pricing-review');
+  });
+
+  it('says how old the catalog behind a repriced or unknown review is, and notes conditional catalog pricing', () => {
+    const retrievedAt = new Date(1_760_000_000_000).toISOString();
+    for (const state of ['repriced', 'unknown']) {
+      const markup = renderSavedPricing(profile({ pricingReview: review({ state }) }));
+      expect(markup).toContain(`data-catalog-compared>Compared with the catalog from <time datetime="${retrievedAt}">`);
+    }
+    expect(renderSavedPricing(profile({ pricingReview: review({ state: 'current', changes: [] }) }))).not.toContain('data-catalog-compared');
+    expect(renderSavedPricing(profile({ pricingReview: review({ state: 'unknown', changes: [], catalogRetrievedAt: null }) }))).not.toContain('data-catalog-compared');
+
+    expect(renderSavedPricing(profile({ pricingReview: review() }))).not.toContain('data-conditional-pricing');
+    const conditional = renderSavedPricing(profile({ pricingReview: review({ state: 'current', changes: [], catalogHasConditionalPricing: true }) }));
+    expect(conditional).toContain('data-conditional-pricing>The catalog also prices this model by conditions a saved price cannot express, so the charge can differ from this estimate.</small>');
+  });
+
+  it('names the profile in the review action, escaped', () => {
+    const markup = renderSavedPricing(profile({ displayName: 'A <b>"x"</b>', pricingReview: review() }));
+    expect(markup).toContain('aria-label="Review catalog price for A &lt;b&gt;&quot;x&quot;&lt;/b&gt;"');
   });
 });
 
@@ -192,6 +227,11 @@ describe('spend panel', () => {
 describe('spend policy editor', () => {
   const flush = async () => { for (let index = 0; index < 20; index += 1) await Promise.resolve(); };
   const problem = (message: string, status: number, code: string) => Object.assign(new Error(message), { status, code });
+  const deferred = () => {
+    let resolve!: (value: unknown) => void;
+    const promise = new Promise<unknown>((done) => { resolve = done; });
+    return { promise, resolve };
+  };
 
   function mount(overrides: Record<string, unknown> = {}) {
     const section = new TreeElement('section', [['id', 'model-spend']]);
@@ -282,6 +322,38 @@ describe('spend policy editor', () => {
     expect(view.status()).toBe('Spend limit updated.');
   });
 
+  it('edits the recreated policy for the same scope and period after the edited one was deleted', async () => {
+    const recreatedId = `msp_${'n'.repeat(24)}`;
+    const recreated = summary([spendWindow({ policy: policy({ id: recreatedId, generation: 1, limitMicros: 30_000_000, warnPercent: 70 }), thresholdState: 'ok' })]);
+    const getSpend = vi.fn().mockResolvedValueOnce({ data: { summary: summary() } }).mockResolvedValue({ data: { summary: recreated } });
+    const setPolicy = vi.fn()
+      .mockRejectedValueOnce(problem('Model spend policy not found.', 404, 'not_found'))
+      .mockResolvedValueOnce({ data: {} });
+    const view = mount({ getSpend, setPolicy });
+    await view.panel.load();
+    await view.click(`[data-spend-action="edit"][data-policy-id="${policyId}"]`);
+    view.fill({ limit: '15' });
+    await view.submit();
+    expect(view.status()).toBe('Model spend policy not found.');
+    expect(view.panel.view.editor).toMatchObject({ mode: 'edit', policyId: recreatedId, generation: 1, period: 'day' });
+    expect(view.q('#spend-policy-heading')!.textContent).toBe('Edit spend limit');
+    expect(view.q('[name="limit"]')!.value).toBe('30.00');
+    await view.submit();
+    expect(setPolicy).toHaveBeenLastCalledWith({ policyId: recreatedId, period: 'day', limitMicros: 30_000_000, warnPercent: 70, expectedGeneration: 1 });
+    expect(view.status()).toBe('Spend limit updated.');
+  });
+
+  it('turns an edit into a create when its policy is gone and nothing replaced it', async () => {
+    const getSpend = vi.fn().mockResolvedValueOnce({ data: { summary: summary() } }).mockResolvedValue({ data: { summary: summary([spendWindow()]) } });
+    const view = mount({ getSpend, setPolicy: vi.fn(async () => { throw problem('Model spend policy not found.', 404, 'not_found'); }) });
+    await view.panel.load();
+    await view.click(`[data-spend-action="edit"][data-policy-id="${policyId}"]`);
+    view.fill({ limit: '15' });
+    await view.submit();
+    expect(view.panel.view.editor).toMatchObject({ mode: 'create', policyId: null, generation: null, period: 'day', limit: '15' });
+    expect(view.q('#spend-policy-heading')!.textContent).toBe('Add a spend limit');
+  });
+
   it('names the profile scope on a profile policy update', async () => {
     const view = mount();
     await view.panel.load();
@@ -299,6 +371,33 @@ describe('spend policy editor', () => {
     expect(view.api.deletePolicy).toHaveBeenCalledWith(policyId, 2);
     expect(view.api.getSpend).toHaveBeenCalledTimes(2);
     expect(view.announce).toHaveBeenCalledWith('Spend limit deleted.');
+  });
+
+  it('names the profile by its display name in the delete confirmation', async () => {
+    const view = mount();
+    await view.panel.load();
+    await view.click(`[data-spend-action="delete"][data-policy-id="${profilePolicyId}"]`);
+    expect(view.confirm).toHaveBeenCalledWith(expect.objectContaining({ target: 'Daily limit · GPT 5 (gpt-5)' }), expect.anything());
+    await view.click(`[data-spend-action="delete"][data-policy-id="${policyId}"]`);
+    expect(view.confirm).toHaveBeenLastCalledWith(expect.objectContaining({ target: 'Daily limit · All runs' }), expect.anything());
+  });
+
+  it('says so when a delete is confirmed while another change is still saving', async () => {
+    const pending = deferred();
+    let confirmed: (() => unknown) | undefined;
+    const view = mount({ setPolicy: vi.fn(() => pending.promise) });
+    view.confirm.mockImplementation((options: { action: () => unknown }) => { confirmed = options.action; });
+    await view.panel.load();
+    await view.click(`[data-spend-action="delete"][data-policy-id="${policyId}"]`);
+    view.fill({ limit: '30' });
+    await view.submit();
+    await confirmed!();
+    expect(view.api.deletePolicy).not.toHaveBeenCalled();
+    expect(view.status()).toBe('Another spend limit change is still saving. Delete the limit again once it finishes.');
+    pending.resolve({ data: {} });
+    await flush();
+    await confirmed!();
+    expect(view.api.deletePolicy).toHaveBeenCalledWith(policyId, 2);
   });
 
   it('re-reads the summary when a delete is refused as stale and shows the API text', async () => {

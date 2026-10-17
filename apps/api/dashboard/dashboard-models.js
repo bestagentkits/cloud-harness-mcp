@@ -205,6 +205,25 @@ export function pricingReviewNotice(review) {
   return { isOverride: false, text: `Catalog price changed by ${Number(largest.toFixed(1))}% since saved` };
 }
 
+export const PRICING_UNKNOWN_TEXT = 'No catalog price to compare with';
+export const CONDITIONAL_PRICING_TEXT = 'The catalog also prices this model by conditions a saved price cannot express, so the charge can differ from this estimate.';
+
+/**
+ * What the list says beside the repricing warning: whether the catalog has no
+ * price to compare with, when the catalog behind a repriced or unknown review was
+ * retrieved (null when unknown or not shown), and whether the catalog prices the
+ * model by conditions no saved price can express.
+ */
+export function pricingReviewContext(review) {
+  const state = review?.state;
+  const showsAge = state === 'repriced' || state === 'unknown';
+  return {
+    unknown: state === 'unknown',
+    comparedAt: showsAge && Number.isFinite(review.catalogRetrievedAt) ? review.catalogRetrievedAt : null,
+    conditional: review?.catalogHasConditionalPricing === true
+  };
+}
+
 /**
  * How a wizard save will record its prices: `catalog` when the catalog price is
  * sent unedited with its reference, `kept` when an edit restates the saved input
@@ -334,10 +353,13 @@ export function buildProfileRequest(state, provider) {
 
 /**
  * Pricing for a save. A catalog price the operator accepted unedited is sent
- * whole, cache prices and long-prompt tiers included, with a reference to its
- * catalog model; the runner records it as the catalog's only when it matches the
- * runner's own cached price. A typed price is sent as typed, with no reference,
- * and is saved as the operator's override.
+ * whole, with a reference to its catalog model; the runner records it as the
+ * catalog's only when it matches the runner's own cached price. Cache prices the
+ * catalog does not publish are sent as null and flat pricing as no tiers, so the
+ * save replaces every saved price instead of restating input and output only,
+ * which would keep a saved cache price or tier. A typed price is sent as typed,
+ * with no reference: the runner keeps the saved prices when it repeats the saved
+ * input and output, and records an override otherwise.
  */
 export function profilePricing(state, inputMicros, outputMicros) {
   const typed = { inputMicrosPerMillionTokens: inputMicros, outputMicrosPerMillionTokens: outputMicros };
@@ -347,14 +369,13 @@ export function profilePricing(state, inputMicros, outputMicros) {
   if (!sourceModelId || edited || price.inputMicrosPerMillionTokens !== inputMicros || price.outputMicrosPerMillionTokens !== outputMicros) {
     return { pricing: typed };
   }
-  const cacheRead = price.cacheReadMicrosPerMillionTokens;
-  const cacheWrite = price.cacheWriteMicrosPerMillionTokens;
+  const known = (micros) => (Number.isSafeInteger(micros) ? micros : null);
   return {
     pricing: {
       ...typed,
-      ...(Number.isSafeInteger(cacheRead) ? { cacheReadMicrosPerMillionTokens: cacheRead } : {}),
-      ...(Number.isSafeInteger(cacheWrite) ? { cacheWriteMicrosPerMillionTokens: cacheWrite } : {}),
-      ...(Array.isArray(price.tiers) && price.tiers.length ? { tiers: price.tiers } : {})
+      cacheReadMicrosPerMillionTokens: known(price.cacheReadMicrosPerMillionTokens),
+      cacheWriteMicrosPerMillionTokens: known(price.cacheWriteMicrosPerMillionTokens),
+      tiers: Array.isArray(price.tiers) ? price.tiers : []
     },
     catalogPriceRef: { sourceModelId }
   };
@@ -854,12 +875,16 @@ export function renderSavedPricing(profile) {
   const tiers = (revision.pricing.tiers ?? []).map((tier) => `<small class="price-line">From ${escape(tier.minPromptTokens.toLocaleString())} prompt tokens: <span class="mono">${escape(priceLevel(tier))}</span>, ${escape(cachePrices(tier))}</small>`).join('');
   const notice = pricingReviewNotice(profile.pricingReview);
   const review = notice
-    ? `<span class="pricing-review" data-pricing-review="${notice.isOverride ? 'override' : 'repriced'}"><span>${escape(notice.text)}</span> <button type="button" data-model-action="review-price" data-profile-id="${escape(profile.id)}">Review catalog price</button></span>`
+    ? `<span class="pricing-review" data-pricing-review="${notice.isOverride ? 'override' : 'repriced'}"><span>${escape(notice.text)}</span> <button type="button" data-model-action="review-price" data-profile-id="${escape(profile.id)}" aria-label="${escape(`Review catalog price for ${profile.displayName}`)}">Review catalog price</button></span>`
     : '';
+  const context = pricingReviewContext(profile.pricingReview);
+  const unknown = context.unknown ? `<small class="price-line" data-pricing-review="unknown">${escape(PRICING_UNKNOWN_TEXT)}</small>` : '';
+  const compared = context.comparedAt === null ? '' : `<small class="price-line" data-catalog-compared>Compared with the catalog from ${timeText(context.comparedAt)}</small>`;
+  const conditional = context.conditional ? `<small class="price-line" data-conditional-pricing>${escape(CONDITIONAL_PRICING_TEXT)}</small>` : '';
   return `<span class="mono">${escape(priceLevel(revision.pricing))}</span>`
     + `<small class="price-line">${escape(cachePrices(revision.pricing))}</small>${tiers}`
     + `<span class="price-provenance"><span class="${statusClass(provenance.isOverride ? 'info' : '')}" data-price-provenance="${provenance.isOverride ? 'override' : 'catalog'}">${escape(provenance.badge)}</span> <small>${escape(provenance.text)}${provenance.retrievedAt ? ` · retrieved ${timeText(provenance.retrievedAt)}` : ''}</small></span>`
-    + review;
+    + review + unknown + compared + conditional;
 }
 
 function profileActions(profile) {
@@ -937,11 +962,13 @@ export function parseSpendLimit(text) {
   const raw = String(text ?? '').trim().replace(/^\$\s*/, '');
   if (!raw) return { error: 'Enter a limit in US dollars.' };
   if (raw.startsWith('-')) return { error: 'Enter an amount above $0.' };
-  const match = /^(\d+)(?:\.(\d*))?$/.exec(raw);
-  if (!match) return { error: 'Enter a dollar amount such as 25 or 12.50.' };
-  const fraction = match[2] ?? '';
+  // Digits on either side of the point: 25, 12.50, 25. and .5 are all amounts.
+  const match = /^(\d*)(?:\.(\d*))?$/.exec(raw);
+  const whole = match?.[1] ?? '';
+  const fraction = match?.[2] ?? '';
+  if (!match || (!whole && !fraction)) return { error: 'Enter a dollar amount such as 25 or 12.50.' };
   if (fraction.length > 6) return { error: 'Use at most six decimal places.' };
-  const micros = BigInt(match[1]) * 1_000_000n + BigInt(fraction.padEnd(6, '0'));
+  const micros = BigInt(whole || '0') * 1_000_000n + BigInt(fraction.padEnd(6, '0'));
   if (micros <= 0n) return { error: 'Enter an amount above $0.' };
   if (micros > BigInt(SPEND_LIMIT_MAX_MICROS)) return { error: 'Keep the limit at or below $1,000,000.' };
   return { micros: Number(micros) };
@@ -1148,9 +1175,13 @@ export function createSpendPanel({ section, insert, api, announce, confirm, prof
       const text = errorMessage(error, 'The spend limit could not be saved.');
       if (isStaleRefusal(error)) {
         await load();
-        // An edit follows the policy's current values; a create keeps what was typed.
+        // An edit follows the policy's current values, including a policy that was
+        // deleted and recreated for the same scope and period under a new id; a create
+        // keeps what was typed.
         if (editor.mode === 'edit') {
-          const latest = policies().find((policy) => policy.id === editor.policyId);
+          const scopeProfileId = editor.profileId || null;
+          const latest = policies().find((policy) => policy.id === editor.policyId)
+            ?? policies().find((policy) => (policy.profileId ?? null) === scopeProfileId && policy.period === editor.period);
           view.editor = latest ? editorForPolicy(latest) : { ...editor, mode: 'create', policyId: null, generation: null };
         }
       }
@@ -1174,6 +1205,12 @@ export function createSpendPanel({ section, insert, api, announce, confirm, prof
     await refresh();
   }
 
+  /** A change confirmed while another is still saving is refused out loud, never dropped. */
+  function refuseWhileBusy() {
+    view.message = { tone: 'error', text: 'Another spend limit change is still saving. Delete the limit again once it finishes.' };
+    render();
+  }
+
   async function run(task) {
     if (busy) return;
     busy = true;
@@ -1195,11 +1232,11 @@ export function createSpendPanel({ section, insert, api, announce, confirm, prof
     else if (action === 'cancel-edit') startCreate();
     else if (action === 'edit' && policy) startEdit(policy);
     else if (action === 'delete' && policy) {
-      const scope = policy.profileId ?? 'all runs';
+      const scope = spendScopeLabel({ scope: policy.profileId ? 'profile' : 'principal', profileId: policy.profileId }, view.profiles);
       confirm({
         title: 'Delete spend limit?', label: 'Delete limit', pendingLabel: 'Deleting…', target: `${SPEND_POLICY_PERIOD_LABELS[policy.period]} limit · ${scope}`,
         description: 'Runs in this scope are no longer stopped by this limit. Recorded spend is kept.',
-        action: () => run(() => remove(policy))
+        action: () => (busy ? refuseWhileBusy() : run(() => remove(policy)))
       }, button);
     }
   });
@@ -1651,9 +1688,11 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
       const result = await api.searchCatalog({ provider: state.provider, credentialId: state.credentialId, q: model, limit: 10 });
       if (!isCurrent(token)) return;
       entry = (Array.isArray(result?.data?.entries) ? result.data.entries : []).find((candidate) => candidate.providerModelId === model);
-    } catch {
-      // A failed lookup leaves the saved price in place; the status below says so.
+    } catch (error) {
+      // A failed lookup leaves the saved price in place.
       if (!isCurrent(token)) return;
+      setStatus(`${errorMessage(error, 'The catalog could not be loaded.')} The saved price is unchanged.`, 'error');
+      return;
     }
     if (!entry || !Number.isSafeInteger(entry.pricing?.inputMicrosPerMillionTokens) || !Number.isSafeInteger(entry.pricing?.outputMicrosPerMillionTokens)) {
       setStatus('The catalog has no current price for this model. The saved price is unchanged; edit it under Advanced settings if needed.', 'error');
