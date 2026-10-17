@@ -102,8 +102,11 @@ Limitations:
   on, and the credential it needs, stay until that agent ends, even when the profile is
   edited while the spawn is in progress. Spawning a subagent pushes again when the gateway
   restarted or lost its profiles, and fails with `UNAVAILABLE` if the gateway is
-  unreachable. The dashboard's model status (`GET /api/v1/agent-model-config-status`)
-  reports whether the gateway answered and when the runner last attempted a push.
+  unreachable. The launch checks the gateway once more before it issues the agent's
+  lease; if the gateway is unreachable by then, the spawn was already accepted and the
+  agent ends `FAILED` instead. The dashboard's model status
+  (`GET /api/v1/agent-model-config-status`) reports whether the gateway answered and when
+  the runner last attempted a push.
 
 The full behaviour of the catalog, checks, and pricing review is described in
 [Models & Budgets](/dashboard/models).
