@@ -539,7 +539,7 @@ To verify live provider connectivity and obtain the operational receipts require
 
 - Verify exact release SHA, image digests, and staging deployment status.
 - Prepare a disposable test repository (no private secrets, PII, or customer data).
-- Ensure workspace uses `networkMode: "none"`.
+- Ensure workspace uses `networkProfile: "network-none"`; agents refuse any other profile.
 - Configure an operator profile in `/etc/cloud-harness-model-gateway/profiles.json` with low hard caps (`maxCostMicros: 500000`, approximately $0.50 maximum spending ceiling).
 - Mount the provider API key exclusively into Model Gateway (`/etc/cloud-harness-model-gateway/provider-api-key`).
 

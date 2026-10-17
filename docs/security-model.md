@@ -929,7 +929,7 @@ the boundary is explicit; the composer is
 - Hooks are defined in `.cloud-harness/hooks.json` supporting declarative JSON format with named lifecycle events (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`).
 - Automatic lifecycle execution requires explicit owner activation (`hooks_activate`) pinned to the exact manifest SHA-256 digest.
 - Modifying the hook script or manifest invalidates activation and blocks execution before process spawn.
-- All hooks execute in unprivileged executor containers with `networkMode: none` by default, no broker credentials, and no Docker socket.
+- All hooks execute in the workspace's unprivileged executor container under its network profile (`dependency-access` by default, `network-none` when the workspace opts out), with no broker credentials and no Docker socket.
 
 ### Third-Party Agent Toolkits & Provisioning Network Firewall
 

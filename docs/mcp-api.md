@@ -911,7 +911,8 @@ ChatGPT subscription (see
 - Hooks support declarative JSON format in `.cloud-harness/hooks.json` with named lifecycle events
   (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`). Automatic lifecycle
   execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest.
-  Execution runs exclusively inside the container executor with `networkMode: none` by default.
+  Execution runs inside the workspace's container executor under the workspace's network profile
+  (`dependency-access` by default, `network-none` when the workspace opted out of egress).
 - Knowledge (Memories & Journals) is stored in principal-isolated SQLite `StateStore` (schema v10) supporting `owner`, `project`, and `workspace` scopes for memories, and chronological journals (`engineering-log`, `decision-record`, `session-reflection`). Operations (`knowledge_create`, `knowledge_read`, `knowledge_update`, `knowledge_delete`, `knowledge_list`, `knowledge_search`, `knowledge_link`, `knowledge_unlink`, `knowledge_graph`) provide CAS concurrency (`expectedGeneration`), RRF hybrid search (FTS5 + vector similarity), and bidirectional graph relations with wikilink extraction.
 - Named deployments come from the repository's `.cloud-harness/deployments.json` and execute inside the
   existing executor; they do not receive deployment secrets or host credentials from the harness.
