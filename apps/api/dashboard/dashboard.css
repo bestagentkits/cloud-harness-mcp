@@ -1352,3 +1352,6 @@ dialog .stack-form { margin-block: 0; max-width: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.repository-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
+.repository-list li { overflow-wrap: anywhere; }

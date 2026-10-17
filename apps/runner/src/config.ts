@@ -174,6 +174,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     packagesBuildTimeoutMs: process.env.PACKAGES_BUILD_TIMEOUT_MS,
     minFreeBytes: process.env.MIN_FREE_BYTES,
     maxWorkspaceBytes: process.env.MAX_WORKSPACE_BYTES,
+    maxWorkspaceRepositories: process.env.MAX_WORKSPACE_REPOSITORIES,
     maxActiveWorkspacesPerOwner: process.env.MAX_ACTIVE_WORKSPACES_PER_OWNER,
     // An empty value must not coerce to 0, which would select immediate auto-close.
     recoverableGraceSeconds: process.env.WORKSPACE_RECOVERABLE_GRACE_SECONDS || undefined,
