@@ -64,9 +64,9 @@ export interface GatewayConfig {
   profiles: ReadonlyMap<string, GatewayProfile>;
   tlsCaFile?: string | undefined;
   /**
-   * Optional provider session header. Some OpenAI-compatible providers reject a
-   * request that carries no stable conversation identifier (OpenCode Go returns
-   * `400 MissingSessionID` without `x-opencode-session`). When set, the gateway
+   * Optional provider session header. Some OpenAI-compatible providers ask clients
+   * to send a stable conversation identifier (OpenCode asks for
+   * `x-opencode-session`). When set, the gateway
    * sends this header with the calling agent's id, which is stable for one agent
    * conversation, and always identifies itself through `user-agent`. A profile's
    * own `sessionHeader` takes precedence; this is the fallback for every other

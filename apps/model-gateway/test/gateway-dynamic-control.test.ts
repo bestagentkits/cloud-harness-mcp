@@ -256,7 +256,11 @@ describe('Model Gateway Dynamic Control & Hot Reload', () => {
     const profilesBefore = new Map(registry.profiles);
     const digestBefore = registry.snapshotDigest;
 
-    for (const [index, header] of (['authorization', 'X-Session', 'x-session\r\nx-evil', 42] as const).entries()) {
+    for (const [index, header] of ([
+      'authorization', 'X-Session', 'x-session\r\nx-evil', 42,
+      'transfer-encoding', 'te', 'connection', 'keep-alive', 'upgrade', 'trailer', 'expect',
+      'proxy-authorization', 'proxy-connection', 'cookie', 'accept-encoding', 'content-encoding'
+    ] as const).entries()) {
       const refused = await sendControl(socketPath, openCodeSnapshot(header, `rev_opencode_bad_${index}`, index + 2));
       expect(refused.ok, String(header)).toBe(false);
       expect(String(refused.error)).toContain('sessionHeader for credential cred_opencode_1');

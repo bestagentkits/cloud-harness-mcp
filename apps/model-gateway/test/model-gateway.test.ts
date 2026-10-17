@@ -451,6 +451,43 @@ describe('model gateway security boundary', () => {
     expect(received[3]).not.toHaveProperty('x-opencode-session');
   });
 
+  it('applies the same session header precedence on the Responses path', async () => {
+    const received: Array<Record<string, string | string[] | undefined>> = [];
+    const provider = await fakeProvider((request, response) => {
+      received.push({ ...request.headers });
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_1', usage: { input_tokens: 1, output_tokens: 1 } } })}\n\n`);
+    });
+    const controlSocket = controlSocketPath();
+    const running = await gateway(profile(provider.upstream), { reserve: vi.fn(), reconcile: vi.fn() }, undefined, {
+      controlSocket, tlsCaFile: certificateFile, sessionHeader: 'x-custom'
+    });
+    const responsesUpstream = new URL(provider.upstream.href.replace('/v1/chat/completions', '/v1/responses'));
+    const applied = await control(controlSocket, {
+      operation: 'apply_snapshot',
+      credentials: {
+        cred_opencode: { provider: 'opencode-go', authMode: 'bearer', secret: 'sk-dynamic-opencode-test-key', sessionHeader: 'x-opencode-session' },
+        cred_openai: { provider: 'openai', authMode: 'bearer', secret: 'sk-dynamic-openai-test-key' }
+      },
+      profiles: Object.fromEntries((['opencode', 'openai'] as const).map((name) => [`rev_${name}`, {
+        credentialId: `cred_${name}`, model: 'kimi-k2.5', downstreamPath: '/v1/responses',
+        upstreamUrl: responsesUpstream.href, limits: { maxInputTokens: 4_096, maxOutputTokens: 1_024, maxCostMicros: 1_000_000 }
+      }]))
+    });
+    expect(applied.ok).toBe(true);
+    for (const profileId of ['rev_opencode', 'rev_openai']) {
+      const response = await fetch(`${running.baseUrl}/v1/responses`, {
+        method: 'POST', headers: headers(activate(running.runtime, issue(profileId))), body: '{"input":"hi","max_output_tokens":20}'
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+    }
+    expect(received[0]?.['x-opencode-session']).toBe('agent_0123456789abcdefghij');
+    expect(received[0]).not.toHaveProperty('x-custom');
+    expect(received[1]?.['x-custom']).toBe('agent_0123456789abcdefghij');
+    expect(received[1]).not.toHaveProperty('x-opencode-session');
+  });
+
   it('rejects a session header that collides with a header the gateway sets itself', async () => {
     await expect(loadGatewayConfig({ MODEL_GATEWAY_MODE: 'test', MODEL_GATEWAY_SESSION_HEADER: 'authorization' }))
       .rejects.toThrow('MODEL_GATEWAY_SESSION_HEADER must not be authorization');

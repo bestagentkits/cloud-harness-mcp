@@ -307,9 +307,14 @@ async function parseProfile(raw: unknown, mode: GatewayMode, index: number): Pro
   };
 }
 
+// Headers the gateway sets itself, plus hop-by-hop, framing, encoding, proxy and cookie
+// headers a session header must never be able to set or override.
 const RESERVED_UPSTREAM_HEADERS: Record<string, true> = {
   accept: true, 'content-type': true, 'content-length': true, host: true,
-  'user-agent': true, authorization: true, 'x-api-key': true
+  'user-agent': true, authorization: true, 'x-api-key': true,
+  'transfer-encoding': true, te: true, connection: true, 'keep-alive': true, upgrade: true,
+  trailer: true, expect: true, 'proxy-authorization': true, 'proxy-connection': true,
+  cookie: true, 'accept-encoding': true, 'content-encoding': true
 };
 
 /**
