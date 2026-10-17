@@ -32,3 +32,13 @@ To prevent unbounded memory growth and buffer overflow attacks, Cloud Harness MC
 | **Skills over MCP Cache Hint** | `ttlMs: 30000`, `cacheScope: private` | Hard bound |
 
 The workspace TTLs, recoverable grace, and active-workspace quota can also be overridden instance-wide in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle), which takes precedence over the runner variable. TTL and grace changes apply only to workspaces opened afterwards.
+
+## Agent model budgets
+
+Every `agent_spawn` model request goes through the Model Gateway. Before sending a request, the gateway reserves the worst case the request can cost from the agent's token and cost caps:
+
+- **Input** is reserved per request byte. Each image, audio, video, or file part also adds a fixed surcharge, because a small image can cost more tokens than its bytes.
+- **Output** is reserved at the output cap the gateway sends upstream. The cap is lowered to what the remaining cost budget can pay for. Reasoning tokens count as output.
+- When the response ends, the gateway charges the usage the provider reported, including cache reads, cache writes, reasoning, and long-context price tiers. It never charges less than a cost the provider reports. Unused reservation is refunded. A request that fails, is cancelled, or reports no usage is charged its full reservation.
+
+A request that the remaining budget cannot cover is refused with `429 model_budget_exhausted`. All figures are gateway estimates, not a provider invoice. The exact reservation rules, surcharge, and pricing are owned by [`apps/model-gateway/src/budget.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/main/apps/model-gateway/src/budget.ts).

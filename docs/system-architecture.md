@@ -101,6 +101,31 @@ Agent tools communicate with the runner via a bounded stdio JSONL protocol for
 the trusted Model Gateway service via per-agent internal Docker networks using
 opaque, short-lived capability leases with pre-reserved token and cost budgets.
 
+The gateway budget is conservative by design, so it never charges less than
+the provider bills. Each request reserves its worst case before it goes
+upstream. Input is estimated at one token per request byte, plus a fixed
+surcharge for each media part, and priced at the highest input-side price
+(input, cache read, or cache write). Output is reserved at the cap sent
+upstream. One token per byte is a safe upper bound for text, because each
+byte-level BPE token covers at least one byte and a message's template tokens
+are fewer than its JSON framing bytes. Media is the exception, which is why it
+carries the surcharge. When the response ends, the gateway prices the reported
+usage. Cache reads, cache writes, and reasoning are priced separately, and long
+prompts are priced at the tier their prompt total reaches. Where a provider's
+report is ambiguous, the gateway charges the more expensive reading, and a
+provider-reported cost is used as a floor. A completed request is refunded at
+most what it reserved. A request that fails, is cancelled, or reports no usage
+keeps its whole reservation. Usage above the reservation is recorded as an
+overrun. Revoking a lease drains its in-flight requests and returns a
+settlement of what the lease consumed. The gateway keeps that settlement in RAM
+for 24 hours, so a repeated revoke returns it again. On `/v1/responses` the
+gateway refuses `previous_response_id`, `conversation`, and an object-valued
+`prompt`, because the stored context they pull in cannot be bounded.
+[`apps/model-gateway/src/budget.ts`](../apps/model-gateway/src/budget.ts),
+[`apps/model-gateway/src/usage-normalizer.ts`](../apps/model-gateway/src/usage-normalizer.ts),
+and [`apps/model-gateway/src/lease-registry.ts`](../apps/model-gateway/src/lease-registry.ts)
+own these rules.
+
 The Dashboard Terminal reuses the executor rather than adding an execution
 engine. The browser never talks to the runner or Docker: the API BFF in
 [`apps/api/src/dashboard-terminal-router.ts`](../apps/api/src/dashboard-terminal-router.ts)

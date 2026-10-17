@@ -2,7 +2,7 @@ import { lstat, open, readFile, realpath } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { isIP } from 'node:net';
-import type { GatewayConfig, GatewayMode, GatewayProfile, ProfileLimits } from './types.js';
+import type { GatewayConfig, GatewayMode, GatewayProfile, PriceTier, ProfileLimits, TokenPrices } from './types.js';
 
 const PROFILE_KEYS: Record<string, true> = {
   id: true, provider: true, model: true, downstreamPath: true, upstreamUrl: true,
@@ -11,8 +11,29 @@ const PROFILE_KEYS: Record<string, true> = {
 };
 const PRICING_KEYS: Record<string, true> = {
   inputMicrosPerMillionTokens: true,
-  outputMicrosPerMillionTokens: true
+  outputMicrosPerMillionTokens: true,
+  cacheReadMicrosPerMillionTokens: true,
+  cacheWriteMicrosPerMillionTokens: true,
+  tiers: true
 };
+const TIER_KEYS: Record<string, true> = {
+  minPromptTokens: true,
+  inputMicrosPerMillionTokens: true,
+  outputMicrosPerMillionTokens: true,
+  cacheReadMicrosPerMillionTokens: true,
+  cacheWriteMicrosPerMillionTokens: true
+};
+const MAX_PRICE_TIERS = 4;
+/**
+ * Prices accept any non-negative safe integer, matching the runner's
+ * AgentModelPricingSchema (packages/contracts/src/model-profile-schemas.ts), so
+ * a snapshot the runner exports is never refused for a large price. Cost math
+ * saturates instead (budget.ts).
+ */
+const MAX_PRICE_MICROS = Number.MAX_SAFE_INTEGER;
+const PRICE_FIELDS = [
+  'inputMicrosPerMillionTokens', 'outputMicrosPerMillionTokens', 'cacheReadMicrosPerMillionTokens', 'cacheWriteMicrosPerMillionTokens'
+] as const;
 const LIMIT_KEYS: Record<string, true> = {
   maxRequestBytes: true, maxResponseBytes: true, maxHeaderBytes: true, maxHeaders: true,
   deadlineMs: true, maxInputTokens: true, maxOutputTokens: true, maxCostMicros: true,
@@ -119,6 +140,77 @@ export function assertProductionHostname(hostname: string): void {
   if (isIP(lower) !== 0 && isUnsafeAddress(lower)) throw new Error('production upstream address is private or reserved');
 }
 
+export type ProfilePricing = Pick<GatewayProfile,
+  'inputMicrosPerMillionTokens' | 'outputMicrosPerMillionTokens' | 'cacheReadMicrosPerMillionTokens' | 'cacheWriteMicrosPerMillionTokens' | 'tiers'>;
+
+function price(value: unknown, label: string): number {
+  return integer(value, label, 0, MAX_PRICE_MICROS);
+}
+
+function optionalPrice(value: unknown, label: string): number | undefined {
+  return value === undefined || value === null ? undefined : price(value, label);
+}
+
+/**
+ * Validates profile pricing. Absent cache prices mean the input price, and
+ * absent tiers mean flat pricing. Tier thresholds must ascend strictly and no
+ * tier price may fall below the tier beneath it (the base prices for the first
+ * tier); the reservation relies on that to never pick a cheaper tier than the
+ * provider bills.
+ *
+ * `strictKeys` refuses unknown pricing and tier keys (static profile files); the
+ * control snapshot ignores them, so a newer runner can add fields. Base prices default
+ * to 0 only when `baseDefault` is set, matching the control snapshot.
+ */
+export function parsePricing(value: unknown, label: string, options: { strictKeys: boolean; baseDefault?: number }): ProfilePricing {
+  const pricing = object(value, label);
+  if (options.strictKeys) exactKeys(pricing, PRICING_KEYS, label);
+  const basePrice = (field: 'inputMicrosPerMillionTokens' | 'outputMicrosPerMillionTokens'): number =>
+    pricing[field] === undefined && options.baseDefault !== undefined ? options.baseDefault : price(pricing[field], `${label}.${field}`);
+  const input = basePrice('inputMicrosPerMillionTokens');
+  const output = basePrice('outputMicrosPerMillionTokens');
+  const cacheRead = optionalPrice(pricing.cacheReadMicrosPerMillionTokens, `${label}.cacheReadMicrosPerMillionTokens`);
+  const cacheWrite = optionalPrice(pricing.cacheWriteMicrosPerMillionTokens, `${label}.cacheWriteMicrosPerMillionTokens`);
+  const result: ProfilePricing = {
+    inputMicrosPerMillionTokens: input,
+    outputMicrosPerMillionTokens: output,
+    ...(cacheRead === undefined ? {} : { cacheReadMicrosPerMillionTokens: cacheRead }),
+    ...(cacheWrite === undefined ? {} : { cacheWriteMicrosPerMillionTokens: cacheWrite })
+  };
+  if (pricing.tiers === undefined || pricing.tiers === null) return result;
+  if (!Array.isArray(pricing.tiers) || pricing.tiers.length > MAX_PRICE_TIERS) {
+    throw new Error(`${label}.tiers must be an array of at most ${MAX_PRICE_TIERS} tiers`);
+  }
+  let below: TokenPrices & { minPromptTokens: number } = {
+    minPromptTokens: 0,
+    inputMicrosPerMillionTokens: input,
+    outputMicrosPerMillionTokens: output,
+    cacheReadMicrosPerMillionTokens: cacheRead ?? input,
+    cacheWriteMicrosPerMillionTokens: cacheWrite ?? input
+  };
+  const tiers: PriceTier[] = [];
+  for (let index = 0; index < pricing.tiers.length; index += 1) {
+    const tierLabel = `${label}.tiers[${index}]`;
+    const raw = object(pricing.tiers[index], tierLabel);
+    if (options.strictKeys) exactKeys(raw, TIER_KEYS, tierLabel);
+    const tierInput = price(raw.inputMicrosPerMillionTokens, `${tierLabel}.inputMicrosPerMillionTokens`);
+    const tier: PriceTier = {
+      minPromptTokens: integer(raw.minPromptTokens, `${tierLabel}.minPromptTokens`, 1, 10_000_000),
+      inputMicrosPerMillionTokens: tierInput,
+      outputMicrosPerMillionTokens: price(raw.outputMicrosPerMillionTokens, `${tierLabel}.outputMicrosPerMillionTokens`),
+      cacheReadMicrosPerMillionTokens: optionalPrice(raw.cacheReadMicrosPerMillionTokens, `${tierLabel}.cacheReadMicrosPerMillionTokens`) ?? tierInput,
+      cacheWriteMicrosPerMillionTokens: optionalPrice(raw.cacheWriteMicrosPerMillionTokens, `${tierLabel}.cacheWriteMicrosPerMillionTokens`) ?? tierInput
+    };
+    if (tier.minPromptTokens <= below.minPromptTokens) throw new Error(`${tierLabel}.minPromptTokens must be strictly ascending`);
+    for (const field of PRICE_FIELDS) {
+      if (tier[field] < below[field]) throw new Error(`${tierLabel}.${field} must not be lower than the tier below`);
+    }
+    tiers.push(tier);
+    below = tier;
+  }
+  return tiers.length === 0 ? result : { ...result, tiers };
+}
+
 async function exactRegularFile(path: string, label: string): Promise<string> {
   if (!isAbsolute(path)) throw new Error(`${label} must be an absolute path`);
   const stat = await lstat(path);
@@ -176,8 +268,7 @@ async function parseProfile(raw: unknown, mode: GatewayMode, index: number): Pro
       throw new Error(`test profile ${id} must use the exact test credential file`);
     }
   }
-  const pricing = object(value.pricing, `profiles[${index}].pricing`);
-  exactKeys(pricing, PRICING_KEYS, `profiles[${index}].pricing`);
+  const pricing = parsePricing(value.pricing, `profiles[${index}].pricing`, { strictKeys: true });
   const limitsValue = object(value.limits, `profiles[${index}].limits`);
   exactKeys(limitsValue, LIMIT_KEYS, `profiles[${index}].limits`);
   const limits: ProfileLimits = {
@@ -208,8 +299,7 @@ async function parseProfile(raw: unknown, mode: GatewayMode, index: number): Pro
     credentialFile,
     credentialHeader,
     credentialScheme,
-    inputMicrosPerMillionTokens: integer(pricing.inputMicrosPerMillionTokens, 'inputMicrosPerMillionTokens', 0, 1_000_000_000),
-    outputMicrosPerMillionTokens: integer(pricing.outputMicrosPerMillionTokens, 'outputMicrosPerMillionTokens', 0, 1_000_000_000),
+    ...pricing,
     limits,
     testOnly,
     allowPrivateUpstream,

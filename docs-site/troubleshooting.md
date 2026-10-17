@@ -326,3 +326,17 @@ If an agent started but followed the wrong files, read the `repository_context` 
 2. Push it (resume with `workspace_recover`, then `git_push`) or use `mode: "export"` to push a recovery snapshot branch.
 3. Call `workspace_close`. Closing without saving first discards the work.
 **Retained by auto-close** in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle) counts these workspaces; they no longer count against the active quota but still use disk.
+
+---
+
+### 29. An agent's model request fails with `400 invalid_model_request` naming a field or tool type
+**Cause:** The Model Gateway charges every request against the agent's budget before sending it, and it keeps the agent inside its workspace's network profile. It refuses anything it cannot measure, and anything that would make the provider act for the agent. The error message names the refused field or tool type:
+- stored Responses context: `previous_response_id`, `conversation`, or an object-valued `prompt` (a stored prompt template);
+- any tool type other than the agent-run `function` and `custom` tools, such as the provider-hosted `web_search`, `file_search`, `code_interpreter`, `image_generation`, `mcp`, or `computer_use`. A hosted web search or remote MCP tool would let an agent in a `network-none` workspace reach the network through the provider;
+- the fields `plugins` and `web_search_options`, which turn on provider-side web search on either API;
+- image, audio, video, or file parts that point at a `file_id` or at a URL other than a `data:` URL, because the provider would download that content for the agent.
+
+**Fix:**
+1. The built-in agent runtime sends the full input on every turn, uses only function tools, and never sends these fields. If you see this error, a custom runtime or tool added one of them.
+2. Send the full conversation as `input` on each request, and send the prompt text inline instead of a stored prompt ID.
+3. Run tools in the agent as function or custom tools, and send images, audio, video, and files inline as a `data:` URL or base64.

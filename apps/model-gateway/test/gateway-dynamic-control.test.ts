@@ -238,4 +238,82 @@ describe('Model Gateway Dynamic Control & Hot Reload', () => {
     const digest = await sendControl(socketPath, { operation: 'digest' });
     expect((digest.digest as { activeProfileCount: number }).activeProfileCount).toBe(0);
   });
+
+  it('applies cache and tier prices from a snapshot and rejects an invalid tier snapshot whole', async () => {
+    const socketPath = tempSocketPath();
+    const config: GatewayConfig = {
+      mode: 'production', host: '127.0.0.1', port: 0, controlSocket: socketPath, profiles: new Map()
+    };
+    const registry: DynamicGatewayRegistry = {
+      profiles: new Map(), credentials: new Map(), snapshotDigest: '', gatewayBootId: 'boot_test'
+    };
+    const server = await startControlServer({
+      config, leases: new LeaseRegistry(), cancelRequest: async () => false, revokeLease: async () => false, registry
+    });
+    runtimes.push({ close: () => new Promise<void>((resolve) => server.close(() => resolve())) });
+
+    const tieredSnapshot = (revisionId: string, tiers: unknown[]): Record<string, unknown> => {
+      const snapshot = productionSnapshot('https://api.openai.com/v1/chat/completions', revisionId);
+      const profile = (snapshot.profiles as Record<string, Record<string, unknown>>)[revisionId] as Record<string, unknown>;
+      profile.pricing = {
+        inputMicrosPerMillionTokens: 1_000,
+        outputMicrosPerMillionTokens: 2_000,
+        cacheReadMicrosPerMillionTokens: 100,
+        cacheWriteMicrosPerMillionTokens: 1_250,
+        tiers
+      };
+      return snapshot;
+    };
+    const tier = {
+      minPromptTokens: 200_000,
+      inputMicrosPerMillionTokens: 2_000,
+      outputMicrosPerMillionTokens: 3_000,
+      cacheReadMicrosPerMillionTokens: 200,
+      cacheWriteMicrosPerMillionTokens: 2_500
+    };
+    const applied = await sendControl(socketPath, tieredSnapshot('rev_tiered', [tier]));
+    expect(applied.ok).toBe(true);
+    expect(registry.profiles.get('rev_tiered')).toMatchObject({
+      inputMicrosPerMillionTokens: 1_000,
+      outputMicrosPerMillionTokens: 2_000,
+      cacheReadMicrosPerMillionTokens: 100,
+      cacheWriteMicrosPerMillionTokens: 1_250,
+      tiers: [tier]
+    });
+
+    const profilesBefore = new Map(registry.profiles);
+    const digestBefore = registry.snapshotDigest;
+    const refused = await sendControl(socketPath, tieredSnapshot('rev_bad_tier', [
+      tier,
+      { ...tier, minPromptTokens: 100_000 }
+    ]));
+    expect(refused.ok).toBe(false);
+    expect(String(refused.error)).toContain('strictly ascending');
+    const cheaper = await sendControl(socketPath, tieredSnapshot('rev_cheaper_tier', [{ ...tier, outputMicrosPerMillionTokens: 1_000 }]));
+    expect(cheaper.ok).toBe(false);
+    expect(String(cheaper.error)).toContain('must not be lower');
+    expect(registry.profiles).toEqual(profilesBefore);
+    expect(registry.snapshotDigest).toBe(digestBefore);
+  });
+
+  it('keeps flat input pricing for a snapshot without cache prices', async () => {
+    const socketPath = tempSocketPath();
+    const config: GatewayConfig = {
+      mode: 'production', host: '127.0.0.1', port: 0, controlSocket: socketPath, profiles: new Map()
+    };
+    const registry: DynamicGatewayRegistry = {
+      profiles: new Map(), credentials: new Map(), snapshotDigest: '', gatewayBootId: 'boot_test'
+    };
+    const server = await startControlServer({
+      config, leases: new LeaseRegistry(), cancelRequest: async () => false, revokeLease: async () => false, registry
+    });
+    runtimes.push({ close: () => new Promise<void>((resolve) => server.close(() => resolve())) });
+    const applied = await sendControl(socketPath, productionSnapshot('https://api.openai.com/v1/chat/completions', 'rev_flat'));
+    expect(applied.ok).toBe(true);
+    const profile = registry.profiles.get('rev_flat');
+    expect(profile).toMatchObject({ inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 });
+    expect(profile?.cacheReadMicrosPerMillionTokens).toBeUndefined();
+    expect(profile?.cacheWriteMicrosPerMillionTokens).toBeUndefined();
+    expect(profile?.tiers).toBeUndefined();
+  });
 });

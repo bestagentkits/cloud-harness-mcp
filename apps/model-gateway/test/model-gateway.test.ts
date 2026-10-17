@@ -8,11 +8,11 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertProductionHostname, isUnsafeAddress, loadGatewayConfig, readExactSecret } from '../src/config.js';
-import { LeaseRegistry } from '../src/lease-registry.js';
+import { createLeaseGrant, LeaseRegistry } from '../src/lease-registry.js';
 import { createGatewayRuntime, type GatewayRuntime } from '../src/gateway.js';
 import { reserveBudget } from '../src/budget.js';
 import { startUpstreamRequest } from '../src/upstream.js';
-import type { GatewayConfig, GatewayLogger, GatewayProfile, LeaseIssueInput } from '../src/types.js';
+import type { BudgetReservation, GatewayConfig, GatewayLogger, GatewayProfile, LeaseIssueInput, Usage } from '../src/types.js';
 
 let fixtureDirectory = '';
 let credentialFile = '';
@@ -49,6 +49,10 @@ function profile(upstream: URL, limits: Partial<GatewayProfile['limits']> = {}):
     allowPrivateUpstream: true,
     tlsCaFile: certificateFile
   };
+}
+
+function grant(profileId: string, inputTokens: number, outputTokens: number, costMicros: number) {
+  return createLeaseGrant({ agentId: issue().agentId, profileId, expiresAt: Date.now() + 1_000, inputTokens, outputTokens, costMicros });
 }
 
 type ActivatedLease = LeaseIssueInput & { lease: string };
@@ -98,6 +102,48 @@ async function gateway(
   const address = runtime.httpServer.address();
   if (address === null || typeof address === 'string') throw new Error('gateway address unavailable');
   return { runtime, baseUrl: `http://127.0.0.1:${address.port}` };
+}
+
+function controlSocketPath(): string {
+  return process.platform === 'win32'
+    ? `\\\\.\\pipe\\model-gateway-${randomBytes(8).toString('hex')}`
+    : join(tmpdir(), `model-gateway-${randomBytes(8).toString('hex')}.sock`);
+}
+
+async function control(socketPath: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(socketPath);
+    let reply = '';
+    socket.on('data', (chunk: Buffer) => { reply += chunk.toString('utf8'); });
+    socket.on('end', () => { try { resolve(JSON.parse(reply) as Record<string, unknown>); } catch (error) { reject(error); } });
+    socket.on('error', reject);
+    socket.end(`${JSON.stringify(payload)}\n`);
+  });
+}
+
+function recordingHooks() {
+  const reserved: BudgetReservation[] = [];
+  const reconciled: Usage[] = [];
+  return {
+    reserved,
+    reconciled,
+    hooks: {
+      reserve: (reservation: BudgetReservation) => { reserved.push({ ...reservation }); },
+      reconcile: (_reservation: BudgetReservation, actual: Usage) => { reconciled.push(actual); }
+    }
+  };
+}
+
+// 2 micros per input token, 8 per output token, 0.5 per cache read, 4 per cache write.
+function pricedProfile(upstream: URL, overrides: Partial<GatewayProfile> = {}): GatewayProfile {
+  return {
+    ...profile(upstream),
+    inputMicrosPerMillionTokens: 2_000_000,
+    outputMicrosPerMillionTokens: 8_000_000,
+    cacheReadMicrosPerMillionTokens: 500_000,
+    cacheWriteMicrosPerMillionTokens: 4_000_000,
+    ...overrides
+  };
 }
 
 function headers(grant: ActivatedLease): Record<string, string> {
@@ -200,10 +246,7 @@ describe('model gateway security boundary', () => {
   it('writes the output cap as max_completion_tokens for OpenAI chat profiles', () => {
     const configured = { ...profile(new URL('https://localhost:443/v1/chat/completions')), provider: 'openai' };
     const body: Record<string, unknown> = { max_tokens: 40, max_completion_tokens: 30, messages: [] };
-    const reservation = reserveBudget(body, 100, {
-      agentId: issue().agentId, profileId: configured.id, expiresAt: Date.now() + 1_000,
-      remainingInputTokens: 100, remainingOutputTokens: 500, remainingCostMicros: 1_000
-    }, configured);
+    const reservation = reserveBudget(body, 100, grant(configured.id, 100, 500, 1_000), configured);
     expect(reservation.outputTokens).toBe(30);
     expect(body).toMatchObject({ max_completion_tokens: 30, stream: true });
     expect(body).not.toHaveProperty('max_tokens');
@@ -215,10 +258,7 @@ describe('model gateway security boundary', () => {
       { ...profile(new URL('https://llm.example.net/v1/chat/completions')), provider: 'OpenAI' }
     ]) {
       const body: Record<string, unknown> = { max_tokens: 25, messages: [] };
-      reserveBudget(body, 100, {
-        agentId: issue().agentId, profileId: configured.id, expiresAt: Date.now() + 1_000,
-        remainingInputTokens: 100, remainingOutputTokens: 500, remainingCostMicros: 1_000
-      }, configured);
+      reserveBudget(body, 100, grant(configured.id, 100, 500, 1_000), configured);
       expect(body).toMatchObject({ max_completion_tokens: 25 });
       expect(body).not.toHaveProperty('max_tokens');
     }
@@ -229,10 +269,7 @@ describe('model gateway security boundary', () => {
       ...profile(new URL('https://api.openai.com/v1/responses')), provider: 'openai', downstreamPath: '/v1/responses'
     };
     const body: Record<string, unknown> = { max_tokens: 40, max_completion_tokens: 30, max_output_tokens: 50, input: [] };
-    const reservation = reserveBudget(body, 100, {
-      agentId: issue().agentId, profileId: configured.id, expiresAt: Date.now() + 1_000,
-      remainingInputTokens: 100, remainingOutputTokens: 500, remainingCostMicros: 1_000
-    }, configured);
+    const reservation = reserveBudget(body, 100, grant(configured.id, 100, 500, 1_000), configured);
     expect(reservation.outputTokens).toBe(50);
     expect(body).toMatchObject({ max_output_tokens: 50, stream: true });
     expect(body).not.toHaveProperty('max_tokens');
@@ -243,10 +280,7 @@ describe('model gateway security boundary', () => {
   it('writes the output cap as max_tokens for other chat providers', () => {
     const configured = profile(new URL('https://localhost:443/v1/chat/completions'));
     const body: Record<string, unknown> = { max_tokens: 40, max_completion_tokens: 30, messages: [] };
-    const reservation = reserveBudget(body, 100, {
-      agentId: issue().agentId, profileId: configured.id, expiresAt: Date.now() + 1_000,
-      remainingInputTokens: 100, remainingOutputTokens: 500, remainingCostMicros: 1_000
-    }, configured);
+    const reservation = reserveBudget(body, 100, grant(configured.id, 100, 500, 1_000), configured);
     expect(reservation.outputTokens).toBe(30);
     expect(body).toMatchObject({ max_tokens: 30, stream: true });
     expect(body).not.toHaveProperty('max_completion_tokens');
@@ -255,10 +289,7 @@ describe('model gateway security boundary', () => {
   it('clamps model and output tokens before reserving cost', () => {
     const configured = profile(new URL('https://localhost:443/v1/chat/completions'));
     const body: Record<string, unknown> = { model: 'caller-model', max_tokens: 999_999, messages: [] };
-    const reservation = reserveBudget(body, 100, {
-      agentId: issue().agentId, profileId: configured.id, expiresAt: Date.now() + 1_000,
-      remainingInputTokens: 100, remainingOutputTokens: 17, remainingCostMicros: 1_000
-    }, configured);
+    const reservation = reserveBudget(body, 100, grant(configured.id, 100, 17, 1_000), configured);
     expect(body).toMatchObject({ model: 'fixed-model', max_tokens: 17, stream: true });
     expect(reservation.outputTokens).toBe(17);
     expect(reservation.costMicros).toBeLessThanOrEqual(1_000);
@@ -408,7 +439,9 @@ describe('model gateway security boundary', () => {
     expect(response.headers.get('x-provider-secret')).toBeNull();
     expect(`${output}${JSON.stringify([...response.headers])}`).not.toContain(credential);
     expect(receivedAuthorization).toBe(`Bearer ${credential}`);
-    expect(reconcile).toHaveBeenCalledWith(expect.anything(), { inputTokens: 3, outputTokens: 2, costMicros: 2 });
+    expect(reconcile).toHaveBeenCalledWith(expect.anything(), {
+      inputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 2, reasoningTokens: 0, costMicros: 2
+    });
     await expect(fetch(`${running.baseUrl}/v1/chat/completions`, {
       method: 'POST', headers: headers(grant), body: '{"messages":[],"max_tokens":20}'
     }).then((leakResponse) => leakResponse.text())).rejects.toThrow();
@@ -479,5 +512,235 @@ describe('model gateway security boundary', () => {
       method: 'POST', headers: headers(revoked), body: '{"messages":[]}'
     });
     expect(replay.status).toBe(401);
+  });
+});
+
+describe('model gateway usage accounting', () => {
+  const chatBody = '{"messages":[],"max_tokens":20}';
+
+  it('charges cached usage from a final SSE chunk split across TCP writes', async () => {
+    const usageChunk = `data: ${JSON.stringify({
+      choices: [],
+      usage: { prompt_tokens: 30, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 10, cache_write_tokens: 4 } }
+    })}\n\ndata: [DONE]\n\n`;
+    const provider = await fakeProvider((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n');
+      const parts = [usageChunk.slice(0, 17), usageChunk.slice(17, 61), usageChunk.slice(61)];
+      const writeNext = (): void => {
+        const part = parts.shift();
+        if (part === undefined) {
+          response.end();
+          return;
+        }
+        response.write(part);
+        setTimeout(writeNext, 15);
+      };
+      setTimeout(writeNext, 15);
+    });
+    const recording = recordingHooks();
+    const running = await gateway(pricedProfile(provider.upstream), recording.hooks);
+    const response = await fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers(activate(running.runtime, issue())), body: chatBody
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    // 16 uncached x 2 + 10 read x 0.5 + 4 written x 4 + 5 output x 8
+    await vi.waitFor(() => expect(recording.reconciled).toEqual([{
+      inputTokens: 30, cacheReadTokens: 10, cacheWriteTokens: 4, outputTokens: 5, reasoningTokens: 0, costMicros: 93
+    }]));
+  });
+
+  it('charges Responses usage nested under response.usage in response.completed', async () => {
+    const provider = await fakeProvider((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_1', usage: null } })}\n\n`);
+      response.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'hi' })}\n\n`);
+      response.end(`event: response.completed\ndata: ${JSON.stringify({
+        type: 'response.completed',
+        response: {
+          id: 'resp_1',
+          usage: { input_tokens: 30, input_tokens_details: { cached_tokens: 10 }, output_tokens: 5, output_tokens_details: { reasoning_tokens: 2 } }
+        }
+      })}\n\n`);
+    });
+    const recording = recordingHooks();
+    const running = await gateway(pricedProfile(provider.upstream, { downstreamPath: '/v1/responses' }), recording.hooks);
+    const response = await fetch(`${running.baseUrl}/v1/responses`, {
+      method: 'POST', headers: headers(activate(running.runtime, issue())), body: '{"input":"hi","max_output_tokens":20}'
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    await vi.waitFor(() => expect(recording.reconciled).toEqual([{
+      inputTokens: 30, cacheReadTokens: 10, cacheWriteTokens: 0, outputTokens: 5, reasoningTokens: 2, costMicros: 20 * 2 + 5 + 5 * 8
+    }]));
+    expect(recording.reserved[0]?.costMicros).toBeGreaterThan(85);
+  });
+
+  it('charges the reservation when the stream ends without usage', async () => {
+    const provider = await fakeProvider((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end('data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n');
+    });
+    const recording = recordingHooks();
+    const running = await gateway(pricedProfile(provider.upstream), recording.hooks);
+    const response = await fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers(activate(running.runtime, issue())), body: chatBody
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    const reservation = recording.reserved[0];
+    await vi.waitFor(() => expect(recording.reconciled).toEqual([{
+      inputTokens: reservation?.inputTokens, cacheReadTokens: 0, cacheWriteTokens: 0,
+      outputTokens: reservation?.outputTokens, reasoningTokens: 0, costMicros: reservation?.costMicros
+    }]));
+  });
+
+  it('charges the reservation when a malformed usage line follows a valid one', async () => {
+    const provider = await fakeProvider((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write('data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":1}}\n\n');
+      response.end('data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":-3}}\n\ndata: [DONE]\n\n');
+    });
+    const recording = recordingHooks();
+    const running = await gateway(pricedProfile(provider.upstream), recording.hooks);
+    const response = await fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers(activate(running.runtime, issue())), body: chatBody
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    const reservation = recording.reserved[0];
+    await vi.waitFor(() => expect(recording.reconciled).toEqual([expect.objectContaining({
+      inputTokens: reservation?.inputTokens, outputTokens: reservation?.outputTokens, costMicros: reservation?.costMicros
+    })]));
+  });
+
+  it('refuses provider-hosted tools with a message naming the tool type', async () => {
+    let providerRequests = 0;
+    const provider = await fakeProvider((_request, response) => {
+      providerRequests += 1;
+      response.end();
+    });
+    const running = await gateway(pricedProfile(provider.upstream, { downstreamPath: '/v1/responses' }));
+    const response = await fetch(`${running.baseUrl}/v1/responses`, {
+      method: 'POST', headers: headers(activate(running.runtime, issue())),
+      body: JSON.stringify({ input: 'hi', tools: [{ type: 'web_search_preview' }] })
+    });
+    expect(response.status).toBe(400);
+    const payload = await response.json() as { error: { code: string; message: string } };
+    expect(payload.error).toMatchObject({ code: 'invalid_model_request', message: expect.stringContaining('web_search_preview') });
+    expect(providerRequests).toBe(0);
+  });
+
+  it('never reserves more than the lease cap across concurrent requests', async () => {
+    const pending: Array<() => void> = [];
+    const provider = await fakeProvider((_request, response) => {
+      pending.push(() => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end('data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":1}}\n\n');
+      });
+    });
+    const recording = recordingHooks();
+    const running = await gateway(pricedProfile(provider.upstream), recording.hooks);
+    const grant = activate(running.runtime, { ...issue(), maxCostMicros: 1_500 });
+    const body = '{"messages":[],"max_tokens":100}';
+    const requests = [0, 1].map(() => fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers(grant), body
+    }));
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    const reservedTotal = recording.reserved.reduce((total, reservation) => total + reservation.costMicros, 0);
+    expect(reservedTotal).toBeLessThanOrEqual(1_500);
+    // The second request only gets the output the first one left affordable.
+    expect(recording.reserved.map((reservation) => reservation.outputTokens).sort((a, b) => b - a)).toEqual([100, 55]);
+    for (const release of pending) release();
+    for (const response of await Promise.all(requests)) {
+      expect(response.status).toBe(200);
+      await response.text();
+    }
+  });
+
+  it('returns a settlement on revoke that counts a cancelled in-flight request at its reservation', async () => {
+    let providerRequests = 0;
+    const provider = await fakeProvider((_request, response) => {
+      providerRequests += 1;
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write('data: {"choices":[]}\n\n');
+    });
+    const socketPath = controlSocketPath();
+    const recording = recordingHooks();
+    const running = await gateway(pricedProfile(provider.upstream), recording.hooks, undefined, { controlSocket: socketPath });
+    const input = issue();
+    const issued = await control(socketPath, { operation: 'issue', ...input });
+    expect(issued).toMatchObject({ ok: true, gatewayBootId: expect.stringMatching(/^boot_/) });
+    const pendingRequest = fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers({ ...input, lease: String(issued.lease) }), body: chatBody
+    }).then((response) => response.text()).catch(() => undefined);
+    await vi.waitFor(() => expect(providerRequests).toBe(1));
+
+    const revoked = await control(socketPath, { operation: 'revoke', leaseId: input.leaseId });
+    await pendingRequest;
+    const reservation = recording.reserved[0];
+    expect(revoked).toMatchObject({
+      ok: true,
+      revoked: true,
+      gatewayBootId: issued.gatewayBootId,
+      settlement: {
+        leaseId: input.leaseId,
+        reason: 'revoked',
+        initialCostMicros: 1_000_000,
+        costMicros: reservation?.costMicros,
+        overrunCostMicros: 0,
+        promptTokens: reservation?.inputTokens,
+        outputTokens: reservation?.outputTokens,
+        requests: 1,
+        requestsWithoutUsage: 1
+      }
+    });
+    expect(recording.reconciled).toEqual([]);
+    // Revoking again is idempotent.
+    await expect(control(socketPath, { operation: 'revoke', leaseId: input.leaseId }))
+      .resolves.toMatchObject({ ok: true, revoked: false, settlement: revoked.settlement });
+  });
+
+  it('returns the settlement of an expired lease on revoke', async () => {
+    const provider = await fakeProvider((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end('data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}\n\n');
+    });
+    const socketPath = controlSocketPath();
+    const running = await gateway(pricedProfile(provider.upstream), undefined, undefined, { controlSocket: socketPath });
+    const input = { ...issue(), ttlMs: 1_000 };
+    const issued = await control(socketPath, { operation: 'issue', ...input });
+    const response = await fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers({ ...input, lease: String(issued.lease) }), body: chatBody
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    await expect(control(socketPath, { operation: 'revoke', leaseId: input.leaseId })).resolves.toMatchObject({
+      ok: true,
+      revoked: false,
+      settlement: { reason: 'expired', costMicros: 5 * 2 + 2 * 8, promptTokens: 5, outputTokens: 2, requests: 1, requestsWithoutUsage: 0 }
+    });
+  });
+
+  it('refuses stateful Responses fields with a message naming the field', async () => {
+    let providerRequests = 0;
+    const provider = await fakeProvider((_request, response) => {
+      providerRequests += 1;
+      response.end();
+    });
+    const running = await gateway(pricedProfile(provider.upstream, { downstreamPath: '/v1/responses' }));
+    const grant = activate(running.runtime, issue());
+    for (const [field, value] of [['previous_response_id', 'resp_1'], ['conversation', 'conv_1'], ['prompt', { id: 'pmpt_1' }]] as const) {
+      const response = await fetch(`${running.baseUrl}/v1/responses`, {
+        method: 'POST', headers: headers(grant), body: JSON.stringify({ input: 'hi', [field]: value })
+      });
+      expect(response.status).toBe(400);
+      const payload = await response.json() as { error: { code: string; message: string } };
+      expect(payload.error.code).toBe('invalid_model_request');
+      expect(payload.error.message).toContain(field);
+    }
+    expect(providerRequests).toBe(0);
   });
 });

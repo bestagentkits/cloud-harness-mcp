@@ -3,7 +3,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { createHash } from 'node:crypto';
 import type { GatewayConfig, GatewayProfile, LeaseIssueInput, ProfileLimits } from './types.js';
 import type { LeaseRegistry } from './lease-registry.js';
-import { assertProductionHostname } from './config.js';
+import { assertProductionHostname, parsePricing } from './config.js';
 
 const MAX_CONTROL_RECORD_BYTES = 1_048_576;
 
@@ -76,10 +76,15 @@ export async function startControlServer(options: {
             const profile = registry.profiles.get(profileId) ?? config.profiles.get(profileId);
             if (!profile) throw new Error('unknown profile');
             const lease = leases.issue(command as unknown as LeaseIssueInput, profile);
-            send(socket, { ok: true, lease });
+            send(socket, { ok: true, lease, gatewayBootId: registry.gatewayBootId });
           } else if (command.operation === 'revoke') {
             if (typeof command.leaseId !== 'string') throw new Error('invalid leaseId');
-            send(socket, { ok: true, revoked: await revokeLease(command.leaseId) });
+            // revokeLease drains in-flight requests before returning, so the settlement
+            // is final and frozen here. Revoking again returns the same settlement for
+            // the retention horizon.
+            const revoked = await revokeLease(command.leaseId);
+            const settlement = leases.freezeSettlement(command.leaseId);
+            send(socket, { ok: true, revoked, gatewayBootId: registry.gatewayBootId, ...(settlement === undefined ? {} : { settlement }) });
           } else if (command.operation === 'cancel') {
             if (typeof command.requestId !== 'string') throw new Error('invalid requestId');
             send(socket, { ok: true, cancelled: await cancelRequest(command.requestId) });
@@ -117,6 +122,8 @@ export async function startControlServer(options: {
                 maxCostMicros: revData.limits.maxCostMicros ?? 100_000_000
               } : defaultLimits();
 
+              const pricing = parsePricing(revData.pricing ?? {}, `pricing for profile revision ${revId}`, { strictKeys: false, baseDefault: 0 });
+
               const upstreamUrl = new URL(revData.upstreamUrl ?? 'https://api.openai.com/v1/chat/completions');
               if (config.mode !== 'test') {
                 // assertProductionHostname rejects an unsafe address literal, and the resolved
@@ -134,8 +141,7 @@ export async function startControlServer(options: {
                 credentialSecret: cred.secret,
                 credentialHeader: cred.authMode === 'x-api-key' ? 'x-api-key' : 'authorization',
                 credentialScheme: cred.authMode === 'x-api-key' ? '' : 'Bearer',
-                inputMicrosPerMillionTokens: revData.pricing?.inputMicrosPerMillionTokens ?? 0,
-                outputMicrosPerMillionTokens: revData.pricing?.outputMicrosPerMillionTokens ?? 0,
+                ...pricing,
                 limits,
                 testOnly: config.mode === 'test',
                 allowPrivateUpstream: config.mode === 'test',

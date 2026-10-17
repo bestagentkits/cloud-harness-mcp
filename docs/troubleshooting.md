@@ -141,6 +141,19 @@ a lost response; do not create a second key until the first result is resolved.
 
 ## Tool behavior
 
+- An agent's model request fails with `400 invalid_model_request` naming a
+  field or tool type: the Model Gateway refuses requests it cannot bound or
+  that would let the provider act on the agent's behalf. These are stored
+  Responses context (`previous_response_id`, `conversation`, an object-valued
+  `prompt`), any tool type other than `function` and `custom`, the fields
+  `plugins` and `web_search_options`, and media parts (image, audio, video,
+  file) with a `file_id` or a URL that is not a `data:` URL. Hosted tools and
+  remote media would give an agent in a `network-none` workspace network or
+  remote MCP access through the provider. The runtime must resend the full
+  input, run tools itself, and send media inline as a `data:` URL or base64;
+  see the
+  [security model](security-model.md#subagent-model-provider-credential-isolation--gateway-control) and
+  [`apps/model-gateway/src/budget.ts`](../apps/model-gateway/src/budget.ts).
 - `files_apply_patch` conflict: read the file again, choose an exact unique
   `oldText`, and pass the latest SHA when concurrency matters. It is not a
   unified diff.
