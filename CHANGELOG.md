@@ -1,3 +1,11 @@
+# [0.66.0-beta.13](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.12...v0.66.0-beta.13) (2026-10-17)
+
+
+### Bug Fixes
+
+* **dashboard:** HTML-escape dashboard markup instead of the global escape() ([#363](https://github.com/bestagentkits/cloud-harness-mcp/issues/363)) ([c517eb2](https://github.com/bestagentkits/cloud-harness-mcp/commit/c517eb2e1bbccc4aa2cce66fbd46f0ff9299eb4b)), closes [#360](https://github.com/bestagentkits/cloud-harness-mcp/issues/360)
+* **deploy:** give the canary network-none fallback its own idempotency key ([#364](https://github.com/bestagentkits/cloud-harness-mcp/issues/364)) ([9a286cc](https://github.com/bestagentkits/cloud-harness-mcp/commit/9a286ccf0249b01d8c78bcca453498c793e80dc0)), closes [#352](https://github.com/bestagentkits/cloud-harness-mcp/issues/352)
+
 # [0.66.0-beta.12](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.11...v0.66.0-beta.12) (2026-10-16)
 
 
