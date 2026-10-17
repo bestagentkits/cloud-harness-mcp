@@ -95,8 +95,11 @@ Limitations:
   first save uses it up whether or not it matched; any other save succeeds but shows
   **Not verified**.
 - **Gateway sync.** Saving a profile or credential pushes a new snapshot to the gateway,
-  but the save succeeds even if that push fails. Spawning a subagent pushes again when the
-  gateway restarted or lost its profiles, and fails with `UNAVAILABLE` if the gateway is
+  but the save succeeds even if that push fails. Each snapshot replaces what the gateway
+  held, so after the next successful push a deleted credential's key is gone from gateway
+  memory and a disabled or deleted profile no longer routes. A revision that a running
+  agent still uses, and the credential it needs, stay until that agent ends.
+  Spawning a subagent pushes again when the gateway restarted or lost its profiles, and fails with `UNAVAILABLE` if the gateway is
   unreachable. The dashboard's model status (`GET /api/v1/agent-model-config-status`)
   reports whether the gateway answered and when the runner last attempted a push.
 
