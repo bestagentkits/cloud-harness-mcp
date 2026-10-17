@@ -1,3 +1,10 @@
+# [0.66.0-beta.17](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.16...v0.66.0-beta.17) (2026-10-17)
+
+
+### Features
+
+* **models:** provider-first profile wizard that keeps its connection check ([#372](https://github.com/bestagentkits/cloud-harness-mcp/issues/372)) ([c26adef](https://github.com/bestagentkits/cloud-harness-mcp/commit/c26adef53c0e33eaf3ab45882415deb935c932b8))
+
 # [0.66.0-beta.16](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.15...v0.66.0-beta.16) (2026-10-17)
 
 
