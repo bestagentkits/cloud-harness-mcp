@@ -69,6 +69,18 @@ export const DASHBOARD_PAGES = [
     icon: '<circle cx="12" cy="8" r="3.2"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/><path d="M4 10H2.5"/><path d="M21.5 10H20"/>'
   },
   {
+    id: 'automations',
+    route: '/dashboard/automations',
+    label: 'Automations',
+    group: 'operate',
+    title: 'Automations',
+    help: 'Webhook-triggered agent runs: GitHub connections, matching rules, runs, and inbound deliveries.',
+    palette: true,
+    paletteHint: 'Webhook rules, runs, connections, and deliveries',
+    nav: true,
+    icon: '<path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12z"/>'
+  },
+  {
     id: 'activity',
     route: '/dashboard/activity',
     label: 'Activity',
