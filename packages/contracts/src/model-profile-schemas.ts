@@ -165,17 +165,16 @@ export type AgentModelProfileRevision = z.infer<typeof AgentModelProfileRevision
 
 // How a saved revision's pinned prices compare with the cached catalog price.
 // `repriced`: a price differs by at least REPRICING_WARNING_PERCENT
-// (model-catalog-schemas.ts), a pinned zero now has a catalog price, or the catalog
-// has tiers or conditional pricing the revision lacks. `unknown`: no cached catalog
-// price exists for the model. For an override (`isOverride`) the result is
+// (model-catalog-schemas.ts), a pinned zero now has a catalog price, or a tier
+// exists on only one side. `unknown`: no cached catalog price exists for the model.
+// The state reflects only comparable prices, so an edit can always clear it. For an override (`isOverride`) the result is
 // informational: the operator chose the price.
 export const ModelPricingReviewStateSchema = z.enum(['current', 'repriced', 'unknown']);
 export type ModelPricingReviewState = z.infer<typeof ModelPricingReviewStateSchema>;
 
 // `tier`: a tier exists on one side only, `pinned` and `catalog` hold that tier's
-// input price. `conditionalPricing`: the catalog price changes under a condition no
-// revision can express. Price fields of a tier carry its `minPromptTokens`.
-export const ModelPricingReviewFieldSchema = z.enum(['input', 'output', 'cacheRead', 'cacheWrite', 'tier', 'conditionalPricing']);
+// input price. Price fields of a tier carry its `minPromptTokens`.
+export const ModelPricingReviewFieldSchema = z.enum(['input', 'output', 'cacheRead', 'cacheWrite', 'tier']);
 export type ModelPricingReviewField = z.infer<typeof ModelPricingReviewFieldSchema>;
 
 export const ModelPricingReviewChangeSchema = z.object({
@@ -193,7 +192,11 @@ export const ModelPricingReviewSchema = z.object({
   state: ModelPricingReviewStateSchema,
   changes: z.array(ModelPricingReviewChangeSchema).max(32),
   catalogRetrievedAt: z.number().int().nonnegative().nullable(),
-  isOverride: z.boolean()
+  isOverride: z.boolean(),
+  // Informational: the catalog price also changes under a condition no revision can
+  // express, so the charged price may be lower or higher than the pinned estimate.
+  // It never affects `state`, because no edit could clear it.
+  catalogHasConditionalPricing: z.boolean()
 }).strict();
 export type ModelPricingReview = z.infer<typeof ModelPricingReviewSchema>;
 

@@ -94,9 +94,10 @@ function levelChanges(pinned: PriceLevel, catalog: PriceLevel, minPromptTokens: 
 /**
  * Compares a revision's pinned prices with the cached catalog price. `repriced`
  * when a price differs by at least REPRICING_WARNING_PERCENT in either direction,
- * a pinned zero now has a catalog price, a tier exists on only one side, or the
- * catalog has conditional pricing no revision can express. `unknown` when there is
- * no cached catalog price. The result is never stored.
+ * a pinned zero now has a catalog price, or a tier exists on only one side.
+ * `unknown` when there is no cached catalog price. Catalog conditional pricing no
+ * revision can express is reported apart from the state, which an edit must always
+ * be able to clear. The result is never stored.
  */
 export function reviewPricing(
   revision: Pick<AgentModelProfileRevision, 'pricing' | 'priceProvenance'>,
@@ -104,8 +105,9 @@ export function reviewPricing(
 ): ModelPricingReview {
   const isOverride = revision.priceProvenance.isOverride;
   const catalogRetrievedAt = catalog?.provenance.retrievedAt ?? null;
+  const catalogHasConditionalPricing = catalog?.hasConditionalPricing ?? false;
   const offered = catalog ? catalogPricing(catalog) : undefined;
-  if (!catalog || !offered) return { state: 'unknown', changes: [], catalogRetrievedAt, isOverride };
+  if (!catalog || !offered) return { state: 'unknown', changes: [], catalogRetrievedAt, isOverride, catalogHasConditionalPricing };
 
   const changes = levelChanges(revision.pricing, offered, null);
   const pinnedTiers = new Map((revision.pricing.tiers ?? []).map((tier) => [tier.minPromptTokens, tier]));
@@ -120,6 +122,5 @@ export function reviewPricing(
       changes.push({ field: 'tier', minPromptTokens: threshold, pinned: tier.inputMicrosPerMillionTokens, catalog: null, percent: null });
     }
   }
-  if (catalog.hasConditionalPricing) changes.push({ field: 'conditionalPricing', minPromptTokens: null, pinned: null, catalog: null, percent: null });
-  return { state: changes.length > 0 ? 'repriced' : 'current', changes, catalogRetrievedAt, isOverride };
+  return { state: changes.length > 0 ? 'repriced' : 'current', changes, catalogRetrievedAt, isOverride, catalogHasConditionalPricing };
 }

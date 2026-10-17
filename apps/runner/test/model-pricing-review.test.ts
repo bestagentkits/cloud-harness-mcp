@@ -85,7 +85,7 @@ describe('repricing review', () => {
 
   it('reads current below the threshold and repriced at it, in both directions', () => {
     expect(reviewPricing(revision(), catalog({ inputMicrosPerMillionTokens: 1_099_000 }))).toEqual({
-      state: 'current', changes: [], catalogRetrievedAt: RETRIEVED_AT, isOverride: false
+      state: 'current', changes: [], catalogRetrievedAt: RETRIEVED_AT, isOverride: false, catalogHasConditionalPricing: false
     });
     expect(reviewPricing(revision(), catalog({ inputMicrosPerMillionTokens: 901_000 })).state).toBe('current');
     const increase = reviewPricing(revision(), catalog({ inputMicrosPerMillionTokens: 1_100_000 }));
@@ -93,7 +93,8 @@ describe('repricing review', () => {
       state: 'repriced',
       changes: [{ field: 'input', minPromptTokens: null, pinned: 1_000_000, catalog: 1_100_000, percent: 10 }],
       catalogRetrievedAt: RETRIEVED_AT,
-      isOverride: false
+      isOverride: false,
+      catalogHasConditionalPricing: false
     });
     expect(ModelPricingReviewSchema.parse(increase)).toEqual(increase);
     expect(reviewPricing(revision(), catalog({ outputMicrosPerMillionTokens: 3_600_000 })).changes)
@@ -126,15 +127,25 @@ describe('repricing review', () => {
       .toEqual([{ field: 'output', minPromptTokens: 200_000, pinned: 22_500_000, catalog: 30_000_000, percent: 33.3 }]);
   });
 
-  it('flags conditional pricing no revision can express', () => {
-    expect(reviewPricing(revision(), catalog({ hasConditionalPricing: true })).changes)
-      .toEqual([{ field: 'conditionalPricing', minPromptTokens: null, pinned: null, catalog: null, percent: null }]);
+  it('reports catalog conditional pricing apart from the state, so matching prices stay current', () => {
+    expect(reviewPricing(revision(), catalog({ hasConditionalPricing: true }))).toEqual({
+      state: 'current', changes: [], catalogRetrievedAt: RETRIEVED_AT, isOverride: false, catalogHasConditionalPricing: true
+    });
+    const changed = reviewPricing(revision(), catalog({ hasConditionalPricing: true, inputMicrosPerMillionTokens: 1_100_000 }));
+    expect(changed).toEqual({
+      state: 'repriced',
+      changes: [{ field: 'input', minPromptTokens: null, pinned: 1_000_000, catalog: 1_100_000, percent: 10 }],
+      catalogRetrievedAt: RETRIEVED_AT, isOverride: false, catalogHasConditionalPricing: true
+    });
+    expect(ModelPricingReviewSchema.parse(changed)).toEqual(changed);
+    expect(reviewPricing(revision(), catalog({ hasConditionalPricing: true, inputMicrosPerMillionTokens: null })))
+      .toMatchObject({ state: 'unknown', catalogHasConditionalPricing: true });
   });
 
   it('reads unknown without a cached catalog price', () => {
-    expect(reviewPricing(revision(), undefined)).toEqual({ state: 'unknown', changes: [], catalogRetrievedAt: null, isOverride: false });
+    expect(reviewPricing(revision(), undefined)).toEqual({ state: 'unknown', changes: [], catalogRetrievedAt: null, isOverride: false, catalogHasConditionalPricing: false });
     const unpriced = catalog({ inputMicrosPerMillionTokens: null });
-    expect(reviewPricing(revision(), unpriced)).toEqual({ state: 'unknown', changes: [], catalogRetrievedAt: RETRIEVED_AT, isOverride: false });
+    expect(reviewPricing(revision(), unpriced)).toEqual({ state: 'unknown', changes: [], catalogRetrievedAt: RETRIEVED_AT, isOverride: false, catalogHasConditionalPricing: false });
   });
 
   it('labels an override so the difference reads as informational', () => {

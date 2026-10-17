@@ -258,7 +258,7 @@ ID matched the way the catalog search matches it. The schema is `ModelPricingRev
   catalog by at least `REPRICING_WARNING_PERCENT` (10%, in
   [`model-catalog-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-catalog-schemas.ts))
   in either direction; a pinned price of zero now has a catalog price; a tier exists on
-  only one side; or the catalog has conditional pricing. A rise means cost estimates and
+  only one side. A rise means cost estimates and
   caps are understated, a fall means they are overstated. A cache price is compared only
   when both sides state it, because an unknown pinned cache price is charged at the
   conservative default below. `changes` lists each difference with the pinned price, the
@@ -267,6 +267,13 @@ ID matched the way the catalog search matches it. The schema is `ModelPricingRev
 - `unknown`: the runner has no cached catalog price for the model, for example before the
   catalog was first searched, for a Custom provider, or for a model the catalog does not
   list.
+
+The state reflects only prices a revision can hold, so editing the profile to the catalog
+price always clears `repriced`. Catalog conditional pricing that no revision can express
+is reported separately as `catalogHasConditionalPricing: true`, an informational note: for
+some requests the provider charges a price the revision does not record, which may be
+lower or higher than the pinned estimate. It never changes `state`, and a profile whose
+prices match the catalog reads `current` with the note set.
 
 `isOverride` repeats the revision's provenance: for your own prices the difference is
 information, not a sign that the price is stale. Listing never makes a network call: the

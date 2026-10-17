@@ -132,16 +132,18 @@ describe('Model Profile & Credential Contracts', () => {
 
   it('describes a repricing review on listed profile metadata', () => {
     const review = {
-      state: 'repriced', catalogRetrievedAt: 1_800_000_000_000, isOverride: false,
+      state: 'repriced', catalogRetrievedAt: 1_800_000_000_000, isOverride: false, catalogHasConditionalPricing: true,
       changes: [
         { field: 'input', minPromptTokens: null, pinned: 1_000_000, catalog: 1_100_000, percent: 10 },
-        { field: 'tier', minPromptTokens: 200_000, pinned: null, catalog: 2_000_000, percent: null },
-        { field: 'conditionalPricing', minPromptTokens: null, pinned: null, catalog: null, percent: null }
+        { field: 'tier', minPromptTokens: 200_000, pinned: null, catalog: 2_000_000, percent: null }
       ]
     };
     expect(ModelPricingReviewSchema.parse(review)).toEqual(review);
     expect(ModelPricingReviewSchema.safeParse({ ...review, state: 'stale' }).success).toBe(false);
     expect(ModelPricingReviewSchema.safeParse({ ...review, changes: [{ ...review.changes[0], field: 'request' }] }).success).toBe(false);
+    // Conditional pricing is a flag, never a change, and the flag is required.
+    expect(ModelPricingReviewSchema.safeParse({ ...review, changes: [{ ...review.changes[0], field: 'conditionalPricing' }] }).success).toBe(false);
+    expect(ModelPricingReviewSchema.safeParse({ ...review, catalogHasConditionalPricing: undefined }).success).toBe(false);
     const metadata = {
       id: 'coding', principalId: 'p1', displayName: 'Coding', credentialId: `cred_${'a'.repeat(24)}`, desiredRevisionId: null, activeRevisionId: null,
       generation: 1, status: 'ACTIVE', activeRevision: null, createdAt: 1, updatedAt: 1
