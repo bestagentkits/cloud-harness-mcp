@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ModelCredentialIdSchema, ModelProfileIdSchema } from './identifiers.js';
+import { ModelCredentialIdSchema, ModelProfileIdSchema, ModelVerificationRefSchema } from './identifiers.js';
 import { AgentModelApiModeSchema, ModelProviderKindSchema, ModelVerificationOutcomeSchema } from './model-profile-schemas.js';
 
 export const ModelVerificationCheckNameSchema = z.enum([
@@ -69,6 +69,9 @@ export const ModelConnectionVerifyResultSchema = z.object({
   checks: z.array(ModelVerificationCheckSchema).max(5),
   usage: ModelVerificationUsageSchema.optional(),
   // Estimated from usage and the saved revision's pricing; null for drafts.
-  estimatedCostMicros: z.number().int().nonnegative().nullable().optional()
+  estimatedCostMicros: z.number().int().nonnegative().nullable().optional(),
+  // Draft checks that name a model only: pass it as `verificationRef` when saving
+  // a profile with the same route to keep this result on the new revision.
+  verificationRef: ModelVerificationRefSchema.optional()
 }).strict();
 export type ModelConnectionVerifyResult = z.infer<typeof ModelConnectionVerifyResultSchema>;

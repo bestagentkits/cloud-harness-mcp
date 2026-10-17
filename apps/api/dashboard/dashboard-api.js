@@ -49,6 +49,16 @@ export const activateModelProfile = (id, expectedGeneration) => api(`/agent-mode
 export const disableModelProfile = (id, expectedGeneration) => api(`/agent-model-profiles/${encodeURIComponent(id)}/disable`, { method: 'POST', body: JSON.stringify({ expectedGeneration }) });
 export const deleteModelProfile = (id, expectedGeneration) => api(`/agent-model-profiles/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
 export const getModelConfigStatus = () => api('/agent-model-config-status');
+export const listModelProviders = () => api('/model-providers');
+export const searchModelCatalog = ({ provider, credentialId, q, limit } = {}) => {
+  const query = new URLSearchParams({ provider: String(provider ?? '') });
+  if (credentialId) query.set('credentialId', credentialId);
+  if (q) query.set('q', q);
+  if (limit) query.set('limit', String(limit));
+  return api(`/model-catalog?${query}`);
+};
+export const refreshModelCatalog = (payload) => api('/model-catalog/refresh', { method: 'POST', body: JSON.stringify(payload) });
+export const verifyModelConnection = (payload) => api('/model-connection/verify', { method: 'POST', body: JSON.stringify(payload) });
 export const listKnowledge = (params = {}) => {
   const query = new URLSearchParams();
   if (params.kind) query.set('kind', params.kind);

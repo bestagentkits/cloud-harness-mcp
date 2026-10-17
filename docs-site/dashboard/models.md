@@ -117,7 +117,13 @@ the input and result schemas are in
   model, API mode, and upstream.
 - `{ "credentialId": "cred_…", "model": "…", "apiMode": "…", "customUpstreamUrl": "…" }`
   checks unsaved settings. A draft never creates or changes a profile, revision, or
-  credential. Without a model only the key is checked. A draft for a Custom credential
+  credential. Without a model only the key is checked. A check of a model whose route
+  resolves includes a `verificationRef`; passing it as `verificationRef` when creating or
+  updating a profile with the same route keeps the result on the new revision (see
+  [the profile wizard](#the-profile-wizard)). A save that matches uses the reference up, and
+  so does a save whose route differs: that save is not refused, its profile simply has no
+  `lastVerification`, and the check must be run again. A save that fails leaves the
+  reference unused. A draft for a Custom credential
   sends the key to the `customUpstreamUrl` you submit, exactly as saving a profile with that
   upstream would, so only submit an upstream you trust with the key.
 - `"checks": { "inference": false, "tools": true }` turns the paid checks off or on.
@@ -164,7 +170,8 @@ target, credential, model, API mode, elapsed time, and token counts, never the k
 
 The latest result appears as `lastVerification` on credentials and profiles. A profile's
 result belongs to the revision it checked, so saving a new revision shows it as not verified
-again; rotating a key does the same for the credential. Deleting a profile or credential
+again, unless the save names a matching draft check; rotating a key does the same for the
+credential. Deleting a profile or credential
 deletes its results.
 
 ## Configuring Model Profiles
@@ -176,6 +183,83 @@ Model profiles define how subagents interact with LLMs:
 - **Token Pricing:** Input and output token pricing in USD per 1M tokens.
 - **Budget Limits:** Hard limits for maximum input tokens, output tokens, and cost per agent execution.
 - **Allowed Proxy Operations:** Hard ceiling on permitted file and search operations from the exact 10 safe tools (`files_list`, `files_read`, `files_write`, `files_apply_patch`, `files_delete`, `files_move`, `files_mkdir`, `grep_search`, `symbols_search`, `symbols_references`).
+
+### The profile wizard
+
+**Add profile** opens a five-step wizard. **Back** returns to an earlier step and keeps
+what you entered, except an API key you have not sent yet: paste it again. Choosing a
+different provider clears the chosen model and any price that came with it. A failed request
+keeps every field so you can retry, and the dialog stays open while a
+key, connection check, or save is in flight.
+
+1. **Provider:** pick the provider. The list and each provider's API modes come from
+   `GET /api/v1/model-providers`.
+2. **Connect:** choose a saved key for that provider or add a new one. A new key is sent
+   once, write-only, and the field is cleared as soon as it is stored or the dialog closes;
+   the wizard never shows it or keeps it anywhere else.
+3. **Model:** search the [model catalog](#model-catalog) with the combobox (arrow keys move
+   through results, Enter selects, Escape closes). Each result shows its availability:
+   listed for your key, or public catalog only. The catalog's freshness is shown below the
+   search, so a stale or unavailable catalog is visible rather than silent. If the model is
+   not listed, use the **custom model ID** option. Custom providers have no catalog, so this
+   step is a plain **Model ID** field. Typing after you chose a model clears the choice until
+   you pick again.
+4. **Review:** the selected model fills the display name and prices. Each price shows where
+   it came from: the catalog source with its confidence and retrieval time, a price you
+   typed, or, when editing or duplicating, the price saved on the profile. A custom model ID
+   never inherits the previous model's price. A price no source published stays **Unknown**:
+   enter it yourself, and enter `0` only for a model that is really free. Choose a permission preset here. **Advanced** holds the profile ID (derived
+   from the model and made unique among your profiles), the API mode, the custom upstream
+   URL (Custom only), per-run limits, prices, and the model ID.
+5. **Verify and save:** run a [connection check](#verifying-a-connection) against the
+   unsaved settings (the tool-call check is optional), then save.
+
+**Permission presets** cover the 10 safe operations:
+
+| Preset | Operations |
+| --- | --- |
+| Read only | `files_list`, `files_read`, `grep_search`, `symbols_search`, `symbols_references` |
+| Code editing | Read only plus `files_write`, `files_apply_patch`, `files_move`, `files_mkdir` |
+| Custom | Any combination you choose |
+
+Before saving, the wizard shows the full permission change: operations added, removed, and
+kept compared with the saved revision (or with nothing, for a new or duplicated profile).
+
+**Saving is gated.** The wizard refuses to save until:
+
+- the connection for the current key, model, API mode, and upstream is verified, or you tick
+  **Save without a verified connection**. A model that came only from the public catalog
+  is unconfirmed for your key, so it always needs one or the other. Both apply only to the
+  route they were made for: changing the key, model, API mode, or upstream asks again;
+- you tick the acknowledgement for any newly allowed operation that changes files
+  (`files_write`, `files_apply_patch`, `files_delete`, `files_move`, `files_mkdir`). No
+  preset or edit turns these on without that tick.
+
+**Edit** and **Duplicate** open the wizard at the review step with the existing values.
+An edit keeps the profile ID and counts as verified only when the route is unchanged and the
+saved revision was verified. A duplicate gets a new unique ID and starts with no operations
+inherited as already approved.
+
+A connection check run inside the wizard is kept on the revision the save creates, so a
+just-checked profile does not need a second paid check. The runner holds the draft result
+itself and gives the browser only an opaque, single-use `verificationRef` that expires after
+a short time (`DRAFT_VERIFICATION_TTL_MS` in
+[`draft-verification-store.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/apps/runner/src/model-verification/draft-verification-store.ts));
+the wizard sends it with the save. The runner keeps the result only when the
+save is by the same principal and uses exactly the checked credential, key version, model,
+API mode, and resolved upstream. Otherwise the save still succeeds and the profile shows
+**Not verified** until you run **Verify** from the list. A runner restart also forgets
+pending draft results.
+
+### The profile list
+
+Each profile shows its provider and model, verification status and when it was checked,
+the key it uses, its prices, and its per-run cost and token limits. Actions are **Verify**
+(checks the saved profile), **Edit**, **Duplicate**, **Disable** or **Activate**, and
+**Delete**. When the catalog now lists a different price for the model than the profile
+saved, or the catalog price could not be refreshed, a pricing note appears next to the
+price: edit the profile to take the new price. The comparison is advisory and is skipped
+when the catalog cannot be reached.
 
 ## Where this page lives now
 

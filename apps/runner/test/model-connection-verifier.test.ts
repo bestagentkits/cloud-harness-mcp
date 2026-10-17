@@ -13,6 +13,7 @@ import { DashboardControlService } from '../src/dashboard-control-service.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
 import { ProviderHttpError, type ProviderHttpClient, type ProviderHttpRequest, type ProviderHttpResponse } from '../src/model-provider-http.js';
+import { DRAFT_VERIFICATION_TTL_MS, DraftVerificationStore } from '../src/model-verification/draft-verification-store.js';
 import { ModelConnectionVerifier, chatOutputCap, type VerificationAudit } from '../src/model-verification/model-connection-verifier.js';
 import { VerificationRateLimiter } from '../src/model-verification/verification-rate-limiter.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
@@ -72,7 +73,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function setup(handler: Handler, options: { limiter?: VerificationRateLimiter; totalBudgetMs?: number } = {}) {
+function setup(handler: Handler, options: { limiter?: VerificationRateLimiter; totalBudgetMs?: number; now?: () => number } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'model-verify-')); roots.push(root);
   const store = new StateStore(join(root, 'state.db'));
   closers.push(() => store.close());
@@ -87,12 +88,13 @@ function setup(handler: Handler, options: { limiter?: VerificationRateLimiter; t
     http: http.client,
     audit: (...args) => { audits.push(args); },
     rateLimiter: options.limiter ?? new VerificationRateLimiter(1_000),
+    ...(options.now ? { now: options.now } : {}),
     ...(options.totalBudgetMs !== undefined ? { totalBudgetMs: options.totalBudgetMs } : {})
   });
   const credential = (provider: ModelProviderKind = 'openai', authMode?: ProviderAuthMode, principal = p1) =>
     repo.createCredential(principal, { label: `${provider} key`, provider, apiKey: SECRET, ...(authMode ? { authMode } : {}) });
-  const profile = (credentialId: string, model: string, apiMode: AgentModelApiMode = 'chat-completions', extra: { customUpstreamUrl?: string } = {}) =>
-    repo.createProfile(p1, {
+  const profile = (credentialId: string, model: string, apiMode: AgentModelApiMode = 'chat-completions', extra: { customUpstreamUrl?: string } = {}, principal = p1) =>
+    repo.createProfile(principal, {
       profileId: ModelProfileIdSchema.parse(`profile-${randomBytes(4).toString('hex')}`),
       displayName: 'Profile',
       credentialId: credentialId as never,
@@ -556,6 +558,39 @@ describe('model connection verifier', () => {
     expect(ctx.repo.listCredentials(ctx.p1)[0]?.lastVerification).toMatchObject({ outcome: 'failed', checkedAt: 3_000 });
   });
 
+  it('keeps the active key version\'s result across key versions whatever the timestamps', () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    const record = (credentialVersion: number, outcome: 'verified' | 'failed', checkedAt: number) => ctx.repo.recordVerification(ctx.p1, {
+      targetKind: 'credential', targetId: cred.id, revisionId: null, credentialVersion, outcome, resultJson: '{}', checkedAt
+    });
+    expect(record(1, 'failed', 1_000)).toBe(true);
+    const rotated = ctx.repo.rotateCredential(ctx.p1, cred.id, { apiKey: `${SECRET}-2`, expectedGeneration: 1 });
+    expect(rotated.activeVersion).toBe(2);
+    expect(record(2, 'verified', 2_000)).toBe(true);
+    // A check of the old key that finishes later never replaces the current key's result.
+    expect(record(1, 'failed', 3_000)).toBe(false);
+    expect(ctx.repo.listCredentials(ctx.p1)[0]?.lastVerification).toMatchObject({ outcome: 'verified', checkedAt: 2_000 });
+  });
+
+  it('keeps the active revision\'s result across revisions whatever the timestamps', () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    const saved = ctx.profile(cred.id, 'gpt-test');
+    const oldRevision = saved.activeRevisionId;
+    const record = (revisionId: string | null, outcome: 'verified' | 'failed', checkedAt: number) => ctx.repo.recordVerification(ctx.p1, {
+      targetKind: 'profile', targetId: saved.id, revisionId, credentialVersion: null, outcome, resultJson: '{}', checkedAt
+    });
+    expect(record(oldRevision, 'failed', 5_000)).toBe(true);
+    const updated = ctx.repo.updateProfile(ctx.p1, saved.id, { displayName: 'Renamed', expectedGeneration: saved.generation });
+    // An earlier draft check attached to the new revision replaces the old revision's newer result.
+    expect(record(updated.activeRevisionId, 'verified', 4_000)).toBe(true);
+    expect(ctx.repo.listProfiles(ctx.p1)[0]?.lastVerification).toMatchObject({ outcome: 'verified', checkedAt: 4_000 });
+    // A late result for the old revision never replaces the active revision's.
+    expect(record(oldRevision, 'failed', 6_000)).toBe(false);
+    expect(ctx.repo.listProfiles(ctx.p1)[0]?.lastVerification).toMatchObject({ outcome: 'verified', checkedAt: 4_000 });
+  });
+
   it('does not store a result for a target that was deleted or belongs to another principal', () => {
     const ctx = setup(openAiHandler());
     const cred = ctx.credential();
@@ -600,6 +635,143 @@ describe('model connection verifier', () => {
   });
 });
 
+describe('draft verification attached to a profile save', () => {
+  it('keeps a matching draft result on the revision the save creates, once', async () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    const draft = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'gpt-test' });
+    expect(draft.verificationRef).toMatch(/^vref_[0-9a-f]{32}$/);
+    expect(ModelConnectionVerifyResultSchema.parse(draft)).toEqual(draft);
+
+    const saved = ctx.verifier.attachDraftVerification(ctx.p1, draft.verificationRef, ctx.profile(cred.id, 'gpt-test'));
+    expect(saved.lastVerification).toEqual({ outcome: 'verified', checkedAt: draft.checkedAt, revisionId: saved.activeRevisionId });
+    expect(ctx.repo.listProfiles(ctx.p1)[0]?.lastVerification).toEqual(saved.lastVerification);
+    const stored = ctx.store.database.prepare("SELECT revision_id, result_json FROM model_verification_results WHERE target_kind = 'profile'").get() as { revision_id: string; result_json: string };
+    expect(stored.revision_id).toBe(saved.activeRevisionId);
+    // The reference is a handle, not part of the result the runner keeps.
+    expect(stored.result_json).not.toContain('vref_');
+
+    // Single use: the same reference never attaches to a second save.
+    const again = ctx.verifier.attachDraftVerification(ctx.p1, draft.verificationRef, ctx.profile(cred.id, 'gpt-test'));
+    expect(again.lastVerification).toBeUndefined();
+  });
+
+  it('keeps a draft result on an updated revision, and never a stale one', async () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    const original = ctx.profile(cred.id, 'gpt-test');
+    const draft = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'gpt-other' });
+    const updated = ctx.verifier.attachDraftVerification(ctx.p1, draft.verificationRef,
+      ctx.repo.updateProfile(ctx.p1, original.id, { model: 'gpt-other', expectedGeneration: original.generation }));
+    expect(updated.lastVerification?.revisionId).toBe(updated.activeRevisionId);
+    expect(updated.activeRevisionId).not.toBe(original.activeRevisionId);
+  });
+
+  it('does not attach when the model, API mode, upstream, or key version differs', async () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    const attach = (ref: string | undefined, saved: ReturnType<typeof ctx.profile>) => ctx.verifier.attachDraftVerification(ctx.p1, ref, saved).lastVerification;
+
+    const model = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'gpt-test' });
+    expect(attach(model.verificationRef, ctx.profile(cred.id, 'gpt-other'))).toBeUndefined();
+    // A mismatch spends the reference, so it cannot be retried against the right route.
+    expect(attach(model.verificationRef, ctx.profile(cred.id, 'gpt-test'))).toBeUndefined();
+
+    const mode = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'gpt-test', apiMode: 'chat-completions' });
+    expect(attach(mode.verificationRef, ctx.profile(cred.id, 'gpt-test', 'responses'))).toBeUndefined();
+
+    const rotated = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'gpt-test' });
+    ctx.repo.rotateCredential(ctx.p1, cred.id, { apiKey: `${SECRET}-next`, expectedGeneration: 1 });
+    expect(attach(rotated.verificationRef, ctx.profile(cred.id, 'gpt-test'))).toBeUndefined();
+
+    const custom = ctx.credential('custom');
+    const upstream = await ctx.verifier.verify(ctx.p1, { credentialId: custom.id, model: 'local', customUpstreamUrl: 'https://llm.example.org/v1/chat/completions' });
+    expect(attach(upstream.verificationRef, ctx.profile(custom.id, 'local', 'chat-completions', { customUpstreamUrl: 'https://other.example.org/v1/chat/completions' }))).toBeUndefined();
+    const sameUpstream = await ctx.verifier.verify(ctx.p1, { credentialId: custom.id, model: 'local', customUpstreamUrl: 'https://llm.example.org/v1/chat/completions' });
+    expect(attach(sameUpstream.verificationRef, ctx.profile(custom.id, 'local', 'chat-completions', { customUpstreamUrl: 'https://llm.example.org/v1/chat/completions' }))?.outcome).toBe('verified');
+
+    expect(attach(undefined, ctx.profile(cred.id, 'gpt-test'))).toBeUndefined();
+    expect(attach('vref_000000000000000000000000000000ff', ctx.profile(cred.id, 'gpt-test'))).toBeUndefined();
+    expect((ctx.store.database.prepare("SELECT count(*) AS count FROM model_verification_results WHERE target_kind = 'profile'").get() as { count: number }).count).toBe(1);
+  });
+
+  it('does not attach a draft result once it has expired', async () => {
+    let clock = 1_000_000;
+    const ctx = setup(openAiHandler(), { now: () => clock });
+    const cred = ctx.credential();
+    const fresh = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'gpt-test' });
+    const stale = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'gpt-test' });
+    clock += DRAFT_VERIFICATION_TTL_MS - 1;
+    expect(ctx.verifier.attachDraftVerification(ctx.p1, fresh.verificationRef, ctx.profile(cred.id, 'gpt-test')).lastVerification?.outcome).toBe('verified');
+    clock += 1;
+    expect(ctx.verifier.attachDraftVerification(ctx.p1, stale.verificationRef, ctx.profile(cred.id, 'gpt-test')).lastVerification).toBeUndefined();
+  });
+
+  it('refuses another principal and leaves the owner\'s reference unspent', async () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    const draft = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'gpt-test' });
+
+    const store = new DraftVerificationStore();
+    const route = { credentialId: cred.id, credentialVersion: 1, model: 'gpt-test', apiMode: 'chat-completions' as const, upstreamUrl: 'https://api.openai.com/v1/chat/completions' };
+    const ref = store.remember(ctx.p1, route, draft);
+    expect(store.take(ctx.p2, ref, route)).toBeUndefined();
+    expect(store.take(ctx.p1, ref, route)).toBe(draft);
+    expect(store.take(ctx.p1, ref, route)).toBeUndefined();
+
+    // Through the verifier: another principal's save of its own profile cannot use the reference.
+    const otherCred = ctx.credential('openai', undefined, ctx.p2);
+    expect(ctx.verifier.attachDraftVerification(ctx.p2, draft.verificationRef, ctx.profile(otherCred.id, 'gpt-test', 'chat-completions', {}, ctx.p2)).lastVerification).toBeUndefined();
+    expect(ctx.verifier.attachDraftVerification(ctx.p1, draft.verificationRef, ctx.profile(cred.id, 'gpt-test')).lastVerification?.outcome).toBe('verified');
+  });
+
+  it('issues a reference only for a draft that names a model', async () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    expect((await ctx.verifier.verify(ctx.p1, { credentialId: cred.id })).verificationRef).toBeUndefined();
+    const saved = ctx.profile(cred.id, 'gpt-test');
+    expect((await ctx.verifier.verify(ctx.p1, { profileId: saved.id })).verificationRef).toBeUndefined();
+  });
+
+  it('attaches to an update that switches credential only when the check was of the new credential', async () => {
+    const ctx = setup(openAiHandler());
+    const first = ctx.credential();
+    const second = ctx.credential();
+    const switchTo = async (checked: string) => {
+      const original = ctx.profile(first.id, 'gpt-test');
+      const check = await ctx.verifier.verify(ctx.p1, { credentialId: checked, model: 'gpt-test' });
+      return ctx.verifier.attachDraftVerification(ctx.p1, check.verificationRef,
+        ctx.repo.updateProfile(ctx.p1, original.id, { credentialId: second.id as never, expectedGeneration: original.generation }));
+    };
+
+    expect((await switchTo(first.id)).lastVerification).toBeUndefined();
+    const attached = await switchTo(second.id);
+    expect(attached.activeRevision?.credentialId).toBe(second.id);
+    expect(attached.lastVerification?.revisionId).toBe(attached.activeRevisionId);
+  });
+
+  it('never fails a committed save when the result cannot be stored', async () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    const draft = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'gpt-test' });
+    const saved = ctx.profile(cred.id, 'gpt-test');
+    ctx.repo.recordVerification = () => { throw new Error('database is locked'); };
+    const result = ctx.verifier.attachDraftVerification(ctx.p1, draft.verificationRef, saved);
+    expect(result).toBe(saved);
+    expect(result.lastVerification).toBeUndefined();
+  });
+
+  it('keeps at most a bounded number of references and drops the oldest first', () => {
+    const store = new DraftVerificationStore();
+    const route = { credentialId: 'cred_1', credentialVersion: 1, model: 'm', apiMode: 'chat-completions' as const, upstreamUrl: 'https://example.org/v1/chat/completions' };
+    const result = { outcome: 'verified' } as ModelConnectionVerifyResult;
+    const refs = Array.from({ length: 1_001 }, () => store.remember('p1', route, result));
+    expect(store.take('p1', refs[0]!, route)).toBeUndefined();
+    expect(store.take('p1', refs[1]!, route)).toBe(result);
+    expect(store.take('p1', refs[1_000]!, route)).toBe(result);
+  });
+});
+
 describe('model_connection_verify operation', () => {
   it('dispatches through the dashboard control service and audits the check', async () => {
     const root = mkdtempSync(join(tmpdir(), 'model-verify-svc-')); roots.push(root);
@@ -637,6 +809,39 @@ describe('model_connection_verify operation', () => {
 
     // Both target shapes at once is not a valid request.
     await expect(call('model_connection_verify', { credentialId, profileId: 'coding' })).rejects.toThrow();
+
+    // A profile save that names the draft check of its exact route keeps that result.
+    const profileInput = {
+      displayName: 'Coding', credentialId, model: 'gpt-test', apiMode: 'chat-completions',
+      pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { maxInputTokens: 100, maxOutputTokens: 100, maxCostMicros: 100 },
+      maxProxyOperations: ['files_read']
+    };
+    const { verificationRef } = verified.data as ModelConnectionVerifyResult;
+    const createdProfile = await call('model_profile_create', { profileId: 'coding', ...profileInput, verificationRef });
+    const saved = createdProfile.data as { activeRevisionId: string; generation: number; lastVerification?: { outcome: string; revisionId: string } };
+    expect(saved.lastVerification).toMatchObject({ outcome: 'verified', revisionId: saved.activeRevisionId });
+
+    const responsesCheck = await call('model_connection_verify', { credentialId, model: 'gpt-test', apiMode: 'responses' });
+    const updatedProfile = await call('model_profile_update', {
+      profileId: 'coding', apiMode: 'responses', expectedGeneration: saved.generation,
+      verificationRef: (responsesCheck.data as ModelConnectionVerifyResult).verificationRef
+    });
+    const updated = updatedProfile.data as { activeRevisionId: string; lastVerification?: { revisionId: string } };
+    expect(updated.lastVerification?.revisionId).toBe(updated.activeRevisionId);
+
+    // An unknown reference never fails the save; it just keeps nothing.
+    const unverified = await call('model_profile_create', { profileId: 'coding-2', ...profileInput, verificationRef: 'vref_000000000000000000000000000000ff' });
+    expect(unverified.ok).toBe(true);
+    expect((unverified.data as { lastVerification?: unknown }).lastVerification).toBeUndefined();
+
+    // A save that fails leaves the reference unspent for the save that follows.
+    const retryCheck = await call('model_connection_verify', { credentialId, model: 'gpt-test' });
+    const retryRef = (retryCheck.data as ModelConnectionVerifyResult).verificationRef;
+    const duplicate = await call('model_profile_create', { profileId: 'coding', ...profileInput, verificationRef: retryRef }).catch((error: unknown) => error);
+    expect((duplicate as { ok?: boolean }).ok).not.toBe(true);
+    const retried = await call('model_profile_create', { profileId: 'coding-3', ...profileInput, verificationRef: retryRef });
+    expect((retried.data as { lastVerification?: { outcome: string } }).lastVerification?.outcome).toBe('verified');
   });
 });
 
