@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ModelConfigStatusSchema, RunnerAgentsConfigSchema, type MetadataRunnerRequest, type ModelConfigStatus, type RunnerConfig } from '@cloud-harness/contracts';
-import { DockerAgentGatewayControl, gatewaySnapshotDigest } from '../src/agent-gateway-control.js';
+import { DockerAgentGatewayControl, gatewaySnapshotDigest, type GatewaySnapshot } from '../src/agent-gateway-control.js';
 import type { AgentLauncher } from '../src/agent-launcher.js';
 import { AgentManager } from '../src/agent-manager.js';
 import { ArtifactStore } from '../src/artifact-store.js';
@@ -44,6 +44,8 @@ async function startGateway(root: string) {
     digestGate: undefined as Promise<void> | undefined,
     digestQueries: 0,
     issueRequests: 0,
+    /** Sees every snapshot record the runner sends, before the gateway answers it. */
+    onApply: undefined as ((command: GatewaySnapshot) => void) | undefined,
     get socketPath() { return socketPath; },
     async start() {
       generation += 1;
@@ -107,6 +109,7 @@ async function setup() {
       gateway.digestQueries += 1;
       if (gateway.digestGate) await gateway.digestGate;
     }
+    if (stdin.includes('"operation":"apply_snapshot"')) gateway.onApply?.(JSON.parse(stdin) as GatewaySnapshot);
     if (!gateway.reachable || (gateway.failApply && stdin.includes('"apply_snapshot"'))) {
       return { exitCode: 1, stdout: '', stderr: 'gateway container is not running' };
     }
@@ -177,7 +180,8 @@ async function setup() {
     gateway, repo, status, call, createProfile, profileInput, restartRunner, runAgentOn, agentManager,
     workspace: () => principals.byId(workspaceId)!,
     /** A push by another component sharing this runner's gateway control, such as the agent manager. */
-    pushFromAgentManager: async () => await runner.control.applySnapshot(repo.getExportSnapshot()),
+    pushFromAgentManager: async () => await runner.control.syncSnapshot(() => repo.getExportSnapshot(), { onlyIfMismatch: false }),
+    control: () => runner.control,
     ownerId
   };
 }
@@ -343,11 +347,16 @@ describe('model configuration status', () => {
     expect(gateway.registry?.snapshotDigest).toBe(expectedDigest(repo));
   });
   it('never pushes a snapshot older than a key rotation that lands while a status read is in flight', async () => {
-    const { gateway, repo, status, call, createProfile, ownerId } = await setup();
+    const { gateway, repo, status, call, createProfile, control, ownerId } = await setup();
     await createProfile('coding');
     const credential = repo.listCredentials(ownerId)[0]!;
+    const rotatedSecret = 'sk-rotated-secret';
+    // Whether each pushed snapshot carried the rotated key, in push order. Flags only, so a failure never prints a key.
+    const appliedRotated: boolean[] = [];
+    gateway.onApply = (command) => { appliedRotated.push(command.credentials[credential.id]?.secret === rotatedSecret); };
     // Make the gateway stale so the status read decides to repair it.
     gateway.registry!.snapshotDigest = 'sha256:stale';
+    const syncs = vi.spyOn(control(), 'syncSnapshot');
 
     let release!: () => void;
     gateway.digestGate = new Promise<void>((resolve) => { release = resolve; });
@@ -356,16 +365,18 @@ describe('model configuration status', () => {
     await vi.waitFor(() => expect(gateway.digestQueries).toBe(queriesBefore + 1));
 
     // The owner rotates the key, keeping the credential id, while the read waits on the gateway.
-    const rotating = call('model_credential_rotate', { credentialId: credential.id, apiKey: 'sk-rotated-secret', expectedGeneration: 1 });
-    await vi.waitFor(() => expect(repo.listCredentials(ownerId)[0]!.activeVersion).toBe(2));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const rotating = call('model_credential_rotate', { credentialId: credential.id, apiKey: rotatedSecret, expectedGeneration: 1 });
+    // The rotation's push is queued behind the read before the gateway answers.
+    await vi.waitFor(() => expect(syncs).toHaveBeenCalledTimes(2));
     gateway.digestGate = undefined;
     release();
     const result = await reading;
     await rotating;
 
+    expect(appliedRotated.length).toBeGreaterThan(0);
+    expect(appliedRotated.at(-1)).toBe(true);
+    expect(appliedRotated.slice(appliedRotated.indexOf(true))).not.toContain(false);
     const current = repo.getExportSnapshot();
-    // Compared by identity only, so a failure never prints a key.
     expect(gateway.registry!.credentials.get(credential.id)?.secret === current.credentials[credential.id]?.secret).toBe(true);
     expect(gateway.registry!.snapshotDigest).toBe(expectedDigest(repo));
     // Synced is judged against a snapshot built after the rotation, never the one from before it.

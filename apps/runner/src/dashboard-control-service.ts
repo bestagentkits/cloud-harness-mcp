@@ -61,7 +61,7 @@ import { ModelCatalogService } from './model-catalog/model-catalog-service.js';
 import { reviewPricing, savedPriceProvenance } from './model-catalog/pricing-review.js';
 import { createProviderHttpClient, type ProviderHttpClient } from './model-provider-http.js';
 import { ModelConnectionVerifier } from './model-verification/model-connection-verifier.js';
-import { syncGatewaySnapshot, type AgentGatewayControl } from './agent-gateway-control.js';
+import type { AgentGatewayControl } from './agent-gateway-control.js';
 import { ModelSpendLedger, type ModelSpendPolicyHooks } from './model-spend-ledger.js';
 import { packageApprovalUnavailable } from './config.js';
 import {
@@ -563,7 +563,7 @@ export class DashboardControlService {
               // One serialized section: query the gateway, build the whole-instance snapshot the
               // runner pushes, and repair a mismatch with one push. The expected digest comes from
               // a snapshot built after any earlier push landed, and a repair never overwrites a newer push.
-              const sync = await syncGatewaySnapshot(control, () => models.getExportSnapshot(), {
+              const sync = await control.syncSnapshot(() => models.getExportSnapshot(), {
                 onlyIfMismatch: true,
                 onQueried: (digest) => { gatewayBootId = digest.gatewayBootId; }
               });
@@ -1560,7 +1560,7 @@ export class DashboardControlService {
     if (!modelProfiles || !control) return;
     try {
       // Built inside the push queue, so the push carries the state as of the push, not of this call.
-      await syncGatewaySnapshot(control, () => modelProfiles.getExportSnapshot(), { onlyIfMismatch: false });
+      await control.syncSnapshot(() => modelProfiles.getExportSnapshot(), { onlyIfMismatch: false });
     } catch {
       // The gateway control records the failure; model_config_status reports it instead of failing the mutation.
     }

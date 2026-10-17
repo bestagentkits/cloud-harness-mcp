@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AgentManager } from '../../apps/runner/src/agent-manager.js';
-import { gatewaySnapshotDigest, type AgentGatewayControl, type GatewaySnapshot } from '../../apps/runner/src/agent-gateway-control.js';
+import { gatewaySnapshotDigest, runSnapshotSync, type AgentGatewayControl, type GatewaySnapshot } from '../../apps/runner/src/agent-gateway-control.js';
 import type { AgentLauncher } from '../../apps/runner/src/agent-launcher.js';
 import { AgentStateRepository } from '../../apps/runner/src/agent-state-repository.js';
 import { ModelProfileStateRepository } from '../../apps/runner/src/model-profile-state-repository.js';
@@ -178,16 +178,17 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       },
       revokeAndDrain: async () => {},
       cancelAndDrain: async () => {},
-      // Acks and reports the digest a real gateway would, so a spawn on an in-sync gateway pushes nothing.
-      applySnapshot: async (snapshot: GatewaySnapshot) => {
-        lastApplied = snapshot;
-        snapshotPushes += 1;
-        return { gatewayBootId: 'boot1', snapshotDigest: gatewaySnapshotDigest(snapshot) };
-      },
       queryDigest: async () => ({
         gatewayBootId: 'boot1', snapshotDigest: lastApplied ? gatewaySnapshotDigest(lastApplied) : '',
         activeProfileCount: 1, activeCredentialCount: 1, activeLeaseCount: 0
-      })
+      }),
+      // Acks and reports the digest a real gateway would, so a spawn on an in-sync gateway pushes nothing.
+      syncSnapshot: (build: Parameters<AgentGatewayControl['syncSnapshot']>[0], options: Parameters<AgentGatewayControl['syncSnapshot']>[1]) =>
+        runSnapshotSync(mockGateway.queryDigest, async (snapshot: GatewaySnapshot) => {
+          lastApplied = snapshot;
+          snapshotPushes += 1;
+          return { gatewayBootId: 'boot1', snapshotDigest: gatewaySnapshotDigest(snapshot) };
+        }, build, options)
     };
 
     const mockLauncher = {
@@ -645,16 +646,16 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       cancelAndDrain: async (requestId) => {
         await sendGwControl({ operation: 'cancel', requestId });
       },
-      applySnapshot: async (snapshot) => {
-        const res = await sendGwControl({ operation: 'apply_snapshot', sequence: 1, generation: 1, credentials: snapshot.credentials, profiles: snapshot.profiles }) as { ok: boolean; ack: { gatewayBootId: string; snapshotDigest: string }; error?: string };
-        if (!res.ok) throw new Error(res.error ?? 'apply failed');
-        return res.ack;
-      },
       queryDigest: async () => {
         const res = await sendGwControl({ operation: 'digest' }) as { ok: boolean; digest: { gatewayBootId: string; snapshotDigest: string; activeProfileCount: number; activeCredentialCount: number; activeLeaseCount: number }; error?: string };
         if (!res.ok) throw new Error(res.error ?? 'digest failed');
         return res.digest;
-      }
+      },
+      syncSnapshot: (build, options) => runSnapshotSync(mockGatewayControl.queryDigest, async (snapshot) => {
+        const res = await sendGwControl({ operation: 'apply_snapshot', sequence: 1, generation: 1, credentials: snapshot.credentials, profiles: snapshot.profiles }) as { ok: boolean; ack: { gatewayBootId: string; snapshotDigest: string }; error?: string };
+        if (!res.ok) throw new Error(res.error ?? 'apply failed');
+        return res.ack;
+      }, build, options)
     };
 
     // 1. Start Gateway 1

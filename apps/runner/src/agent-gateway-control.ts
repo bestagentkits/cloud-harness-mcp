@@ -156,18 +156,27 @@ export interface AgentGatewayControl {
   /** Revokes the lease after its in-flight requests drain. A fake or older control may return nothing. */
   revokeAndDrain(leaseId: string): Promise<AgentLeaseRevocation | void>;
   cancelAndDrain(requestId: string): Promise<void>;
-  applySnapshot(snapshot: GatewaySnapshot): Promise<{ gatewayBootId: string; snapshotDigest: string }>;
   queryDigest(): Promise<{ gatewayBootId: string; snapshotDigest: string; activeProfileCount: number; activeCredentialCount: number; activeLeaseCount: number }>;
-  /** The shared record of every applySnapshot outcome. Optional so lease-only test doubles stay small. */
+  /** The shared record of every snapshot push outcome. Optional so lease-only test doubles stay small. */
   snapshotPushState?(): GatewaySnapshotPushState;
-  /** Builds and, when needed, pushes a snapshot in one serialized section. Optional for test doubles. */
-  syncSnapshot?(build: GatewaySnapshotBuilder, options: GatewaySnapshotSyncOptions): Promise<GatewaySnapshotSync>;
+  /**
+   * The only way to push a snapshot. Builds and, when needed, pushes it in one section, serialized
+   * against every other sync on this control, so a snapshot is always built after the previous push
+   * landed and an older snapshot never lands over a newer one.
+   */
+  syncSnapshot(build: GatewaySnapshotBuilder, options: GatewaySnapshotSyncOptions): Promise<GatewaySnapshotSync>;
 }
 
-/** One sync, unserialized: query (when asked), build after the query answered, compare, push. */
-async function runSnapshotSync(
-  query: () => Promise<{ gatewayBootId: string; snapshotDigest: string }>,
-  apply: (snapshot: GatewaySnapshot) => Promise<{ gatewayBootId: string; snapshotDigest: string }>,
+type GatewayDigest = { gatewayBootId: string; snapshotDigest: string };
+
+/**
+ * One sync, unserialized: query (when asked), build after the query answered, compare, push.
+ * DockerAgentGatewayControl runs it inside its push queue; a control with no concurrent callers,
+ * such as a test double, may call it directly.
+ */
+export async function runSnapshotSync(
+  query: () => Promise<GatewayDigest>,
+  apply: (snapshot: GatewaySnapshot) => Promise<GatewayDigest>,
   build: GatewaySnapshotBuilder,
   options: GatewaySnapshotSyncOptions
 ): Promise<GatewaySnapshotSync> {
@@ -187,19 +196,13 @@ async function runSnapshotSync(
   return { gatewayBootId: ack.gatewayBootId, gatewayDigest: ack.snapshotDigest, expectedDigest: gatewaySnapshotDigest(snapshot), pushed: true };
 }
 
-/**
- * Every snapshot push goes through here. The Docker control serializes these sections, so a
- * snapshot is always built after the previous push landed and pushes land in build order:
- * a sync that started earlier can never push an older snapshot over a newer one.
- */
-export async function syncGatewaySnapshot(
-  control: AgentGatewayControl,
-  build: GatewaySnapshotBuilder,
-  options: GatewaySnapshotSyncOptions
-): Promise<GatewaySnapshotSync> {
-  if (control.syncSnapshot) return await control.syncSnapshot(build, options);
-  return await runSnapshotSync(() => control.queryDigest(), (snapshot) => control.applySnapshot(snapshot), build, options);
-}
+/** A queued sync section that has not started yet. Later syncs join it instead of queueing another. */
+type PendingSnapshotSync = {
+  build: GatewaySnapshotBuilder;
+  forced: boolean;
+  listeners: Array<(digest: GatewayDigest) => void>;
+  result: Promise<GatewaySnapshotSync>;
+};
 
 type ControlResponse = {
   ok: boolean;
@@ -214,6 +217,7 @@ export class DockerAgentGatewayControl implements AgentGatewayControl {
   private pushState: GatewaySnapshotPushState = { lastSuccessAt: null, lastError: null };
   /** The tail of the snapshot push queue. It never rejects, so a failed push does not block later ones. */
   private pushQueue: Promise<unknown> = Promise.resolve();
+  private pendingSync: PendingSnapshotSync | undefined;
 
   constructor(
     private readonly explicitContainer?: string,
@@ -262,17 +266,43 @@ export class DockerAgentGatewayControl implements AgentGatewayControl {
     await this.control({ operation: 'cancel', requestId });
   }
 
-  /** Pushes this exact snapshot, queued behind any sync already in flight. */
-  async applySnapshot(snapshot: GatewaySnapshot): Promise<{ gatewayBootId: string; snapshotDigest: string }> {
-    const result = await this.syncSnapshot(() => snapshot, { onlyIfMismatch: false });
-    return { gatewayBootId: result.gatewayBootId, snapshotDigest: result.gatewayDigest };
+  /**
+   * Queues one sync section. A section that has not started yet is joined rather than followed by
+   * another: its build runs only when the section starts, so it already reads the latest state, and a
+   * forced call upgrades it to a forced push. Every joined caller gets that section's result.
+   *
+   * At most one section is in flight and one pending, so a caller waits for at most two sections,
+   * each bounded by the control request timeout. That remaining wait is the accepted cost of never
+   * letting an older snapshot land over a newer one.
+   */
+  syncSnapshot(build: GatewaySnapshotBuilder, options: GatewaySnapshotSyncOptions): Promise<GatewaySnapshotSync> {
+    const pending = this.pendingSync;
+    if (pending) {
+      pending.build = build;
+      if (!options.onlyIfMismatch) pending.forced = true;
+      if (options.onQueried) pending.listeners.push(options.onQueried);
+      return pending.result;
+    }
+    const start = () => this.runSection(section);
+    const section: PendingSnapshotSync = {
+      build,
+      forced: !options.onlyIfMismatch,
+      listeners: options.onQueried ? [options.onQueried] : [],
+      // The queue callback always runs after this method returns, so `section` is initialized by then.
+      result: this.pushQueue.then(start, start)
+    };
+    this.pendingSync = section;
+    this.pushQueue = section.result.catch(() => undefined);
+    return section.result;
   }
 
-  syncSnapshot(build: GatewaySnapshotBuilder, options: GatewaySnapshotSyncOptions): Promise<GatewaySnapshotSync> {
-    const run = () => runSnapshotSync(() => this.queryDigest(), (snapshot) => this.pushNow(snapshot), build, options);
-    const result = this.pushQueue.then(run, run);
-    this.pushQueue = result.catch(() => undefined);
-    return result;
+  private runSection(section: PendingSnapshotSync): Promise<GatewaySnapshotSync> {
+    // From here on the section is running, so a later sync queues behind it instead of joining.
+    if (this.pendingSync === section) this.pendingSync = undefined;
+    return runSnapshotSync(() => this.queryDigest(), (snapshot) => this.pushNow(snapshot), () => section.build(), {
+      onlyIfMismatch: !section.forced,
+      onQueried: (digest) => { for (const listener of section.listeners) listener(digest); }
+    });
   }
 
   /** One push, recorded. Only called inside the push queue, so outcomes are recorded in push order. */
@@ -282,7 +312,7 @@ export class DockerAgentGatewayControl implements AgentGatewayControl {
       if (!response.ack) {
         throw new HarnessError('UNAVAILABLE', 'model gateway omitted snapshot ack', 503, true);
       }
-      this.pushState = { lastSuccessAt: Math.max(this.pushState.lastSuccessAt ?? Number.NEGATIVE_INFINITY, this.now()), lastError: null };
+      this.pushState = { lastSuccessAt: this.now(), lastError: null };
       return response.ack;
     } catch (err) {
       this.pushState = { lastSuccessAt: this.pushState.lastSuccessAt, lastError: err instanceof Error ? err.message : 'snapshot push failed' };

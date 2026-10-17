@@ -418,6 +418,8 @@ profile, and refuses the launch as retryable when the gateway cannot be brought 
 The runner serializes every snapshot push, and it builds each snapshot just before sending it.
 A push therefore always carries the latest saved state, such as a key rotated a moment earlier,
 and a slower push can never replace a newer snapshot with an older one.
+Requests that arrive while a push is already waiting share that push, so a status read or an
+agent launch waits for at most the push in progress and one more.
 
 ## Spend policies
 
