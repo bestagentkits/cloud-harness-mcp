@@ -195,6 +195,14 @@ describe('model connection verifier', () => {
     expect(ctx.audits[0]?.[5]).toMatchObject({ keyVersion: 1, credentialId: cred.id });
   });
 
+  it('names the channel that asked in the audit entry, the Dashboard by default', async () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    await ctx.verifier.verify(ctx.p1, { credentialId: cred.id });
+    await ctx.verifier.verify(ctx.p1, { credentialId: cred.id }, 'mcp');
+    expect(ctx.audits.map((entry) => entry[5].actor)).toEqual(['dashboard', 'mcp']);
+  });
+
   it('verifies a responses-mode draft without saving a profile or revision', async () => {
     const ctx = setup(openAiHandler());
     const cred = ctx.credential();
@@ -654,6 +662,32 @@ describe('draft verification attached to a profile save', () => {
     // Single use: the same reference never attaches to a second save.
     const again = ctx.verifier.attachDraftVerification(ctx.p1, draft.verificationRef, ctx.profile(cred.id, 'gpt-test'));
     expect(again.lastVerification).toBeUndefined();
+  });
+
+  it('reports whether a draft result would attach without spending the reference', async () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    const draft = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'gpt-test' });
+    const route = { credentialId: cred.id, model: 'gpt-test', apiMode: 'chat-completions' as const, upstreamUrl: 'https://api.openai.com/v1/chat/completions' };
+    expect(ctx.verifier.draftVerificationAttachable(ctx.p1, draft.verificationRef, route)).toBe(true);
+    expect(ctx.verifier.draftVerificationAttachable(ctx.p1, draft.verificationRef, route)).toBe(true);
+    expect(ctx.verifier.draftVerificationAttachable(ctx.p1, draft.verificationRef, { ...route, model: 'gpt-other' })).toBe(false);
+    expect(ctx.verifier.draftVerificationAttachable(ctx.p2, draft.verificationRef, route)).toBe(false);
+    expect(ctx.verifier.draftVerificationAttachable(ctx.p1, undefined, route)).toBe(false);
+    // Looking, even at a mismatched route, left the reference for the save.
+    const saved = ctx.verifier.attachDraftVerification(ctx.p1, draft.verificationRef, ctx.profile(cred.id, 'gpt-test'));
+    expect(saved.lastVerification?.outcome).toBe('verified');
+    expect(ctx.verifier.draftVerificationAttachable(ctx.p1, draft.verificationRef, route)).toBe(false);
+  });
+
+  it('never reports an expired draft result as attachable', () => {
+    let now = 1_000;
+    const store = new DraftVerificationStore(() => now);
+    const route = { credentialId: 'cred_1', credentialVersion: 1, model: 'm', apiMode: 'chat-completions' as const, upstreamUrl: 'https://api.openai.com/v1/chat/completions' };
+    const ref = store.remember('p1', route, {} as ModelConnectionVerifyResult);
+    expect(store.peek('p1', ref, route)).toBe(true);
+    now += DRAFT_VERIFICATION_TTL_MS;
+    expect(store.peek('p1', ref, route)).toBe(false);
   });
 
   it('keeps a draft result on an updated revision, and never a stale one', async () => {

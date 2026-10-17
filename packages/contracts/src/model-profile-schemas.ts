@@ -223,6 +223,77 @@ export const AgentModelProfileMetadataSchema = z.object({
 }).strict();
 export type AgentModelProfileMetadata = z.infer<typeof AgentModelProfileMetadataSchema>;
 
+// A change a profile save would make that only the owner may approve when it does not
+// come from the Dashboard, because it raises spend capacity, widens what an agent may
+// do, or sends a key to a new host:
+// - `limits_raised`: a token or cost limit is higher than the current revision's;
+// - `price_lowered`: an effective price (cache prices and tiers resolved for the
+//   provider) is lower than the current one and is not a catalog-verified price;
+// - `price_unverified_for_new_route`: the credential or model changes and the
+//   prices are an override rather than the catalog's;
+// - `proxy_operations_widened`: an operation the current revision does not allow;
+// - `custom_upstream_unbound`: a custom upstream URL none of the principal's
+//   revisions on that credential already uses.
+export const ModelProfileEscalationSchema = z.enum([
+  'custom_upstream_unbound',
+  'limits_raised',
+  'price_lowered',
+  'price_unverified_for_new_route',
+  'proxy_operations_widened'
+]);
+export type ModelProfileEscalation = z.infer<typeof ModelProfileEscalationSchema>;
+
+// A dry run of a profile create or update. It takes exactly the save input plus the
+// action, so a client can validate the body it is about to send.
+export const ModelProfileValidateInputSchema = z.discriminatedUnion('action', [
+  AgentModelProfileInputSchema.extend({ action: z.literal('create') }).strict(),
+  AgentModelProfileUpdateInputSchema.extend({ action: z.literal('update'), profileId: ModelProfileIdSchema }).strict()
+]);
+export type ModelProfileValidateInput = z.infer<typeof ModelProfileValidateInputSchema>;
+
+// A refusal the save would answer with. Messages are registry or repository text:
+// they name supported values and never echo a credential.
+export const ModelProfileValidationIssueSchema = z.object({
+  code: z.enum(['INVALID_INPUT', 'NOT_FOUND', 'CONFLICT']),
+  message: z.string().max(1000)
+}).strict();
+export type ModelProfileValidationIssue = z.infer<typeof ModelProfileValidationIssueSchema>;
+
+// The route and prices a save would write right now. Identifiers, digest, and
+// timestamps are assigned only by the real save.
+export const ModelProfileValidatedRevisionSchema = z.object({
+  credentialId: ModelCredentialIdSchema,
+  provider: ModelProviderKindSchema,
+  model: z.string(),
+  apiMode: AgentModelApiModeSchema,
+  upstreamUrl: z.string(),
+  pricing: AgentModelPricingSchema,
+  priceProvenance: AgentModelPriceProvenanceSchema,
+  limits: AgentModelLimitsSchema,
+  maxProxyOperations: z.array(AgentProxyOperationSchema)
+}).strict();
+export type ModelProfileValidatedRevision = z.infer<typeof ModelProfileValidatedRevisionSchema>;
+
+export const ModelProfileValidateResultSchema = z.object({
+  valid: z.boolean(),
+  action: z.enum(['create', 'update']),
+  profileId: ModelProfileIdSchema,
+  issues: z.array(ModelProfileValidationIssueSchema).max(16),
+  revision: ModelProfileValidatedRevisionSchema.nullable(),
+  // Compared with the cached catalog price only; validation never fetches a catalog.
+  pricingReview: ModelPricingReviewSchema.nullable(),
+  // Whether `verificationRef` would attach to the saved revision. Validation only
+  // looks; the reference stays available for the save.
+  verificationAttachable: z.boolean(),
+  escalations: z.array(ModelProfileEscalationSchema),
+  // Escalations are reported to every caller, but only refused for callers outside
+  // the Dashboard, which is the owner's input channel.
+  ownerApprovalRequiredOverMcp: z.boolean(),
+  statusAfterSaveOverMcp: z.enum(['DISABLED', 'unchanged']),
+  currentGeneration: z.number().int().positive().nullable()
+}).strict();
+export type ModelProfileValidateResult = z.infer<typeof ModelProfileValidateResultSchema>;
+
 export const GatewayControlApplySnapshotSchema = z.object({
   type: z.literal('apply_snapshot'),
   sequence: z.number().int().positive(),

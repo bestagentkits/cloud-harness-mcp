@@ -70,6 +70,16 @@ export class DraftVerificationStore {
     return entry.result;
   }
 
+  /**
+   * Whether `take` would return a result for this reference and route right now.
+   * It never spends the reference, so a dry run can report that a later save will
+   * keep the check.
+   */
+  peek(principalId: string, ref: string, route: DraftVerificationRoute): boolean {
+    const entry = this.entries.get(ref);
+    return entry !== undefined && entry.principalId === principalId && entry.expiresAt > this.now() && sameRoute(entry.route, route);
+  }
+
   private prune(): void {
     const now = this.now();
     for (const [ref, entry] of this.entries) {

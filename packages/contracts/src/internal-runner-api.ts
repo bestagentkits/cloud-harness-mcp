@@ -6,6 +6,7 @@ import { DecisionRerankToolsInputSchema } from './decision-plane.js';
 import {
   AgentModelProfileInputSchema,
   AgentModelProfileUpdateInputSchema,
+  ModelProfileValidateInputSchema,
   ProviderCredentialInputSchema
 } from './model-profile-schemas.js';
 import { ModelCatalogRefreshInputSchema, ModelCatalogSearchInputSchema } from './model-catalog-schemas.js';
@@ -194,6 +195,7 @@ export const MetadataRunnerOperationSchema = z.enum([
   'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove',
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
   'model_profile_list', 'model_profile_create', 'model_profile_update', 'model_profile_activate', 'model_profile_disable', 'model_profile_delete',
+  'model_profile_validate',
   'model_config_status', 'model_provider_list',
   'model_catalog_search', 'model_catalog_refresh',
   'model_connection_verify',
@@ -323,6 +325,7 @@ const metadataInputs = {
   model_profile_activate: z.object({ profileId: ModelProfileIdSchema, expectedGeneration: generation }).strict(),
   model_profile_disable: z.object({ profileId: ModelProfileIdSchema, expectedGeneration: generation }).strict(),
   model_profile_delete: z.object({ profileId: ModelProfileIdSchema, expectedGeneration: generation }).strict(),
+  model_profile_validate: ModelProfileValidateInputSchema,
   model_config_status: z.object({}).strict(),
   model_provider_list: z.object({}).strict(),
   model_catalog_search: ModelCatalogSearchInputSchema,
@@ -620,6 +623,7 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('package_plan_reject'), metadataRequest('package_rollback'), metadataRequest('package_remove'),
   metadataRequest('model_credential_list'), metadataRequest('model_credential_create'), metadataRequest('model_credential_rotate'), metadataRequest('model_credential_delete'),
   metadataRequest('model_profile_list'), metadataRequest('model_profile_create'), metadataRequest('model_profile_update'), metadataRequest('model_profile_activate'), metadataRequest('model_profile_disable'), metadataRequest('model_profile_delete'),
+  metadataRequest('model_profile_validate'),
   metadataRequest('model_config_status'), metadataRequest('model_provider_list'),
   metadataRequest('model_catalog_search'), metadataRequest('model_catalog_refresh'),
   metadataRequest('model_connection_verify'),
