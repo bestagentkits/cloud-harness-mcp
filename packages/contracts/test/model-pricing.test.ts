@@ -12,8 +12,7 @@ import {
   findResolvedPriceTierIssues,
   getModelProvider,
   resolveEffectivePricing,
-  type ModelProviderKind,
-  type PinnedModelPricing
+  type ModelProviderKind
 } from '../src/index.js';
 
 const base = { inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 4_000 };
@@ -27,7 +26,9 @@ const GATEWAY_PRICE_FIELDS = [
  * the control snapshot calls it: prices are non-negative safe integers, absent
  * cache prices mean the input price of the same level, at most four tiers, integer
  * thresholds from 1 to 10,000,000 that strictly ascend, and no resolved tier price
- * below the same price one level down. Throws the first violation.
+ * below the same price one level down. Throws the first violation. This copy keeps
+ * the contract tests self-contained; apps/runner/test/model-gateway-snapshot-pricing.test.ts
+ * runs the gateway's real parser and is the authority on compatibility.
  */
 function gatewayParsePricing(value: unknown): void {
   const record = (candidate: unknown, label: string): Record<string, unknown> => {
@@ -68,54 +69,6 @@ function gatewayParsePricing(value: unknown): void {
     }
     below = tier;
   });
-}
-
-/** A deterministic PRNG (mulberry32), so a failing case reproduces from its seed. */
-function seededRandom(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
-
-/** Pricing that passes AgentModelPricingSchema, with cache prices stated, null, or absent at random. */
-function randomSchemaValidPricing(random: () => number): PinnedModelPricing {
-  const amount = (min: number) => min + Math.floor(random() * 5_000_000);
-  const cache = (min: number): number | null | undefined => {
-    const pick = random();
-    if (pick < 0.3) return undefined;
-    if (pick < 0.4) return null;
-    // Small stated prices land below the resolved defaults of the level beneath.
-    return pick < 0.55 ? min + Math.floor(random() * 3_000) : amount(min);
-  };
-  const level = (below?: Record<string, number | null | undefined>) => {
-    const floor = (key: string) => typeof below?.[key] === 'number' ? below[key] as number : 0;
-    const cacheRead = cache(floor('cacheReadMicrosPerMillionTokens'));
-    const cacheWrite = cache(floor('cacheWriteMicrosPerMillionTokens'));
-    return {
-      inputMicrosPerMillionTokens: amount(floor('inputMicrosPerMillionTokens')),
-      outputMicrosPerMillionTokens: amount(floor('outputMicrosPerMillionTokens')),
-      ...(cacheRead === undefined ? {} : { cacheReadMicrosPerMillionTokens: cacheRead }),
-      ...(cacheWrite === undefined ? {} : { cacheWriteMicrosPerMillionTokens: cacheWrite })
-    };
-  };
-  const pricing: PinnedModelPricing = level();
-  const tierCount = Math.floor(random() * (MAX_MODEL_PRICE_TIERS + 1));
-  const tiers = [];
-  let below: Record<string, number | null | undefined> = pricing;
-  let threshold = 0;
-  for (let index = 0; index < tierCount; index += 1) {
-    threshold += 1 + Math.floor(random() * 2_000_000);
-    const tier = { minPromptTokens: threshold, ...level(below) };
-    tiers.push(tier);
-    below = tier;
-  }
-  if (tiers.length > 0) pricing.tiers = tiers;
-  return pricing;
 }
 
 describe('resolveEffectivePricing', () => {
@@ -187,31 +140,6 @@ describe('resolveEffectivePricing', () => {
     }, 'anthropic');
     expect(statedBaseWrite.tiers?.[0]?.cacheWriteMicrosPerMillionTokens).toBe(3_750_000);
     for (const effective of [gemini, openrouter, statedBaseWrite]) expect(() => gatewayParsePricing(effective)).not.toThrow();
-  });
-
-  it('resolves schema-valid pricing to prices the gateway accepts, for every provider', () => {
-    const random = seededRandom(0x5eed_358);
-    for (let iteration = 0; iteration < 2_000; iteration += 1) {
-      const pricing = AgentModelPricingSchema.parse(randomSchemaValidPricing(random));
-      for (const basis of [...ModelProviderKindSchema.options, { billsCacheWrites: false }] as const) {
-        const effective = resolveEffectivePricing(pricing, basis);
-        expect(() => gatewayParsePricing(effective), `iteration ${iteration}, ${JSON.stringify(basis)}: ${JSON.stringify(pricing)}`).not.toThrow();
-        if (findResolvedPriceTierIssues(pricing, basis).length === 0) {
-          // Pricing the runner accepts is never raised: every tier keeps its own resolution.
-          const billsWrites = typeof basis === 'string' ? getModelProvider(basis).billsCacheWrites : basis.billsCacheWrites;
-          (pricing.tiers ?? []).forEach((tier, index) => {
-            expect(effective.tiers?.[index]).toEqual({
-              minPromptTokens: tier.minPromptTokens,
-              inputMicrosPerMillionTokens: tier.inputMicrosPerMillionTokens,
-              outputMicrosPerMillionTokens: tier.outputMicrosPerMillionTokens,
-              cacheReadMicrosPerMillionTokens: tier.cacheReadMicrosPerMillionTokens ?? tier.inputMicrosPerMillionTokens,
-              cacheWriteMicrosPerMillionTokens: tier.cacheWriteMicrosPerMillionTokens
-                ?? (billsWrites ? tier.inputMicrosPerMillionTokens * 2 : tier.inputMicrosPerMillionTokens)
-            });
-          });
-        }
-      }
-    }
   });
 
   it('resolves each provider\'s defaults to prices the gateway accepts', () => {

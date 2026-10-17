@@ -34,7 +34,7 @@ import {
 import { canonicalJson } from './cloudflare-access-oauth-provider.js';
 import type { SecretKeyring, EncryptedSecret } from './secret-keyring.js';
 
-/** Hashes every revision field, nested pricing and limits included, in canonical key order. */
+/** Hashes every revision field, nested pricing, price provenance, and limits included, in canonical key order. */
 function computeRevisionDigest(fields: Record<string, unknown>): string {
   return `sha256:${createHash('sha256').update(canonicalJson(fields), 'utf8').digest('hex')}`;
 }
@@ -672,6 +672,7 @@ export class ModelProfileStateRepository {
       downstreamPath,
       upstreamUrl,
       pricing,
+      priceProvenance,
       limits: input.limits,
       maxProxyOperations: input.maxProxyOperations
     });
@@ -821,6 +822,9 @@ export class ModelProfileStateRepository {
     let priceProvenance: AgentModelPriceProvenance;
     if (currentRev && (!input.pricing || restatesStoredPrices(input.pricing, currentRev))) {
       pricing = pricingFromRow(currentRev);
+      // Another credential can resolve unknown cache prices differently, so kept
+      // tiers must still satisfy the gateway's ordering for its provider.
+      if (credentialId !== currentRev.credential_id) assertResolvedPriceTiers(pricing, cred.provider);
       const stored = provenanceFromRow(currentRev);
       const servesSameModel = model === currentRev.model && credentialId === currentRev.credential_id;
       priceProvenance = servesSameModel ? stored : { ...stored, isOverride: true, confidence: 'unknown' };
@@ -859,6 +863,7 @@ export class ModelProfileStateRepository {
       downstreamPath,
       upstreamUrl,
       pricing,
+      priceProvenance,
       limits,
       maxProxyOperations
     });

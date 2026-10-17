@@ -386,6 +386,38 @@ describe('ModelProfileStateRepository', () => {
       expect(repo.listProfiles(p1)[0]?.activeRevisionId).toBe(created.activeRevisionId);
     });
 
+    it('refuses a credential change that leaves kept tiers below the level beneath them', () => {
+      const { repo, p1 } = setup();
+      const custom = repo.createCredential(p1, { label: 'Custom', provider: 'custom', apiKey: 'sk-custom' });
+      const openai = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-switch' });
+      // On custom the tier's unstated write doubles to 200; on OpenAI it is 100, below the base's 150.
+      const created = repo.createProfile(p1, {
+        ...pricedProfile(custom.id, 'switch'),
+        customUpstreamUrl: 'https://llm.example.com/v1/chat/completions',
+        pricing: {
+          inputMicrosPerMillionTokens: 100, outputMicrosPerMillionTokens: 100, cacheWriteMicrosPerMillionTokens: 150,
+          tiers: [{ minPromptTokens: 1_000, inputMicrosPerMillionTokens: 100, outputMicrosPerMillionTokens: 100 }]
+        }
+      });
+      const switchTo = (pricing?: { inputMicrosPerMillionTokens: number; outputMicrosPerMillionTokens: number }) => () =>
+        repo.updateProfile(p1, created.id, { credentialId: openai.id, ...(pricing ? { pricing } : {}), expectedGeneration: 1 });
+      for (const attempt of [switchTo(), switchTo({ inputMicrosPerMillionTokens: 100, outputMicrosPerMillionTokens: 100 })]) {
+        expect(attempt).toThrow(expect.objectContaining({ code: 'INVALID_INPUT', message: expect.stringContaining('tiers[0].cacheWriteMicrosPerMillionTokens') }));
+      }
+      expect(repo.listProfiles(p1)[0]?.activeRevisionId).toBe(created.activeRevisionId);
+    });
+
+    it('gives revisions that differ only in price provenance different digests', () => {
+      const { repo, p1 } = setup();
+      const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-prov-digest' });
+      const input = pricedProfile(cred.id, 'provenance-digest');
+      const fromCatalog = repo.createProfile(p1, input, { priceProvenance: catalogProvenance });
+      const typed = repo.updateProfile(p1, fromCatalog.id, { pricing: input.pricing, expectedGeneration: 1 });
+      expect(typed.activeRevision?.pricing).toEqual(fromCatalog.activeRevision?.pricing);
+      expect(typed.activeRevision?.priceProvenance).not.toEqual(fromCatalog.activeRevision?.priceProvenance);
+      expect(typed.activeRevision?.digest).not.toBe(fromCatalog.activeRevision?.digest);
+    });
+
     it('reads stored tiers that carry keys this runner does not know', () => {
       const { store, repo, p1 } = setup();
       const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-newer' });

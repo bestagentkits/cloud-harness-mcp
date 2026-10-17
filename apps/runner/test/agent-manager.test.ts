@@ -648,7 +648,7 @@ describe('agent repository guidance bootstrap', () => {
       const record = workspace('network-none', ownerId);
       store.create(record);
       const modelProfiles = new ModelProfileStateRepository(store.database, new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]));
-      const credential = modelProfiles.createCredential(ownerId, { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or-test' });
+      const credential = modelProfiles.createCredential(ownerId, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-openai-test' });
       modelProfiles.createProfile(ownerId, {
         profileId: ModelProfileIdSchema.parse('cached'),
         displayName: 'Cached',
@@ -668,8 +668,9 @@ describe('agent repository guidance bootstrap', () => {
         modelProfiles
       });
       await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { profileId: 'cached' }));
-      // OpenRouter bills cache writes, so the unknown write price is twice the input price.
-      expect(await startRecordCost(launcher)).toEqual({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 6 });
+      // OpenAI bills no cache-write premium, so the unknown write costs the input price. A lookup
+      // that missed the credential would resolve as custom and report twice that.
+      expect(await startRecordCost(launcher)).toEqual({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 });
       await manager.stop();
     });
   });

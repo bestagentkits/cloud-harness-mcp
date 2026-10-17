@@ -205,16 +205,19 @@ and `AgentModelPricingSchema` in
   avoid this.
 - **Provenance.** `priceProvenance` records where the prices came from: `source`
   (`provider`, `openrouter`, `user`, or `none`), `sourceModelId`, `retrievedAt`,
-  `confidence` (`exact`, `estimate`, or `unknown`), and `isOverride`. Prices you type are
-  recorded as a `user` override of `unknown` confidence. Revisions saved before provenance
-  existed read back the same way, because those prices were entered by hand.
+  `confidence` (`exact`, `estimate`, or `unknown`), and `isOverride`. Today every saved
+  price is recorded as a `user` override of `unknown` confidence, including a price the
+  wizard filled in from the model catalog: saving does not yet record the catalog as the
+  source. Revisions saved before provenance existed read back the same way.
 
 **Pinned prices never drift.** Revisions are immutable, and catalog refreshes never write
 to them. An edit that does not submit pricing copies the current revision's prices, cache
 prices, tiers, and provenance unchanged, and keeps its limits unless the edit changes them.
 Submitting only the input and output prices, unchanged, counts as not submitting pricing.
 If the edit changes the model or the key, the copied prices are recorded as your override
-of `unknown` confidence, because they were set for the previous model. Any other submitted
+of `unknown` confidence, because they were set for the previous model. A key for another
+provider can resolve unknown cache prices differently, so switching keys is refused with
+`INVALID_INPUT` when the copied tiers would break the rule above. Any other submitted
 pricing replaces all of them: send the cache prices and tiers again to keep them, and the
 new prices are recorded as your override.
 
