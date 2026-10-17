@@ -40,6 +40,12 @@ beforeEach(async () => {
       if (operation === 'model_profile_list') {
         return { ok: true, message: 'listed', truncated: false, data: { profiles: [{ id: 'coding-fast', displayName: 'Fast Coding', status: 'ACTIVE' }] } };
       }
+      if (operation === 'model_provider_list') {
+        return { ok: true, message: 'listed', truncated: false, data: { providers: [{ id: 'google', displayName: 'Google Gemini' }] } };
+      }
+      if (operation === 'model_profile_create') {
+        return { ok: false, message: 'refused', truncated: false, error: { code: 'INVALID_INPUT', message: 'Google Gemini does not support the responses API mode; supported: chat-completions', retryable: false } };
+      }
       if (operation === 'model_config_status') {
         return { ok: true, message: 'status', truncated: false, data: { status: { gatewaySynced: true } } };
       }
@@ -128,5 +134,26 @@ describe('Dashboard Models & Credentials Router', () => {
     const status = await request('/agent-model-config-status');
     expect(status.status).toBe(200);
     expect(calls[1]?.operation).toBe('model_config_status');
+  });
+
+  it('lists the provider registry through GET /model-providers', async () => {
+    const reply = await request('/model-providers');
+    expect(reply.status).toBe(200);
+    expect(calls[0]?.operation).toBe('model_provider_list');
+    expect(reply.json.data).toEqual({ providers: [{ id: 'google', displayName: 'Google Gemini' }] });
+  });
+
+  it('shows the registry refusal naming the supported values when a profile save is rejected', async () => {
+    const reply = await request('/agent-model-profiles', {
+      method: 'POST',
+      body: {
+        profileId: 'gemini', displayName: 'Gemini', credentialId: 'cred_12345678901234567890', model: 'gemini-2.5-flash',
+        apiMode: 'responses', pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+        limits: { maxInputTokens: 1000, maxOutputTokens: 100, maxCostMicros: 1000 }, maxProxyOperations: ['files_read']
+      }
+    });
+    expect(calls[0]?.operation).toBe('model_profile_create');
+    expect(reply.status).toBe(400);
+    expect(reply.json.message).toBe('Google Gemini does not support the responses API mode; supported: chat-completions');
   });
 });

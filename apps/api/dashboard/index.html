@@ -125,6 +125,7 @@
         <option value="anthropic">Anthropic (OpenAI-compatible)</option>
         <option value="openrouter">OpenRouter</option>
         <option value="google">Google Gemini (OpenAI-compatible)</option>
+        <option value="deepseek">DeepSeek</option>
         <option value="custom">Custom (OpenAI-compatible)</option>
       </select>
       <label for="model-credential-auth-mode">Auth header mode</label>
@@ -158,6 +159,7 @@
       <label for="model-profile-api-mode">API Mode</label>
       <select id="model-profile-api-mode" name="apiMode">
         <option value="chat-completions" selected>Chat Completions (/v1/chat/completions)</option>
+        <option value="responses">Responses (/v1/responses)</option>
       </select>
       <div id="model-profile-custom-url-group" hidden>
         <label for="model-profile-custom-url">Custom Upstream HTTPS URL</label>
