@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { getModelProvider, type ModelProviderKind, type ProviderAuthMode } from '@cloud-harness/contracts';
 import { assertProviderRequestUrl, redactSecret, type ProviderHttpClient } from '../model-provider-http.js';
@@ -92,7 +93,10 @@ export async function fetchProviderModels(
   const endpoint = definition.modelsEndpoint;
   if (!endpoint || definition.catalogStrategy !== 'provider-models') throw new CatalogSourceError('upstream_error');
   const { secret } = credential;
-  const headers = authHeaders(endpoint.auth, credential);
+  // A provider that asks for a session header gets a fresh id per listing, as the connection check sends.
+  const headers = definition.sessionHeader === null
+    ? authHeaders(endpoint.auth, credential)
+    : { ...authHeaders(endpoint.auth, credential), [definition.sessionHeader]: randomUUID() };
   const now = options.now ?? Date.now;
   const deadline = now() + (options.budgetMs ?? PROVIDER_CATALOG_BUDGET_MS);
   // Gemini answers an unusable key with 400 INVALID_ARGUMENT rather than 401.

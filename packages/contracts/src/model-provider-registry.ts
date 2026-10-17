@@ -35,9 +35,10 @@ export interface ModelProviderDefinition {
   // An unknown cache-write price defaults to twice the input price when true and
   // to the input price when false (resolveEffectivePricing in model-pricing.ts).
   billsCacheWrites: boolean;
-  // A lowercase header the provider requires to carry a stable session id. The
-  // gateway sends it with the calling agent id, and the connection check sends
-  // it with a per-check id. `null` when the provider needs none.
+  // A lowercase header the provider asks clients to send with a session id. The
+  // gateway sends it with the calling agent id; the connection check and the
+  // catalog listing send it with a fresh random id per call. `null` when the
+  // provider asks for none.
   sessionHeader: string | null;
 }
 
@@ -158,7 +159,7 @@ const definitions: readonly ModelProviderDefinition[] = [
     requiresCustomUpstream: false,
     // The subscription meters cache writes against the plan allowance; assume a premium.
     billsCacheWrites: true,
-    // OpenCode Go rejects a request without it (`400 MissingSessionID`).
+    // OpenCode asks clients to send it so it can optimize routing and prompt caching.
     sessionHeader: 'x-opencode-session'
   },
   {

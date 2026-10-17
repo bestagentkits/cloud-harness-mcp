@@ -403,7 +403,7 @@ export class ModelConnectionVerifier {
     const expired = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => reject(new ProviderHttpError('timeout', `provider did not answer within ${request.timeoutMs} ms`)), request.timeoutMs);
     });
-    // A provider that requires a session header refuses a request without one.
+    // A provider that asks for a session header gets it on every request of the check.
     const sessionHeader = getModelProvider(provider).sessionHeader;
     const outbound = sessionHeader === null ? request : { ...request, headers: { ...request.headers, [sessionHeader]: target.sessionId } };
     try {

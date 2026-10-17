@@ -50,7 +50,21 @@ describe('model provider registry', () => {
     expect(provider.sessionHeader).toBe('x-opencode-session');
   });
 
-  it('names a session header only for providers that require one', () => {
+  it('names only session headers the gateway accepts', () => {
+    // Mirrors the gateway's reserved names (apps/model-gateway/src/config.ts), which contracts cannot import.
+    const reserved = [
+      'accept', 'content-type', 'content-length', 'host', 'user-agent', 'authorization', 'x-api-key',
+      'transfer-encoding', 'te', 'connection', 'keep-alive', 'upgrade', 'trailer', 'expect',
+      'proxy-authorization', 'proxy-connection', 'cookie', 'accept-encoding', 'content-encoding'
+    ];
+    for (const provider of listModelProviders()) {
+      if (provider.sessionHeader === null) continue;
+      expect(provider.sessionHeader, provider.id).toMatch(/^[a-z0-9][a-z0-9-]{1,62}$/u);
+      expect(reserved, provider.id).not.toContain(provider.sessionHeader);
+    }
+  });
+
+  it('names a session header only for providers that ask for one', () => {
     for (const provider of listModelProviders()) {
       if (provider.id === 'opencode-go') continue;
       expect(provider.sessionHeader, provider.id).toBeNull();

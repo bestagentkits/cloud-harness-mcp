@@ -490,7 +490,7 @@ describe('model connection verifier', () => {
       usage: { prompt_tokens: 40, completion_tokens: 8 }
     });
     const ctx = setup((request) => {
-      // OpenCode Go refuses a request that carries no session id.
+      // Answer as a provider that refuses a request without the session header would, so a missing header fails the check.
       if (!request.headers?.['x-opencode-session']) return { status: 400, body: json({ error: { type: 'MissingSessionID', message: 'missing session id' } }) };
       if (request.url.endsWith('/v1/models')) return { status: 200, body: listing(['kimi-k2.5']) };
       const body = JSON.parse(request.body ?? '{}') as Record<string, unknown>;
