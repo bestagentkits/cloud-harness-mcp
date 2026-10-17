@@ -16,6 +16,20 @@ export type AgentLeaseGrant = {
   gatewayBootId?: string;
 };
 
+/**
+ * The gateway answered the control record with an explicit `{ ok: false }`
+ * refusal. The gateway validates a record completely before it acts, so a
+ * refused `issue` created no lease and nothing can be spent on it. Every other
+ * failure (the exec failing, a timeout, an unparseable answer) is ambiguous:
+ * the gateway may have acted before the answer was lost.
+ */
+export class GatewayControlRejection extends HarnessError {
+  constructor(message: string) {
+    super('UNAVAILABLE', message, 503, true);
+    this.name = 'GatewayControlRejection';
+  }
+}
+
 const CounterSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
 /**
@@ -169,8 +183,11 @@ export class DockerAgentGatewayControl implements AgentGatewayControl {
     } catch {
       throw new HarnessError('UNAVAILABLE', 'model gateway returned an invalid control response', 503, true);
     }
+    if (typeof response !== 'object' || response === null || (response.ok !== true && response.ok !== false)) {
+      throw new HarnessError('UNAVAILABLE', 'model gateway returned an invalid control response', 503, true);
+    }
     if (!response.ok) {
-      throw new HarnessError('UNAVAILABLE', `model gateway rejected control request: ${response.error ?? 'unknown error'}`.slice(0, 2_000), 503, true);
+      throw new GatewayControlRejection(`model gateway rejected control request: ${typeof response.error === 'string' ? response.error : 'unknown error'}`.slice(0, 2_000));
     }
     return response;
   }

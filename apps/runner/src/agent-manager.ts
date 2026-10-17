@@ -23,7 +23,12 @@ import {
   type AgentTombstone
 } from './agent-state-repository.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
-import { DockerAgentGatewayControl, type AgentGatewayControl, type AgentLeaseRevocation } from './agent-gateway-control.js';
+import {
+  DockerAgentGatewayControl,
+  GatewayControlRejection,
+  type AgentGatewayControl,
+  type AgentLeaseRevocation
+} from './agent-gateway-control.js';
 import { ModelSpendLedger, type ModelSpendThresholdCrossing } from './model-spend-ledger.js';
 import {
   AgentProtocolChannel,
@@ -421,15 +426,22 @@ export class AgentManager {
       const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext);
       // From here the lease may exist in the gateway, so an unsettled row is charged its whole cap.
       this.spendLedger.markIssuing(record.gatewayLeaseId);
-      const grant = await this.gateway.issue({
-        leaseId: record.gatewayLeaseId,
-        agentId: record.id,
-        profileId: record.profileId,
-        ttlMs: Math.max(1_000, record.expiresAt - this.now()),
-        maxInputTokens: record.budget.maxInputTokens,
-        maxOutputTokens: record.budget.maxOutputTokens,
-        maxCostMicros: record.budget.maxCostMicros
-      });
+      let grant: Awaited<ReturnType<AgentGatewayControl['issue']>>;
+      try {
+        grant = await this.gateway.issue({
+          leaseId: record.gatewayLeaseId,
+          agentId: record.id,
+          profileId: record.profileId,
+          ttlMs: Math.max(1_000, record.expiresAt - this.now()),
+          maxInputTokens: record.budget.maxInputTokens,
+          maxOutputTokens: record.budget.maxOutputTokens,
+          maxCostMicros: record.budget.maxCostMicros
+        });
+      } catch (error) {
+        // An explicit refusal means no lease exists; any other failure may have issued one.
+        if (error instanceof GatewayControlRejection) this.spendLedger.releaseRefusedIssue(record.gatewayLeaseId, this.now());
+        throw error;
+      }
       if (grant.gatewayBootId !== undefined) this.spendLedger.recordGatewayBoot(record.gatewayLeaseId, grant.gatewayBootId);
       const runtime = await this.launcher.launch(spec);
       const lease = grant.lease;

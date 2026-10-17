@@ -382,8 +382,10 @@ memory, so a policy only bounds how many caps may be outstanding and needs no
 per-request round trip. When the runner revokes the lease, it settles the row
 from the gateway's frozen settlement: at the gateway's cost (which can exceed
 the cap on overrun, and is at least the cap when a request reported no usage),
-released at zero when the lease was never issued, or `unreconciled` at the cap
-when the lease may have been issued but the issuing gateway has no settlement.
+released at zero when the lease was never issued (including when the gateway
+explicitly refused to issue it), or `unreconciled` at the cap when the lease may
+have been issued (an ambiguous issue failure, or no settlement from the issuing
+gateway).
 A gateway restart therefore over-counts rather than under-counts: open rows stay
 committed at their cap, and revoking a lost lease returns a new boot id. A
 runner restart keeps the ledger, and a sweep at startup and every minute

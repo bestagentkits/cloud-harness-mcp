@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DockerAgentGatewayControl } from '../src/agent-gateway-control.js';
+import { DockerAgentGatewayControl, GatewayControlRejection } from '../src/agent-gateway-control.js';
 import * as dockerEngine from '../src/docker-engine.js';
 
 describe('Runner AgentGatewayControl Dynamic Sync', () => {
@@ -92,6 +92,28 @@ describe('Runner AgentGatewayControl Dynamic Sync', () => {
       const older = respond({ ok: true, lease });
       await expect(control.issue(issueInput)).resolves.toEqual({ ...issueInput, lease });
       older.mockRestore();
+    });
+
+    it('marks only an explicit gateway refusal as a definite rejection', async () => {
+      const control = new DockerAgentGatewayControl('mock-gateway-container');
+      const refused = respond({ ok: false, error: 'unknown profile' });
+      const refusal = await control.issue(issueInput).catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(GatewayControlRejection);
+      expect(refusal).toMatchObject({ code: 'UNAVAILABLE', message: 'model gateway rejected control request: unknown profile' });
+      refused.mockRestore();
+      const ambiguous: Array<{ exitCode: number; stdout: string }> = [
+        { exitCode: 1, stdout: '' },
+        { exitCode: 0, stdout: 'not json' },
+        { exitCode: 0, stdout: '{}' },
+        { exitCode: 0, stdout: 'null' }
+      ];
+      for (const answer of ambiguous) {
+        const spy = vi.spyOn(dockerEngine, 'runDocker').mockResolvedValue({ ...answer, stderr: '' });
+        const error = await control.issue(issueInput).catch((caught: unknown) => caught);
+        expect(error).toMatchObject({ code: 'UNAVAILABLE' });
+        expect(error).not.toBeInstanceOf(GatewayControlRejection);
+        spy.mockRestore();
+      }
     });
 
     it('returns the frozen settlement and boot id from a revoke', async () => {

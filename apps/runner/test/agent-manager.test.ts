@@ -7,7 +7,8 @@ import { ModelProfileIdSchema, RunnerAgentsConfigSchema, buildRepositoryGuidance
 import { createHash, randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentManager } from '../src/agent-manager.js';
-import type { AgentGatewayControl, AgentLeaseGrant, AgentLeaseRevocation, AgentLeaseSettlement } from '../src/agent-gateway-control.js';
+import { DockerAgentGatewayControl, type AgentGatewayControl, type AgentLeaseGrant, type AgentLeaseRevocation, type AgentLeaseSettlement } from '../src/agent-gateway-control.js';
+import * as dockerEngine from '../src/docker-engine.js';
 import type { AgentLaunchSpec, AgentLauncher, AgentRuntimeProcess } from '../src/agent-launcher.js';
 import { AgentStateRepository } from '../src/agent-state-repository.js';
 import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
@@ -682,6 +683,68 @@ describe('agent spend ledger enforcement', () => {
     await expect(manager.dispatch(record.ownerId, record, 'agent_cancel', { workspaceId: record.id, agentId })).rejects.toThrow('injected lease revoke failure');
     expect(spendLedger.find(leaseOf(repository, record, agentId))).toMatchObject({ state: 'issuing', chargedMicros: null });
     await manager.stop();
+  });
+
+  /** A manager on the real control client, whose gateway answers `issue` with `issueAnswer`. */
+  function controlClientSetup(issueAnswer: { exitCode: number; stdout: string }) {
+    const base = setup();
+    const runDocker = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async (_args, options) => {
+      const command = JSON.parse(options?.stdin ?? '{}') as { operation?: string };
+      if (command.operation === 'issue') return { ...issueAnswer, stderr: '' };
+      return { exitCode: 0, stdout: JSON.stringify({ ok: true, revoked: false, gatewayBootId: 'boot-1' }), stderr: '' };
+    });
+    const manager = new AgentManager(agentsConfig, base.store, {
+      repository: base.repository, launcher: base.launcher, spendLedger: base.spendLedger, toolExecutor: base.toolExecutor,
+      gateway: new DockerAgentGatewayControl('mock-gateway-container')
+    });
+    return { ...base, manager, runDocker };
+  }
+
+  async function spawnUntilFailed(manager: AgentManager, record: WorkspaceRecord, repository: AgentStateRepository, idempotencyKey: string): Promise<string> {
+    const spawned = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { idempotencyKey }));
+    const agentId = (spawned.data as { agentId: string }).agentId;
+    await vi.waitFor(() => expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('FAILED'));
+    return agentId;
+  }
+
+  it('releases the reservation when the gateway explicitly refuses the lease', async () => {
+    const { manager, record, repository, spendLedger, launcher, runDocker } = controlClientSetup({
+      exitCode: 0, stdout: JSON.stringify({ ok: false, error: 'unknown profile' })
+    });
+    try {
+      const agentId = await spawnUntilFailed(manager, record, repository, 'refused-spawn');
+      expect(launcher.launches).toHaveLength(0);
+      expect(spendLedger.find(leaseOf(repository, record, agentId))).toMatchObject({ state: 'released', chargedMicros: 0 });
+      expect(spendLedger.windowTotals(record.ownerId, null, 'day', Date.now()).committedMicros).toBe(0);
+    } finally {
+      runDocker.mockRestore();
+      await manager.stop();
+    }
+  });
+
+  it('does not let repeated refused issues use up a tight daily policy', async () => {
+    const { manager, record, repository, spendLedger, runDocker } = controlClientSetup({
+      exitCode: 0, stdout: JSON.stringify({ ok: false, error: 'unknown profile' })
+    });
+    try {
+      spendLedger.setPolicy(record.ownerId, { period: 'day', limitMicros: 1_000_000 }, Date.now());
+      for (const key of ['refused-one', 'refused-two', 'refused-three']) await spawnUntilFailed(manager, record, repository, key);
+      expect(spendLedger.windowTotals(record.ownerId, null, 'day', Date.now()).committedMicros).toBe(0);
+    } finally {
+      runDocker.mockRestore();
+      await manager.stop();
+    }
+  });
+
+  it('charges the cap as unreconciled when the issue fails in transport, because the lease may exist', async () => {
+    const { manager, record, repository, spendLedger, runDocker } = controlClientSetup({ exitCode: 1, stdout: '' });
+    try {
+      const agentId = await spawnUntilFailed(manager, record, repository, 'transport-failure');
+      expect(spendLedger.find(leaseOf(repository, record, agentId))).toMatchObject({ state: 'unreconciled', chargedMicros: 1_000_000 });
+    } finally {
+      runDocker.mockRestore();
+      await manager.stop();
+    }
   });
 
   it('settles orphaned rows on runner restart', async () => {

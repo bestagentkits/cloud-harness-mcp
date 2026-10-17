@@ -115,6 +115,20 @@ describe('ModelSpendLedger', () => {
     });
   });
 
+  it('releases a refused issue at zero, and leaves any other row alone', () => {
+    const { ledger } = ledgerFixture();
+    const refused = admission({ reservedMicros: 500 });
+    const reserved = admission({ reservedMicros: 500 });
+    ledger.admit(refused);
+    ledger.admit(reserved);
+    ledger.markIssuing(refused.leaseId);
+    ledger.releaseRefusedIssue(refused.leaseId, NOW + 1);
+    ledger.releaseRefusedIssue(reserved.leaseId, NOW + 1);
+    expect(ledger.find(refused.leaseId)).toMatchObject({ state: 'released', chargedMicros: 0, settledAt: NOW + 1 });
+    expect(ledger.find(reserved.leaseId)).toMatchObject({ state: 'reserved', chargedMicros: null });
+    expect(ledger.settle(refused.leaseId, undefined, NOW + 2)).toMatchObject({ state: 'released', chargedMicros: 0 });
+  });
+
   it('settles at the gateway cost, including an overrun above the reservation', () => {
     const { ledger, database } = ledgerFixture();
     const entry = admission({ reservedMicros: 100 });

@@ -274,6 +274,16 @@ export class ModelSpendLedger {
     this.database.prepare("UPDATE model_spend_ledger SET state='issuing' WHERE lease_id=? AND state='reserved'").run(leaseId);
   }
 
+  /**
+   * Releases the reservation of a lease the gateway definitely refused to issue,
+   * so no lease exists and nothing can be charged to it. Only for an explicit
+   * refusal; an ambiguous issue failure stays `issuing` and settles conservatively.
+   */
+  releaseRefusedIssue(leaseId: string, now: number): void {
+    this.database.prepare(`UPDATE model_spend_ledger SET state='released', charged_micros=0, settled_at=?
+      WHERE lease_id=? AND state='issuing'`).run(now, leaseId);
+  }
+
   recordGatewayBoot(leaseId: string, gatewayBootId: string): void {
     this.database.prepare("UPDATE model_spend_ledger SET gateway_boot_id=? WHERE lease_id=? AND state='issuing'")
       .run(gatewayBootId, leaseId);
