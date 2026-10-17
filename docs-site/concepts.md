@@ -10,6 +10,9 @@ description: Essential domain concepts, terminology, and invariants in Cloud Har
 ### Workspace
 A bounded, temporary working directory created on the host filesystem at `/var/lib/cloud-harness/jobs/<workspaceId>/repo`. A workspace hosts a clean clone of the target Git repository and is mounted exclusively into a single executor container.
 
+### Multi-Repository Workspace
+A workspace opened with a `repositories` list instead of one `repositoryUrl`. Each entry gets an `alias` and its own independent checkout under `repos/<alias>/` in the same workspace, so all checkouts share one executor, lease, and owner, and a build can use them side by side. Pass `repositoryId` (the alias or the `repo_` id from `workspace_repos_list`) to pick a checkout: Git, worktree, finalize, recovery-export, and GitHub tools require it, while file, search, and command tools without it work from the workspace root. An entry opened with `access: "read-only"` refuses pushes and GitHub write actions, but it is not isolation: commands in the workspace can still change its files. The instance limit is `MAX_WORKSPACE_REPOSITORIES` (default 5). Local stdio servers do not support it.
+
 ### Executor
 The Docker container (`cloud-harness-executor:local`) executing repository commands on behalf of the workspace. It runs with UID/GID 10001 (`harness`), preserves strict hardening (`--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`), operates across 3 partitioned storage zones (`/tmp/cloud-harness-home` RAM tmpfs, `/opt/user-tools` & `/var/cache/harness`, `/workspace`), has no Docker socket, lacks host mount access, and is isolated by network namespaces.
 ### Runner

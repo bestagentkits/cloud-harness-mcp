@@ -467,6 +467,44 @@ When repository caching is enabled (`enableRepoCache: true`):
 3. Initial workspace checkouts mount the cache directory strictly read-only (`:ro`) in the clone helper and use `git clone --reference-if-able <cache> --dissociate <workspace>`. The `--dissociate` flag copies referenced objects into the workspace repository during creation, severing any ongoing link to the shared object store before the executor starts.
 4. Checkouts are fully independent and writable only to their own workspace; no writable Git state is ever shared across workspaces or principals.
 
+### Multi-repository workspaces
+
+A multi-repository workspace widens what one workspace holds, not who can
+reach it. Every checkout shares the workspace's single executor, lease, owner,
+and trust domain, and lives at `repos/<alias>/` under the one writable
+workspace mount, so the executor restrictions and resource bounds above apply
+unchanged and the checkouts share the workspace byte ceiling.
+
+- **Per-repository brokering.** Each URL passes the repository opening policy
+  before admission. Clone, fetch, push, and GitHub helpers resolve the target
+  repository from the runner's registry, never from caller input, and the
+  trusted broker mints private-clone and push tokens for that repository URL
+  only. No token is shared between checkouts or written into any of them.
+- **Selector confinement.** A `repositoryId` on a file or search tool sets the
+  worker's root to that checkout, which resolves every path and symlink, so the
+  call cannot reach a sibling checkout. The worker root variables use reserved
+  secret-name prefixes, so a runtime secret cannot override them. Command tools
+  only start in the selected checkout.
+- **`read-only` is policy, not isolation.** It refuses brokered writes for that
+  repository (push, pushing finalize, recovery export, GitHub write actions)
+  and clamps its advertised capabilities. Any process in the executor can still
+  modify files and local Git state in every checkout, including a `read-only`
+  one, and with `dependency-access` egress or an operator-injected
+  `GH_TOKEN`/`GITHUB_TOKEN` could push by its own means. Do not group
+  repositories of different sensitivity in one workspace on the strength of
+  `read-only`.
+- **No silent fallback.** Git-bound tools refuse an unselected call in a
+  multi-repository workspace instead of defaulting to one checkout, so a commit
+  or push cannot land in the wrong repository by omission.
+
+Scoping and the write refusal are owned by
+[`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts)
+and [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts);
+the reserved prefixes by
+[`packages/contracts/src/secret-policy.ts`](../packages/contracts/src/secret-policy.ts).
+The decision record is
+[ADR 0005](adr/0005-multi-repository-workspaces.md).
+
 ### Brokered GitHub actions
 
 Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `pr_update`, `pr_comment`, `pr_review_threads`, the review, reviewer, draft/ready, and merge actions listed in `docs/mcp-api.md`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`, `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`, `issue_update`, `issue_publish`) are executed through the `github_action` tool using an ephemeral helper container (`worker/gh-helper.sh`). Action-scoped tokens (`pull_requests: read|write`, `issues: read|write`, each also carrying `contents: read`) are minted by the runner from the trusted GitHub App installation, or resolved from the operator fallback described above when no App token is available, and passed exclusively via `stdin`. `pr_merge` and `pr_auto_merge_enable` additionally mint `contents: write`, and are refused with `GITHUB_PERMISSION_MISSING` naming both scopes when the token GitHub reports lacks it; they never widen any other action. Issue actions that take a number (`issue_view`, `issue_comment`, `issue_update`, `issue_labels_add`, `issue_labels_remove`, `issue_publish`) also ask for `pull_requests` at the same level, because every pull request is also an issue and `gh` resolves the number through `issueOrPullRequest`, which GitHub refuses for a pull request without that permission. That scope is optional: when the installation does not grant it, the runner mints the issues-only token instead, and GitHub's refusal on a pull request number (`Resource not accessible by integration`) is reported as `GITHUB_PERMISSION_MISSING` naming `pull_requests` and the matching `pr_*` action. The accompanying `contents: read` is required for the action to work at all: `gh` resolves repository metadata (such as `defaultBranchRef`) over the GraphQL API, and GitHub refuses those fields for a token narrowed to the action scope alone. The helper container runs read-only with dropped capabilities, and is forcibly removed on all exit paths in a `try/finally` block. Credentials resolved this way never enter the helper environment, workspace filesystem, workspace environment, client result, or audit payload.

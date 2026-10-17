@@ -120,6 +120,71 @@ duplicating work:
   their cached result within their configured retention window (GitHub action
   idempotency records expire after 24 hours).
 
+## Multi-repository workspaces
+
+`workspace_open` accepts either the single-repository `repositoryUrl` (with an
+optional top-level `ref`) or a `repositories` set, never both. Each entry names
+a credential-free `url`, a unique `alias`, an optional `ref`, and an `access`
+mode (`read-write` by default, or `read-only`); `primaryRepositoryAlias`
+defaults to the first entry. The schema rejects duplicate aliases, duplicate
+URLs, a top-level `ref`, and an unknown primary alias; the per-workspace count
+is bounded by the runner's `MAX_WORKSPACE_REPOSITORIES` (see
+[configuration](configuration.md#workspace-and-repository-policy)). Every URL
+passes the [repository opening policy](#repository-opening-policy) before
+anything is admitted, and a clone failure fails the whole open and names the
+repository.
+
+All checkouts share one executor, lease, owner, and trust domain. The
+executor's `/workspace` is the tree root and each checkout lives at
+`repos/<alias>/`. Callers address one checkout with the optional
+`repositoryId` selector, which accepts the stable `repo_` id or the alias:
+
+- **Git-bound tools require it.** Git, worktree, `workspace_finalize`,
+  `workspace_recover` `export`, `github_read`, and `github_action` refuse an
+  unselected call in a multi-repository workspace with `INVALID_INPUT` that
+  lists the aliases, unless the set has only one entry.
+- **File, search, and command tools default to the tree root.** Without a
+  selector their paths and `cwd` are relative to the tree root, so a build can
+  span checkouts. With one, paths and `cwd` resolve inside that checkout, and
+  file and search tools cannot reach a sibling through `..` or a symlink. A
+  command still runs in the shared executor and can reach every checkout.
+- **Workspace-level reads pick a default.** Workspace records from
+  `workspace_open`, `workspace_status`, and `workspace_list` carry the primary
+  repository's capabilities and add `primaryRepositoryId` and `repositories`.
+  `workspace_capabilities` describes the primary repository unless a selector
+  names another. `workspace_recover` `status` and `patch` without a selector
+  report every checkout under `data.repositories`.
+- **Single-repository workspaces are unchanged.** They accept a selector naming
+  their only checkout (`workspace_repos_list` reports its synthesized id and
+  alias at path `.`), behave identically with or without it, and keep their
+  idempotency fingerprints. In a multi-repository workspace the resolved
+  repository joins push, finalize, and batch-write fingerprints.
+
+`workspace_repos_list` returns each checkout's `repositoryId`, `alias`,
+`repositoryUrl`, requested `ref`, `access`, `primary`, and `path`.
+`workspace_repo_status` returns, per checkout, the branch tracking line,
+`hasUncommitted`, and the short Git status, or an `error` when that checkout
+cannot be read. Both are read-only.
+
+`read-only` refuses brokered writes for that repository (`git_push`, a pushing
+`workspace_finalize`, `workspace_recover` `export`, and GitHub write actions)
+with non-retryable `FORBIDDEN` whose `error.repository` names the alias, and
+reports `repositoryAccess: "read-only"` with its write capabilities and
+operations clamped to `false` in `workspace_capabilities`. It is
+not isolation; see the
+[security model](security-model.md#multi-repository-workspaces). Local stdio
+mode rejects `repositoryId` and both repository tools. The schemas are owned by
+[`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts),
+resolution and scoping by
+[`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts)
+and [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts),
+and the behaviour is exercised by
+[`apps/runner/test/multi-repository-workspaces.test.ts`](../apps/runner/test/multi-repository-workspaces.test.ts)
+and
+[`packages/contracts/test/multi-repository-contracts.test.ts`](../packages/contracts/test/multi-repository-contracts.test.ts).
+The design record is
+[ADR 0005](adr/0005-multi-repository-workspaces.md).
+
 ## Coding-agent operations
 
 The six `agent_*` tools run a bounded Pi coding session against an existing
@@ -934,8 +999,9 @@ When running Cloud Harness MCP over local stdio (`--transport stdio --workspace 
 1. **Pre-opened workspace:** The workspace is configured at process startup. Calling `workspace_open` returns `INVALID_INPUT` explaining that the workspace is already selected.
 2. **Lifecycle operations:** `workspace_list` lists the active local workspace. `workspace_status` and `workspace_capabilities` return structured repository and workspace capabilities (`mode: 'local'`, `gitNetwork`, `gitPush`, `sandboxed: false`, granular operations and permissions). `workspace_close` terminates owned child processes but **never deletes the local folder**.
 3. **Subprocess execution:** `exec_run`, `shell_*`, `sessions_*`, and `tasks_*` execute on the local host with the current user's permissions. Output is bounded by ring buffers and paginated with monotonic cursors.
-4. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action`, `exec_run.privileged=true`, and `bash` with `target: "toolbox"` return structured unsupported errors; `bash` with `target: "workspace"` behaves like `exec_run`.
-5. **Filesystem operations:** File reading, writing, patching, deletion, and searching apply within the canonical workspace root. Traversal escapes are rejected.
+4. **Single checkout only:** `repositoryId`, `workspace_repos_list`, and `workspace_repo_status` return `INVALID_INPUT`, because a local workspace is one directory chosen at startup; [multi-repository workspaces](#multi-repository-workspaces) need the remote runner.
+5. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action`, `exec_run.privileged=true`, and `bash` with `target: "toolbox"` return structured unsupported errors; `bash` with `target: "workspace"` behaves like `exec_run`.
+6. **Filesystem operations:** File reading, writing, patching, deletion, and searching apply within the canonical workspace root. Traversal escapes are rejected.
 
 ### Local multi-workspace mode
 

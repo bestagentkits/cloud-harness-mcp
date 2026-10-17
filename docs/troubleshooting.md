@@ -141,6 +141,14 @@ a lost response; do not create a second key until the first result is resolved.
 
 ## Tool behavior
 
+- In a multi-repository workspace, `INVALID_INPUT` naming `needs repositoryId`
+  is a Git-bound tool called without a selector, and `FORBIDDEN` with
+  `error.repository` and `is read-only` is a brokered write to a repository
+  opened `read-only`; access is fixed at open. A repository-count
+  `LIMIT_EXCEEDED` on `workspace_open` is `MAX_WORKSPACE_REPOSITORIES`. The
+  selector rules are in
+  [MCP usage](mcp-api.md#multi-repository-workspaces); the user-facing steps
+  are in [`docs-site/troubleshooting.md`](../docs-site/troubleshooting.md).
 - An agent's model request fails with `400 invalid_model_request` naming a
   field or tool type: the Model Gateway refuses requests it cannot bound or
   that would let the provider act on the agent's behalf. These are stored

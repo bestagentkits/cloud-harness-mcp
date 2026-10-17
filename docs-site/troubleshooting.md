@@ -386,3 +386,21 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 6. `202` with `ignored`: the event is not a label addition on an issue or pull request (GitHub's `ping` is always ignored), or the body was malformed (listed as quarantined).
 7. Processed but no run: the delivery's outcome names the reason, such as `no_matching_rule`, `bot_sender`, `self_trigger`, `actor_not_allowed`, `coalesced` (a run for that issue is already active), or `cooldown`. Check that the rule is enabled and use **Test event** on it.
 8. A run ends `FAILED`, `EXPIRED`, or with **Publish failed**: its error code names the step. A private repository or a comment needs the [GitHub App](/dashboard/github) to have access to that repository (and issue write access for comments).
+
+---
+
+### 33. Multi-repository workspace: `needs repositoryId`, `is read-only`, or a repository-limit `LIMIT_EXCEEDED`
+**Cause:** A workspace opened with `repositories` holds one checkout per alias under `repos/<alias>/`, and some tools need to know which one you mean.
+- `INVALID_INPUT: <tool> needs repositoryId in a multi-repository workspace` comes from a Git, worktree, `workspace_finalize`, `workspace_recover` `export`, `github_read`, or `github_action` call without a selector. These tools never guess, so a commit or push cannot land in the wrong repository.
+- `FORBIDDEN: repository <alias> is read-only in this workspace` means that repository was opened with `access: "read-only"`, which refuses pushes, pushing finalizes, recovery exports, and GitHub write actions for it.
+- `LIMIT_EXCEEDED: a workspace holds at most N repositories on this instance` means the `repositories` set is larger than the operator's `MAX_WORKSPACE_REPOSITORIES`.
+- `repository <alias>: ...` on `workspace_open` means that repository's clone failed. The whole open fails and no checkout is kept.
+- `repositoryId is unsupported in local mode` means you are on a local stdio server, which has one directory per workspace.
+
+**Fix:**
+1. Call `workspace_repos_list` and pass the `alias` or `repositoryId` it returns as `repositoryId`.
+2. To push to a read-only repository, open a new workspace that lists it as `read-write`. Access is fixed when the workspace opens.
+3. Open fewer repositories, or ask the operator to raise `MAX_WORKSPACE_REPOSITORIES` (see [Environment Variables](/reference/environment-variables)).
+4. For a failed clone, fix that repository's URL, ref, or access, then open again with a new idempotency key.
+
+File and command tools without `repositoryId` work on the workspace root, so paths start with `repos/<alias>/`. `read-only` is not isolation: commands in the workspace can still change files in every checkout.

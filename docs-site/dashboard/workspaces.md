@@ -13,6 +13,7 @@ The Workspaces panel lists all currently active and recently closed workspace en
 - **TTL Countdown:** Inspect remaining wall-clock TTL and idle timer before automatic cleanup.
 - **Resource Details:** Check memory limits, container status, and the effective network profile (`dependency-access` or `network-none`).
 - **Force Close:** Immediately terminate a stuck container and permanently purge all temporary workspace files from the host disk.
+- **Multi-repository workspaces:** A workspace opened over MCP with several repositories is titled by its primary repository and shows a repository count; search also matches its aliases. The detail view lists each repository's alias, checkout path, ref, and **Primary** or **Read-only** badge. The **Open Workspace** form opens one repository; use `workspace_open` with `repositories` for more.
 
 ## Opening Workspaces
 
