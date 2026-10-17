@@ -401,8 +401,11 @@ the next upgrade. To lift enforcement during an incident without a rollback, del
 policy instead: read its id and `generation` from `GET /dashboard/api/v1/model-spend`,
 then send `DELETE /dashboard/api/v1/model-spend/policies/<id>` with
 `{ "expectedGeneration": <generation> }`. The DELETE is a dashboard mutation, so it also
-needs the session cookie and the `x-csrf-token` header that
-`GET /dashboard/api/v1/session` returns. No MCP tool manages policies.
+needs the dashboard session cookie, an `x-csrf-token` header set to the `csrfToken` field
+of the `GET /dashboard/api/v1/session` response, `Content-Type: application/json`, and an
+`Origin` header naming an origin in `API_ALLOWED_ORIGINS` that matches the request host;
+without them it is refused with `403 origin_required`, `403 forbidden_origin`, or `415`
+(see [troubleshooting](troubleshooting.md)). No MCP tool manages policies.
 
 The ledger settles each run from the settlement the model gateway returns on revoke. A
 gateway older than the runner returns no settlement and no boot id, so every run that

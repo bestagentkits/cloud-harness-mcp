@@ -416,8 +416,10 @@ created again with the same id inherits both. Delete the policies yourself if th
 profile should start without them.
 
 The page has no spend controls yet, and no MCP tool manages policies. Use these dashboard
-routes. Each needs a signed-in dashboard session; a change also needs the session cookie
-and the `x-csrf-token` header that `GET /dashboard/api/v1/session` returns.
+routes. Each needs a signed-in dashboard session. A change also needs the session cookie,
+an `x-csrf-token` header set to the `csrfToken` field of the `GET /dashboard/api/v1/session`
+response, `Content-Type: application/json`, and the dashboard's own `Origin`; the
+dashboard page sends all of these itself.
 
 - `GET /dashboard/api/v1/model-spend` returns the summary and the policies. For the
   current UTC day and month, the summary lists your account and every saved profile that
@@ -435,7 +437,8 @@ and the `x-csrf-token` header that `GET /dashboard/api/v1/session` returns.
   - To update one, send its `policyId` and current `generation` as `expectedGeneration`,
     with the scope and period it already has; a policy cannot move to another scope or
     period. A changed generation, or a policy that was deleted and created again for the
-    same scope and period, is refused as a conflict, so reload the policy and retry. An
+    same scope and period, is refused as a conflict, so reload the policy and retry. A
+    policy that was deleted and not replaced is refused as not found; create it again. An
     update that omits `warnPercent` keeps the current value.
 - `DELETE /dashboard/api/v1/model-spend/policies/<id>` with `{ "expectedGeneration" }`
   deletes a policy. A policy whose profile was deleted is still listed so you can remove

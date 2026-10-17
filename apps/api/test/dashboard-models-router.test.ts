@@ -271,6 +271,7 @@ describe('Dashboard Models & Credentials Router', () => {
     // A set refuses both a missing profile and a missing policy as NOT_FOUND, so the runner's wording says which.
     expect(missing.json).toEqual({ error: 'not_found', message: 'model profile was not found' });
     const unknown = await request('/model-spend/policies', { method: 'PUT', body: { policyId: spendPolicyId, period: 'day', limitMicros: 1, expectedGeneration: 8 } });
+    expect(unknown.status).toBe(404);
     expect(unknown.json).toEqual({ error: 'not_found', message: 'model spend policy was not found' });
     const stale = await request('/model-spend/policies', { method: 'PUT', body: { policyId: spendPolicyId, period: 'day', limitMicros: 1, expectedGeneration: 9 } });
     expect(stale.status).toBe(409);
