@@ -1,3 +1,10 @@
+# [0.66.0-beta.16](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.15...v0.66.0-beta.16) (2026-10-17)
+
+
+### Features
+
+* **models:** server-side model catalog and runner-side connection verification ([#369](https://github.com/bestagentkits/cloud-harness-mcp/issues/369)) ([5d37e33](https://github.com/bestagentkits/cloud-harness-mcp/commit/5d37e3333d03d8385cfc70af98cf747d58389867)), closes [#355](https://github.com/bestagentkits/cloud-harness-mcp/issues/355)
+
 # [0.66.0-beta.15](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.14...v0.66.0-beta.15) (2026-10-17)
 
 
