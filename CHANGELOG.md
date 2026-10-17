@@ -1,3 +1,10 @@
+# [0.66.0-beta.26](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.25...v0.66.0-beta.26) (2026-10-17)
+
+
+### Bug Fixes
+
+* **model-gateway:** replace snapshot state so removed credentials and revisions are evicted ([#390](https://github.com/bestagentkits/cloud-harness-mcp/issues/390)) ([3373e46](https://github.com/bestagentkits/cloud-harness-mcp/commit/3373e4678660a610d9f0527a2341bed78321eaf0))
+
 # [0.66.0-beta.25](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.24...v0.66.0-beta.25) (2026-10-17)
 
 
