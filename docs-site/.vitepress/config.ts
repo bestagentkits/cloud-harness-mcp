@@ -156,7 +156,8 @@ export default defineConfig({
           { text: 'Environment Variables', link: '/reference/environment-variables' },
           { text: 'Git Transfer Semantics', link: '/reference/git-transfer' },
           { text: 'Sessions & Tasks', link: '/reference/sessions-and-tasks' },
-          { text: 'Limits & Bounds', link: '/reference/limits' }
+          { text: 'Limits & Bounds', link: '/reference/limits' },
+          { text: 'Model Providers', link: '/reference/model-providers' }
         ]
       },
       {

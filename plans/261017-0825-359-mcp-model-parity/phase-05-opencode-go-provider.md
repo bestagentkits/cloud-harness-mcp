@@ -75,6 +75,8 @@ use the official values and update phase 1's record in the same PR.
 
 ## Requirements
 
+- **Connection check sends the session header.** The runner's connection check calls the provider directly and today sends no session header, so OpenCode Go can reject it with `400 MissingSessionID`. The check must send the provider's `sessionHeader` with a per-check value, and `docs-site/reference/model-providers.md` must drop that limitation.
+
 ### Registry entry
 
 ```ts
