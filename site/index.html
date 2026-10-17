@@ -2694,7 +2694,7 @@
               </p>
             </div>
             <div class="invariant-card">
-              <div class="invariant-title">🔑 Zero-Disk GitHub App Credentials</div>
+              <div class="invariant-title">🔑 Runner-Only GitHub App Credentials</div>
               <p style="color: var(--text-muted); font-size: 0.9rem;">
                 GitHub App private keys stay inside the runner. Installation tokens are short-lived and piped over stdin to an ephemeral git helper.
               </p>
@@ -2826,7 +2826,7 @@
             <p>})</p>
             <br/>
             <p style="color: var(--cyan-glow)">[Broker Transfer Staged]</p>
-            <p style="color: var(--text-muted)">├── GitHub App Broker minted 60s installation token</p>
+            <p style="color: var(--text-muted)">├── GitHub App Broker minted short-lived installation token</p>
             <p style="color: var(--text-muted)">├── Token piped to git helper over stdio (zero disk writes)</p>
             <p style="color: var(--green-neon)">└── Remote ref updated: 0a1b2c3 -> 9d8e7f6 [SUCCESS]</p>
           `;
