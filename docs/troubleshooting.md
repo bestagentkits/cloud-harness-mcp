@@ -163,8 +163,10 @@ a lost response; do not create a second key until the first result is resolved.
   so lower `maxCostMicros` or wait for running agents to end, then retry; the
   owner can also raise or remove the policy. A `model spend threshold reached`
   runner log line marks the first time a window reaches the policy's warning
-  percentage. All of these figures are estimates; the per-run cap is enforced
-  by the gateway as before. The rules are in
+  percentage. All of these figures are estimates: a run counts entirely in
+  the window it was admitted in, so spend near a window boundary can exceed
+  one window's limit. "Not retryable" means an unchanged retry right away
+  fails the same way. The per-run cap is enforced by the gateway as before. The rules are in
   [`apps/runner/src/model-spend-ledger.ts`](../apps/runner/src/model-spend-ledger.ts).
 - `files_apply_patch` conflict: read the file again, choose an exact unique
   `oldText`, and pass the latest SHA when concurrency matters. It is not a

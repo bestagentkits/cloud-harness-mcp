@@ -12,7 +12,7 @@ import * as dockerEngine from '../src/docker-engine.js';
 import type { AgentLaunchSpec, AgentLauncher, AgentRuntimeProcess } from '../src/agent-launcher.js';
 import { AgentStateRepository } from '../src/agent-state-repository.js';
 import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
-import { ModelSpendLedger } from '../src/model-spend-ledger.js';
+import { ModelSpendLedger, staticProfileSpendKey } from '../src/model-spend-ledger.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
 
@@ -182,6 +182,23 @@ async function waitForRunning(manager: AgentManager, record: WorkspaceRecord): P
     workspaceId: record.id, idempotencyKey: 'spawn-key'
   });
   return (response.data as { agentId: string }).agentId;
+}
+
+/** Saves the profile `cached` for the store's owner, priced like an OpenAI model. */
+function createCachedProfile(store: StateStore, ownerId: string): ModelProfileStateRepository {
+  const modelProfiles = new ModelProfileStateRepository(store.database, new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]));
+  const credential = modelProfiles.createCredential(ownerId, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-openai-test' });
+  modelProfiles.createProfile(ownerId, {
+    profileId: ModelProfileIdSchema.parse('cached'),
+    displayName: 'Cached',
+    credentialId: credential.id,
+    model: 'openai/gpt-5',
+    apiMode: 'chat-completions',
+    pricing: { inputMicrosPerMillionTokens: 3_000_000, outputMicrosPerMillionTokens: 15_000_000, cacheReadMicrosPerMillionTokens: 300_000 },
+    limits: { maxInputTokens: 10_000, maxOutputTokens: 2_000, maxCostMicros: 1_000_000 },
+    maxProxyOperations: ['files_read']
+  });
+  return modelProfiles;
 }
 
 describe('AgentManager', () => {
@@ -590,14 +607,25 @@ describe('agent spend ledger enforcement', () => {
   });
 
   it('creates no agent, lease, or container for a spawn the policy refuses', async () => {
-    const { manager, record, store, repository, spendLedger, launcher, gateway } = setup();
-    spendLedger.setPolicy(record.ownerId, { profileId: 'default', period: 'day', limitMicros: 999_999 }, Date.now());
-    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record)))
-      .rejects.toMatchObject({ code: 'LIMIT_EXCEEDED', message: expect.stringContaining('(profile default, day)') });
+    const { store, record, repository, spendLedger, launcher, gateway, toolExecutor } = setup();
+    const manager = new AgentManager(agentsConfig, store, {
+      repository, launcher, gateway, toolExecutor, spendLedger, modelProfiles: createCachedProfile(store, record.ownerId)
+    });
+    spendLedger.setPolicy(record.ownerId, { profileId: 'cached', period: 'day', limitMicros: 999_999 }, Date.now());
+    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { profileId: 'cached' })))
+      .rejects.toMatchObject({ code: 'LIMIT_EXCEEDED', message: expect.stringContaining('(profile cached, day)') });
     expect(repository.findByIdempotency(record.ownerId, record.id, 'spawn-key')).toBeUndefined();
     expect(ledgerRows(store)).toBe(0);
     expect(gateway.issued).toHaveLength(0);
     expect(launcher.launches).toHaveLength(0);
+    await manager.stop();
+  });
+
+  it('does not apply a saved-profile policy to a static profile that shares its id', async () => {
+    const { manager, record, store, spendLedger } = setup();
+    spendLedger.setPolicy(record.ownerId, { profileId: 'default', period: 'day', limitMicros: 999_999 }, Date.now());
+    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record))).resolves.toBeDefined();
+    expect(ledgerRows(store)).toBe(1);
     await manager.stop();
   });
 
@@ -685,12 +713,22 @@ describe('agent spend ledger enforcement', () => {
     await manager.stop();
   });
 
-  /** A manager on the real control client, whose gateway answers `issue` with `issueAnswer`. */
-  function controlClientSetup(issueAnswer: { exitCode: number; stdout: string }) {
+  type ControlAnswer = { exitCode: number; stdout: string };
+  const issuedAnswer: ControlAnswer = { exitCode: 0, stdout: JSON.stringify({ ok: true, lease: 'L'.repeat(64), gatewayBootId: 'boot-1' }) };
+
+  /**
+   * A manager on the real control client, whose gateway answers `issue` with `issueAnswer`
+   * and `revoke` with `revokeAnswer(leaseId)`.
+   */
+  function controlClientSetup(
+    issueAnswer: ControlAnswer,
+    revokeAnswer: (leaseId: string) => unknown = () => ({ ok: true, revoked: false, gatewayBootId: 'boot-1' })
+  ) {
     const base = setup();
     const runDocker = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async (_args, options) => {
-      const command = JSON.parse(options?.stdin ?? '{}') as { operation?: string };
+      const command = JSON.parse(options?.stdin ?? '{}') as { operation?: string; leaseId?: string };
       if (command.operation === 'issue') return { ...issueAnswer, stderr: '' };
+      if (command.operation === 'revoke') return { exitCode: 0, stdout: JSON.stringify(revokeAnswer(command.leaseId ?? '')), stderr: '' };
       return { exitCode: 0, stdout: JSON.stringify({ ok: true, revoked: false, gatewayBootId: 'boot-1' }), stderr: '' };
     });
     const manager = new AgentManager(agentsConfig, base.store, {
@@ -747,6 +785,103 @@ describe('agent spend ledger enforcement', () => {
     }
   });
 
+  it('treats an already-registered refusal as ambiguous, because the lease exists', async () => {
+    const { manager, record, repository, spendLedger, runDocker } = controlClientSetup({
+      exitCode: 0, stdout: JSON.stringify({ ok: false, error: 'leaseId already registered' })
+    });
+    try {
+      const agentId = await spawnUntilFailed(manager, record, repository, 'already-registered');
+      expect(spendLedger.find(leaseOf(repository, record, agentId))).toMatchObject({ state: 'unreconciled', chargedMicros: 1_000_000 });
+    } finally {
+      runDocker.mockRestore();
+      await manager.stop();
+    }
+  });
+
+  function gatewaySettlement(leaseId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      leaseId, reason: 'revoked', settledAt: 1, initialInputTokens: 10_000, initialOutputTokens: 2_000, initialCostMicros: 1_000_000,
+      costMicros: 300_000, overrunCostMicros: 0, promptTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 5,
+      reasoningTokens: 0, requests: 1, requestsWithoutUsage: 0, ...overrides
+    };
+  }
+
+  it('ends the agent and charges the cap as unreconciled when the gateway returns an invalid settlement', async () => {
+    const { manager, record, repository, spendLedger, runDocker } = controlClientSetup(issuedAnswer, (leaseId) => ({
+      ok: true, revoked: true, gatewayBootId: 'boot-1', settlement: gatewaySettlement(leaseId, { costMicros: -1 })
+    }));
+    try {
+      await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+      const agentId = await waitForRunning(manager, record);
+      await manager.dispatch(record.ownerId, record, 'agent_cancel', { workspaceId: record.id, agentId });
+      expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('CANCELLED');
+      expect(spendLedger.find(leaseOf(repository, record, agentId))).toMatchObject({ state: 'unreconciled', chargedMicros: 1_000_000 });
+    } finally {
+      runDocker.mockRestore();
+      await manager.stop();
+    }
+  });
+
+  it('settles normally when a newer gateway adds an unknown settlement field', async () => {
+    const { manager, record, repository, spendLedger, runDocker } = controlClientSetup(issuedAnswer, (leaseId) => ({
+      ok: true, revoked: true, gatewayBootId: 'boot-1', settlement: gatewaySettlement(leaseId, { futureField: 'value' })
+    }));
+    try {
+      await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+      const agentId = await waitForRunning(manager, record);
+      await manager.dispatch(record.ownerId, record, 'agent_cancel', { workspaceId: record.id, agentId });
+      expect(spendLedger.find(leaseOf(repository, record, agentId))).toMatchObject({ state: 'settled', chargedMicros: 300_000 });
+    } finally {
+      runDocker.mockRestore();
+      await manager.stop();
+    }
+  });
+
+  it('starts accepting spawns even when the startup spend sweep fails', async () => {
+    const { manager, record, spendLedger } = setup();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const listOpen = vi.spyOn(spendLedger, 'listOpen').mockImplementation(() => { throw new Error('database is locked'); });
+    try {
+      await expect(manager.start()).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(listOpen).toHaveBeenCalled());
+      await vi.waitFor(() => expect(stderr).toHaveBeenCalledWith(expect.stringContaining('model spend sweep failed')));
+      await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record))).resolves.toBeDefined();
+    } finally {
+      listOpen.mockRestore();
+      await manager.stop();
+      stderr.mockRestore();
+    }
+  });
+
+  it('keeps sweeping the remaining rows when one settle or the prune throws', async () => {
+    const { manager, record, gateway, spendLedger } = setup();
+    gateway.bootId = 'boot-1';
+    const now = Date.now();
+    for (const leaseId of ['lease-broken', 'lease-fine']) {
+      spendLedger.admit({
+        leaseId, principalId: record.ownerId, profileKey: staticProfileSpendKey('default'), revisionId: null,
+        agentId: `agent_${leaseId.slice(-4).padEnd(24, 'z')}`, workspaceId: record.id, reservedMicros: 500_000, now
+      });
+      spendLedger.markIssuing(leaseId);
+    }
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const settle = spendLedger.settle.bind(spendLedger);
+    vi.spyOn(spendLedger, 'settle').mockImplementation((leaseId, ...rest) => {
+      if (leaseId === 'lease-broken') throw new Error('disk I/O error');
+      return settle(leaseId, ...rest);
+    });
+    vi.spyOn(spendLedger, 'prune').mockImplementation(() => { throw new Error('disk I/O error'); });
+    try {
+      await expect(manager.start()).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(spendLedger.find('lease-fine')).toMatchObject({ state: 'unreconciled' }));
+      expect(spendLedger.find('lease-broken')).toMatchObject({ state: 'issuing' });
+      await vi.waitFor(() => expect(stderr.mock.calls.filter(([line]) => String(line).includes('model spend sweep failed'))).toHaveLength(2));
+    } finally {
+      vi.restoreAllMocks();
+      await manager.stop();
+    }
+  });
+
   it('settles orphaned rows on runner restart', async () => {
     const { manager, record, repository, gateway, spendLedger } = setup();
     gateway.bootId = 'boot-1';
@@ -757,7 +892,7 @@ describe('agent spend ledger enforcement', () => {
       ...reservation,
       admit: () => {
         spendLedger.admit({
-          leaseId: reservation.gatewayLeaseId, principalId: record.ownerId, profileKey: 'default', revisionId: null,
+          leaseId: reservation.gatewayLeaseId, principalId: record.ownerId, profileKey: staticProfileSpendKey('default'), revisionId: null,
           agentId: reservation.id, workspaceId: record.id, reservedMicros: 1_000_000, now
         });
       }
@@ -771,11 +906,16 @@ describe('agent spend ledger enforcement', () => {
     gateway.settlements.set(reservation.gatewayLeaseId, { costMicros: 250_000 });
     // A row whose agent record is gone and whose lease the gateway no longer knows.
     spendLedger.admit({
-      leaseId: 'lease-gone', principalId: record.ownerId, profileKey: 'default', revisionId: null,
+      leaseId: 'lease-gone', principalId: record.ownerId, profileKey: staticProfileSpendKey('default'), revisionId: null,
       agentId: `agent_${'g'.repeat(24)}`, workspaceId: record.id, reservedMicros: 500_000, now
     });
     spendLedger.markIssuing('lease-gone');
     await manager.start();
+    // The startup sweep runs in the background, after admission opens.
+    await vi.waitFor(() => {
+      expect(spendLedger.find('lease-gone')?.state).not.toBe('issuing');
+      expect(spendLedger.find(reservation.gatewayLeaseId)?.state).not.toBe('issuing');
+    });
     expect(gateway.revoked).toEqual(expect.arrayContaining([reservation.gatewayLeaseId, 'lease-gone']));
     expect(spendLedger.find(reservation.gatewayLeaseId)).toMatchObject({ state: 'settled', chargedMicros: 250_000 });
     expect(spendLedger.find('lease-gone')).toMatchObject({ state: 'unreconciled', chargedMicros: 500_000 });
@@ -908,18 +1048,7 @@ describe('agent repository guidance bootstrap', () => {
       const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
       const record = workspace('network-none', ownerId);
       store.create(record);
-      const modelProfiles = new ModelProfileStateRepository(store.database, new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]));
-      const credential = modelProfiles.createCredential(ownerId, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-openai-test' });
-      modelProfiles.createProfile(ownerId, {
-        profileId: ModelProfileIdSchema.parse('cached'),
-        displayName: 'Cached',
-        credentialId: credential.id,
-        model: 'openai/gpt-5',
-        apiMode: 'chat-completions',
-        pricing: { inputMicrosPerMillionTokens: 3_000_000, outputMicrosPerMillionTokens: 15_000_000, cacheReadMicrosPerMillionTokens: 300_000 },
-        limits: { maxInputTokens: 10_000, maxOutputTokens: 2_000, maxCostMicros: 1_000_000 },
-        maxProxyOperations: ['files_read']
-      });
+      const modelProfiles = createCachedProfile(store, ownerId);
       const launcher = new FakeLauncher();
       const manager = new AgentManager(agentsConfig, store, {
         repository: new AgentStateRepository(store.database, agentsConfig.limits),

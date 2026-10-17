@@ -25,11 +25,16 @@ import {
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
 import {
   DockerAgentGatewayControl,
-  GatewayControlRejection,
+  isDefiniteIssueRefusal,
   type AgentGatewayControl,
   type AgentLeaseRevocation
 } from './agent-gateway-control.js';
-import { ModelSpendLedger, type ModelSpendThresholdCrossing } from './model-spend-ledger.js';
+import {
+  ModelSpendLedger,
+  savedProfileSpendKey,
+  staticProfileSpendKey,
+  type ModelSpendThresholdCrossing
+} from './model-spend-ledger.js';
 import {
   AgentProtocolChannel,
   MAX_TOOL_RESULT_RECORD_BYTES,
@@ -44,7 +49,7 @@ import type { StateStore, WorkspaceRecord } from './state-store.js';
 type PricedAgentModelProfile = AgentModelProfile & {
   cacheReadMicrosPerMillionTokens: number;
   cacheWriteMicrosPerMillionTokens: number;
-  /** The stable profile id that spend policies name: a saved profile's id, or the static profile's id. */
+  /** The ledger key of the stable profile: a saved profile's id, or the static profile's id, namespaced. */
   spendProfileKey: string;
   revisionId: string | null;
 };
@@ -205,9 +210,11 @@ export class AgentManager {
       this.repository.openWorkspaceAdmission(workspace.ownerId, workspace.id, workspace.generation, this.now());
     }
     this.repository.maintainClosedWorkspaces(this.now());
-    // Every agent of the previous runner has been reconciled, so any row still open is an orphan.
-    await this.sweepSpend(0);
     this.accepting = true;
+    // Every agent of the previous runner has been reconciled, so any row still open is an orphan.
+    // The sweep may wait on the gateway for each row, so it runs in the background, never
+    // delaying admission or failing startup.
+    void this.sweepSpend(0);
     this.reaper = setInterval(() => { void this.reap().catch(() => undefined); }, 1_000);
     this.reaper.unref();
   }
@@ -218,6 +225,8 @@ export class AgentManager {
     // Promise.allSettled keeps teardown non-throwing: one workspace failing to stop must not abort
     // the rest. The callback returns the promise explicitly so that intent is unambiguous.
     await Promise.allSettled(this.store.active().map((workspace) => this.stopWorkspaceForShutdown(workspace)));
+    // A sweep never rejects; waiting keeps it from touching the store after shutdown.
+    await this.spendSweep;
   }
 
   private async stopWorkspaceForShutdown(workspace: WorkspaceRecord): Promise<void> {
@@ -439,7 +448,7 @@ export class AgentManager {
         });
       } catch (error) {
         // An explicit refusal means no lease exists; any other failure may have issued one.
-        if (error instanceof GatewayControlRejection) this.spendLedger.releaseRefusedIssue(record.gatewayLeaseId, this.now());
+        if (isDefiniteIssueRefusal(error)) this.spendLedger.releaseRefusedIssue(record.gatewayLeaseId, this.now());
         throw error;
       }
       if (grant.gatewayBootId !== undefined) this.spendLedger.recordGatewayBoot(record.gatewayLeaseId, grant.gatewayBootId);
@@ -887,7 +896,7 @@ export class AgentManager {
       }
     }
     this.repository.maintainClosedWorkspaces(now);
-    if (now - this.lastSpendSweepAt >= SPEND_SWEEP_INTERVAL_MS) await this.sweepSpend(SPEND_SWEEP_MIN_AGE_MS);
+    if (now - this.lastSpendSweepAt >= SPEND_SWEEP_INTERVAL_MS) void this.sweepSpend(SPEND_SWEEP_MIN_AGE_MS);
   }
 
   /**
@@ -898,24 +907,42 @@ export class AgentManager {
    * leaves the row open, still committed at its cap, for the next sweep.
    */
   private async sweepSpend(minAgeMs: number): Promise<void> {
-    this.spendSweep ??= (async () => {
-      const now = this.now();
-      this.lastSpendSweepAt = now;
-      const open = this.spendLedger.listOpen(now - minAgeMs, this.config.limits.globalActive + 100);
-      for (const entry of open) {
+    this.spendSweep ??= this.runSpendSweep(minAgeMs).finally(() => { this.spendSweep = undefined; });
+    await this.spendSweep;
+  }
+
+  /** Never rejects: a row that cannot be read, revoked, or settled simply stays open, committed at its cap. */
+  private async runSpendSweep(minAgeMs: number): Promise<void> {
+    const now = this.now();
+    this.lastSpendSweepAt = now;
+    let open: ReturnType<ModelSpendLedger['listOpen']>;
+    try {
+      open = this.spendLedger.listOpen(now - minAgeMs, this.config.limits.globalActive + 100);
+    } catch (error) {
+      reportSpendSweepFailure('list', error);
+      return;
+    }
+    for (const entry of open) {
+      try {
         const agent = this.repository.findAgent(entry.principalId, entry.workspaceId, entry.agentId);
         if (agent && !terminalStatuses.has(agent.status)) continue;
         let revocation: AgentLeaseRevocation | undefined;
         try {
           revocation = revocationOf(await this.gateway.revokeAndDrain(entry.leaseId));
         } catch {
+          // The gateway is unreachable; the next sweep retries.
           continue;
         }
         this.spendLedger.settle(entry.leaseId, revocation, this.now());
+      } catch (error) {
+        reportSpendSweepFailure('settle', error);
       }
+    }
+    try {
       this.spendLedger.prune(now);
-    })().finally(() => { this.spendSweep = undefined; });
-    await this.spendSweep;
+    } catch (error) {
+      reportSpendSweepFailure('prune', error);
+    }
   }
 
   private reconcileUsage(context: RuntimeContext, usage: { input: number; output: number; cost: number }): void {
@@ -989,7 +1016,7 @@ export class AgentManager {
         const pricing = resolveEffectivePricing(rev.pricing, provider);
         return {
           id: rev.id,
-          spendProfileKey: matched.id,
+          spendProfileKey: savedProfileSpendKey(matched.id),
           revisionId: rev.id,
           displayName: matched.displayName,
           provider: rev.model,
@@ -1015,7 +1042,7 @@ export class AgentManager {
       ...staticProfile,
       cacheReadMicrosPerMillionTokens: pricing.cacheReadMicrosPerMillionTokens,
       cacheWriteMicrosPerMillionTokens: pricing.cacheWriteMicrosPerMillionTokens,
-      spendProfileKey: staticProfile.id,
+      spendProfileKey: staticProfileSpendKey(staticProfile.id),
       revisionId: null
     };
   }
@@ -1107,6 +1134,10 @@ function toolError(requestId: string, message: string): AgentInputRecord {
     type: 'tool_result', requestId, final: true, isError: true,
     content: [{ type: 'text', text: JSON.stringify({ ok: false, message, error: { code: 'TOOL_ERROR', message, retryable: false }, truncated: false }) }]
   };
+}
+
+function reportSpendSweepFailure(stage: 'list' | 'settle' | 'prune', error: unknown): void {
+  process.stderr.write(`${JSON.stringify({ level: 'warn', time: Date.now(), msg: 'model spend sweep failed', stage, error: safeError(error).slice(0, 500) })}\n`);
 }
 
 /** An older gateway, or a test double, returns nothing from a revoke. */

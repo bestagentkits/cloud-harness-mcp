@@ -5,6 +5,8 @@ import {
   MODEL_SPEND_RETENTION_MS,
   ModelSpendLedger,
   initializeModelSpendSchema,
+  savedProfileSpendKey,
+  staticProfileSpendKey,
   type ModelSpendAdmission
 } from '../src/model-spend-ledger.js';
 
@@ -29,7 +31,7 @@ function admission(overrides: Partial<ModelSpendAdmission> = {}): ModelSpendAdmi
   return {
     leaseId: `lease_${String(sequence).padStart(24, '0')}`,
     principalId: 'principal-a',
-    profileKey: 'profile-a',
+    profileKey: savedProfileSpendKey('profile-a'),
     revisionId: null,
     agentId: `agent_${String(sequence).padStart(24, '0')}`,
     workspaceId: 'ws_workspace',
@@ -92,7 +94,7 @@ describe('ModelSpendLedger', () => {
     expect(ledger.find(refused.leaseId)).toBeUndefined();
     // Other principals are never counted against the policy, and a profile policy leaves other profiles alone.
     expect(() => ledger.admit(admission({ principalId: 'principal-b', reservedMicros: 1_000 }))).not.toThrow();
-    if (profileId) expect(() => ledger.admit(admission({ profileKey: 'profile-b', reservedMicros: 1_000 }))).not.toThrow();
+    if (profileId) expect(() => ledger.admit(admission({ profileKey: savedProfileSpendKey('profile-b'), reservedMicros: 1_000 }))).not.toThrow();
     expect((database.prepare('SELECT COUNT(*) AS count FROM model_spend_ledger').get() as { count: number }).count).toBe(profileId ? 4 : 3);
   });
 
@@ -141,7 +143,7 @@ describe('ModelSpendLedger', () => {
     expect(settled).toMatchObject({ state: 'settled', chargedMicros: 130, settledAt: NOW + 5, gatewayBootId: 'boot-1' });
     expect(database.prepare('SELECT prompt_tokens, cache_read_tokens, cache_write_tokens, output_tokens, reasoning_tokens FROM model_spend_ledger WHERE lease_id=?')
       .get(entry.leaseId)).toEqual({ prompt_tokens: 10, cache_read_tokens: 2, cache_write_tokens: 1, output_tokens: 5, reasoning_tokens: 3 });
-    expect(ledger.windowTotals('principal-a', 'profile-a', 'month', NOW)).toMatchObject({ settledMicros: 130, committedMicros: 130 });
+    expect(ledger.windowTotals('principal-a', savedProfileSpendKey('profile-a'), 'month', NOW)).toMatchObject({ settledMicros: 130, committedMicros: 130 });
   });
 
   it('settles under the gateway cost only when every request reported usage', () => {
@@ -152,6 +154,64 @@ describe('ModelSpendLedger', () => {
     expect(ledger.settle(entry.leaseId, {
       revoked: true, settlement: settlement(entry.leaseId, { costMicros: 40, requestsWithoutUsage: 1 })
     }, NOW)).toMatchObject({ state: 'settled', chargedMicros: 100 });
+  });
+
+  it('never applies a profile policy to a static profile that shares its id', () => {
+    const { ledger } = ledgerFixture();
+    ledger.setPolicy('principal-a', { profileId: 'profile-a', period: 'day', limitMicros: 100 }, NOW);
+    expect(() => ledger.admit(admission({ profileKey: staticProfileSpendKey('profile-a'), reservedMicros: 1_000 }))).not.toThrow();
+    ledger.admit(admission({ reservedMicros: 100 }));
+    expect(ledger.windowTotals('principal-a', savedProfileSpendKey('profile-a'), 'day', NOW).committedMicros).toBe(100);
+    expect(ledger.windowTotals('principal-a', null, 'day', NOW).committedMicros).toBe(1_100);
+  });
+
+  it.each([
+    ['reserved', false],
+    ['issuing', true]
+  ])('charges the reservation for a settlement the runner could not trust, from a %s row', (_state, issuing) => {
+    const { ledger } = ledgerFixture();
+    const entry = admission({ reservedMicros: 100 });
+    ledger.admit(entry);
+    if (issuing) ledger.markIssuing(entry.leaseId);
+    // Even a row never marked issuing has a lease the gateway answered for, so it is not released.
+    expect(ledger.settle(entry.leaseId, { revoked: true, gatewayBootId: 'boot-1', settlementInvalid: true }, NOW))
+      .toMatchObject({ state: 'unreconciled', chargedMicros: 100 });
+  });
+
+  it('answers every window total and policy check from an index range, not a scan of the principal', () => {
+    const { database, ledger } = ledgerFixture();
+    ledger.setPolicy('principal-a', { period: 'day', limitMicros: 1_000 }, NOW);
+    ledger.setPolicy('principal-a', { profileId: 'profile-a', period: 'day', limitMicros: 1_000 }, NOW);
+    const plans: string[] = [];
+    const prepare = database.prepare.bind(database);
+    const spy = vi.spyOn(database, 'prepare').mockImplementation((sql: string) => {
+      if (sql.includes('FROM model_spend_ledger WHERE') && sql.includes('SUM(')) {
+        // Bind the same values the real statement gets, with the plan of the statement itself.
+        const statement = prepare(sql);
+        return {
+          get: (...args: unknown[]) => {
+            const plan = prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(args as never[])) as Array<{ detail: string }>;
+            plans.push(plan.map((row) => row.detail).join(' | '));
+            return statement.get(...(args as never[]));
+          }
+        } as unknown as ReturnType<typeof prepare>;
+      }
+      return prepare(sql);
+    });
+    try {
+      ledger.admit(admission());
+      for (const period of ['day', 'month'] as const) {
+        ledger.windowTotals('principal-a', null, period, NOW);
+        ledger.windowTotals('principal-a', savedProfileSpendKey('profile-a'), period, NOW);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+    expect(plans.length).toBeGreaterThanOrEqual(6);
+    for (const plan of plans) {
+      expect(plan).toMatch(/USING INDEX model_spend_ledger_(principal|profile)_month \(principal_id=\? AND (profile_key=\? AND )?month_key=\?\)/);
+    }
+    expect(plans.some((plan) => plan.includes('model_spend_ledger_profile_month (principal_id=? AND profile_key=? AND month_key=?)'))).toBe(true);
   });
 
   it('does not trust a settlement from a different gateway boot', () => {

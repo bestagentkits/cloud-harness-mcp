@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DockerAgentGatewayControl, GatewayControlRejection } from '../src/agent-gateway-control.js';
+import { DockerAgentGatewayControl, GatewayControlRejection, isDefiniteIssueRefusal } from '../src/agent-gateway-control.js';
 import * as dockerEngine from '../src/docker-engine.js';
 
 describe('Runner AgentGatewayControl Dynamic Sync', () => {
@@ -129,16 +129,39 @@ describe('Runner AgentGatewayControl Dynamic Sync', () => {
       spy.mockRestore();
     });
 
-    it.each([
-      ['a negative counter', { ...settlement, costMicros: -1 }],
-      ['an unknown field', { ...settlement, refundMicros: 5 }],
-      ['a missing counter', { ...settlement, requestsWithoutUsage: undefined }],
-      ['another lease', { ...settlement, leaseId: 'lease_bbbbbbbbbbbbbbbbbbbbbbbb' }]
-    ])('refuses a settlement with %s', async (_label, invalid) => {
-      const spy = respond({ ok: true, revoked: true, gatewayBootId: 'boot-1', settlement: invalid });
+    it('strips unknown settlement fields so a newer gateway still settles', async () => {
+      const spy = respond({ ok: true, revoked: true, gatewayBootId: 'boot-1', settlement: { ...settlement, refundMicros: 5 } });
       await expect(new DockerAgentGatewayControl('mock-gateway-container').revokeAndDrain(leaseId))
-        .rejects.toMatchObject({ code: 'UNAVAILABLE', message: 'model gateway returned an invalid lease settlement' });
+        .resolves.toEqual({ revoked: true, gatewayBootId: 'boot-1', settlement });
       spy.mockRestore();
+    });
+
+    it.each([
+      ['a negative counter', { settlement: { ...settlement, costMicros: -1 } }],
+      ['a fractional counter', { settlement: { ...settlement, costMicros: 1.5 } }],
+      ['a missing counter', { settlement: { ...settlement, requestsWithoutUsage: undefined } }],
+      ['another lease', { settlement: { ...settlement, leaseId: 'lease_bbbbbbbbbbbbbbbbbbbbbbbb' } }],
+      ['an unreadable boot id', { settlement, gatewayBootId: 7 }],
+      ['a settlement that is not an object', { settlement: 'settled' }]
+    ])('marks a settlement with %s invalid instead of failing the revoke', async (_label, answer) => {
+      const spy = respond({ ok: true, revoked: true, gatewayBootId: 'boot-1', ...answer });
+      const revocation = await new DockerAgentGatewayControl('mock-gateway-container').revokeAndDrain(leaseId);
+      expect(revocation).toMatchObject({ revoked: true, settlementInvalid: true });
+      expect(revocation).not.toHaveProperty('settlement');
+      spy.mockRestore();
+    });
+
+    it('treats a refusal of an already registered lease id as ambiguous, because that lease exists', async () => {
+      const control = new DockerAgentGatewayControl('mock-gateway-container');
+      const spy = respond({ ok: false, error: 'leaseId already registered' });
+      const error = await control.issue(issueInput).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(GatewayControlRejection);
+      expect(isDefiniteIssueRefusal(error)).toBe(false);
+      spy.mockRestore();
+      const refused = respond({ ok: false, error: 'unknown profile' });
+      expect(isDefiniteIssueRefusal(await control.issue(issueInput).catch((caught: unknown) => caught))).toBe(true);
+      refused.mockRestore();
+      expect(isDefiniteIssueRefusal(new Error('model gateway control request failed'))).toBe(false);
     });
   });
 });

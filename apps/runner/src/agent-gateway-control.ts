@@ -24,8 +24,8 @@ export type AgentLeaseGrant = {
  * the gateway may have acted before the answer was lost.
  */
 export class GatewayControlRejection extends HarnessError {
-  constructor(message: string) {
-    super('UNAVAILABLE', message, 503, true);
+  constructor(readonly gatewayError: string) {
+    super('UNAVAILABLE', `model gateway rejected control request: ${gatewayError}`.slice(0, 2_000), 503, true);
     this.name = 'GatewayControlRejection';
   }
 }
@@ -33,9 +33,10 @@ export class GatewayControlRejection extends HarnessError {
 const CounterSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
 /**
- * The gateway's frozen accounting for a revoked or expired lease. Unknown or
- * negative fields are refused: the ledger charges from it, so a malformed
- * settlement must never be read as a smaller charge.
+ * The gateway's frozen accounting for a revoked or expired lease. Unknown keys
+ * are stripped so a newer gateway stays compatible; a missing, negative, or
+ * non-integer value makes the settlement invalid, because the ledger charges
+ * from it and a malformed settlement must never be read as a smaller charge.
  */
 export const AgentLeaseSettlementSchema = z.object({
   leaseId: z.string().min(1).max(256),
@@ -53,7 +54,7 @@ export const AgentLeaseSettlementSchema = z.object({
   reasoningTokens: CounterSchema,
   requests: CounterSchema,
   requestsWithoutUsage: CounterSchema
-}).strict();
+});
 export type AgentLeaseSettlement = z.infer<typeof AgentLeaseSettlementSchema>;
 
 /**
@@ -65,15 +66,26 @@ export type AgentLeaseRevocation = {
   revoked: boolean;
   gatewayBootId?: string;
   settlement?: AgentLeaseSettlement;
+  /**
+   * The gateway sent a settlement the runner cannot trust (invalid values, another
+   * lease id, or an unreadable boot id). The revoke itself succeeded, so cleanup
+   * proceeds, and the ledger charges the lease its whole reservation.
+   */
+  settlementInvalid?: true;
 };
+
+/**
+ * True when the gateway's refusal of an `issue` proves no lease exists for the id.
+ * The gateway refuses a lease id it already holds (`lease-registry.ts`), and that
+ * refusal means the lease does exist, for example when an earlier issue succeeded
+ * but its answer was lost, so it is ambiguous like any transport failure.
+ */
+export function isDefiniteIssueRefusal(error: unknown): boolean {
+  return error instanceof GatewayControlRejection && error.gatewayError !== 'leaseId already registered';
+}
 
 const BootIdSchema = z.string().min(1).max(256);
 const IssueResponseSchema = z.object({ gatewayBootId: BootIdSchema.optional() });
-const RevokeResponseSchema = z.object({
-  revoked: z.boolean().optional(),
-  gatewayBootId: BootIdSchema.optional(),
-  settlement: AgentLeaseSettlementSchema.optional()
-});
 
 export interface AgentGatewayControl {
   gatewayContainer(): Promise<string>;
@@ -125,17 +137,16 @@ export class DockerAgentGatewayControl implements AgentGatewayControl {
   }
 
   async revokeAndDrain(leaseId: string): Promise<AgentLeaseRevocation> {
-    const response = await this.control({ operation: 'revoke', leaseId });
-    const parsed = RevokeResponseSchema.safeParse(response);
-    if (!parsed.success || (parsed.data.settlement !== undefined && parsed.data.settlement.leaseId !== leaseId)) {
-      throw new HarnessError('UNAVAILABLE', 'model gateway returned an invalid lease settlement', 503, true);
+    const response = await this.control({ operation: 'revoke', leaseId }) as ControlResponse & Record<string, unknown>;
+    const revoked = response.revoked === true;
+    const bootId = response.gatewayBootId === undefined ? undefined : BootIdSchema.safeParse(response.gatewayBootId);
+    const gatewayBootId = bootId?.success === true ? { gatewayBootId: bootId.data } : {};
+    if (response.settlement === undefined) return { revoked, ...gatewayBootId };
+    const settlement = AgentLeaseSettlementSchema.safeParse(response.settlement);
+    if (!settlement.success || settlement.data.leaseId !== leaseId || bootId?.success === false) {
+      return { revoked, ...gatewayBootId, settlementInvalid: true };
     }
-    const { revoked, gatewayBootId, settlement } = parsed.data;
-    return {
-      revoked: revoked === true,
-      ...(gatewayBootId === undefined ? {} : { gatewayBootId }),
-      ...(settlement === undefined ? {} : { settlement })
-    };
+    return { revoked, ...gatewayBootId, settlement: settlement.data };
   }
 
   async cancelAndDrain(requestId: string): Promise<void> {
@@ -187,7 +198,7 @@ export class DockerAgentGatewayControl implements AgentGatewayControl {
       throw new HarnessError('UNAVAILABLE', 'model gateway returned an invalid control response', 503, true);
     }
     if (!response.ok) {
-      throw new GatewayControlRejection(`model gateway rejected control request: ${typeof response.error === 'string' ? response.error : 'unknown error'}`.slice(0, 2_000));
+      throw new GatewayControlRejection(typeof response.error === 'string' ? response.error : 'unknown error');
     }
     return response;
   }

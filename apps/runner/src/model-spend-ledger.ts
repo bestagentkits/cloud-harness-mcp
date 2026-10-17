@@ -42,10 +42,23 @@ export type ModelSpendLedgerEntry = {
   settledAt: number | null;
 };
 
+/**
+ * Ledger profile keys are namespaced so a saved profile and a static profile
+ * that share an id can never be counted together. Profile-scoped policies name
+ * saved profiles only, and match the `profile:` key of that id.
+ */
+export function savedProfileSpendKey(profileId: string): string {
+  return `profile:${profileId}`;
+}
+
+export function staticProfileSpendKey(profileId: string): string {
+  return `static:${profileId}`;
+}
+
 export type ModelSpendAdmission = {
   leaseId: string;
   principalId: string;
-  /** The stable profile id of a saved profile, or the id of a static profile. */
+  /** From savedProfileSpendKey or staticProfileSpendKey. */
   profileKey: string;
   revisionId: string | null;
   agentId: string;
@@ -189,6 +202,21 @@ function policyFromRow(row: PolicyRow): ModelSpendPolicy {
   });
 }
 
+/**
+ * The WHERE clause of one window. A day key implies its month key, so both are
+ * bound: every window query is then a range on a `(principal[, profile], month)`
+ * index instead of a scan of all the principal's retained rows, which matters
+ * because admission runs it inside the spawn's write lock.
+ */
+function windowFilter(principalId: string, profileKey: string | null, window: string): { where: string; args: string[] } {
+  const month = window.slice(0, 7);
+  const day = window.length === 10 ? ' AND day_key=?' : '';
+  const dayArgs = window.length === 10 ? [window] : [];
+  return profileKey === null
+    ? { where: `principal_id=? AND month_key=?${day}`, args: [principalId, month, ...dayArgs] }
+    : { where: `principal_id=? AND profile_key=? AND month_key=?${day}`, args: [principalId, profileKey, month, ...dayArgs] };
+}
+
 function reachesWarning(committed: number, policy: PolicyRow): boolean {
   return committed * 100 >= policy.limit_micros * policy.warn_percent;
 }
@@ -306,11 +334,19 @@ export class ModelSpendLedger {
       if (!row) return undefined;
       if (row.state !== 'reserved' && row.state !== 'issuing') return entryFromRow(row);
       const settlement = revocation?.settlement;
+      // A missing boot id on either side cannot hide a lost lease: lease ids are random and
+      // never reissued, and a gateway keeps no state across a restart, so a settlement for
+      // this lease id can only come from the gateway process that issued it. The boot ids
+      // only add a cross-check when both are known.
       const sameBoot = row.gateway_boot_id === null || revocation?.gatewayBootId === undefined
         || revocation.gatewayBootId === row.gateway_boot_id;
       let state: ModelSpendLedgerState;
       let charged: number;
-      if (settlement && settlement.leaseId === leaseId && sameBoot) {
+      if (revocation?.settlementInvalid === true) {
+        // The gateway answered with a settlement the runner cannot trust, so the lease existed.
+        state = 'unreconciled';
+        charged = row.reserved_micros;
+      } else if (settlement && settlement.leaseId === leaseId && sameBoot) {
         state = 'settled';
         charged = settlement.requestsWithoutUsage > 0
           ? Math.max(settlement.costMicros, row.reserved_micros)
@@ -362,15 +398,13 @@ export class ModelSpendLedger {
 
   /** The estimated spend of one window, for the principal or one of its profiles. */
   windowTotals(principalId: string, profileKey: string | null, period: ModelSpendPeriod, now: number): ModelSpendWindowTotals {
-    const column = period === 'day' ? 'day_key' : 'month_key';
-    const window = period === 'day' ? utcDayKey(now) : utcMonthKey(now);
+    const filter = windowFilter(principalId, profileKey, period === 'day' ? utcDayKey(now) : utcMonthKey(now));
     const row = this.database.prepare(`SELECT
         COALESCE(SUM(CASE WHEN state='settled' THEN charged_micros ELSE 0 END), 0) AS settled,
         COALESCE(SUM(CASE WHEN state IN ('reserved', 'issuing') THEN reserved_micros ELSE 0 END), 0) AS reserved,
         COALESCE(SUM(CASE WHEN state='unreconciled' THEN charged_micros ELSE 0 END), 0) AS unreconciled
-      FROM model_spend_ledger
-      WHERE principal_id=? AND (? IS NULL OR profile_key=?) AND ${column}=?`)
-      .get(principalId, profileKey, profileKey, window) as { settled: number; reserved: number; unreconciled: number };
+      FROM model_spend_ledger WHERE ${filter.where}`)
+      .get(...filter.args) as { settled: number; reserved: number; unreconciled: number };
     return {
       settledMicros: row.settled,
       reservedMicros: row.reserved,
@@ -440,19 +474,18 @@ export class ModelSpendLedger {
     return policyFromRow(row);
   }
 
-  /** The principal's own policies and those of the profile, at most four. */
+  /** The principal's own policies and, for a saved profile, that profile's; at most four. */
   private applicablePolicies(principalId: string, profileKey: string): PolicyRow[] {
     return this.database.prepare(`SELECT * FROM model_spend_policies
-      WHERE principal_id=? AND (profile_id IS NULL OR profile_id=?)
+      WHERE principal_id=? AND (profile_id IS NULL OR ?='profile:' || profile_id)
       ORDER BY profile_id IS NOT NULL, period`).all(principalId, profileKey) as PolicyRow[];
   }
 
   private committed(policy: PolicyRow, window: string): number {
-    const column = policy.period === 'day' ? 'day_key' : 'month_key';
+    const filter = windowFilter(policy.principal_id, policy.profile_id === null ? null : savedProfileSpendKey(policy.profile_id), window);
     const row = this.database.prepare(`SELECT COALESCE(SUM(COALESCE(charged_micros, reserved_micros)), 0) AS committed
-      FROM model_spend_ledger
-      WHERE principal_id=? AND (? IS NULL OR profile_key=?) AND ${column}=? AND state <> 'released'`)
-      .get(policy.principal_id, policy.profile_id, policy.profile_id, window) as { committed: number };
+      FROM model_spend_ledger WHERE ${filter.where} AND state <> 'released'`)
+      .get(...filter.args) as { committed: number };
     return row.committed;
   }
 
