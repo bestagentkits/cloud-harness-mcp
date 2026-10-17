@@ -144,8 +144,9 @@ Agent calls do not refresh the parent workspace idle TTL.
   an estimate, not provider billing: a run counts entirely in the UTC window
   it was admitted in, so spend near a window boundary can exceed one
   window's limit. Per-run caps are unchanged, and a replayed spawn never
-  reserves twice. No MCP tool reads or changes policies; the owner manages
-  them through the dashboard routes described in
+  reserves twice. `model_spend_summary` reads the policies and the estimated
+  spend in each window; no MCP tool changes them. The owner manages them
+  through the dashboard routes described in
   [Models & Budgets](../docs-site/dashboard/models.md#spend-policies).
 - `agent_status` accepts exactly one of the agent ID or spawn idempotency key.
   While full state is retained, it reports lineage, configured policy and
@@ -185,6 +186,62 @@ A runner restart never replays prompts, messages, model requests, or proxy
 writes. Any active agent from a prior runner epoch is reconciled: its model
 lease is revoked, its container is removed, and its status transitions to
 `INTERRUPTED` with `outcomeUnknown: true`.
+
+### Model setup and spend
+
+Eight tools let a client choose a model for `agent_spawn` and prepare its
+profile: `model_provider_list`, `model_catalog_search`,
+`model_connection_verify`, `model_profile_list`, `model_profile_validate`,
+`model_profile_create`, `model_profile_update`, and the read-only
+`model_spend_summary`. They are scoped to the caller's principal and run in
+the runner on the same control service as the Dashboard's model routes, so
+the catalog cache, the per-principal connection-check rate limit, the
+revision plan, and the gateway sync are shared. Inputs and the strict result
+schemas are owned by
+[`packages/contracts/src/model-tool-schemas.ts`](../packages/contracts/src/model-tool-schemas.ts);
+the runner parses every result against its schema before returning it, so a
+field the schema does not list, such as key material, fails the call instead
+of reaching the client. Local stdio mode refuses them with `INVALID_INPUT`,
+because profiles live in the remote runner.
+
+The Dashboard keeps the owner's decisions:
+
+- **No key, lifecycle, or policy tool.** Credentials are added, rotated, and
+  deleted only on the Dashboard; `model_provider_list` returns their
+  metadata, never a key. No tool activates, disables, or deletes a profile,
+  refreshes the catalog, or changes a spend policy.
+- **Created disabled.** `model_profile_create` always saves a `DISABLED`
+  profile (`activation: "dashboard_required"`), which the gateway does not
+  serve until the owner activates it. `model_profile_update` keeps the
+  profile's status.
+- **Escalations need the owner.** A save that would raise a token or cost
+  limit, lower a price that is not catalog-verified, carry override prices to
+  another model or credential, widen proxy operations, or use a Custom
+  upstream URL that none of the principal's profiles on that credential uses
+  is refused with `OWNER_APPROVAL_REQUIRED` (403, not retryable,
+  `resumeAction: "dashboard:models"`). The rules are owned by
+  [`apps/runner/src/model-profile-guard.ts`](../apps/runner/src/model-profile-guard.ts)
+  and are applied inside the save's transaction, so nothing is written; the
+  refusal is audited separately as `model_profile.change_refused` with the
+  actor `mcp`. A draft `model_connection_verify` with an unbound Custom
+  upstream URL is refused the same way before any request is sent, and audited
+  as `model_connection.refused`. `model_profile_validate` reports the same
+  escalations without writing, and the Dashboard can save every one of them.
+- **Idempotency and generations.** Create and update require an
+  `idempotencyKey`. The record is keyed by principal, tool, and key, bound to
+  a SHA-256 fingerprint of the rest of the input, written in the save's
+  transaction, and kept for 24 hours: the same key and input return the first
+  result with `replayed: true`, and the same key with other input returns
+  `CONFLICT`. A refused or failed call records nothing, so its key can be
+  reused. Update also requires `expectedGeneration`; a moved generation
+  returns `CONFLICT`, recovered by re-reading `model_profile_list`.
+- **Audit.** Saves and connection checks are audited with the actor `mcp`;
+  reads are not audited. Audit details name the route, limits, and price
+  source, never a key, price, or URL path.
+
+`model_spend_summary` returns the same body as the Dashboard's spend route:
+the UTC day and month windows (settled, reserved, and unreconciled estimates)
+and the policies that bound them, optionally narrowed to one `period`.
 
 ### Repository guidance bootstrap
 

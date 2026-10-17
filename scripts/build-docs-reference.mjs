@@ -53,6 +53,11 @@ const CATEGORIES = [
     names: ['skills_list', 'skills_read', 'skills_run', 'hooks_list', 'hooks_run', 'memories_list', 'memories_read', 'memories_write', 'deployments_list', 'deployments_run']
   },
   {
+    title: 'Models and Spend',
+    description: 'Choose a provider and model, check a connection, save agent model profiles (created disabled; the owner activates them on the Dashboard), and read estimated model spend. Keys, activation, deletion, and spend policies stay on the Dashboard.',
+    names: ['model_provider_list', 'model_catalog_search', 'model_connection_verify', 'model_profile_list', 'model_profile_validate', 'model_profile_create', 'model_profile_update', 'model_spend_summary']
+  },
+  {
     title: 'Retained Artifacts',
     description: 'Tools for snapshotting workspace files, listing, reading bounded ranges, restoring into workspaces, and deleting retained artifacts.',
     names: ['artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete']
