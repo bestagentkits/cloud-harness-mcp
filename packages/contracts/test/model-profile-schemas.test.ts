@@ -95,6 +95,7 @@ describe('Model Profile & Credential Contracts', () => {
         inputMicrosPerMillionTokens: 1750000,
         outputMicrosPerMillionTokens: 14000000
       },
+      priceProvenance: { source: 'user', sourceModelId: null, retrievedAt: null, confidence: 'unknown', isOverride: true },
       limits: {
         maxInputTokens: 200000,
         maxOutputTokens: 32000,
@@ -133,6 +134,7 @@ describe('Model Profile & Credential Contracts', () => {
           downstreamPath: '/v1/chat/completions',
           upstreamUrl: 'https://api.openai.com/v1/chat/completions',
           pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+          priceProvenance: { source: 'user', sourceModelId: null, retrievedAt: null, confidence: 'unknown', isOverride: true },
           limits: { maxInputTokens: 1000, maxOutputTokens: 500, maxCostMicros: 10000 },
           maxProxyOperations: ['files_read'],
           digest: 'digest-1',

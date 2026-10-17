@@ -741,4 +741,101 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     await manager.stop();
     await gwRuntime.close();
   });
+  it('applies a snapshot carrying cache and tier prices to the gateway and serves requests from it', async () => {
+    const { repo, p } = setup();
+    const { certFile, keyFile } = await ensureTlsFixtures();
+    const upstreamServer: TlsServer = createTlsServer({ cert: readFileSync(certFile), key: readFileSync(keyFile) }, (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: {"choices":[{"delta":{"content":"priced"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":2}}}\n\n');
+      res.end('data: [DONE]\n\n');
+    });
+    await new Promise<void>((res) => upstreamServer.listen(0, '127.0.0.1', res));
+    const upstreamAddress = upstreamServer.address() as AddressInfo;
+
+    const controlSocket = process.platform === 'win32'
+      ? `\\\\.\\pipe\\gw-priced-${randomBytes(6).toString('hex')}`
+      : join(tmpdir(), `gw-priced-${randomBytes(6).toString('hex')}.sock`);
+    const gwRuntime = createGatewayRuntime(await loadGatewayConfig({
+      MODEL_GATEWAY_MODE: 'test',
+      MODEL_GATEWAY_CONTROL_SOCKET: controlSocket,
+      MODEL_GATEWAY_HOST: '127.0.0.1',
+      MODEL_GATEWAY_PORT: '3210',
+      MODEL_GATEWAY_PROFILES_JSON: '[]',
+      MODEL_GATEWAY_TEST_TLS_CA_FILE: certFile
+    }));
+    await gwRuntime.listen();
+    const gwAddress = gwRuntime.httpServer.address() as AddressInfo;
+
+    try {
+      const cred = repo.createCredential(p, { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or-priced-778899' });
+      const profile = repo.createProfile(p, {
+        profileId: ModelProfileIdSchema.parse('priced-tiers'),
+        displayName: 'Priced Tiers',
+        credentialId: cred.id,
+        model: 'google/gemini-2.5-pro',
+        apiMode: 'chat-completions',
+        pricing: {
+          inputMicrosPerMillionTokens: 1_250_000,
+          outputMicrosPerMillionTokens: 10_000_000,
+          cacheReadMicrosPerMillionTokens: 310_000,
+          tiers: [{ minPromptTokens: 200_000, inputMicrosPerMillionTokens: 2_500_000, outputMicrosPerMillionTokens: 15_000_000, cacheReadMicrosPerMillionTokens: 625_000 }]
+        },
+        limits: { maxInputTokens: 50_000, maxOutputTokens: 2_000, maxCostMicros: 100_000 },
+        maxProxyOperations: ['files_read']
+      }, { priceProvenance: { source: 'openrouter', sourceModelId: 'google/gemini-2.5-pro', retrievedAt: 1_700_000_000_000, confidence: 'exact', isOverride: false } });
+      const revisionId = profile.activeRevisionId!;
+
+      const snapshot = repo.getExportSnapshot(p);
+      expect(snapshot.profiles[revisionId]?.pricing).toEqual({
+        inputMicrosPerMillionTokens: 1_250_000,
+        outputMicrosPerMillionTokens: 10_000_000,
+        cacheReadMicrosPerMillionTokens: 310_000,
+        cacheWriteMicrosPerMillionTokens: 2_500_000,
+        tiers: [{
+          minPromptTokens: 200_000,
+          inputMicrosPerMillionTokens: 2_500_000,
+          outputMicrosPerMillionTokens: 15_000_000,
+          cacheReadMicrosPerMillionTokens: 625_000,
+          cacheWriteMicrosPerMillionTokens: 5_000_000
+        }]
+      });
+      snapshot.profiles[revisionId]!.upstreamUrl = `https://127.0.0.1:${upstreamAddress.port}/v1/chat/completions`;
+
+      const controlClient = connect(controlSocket);
+      const applied = await new Promise<{ ok: boolean; ack?: { activeProfileCount: number } }>((res, rej) => {
+        let buf = '';
+        controlClient.on('data', (d) => { buf += d.toString(); });
+        controlClient.on('end', () => res(JSON.parse(buf)));
+        controlClient.on('error', rej);
+        controlClient.end(JSON.stringify({ operation: 'apply_snapshot', sequence: 1, generation: 1, credentials: snapshot.credentials, profiles: snapshot.profiles }) + '\n');
+      });
+      expect(applied).toMatchObject({ ok: true, ack: { activeProfileCount: 1 } });
+
+      const lease = gwRuntime.issueLease({
+        leaseId: 'lease_priced_1', agentId: 'agent_012345678901234567890', profileId: revisionId,
+        ttlMs: 60_000, maxInputTokens: 10_000, maxOutputTokens: 1_000, maxCostMicros: 50_000
+      });
+      const request = httpRequest({
+        host: '127.0.0.1', port: gwAddress.port, path: '/v1/chat/completions', method: 'POST',
+        headers: {
+          'content-type': 'application/json', authorization: `Bearer ${lease}`, 'x-model-profile': revisionId,
+          'x-agent-id': 'agent_012345678901234567890', 'x-request-id': 'req_priced_1'
+        }
+      });
+      const response = await new Promise<{ status: number; body: string }>((res, rej) => {
+        request.on('response', (r) => {
+          let body = '';
+          r.on('data', (chunk) => { body += chunk; });
+          r.on('end', () => res({ status: r.statusCode ?? 500, body }));
+        });
+        request.on('error', rej);
+        request.end(JSON.stringify({ model: 'google/gemini-2.5-pro', stream: true, max_tokens: 100, messages: [{ role: 'user', content: 'hello' }] }));
+      });
+      expect(response.status).toBe(200);
+      expect(response.body).toContain('priced');
+    } finally {
+      await gwRuntime.close();
+      await new Promise<void>((res) => upstreamServer.close(() => res()));
+    }
+  });
 });

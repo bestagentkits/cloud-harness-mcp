@@ -365,6 +365,30 @@ runner rebuilds from providers, so the bounded `downgradeStateSchemaToV13` in
 [`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts)
 drops the table without a data-loss guard; the next search refetches.
 
+## Revision pricing columns rollback
+
+Revision cache prices, long-prompt tiers, and price provenance are columns added in place
+to `agent_model_profile_revisions` by `initializeModelProfilePricingColumns` in
+[`apps/runner/src/model-profile-state-repository.ts`](../apps/runner/src/model-profile-state-repository.ts),
+without a state schema version bump. Every column is nullable or defaulted, so existing
+revisions read as user overrides of unknown confidence, and a rolled-back runner keeps
+reading and writing revisions by column name; its new revisions take the defaults. No data
+change is needed to roll back, and the columns stay in place for the next upgrade.
+
+Charging the new prices needs a model gateway that reads cache prices and tiers from the
+control snapshot, in releases after 0.66.0-beta.17; every release with these columns
+includes it. An older gateway ignores them, and Compose rolls the runner and the gateway
+back together. While running the older release:
+
+- Cache usage is billed at the input price, which over-charges models with cheaper cached
+  reads.
+- Long prompts on a revision with tiers are billed at the base prices, which under-charges.
+  Lower the per-run cost caps of tiered profiles or avoid long prompts on them.
+- An edit saved by the older runner writes a revision with only input and output prices:
+  its cache prices and tiers are dropped, and its provenance reads as a user override of
+  unknown confidence. Upgrading again does not restore them; re-enter the cache prices and
+  tiers of every profile edited during the rollback.
+
 ## MCP Events deployment verification
 
 Automated tests prove [MCP Events](mcp-api.md#mcp-events-webhook-delivery)

@@ -52,6 +52,10 @@ export const AgentModelProfileSchema = z.object({
   apiMode: z.enum(['chat-completions', 'responses']).default('chat-completions'),
   inputMicrosPerMillionTokens: z.coerce.number().int().min(0).max(1_000_000_000),
   outputMicrosPerMillionTokens: z.coerce.number().int().min(0).max(1_000_000_000),
+  // Optional cache prices; when absent the agent is told the conservative default
+  // from resolveEffectivePricing, never zero.
+  cacheReadMicrosPerMillionTokens: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+  cacheWriteMicrosPerMillionTokens: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
   maxInputTokens: z.coerce.number().int().min(1).max(2_000_000),
   maxOutputTokens: z.coerce.number().int().min(1).max(2_000_000),
   maxCostMicros: z.coerce.number().int().min(0).max(1_000_000_000),

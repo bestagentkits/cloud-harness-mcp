@@ -1,28 +1,14 @@
 import { z } from 'zod';
 import { ModelCredentialIdSchema } from './identifiers.js';
+import { ModelCatalogPriceProvenanceSchema, PriceMicrosPerMillionSchema } from './model-pricing.js';
 import { ModelProviderKindSchema } from './model-profile-schemas.js';
+
+// The price source, confidence, and provenance schemas live in model-pricing.ts,
+// which saved profile revisions share without importing this module.
 
 // A price is integer micro-USD per one million tokens. `null` means the price is
 // unknown, which is never the same as free: only an explicit zero is free.
-const MicrosPerMillionSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable();
-
-// `none`: no source published a price for the model, so the price fields are null.
-export const ModelCatalogPriceSourceSchema = z.enum(['provider', 'openrouter', 'user', 'none']);
-export type ModelCatalogPriceSource = z.infer<typeof ModelCatalogPriceSourceSchema>;
-
-// `exact` is the price the selected route bills, `estimate` is a price observed on
-// another route (OpenRouter metadata applied to a direct vendor), `unknown` means
-// no price evidence exists.
-export const ModelCatalogPriceConfidenceSchema = z.enum(['exact', 'estimate', 'unknown']);
-export type ModelCatalogPriceConfidence = z.infer<typeof ModelCatalogPriceConfidenceSchema>;
-
-export const ModelCatalogPriceProvenanceSchema = z.object({
-  source: ModelCatalogPriceSourceSchema,
-  sourceModelId: z.string().max(300).nullable(),
-  retrievedAt: z.number().int().nonnegative().nullable(),
-  confidence: ModelCatalogPriceConfidenceSchema
-}).strict();
-export type ModelCatalogPriceProvenance = z.infer<typeof ModelCatalogPriceProvenanceSchema>;
+const MicrosPerMillionSchema = PriceMicrosPerMillionSchema.nullable();
 
 export const ModelCatalogPriceSchema = z.object({
   inputMicrosPerMillionTokens: MicrosPerMillionSchema,

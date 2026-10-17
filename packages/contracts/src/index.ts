@@ -12,6 +12,7 @@ export * from './context-provenance.js';
 export * from './model-profile-schemas.js';
 export * from './model-provider-registry.js';
 export * from './model-catalog-schemas.js';
+export * from './model-pricing.js';
 export * from './model-verification-schemas.js';
 export * from './knowledge-schemas.js';
 export * from './mcp-gateway-schemas.js';
