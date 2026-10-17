@@ -637,7 +637,7 @@ describe('models page list', () => {
   it('shows when the gateway was last synchronized, never for no push yet, and why the last push failed', () => {
     const never = renderModelsPage({ status: { gatewaySynced: false, lastSyncTime: null, error: null } });
     expect(never).toContain('Gateway sync pending');
-    expect(never).toContain('Last successful sync: Never');
+    expect(never).toContain('Last successful sync: Never since the runner started');
 
     const at = Date.UTC(2026, 0, 2, 3, 4, 5);
     const failed = renderModelsPage({ status: { gatewaySynced: false, lastSyncTime: at, error: 'model gateway <rejected> snapshot' } });

@@ -101,14 +101,20 @@ async function setup() {
     }
     return { exitCode: 0, stdout: await forward(gateway.socketPath, stdin), stderr: '' };
   });
-  const control = new DockerAgentGatewayControl('model-gateway-test');
-  const controls = new DashboardControlService(
-    { artifactRetentionSeconds: 60 } as RunnerConfig, principals, metadata, artifacts, {} as WorkspaceService,
-    undefined, undefined, repo, control, keyring
-  );
   const principal = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'operator-a' };
+  /** One runner process: its gateway control is shared by every component that pushes snapshots. */
+  const startRunner = () => {
+    const control = new DockerAgentGatewayControl('model-gateway-test');
+    const controls = new DashboardControlService(
+      { artifactRetentionSeconds: 60 } as RunnerConfig, principals, metadata, artifacts, {} as WorkspaceService,
+      undefined, undefined, repo, control, keyring
+    );
+    return { control, controls };
+  };
+  let runner = startRunner();
+  const restartRunner = () => { runner = startRunner(); };
   const call = async (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown> = {}) =>
-    (await controls.execute({ version: 2, principal, operation, input } as MetadataRunnerRequest)).data;
+    (await runner.controls.execute({ version: 2, principal, operation, input } as MetadataRunnerRequest)).data;
   const status = async (): Promise<ModelConfigStatus> =>
     ModelConfigStatusSchema.parse((await call('model_config_status') as { status: unknown }).status);
   const profileInput = (profileId: string, credentialId: string) => ({
@@ -121,7 +127,12 @@ async function setup() {
     const credential = await call('model_credential_create', { label: `Key ${profileId}`, provider: 'openai', apiKey: `sk-${profileId}-secret` }) as { id: string };
     return await call('model_profile_create', profileInput(profileId, credential.id)) as { status: string };
   };
-  return { gateway, repo, control, call, status, createProfile, profileInput, ownerId: principals.resolvePrincipal(principal) };
+  return {
+    gateway, repo, status, createProfile, profileInput, restartRunner,
+    /** A push by another component sharing this runner's gateway control, such as the agent manager. */
+    pushFromAgentManager: async () => await runner.control.applySnapshot(repo.getExportSnapshot()),
+    ownerId: principals.resolvePrincipal(principal)
+  };
 }
 
 const expectedDigest = (repo: ModelProfileStateRepository) => gatewaySnapshotDigest(repo.getExportSnapshot());
@@ -134,14 +145,8 @@ describe('model configuration status', () => {
     expect((gateway.registry as DynamicGatewayRegistry).snapshotDigest).toBe(expectedDigest(repo));
   });
 
-  it('reports synchronized only once the gateway holds the current snapshot, timing only successful pushes', async () => {
-    const { gateway, repo, control, status, createProfile } = await setup();
-    // Agent manager pushes the empty snapshot at boot; this service has pushed nothing yet.
-    await control.applySnapshot(repo.getExportSnapshot());
-    expect(await status()).toEqual({
-      gatewaySynced: true, gatewayBootId: 'boot_1', lastSyncTime: null, activeProfileCount: 0, activeCredentialCount: 0, error: null
-    });
-
+  it('reports synchronized with the last successful push time when the gateway holds the current snapshot', async () => {
+    const { gateway, status, createProfile } = await setup();
     const before = Date.now();
     expect((await createProfile('coding')).status).toBe('ACTIVE');
     const result = await status();
@@ -149,6 +154,38 @@ describe('model configuration status', () => {
     expect(result.lastSyncTime).toBeGreaterThanOrEqual(before);
     expect(result.lastSyncTime).toBeLessThanOrEqual(Date.now());
     expect(gateway.registry?.profiles.size).toBe(1);
+  });
+
+  it('reports synchronized without a push time when the gateway kept the snapshot from before the runner restarted', async () => {
+    const { status, createProfile, restartRunner } = await setup();
+    await createProfile('coding');
+    restartRunner();
+    expect(await status()).toEqual({
+      gatewaySynced: true, gatewayBootId: 'boot_1', lastSyncTime: null, activeProfileCount: 1, activeCredentialCount: 1, error: null
+    });
+  });
+
+  it('counts a push made by another component sharing the gateway control and clears the earlier failure', async () => {
+    const { gateway, status, createProfile, pushFromAgentManager } = await setup();
+    gateway.failApply = true;
+    await createProfile('coding');
+    expect(await status()).toMatchObject({ gatewaySynced: false, lastSyncTime: null, error: 'model gateway control request failed' });
+
+    gateway.failApply = false;
+    const before = Date.now();
+    await pushFromAgentManager();
+    const result = await status();
+    expect(result).toMatchObject({ gatewaySynced: true, error: null });
+    expect(result.lastSyncTime).toBeGreaterThanOrEqual(before);
+  });
+
+  it('shows no push error while the gateway holds the current snapshot', async () => {
+    const { gateway, status, createProfile, pushFromAgentManager } = await setup();
+    await createProfile('coding');
+    const pushedAt = (await status()).lastSyncTime;
+    gateway.failApply = true;
+    await expect(pushFromAgentManager()).rejects.toThrow('model gateway control request failed');
+    expect(await status()).toMatchObject({ gatewaySynced: true, lastSyncTime: pushedAt, error: null });
   });
 
   it('reports not synchronized when the gateway answers with a stale snapshot digest', async () => {

@@ -398,10 +398,13 @@ The badge beside **Model profiles** reads `GET /api/v1/agent-model-config-status
   exactly the runner's current profile and credential snapshot: the snapshot digest it reports
   equals the digest of the snapshot the runner would send now. A gateway that answers with an
   older snapshot shows **Gateway sync pending**, as does an unreachable one.
-- **Last successful sync** (`lastSyncTime`) is when the dashboard last pushed a snapshot
-  successfully, or **Never** (`null`) when it has not pushed one since the runner started.
-  Pushes made at runner startup and before an agent launch do not update it.
-- The error line (`error`) explains an unreachable gateway or a failed last push.
+- **Last successful sync** (`lastSyncTime`) is when the runner last pushed a snapshot
+  successfully: after a dashboard change, at runner startup, before an agent launch, or to
+  repair the gateway. It is kept in memory, so it reads **Never since the runner started**
+  (`null`) until the restarted runner pushes again. The badge can then still read
+  **Gateway synchronized**, because the gateway kept the snapshot the previous runner sent.
+- The error line (`error`) explains an unreachable gateway or a failed last push. A later
+  successful push clears it, and it is not shown while the gateway holds the current snapshot.
 
 If the gateway reports no profiles while you have active ones, for example after it restarted,
 reading the status sends it the snapshot again.

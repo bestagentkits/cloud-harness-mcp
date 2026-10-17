@@ -167,3 +167,49 @@ describe('Runner AgentGatewayControl Dynamic Sync', () => {
     });
   });
 });
+
+describe('gateway snapshot push state', () => {
+  const ack = JSON.stringify({ ok: true, ack: { gatewayBootId: 'boot_1', snapshotDigest: 'sha256:a' } });
+  const snapshot = { credentials: {}, profiles: {} };
+
+  it('keeps the last successful push time, reports a later failure, and clears it on the next success', async () => {
+    let clock = 1_000;
+    let fail = false;
+    const spy = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async () =>
+      fail ? { exitCode: 1, stdout: '', stderr: '' } : { exitCode: 0, stdout: ack, stderr: '' });
+    const control = new DockerAgentGatewayControl('gateway', () => clock);
+    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: null, lastError: null });
+
+    await control.applySnapshot(snapshot);
+    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: 1_000, lastError: null });
+
+    clock = 2_000; fail = true;
+    await expect(control.applySnapshot(snapshot)).rejects.toThrow('model gateway control request failed');
+    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: 1_000, lastError: 'model gateway control request failed' });
+
+    clock = 3_000; fail = false;
+    await control.applySnapshot(snapshot);
+    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: 3_000, lastError: null });
+    spy.mockRestore();
+  });
+
+  it('keeps the outcome of a later push when an earlier one settles after it', async () => {
+    const releases: Array<() => void> = [];
+    let calls = 0;
+    const spy = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        await new Promise<void>((resolve) => releases.push(resolve));
+        return { exitCode: 1, stdout: '', stderr: '' };
+      }
+      return { exitCode: 0, stdout: ack, stderr: '' };
+    });
+    const control = new DockerAgentGatewayControl('gateway', () => 5_000);
+    const slowFailure = control.applySnapshot(snapshot);
+    await control.applySnapshot(snapshot);
+    releases[0]!();
+    await expect(slowFailure).rejects.toThrow();
+    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: 5_000, lastError: null });
+    spy.mockRestore();
+  });
+});

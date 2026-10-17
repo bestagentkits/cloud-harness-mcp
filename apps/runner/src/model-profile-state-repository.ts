@@ -1000,13 +1000,17 @@ export class ModelProfileStateRepository {
     }
   }
 
+  /**
+   * The gateway snapshot. Every query is ordered by id so that the same state always
+   * serializes to the same record, and therefore to the same gateway snapshot digest.
+   */
   getExportSnapshot(principalId?: string): {
     credentials: Record<string, { provider: ModelProviderKind; authMode: ProviderAuthMode; secret: string }>;
     profiles: Record<string, AgentModelProfileRevision>;
   } {
     const profileRows = (principalId
-      ? this.database.prepare("SELECT * FROM agent_model_profiles WHERE principal_id = ? AND status = 'ACTIVE'").all(principalId)
-      : this.database.prepare("SELECT * FROM agent_model_profiles WHERE status = 'ACTIVE'").all()) as Array<{
+      ? this.database.prepare("SELECT * FROM agent_model_profiles WHERE principal_id = ? AND status = 'ACTIVE' ORDER BY id").all(principalId)
+      : this.database.prepare("SELECT * FROM agent_model_profiles WHERE status = 'ACTIVE' ORDER BY id").all()) as Array<{
         id: string;
         principal_id: string;
         active_revision_id: string | null;
@@ -1022,10 +1026,12 @@ export class ModelProfileStateRepository {
         ? this.database.prepare(`
             SELECT DISTINCT profile_id FROM agents
             WHERE owner_id = ? AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED')
+            ORDER BY profile_id
           `).all(principalId)
         : this.database.prepare(`
             SELECT DISTINCT profile_id FROM agents
             WHERE status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED')
+            ORDER BY profile_id
           `).all()) as Array<{ profile_id: string }>;
 
       for (const row of activeAgentRows) {
@@ -1064,8 +1070,8 @@ export class ModelProfileStateRepository {
     }
 
     const credRows = (principalId
-      ? this.database.prepare('SELECT * FROM model_provider_credentials WHERE principal_id = ?').all(principalId)
-      : this.database.prepare('SELECT * FROM model_provider_credentials').all()) as Array<{
+      ? this.database.prepare('SELECT * FROM model_provider_credentials WHERE principal_id = ? ORDER BY id').all(principalId)
+      : this.database.prepare('SELECT * FROM model_provider_credentials ORDER BY id').all()) as Array<{
         id: string;
         principal_id: string;
         provider: ModelProviderKind;

@@ -122,6 +122,14 @@ export function gatewaySnapshotDigest(snapshot: GatewaySnapshot): string {
   return `sha256:${createHash('sha256').update(JSON.stringify(snapshotCommand(snapshot)), 'utf8').digest('hex')}`;
 }
 
+/** Outcome of this runner process's snapshot pushes, whichever component made them. */
+export type GatewaySnapshotPushState = {
+  /** When a push last succeeded, or null when none has since the runner started. */
+  lastSuccessAt: number | null;
+  /** Why the latest push failed, or null when it succeeded or none was made. */
+  lastError: string | null;
+};
+
 export interface AgentGatewayControl {
   gatewayContainer(): Promise<string>;
   issue(input: Omit<AgentLeaseGrant, 'lease' | 'gatewayBootId'>): Promise<AgentLeaseGrant>;
@@ -130,6 +138,8 @@ export interface AgentGatewayControl {
   cancelAndDrain(requestId: string): Promise<void>;
   applySnapshot(snapshot: GatewaySnapshot): Promise<{ gatewayBootId: string; snapshotDigest: string }>;
   queryDigest(): Promise<{ gatewayBootId: string; snapshotDigest: string; activeProfileCount: number; activeCredentialCount: number; activeLeaseCount: number }>;
+  /** The shared record of every applySnapshot outcome. Optional so lease-only test doubles stay small. */
+  snapshotPushState?(): GatewaySnapshotPushState;
 }
 
 type ControlResponse = {
@@ -142,8 +152,18 @@ type ControlResponse = {
 
 export class DockerAgentGatewayControl implements AgentGatewayControl {
   private resolvedContainer?: Promise<string>;
+  private pushState: GatewaySnapshotPushState = { lastSuccessAt: null, lastError: null };
+  private pushAttempts = 0;
+  private recordedAttempt = 0;
 
-  constructor(private readonly explicitContainer?: string) {}
+  constructor(
+    private readonly explicitContainer?: string,
+    private readonly now: () => number = Date.now
+  ) {}
+
+  snapshotPushState(): GatewaySnapshotPushState {
+    return { ...this.pushState };
+  }
 
   gatewayContainer(): Promise<string> {
     this.resolvedContainer ??= this.resolveGatewayContainer();
@@ -184,11 +204,26 @@ export class DockerAgentGatewayControl implements AgentGatewayControl {
   }
 
   async applySnapshot(snapshot: GatewaySnapshot): Promise<{ gatewayBootId: string; snapshotDigest: string }> {
-    const response = await this.control(snapshotCommand(snapshot), 1_048_576);
-    if (!response.ack) {
-      throw new HarnessError('UNAVAILABLE', 'model gateway omitted snapshot ack', 503, true);
+    // Outcomes are kept in the order pushes started, so a slow earlier push that settles
+    // late never replaces the outcome of a later one.
+    const attempt = ++this.pushAttempts;
+    try {
+      const response = await this.control(snapshotCommand(snapshot), 1_048_576);
+      if (!response.ack) {
+        throw new HarnessError('UNAVAILABLE', 'model gateway omitted snapshot ack', 503, true);
+      }
+      this.recordPush(attempt, { lastSuccessAt: this.now(), lastError: null });
+      return response.ack;
+    } catch (err) {
+      this.recordPush(attempt, { lastSuccessAt: this.pushState.lastSuccessAt, lastError: err instanceof Error ? err.message : 'snapshot push failed' });
+      throw err;
     }
-    return response.ack;
+  }
+
+  private recordPush(attempt: number, state: GatewaySnapshotPushState): void {
+    if (attempt < this.recordedAttempt) return;
+    this.recordedAttempt = attempt;
+    this.pushState = state;
   }
 
   async queryDigest(): Promise<{ gatewayBootId: string; snapshotDigest: string; activeProfileCount: number; activeCredentialCount: number; activeLeaseCount: number }> {
