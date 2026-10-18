@@ -27,6 +27,16 @@ export default tseslint.config(
     }
   },
   {
+    files: ['site/**/*.js'],
+    languageOptions: {
+      globals: {
+        document: 'readonly',
+        localStorage: 'readonly',
+        window: 'readonly'
+      }
+    }
+  },
+  {
     files: ['apps/api/dashboard/**/*.js'],
     languageOptions: {
       globals: {

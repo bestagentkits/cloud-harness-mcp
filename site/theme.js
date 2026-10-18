@@ -10,10 +10,10 @@
   var mq = window.matchMedia("(prefers-color-scheme: light)");
 
   function current() {
-    try { return localStorage.getItem(STORE) || "system"; } catch (e) { return "system"; }
+    try { return localStorage.getItem(STORE) || "system"; } catch { return "system"; }
   }
   function save(theme) {
-    try { localStorage.setItem(STORE, theme); } catch (e) {}
+    try { localStorage.setItem(STORE, theme); } catch { /* storage blocked: the choice lasts for this page only */ }
   }
   function resolve(theme) {
     return theme === "light" ? "light" : theme === "dark" ? "dark" : (mq.matches ? "light" : "dark");
