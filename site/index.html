@@ -1371,12 +1371,42 @@
         .hero-video-sound-label { display: none; }
       }
 
+      /* Compact AgentKit.best introduction */
+      .agentkit-wrap { padding-top: 0; }
+      .agentkit-band {
+        display: grid;
+        grid-template-columns: 1.15fr 1fr;
+        gap: clamp(1.5rem, 4vw, 3rem);
+        align-items: center;
+        padding: clamp(1.75rem, 4vw, 2.75rem);
+        border-color: rgba(165, 139, 255, 0.45);
+      }
+      .agentkit-copy .section-title { font-size: clamp(1.5rem, 3vw, 2.1rem); margin: 0.75rem 0; }
+      .agentkit-copy p { color: var(--text-muted); line-height: 1.7; margin-bottom: 1.5rem; }
+      .agentkit-copy p a { color: var(--purple-laser); text-decoration: underline; text-underline-offset: 3px; }
+      .agentkit-products { list-style: none; display: grid; gap: 0.75rem; margin: 0; padding: 0; }
+      .agentkit-products li {
+        display: grid;
+        gap: 0.2rem;
+        padding: 0.9rem 1rem;
+        background: var(--bg-void);
+        border: 1px solid var(--slab-edge);
+        border-left: 3px solid var(--purple-laser);
+        border-radius: 4px;
+      }
+      .agentkit-products strong { color: var(--text-bright); font-size: 0.98rem; }
+      .agentkit-products li > span:last-child { color: var(--text-muted); font-size: 0.88rem; line-height: 1.5; }
+      .agentkit-product-tag { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.14em; color: var(--purple-laser); }
+      @media (max-width: 860px) {
+        .agentkit-band { grid-template-columns: 1fr; }
+      }
+
       /* ---- Dark isometric cutaway skin ----
          Panels read as extruded slabs: a lit top face, a dark side offset
          down-right, and a hatched strip along the top edge like a section cut. */
       .arch-card, .feature-item, .skill-card, .agent-runtime-card, .tool-card,
       .invariant-card, .client-matrix, .diagram-container, .terminal-hud,
-      .hero-video-frame, .security-box, .cta-cyber, .code-box {
+      .hero-video-frame, .security-box, .cta-cyber, .code-box, .agentkit-band {
         position: relative;
         background: var(--slab-top);
         border: 1px solid var(--slab-edge);
@@ -1386,7 +1416,8 @@
 
       .arch-card::before, .feature-item::before, .skill-card::before,
       .agent-runtime-card::before, .invariant-card::before, .diagram-container::before,
-      .security-box::before, .cta-cyber::before, .hero-video-frame::before, .client-matrix::before {
+      .security-box::before, .cta-cyber::before, .hero-video-frame::before, .client-matrix::before,
+      .agentkit-band::before {
         content: "";
         position: absolute;
         left: 0;
@@ -2433,6 +2464,37 @@
         </div>
         <div style="text-align: center; margin-top: 2rem;">
           <a class="feature-link" href="https://docs.harness.agentkit.best/agent-toolkits" target="_blank" rel="noreferrer">Agent toolkits &amp; skills guide ↗</a>
+        </div>
+      </section>
+
+      <!-- AgentKit.best -->
+      <section class="section-wrap agentkit-wrap" id="agentkit">
+        <div class="agentkit-band">
+          <div class="agentkit-copy">
+            <div class="section-tag">// Meet AgentKit.best</div>
+            <h2 class="section-title">Kits That Make Every Agent Ship Like a Team</h2>
+            <p>
+              <a href="https://agentkit.best" target="_blank" rel="noreferrer">AgentKit.best</a> packages development and marketing workflows as skills, hooks, and specialist subagents, with the <code>ak</code> CLI and a desktop app to install and manage them. Cloud Harness MCP is built by the same team, so licensed kits mount read-only in every workspace and <code>ak</code> is already inside the executor.
+            </p>
+            <a class="hud-button hud-button-primary" href="https://agentkit.best" target="_blank" rel="noreferrer">Explore AgentKit.best ↗</a>
+          </div>
+          <ul class="agentkit-products">
+            <li>
+              <span class="agentkit-product-tag">ENGINEER</span>
+              <strong>Plan, build, test, review, ship</strong>
+              <span>Full-stack development skills, workflows, and specialist agents.</span>
+            </li>
+            <li>
+              <span class="agentkit-product-tag">MARKETING</span>
+              <strong>Research, content, growth</strong>
+              <span>Sales, content, and growth automation for every launch.</span>
+            </li>
+            <li>
+              <span class="agentkit-product-tag">APP</span>
+              <strong>Desktop control center</strong>
+              <span>Install, update, and manage licensed kits in one place.</span>
+            </li>
+          </ul>
         </div>
       </section>
 
