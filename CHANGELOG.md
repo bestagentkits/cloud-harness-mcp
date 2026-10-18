@@ -1,3 +1,10 @@
+# [0.71.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.70.0...v0.71.0) (2026-10-18)
+
+
+### Features
+
+* **site:** apply the dark isometric design to haas, support and legal pages ([#413](https://github.com/bestagentkits/cloud-harness-mcp/issues/413)) ([44f5fb8](https://github.com/bestagentkits/cloud-harness-mcp/commit/44f5fb845f40f384ae2d428a6a7e90db28652674)), closes [#412](https://github.com/bestagentkits/cloud-harness-mcp/issues/412)
+
 # [0.70.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.69.0...v0.70.0) (2026-10-18)
 
 
