@@ -1,3 +1,10 @@
+# [0.70.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.69.0...v0.70.0) (2026-10-18)
+
+
+### Features
+
+* **site:** add a compact AgentKit.best introduction ([#415](https://github.com/bestagentkits/cloud-harness-mcp/issues/415)) ([52cffd5](https://github.com/bestagentkits/cloud-harness-mcp/commit/52cffd5fa36954960c72b54aaa5d65e28b56a476)), closes [#414](https://github.com/bestagentkits/cloud-harness-mcp/issues/414)
+
 # [0.69.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.68.0...v0.69.0) (2026-10-17)
 
 
