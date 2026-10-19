@@ -29,6 +29,8 @@ docker compose --profile images build executor-image
 **Cause:** The workspace reached its wall-clock lifetime or idle timeout (15 and 5 minutes by default; the operator can change both in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle) for workspaces opened afterwards).
 **Fix:** Workspaces are ephemeral by design. While the workspace is `EXPIRED_RECOVERABLE`, `workspace_recover` restores or exports its work. Otherwise re-open a workspace using `workspace_open` with a fresh idempotency key.
 
+If the workspace `error` starts `executor reconciliation failed during startup:`, the workspace did not time out: its executor could not be restarted or rebuilt after a runner restart. Other workspaces are unaffected. During the recoverable grace its checkout is kept, so `workspace_recover` rebuilds the executor once the cause in the message is fixed; afterwards it is auto-closed like any expired workspace.
+
 ---
 
 ### 4. API Key Denied (`401 Unauthorized`)

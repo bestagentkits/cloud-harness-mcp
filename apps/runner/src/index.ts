@@ -81,7 +81,9 @@ const oauthGrantSettings = new OAuthGrantSettingsService(
   config.cloudflareAccessOAuth ? new CloudflareAccessOAuthProvider(config.cloudflareAccessOAuth) : undefined,
   (ownerId, action, details) => metadata.recordAudit(ownerId, action, 'instance', 'oauth_grant_settings', 1, details)
 );
-await service.start();
+for (const failure of await service.start()) {
+  logger.warn(failure, 'workspace executor reconciliation failed during startup');
+}
 const automations = new AutomationService({
   database: store.database,
   enabled: config.automationsEnabled,
