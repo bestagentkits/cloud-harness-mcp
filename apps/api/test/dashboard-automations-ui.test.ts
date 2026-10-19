@@ -10,9 +10,9 @@ import {
   automationWorkflowIsTerminal, renderAutomationBlocked, renderAutomationConnections, renderAutomationDeliveries,
   renderAutomationPreviewDialog, renderAutomationPreviewResult, renderAutomationRuleDialog, renderAutomationRules, renderAutomationRunDetail,
   renderAutomationRuns, renderAutomationSecretPanel, renderAutomationTabs, renderAutomationRuleMatchFields, renderAutomationMetrics,
-  automationMatchSummary, automationResourceText
+  automationMatchSummary, automationResourceText, renderAutomationCredentialsDialog
 } from '../dashboard/dashboard-render.js';
-import { automationConnectionInput, automationPreviewSample, automationRuleInput, automationRuleUpdateInput, bindAutomationSecretReveal } from '../dashboard/dashboard.js';
+import { automationConnectionInput, automationCredentialsInput, automationPreviewSample, automationRuleInput, automationRuleUpdateInput, bindAutomationSecretReveal } from '../dashboard/dashboard.js';
 import { DASHBOARD_PAGES, navGroups } from '../dashboard/dashboard-pages.js';
 import { FakeElement } from './dashboard-test-dom.js';
 
@@ -708,6 +708,43 @@ describe('automation connections for every provider', () => {
       .toEqual(['apiToken', 'baseUrl']);
     expect(Object.keys(automationConnectionInput(new URLSearchParams({ provider: 'linear', name: '', apiKey: 'short' })).errors).sort()).toEqual(['apiKey', 'name']);
     expect(automationConnectionInput(new URLSearchParams({ provider: 'gitlab', name: 'x' })).errors.provider).toBe('Choose a provider.');
+  });
+
+  it('offers outbound credential actions for Linear and Jira only, and Clear only while one is set', () => {
+    const html = renderAutomationConnections({ connections: [connection, linearConnection, jiraConnection], origin, health });
+    expect(html.match(/data-automation-credentials-edit=/g)).toHaveLength(2);
+    expect(html).toContain(`data-automation-credentials-edit="${jiraConnectionId}" data-provider="jira" data-generation="${jiraConnection.generation}"`);
+    expect(html.match(/data-automation-credentials-clear=/g)).toHaveLength(1);
+    expect(html).toContain(`data-automation-credentials-clear="${linearConnectionId}"`);
+    expectCspSafe(html);
+  });
+
+  it('renders write-only credential inputs with no value, even when the connection carries one', () => {
+    for (const [connectionForDialog, names] of [[linearConnection, ['apiKey']], [jiraConnection, ['email', 'apiToken']]] as const) {
+      const html = renderAutomationCredentialsDialog({ ...connectionForDialog, apiKey: 'lin_api_secret_value', apiToken: 'atl_secret_value', email: 'stored@acme.test' });
+      expect(html).not.toMatch(/secret_value|stored@acme\.test/u);
+      for (const name of names) {
+        const input = html.match(new RegExp(`<input[^>]*name="${name}"[^>]*>`))?.[0] ?? '';
+        expect(input).not.toContain('value=');
+      }
+      for (const name of names.filter((field) => field !== 'email')) {
+        const input = html.match(new RegExp(`<input[^>]*name="${name}"[^>]*>`))?.[0] ?? '';
+        expect(input).toContain('type="password"');
+        expect(input).toContain('data-write-only');
+        expect(input).toContain('autocomplete="new-password"');
+      }
+      expectCspSafe(html);
+    }
+  });
+
+  it('builds the credential update fields per provider and refuses incomplete ones', () => {
+    expect(automationCredentialsInput(new URLSearchParams({ apiKey: 'lin_api_12345678' }), 'linear')).toEqual({ errors: {}, body: { apiKey: 'lin_api_12345678' } });
+    expect(automationCredentialsInput(new URLSearchParams({ email: ' ops@acme.test ', apiToken: 'atl-token-123' }), 'jira'))
+      .toEqual({ errors: {}, body: { email: 'ops@acme.test', apiToken: 'atl-token-123' } });
+    expect(Object.keys(automationCredentialsInput(new URLSearchParams({ apiKey: '' }), 'linear').errors)).toEqual(['apiKey']);
+    expect(Object.keys(automationCredentialsInput(new URLSearchParams({ email: 'ops@acme.test' }), 'jira').errors)).toEqual(['apiToken']);
+    expect(Object.keys(automationCredentialsInput(new URLSearchParams({ apiToken: 'atl-token-123' }), 'jira').errors)).toEqual(['email']);
+    expect(automationCredentialsInput(new URLSearchParams({ apiKey: 'lin_api_12345678' }), 'github').body).toBeUndefined();
   });
 
   it('explains where to paste the secret for each provider and keeps the secret out of the markup', () => {

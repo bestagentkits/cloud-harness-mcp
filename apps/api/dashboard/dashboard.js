@@ -91,7 +91,7 @@ import {
   AUTOMATION_GITHUB_EVENTS, AUTOMATION_PROXY_OPERATIONS, AUTOMATION_SENDER_TYPES, AUTOMATION_WORKFLOW_STATES,
   AUTOMATION_DELIVERY_STATES, AUTOMATION_PUBLISH_STATES, AUTOMATION_PROVIDERS, AUTOMATION_PROVIDER_EVENT_TYPES, AUTOMATION_STATE_TRIGGERS, AUTOMATION_METRICS_WINDOWS,
   automationBlockedState, automationMatchProvider, automationResourceText, automationSectionForPath, renderAutomationBlocked, renderAutomationConnections, renderAutomationDeliveries,
-  renderAutomationLoading, renderAutomationMetrics, renderAutomationPreviewDialog, renderAutomationPreviewResult, renderAutomationRuleDialog, renderAutomationRuleMatchFields, renderAutomationRules,
+  renderAutomationCredentialsDialog, renderAutomationLoading, renderAutomationMetrics, renderAutomationPreviewDialog, renderAutomationPreviewResult, renderAutomationRuleDialog, renderAutomationRuleMatchFields, renderAutomationRules,
   renderAutomationRunDetail, renderAutomationRuns, renderAutomationSecretPanel, renderAutomationTabs
 } from './dashboard-render.js';
 import { mountTerminalPane } from './dashboard-terminal.js';
@@ -399,6 +399,29 @@ export function automationConnectionInput(values) {
   }
   if (Object.keys(errors).length) return { errors };
   return { errors: {}, body: { provider, name, ...extra } };
+}
+
+/**
+ * The `connection_update` fields for the Outbound credentials form, mirroring
+ * `AutomationConnectionUpdateInputSchema`: a Linear key, or a Jira email and token set together.
+ * The caller adds the generation it loaded.
+ */
+export function automationCredentialsInput(values, provider) {
+  const errors = {};
+  const credential = (field) => {
+    const value = automationField(values, field).trim();
+    if (!AUTOMATION_OUTBOUND_CREDENTIAL.test(value)) errors[field] = 'Enter the credential as 8 to 1024 printable characters without spaces.';
+    return value;
+  };
+  if (provider === 'linear') {
+    const apiKey = credential('apiKey');
+    return Object.keys(errors).length ? { errors } : { errors: {}, body: { apiKey } };
+  }
+  if (provider !== 'jira') return { errors: { provider: 'Only Linear and Jira connections have an outbound credential.' } };
+  const email = automationField(values, 'email').trim();
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = 'Enter the Jira account email.';
+  const apiToken = credential('apiToken');
+  return Object.keys(errors).length ? { errors } : { errors: {}, body: { email, apiToken } };
 }
 
 /**
@@ -3496,6 +3519,37 @@ export function initializeDashboard() {
         if (!rotated?.connection || typeof rotated.secret !== 'string' || !rotated.secret) throw new Error('The new signing secret was unavailable. Rotate the secret again.');
         await loadAutomationConnections({ connection: rotated.connection, secret: rotated.secret, rotated: true });
         announce('Signing secret rotated. Copy the new secret now; it is shown once.');
+      }
+    }, event.currentTarget));
+    for (const button of content.querySelectorAll('[data-automation-credentials-edit]')) button.addEventListener('click', (event) => {
+      const provider = button.dataset.provider;
+      const id = button.dataset.automationCredentialsEdit;
+      const generation = Number(button.dataset.generation);
+      const dialog = openAutomationDialog(renderAutomationCredentialsDialog({ provider, name: button.dataset.connectionName }), event.currentTarget);
+      const credentialsForm = dialog?.querySelector('#automation-credentials-form');
+      credentialsForm?.addEventListener('submit', (submitEvent) => {
+        submitEvent.preventDefault();
+        const { errors, body } = automationCredentialsInput(new FormData(credentialsForm), provider);
+        if (reportAutomationFieldErrors(credentialsForm, errors)) return;
+        // Credentials are write-only: they leave the form as soon as they are sent.
+        resetWriteOnlyFields(credentialsForm);
+        void submitForm(credentialsForm, 'Saving…', () => updateAutomationConnection(id, { expectedGeneration: generation, ...body }), async () => {
+          dialog.close();
+          announce('Outbound credentials saved. They are not shown again.');
+          await loadAutomationConnections(undefined, true);
+        });
+      });
+    });
+    for (const button of content.querySelectorAll('[data-automation-credentials-clear]')) button.addEventListener('click', (event) => confirmAction({
+      title: 'Clear outbound credentials?',
+      description: 'The stored credential is removed. Runs keep completing but stop posting their answer back until a new credential is saved.',
+      target: button.dataset.connectionName ?? button.dataset.automationCredentialsClear,
+      label: 'Clear credentials',
+      pendingLabel: 'Clearing…',
+      action: async () => {
+        await updateAutomationConnection(button.dataset.automationCredentialsClear, { expectedGeneration: Number(button.dataset.generation), clearOutbound: true });
+        announce('Outbound credentials cleared.');
+        await loadAutomationConnections(undefined, true);
       }
     }, event.currentTarget));
     for (const button of content.querySelectorAll('[data-automation-connection-delete]')) button.addEventListener('click', (event) => confirmAction({

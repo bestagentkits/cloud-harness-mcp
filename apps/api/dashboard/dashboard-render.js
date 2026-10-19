@@ -2988,6 +2988,35 @@ function automationOutboundText(connection) {
   return connection.outboundConfigured ? '<span class="status enabled">Configured</span>' : '<span class="status">Not configured</span>';
 }
 
+/** Linear and Jira keep a stored outbound credential; Clear is offered only while one is set. */
+function automationCredentialActions(connection, id, generation) {
+  if (connection.provider !== 'linear' && connection.provider !== 'jira') return '';
+  const name = escape(connection.name);
+  const clear = connection.outboundConfigured
+    ? `<button class="danger" type="button" data-automation-credentials-clear="${id}" data-generation="${generation}" data-connection-name="${name}">Clear credentials</button>`
+    : '';
+  return `
+        <button type="button" data-automation-credentials-edit="${id}" data-provider="${escape(connection.provider)}" data-generation="${generation}" data-connection-name="${name}">Outbound credentials</button>${clear}`;
+}
+
+/**
+ * Replaces a connection's stored outbound credential. The inputs are write-only: no value attribute,
+ * so nothing stored is ever rendered, and the loader clears them as soon as the form is sent.
+ */
+export function renderAutomationCredentialsDialog(connection) {
+  const jira = connection?.provider === 'jira';
+  const fields = jira
+    ? `<label for="automation-credentials-email">Account email<input id="automation-credentials-email" name="email" type="email" required maxlength="254" autocomplete="off" spellcheck="false"></label>
+      ${automationSecretField({ id: 'automation-credentials-token', name: 'apiToken', label: 'API token', help: 'Replaces the stored credential. Stored sealed in the runner and never shown again.' })}`
+    : automationSecretField({ id: 'automation-credentials-key', name: 'apiKey', label: 'API key', help: 'Replaces the stored credential. Stored sealed in the runner and never shown again.' });
+  return renderFormDialog({
+    id: 'automation-credentials-dialog', title: 'Outbound credentials',
+    description: `Used only to post the agent's answer back as a comment on ${connection?.name ?? 'this connection'}'s ${jira ? 'Jira site' : 'Linear workspace'}.`,
+    formId: 'automation-credentials-form', submitId: 'automation-credentials-submit', submitLabel: 'Save credentials',
+    body: fields
+  });
+}
+
 function automationConnectionCard(connection, origin, health, healthAvailable) {
   const id = escape(connection.id);
   const generation = escape(connection.generation);
@@ -2995,7 +3024,7 @@ function automationConnectionCard(connection, origin, health, healthAvailable) {
   const baseUrl = connection.config?.baseUrl ? `<dt>Jira site</dt><dd class="mono wrap">${escape(connection.config.baseUrl)}</dd>` : '';
   return `<li class="panel automation-connection"><div class="record-heading"><div><h3>${escape(connection.name)}</h3><p><span class="status${connection.enabled ? ' enabled' : ''}">${connection.enabled ? 'Enabled' : 'Disabled'}</span> <span>${escape(automationProviderLabel(connection.provider))}</span></p></div><div class="row-actions">
         <button type="button" data-automation-connection-toggle="${id}" data-next-enabled="${connection.enabled ? 'false' : 'true'}" data-generation="${generation}">${connection.enabled ? 'Disable' : 'Enable'}</button>
-        <button type="button" data-automation-connection-rotate="${id}" data-generation="${generation}" data-connection-name="${escape(connection.name)}">Rotate secret</button>
+        <button type="button" data-automation-connection-rotate="${id}" data-generation="${generation}" data-connection-name="${escape(connection.name)}">Rotate secret</button>${automationCredentialActions(connection, id, generation)}
         <button class="danger" type="button" data-automation-connection-delete="${id}" data-generation="${generation}" data-connection-name="${escape(connection.name)}">Delete</button>
       </div></div><dl class="facts"><dt>Provider</dt><dd class="mono">${escape(connection.provider)}</dd><dt>Webhook URL</dt><dd>${renderCopyChip({ value: url, label: 'Webhook URL' })}</dd><dt>Webhook path</dt><dd class="mono wrap">${escape(connection.webhookPath)}</dd>${baseUrl}<dt>Post back</dt><dd>${automationOutboundText(connection)}</dd><dt>Connection ID</dt><dd class="mono wrap">${id}</dd><dt>Secret rotated</dt><dd>${optionalTime(connection.secretRotatedAt)}</dd><dt>Last delivery</dt><dd>${optionalTime(health?.lastDeliveryAt ?? connection.lastDeliveryAt)}</dd>${automationHealthFacts(health, healthAvailable)}<dt>Created</dt><dd>${optionalTime(connection.createdAt)}</dd></dl></li>`;
 }
@@ -3035,7 +3064,7 @@ export function renderAutomationConnections({ connections = [], origin = '', hea
     : '<li class="empty"><h3>No connections yet.</h3><p>Create a webhook connection to get a payload URL and a signing secret for GitHub, Linear, Jira or your own sender.</p></li>';
   return `${renderResourcePage({
     body: `<section aria-labelledby="automation-connections-heading"><div class="record-heading"><div><h2 id="automation-connections-heading">Connections</h2><p>Each connection is one webhook endpoint for one provider, with its own signing secret. Deliveries with a bad signature are refused and not recorded.</p></div></div><ul class="record-list automation-connection-list">${items}</ul></section>`
-  })}${renderAutomationConnectionDialog()}`;
+  })}${renderAutomationConnectionDialog()}<div id="automation-dialog-host"></div>`;
 }
 
 /** Where to paste the URL and secret, per provider. */

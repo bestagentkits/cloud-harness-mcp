@@ -385,9 +385,9 @@ and its workspace is reclaimed only by normal expiry. After a suspected secret l
 the connection and update the provider's webhook at once (for Linear, through
 its API's `webhookUpdate`): rotation has no grace window, so deliveries signed
 with the old secret return `401` until the provider has the new one. A leaked
-Linear API key or Jira API token is revoked at the provider; the Dashboard sets
-outbound credentials only when it creates a connection, so replace one by
-creating a new connection.
+Linear API key or Jira API token is revoked at the provider; replace it with
+**Outbound credentials** on the connection card, or remove it with **Clear
+credentials**.
 
 ## Model catalog state schema rollback
 

@@ -226,9 +226,11 @@ Linear and Jira need a credential only to post comments; receiving webhooks neve
 
 Credentials are stored sealed in the runner and are never shown again; the connection
 only shows whether one is configured. They are sent only to Linear's API or to the
-connection's Jira site, never to a workspace or agent. The Dashboard sets them when you
-create the connection and does not edit them afterwards; to change one, create a new
-connection, point the provider's webhook at it, and recreate its rules.
+connection's Jira site, never to a workspace or agent. Set them when you create the
+connection, or later with **Outbound credentials** on the connection card: the form
+replaces the stored credential, and its fields start empty and are cleared as soon as
+you save. **Clear credentials** (after a confirmation) removes the stored credential, so
+runs keep completing but stop posting their answer back.
 
 ## Pages
 
@@ -241,7 +243,8 @@ connection, point the provider's webhook at it, and recreate its rules.
 - **Connections** shows each connection's provider, webhook URL, last delivery, when
   its secret was last rotated, whether an outbound credential is set, and its health:
   deliveries by state over the last day and week, and the last quarantine reason. It
-  offers **Rotate secret**, **Enable**/**Disable**, and **Delete**.
+  offers **Rotate secret**, **Outbound credentials** (Linear and Jira),
+  **Enable**/**Disable**, and **Delete**.
 - **Deliveries** lists what each provider sent and what happened: processed, ignored,
   or quarantined, the outcome, and how many runs it started. Filter by **Quarantined
   (dead letter)** to see deliveries that verified but could not be read; fix the

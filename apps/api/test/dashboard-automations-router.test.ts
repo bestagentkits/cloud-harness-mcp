@@ -189,6 +189,34 @@ describe('dashboard automations BFF', () => {
     expect(forwarded.input).toMatchObject({ connectionId, enabled: false, match: { ignoreBots: true }, action: { publishComment: false, maxConcurrent: 1 } });
   });
 
+  it('passes outbound credential updates through and never echoes them', async () => {
+    const headers = await mutationHeaders();
+    const path = `/api/v1/automations/connections/${connectionId}`;
+    const updates: Array<Record<string, unknown>> = [
+      { expectedGeneration: 3, apiKey: 'lin_api_credential_1' },
+      { expectedGeneration: 3, email: 'ops@acme.test', apiToken: 'atl-credential-2' },
+      { expectedGeneration: 3, clearOutbound: true }
+    ];
+    for (const body of updates) {
+      const response = await send(path, { method: 'PATCH', headers, body: JSON.stringify(body) });
+      expect(response.status, JSON.stringify(Object.keys(body))).toBe(200);
+      expect(requests.at(-1)).toEqual({ version: 1, principal, operation: 'connection_update', input: { id: connectionId, ...body } });
+      expect(JSON.stringify(response.json)).not.toMatch(/credential/u);
+    }
+    const refused: Array<Record<string, unknown>> = [
+      { expectedGeneration: 3, email: 'ops@acme.test' },
+      { expectedGeneration: 3, apiToken: 'atl-credential-2' },
+      { expectedGeneration: 3, apiKey: 'lin_api_credential_1', clearOutbound: true },
+      { expectedGeneration: 3, apiKey: 'short' }
+    ];
+    for (const body of refused) {
+      const before = requests.length;
+      const response = await send(path, { method: 'PATCH', headers, body: JSON.stringify(body) });
+      expect(response.status, JSON.stringify(Object.keys(body))).toBe(400);
+      expect(requests.length).toBe(before);
+    }
+  });
+
   it('returns the signing secret only with no-store caching', async () => {
     const headers = await mutationHeaders();
     const created = await send('/api/v1/automations/connections', { method: 'POST', headers, body: JSON.stringify({ provider: 'github', name: 'Main repo' }) });
