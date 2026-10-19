@@ -82,10 +82,9 @@ the choice stays in the address (`?repository=<alias>`), so links and reloads ke
   checkout, branch, merge, rebase, worktrees) acts on the selected repository.
 - **Terminal** opens new sessions in `repos/<alias>`, and the re-attach list shows the
   directory of each session that did not start at the workspace root.
-- **Finalize** commits the repository selected in the current **Files**, **Git**, or
-  **Terminal** view. In a multi-repository workspace, choose a repository before you
-  finalize. From another section, no repository is selected and the harness refuses
-  the request.
+- **Finalize** commits one repository. In a multi-repository workspace the dialog asks
+  which one, preselecting the repository of the current **Files**, **Git**, or
+  **Terminal** view.
 
 A single-repository workspace shows no selector and behaves exactly as before.
 

@@ -3798,7 +3798,7 @@ export function initializeDashboard() {
     // A tab body may need to bind controls once it is in the document, so the Files tab
     // returns its markup plus that hook instead of reaching into the DOM early.
     const markup = typeof body === 'string' ? body : body.markup;
-    const finalizeDialog = workspaceHasAction(item, 'workspace_finalize') ? renderFinalizeDialog() : '';
+    const finalizeDialog = workspaceHasAction(item, 'workspace_finalize') ? renderFinalizeDialog(item, scope.repository) : '';
     // The selector exists only for a multi-repository workspace, so a single-repository cockpit
     // renders exactly as it always has.
     const selector = scope.repositories.length
@@ -4071,8 +4071,8 @@ export function initializeDashboard() {
       void submitForm(form, 'Finalizing…', async () => {
         await api(`/workspaces/${encodeURIComponent(id)}/finalize`, {
           method: 'POST',
-          // A multi-repository workspace finalizes the checkout the cockpit is scoped to.
-          body: requestBody(inRepository({ all: true, push: values.get('push') === 'on', commitMessage: values.get('commitMessage') }, repository))
+          // A multi-repository workspace finalizes the checkout chosen in the dialog.
+          body: requestBody(inRepository({ all: true, push: values.get('push') === 'on', commitMessage: values.get('commitMessage') }, values.get('repositoryId') || repository))
         });
       }, async () => {
         document.querySelector('#finalize-workspace-dialog')?.close();

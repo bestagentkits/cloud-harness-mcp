@@ -295,13 +295,18 @@ export function renderWorkspaceActivity({ events = [], workspaceId = '' } = {}) 
   return `<section class="panel" aria-labelledby="workspace-activity-heading"><h2 id="workspace-activity-heading">Activity</h2><p class="page-note">Live runtime rows and retained audit rows recorded against <span class="mono">${escape(workspaceId)}</span>. The cross-workspace view is the Activity Center.</p><ul class="activity-list">${rows}</ul></section>`;
 }
 
-/** The finalize dialog: a commit message, plus the push decision. */
-export function renderFinalizeDialog() {
+/**
+ * The finalize dialog: a commit message, plus the push decision. A multi-repository
+ * workspace finalizes one checkout, so the dialog asks which one instead of guessing.
+ */
+export function renderFinalizeDialog(workspace = {}, selected = '') {
+  const entries = workspaceRepositories(workspace);
+  const repository = entries.length < 2 ? '' : `<label for="finalize-repository">Repository</label><select id="finalize-repository" name="repositoryId" required>${selected ? '' : '<option value="" selected disabled>Choose a repository</option>'}${entries.map((entry) => `<option value="${escape(entry.alias)}"${entry.alias === selected ? ' selected' : ''}>${escape(entry.alias)}</option>`).join('')}</select>`;
   return renderFormDialog({
     id: 'finalize-workspace-dialog', title: 'Finalize workspace',
     description: 'Stages the changes, runs the preflights, commits with the workspace identity, and pushes when you ask it to.',
     formId: 'finalize-workspace-form', submitId: 'finalize-workspace-submit', submitLabel: 'Finalize workspace',
-    body: '<label for="finalize-commit-message">Commit message</label><input id="finalize-commit-message" name="commitMessage" required maxlength="10000"><label class="checkbox-label"><input name="push" type="checkbox" checked><span>Push to the remote after committing</span></label>'
+    body: repository + '<label for="finalize-commit-message">Commit message</label><input id="finalize-commit-message" name="commitMessage" required maxlength="10000"><label class="checkbox-label"><input name="push" type="checkbox" checked><span>Push to the remote after committing</span></label>'
   });
 }
 
