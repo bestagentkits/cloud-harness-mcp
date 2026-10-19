@@ -4,7 +4,7 @@ import { ToolResultSchema } from './mcp-results.js';
 export const RunnerOperationSchema = z.enum([
   'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close',
   'workspace_lease_renew', 'workspace_recover', 'workspace_context', 'workspace_set_active',
-  'workspace_finalize', 'workspace_repos_list', 'workspace_repo_status',
+  'workspace_finalize', 'workspace_repos_list', 'workspace_repo_status', 'workspace_repo_add', 'workspace_repo_remove',
   'files_list', 'files_read', 'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir', 'grep_search',
   'symbols_search', 'symbols_references',
   'exec_run', 'bash', 'shell_open', 'shell_io', 'shell_close',
