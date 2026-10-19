@@ -212,8 +212,11 @@ then given the new `prompt`.
   including `CANCELLED` and `INTERRUPTED`. It is not continuable when its log
   is incomplete, exceeded the configured message or byte bounds, or would
   have pushed the stored sessions of its workspace, owner, or instance past
-  their aggregate byte budget; the run itself is not affected. A tool call the earlier run never answered is closed
-  with an error result before the new prompt.
+  their aggregate byte budget; the run itself is not affected. A tool call the
+  earlier run never answered is closed before the new prompt with the outcome
+  the runner settled for it (see
+  [Agent tool receipts and replay](#agent-tool-receipts-and-replay)), or with a
+  generic interruption error when it has none.
 - `continueFrom` is refused before any agent exists with `NOT_SUPPORTED` when
   persistence is off; `NOT_FOUND` for an agent outside this owner and
   workspace; `STALE_GENERATION` for an earlier workspace generation;
@@ -270,6 +273,19 @@ the ledger and its fences are in
   paths before the work is repeated.
 - The same request ID with a different payload returns `CONFLICT` without
   running.
+- Before a continuation's first turn, the runner settles every tool call the
+  earlier transcript left unanswered, because the model would otherwise issue
+  the same intent again under a new tool call ID that the ledger cannot match.
+  It looks each call up in the lineage's ledger, reconciles a mutation whose
+  outcome was lost as above, and the runtime closes the call with the result:
+  an applied or rejected call gets its stored result, a mutation that did not
+  land gets `EFFECT_NOT_APPLIED`, and an undecidable one gets `EFFECT_UNKNOWN`,
+  which tells the model the effect may have landed and to read the target
+  before any retry. A call that never reached the executor, a read, or a call
+  whose transcript arguments do not match the recorded request keeps the generic
+  interruption (the last as `EFFECT_UNKNOWN` for a mutation). At most 64
+  outcomes are carried, each bounded in size; a larger stored result is
+  summarized.
 - Only the agent of the current runner epoch and agent generation can record an
   outcome, add usage, or append session messages; recording an outcome also
   needs the active workspace generation, and an agent that a successor

@@ -3,7 +3,9 @@ import type { RunnerResponse } from '@cloud-harness/contracts';
 import { describe, expect, it } from 'vitest';
 import {
   capturePatchImages,
+  danglingToolCalls,
   effectErrorText,
+  effectRequestId,
   observeEntry,
   reconcileEffect,
   writeImages,
@@ -23,6 +25,37 @@ function reader(files: Record<string, string>, directories: string[] = [], optio
     return { ok: true, message: 'read', data: { path, content, sha256: sha256(content), eof: options.eof ?? true }, truncated: false };
   };
 }
+
+describe('unanswered tool calls of a transcript', () => {
+  const assistant = (...calls: Array<[string, string]>) => ({
+    role: 'assistant', content: [{ type: 'text', text: 'working' }, ...calls.map(([id, name]) => ({ type: 'toolCall', id, name, arguments: { path: id } }))]
+  });
+  const result = (id: string) => ({ role: 'toolResult', toolCallId: id, content: [], isError: false });
+  const user = { role: 'user', content: [] };
+
+  it('derives the request ID the agent runtime proxies a tool call under', () => {
+    expect(effectRequestId('toolu_1', 0)).toBe('toolu_1');
+    expect(effectRequestId('bad id', 0)).toBe(`call_${sha256('bad id').slice(0, 32)}`);
+    expect(effectRequestId('toolu_1', 2)).toBe(`call_${sha256('toolu_1#2').slice(0, 32)}`);
+    expect(effectRequestId('bad id', 1)).toBe(`call_${sha256(`call_${sha256('bad id').slice(0, 32)}#1`).slice(0, 32)}`);
+  });
+
+  it('finds calls without a result, inside the log and at its end, with the arguments the model sent', () => {
+    const calls = danglingToolCalls([user, assistant(['a', 'files_write'], ['b', 'files_read']), result('b'), user, assistant(['c', 'files_move'])]);
+    expect(calls).toEqual([
+      { toolCallId: 'a', name: 'files_write', arguments: { path: 'a' }, requestId: 'a' },
+      { toolCallId: 'c', name: 'files_move', arguments: { path: 'c' }, requestId: 'c' }
+    ]);
+    expect(danglingToolCalls([user, assistant(['a', 'files_write']), result('a')])).toEqual([]);
+    expect(danglingToolCalls([null, 'text', { role: 'assistant', content: 'plain' }])).toEqual([]);
+  });
+
+  it('counts earlier results and replay closures of a repeated call ID, as the runtime does', () => {
+    // The first use was answered, the second was closed by replay, so the third is use index 2.
+    const calls = danglingToolCalls([user, assistant(['x', 'files_write']), result('x'), user, assistant(['x', 'files_write']), user, assistant(['x', 'files_mkdir'])]);
+    expect(calls.map((call) => call.requestId)).toEqual([effectRequestId('x', 1), effectRequestId('x', 2)]);
+  });
+});
 
 describe('agent effect reconciler', () => {
   it('computes the intended image of a whole-file write and keeps only a valid guard as its pre-image', () => {
