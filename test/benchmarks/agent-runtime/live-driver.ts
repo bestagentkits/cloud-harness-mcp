@@ -17,8 +17,10 @@
  * - AGENT_RUNTIME_BENCHMARK_MAX_COST_USD: cumulative cap for this run, default 5
  * - AGENT_RUNTIME_BENCHMARK_AGENT_MAX_COST_USD: per-agent cost cap, default 0.25
  * - AGENT_RUNTIME_BENCHMARK_REPS: repetitions, default 3
- * - AGENT_RUNTIME_BENCHMARK_RUNTIMES: comma list, default "pi-coding,pi-coding+persisted"
+ * - AGENT_RUNTIME_BENCHMARK_RUNTIMES: comma list, default "pi-coding,pi-coding+persisted,pi-durable"
  * - AGENT_RUNTIME_BENCHMARK_AGENT_TTL_SECONDS: per-agent TTL, default 300
+ * - AGENT_RUNTIME_BENCHMARK_AGENT_MAX_INPUT_TOKENS / _MAX_OUTPUT_TOKENS: per-agent token caps, default
+ *   200000 / 16000; both must fit the profile's own caps
  * - AGENT_RUNTIME_BENCHMARK_REPOSITORY_URL / _REF: repository for the disposable workspace
  * - AGENT_RUNTIME_BENCHMARK_OUT: path of the JSON report
  *
@@ -44,15 +46,23 @@ const LIVE_SCENARIOS = ['pr-review', 'restart-followup', 'killed-run-with-effect
 type LiveScenarioId = typeof LIVE_SCENARIOS[number];
 const MICROS_PER_USD = 1_000_000;
 const POLL_MS = 1_000;
+/** 100 calls a minute leaves headroom under the API's 120-per-minute principal window. */
+const MIN_CALL_INTERVAL_MS = 600;
+/** Retries of a `rate_limited` call, spread over more than one full window. */
+const RATE_LIMIT_ATTEMPTS = 20;
+const RATE_LIMIT_BACKOFF_MS = 5_000;
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
- * How each runtime is selected on spawn. `pi-durable` is filled in when its spawn selector exists;
- * until then asking for it fails before anything is spawned.
+ * How each runtime is selected on spawn. `spawnOptions` apply to root agents only: a continuation
+ * (`continueFrom`) inherits its predecessor's engine. The persisted and durable runtimes need the
+ * stack's `AGENT_SESSION_PERSISTENCE_ENABLED`, and the durable one also `AGENT_DURABLE_RUNTIME_ENABLED`
+ * and an agent image built with `INCLUDE_DURABLE_RUNTIME=true`.
  */
-const LIVE_RUNTIMES: Record<string, { continues: boolean; spawnOptions: Record<string, unknown> } | undefined> = {
+const LIVE_RUNTIMES: Record<string, { continues: boolean; spawnOptions: Record<string, unknown> }> = {
   'pi-coding': { continues: false, spawnOptions: {} },
   'pi-coding+persisted': { continues: true, spawnOptions: {} },
-  'pi-durable': undefined
+  'pi-durable': { continues: true, spawnOptions: { runtime: 'pi-durable' } }
 };
 
 export interface LiveConfig {
@@ -64,6 +74,8 @@ export interface LiveConfig {
   repetitions: number;
   runtimes: string[];
   ttlSeconds: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
   repositoryUrl: string;
   repositoryRef: string | undefined;
   out: string | undefined;
@@ -92,17 +104,18 @@ export function liveConfig(env: NodeJS.ProcessEnv): LiveConfig {
   const agentCapMicros = Math.floor(positiveNumber(env, 'AGENT_RUNTIME_BENCHMARK_AGENT_MAX_COST_USD', 0.25) * MICROS_PER_USD);
   if (agentCapMicros > costCapMicros) throw new Error('the per-agent cost cap cannot exceed the cumulative cap');
   const repetitions = Math.floor(positiveNumber(env, 'AGENT_RUNTIME_BENCHMARK_REPS', 3));
-  const runtimes = (env.AGENT_RUNTIME_BENCHMARK_RUNTIMES ?? 'pi-coding,pi-coding+persisted').split(',').map((id) => id.trim()).filter(Boolean);
+  const runtimes = (env.AGENT_RUNTIME_BENCHMARK_RUNTIMES ?? Object.keys(LIVE_RUNTIMES).join(',')).split(',').map((id) => id.trim()).filter(Boolean);
   for (const id of runtimes) {
-    if (!(id in LIVE_RUNTIMES)) throw new Error(`unknown live runtime: ${id}`);
-    if (!LIVE_RUNTIMES[id]) throw new Error(`live runtime ${id} has no spawn selector yet`);
+    if (!Object.hasOwn(LIVE_RUNTIMES, id)) throw new Error(`unknown live runtime: ${id}`);
   }
   if (runtimes.length === 0) throw new Error('AGENT_RUNTIME_BENCHMARK_RUNTIMES selects no runtime');
   const ttlSeconds = Math.floor(positiveNumber(env, 'AGENT_RUNTIME_BENCHMARK_AGENT_TTL_SECONDS', 300));
   if (ttlSeconds < 30) throw new Error('AGENT_RUNTIME_BENCHMARK_AGENT_TTL_SECONDS must be at least 30');
+  const maxInputTokens = Math.floor(positiveNumber(env, 'AGENT_RUNTIME_BENCHMARK_AGENT_MAX_INPUT_TOKENS', 200_000));
+  const maxOutputTokens = Math.floor(positiveNumber(env, 'AGENT_RUNTIME_BENCHMARK_AGENT_MAX_OUTPUT_TOKENS', 16_000));
   const customRepository = env.AGENT_RUNTIME_BENCHMARK_REPOSITORY_URL;
   return {
-    endpoint, token, profileId, costCapMicros, agentCapMicros, repetitions, runtimes, ttlSeconds,
+    endpoint, token, profileId, costCapMicros, agentCapMicros, repetitions, runtimes, ttlSeconds, maxInputTokens, maxOutputTokens,
     repositoryUrl: customRepository ?? 'https://github.com/bestagentkits/cloud-harness-mcp.git',
     repositoryRef: env.AGENT_RUNTIME_BENCHMARK_REPOSITORY_REF ?? (customRepository ? undefined : 'test-fixture-v1'),
     out: env.AGENT_RUNTIME_BENCHMARK_OUT || undefined
@@ -122,9 +135,36 @@ class McpTools {
     }));
   }
 
-  /** Calls one tool and returns its `data`, or throws with the tool's error code and message. */
+  #nextCallAt = 0;
+
+  /**
+   * Spaces calls under the API's per-principal request window (120 per minute, rejected requests
+   * included), so polling never starves the calls that drive a scenario.
+   */
+  async #pace(): Promise<void> {
+    const now = Date.now();
+    const wait = this.#nextCallAt - now;
+    this.#nextCallAt = Math.max(now, this.#nextCallAt) + MIN_CALL_INTERVAL_MS;
+    if (wait > 0) await sleep(wait);
+  }
+
+  /**
+   * Calls one tool and returns its `data`, or throws with the tool's error code and message. A
+   * request the API refused with `rate_limited` never reached a tool, so it is sent again once the
+   * window has room; every other failure is thrown.
+   */
   async call<T>(name: string, args: Record<string, unknown>): Promise<T> {
-    const result = await this.#client.callTool({ name, arguments: args });
+    let result: Awaited<ReturnType<Client['callTool']>>;
+    for (let attempt = 1; ; attempt += 1) {
+      await this.#pace();
+      try {
+        result = await this.#client.callTool({ name, arguments: args });
+        break;
+      } catch (error) {
+        if (attempt >= RATE_LIMIT_ATTEMPTS || !/rate_limited/u.test(String(error))) throw error;
+        await sleep(RATE_LIMIT_BACKOFF_MS);
+      }
+    }
     const structured = result.structuredContent as { ok?: unknown; data?: unknown; message?: unknown; error?: { code?: unknown } } | undefined;
     if (result.isError || structured?.ok !== true) {
       throw new Error(`${name} failed: ${String(structured?.error?.code ?? 'ERROR')} ${String(structured?.message ?? '')}`.trim());
@@ -148,6 +188,9 @@ type AgentStatus = {
   usage: { inputTokens: number; outputTokens: number; costMicros: number };
   session?: { persisted: boolean; continuable: boolean; messages: number; bytes: number };
   continuedFrom?: string | null;
+  /** Present for an agent on a non-default engine. */
+  runtime?: string;
+  run?: { resumable: boolean };
 };
 type LogEvent = { timestamp: string; type: string; content: string };
 type SpendWindow = { scope: string; period: string; estimatedSettledMicros: number; estimatedReservedMicros: number; estimatedUnreconciledMicros: number };
@@ -159,6 +202,8 @@ type SpendWindow = { scope: string; period: string; estimatedSettledMicros: numb
 export interface LiveAgentSample {
   agentId: string;
   role: 'task' | 'follow-up' | 'killed' | 'restart';
+  /** The engine `agent_status` reports for the agent. */
+  runtime: string;
   status: string;
   terminalReason: string | null;
   /** createdAt to startedAt: admission, lease and the real launcher until the container runs. */
@@ -304,6 +349,9 @@ class LiveDriver {
     const workspaceId = this.workspaceId;
     await this.#tools.call('files_delete', { workspaceId, path: 'CHANGELOG.md' }).catch(() => undefined);
     for (const [path, content] of Object.entries(fixture.workspace)) {
+      // files_write does not create parent directories; files_mkdir is idempotent.
+      const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+      if (parent) await this.#tools.call('files_mkdir', { workspaceId, path: parent });
       await this.#tools.call('files_write', { workspaceId, path, content });
     }
   }
@@ -319,12 +367,13 @@ class LiveDriver {
       workspaceId: this.workspaceId,
       prompt,
       idempotencyKey: `agent-runtime-bench-${randomUUID()}`,
-      ...(continueFrom ? { continueFrom } : { profileId: this.config.profileId }),
+      ...(continueFrom ? { continueFrom } : { profileId: this.config.profileId, ...runtime.spawnOptions }),
       proxyOperations: tools,
       ttlSeconds: this.config.ttlSeconds,
       maxCostMicros: this.config.agentCapMicros,
-      repositoryContext: 'none',
-      ...runtime.spawnOptions
+      maxInputTokens: this.config.maxInputTokens,
+      maxOutputTokens: this.config.maxOutputTokens,
+      repositoryContext: 'none'
     });
     if (!AGENT_ID.test(spawned.agentId)) throw new Error('agent_spawn returned an invalid agent id');
     this.#spawned.add(spawned.agentId);
@@ -360,7 +409,7 @@ class LiveDriver {
       }
       if (Date.now() > deadline) throw new Error(`agent ${agentId} did not reach a terminal status`);
       if (onPoll && !acted) acted = await onPoll();
-      await new Promise((resolve) => setTimeout(resolve, acted ? POLL_MS : POLL_MS / 4));
+      await sleep(acted ? POLL_MS : POLL_MS / 4);
     }
   }
 
@@ -374,7 +423,7 @@ class LiveDriver {
       }
     }
     return {
-      agentId, role, status: status.status, terminalReason: status.terminalReason,
+      agentId, role, runtime: status.runtime ?? 'pi-coding', status: status.status, terminalReason: status.terminalReason,
       coldStartMs: elapsed(status.createdAt, status.startedAt),
       wallMs: elapsed(status.createdAt, status.terminalAt),
       firstEventMs: elapsed(status.createdAt, events[0]?.timestamp),
@@ -385,18 +434,27 @@ class LiveDriver {
     };
   }
 
-  /** Kills the agent's container once its events show a completed mutation; true once killed. */
-  async killAfterFirstMutation(agentId: string): Promise<boolean> {
+  /**
+   * Kills the agent's container once its events show a completed mutation. `missed` means the
+   * container had already exited (the agent finished first), so the run is recorded as not killed.
+   */
+  async killAfterFirstMutation(agentId: string): Promise<'waiting' | 'killed' | 'missed'> {
     const applied = (await this.logs(agentId)).some((event) => {
       const parsed = parseEvent(event);
       return parsed?.kind === 'tool' && parsed.phase === 'ended' && parsed.isError === false && parsed.name !== undefined && MUTATIONS.has(parsed.name);
     });
-    if (!applied) return false;
+    if (!applied) return 'waiting';
     const { stdout } = await execFileAsync('docker', ['ps', '-q', '--filter', 'label=cloud-harness.agent-container=true', '--filter', `label=cloud-harness.agent=${agentId}`], { timeout: 15_000 });
     const containers = stdout.split(/\s+/u).filter(Boolean);
+    if (containers.length === 0) return 'missed';
     if (containers.length !== 1) throw new Error(`expected exactly one container for ${agentId}, found ${containers.length}`);
-    await execFileAsync('docker', ['kill', containers[0]!], { timeout: 15_000 });
-    return true;
+    try {
+      await execFileAsync('docker', ['kill', containers[0]!], { timeout: 15_000 });
+    } catch (error) {
+      if (/is not running|No such container/u.test(String(error))) return 'missed';
+      throw error;
+    }
+    return 'killed';
   }
 }
 
@@ -428,9 +486,9 @@ async function runScenario(driver: LiveDriver, runtimeId: string, scenario: Live
   const killedId = await driver.spawn(runtimeId, spec.prompt, spec.tools);
   let killedAt: number | null = null;
   const killedStatus = await driver.untilTerminal(killedId, async () => {
-    const done = await driver.killAfterFirstMutation(killedId);
-    if (done) killedAt = Date.now();
-    return done;
+    const outcome = await driver.killAfterFirstMutation(killedId);
+    if (outcome === 'killed') killedAt = Date.now();
+    return outcome !== 'waiting';
   });
   const killed = await driver.sample(killedId, 'killed', killedStatus);
   const restartId = await driver.spawn(runtimeId, spec.prompt, spec.tools, continues ? killedId : undefined);
@@ -442,6 +500,8 @@ async function runScenario(driver: LiveDriver, runtimeId: string, scenario: Live
       killDelivered: killedAt !== null,
       killedState: killed.status,
       reportedSuccess: killed.status === 'SUCCEEDED',
+      outcomeUnknown: killedStatus.outcomeUnknown,
+      runResumable: killedStatus.run?.resumable ?? null,
       restartState: restart.status,
       restartContinued: restart.continuedFrom === killedId,
       // Mutating tools the killed run completed that the restart completed again (observational).
@@ -497,11 +557,9 @@ export async function runLiveBenchmark(env: NodeJS.ProcessEnv): Promise<LiveBenc
           try {
             runs.push(await runScenario(driver, runtime, scenario, repetition));
           } catch (error) {
-            if (error instanceof CostCapExceeded) {
-              aborted = error.message;
-              break matrix;
-            }
-            throw error;
+            // Stop the matrix but keep the runs measured so far; the report names the reason.
+            aborted = error instanceof CostCapExceeded ? error.message : `${runtime} ${scenario} #${repetition}: ${error instanceof Error ? error.message : String(error)}`;
+            break matrix;
           }
         }
       }
