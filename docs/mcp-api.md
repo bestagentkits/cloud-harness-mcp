@@ -851,7 +851,8 @@ and
   `title` with `summary` set together; it accepts an `idempotencyKey`) and
   `check_run_update` moves an existing `checkRunId` forward, both needing the App's
   `checks` write permission; `commit_status_get` returns the combined
-  status and `check_runs_list` the latest check runs for a SHA; `pr_reviews` returns
+  status and `check_runs_list` the latest check runs for a SHA, each with the
+  `externalId` it was created with (`null` when it has none); `pr_reviews` returns
   every review plus each reviewer's latest verdict (`latestByReviewer`,
   `changesRequestedBy`, `approvedBy`; a later `COMMENTED` review does not clear an
   earlier verdict); `ref_get` reads a fully qualified ref and reports `exists: false`
