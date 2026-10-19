@@ -144,6 +144,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     'AGENT_GLOBAL_SESSION_BYTES',
     'AGENT_PRINCIPAL_SESSION_BYTES',
     'AGENT_WORKSPACE_SESSION_BYTES',
+    'AGENT_DURABLE_RUNTIME_ENABLED',
+    'AGENT_DURABLE_MAX_LINEAGE_BYTES',
     'AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE'
   ].some((name) => process.env[name] !== undefined);
   const config = RunnerConfigSchema.parse({
@@ -224,6 +226,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
       gatewayUrl: process.env.AGENT_GATEWAY_URL,
       profiles: agentProfiles(process.env.AGENT_PROFILES_JSON, process.env.AGENT_PROFILES_FILE),
       sessionPersistenceEnabled: process.env.AGENT_SESSION_PERSISTENCE_ENABLED,
+      durableRuntimeEnabled: process.env.AGENT_DURABLE_RUNTIME_ENABLED,
       limits: {
         globalActive: process.env.AGENT_GLOBAL_ACTIVE,
         principalActive: process.env.AGENT_PRINCIPAL_ACTIVE,
@@ -255,6 +258,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
         globalSessionBytes: process.env.AGENT_GLOBAL_SESSION_BYTES,
         principalSessionBytes: process.env.AGENT_PRINCIPAL_SESSION_BYTES,
         workspaceSessionBytes: process.env.AGENT_WORKSPACE_SESSION_BYTES,
+        maxDurableLineageBytes: process.env.AGENT_DURABLE_MAX_LINEAGE_BYTES,
         maxReceiptBytesPerLineage: process.env.AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE
       }
     } : undefined

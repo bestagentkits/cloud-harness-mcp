@@ -1,5 +1,5 @@
 import { AgentWorker } from './agent-worker.js';
-import { EngineRouter, type EngineWorker } from './engine-selection.js';
+import { durableLoadFailure, EngineRouter, type EngineWorker } from './engine-selection.js';
 import { InputRecordQueue, JsonlWriter, ProtocolError } from './jsonl.js';
 import { BoundedOutput, OutputLimitError } from './output.js';
 import { createPiSessionFactory } from './pi-session.js';
@@ -29,8 +29,8 @@ async function loadDurableEngine(start: StartRecord): Promise<EngineWorker> {
 const worker = new EngineRouter(
   new AgentWorker(output, createPiSessionFactory(gatewayBaseUrl)),
   loadDurableEngine,
-  async () => {
-    if (!output.terminalWritten) await output.terminal('FAILED', ZERO_USAGE, 'durable agent runtime is unavailable');
+  async (error) => {
+    if (!output.terminalWritten) await output.terminal('FAILED', ZERO_USAGE, durableLoadFailure(error));
   }
 );
 let inputClosed = false;

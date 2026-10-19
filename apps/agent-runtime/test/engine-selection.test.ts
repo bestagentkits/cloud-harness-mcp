@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { EngineRouter, type EngineWorker } from '../src/engine-selection.js';
+import { durableLoadFailure, EngineRouter, type EngineWorker } from '../src/engine-selection.js';
 import { ProtocolError } from '../src/jsonl.js';
 import type { InputRecord } from '../src/protocol-schemas.js';
 import { createStartRecord } from './helpers.js';
@@ -86,5 +86,16 @@ describe('engine selection', () => {
     await router.completion;
     expect(onFailure).toHaveBeenCalledTimes(1);
     expect(() => router.receive(message)).toThrow(ProtocolError);
+  });
+});
+
+describe('durable engine load failure', () => {
+  it('tells the operator to rebuild the image when the engine is not installed, without the module path', () => {
+    const missing = Object.assign(new Error("Cannot find package '/app/node_modules/@cloud-harness/agent-runtime-durable'"), { code: 'ERR_MODULE_NOT_FOUND' });
+    const message = durableLoadFailure(missing);
+    expect(message).toContain('INCLUDE_DURABLE_RUNTIME=true');
+    expect(message).not.toContain('/app');
+    expect(durableLoadFailure(new Error('boom'))).toBe('durable agent runtime is unavailable');
+    expect(durableLoadFailure(undefined)).toBe('durable agent runtime is unavailable');
   });
 });

@@ -360,7 +360,18 @@ export const AgentSessionStatusSchema = z.object({
   bytes: z.number().int().nonnegative()
 }).strict();
 
-/** Whether the run itself can resume in place. Always false for the pi-coding runtime. */
+/**
+ * The agent engine. `pi-coding` is the default; `pi-durable` is an opt-in engine whose session
+ * store lives in the runner, so a continuation resumes the work its predecessor left unfinished.
+ */
+export const AgentRuntimeKindSchema = z.enum(['pi-coding', 'pi-durable']);
+export type AgentRuntimeKind = z.infer<typeof AgentRuntimeKindSchema>;
+
+/**
+ * Whether a continuation would resume unfinished work. Always false for the pi-coding runtime; for
+ * pi-durable it is true when the agent ended, other than by cancellation, with unfinished tasks in
+ * its session store. Nothing resumes on its own: the owner continues the agent explicitly.
+ */
 export const AgentRunStatusSchema = z.object({
   resumable: z.boolean()
 }).strict();
@@ -387,7 +398,9 @@ export const AgentLiveStatusDataSchema = z.object({
   // Present only for agents spawned with session persistence on.
   session: AgentSessionStatusSchema.optional(),
   run: AgentRunStatusSchema.optional(),
-  continuedFrom: AgentIdSchema.nullable().optional()
+  continuedFrom: AgentIdSchema.nullable().optional(),
+  // Present only for an agent on a runtime other than the default pi-coding engine.
+  runtime: AgentRuntimeKindSchema.optional()
 }).strict();
 
 export const AgentCompactedStatusDataSchema = z.object({
