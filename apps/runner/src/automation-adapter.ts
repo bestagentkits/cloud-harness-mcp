@@ -200,11 +200,40 @@ export const ANY_INDEX_KEY = '';
  * rules; the adapter's `matches` decides.
  */
 export function ruleIndexKeys(match: AutomationRuleMatch): { scope: string; trigger: string } {
-  if (match.provider === 'linear') return { scope: (match.teamKey ?? ANY_INDEX_KEY).toLowerCase(), trigger: (match.label ?? match.toState ?? ANY_INDEX_KEY).toLowerCase() };
-  // One Jira update can add several labels and move the status, so only the project narrows the candidates.
+  // One Linear or Jira update can add several labels and move the state, and one custom event can list
+  // several added labels, so for those providers only the scope narrows the candidates.
+  if (match.provider === 'linear') return { scope: (match.teamKey ?? ANY_INDEX_KEY).toLowerCase(), trigger: ANY_INDEX_KEY };
   if (match.provider === 'jira') return { scope: match.projectKey.toLowerCase(), trigger: ANY_INDEX_KEY };
-  if (match.provider === 'custom') return { scope: match.event.toLowerCase(), trigger: (match.label ?? ANY_INDEX_KEY).toLowerCase() };
+  if (match.provider === 'custom') return { scope: match.event.toLowerCase(), trigger: ANY_INDEX_KEY };
   return { scope: match.repository.toLowerCase(), trigger: match.label.toLowerCase() };
+}
+
+/** Longest `extras.addedLabels` value; a flat extras value is bounded to 200 characters. */
+const ADDED_LABELS_MAX_CHARS = 200;
+
+/**
+ * The labels an event added, packed for `extras.addedLabels`: in order, deduplicated, as many as fit,
+ * joined by `separator`. A label containing the separator would split in two, so it is skipped. The
+ * separator must pass the single-line extras check (not CR, LF or NUL): a space for Jira, whose labels
+ * hold no whitespace, and a tab for providers whose labels may contain spaces.
+ */
+export function packAddedLabels(labels: readonly string[], separator: string): { labels: string[]; extras: { addedLabels: string } | undefined } {
+  const kept: string[] = [];
+  let used = 0;
+  for (const name of labels) {
+    if (name === '' || name.includes(separator) || kept.includes(name)) continue;
+    const cost = name.length + (kept.length > 0 ? separator.length : 0);
+    if (used + cost > ADDED_LABELS_MAX_CHARS) break;
+    used += cost;
+    kept.push(name);
+  }
+  return { labels: kept, extras: kept.length === 0 ? undefined : { addedLabels: kept.join(separator) } };
+}
+
+/** The labels packed by `packAddedLabels`, or the event's single `label` when it carries no list. */
+export function eventAddedLabels(event: NormalizedAutomationEvent, separator: string): string[] {
+  const listed = event.extras?.addedLabels;
+  return typeof listed === 'string' ? listed.split(separator).filter(Boolean) : event.label ? [event.label] : [];
 }
 
 export function eventIndexKeys(event: NormalizedAutomationEvent): { scope: string; trigger: string } {

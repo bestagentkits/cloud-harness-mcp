@@ -2,6 +2,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { AUTOMATION_LIMITS, type AutomationRuleMatch } from '@cloud-harness/contracts';
 import {
   boundedText,
+  eventAddedLabels,
+  packAddedLabels,
   record,
   rejectActor,
   type AutomationEventActor,
@@ -29,6 +31,11 @@ const TEAM_KEY = /^[A-Za-z0-9_]{1,16}$/u;
 const IDENTIFIER = /^[A-Za-z0-9_]{1,16}-\d{1,9}$/u;
 const SINGLE_LINE = /^[^\0\r\n]+$/u;
 const MAX_LABELS = 250;
+/**
+ * Linear label names may contain spaces, so `extras.addedLabels` joins them with a tab. The extras
+ * check allows a tab (only CR, LF and NUL are refused); a label that itself contains one is skipped.
+ */
+const ADDED_LABELS_SEPARATOR = '\t';
 const MAX_COMMENT_CHARS = 60_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -90,9 +97,10 @@ function linearActor(value: unknown): AutomationEventActor | undefined {
  * can carry a transition; everything else, and an issue change that is neither a label added nor a
  * state change, is `ignored`. An issue with a missing or malformed field is `quarantined`.
  *
- * One delivery yields one event. When a single change adds several labels, the first in the issue's
- * `labelIds` order is the event's label; when it also changes the state, the label wins. Linear's
- * UI adds one label at a time, so this only matters for API and bulk edits.
+ * One delivery yields one event that keeps every transition. `label` is the first label added and
+ * `extras.addedLabels` lists all of them (as many as fit), and a state change makes it a
+ * `state_changed` event that still carries the labels. `matchLinearRule` checks the added labels and
+ * the state separately, so a label rule and a state rule can both fire from one update.
  */
 export function normalizeLinearEvent(providerEvent: string, body: Buffer): AutomationNormalization {
   if (providerEvent !== 'Issue') return { kind: 'ignored', reason: 'unsupported_event' };
@@ -130,35 +138,46 @@ export function normalizeLinearEvent(providerEvent: string, body: Buffer): Autom
   // A created issue gained all its labels; an update only touched labels when `updatedFrom` has them.
   const previousLabels = payload.action === 'create' ? [] : updatedFrom.labelIds === undefined ? undefined : idList(updatedFrom.labelIds) ?? null;
   if (previousLabels === null) return { kind: 'quarantined', reason: 'invalid_labels' };
-  if (previousLabels) {
-    const added = addedLabel(data, previousLabels);
-    if (added === 'invalid') return { kind: 'quarantined', reason: 'invalid_labels' };
-    if (added) return { kind: 'event', event: { ...base, eventType: 'linear.issue.label_added', label: added } };
-  }
+  const labelNames = previousLabels ? addedLabelNames(data, previousLabels) : [];
+  if (labelNames === 'invalid') return { kind: 'quarantined', reason: 'invalid_labels' };
+  const added = packAddedLabels(labelNames, ADDED_LABELS_SEPARATOR);
 
+  let toState: string | undefined;
   const previousState = updatedFrom.stateId;
   if (payload.action === 'update' && previousState !== undefined) {
     const stateName = record(data.state)?.name;
     if (!line(previousState, 100) || !line(data.stateId, 100) || !line(stateName, 100)) return { kind: 'quarantined', reason: 'invalid_state' };
-    if (previousState !== data.stateId) return { kind: 'event', event: { ...base, eventType: 'linear.issue.state_changed', toState: stateName } };
+    if (previousState !== data.stateId) toState = stateName;
   }
-  return { kind: 'ignored', reason: 'no_transition' };
+  if (toState === undefined && added.labels.length === 0) return { kind: 'ignored', reason: 'no_transition' };
+
+  return {
+    kind: 'event',
+    event: {
+      ...base,
+      eventType: toState === undefined ? 'linear.issue.label_added' : 'linear.issue.state_changed',
+      ...(added.labels[0] === undefined ? {} : { label: added.labels[0] }),
+      ...(toState === undefined ? {} : { toState }),
+      extras: { issueId: data.id, ...added.extras }
+    }
+  };
 }
 
-/** The first label present now that was absent before; `undefined` when none was added. */
-function addedLabel(data: Record<string, unknown>, previous: readonly string[]): string | 'invalid' | undefined {
+/** Names of the labels present now that were absent before, in the issue's `labelIds` order. */
+function addedLabelNames(data: Record<string, unknown>, previous: readonly string[]): string[] | 'invalid' {
   const labels = issueLabels(data);
   const current = data.labelIds === undefined ? labels?.map((entry) => entry.id) : idList(data.labelIds);
   if (!labels || !current) return 'invalid';
   const before = new Set(previous);
   const names = new Map(labels.map((entry) => [entry.id, entry.name]));
+  const added: string[] = [];
   for (const id of current) {
     if (before.has(id)) continue;
     const name = names.get(id);
     if (name === undefined) return 'invalid';
-    return name;
+    added.push(name);
   }
-  return undefined;
+  return added;
 }
 
 /** Evaluates one Linear rule: team, then the label or state trigger, then the actor filters. */
@@ -170,8 +189,10 @@ export function matchLinearRule(
   if (match.provider !== 'linear' || event.provider !== 'linear') return { matched: false, reason: 'provider_mismatch' };
   if (match.teamKey !== undefined && match.teamKey.toLowerCase() !== event.scope.toLowerCase()) return { matched: false, reason: 'team_mismatch' };
   if (match.trigger === 'label_added') {
-    if (event.eventType !== 'linear.issue.label_added') return { matched: false, reason: 'event_not_selected' };
-    if ((match.label ?? '').toLowerCase() !== (event.label ?? '').toLowerCase()) return { matched: false, reason: 'label_mismatch' };
+    const wanted = (match.label ?? '').toLowerCase();
+    const added = eventAddedLabels(event, ADDED_LABELS_SEPARATOR);
+    if (added.length === 0) return { matched: false, reason: 'event_not_selected' };
+    if (!added.some((name) => name.toLowerCase() === wanted)) return { matched: false, reason: 'label_mismatch' };
   } else {
     if (event.eventType !== 'linear.issue.state_changed') return { matched: false, reason: 'event_not_selected' };
     if (match.toState !== undefined && match.toState.toLowerCase() !== (event.toState ?? '').toLowerCase()) return { matched: false, reason: 'state_mismatch' };

@@ -174,7 +174,7 @@ export const AutomationCustomEnvelopeSchema = z.object({
   }).strict(),
   /** One label added. Mutually exclusive with `labelsAdded`. */
   label: label.optional(),
-  /** Labels added; the first one is the event's label, so send one event per label to trigger several. */
+  /** Labels added; the first one is the event's label, and a label rule matches any of them. */
   labelsAdded: z.array(label).min(1).max(20).optional(),
   actor: z.object({
     login: singleLine(254),
