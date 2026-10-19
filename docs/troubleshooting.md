@@ -338,6 +338,9 @@ rest. During the recoverable grace `workspace_recover` rebuilds the executor
 once the cause in the message (for example a full disk or a missing executor
 image) is fixed; after it, auto-close treats the workspace like any expired
 one. A workspace whose checkout is already gone from disk is closed instead.
+The same warning with a reason starting `leftover container` names a managed
+container Docker would not remove; startup skips it and retries at the next
+start. Inspect it with the `docker ps` filter above before removing it by name.
 
 Prefer `workspace_close`. If manual recovery is unavoidable, match the opaque
 workspace ID in SQLite, the Docker label, and the exact job directory first.

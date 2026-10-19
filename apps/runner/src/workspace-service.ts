@@ -617,7 +617,7 @@ export class WorkspaceService {
       }
     }
     await this.toolkitCacheManager.reconcileStartup().catch(() => undefined);
-    await this.reconcileContainers();
+    await this.reconcileContainers(failures);
     // After leftover containers are gone, so no builder can still be writing below the packages root.
     if (this.config.packagesEnabled === true) await this.packages.reconcileStartup();
     await this.reconcileJobDirectories();
@@ -731,7 +731,11 @@ export class WorkspaceService {
     await this.agentManager?.stop();
     await this.packageService?.shutdown();
   }
-  private async reconcileContainers(): Promise<void> {
+  /**
+   * Removes managed containers no active workspace owns. One that Docker will not remove is reported and left
+   * for the next startup (a fixed-name executor rebuild also removes it first), so it never aborts this one.
+   */
+  private async reconcileContainers(failures: StartupReconcileFailure[]): Promise<void> {
     const managed = await runDocker([
       'ps', '-a', '--filter', 'label=cloud-harness.managed=true',
       '--filter', `label=cloud-harness.instance=${this.instanceId}`,
@@ -742,7 +746,12 @@ export class WorkspaceService {
       const [name, workspaceId] = line.split('\t');
       if (!name) continue;
       const record = workspaceId ? this.store.byId(workspaceId) : undefined;
-      if (!record || !activeStatus.has(record.status) || record.containerName !== name) await removeContainer(name);
+      if (record && activeStatus.has(record.status) && record.containerName === name) continue;
+      try {
+        await removeContainer(name);
+      } catch (error) {
+        failures.push({ workspaceId: workspaceId || name, reason: `leftover container ${name} could not be removed: ${error instanceof Error ? error.message : String(error)}` });
+      }
     }
 
     const helpers = await runDocker([
