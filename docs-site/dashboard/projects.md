@@ -12,3 +12,4 @@ The Projects view displays distinct repository origins that have been opened by 
 - **Repository URLs:** See clean HTTPS repository URLs cloned by your agent sessions.
 - **Active Worktrees:** Inspect multiple concurrent branches or workspaces opened against the same repository.
 - **Git State:** Quick links to review recent commits and workspace history.
+- **Agent policies:** Narrow the global agent policy for one project from the project page. See [Agent Policies](/dashboard/agent-policies).

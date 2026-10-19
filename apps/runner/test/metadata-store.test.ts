@@ -75,9 +75,12 @@ describe('MetadataStore', () => {
     const secret = store.secrets.create(owner, environment.id, 'API_TOKEN', 'value', 0)!;
     const auditBefore = store.listAudit(owner, 100);
 
+    expect(store.activeProjectIds(owner)).toEqual(new Set([project.id]));
+    expect(store.activeProjectIds('someone-else')).toEqual(new Set());
     const deleted = store.deleteProject(owner, project.id, project.generation)!;
     expect(deleted).toMatchObject({ id: project.id, state: 'DELETED', generation: 2 });
     expect(store.listProjects(owner)).toEqual([]);
+    expect(store.activeProjectIds(owner)).toEqual(new Set());
     expect(store.listEnvironments(owner, project.id)).toEqual([]);
     expect(store.listSecretReferences(owner, environment.id)).toEqual([]);
     expect(store.database.prepare('SELECT 1 FROM projects WHERE id = ?').get(project.id)).toBeUndefined();

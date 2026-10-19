@@ -67,6 +67,12 @@ export class MetadataStore {
     return (rows as Parameters<typeof projectView>[0][]).map(projectView);
   }
 
+  /** The ids of the principal's active projects, without loading their rows. */
+  activeProjectIds(principalId: string): Set<string> {
+    const rows = this.database.prepare("SELECT id FROM projects WHERE principal_id = ? AND state = 'ACTIVE'").all(principalId) as Array<{ id: string }>;
+    return new Set(rows.map((row) => row.id));
+  }
+
   createProject(principalId: string, name: string, expectedGeneration: 0): ProjectView | undefined {
     if (expectedGeneration !== 0) return undefined;
     return transaction(this.database, () => {

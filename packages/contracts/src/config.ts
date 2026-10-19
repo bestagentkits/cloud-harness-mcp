@@ -379,6 +379,8 @@ export const RunnerConfigSchema = z.object({
   automationsEnabled: enabled,
   /** Instance-wide ceiling on automation workflows holding a workspace at once. */
   automationsMaxConcurrentWorkflows: positiveBoundedInteger(16, 2),
+  /** Enables the owner-authored agent execution policies and the gate simulation. Off by default. */
+  agentPoliciesEnabled: enabled,
   /** Durable agent run traces recorded by the runner. Off by default; the schema is created either way. */
   agentTraces: AgentTracesConfigSchema
 }).superRefine((config, context) => {

@@ -94,3 +94,8 @@ The panel is read-only, with the reason shown, when no integration is configured
 ## TypeSafe integration
 
 The last panel stores your write-only TypeSafe API key and shows whether it is configured, whether the operator left TypeSafe egress on, and the endpoint and model in use. The key is per owner, unlike the instance-wide values above. See [TypeSafe Integration](/dashboard/typesafe).
+
+## Agent policies
+
+**Agent policies** in the page header opens the global execution policy for coding
+agents. See [Agent Policies](/dashboard/agent-policies).

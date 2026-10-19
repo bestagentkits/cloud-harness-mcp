@@ -92,6 +92,7 @@ import {
 } from './dashboard-render.js';
 import { mountTerminalPane } from './dashboard-terminal.js';
 import { createModelWizard, createSpendPanel, renderModelsPage, verificationLabel } from './dashboard-models.js';
+import { createAgentPolicyEditor } from './dashboard-policies.js';
 import { createTracesView, tracesAvailable } from './dashboard-traces.js';
 import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
@@ -1366,6 +1367,7 @@ export function initializeDashboard() {
     artifacts: loadArtifacts,
     'api-keys': loadApiKeys,
     settings: loadSettings,
+    'agent-policies': () => loadAgentPolicies(),
     profile: loadProfile
   };
   let loadQueue = Promise.resolve();
@@ -1389,6 +1391,7 @@ export function initializeDashboard() {
     try {
       const pathname = location.pathname;
       const pathMatch = pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(summary|agents|runtime|terminal|files|git|automation|deploy|artifacts|activity))?$/);
+      const projectPolicyMatch = pathname.match(/^\/dashboard\/projects\/(prj_[A-Za-z0-9_-]{20,80})\/agent-policies$/);
       const projectMatch = pathname.match(/^\/dashboard\/projects\/(prj_[A-Za-z0-9_-]{20,80})$/);
       const knowledgeMatch = pathname.match(/^\/dashboard\/knowledge\/(kn_[A-Za-z0-9_-]{10,80})$/);
       const mcpServerMatch = pathname.match(/^\/dashboard\/mcp-servers\/(mcps_[A-Za-z0-9_-]{20,80})$/);
@@ -1399,6 +1402,7 @@ export function initializeDashboard() {
       if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
       else if (pathMatch?.[2] === 'runtime') await loadRuntime(pathMatch[1]);
       else if (pathMatch) await loadWorkspace(pathMatch[1], pathMatch[2] ?? 'summary');
+      else if (projectPolicyMatch) await loadAgentPolicies(projectPolicyMatch[1]);
       else if (projectMatch) await loadProject(projectMatch[1]);
       else if (knowledgeMatch) await loadKnowledgeDetailView(knowledgeMatch[1]);
       else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
@@ -2062,6 +2066,7 @@ export function initializeDashboard() {
       return { ...environment, secrets: result.data.secrets, readiness: result.data.readiness };
     }));
     setTitle(project.name, 'Retained environments and write-only secret references.'); insertRendered(content, renderProjectDetail(project, environments));
+    setPageActions(`<a class="page-action-link" href="/dashboard/projects/${encodeURIComponent(project.id)}/agent-policies">Agent policies</a>`);
     bindProjectControls(project, environments);
   }
   function bindProjectControls(project, environments = []) {
@@ -2552,6 +2557,27 @@ export function initializeDashboard() {
     settingsTypesafe = typesafe;
     settingsReadiness = undefined;
     renderSettingsView();
+    setPageActions('<a class="page-action-link" href="/dashboard/settings/agent-policies">Agent policies</a>');
+  }
+  /**
+   * Settings > Agent policies without a project id, Project > Agent policies with one. The editor owns its
+   * own element, so its delegated listeners go away with the page instead of piling up on `content`.
+   */
+  async function loadAgentPolicies(projectId) {
+    selectNavigation(projectId ? 'projects' : 'agent-policies');
+    document.querySelector('#command-surface').hidden = true;
+    let projectNames = {};
+    if (projectId) {
+      const project = (await api('/projects')).data.projects.find((item) => item.id === projectId);
+      // A deleted project can still hold a policy; the page stays reachable so the owner can remove it.
+      setTitle(project ? `Agent policies: ${project.name}` : 'Agent policies', 'The project policy narrows the global execution policy for agents working on this project.');
+      setPageActions(`<a class="page-action-link" href="/dashboard/projects/${encodeURIComponent(projectId)}">Back to project</a>`);
+    } else {
+      projectNames = Object.fromEntries((await api('/projects')).data.projects.map((item) => [item.id, item.name]));
+    }
+    insertRendered(content, '<div id="agent-policy-root"></div>');
+    const root = content.querySelector('#agent-policy-root');
+    await createAgentPolicyEditor({ root, insert: insertRendered, api, announce, confirm: confirmAction, scope: projectId ? 'project' : 'global', projectId: projectId ?? null, projectNames }).load();
   }
   function renderSettingsView() {
     insertRendered(content, renderSettings(settingsPageData, settingsReadiness, settingsOAuth, settingsTypesafe));
