@@ -218,4 +218,40 @@ describe('AgentSession worker lifecycle', () => {
       requestId: request?.type === 'tool_request' ? request.requestId : 'missing'
     }));
   });
+
+  it('names each proxy request by its tool call ID so a redelivery is recognizable', async () => {
+    const emitted: OutputRecord[] = [];
+    const broker = new ProxyToolBroker((record) => emitted.push(record), createRedactor(), 64 * 1024);
+    const [definition] = broker.createDefinitions(['files_read']);
+    if (!definition) throw new Error('expected proxy tool definition');
+    const execution = definition.execute('toolu_01ABC', { path: 'a.txt' }, undefined, undefined, undefined as never);
+    expect(emitted[0]).toMatchObject({ type: 'tool_request', requestId: 'toolu_01ABC', toolCallId: 'toolu_01ABC' });
+    broker.acceptResult({ type: 'tool_result', requestId: 'toolu_01ABC', final: true, isError: false, content: [{ type: 'text', text: 'ok' }] });
+    await expect(execution).resolves.toMatchObject({ content: [{ type: 'text', text: 'ok' }] });
+  });
+
+  it('gives a repeated or empty tool call ID a distinct request ID that a replay reproduces', async () => {
+    const requestIds = (ctx: unknown, ids: string[]) => {
+      const emitted: OutputRecord[] = [];
+      const broker = new ProxyToolBroker((record) => emitted.push(record), createRedactor(), 64 * 1024);
+      const [definition] = broker.createDefinitions(['files_read']);
+      if (!definition) throw new Error('expected proxy tool definition');
+      for (const id of ids) void definition.execute(id, { path: 'a.txt' }, undefined, undefined, ctx as never).catch(() => undefined);
+      return emitted.flatMap((record) => record.type === 'tool_request' ? [record.requestId] : []);
+    };
+    const firstRun = requestIds(undefined, ['call_0', 'call_0', '', '']);
+    expect(firstRun[0]).toBe('call_0');
+    expect(new Set(firstRun).size).toBe(4);
+    for (const id of firstRun) expect(id).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u);
+
+    // A continuation whose replayed history already holds one result for `call_0` reissues the
+    // second use with the same request ID the first run gave it.
+    const history = { sessionManager: { getEntries: () => [
+      { type: 'message', message: { role: 'assistant', content: [] } },
+      { type: 'message', message: { role: 'toolResult', toolCallId: 'call_0' } }
+    ] } };
+    expect(requestIds(history, ['call_0'])).toEqual([firstRun[1]]);
+    // An unreadable session falls back to the first use rather than failing the call.
+    expect(requestIds({ sessionManager: { getEntries: () => { throw new Error('closed'); } } }, ['call_0'])).toEqual(['call_0']);
+  });
 });
