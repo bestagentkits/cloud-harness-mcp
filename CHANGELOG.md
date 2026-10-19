@@ -4,6 +4,30 @@
 ### Bug Fixes
 
 * **automations:** harden webhook ingress fairness, admission and recovery ([8390e67](https://github.com/bestagentkits/cloud-harness-mcp/commit/8390e67cfeda44e260f602dc20dfce71f42342f3))
+* **dashboard:** keep trace list cursors and filters stable ([d903ade](https://github.com/bestagentkits/cloud-harness-mcp/commit/d903ade39c397eb0b9a9c496dc341ed63e5ee7a8)), closes [#394](https://github.com/bestagentkits/cloud-harness-mcp/issues/394)
+* **runner:** confine a failed executor restart at startup to its workspace ([8d1b878](https://github.com/bestagentkits/cloud-harness-mcp/commit/8d1b8788c7825ea4239d310a8c3a0b98baec0ccb)), closes [#428](https://github.com/bestagentkits/cloud-harness-mcp/issues/428)
+* **runner:** log startup reconcile failures and close workspaces without a checkout ([288efdc](https://github.com/bestagentkits/cloud-harness-mcp/commit/288efdc8a6e94597f75bcdfcafb7810766eed4b4))
+* **traces:** bound redaction cost and complete budget spans ([4407620](https://github.com/bestagentkits/cloud-harness-mcp/commit/44076206265602debf4cdf71e5a8becfd87a0d01)), closes [#394](https://github.com/bestagentkits/cloud-harness-mcp/issues/394)
+* **traces:** evict quota excess in batches and stop the purge on shutdown ([3668e01](https://github.com/bestagentkits/cloud-harness-mcp/commit/3668e012de47800f10ad5c2bb831ed87dfa461f8)), closes [#394](https://github.com/bestagentkits/cloud-harness-mcp/issues/394)
+* **workspaces:** keep multi-repository writes scoped to their repository ([f0fc6b8](https://github.com/bestagentkits/cloud-harness-mcp/commit/f0fc6b836d0d67f4aa3d448fb9f045328623e0ee))
+
+
+### Features
+
+* **agent-runtime:** report bounded turn outcome and error class ([6e46a54](https://github.com/bestagentkits/cloud-harness-mcp/commit/6e46a543ae7431d607e66eef63b4f5029836ab28))
+* **automations:** GitHub label webhooks start budgeted read-only agent workflows ([25e92e1](https://github.com/bestagentkits/cloud-harness-mcp/commit/25e92e15c504e002c943c221400b1234a626fc2f))
+* **contracts:** add webhook automation internal channel, limits and MCP event names ([10c0985](https://github.com/bestagentkits/cloud-harness-mcp/commit/10c09853b5d9d2a03a2eed64793eb7d0bb03784b))
+* **dashboard:** add a Traces page and agent trace waterfall ([b9f58aa](https://github.com/bestagentkits/cloud-harness-mcp/commit/b9f58aada363f8600fdb976514a54e58c816b263))
+* **dashboard:** Automations page for runs, rules, connections and deliveries ([69fd6e0](https://github.com/bestagentkits/cloud-harness-mcp/commit/69fd6e018d9829e8870cfc7aa5546e8261fc703e))
+* **traces:** record durable agent traces with owner-scoped read tools ([4b63b37](https://github.com/bestagentkits/cloud-harness-mcp/commit/4b63b37db12bb27b4868292ef2de54c1ded19c17))
+* **workspaces:** open one workspace with several repository checkouts ([367a46f](https://github.com/bestagentkits/cloud-harness-mcp/commit/367a46f0f2a9f6a8979b765ea8925ac727a5d3ef))
+
+# [0.66.0-beta.29](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.28...v0.66.0-beta.29) (2026-10-19)
+
+
+### Bug Fixes
+
+* **automations:** harden webhook ingress fairness, admission and recovery ([8390e67](https://github.com/bestagentkits/cloud-harness-mcp/commit/8390e67cfeda44e260f602dc20dfce71f42342f3))
 * **runner:** confine a failed executor restart at startup to its workspace ([8d1b878](https://github.com/bestagentkits/cloud-harness-mcp/commit/8d1b8788c7825ea4239d310a8c3a0b98baec0ccb)), closes [#428](https://github.com/bestagentkits/cloud-harness-mcp/issues/428)
 * **runner:** log startup reconcile failures and close workspaces without a checkout ([288efdc](https://github.com/bestagentkits/cloud-harness-mcp/commit/288efdc8a6e94597f75bcdfcafb7810766eed4b4))
 * **workspaces:** keep multi-repository writes scoped to their repository ([f0fc6b8](https://github.com/bestagentkits/cloud-harness-mcp/commit/f0fc6b836d0d67f4aa3d448fb9f045328623e0ee))
