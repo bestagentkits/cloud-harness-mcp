@@ -211,7 +211,9 @@ Posting is opt-in per rule. When it is on:
   triggered from a pull request, a **Cloud Harness** check run on the pull request's
   head commit shows the same progress and ends as success, failure, cancelled, or timed
   out. If the [GitHub App](/dashboard/github) lacks the **Checks** permission, the
-  check run is skipped and the comment carries on alone. Commenting needs issue write
+  check run is skipped and the comment carries on alone. If GitHub accepted the check
+  run but its id could not be read back, completion looks it up by the run id it carries
+  and completes it; a second check run is never created. Commenting needs issue write
   access on that repository (and pull request access for pull requests), and a private
   repository needs the App's repository access to open.
 - **Linear** and **Jira** keep one comment per run in the same way, posted with the
@@ -259,7 +261,10 @@ runs keep completing but stop posting their answer back.
   **Enable**/**Disable**, and **Delete**. Deleting a connection also removes its rules,
   deliveries, and runs; it is refused while one of its runs is still active,
   publishing, or closing its workspace, so cancel those runs and wait for them to end
-  first.
+  first. If closing a run's workspace keeps failing, the run stops trying an hour after
+  the longest workspace lifetime an operator can set (25 hours after it ended). By then
+  the workspace is past its hard deadline and the runner's own expiry and cleanup take
+  it from there, and the connection can be deleted.
 - **Deliveries** lists what each provider sent and what happened: processed, ignored,
   or quarantined, the outcome, and how many runs it started. Filter by **Quarantined
   (dead letter)** to see deliveries that verified but could not be read; fix the

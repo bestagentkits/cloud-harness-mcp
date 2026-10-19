@@ -9,6 +9,7 @@ import {
   AutomationsRunnerRequestSchema,
   CODING_PROXY_OPERATIONS,
   CodingPhaseSchema,
+  WORKSPACE_LIFECYCLE_BOUNDS,
   automationCodingProblem,
   automationMatchProvider,
   automationRuleProblem,
@@ -66,6 +67,15 @@ export type { AutomationOperationResult } from './automation-adapter.js';
 export const AUTOMATION_DELIVERIES_PER_MINUTE = 120;
 /** Backoff after a failed comment attempt; the attempt after the last entry is final. */
 export const AUTOMATION_PUBLISH_RETRY_DELAYS_MS = [30_000, 120_000, 300_000, 900_000] as const;
+/** Wait between attempts to close a finished run's workspace. */
+const CLEANUP_RETRY_MS = 30_000;
+/**
+ * How long after a run ends its cleanup keeps retrying `workspace_close`. The workspace was opened
+ * before the run ended, so by then it is past the longest hard deadline an operator can configure and
+ * the runner's reaper owns its close; the extra hour covers reaper passes. Releasing it then lets the
+ * run stop holding a concurrency slot, blocking its purge, and blocking its connection's deletion.
+ */
+export const AUTOMATION_CLEANUP_WINDOW_MS = WORKSPACE_LIFECYCLE_BOUNDS.wallTtlSeconds.max * 1_000 + 3_600_000;
 const TICK_INTERVAL_MS = 2_000;
 const PURGE_INTERVAL_MS = 3_600_000;
 const BATCH = 50;
@@ -1689,7 +1699,12 @@ export class AutomationService {
       this.database.prepare('UPDATE automation_workflows SET workspace_closed = 1, updated_at = ? WHERE id = ?').run(this.now(), row.id);
       return;
     }
-    this.database.prepare('UPDATE automation_workflows SET next_attempt_at = ? WHERE id = ?').run(this.now() + 30_000, row.id);
+    if (row.terminal_at !== null && this.now() - row.terminal_at >= AUTOMATION_CLEANUP_WINDOW_MS) {
+      this.log({ event: 'automation_cleanup_released', workflowId: row.id, code: bounded(closed.error?.code ?? 'UNKNOWN', 100) });
+      this.database.prepare('UPDATE automation_workflows SET workspace_closed = 1, updated_at = ? WHERE id = ?').run(this.now(), row.id);
+      return;
+    }
+    this.database.prepare('UPDATE automation_workflows SET next_attempt_at = ? WHERE id = ?').run(this.now() + CLEANUP_RETRY_MS, row.id);
   }
 
   private purge(): void {

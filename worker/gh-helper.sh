@@ -373,7 +373,7 @@ case "$action" in
     require_number "$limit" "Check run limit"
     cmd=(gh api -X GET "repos/{owner}/{repo}/commits/${sha}/check-runs" -f "per_page=$limit" -f "filter=latest")
     if [ -n "$check_name" ]; then cmd+=(-f "check_name=$check_name"); fi
-    exec "${cmd[@]}" --jq '{ totalCount: .total_count, checkRuns: [.check_runs[] | { id, name, status, conclusion, headSha: .head_sha, startedAt: .started_at, completedAt: .completed_at, detailsUrl: .details_url, url: .html_url, app: .app.slug }] }'
+    exec "${cmd[@]}" --jq '{ totalCount: .total_count, checkRuns: [.check_runs[] | { id, name, status, conclusion, headSha: .head_sha, startedAt: .started_at, completedAt: .completed_at, detailsUrl: .details_url, url: .html_url, app: .app.slug, externalId: .external_id }] }'
     ;;
   workflow_runs_list)
     limit="${1:-20}"

@@ -381,7 +381,13 @@ every non-GitHub connection on the Dashboard (and remove the matching provider
 webhooks). Deleting a connection removes its rules, deliveries, runs, and their
 transitions with it, and is refused with `CONFLICT` while any of its runs is
 queued, running, still publishing, or still closing its workspace: cancel those
-runs from their run pages and wait for cleanup first. A GitHub rule whose match
+runs from their run pages and wait for cleanup first. A run whose
+`workspace_close` keeps failing stops retrying 25 hours after it ended (the
+longest configurable wall TTL plus an hour), when the workspace is past its hard
+deadline and the runner reaper owns it; the runner logs
+`automation_cleanup_released` with the last error code, and the run then no
+longer blocks deletion
+([`apps/runner/src/automation-service.ts`](../apps/runner/src/automation-service.ts)). A GitHub rule whose match
 was saved with an explicit `"provider": "github"` also fails the older strict
 match schema; save it again without that field before rolling back.
 

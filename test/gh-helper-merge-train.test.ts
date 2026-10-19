@@ -53,6 +53,8 @@ case "$method $path" in
       name: (.name // "Cloud Harness: Triage"), status: (if .conclusion then "completed" else (.status // "in_progress") end),
       conclusion: (.conclusion // null), head_sha: (.head_sha // $sha), external_id: (.external_id // null),
       started_at: "2026-10-19T00:00:00Z", completed_at: null, html_url: "https://github.com/acme/widgets/runs/777" }' <<<"$body" | respond ;;
+  "GET repos/{owner}/{repo}/commits/"*/check-runs)
+    printf '%s' '{"total_count":1,"check_runs":[{"id":901,"name":"build","status":"in_progress","conclusion":null,"head_sha":"'"$STUB_HEAD_SHA"'","external_id":"wfl_1","started_at":"2026-10-19T00:00:00Z","completed_at":null,"details_url":null,"html_url":"https://github.com/acme/widgets/runs/901","app":{"slug":"harness"}}]}' | respond ;;
   "GET repos/{owner}/{repo}/commits/heads/main")
     printf '{"sha":"%s"}' "$STUB_HEAD_SHA" | respond ;;
   "GET repos/{owner}/{repo}/commits/"*)
@@ -238,7 +240,10 @@ describe.skipIf(process.platform === 'win32')('gh-helper merge-train actions', (
 
   it('lists the latest check runs for a SHA, optionally filtered by name', () => {
     const { run, calls } = workspace();
-    run(['check_runs_list', HEAD_SHA, '30', 'build']);
+    expect(run(['check_runs_list', HEAD_SHA, '30', 'build']).json()).toEqual({ totalCount: 1, checkRuns: [{
+      id: 901, name: 'build', status: 'in_progress', conclusion: null, headSha: HEAD_SHA, startedAt: '2026-10-19T00:00:00Z', completedAt: null,
+      detailsUrl: null, url: 'https://github.com/acme/widgets/runs/901', app: 'harness', externalId: 'wfl_1'
+    }] });
     expect(calls()[0]).toEqual(expect.arrayContaining([`repos/{owner}/{repo}/commits/${HEAD_SHA}/check-runs`, 'per_page=30', 'filter=latest', 'check_name=build']));
   });
 
