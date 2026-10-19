@@ -108,21 +108,24 @@ cleanup command on a shared Docker host.
 `npm run bench:agent-runtime` drives the real agent worker and Pi session
 in-process against a scripted model and an in-memory proxy tool executor, and
 prints p50/p95 timings, protocol bytes, tokens, tool effects, context size and
-session storage for five use cases. It measures the shipped one-shot runtime and
-the same worker with session persistence behind the real runner state, continuation
-and effect-receipt code. It needs no Docker, network or credentials, so it also
+session storage for five use cases. It measures the shipped one-shot runtime, the
+same worker with session persistence, and the opt-in durable engine, the last two
+behind the real runner state, continuation, effect-receipt and durable session
+store code. It needs no Docker, network or credentials, so it also
 runs inside `npm test`. `AGENT_RUNTIME_BENCHMARK_REPS` sets the repetitions
 (default 20) and `AGENT_RUNTIME_BENCHMARK_OUT` writes the JSON report.
 
 The live mode is opt-in (`RUN_AGENT_RUNTIME_BENCHMARK=live`) and never runs by
 default. It spawns real agents through the MCP endpoint of a local Compose stack
 on a real model profile, under a hard cumulative spend cap, and needs the local
-owner bearer and an active profile; its environment is documented and validated
+owner bearer and an active profile. The persisted and durable runtimes need the
+stack's session flags, and the durable one an agent image built with the durable
+engine. Its environment is documented and validated
 in [`live-driver.ts`](../test/benchmarks/agent-runtime/live-driver.ts). The
 scenarios, fixtures and result shape are owned by
 [`test/benchmarks/agent-runtime.bench.test.ts`](../test/benchmarks/agent-runtime.bench.test.ts);
 the decision it supports is
-[ADR 0005](adr/0005-agent-session-persistence.md).
+[ADR 0006](adr/0006-agent-session-persistence.md).
 
 ## Local service development
 

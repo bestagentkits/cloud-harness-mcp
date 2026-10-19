@@ -118,6 +118,9 @@ run at a time. The container therefore stays stateless, and a continuation of
 an interrupted durable run resumes its unfinished work. The engine is loaded,
 in the runner and in the agent image, only when the operator opts in
 ([operations](operations.md#durable-agent-engine)).
+[ADR 0006](adr/0006-agent-session-persistence.md) records why the coding runtime
+stays the default and both session persistence and the durable engine stay
+flag-gated opt-ins, with the measurements behind that decision.
 
 The gateway budget is conservative by design, so it never charges less than
 the provider bills. Each request reserves its worst case before it goes
