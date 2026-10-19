@@ -892,6 +892,13 @@ describe('contracts', () => {
       proxyOperations: ['files_read'],
       ownerId: 'public-identity-is-forbidden'
     })).toThrow();
+    // profileId may be omitted only by a continuation, which inherits its predecessor's profile.
+    expect(() => TOOL_SCHEMA_BY_NAME.agent_spawn.parse({
+      workspaceId, prompt: 'p', idempotencyKey: 'spawn-key-1234', proxyOperations: ['files_read']
+    })).toThrow(/profileId is required/);
+    expect(TOOL_SCHEMA_BY_NAME.agent_spawn.parse({
+      workspaceId, prompt: 'p', idempotencyKey: 'spawn-key-1234', proxyOperations: ['files_read'], continueFrom: agentId
+    })).not.toHaveProperty('profileId');
     expect(() => TOOL_SCHEMA_BY_NAME.agent_status.parse({ workspaceId, agentId })).not.toThrow();
     expect(() => TOOL_SCHEMA_BY_NAME.agent_status.parse({ workspaceId, idempotencyKey: 'spawn-key-1234' })).not.toThrow();
     expect(() => TOOL_SCHEMA_BY_NAME.agent_status.parse({ workspaceId, agentId, idempotencyKey: 'spawn-key-1234' })).toThrow();

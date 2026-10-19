@@ -1121,7 +1121,9 @@ const schemas = {
     ...workspace,
     prompt: boundedUtf8Text(131_072),
     idempotencyKey: IdempotencyKeySchema,
-    profileId,
+    // Required unless continueFrom is set; a continuation runs on its predecessor's profile.
+    profileId: profileId.optional()
+      .describe('Model profile to run on. Required unless continueFrom is set; a continuation inherits the profile of the agent it continues and refuses a different one.'),
     parentAgentId: AgentIdSchema.optional(),
     proxyOperations: uniqueProxyOperations,
     ttlSeconds: z.number().int().min(30).max(86_400).default(900),
@@ -1137,7 +1139,11 @@ const schemas = {
     // Optional, and without a default, so omitting it keeps the idempotency payload unchanged.
     continueFrom: AgentIdSchema.optional()
       .describe('A terminal agent of this workspace whose persisted session the new agent continues; needs session persistence on the instance. The new agent gets a new id, container, lease, and budget.')
-  }).strict(),
+  }).strict().superRefine((input, context) => {
+    if (input.profileId === undefined && input.continueFrom === undefined) {
+      context.addIssue({ code: 'custom', path: ['profileId'], message: 'profileId is required unless continueFrom is set' });
+    }
+  }),
   agent_status: agentLookup,
   agent_logs: z.object({
     ...workspace,
