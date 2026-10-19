@@ -367,12 +367,26 @@ runner publishes":
   sends from: the runner copies the checkout through the pack protocol (no
   shared object files or alternates), then the transfer helper reads the raw
   commit object and the paths it changes there, with replace objects and
-  grafts off. The commit must have exactly one parent, the base, and this
-  run's `Cloud-Harness-Workflow` trailer, and every path it changes is gated
-  again. On a refusal (`COMMIT_UNVERIFIED` or
+  grafts off. The commit must have exactly one parent, the base. Its author and
+  committer must be the runner's identity, and its message must begin with
+  the runner's message, which carries this run's `Cloud-Harness-Workflow`
+  trailer. Every path it changes is gated again, and the listing must be
+  complete. On a refusal (`COMMIT_UNVERIFIED`, `PATHS_UNVERIFIABLE` or
   `ACTION_DENIED:PATH_OUT_OF_SCOPE`) the clone is discarded and nothing is
   pushed ([`worker/git-transfer-helper.sh`](../worker/git-transfer-helper.sh),
   [`test/integration/coding-publish.docker.test.ts`](../test/integration/coding-publish.docker.test.ts)).
+  A staged copy that repeatedly cannot be made or read stops the run as
+  `COMMIT_UNVERIFIED` instead of being retried until the run times out. The
+  helper also overrides the settings through which a checkout's configuration
+  would make Git run a command (hooks, fsmonitor, the alternate refs command).
+  It does not serialise transfers: the clone is staged in the workspace's job
+  directory, where another transfer helper for the same workspace, such as an
+  owner's concurrent `git_fetch`, mounts it too, and nothing stops that one
+  from changing the clone between the check and the push. The runner commits
+  first and reads HEAD afterwards, so a process the agent left running could
+  still substitute a commit in between. That commit would have to match all
+  of the above, including the runner's message and identity, and only paths
+  the policy allows can be published through it.
   The push names that commit by its id, never `HEAD`. A first attempt refuses
   a branch that already exists (`BRANCH_EXISTS`) instead of adopting it; only
   a replay of the run's own recorded commit step may reuse its branch. An

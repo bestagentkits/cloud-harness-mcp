@@ -224,8 +224,11 @@ class LocalWorkspaces {
     const fault = this.github.takeFault('commit');
     // The workspace service runs the repository's pre_commit lifecycle hooks at this point.
     this.beforeCommit?.(checkout);
-    const output = git(checkout, ['commit', '-m', String(input.message)]);
-    const answer = { output, authorName: 'Fixture', authorEmail: 'fixture@example.invalid' };
+    // The worker commits as the requested author, who is also the committer.
+    const authorName = typeof input.authorName === 'string' ? input.authorName : 'Fixture';
+    const authorEmail = typeof input.authorEmail === 'string' ? input.authorEmail : 'fixture@example.invalid';
+    const output = git(checkout, ['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`, 'commit', '--no-gpg-sign', '-m', String(input.message)]);
+    const answer = { output, authorName, authorEmail };
     // A crash loses the idempotency record with the answer, as a runner that dies mid-call would.
     if (fault !== 'crash-after-effect') this.commits.set(key, answer);
     return await this.github.afterEffect('commit', fault, ok(answer));

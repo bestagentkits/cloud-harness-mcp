@@ -7,7 +7,9 @@ import { CodingActionBroker } from '../../apps/runner/src/agent-governance/actio
 import {
   CODING_GIT_ARGS, CODING_GIT_ENV, createCodingGitPort, parseTransferInspection, type CodingGitRunner
 } from '../../apps/runner/src/agent-governance/coding-git.js';
-import { codingBranch, CodingWorkflowEngine, workflowTrailer, type CodingPublishPort } from '../../apps/runner/src/automation-coding.js';
+import {
+  CODING_COMMIT_AUTHOR, codingBranch, codingCommitMessage, CodingWorkflowEngine, type CodingPublishPort
+} from '../../apps/runner/src/automation-coding.js';
 import { CODING_GLOBAL_POLICY, CODING_PROJECT, CODING_REPOSITORY, createPolicyService, insertCodingWorkflow } from '../../apps/runner/test/support/coding-policy.js';
 import { dockerPrerequisiteIssue, requireDockerPrerequisites } from '../agent-docker-test-support.js';
 
@@ -90,7 +92,11 @@ function checkout(name: string, plant: string): { repository: string; base: stri
     plant,
     `git checkout -qb ${BRANCH}`,
     'git -c core.hooksPath=/dev/null add --all',
-    `git -c core.hooksPath=/dev/null commit -qm "fix: resolve issue #7" -m "${workflowTrailer(WORKFLOW)}"`,
+    // The worker commits as the runner's identity with the runner's message; the executor's own identity
+    // variables are dropped so they cannot override it.
+    `echo ${Buffer.from(codingCommitMessage(7, 'Fix issues', WORKFLOW)).toString('base64')} | base64 -d > /tmp/message`,
+    'env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL git -c core.hooksPath=/dev/null'
+      + ` -c user.name="${CODING_COMMIT_AUTHOR.name}" -c user.email=${CODING_COMMIT_AUTHOR.email} commit -q --no-gpg-sign -F /tmp/message`,
     'echo "$BASE $(git rev-parse HEAD)"'
   ].join('\n')).split(' ');
   return { repository, base: base!, sha: sha! };
@@ -115,6 +121,8 @@ async function publishFrom(target: { repository: string; base: string; sha: stri
       try {
         const staged = helper('stage-push', target.repository, transfer, 'isolated');
         expect(staged.status, staged.stderr).toBe(0);
+        // The helper's answers carry no graft deprecation hint, whatever the checkout holds.
+        expect(staged.stderr).not.toMatch(/graft/iu);
         const inspected = helper('inspect', target.repository, transfer, verifier.sha, verifier.base);
         if (inspected.status !== 0) return { ok: false, error: { code: 'UNAVAILABLE', retryable: true } };
         if (await verifier.verify(parseTransferInspection(inspected.stdout, false)) !== null) return { ok: false, error: { code: 'FORBIDDEN', retryable: false } };

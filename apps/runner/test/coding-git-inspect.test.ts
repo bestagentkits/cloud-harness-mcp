@@ -178,7 +178,14 @@ describe('verified git_push', () => {
     expect(stage[stage.indexOf('stage-push') + 4]).toBe('isolated');
     const inspect = docker.runDocker.mock.calls.find(([args]) => transferMode(args as string[]) === 'inspect')![0] as string[];
     expect(inspect[inspect.indexOf('--network') + 1]).toBe('none');
-    expect(verify).toHaveBeenCalledWith({ sha: SHA, parents: [BASE], message: 'feat: change\n', paths: ['src/app.ts'], truncated: false });
+    // The inspection is capped like the runner's own Git reads, not by the operator's output cap.
+    const inspectOptions = docker.runDocker.mock.calls.find(([args]) => transferMode(args as string[]) === 'inspect')![1] as { maxBytes: number };
+    expect(inspectOptions.maxBytes).toBe(2 * 1_048_576);
+    const pushOptions = docker.runDocker.mock.calls.find(([args]) => transferMode(args as string[]) === 'push')![1] as { maxBytes: number };
+    expect(pushOptions.maxBytes).toBe(262_144);
+    expect(verify).toHaveBeenCalledWith({
+      sha: SHA, parents: [BASE], author: 'A <a@example.com>', committer: null, message: 'feat: change\n', paths: ['src/app.ts'], truncated: false
+    });
   });
 
   it('sends nothing when the verifier refuses what the transfer clone holds', async () => {

@@ -8,7 +8,7 @@ import {
   type CodingGitCommit, type CodingGitPort, type PushVerifier
 } from '../src/agent-governance/coding-git.js';
 import {
-  codingBranch, CodingWorkflowEngine, packagesDigest, workflowTrailer,
+  CODING_COMMIT_AUTHOR, codingBranch, codingCommitMessage, CodingWorkflowEngine, packagesDigest, workflowTrailer,
   type CodingInstallPort, type CodingPublishPort, type CodingWorkflowRow
 } from '../src/automation-coding.js';
 import type { AutomationOperationResult } from '../src/automation-service.js';
@@ -21,7 +21,9 @@ const WORKSPACE = `ws_${'w'.repeat(24)}`;
 const BASE = 'a'.repeat(40);
 const COMMIT = 'c'.repeat(40);
 const BRANCH = codingBranch(7, WORKFLOW);
-const OWN_MESSAGE = `fix: resolve issue #7\n\nCloses #7\n\n${workflowTrailer(WORKFLOW)}\n`;
+/** The message and identity the runner commits with, as Git stores them. */
+const OWN_MESSAGE = `${codingCommitMessage(7, 'Fix issues', WORKFLOW)}\n`;
+const IDENTITY = `${CODING_COMMIT_AUTHOR.name} <${CODING_COMMIT_AUTHOR.email}>`;
 
 type Call = { operation: RunnerOperation; input: Record<string, unknown> };
 type Handler = (input: Record<string, unknown>) => AutomationOperationResult | Promise<AutomationOperationResult>;
@@ -34,7 +36,7 @@ afterEach(() => {
 const text = (output: string): AutomationOperationResult => ({ ok: true, data: { output, exitCode: 0 } });
 /** A raw commit object as `git cat-file commit` prints it. */
 const rawCommit = (parents: string[], message: string) =>
-  `tree ${'1'.repeat(40)}\n${parents.map((parent) => `parent ${parent}\n`).join('')}author A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\n\n${message}`;
+  `tree ${'1'.repeat(40)}\n${parents.map((parent) => `parent ${parent}\n`).join('')}author ${IDENTITY} 1 +0000\ncommitter ${IDENTITY} 1 +0000\n\n${message}`;
 
 type CheckoutState = {
   head: string;
@@ -47,6 +49,8 @@ type CheckoutState = {
    * the same as `commit`, `null` that the clone holds no such commit.
    */
   transfer?: CodingGitCommit | null;
+  /** Staging or reading the transfer clone fails before anything is inspected. */
+  stageFails?: boolean;
 };
 
 async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; install?: CodingInstallPort; git?: false; publish?: false } = {}) {
@@ -67,7 +71,7 @@ async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; 
     head: BASE,
     paths: ['src/a.ts', 'test/a.test.ts'],
     truncated: false,
-    commit: { sha: COMMIT, parents: [BASE], message: OWN_MESSAGE, paths: ['src/a.ts', 'test/a.test.ts'], truncated: false }
+    commit: { sha: COMMIT, parents: [BASE], author: IDENTITY, committer: IDENTITY, message: OWN_MESSAGE, paths: ['src/a.ts', 'test/a.test.ts'], truncated: false }
   };
   const calls: Call[] = [];
   // Answers have the worker's shapes: `git_commit` names the author, never the commit.
@@ -95,7 +99,7 @@ async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; 
     },
     commit: async (_owner, _workspace, revision) => {
       inspections.push({ kind: 'commit', revision });
-      if (revision === 'HEAD' && checkout.head === BASE) return { ok: true, data: { sha: BASE, parents: ['b'.repeat(40)], message: 'Initial', paths: [], truncated: false } };
+      if (revision === 'HEAD' && checkout.head === BASE) return { ok: true, data: { sha: BASE, parents: ['b'.repeat(40)], author: null, committer: null, message: 'Initial', paths: [], truncated: false } };
       return { ok: true, data: { ...checkout.commit, paths: [...checkout.commit.paths] } };
     }
   };
@@ -104,6 +108,7 @@ async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; 
   // is sent, and a refusal sends nothing (only a sent push is recorded as a `git_push` call).
   const publish: CodingPublishPort = async (_owner, input, verifier) => {
     verifiers.push(verifier);
+    if (checkout.stageFails) return { ok: false, error: { code: 'UNAVAILABLE', retryable: true } };
     const staged = checkout.transfer === undefined ? checkout.commit : checkout.transfer;
     const refusal = await verifier.verify(staged ? { ...staged, paths: [...staged.paths] } : null);
     if (refusal !== null) return { ok: false, error: { code: 'FORBIDDEN', retryable: false } };
@@ -154,10 +159,16 @@ describe('coding workflow helpers', () => {
   });
 
   it('takes commit parents from the raw object headers only', async () => {
-    const signed = `tree ${'1'.repeat(40)}\nparent ${BASE}\nauthor A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\ngpgsig -----BEGIN-----\n parent ${'d'.repeat(40)}\n -----END-----\n\n${OWN_MESSAGE}`;
-    expect(parseCommitObject(signed)).toEqual({ parents: [BASE], message: OWN_MESSAGE });
+    const signed = `tree ${'1'.repeat(40)}\nparent ${BASE}\nauthor A <a@x> 1 +0000\ncommitter B <b@x> 2 -0130\ngpgsig -----BEGIN-----\n parent ${'d'.repeat(40)}\n -----END-----\n\n${OWN_MESSAGE}`;
+    expect(parseCommitObject(signed)).toEqual({ parents: [BASE], author: 'A <a@x>', committer: 'B <b@x>', message: OWN_MESSAGE });
     // A `parent` line in the message is not a parent.
-    expect(parseCommitObject(rawCommit([], `subject\n\nparent ${BASE}\n`))).toEqual({ parents: [], message: `subject\n\nparent ${BASE}\n` });
+    expect(parseCommitObject(rawCommit([], `subject\n\nparent ${BASE}\n`))).toEqual({ parents: [], author: IDENTITY, committer: IDENTITY, message: `subject\n\nparent ${BASE}\n` });
+    // As Git reads a commit, a `parent` header after another header is not a parent either.
+    const late = `tree ${'1'.repeat(40)}\nparent ${BASE}\nauthor A <a@x> 1 +0000\nparent ${'d'.repeat(40)}\ncommitter A <a@x> 1 +0000\n\nx`;
+    expect(parseCommitObject(late)?.parents).toEqual([BASE]);
+    expect(parseCommitObject(`tree ${'1'.repeat(40)}\nauthor A <a@x> 1 +0000\nparent ${BASE}\n\nx`)?.parents).toEqual([]);
+    // An identity without its date, or no identity at all, is not read as one.
+    expect(parseCommitObject(`tree ${'1'.repeat(40)}\nauthor A <a@x>\n\nx`)).toMatchObject({ author: null, committer: null });
     expect(parseCommitObject(rawCommit([BASE, 'd'.repeat(40)], 'merge\n'))?.parents).toEqual([BASE, 'd'.repeat(40)]);
     expect(parseCommitObject('blob\n\nx')).toBeNull();
     expect(parseCommitObject(`tree ${'1'.repeat(40)}\nparent not-an-id\n\nx`)).toBeNull();
@@ -166,8 +177,8 @@ describe('coding workflow helpers', () => {
   it('reads the transfer helper inspect answer, and nothing malformed', async () => {
     const encoded = Buffer.from(rawCommit([BASE], OWN_MESSAGE)).toString('base64');
     expect(parseTransferInspection(`${COMMIT}\n${encoded}\npaths\nsrc/b.ts\0src/a.ts\0`, false))
-      .toEqual({ sha: COMMIT, parents: [BASE], message: OWN_MESSAGE, paths: ['src/a.ts', 'src/b.ts'], truncated: false });
-    expect(parseTransferInspection(`${COMMIT}\n${encoded}\nno-base\n`, true)).toEqual({ sha: COMMIT, parents: [BASE], message: OWN_MESSAGE, paths: [], truncated: true });
+      .toEqual({ sha: COMMIT, parents: [BASE], author: IDENTITY, committer: IDENTITY, message: OWN_MESSAGE, paths: ['src/a.ts', 'src/b.ts'], truncated: false });
+    expect(parseTransferInspection(`${COMMIT}\n${encoded}\nno-base\n`, true)).toEqual({ sha: COMMIT, parents: [BASE], author: IDENTITY, committer: IDENTITY, message: OWN_MESSAGE, paths: [], truncated: true });
     for (const malformed of ['\n', `${COMMIT}\n`, `${COMMIT}\n${encoded}\n`, `${COMMIT}\n${encoded}\nother\n`, `${COMMIT}\n!!\npaths\n`, `HEAD\n${encoded}\npaths\n`]) {
       expect(parseTransferInspection(malformed, false), JSON.stringify(malformed)).toBeNull();
     }
@@ -194,7 +205,7 @@ describe('createCodingGitPort', () => {
     const status = await port.status(OWNER, WORKSPACE, AbortSignal.timeout(1_000));
     expect(status).toEqual({ ok: true, data: { head: COMMIT, paths: ['src/a.ts'], truncated: false } });
     const commit = await port.commit(OWNER, WORKSPACE, 'HEAD', BASE, AbortSignal.timeout(1_000));
-    expect(commit).toEqual({ ok: true, data: { sha: COMMIT, parents: [BASE], message: OWN_MESSAGE, paths: ['src/a.ts'], truncated: true } });
+    expect(commit).toEqual({ ok: true, data: { sha: COMMIT, parents: [BASE], author: IDENTITY, committer: IDENTITY, message: OWN_MESSAGE, paths: ['src/a.ts'], truncated: true } });
     expect(seen.map((args) => args[0])).toEqual(['rev-parse', 'status', 'rev-parse', 'cat-file', 'diff-tree']);
     expect(seen.find((args) => args[0] === 'cat-file')).toEqual(['cat-file', 'commit', COMMIT]);
     expect(seen.find((args) => args[0] === 'diff-tree')).toEqual(['diff-tree', '-r', '--no-renames', '--no-commit-id', '--name-only', '-z', BASE, COMMIT, '--']);
@@ -379,6 +390,11 @@ describe('CodingWorkflowEngine', () => {
       ['trailer', (context) => { context.checkout.transfer = { ...context.checkout.commit, message: 'chore: tidy\n' }; }, 'COMMIT_UNVERIFIED'],
       ['missing', (context) => { context.checkout.transfer = null; }, 'COMMIT_UNVERIFIED'],
       ['other commit', (context) => { context.checkout.transfer = { ...context.checkout.commit, sha: 'e'.repeat(40) }; }, 'COMMIT_UNVERIFIED'],
+      // A process left in the executor swapped in a commit of its own, trailer and all.
+      ['author', (context) => { context.checkout.transfer = { ...context.checkout.commit, author: 'Agent <agent@example.invalid>' }; }, 'COMMIT_UNVERIFIED'],
+      ['committer', (context) => { context.checkout.transfer = { ...context.checkout.commit, committer: null }; }, 'COMMIT_UNVERIFIED'],
+      ['message', (context) => { context.checkout.transfer = { ...context.checkout.commit, message: `chore: other\n\n${workflowTrailer(WORKFLOW)}\n` }; }, 'COMMIT_UNVERIFIED'],
+      ['extended trailer line', (context) => { context.checkout.transfer = { ...context.checkout.commit, message: `${OWN_MESSAGE.trimEnd()}x\n` }; }, 'COMMIT_UNVERIFIED'],
       // A relative or truncated listing in the checkout hid a path the clone's commit changes.
       ['hidden path', (context) => { context.checkout.transfer = { ...context.checkout.commit, paths: ['src/a.ts', '.github/workflows/evil.yml'] }; }, 'ACTION_DENIED:PATH_OUT_OF_SCOPE'],
       ['manifest', (context) => { context.checkout.transfer = { ...context.checkout.commit, paths: ['src/a.ts', 'package.json'] }; }, /^ACTION_DENIED:/u],
@@ -395,6 +411,54 @@ describe('CodingWorkflowEngine', () => {
       expect(context.count('git_push'), name).toBe(0);
       expect(context.receipts().find((receipt) => receipt.step === 'push'), name).toMatchObject({ state: 'REJECTED', outcome: { errorCode: expect.stringMatching(code) } });
     }
+  });
+
+  it('commits as the runner and accepts only an appended trailer beyond its own message', async () => {
+    const context = await setup({ phase: 'COMMIT' });
+    await context.engine.advance(context.row());
+    expect(context.calls.find((call) => call.operation === 'git_commit')?.input).toMatchObject({
+      authorName: CODING_COMMIT_AUTHOR.name, authorEmail: CODING_COMMIT_AUTHOR.email, message: OWN_MESSAGE.trimEnd()
+    });
+    // A repository's commit-msg hook appended a trailer: still the runner's message.
+    context.checkout.transfer = { ...context.checkout.commit, message: `${OWN_MESSAGE}Change-Id: I0123\n` };
+    await context.run();
+    expect(context.outcome).toMatchObject({ state: 'COMPLETED' });
+
+    // On the checkout side, a commit by another identity is never adopted after a first-attempt commit.
+    const forged = await setup({ phase: 'COMMIT' });
+    forged.checkout.commit = { ...forged.checkout.commit, author: 'Agent <agent@example.invalid>' };
+    await forged.run();
+    expect(forged.outcome.code).toBe('COMMIT_UNVERIFIED');
+    expect(forged.count('git_push')).toBe(0);
+  });
+
+  it('stops a push whose transfer clone keeps failing before it can be inspected', async () => {
+    const context = await setup({ phase: 'COMMIT' });
+    await context.engine.advance(context.row());
+    context.checkout.stageFails = true;
+    await context.engine.advance(context.row());
+    await context.engine.advance(context.row());
+    expect(context.row()).toMatchObject({ coding_phase: 'PUSH', push_unverified_attempts: 2 });
+    expect(context.outcome.state).toBe('RUNNING');
+    await context.engine.advance(context.row());
+    expect(context.outcome).toMatchObject({ state: 'FAILED', code: 'COMMIT_UNVERIFIED' });
+    expect(context.receipts().find((receipt) => receipt.step === 'push')).toMatchObject({ state: 'REJECTED', outcome: { errorCode: 'COMMIT_UNVERIFIED' } });
+    expect(context.count('git_push')).toBe(0);
+    expect(context.verifiers).toHaveLength(3);
+  });
+
+  it('refuses the push as unverified when the verifier itself fails', async () => {
+    const context = await setup({ phase: 'COMMIT' });
+    await context.engine.advance(context.row());
+    // The path gate cannot decide while the push is verified.
+    vi.spyOn(context.broker, 'begin').mockImplementation(async (step) => {
+      if (step.step === 'path_check') throw new Error('gate unavailable');
+      return await CodingActionBroker.prototype.begin.call(context.broker, step);
+    });
+    await context.run();
+    expect(context.outcome).toMatchObject({ state: 'FAILED', code: 'COMMIT_UNVERIFIED' });
+    expect(context.receipts().find((receipt) => receipt.step === 'push')).toMatchObject({ state: 'REJECTED', outcome: { errorCode: 'COMMIT_UNVERIFIED' } });
+    expect(context.count('git_push')).toBe(0);
   });
 
   it('fails closed without a verified publish port', async () => {

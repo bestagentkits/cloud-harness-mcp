@@ -19,7 +19,9 @@ const WORKFLOW_COLUMNS: readonly [string, string][] = [
   ['agent_generation', 'INTEGER'],
   ['trace_id', 'TEXT'],
   /** Consecutive engine steps of the workflow that threw; the engine backs off and finally fails it. */
-  ['step_failures', 'INTEGER NOT NULL DEFAULT 0']
+  ['step_failures', 'INTEGER NOT NULL DEFAULT 0'],
+  /** Push attempts that ended before the staged transfer clone could be inspected; a few fail the push. */
+  ['push_unverified_attempts', 'INTEGER NOT NULL DEFAULT 0']
 ];
 
 export function initializeCodingActionSchema(database: DatabaseSync): void {

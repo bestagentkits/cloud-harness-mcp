@@ -21,7 +21,10 @@ export type CodingGitRunner = (
 export type CodingGitResult<T> = { ok: true; data: T } | { ok: false; code: string; retryable: boolean };
 
 export type CodingGitStatus = { head: string; paths: string[]; truncated: boolean };
-export type CodingGitCommit = { sha: string; parents: string[]; message: string; paths: string[]; truncated: boolean };
+/** `author` and `committer` are the identities (`Name <email>`) of the raw commit headers, without their dates. */
+export type CodingGitCommit = {
+  sha: string; parents: string[]; author: string | null; committer: string | null; message: string; paths: string[]; truncated: boolean;
+};
 
 export type CodingGitPort = {
   /** HEAD and every changed, staged or untracked path of the working tree. */
@@ -50,20 +53,21 @@ export const CODING_GIT_SUBCOMMANDS = new Set(['rev-parse', 'status', 'cat-file'
  * and no optional index writes.
  */
 export const CODING_GIT_ENV: readonly string[] = [
-  'HOME=/tmp', 'GIT_CONFIG_NOSYSTEM=1', 'GIT_CONFIG_GLOBAL=/dev/null', 'GIT_NO_REPLACE_OBJECTS=1', 'GIT_GRAFT_FILE=/dev/null',
+  'HOME=/tmp', 'GIT_CONFIG_NOSYSTEM=1', 'GIT_CONFIG_GLOBAL=/dev/null', 'GIT_NO_REPLACE_OBJECTS=1', 'GIT_GRAFT_FILE=/dev/null/no-grafts',
   'GIT_TERMINAL_PROMPT=0', 'GIT_OPTIONAL_LOCKS=0'
 ];
 
 /**
  * Options of a checkout inspection, run in the checkout root, that override what its own configuration
  * sets: replace refs (a repository's core.useReplaceRefs re-enables them otherwise), relative diff
- * listings, hooks, fsmonitor, pagers and path quoting. The Git directory and work tree are named
- * explicitly, so core.worktree cannot move the listing elsewhere.
+ * listings, hooks, fsmonitor, pagers, path quoting and the alternate refs command. The Git directory and
+ * work tree are named explicitly, so core.worktree cannot move the listing elsewhere. The graft file is a
+ * path that can never exist, so no grafts are read and no graft hint is printed.
  */
 export const CODING_GIT_ARGS: readonly string[] = [
   '--no-replace-objects', '--git-dir=.git', '--work-tree=.',
   '-c', 'core.useReplaceRefs=false', '-c', 'diff.relative=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
-  '-c', 'core.pager=cat', '-c', 'core.quotePath=false'
+  '-c', 'core.pager=cat', '-c', 'core.quotePath=false', '-c', 'core.alternateRefsCommand=', '-c', 'core.alternateRefsPrefixes='
 ];
 
 const SHA = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
@@ -86,23 +90,35 @@ export function nulPaths(output: string): string[] {
   return [...new Set(output.split('\0').filter((entry) => entry.length > 0))].sort();
 }
 
+type ParsedCommit = { parents: string[]; author: string | null; committer: string | null; message: string };
+
+/** The identity of an `author` or `committer` header value (`Name <email> <seconds> <zone>`), without its date. */
+function identity(value: string | undefined): string | null {
+  const match = value === undefined ? null : /^(.*<[^<>\n]*>) -?\d+ [+-]\d{4}$/u.exec(value);
+  return match?.[1] ?? null;
+}
+
 /**
- * Parents and message of a raw commit object (`git cat-file commit`). The parents are the object's own
- * `parent` headers, so neither a graft nor a replace ref can change them. Null when it is not a commit.
+ * Parents, identities and message of a raw commit object (`git cat-file commit`). The parents are the
+ * object's own `parent` headers, so neither a graft nor a replace ref can change them. As Git reads a
+ * commit, they are the run of `parent` headers right after `tree`: a `parent` header after any other
+ * header is not a parent. Null when it is not a commit.
  */
-export function parseCommitObject(raw: string): { parents: string[]; message: string } | null {
+export function parseCommitObject(raw: string): ParsedCommit | null {
   const end = raw.indexOf('\n\n');
   const header = end === -1 ? raw : raw.slice(0, end);
   const lines = header.split('\n');
   if (!/^tree [a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(lines[0] ?? '')) return null;
   const parents: string[] = [];
-  for (const line of lines.slice(1)) {
-    if (!line.startsWith('parent ')) continue;
-    const parent = line.slice('parent '.length);
+  let index = 1;
+  for (; index < lines.length && lines[index]!.startsWith('parent '); index += 1) {
+    const parent = lines[index]!.slice('parent '.length);
     if (!SHA.test(parent)) return null;
     parents.push(parent);
   }
-  return { parents, message: end === -1 ? '' : raw.slice(end + 2) };
+  const rest = lines.slice(index);
+  const field = (name: string) => rest.find((line) => line.startsWith(`${name} `))?.slice(name.length + 1);
+  return { parents, author: identity(field('author')), committer: identity(field('committer')), message: end === -1 ? '' : raw.slice(end + 2) };
 }
 
 /**
@@ -153,8 +169,10 @@ export function createCodingGitPort(run: CodingGitRunner): CodingGitPort {
     async status(ownerId, workspaceId, signal) {
       try {
         const head = await resolve(ownerId, workspaceId, 'HEAD', signal);
-        // Porcelain v1 is Git's stable machine format: status.* display settings do not apply to it, and
-        // unlike a raw index diff it compares content, not just file timestamps.
+        // The one porcelain read: changes that are not committed yet exist only in the working tree, so no
+        // plumbing read of objects (and no transfer clone) can list them. Porcelain v1 is Git's stable machine
+        // format: status.* display settings do not apply to it, and unlike a raw index diff it compares
+        // content, not just file timestamps. What it lists is gated again from the commit on the transfer clone.
         const listed = await git(ownerId, workspaceId, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames', '--ignore-submodules=none'], signal);
         return { ok: true, data: { head, paths: porcelainPaths(listed.stdout), truncated: listed.truncated } };
       } catch (error) {

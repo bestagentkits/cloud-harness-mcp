@@ -28,9 +28,18 @@ import type { RunnerOperation } from '@cloud-harness/contracts';
 const VERIFY_TIMEOUT_MS = 300_000;
 /** Delay before a step that hit a transient failure runs again. The gate's run-time budget bounds the retries. */
 const STEP_RETRY_MS = 5_000;
+/**
+ * Push attempts that may end before the staged transfer clone is inspected (staging or reading it
+ * failed) before the push is refused as unverifiable.
+ */
+const MAX_UNVERIFIED_PUSH_ATTEMPTS = 3;
 /** Delay before a run held back by the concurrency limit asks to be admitted again. */
 const ADMIT_RETRY_MS = 15_000;
-/** Delay before a run whose admission raced another run's asks again, so racing runs do not spin. */
+/**
+ * Delay before a run whose admission raced another run's asks again, so racing runs do not spin. It is
+ * fixed on purpose: a race ends as soon as either run's admission is recorded, and the start window
+ * bounds how often a run can lose one, so a growing delay would only postpone admission.
+ */
 const ADMIT_RACE_RETRY_MS = 1_000;
 /** Bound on one gate decision, including an advisor call it makes. */
 const GATE_TIMEOUT_MS = 60_000;
@@ -58,6 +67,8 @@ export type CodingWorkflowRow = {
   base_oid: string | null;
   branch: string | null;
   commit_sha: string | null;
+  /** Push attempts that ended before the transfer clone could be inspected. */
+  push_unverified_attempts?: number | null;
 };
 
 /** What the automation engine lends the coding engine: owner-scoped operations and guarded workflow updates. */
@@ -119,6 +130,26 @@ export function codingBranch(resourceNumber: number, workflowId: string): string
 /** The trailer that marks a commit as this workflow's own. */
 export function workflowTrailer(workflowId: string): string {
   return `Cloud-Harness-Workflow: ${workflowId}`;
+}
+
+/** The author and committer the runner commits as; a published commit must carry exactly this identity. */
+export const CODING_COMMIT_AUTHOR = { name: 'Cloud Harness Automation', email: 'coding-automation@cloud-harness.local' } as const;
+const CODING_COMMIT_IDENTITY = `${CODING_COMMIT_AUTHOR.name} <${CODING_COMMIT_AUTHOR.email}>`;
+
+/**
+ * The message the runner commits with. A published commit's message must begin with it; Git may only
+ * append (a repository's commit-msg hook adding a trailer), never change what the runner wrote.
+ */
+export function codingCommitMessage(resourceNumber: number, ruleName: string, workflowId: string): string {
+  return [
+    `fix: resolve issue #${resourceNumber}`,
+    '',
+    `Automated change by the Cloud Harness coding automation "${ruleName}".`,
+    '',
+    `Closes #${resourceNumber}`,
+    '',
+    workflowTrailer(workflowId)
+  ].join('\n');
 }
 
 /** sha256 of the sorted `ecosystem:name@version registry` lines of the packages an install covers. */
@@ -445,22 +476,20 @@ export class CodingWorkflowEngine {
     if (!staged.ok) return this.stepFailed(row, binding, record, staged, startedAt);
     const committed = await this.host.call(row.owner_id, 'git_commit', {
       workspaceId,
-      message: [
-        `fix: resolve issue #${row.resource_number}`,
-        '',
-        `Automated change by the Cloud Harness coding automation "${this.snapshotOf(row).name}".`,
-        '',
-        `Closes #${row.resource_number}`,
-        '',
-        workflowTrailer(row.id)
-      ].join('\n'),
+      message: this.commitMessage(row),
+      authorName: CODING_COMMIT_AUTHOR.name,
+      authorEmail: CODING_COMMIT_AUTHOR.email,
       expectedHeadOid: base,
       idempotencyKey: key
     });
     // The commit tool answers without the commit id, and a replay may find HEAD already past the base
     // (an earlier attempt committed and only its answer was lost). Either way the commit is read back
-    // from the checkout and adopted only if it is this workflow's own. A first attempt that finds HEAD
-    // moved was raced by something else in the checkout and stops.
+    // from the checkout and adopted only if it is this workflow's own: the base as its only parent, the
+    // runner's identity as author and committer, and the runner's message. A first attempt that finds
+    // HEAD moved was raced by something else in the checkout and stops. A process left running in the
+    // executor could still move HEAD to a commit of its own between the commit and this read; such a
+    // commit must match all of the above, and the push gates every path it changes again on the transfer
+    // clone, so it can publish nothing the agent could not have written itself.
     if (!committed.ok && committed.error?.code === 'STALE_HEAD' && !replay) return this.refused(row, binding, record, 'HEAD_MOVED', startedAt);
     if (!committed.ok && committed.error?.code !== 'STALE_HEAD') return this.stepFailed(row, binding, record, committed, startedAt);
     const own = await this.ownCommit(row, workspaceId, 'HEAD');
@@ -508,14 +537,20 @@ export class CodingWorkflowEngine {
     // anything, and a replay that finds its own commit there is recognised by the reconciliation below.
     // The source is the commit id, so whatever HEAD points at now is never published. What is published
     // is decided on the staged transfer clone the push sends from, before every attempt that sends.
-    const decided: { refusal: string | null } = { refusal: null };
+    const decided: { inspected: boolean; refusal: string | null } = { inspected: false, refusal: null };
     const pushed = await publish(row.owner_id, {
       workspaceId, refspec: `${commitSha}:refs/heads/${branch}`, forceWithLease: true, expectedAbsent: true, idempotencyKey: key
     }, {
       sha: commitSha,
       base,
       verify: async (commit) => {
-        decided.refusal = await this.verifyPublished(row, binding, key, branch, commitSha, commit);
+        decided.inspected = true;
+        try {
+          decided.refusal = await this.verifyPublished(row, binding, key, branch, commitSha, commit);
+        } catch {
+          // A verifier that cannot decide refuses: the workspace service refuses the push the same way.
+          decided.refusal = 'COMMIT_UNVERIFIED';
+        }
         return decided.refusal;
       }
     });
@@ -535,6 +570,14 @@ export class CodingWorkflowEngine {
       return this.stepFailed(row, binding, record, pushed, startedAt);
     }
     if (remote.oid === null && ambiguous) {
+      // The transfer clone was never inspected: staging or reading it failed, which the checkout can cause
+      // deterministically. Such attempts are counted, and the push stops instead of retrying until the
+      // run's time runs out.
+      if (!decided.inspected) {
+        const attempts = (row.push_unverified_attempts ?? 0) + 1;
+        if (attempts >= MAX_UNVERIFIED_PUSH_ATTEMPTS) return this.refused(row, binding, record, 'COMMIT_UNVERIFIED', startedAt);
+        this.host.update(row.id, { push_unverified_attempts: attempts });
+      }
       // Proven absent: nothing was published, so the push is attempted again on the next tick.
       this.broker.settle(binding, record, 'UNKNOWN', { errorCode: bounded(pushed.error?.code ?? 'UNKNOWN') }, startedAt);
       this.retryLater(row);
@@ -630,14 +673,19 @@ export class CodingWorkflowEngine {
     return null;
   }
 
+  private commitMessage(row: CodingWorkflowRow): string {
+    return codingCommitMessage(row.resource_number, this.snapshotOf(row).name, row.id);
+  }
+
   /**
-   * Whether a commit is this workflow's own: exactly one parent, the base, and the workflow trailer in
-   * its message, with a complete, gateable list of the paths it changes. Null when it is.
+   * Whether a commit is this workflow's own: exactly one parent, the base; the runner's identity as both
+   * author and committer; a message that begins with the runner's message (which carries the workflow
+   * trailer); and a complete, gateable list of the paths it changes. Null when it is.
    */
   private ownCommitRefusal(row: CodingWorkflowRow, base: string, commit: CodingGitCommit): 'COMMIT_UNVERIFIED' | 'PATHS_UNVERIFIABLE' | null {
-    const trailer = workflowTrailer(row.id);
-    const marked = commit.message.split('\n').some((line) => line.trim() === trailer);
-    if (commit.sha === base || commit.parents.length !== 1 || commit.parents[0] !== base || !marked) return 'COMMIT_UNVERIFIED';
+    const own = commit.message.startsWith(`${this.commitMessage(row)}\n`)
+      && commit.author === CODING_COMMIT_IDENTITY && commit.committer === CODING_COMMIT_IDENTITY;
+    if (commit.sha === base || commit.parents.length !== 1 || commit.parents[0] !== base || !own) return 'COMMIT_UNVERIFIED';
     if (commit.truncated || commit.paths.length === 0 || !verifiablePaths(commit.paths)) return 'PATHS_UNVERIFIABLE';
     return null;
   }

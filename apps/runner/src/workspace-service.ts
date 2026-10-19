@@ -2237,7 +2237,10 @@ export class WorkspaceService {
         '--volume', `${record.workspacePath}:/job:rw`, '--entrypoint', '/opt/harness/git-transfer-helper.sh',
         this.config.executorImage, mode, record.repositoryUrl, checkoutJobPath(record), `/job/${transferName}`, argument, expectedRemoteOid ?? '', historySpec
       ], {
-        stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes,
+        // An inspection is decided on, not shown: it is capped like the runner's checkout reads (its commit
+        // object and its path listing each within the cap of their own read there), never by the operator's
+        // output cap, so a commit that passed the checkout gate is not refused at push for its size.
+        stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: mode === 'inspect' ? 2 * CODING_GIT_MAX_BYTES : this.config.maxOutputBytes,
         ...(signal ? { signal } : {})
       });
       if (result.exitCode !== 0) {
