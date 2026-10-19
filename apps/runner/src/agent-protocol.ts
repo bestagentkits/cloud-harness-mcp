@@ -34,6 +34,9 @@ export const AgentOutputRecordSchema = z.discriminatedUnion('type', [
   }).strict(),
   z.object({ type: z.literal('tool_cancel'), requestId, reason: z.string().max(1_024).optional() }).strict(),
   z.object({ type: z.literal('usage'), sequence: z.number().int().positive(), usage }).strict(),
+  // The message role is checked when the record is appended, so an unexpected message stops the
+  // persisted log instead of closing the channel and failing the run.
+  z.object({ type: z.literal('session_message'), seq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), message: boundedJson }).strict(),
   z.object({
     type: z.literal('terminal'),
     state: z.enum(['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED']),
@@ -60,6 +63,8 @@ export type AgentStartRecord = {
     cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   };
   limits: { deadlineMs: number; maxEvents: number; maxOutputBytes: number; maxEventBytes: number; maxToolResultBytes: number };
+  /** Present only when the agent persists its session; the history to replay before the prompt. */
+  session?: { messages: unknown[]; headSha256: string };
 };
 export type AgentInputRecord = AgentStartRecord | {
   type: 'message'; requestId: string; behavior: 'steer' | 'followUp'; text: string;

@@ -10,7 +10,7 @@ import { AgentManager } from '../src/agent-manager.js';
 import { DockerAgentGatewayControl, type AgentGatewayControl, type AgentLeaseGrant, type AgentLeaseRevocation, type AgentLeaseSettlement } from '../src/agent-gateway-control.js';
 import * as dockerEngine from '../src/docker-engine.js';
 import type { AgentLaunchSpec, AgentLauncher, AgentRuntimeProcess } from '../src/agent-launcher.js';
-import { AgentStateRepository } from '../src/agent-state-repository.js';
+import { AGENT_SESSION_GENESIS_SHA256, AgentStateRepository, chainAgentSessionHead } from '../src/agent-state-repository.js';
 import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
 import { ModelSpendLedger, staticProfileSpendKey } from '../src/model-spend-ledger.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
@@ -1079,5 +1079,317 @@ describe('agent repository guidance bootstrap', () => {
       expect(await startRecordCost(launcher)).toEqual({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 });
       await manager.stop();
     });
+  });
+});
+
+describe('AgentManager persisted sessions', () => {
+  const persistingConfig = RunnerAgentsConfigSchema.parse({ ...agentsConfig, sessionPersistenceEnabled: true });
+  const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2, cost: 0 };
+  const userMessage = (text: string) => ({ role: 'user', content: [{ type: 'text', text }], timestamp: 1 });
+  const assistantCall = { role: 'assistant', content: [{ type: 'toolCall', id: 'call-1', name: 'files_read', arguments: { path: 'README.md' } }], stopReason: 'toolUse', timestamp: 2 };
+  const toolResult = { role: 'toolResult', toolCallId: 'call-1', toolName: 'files_read', content: [{ type: 'text', text: 'ok' }], isError: false, timestamp: 3 };
+
+  function emit(launcher: FakeLauncher, index: number, record: Record<string, unknown>): void {
+    launcher.outputs[index]!.write(`${JSON.stringify(record)}\n`);
+  }
+
+  /** Collects every protocol line the runner writes to one agent, from its first byte. */
+  function captureInput(launcher: FakeLauncher, index: number): () => Array<Record<string, unknown>> {
+    const chunks: Buffer[] = [];
+    launcher.inputs[index]!.on('data', (chunk: Buffer) => chunks.push(chunk));
+    return () => Buffer.concat(chunks).toString('utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  async function startOf(launcher: FakeLauncher, index: number): Promise<Record<string, unknown>> {
+    await vi.waitFor(() => expect(launcher.inputs.length).toBeGreaterThan(index));
+    const lines = captureInput(launcher, index);
+    let start: Record<string, unknown> | undefined;
+    await vi.waitFor(() => {
+      start = lines().find((record) => record.type === 'start');
+      expect(start).toBeDefined();
+    });
+    return start!;
+  }
+
+  async function spawnRunning(
+    context: ReturnType<typeof setup>,
+    idempotencyKey: string,
+    overrides: Record<string, unknown> = {}
+  ): Promise<string> {
+    const { manager, record, repository } = context;
+    const response = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { idempotencyKey, ...overrides }));
+    const agentId = (response.data as { agentId: string }).agentId;
+    await vi.waitFor(() => expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('RUNNING'));
+    return agentId;
+  }
+
+  async function finish(context: ReturnType<typeof setup>, index: number, agentId: string, state = 'SUCCEEDED'): Promise<void> {
+    emit(context.launcher, index, { type: 'terminal', state, usage });
+    await vi.waitFor(() => expect(context.repository.findAgent(context.record.ownerId, context.record.id, agentId)?.status).toBe(state));
+  }
+
+  async function status(context: ReturnType<typeof setup>, agentId: string): Promise<Record<string, unknown>> {
+    const response = await context.manager.dispatch(context.record.ownerId, context.record, 'agent_status', { workspaceId: context.record.id, agentId });
+    return response.data as Record<string, unknown>;
+  }
+
+  /** Runs one persisting agent that records a user turn and an unanswered tool call, then ends. */
+  async function sealedPredecessor(context: ReturnType<typeof setup>, state = 'SUCCEEDED'): Promise<string> {
+    const agentId = await spawnRunning(context, 'first-key');
+    emit(context.launcher, 0, { type: 'session_message', seq: 0, message: userMessage('inspect the repository') });
+    emit(context.launcher, 0, { type: 'session_message', seq: 1, message: assistantCall });
+    await vi.waitFor(() => expect(context.repository.findSession(agentId)?.messageCount).toBe(2));
+    await finish(context, 0, agentId, state);
+    return agentId;
+  }
+
+  it('leaves the start record and status unchanged when session persistence is off', async () => {
+    const context = setup();
+    const { manager, record, launcher, repository } = context;
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+    const start = await startOf(launcher, 0);
+    expect(Object.keys(start)).toEqual(['type', 'requestId', 'agentId', 'prompt', 'tools', 'gateway', 'model', 'limits']);
+    const agentId = start.agentId as string;
+    expect(repository.findSession(agentId)).toBeUndefined();
+    emit(launcher, 0, { type: 'session_message', seq: 0, message: userMessage('ignored') });
+    await finish(context, 0, agentId);
+    const data = await status(context, agentId);
+    expect(data).not.toHaveProperty('session');
+    expect(data).not.toHaveProperty('run');
+    expect(data).not.toHaveProperty('continuedFrom');
+    expect((context.store.database.prepare('SELECT COUNT(*) AS count FROM agent_session_messages').get() as { count: number }).count).toBe(0);
+    await manager.stop();
+  });
+
+  it('refuses continueFrom when session persistence is off', async () => {
+    const { manager, record, launcher } = setup();
+    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { continueFrom: `agent_${'a'.repeat(24)}` })))
+      .rejects.toMatchObject({ code: 'NOT_SUPPORTED' });
+    expect(launcher.launches).toHaveLength(0);
+    await manager.stop();
+  });
+
+  it('persists runtime messages with a chained digest and seals the session on terminal', async () => {
+    const context = setup('network-none', persistingConfig);
+    const { manager, record, launcher, repository } = context;
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+    const start = await startOf(launcher, 0);
+    // A fresh persisting agent receives an empty log so it knows to report its messages.
+    expect(start.session).toEqual({ messages: [], headSha256: AGENT_SESSION_GENESIS_SHA256 });
+    const agentId = start.agentId as string;
+    await vi.waitFor(() => expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('RUNNING'));
+    const messages = [userMessage('inspect the repository'), assistantCall, toolResult];
+    messages.forEach((message, seq) => emit(launcher, 0, { type: 'session_message', seq, message }));
+    await vi.waitFor(() => expect(repository.findSession(agentId)?.messageCount).toBe(3));
+    const log = repository.loadSessionLog(agentId, 1);
+    expect(log.messages).toEqual(messages);
+    const head = messages.reduce(
+      (previous, message) => chainAgentSessionHead(previous, createHash('sha256').update(JSON.stringify(message)).digest('hex')),
+      AGENT_SESSION_GENESIS_SHA256
+    );
+    expect(log.headSha256).toBe(head);
+    expect(await status(context, agentId)).toMatchObject({
+      session: { persisted: true, continuable: false, messages: 3 }, run: { resumable: false }, continuedFrom: null
+    });
+    await finish(context, 0, agentId);
+    const sealed = repository.findSession(agentId)!;
+    expect(sealed).toMatchObject({ state: 'SEALED', continuable: true });
+    expect(sealed.retainUntil).toBeGreaterThan(Date.now());
+    expect(await status(context, agentId)).toMatchObject({ session: { persisted: true, continuable: true, messages: 3, bytes: log.bytes } });
+    // A record arriving after the terminal transition is fenced.
+    emit(launcher, 0, { type: 'session_message', seq: 3, message: userMessage('late') });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(repository.findSession(agentId)?.messageCount).toBe(3);
+    await manager.stop();
+  });
+
+  it('fences appends from a stale runner epoch, a stale generation, or a stopped agent', async () => {
+    const context = setup('network-none', persistingConfig);
+    const { record, repository } = context;
+    const agentId = await spawnRunning(context, 'fence-key');
+    const append = (overrides: Partial<Parameters<AgentStateRepository['appendSessionMessage']>[0]>) => repository.appendSessionMessage({
+      ownerId: record.ownerId, workspaceId: record.id, agentId, generation: 1, runnerEpoch: 1, seq: 0,
+      message: userMessage('task'), now: Date.now(), ...overrides
+    });
+    expect(append({ runnerEpoch: 2 })).toBe('FENCED');
+    expect(append({ generation: 2 })).toBe('FENCED');
+    expect(append({ ownerId: 'someone-else' })).toBe('FENCED');
+    expect(repository.findSession(agentId)).toMatchObject({ messageCount: 0, continuable: true });
+    expect(append({})).toBe('APPENDED');
+    await finish(context, 0, agentId);
+    expect(append({ seq: 1 })).toBe('FENCED');
+    expect(repository.findSession(agentId)?.messageCount).toBe(1);
+    await context.manager.stop();
+  });
+
+  it('marks the session not continuable on a sequence gap or an invalid message without failing the run', async () => {
+    const context = setup('network-none', persistingConfig);
+    const { record, repository } = context;
+    const agentId = await spawnRunning(context, 'gap-key-1');
+    const append = (seq: number, message: unknown) => repository.appendSessionMessage({
+      ownerId: record.ownerId, workspaceId: record.id, agentId, generation: 1, runnerEpoch: 1, seq, message, now: Date.now()
+    });
+    expect(append(0, { role: 'bashExecution', command: 'ls' })).toBe('DISCONTINUED');
+    expect(append(0, userMessage('task'))).toBe('IGNORED');
+    expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('RUNNING');
+
+    const second = setup('network-none', persistingConfig);
+    const secondId = await spawnRunning(second, 'gap-key-1');
+    expect(second.repository.appendSessionMessage({
+      ownerId: second.record.ownerId, workspaceId: second.record.id, agentId: secondId, generation: 1, runnerEpoch: 1,
+      seq: 1, message: userMessage('skipped one'), now: Date.now()
+    })).toBe('DISCONTINUED');
+    await finish(second, 0, secondId);
+    expect(await status(second, secondId)).toMatchObject({ session: { persisted: true, continuable: false, messages: 0 } });
+    await context.manager.stop();
+    await second.manager.stop();
+  });
+
+  it('keeps the run going but stops continuation when the session exceeds its bounds', async () => {
+    const config = RunnerAgentsConfigSchema.parse({ ...persistingConfig, limits: { ...persistingConfig.limits, maxSessionMessages: 1 } });
+    const context = setup('network-none', config);
+    const { manager, record, launcher, repository } = context;
+    const agentId = await spawnRunning(context, 'bounded-key');
+    emit(launcher, 0, { type: 'session_message', seq: 0, message: userMessage('task') });
+    emit(launcher, 0, { type: 'session_message', seq: 1, message: assistantCall });
+    await vi.waitFor(() => expect(repository.findSession(agentId)?.continuable).toBe(false));
+    expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('RUNNING');
+    await finish(context, 0, agentId);
+    expect(await status(context, agentId)).toMatchObject({ session: { persisted: true, continuable: false, messages: 1 } });
+    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { idempotencyKey: 'next-key', continueFrom: agentId })))
+      .rejects.toMatchObject({ code: 'CONFLICT' });
+    await manager.stop();
+  });
+
+  it('continues a sealed session in a new agent that replays the exact log', async () => {
+    const context = setup('network-none', persistingConfig);
+    const { manager, record, launcher, repository, gateway } = context;
+    const predecessorId = await sealedPredecessor(context);
+    const predecessorLog = repository.loadSessionLog(predecessorId, 1);
+    const response = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, {
+      idempotencyKey: 'continue-key', prompt: 'now fix the failing test', continueFrom: predecessorId
+    }));
+    const successorId = (response.data as { agentId: string }).agentId;
+    expect(successorId).not.toBe(predecessorId);
+    const start = await startOf(launcher, 1);
+    expect(start.agentId).toBe(successorId);
+    expect(start.session).toEqual({ messages: [userMessage('inspect the repository'), assistantCall], headSha256: predecessorLog.headSha256 });
+    // A new agent gets its own container and lease.
+    expect(launcher.launches[1]!.containerName).not.toBe(launcher.launches[0]!.containerName);
+    expect(gateway.issued[1]!.leaseId).not.toBe(gateway.issued[0]!.leaseId);
+    await vi.waitFor(() => expect(repository.findAgent(record.ownerId, record.id, successorId)?.status).toBe('RUNNING'));
+    expect(repository.findSession(successorId)).toMatchObject({
+      continuedFrom: predecessorId, rootAgentId: predecessorId, messageCount: 2, headSha256: predecessorLog.headSha256, state: 'ACTIVE'
+    });
+    // The successor's own log continues after the copied messages.
+    emit(launcher, 1, { type: 'session_message', seq: 2, message: userMessage('now fix the failing test') });
+    await vi.waitFor(() => expect(repository.findSession(successorId)?.messageCount).toBe(3));
+    expect(await status(context, successorId)).toMatchObject({ continuedFrom: predecessorId, run: { resumable: false } });
+    // The predecessor's log is untouched.
+    expect(repository.loadSessionLog(predecessorId, 1).headSha256).toBe(predecessorLog.headSha256);
+    // Replaying the same spawn returns the same successor instead of refusing it.
+    const replayed = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, {
+      idempotencyKey: 'continue-key', prompt: 'now fix the failing test', continueFrom: predecessorId
+    }));
+    expect(replayed.data).toMatchObject({ agentId: successorId, replayed: true });
+    await manager.stop();
+  });
+
+  it('lets exactly one of two concurrent continuations win', async () => {
+    const context = setup('network-none', persistingConfig);
+    const { manager, record } = context;
+    const predecessorId = await sealedPredecessor(context);
+    const results = await Promise.allSettled(['race-key-a', 'race-key-b'].map((idempotencyKey) =>
+      manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { idempotencyKey, continueFrom: predecessorId }))));
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toMatchObject({ code: 'CONFLICT' });
+    await manager.stop();
+  });
+
+  it('keeps an interrupted session continuable while the run itself is never resumable', async () => {
+    const context = setup('network-none', persistingConfig);
+    const predecessorId = await sealedPredecessor(context, 'INTERRUPTED');
+    expect(await status(context, predecessorId)).toMatchObject({
+      status: 'INTERRUPTED', session: { persisted: true, continuable: true, messages: 2 }, run: { resumable: false }
+    });
+    const response = await context.manager.dispatch(context.record.ownerId, context.record, 'agent_spawn', spawnInput(context.record, {
+      idempotencyKey: 'after-interrupt', continueFrom: predecessorId
+    }));
+    expect(response.data).toMatchObject({ replayed: false });
+    await context.manager.stop();
+  });
+
+  it('refuses to continue a running agent', async () => {
+    const context = setup('network-none', persistingConfig);
+    const agentId = await spawnRunning(context, 'running-key');
+    await expect(context.manager.dispatch(context.record.ownerId, context.record, 'agent_spawn', spawnInput(context.record, {
+      idempotencyKey: 'too-early', continueFrom: agentId
+    }))).rejects.toMatchObject({ code: 'CONFLICT', retryable: true });
+    await context.manager.stop();
+  });
+
+  it('refuses to continue another owner\'s agent or one from an earlier workspace generation', async () => {
+    const context = setup('network-none', persistingConfig);
+    const { manager, record, repository, store } = context;
+    const predecessorId = await sealedPredecessor(context);
+    const otherOwner = store.resolvePrincipal({ kind: 'owner', ownerId: 'other-owner' });
+    const otherWorkspace: WorkspaceRecord = { ...workspace('network-none', otherOwner), id: `ws_${'o'.repeat(24)}`, idempotencyKey: 'other-workspace' };
+    store.create(otherWorkspace);
+    await expect(manager.dispatch(otherOwner, otherWorkspace, 'agent_spawn', spawnInput(otherWorkspace, { continueFrom: predecessorId })))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(() => repository.requireContinuable(record.ownerId, record.id, record.generation + 1, predecessorId))
+      .toThrow(expect.objectContaining({ code: 'STALE_GENERATION' }));
+    await manager.stop();
+  });
+
+  it('refuses to continue a session purged by retention', async () => {
+    const context = setup('network-none', persistingConfig);
+    const { manager, record, repository } = context;
+    const predecessorId = await sealedPredecessor(context);
+    const sealed = repository.findSession(predecessorId)!;
+    expect(repository.purgeExpiredSessions(sealed.retainUntil! - 1)).toBe(0);
+    expect(repository.purgeExpiredSessions(sealed.retainUntil!)).toBe(1);
+    expect(await status(context, predecessorId)).toMatchObject({ session: { persisted: false, continuable: false, messages: 0, bytes: 0 } });
+    expect((context.store.database.prepare('SELECT COUNT(*) AS count FROM agent_session_messages WHERE agent_id=?').get(predecessorId) as { count: number }).count).toBe(0);
+    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { idempotencyKey: 'after-purge', continueFrom: predecessorId })))
+      .rejects.toMatchObject({ code: 'EXPIRED' });
+    await manager.stop();
+  });
+
+  it('refuses to continue an agent whose model profile is no longer enabled', async () => {
+    const context = setup('network-none', persistingConfig);
+    const { store, record, repository } = context;
+    const predecessorId = await sealedPredecessor(context);
+    await context.manager.stop();
+    repository.openWorkspaceAdmission(record.ownerId, record.id, record.generation, Date.now());
+    // The instance now offers a different profile only.
+    const config = RunnerAgentsConfigSchema.parse({
+      ...persistingConfig,
+      profiles: [{ ...persistingConfig.profiles[0]!, id: 'replacement', displayName: 'Replacement' }]
+    });
+    const launcher = new FakeLauncher();
+    const manager = new AgentManager(config, store, {
+      repository, launcher, gateway: new FakeGateway(), spendLedger: new ModelSpendLedger(store.database, { log: vi.fn() }),
+      toolExecutor: vi.fn(async () => ({ ok: true as const, message: 'read', data: {}, truncated: false }))
+    });
+    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, {
+      idempotencyKey: 'other-profile', profileId: 'replacement', continueFrom: predecessorId
+    }))).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('no longer enabled') });
+    expect(launcher.launches).toHaveLength(0);
+    expect(repository.findSuccessor(predecessorId)).toBeUndefined();
+    await manager.stop();
+  });
+
+  it('deletes persisted sessions when the workspace closes but keeps them across a runner stop', async () => {
+    const context = setup('network-none', persistingConfig);
+    const { manager, record, repository, store } = context;
+    const predecessorId = await sealedPredecessor(context);
+    await manager.stop();
+    expect(repository.findSession(predecessorId)).toMatchObject({ state: 'SEALED', continuable: true, messageCount: 2 });
+    await manager.stopWorkspace(record.ownerId, record.id, 'workspace closed');
+    expect(repository.findSession(predecessorId)).toBeUndefined();
+    expect((store.database.prepare('SELECT COUNT(*) AS count FROM agent_session_messages').get() as { count: number }).count).toBe(0);
   });
 });

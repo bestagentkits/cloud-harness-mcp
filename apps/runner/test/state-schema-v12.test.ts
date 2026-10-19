@@ -56,12 +56,12 @@ describe('state schema v12', () => {
   it('adds the revision version column additively and is idempotent', () => {
     const store = new StateStore(tempDbPath());
     try {
-      expect(schemaVersion(store.database)).toBe(14);
+      expect(schemaVersion(store.database)).toBe(15);
       expect(revisionColumns(store.database).has('version')).toBe(true);
 
       // Re-running the migration must not throw and must not change the version.
       migratePrincipalSchema(store.database);
-      expect(schemaVersion(store.database)).toBe(14);
+      expect(schemaVersion(store.database)).toBe(15);
     } finally {
       store.close();
     }
