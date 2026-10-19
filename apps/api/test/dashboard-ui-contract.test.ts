@@ -755,3 +755,30 @@ describe('model pricing and spend surfaces', () => {
     expect(models).not.toMatch(/\?\?\s*['"]\$0/);
   });
 });
+
+describe('repository scope wiring', () => {
+  const client = readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8');
+  const styles = readFileSync(new URL('../dashboard/dashboard.css', import.meta.url), 'utf8');
+
+  it('reads the registry without executor status for the selector and live status only for the explorer', () => {
+    expect(client).toContain('/repositories?status=false`');
+    expect(client).toContain("/repositories?status=${live ? 'true' : 'false'}`");
+  });
+
+  it('requires a repository choice before Git renders or binds in a multi-repository workspace', () => {
+    expect(client).toContain("if (tab === 'git' && scope.repositories.length && !scope.repository) return renderRepositoryRequired(scope.repositories);");
+    expect(client).toContain("tab === 'git' && (scope.repository || !scope.repositories.length)) bindGitControls(id, scope.repository);");
+    expect(client).toContain("allowRoot: tab !== 'git'");
+  });
+
+  it('scopes the cockpit tabs, the selector form, and the Git return paths to the selected repository', () => {
+    expect(client).toContain('renderWorkspaceTabs(id, tab, scope.repository)');
+    expect(client).toContain("document.querySelector('#repository-scope-form')");
+    expect(client).toContain("const gitTab = workspaceTabHref(workspaceId, 'git', repository);");
+  });
+
+  it('lays the scope selector out with tokens so it wraps at phone width', () => {
+    expect(styles).toMatch(/\.repository-scope \{[^}]*var\(--space-4\)/);
+    expect(styles).toMatch(/\.repository-scope select \{[^}]*max-width: 100%/);
+  });
+});

@@ -204,11 +204,11 @@ export function createTerminalSession({ client, sink, onChange = () => {}, delay
   return {
     get state() { return state; },
     get terminalId() { return terminalId; },
-    /** Open a new PTY, then start streaming its output. */
-    async open({ cols, rows, cwd } = {}) {
+    /** Open a new PTY, then start streaming its output. A repository opens it in that checkout. */
+    async open({ cols, rows, cwd, repositoryId } = {}) {
       update({ phase: 'connecting', terminal: undefined, exitCode: undefined, message: undefined, interrupted: false });
       try {
-        const result = await client.open({ ...(cwd ? { cwd } : {}), ...(cols ? { cols } : {}), ...(rows ? { rows } : {}) });
+        const result = await client.open({ ...(cwd ? { cwd } : {}), ...(repositoryId ? { repositoryId } : {}), ...(cols ? { cols } : {}), ...(rows ? { rows } : {}) });
         if (disposed) return;
         const view = result?.data?.terminal;
         if (!view?.terminalId) throw Object.assign(new Error('The terminal service returned no terminal.'), { status: 502 });
@@ -388,7 +388,7 @@ function loadEmulator(documentRef) {
  * `dispose` stops loops and observers without closing the PTY, so leaving the tab keeps the shell running
  * for a later re-attach (until its idle expiry).
  */
-export function mountTerminalPane({ root, workspaceId, api, announce = () => {}, onError = () => {}, terminals = [] }) {
+export function mountTerminalPane({ root, workspaceId, api, announce = () => {}, onError = () => {}, terminals = [], repositoryId = '' }) {
   const documentRef = root.ownerDocument;
   const view = documentRef.defaultView;
   const client = createTerminalClient(api, workspaceId);
@@ -481,7 +481,7 @@ export function mountTerminalPane({ root, workspaceId, api, announce = () => {},
       if (offers) offers.hidden = true;
       const next = freshSession();
       if (attachTo) next.attach(attachTo);
-      else await next.open({ cols: term.cols, rows: term.rows });
+      else await next.open({ cols: term.cols, rows: term.rows, ...(repositoryId ? { repositoryId } : {}) });
       if (disposed) return;
       fit.fit();
       void next.resize(term.cols, term.rows);
