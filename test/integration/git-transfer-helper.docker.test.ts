@@ -133,10 +133,10 @@ describe('transfer repository isolation', () => {
   };
   const repositoryOf = (name: string) => gitTransferRepositoryPath(name);
 
-  const transfer = (mode: 'fetch' | 'import' | 'stage-push' | 'push', name: string, argument = '', extraVolumes: string[] = []) => execFileSync('docker', [
+  const transfer = (mode: 'fetch' | 'import' | 'stage-push' | 'inspect' | 'push', name: string, argument = '', extraVolumes: string[] = [], expected = '') => execFileSync('docker', [
     'run', '-i', '--rm', '--network', 'none', '--user', '10001:10001', '--read-only', '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m',
     ...gitTransferVolumes(mode, root, name), ...extraVolumes,
-    '--entrypoint', '/opt/harness/git-transfer-helper.sh', image, mode, '/job/remote.git', '/job/repo', repositoryOf(name), argument, ''
+    '--entrypoint', '/opt/harness/git-transfer-helper.sh', image, mode, '/job/remote.git', '/job/repo', repositoryOf(name), argument, expected
   ], { input: '\n', encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
 
   // Stands in for any command the repository configures and Git runs during the transfer: it runs with
@@ -179,6 +179,12 @@ describe('transfer repository isolation', () => {
     transfer('stage-push', staged);
     const stagedHead = asOwner(`git --git-dir=${repositoryOf(staged)} rev-parse refs/heads/main`);
     expect(stagedHead).toBe(asOwner('git -C /job/repo rev-parse HEAD'));
+
+    // An inspection reads the staged clone through a read-only mount of it alone, which nothing can rewrite.
+    const inspected = transfer('inspect', staged, stagedHead, [], asOwner('git -C /job/repo rev-parse HEAD~1')).split('\n');
+    expect(inspected[0]).toBe(stagedHead);
+    expect(inspected[2]).toBe('paths');
+    expect(tamper(gitTransferVolumes('inspect', root, staged))).toBe('');
 
     // A concurrent fetch and import, and a second push's stage, see only their own transfer repositories.
     const remote = ['--volume', `${join(root, 'remote.git')}:/job/remote.git:ro`];
