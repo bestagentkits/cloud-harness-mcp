@@ -130,8 +130,11 @@ export function traceListPath(filters = {}, { cursor, limit = 50, since, include
   return `/traces?${query}`;
 }
 
-/** The KPI strip over the filtered window. */
-export function renderTraceKpis(summary = {}) {
+/**
+ * The KPI strip over the filtered window. `asOf` (a time label) marks figures that stay fixed while
+ * the rows below keep refreshing.
+ */
+export function renderTraceKpis(summary = {}, { asOf = null } = {}) {
   const tokens = summary.tokens ?? {};
   const unknownCost = Number(summary.unknownCostTraces ?? 0);
   const tiles = [
@@ -142,9 +145,10 @@ export function renderTraceKpis(summary = {}) {
     ['Model latency', latency(summary.modelLatency), `${traceCount(summary.modelLatency?.samples)} timed call(s)`],
     ['Time to first token', latency(summary.ttft), `${traceCount(summary.ttft?.samples)} streamed call(s)`]
   ];
+  const hint = asOf ? `<p class="metric-note trace-kpis-as-of">Summary as of ${escape(asOf)} (page load); the rows below keep refreshing.</p>` : '';
   return `<ul class="metric-grid trace-kpis" aria-label="Trace summary">${tiles.map(([label, value, note]) => (
     `<li class="metric"><span class="metric-label">${escape(label)}</span><span class="metric-value small">${escape(value)}</span><span class="metric-note">${escape(note)}</span></li>`
-  )).join('')}</ul>`;
+  )).join('')}</ul>${hint}`;
 }
 
 function renderCohorts(cohorts = []) {
@@ -196,10 +200,10 @@ export function renderTraceTable(traces = [], { nextCursor = null, caption = '' 
 }
 
 /** The whole Traces page body for one list response. */
-export function renderTracesPage({ traces = [], summary = {}, filters = {}, nextCursor = null } = {}) {
+export function renderTracesPage({ traces = [], summary = {}, filters = {}, nextCursor = null, kpiAsOf = null } = {}) {
   return `<div class="page-note"><strong>Agent traces.</strong> One trace per coding agent run: model calls, tool calls, budget events and the gateway settlement, with identifiers, timings, tokens and cost. Prompts and model output are never recorded; tool arguments are recorded only as a digest, unless the operator turns on a bounded, redacted preview.</div>`
     + `<div class="resource-filters">${renderTraceFilters(filters)}</div>`
-    + `<div class="resource-body traces">${renderTraceKpis(summary ?? {})}<section aria-labelledby="trace-list-heading"><h2 id="trace-list-heading">Traces</h2><div id="trace-list">${renderTraceTable(traces, { nextCursor })}</div></section>${renderCohorts(summary?.cohorts)}</div>`;
+    + `<div class="resource-body traces">${renderTraceKpis(summary ?? {}, { asOf: kpiAsOf })}<section aria-labelledby="trace-list-heading"><h2 id="trace-list-heading">Traces</h2><div id="trace-list">${renderTraceTable(traces, { nextCursor })}</div></section>${renderCohorts(summary?.cohorts)}</div>`;
 }
 
 /**
@@ -368,10 +372,13 @@ export function createTracesView({ insert, navigate, createPoller, announce = ()
     const result = await fetcher(traceListPath(filters, { since, includeSummary: true }));
     const data = result?.data ?? {};
     const state = { traces: data.traces ?? [], nextCursor: data.nextCursor ?? null, since };
-    insert(container, renderTracesPage({ ...state, summary: data.summary ?? {}, filters }));
+    const live = state.traces.some((trace) => trace.state === 'RUNNING');
+    // Polls refresh rows only, so a live page labels its KPI strip with the time it was computed.
+    const kpiAsOf = live ? new Date().toLocaleTimeString() : null;
+    insert(container, renderTracesPage({ ...state, summary: data.summary ?? {}, filters, kpiAsOf }));
     bindFilters(container);
     bindMore(container, filters, state);
-    if (state.traces.some((trace) => trace.state === 'RUNNING')) {
+    if (live) {
       poll(
         // A poll refreshes the rows only: the KPI summary is not recomputed, and the filter form keeps
         // whatever the user is typing.

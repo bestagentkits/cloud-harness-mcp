@@ -158,10 +158,14 @@ describe('traces view controller', () => {
     await idle.view.loadList(idle.container, '');
     expect(idle.pollers).toHaveLength(0);
     expect(idle.container.markup).toContain(traceId);
+    expect(idle.container.markup).not.toContain('trace-kpis-as-of');
 
     const live = harness(() => listResponse([trace({ state: 'RUNNING', endedAt: null, durationMs: null })]));
     await live.view.loadList(live.container, '?state=RUNNING');
     expect(live.pollers).toHaveLength(1);
+    // The KPI strip says its figures are from page load while the rows keep refreshing.
+    expect(live.container.markup).toContain('trace-kpis-as-of');
+    expect(live.container.markup).toContain('(page load)');
     expect(live.pollers[0].options.intervalMs).toBe(5_000);
     expect(live.view.polling()).toBe(true);
     expect(live.pollers[0].options.isTerminal(listResponse([trace()]))).toBe(true);

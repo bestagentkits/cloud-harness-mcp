@@ -34,7 +34,8 @@ retention removed the page a cursor pointed to, reload the list.
 
 While a listed trace is still running, the rows refresh every few seconds and stop as
 soon as no trace is running or you navigate away. A refresh leaves the filter form and
-the KPI strip as they are, so a filter you are typing is not lost.
+the KPI strip as they are, so a filter you are typing is not lost; the strip is labelled
+with the time it was computed.
 
 ## One trace
 

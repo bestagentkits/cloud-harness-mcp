@@ -2996,8 +2996,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
    * Removes agent traces past their retention, in bounded batches. It runs whether or not traces
    * are enabled, so turning the feature off never keeps old traces past their retention.
    */
-  async purgeAgentTraces(now = Date.now()): Promise<number> {
-    return await this.tracePurger.purgeExpired(now);
+  async purgeAgentTraces(now = Date.now(), signal?: AbortSignal): Promise<number> {
+    return await this.tracePurger.purgeExpired(now, signal ? { signal } : {});
   }
 
   async execute(principal: PrincipalSelector | string, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
