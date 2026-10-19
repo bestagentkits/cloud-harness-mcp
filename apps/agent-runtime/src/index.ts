@@ -1,13 +1,38 @@
 import { AgentWorker } from './agent-worker.js';
+import { EngineRouter, type EngineWorker } from './engine-selection.js';
 import { InputRecordQueue, JsonlWriter, ProtocolError } from './jsonl.js';
-import { BoundedOutput } from './output.js';
+import { BoundedOutput, OutputLimitError } from './output.js';
 import { createPiSessionFactory } from './pi-session.js';
+import type { StartRecord } from './protocol-schemas.js';
+import { createRedactor } from './redaction.js';
 
 const gatewayBaseUrl = process.env.AGENT_MODEL_GATEWAY_URL ?? 'http://model-gateway:3210/v1';
 const decoder = new InputRecordQueue();
 const writer = new JsonlWriter(process.stdout);
 const output = new BoundedOutput(writer);
-const worker = new AgentWorker(output, createPiSessionFactory(gatewayBaseUrl));
+const ZERO_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
+
+// The durable engine and its dependencies load only when a start record asks for it.
+async function loadDurableEngine(start: StartRecord): Promise<EngineWorker> {
+  const { runDurableWorker } = await import('@cloud-harness/agent-runtime-durable');
+  return runDurableWorker({
+    gatewayBaseUrl,
+    redactor: createRedactor(),
+    configureOutput: (limits) => output.configure(limits),
+    emit: (record) => output.emit(record),
+    isOutputLimitError: (error) => error instanceof OutputLimitError,
+    sendStorage: (record) => writer.write(record),
+    terminal: (state, usage, error) => output.terminal(state, usage, error)
+  }, start);
+}
+
+const worker = new EngineRouter(
+  new AgentWorker(output, createPiSessionFactory(gatewayBaseUrl)),
+  loadDurableEngine,
+  async () => {
+    if (!output.terminalWritten) await output.terminal('FAILED', ZERO_USAGE, 'durable agent runtime is unavailable');
+  }
+);
 let inputClosed = false;
 
 function failInput(error: unknown): void {
