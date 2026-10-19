@@ -893,8 +893,12 @@ changes simulation results only.
     `nice`, `timeout`, `xargs`, `setsid`, `npx`, `npm exec` and `busybox`);
   - it reads `sh`, `bash`, `zsh`, `dash` and `ksh` `-c` strings with their
     value-taking options;
-  - it splits shell strings on every separator, keyword, redirection and
-    command substitution, and skips here-document bodies.
+  - inside a shell string it reads only a small grammar: simple commands
+    joined by `;`, `&&`, `||`, `|` and `&`, quoted words, `$VAR` in argument
+    position, simple redirections, and here-documents fed to data-only
+    programs. A here-document body is data only when its delimiter is quoted
+    (`<<'EOF'`) or the body holds no `$` or backtick, because bash expands an
+    unquoted one.
 
   A container runtime or privilege tool in program position, or the Docker
   socket handed to a program, is a definite match and denies. A command the
@@ -903,6 +907,14 @@ changes simulation results only.
   answer, project rule or delegation lowers it, while a hard deny, a scope
   deny or the `publish_branch` evaluation of a detected push still wins. The
   following are unanalyzable:
+  - command or process substitution, `${...}`, `$'...'`, arithmetic,
+    parentheses, braces, comments, compound commands (`if`, `for`, `case`,
+    `[[ ]]` and similar) and function definitions in a shell string;
+  - setting an environment variable outside a short safe list (`CI`,
+    `NODE_ENV`, `FORCE_COLOR`, `NO_COLOR`, `TZ`, `LANG`, `LC_ALL`, `DEBUG`,
+    and `npm_config_*` settings that do not name a program or config file),
+    inline, through `env` or with `export`, since variables such as `PAGER`,
+    `EDITOR`, `LESSOPEN` or `GIT_*` make a program run another one;
   - an unknown launcher option;
   - a program name computed at run time;
   - `eval` and `source`;
@@ -916,8 +928,9 @@ changes simulation results only.
   - nesting beyond the analysis bounds.
 
   Data-only programs (`grep`, `rg`, `cat`, `echo`, `jq` and similar) are never
-  treated as running their arguments, and a here-document is data to them,
-  unless an option tells them to run a program (`rg --pre`). The analysis
+  treated as running their arguments, and a here-document read under the rule
+  above is data to them, unless an option tells them to run a program
+  (`rg --pre`, `sort --compress-program`, a `less` startup command). The analysis
   does not read the content of files a command runs (a script, a Makefile, a
   package script, git hooks). The executor's isolation stays the boundary for
   those, and the gate is defence in depth.

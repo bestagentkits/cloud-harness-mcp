@@ -1,15 +1,19 @@
 /**
- * Fail-closed static analysis of an agent command line for the gate's platform invariants.
+ * Static analysis of an agent command line for the gate's platform invariants.
  *
- * The gate never executes anything, so it can only judge a command it can read completely. This
- * module unwraps the launchers it knows exactly (their every option, including attached forms such
- * as `-S'cmd'` or `--call=cmd`), reads `sh`/`bash`/`zsh`/`dash`/`ksh` `-c` strings with their
- * value-taking options, strips leading assignments, redirections and shell keywords, and splits
- * shell strings on every separator and command substitution. Whatever it cannot read exactly is
- * reported as unanalyzable, and the gate denies it: an unknown launcher option, a program computed
- * at run time (`$X`, globs, brace expansion), code handed to `eval`, `source`, an interpreter's
- * inline flag or a shell reading standard input, a `git -c` setting outside a small safe list, an
- * unknown git command (it could be an alias), and anything nested beyond the bounds below.
+ * The gate never executes anything, so it only reads a deliberately small grammar: simple commands
+ * joined by `;`, `&&`, `||`, `|` and `&`, quoted words, `$VAR` in argument position, simple
+ * redirections, and here-documents fed to data-only programs. It unwraps the launchers it knows
+ * exactly (their every option, including attached forms such as `-S'cmd'` or `--call=cmd`) and reads
+ * `sh`/`bash`/`zsh`/`dash`/`ksh` `-c` strings with their value-taking options.
+ *
+ * Everything else is reported as unanalyzable, and the gate then requires a mandatory owner
+ * approval: command or process substitution, `${...}`, arithmetic, parentheses, braces, comments,
+ * `case`/`function`/`select`, an environment assignment outside a short safe list, an unknown
+ * launcher option, a program computed at run time, code handed to `eval`, `source`, an
+ * interpreter's inline flag or a shell reading standard input, a `git -c` setting outside a small
+ * safe list, an unknown git command (it could be an alias), and anything nested beyond the bounds
+ * below.
  *
  * What it deliberately does not read is the content of files a command runs (a script, a Makefile,
  * a package.json script, git hooks). The executor's isolation is the boundary for those, and
@@ -53,60 +57,40 @@ export const PRIVILEGE_PROGRAMS: ReadonlySet<string> = new Set(['sudo', 'su', 'd
 export const DATA_ONLY_PROGRAMS: ReadonlySet<string> = new Set([
   'grep', 'rg', 'egrep', 'fgrep', 'cat', 'head', 'tail', 'less', 'wc', 'ls', 'echo', 'printf', 'sort', 'uniq', 'diff', 'cut', 'tr', 'jq', 'true', 'false'
 ]);
-/** Options of data-only programs that run another program (`rg --pre`, `sort --compress-program`). */
-const DATA_ONLY_EXEC = /^(?:--pre|--compress-program)(?:=|$)/u;
+/**
+ * Whether an argument makes a data-only program run another program or evaluate code: `rg --pre`,
+ * `sort --compress-program` (GNU accepts any unique prefix such as `--compress`), `less` with a
+ * startup command (`+cmd`) or a lesskey file, and bash's `printf -v`, whose array subscript is
+ * evaluated.
+ */
+function runsAnotherProgram(program: string, token: string): boolean {
+  const name = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
+  if (program === 'rg') return name === '--pre';
+  if (program === 'sort') return name.length >= 4 && '--compress-program'.startsWith(name);
+  if (program === 'less') return token.startsWith('+') || /^-[A-Za-z]*k/u.test(token) || name.startsWith('--lesskey');
+  if (program === 'printf') return /^-[A-Za-z]*v/u.test(token);
+  return false;
+}
 
 // ---------------------------------------------------------------- shell tokens
 
-/** Operators that end a command. `{` and `}` only count as standalone words. */
-const SEGMENT_OPERATORS = new Set([';', '&&', '||', '|', '&', '|&', '(', ')', '{', '}', '\n']);
-const CHARACTER_OPERATORS = new Set([';', '|', '&', '(', ')', '\n']);
-
-/** Index of the character closing the substitution that opens at `start` (`$(` or a backtick). */
-function substitutionEnd(source: string, start: number): number {
-  if (source[start] === '`') {
-    for (let cursor = start + 1; cursor < source.length; cursor += 1) {
-      if (source[cursor] === '\\') cursor += 1;
-      else if (source[cursor] === '`') return cursor;
-    }
-    return source.length;
-  }
-  let depth = 0;
-  for (let cursor = start + 2; cursor < source.length; cursor += 1) {
-    if (source[cursor] === '\\') cursor += 1;
-    else if (source[cursor] === '(') depth += 1;
-    else if (source[cursor] === ')') {
-      if (depth === 0) return cursor;
-      depth -= 1;
-    }
-  }
-  return source.length;
-}
-
-const isWordEnd = (character: string | undefined) => character === undefined || /[\s;&|()]/u.test(character);
+/** Operators that end a command. */
+const SEGMENT_OPERATORS = new Set([';', '&&', '||', '|', '&', '|&', '\n']);
 
 /**
- * Splits a shell string into words and operators. Quotes and backslashes are honoured. A command
- * substitution (`$(...)` or backticks, quoted or not) is tokenized recursively, bounded by
- * `MAX_DEPTH`, and appended as its own command; the word it appeared in keeps a `$` so a program
- * name computed by a substitution is recognised as unreadable.
+ * Splits a shell string into words and operators, honouring quotes and backslashes. It accepts only
+ * the small grammar described above and fails on anything that would make bash run something this
+ * reading does not show: `$(`, backticks, `${`, `$[`, `$'...'`, `$"..."`, `(` or `)` outside quotes
+ * (subshells, function definitions, arithmetic, `<(` and `>(`), unquoted braces (brace groups and
+ * brace expansion) and comments. A here-document body is skipped; with an unquoted delimiter bash
+ * expands it, so a body containing `$` or a backtick fails.
  */
-export function tokenizeShell(source: string, depth = 0): string[] {
-  if (depth > MAX_DEPTH) fail('command substitutions are nested too deeply');
+function tokenizeShell(source: string): string[] {
   const tokens: string[] = [];
-  const nested: string[] = [];
-  /** Tokenizes the substitution opening at `start` and returns the index of its closing character. */
-  const substitute = (start: number): number => {
-    const end = substitutionEnd(source, start);
-    if (end >= source.length) fail('a command substitution is not closed');
-    nested.push('\n', ...tokenizeShell(source.slice(start + (source[start] === '`' ? 1 : 2), end), depth + 1));
-    current += '$';
-    return end;
-  };
   let current = '';
   let quoted = false;
   /** Here-documents whose bodies start after the next newline; `strip` is the `<<-` form. */
-  const heredocs: Array<{ delimiter: string; strip: boolean }> = [];
+  const heredocs: Array<{ delimiter: string; strip: boolean; quoted: boolean }> = [];
   let delimiterFor: boolean | null = null;
   /** True when the current word holds an unquoted `<<` operator (quoted `"<<x"` is plain text). */
   let heredocWord = false;
@@ -115,12 +99,12 @@ export function tokenizeShell(source: string, depth = 0): string[] {
       tokens.push(current);
       const attached = /^(?:\d+)?<<(-?)(.+)$/su.exec(current);
       if (delimiterFor !== null) {
-        heredocs.push({ delimiter: current, strip: delimiterFor });
+        heredocs.push({ delimiter: current, strip: delimiterFor, quoted });
         delimiterFor = null;
       } else if (heredocWord && /^(?:\d+)?<<-?$/u.test(current)) {
         delimiterFor = current.endsWith('-');
       } else if (heredocWord && attached) {
-        heredocs.push({ delimiter: attached[2] as string, strip: attached[1] === '-' });
+        heredocs.push({ delimiter: attached[2] as string, strip: attached[1] === '-', quoted });
       }
     }
     current = '';
@@ -130,12 +114,13 @@ export function tokenizeShell(source: string, depth = 0): string[] {
   /** Skips the bodies of pending here-documents, which start at `start`; returns the index after them. */
   const skipHeredocBodies = (start: number): number => {
     let position = start;
-    for (const { delimiter, strip } of heredocs.splice(0)) {
+    for (const { delimiter, strip, quoted: literal } of heredocs.splice(0)) {
       while (position < source.length) {
         const end = source.indexOf('\n', position);
         const line = source.slice(position, end === -1 ? source.length : end);
         position = end === -1 ? source.length : end + 1;
         if ((strip ? line.replace(/^\t+/u, '') : line) === delimiter) break;
+        if (!literal && /[$`]/u.test(line)) fail('an unquoted here-document body is expanded by the shell');
       }
     }
     return position;
@@ -157,10 +142,8 @@ export function tokenizeShell(source: string, depth = 0): string[] {
           cursor += 2;
           continue;
         }
-        if ((source[cursor] === '$' && source[cursor + 1] === '(') || source[cursor] === '`') {
-          // A substitution inside double quotes still runs: analyse its body as its own command.
-          cursor = substitute(cursor) + 1;
-          continue;
+        if (source[cursor] === '`' || (source[cursor] === '$' && /^[({[]$/u.test(source[cursor + 1] ?? ''))) {
+          fail('a substitution or parameter expansion is not analysed');
         }
         current += source[cursor];
         cursor += 1;
@@ -173,8 +156,14 @@ export function tokenizeShell(source: string, depth = 0): string[] {
       index += 1;
     } else if (/\s/u.test(character) && character !== '\n') {
       flush();
-    } else if ((character === '$' && next === '(') || character === '`') {
-      index = substitute(index);
+    } else if (character === '`' || (character === '$' && /^[({["']$/u.test(next ?? ''))) {
+      fail('a substitution, expansion or special quoting is not analysed');
+    } else if (character === '(' || character === ')') {
+      fail('subshells, function definitions, arithmetic and process substitution are not analysed');
+    } else if (character === '{' || character === '}') {
+      fail('brace groups and brace expansion are not analysed');
+    } else if (character === '#' && current === '' && !quoted) {
+      fail('a comment is not analysed');
     } else if (character === '<' && next === '<') {
       // `<<<` is a here-string; `<<` and `<<-` open a here-document whose body follows the line.
       if (source[index + 2] === '<') {
@@ -185,8 +174,6 @@ export function tokenizeShell(source: string, depth = 0): string[] {
         current += '<<';
         index += 1;
       }
-    } else if ((character === '{' || character === '}') && current === '' && !quoted && isWordEnd(next)) {
-      tokens.push(character);
     } else if ((character === '&' && (next === '>' || /[<>]$/u.test(current))) || (character === '|' && />$/u.test(current))) {
       // Part of a redirection (`&>`, `2>&1`, `>|`), not a separator.
       current += character;
@@ -194,22 +181,17 @@ export function tokenizeShell(source: string, depth = 0): string[] {
       flush();
       tokens.push(`${character}${next}`);
       index += 1;
-    } else if (CHARACTER_OPERATORS.has(character)) {
+    } else if (character === ';' || character === '|' || character === '&' || character === '\n') {
       flush();
       tokens.push(character);
-      // A here-document body is data, not commands: skip it.
       if (character === '\n' && heredocs.length > 0) index = skipHeredocBodies(index + 1) - 1;
-    } else if (character === '#' && current === '' && !quoted) {
-      const end = source.indexOf('\n', index);
-      index = end === -1 ? source.length : end - 1;
     } else {
       current += character;
     }
   }
   flush();
-  return [...tokens, ...nested];
+  return tokens;
 }
-
 /** Splits shell tokens into command segments on every operator. */
 function splitSegments(tokens: readonly string[]): string[][] {
   const segments: string[][] = [];
@@ -229,11 +211,27 @@ function splitSegments(tokens: readonly string[]): string[][] {
 // ---------------------------------------------------------------- command words
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/u;
-/** Variables that make a later program run other code. */
-const RISKY_VARIABLE = /^(?:GIT_.*|LD_.*|DYLD_.*|BASH_ENV|ENV|BASH_FUNC_.*|SHELLOPTS|BASHOPTS|IFS|PS4|PROMPT_COMMAND|CDPATH)$/u;
+const SAFE_VARIABLES = new Set(['CI', 'NODE_ENV', 'FORCE_COLOR', 'NO_COLOR', 'TZ', 'LANG', 'LC_ALL', 'DEBUG']);
+/** npm settings that name a program, a config file or a script npm would load or run. */
+const NPM_UNSAFE_SETTINGS = new Set(['script_shell', 'node_options', 'userconfig', 'globalconfig', 'onload_script', 'shell', 'git', 'editor', 'browser', 'viewer']);
+/**
+ * The only variables a command may set (inline, through `env NAME=...`, or with `export`). Anything
+ * else (`PAGER`, `EDITOR`, `LESSOPEN`, `GIT_*`, `LD_*`, ...) can make a program run another one.
+ */
+function isSafeVariable(name: string): boolean {
+  if (SAFE_VARIABLES.has(name)) return true;
+  const lower = name.toLowerCase();
+  return lower.startsWith('npm_config_') && !NPM_UNSAFE_SETTINGS.has(lower.slice('npm_config_'.length).replaceAll('-', '_'));
+}
 const REDIRECTION = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?(<<<|<<-?|<>|<&|>&|>>|>\||&>>|&>|<|>)(.*)$/su;
-/** Words that start a compound command or negate one; the command after them still runs. */
-const KEYWORDS = new Set(['!', 'if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'esac', '{', '}']);
+/**
+ * Compound commands, function definitions and arithmetic, which the analysis does not read. The
+ * command that follows one is still recorded, so a definite platform violation inside it is found.
+ */
+const COMPOUND_KEYWORDS = new Set([
+  'if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'for', 'in', 'case', 'esac', 'function', 'select',
+  'let', '[[', ']]'
+]);
 const DECLARATIONS = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
 /** Programs that run code the gate cannot read. */
 const UNANALYZABLE_PROGRAMS = new Set([
@@ -405,8 +403,18 @@ export function analyzeCommand(argv: readonly string[]): CommandAnalysis {
   const segments: string[][] = [];
   const pushes: GitPush[] = [];
 
+  /** Reads every command of a shell string, so a definite match after an unreadable one is still found. */
   const shellString = (source: string, depth: number) => {
-    for (const segment of splitSegments(tokenizeShell(source, depth))) visit(segment, depth, false, true);
+    let unreadable: Unanalyzable | undefined;
+    for (const segment of splitSegments(tokenizeShell(source))) {
+      try {
+        visit(segment, depth, false, true);
+      } catch (error) {
+        if (!(error instanceof Unanalyzable)) throw error;
+        unreadable ??= error;
+      }
+    }
+    if (unreadable) throw unreadable;
   };
 
   const runLauncher = (rest: readonly string[], spec: LauncherSpec, depth: number, openArgs = false) => {
@@ -612,16 +620,23 @@ export function analyzeCommand(argv: readonly string[]): CommandAnalysis {
     if (depth > MAX_DEPTH) fail('the command nests too many launchers or shell strings');
     if (segments.length >= MAX_SEGMENTS) fail('the command runs too many commands');
     const { kept: segment, feedsInput } = withoutRedirections(raw, !fromShell);
+    /** The first reason the segment cannot be read; raised once its command is recorded. */
+    let problem: string | undefined;
     let index = 0;
     while (index < segment.length) {
       const token = segment[index] as string;
       const assignment = ASSIGNMENT.exec(token);
       if (assignment) {
-        if (RISKY_VARIABLE.test(assignment[1] as string)) fail(`setting ${assignment[1]} changes what a later program runs`);
+        if (!isSafeVariable(assignment[1] as string)) problem ??= `setting ${assignment[1]} can change what a later program runs`;
         index += 1;
         continue;
       }
-      if (KEYWORDS.has(token)) {
+      if (token === '!') {
+        index += 1;
+        continue;
+      }
+      if (COMPOUND_KEYWORDS.has(token)) {
+        problem ??= `${token} is not analysed`;
         index += 1;
         continue;
       }
@@ -630,15 +645,17 @@ export function analyzeCommand(argv: readonly string[]): CommandAnalysis {
     const rest = segment.slice(index);
     const head = rest[0];
     if (head === undefined) {
+      if (problem !== undefined) fail(problem);
       if (openArgs) fail('xargs supplies the program at run time');
       return;
     }
-    if (head !== '[' && head !== '[[' && /[$`*?[\]{}\\]/u.test(head)) fail('the program name is computed when the command runs');
+    if (head !== '[' && /[$`*?[\]{}\\]/u.test(head)) fail('the program name is computed when the command runs');
     segments.push([...rest]);
+    if (problem !== undefined) fail(problem);
     const program = programName(head);
     if (DATA_ONLY_PROGRAMS.has(program)) {
       // Arguments and here-documents are data, unless an option makes the program run another one.
-      if (rest.some((token) => DATA_ONLY_EXEC.test(token))) fail(`${program} is told to run another program`);
+      if (rest.slice(1).some((token) => runsAnotherProgram(program, token))) fail(`${program} is told to run another program`);
       return;
     }
     if (feedsInput) fail(`a here-document or here-string feeds ${program}, which may run it`);
@@ -648,8 +665,10 @@ export function analyzeCommand(argv: readonly string[]): CommandAnalysis {
     }
     if (DECLARATIONS.has(program)) {
       for (const token of rest.slice(1)) {
+        // Options such as `-i` (integer) or `-n` (name reference) make a later expansion evaluate code.
+        if (/^[-+]/u.test(token)) fail(`${program} ${token} is not analysed`);
         const assignment = ASSIGNMENT.exec(token);
-        if (assignment && RISKY_VARIABLE.test(assignment[1] as string)) fail(`setting ${assignment[1]} changes what a later program runs`);
+        if (assignment && !isSafeVariable(assignment[1] as string)) fail(`setting ${assignment[1]} can change what a later program runs`);
       }
       return;
     }

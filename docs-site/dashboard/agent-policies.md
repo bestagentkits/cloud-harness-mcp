@@ -143,11 +143,18 @@ Commands have two platform outcomes. A command that runs a container runtime or
 a privilege tool such as `sudo` is denied, and no policy or approval can allow
 it. A command the runner cannot read exactly **Requires approval** with
 `PLATFORM_COMMAND_UNANALYZABLE`. Examples are `eval`, a program name built from
-a variable, inline interpreter code, a here-document fed to a shell, or a
-`git -c` setting that could change what git runs. That approval is always
-required: an advisor or a project rule cannot clear it. Ordinary commands such
-as `grep -r docker .`, `cat <<EOF` or `vitest --environment node` are not
-affected. A command that runs `git push` is also judged as **Publish branch**,
+a variable, inline interpreter code, a here-document fed to a shell, a
+`git -c` setting that could change what git runs, and, inside a `sh -c` string,
+command substitution (`$(...)`, backticks), `${...}`, arithmetic, parentheses,
+braces, comments, `if`/`for`/`case` blocks or function definitions. Setting an
+environment variable also needs approval unless it is `CI`, `NODE_ENV`,
+`FORCE_COLOR`, `NO_COLOR`, `TZ`, `LANG`, `LC_ALL`, `DEBUG` or a harmless
+`npm_config_*` setting, because variables such as `PAGER`, `EDITOR` or
+`GIT_SSH_COMMAND` make a program run another one. A here-document is plain
+data only when its delimiter is quoted (`<<'EOF'`) or its body contains no `$`
+or backtick. That approval is always required: an advisor or a project rule
+cannot clear it. Ordinary commands such as `grep -r docker .`,
+`cat <<'EOF' > notes.txt` or `vitest --environment node` are not affected. A command that runs `git push` is also judged as **Publish branch**,
 and the stricter decision applies.
 
 Tick **Evaluate the unsaved editor draft** to try a change before saving it.
