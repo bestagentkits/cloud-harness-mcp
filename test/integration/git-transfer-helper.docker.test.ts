@@ -106,6 +106,9 @@ describe('credential-isolated Git transfer helper', () => {
     ];
 
     expect(exists('/job/pwned-altcmd')).toBe(false);
-    for (const output of outputs) expect(`${output.stdout}\n${output.stderr}`).not.toMatch(/graft/iu);
+    for (const output of outputs) {
+      // Neither the graft hint nor a complaint about the overridden alternate refs command.
+      expect(`${output.stdout}\n${output.stderr}`).not.toMatch(/graft|cannot run|alternateRefs/iu);
+    }
   });
 });

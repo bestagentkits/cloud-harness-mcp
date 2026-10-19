@@ -51,6 +51,8 @@ type CheckoutState = {
   transfer?: CodingGitCommit | null;
   /** Staging or reading the transfer clone fails before anything is inspected. */
   stageFails?: boolean;
+  /** The verified push fails with this code around the helper (a credential, the executor pause, a probe). */
+  publishFails?: string;
 };
 
 async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; install?: CodingInstallPort; git?: false; publish?: false } = {}) {
@@ -108,7 +110,11 @@ async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; 
   // is sent, and a refusal sends nothing (only a sent push is recorded as a `git_push` call).
   const publish: CodingPublishPort = async (_owner, input, verifier) => {
     verifiers.push(verifier);
-    if (checkout.stageFails) return { ok: false, error: { code: 'UNAVAILABLE', retryable: true } };
+    if (checkout.publishFails) return { ok: false, error: { code: checkout.publishFails, retryable: true } };
+    if (checkout.stageFails) {
+      verifier.stagingFailed?.();
+      return { ok: false, error: { code: 'UNAVAILABLE', retryable: true } };
+    }
     const staged = checkout.transfer === undefined ? checkout.commit : checkout.transfer;
     const refusal = await verifier.verify(staged ? { ...staged, paths: [...staged.paths] } : null);
     if (refusal !== null) return { ok: false, error: { code: 'FORBIDDEN', retryable: false } };
@@ -413,14 +419,21 @@ describe('CodingWorkflowEngine', () => {
     }
   });
 
-  it('commits as the runner and accepts only an appended trailer beyond its own message', async () => {
+  it('commits as the runner and publishes only its exact message', async () => {
     const context = await setup({ phase: 'COMMIT' });
     await context.engine.advance(context.row());
     expect(context.calls.find((call) => call.operation === 'git_commit')?.input).toMatchObject({
       authorName: CODING_COMMIT_AUTHOR.name, authorEmail: CODING_COMMIT_AUTHOR.email, message: OWN_MESSAGE.trimEnd()
     });
-    // A repository's commit-msg hook appended a trailer: still the runner's message.
-    context.checkout.transfer = { ...context.checkout.commit, message: `${OWN_MESSAGE}Change-Id: I0123\n` };
+    // The worker commits with hooks off, so anything appended (another issue it closes, say) is not the runner's.
+    for (const message of [`${OWN_MESSAGE}Closes #8\n`, OWN_MESSAGE.trimEnd(), `${OWN_MESSAGE}\n`]) {
+      const appended = await setup({ phase: 'COMMIT' });
+      await appended.engine.advance(appended.row());
+      appended.checkout.transfer = { ...appended.checkout.commit, message };
+      await appended.run();
+      expect(appended.outcome.code, JSON.stringify(message)).toBe('COMMIT_UNVERIFIED');
+      expect(appended.count('git_push')).toBe(0);
+    }
     await context.run();
     expect(context.outcome).toMatchObject({ state: 'COMPLETED' });
 
@@ -432,9 +445,38 @@ describe('CodingWorkflowEngine', () => {
     expect(forged.count('git_push')).toBe(0);
   });
 
-  it('stops a push whose transfer clone keeps failing before it can be inspected', async () => {
+  it('builds the commit message in the form Git stores it, whatever whitespace the rule name holds', async () => {
+    expect(codingCommitMessage(7, '  Fix  \n\n\n issues\t', WORKFLOW)).toBe(codingCommitMessage(7, 'Fix issues', WORKFLOW));
+    const message = codingCommitMessage(7, 'Fix\r\n\r\nissues', WORKFLOW);
+    // What `git commit -m` cleans up: trailing blanks on a line, and runs of blank lines.
+    expect(message).not.toMatch(/[ \t]$|\n\n\n/mu);
+    expect(message).toContain('automation "Fix issues".');
+  });
+
+  it('counts only failures to stage or read the transfer clone, in a row, and stops at the third', async () => {
     const context = await setup({ phase: 'COMMIT' });
     await context.engine.advance(context.row());
+    // Failures around the helper (a credential, the executor pause, the remote probe) never count.
+    for (const code of ['UNAVAILABLE', 'UNKNOWN_REMOTE_STATE', 'GITHUB_RATE_LIMITED', 'UNAVAILABLE']) {
+      context.checkout.publishFails = code;
+      await context.engine.advance(context.row());
+    }
+    expect(context.row()).toMatchObject({ coding_phase: 'PUSH', push_unverified_attempts: 0 });
+    expect(context.outcome.state).toBe('RUNNING');
+    delete context.checkout.publishFails;
+
+    // Two staging failures, then an attempt that reaches the clone: the count starts over.
+    context.checkout.stageFails = true;
+    await context.engine.advance(context.row());
+    await context.engine.advance(context.row());
+    expect(context.row()).toMatchObject({ push_unverified_attempts: 2 });
+    context.checkout.stageFails = false;
+    context.handlers.git_push = () => ({ ok: false, error: { code: 'UNAVAILABLE', retryable: true } });
+    await context.engine.advance(context.row());
+    expect(context.row()).toMatchObject({ coding_phase: 'PUSH', push_unverified_attempts: 0 });
+    expect(context.outcome.state).toBe('RUNNING');
+
+    // Three in a row stop the push.
     context.checkout.stageFails = true;
     await context.engine.advance(context.row());
     await context.engine.advance(context.row());
@@ -443,8 +485,8 @@ describe('CodingWorkflowEngine', () => {
     await context.engine.advance(context.row());
     expect(context.outcome).toMatchObject({ state: 'FAILED', code: 'COMMIT_UNVERIFIED' });
     expect(context.receipts().find((receipt) => receipt.step === 'push')).toMatchObject({ state: 'REJECTED', outcome: { errorCode: 'COMMIT_UNVERIFIED' } });
-    expect(context.count('git_push')).toBe(0);
-    expect(context.verifiers).toHaveLength(3);
+    expect(context.count('git_push')).toBe(1);
+    expect(context.verifiers).toHaveLength(10);
   });
 
   it('refuses the push as unverified when the verifier itself fails', async () => {
@@ -495,8 +537,16 @@ describe('CodingWorkflowEngine', () => {
     taken.handlers.git_push = () => ({ ok: false, error: { code: 'CONFLICT' } });
     taken.handlers.github_read = () => text(JSON.stringify({ exists: true, oid: 'f'.repeat(40) }));
     await taken.engine.advance(taken.row());
-    expect(taken.outcome.code).toBe('CODING_PUBLISH_FAILED');
-    expect(taken.receipts().find((receipt) => receipt.step === 'push')?.outcome.errorCode).toBe('BRANCH_EXISTS');
+    expect(taken.outcome).toMatchObject({ state: 'FAILED', code: 'BRANCH_EXISTS' });
+    expect(taken.receipts().find((receipt) => receipt.step === 'push')).toMatchObject({ state: 'REJECTED', outcome: { errorCode: 'BRANCH_EXISTS' } });
+
+    // A definite failure with the branch absent stays a publish failure.
+    const refusedByGitHub = await setup({ phase: 'COMMIT' });
+    await refusedByGitHub.engine.advance(refusedByGitHub.row());
+    refusedByGitHub.handlers.git_push = () => ({ ok: false, error: { code: 'FORBIDDEN', retryable: false } });
+    await refusedByGitHub.engine.advance(refusedByGitHub.row());
+    expect(refusedByGitHub.outcome.code).toBe('CODING_PUBLISH_FAILED');
+    expect(refusedByGitHub.receipts().find((receipt) => receipt.step === 'push')?.outcome.errorCode).toBe('FORBIDDEN');
 
     const absent = await setup({ phase: 'COMMIT' });
     await absent.engine.advance(absent.row());

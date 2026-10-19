@@ -124,7 +124,10 @@ async function publishFrom(target: { repository: string; base: string; sha: stri
         // The helper's answers carry no graft deprecation hint, whatever the checkout holds.
         expect(staged.stderr).not.toMatch(/graft/iu);
         const inspected = helper('inspect', target.repository, transfer, verifier.sha, verifier.base);
-        if (inspected.status !== 0) return { ok: false, error: { code: 'UNAVAILABLE', retryable: true } };
+        if (inspected.status !== 0) {
+          verifier.stagingFailed?.();
+          return { ok: false, error: { code: 'UNAVAILABLE', retryable: true } };
+        }
         if (await verifier.verify(parseTransferInspection(inspected.stdout, false)) !== null) return { ok: false, error: { code: 'FORBIDDEN', retryable: false } };
         const pushed = helper('push', target.repository, transfer, String(input.refspec), 'absent');
         if (pushed.status !== 0) return { ok: false, error: { code: 'CONFLICT', retryable: false } };

@@ -43,7 +43,19 @@ export type PushVerifier = {
   sha: string;
   base: string;
   verify(commit: CodingGitCommit | null): Promise<string | null>;
+  /**
+   * Told when the transfer helper failed to stage or inspect the clone, so nothing could be decided.
+   * Only those two steps report it: a failure around them (a credential, the executor pause, the remote
+   * probe) says nothing about the checkout.
+   */
+  stagingFailed?(): void;
 };
+
+/**
+ * The alternate refs command a checkout's configuration cannot replace: `true` lists no refs and prints
+ * nothing, where an empty value makes Git report that it cannot run the command.
+ */
+const NO_ALTERNATE_REFS = 'core.alternateRefsCommand=true';
 
 /** The only Git subcommands the inspection port runs; the workspace service refuses anything else. */
 export const CODING_GIT_SUBCOMMANDS = new Set(['rev-parse', 'status', 'cat-file', 'diff-tree']);
@@ -67,7 +79,7 @@ export const CODING_GIT_ENV: readonly string[] = [
 export const CODING_GIT_ARGS: readonly string[] = [
   '--no-replace-objects', '--git-dir=.git', '--work-tree=.',
   '-c', 'core.useReplaceRefs=false', '-c', 'diff.relative=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
-  '-c', 'core.pager=cat', '-c', 'core.quotePath=false', '-c', 'core.alternateRefsCommand=', '-c', 'core.alternateRefsPrefixes='
+  '-c', 'core.pager=cat', '-c', 'core.quotePath=false', '-c', NO_ALTERNATE_REFS, '-c', 'core.alternateRefsPrefixes='
 ];
 
 const SHA = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;

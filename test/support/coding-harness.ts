@@ -269,7 +269,10 @@ class LocalWorkspaces {
     const staged = join(record.workspacePath, `git-transfer-${randomBytes(6).toString('hex')}`);
     try {
       const cloned = cleanGit(record.workspacePath, ['clone', '--quiet', '--bare', '--no-local', '--', this.checkout(workspaceId), staged]);
-      if (cloned.status !== 0) return fail('UNAVAILABLE', true);
+      if (cloned.status !== 0) {
+        verifier.stagingFailed?.();
+        return fail('UNAVAILABLE', true);
+      }
       this.transferInspections += 1;
       let refusal: string | null;
       try {

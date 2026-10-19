@@ -37,14 +37,15 @@ EOF
 # core.useReplaceRefs would otherwise re-enable them), so every read sees the objects a push sends.
 # The checkout's configuration is the agent's to write, so every setting through which Git would run a
 # command it names is overridden: hooks, fsmonitor, and the command that lists an alternate's refs
-# when a fetch into a checkout with an alternates file negotiates. The graft file names a path that can
-# never exist (below /dev/null), so Git reads no grafts and prints no graft deprecation hint into an answer;
-# an existing empty file would print that hint from every process, upload-pack included, which ignores
-# the advice setting.
+# when a fetch into a checkout with an alternates file negotiates (`true` lists none and prints nothing,
+# where an empty value makes Git report it cannot run the command). The graft file names a path that
+# can never exist (below /dev/null), so Git reads no grafts and prints no graft deprecation hint into an
+# answer; an existing empty file would print that hint from every process, upload-pack included, which
+# ignores the advice setting.
 git_clean() {
   GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null/no-grafts \
     git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.useReplaceRefs=false -c diff.relative=false \
-    -c core.alternateRefsCommand= -c core.alternateRefsPrefixes= -c advice.graftFileDeprecated=false \
+    -c core.alternateRefsCommand=true -c core.alternateRefsPrefixes= -c advice.graftFileDeprecated=false \
     -c credential.helper= -c http.followRedirects=false "$@"
 }
 
@@ -117,7 +118,7 @@ case $mode in
     # a checkout's core.useReplaceRefs or grafts would otherwise reshape the history it sends.
     if [[ $argument == isolated ]]; then
       git_clean clone --bare --no-local \
-        --upload-pack='env GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null/no-grafts git -c core.useReplaceRefs=false -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.alternateRefsCommand= -c core.alternateRefsPrefixes= -c advice.graftFileDeprecated=false upload-pack' \
+        --upload-pack='env GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null/no-grafts git -c core.useReplaceRefs=false -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.alternateRefsCommand=true -c core.alternateRefsPrefixes= -c advice.graftFileDeprecated=false upload-pack' \
         -- "$repository_path" "$transfer_path"
     else
       git_clean clone --bare -- "$repository_path" "$transfer_path"

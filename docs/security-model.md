@@ -368,15 +368,18 @@ runner publishes":
   shared object files or alternates), then the transfer helper reads the raw
   commit object and the paths it changes there, with replace objects and
   grafts off. The commit must have exactly one parent, the base. Its author and
-  committer must be the runner's identity, and its message must begin with
-  the runner's message, which carries this run's `Cloud-Harness-Workflow`
-  trailer. Every path it changes is gated again, and the listing must be
+  committer must be the runner's identity, and its message must be exactly the
+  runner's message, which carries this run's `Cloud-Harness-Workflow`
+  trailer (the worker commits with hooks off, so nothing may append to it). Every path it changes is gated again, and the listing must be
   complete. On a refusal (`COMMIT_UNVERIFIED`, `PATHS_UNVERIFIABLE` or
   `ACTION_DENIED:PATH_OUT_OF_SCOPE`) the clone is discarded and nothing is
   pushed ([`worker/git-transfer-helper.sh`](../worker/git-transfer-helper.sh),
   [`test/integration/coding-publish.docker.test.ts`](../test/integration/coding-publish.docker.test.ts)).
-  A staged copy that repeatedly cannot be made or read stops the run as
-  `COMMIT_UNVERIFIED` instead of being retried until the run times out. The
+  When the transfer helper fails to stage or read the copy three attempts in a
+  row, the run stops as `COMMIT_UNVERIFIED` instead of retrying until it times
+  out; failures around the helper, such as a credential or the remote probe,
+  are not counted. A branch that already holds another commit is never
+  overwritten, and the run stops as `BRANCH_EXISTS`. The
   helper also overrides the settings through which a checkout's configuration
   would make Git run a command (hooks, fsmonitor, the alternate refs command).
   It does not serialise transfers: the clone is staged in the workspace's job

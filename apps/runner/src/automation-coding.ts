@@ -29,8 +29,8 @@ const VERIFY_TIMEOUT_MS = 300_000;
 /** Delay before a step that hit a transient failure runs again. The gate's run-time budget bounds the retries. */
 const STEP_RETRY_MS = 5_000;
 /**
- * Push attempts that may end before the staged transfer clone is inspected (staging or reading it
- * failed) before the push is refused as unverifiable.
+ * Push attempts in a row whose transfer clone the helper could not stage or read before the push is
+ * refused as unverifiable.
  */
 const MAX_UNVERIFIED_PUSH_ATTEMPTS = 3;
 /** Delay before a run held back by the concurrency limit asks to be admitted again. */
@@ -137,14 +137,16 @@ export const CODING_COMMIT_AUTHOR = { name: 'Cloud Harness Automation', email: '
 const CODING_COMMIT_IDENTITY = `${CODING_COMMIT_AUTHOR.name} <${CODING_COMMIT_AUTHOR.email}>`;
 
 /**
- * The message the runner commits with. A published commit's message must begin with it; Git may only
- * append (a repository's commit-msg hook adding a trailer), never change what the runner wrote.
+ * The message the runner commits with, already in the form Git stores it: the rule name's whitespace is
+ * collapsed to single spaces (a name may hold newlines or runs of blanks, which `git commit -m` would
+ * clean up), so a published commit's message must equal it exactly, plus Git's final newline. The
+ * worker commits with hooks off, so nothing appends to it.
  */
 export function codingCommitMessage(resourceNumber: number, ruleName: string, workflowId: string): string {
   return [
     `fix: resolve issue #${resourceNumber}`,
     '',
-    `Automated change by the Cloud Harness coding automation "${ruleName}".`,
+    `Automated change by the Cloud Harness coding automation "${ruleName.replace(/\s+/gu, ' ').trim()}".`,
     '',
     `Closes #${resourceNumber}`,
     '',
@@ -537,7 +539,7 @@ export class CodingWorkflowEngine {
     // anything, and a replay that finds its own commit there is recognised by the reconciliation below.
     // The source is the commit id, so whatever HEAD points at now is never published. What is published
     // is decided on the staged transfer clone the push sends from, before every attempt that sends.
-    const decided: { inspected: boolean; refusal: string | null } = { inspected: false, refusal: null };
+    const decided: { inspected: boolean; stagingFailed: boolean; refusal: string | null } = { inspected: false, stagingFailed: false, refusal: null };
     const pushed = await publish(row.owner_id, {
       workspaceId, refspec: `${commitSha}:refs/heads/${branch}`, forceWithLease: true, expectedAbsent: true, idempotencyKey: key
     }, {
@@ -552,8 +554,11 @@ export class CodingWorkflowEngine {
           decided.refusal = 'COMMIT_UNVERIFIED';
         }
         return decided.refusal;
-      }
+      },
+      stagingFailed: () => { decided.stagingFailed = true; }
     });
+    // An attempt that reached the clone shows the checkout can be staged and read: the count starts over.
+    if (decided.inspected && (row.push_unverified_attempts ?? 0) > 0) this.host.update(row.id, { push_unverified_attempts: 0 });
     if (decided.refusal !== null) return this.refused(row, binding, record, decided.refusal, startedAt);
     if (pushed.ok) {
       this.broker.settle(binding, record, 'APPLIED', { branch, commitSha }, startedAt);
@@ -570,10 +575,10 @@ export class CodingWorkflowEngine {
       return this.stepFailed(row, binding, record, pushed, startedAt);
     }
     if (remote.oid === null && ambiguous) {
-      // The transfer clone was never inspected: staging or reading it failed, which the checkout can cause
-      // deterministically. Such attempts are counted, and the push stops instead of retrying until the
-      // run's time runs out.
-      if (!decided.inspected) {
+      // The transfer helper could not stage or read the clone, which the checkout can cause deterministically.
+      // Such attempts in a row are counted, and the push stops instead of retrying until the run's time runs
+      // out. A failure around the helper (a credential, the executor pause, the remote probe) is not counted.
+      if (decided.stagingFailed) {
         const attempts = (row.push_unverified_attempts ?? 0) + 1;
         if (attempts >= MAX_UNVERIFIED_PUSH_ATTEMPTS) return this.refused(row, binding, record, 'COMMIT_UNVERIFIED', startedAt);
         this.host.update(row.id, { push_unverified_attempts: attempts });
@@ -583,8 +588,10 @@ export class CodingWorkflowEngine {
       this.retryLater(row);
       return;
     }
-    // The branch is absent after a definite failure, or holds another commit: never overwritten.
-    this.stepFailed(row, binding, record, remote.oid === null ? pushed : { ok: false, error: { code: 'BRANCH_EXISTS' } }, startedAt);
+    // The branch holds another commit: it is never overwritten, and the run stops as the branch's.
+    if (remote.oid !== null) return this.refused(row, binding, record, 'BRANCH_EXISTS', startedAt);
+    // The branch is absent after a definite failure.
+    this.stepFailed(row, binding, record, pushed, startedAt);
   }
 
   private async openPullRequest(row: CodingWorkflowRow, binding: CodingBinding): Promise<void> {
@@ -679,11 +686,11 @@ export class CodingWorkflowEngine {
 
   /**
    * Whether a commit is this workflow's own: exactly one parent, the base; the runner's identity as both
-   * author and committer; a message that begins with the runner's message (which carries the workflow
-   * trailer); and a complete, gateable list of the paths it changes. Null when it is.
+   * author and committer; exactly the runner's message (which carries the workflow trailer); and a
+   * complete, gateable list of the paths it changes. Null when it is.
    */
   private ownCommitRefusal(row: CodingWorkflowRow, base: string, commit: CodingGitCommit): 'COMMIT_UNVERIFIED' | 'PATHS_UNVERIFIABLE' | null {
-    const own = commit.message.startsWith(`${this.commitMessage(row)}\n`)
+    const own = commit.message === `${this.commitMessage(row)}\n`
       && commit.author === CODING_COMMIT_IDENTITY && commit.committer === CODING_COMMIT_IDENTITY;
     if (commit.sha === base || commit.parents.length !== 1 || commit.parents[0] !== base || !own) return 'COMMIT_UNVERIFIED';
     if (commit.truncated || commit.paths.length === 0 || !verifiablePaths(commit.paths)) return 'PATHS_UNVERIFIABLE';

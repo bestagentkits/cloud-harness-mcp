@@ -2237,10 +2237,11 @@ export class WorkspaceService {
         '--volume', `${record.workspacePath}:/job:rw`, '--entrypoint', '/opt/harness/git-transfer-helper.sh',
         this.config.executorImage, mode, record.repositoryUrl, checkoutJobPath(record), `/job/${transferName}`, argument, expectedRemoteOid ?? '', historySpec
       ], {
-        // An inspection is decided on, not shown: it is capped like the runner's checkout reads (its commit
-        // object and its path listing each within the cap of their own read there), never by the operator's
-        // output cap, so a commit that passed the checkout gate is not refused at push for its size.
-        stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: mode === 'inspect' ? 2 * CODING_GIT_MAX_BYTES : this.config.maxOutputBytes,
+        // An inspection is decided on, not shown, so it is never capped by the operator's output cap: a commit
+        // that passed the checkout gate must not be refused at push for its size. Its answer holds the commit
+        // object in base64 (4/3 of its size) and the path listing, each read within CODING_GIT_MAX_BYTES on
+        // the checkout, so three times that cap holds both (4/3 + 1, with room for the framing lines).
+        stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: mode === 'inspect' ? 3 * CODING_GIT_MAX_BYTES : this.config.maxOutputBytes,
         ...(signal ? { signal } : {})
       });
       if (result.exitCode !== 0) {
@@ -2517,7 +2518,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (source !== verifier.sha || !isCommitSha(verifier.sha) || !isCommitSha(verifier.base)) {
       throw new HarnessError('INVALID_INPUT', 'a verified push must name the verified commit id as its source', 400, false);
     }
-    const inspected = await this.runGitTransferHelper(record, 'inspect', transferName, verifier.sha, undefined, verifier.base, signal);
+    const inspected = await this.runGitTransferHelper(record, 'inspect', transferName, verifier.sha, undefined, verifier.base, signal)
+      .catch((error: unknown) => { verifier.stagingFailed?.(); throw error; });
     let refusal: string | null;
     try {
       refusal = await verifier.verify(parseTransferInspection(inspected.stdout, inspected.truncated));
@@ -2661,12 +2663,13 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       // A verified push stages an isolated copy (no object files shared with the checkout), so the commit
       // inspected below is exactly what the push sends even after the executor resumes.
       const stageArgument = verifier ? 'isolated' : '';
+      // Only the helper's own failure is reported to the verifier, not the executor pause around it.
+      const stage = async () => await this.runGitTransferHelper(record, 'stage-push', transferName, stageArgument, undefined, undefined, signal)
+        .catch((error: unknown) => { verifier?.stagingFailed?.(); throw error; });
       if (record.containerName) {
-        await this.withPausedExecutor(record, async () =>
-          await this.runGitTransferHelper(record, 'stage-push', transferName, stageArgument, undefined, undefined, signal)
-        );
+        await this.withPausedExecutor(record, stage);
       } else {
-        await this.runGitTransferHelper(record, 'stage-push', transferName, stageArgument, undefined, undefined, signal);
+        await stage();
       }
       if (verifier) await this.verifyStagedPush(record, transferName, pushedSource, verifier, signal);
       let pushed: { exitCode: number; stdout: string; stderr: string; truncated: boolean };

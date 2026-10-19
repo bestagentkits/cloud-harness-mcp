@@ -180,7 +180,7 @@ describe('verified git_push', () => {
     expect(inspect[inspect.indexOf('--network') + 1]).toBe('none');
     // The inspection is capped like the runner's own Git reads, not by the operator's output cap.
     const inspectOptions = docker.runDocker.mock.calls.find(([args]) => transferMode(args as string[]) === 'inspect')![1] as { maxBytes: number };
-    expect(inspectOptions.maxBytes).toBe(2 * 1_048_576);
+    expect(inspectOptions.maxBytes).toBe(3 * 1_048_576);
     const pushOptions = docker.runDocker.mock.calls.find(([args]) => transferMode(args as string[]) === 'push')![1] as { maxBytes: number };
     expect(pushOptions.maxBytes).toBe(262_144);
     expect(verify).toHaveBeenCalledWith({
@@ -209,6 +209,28 @@ describe('verified git_push', () => {
     await expect(push(service, principalSelector, workspaceId, async () => { throw new Error('boom'); }))
       .rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining('COMMIT_UNVERIFIED') });
     expect(modes()).not.toContain('push');
+  });
+
+  it('reports only a failed stage or inspection as a staging failure, not a failure around them', async () => {
+    const { service, principalSelector, workspaceId } = fixture();
+    const attempt = async (fails: (args: string[]) => boolean) => {
+      vi.clearAllMocks();
+      docker.runDocker.mockImplementation(async (args: string[]) => {
+        if (fails(args)) return { stdout: '', stderr: 'fatal: broken', exitCode: 1, truncated: false };
+        if (args[0] === 'exec' && args.includes('rev-parse')) return ok(`${SHA}\n`);
+        return ok();
+      });
+      const stagingFailed = vi.fn();
+      await expect(service.execute(principalSelector, 'git_push', { workspaceId, remote: 'origin', refspec: `${SHA}:refs/heads/feat`, expectedAbsent: true, forceWithLease: true }, undefined, {
+        pushVerifier: { sha: SHA, base: BASE, verify: async () => null, stagingFailed }
+      })).rejects.toBeInstanceOf(HarnessError);
+      return stagingFailed;
+    };
+    expect(await attempt((args) => transferMode(args) === 'stage-push')).toHaveBeenCalledTimes(1);
+    expect(await attempt((args) => transferMode(args) === 'inspect')).toHaveBeenCalledTimes(1);
+    expect(await attempt((args) => args[0] === 'pause')).not.toHaveBeenCalled();
+    broker.mintPrincipalRepositoryToken.mockRejectedValueOnce(new HarnessError('UNAVAILABLE', 'GitHub is down', 503, true));
+    expect(await attempt(() => false)).not.toHaveBeenCalled();
   });
 
   it('refuses a verified push whose source is not the verified commit', async () => {
