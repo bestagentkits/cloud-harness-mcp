@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -15,7 +15,14 @@ const docker = vi.hoisted(() => ({
   failCloneAlias: undefined as string | undefined,
   onClone: undefined as ((destination: string) => void) | undefined,
   onWorker: undefined as ((operation: string, root: string) => void) | undefined,
+  workerHandler: undefined as ((operation: string, root: string, input: Record<string, unknown>) => Record<string, unknown> | undefined) | undefined,
+  onCommand: undefined as ((args: string[]) => void) | undefined,
+  failPause: false,
+  psOutput: '',
   runDocker: vi.fn(async (args: string[], options?: { stdin?: string }) => {
+    docker.onCommand?.(args);
+    if (args[0] === 'pause' && docker.failPause) return { stdout: '', stderr: 'cannot pause', exitCode: 1, truncated: false };
+    if (args[0] === 'ps') return { stdout: docker.psOutput, stderr: '', exitCode: 0, truncated: false };
     if (args.includes('/opt/harness/clone-helper.sh')) {
       // The host side of `<host>:/job` may itself contain a drive colon.
       const volume = args[args.indexOf('--volume') + 1]!;
@@ -35,9 +42,10 @@ const docker = vi.hoisted(() => ({
     if (args.includes('branch') && args.includes('--show-current')) return { stdout: 'main\n', stderr: '', exitCode: 0, truncated: false };
     if (args.includes('/opt/harness/worker-runner.sh')) {
       const root = args.find((value) => value.startsWith('CH_WORKSPACE_ROOT='))?.slice('CH_WORKSPACE_ROOT='.length) ?? '/workspace';
-      const operation = (JSON.parse(options?.stdin ?? '{}') as { operation?: string }).operation ?? '';
+      const request = JSON.parse(options?.stdin ?? '{}') as { operation?: string; input?: Record<string, unknown> };
+      const operation = request.operation ?? '';
       docker.onWorker?.(operation, root);
-      const result = docker.workerResults.get(`${operation}:${root}`) ?? docker.workerResult;
+      const result = docker.workerHandler?.(operation, root, request.input ?? {}) ?? docker.workerResults.get(`${operation}:${root}`) ?? docker.workerResult;
       return { stdout: JSON.stringify(result), stderr: '', exitCode: 0, truncated: false };
     }
     if (args[0] === 'create') return { stdout: 'container-created\n', stderr: '', exitCode: 0, truncated: false };
@@ -126,6 +134,14 @@ function checkout(jobsRoot: string, workspaceId: string, alias: string): string 
   return join(jobsRoot, workspaceId, 'repo', 'repos', alias);
 }
 
+function stagingDirectories(jobsRoot: string, workspaceId: string): string[] {
+  return readdirSync(join(jobsRoot, workspaceId)).filter((name) => name.startsWith('repository-add-'));
+}
+
+function dockerVerbs(): string[] {
+  return docker.runDocker.mock.calls.map((call) => (call[0].includes('/opt/harness/worker-runner.sh') ? `${call[0][0]}:worker` : call[0][0]!));
+}
+
 function clones() {
   return docker.runDocker.mock.calls.filter((call) => call[0].includes('/opt/harness/clone-helper.sh'));
 }
@@ -152,6 +168,10 @@ afterEach(() => {
   docker.failCloneAlias = undefined;
   docker.onClone = undefined;
   docker.onWorker = undefined;
+  docker.workerHandler = undefined;
+  docker.onCommand = undefined;
+  docker.failPause = false;
+  docker.psOutput = '';
   vi.clearAllMocks();
   for (const store of openStores.splice(0)) {
     try { store.close(); } catch { /* already closed */ }
@@ -171,10 +191,13 @@ describe('workspace_repo_add', () => {
     expect(data.repositories.map((entry) => entry.alias)).toEqual(['api', 'web', 'docs']);
     expect(existsSync(checkout(jobsRoot, workspaceId, 'docs'))).toBe(true);
 
+    // The clone lands in a staging directory outside the executor's mount, which is gone afterwards.
     const clone = clones().at(-1)![0];
-    expect(clone.slice(-5, -3)).toEqual(['https://github.com/acme/docs.git', '/job/repo/repos/docs']);
+    expect(clone.at(-5)).toBe('https://github.com/acme/docs.git');
+    expect(clone.at(-4)).toMatch(/^\/job\/repository-add-[0-9a-f]{24}\/docs$/);
     expect(clone.at(-3)).toBe('main');
     expect(clone.join(' ')).not.toContain('mock-token');
+    expect(stagingDirectories(jobsRoot, workspaceId)).toEqual([]);
 
     const rows = store.workspaceRepositories(workspaceId);
     expect(rows.map((row) => [row.alias, row.position, row.primary])).toEqual([['api', 0, true], ['web', 1, false], ['docs', 2, false]]);
@@ -268,21 +291,72 @@ describe('workspace_repo_add', () => {
     expect(store.workspaceRepositories(workspaceId)).toHaveLength(2);
   });
 
-  it('unlinks a symlink swapped in for the new checkout without following it', async () => {
+  it('refuses a link placed at the new checkout path during the clone and leaves it and its target alone', async () => {
     const { service, store, jobsRoot } = fixture();
     const { workspaceId } = await openMulti(service);
     const api = checkout(jobsRoot, workspaceId, 'api');
     writeFileSync(join(api, 'keep.txt'), 'untouched');
+    docker.onClone = () => symlinkSync(api, checkout(jobsRoot, workspaceId, 'docs'), 'junction');
+
+    await expect(service.execute(principal, 'workspace_repo_add', addDocs(workspaceId)))
+      .rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('repos/docs already exists') });
+    expect(lstatSync(checkout(jobsRoot, workspaceId, 'docs')).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(api, 'keep.txt'), 'utf8')).toBe('untouched');
+    expect(store.workspaceRepositories(workspaceId)).toHaveLength(2);
+    expect(stagingDirectories(jobsRoot, workspaceId)).toEqual([]);
+  });
+
+  it('never removes a directory the executor created at the checkout path while the clone ran', async () => {
+    const { service, store, jobsRoot } = fixture();
+    const { workspaceId } = await openMulti(service);
     docker.onClone = () => {
-      rmSync(checkout(jobsRoot, workspaceId, 'docs'), { recursive: true });
-      symlinkSync(api, checkout(jobsRoot, workspaceId, 'docs'), 'junction');
+      mkdirSync(checkout(jobsRoot, workspaceId, 'docs'));
+      writeFileSync(join(checkout(jobsRoot, workspaceId, 'docs'), 'draft.md'), 'mine');
     };
 
     await expect(service.execute(principal, 'workspace_repo_add', addDocs(workspaceId)))
-      .rejects.toMatchObject({ code: 'CONFLICT' });
-    expect(existsSync(checkout(jobsRoot, workspaceId, 'docs'))).toBe(false);
-    expect(readFileSync(join(api, 'keep.txt'), 'utf8')).toBe('untouched');
+      .rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('repos/docs already exists') });
+    expect(readFileSync(join(checkout(jobsRoot, workspaceId, 'docs'), 'draft.md'), 'utf8')).toBe('mine');
+    expect(existsSync(join(checkout(jobsRoot, workspaceId, 'docs'), '.git'))).toBe(false);
     expect(store.workspaceRepositories(workspaceId)).toHaveLength(2);
+    expect(stagingDirectories(jobsRoot, workspaceId)).toEqual([]);
+  });
+
+  it('rolls back only the directory it placed, not one that replaced it', async () => {
+    const { service, store, jobsRoot } = fixture();
+    const { workspaceId } = await openMulti(service);
+    const docs = checkout(jobsRoot, workspaceId, 'docs');
+    vi.spyOn(store, 'addWorkspaceRepository').mockImplementationOnce(() => {
+      renameSync(docs, `${docs}-placed`);
+      mkdirSync(docs);
+      writeFileSync(join(docs, 'draft.md'), 'mine');
+      throw new Error('registry write failed');
+    });
+
+    await expect(service.execute(principal, 'workspace_repo_add', addDocs(workspaceId))).rejects.toThrow('registry write failed');
+    expect(readFileSync(join(docs, 'draft.md'), 'utf8')).toBe('mine');
+    expect(store.workspaceRepositories(workspaceId)).toHaveLength(2);
+  });
+
+  it('places the checkout with the executor paused and refuses when it cannot be paused', async () => {
+    const { service, store, jobsRoot } = fixture();
+    const { workspaceId } = await openMulti(service);
+    docker.onCommand = (args) => {
+      if (args[0] === 'pause') expect(existsSync(checkout(jobsRoot, workspaceId, 'docs'))).toBe(false);
+      if (args[0] === 'unpause') expect(store.workspaceRepositories(workspaceId)).toHaveLength(3);
+    };
+    await service.execute(principal, 'workspace_repo_add', addDocs(workspaceId));
+    const verbs = dockerVerbs();
+    expect(verbs.indexOf('pause')).toBeGreaterThan(verbs.lastIndexOf('run'));
+    expect(verbs.at(-1)).toBe('unpause');
+
+    docker.onCommand = undefined;
+    docker.failPause = true;
+    await expect(service.execute(principal, 'workspace_repo_add', { ...addDocs(workspaceId, 'add-notes-1'), alias: 'notes', url: 'https://github.com/acme/notes.git' }))
+      .rejects.toMatchObject({ code: 'UNAVAILABLE', message: expect.stringContaining('could not be paused') });
+    expect(existsSync(checkout(jobsRoot, workspaceId, 'notes'))).toBe(false);
+    expect(store.workspaceRepositories(workspaceId)).toHaveLength(3);
+    expect(stagingDirectories(jobsRoot, workspaceId)).toEqual([]);
   });
 
   it('refuses when the checkout path already holds the caller\'s data, and leaves it in place', async () => {
@@ -415,6 +489,110 @@ describe('workspace_repo_remove', () => {
     expect(store.workspaceRepositories(workspaceId)).toHaveLength(2);
   });
 
+  it('keeps the executor paused from the unsaved-work check until the directory is gone', async () => {
+    const { service, jobsRoot } = fixture();
+    const { workspaceId } = await openMulti(service);
+    docker.onCommand = (args) => {
+      if (args[0] === 'unpause') expect(existsSync(checkout(jobsRoot, workspaceId, 'web'))).toBe(false);
+    };
+    const before = docker.runDocker.mock.calls.length;
+    await service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-frozen' });
+
+    const calls = docker.runDocker.mock.calls.slice(before).map((call) => call[0]);
+    const verbs = calls.map((args) => args[0]);
+    expect(verbs[0]).toBe('pause');
+    expect(verbs.at(-1)).toBe('unpause');
+    // A paused executor takes no exec, so the check runs in a read-only helper inside the frozen window.
+    const check = calls.find((args) => args.includes('/opt/harness/worker-runner.sh'))!;
+    expect(check[0]).toBe('run');
+    expect(check).toContain(`${join(jobsRoot, workspaceId)}/repo:/workspace:ro`);
+    expect(calls.some((args) => args[0] === 'exec')).toBe(false);
+  });
+
+  it('refuses, and changes nothing, when the executor cannot be paused or another container uses the tree', async () => {
+    const { service, store, jobsRoot } = fixture();
+    const { workspaceId } = await openMulti(service);
+    docker.failPause = true;
+    const checksBefore = workerCalls().length;
+    await expect(service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-unpaused' }))
+      .rejects.toMatchObject({ code: 'UNAVAILABLE', message: expect.stringContaining('could not be paused') });
+    expect(workerCalls()).toHaveLength(checksBefore);
+
+    docker.failPause = false;
+    docker.psOutput = 'chm-priv-other\t\n';
+    await expect(service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-busy-tree' }))
+      .rejects.toMatchObject({ code: 'CONFLICT', retryable: true, message: expect.stringContaining('chm-priv-other') });
+    expect(existsSync(checkout(jobsRoot, workspaceId, 'web'))).toBe(true);
+    expect(store.workspaceRepositories(workspaceId)).toHaveLength(2);
+    expect(dockerVerbs().at(-1)).toBe('unpause');
+
+    // Agent containers mount no workspace tree, so they do not hold the change back.
+    docker.psOutput = 'chm-agent-1\ttrue\n';
+    const removed = await service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-busy-tree' });
+    expect(removed.data).toMatchObject({ checkoutRemoved: true });
+  });
+
+  it('refuses while a privileged helper writes to the tree, and no helper starts while it is frozen', async () => {
+    const { service, store } = fixture();
+    const { workspaceId } = await openMulti(service);
+    const writers = service as unknown as { claimTreeWriter(record: { id: string }): () => void };
+    const release = writers.claimTreeWriter({ id: workspaceId });
+    await expect(service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-writer' }))
+      .rejects.toMatchObject({ code: 'CONFLICT', retryable: true, message: expect.stringContaining('privileged command') });
+    expect(store.workspaceRepositories(workspaceId)).toHaveLength(2);
+    release();
+
+    let startedWhileFrozen: unknown;
+    docker.onWorker = (operation) => {
+      if (operation !== 'workspace_recover') return;
+      try { writers.claimTreeWriter({ id: workspaceId })(); } catch (error) { startedWhileFrozen = error; }
+    };
+    await service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-writer' });
+    expect(startedWhileFrozen).toMatchObject({ code: 'CONFLICT', retryable: true });
+    expect(() => writers.claimTreeWriter({ id: workspaceId })()).not.toThrow();
+  });
+
+  it('refuses, and deletes nothing outside, when a link replaces the checkout after its path was verified', async () => {
+    const { service, store, jobsRoot } = fixture();
+    const { workspaceId } = await openMulti(service);
+    const web = checkout(jobsRoot, workspaceId, 'web');
+    const outside = join(jobsRoot, '..', 'outside-target');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'state.db'), 'precious');
+    docker.onWorker = (operation, root) => {
+      if (operation !== 'workspace_recover' || root !== '/workspace/repos/web') return;
+      renameSync(web, `${web}-moved`);
+      symlinkSync(outside, web, 'junction');
+    };
+
+    await expect(service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-swapped' }))
+      .rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(readFileSync(join(outside, 'state.db'), 'utf8')).toBe('precious');
+    expect(lstatSync(web).isSymbolicLink()).toBe(true);
+    expect(store.workspaceRepositories(workspaceId)).toHaveLength(2);
+  });
+
+  it('unlinks a link inside the checkout without following it out of the workspace', async () => {
+    const { service, store, jobsRoot } = fixture();
+    const { workspaceId } = await openMulti(service);
+    const web = checkout(jobsRoot, workspaceId, 'web');
+    mkdirSync(join(web, 'src'));
+    const outside = join(jobsRoot, '..', 'outside-target');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'state.db'), 'precious');
+    docker.onWorker = (operation, root) => {
+      if (operation !== 'workspace_recover' || root !== '/workspace/repos/web') return;
+      rmSync(join(web, 'src'), { recursive: true });
+      symlinkSync(outside, join(web, 'src'), 'junction');
+    };
+
+    const result = await service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-inner-link' });
+    expect(result.data).toMatchObject({ checkoutRemoved: true });
+    expect(existsSync(web)).toBe(false);
+    expect(readFileSync(join(outside, 'state.db'), 'utf8')).toBe('precious');
+    expect(store.workspaceRepositories(workspaceId)).toHaveLength(1);
+  });
+
   it('unregisters a checkout whose directory is already gone', async () => {
     const { service, store, jobsRoot } = fixture();
     const { workspaceId } = await openMulti(service);
@@ -468,6 +646,40 @@ describe('scope "all" search', () => {
 
     await expect(service.execute(principal, 'symbols_references', { workspaceId, symbol: 'x', scope: 'all', cursor: 'repo_unknown' }))
       .rejects.toMatchObject({ code: 'INVALID_INPUT', message: expect.stringContaining('cursor') });
+  });
+
+  it('reports a grep cut by the budget as truncated although the worker cuts silently', async () => {
+    const { service } = fixture();
+    const { workspaceId, repositories } = await openMulti(service);
+    const [api, web] = repositories.map((entry) => entry.repositoryId);
+    const lines: Record<string, number> = { '/workspace/repos/api': 2, '/workspace/repos/web': 5 };
+    // Like the real worker: slice to maxResults and report truncation only for the byte cap.
+    docker.workerHandler = (operation, root, input) => operation === 'grep_search'
+      ? {
+          ok: true,
+          message: 'Search complete',
+          data: { matches: Array.from({ length: lines[root] ?? 0 }, (_, index) => `${root}/f.ts:${index + 1}:1:x`).slice(0, input.maxResults as number) },
+          truncated: false
+        }
+      : undefined;
+
+    const first = await service.execute(principal, 'grep_search', { workspaceId, pattern: 'x', scope: 'all', maxResults: 4 });
+    expect((first.data as { matches: unknown[] }).matches).toHaveLength(4);
+    expect((first.data as { repositories: unknown[] }).repositories).toEqual([
+      { repositoryId: api, alias: 'api', results: 2, truncated: false },
+      { repositoryId: web, alias: 'web', results: 2, truncated: true }
+    ]);
+    expect(first.truncated).toBe(true);
+    expect(first).not.toHaveProperty('cursor');
+
+    // An exact fit is not a cut.
+    const exact = await service.execute(principal, 'grep_search', { workspaceId, pattern: 'x', scope: 'all', maxResults: 5, cursor: web });
+    expect((exact.data as { repositories: unknown[] }).repositories).toEqual([{ repositoryId: web, alias: 'web', results: 5, truncated: false }]);
+    expect(exact.truncated).toBe(false);
+
+    // Without the scope the worker sees the caller's maxResults unchanged.
+    await service.execute(principal, 'grep_search', { workspaceId, pattern: 'x', maxResults: 4 });
+    expect(JSON.parse(workerCalls().at(-1)![1]!.stdin!).input).toMatchObject({ maxResults: 4 });
   });
 
   it('attributes symbols and reports a failing checkout beside the others', async () => {

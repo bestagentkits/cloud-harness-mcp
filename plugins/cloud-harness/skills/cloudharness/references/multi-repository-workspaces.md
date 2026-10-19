@@ -60,7 +60,9 @@ handle-based calls take no selector.
 Both tools need an `idempotencyKey`, apply only to a multi-repository
 workspace, and replay the first result for a repeated key. A close, expiry, or
 recovery during the change returns `EXPIRED` and changes nothing; another
-change in flight returns a retryable `CONFLICT`.
+change in flight returns a retryable `CONFLICT`. Each change briefly pauses
+the executor, so a running command stalls for a moment; it is a retryable
+`CONFLICT` while a privileged command or helper container uses the tree.
 
 <!-- cloudharness-tool:workspace_repo_add -->
 ### `workspace_repo_add`

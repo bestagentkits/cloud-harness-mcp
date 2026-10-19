@@ -415,6 +415,7 @@ File and command tools without `repositoryId` work on the workspace root, so pat
 - `repository <alias>: ...` means the clone failed. Only the new checkout was removed, and nothing was registered, so you can retry with the same idempotency key.
 - `CONFLICT: repository <alias> has work that removing it would lose: ...` lists uncommitted or untracked paths, stashes, linked worktrees, or commits on no remote.
 - `CONFLICT: repository <alias> is in use by ...` names the tasks, shells, sessions, terminals, or operations running inside the checkout, or says an agent is running in the workspace. It is retryable.
+- `CONFLICT: a privileged command or Git transfer is writing to the workspace tree` or `another container is using the workspace tree` means a helper that can write to the checkouts is running. Each change pauses the executor and refuses to run beside such a helper. It is retryable. `UNAVAILABLE: executor could not be paused` means the executor could not be frozen, so nothing was changed.
 - `INVALID_INPUT: the last repository of a workspace cannot be removed` means only one checkout is left.
 - `CONFLICT: Idempotency key reused with different repository change parameters` means the key was already used for another change.
 - `EXPIRED` means the workspace was closed, expired, or recovered during the change. Nothing was registered or removed.

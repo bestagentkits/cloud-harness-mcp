@@ -175,7 +175,11 @@ lease, and commit their registry change fenced on the workspace generation, so
 a close, expiry, or recovery meanwhile fails the call with `EXPIRED` and leaves
 the registry unchanged. A replayed key returns the first result; the same key
 with different parameters is a `CONFLICT`. A second change to the same
-workspace while one is in flight is a retryable `CONFLICT`.
+workspace while one is in flight is a retryable `CONFLICT`. Each change pauses
+the workspace executor briefly while it checks and changes `repos/<alias>`
+(commands in the executor resume afterwards); it is a retryable `CONFLICT`
+while a privileged command or another helper container uses the workspace
+tree, and `UNAVAILABLE` when the executor cannot be paused.
 
 - **`workspace_repo_add`** takes one `repositories` entry (`url`, `alias`,
   optional `ref`, `access`). It applies the open-time rules: the
@@ -184,9 +188,10 @@ workspace while one is in flight is a retryable `CONFLICT`.
   `repos/<alias>/` with the same brokered credentials and constrained clone
   helper as open, using the default history (deepen it with `git_fetch`), and
   writes the registry row only after the clone succeeded and the workspace
-  stayed inside its size bounds. A `repos/<alias>` path that already exists is
-  refused with `CONFLICT` and left untouched. Any failure removes only the new
-  checkout and names the repository. The added checkout is not the primary.
+  stayed inside its size bounds. A `repos/<alias>` path that already exists,
+  or that appears while the clone runs, is refused with `CONFLICT` and left
+  untouched. Any failure removes only the new checkout and names the
+  repository. The added checkout is not the primary.
 - **`workspace_repo_remove`** takes a `repositoryId` and refuses, without
   changing anything, while the checkout has uncommitted or untracked paths,
   stashes, linked worktrees, or commits on no remote (non-retryable

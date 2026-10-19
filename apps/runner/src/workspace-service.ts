@@ -16,7 +16,7 @@ import {
   unknownRepository
 } from './workspace-repositories.js';
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
-import { chmod, chown, cp, lstat, mkdir, readFile, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
+import { chmod, chown, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
@@ -285,6 +285,9 @@ type RepositoryChange = {
   fingerprint: string;
 };
 
+/** The device and inode of a checkout directory, so a removal touches only the directory it verified. */
+type CheckoutIdentity = { dev: number; ino: number };
+
 /** A scoped mutation's audit row names the repository it targeted, beside the workspace and generation. */
 function withRepositoryAudit(record: WorkspaceRecord, details: Record<string, string | number | boolean>): Record<string, string | number | boolean> {
   return record.repositoryScope ? { ...details, repositoryId: record.repositoryScope.id, repositoryAlias: record.repositoryScope.alias } : details;
@@ -391,8 +394,17 @@ export class WorkspaceService {
    * restart simply rescans on first use.
    */
   private readonly guidanceCache = new Map<string, { generation: number; fingerprint: string; snapshot: RepositoryGuidanceSnapshot }>();
-  /** Workspaces with a repository add or remove in flight; a second change waits for the first. */
+  /**
+   * Workspaces with a repository add or remove in flight; a second change is refused with a retryable
+   * `CONFLICT` rather than queued. This lock, `frozenTrees`, and `treeWriters` are in memory only: they
+   * rely on one runner process per instance, which the deployment provides (one runner service owning
+   * the SQLite state). The registry transaction still fences the rows if that ever changes.
+   */
   private readonly repositoryChanges = new Set<string>();
+  /** Workspaces whose tree is frozen for a host-side check-and-change; no new tree writer may start. */
+  private readonly frozenTrees = new Set<string>();
+  /** In-flight helper containers that mount a workspace tree read-write, by workspace. */
+  private readonly treeWriters = new Map<string, number>();
   private reaper?: NodeJS.Timeout | undefined;
   private reaperRunning = false;
   /** Toolbox containers this runner is running now; the semaphore count and the sweep's exclusion list. */
@@ -907,9 +919,20 @@ export class WorkspaceService {
     return Math.min(record.hardExpiresAt, activityAt + (record.idleTtlSeconds ?? this.config.idleTtlSeconds) * 1_000);
   }
 
-  private async clone(record: WorkspaceRecord, repositoryUrl: URL, ref?: string, historySpec = ''): Promise<string> {
+  /**
+   * Clones into the record's checkout, or into `destination` (a host path and its `/job` path) when given.
+   * A retry removes the failed attempt host-side, so a destination must be a directory the executor cannot
+   * reach; the default checkout path qualifies only while no executor runs yet (open).
+   */
+  private async clone(
+    record: WorkspaceRecord,
+    repositoryUrl: URL,
+    ref?: string,
+    historySpec = '',
+    destination?: { hostPath: string; jobPath: string }
+  ): Promise<string> {
     const jobPath = record.workspacePath;
-    const repositoryPath = checkoutHostPath(record);
+    const repositoryPath = destination?.hostPath ?? checkoutHostPath(record);
     const helperName = `chm-clone-${record.id.slice(3, 15)}${record.repositoryScope ? `-${record.repositoryScope.alias}` : ''}`;
     await mkdir(jobPath, { recursive: true, mode: 0o700 });
     await chmod(jobPath, 0o777);
@@ -936,7 +959,7 @@ export class WorkspaceService {
       '--volume', `${jobPath}:/job`,
       ...(cachePath ? ['--volume', `${cachePath}:/job/cache:ro`] : []),
       '--entrypoint', '/opt/harness/clone-helper.sh', this.config.executorImage,
-      record.repositoryUrl, checkoutJobPath(record), ref ?? '', cachePath ? '/job/cache' : '', historySpec
+      record.repositoryUrl, destination?.jobPath ?? checkoutJobPath(record), ref ?? '', cachePath ? '/job/cache' : '', historySpec
     ];
 
     const runClone = async (token: string | undefined, cachePath?: string) => {
@@ -2047,9 +2070,11 @@ export class WorkspaceService {
     operation: RunnerOperation,
     input: Record<string, unknown>,
     signal?: AbortSignal,
-    writable = false
+    writable = false,
+    /** A paused executor cannot take a `docker exec`, so the check runs in a read-only helper instead. */
+    executorPaused = false
   ): Promise<RunnerResponse> {
-    if (record.containerName) {
+    if (record.containerName && !executorPaused) {
       return await this.runWorker(record, operation, input, signal);
     }
     const helperName = `chm-rec-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
@@ -2096,6 +2121,7 @@ export class WorkspaceService {
   ) {
     const helperName = `chm-git-${mode.replaceAll('-', '').slice(0, 5)}-${randomBytes(6).toString('hex')}`;
     const network = mode === 'fetch' || mode === 'push' ? 'bridge' : 'none';
+    const releaseTreeWriter = this.claimTreeWriter(record);
     try {
       const result = await runDocker([
         'run', '-i', '--rm', '--pull', 'never', '--name', helperName,
@@ -2153,23 +2179,83 @@ export class WorkspaceService {
       }
       return result;
     } finally {
-      await removeContainer(helperName);
+      try { await removeContainer(helperName); } finally { releaseTreeWriter(); }
     }
   }
 
-  private async withPausedExecutor<T>(record: WorkspaceRecord, action: () => Promise<T>): Promise<T> {
+  private async withPausedExecutor<T>(record: WorkspaceRecord, action: () => Promise<T>, purpose = 'an atomic Git transfer'): Promise<T> {
     if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
     const paused = await runDocker(['pause', record.containerName], { timeoutMs: 30_000, maxBytes: 8_192 });
-    if (paused.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'executor could not be paused for an atomic Git transfer', 503, true);
+    if (paused.exitCode !== 0) throw new HarnessError('UNAVAILABLE', `executor could not be paused for ${purpose}`, 503, true);
     let value: T | undefined;
     let actionError: unknown;
     try {
       value = await action();
     } catch (error) { actionError = error; }
     const resumed = await runDocker(['unpause', record.containerName], { timeoutMs: 30_000, maxBytes: 8_192 });
-    if (resumed.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'executor could not be resumed after Git transfer', 503, true);
+    if (resumed.exitCode !== 0) throw new HarnessError('UNAVAILABLE', `executor could not be resumed after ${purpose}`, 503, true);
     if (actionError) throw actionError;
     return value!;
+  }
+
+  /**
+   * Runs a host-side check-and-change of the workspace tree while nothing in the workspace can write to it.
+   * Node's recursive `rm` re-resolves every path it descends, so a link swapped in mid-removal would be
+   * followed; freezing the writers is what keeps a verified path verified. The executor (and every process
+   * exec'd into it) is paused for the whole action, a privileged or transfer helper that mounts the tree
+   * read-write may neither be running nor start meanwhile, and any other running workspace container
+   * refuses the change. Agent containers mount no workspace tree; they reach it through the executor.
+   * Every failure to establish the freeze refuses the change instead of running it unfrozen.
+   */
+  private async withFrozenWorkspaceTree<T>(record: WorkspaceRecord, action: () => Promise<T>): Promise<T> {
+    if (this.frozenTrees.has(record.id)) throw new HarnessError('CONFLICT', 'the workspace tree is frozen for another change; retry shortly', 409, true);
+    this.frozenTrees.add(record.id);
+    try {
+      if ((this.treeWriters.get(record.id) ?? 0) > 0) {
+        throw new HarnessError('CONFLICT', 'a privileged command or Git transfer is writing to the workspace tree; retry once it finishes', 409, true);
+      }
+      return await this.withPausedExecutor(record, async () => {
+        await this.assertNoOtherTreeContainers(record);
+        return await action();
+      }, 'a repository change');
+    } finally {
+      this.frozenTrees.delete(record.id);
+    }
+  }
+
+  private async assertNoOtherTreeContainers(record: WorkspaceRecord): Promise<void> {
+    const listed = await runDocker([
+      'ps', '--filter', `label=cloud-harness.instance=${this.instanceId}`, '--filter', `label=cloud-harness.workspace=${record.id}`,
+      '--format', '{{.Names}}\t{{.Label "cloud-harness.agent-container"}}'
+    ], { timeoutMs: 30_000, maxBytes: 65_536 });
+    if (listed.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'the workspace containers could not be listed for a repository change', 503, true);
+    const others = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean)
+      .map((line) => line.split('\t'))
+      .filter(([name, agent]) => name !== record.containerName && agent !== 'true')
+      .map(([name]) => name!);
+    if (others.length > 0) {
+      throw new HarnessError('CONFLICT', `another container is using the workspace tree (${others.slice(0, 3).join(', ')}); retry once it finishes`, 409, true);
+    }
+  }
+
+  /**
+   * Counts a helper that mounts the workspace tree read-write until the returned release runs; none may
+   * start while the tree is frozen. The check and the count are synchronous, so a freeze either sees the
+   * helper or the helper sees the freeze.
+   */
+  private claimTreeWriter(record: WorkspaceRecord): () => void {
+    if (this.frozenTrees.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'the workspace tree is briefly frozen for a repository change; retry shortly', 409, true);
+    }
+    this.treeWriters.set(record.id, (this.treeWriters.get(record.id) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.treeWriters.get(record.id) ?? 1) - 1;
+      if (remaining > 0) this.treeWriters.set(record.id, remaining);
+      else this.treeWriters.delete(record.id);
+    };
   }
 
   private async currentBranch(record: WorkspaceRecord, signal?: AbortSignal): Promise<string> {
@@ -2438,9 +2524,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   }
 
   /**
-   * Clones the new repository into `repos/<alias>` exactly as open does, then registers it. The row is
-   * written only after the clone succeeded and the workspace stayed inside its disk bounds; any failure
-   * removes only the directory this call created.
+   * Clones the new repository with the same helper as open, then moves it to `repos/<alias>` and registers
+   * it in one frozen step. The row is written only after the clone succeeded and the workspace stayed inside
+   * its disk bounds; any failure removes only the directory this call created, never one found in its place.
    */
   private async addRepository(change: RepositoryChange, validated: Record<string, unknown>): Promise<RunnerResponse> {
     const { ownerId, record, entries } = change;
@@ -2467,9 +2553,17 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     };
     const view = scopedRecordView(record, entry);
     await this.assertCheckoutPathFree(view);
+    // The clone lands in a staging directory beside the tree, outside every container mount of it, so the
+    // executor can reach neither the clone nor its retry cleanup, and nothing it writes is ever removed.
+    const stagingName = `repository-add-${randomBytes(12).toString('hex')}`;
+    const stagingRoot = join(record.workspacePath, stagingName);
     try {
-      await this.clone(view, url, entry.repositoryRef ?? undefined);
-      await this.verifiedCheckoutPath(view);
+      await mkdir(stagingRoot, { mode: 0o700 });
+      await chmod(stagingRoot, 0o777);
+      const staged = await this.clone(view, url, entry.repositoryRef ?? undefined, '', {
+        hostPath: join(stagingRoot, alias),
+        jobPath: `/job/${stagingName}/${alias}`
+      });
       const violation = await this.resourceViolation(record);
       if (violation) throw new HarnessError('LIMIT_EXCEEDED', `${violation}; the new checkout was removed`, 507, false);
       const repositories = [...entries, entry];
@@ -2483,24 +2577,36 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         },
         truncated: false
       };
-      this.store.addWorkspaceRepository(entry, { generation: record.generation, limit, urlKey: normalizedRepositoryUrlKey }, {
-        ownerId, key: change.key, operation: 'workspace_repo_add', fingerprint: change.fingerprint, resultJson: JSON.stringify(result)
+      await this.withFrozenWorkspaceTree(record, async () => {
+        const identity = await this.placeStagedCheckout(view, staged);
+        try {
+          this.store.addWorkspaceRepository(entry, { generation: record.generation, limit, urlKey: normalizedRepositoryUrlKey }, {
+            ownerId, key: change.key, operation: 'workspace_repo_add', fingerprint: change.fingerprint, resultJson: JSON.stringify(result)
+          });
+        } catch (error) {
+          // An unregistered checkout would read as unsaved work and block auto-close, so the placed directory
+          // is removed; a removal failure keeps the original error, and the leftover still blocks auto-close.
+          await this.removeVerifiedCheckout(view, identity).catch(() => undefined);
+          throw error;
+        }
       });
       this.auditWorkspaceMutation(ownerId, 'workspace.repository_added', view, { operation: 'workspace_repo_add' });
       return result;
     } catch (error) {
-      // A partial checkout left behind would read as unsaved work and block auto-close, so it is removed;
-      // a removal failure keeps the original error, and the leftover still blocks auto-close.
-      await this.removeNewCheckout(view).catch(() => undefined);
       if (error instanceof HarnessError && !(error.message.startsWith(`repository ${alias}`))) {
         throw new HarnessError(error.code, `repository ${alias}: ${error.message}`.slice(0, 2_000), error.status, error.retryable);
       }
       throw error;
+    } finally {
+      await this.safeRemovePath(stagingRoot).catch(() => undefined);
     }
   }
 
-  /** The new checkout's directory must not exist yet: anything already there is the caller's data. */
-  private async assertCheckoutPathFree(view: WorkspaceRecord): Promise<void> {
+  /**
+   * The new checkout's directory must not exist yet: anything already there is the caller's data. Returns
+   * the checkout path below a `repos/` that is a real directory inside the tree.
+   */
+  private async assertCheckoutPathFree(view: WorkspaceRecord): Promise<string> {
     const { alias, subpath } = view.repositoryScope!;
     const treeRoot = await realpath(join(view.workspacePath, 'repo'));
     const repositoriesDirectory = join(treeRoot, REPOSITORIES_DIRECTORY);
@@ -2508,33 +2614,47 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (!stats?.isDirectory() || await realpath(repositoriesDirectory) !== repositoriesDirectory) {
       throw new HarnessError('CONFLICT', `${REPOSITORIES_DIRECTORY}/ is missing or is not a directory in the workspace tree`, 409, false);
     }
-    const existing = await lstat(join(repositoriesDirectory, alias)).catch((error: NodeJS.ErrnoException) => {
+    const target = join(repositoriesDirectory, alias);
+    const existing = await lstat(target).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return undefined;
       throw error;
     });
     if (existing) {
       throw new HarnessError('CONFLICT', `${subpath} already exists in the workspace tree; move or delete it before adding repository ${alias}`, 409, false);
     }
+    return target;
   }
 
   /**
-   * Rolls back a failed add: a link the executor swapped in for the checkout is unlinked, a directory is
-   * removed in place. Nothing is touched unless `repos/` is still the real directory inside the tree, so
-   * a swapped `repos/` link can never direct the removal elsewhere.
+   * Moves the staged clone to `repos/<alias>` inside a frozen tree. The path must still be free, so nothing
+   * created there meanwhile is replaced, and the returned identity is the only directory a rollback removes.
    */
-  private async removeNewCheckout(view: WorkspaceRecord): Promise<void> {
-    const treeRoot = await realpath(join(view.workspacePath, 'repo'));
-    const repositoriesDirectory = join(treeRoot, REPOSITORIES_DIRECTORY);
-    const parent = await lstat(repositoriesDirectory).catch(() => undefined);
-    if (!parent?.isDirectory() || await realpath(repositoriesDirectory) !== repositoriesDirectory) return;
-    const path = join(repositoriesDirectory, view.repositoryScope!.alias);
-    const stats = await lstat(path).catch(() => undefined);
-    if (!stats) return;
-    if (!stats.isDirectory()) {
-      await rm(path, { force: true });
-      return;
+  private async placeStagedCheckout(view: WorkspaceRecord, staged: string): Promise<CheckoutIdentity> {
+    const target = await this.assertCheckoutPathFree(view);
+    const stats = await lstat(staged);
+    if (!stats.isDirectory()) throw new HarnessError('INTERNAL_ERROR', 'the cloned checkout is not a directory', 500, false);
+    await rename(staged, target);
+    const identity: CheckoutIdentity = { dev: stats.dev, ino: stats.ino };
+    this.assertCheckoutIdentity(view, identity, await lstat(await this.verifiedCheckoutPath(view)));
+    return identity;
+  }
+
+  private assertCheckoutIdentity(view: WorkspaceRecord, expected: CheckoutIdentity, actual: CheckoutIdentity): void {
+    if (actual.dev !== expected.dev || actual.ino !== expected.ino) {
+      const { alias, subpath } = view.repositoryScope!;
+      throw new HarnessError('CONFLICT', `repository ${alias} checkout at ${subpath} was replaced while it was being changed`, 409, false);
     }
-    await this.safeRemovePath(await this.verifiedCheckoutPath(view));
+  }
+
+  /**
+   * Removes a checkout directory inside a frozen tree. Each component of `repos/<alias>` is verified again
+   * to be a real directory resolving exactly there, and the directory must still be the one identified
+   * earlier, so the removal cannot reach anything else.
+   */
+  private async removeVerifiedCheckout(view: WorkspaceRecord, identity: CheckoutIdentity): Promise<void> {
+    const path = await this.verifiedCheckoutPath(view);
+    this.assertCheckoutIdentity(view, identity, await lstat(path));
+    await this.safeRemovePath(path);
   }
 
   /**
@@ -2551,17 +2671,6 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     const view = scopedRecordView(record, entry);
     this.assertCheckoutUnused(ownerId, view);
-    // A checkout that is already gone has nothing left to lose; a link or file in its place is refused.
-    const present = await lstat(checkoutHostPath(view)).then(() => true, () => false);
-    if (present) {
-      await this.verifiedCheckoutPath(view);
-      const blockers = [await this.linkedWorktreeBlocker(view), await this.checkoutCloseBlocker(view)].filter(Boolean);
-      if (blockers.length > 0) {
-        throw new HarnessError('CONFLICT', `repository ${entry.alias} has work that removing it would lose: ${blockers.join(', ')}; commit and push it, or move it out of the checkout first`, 409, false);
-      }
-      // The check above takes a while; refuse anything that started inside the checkout meanwhile.
-      this.assertCheckoutUnused(ownerId, view);
-    }
     const remaining = entries.filter((candidate) => candidate.id !== entry.id);
     const promoted = entry.primary ? remaining[0]!.id : undefined;
     const result = (checkoutRemoved: boolean): RunnerResponse => ({
@@ -2577,19 +2686,36 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       },
       truncated: false
     });
-    this.store.removeWorkspaceRepository(record.id, entry.id, record.generation, {
-      ownerId, key: change.key, operation: 'workspace_repo_remove', fingerprint: change.fingerprint, resultJson: JSON.stringify(result(true))
-    });
-    this.guidanceCache.delete(guidanceCacheKey(view));
-    let checkoutRemoved = true;
-    if (present) {
-      try {
-        await this.safeRemovePath(await this.verifiedCheckoutPath(view));
-      } catch {
-        checkoutRemoved = false;
-        this.store.updateRepositoryChangeResult(ownerId, record.id, change.key, JSON.stringify(result(false)));
+    // Everything in the workspace that can write to the tree stays frozen from the unsaved-work check through
+    // the removal, so no work can land in the checkout, and no link can be swapped into it, once it was checked.
+    const checkoutRemoved = await this.withFrozenWorkspaceTree(record, async () => {
+      // A checkout that is already gone has nothing left to lose; a link or file in its place is refused.
+      const present = await lstat(checkoutHostPath(view)).then(() => true, () => false);
+      let identity: CheckoutIdentity | undefined;
+      if (present) {
+        const checked = await lstat(await this.verifiedCheckoutPath(view));
+        identity = { dev: checked.dev, ino: checked.ino };
+        const blockers = [await this.linkedWorktreeBlocker(view), await this.checkoutCloseBlocker(view, true)].filter(Boolean);
+        if (blockers.length > 0) {
+          throw new HarnessError('CONFLICT', `repository ${entry.alias} has work that removing it would lose: ${blockers.join(', ')}; commit and push it, or move it out of the checkout first`, 409, false);
+        }
+        // Refuse anything that started inside the checkout before the freeze took hold.
+        this.assertCheckoutUnused(ownerId, view);
+        this.assertCheckoutIdentity(view, identity, await lstat(await this.verifiedCheckoutPath(view)));
       }
-    }
+      this.store.removeWorkspaceRepository(record.id, entry.id, record.generation, {
+        ownerId, key: change.key, operation: 'workspace_repo_remove', fingerprint: change.fingerprint, resultJson: JSON.stringify(result(true))
+      });
+      this.guidanceCache.delete(guidanceCacheKey(view));
+      if (!identity) return true;
+      try {
+        await this.removeVerifiedCheckout(view, identity);
+        return true;
+      } catch {
+        this.store.updateRepositoryChangeResult(ownerId, record.id, change.key, JSON.stringify(result(false)));
+        return false;
+      }
+    });
     this.auditWorkspaceMutation(ownerId, 'workspace.repository_removed', view, { operation: 'workspace_repo_remove', checkoutRemoved });
     return result(checkoutRemoved);
   }
@@ -2660,7 +2786,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       try {
         const view = multiRepository ? this.resolveRepositoryView(record, { repositoryId: entry.id }, 'optional', operation).scoped : record;
         prefix = `${checkoutContainerPath(view)}/`;
-        response = await this.runWorker(view, operation, { ...input, maxResults: budget }, signal);
+        // One result past the budget proves the checkout had more: `grep_search` cuts at `maxResults`
+        // without reporting truncation, so the worker's own flag alone would hide the cut.
+        response = await this.runWorker(view, operation, { ...input, maxResults: budget + 1 }, signal);
       } catch (error) {
         firstError ??= error;
         repositories.push({ ...attribution, error: (error instanceof Error ? error.message : 'search failed').slice(0, 2_000) });
@@ -3066,6 +3194,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const normalizedCwd = input.cwd.replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '') || '.';
     const checkoutPath = checkoutContainerPath(record);
     const workdir = normalizedCwd === '.' ? checkoutPath : `${checkoutPath}/${normalizedCwd}`;
+    const releaseTreeWriter = this.claimTreeWriter(record);
     try {
       await this.networkProfileManager.ensureProfileReady(record.networkProfile);
       const result = await runDocker([
@@ -3107,7 +3236,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         truncated: result.truncated
       };
     } finally {
-      await removeContainer(privName);
+      try { await removeContainer(privName); } finally { releaseTreeWriter(); }
     }
   }
 
@@ -5565,10 +5694,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return reasons.length > 0 ? reasons.join('; ') : undefined;
   }
 
-  private async checkoutCloseBlocker(record: WorkspaceRecord): Promise<string | undefined> {
+  private async checkoutCloseBlocker(record: WorkspaceRecord, executorPaused = false): Promise<string | undefined> {
     let check: RunnerResponse;
     try {
-      check = await this.runRecoveryWorker(record, 'workspace_recover', { mode: 'close_check', cloneRef: record.repositoryRef ?? '' });
+      check = await this.runRecoveryWorker(record, 'workspace_recover', { mode: 'close_check', cloneRef: record.repositoryRef ?? '' }, undefined, false, executorPaused);
     } catch {
       return 'the unsaved-work check could not run';
     }

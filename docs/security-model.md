@@ -503,10 +503,18 @@ unchanged and the checkouts share the workspace byte ceiling.
   credential-free checkout. Both changes touch the host filesystem only at the
   canonical `repos/<alias>` path, verified host-side to be a real directory
   that resolves exactly there (never a symlink the executor swapped in) before
-  any removal, and the removal stays confined to the jobs root. A failed add
-  removes only the directory it created; an existing path is refused rather
-  than overwritten. Remove refuses while the checkout holds work no remote has
-  or anything runs inside it, so it cannot discard work the owner did not save.
+  any removal, and the removal stays confined to the jobs root. Because a
+  recursive delete re-resolves each path it descends, the runner never
+  changes `repos/` while anything in the workspace can write to it: the
+  executor is paused from the last check through the change, and the change is
+  refused (retryable `CONFLICT`) while a privileged command, transfer helper,
+  or other container that mounts the tree runs, or with `UNAVAILABLE` when the
+  executor cannot be paused. An add clones into a staging directory outside
+  every container mount and moves it into place only while the path is still
+  free, so a failed add removes only the directory it created; an existing
+  path is refused rather than overwritten. Remove refuses while the checkout
+  holds work no remote has or anything runs inside it, and runs that check
+  inside the paused window, so it cannot discard work the owner did not save.
 
 Scoping and the write refusal are owned by
 [`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts)
