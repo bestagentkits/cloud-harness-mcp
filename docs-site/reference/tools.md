@@ -147,7 +147,7 @@ Summarize each repository checkout of a workspace (its branch tracking line, whe
 
 **Add workspace repository**
 
-Clone one more repository into a multi-repository workspace at repos/<alias>/, with the same URL policy, brokered clone credentials, and per-workspace limit as workspace_open. The repository joins the registry only after its clone succeeds; a failed add removes only the new checkout. A single-repository workspace refuses. Replaying the idempotencyKey returns the first result.
+Clone one more repository into a multi-repository workspace at `repos/<alias>/`, with the same URL policy, brokered clone credentials, and per-workspace limit as workspace_open. The repository joins the registry only after its clone succeeds; a failed add removes only the new checkout. A single-repository workspace refuses. Replaying the idempotencyKey returns the first result.
 
 **Attributes:** `idempotent` · <span class="badge-openworld">openWorld</span>
 
