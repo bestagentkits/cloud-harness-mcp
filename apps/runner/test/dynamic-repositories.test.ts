@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -265,6 +265,23 @@ describe('workspace_repo_add', () => {
     await expect(service.execute(principal, 'workspace_repo_add', addDocs(workspaceId)))
       .rejects.toMatchObject({ code: 'EXPIRED' });
     expect(existsSync(checkout(jobsRoot, workspaceId, 'docs'))).toBe(false);
+    expect(store.workspaceRepositories(workspaceId)).toHaveLength(2);
+  });
+
+  it('unlinks a symlink swapped in for the new checkout without following it', async () => {
+    const { service, store, jobsRoot } = fixture();
+    const { workspaceId } = await openMulti(service);
+    const api = checkout(jobsRoot, workspaceId, 'api');
+    writeFileSync(join(api, 'keep.txt'), 'untouched');
+    docker.onClone = () => {
+      rmSync(checkout(jobsRoot, workspaceId, 'docs'), { recursive: true });
+      symlinkSync(api, checkout(jobsRoot, workspaceId, 'docs'), 'junction');
+    };
+
+    await expect(service.execute(principal, 'workspace_repo_add', addDocs(workspaceId)))
+      .rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(existsSync(checkout(jobsRoot, workspaceId, 'docs'))).toBe(false);
+    expect(readFileSync(join(api, 'keep.txt'), 'utf8')).toBe('untouched');
     expect(store.workspaceRepositories(workspaceId)).toHaveLength(2);
   });
 

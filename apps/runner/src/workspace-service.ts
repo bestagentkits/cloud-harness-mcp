@@ -2517,17 +2517,24 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
   }
 
-  /** Rolls back a failed add: a link the executor swapped in is unlinked, a directory removed in place. */
+  /**
+   * Rolls back a failed add: a link the executor swapped in for the checkout is unlinked, a directory is
+   * removed in place. Nothing is touched unless `repos/` is still the real directory inside the tree, so
+   * a swapped `repos/` link can never direct the removal elsewhere.
+   */
   private async removeNewCheckout(view: WorkspaceRecord): Promise<void> {
-    const path = checkoutHostPath(view);
+    const treeRoot = await realpath(join(view.workspacePath, 'repo'));
+    const repositoriesDirectory = join(treeRoot, REPOSITORIES_DIRECTORY);
+    const parent = await lstat(repositoriesDirectory).catch(() => undefined);
+    if (!parent?.isDirectory() || await realpath(repositoriesDirectory) !== repositoriesDirectory) return;
+    const path = join(repositoriesDirectory, view.repositoryScope!.alias);
     const stats = await lstat(path).catch(() => undefined);
     if (!stats) return;
     if (!stats.isDirectory()) {
       await rm(path, { force: true });
       return;
     }
-    await this.verifiedCheckoutPath(view);
-    await this.safeRemovePath(path);
+    await this.safeRemovePath(await this.verifiedCheckoutPath(view));
   }
 
   /**
@@ -2577,8 +2584,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     let checkoutRemoved = true;
     if (present) {
       try {
-        await this.verifiedCheckoutPath(view);
-        await this.safeRemovePath(checkoutHostPath(view));
+        await this.safeRemovePath(await this.verifiedCheckoutPath(view));
       } catch {
         checkoutRemoved = false;
         this.store.updateRepositoryChangeResult(ownerId, record.id, change.key, JSON.stringify(result(false)));
