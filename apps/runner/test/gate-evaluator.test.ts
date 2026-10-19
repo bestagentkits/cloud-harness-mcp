@@ -500,8 +500,12 @@ describe('a git push is judged as publish_branch whatever class it declares', ()
     ['git', 'submodule', 'foreach', 'npm test'],
     ['xargs', 'git', 'push', 'origin', 'agent/x'],
     ['xargs', 'git']
-  ].map((command) => [command]))('%j is unanalyzable', (command) => {
-    expect(run('vcs_local', command, global({ scope: { ...GLOBAL.scope, commands: ['*'] } })).reasonCode).toBe('PLATFORM_COMMAND_UNANALYZABLE');
+  ].map((command) => [command]))('%j is unanalyzable and needs approval', (command) => {
+    expect(run('vcs_local', command, global({ scope: { ...GLOBAL.scope, commands: ['*'] } }))).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'PLATFORM_COMMAND_UNANALYZABLE' });
+  });
+
+  it('lets the publish hard deny win over an unanalyzable part of a command that pushes', () => {
+    expect(run('test', ['sh', '-c', 'git push origin agent/x; eval x'], denyPublish)).toMatchObject({ decision: 'DENY', reasonCode: 'GLOBAL_HARD_DENY' });
   });
 
   it('accepts the safe git settings and read-only config', () => {
@@ -557,7 +561,12 @@ describe('the command analysis fails closed', () => {
     [['sh', '-c', '</dev/null sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
     [['sh', '-c', '2>/dev/null docker ps'], 'PLATFORM_DOCKER_ACCESS'],
     [['sh', '-c', '> out 2>&1 sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
-    [['sh', '-c', 'cat <<EOF\nsudo id\nEOF'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'bash <<EOF\nsudo id\nEOF'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', "python3 <<'EOF'\nimport os\nEOF"], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', "node <<<'process.exit()'"], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'echo "<<X"\nsudo id\nX'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['sh', '-c', 'cat <<EOF\nok\nEOF\nsudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['rg', '--pre', './x.sh', 'pattern'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     // Launchers that were not unwrapped before.
     [['setsid', '-f', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
     [['flock', '/tmp/l', 'npm', 'test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
@@ -571,7 +580,8 @@ describe('the command analysis fails closed', () => {
     [['yarn', 'dlx', 'docker', 'ps'], 'PLATFORM_DOCKER_ACCESS'],
     [['bun', 'exec', 'sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
     [['fish', '-c', 'npm test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
-    [['strace', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['strace', 'sudo', 'id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['vitest', '--environment', 'bash'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['strace', 'bash', '-c', 'npm test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['python3', '-c', 'import os'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['node', '-e', 'process.exit()'], 'PLATFORM_COMMAND_UNANALYZABLE'],
@@ -590,8 +600,49 @@ describe('the command analysis fails closed', () => {
     // Malformed input.
     [['sh', '-c', "echo 'unclosed"], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['sh', '-c', 'echo $(id'], 'PLATFORM_COMMAND_UNANALYZABLE']
-  ])('%j is denied', (command, reason) => {
-    expect(run(command)).toMatchObject({ decision: 'DENY', reasonCode: reason });
+  ])('%j is denied, or held for mandatory approval when it cannot be analysed', (command, reason) => {
+    // A definite platform match denies; a command the analysis cannot read needs a human.
+    expect(run(command)).toMatchObject({ decision: reason === 'PLATFORM_COMMAND_UNANALYZABLE' ? 'REQUIRE_APPROVAL' : 'DENY', reasonCode: reason });
+  });
+
+  it.each([
+    ['grep', '-r', 'docker', '.'],
+    ['rg', '-n', 'sudo', 'src'],
+    ['echo', 'bash'],
+    ['sh', '-c', 'cat <<EOF > notes.txt\nrun sudo id or docker ps\nEOF'],
+    ['sh', '-c', "cat <<-'EOF'\n\tbash -c 'sudo id'\n\tEOF"],
+    ['sh', '-c', 'jq . <<<\'{"a":1}\''],
+    ['vitest', '--environment', 'node'],
+    ['vitest', 'run', '-o', 'report.json'],
+    ['npm', 'test'],
+    ['npx', 'vitest', 'run'],
+    ['git', 'status'],
+    ['git', 'diff'],
+    ['git', 'commit', '-m', 'x'],
+    ['sh', '-c', 'git commit -m "x"']
+  ].map((command) => [command]))('%j is allowed', (command) => {
+    expect(run(command).reasonCode).toBe('RULE_ALLOW');
+  });
+
+  it('keeps an unanalyzable command at approval: no advisor answer, project rule or delegation lowers it', () => {
+    const delegating = global({
+      scope: { ...GLOBAL.scope, commands: ['*'] },
+      defaults: { ...GLOBAL.defaults, vcs_local: { effect: 'advisor_or_approval', delegable: true } }
+    });
+    const descriptor = action('vcs_local', { command: ['eval', 'npm test'] });
+    for (const projectPolicy of [null, project({ rules: { vcs_local: 'allow' } })]) {
+      const pending = evaluateGate({ descriptor, snapshot: snapshot({ global: delegating, project: projectPolicy }), advisorAvailable: true });
+      expect(pending).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'PLATFORM_COMMAND_UNANALYZABLE', advisor: { required: false } });
+      expect(isAdvisorPending(pending)).toBe(false);
+      expect(combineAdvisor(pending, { effect: 'no_change' })).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'PLATFORM_COMMAND_UNANALYZABLE' });
+      expect(decide({ descriptor, snapshot: snapshot({ global: delegating, project: projectPolicy }), advisorAvailable: true }, { effect: 'no_change' }).decision).toBe('REQUIRE_APPROVAL');
+    }
+  });
+
+  it('lets a hard deny or a scope deny win over an unanalyzable command', () => {
+    const hardDenied = global({ hardDeny: ['vcs_local'], allowedActionClasses: AGENT_ACTION_CLASSES.filter((value) => value !== 'vcs_local'), scope: { ...GLOBAL.scope, commands: ['*'] } });
+    expect(evaluate(action('vcs_local', { command: ['eval', 'npm test'] }), { global: hardDenied })).toMatchObject({ decision: 'DENY', reasonCode: 'GLOBAL_HARD_DENY' });
+    expect(evaluate(action('vcs_local', { command: ['eval', 'npm test'] }))).toMatchObject({ decision: 'DENY', reasonCode: 'COMMAND_NOT_ALLOWED' });
   });
 
   it('still allows ordinary commands', () => {

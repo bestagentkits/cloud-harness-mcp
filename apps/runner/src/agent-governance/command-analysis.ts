@@ -36,9 +36,25 @@ export type GitPush = {
   implicit: boolean;
 };
 
+/**
+ * `ok: false` means something could not be read exactly; the gate then requires approval. The
+ * segments and pushes read before that point are still reported, so a definite platform match
+ * (a container runtime or privilege tool in program position) is denied even in a partial reading.
+ */
 export type CommandAnalysis =
   | { ok: true; segments: string[][]; pushes: GitPush[] }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; segments: string[][]; pushes: GitPush[] };
+
+/** Container runtimes and their clients; one in program position is a definite platform match. */
+export const DOCKER_PROGRAMS: ReadonlySet<string> = new Set(['docker', 'dockerd', 'podman', 'nerdctl', 'ctr', 'crictl', 'kubectl', 'buildah']);
+/** Privilege-changing tools; one in program position is a definite platform match. */
+export const PRIVILEGE_PROGRAMS: ReadonlySet<string> = new Set(['sudo', 'su', 'doas', 'nsenter', 'chroot', 'unshare', 'setcap', 'capsh', 'pkexec']);
+/** Programs that only read or print data: their arguments are never programs, and a here-document is data to them. */
+export const DATA_ONLY_PROGRAMS: ReadonlySet<string> = new Set([
+  'grep', 'rg', 'egrep', 'fgrep', 'cat', 'head', 'tail', 'less', 'wc', 'ls', 'echo', 'printf', 'sort', 'uniq', 'diff', 'cut', 'tr', 'jq', 'true', 'false'
+]);
+/** Options of data-only programs that run another program (`rg --pre`, `sort --compress-program`). */
+const DATA_ONLY_EXEC = /^(?:--pre|--compress-program)(?:=|$)/u;
 
 // ---------------------------------------------------------------- shell tokens
 
@@ -89,10 +105,40 @@ export function tokenizeShell(source: string, depth = 0): string[] {
   };
   let current = '';
   let quoted = false;
+  /** Here-documents whose bodies start after the next newline; `strip` is the `<<-` form. */
+  const heredocs: Array<{ delimiter: string; strip: boolean }> = [];
+  let delimiterFor: boolean | null = null;
+  /** True when the current word holds an unquoted `<<` operator (quoted `"<<x"` is plain text). */
+  let heredocWord = false;
   const flush = () => {
-    if (current !== '' || quoted) tokens.push(current);
+    if (current !== '' || quoted) {
+      tokens.push(current);
+      const attached = /^(?:\d+)?<<(-?)(.+)$/su.exec(current);
+      if (delimiterFor !== null) {
+        heredocs.push({ delimiter: current, strip: delimiterFor });
+        delimiterFor = null;
+      } else if (heredocWord && /^(?:\d+)?<<-?$/u.test(current)) {
+        delimiterFor = current.endsWith('-');
+      } else if (heredocWord && attached) {
+        heredocs.push({ delimiter: attached[2] as string, strip: attached[1] === '-' });
+      }
+    }
     current = '';
     quoted = false;
+    heredocWord = false;
+  };
+  /** Skips the bodies of pending here-documents, which start at `start`; returns the index after them. */
+  const skipHeredocBodies = (start: number): number => {
+    let position = start;
+    for (const { delimiter, strip } of heredocs.splice(0)) {
+      while (position < source.length) {
+        const end = source.indexOf('\n', position);
+        const line = source.slice(position, end === -1 ? source.length : end);
+        position = end === -1 ? source.length : end + 1;
+        if ((strip ? line.replace(/^\t+/u, '') : line) === delimiter) break;
+      }
+    }
+    return position;
   };
   for (let index = 0; index < source.length; index += 1) {
     const character = source[index] as string;
@@ -129,6 +175,16 @@ export function tokenizeShell(source: string, depth = 0): string[] {
       flush();
     } else if ((character === '$' && next === '(') || character === '`') {
       index = substitute(index);
+    } else if (character === '<' && next === '<') {
+      // `<<<` is a here-string; `<<` and `<<-` open a here-document whose body follows the line.
+      if (source[index + 2] === '<') {
+        current += '<<<';
+        index += 2;
+      } else {
+        heredocWord = current === '' || /^\d+$/u.test(current);
+        current += '<<';
+        index += 1;
+      }
     } else if ((character === '{' || character === '}') && current === '' && !quoted && isWordEnd(next)) {
       tokens.push(character);
     } else if ((character === '&' && (next === '>' || /[<>]$/u.test(current))) || (character === '|' && />$/u.test(current))) {
@@ -141,6 +197,8 @@ export function tokenizeShell(source: string, depth = 0): string[] {
     } else if (CHARACTER_OPERATORS.has(character)) {
       flush();
       tokens.push(character);
+      // A here-document body is data, not commands: skip it.
+      if (character === '\n' && heredocs.length > 0) index = skipHeredocBodies(index + 1) - 1;
     } else if (character === '#' && current === '' && !quoted) {
       const end = source.indexOf('\n', index);
       index = end === -1 ? source.length : end - 1;
@@ -312,22 +370,28 @@ function parsePush(args: readonly string[]): GitPush {
 }
 
 /**
- * External programs that run another program or code they are given. A program the analysis does
- * not know is treated as a leaf, so it may not be handed one of these names: it could be a wrapper
- * (`strace`, `chrt`, `nodemon --exec`) that runs it. Shell builtins are absent because only a shell
- * can run them.
+ * A program the analysis does not know is treated as a leaf, but it could be a wrapper (`strace`,
+ * `chrt`, `nodemon --exec`) that runs one of its arguments. These names make it unanalyzable
+ * wherever they appear: shells, launchers, git, container runtimes and privilege tools. Shell
+ * builtins are absent because only a shell can run them.
  */
-const PROGRAM_RUNNERS = new Set([
-  ...SHELLS, ...Object.keys(LAUNCHERS).filter((name) => name !== 'builtin' && name !== 'exec'), ...Object.keys(PACKAGE_MANAGERS), 'git',
-  ...[...UNANALYZABLE_PROGRAMS].filter((name) => !['eval', 'source', '.', 'trap', 'coproc', 'alias', 'hash', 'enable', 'fc'].includes(name))
+const ALWAYS_RUNNABLE = new Set([
+  ...SHELLS, ...Object.keys(LAUNCHERS).filter((name) => !['builtin', 'exec', 'time', 'command'].includes(name)), 'git',
+  ...[...UNANALYZABLE_PROGRAMS].filter((name) => !['eval', 'source', '.', 'trap', 'coproc', 'alias', 'hash', 'enable', 'fc'].includes(name)),
+  ...DOCKER_PROGRAMS, ...PRIVILEGE_PROGRAMS
 ]);
+/** Interpreters and package managers: flagged as a positional argument, but not as an option's value (`--environment node`). */
+const isSoftRunnable = (name: string) =>
+  name === 'time' || name === 'command' || Object.hasOwn(PACKAGE_MANAGERS, name) || INLINE_CODE.some(([pattern]) => pattern.test(name));
 
 function rejectProgramArguments(program: string, rest: readonly string[]): void {
-  for (const token of rest.slice(1)) {
+  for (let index = 1; index < rest.length; index += 1) {
+    const token = rest[index] as string;
+    if (token.startsWith('-')) continue;
+    const previous = rest[index - 1] as string;
+    const optionValue = index > 1 && previous.startsWith('-') && !previous.includes('=');
     const name = programName(token);
-    if (PROGRAM_RUNNERS.has(name) || INLINE_CODE.some(([pattern]) => pattern.test(name))) {
-      fail(`${program} is given ${name}, which it could run`);
-    }
+    if (ALWAYS_RUNNABLE.has(name) || (!optionValue && isSoftRunnable(name))) fail(`${program} is given ${name}, which it could run`);
   }
 }
 
@@ -335,14 +399,14 @@ function rejectProgramArguments(program: string, rest: readonly string[]): void 
 
 /**
  * Every command an argv runs, after unwrapping launchers and shell strings, and the `git push`
- * invocations among them. `ok: false` means the gate must deny: something could not be read exactly.
+ * invocations among them. `ok: false` means something could not be read exactly.
  */
 export function analyzeCommand(argv: readonly string[]): CommandAnalysis {
   const segments: string[][] = [];
   const pushes: GitPush[] = [];
 
   const shellString = (source: string, depth: number) => {
-    for (const segment of splitSegments(tokenizeShell(source, depth))) visit(withoutRedirections(segment), depth);
+    for (const segment of splitSegments(tokenizeShell(source, depth))) visit(segment, depth, false, true);
   };
 
   const runLauncher = (rest: readonly string[], spec: LauncherSpec, depth: number, openArgs = false) => {
@@ -520,8 +584,9 @@ export function analyzeCommand(argv: readonly string[]): CommandAnalysis {
    * and a shell's input must not hide in one. A direct argv only loses leading ones (`leadingOnly`),
    * because its later words are literal arguments.
    */
-  const withoutRedirections = (segment: readonly string[], leadingOnly = false): string[] => {
+  const withoutRedirections = (segment: readonly string[], leadingOnly: boolean): { kept: string[]; feedsInput: boolean } => {
     const kept: string[] = [];
+    let feedsInput = false;
     for (let index = 0; index < segment.length; index += 1) {
       if (leadingOnly && kept.length > 0) {
         kept.push(segment[index] as string);
@@ -532,20 +597,21 @@ export function analyzeCommand(argv: readonly string[]): CommandAnalysis {
         kept.push(segment[index] as string);
         continue;
       }
-      if (redirection[1] === '<<' || redirection[1] === '<<-') fail('a here-document is not analysed');
+      if (redirection[1] === '<<' || redirection[1] === '<<-' || redirection[1] === '<<<') feedsInput = true;
       if (redirection[2] === '') index += 1;
     }
-    return kept;
+    return { kept, feedsInput };
   };
 
   /**
    * `openArgs` is true under `xargs`, which appends arguments read at run time: the command must then
    * name everything that decides what runs, and a `git push` must not receive extra refspecs.
+   * `fromShell` marks a segment tokenized from a shell string, where redirections may appear anywhere.
    */
-  function visit(raw: readonly string[], depth: number, openArgs = false): void {
+  function visit(raw: readonly string[], depth: number, openArgs = false, fromShell = false): void {
     if (depth > MAX_DEPTH) fail('the command nests too many launchers or shell strings');
     if (segments.length >= MAX_SEGMENTS) fail('the command runs too many commands');
-    const segment = withoutRedirections(raw, true);
+    const { kept: segment, feedsInput } = withoutRedirections(raw, !fromShell);
     let index = 0;
     while (index < segment.length) {
       const token = segment[index] as string;
@@ -570,6 +636,12 @@ export function analyzeCommand(argv: readonly string[]): CommandAnalysis {
     if (head !== '[' && head !== '[[' && /[$`*?[\]{}\\]/u.test(head)) fail('the program name is computed when the command runs');
     segments.push([...rest]);
     const program = programName(head);
+    if (DATA_ONLY_PROGRAMS.has(program)) {
+      // Arguments and here-documents are data, unless an option makes the program run another one.
+      if (rest.some((token) => DATA_ONLY_EXEC.test(token))) fail(`${program} is told to run another program`);
+      return;
+    }
+    if (feedsInput) fail(`a here-document or here-string feeds ${program}, which may run it`);
     if (UNANALYZABLE_PROGRAMS.has(program)) fail(`${program} runs code the gate cannot read`);
     for (const [name, flag] of INLINE_CODE) {
       if (name.test(program) && rest.slice(1).some((token) => flag.test(token))) fail(`${program} is given inline code`);
@@ -594,9 +666,9 @@ export function analyzeCommand(argv: readonly string[]): CommandAnalysis {
   try {
     visit(argv, 0);
   } catch (error) {
-    if (error instanceof Unanalyzable) return { ok: false, reason: error.message };
-    // A pathological input (for example deep recursion) must deny, never crash the gate.
-    if (error instanceof RangeError) return { ok: false, reason: 'the command is too complex to analyse' };
+    if (error instanceof Unanalyzable) return { ok: false, reason: error.message, segments, pushes };
+    // A pathological input (for example deep recursion) must never crash the gate.
+    if (error instanceof RangeError) return { ok: false, reason: 'the command is too complex to analyse', segments, pushes };
     throw error;
   }
   return { ok: true, segments, pushes };

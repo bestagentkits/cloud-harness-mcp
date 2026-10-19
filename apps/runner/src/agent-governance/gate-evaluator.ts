@@ -15,7 +15,7 @@ import {
   type ProjectExecutionPolicy
 } from '@cloud-harness/contracts';
 import { AGENT_GOVERNANCE_PORTS_VERSION, type GateEvaluator as GateEvaluatorPort } from './ports.js';
-import { analyzeCommand, isValidBranchName, programName, type GitPush } from './command-analysis.js';
+import { analyzeCommand, DATA_ONLY_PROGRAMS, DOCKER_PROGRAMS, isValidBranchName, PRIVILEGE_PROGRAMS, programName, type GitPush } from './command-analysis.js';
 import { actionFingerprint, commandAdmitted, listAdmits, normalizeWorkspacePath, resolveEffectivePolicy } from './policy-merge.js';
 
 /**
@@ -24,8 +24,8 @@ import { actionFingerprint, commandAdmitted, listAdmits, normalizeWorkspacePath,
  * preview and the execution broker all call it, so a preview cannot drift from enforcement.
  *
  * Precedence, evaluated in order (the first terminal outcome wins):
- *  1. Platform invariants (credentials, Docker, network escalation, paths outside the workspace, and any
- *     command the fail-closed analysis in `command-analysis.ts` cannot read completely) -> DENY
+ *  1. Platform invariants (credentials, Docker, network escalation, paths outside the workspace, and a
+ *     container runtime or privilege tool in program position after unwrapping launchers) -> DENY
  *  2. Runtime facts: orphaned/unknown project, revoked grant, stale generation, stale policy, budget -> DENY
  *  3. Global hard-deny -> DENY
  *  4. Repository, branch, path, command, package and host scope (deny on a miss) -> DENY
@@ -36,6 +36,10 @@ import { actionFingerprint, commandAdmitted, listAdmits, normalizeWorkspacePath,
  *  9. `advisor_or_approval`: REQUIRE_APPROVAL (`ADVISOR_REQUIRED`, pending) when an advisor is configured,
  *     which only `combineAdvisor`/`decide` with a valid `no_change` answer turns into ALLOW;
  *     REQUIRE_APPROVAL (`ADVISOR_UNAVAILABLE`) with no advisor
+ *
+ * A command the analysis in `command-analysis.ts` cannot read completely is not a definite violation:
+ * steps 2-9 still run, and anything short of DENY becomes a mandatory REQUIRE_APPROVAL with
+ * `PLATFORM_COMMAND_UNANALYZABLE`, which no advisor answer and no project rule can lower.
  *
  * A command that runs `git push` is evaluated twice, as its declared class and as `publish_branch`, and
  * the stricter decision wins, so a push cannot escape a publish hard deny, approval or rule by being
@@ -77,8 +81,7 @@ export type AdvisorAnswer = { effect: AdvisorEffect; decisionId?: string | null 
 
 type Verdict = { decision: GateDecisionValue; code: GateReasonCode; source: GateReason['source']; detail: string; rule?: string };
 
-const DOCKER_PROGRAMS = new Set(['docker', 'dockerd', 'podman', 'nerdctl', 'ctr', 'crictl', 'kubectl', 'buildah']);
-const PRIVILEGE_PROGRAMS = new Set(['sudo', 'su', 'doas', 'nsenter', 'chroot', 'unshare', 'setcap', 'capsh', 'pkexec']);
+
 const PLATFORM_EFFECT_CODES: Record<AgentPlatformEffect, GateReasonCode> = {
   credential_access: 'PLATFORM_CREDENTIAL_ACCESS',
   docker_access: 'PLATFORM_DOCKER_ACCESS',
@@ -93,22 +96,27 @@ function escapesWorkspace(path: string): boolean {
   return path.startsWith('/') || /^[A-Za-z]:/u.test(path) || path.includes('\\') || path.split('/').includes('..');
 }
 
-type Inspection = { verdict?: Verdict | undefined; pushes: GitPush[] };
+/** `verdict` is a definite platform DENY; `unanalyzable` (the reason) forces a mandatory approval. */
+type Inspection = { verdict?: Verdict | undefined; unanalyzable?: string | undefined; pushes: GitPush[] };
 
-const unanalyzable = (detail: string): Verdict => ({ decision: 'DENY', code: 'PLATFORM_COMMAND_UNANALYZABLE', source: 'platform', detail });
+const unanalyzable = (detail: string): Verdict => ({ decision: 'REQUIRE_APPROVAL', code: 'PLATFORM_COMMAND_UNANALYZABLE', source: 'platform', detail });
 
-/** Step 1, plus the `git push` invocations the command runs. Any failure here denies. */
+/** Step 1, plus the `git push` invocations the command runs. A failure here is unanalyzable, never a crash. */
 function inspect(descriptor: AgentActionDescriptor): Inspection {
   try {
     return inspectUnchecked(descriptor);
   } catch {
-    return { verdict: unanalyzable('the command could not be analysed'), pushes: [] };
+    return { unanalyzable: 'the command could not be analysed', pushes: [] };
   }
 }
 
-/** Step 1. The broker's own classification, plus what the descriptor itself proves. */
+/**
+ * Step 1. The broker's own classification, plus what the descriptor itself proves: a definite DENY,
+ * or the mandatory REQUIRE_APPROVAL of a command that cannot be analysed.
+ */
 export function platformViolation(descriptor: AgentActionDescriptor): Verdict | undefined {
-  return inspect(descriptor).verdict;
+  const inspection = inspect(descriptor);
+  return inspection.verdict ?? (inspection.unanalyzable ? unanalyzable(inspection.unanalyzable) : undefined);
 }
 
 function inspectUnchecked(descriptor: AgentActionDescriptor): Inspection {
@@ -124,22 +132,26 @@ function inspectUnchecked(descriptor: AgentActionDescriptor): Inspection {
   }
   const argv = descriptor.command ?? [];
   if (argv.length === 0) return { pushes: [] };
-  // Every program the command line runs, looking through launchers and shell strings; anything unreadable denies.
+  // Every program the command line runs, looking through launchers and shell strings. The segments
+  // read before an analysis failure still count, so a definite match denies even then.
   const analysis = analyzeCommand(argv);
-  // Any word naming a container runtime or privilege tool denies, not only a program word: a program
-  // the analysis treats as a leaf could be a wrapper that runs its arguments (`strace sudo id`). The
-  // literal argv is checked even when the analysis fails, so the specific reason wins.
-  const named = namedPlatformAccess(analysis.ok ? [...argv, ...analysis.segments.flat()] : argv);
-  if (named) return { verdict: named, pushes: [] };
-  if (!analysis.ok) return { verdict: unanalyzable(`the command cannot be analysed: ${analysis.reason}`), pushes: [] };
-  return { pushes: analysis.pushes };
+  const definite = definitePlatformAccess(analysis.segments);
+  if (definite) return { verdict: definite, pushes: analysis.pushes };
+  return analysis.ok ? { pushes: analysis.pushes } : { unanalyzable: `the command cannot be analysed: ${analysis.reason}`, pushes: analysis.pushes };
 }
 
-function namedPlatformAccess(words: readonly string[]): Verdict | undefined {
-  if (words.some((word) => DOCKER_PROGRAMS.has(programName(word)) || word.includes('docker.sock'))) {
+/**
+ * A container runtime or privilege tool in program position, or the Docker socket handed to a
+ * program that is not data-only (`curl --unix-socket .../docker.sock`). A name elsewhere in the
+ * arguments is not definite; the analysis reports it as unanalyzable instead.
+ */
+function definitePlatformAccess(segments: readonly string[][]): Verdict | undefined {
+  const programs = segments.map((segment) => programName(segment[0] ?? ''));
+  const socket = segments.some((segment) => !DATA_ONLY_PROGRAMS.has(programName(segment[0] ?? '')) && segment.some((word) => word.includes('docker.sock')));
+  if (socket || programs.some((program) => DOCKER_PROGRAMS.has(program))) {
     return { decision: 'DENY', code: 'PLATFORM_DOCKER_ACCESS', source: 'platform', detail: 'container runtimes are never reachable from an agent' };
   }
-  if (words.some((word) => PRIVILEGE_PROGRAMS.has(programName(word)))) {
+  if (programs.some((program) => PRIVILEGE_PROGRAMS.has(program))) {
     return { decision: 'DENY', code: 'PLATFORM_PRIVILEGE_ESCALATION', source: 'platform', detail: 'privilege changes are never permitted' };
   }
   return undefined;
@@ -240,9 +252,27 @@ function strictness(decision: GateDecision): number {
 export function evaluateGate(input: GateInput): GateDecision {
   const inspection = inspect(input.descriptor);
   const declared = evaluateAs(input, input.descriptor.actionClass, inspection);
-  if (inspection.verdict || inspection.pushes.length === 0 || input.descriptor.actionClass === 'publish_branch') return declared;
-  const publish = evaluateAs(input, 'publish_branch', inspection);
-  return strictness(publish) >= strictness(declared) ? publish : declared;
+  const decision = inspection.verdict || inspection.pushes.length === 0 || input.descriptor.actionClass === 'publish_branch'
+    ? declared
+    : [evaluateAs(input, 'publish_branch', inspection), declared].reduce((stricter, next) => (strictness(next) > strictness(stricter) ? next : stricter));
+  return inspection.unanalyzable ? requireUnanalyzableApproval(decision, inspection.unanalyzable) : decision;
+}
+
+/**
+ * An unanalyzable command needs a human: anything short of DENY (a hard deny, a scope deny or the
+ * publish evaluation of a detected push) becomes REQUIRE_APPROVAL. It is not advisor-pending, so
+ * `combineAdvisor` keeps it, and it is applied after the merge, so no project rule lowers it.
+ */
+function requireUnanalyzableApproval(decision: GateDecision, reason: string): GateDecision {
+  if (decision.decision === 'DENY') return decision;
+  return {
+    ...decision,
+    decision: 'REQUIRE_APPROVAL',
+    reasonCode: 'PLATFORM_COMMAND_UNANALYZABLE',
+    reasons: [{ code: 'PLATFORM_COMMAND_UNANALYZABLE' as const, source: 'platform' as const, detail: reason.slice(0, 300) }, ...decision.reasons].slice(0, 50),
+    matchedRules: ['platform', ...decision.matchedRules].slice(0, 50),
+    advisor: { ...decision.advisor, required: false }
+  };
 }
 
 /** Steps 1-9 for one action class. The decision always reports the descriptor's declared class. */
