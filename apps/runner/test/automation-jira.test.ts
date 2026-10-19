@@ -554,8 +554,9 @@ describe('Jira through the automation service', () => {
       return String(context.operations.calls.find((call) => call.operation === 'agent_spawn' && call.input.idempotencyKey === `automation:${id}:spawn`)!.input.prompt);
     };
     expect(prompt('claude')).toContain('the label "claude" was added to issue OPS-12 in OPS');
-    expect(prompt('claude')).not.toContain('moved from');
-    expect(prompt('In Review')).toContain('issue OPS-12 in OPS moved from "To Do" to "In Review"');
+    expect(prompt('claude')).not.toContain('moved to');
+    expect(prompt('In Review')).toContain('issue OPS-12 in OPS moved to "In Review"');
+    expect(prompt('In Review')).toContain('State: from "To Do" to "In Review"');
     expect(prompt('In Review')).not.toContain('the label');
 
     const comments = context.sent.map((request) => JSON.stringify(request.body));

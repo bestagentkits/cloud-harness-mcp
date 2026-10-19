@@ -282,9 +282,10 @@ credentials are managed only on this page.
   pushed: the only thing a run can write to the source is the optional comment (and,
   on GitHub, the check run).
 - **No network in the workspace,** and the agent is held to the rule's budget.
-- **Event text is untrusted.** The title and body are passed to the agent as data,
-  clearly separated from your instructions, and are not kept after matching. The raw
-  webhook is never stored.
+- **Event text is untrusted.** The title and body, and other text the provider chooses
+  (state names, added labels, links, a custom event's resource id), are passed to the
+  agent as data, clearly separated from your instructions. The title and body are not
+  kept after matching, and the raw webhook is never stored.
 - **No loops or pings.** Bot senders are ignored by default, this harness's own GitHub
   App is always ignored when the operator configured its slug, and posting never
   raises a label event.

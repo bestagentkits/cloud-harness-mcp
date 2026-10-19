@@ -31,6 +31,7 @@ import {
 import {
   ANY_INDEX_KEY,
   boundedText,
+  eventAddedLabels,
   eventIndexKeys,
   isRetryableResult,
   normalizedEventProblem,
@@ -223,19 +224,40 @@ function triggerValue(match: AutomationRuleMatch, event: NormalizedAutomationEve
   return event.label ?? match.label;
 }
 
-/** One trusted sentence naming what happened. Provider values in it are bounded and delimiter-escaped. */
+/**
+ * One trusted sentence naming what happened. It is built from the rule's own values (label, target
+ * state, custom event name) and from the provider fields its adapter holds to a fixed format: the
+ * scope and the GitHub, Linear or Jira reference. Free-form provider text, such as state names, a
+ * custom resource id or a link, goes to the untrusted block instead.
+ */
 function describeTrigger(snapshot: RuleSnapshot, event: NormalizedAutomationEvent): string {
-  const reference = `${resourceKind(event.eventType)} ${escapeDelimiter(event.resourceRef)} in ${escapeDelimiter(event.scope)}`;
-  const kind = triggerKind(snapshot.match);
-  const value = escapeDelimiter(triggerValue(snapshot.match, event));
-  if (kind === 'event') {
-    const labelled = value === '' ? '' : ` labelled "${value}"`;
-    return `the custom event "${escapeDelimiter(event.scope)}"${labelled} was received for ${escapeDelimiter(event.resourceRef)}`;
+  const { match } = snapshot;
+  if (match.provider === 'custom') {
+    const labelled = match.label === undefined ? '' : ` labelled "${escapeDelimiter(match.label)}"`;
+    return `the custom event "${escapeDelimiter(match.event)}"${labelled} was received (the resource it names is in the event data)`;
   }
-  if (kind === 'label') return `the label "${value}" was added to ${reference}`;
-  const from = event.fromState === undefined ? '' : ` from "${escapeDelimiter(event.fromState)}"`;
-  return `${reference} moved${from} to "${value}"`;
+  const reference = `${resourceKind(event.eventType)} ${escapeDelimiter(event.resourceRef)} in ${escapeDelimiter(event.scope)}`;
+  if (triggerKind(match) === 'label') return `the label "${escapeDelimiter(match.label ?? '')}" was added to ${reference}`;
+  const target = match.provider === 'linear' ? match.toState : match.provider === 'jira' ? match.toStatus : undefined;
+  return target === undefined ? `${reference} changed state (the states are in the event data)` : `${reference} moved to "${escapeDelimiter(target)}"`;
 }
+
+/** Provider-chosen details of the event, for the untrusted block only. */
+function untrustedDetails(event: NormalizedAutomationEvent): string[] {
+  const lines: string[] = [];
+  if (event.provider === 'custom') lines.push(`Resource: ${escapeDelimiter(event.resourceRef)}`);
+  if (!trustedSource(event) && event.resourceUrl) lines.push(`Link: ${escapeDelimiter(event.resourceUrl)}`);
+  if (event.toState !== undefined) {
+    const from = event.fromState ? `from "${escapeDelimiter(event.fromState)}" ` : '';
+    lines.push(`State: ${from}to "${escapeDelimiter(event.toState)}"`);
+  }
+  const labels = eventAddedLabels(event, event.provider === 'jira' ? ' ' : '\t');
+  if (labels.length > 0) lines.push(`Labels added: ${labels.map((name) => `"${escapeDelimiter(name)}"`).join(', ')}`);
+  return lines;
+}
+
+/** GitHub links are checked against the repository and Jira links are built from the connection's site. */
+const trustedSource = (event: NormalizedAutomationEvent): boolean => event.provider === 'github' || event.provider === 'jira';
 
 /** Builds the agent task: owner instructions, trusted trigger context, then fenced untrusted event data. */
 export function buildAutomationPrompt(snapshot: RuleSnapshot, event: NormalizedAutomationEvent): string {
@@ -247,7 +269,7 @@ export function buildAutomationPrompt(snapshot: RuleSnapshot, event: NormalizedA
     '',
     '## Trigger context (from Cloud Harness, trusted)',
     `- Event: ${describeTrigger(snapshot, event)}.`,
-    `- Source: ${event.resourceUrl || '(no link)'}`,
+    `- Source: ${trustedSource(event) ? event.resourceUrl || '(no link)' : '(see the event data)'}`,
     `- Checked-out ref: ${snapshot.action.ref ?? 'the repository default branch'}`,
     `- Workspace tools available to you: ${tools}.`,
     snapshot.action.publishComment
@@ -259,6 +281,7 @@ export function buildAutomationPrompt(snapshot: RuleSnapshot, event: NormalizedA
     `<${DELIMITER}>`,
     `Title: ${escapeDelimiter(event.title)}`,
     `${triggerKind(snapshot.match) === 'label' ? 'Labeled' : 'Triggered'} by: ${escapeDelimiter(event.actor.login)} (${escapeDelimiter(actorType)})`,
+    ...untrustedDetails(event),
     'Body:',
     escapeDelimiter(event.body) || '(empty)',
     `</${DELIMITER}>`
