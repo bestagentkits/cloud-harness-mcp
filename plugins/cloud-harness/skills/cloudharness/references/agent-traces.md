@@ -80,7 +80,8 @@ preview only when the operator enabled one. A failed model call's `errorClass`
 `budget` is a gateway budget refusal (raise the agent's budget, up to the model
 profile's limits); `rate_limit` is
 provider throttling (wait and retry). A run that ends on provider throttling
-finishes `FAILED`; only a harness limit ends it `LIMIT_EXCEEDED`.
+ends `FAILED` (finish reason `failed`); only a harness limit ends it
+`LIMIT_EXCEEDED`.
 
 - Required: `traceId`. Optional: `kind`, `cursor`, `limit` (1–500, default 200).
 

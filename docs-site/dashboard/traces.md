@@ -58,7 +58,7 @@ agent's budget (`maxInputTokens`, `maxOutputTokens`, or `maxCostMicros`) to let 
 further; the model profile's limits cap that budget, so a run already at the profile
 ceiling needs a profile with higher limits. `rate_limit` means the
 provider throttled the call; waiting and retrying is the fix, not a bigger budget. A
-run that ends on provider throttling finishes `FAILED`, not `limit_exceeded`.
+run that ends on provider throttling has the finish reason `failed`, not `limit_exceeded`.
 
 A trace whose data is incomplete is marked **partial**: a span never closed, a model
 call reported no usage, the gateway settlement is missing or counted requests without

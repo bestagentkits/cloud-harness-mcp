@@ -108,6 +108,7 @@ describe('AgentSession worker lifecycle', () => {
     const failures = [
       { stopReason: 'error', errorMessage: '429 budget_exceeded: model budget exhausted' },
       { stopReason: 'error', errorMessage: '413 model_bound_exceeded' },
+      { stopReason: 'error', errorMessage: '413 model bound exceeded' },
       { stopReason: 'length' }
     ];
     for (const failure of failures) {
@@ -125,7 +126,10 @@ describe('AgentSession worker lifecycle', () => {
   it.each([
     '429 Too Many Requests',
     '429 Rate limit reached for requests',
-    '429 You exceeded your current quota, please check your plan and billing details'
+    '429 You exceeded your current quota, please check your plan and billing details',
+    '429 Rate limit reached for gpt-4o on tokens per min (TPM): Limit 30000, Used 29587, Requested 413.',
+    '429 Token limit exceeded for this minute',
+    '413 request_too_large: Request exceeds the maximum allowed number of bytes'
   ])('ends a run throttled by the provider (%s) as FAILED, not LIMIT_EXCEEDED', async (errorMessage) => {
     const session = new FakeSession();
     session.messages[0] = { role: 'assistant', stopReason: 'error', errorMessage };
@@ -135,6 +139,21 @@ describe('AgentSession worker lifecycle', () => {
     await worker.completion;
     await writer.close();
     expect(records()).toContainEqual(expect.objectContaining({ type: 'terminal', state: 'FAILED' }));
+  });
+
+  it.each([
+    [{ status: 429, code: 'rate_limit_exceeded', message: '429 Rate limit reached for requests' }, 'FAILED'],
+    [{ status: 413, code: 'request_too_large', message: '413 Request too large' }, 'FAILED'],
+    [{ status: 429, code: 'model_budget_exhausted', message: '429 budget_exceeded: model budget exhausted' }, 'LIMIT_EXCEEDED'],
+    [{ status: 413, code: 'model_bound_exceeded', message: '413 model bound exceeded' }, 'LIMIT_EXCEEDED']
+  ])('maps a thrown provider error %o to %s', async (fields, state) => {
+    const session = new FakeSession();
+    const { worker, writer, records } = createWorker(session);
+    worker.receive(createStartRecord());
+    session.promptGate.reject(Object.assign(new Error(fields.message), fields));
+    await worker.completion;
+    await writer.close();
+    expect(records()).toContainEqual(expect.objectContaining({ type: 'terminal', state }));
   });
 
   it('cooperatively aborts the session and emits CANCELLED exactly once', async () => {
