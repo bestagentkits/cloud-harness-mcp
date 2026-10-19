@@ -316,6 +316,15 @@ event-to-span mapping by
   `null`. Its `costMicros` is `null` when no trace in the window has a known
   cost.
 - **Spans** are returned in recording order (span sequence), not start time.
+- **Coding automations.** The trace of an agent a coding automation started
+  carries the run's `workflowId` (filterable in `agent_traces_list`), and each
+  brokered action adds an `action` span with its decision, reason code and
+  receipt state. The runner verifies, commits, pushes and opens the pull
+  request after the agent ends, so those spans are appended to a trace that is
+  already terminal; a finished trace's span list can still grow. The receipts
+  themselves are on the Dashboard Automations run page, read through the
+  runner's `workflow_get` newest first and keyset-paged by `actionsCursor`
+  ([`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts)).
 - **Error classes.** A failed model call carries a bounded `errorClass`. A
   Model Gateway budget refusal is `budget`, recognised by the gateway's
   structured refusal code `budget_exceeded` (owned by

@@ -36,6 +36,14 @@ function workspace(lockfile?: string): { workspaceId: string; workspacePath: str
   chmodSync(repo, 0o777);
   writeFileSync(join(repo, 'package.json'), `${JSON.stringify({ name: 'coding-fixture', version: '1.0.0', private: true, dependencies: { 'chm-hello': '1.0.0' } }, null, 2)}\n`);
   if (lockfile !== undefined) writeFileSync(join(repo, NPM_LOCKFILE), lockfile);
+  // A real checkout, as the install runs in one: a Git repository with the manifest committed.
+  const git = (args: string[]) => {
+    const result = spawnSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd: repo, encoding: 'utf8' });
+    if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr}`);
+  };
+  git(['init', '--quiet', '--initial-branch=main']);
+  git(['add', '-A']);
+  git(['commit', '--quiet', '-m', 'Fixture']);
   return { workspaceId, workspacePath, repo };
 }
 

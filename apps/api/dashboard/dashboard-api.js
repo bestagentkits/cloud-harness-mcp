@@ -126,7 +126,7 @@ export const updateAutomationRule = (id, payload) => api(automationPath('rules',
 export const deleteAutomationRule = (id, expectedGeneration) => api(automationPath('rules', id), { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
 export const previewAutomationRule = (id, sample) => api(automationPath('rules', id, '/preview'), { method: 'POST', body: JSON.stringify({ sample }) });
 export const listAutomationWorkflows = ({ ruleId, state, limit } = {}) => api(`/automations/workflows${automationQuery({ ruleId, state, limit })}`);
-export const getAutomationWorkflow = (id) => api(automationPath('workflows', id));
+export const getAutomationWorkflow = (id, { actionsCursor } = {}) => api(`${automationPath('workflows', id)}${automationQuery({ actionsCursor })}`);
 export const cancelAutomationWorkflow = (id, reason) => api(automationPath('workflows', id, '/cancel'), { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) });
 export const listAutomationDeliveries = ({ connectionId, limit } = {}) => api(`/automations/deliveries${automationQuery({ connectionId, limit })}`);
 

@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import {
   AGENT_POLICY_LIMITS,
   CODING_LIMITS,
   type AgentActionDescriptorInput,
   type CodingActionOutcome,
   type CodingActionStep,
+  type CodingErrorCode,
   type CodingPhase,
   type GateDecision
 } from '@cloud-harness/contracts';
@@ -11,12 +13,14 @@ import {
   editActionClass,
   plainArgv,
   type BrokeredAdmission,
+  type BrokeredStep,
   type CodingActionBroker,
   type CodingBinding
 } from './agent-governance/action-broker.js';
 import type { CodingActionRecord } from './agent-governance/action-store.js';
+import type { CodingGitPort } from './agent-governance/coding-git.js';
 import { ExecutionBackendError, WorkspaceExecutionBackend } from './agent-governance/workspace-execution-backend.js';
-import { admitNpmLockfile, MAX_LOCKFILE_BYTES, NPM_LOCKFILE, type InstallResult } from './agent-governance/install-executor.js';
+import { admitNpmLockfile, INSTALL_TIMEOUT_MS, MAX_LOCKFILE_BYTES, NPM_LOCKFILE, type InstallResult } from './agent-governance/install-executor.js';
 import type { AutomationOperationResult } from './automation-service.js';
 import type { RunnerOperation } from '@cloud-harness/contracts';
 
@@ -24,8 +28,21 @@ import type { RunnerOperation } from '@cloud-harness/contracts';
 const VERIFY_TIMEOUT_MS = 300_000;
 /** Delay before a step that hit a transient failure runs again. The gate's run-time budget bounds the retries. */
 const STEP_RETRY_MS = 5_000;
+/** Delay before a run held back by the concurrency limit asks to be admitted again. */
+const ADMIT_RETRY_MS = 15_000;
+/** Bound on one gate decision, including an advisor call it makes. */
+const GATE_TIMEOUT_MS = 60_000;
+/** Bound on one Git inspection of the checkout. */
+const INSPECT_TIMEOUT_MS = 90_000;
+/**
+ * The most changed paths the runner gates for one commit. Every path is decided, in chunks of the
+ * gate's per-action limit, so a larger change is refused as unverifiable rather than partly checked.
+ */
+const MAX_GATED_PATHS = 2_000;
+const MAX_PATH_CHARS = 1_024;
 const DIFF_FILE = '.cloud-harness-coding.diff';
 const RETRYABLE_CODES = new Set(['UNAVAILABLE', 'TIMEOUT', 'GITHUB_RATE_LIMITED', 'INTERNAL', 'UNKNOWN_REMOTE_STATE']);
+const SHA = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
 
 /** The workflow columns the coding engine reads. */
 export type CodingWorkflowRow = {
@@ -52,6 +69,8 @@ export type CodingEngineHost = {
   complete(workflowId: string, fields: Record<string, string | number | null>): void;
   now(): number;
   install?: CodingInstallPort | undefined;
+  /** Read-only Git inspection of the checkout. Without it nothing is committed (COMMIT_UNVERIFIED). */
+  git?: CodingGitPort | undefined;
 };
 
 /** The lockfile install executor as the engine sees it. */
@@ -60,15 +79,24 @@ export type CodingInstallPort = {
   enabled(): boolean;
   /** The registry `npm ci` uses; every locked package must resolve below it. */
   registry: string;
-  run(ownerId: string, workspaceId: string): Promise<InstallResult>;
+  run(ownerId: string, workspaceId: string, signal: AbortSignal): Promise<InstallResult>;
 };
+
+/** How admission of a coding run ended. `waiting`: the concurrency limit holds it back for now. */
+export type CodingAdmission = { state: 'admitted' } | { state: 'waiting'; retryAt: number } | { state: 'refused'; code: string } | { state: 'gone' };
+
+type StepResult = { ok: true } | { ok: false; code: string; retry: boolean };
+type OwnCommit = { ok: true; sha: string; paths: string[] } | { ok: false; code: string; retryable: boolean };
 
 const retryable = (result: AutomationOperationResult) => result.error?.retryable === true || RETRYABLE_CODES.has(result.error?.code ?? '');
 const bounded = (value: string, max = 100) => (value.length <= max ? value : value.slice(0, max));
+const gateSignal = () => AbortSignal.timeout(GATE_TIMEOUT_MS);
+const inspectSignal = () => AbortSignal.timeout(INSPECT_TIMEOUT_MS);
 
 /** The workflow error code for a refused step. */
-export function refusalCode(admission: Pick<BrokeredAdmission, 'decision'>): string {
-  const decision: GateDecision | null = admission.decision;
+export function refusalCode(admission: { decision: GateDecision | null; refusal?: string | null }): string {
+  if (admission.refusal) return bounded(`ACTION_DENIED:${admission.refusal}`);
+  const decision = admission.decision;
   if (decision === null) return 'CODING_DISABLED';
   return bounded(`${decision.decision === 'REQUIRE_APPROVAL' ? 'ACTION_REQUIRES_APPROVAL' : 'ACTION_DENIED'}:${decision.reasonCode}`);
 }
@@ -81,18 +109,15 @@ export function codingBranch(resourceNumber: number, workflowId: string): string
   return `${CODING_LIMITS.branchPrefix}${resourceNumber}-${workflowId.slice(4, 12)}`;
 }
 
-/** Paths in `git status --short` output, both sides of a rename included. */
-export function changedPaths(statusOutput: string): string[] {
-  const paths = new Set<string>();
-  for (const line of statusOutput.split('\n')) {
-    if (line.length < 4 || line.startsWith('##')) continue;
-    for (const part of line.slice(3).split(' -> ')) {
-      const trimmed = part.trim();
-      const unquoted = trimmed.startsWith('"') && trimmed.endsWith('"') ? trimmed.slice(1, -1) : trimmed;
-      if (unquoted) paths.add(unquoted);
-    }
-  }
-  return [...paths].sort();
+/** The trailer that marks a commit as this workflow's own. */
+export function workflowTrailer(workflowId: string): string {
+  return `Cloud-Harness-Workflow: ${workflowId}`;
+}
+
+/** sha256 of the sorted `ecosystem:name@version registry` lines of the packages an install covers. */
+export function packagesDigest(packages: readonly { name: string; version: string; registryHost: string }[]): string {
+  const lines = [...new Set(packages.map((entry) => `npm:${entry.name}@${entry.version} ${entry.registryHost}`))].sort();
+  return createHash('sha256').update(lines.join('\n')).digest('hex');
 }
 
 function outputOf(result: AutomationOperationResult): string {
@@ -108,12 +133,23 @@ function parseJson(text: string): unknown {
   }
 }
 
+/** Whether every path can be described to the gate exactly; anything else is refused, never truncated. */
+function verifiablePaths(paths: readonly string[]): boolean {
+  return paths.length <= MAX_GATED_PATHS && paths.every((path) => path.length > 0 && path.length <= MAX_PATH_CHARS && !path.includes('\0'));
+}
+
 /**
  * The runner-owned half of a coding workflow, after the agent has finished editing: verify, commit,
  * push and open the pull request. One step runs per engine tick; every step is described, decided by
  * the gate, recorded as a receipt and traced before it runs, and keyed so a replay after a restart or
  * a lost response finds its first effect instead of acting twice. An effect that cannot be proven
  * either way stops the workflow as BLOCKED with EFFECT_UNKNOWN. The engine never merges or deploys.
+ *
+ * The agent and its verify command run arbitrary code in the checkout, including Git. The runner
+ * therefore reads the checkout itself: HEAD must still be the base before anything is staged, every
+ * changed path is gated before the commit, and the commit it pushes must be its own (one parent, the
+ * base, and this workflow's trailer) with every path it changes gated again. The push names that
+ * commit by its id, never by HEAD.
  */
 export class CodingWorkflowEngine {
   private readonly backend: WorkspaceExecutionBackend;
@@ -128,33 +164,41 @@ export class CodingWorkflowEngine {
 
   /**
    * Admits a coding workflow: the rule's repository must be readable under the owner's policy for the
-   * rule's project. The revisions it was admitted under are pinned, so a later policy change stops it.
+   * rule's project, and the owner's coding runs must be below the policy's concurrency limit. The
+   * revisions it was admitted under are pinned, so a later policy change stops it. A run held back by
+   * the concurrency limit waits; it is admitted when an earlier run finishes, or expires with the queue.
    */
-  async admit(ownerId: string, projectId: string, repository: string): Promise<{ ok: true; fields: Record<string, string | number> } | { ok: false; code: string }> {
-    const decision = await this.broker.admit(ownerId, projectId, { version: 1, actionClass: 'read', repository });
-    if (decision.decision !== 'ALLOW') return { ok: false, code: refusalCode({ decision }) };
-    return {
-      ok: true,
-      fields: {
-        project_id: projectId,
-        coding_phase: 'AGENT' satisfies CodingPhase,
-        coding_started_at: this.host.now(),
-        policy_revision_json: JSON.stringify({ globalRevisionId: decision.policy.globalRevisionId, projectRevisionId: decision.policy.projectRevisionId })
-      }
-    };
+  async admit(row: { id: string; owner_id: string }, projectId: string, repository: string): Promise<CodingAdmission> {
+    const active = this.broker.activeCodingRuns(row.owner_id);
+    const decision = await this.broker.admit(row.owner_id, projectId, { version: 1, actionClass: 'read', repository }, active);
+    // Another run was admitted while the gate decided: decide again against the new count. The check and
+    // the update below run without yielding, so two runs can never both take the last slot.
+    if (this.broker.activeCodingRuns(row.owner_id) !== active) return { state: 'waiting', retryAt: this.host.now() };
+    if (decision.decision !== 'ALLOW') {
+      // At admission the only usage the gate sees is the concurrency count.
+      if (decision.reasonCode === 'BUDGET_EXHAUSTED') return { state: 'waiting', retryAt: this.host.now() + ADMIT_RETRY_MS };
+      return { state: 'refused', code: refusalCode({ decision }) };
+    }
+    const admitted = this.host.update(row.id, {
+      project_id: projectId,
+      coding_phase: 'AGENT' satisfies CodingPhase,
+      coding_started_at: this.host.now(),
+      policy_revision_json: JSON.stringify({ globalRevisionId: decision.policy.globalRevisionId, projectRevisionId: decision.policy.projectRevisionId })
+    });
+    return admitted ? { state: 'admitted' } : { state: 'gone' };
   }
 
   /**
    * Binds the opened workspace: one repository only (the repository is resolved from the rule, so a
    * workspace with several checkouts is ambiguous), its generation pinned, and the base commit recorded.
    */
-  async bindWorkspace(row: CodingWorkflowRow, workspaceId: string): Promise<{ ok: true } | { ok: false; code: string; retry: boolean }> {
+  async bindWorkspace(row: CodingWorkflowRow, workspaceId: string): Promise<StepResult> {
     if (this.broker.workspaces.repositoryCount(workspaceId) > 1) return { ok: false, code: 'REPOSITORY_AMBIGUOUS', retry: false };
     const generation = this.broker.workspaces.generation(workspaceId);
     if (generation === null) return { ok: false, code: 'WORKSPACE_LOST', retry: false };
     const log = await this.host.call(row.owner_id, 'git_log', { workspaceId, limit: 1 });
     const base = outputOf(log).split('\t')[0]?.trim() ?? '';
-    if (!log.ok || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(base)) {
+    if (!log.ok || !SHA.test(base)) {
       return { ok: false, code: bounded(`WORKSPACE_OPEN_FAILED:${log.error?.code ?? 'NO_BASE_COMMIT'}`), retry: !log.ok && retryable(log) };
     }
     this.host.update(row.id, { workspace_generation: generation, base_oid: base });
@@ -164,10 +208,12 @@ export class CodingWorkflowEngine {
   /**
    * Installs the checkout's npm lockfile before the agent starts, when the install flag is on and a
    * lockfile exists. The lockfile must pass supply-chain admission and the gate must allow every locked
-   * package as a `package_install`; one refusal stops the workflow before anything is fetched. Each
-   * package is a receipt, so a replay after a restart finds the finished install instead of running again.
+   * package as a `package_install`; one refusal stops the workflow before anything is fetched. The
+   * install is one action whose receipt names the package count and the digest of the package list, and
+   * whose key is that digest, so a replay after a restart finds the finished install instead of running
+   * again, and a changed lockfile is a different action.
    */
-  async installDependencies(row: CodingWorkflowRow, workspaceId: string): Promise<{ ok: true } | { ok: false; code: string; retry: boolean }> {
+  async installDependencies(row: CodingWorkflowRow, workspaceId: string): Promise<StepResult> {
     const install = this.host.install;
     if (!install?.enabled()) return { ok: true };
     const binding = this.broker.binding(row.owner_id, row.id);
@@ -183,32 +229,47 @@ export class CodingWorkflowEngine {
     const lockfile = admitNpmLockfile(content, [install.registry]);
     if (!lockfile.ok) return { ok: false, code: 'LOCKFILE_REJECTED', retry: false };
     if (lockfile.packages.length === 0) return { ok: true };
-    const records: CodingActionRecord[] = [];
+    const digest = packagesDigest(lockfile.packages);
+    const packageCount = lockfile.packages.length;
+    const descriptors = new Map<string, AgentActionDescriptorInput>();
     for (const locked of lockfile.packages) {
-      const admission = await this.broker.begin({
-        binding, origin: 'runner', step: 'install', idempotencyKey: `automation:${row.id}:install:${locked.name}`,
-        descriptor: { version: 1, actionClass: 'package_install', repository: binding.repository, package: { ecosystem: 'npm', name: locked.name, registry: locked.registryHost } }
+      descriptors.set(`${locked.name} ${locked.registryHost}`, {
+        version: 1, actionClass: 'package_install', repository: binding.repository,
+        package: { ecosystem: 'npm', name: locked.name, registry: locked.registryHost }
       });
-      if (!admission.allowed) {
-        this.broker.traceRefusal(binding, admission.record);
-        return { ok: false, code: refusalCode(admission), retry: false };
-      }
-      records.push(admission.record);
     }
-    if (records.every((record) => record.state === 'APPLIED')) return { ok: true };
+    const step = (descriptor: AgentActionDescriptorInput): BrokeredStep => ({
+      binding, origin: 'runner', step: 'install', idempotencyKey: `automation:${row.id}:install:${digest.slice(0, 16)}`,
+      descriptor: { ...descriptor, reason: `npm ci of ${packageCount} locked packages from ${NPM_LOCKFILE} (sha256 ${digest})` },
+      signal: gateSignal()
+    });
+    // Every package is decided by the pure gate first. A refusal is recorded on the install receipt with
+    // the package it names; a package the advisor would have to clear is not cleared in bulk.
+    const refused = this.broker.precheck(binding, [...descriptors.values()]);
+    if (refused) {
+      this.broker.reject(step(refused.descriptor), refused.decision);
+      return { ok: false, code: refusalCode({ decision: refused.decision }), retry: false };
+    }
+    const admission = await this.broker.begin(step(descriptors.values().next().value as AgentActionDescriptorInput));
+    if (!admission.allowed) {
+      this.broker.traceRefusal(binding, admission.record);
+      return { ok: false, code: refusalCode(admission), retry: false };
+    }
+    const { record } = admission;
+    if (record.state === 'APPLIED') return { ok: true };
+    if (record.state === 'REJECTED' || record.state === 'BLOCKED') return { ok: false, code: 'CODING_INSTALL_FAILED', retry: false };
     const startedAt = this.host.now();
-    for (const record of records) this.broker.dispatched(record);
+    if (!this.broker.dispatched(record)) return { ok: false, code: 'CODING_INSTALL_FAILED', retry: true };
     let result: InstallResult;
     try {
-      result = await install.run(row.owner_id, workspaceId);
+      result = await install.run(row.owner_id, workspaceId, AbortSignal.timeout(INSTALL_TIMEOUT_MS + 60_000));
     } catch (error) {
       const code = typeof (error as { code?: unknown })?.code === 'string' ? (error as { code: string }).code : 'CODING_INSTALL_FAILED';
-      for (const record of records) this.broker.settle(binding, record, 'REJECTED', { errorCode: bounded(code) }, startedAt);
+      this.broker.settle(binding, record, 'REJECTED', { errorCode: bounded(code), packageCount, packagesDigest: digest }, startedAt);
       return { ok: false, code: bounded(code), retry: false };
     }
-    for (const record of records) {
-      this.broker.settle(binding, record, result.ok ? 'APPLIED' : 'REJECTED', result.ok ? { exitCode: 0 } : { exitCode: result.exitCode, errorCode: result.code }, startedAt);
-    }
+    this.broker.settle(binding, record, result.ok ? 'APPLIED' : 'REJECTED',
+      result.ok ? { exitCode: 0, packageCount, packagesDigest: digest } : { exitCode: result.exitCode, errorCode: result.code, packageCount, packagesDigest: digest }, startedAt);
     return result.ok ? { ok: true } : { ok: false, code: result.code, retry: false };
   }
 
@@ -258,7 +319,7 @@ export class CodingWorkflowEngine {
     if (record.state === 'APPLIED') return this.phase(row, 'COMMIT');
     if (record.state === 'REJECTED' || record.state === 'BLOCKED') return await this.verifyFailed(row, binding, workspaceId);
     const startedAt = this.host.now();
-    this.broker.dispatched(record);
+    if (!this.broker.dispatched(record)) return;
     let ran: { exitCode: number | null; timedOut: boolean };
     try {
       ran = await this.backend.run({ principalId: row.owner_id, workspaceId, argv, timeoutMs: VERIFY_TIMEOUT_MS, signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS + 60_000) });
@@ -286,13 +347,12 @@ export class CodingWorkflowEngine {
   private async verifyFailed(row: CodingWorkflowRow, binding: CodingBinding, workspaceId: string): Promise<void> {
     const admission = await this.broker.begin({
       binding, origin: 'runner', step: 'diff_artifact', idempotencyKey: `automation:${row.id}:diff`,
-      descriptor: { version: 1, actionClass: 'read', repository: binding.repository }
+      descriptor: { version: 1, actionClass: 'read', repository: binding.repository }, signal: gateSignal()
     });
     if (!admission.allowed) {
       this.broker.traceRefusal(binding, admission.record);
-    } else if (admission.record.state === 'INTENT' || admission.record.state === 'DISPATCHED') {
+    } else if ((admission.record.state === 'INTENT' || admission.record.state === 'DISPATCHED') && this.broker.dispatched(admission.record)) {
       const startedAt = this.host.now();
-      this.broker.dispatched(admission.record);
       const outcome = await this.snapshotDiff(row.owner_id, row.id, workspaceId);
       this.broker.settle(binding, admission.record, outcome.artifactId ? 'APPLIED' : 'REJECTED', outcome, startedAt);
     }
@@ -314,47 +374,50 @@ export class CodingWorkflowEngine {
 
   private async commit(row: CodingWorkflowRow, binding: CodingBinding): Promise<void> {
     const workspaceId = binding.workspaceId;
-    if (!workspaceId || !row.base_oid) {
+    const base = row.base_oid;
+    if (!workspaceId || !base) {
       this.host.fail(row.id, 'WORKSPACE_LOST');
+      return;
+    }
+    const git = this.host.git;
+    if (!git) {
+      this.host.fail(row.id, 'COMMIT_UNVERIFIED');
       return;
     }
     const branch = row.branch ?? codingBranch(row.resource_number, row.id);
     if (!row.branch && !this.host.update(row.id, { branch })) return;
     const key = `automation:${row.id}:commit`;
+    const descriptor: AgentActionDescriptorInput = { version: 1, actionClass: 'vcs_local', repository: binding.repository, branch };
     const earlier = this.broker.actions.byKey(row.owner_id, row.id, key);
     if (!earlier || earlier.state === 'INTENT') {
-      // The changed paths are decided as edits (a manifest or lockfile as a package install) before
-      // anything is staged, so a path the agent could not have been allowed to write is never committed.
-      const status = await this.host.call(row.owner_id, 'git_status', { workspaceId });
+      // Before anything is staged: HEAD must still be the base (the agent or its verify command can run
+      // Git, and its commits are never adopted), and every changed path is decided as an edit (a manifest
+      // or lockfile as a package install), so a path the agent could not have been allowed to write is
+      // never committed.
+      const status = await git.status(row.owner_id, workspaceId, inspectSignal());
       if (!status.ok) {
-        if (retryable(status)) this.retryLater(row);
-        else this.host.fail(row.id, bounded(`CODING_PUBLISH_FAILED:${status.error?.code ?? 'GIT_STATUS_FAILED'}`));
+        if (status.retryable || RETRYABLE_CODES.has(status.code)) this.retryLater(row);
+        else this.host.fail(row.id, bounded(`CODING_PUBLISH_FAILED:${status.code}`));
         return;
       }
-      const paths = changedPaths(outputOf(status));
-      if (paths.length === 0) {
+      if (status.data.head !== base) return this.refuseStep(row, binding, 'commit', key, descriptor, 'HEAD_MOVED');
+      if (status.data.truncated || !verifiablePaths(status.data.paths)) return this.refuseStep(row, binding, 'commit', key, descriptor, 'PATHS_UNVERIFIABLE');
+      if (status.data.paths.length === 0) {
         this.host.fail(row.id, 'CODING_NO_CHANGES');
         return;
       }
-      for (let index = 0; index * AGENT_POLICY_LIMITS.maxPathsPerAction < paths.length; index += 1) {
-        const chunk = paths.slice(index * AGENT_POLICY_LIMITS.maxPathsPerAction, (index + 1) * AGENT_POLICY_LIMITS.maxPathsPerAction);
-        const check = await this.gate(row, binding, 'commit', `${key}:paths:${index}`, {
-          version: 1, actionClass: editActionClass(chunk), repository: binding.repository, branch, paths: chunk
-        });
-        if (!check) return;
-        if (check.record.state === 'INTENT') this.broker.settle(binding, check.record, 'APPLIED', { branch }, this.host.now());
-      }
+      if (!(await this.checkPaths(row, binding, key, branch, status.data.paths))) return;
     }
-    const admission = await this.gate(row, binding, 'commit', key, { version: 1, actionClass: 'vcs_local', repository: binding.repository, branch });
+    const admission = await this.gate(row, binding, 'commit', key, descriptor);
     if (!admission) return;
     const { record } = admission;
     if (record.state === 'APPLIED' && record.outcome.commitSha) return this.phase(row, 'PUSH', { commit_sha: record.outcome.commitSha });
-    if (record.state === 'REJECTED' || record.state === 'BLOCKED') {
+    if (record.state !== 'INTENT' && record.state !== 'DISPATCHED' && record.state !== 'UNKNOWN') {
       this.host.fail(row.id, 'CODING_PUBLISH_FAILED');
       return;
     }
     const startedAt = this.host.now();
-    this.broker.dispatched(record);
+    if (!this.broker.dispatched(record)) return;
     const created = await this.host.call(row.owner_id, 'git_checkout', { workspaceId, ref: branch, create: true });
     if (!created.ok) {
       // A replay finds the branch already created by the first attempt.
@@ -363,57 +426,75 @@ export class CodingWorkflowEngine {
     }
     const staged = await this.host.call(row.owner_id, 'git_add', { workspaceId, all: true });
     if (!staged.ok) return this.stepFailed(row, binding, record, staged, startedAt);
-    const snapshot = this.snapshotOf(row);
     const committed = await this.host.call(row.owner_id, 'git_commit', {
       workspaceId,
       message: [
         `fix: resolve issue #${row.resource_number}`,
         '',
-        `Automated change by the Cloud Harness coding automation "${snapshot.name}".`,
+        `Automated change by the Cloud Harness coding automation "${this.snapshotOf(row).name}".`,
         '',
         `Closes #${row.resource_number}`,
         '',
-        `Cloud-Harness-Workflow: ${row.id}`
+        workflowTrailer(row.id)
       ].join('\n'),
-      expectedHeadOid: row.base_oid,
+      expectedHeadOid: base,
       idempotencyKey: key
     });
-    let commitSha = (committed.data as { commitSha?: unknown } | undefined)?.commitSha;
-    if (!committed.ok && committed.error?.code === 'STALE_HEAD') {
-      // HEAD moved past the base: an earlier attempt committed, and only its answer was lost.
-      const head = await this.head(row.owner_id, workspaceId);
-      if (head && head !== row.base_oid) commitSha = head;
+    // The commit tool answers without the commit id, and a replay may find HEAD already past the base
+    // (an earlier attempt committed and only its answer was lost). Either way the commit is read back
+    // from the checkout and adopted only if it is this workflow's own.
+    if (!committed.ok && committed.error?.code !== 'STALE_HEAD') return this.stepFailed(row, binding, record, committed, startedAt);
+    const own = await this.ownCommit(row, workspaceId, 'HEAD');
+    if (!own.ok) {
+      if (own.retryable) {
+        this.broker.settle(binding, record, 'UNKNOWN', { errorCode: bounded(own.code) }, startedAt);
+        this.retryLater(row);
+        return;
+      }
+      this.broker.settle(binding, record, 'REJECTED', { errorCode: own.code }, startedAt);
+      this.host.fail(row.id, own.code);
+      return;
     }
-    if (typeof commitSha !== 'string' || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(commitSha)) {
-      return this.stepFailed(row, binding, record, committed.ok ? { ok: false, error: { code: 'NO_COMMIT_SHA' } } : committed, startedAt);
-    }
-    this.broker.settle(binding, record, 'APPLIED', { commitSha, branch }, startedAt);
-    this.phase(row, 'PUSH', { commit_sha: commitSha });
+    this.broker.settle(binding, record, 'APPLIED', { commitSha: own.sha, branch }, startedAt);
+    this.phase(row, 'PUSH', { commit_sha: own.sha });
   }
 
   private async push(row: CodingWorkflowRow, binding: CodingBinding): Promise<void> {
     const workspaceId = binding.workspaceId;
     const branch = row.branch;
     const commitSha = row.commit_sha;
-    if (!workspaceId || !branch || !commitSha) {
+    if (!workspaceId || !branch || !commitSha || !SHA.test(commitSha) || !row.base_oid) {
       this.host.fail(row.id, 'WORKSPACE_LOST');
       return;
     }
     const key = `automation:${row.id}:push`;
-    const admission = await this.gate(row, binding, 'push', key, { version: 1, actionClass: 'publish_branch', repository: binding.repository, branch });
+    const descriptor: AgentActionDescriptorInput = { version: 1, actionClass: 'publish_branch', repository: binding.repository, branch };
+    const earlier = this.broker.actions.byKey(row.owner_id, row.id, key);
+    if (!earlier || earlier.state === 'INTENT') {
+      // What is published is the commit, not the working tree: it must be this workflow's own, and every
+      // path it changes against the base is gated again before the first push attempt.
+      const own = await this.ownCommit(row, workspaceId, commitSha);
+      if (!own.ok) {
+        if (own.retryable) return this.retryLater(row);
+        return this.refuseStep(row, binding, 'push', key, descriptor, own.code);
+      }
+      if (!(await this.checkPaths(row, binding, key, branch, own.paths))) return;
+    }
+    const admission = await this.gate(row, binding, 'push', key, descriptor);
     if (!admission) return;
     const { record } = admission;
     if (record.state === 'APPLIED') return this.phase(row, 'PR');
-    if (record.state === 'REJECTED' || record.state === 'BLOCKED') {
+    if (record.state !== 'INTENT' && record.state !== 'DISPATCHED' && record.state !== 'UNKNOWN') {
       this.host.fail(row.id, 'CODING_PUBLISH_FAILED');
       return;
     }
     const startedAt = this.host.now();
-    this.broker.dispatched(record);
+    if (!this.broker.dispatched(record)) return;
     // Create-only: the push succeeds only when the branch does not exist yet, so it never overwrites
     // anything, and a replay that finds its own commit there is recognised by the reconciliation below.
+    // The source is the verified commit id, so whatever HEAD points at now is never published.
     const pushed = await this.host.call(row.owner_id, 'git_push', {
-      workspaceId, refspec: `HEAD:refs/heads/${branch}`, forceWithLease: true, expectedAbsent: true, idempotencyKey: key
+      workspaceId, refspec: `${commitSha}:refs/heads/${branch}`, forceWithLease: true, expectedAbsent: true, idempotencyKey: key
     });
     if (pushed.ok) {
       this.broker.settle(binding, record, 'APPLIED', { branch, commitSha }, startedAt);
@@ -450,15 +531,16 @@ export class CodingWorkflowEngine {
     if (!admission) return;
     const { record } = admission;
     if (record.state === 'APPLIED' && record.outcome.prNumber && record.outcome.prUrl) return this.done(row, record.outcome.prNumber, record.outcome.prUrl);
-    if (record.state === 'REJECTED' || record.state === 'BLOCKED') {
+    if (record.state !== 'INTENT' && record.state !== 'DISPATCHED' && record.state !== 'UNKNOWN') {
       this.host.fail(row.id, 'CODING_PUBLISH_FAILED');
       return;
     }
     const startedAt = this.host.now();
     const attempted = record.state !== 'INTENT';
-    this.broker.dispatched(record);
+    if (!this.broker.dispatched(record)) return;
+    const baseBranch = binding.coding.baseBranch;
     // The provider has no idempotency key for pull requests, so an existing one for the branch is adopted.
-    const before = await this.findPullRequest(row.owner_id, workspaceId, branch);
+    const before = await this.findPullRequest(row.owner_id, workspaceId, branch, baseBranch);
     if (before.found) return this.prApplied(row, binding, record, before.found, branch, startedAt);
     if (!before.readable && attempted) return this.blocked(row, binding, record, startedAt);
     const created = await this.host.call(row.owner_id, 'github_action', {
@@ -472,11 +554,11 @@ export class CodingWorkflowEngine {
       ].join('\n'),
       head: branch,
       // Always explicit: the provider's default base is never relied on.
-      base: binding.coding.baseBranch
+      base: baseBranch
     });
     const url = outputOf(created).match(/https:\/\/\S+\/pull\/(\d+)/u);
     if (created.ok && url?.[1]) return this.prApplied(row, binding, record, { number: Number(url[1]), url: url[0] }, branch, startedAt);
-    const after = await this.findPullRequest(row.owner_id, workspaceId, branch);
+    const after = await this.findPullRequest(row.owner_id, workspaceId, branch, baseBranch);
     if (after.found) return this.prApplied(row, binding, record, after.found, branch, startedAt);
     if (!after.readable) return this.blocked(row, binding, record, startedAt);
     if (!created.ok && retryable(created)) {
@@ -491,11 +573,52 @@ export class CodingWorkflowEngine {
 
   /** Records and decides a step; on a refusal the workflow fails and nothing is dispatched. */
   private async gate(row: CodingWorkflowRow, binding: CodingBinding, step: CodingActionStep, idempotencyKey: string, descriptor: AgentActionDescriptorInput): Promise<BrokeredAdmission | null> {
-    const admission = await this.broker.begin({ binding, origin: 'runner', step, idempotencyKey, descriptor });
+    const admission = await this.broker.begin({ binding, origin: 'runner', step, idempotencyKey, descriptor, signal: gateSignal() });
     if (admission.allowed) return admission;
     this.broker.traceRefusal(binding, admission.record);
     this.host.fail(row.id, refusalCode(admission));
     return null;
+  }
+
+  /** Gates changed paths as edits, in chunks of the gate's per-action limit; false when one is refused. */
+  private async checkPaths(row: CodingWorkflowRow, binding: CodingBinding, keyPrefix: string, branch: string, paths: readonly string[]): Promise<boolean> {
+    const size = AGENT_POLICY_LIMITS.maxPathsPerAction;
+    for (let index = 0; index * size < paths.length; index += 1) {
+      const chunk = paths.slice(index * size, (index + 1) * size);
+      const check = await this.gate(row, binding, 'path_check', `${keyPrefix}:paths:${index}`, {
+        version: 1, actionClass: editActionClass(chunk), repository: binding.repository, branch, paths: chunk
+      });
+      if (!check) return false;
+      if (check.record.state === 'INTENT') this.broker.settle(binding, check.record, 'APPLIED', { branch }, this.host.now());
+    }
+    return true;
+  }
+
+  /**
+   * The commit `revision` names, accepted only as this workflow's own: exactly one parent, the base, and
+   * the workflow trailer in its message, with a complete, gateable list of the paths it changes.
+   */
+  private async ownCommit(row: CodingWorkflowRow, workspaceId: string, revision: string): Promise<OwnCommit> {
+    const base = row.base_oid;
+    if (!this.host.git || !base) return { ok: false, code: 'COMMIT_UNVERIFIED', retryable: false };
+    const inspected = await this.host.git.commit(row.owner_id, workspaceId, revision, base, inspectSignal());
+    if (!inspected.ok) {
+      const transient = inspected.retryable || RETRYABLE_CODES.has(inspected.code);
+      return { ok: false, code: transient ? bounded(inspected.code) : 'COMMIT_UNVERIFIED', retryable: transient };
+    }
+    const { sha, parents, message, paths, truncated } = inspected.data;
+    const trailer = workflowTrailer(row.id);
+    const marked = message.split('\n').some((line) => line.trim() === trailer);
+    if (sha === base || parents.length !== 1 || parents[0] !== base || !marked) return { ok: false, code: 'COMMIT_UNVERIFIED', retryable: false };
+    if (truncated || paths.length === 0 || !verifiablePaths(paths)) return { ok: false, code: 'PATHS_UNVERIFIABLE', retryable: false };
+    return { ok: true, sha, paths };
+  }
+
+  /** Records a refusal decided by the runner itself (not the gate) on the step's receipt and fails the workflow. */
+  private refuseStep(row: CodingWorkflowRow, binding: CodingBinding, step: CodingActionStep, idempotencyKey: string, descriptor: AgentActionDescriptorInput, code: string): void {
+    const reason = (['HEAD_MOVED', 'PATHS_UNVERIFIABLE', 'COMMIT_UNVERIFIED'] as const).find((known) => known === code);
+    if (reason) this.broker.refuse({ binding, origin: 'runner', step, idempotencyKey, descriptor }, reason satisfies CodingErrorCode);
+    this.host.fail(row.id, bounded(code));
   }
 
   private phase(row: CodingWorkflowRow, phase: CodingPhase, fields: Record<string, string | number | null> = {}): void {
@@ -526,12 +649,6 @@ export class CodingWorkflowEngine {
     this.host.complete(row.id, { coding_phase: 'DONE', pr_number: prNumber, pr_url: prUrl.slice(0, 2_048) });
   }
 
-  private async head(ownerId: string, workspaceId: string): Promise<string | null> {
-    const log = await this.host.call(ownerId, 'git_log', { workspaceId, limit: 1 });
-    const sha = outputOf(log).split('\t')[0]?.trim() ?? '';
-    return log.ok && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(sha) ? sha : null;
-  }
-
   /** The remote branch's commit: `oid` null when it provably does not exist. */
   private async remoteBranch(ownerId: string, workspaceId: string, branch: string): Promise<{ readable: boolean; oid: string | null }> {
     const result = await this.host.call(ownerId, 'github_read', { workspaceId, action: 'ref_get', ref: `refs/heads/${branch}` });
@@ -542,13 +659,19 @@ export class CodingWorkflowEngine {
     return { readable: false, oid: null };
   }
 
-  private async findPullRequest(ownerId: string, workspaceId: string, branch: string): Promise<{ readable: boolean; found: { number: number; url: string } | null }> {
+  /**
+   * An existing pull request of this workflow's branch: its head in this repository (never a fork's
+   * branch of the same name) and its base the rule's base branch. The listing cannot be filtered by head,
+   * so it reads the most recent pull requests.
+   */
+  private async findPullRequest(ownerId: string, workspaceId: string, branch: string, baseBranch: string): Promise<{ readable: boolean; found: { number: number; url: string } | null }> {
     const result = await this.host.call(ownerId, 'github_read', { workspaceId, action: 'pr_list', state: 'all', limit: 100 });
     if (!result.ok) return { readable: false, found: null };
     const parsed = parseJson(outputOf(result));
     if (!Array.isArray(parsed)) return { readable: false, found: null };
-    for (const entry of parsed as { number?: unknown; headRefName?: unknown; url?: unknown }[]) {
-      if (entry?.headRefName === branch && typeof entry.number === 'number' && typeof entry.url === 'string') {
+    for (const entry of parsed as { number?: unknown; headRefName?: unknown; baseRefName?: unknown; isCrossRepository?: unknown; url?: unknown }[]) {
+      if (entry?.headRefName === branch && entry.isCrossRepository === false && entry.baseRefName === baseBranch
+        && typeof entry.number === 'number' && typeof entry.url === 'string') {
         return { readable: true, found: { number: entry.number, url: entry.url } };
       }
     }

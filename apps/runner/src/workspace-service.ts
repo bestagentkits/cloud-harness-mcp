@@ -100,6 +100,7 @@ import { AgentTraceStore, executeAgentTraceOperation } from './agent-trace-store
 import { AgentTraceRecorder, type AgentActionTraceSink } from './agent-trace-recorder.js';
 import type { CodingActionBroker } from './agent-governance/action-broker.js';
 import { LockfileInstallExecutor, type InstallResult } from './agent-governance/install-executor.js';
+import { CODING_GIT_SUBCOMMANDS } from './agent-governance/coding-git.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -145,6 +146,10 @@ const countedStatus = new Set<WorkspaceRecord['status']>(COUNTED_WORKSPACE_STATU
  * an operator or agent to act, and every check starts a short-lived helper container.
  */
 const AUTO_CLOSE_RETRY_MS = 3_600_000;
+/** Git in the executor image (Debian), named absolutely so nothing on the checkout's PATH can stand in for it. */
+const CODING_GIT_BINARY = '/usr/bin/git';
+/** Output cap of one coding Git inspection; a larger listing is reported truncated and refused. */
+const CODING_GIT_MAX_BYTES = 1_048_576;
 
 /** A retained workspace that startup reconciliation could not bring back; the runner logs each one. */
 export interface StartupReconcileFailure {
@@ -545,6 +550,44 @@ export class WorkspaceService {
       registry: DEFAULT_NPM_REGISTRY
     });
     return await executor.install({ workspaceId: record.id, workspacePath: record.workspacePath }, signal);
+  }
+
+  /**
+   * Runs one read-only Git inspection in a coding checkout for the coding engine (see
+   * `agent-governance/coding-git.ts`): owner-scoped, ACTIVE only, a fixed subcommand allow-list, and
+   * hooks, fsmonitor, pagers, path quoting and replace refs off, so nothing in the checkout's own
+   * configuration runs or reshapes the listing. Output is capped and the cap is reported.
+   */
+  async runCodingGit(ownerId: string, workspaceId: string, args: readonly string[], signal?: AbortSignal): Promise<{ exitCode: number; stdout: string; truncated: boolean }> {
+    if (!CODING_GIT_SUBCOMMANDS.has(args[0] ?? '')) throw new HarnessError('FORBIDDEN', 'git subcommand is not inspectable', 403, false);
+    const record = this.store.byId(workspaceId);
+    if (!record || record.ownerId !== ownerId || record.status !== 'ACTIVE') throw new HarnessError('NOT_FOUND', 'workspace not found', 404, false);
+    const gitArgs = [
+      '--no-replace-objects', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'core.pager=cat',
+      '-c', 'core.quotePath=false', ...args
+    ];
+    const options = { timeoutMs: 60_000, maxBytes: CODING_GIT_MAX_BYTES, ...(signal ? { signal } : {}) };
+    if (record.containerName) {
+      // The absolute path: the executor PATH starts in the checkout (`node_modules/.bin`), which the agent controls.
+      const result = await runDocker(['exec', ...scopedWorkdirArgs(record), record.containerName, CODING_GIT_BINARY, ...gitArgs], options);
+      return { exitCode: result.exitCode, stdout: result.stdout, truncated: result.truncated };
+    }
+    const helperName = `chm-cg-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
+    try {
+      const result = await runDocker([
+        'run', '--rm', '--name', helperName,
+        '--label', 'cloud-harness.ephemeral=true',
+        '--network', 'none', '--user', '10001:10001', '--read-only',
+        '--volume', `${record.workspacePath}/repo:/workspace:ro`,
+        '--workdir', checkoutContainerPath(record),
+        '--entrypoint', CODING_GIT_BINARY,
+        this.config.executorImage,
+        ...gitArgs
+      ], options);
+      return { exitCode: result.exitCode, stdout: result.stdout, truncated: result.truncated };
+    } finally {
+      await removeContainer(helperName);
+    }
   }
 
   /**

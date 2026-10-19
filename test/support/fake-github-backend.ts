@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 /**
  * A GitHub stand-in for coding-workflow tests. The repository is a local bare Git remote seeded from
@@ -31,6 +32,8 @@ export type FakePullRequest = {
   base: string;
   state: 'OPEN' | 'CLOSED' | 'MERGED';
   url: string;
+  /** A pull request from a fork: its head branch lives in another repository. */
+  crossRepository: boolean;
 };
 
 export type FakeCallResult = { ok: boolean; data?: unknown; error?: { code: string; retryable?: boolean } };
@@ -55,8 +58,8 @@ export class FakeGitHubBackend {
     this.remote = join(root, 'remote.git');
   }
 
-  /** Creates the bare remote with one commit on `main` holding the fixture tree. */
-  static create(root: string, fixture: string): FakeGitHubBackend {
+  /** Creates the bare remote with one commit on `main` holding the fixture tree; `branches` start at that commit too. */
+  static create(root: string, fixture: string, branches: readonly string[] = []): FakeGitHubBackend {
     const backend = new FakeGitHubBackend(root);
     mkdirSync(backend.remote, { recursive: true });
     git(backend.remote, ['init', '--quiet', '--bare', '--initial-branch=main']);
@@ -65,8 +68,35 @@ export class FakeGitHubBackend {
     git(seed, ['init', '--quiet', '--initial-branch=main']);
     git(seed, ['add', '-A']);
     git(seed, ['commit', '--quiet', '-m', 'Initial commit']);
-    git(seed, ['push', '--quiet', backend.remote, 'main:refs/heads/main']);
+    git(seed, ['push', '--quiet', backend.remote, 'main:refs/heads/main', ...branches.map((branch) => `main:refs/heads/${branch}`)]);
     return backend;
+  }
+
+  /** Adds a commit writing one file on top of a remote branch; returns its id. */
+  commitOn(branch: string, path: string, content: string): string {
+    const work = mkdtempSync(join(tmpdir(), 'fake-github-commit-'));
+    try {
+      git(work, ['clone', '--quiet', '--branch', branch, this.remote, '.']);
+      mkdirSync(dirname(join(work, path)), { recursive: true });
+      writeFileSync(join(work, path), content);
+      git(work, ['add', '-A']);
+      git(work, ['commit', '--quiet', '-m', `Update ${path}`]);
+      git(work, ['push', '--quiet', 'origin', `HEAD:refs/heads/${branch}`]);
+      return git(work, ['rev-parse', 'HEAD']).trim();
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  }
+
+  /** A pull request someone opened from a fork whose branch has the given name. */
+  addForkPull(head: string, base: string): FakePullRequest {
+    const number = this.pulls.length + 1;
+    const pull: FakePullRequest = {
+      number, title: 'Fork change', body: '', head, base, state: 'OPEN', crossRepository: true,
+      url: `https://github.com/${FAKE_GITHUB_REPOSITORY}/pull/${number}`
+    };
+    this.pulls.push(pull);
+    return pull;
   }
 
   /** Queues a one-shot fault for the next call to a target. */
@@ -129,17 +159,17 @@ export class FakeGitHubBackend {
     return git(this.remote, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/']).split('\n').filter(Boolean).sort();
   }
 
-  /** Create-only push of the checkout's HEAD; refuses when the branch already exists. */
-  async push(checkout: string, branch: string, expectedAbsent: boolean): Promise<FakeCallResult> {
+  /** Create-only push of `source` (a commit id or HEAD) from the checkout; refuses when the branch already exists. */
+  async push(checkout: string, source: string, branch: string, expectedAbsent: boolean): Promise<FakeCallResult> {
     this.pushAttempts += 1;
     const fault = this.takeFault('push');
     const early = this.beforeEffect(fault);
     if (early) return early;
     if (expectedAbsent && this.branchOid(branch) !== null) return { ok: false, error: { code: 'CONFLICT', retryable: false } };
-    const oid = git(checkout, ['rev-parse', 'HEAD']).trim();
-    git(checkout, ['push', '--quiet', this.remote, `HEAD:refs/heads/${branch}`]);
+    const oid = git(checkout, ['rev-parse', '--verify', `${source}^{commit}`]).trim();
+    git(checkout, ['push', '--quiet', this.remote, `${oid}:refs/heads/${branch}`]);
     this.pushes.push({ branch, oid });
-    return await this.afterEffect('push', fault, { ok: true, data: { refspec: `HEAD:refs/heads/${branch}` } });
+    return await this.afterEffect('push', fault, { ok: true, data: { refspec: `${source}:refs/heads/${branch}` } });
   }
 
   /** `github_read` with the JSON shapes the runner's GitHub helper returns. */
@@ -156,7 +186,12 @@ export class FakeGitHubBackend {
       if (early) return early;
       return {
         ok: true,
-        data: { output: JSON.stringify(this.pulls.map((pull) => ({ number: pull.number, title: pull.title, state: pull.state, author: 'cloud-harness[bot]', headRefName: pull.head, url: pull.url }))) }
+        data: {
+          output: JSON.stringify(this.pulls.map((pull) => ({
+            number: pull.number, title: pull.title, state: pull.state, author: pull.crossRepository ? 'mallory' : 'cloud-harness[bot]',
+            headRefName: pull.head, baseRefName: pull.base, isCrossRepository: pull.crossRepository, url: pull.url
+          })))
+        }
       };
     }
     return { ok: false, error: { code: 'INVALID_INPUT', retryable: false } };
@@ -173,10 +208,10 @@ export class FakeGitHubBackend {
       if (!head || !base || this.branchOid(head) === null || this.branchOid(base) === null) {
         return { ok: false, error: { code: 'INVALID_INPUT', retryable: false } };
       }
-      if (this.pulls.some((pull) => pull.head === head && pull.state === 'OPEN')) return { ok: false, error: { code: 'CONFLICT', retryable: false } };
+      if (this.pulls.some((pull) => pull.head === head && !pull.crossRepository && pull.state === 'OPEN')) return { ok: false, error: { code: 'CONFLICT', retryable: false } };
       const number = this.pulls.length + 1;
       const url = `https://github.com/${FAKE_GITHUB_REPOSITORY}/pull/${number}`;
-      this.pulls.push({ number, title: String(input.title ?? ''), body: String(input.body ?? ''), head, base, state: 'OPEN', url });
+      this.pulls.push({ number, title: String(input.title ?? ''), body: String(input.body ?? ''), head, base, state: 'OPEN', url, crossRepository: false });
       return await this.afterEffect('pr_create', fault, { ok: true, data: { output: `${url}\n` } });
     }
     if (action === 'issue_comment') {

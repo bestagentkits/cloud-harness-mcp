@@ -3237,13 +3237,27 @@ export function initializeDashboard() {
     document.querySelector('#refresh-automation-runs')?.addEventListener('click', () => { void load().then(() => announce('Automation runs refreshed.')); });
     bindAutomationFilter('#automation-runs-filter', '/dashboard/automations');
   }
-  async function loadAutomationRunDetail(workflowId) {
-    const [detailResult, rulesResult] = await Promise.all([getAutomationWorkflow(workflowId), listAutomationRules().catch(() => undefined)]);
-    const { workflow, result, transitions, actions } = detailResult.data ?? {};
+  /**
+   * Receipts arrive newest first, one page at a time. "Show older actions" reads the next page and
+   * keeps the receipts already shown above it.
+   */
+  async function loadAutomationRunDetail(workflowId, earlier = { actions: [], cursor: undefined }) {
+    const [detailResult, rulesResult] = await Promise.all([getAutomationWorkflow(workflowId, { actionsCursor: earlier.cursor }), listAutomationRules().catch(() => undefined)]);
+    const { workflow, result, transitions, actions, actionsCursor } = detailResult.data ?? {};
     if (!workflow) throw Object.assign(new Error('This automation run was not found.'), { status: 404 });
     const rule = automationArray(rulesResult?.data?.rules).find((entry) => entry.id === workflow.ruleId);
+    const shown = [...earlier.actions, ...automationArray(actions)];
     setTitle(`${workflow.repository}#${workflow.resourceNumber}`, 'Automation run: state, transitions, and the agent result.');
-    insertRendered(content, renderAutomationRunDetail({ workflow, result, transitions, ruleName: rule?.name, actions: automationArray(actions) }));
+    insertRendered(content, renderAutomationRunDetail({ workflow, result, transitions, ruleName: rule?.name, actions: shown, actionsCursor }));
+    content.querySelector('[data-automation-older-actions]')?.addEventListener('click', (event) => {
+      event.currentTarget.disabled = true;
+      void loadAutomationRunDetail(workflowId, { actions: shown, cursor: event.currentTarget.dataset.automationOlderActions })
+        .then(() => {
+          announce('Older actions loaded.');
+          (content.querySelector('[data-automation-older-actions]') ?? content.querySelector('#automation-coding-heading'))?.focus?.();
+        })
+        .catch(showError);
+    });
     content.querySelector('[data-automation-cancel]')?.addEventListener('click', (event) => confirmAction({
       title: 'Cancel this run?',
       description: 'The run stops and ends as cancelled. A cancelled run is not retried.',

@@ -8,6 +8,7 @@ import { vi } from 'vitest';
 import {
   CODING_PROXY_OPERATIONS,
   RunnerAgentsConfigSchema,
+  TOOL_SCHEMA_BY_NAME,
   type AgentStatus,
   type GlobalExecutionPolicy,
   type RunnerOperation,
@@ -15,6 +16,7 @@ import {
   type RunnerResponse
 } from '@cloud-harness/contracts';
 import { CodingActionBroker, type AgentToolRequest } from '../../apps/runner/src/agent-governance/action-broker.js';
+import type { CodingGitRunner } from '../../apps/runner/src/agent-governance/coding-git.js';
 import { AgentManager } from '../../apps/runner/src/agent-manager.js';
 import { AgentStateRepository } from '../../apps/runner/src/agent-state-repository.js';
 import { AgentTraceRecorder } from '../../apps/runner/src/agent-trace-recorder.js';
@@ -59,8 +61,16 @@ export type OperationCall = { operation: RunnerOperation; input: Record<string, 
 class LocalWorkspaces {
   private readonly opened = new Map<string, string>();
   readonly artifacts = new Map<string, { workspaceId: string; logicalName: string; content: string }>();
-  private readonly commits = new Map<string, string>();
+  private readonly commits = new Map<string, Record<string, unknown>>();
   private readonly pushes = new Map<string, FakeCallResult>();
+  /** Refspecs of every push the engine sent. */
+  readonly pushedRefspecs: string[] = [];
+  /** Arguments of every Git inspection the engine ran. */
+  readonly gitInspections: string[][] = [];
+  /** Makes every Git inspection report a truncated listing, as an executor at its output cap would. */
+  truncateGit = false;
+  /** Stands in for a repository pre_commit lifecycle hook: runs in the checkout right before `git_commit` commits. */
+  beforeCommit: ((checkout: string) => void) | undefined;
 
   constructor(private readonly root: string, private readonly store: StateStore, private readonly github: FakeGitHubBackend, private readonly now: () => number) {}
 
@@ -107,8 +117,17 @@ class LocalWorkspaces {
     return join(this.checkout(workspaceId), cleaned);
   }
 
-  /** The file, Git, command and artifact operations of one active workspace. */
-  async run(workspaceId: string, operation: RunnerOperation, input: Record<string, unknown>): Promise<FakeCallResult> {
+  /**
+   * The file, Git, command and artifact operations of one active workspace. Inputs are parsed with the
+   * tool schemas the real runner validates against, and answers have the worker's shapes, so a caller
+   * that relies on a field the worker never returns fails here too.
+   */
+  async run(workspaceId: string, operation: RunnerOperation, raw: Record<string, unknown>): Promise<FakeCallResult> {
+    const schema = (TOOL_SCHEMA_BY_NAME as Partial<Record<RunnerOperation, { safeParse(value: unknown): { success: boolean; data?: unknown } }>>)[operation];
+    if (!schema) return fail('UNSUPPORTED_OPERATION');
+    const parsed = schema.safeParse(raw);
+    if (!parsed.success) return fail('INVALID_INPUT');
+    const input = parsed.data as Record<string, unknown>;
     const record = this.store.byId(workspaceId);
     if (!record || record.status !== 'ACTIVE') return fail('NOT_FOUND');
     const checkout = this.checkout(workspaceId);
@@ -143,15 +162,15 @@ class LocalWorkspaces {
           cwd: checkout, encoding: 'utf8', shell: false, windowsHide: true, timeout: Number(input.timeoutMs ?? 60_000)
         });
         if (ran.error && (ran.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') return fail('TIMEOUT', true);
-        if (ran.error) return ok({ exitCode: 127, stdout: '', stderr: ran.error.message });
-        return ok({ exitCode: ran.status, stdout: ran.stdout, stderr: ran.stderr });
+        if (ran.error) return ok({ output: ran.error.message, exitCode: 127, signal: null, truncated: false });
+        return ok({ output: `${ran.stdout}${ran.stderr}`, exitCode: ran.status, signal: ran.signal, truncated: false });
       }
       case 'git_log': {
-        const head = git(checkout, ['log', `-n${Number(input.limit ?? 1)}`, '--format=%H%x09%s']);
-        return ok({ output: head });
+        const head = git(checkout, ['log', `-n${Number(input.limit ?? 1)}`, '--format=%H%x09%aI%x09%an%x09%s']);
+        return ok({ output: head, exitCode: 0 });
       }
-      case 'git_status': return ok({ output: git(checkout, ['status', '--porcelain=v1', '--untracked-files=all']) });
-      case 'git_diff': return ok({ output: git(checkout, ['diff', ...(input.staged === true ? ['--cached'] : [])]) });
+      case 'git_status': return ok({ output: git(checkout, ['status', '--short', '--branch', '--untracked-files=all']), exitCode: 0 });
+      case 'git_diff': return ok({ output: git(checkout, ['diff', ...(input.staged === true ? ['--cached'] : [])]), exitCode: 0 });
       case 'git_add': {
         git(checkout, ['add', '-A']);
         return ok({});
@@ -169,8 +188,10 @@ class LocalWorkspaces {
         const key = `${workspaceId}:${String(input.idempotencyKey)}`;
         const replay = this.pushes.get(key);
         if (replay) return replay;
-        const branch = String(input.refspec ?? '').replace(/^HEAD:refs\/heads\//u, '');
-        const pushed = await this.github.push(checkout, branch, input.expectedAbsent === true);
+        const refspec = /^(HEAD|[a-f0-9]{40}):refs\/heads\/(.+)$/u.exec(String(input.refspec ?? ''));
+        if (!refspec) return fail('INVALID_INPUT');
+        this.pushedRefspecs.push(String(input.refspec));
+        const pushed = await this.github.push(checkout, refspec[1]!, refspec[2]!, input.expectedAbsent === true);
         if (pushed.ok) this.pushes.set(key, pushed);
         return pushed;
       }
@@ -187,31 +208,54 @@ class LocalWorkspaces {
     }
   }
 
+  /**
+   * `git_commit` as the workspace service runs it: a recorded key replays its first answer with
+   * `alreadyFinalized` before HEAD is compared, and the worker's answer names the author, not the commit.
+   */
   private async commit(workspaceId: string, checkout: string, input: Record<string, unknown>): Promise<FakeCallResult> {
     const key = `${workspaceId}:${String(input.idempotencyKey)}`;
     const replay = this.commits.get(key);
-    if (replay) return ok({ commitSha: replay, replayed: true });
+    if (replay) return ok({ ...replay, alreadyFinalized: true });
     const head = git(checkout, ['rev-parse', 'HEAD']).trim();
     if (typeof input.expectedHeadOid === 'string' && input.expectedHeadOid !== head) return fail('STALE_HEAD');
     const fault = this.github.takeFault('commit');
-    git(checkout, ['commit', '--quiet', '-m', String(input.message)]);
-    const commitSha = git(checkout, ['rev-parse', 'HEAD']).trim();
+    // The workspace service runs the repository's pre_commit lifecycle hooks at this point.
+    this.beforeCommit?.(checkout);
+    const output = git(checkout, ['commit', '-m', String(input.message)]);
+    const answer = { output, authorName: 'Fixture', authorEmail: 'fixture@example.invalid' };
     // A crash loses the idempotency record with the answer, as a runner that dies mid-call would.
-    if (fault !== 'crash-after-effect') this.commits.set(key, commitSha);
-    return await this.github.afterEffect('commit', fault, ok({ commitSha }));
+    if (fault !== 'crash-after-effect') this.commits.set(key, answer);
+    return await this.github.afterEffect('commit', fault, ok(answer));
   }
+
+  /** The coding engine's read-only Git inspection, run in the checkout with the same output cap semantics. */
+  readonly runGit: CodingGitRunner = async (ownerId, workspaceId, args) => {
+    const record = this.store.byId(workspaceId);
+    if (!record || record.ownerId !== ownerId || record.status !== 'ACTIVE') throw Object.assign(new Error('workspace not found'), { code: 'NOT_FOUND', retryable: false });
+    this.gitInspections.push([...args]);
+    const ran = spawnSync('git', ['--no-replace-objects', '-c', 'core.quotePath=false', ...args], { cwd: this.checkout(workspaceId), encoding: 'utf8', windowsHide: true });
+    // Only a listing can reach the cap; a single object id never does.
+    const truncated = this.truncateGit && (args[0] === 'status' || args[0] === 'diff');
+    return { exitCode: ran.status ?? 1, stdout: truncated ? ran.stdout.slice(0, Math.floor(ran.stdout.length / 2)) : ran.stdout, truncated };
+  };
 }
 
 export type CodingHarnessOptions = {
   policy?: GlobalExecutionPolicy;
   publishComment?: boolean;
+  /** The rule's pull request base; branches other than `main` must be seeded with `branches`. */
+  baseBranch?: string;
+  /** Extra remote branches, created at the fixture commit. */
+  branches?: string[];
+  /** The rule's own concurrency limit (default 1). */
+  ruleMaxConcurrent?: number;
 };
 
 export type CodingHarness = Awaited<ReturnType<typeof createCodingHarness>>;
 
 export async function createCodingHarness(options: CodingHarnessOptions = {}) {
   const root = mkdtempSync(join(tmpdir(), 'coding-harness-'));
-  const github = FakeGitHubBackend.create(root, CODING_FIXTURE);
+  const github = FakeGitHubBackend.create(root, CODING_FIXTURE, options.branches);
   const store = new StateStore(join(root, 'state.db'));
   const owner: RunnerPrincipalSelector = { kind: 'owner', ownerId: 'owner' };
   const ownerId = store.resolvePrincipal(owner);
@@ -286,7 +330,8 @@ export async function createCodingHarness(options: CodingHarnessOptions = {}) {
     keyring,
     selfLogin: 'cloud-harness[bot]',
     now,
-    coding: broker
+    coding: broker,
+    codingGit: workspaces.runGit
   });
   let service = newService();
 
@@ -306,8 +351,9 @@ export async function createCodingHarness(options: CodingHarnessOptions = {}) {
       profileId: CODING_PROFILE,
       instructions: 'Fix the bug the issue describes so the test suite passes.',
       cooldownSeconds: 0,
+      maxConcurrent: options.ruleMaxConcurrent ?? 1,
       publishComment: options.publishComment ?? false,
-      coding: { projectId: CODING_PROJECT, verifyCommand: VERIFY_COMMAND, baseBranch: 'main' }
+      coding: { projectId: CODING_PROJECT, verifyCommand: VERIFY_COMMAND, baseBranch: options.baseBranch ?? 'main' }
     }
   });
 
@@ -367,8 +413,14 @@ export async function createCodingHarness(options: CodingHarnessOptions = {}) {
       return data<{ workflows: Array<{ id: string; state: string; errorCode: string | null; agentId: string | null; workspaceId: string | null; coding: { projectId: string; phase: string; branch: string | null; commitSha: string | null; prNumber: number | null; prUrl: string | null; traceId: string | null } | null }> }>('workflows_list', {}).workflows;
     },
 
-    workflow(id: string) {
-      return data<{ workflow: ReturnType<typeof harness.workflows>[number]; result: string | null; actions: Array<Record<string, any>> }>('workflow_get', { id });
+    workflow(id: string, actionsCursor?: string) {
+      return data<{ workflow: ReturnType<typeof harness.workflows>[number]; result: string | null; actions: Array<Record<string, any>>; actionsCursor: string | null }>(
+        'workflow_get', { id, ...(actionsCursor ? { actionsCursor } : {}) });
+    },
+
+    /** `workflow_get` as another principal, answered as the runner answers it (no throw). */
+    workflowAs(principal: RunnerPrincipalSelector, id: string) {
+      return service.execute({ version: 1, principal, operation: 'workflow_get', input: { id } });
     },
 
     row(id: string): Record<string, unknown> {

@@ -27,7 +27,8 @@ import { boundedText, normalizeGitHubEvent, verifyGitHubSignature, type Normaliz
 import { emitAutomationTerminalEvent, withEventSavepoint } from './event-outbox.js';
 import type { EncryptedSecret, SecretKeyring } from './secret-keyring.js';
 import type { CodingActionBroker } from './agent-governance/action-broker.js';
-import { CodingActionStore } from './agent-governance/action-store.js';
+import { CodingActionCursorError, CodingActionStore } from './agent-governance/action-store.js';
+import { createCodingGitPort, type CodingGitRunner } from './agent-governance/coding-git.js';
 import { CodingWorkflowEngine, type CodingInstallPort } from './automation-coding.js';
 import { conformRuntime, PI_RUNTIME_MANIFEST } from './agent-governance/runtime-adapters.js';
 import { traceIdFor } from './agent-trace-store.js';
@@ -39,6 +40,8 @@ export const AUTOMATION_PUBLISH_RETRY_DELAYS_MS = [30_000, 120_000, 300_000, 900
 const TICK_INTERVAL_MS = 2_000;
 const PURGE_INTERVAL_MS = 3_600_000;
 const BATCH = 50;
+/** Consecutive thrown steps after which a starting or running workflow fails as STEP_FAILED. */
+const MAX_STEP_FAILURES = 5;
 const SECRET_CONTEXT = 'automation-webhook-connection';
 const DELIMITER = 'untrusted_event_data';
 const RESULT_LOG_PAGES = 64;
@@ -60,6 +63,8 @@ export type AutomationOperationResult = {
   error?: { code: string; retryable?: boolean } | undefined;
   /** The next page of a paginated operation. */
   cursor?: string | undefined;
+  /** The operation's output was cut at its size cap; a caller that gates on the output must not trust it. */
+  truncated?: boolean | undefined;
 };
 
 /** The existing owner-scoped workspace and agent operations, reached in-process. */
@@ -96,6 +101,8 @@ export type AutomationServiceOptions = {
   coding?: CodingActionBroker | undefined;
   /** The lockfile install executor; used only while its own flag is on (AGENT_CODING_PACKAGE_INSTALL_ENABLED). */
   codingInstall?: CodingInstallPort | undefined;
+  /** Read-only Git inspection of a coding checkout; without it a coding workflow never commits. */
+  codingGit?: CodingGitRunner | undefined;
 };
 
 type SealedSecret = { generation: number; keyVersion: number; nonce: string; ciphertext: string; authTag: string };
@@ -284,7 +291,8 @@ export class AutomationService {
       fail: (id, code, fields) => { this.finish(id, ['STARTING', 'RUNNING'], 'FAILED', code, 'system', { ...fields, ...this.publishFields(id) }); },
       complete: (id, fields) => { this.finish(id, ['RUNNING'], 'COMPLETED', null, 'system', { ...fields, ...this.publishFields(id) }); },
       now: () => this.now(),
-      ...(options.codingInstall ? { install: options.codingInstall } : {})
+      ...(options.codingInstall ? { install: options.codingInstall } : {}),
+      ...(options.codingGit ? { git: createCodingGitPort(options.codingGit) } : {})
     }) : undefined;
   }
 
@@ -362,7 +370,7 @@ export class AutomationService {
       case 'rule_delete': return this.deleteRule(ownerId, request.input.id, request.input.expectedGeneration);
       case 'rule_preview': return this.previewRule(ownerId, request.input.id, request.input.sample);
       case 'workflows_list': return { workflows: this.listWorkflows(ownerId, request.input).map((row) => this.workflowSummary(row)) };
-      case 'workflow_get': return this.getWorkflow(ownerId, request.input.id);
+      case 'workflow_get': return this.getWorkflow(ownerId, request.input.id, request.input.actionsCursor);
       case 'workflow_cancel': return this.cancelWorkflow(ownerId, request.input.id, request.input.reason);
       case 'deliveries_list': return { deliveries: this.listDeliveries(ownerId, request.input).map((row) => this.deliverySummary(row)) };
     }
@@ -611,15 +619,24 @@ export class AutomationService {
     return row;
   }
 
-  private getWorkflow(ownerId: string, id: string) {
+  private getWorkflow(ownerId: string, id: string, actionsCursor: string | undefined) {
     const row = this.ownedWorkflow(ownerId, id);
     const transitions = this.database.prepare('SELECT from_state, to_state, actor, code, at FROM automation_transitions WHERE workflow_id = ? ORDER BY seq')
       .all(id) as { from_state: AutomationWorkflowState | null; to_state: AutomationWorkflowState; actor: 'system' | 'owner'; code: string | null; at: number }[];
+    let page: ReturnType<CodingActionStore['receipts']>;
+    try {
+      // Newest first, so the runner's own steps (which come last) are always on the first page.
+      page = this.codingActions.receipts(ownerId, id, { cursor: actionsCursor });
+    } catch (error) {
+      if (error instanceof CodingActionCursorError) throw new AutomationsError('INVALID_INPUT', 'invalid actions cursor');
+      throw error;
+    }
     return {
       workflow: this.workflowSummary(row),
       result: row.result_text,
       transitions: transitions.map((entry) => ({ fromState: entry.from_state, toState: entry.to_state, actor: entry.actor, code: entry.code, at: iso(entry.at) })),
-      actions: this.codingActions.receipts(ownerId, id)
+      actions: page.receipts,
+      actionsCursor: page.cursor
     };
   }
 
@@ -708,20 +725,44 @@ export class AutomationService {
     this.processDeliveries();
     this.admitQueued();
     // Each list is read only after the previous launches, so a row already busy is skipped by id.
-    for (const row of this.due('STARTING')) this.launch(row, () => this.startWorkflow(row));
-    for (const row of this.due('RUNNING')) this.launch(row, () => this.poll(row));
+    for (const row of this.due('STARTING')) this.launch(row, () => this.startWorkflow(row), true);
+    for (const row of this.due('RUNNING')) this.launch(row, () => this.poll(row), true);
     for (const row of this.duePublish()) this.launch(row, () => this.publish(row));
     for (const row of this.dueCleanup()) this.launch(row, () => this.cleanup(row));
     this.purge();
     await Promise.resolve();
   }
 
-  private launch(row: WorkflowRow, step: () => Promise<void>): void {
+  /**
+   * Runs one step of a workflow. A step of a starting or running workflow that throws (a gate or store
+   * failure, not an operation's own error result) is retried with backoff instead of on the next tick,
+   * and the workflow fails as STEP_FAILED after MAX_STEP_FAILURES consecutive throws.
+   */
+  private launch(row: WorkflowRow, step: () => Promise<void>, counted = false): void {
     if (this.steps.has(row.id)) return;
-    const running = step().catch((error: unknown) => {
+    const running = step().then(() => {
+      if (counted) this.database.prepare('UPDATE automation_workflows SET step_failures = 0 WHERE id = ? AND step_failures != 0').run(row.id);
+    }).catch((error: unknown) => {
       this.log({ event: 'automation_step_failed', workflowId: row.id, error: error instanceof Error ? error.name : 'unknown' });
+      if (counted) this.stepThrew(row.id);
     }).finally(() => { this.steps.delete(row.id); });
     this.steps.set(row.id, running);
+  }
+
+  private stepThrew(id: string): void {
+    try {
+      const current = this.database.prepare('SELECT step_failures FROM automation_workflows WHERE id = ?').get(id) as { step_failures: number } | undefined;
+      if (!current) return;
+      const failures = current.step_failures + 1;
+      if (failures >= MAX_STEP_FAILURES) {
+        this.finish(id, ['STARTING', 'RUNNING'], 'FAILED', 'STEP_FAILED', 'system', { step_failures: failures, ...this.publishFields(id) });
+        return;
+      }
+      this.database.prepare(`UPDATE automation_workflows SET step_failures = ?, next_attempt_at = ?, updated_at = ? WHERE id = ? AND state IN ('STARTING', 'RUNNING')`)
+        .run(failures, this.now() + this.backoff(failures), this.now(), id);
+    } catch (error) {
+      this.log({ event: 'automation_step_backoff_failed', workflowId: id, error: error instanceof Error ? error.name : 'unknown' });
+    }
   }
 
   private processDeliveries(): void {
@@ -869,12 +910,17 @@ export class AutomationService {
       }
       if (row.project_id === null) {
         // Repository and project come from the owner's rule, never from the webhook payload.
-        const admitted = await this.coding.admit(row.owner_id, coding.projectId, snapshot.match.repository);
-        if (!admitted.ok) {
+        const admitted = await this.coding.admit(row, coding.projectId, snapshot.match.repository);
+        if (admitted.state === 'refused') {
           this.finish(row.id, ['STARTING'], 'FAILED', admitted.code, 'system', {});
           return;
         }
-        if (!this.updateRunning(row.id, admitted.fields)) return;
+        if (admitted.state === 'waiting') {
+          // Held back by the policy's concurrency limit; it stays STARTING until a slot frees or it expires.
+          this.updateRunning(row.id, { next_attempt_at: admitted.retryAt });
+          return;
+        }
+        if (admitted.state === 'gone') return;
       }
     }
     let workspaceId = row.workspace_id;
@@ -961,9 +1007,11 @@ export class AutomationService {
   }
 
   private async openWorkspace(row: WorkflowRow, snapshot: RuleSnapshot): Promise<AutomationOperationResult> {
+    // A coding workflow starts from its pull request's base, so the change it publishes is made against it.
+    const ref = snapshot.action.coding ? snapshot.action.coding.baseBranch : snapshot.action.ref;
     return await this.call(row.owner_id, 'workspace_open', {
       repositoryUrl: `https://github.com/${row.repository}.git`,
-      ...(snapshot.action.ref ? { ref: snapshot.action.ref } : {}),
+      ...(ref ? { ref } : {}),
       idempotencyKey: `automation:${row.id}:open`,
       networkProfile: 'network-none'
     });

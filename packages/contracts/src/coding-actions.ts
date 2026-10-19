@@ -17,8 +17,8 @@ import type { AgentProxyOperation } from './runner-api.js';
  */
 
 export const CODING_LIMITS = {
-  /** Receipts returned with one workflow. Older receipts stay stored but are not listed. */
-  maxReceiptsPerWorkflow: 500,
+  /** Receipts returned per page of one workflow, newest first; older pages are read with the returned cursor. */
+  receiptsPerPage: 200,
   /** Prefix of every branch the runner publishes. The policy branch scope must cover it. */
   branchPrefix: 'agent/',
   maxVerifyCommandChars: 512,
@@ -51,7 +51,7 @@ export const CodingActionOriginSchema = z.enum(['agent', 'runner']);
 
 export const CodingActionStepSchema = z.enum([
   'files_write', 'files_apply_patch', 'files_move', 'files_mkdir', 'exec_run', 'git_status', 'git_diff',
-  'install', 'verify', 'diff_artifact', 'commit', 'push', 'open_pr'
+  'install', 'verify', 'diff_artifact', 'path_check', 'commit', 'push', 'open_pr'
 ]);
 
 /** Phases of the runner-owned part of a coding workflow, after the agent has finished editing. */
@@ -60,7 +60,7 @@ export const CodingPhaseSchema = z.enum(['AGENT', 'VERIFY', 'COMMIT', 'PUSH', 'P
 export const CODING_ERROR_CODES = [
   'CODING_DISABLED', 'ACTION_DENIED', 'ACTION_REQUIRES_APPROVAL', 'EFFECT_UNKNOWN', 'COMMAND_UNSUPPORTED',
   'REPOSITORY_AMBIGUOUS', 'CODING_RULE_INVALID', 'CODING_VERIFY_FAILED', 'CODING_NO_CHANGES', 'CODING_AGENT_FAILED',
-  'CODING_PUBLISH_FAILED', 'CODING_INSTALL_FAILED', 'LOCKFILE_REJECTED'
+  'CODING_PUBLISH_FAILED', 'CODING_INSTALL_FAILED', 'LOCKFILE_REJECTED', 'HEAD_MOVED', 'PATHS_UNVERIFIABLE', 'COMMIT_UNVERIFIED'
 ] as const;
 export const CodingErrorCodeSchema = z.enum(CODING_ERROR_CODES);
 
@@ -87,6 +87,9 @@ export const CodingActionOutcomeSchema = z.object({
   prNumber: z.number().int().positive().optional(),
   prUrl: z.string().max(2_048).optional(),
   artifactId: z.string().max(200).optional(),
+  /** Locked packages an install action covered, and the sha256 of their sorted `ecosystem:name@version registry` lines. */
+  packageCount: z.number().int().nonnegative().optional(),
+  packagesDigest: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   errorCode: z.string().max(100).optional()
 }).strict();
 
@@ -96,10 +99,10 @@ export const CodingActionReceiptSchema = z.object({
   origin: CodingActionOriginSchema,
   step: CodingActionStepSchema,
   actionClass: AgentActionClassSchema,
-  repository: z.string(),
-  branch: z.string().nullable(),
-  paths: z.array(z.string()).max(CODING_LIMITS.maxPathsPerReceipt),
-  command: z.array(z.string()).nullable(),
+  repository: z.string().max(200),
+  branch: z.string().max(255).nullable(),
+  paths: z.array(z.string().max(1_024)).max(CODING_LIMITS.maxPathsPerReceipt),
+  command: z.array(z.string().max(512)).nullable(),
   decision: GateDecisionValueSchema,
   reasonCode: GateReasonCodeSchema.or(CodingErrorCodeSchema),
   state: CodingActionStateSchema,
@@ -110,10 +113,10 @@ export const CodingActionReceiptSchema = z.object({
   inputFingerprint: z.string().regex(/^[a-f0-9]{64}$/u).nullable(),
   /** The Decision Plane evaluation id when the gate consulted the advisor for this action; `null` otherwise. */
   decisionId: z.string().max(200).nullable().default(null),
-  workspaceId: z.string().nullable(),
-  agentId: z.string().nullable(),
-  traceId: z.string().nullable(),
-  spanId: z.string().nullable(),
+  workspaceId: z.string().max(200).nullable(),
+  agentId: z.string().max(200).nullable(),
+  traceId: z.string().max(200).nullable(),
+  spanId: z.string().max(200).nullable(),
   outcome: CodingActionOutcomeSchema,
   createdAt: instant,
   updatedAt: instant
@@ -131,16 +134,18 @@ export const CodingRuleActionSchema = z.object({
   /** Base branch of the pull request. Always explicit: the runner never relies on a provider default. */
   baseBranch: z.string().min(1).max(200).regex(/^[A-Za-z0-9._/-]+$/u)
     .refine((value) => !value.startsWith('-') && !value.includes('..') && !value.startsWith(CODING_LIMITS.branchPrefix), 'invalid base branch')
+    // The rest of git check-ref-format: no empty or dot-led component, no `.lock` component, no trailing dot.
+    .refine((value) => value.split('/').every((part) => part.length > 0 && !part.startsWith('.') && !part.endsWith('.lock')) && !value.endsWith('.'), 'invalid base branch')
 }).strict();
 
 export const CodingWorkflowSummarySchema = z.object({
   projectId: AgentPolicyProjectIdSchema,
   phase: CodingPhaseSchema,
-  branch: z.string().nullable(),
-  commitSha: z.string().nullable(),
+  branch: z.string().max(255).nullable(),
+  commitSha: z.string().max(64).nullable(),
   prNumber: z.number().int().positive().nullable(),
-  prUrl: z.string().nullable(),
-  traceId: z.string().nullable()
+  prUrl: z.string().max(2_048).nullable(),
+  traceId: z.string().max(200).nullable()
 }).strict();
 
 export type CodingActionState = z.infer<typeof CodingActionStateSchema>;

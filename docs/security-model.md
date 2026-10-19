@@ -351,6 +351,23 @@ runner publishes":
   explicit base. It never merges, deploys, or pushes to an existing branch.
   When verification fails, nothing is committed and the staged diff is kept as
   a workspace artifact.
+- **The runner trusts only what it reads itself.** The agent and the verify
+  command run arbitrary code in the checkout, so the runner reads HEAD and the
+  changed paths with its own fixed, read-only Git invocations (hooks, pager,
+  fsmonitor and replace objects off; NUL-separated, bounded output) instead of
+  the worker's tools. It refuses to stage unless HEAD is still the base
+  (`HEAD_MOVED`), gates every changed path in bounded chunks, and refuses a
+  listing it could not read completely (`PATHS_UNVERIFIABLE`). Before the push
+  it reads the commit again: exactly one parent, the base; this run's
+  `Cloud-Harness-Workflow` trailer; and every path the commit changes gated
+  again, so a path a commit hook added is caught (`COMMIT_UNVERIFIED` or
+  `ACTION_DENIED:PATH_OUT_OF_SCOPE`). The push names that commit by its id,
+  never `HEAD`, and an existing pull request is adopted only when it comes from
+  the same repository, the run's branch and the rule's base.
+- **Concurrency is decided at admission.** The policy's `maxConcurrentRuns`
+  counts the owner's coding runs in progress; a run over the limit waits in
+  `STARTING` until a slot frees or the start window expires, rather than being
+  admitted and stopped later.
 - **Effects are recorded before they happen.** Each step writes a receipt in
   `coding_actions` (intent, dispatched, then applied, rejected, unknown or
   blocked) under an idempotency key, so a redelivery, a restart or a crash
@@ -359,12 +376,15 @@ runner publishes":
   cannot be read, the step stops as `EFFECT_UNKNOWN` and is never retried
   blindly. Receipts have no foreign key, so they stay readable after the
   workspace closes, and each one is joined to the agent's trace by an `action`
-  span.
+  span. A receipt stores the action's argv and paths as decided, unredacted,
+  and the owner's Dashboard run page shows them; a verify command or path
+  should therefore never carry a secret.
 - **Installs are lockfile-only and separate.** With
   `AGENT_CODING_PACKAGE_INSTALL_ENABLED`, a checkout's npm lockfile is admitted
   only if every entry is a registry tarball with a sha512 integrity from an
   allowed registry, each package is a `package_install` action the policy must
-  allow, and `npm ci --ignore-scripts` runs once before the agent starts in a
+  allow (one install receipt names the package count and the digest of the
+  locked package list), and `npm ci --ignore-scripts` runs once before the agent starts in a
   one-shot `dependency-access` container that mounts only the checkout and
   receives no secrets, Docker socket, tools or caches
   ([`apps/runner/src/agent-governance/install-executor.ts`](../apps/runner/src/agent-governance/install-executor.ts)).

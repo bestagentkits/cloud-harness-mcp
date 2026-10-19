@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   AgentProxyOperationSchema,
   AutomationRuleActionSchema,
+  AutomationsRunnerDataSchemas,
+  AutomationsRunnerRequestSchema,
   BROKERED_ONLY_PROXY_OPERATIONS,
   CODING_PROXY_OPERATIONS,
+  CodingActionOutcomeSchema,
   CodingActionReceiptSchema,
   CodingActionRequestSchema,
   CodingRuleActionSchema,
@@ -31,8 +34,11 @@ describe('coding action contracts', () => {
   it('requires an explicit, non-agent base branch and a project', () => {
     const base = { projectId: PROJECT, verifyCommand: 'npm test', baseBranch: 'main' };
     expect(CodingRuleActionSchema.parse(base)).toEqual(base);
-    for (const baseBranch of ['', 'agent/x', '-main', 'a..b', 'main branch']) {
+    for (const baseBranch of ['', 'agent/x', '-main', 'a..b', 'main branch', 'main.lock', 'release/v1.lock', 'main/', 'a//b', 'main.', '.hidden', 'release/.x']) {
       expect(CodingRuleActionSchema.safeParse({ ...base, baseBranch }).success, baseBranch).toBe(false);
+    }
+    for (const baseBranch of ['develop', 'release/v1.2', 'feature/a-b_c']) {
+      expect(CodingRuleActionSchema.safeParse({ ...base, baseBranch }).success, baseBranch).toBe(true);
     }
     expect(CodingRuleActionSchema.safeParse({ verifyCommand: 'npm test', baseBranch: 'main' }).success).toBe(false);
     expect(CodingRuleActionSchema.safeParse({ ...base, principalId: 'someone' }).success).toBe(false);
@@ -65,5 +71,24 @@ describe('coding action contracts', () => {
     expect(CodingActionReceiptSchema.safeParse({ ...receipt, reasonCode: 'PATH_OUT_OF_SCOPE' }).success).toBe(true);
     expect(CodingActionReceiptSchema.safeParse({ ...receipt, reasonCode: 'MADE_UP' }).success).toBe(false);
     expect(CodingActionReceiptSchema.safeParse({ ...receipt, state: 'DONE' }).success).toBe(false);
+  });
+
+  it('describes an install by its package count and package-list digest', () => {
+    const digest = 'f'.repeat(64);
+    expect(CodingActionOutcomeSchema.parse({ exitCode: 0, packageCount: 2, packagesDigest: digest })).toEqual({ exitCode: 0, packageCount: 2, packagesDigest: digest });
+    expect(CodingActionOutcomeSchema.safeParse({ packageCount: -1 }).success).toBe(false);
+    expect(CodingActionOutcomeSchema.safeParse({ packagesDigest: 'xyz' }).success).toBe(false);
+  });
+
+  it('pages workflow receipts with an opaque cursor', () => {
+    const request = { version: 1, principal: { kind: 'owner', ownerId: 'owner' }, operation: 'workflow_get', input: { id: WORKFLOW } };
+    expect(AutomationsRunnerRequestSchema.safeParse(request).success).toBe(true);
+    expect(AutomationsRunnerRequestSchema.safeParse({ ...request, input: { id: WORKFLOW, actionsCursor: 'MTc2MDgzMjAwMDAwMDoxMg' } }).success).toBe(true);
+    for (const actionsCursor of ['', 'a b', 'x'.repeat(65), '../etc']) {
+      expect(AutomationsRunnerRequestSchema.safeParse({ ...request, input: { id: WORKFLOW, actionsCursor } }).success, actionsCursor).toBe(false);
+    }
+    const data = AutomationsRunnerDataSchemas.workflow_get.shape;
+    expect(data.actionsCursor.parse(undefined)).toBeNull();
+    expect(data.actions.parse(undefined)).toEqual([]);
   });
 });

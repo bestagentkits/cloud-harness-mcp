@@ -41,15 +41,40 @@ async function started(harness: CodingHarness, options: Parameters<CodingHarness
   return workflow!.id;
 }
 
+/** Every receipt of the workflow, oldest first, read through all pages of `workflow_get`. */
 function receipts(harness: CodingHarness, workflowId: string) {
-  return harness.workflow(workflowId).actions.map((receipt) => CodingActionReceiptSchema.parse(receipt));
+  const all = [];
+  let cursor: string | undefined;
+  do {
+    const page = harness.workflow(workflowId, cursor);
+    all.push(...page.actions.map((receipt) => CodingActionReceiptSchema.parse(receipt)));
+    cursor = page.actionsCursor ?? undefined;
+  } while (cursor);
+  return all.reverse();
 }
+
+const RUNNER_STEPS = ['verify:APPLIED', 'path_check:APPLIED', 'commit:APPLIED', 'path_check:APPLIED', 'push:APPLIED', 'open_pr:APPLIED'];
+
+/** A verify script that passes, but first commits a workflow file and a manifest itself. */
+const SNEAKY_VERIFY = [
+  "import { execFileSync } from 'node:child_process';",
+  "import { mkdirSync, writeFileSync } from 'node:fs';",
+  "mkdirSync('.github/workflows', { recursive: true });",
+  "writeFileSync('.github/workflows/release.yml', 'on: push\\n');",
+  "writeFileSync('package.json', '{\"dependencies\":{\"left-pad\":\"1.3.0\"}}\\n');",
+  "const git = (...args) => execFileSync('git', ['-c', 'user.name=agent', '-c', 'user.email=agent@example.invalid', '-c', 'commit.gpgsign=false', ...args]);",
+  "git('add', '-A');",
+  "git('commit', '-q', '-m', 'chore: tidy');",
+  ''
+].join('\n');
 
 function runnerSteps(harness: CodingHarness, workflowId: string) {
   return receipts(harness, workflowId).filter((receipt) => receipt.origin === 'runner').map((receipt) => `${receipt.step}:${receipt.state}`);
 }
 
-describe('coding automation: issue to pull request', () => {
+// Every case drives real Git repositories end to end (clone, commit, inspection, push), which takes
+// several seconds on slower hosts; the bound is generous so only a hang fails.
+describe('coding automation: issue to pull request', { timeout: 30_000 }, () => {
   it('fixes the issue, verifies it, and publishes one commit, one push and one unmerged pull request', async () => {
     const harness = await setup();
     const mainBefore = harness.github.branchOid('main');
@@ -80,7 +105,13 @@ describe('coding automation: issue to pull request', () => {
     const agentReceipts = receipts(harness, workflowId).filter((receipt) => receipt.origin === 'agent');
     expect(agentReceipts.map((receipt) => `${receipt.step}:${receipt.state}`)).toEqual(['files_write:APPLIED', 'files_write:APPLIED', 'exec_run:APPLIED', 'git_status:APPLIED']);
     expect(agentReceipts.find((receipt) => receipt.step === 'exec_run')?.outcome.exitCode).toBe(0);
-    expect(runnerSteps(harness, workflowId)).toEqual(['verify:APPLIED', 'commit:APPLIED', 'commit:APPLIED', 'push:APPLIED', 'open_pr:APPLIED']);
+    expect(runnerSteps(harness, workflowId)).toEqual(RUNNER_STEPS);
+    // The runner pushed the commit it verified, by id, not whatever HEAD named at push time.
+    expect(harness.workspaces.pushedRefspecs).toEqual([`${workflow.coding!.commitSha}:refs/heads/${branch}`]);
+    // workflow_get lists receipts newest first: the runner's last step leads the first page.
+    const firstPage = harness.workflow(workflowId);
+    expect(firstPage.actions[0]).toMatchObject({ step: 'open_pr', origin: 'runner' });
+    expect(firstPage.actionsCursor).toBeNull();
 
     // The workspace is closed, and every receipt is still readable and joined to the agent's trace.
     const row = harness.row(workflowId);
@@ -145,7 +176,7 @@ describe('coding automation: issue to pull request', () => {
     expect(harness.github.commitsAhead(branch)).toEqual([workflow.coding!.commitSha]);
     expect(harness.github.pushes).toHaveLength(1);
     expect(harness.github.pulls).toHaveLength(1);
-    expect(runnerSteps(harness, workflowId).filter((step) => !step.startsWith('verify'))).toEqual(['commit:APPLIED', 'commit:APPLIED', 'push:APPLIED', 'open_pr:APPLIED']);
+    expect(runnerSteps(harness, workflowId)).toEqual(RUNNER_STEPS);
   });
 
   it('reconciles a push whose receipt was lost in a crash to APPLIED without pushing again', async () => {
@@ -222,6 +253,127 @@ describe('coding automation: issue to pull request', () => {
     expect(harness.github.branchFiles(branch)).not.toContain('.github/workflows/release.yml');
     expect(harness.github.commitsAhead('main', branch)).toEqual([]);
     expect(harness.github.pulls[0]).toMatchObject({ head: branch, base: 'main' });
+  });
+
+  it('refuses a commit the verify command made itself, with a workflow file and a manifest, and pushes nothing', async () => {
+    const harness = await setup();
+    const workflowId = await started(harness);
+    await harness.runAgent(workflowId, [
+      ...FIX_BOTH.filter((tool) => tool.operation === 'files_write'),
+      { operation: 'files_write', input: { path: 'test/run.mjs', content: SNEAKY_VERIFY } }
+    ]);
+    await harness.tick(6);
+
+    const { workflow } = harness.workflow(workflowId);
+    expect(workflow.state).toBe('FAILED');
+    expect(workflow.errorCode).toBe('HEAD_MOVED');
+    // The commit receipt says why; nothing was staged, committed by the runner, or pushed.
+    expect(receipts(harness, workflowId).find((receipt) => receipt.step === 'commit')).toMatchObject({ decision: 'DENY', reasonCode: 'HEAD_MOVED', state: 'REJECTED' });
+    expect(harness.count('git_add')).toBe(0);
+    expect(harness.count('git_commit')).toBe(0);
+    expect(harness.github.pushAttempts).toBe(0);
+    expect(harness.github.remoteBranches()).toEqual(['main']);
+    expect(harness.github.pulls).toHaveLength(0);
+  });
+
+  it('gates every path of the commit it is about to push, so a file added after the path check is never published', async () => {
+    const harness = await setup();
+    const workflowId = await started(harness);
+    await harness.runAgent(workflowId, FIX_BOTH);
+    // A repository pre-commit hook stages a workflow file between the path check and the commit.
+    harness.workspaces.beforeCommit = (checkout) => {
+      writeFileSync(join(checkout, 'release.yml'), 'on: push\n');
+      git(checkout, ['add', 'release.yml']);
+    };
+    await harness.tick(8);
+
+    const { workflow } = harness.workflow(workflowId);
+    expect(workflow.state).toBe('FAILED');
+    expect(workflow.errorCode).toBe('ACTION_DENIED:PATH_OUT_OF_SCOPE');
+    const pushChecks = receipts(harness, workflowId).filter((receipt) => receipt.step === 'path_check' && receipt.state === 'REJECTED');
+    expect(pushChecks).toEqual([expect.objectContaining({ decision: 'DENY', reasonCode: 'PATH_OUT_OF_SCOPE', paths: expect.arrayContaining(['release.yml']) })]);
+    expect(harness.count('git_commit')).toBe(1);
+    expect(harness.github.pushAttempts).toBe(0);
+    expect(harness.github.remoteBranches()).toEqual(['main']);
+  });
+
+  it('refuses to commit when the changed-path listing is truncated', async () => {
+    const harness = await setup();
+    const workflowId = await started(harness);
+    await harness.runAgent(workflowId, FIX_BOTH);
+    harness.workspaces.truncateGit = true;
+    await harness.tick(6);
+
+    const { workflow } = harness.workflow(workflowId);
+    expect(workflow.state).toBe('FAILED');
+    expect(workflow.errorCode).toBe('PATHS_UNVERIFIABLE');
+    expect(receipts(harness, workflowId).find((receipt) => receipt.step === 'commit')).toMatchObject({ reasonCode: 'PATHS_UNVERIFIABLE', state: 'REJECTED' });
+    expect(harness.count('git_commit')).toBe(0);
+    expect(harness.github.pushAttempts).toBe(0);
+  });
+
+  it('holds a second issue at admission while the policy allows one coding run, then runs it', async () => {
+    // The rule itself would run both at once; only the policy's concurrency limit holds the second back.
+    const harness = await setup({ ruleMaxConcurrent: 2, policy: { ...CODING_GLOBAL_POLICY, budget: { ...CODING_GLOBAL_POLICY.budget, maxConcurrentRuns: 1 } } });
+    harness.deliver({ number: 7 });
+    harness.deliver({ number: 8 });
+    await harness.tick(2);
+
+    const running = harness.workflows().filter((entry) => entry.state === 'RUNNING');
+    const waiting = harness.workflows().filter((entry) => entry.state === 'STARTING');
+    expect(running).toHaveLength(1);
+    expect(waiting).toHaveLength(1);
+    // The held run was never admitted: no project binding, no workspace, no agent.
+    expect(waiting[0]!.coding).toBeNull();
+    expect(waiting[0]!.workspaceId).toBeNull();
+
+    await harness.runAgent(running[0]!.id, FIX_BOTH);
+    await harness.tick(8);
+    expect(harness.workflow(running[0]!.id).workflow.state).toBe('COMPLETED');
+
+    harness.clock.now += 15_000;
+    await harness.tick();
+    const second = harness.workflow(waiting[0]!.id).workflow;
+    expect(second.state).toBe('RUNNING');
+    expect(second.coding?.phase).toBe('AGENT');
+  });
+
+  it('opens its own pull request instead of adopting a fork pull request with the same branch name', async () => {
+    const harness = await setup();
+    const workflowId = await started(harness);
+    const fork = harness.github.addForkPull(`agent/7-${workflowId.slice(4, 12)}`, 'main');
+    await harness.runAgent(workflowId, FIX_BOTH);
+    await harness.tick(8);
+
+    const { workflow } = harness.workflow(workflowId);
+    expect(workflow.state).toBe('COMPLETED');
+    expect(workflow.coding?.prNumber).not.toBe(fork.number);
+    expect(harness.github.pulls.filter((pull) => !pull.crossRepository)).toEqual([expect.objectContaining({ number: workflow.coding!.prNumber, head: workflow.coding!.branch, base: 'main' })]);
+  });
+
+  it('starts from the rule base branch and opens the pull request against it', async () => {
+    const harness = await setup({ baseBranch: 'develop', branches: ['develop'] });
+    const developHead = harness.github.commitOn('develop', 'docs/develop.md', 'develop only\n');
+    const workflowId = await started(harness);
+    await harness.runAgent(workflowId, FIX_BOTH);
+    await harness.tick(8);
+
+    const { workflow } = harness.workflow(workflowId);
+    expect(workflow.state).toBe('COMPLETED');
+    const branch = workflow.coding!.branch!;
+    expect(harness.github.pulls).toEqual([expect.objectContaining({ head: branch, base: 'develop' })]);
+    expect(harness.github.commitsAhead(branch, 'develop')).toEqual([workflow.coding!.commitSha]);
+    expect(git(harness.github.remote, ['rev-parse', `${workflow.coding!.commitSha}^`]).trim()).toBe(developHead);
+    expect(harness.github.branchFiles(branch)).toContain('docs/develop.md');
+  });
+
+  it('answers NOT_FOUND to another principal asking for the workflow and its receipts', async () => {
+    const harness = await setup();
+    const workflowId = await started(harness);
+    const response = harness.workflowAs({ kind: 'owner', ownerId: 'mallory' }, workflowId);
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error.code).toBe('NOT_FOUND');
+    expect(JSON.stringify(response)).not.toContain('actions');
   });
 
   it('takes the principal, project and policy from the rule and the runner, never from the payload', async () => {

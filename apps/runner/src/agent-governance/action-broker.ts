@@ -12,6 +12,7 @@ import {
   type CodingActionOutcome,
   type CodingActionState,
   type CodingActionStep,
+  type CodingErrorCode,
   type CodingRuleAction,
   type GateContext,
   type GateDecision,
@@ -76,8 +77,11 @@ export type CodingActionBrokerOptions = {
   database: DatabaseSync;
   /** `AGENT_CODING_ENABLED`, read on every action so turning it off stops running workflows. */
   enabled: () => boolean;
-  /** The execution-time gate: the policy service's `decide`, which consults the advisor only for a pending discretionary action. */
-  policies: Pick<AgentPolicyService, 'decide'>;
+  /**
+   * The execution-time gate: the policy service's `decide`, which consults the advisor only for a pending
+   * discretionary action. `evaluate` (pure, no advisor) pre-checks the packages of a lockfile install.
+   */
+  policies: Pick<AgentPolicyService, 'decide' | 'evaluate'>;
   workspaces: CodingWorkspaceFacts;
   traces?: AgentActionTraceSink | undefined;
   now?: () => number;
@@ -116,13 +120,9 @@ export type BrokeredAdmission = {
   decision: GateDecision | null;
   /** Whether the action may be dispatched now. */
   allowed: boolean;
+  /** Why a replay was refused outside the gate (its input differs from the recorded one); null otherwise. */
+  refusal: string | null;
 };
-
-export class CodingActionRefusal extends Error {
-  constructor(readonly code: string, message: string) {
-    super(message);
-  }
-}
 
 function refusal(code: string, message: string, data?: Record<string, unknown>): RunnerResponse {
   return {
@@ -165,7 +165,7 @@ export class CodingActionBroker implements ActionBroker {
   readonly actions: CodingActionStore;
   private readonly database: DatabaseSync;
   private readonly enabled: () => boolean;
-  private readonly policies: Pick<AgentPolicyService, 'decide'>;
+  private readonly policies: Pick<AgentPolicyService, 'decide' | 'evaluate'>;
   readonly workspaces: CodingWorkspaceFacts;
   private readonly traces: AgentActionTraceSink | undefined;
   private readonly now: () => number;
@@ -189,9 +189,52 @@ export class CodingActionBroker implements ActionBroker {
     return this.executionDecision(request.principalId, request.projectId, request.descriptor, request.context);
   }
 
-  /** The policy decision a run is admitted under; the caller pins its revisions on the workflow. */
-  admit(principalId: string, projectId: string, descriptor: AgentActionDescriptorInput): Promise<GateDecision> {
-    return this.executionDecision(principalId, projectId, AgentActionDescriptorSchema.parse(descriptor), undefined);
+  /**
+   * The policy decision a run is admitted under; the caller pins its revisions on the workflow. The run
+   * budget's concurrency limit is enforced here, against the coding runs already admitted, so a run that
+   * is already working is never stopped because another one started after it.
+   */
+  admit(principalId: string, projectId: string, descriptor: AgentActionDescriptorInput, concurrentRuns: number): Promise<GateDecision> {
+    return this.executionDecision(principalId, projectId, AgentActionDescriptorSchema.parse(descriptor), { usage: { concurrentRuns } });
+  }
+
+  /** Coding runs of the principal that were admitted and still hold, or are acquiring, a workspace. */
+  activeCodingRuns(principalId: string): number {
+    const row = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE owner_id = ? AND project_id IS NOT NULL
+      AND state IN ('STARTING', 'RUNNING')`).get(principalId) as { count: number };
+    return row.count;
+  }
+
+  /**
+   * The pure gate decision (no advisor, no receipt) for each descriptor under the run's live context: the
+   * first one that is not ALLOW, or null when all are. A lockfile install checks every locked package this
+   * way and then brokers the install as one action.
+   */
+  precheck(binding: CodingBinding, descriptors: readonly AgentActionDescriptorInput[]): { descriptor: AgentActionDescriptorInput; decision: GateDecision } | null {
+    const context = this.context(binding, binding.usage);
+    for (const input of descriptors) {
+      const decision = this.policies.evaluate(binding.principalId, binding.projectId, AgentActionDescriptorSchema.parse(input), context);
+      if (decision.decision !== 'ALLOW') return { descriptor: input, decision };
+    }
+    return null;
+  }
+
+  /**
+   * Records a step the gate already refused (a `precheck` result) with that decision, so the receipt
+   * names the gate's reason. A step recorded earlier but not yet dispatched is moved to REJECTED.
+   */
+  reject(step: BrokeredStep, decision: GateDecision): CodingActionRecord {
+    const descriptor = AgentActionDescriptorSchema.parse(step.descriptor);
+    const recorded = this.actions.record({
+      principalId: step.binding.principalId, workflowId: step.binding.workflowId, workspaceId: step.binding.workspaceId,
+      agentId: step.binding.agentId, agentGeneration: step.binding.agentGeneration,
+      idempotencyKey: step.idempotencyKey, origin: step.origin, step: step.step, descriptor, projectId: step.binding.projectId,
+      decision, state: 'REJECTED'
+    });
+    if (recorded.replayed) this.actions.transition(recorded.record.actionId, ['INTENT'], 'REJECTED', { errorCode: decision.reasonCode });
+    const record = this.actions.get(recorded.record.actionId) ?? recorded.record;
+    this.trace(step.binding, record, undefined, this.now(), this.now());
+    return record;
   }
 
   /**
@@ -250,19 +293,27 @@ export class CodingActionBroker implements ActionBroker {
     if (!this.enabled()) {
       const recorded = this.actions.record({ ...base, decision: null, refusal: { reasonCode: 'CODING_DISABLED' }, state: 'REJECTED' });
       if (recorded.replayed) this.actions.transition(recorded.record.actionId, ['INTENT'], 'REJECTED', { errorCode: 'CODING_DISABLED' });
-      return { record: this.actions.get(recorded.record.actionId) ?? recorded.record, replayed: recorded.replayed, decision: null, allowed: false };
+      return { record: this.actions.get(recorded.record.actionId) ?? recorded.record, replayed: recorded.replayed, decision: null, allowed: false, refusal: null };
     }
     const decision = await this.decide(step.binding, descriptor, step.usage ?? step.binding.usage, step.signal);
     const allowed = decision.decision === 'ALLOW';
     const recorded = this.actions.record({ ...base, decision, state: allowed ? 'INTENT' : 'REJECTED' });
+    const stored = recorded.record.inputFingerprint;
+    if (recorded.replayed && stored !== null && stored !== decision.inputFingerprint) {
+      // The key was recorded for different input: never let one receipt stand for two actions.
+      return { record: recorded.record, replayed: true, decision, allowed: false, refusal: 'IDEMPOTENCY_KEY_REUSED' };
+    }
     if (recorded.replayed && !allowed) {
       this.actions.transition(recorded.record.actionId, ['INTENT'], 'REJECTED', { errorCode: decision.reasonCode });
     }
-    return { record: this.actions.get(recorded.record.actionId) ?? recorded.record, replayed: recorded.replayed, decision, allowed };
+    return { record: this.actions.get(recorded.record.actionId) ?? recorded.record, replayed: recorded.replayed, decision, allowed, refusal: null };
   }
 
-  /** Records a refusal decided before the gate (unsupported input, ambiguous repository). */
-  refuse(step: BrokeredStep, reasonCode: string): CodingActionRecord {
+  /**
+   * Records a refusal decided outside the gate (unsupported input, ambiguous repository, an unverifiable
+   * checkout). A step already recorded but not yet dispatched is moved to REJECTED with the reason.
+   */
+  refuse(step: BrokeredStep, reasonCode: CodingErrorCode): CodingActionRecord {
     const descriptor = AgentActionDescriptorSchema.parse(step.descriptor);
     const recorded = this.actions.record({
       principalId: step.binding.principalId, workflowId: step.binding.workflowId, workspaceId: step.binding.workspaceId,
@@ -270,8 +321,10 @@ export class CodingActionBroker implements ActionBroker {
       idempotencyKey: step.idempotencyKey, origin: step.origin, step: step.step, descriptor, projectId: step.binding.projectId,
       decision: null, refusal: { reasonCode }, state: 'REJECTED'
     });
-    this.trace(step.binding, recorded.record, step.agent?.requestId, this.now(), this.now());
-    return recorded.record;
+    if (recorded.replayed) this.actions.transition(recorded.record.actionId, ['INTENT'], 'REJECTED', { errorCode: reasonCode });
+    const record = this.actions.get(recorded.record.actionId) ?? recorded.record;
+    this.trace(step.binding, record, step.agent?.requestId, this.now(), this.now());
+    return record;
   }
 
   dispatched(record: CodingActionRecord): boolean {
@@ -280,7 +333,8 @@ export class CodingActionBroker implements ActionBroker {
 
   /** Settles an action and writes its trace span. */
   settle(binding: CodingBinding, record: CodingActionRecord, state: CodingActionState, outcome: CodingActionOutcome, startedAt: number, requestId?: string): void {
-    this.actions.transition(record.actionId, ['INTENT', 'DISPATCHED', 'UNKNOWN', 'REJECTED'], state, outcome);
+    // REJECTED and the other settled states are terminal: a late writer cannot reopen them.
+    this.actions.transition(record.actionId, ['INTENT', 'DISPATCHED', 'UNKNOWN'], state, outcome);
     const settled = this.actions.get(record.actionId) ?? record;
     this.trace(binding, settled, requestId, startedAt, this.now());
   }
@@ -343,6 +397,9 @@ export class CodingActionBroker implements ActionBroker {
     }
     const startedAt = this.now();
     const admission = await this.begin({ ...base, step, descriptor, signal: request.signal });
+    if (admission.refusal !== null) {
+      return refusal('ACTION_DENIED', admission.refusal, { actionId: admission.record.actionId });
+    }
     if (!admission.allowed) {
       this.traceRefusal(binding, admission.record, request.requestId);
       const code = admission.decision === null ? 'CODING_DISABLED'
@@ -354,7 +411,10 @@ export class CodingActionBroker implements ActionBroker {
     if (admission.replayed && admission.record.state !== 'INTENT') {
       return refusal('ACTION_DENIED', 'this tool request was already brokered', { actionId: admission.record.actionId });
     }
-    this.dispatched(admission.record);
+    if (!this.dispatched(admission.record)) {
+      // Another writer settled this action first; dispatching it again could act twice.
+      return refusal('ACTION_DENIED', 'this tool request was already brokered', { actionId: admission.record.actionId });
+    }
     try {
       const result = await inner({ ...request, toolInput });
       const exitCode = (result.data as { exitCode?: unknown } | undefined)?.exitCode;
@@ -376,8 +436,11 @@ export class CodingActionBroker implements ActionBroker {
 
   /** Runtime facts the gate re-checks: usage, pinned revisions, workspace generation and revocation. */
   private context(binding: CodingBinding, usage: CodingUsage | null): GateContext {
+    // Only runs admitted before this one count, so the run admitted first keeps its slot at every action.
     const others = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE owner_id = ? AND id != ?
-      AND project_id IS NOT NULL AND state IN ('STARTING', 'RUNNING')`).get(binding.principalId, binding.workflowId) as { count: number };
+      AND project_id IS NOT NULL AND state IN ('STARTING', 'RUNNING')
+      AND (COALESCE(coding_started_at, created_at) < ? OR (COALESCE(coding_started_at, created_at) = ? AND id < ?))`)
+      .get(binding.principalId, binding.workflowId, binding.startedAt, binding.startedAt, binding.workflowId) as { count: number };
     const current = binding.workspaceId === null ? null : this.workspaces.generation(binding.workspaceId);
     const revoked = !ACTIVE_STATES.has(binding.state) || (binding.workspaceId !== null && current === null);
     return {

@@ -2691,24 +2691,33 @@ function automationActionOutcome(outcome) {
   return parts.join(' · ');
 }
 
-/** Coding runs: the publish phase, what was published, and every brokered action's receipt. */
-function automationCodingSection(coding, actions) {
+/**
+ * Coding runs: the publish phase, what was published, and the brokered actions' receipts, newest
+ * first. The runner pages receipts; `actionsCursor` names the next, older page.
+ */
+function automationCodingSection(coding, actions, actionsCursor) {
   if (!coding) return '';
   const prHref = automationResourceHref(coding.prUrl);
   const pr = coding.prNumber ? (prHref ? `<a class="mono" href="${escape(prHref)}" target="_blank" rel="noopener noreferrer">#${escape(coding.prNumber)}</a>` : `<span class="mono">#${escape(coding.prNumber)}</span>`) : 'Not opened';
   const receipts = automationList(actions);
+  const decision = (action) => `${escape(action.decision)}<small>${escape(action.reasonCode)}</small>`;
   const rows = receipts.length ? receipts.map((action) => `<tr>
         <td>${time(action.createdAt)}</td>
         <td class="mono">${escape(action.origin)}</td>
         <th scope="row" class="mono">${escape(action.step)}</th>
         <td class="mono">${escape(action.actionClass)}</td>
-        <td class="mono wrap">${escape(action.decision)}<small>${escape(action.reasonCode)}</small></td>
+        <td class="mono wrap">${decision(action)}</td>
         <td class="mono">${escape(action.state)}</td>
         <td class="mono wrap">${escape(automationActionOutcome(action.outcome))}</td>
       </tr>`).join('') : '<tr><td colspan="7">No actions recorded yet.</td></tr>';
+  const cards = receipts.length ? receipts.map((action) => `<li><h3 class="mono">${escape(action.step)}</h3><dl><dt>Time</dt><dd>${time(action.createdAt)}</dd><dt>Origin</dt><dd class="mono">${escape(action.origin)}</dd><dt>Class</dt><dd class="mono">${escape(action.actionClass)}</dd><dt>Decision</dt><dd class="mono wrap">${decision(action)}</dd><dt>State</dt><dd class="mono">${escape(action.state)}</dd><dt>Outcome</dt><dd class="mono wrap">${escape(automationActionOutcome(action.outcome))}</dd></dl></li>`).join('')
+    : '<li class="empty"><h3>No actions recorded yet.</h3></li>';
+  const older = typeof actionsCursor === 'string' && actionsCursor
+    ? `<div class="row-actions"><button type="button" data-automation-older-actions="${escape(actionsCursor)}">Show older actions</button></div>`
+    : '';
   return `
     <section class="panel" aria-labelledby="automation-coding-heading">
-      <h2 id="automation-coding-heading">Coding</h2>
+      <h2 id="automation-coding-heading" tabindex="-1">Coding</h2>
       <p>The runner commits, pushes and opens the pull request itself after the agent finishes and verification passes. It never merges.</p>
       <dl class="facts">
         <dt>Phase</dt><dd class="mono">${escape(coding.phase)}</dd>
@@ -2718,10 +2727,11 @@ function automationCodingSection(coding, actions) {
         <dt>Pull request</dt><dd>${pr}</dd>
       </dl>
       <div class="desktop-table"><table><caption>${escape(receipts.length)} brokered actions</caption><thead><tr><th>Time</th><th>Origin</th><th>Step</th><th>Class</th><th>Decision</th><th>State</th><th>Outcome</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <ul class="mobile-list">${cards}</ul>${older}
     </section>`;
 }
 
-export function renderAutomationRunDetail({ workflow, result = null, transitions = [], ruleName, actions = [] } = {}) {
+export function renderAutomationRunDetail({ workflow, result = null, transitions = [], ruleName, actions = [], actionsCursor = null } = {}) {
   if (!workflow) return '<div class="empty"><h3>Automation run not found.</h3><p>It may have been purged after the retention window or belong to another identity.</p></div>';
   const cancel = automationWorkflowIsTerminal(workflow.state) ? '' : `<div class="row-actions"><button class="danger" type="button" data-automation-cancel="${escape(workflow.id)}">Cancel run</button></div>`;
   const resultBody = typeof result === 'string' && result
@@ -2753,7 +2763,7 @@ export function renderAutomationRunDetail({ workflow, result = null, transitions
         <dt>Updated</dt><dd>${time(workflow.updatedAt)}</dd>
         <dt>Finished</dt><dd>${workflow.terminalAt ? time(workflow.terminalAt) : 'Not finished'}</dd>
       </dl>
-    </section>${automationCodingSection(workflow.coding, actions)}
+    </section>${automationCodingSection(workflow.coding, actions, actionsCursor)}
     <section class="panel" aria-labelledby="automation-result-heading">
       <h2 id="automation-result-heading">Result</h2>
       <p>The agent's answer, shown as plain text exactly as recorded.</p>

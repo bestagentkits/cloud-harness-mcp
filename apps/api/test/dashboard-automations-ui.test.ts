@@ -222,7 +222,7 @@ describe('automation run detail', () => {
       receipt('open_pr', { actionClass: 'open_pr', outcome: { prNumber: 3, prUrl: coding.prUrl, errorCode: HOSTILE } })
     ];
     const html = renderAutomationRunDetail({ workflow: { ...workflow, state: 'COMPLETED', coding }, result: null, transitions, actions });
-    expect(html).toContain('<h2 id="automation-coding-heading">Coding</h2>');
+    expect(html).toContain('<h2 id="automation-coding-heading" tabindex="-1">Coding</h2>');
     expect(html).toContain('agent/7-abcdef01');
     expect(html).toContain('href="https://github.com/acme/widgets/pull/3"');
     expect(html).toContain('2 brokered actions');
@@ -231,6 +231,18 @@ describe('automation run detail', () => {
     expect(html).not.toContain(HOSTILE);
     expect(html).toContain(ESCAPED);
     expectCspSafe(html);
+    // The receipts table is paired with a card list of the same rows for narrow screens.
+    expect(html).toContain('<div class="desktop-table"><table><caption>2 brokered actions');
+    const cards = /<ul class="mobile-list">([\s\S]*?)<\/ul>/u.exec(html.slice(html.indexOf('automation-coding-heading')))?.[1] ?? '';
+    expect(cards.match(/<li>/gu)).toHaveLength(2);
+    expect(cards).toContain('<h3 class="mono">open_pr</h3>');
+    expect(cards).toContain('PR #3');
+    expect(cards).not.toContain(HOSTILE);
+    // Older receipts are a page away; the last page offers no control.
+    expect(html).not.toContain('data-automation-older-actions');
+    const paged = renderAutomationRunDetail({ workflow: { ...workflow, coding }, transitions, actions, actionsCursor: 'MTc2MDoxMg' });
+    expect(paged).toContain('<button type="button" data-automation-older-actions="MTc2MDoxMg">Show older actions</button>');
+    expect(renderAutomationRunDetail({ workflow: { ...workflow, coding }, transitions, actions, actionsCursor: '"><script>' })).not.toContain('"><script>');
 
     expect(renderAutomationRunDetail({ workflow, transitions })).not.toContain('automation-coding-heading');
     const unsafe = renderAutomationRunDetail({ workflow: { ...workflow, coding: { ...coding, prUrl: 'javascript:alert(1)' } }, transitions });

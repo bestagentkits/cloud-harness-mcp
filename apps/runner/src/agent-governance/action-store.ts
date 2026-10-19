@@ -34,6 +34,8 @@ export type CodingActionRecord = {
   reasonCode: string;
   outcome: CodingActionOutcome;
   descriptor: AgentActionDescriptor;
+  /** sha256 of the descriptor the gate decided; null for a refusal decided before the gate. */
+  inputFingerprint: string | null;
   agentId: string | null;
   agentGeneration: number | null;
   createdAt: number;
@@ -60,12 +62,32 @@ export type NewCodingAction = {
 
 const iso = (value: number) => new Date(value).toISOString();
 
+/** A receipt cursor that does not decode; the caller reports it as invalid input. */
+export class CodingActionCursorError extends Error {
+  constructor() {
+    super('invalid receipts cursor');
+  }
+}
+
+function encodeCursor(createdAt: number, position: number): string {
+  return Buffer.from(`${createdAt}:${position}`).toString('base64url');
+}
+
+function decodeCursor(cursor: string): { createdAt: number; position: number } | null {
+  const match = /^(\d{1,16}):(\d{1,16})$/u.exec(Buffer.from(cursor, 'base64url').toString('utf8'));
+  if (!match) return null;
+  const createdAt = Number(match[1]);
+  const position = Number(match[2]);
+  return Number.isSafeInteger(createdAt) && Number.isSafeInteger(position) ? { createdAt, position } : null;
+}
+
 function recordOf(row: ActionRow): CodingActionRecord {
   return {
     actionId: row.action_id, principalId: row.principal_id, workflowId: row.workflow_id, idempotencyKey: row.idempotency_key,
     step: row.step, state: row.state, decision: row.decision, reasonCode: row.reason_code,
     outcome: CodingActionOutcomeSchema.parse(JSON.parse(row.outcome_json)),
     descriptor: JSON.parse(row.descriptor_json) as AgentActionDescriptor,
+    inputFingerprint: row.descriptor_digest,
     agentId: row.agent_id, agentGeneration: row.agent_generation, createdAt: row.created_at
   };
 }
@@ -128,41 +150,57 @@ export class CodingActionStore {
     return row ? recordOf(row) : undefined;
   }
 
-  /** The workflow's receipts, oldest first, scoped to the principal that owns the workflow. */
-  receipts(principalId: string, workflowId: string, limit: number = CODING_LIMITS.maxReceiptsPerWorkflow): CodingActionReceipt[] {
-    const rows = this.database.prepare('SELECT * FROM coding_actions WHERE principal_id = ? AND workflow_id = ? ORDER BY created_at, rowid LIMIT ?')
-      .all(principalId, workflowId, limit) as ActionRow[];
-    return rows.map((row) => {
-      const descriptor = JSON.parse(row.descriptor_json) as AgentActionDescriptor;
-      // The full gate decision is stored with the receipt; its advisor block carries the Decision Plane id.
-      const stored = row.decision_json ? JSON.parse(row.decision_json) as { advisor?: { decisionId?: unknown } } : null;
-      const decisionId = typeof stored?.advisor?.decisionId === 'string' ? stored.advisor.decisionId : null;
-      return CodingActionReceiptSchema.parse({
-        actionId: row.action_id,
-        workflowId: row.workflow_id,
-        origin: row.origin,
-        step: row.step,
-        actionClass: row.action_class,
-        repository: descriptor.repository,
-        branch: descriptor.branch ?? null,
-        paths: (descriptor.paths ?? []).slice(0, CODING_LIMITS.maxPathsPerReceipt),
-        command: descriptor.command ?? null,
-        decision: row.decision,
-        reasonCode: row.reason_code,
-        state: row.state,
-        projectId: row.project_id,
-        globalRevisionId: row.global_revision_id,
-        projectRevisionId: row.project_revision_id,
-        inputFingerprint: row.descriptor_digest,
-        decisionId,
-        workspaceId: row.workspace_id,
-        agentId: row.agent_id,
-        traceId: row.trace_id,
-        spanId: row.span_id,
-        outcome: JSON.parse(row.outcome_json) as unknown,
-        createdAt: iso(row.created_at),
-        updatedAt: iso(row.updated_at)
-      });
+  /**
+   * One page of the workflow's receipts, newest first, scoped to the principal that owns the workflow.
+   * The cursor is the (created_at, rowid) keyset of the last receipt returned, so a page never repeats
+   * or skips a receipt while new ones are appended.
+   */
+  receipts(principalId: string, workflowId: string, options: { cursor?: string | undefined; limit?: number } = {}): { receipts: CodingActionReceipt[]; cursor: string | null } {
+    const limit = options.limit ?? CODING_LIMITS.receiptsPerPage;
+    const after = options.cursor === undefined ? null : decodeCursor(options.cursor);
+    if (options.cursor !== undefined && after === null) throw new CodingActionCursorError();
+    const rows = (after
+      ? this.database.prepare(`SELECT rowid AS position, * FROM coding_actions WHERE principal_id = ? AND workflow_id = ?
+          AND (created_at < ? OR (created_at = ? AND rowid < ?)) ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+        .all(principalId, workflowId, after.createdAt, after.createdAt, after.position, limit + 1)
+      : this.database.prepare('SELECT rowid AS position, * FROM coding_actions WHERE principal_id = ? AND workflow_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?')
+        .all(principalId, workflowId, limit + 1)) as (ActionRow & { position: number })[];
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    const cursor = rows.length > limit && last ? encodeCursor(last.created_at, last.position) : null;
+    return { receipts: page.map((row) => this.receiptOf(row)), cursor };
+  }
+
+  private receiptOf(row: ActionRow): CodingActionReceipt {
+    const descriptor = JSON.parse(row.descriptor_json) as AgentActionDescriptor;
+    // The full gate decision is stored with the receipt; its advisor block carries the Decision Plane id.
+    const stored = row.decision_json ? JSON.parse(row.decision_json) as { advisor?: { decisionId?: unknown } } : null;
+    const decisionId = typeof stored?.advisor?.decisionId === 'string' ? stored.advisor.decisionId : null;
+    return CodingActionReceiptSchema.parse({
+      actionId: row.action_id,
+      workflowId: row.workflow_id,
+      origin: row.origin,
+      step: row.step,
+      actionClass: row.action_class,
+      repository: descriptor.repository,
+      branch: descriptor.branch ?? null,
+      paths: (descriptor.paths ?? []).slice(0, CODING_LIMITS.maxPathsPerReceipt),
+      command: descriptor.command ?? null,
+      decision: row.decision,
+      reasonCode: row.reason_code,
+      state: row.state,
+      projectId: row.project_id,
+      globalRevisionId: row.global_revision_id,
+      projectRevisionId: row.project_revision_id,
+      inputFingerprint: row.descriptor_digest,
+      decisionId,
+      workspaceId: row.workspace_id,
+      agentId: row.agent_id,
+      traceId: row.trace_id,
+      spanId: row.span_id,
+      outcome: JSON.parse(row.outcome_json) as unknown,
+      createdAt: iso(row.created_at),
+      updatedAt: iso(row.updated_at)
     });
   }
 

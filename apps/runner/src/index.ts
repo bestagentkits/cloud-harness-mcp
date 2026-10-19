@@ -123,7 +123,10 @@ const automations = new AutomationService({
     execute: async (ownerId, operation, input) => {
       try {
         const result = await service.execute(ownerId, operation, input);
-        return { ok: result.ok, data: result.data, error: result.error ? { code: result.error.code, retryable: result.error.retryable } : undefined, cursor: result.cursor };
+        return {
+          ok: result.ok, data: result.data, error: result.error ? { code: result.error.code, retryable: result.error.retryable } : undefined,
+          cursor: result.cursor, truncated: result.truncated
+        };
       } catch (error) {
         if (error instanceof HarnessError) return { ok: false, error: { code: error.code, retryable: error.retryable } };
         throw error;
@@ -138,8 +141,9 @@ const automations = new AutomationService({
   codingInstall: {
     enabled: () => config.agentCodingPackageInstallEnabled,
     registry: DEFAULT_NPM_REGISTRY,
-    run: async (ownerId, workspaceId) => await service.installCodingDependencies(ownerId, workspaceId)
-  }
+    run: async (ownerId, workspaceId, signal) => await service.installCodingDependencies(ownerId, workspaceId, signal)
+  },
+  codingGit: async (ownerId, workspaceId, args, signal) => await service.runCodingGit(ownerId, workspaceId, args, signal)
 });
 automations.start();
 // Agent trace retention: traces past their retention period are removed hourly in bounded,

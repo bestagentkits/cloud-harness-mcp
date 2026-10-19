@@ -162,7 +162,11 @@ export const AutomationsRunnerRequestSchema = z.discriminatedUnion('operation', 
     state: AutomationWorkflowStateSchema.optional(),
     limit: z.number().int().min(1).max(AUTOMATION_LIMITS.maxListLimit).default(50)
   }).strict()),
-  owner('workflow_get', z.object({ id: AutomationWorkflowIdSchema }).strict()),
+  owner('workflow_get', z.object({
+    id: AutomationWorkflowIdSchema,
+    /** The `actionsCursor` of the previous page; omitted for the newest receipts. */
+    actionsCursor: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/u).optional()
+  }).strict()),
   owner('workflow_cancel', z.object({ id: AutomationWorkflowIdSchema, reason: z.string().max(500).optional() }).strict()),
   owner('deliveries_list', z.object({
     connectionId: AutomationConnectionIdSchema.optional(),
@@ -263,8 +267,10 @@ export const AutomationsRunnerDataSchemas = {
     workflow: AutomationWorkflowSummarySchema,
     result: z.string().nullable(),
     transitions: z.array(AutomationWorkflowTransitionSchema),
-    /** Action receipts of a coding workflow, oldest first; empty for read-only workflows. */
-    actions: z.array(CodingActionReceiptSchema).default([])
+    /** One page of a coding workflow's action receipts, newest first; empty for read-only workflows. */
+    actions: z.array(CodingActionReceiptSchema).default([]),
+    /** Pass as `actionsCursor` to read the next, older page; `null` on the last page. */
+    actionsCursor: z.string().nullable().default(null)
   }).strict(),
   workflow_cancel: z.object({ workflow: AutomationWorkflowSummarySchema }).strict(),
   deliveries_list: z.object({ deliveries: z.array(AutomationDeliverySummarySchema) }).strict()

@@ -58,7 +58,7 @@ const dataFor: Record<string, unknown> = {
   rule_delete: { deleted: true },
   rule_preview: { matched: true, reason: 'label matched' },
   workflows_list: { workflows: [workflow] },
-  workflow_get: { workflow, result: null, transitions: [{ fromState: null, toState: 'QUEUED', actor: 'system', code: null, at }], actions: [] },
+  workflow_get: { workflow, result: null, transitions: [{ fromState: null, toState: 'QUEUED', actor: 'system', code: null, at }], actions: [], actionsCursor: null },
   workflow_cancel: { workflow: { ...workflow, state: 'CANCELLED' } },
   deliveries_list: { deliveries: [delivery] }
 };
@@ -135,6 +135,7 @@ describe('dashboard automations BFF', () => {
       ['/api/v1/automations/workflows', 'workflows_list', { limit: 50 }],
       [`/api/v1/automations/workflows?ruleId=${ruleId}&state=RUNNING&limit=10`, 'workflows_list', { ruleId, state: 'RUNNING', limit: 10 }],
       [`/api/v1/automations/workflows/${workflowId}`, 'workflow_get', { id: workflowId }],
+      [`/api/v1/automations/workflows/${workflowId}?actionsCursor=MTc2MDoxMg`, 'workflow_get', { id: workflowId, actionsCursor: 'MTc2MDoxMg' }],
       ['/api/v1/automations/deliveries?limit=5', 'deliveries_list', { limit: 5 }],
       [`/api/v1/automations/deliveries?connectionId=${connectionId}`, 'deliveries_list', { connectionId, limit: 50 }]
     ];

@@ -17,7 +17,9 @@ const WORKFLOW_COLUMNS: readonly [string, string][] = [
   ['pr_number', 'INTEGER'],
   ['pr_url', 'TEXT'],
   ['agent_generation', 'INTEGER'],
-  ['trace_id', 'TEXT']
+  ['trace_id', 'TEXT'],
+  /** Consecutive engine steps of the workflow that threw; the engine backs off and finally fails it. */
+  ['step_failures', 'INTEGER NOT NULL DEFAULT 0']
 ];
 
 export function initializeCodingActionSchema(database: DatabaseSync): void {
@@ -57,4 +59,6 @@ export function initializeCodingActionSchema(database: DatabaseSync): void {
   for (const [name, type] of WORKFLOW_COLUMNS) {
     if (!present.has(name)) database.exec(`ALTER TABLE automation_workflows ADD COLUMN ${name} ${type}`);
   }
+  // The broker resolves a workspace's coding workflow on every agent tool call.
+  database.exec('CREATE INDEX IF NOT EXISTS automation_workflows_workspace ON automation_workflows(owner_id, workspace_id)');
 }

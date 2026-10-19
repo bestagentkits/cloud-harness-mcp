@@ -67,8 +67,9 @@ The exact limits and defaults are owned by
   agent's answer, and the timeline of state changes, and offers **Cancel run** while
   it is still active. A coding run's page adds a **Coding** section: its phase,
   branch, commit, pull request, and every action the policy decided, with the
-  decision, reason, and outcome. These receipts stay readable after the workspace
-  closes.
+  decision, reason, and outcome, newest first, with **Show older actions** for
+  earlier pages. These receipts stay readable after the workspace closes. They show
+  commands and paths exactly as decided, so keep secrets out of verify commands.
 - **Rules** lists rules with **Edit**, **Test event**, **Enable**/**Disable**, and
   **Delete**. A rule stays on the connection it was created for.
 - **Connections** shows each connection's webhook URL, last delivery, and when its
@@ -125,7 +126,13 @@ needs [Agent Policies](/dashboard/agent-policies) and automations to be on.
    `agent/<issue>-<id>` branch, and opens a pull request against your base branch,
    with `Closes #<issue>` in its description. The agent never holds the credential
    that publishes, a push never overwrites an existing branch, and nothing is ever
-   merged or deployed.
+   merged or deployed. Cloud Harness reads the checkout itself before committing and
+   reads the commit again before pushing: if something else committed
+   (`HEAD_MOVED`), the commit is not its own (`COMMIT_UNVERIFIED`), or the commit
+   touches a path the policy does not allow, nothing is pushed.
+
+A run over the policy's concurrent-run limit waits to start until an earlier coding
+run finishes.
 
 Every step is recorded before it runs, so a redelivered webhook, a restart, or a
 crash continues the same run instead of starting over or pushing twice. If GitHub

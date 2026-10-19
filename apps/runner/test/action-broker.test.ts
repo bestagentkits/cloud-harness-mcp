@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentActionDescriptorInput, RunnerPrincipalSelector, RunnerResponse } from '@cloud-harness/contracts';
 import { CodingActionBroker, editActionClass, plainArgv, type AgentToolRequest } from '../src/agent-governance/action-broker.js';
+import { CodingActionCursorError } from '../src/agent-governance/action-store.js';
 import type { AgentActionTraceSink, TraceActionEvent } from '../src/agent-trace-recorder.js';
 import {
   CODING_GLOBAL_POLICY,
@@ -42,6 +43,7 @@ async function setup(options: { enabled?: boolean; generation?: number | null; r
     database,
     enabled: () => enabled,
     policies: {
+      evaluate: (...args: Parameters<typeof policies.service.evaluate>) => policies.service.evaluate(...args),
       // Stands in for an advisor-backed decision: the real policy decision, stamped with a Decision Plane id.
       decide: async (...args: Parameters<typeof policies.service.decide>) => {
         const decision = await policies.service.decide(...args);
@@ -52,7 +54,7 @@ async function setup(options: { enabled?: boolean; generation?: number | null; r
     traces,
     now: () => clock
   });
-  const admitted = await broker.admit(OWNER, CODING_PROJECT, { version: 1, actionClass: 'read', repository: CODING_REPOSITORY });
+  const admitted = await broker.admit(OWNER, CODING_PROJECT, { version: 1, actionClass: 'read', repository: CODING_REPOSITORY }, 0);
   insertCodingWorkflow(database, {
     id: WORKFLOW, ownerId: OWNER, workspaceId: WORKSPACE, agentId: AGENT, agentGeneration: 1, createdAt: clock,
     policyRevisionJson: JSON.stringify({ globalRevisionId: admitted.policy.globalRevisionId, projectRevisionId: admitted.policy.projectRevisionId })
@@ -108,7 +110,7 @@ describe('CodingActionBroker', () => {
     const admission = await begin(context, 'k1', edit(['src/a.ts']));
     expect(admission).toMatchObject({ allowed: true, replayed: false });
     expect(admission.record.state).toBe('INTENT');
-    const [receipt] = context.broker.actions.receipts(OWNER, WORKFLOW);
+    const [receipt] = context.broker.actions.receipts(OWNER, WORKFLOW).receipts;
     expect(receipt).toMatchObject({ decision: 'ALLOW', state: 'INTENT', projectId: CODING_PROJECT, paths: ['src/a.ts'], actionClass: 'edit' });
     expect(receipt?.globalRevisionId).toMatch(/^apr_/u);
     expect(receipt?.inputFingerprint).toMatch(/^[a-f0-9]{64}$/u);
@@ -118,7 +120,7 @@ describe('CodingActionBroker', () => {
   it('records the Decision Plane id of the execution-time decision on the receipt', async () => {
     const context = await setup({ advisorDecisionId: 'dec_123' });
     expect((await begin(context, 'k1', edit(['src/a.ts']))).decision?.advisor.decisionId).toBe('dec_123');
-    expect(context.broker.actions.receipts(OWNER, WORKFLOW)[0]?.decisionId).toBe('dec_123');
+    expect(context.broker.actions.receipts(OWNER, WORKFLOW).receipts[0]?.decisionId).toBe('dec_123');
   });
 
   it('refuses everything while the kill switch is off, and stops an undispatched replay', async () => {
@@ -182,7 +184,7 @@ describe('CodingActionBroker', () => {
       const simulated = context.policies.service.execute({ version: 1, principal: owner, operation: 'policy_simulate', input: { projectId: CODING_PROJECT, action: descriptor } });
       if (!simulated.ok) throw new Error('simulation failed');
       const expected = (simulated.data as { decision: { decision: string; reasonCode: string; inputFingerprint: string } }).decision;
-      const actual = await context.broker.admit(OWNER, CODING_PROJECT, descriptor);
+      const actual = await context.broker.admit(OWNER, CODING_PROJECT, descriptor, 0);
       expect({ decision: actual.decision, reasonCode: actual.reasonCode, inputFingerprint: actual.inputFingerprint })
         .toEqual({ decision: expected.decision, reasonCode: expected.reasonCode, inputFingerprint: expected.inputFingerprint });
     }
@@ -193,7 +195,69 @@ describe('CodingActionBroker', () => {
     expect((await begin(context, 'k1', { version: 1, actionClass: 'test', repository: CODING_REPOSITORY, command: VERIFY_COMMAND.split(' ') })).allowed).toBe(true);
     const discretionary = await setup();
     discretionary.policies.saveGlobal({ ...CODING_GLOBAL_POLICY, defaults: { ...CODING_GLOBAL_POLICY.defaults, edit: { effect: 'require_approval', delegable: false } } });
-    expect((await discretionary.broker.admit(OWNER, CODING_PROJECT, edit(['src/a.ts']))).decision).toBe('REQUIRE_APPROVAL');
+    expect((await discretionary.broker.admit(OWNER, CODING_PROJECT, edit(['src/a.ts']), 0)).decision).toBe('REQUIRE_APPROVAL');
+  });
+
+  it('refuses a replayed key that names different input', async () => {
+    const context = await setup();
+    expect((await begin(context, 'k1', edit(['src/a.ts']))).allowed).toBe(true);
+    const reused = await begin(context, 'k1', edit(['src/b.ts']));
+    expect(reused).toMatchObject({ allowed: false, replayed: true, refusal: 'IDEMPOTENCY_KEY_REUSED' });
+    expect(context.broker.actions.receipts(OWNER, WORKFLOW).receipts).toHaveLength(1);
+  });
+
+  it('moves an undispatched step to REJECTED on a refusal, and never reopens a settled one', async () => {
+    const context = await setup();
+    const step = { binding: context.binding(), origin: 'runner' as const, step: 'commit' as const, idempotencyKey: 'k1', descriptor: edit(['src/a.ts']) };
+    const first = await context.broker.begin(step);
+    expect(first.record.state).toBe('INTENT');
+    expect(context.broker.refuse(step, 'HEAD_MOVED')).toMatchObject({ state: 'REJECTED', outcome: { errorCode: 'HEAD_MOVED' } });
+    // A late writer cannot dispatch or settle the rejected action.
+    expect(context.broker.dispatched(first.record)).toBe(false);
+    context.broker.settle(context.binding(), first.record, 'APPLIED', { exitCode: 0 }, 0);
+    expect(context.broker.actions.get(first.record.actionId)?.state).toBe('REJECTED');
+    // A replay finds the rejected record and does not run it.
+    const replay = await context.broker.begin(step);
+    expect(replay).toMatchObject({ replayed: true, record: { state: 'REJECTED' } });
+  });
+
+  it('records a gate refusal decided outside begin on the receipt', async () => {
+    const context = await setup();
+    const descriptor = edit(['deploy/prod.yaml']);
+    const checked = context.broker.precheck(context.binding(), [edit(['src/a.ts']), descriptor]);
+    expect(checked).toMatchObject({ descriptor, decision: { decision: 'DENY', reasonCode: 'PATH_OUT_OF_SCOPE' } });
+    expect(context.broker.precheck(context.binding(), [edit(['src/a.ts'])])).toBeNull();
+    const record = context.broker.reject({ binding: context.binding(), origin: 'runner', step: 'path_check', idempotencyKey: 'k1', descriptor }, checked!.decision);
+    expect(record).toMatchObject({ state: 'REJECTED', decision: 'DENY', reasonCode: 'PATH_OUT_OF_SCOPE' });
+    expect(context.actions.at(-1)).toMatchObject({ step: 'path_check', state: 'REJECTED' });
+  });
+
+  it('pages receipts newest first with a keyset cursor and refuses a forged cursor', async () => {
+    const context = await setup();
+    for (let index = 0; index < 5; index += 1) {
+      await begin(context, `k${index}`, edit([`src/${index}.ts`]));
+      if (index % 2 === 0) context.advance(1);
+    }
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page += 1) {
+      const result = context.broker.actions.receipts(OWNER, WORKFLOW, { limit: 2, ...(cursor ? { cursor } : {}) });
+      seen.push(...result.receipts.map((receipt) => receipt.paths?.[0] ?? ''));
+      if (result.cursor === null) break;
+      cursor = result.cursor;
+    }
+    expect(seen).toEqual(['src/4.ts', 'src/3.ts', 'src/2.ts', 'src/1.ts', 'src/0.ts']);
+    expect(() => context.broker.actions.receipts(OWNER, WORKFLOW, { cursor: 'not-a-cursor' })).toThrow(CodingActionCursorError);
+    // Another principal sees nothing, cursor or not.
+    expect(context.broker.actions.receipts('intruder', WORKFLOW).receipts).toEqual([]);
+  });
+
+  it('counts only running coding workflows toward the concurrency limit', async () => {
+    const context = await setup();
+    expect(context.broker.activeCodingRuns(OWNER)).toBe(1);
+    expect(context.broker.activeCodingRuns('intruder')).toBe(0);
+    context.database.prepare("UPDATE automation_workflows SET state = 'COMPLETED'").run();
+    expect(context.broker.activeCodingRuns(OWNER)).toBe(0);
   });
 });
 
@@ -215,7 +279,7 @@ describe('CodingActionBroker.executeAgentTool', () => {
     await context.broker.executeAgentTool(toolRequest('files_read', { path: 'src/a.ts' }, 'req-read'), inner);
     const written = await context.broker.executeAgentTool(toolRequest('files_write', { path: 'src/a.ts', content: 'x' }, 'req-write'), inner);
     expect(written.ok).toBe(true);
-    const receipts = context.broker.actions.receipts(OWNER, WORKFLOW);
+    const receipts = context.broker.actions.receipts(OWNER, WORKFLOW).receipts;
     expect(receipts).toHaveLength(1);
     expect(receipts[0]).toMatchObject({ origin: 'agent', step: 'files_write', state: 'APPLIED', agentId: AGENT, traceId: 'trace-1' });
     expect(context.actions).toEqual([expect.objectContaining({ step: 'files_write', state: 'APPLIED', requestId: 'req-write' })]);
@@ -229,7 +293,7 @@ describe('CodingActionBroker.executeAgentTool', () => {
     const lockfile = await context.broker.executeAgentTool(toolRequest('files_write', { path: 'package-lock.json', content: '{}' }, 'req-2'), inner);
     expect(lockfile.ok).toBe(false);
     expect(inner).not.toHaveBeenCalled();
-    expect(context.broker.actions.receipts(OWNER, WORKFLOW).map((receipt) => receipt.state)).toEqual(['REJECTED', 'REJECTED']);
+    expect(context.broker.actions.receipts(OWNER, WORKFLOW).receipts.map((receipt) => receipt.state)).toEqual(['REJECTED', 'REJECTED']);
   });
 
   it('runs only plain, allowed commands, never privileged, detached or with a grant', async () => {
@@ -244,7 +308,7 @@ describe('CodingActionBroker.executeAgentTool', () => {
     expect(allowed.ok).toBe(true);
     expect(inner.mock.calls[0]?.[0].toolInput).toMatchObject({ privileged: false, async: false });
     expect(inner.mock.calls[0]?.[0].toolInput).not.toHaveProperty('approvalGrantToken');
-    expect(context.broker.actions.receipts(OWNER, WORKFLOW).at(-1)).toMatchObject({ step: 'exec_run', command: ['node', 'test/run.mjs'], outcome: { exitCode: 0 } });
+    expect(context.broker.actions.receipts(OWNER, WORKFLOW).receipts[0]).toMatchObject({ step: 'exec_run', command: ['node', 'test/run.mjs'], outcome: { exitCode: 0 } });
   });
 
   it('refuses a workspace with several repositories', async () => {
@@ -259,10 +323,20 @@ describe('CodingActionBroker.executeAgentTool', () => {
     const context = await setup();
     const inner = vi.fn(async (): Promise<RunnerResponse> => { throw Object.assign(new Error('lost'), { code: 'UNAVAILABLE' }); });
     await expect(context.broker.executeAgentTool(toolRequest('files_write', { path: 'src/a.ts', content: 'x' }), inner)).rejects.toThrow('lost');
-    expect(context.broker.actions.receipts(OWNER, WORKFLOW)[0]).toMatchObject({ state: 'UNKNOWN', outcome: { errorCode: 'UNAVAILABLE' } });
+    expect(context.broker.actions.receipts(OWNER, WORKFLOW).receipts[0]).toMatchObject({ state: 'UNKNOWN', outcome: { errorCode: 'UNAVAILABLE' } });
     const replay = await context.broker.executeAgentTool(toolRequest('files_write', { path: 'src/a.ts', content: 'x' }), inner);
     expect(replay.message).toMatch(/already brokered/u);
     expect(inner).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not dispatch a request another writer already claimed', async () => {
+    const context = await setup();
+    const inner = vi.fn(async () => okResponse);
+    vi.spyOn(context.broker, 'dispatched').mockReturnValueOnce(false);
+    const refused = await context.broker.executeAgentTool(toolRequest('files_write', { path: 'src/a.ts', content: 'x' }), inner);
+    expect(refused).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
+    expect(refused.message).toMatch(/already brokered/u);
+    expect(inner).not.toHaveBeenCalled();
   });
 
   it('grants the brokered operations to a spawn only for a running coding workflow', async () => {
