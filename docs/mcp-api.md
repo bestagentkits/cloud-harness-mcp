@@ -220,7 +220,10 @@ Agent calls do not refresh the parent workspace idle TTL.
   budgets, usage, timestamps, terminal reason, and `outcomeUnknown`.
   `SPAWNING`, `RUNNING`, and `CANCELLING` are nonterminal; `SUCCEEDED`,
   `FAILED`, `CANCELLED`, `TIMED_OUT`, `LIMIT_EXCEEDED`, and `INTERRUPTED` are
-  terminal.
+  terminal. `LIMIT_EXCEEDED` means a harness limit stopped the run: its output
+  byte budget, the model output token cap, or a Model Gateway budget refusal or
+  request bound. A run the provider throttled (a provider 429, rate limit, or
+  quota) ends `FAILED`, because no harness limit can be raised to fix it.
 - `agent_logs` uses a nonnegative decimal byte cursor. Continue with
   `nextCursor` while `hasMore` is true. `truncated` means the requested cursor
   predates `retainedBaseCursor`; it can also coexist with another bounded page,

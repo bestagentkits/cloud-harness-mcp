@@ -122,6 +122,21 @@ describe('AgentSession worker lifecycle', () => {
     }
   });
 
+  it.each([
+    '429 Too Many Requests',
+    '429 Rate limit reached for requests',
+    '429 You exceeded your current quota, please check your plan and billing details'
+  ])('ends a run throttled by the provider (%s) as FAILED, not LIMIT_EXCEEDED', async (errorMessage) => {
+    const session = new FakeSession();
+    session.messages[0] = { role: 'assistant', stopReason: 'error', errorMessage };
+    const { worker, writer, records } = createWorker(session);
+    worker.receive(createStartRecord());
+    session.promptGate.resolve();
+    await worker.completion;
+    await writer.close();
+    expect(records()).toContainEqual(expect.objectContaining({ type: 'terminal', state: 'FAILED' }));
+  });
+
   it('cooperatively aborts the session and emits CANCELLED exactly once', async () => {
     const session = new FakeSession();
     const { worker, writer, records } = createWorker(session);

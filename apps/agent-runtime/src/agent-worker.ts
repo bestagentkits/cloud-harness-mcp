@@ -18,15 +18,19 @@ const ZERO_USAGE: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, to
 function safeTokenCount(value: number): number {
   return Number.isFinite(value) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(value))) : 0;
 }
+/**
+ * True only for a harness limit: a Model Gateway budget refusal or request bound. Provider
+ * throttling (a provider 429, rate limit, or quota) is a provider failure, not a harness limit.
+ */
 function isLimitExceeded(error: unknown): boolean {
   let current = error;
   for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth += 1) {
     const record = current as Record<string, unknown>;
     const status = record.status ?? record.statusCode;
-    if (status === 429 || status === 413) return true;
+    if (status === 413) return true;
     const code = typeof record.code === 'string' ? record.code : '';
     const message = typeof record.message === 'string' ? record.message : '';
-    if (/\b(?:413|429)\b|model_(?:budget_exhausted|bound_exceeded)|(?:budget|quota|token|cost|output|rate)[\s_-]*(?:limit|exhaust|exceed)/i.test(`${code} ${message}`)) return true;
+    if (/\b413\b|model_(?:budget_exhausted|bound_exceeded)|(?:budget|token|cost|output)[\s_-]*(?:limit|exhaust|exceed)/i.test(`${code} ${message}`)) return true;
     current = record.cause;
   }
   return false;
