@@ -185,9 +185,12 @@ boundary is described in the
 - **One execution call site.** Every agent and runner action reaches the gate
   through `CodingActionBroker.executionDecision` in
   [`action-broker.ts`](../../apps/runner/src/agent-governance/action-broker.ts),
-  which calls the evaluator's `decide` with no advisor, so a discretionary
-  effect resolves to `REQUIRE_APPROVAL` and fails closed. When the advisor
-  service lands, that method is the only place to switch over.
+  which calls `AgentPolicyService.decide` on the evaluated descriptor. The
+  advisor is consulted only for a pending discretionary action and can never
+  lower a decision; without an available advisor the evaluator decides that
+  action alone and it fails closed. The decision is stored with the action, so its receipt names the
+  Decision Plane id when the advisor was consulted. Simulation keeps calling
+  `evaluate`, which never contacts the advisor.
 - **Ports.** `ActionBroker` (`CodingActionBroker`) and `ExecutionBackend`
   (`WorkspaceExecutionBackend`) are now implemented. `RuntimeAdapter` start and
   cancel are not: the Pi runtime declares the actions it can broker in a

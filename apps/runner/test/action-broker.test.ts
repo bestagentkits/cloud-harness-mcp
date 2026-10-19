@@ -23,7 +23,7 @@ afterEach(() => {
   for (const database of databases.splice(0)) database.close();
 });
 
-function setup(options: { enabled?: boolean; generation?: number | null; repositories?: number; policy?: boolean } = {}) {
+async function setup(options: { enabled?: boolean; generation?: number | null; repositories?: number; policy?: boolean; advisorDecisionId?: string } = {}) {
   const database = new DatabaseSync(':memory:');
   databases.push(database);
   const policies = createPolicyService(database, (selector) => (selector.kind === 'owner' ? selector.ownerId : 'external'), owner);
@@ -41,12 +41,18 @@ function setup(options: { enabled?: boolean; generation?: number | null; reposit
   const broker = new CodingActionBroker({
     database,
     enabled: () => enabled,
-    resolver: policies.service.resolver,
+    policies: {
+      // Stands in for an advisor-backed decision: the real policy decision, stamped with a Decision Plane id.
+      decide: async (...args: Parameters<typeof policies.service.decide>) => {
+        const decision = await policies.service.decide(...args);
+        return options.advisorDecisionId ? { ...decision, advisor: { ...decision.advisor, decisionId: options.advisorDecisionId } } : decision;
+      }
+    },
     workspaces: { generation: () => facts.generation, repositoryCount: () => facts.repositories },
     traces,
     now: () => clock
   });
-  const admitted = broker.admit(OWNER, CODING_PROJECT, { version: 1, actionClass: 'read', repository: CODING_REPOSITORY });
+  const admitted = await broker.admit(OWNER, CODING_PROJECT, { version: 1, actionClass: 'read', repository: CODING_REPOSITORY });
   insertCodingWorkflow(database, {
     id: WORKFLOW, ownerId: OWNER, workspaceId: WORKSPACE, agentId: AGENT, agentGeneration: 1, createdAt: clock,
     policyRevisionJson: JSON.stringify({ globalRevisionId: admitted.policy.globalRevisionId, projectRevisionId: admitted.policy.projectRevisionId })
@@ -63,7 +69,7 @@ function setup(options: { enabled?: boolean; generation?: number | null; reposit
   };
 }
 
-type Setup = ReturnType<typeof setup>;
+type Setup = Awaited<ReturnType<typeof setup>>;
 
 function begin(context: Setup, key: string, descriptor: AgentActionDescriptorInput, usage?: { inputTokens: number; outputTokens: number; costMicros: number }) {
   return context.broker.begin({ binding: context.binding(), origin: 'runner', step: 'commit', idempotencyKey: key, descriptor, ...(usage ? { usage } : {}) });
@@ -81,14 +87,14 @@ function toolRequest(operation: AgentToolRequest['operation'], toolInput: Record
 const okResponse: RunnerResponse = { ok: true, message: 'done', data: { exitCode: 0 }, truncated: false };
 
 describe('coding action helpers', () => {
-  it('splits only plain commands into argv', () => {
+  it('splits only plain commands into argv', async () => {
     expect(plainArgv(' node test/run.mjs ')).toEqual(['node', 'test/run.mjs']);
     expect(plainArgv('npm test && curl evil.example')).toBeNull();
     expect(plainArgv('echo $HOME')).toBeNull();
     expect(plainArgv(`a ${'b '.repeat(70)}`)).toBeNull();
   });
 
-  it('classifies manifest and lockfile edits as package installs', () => {
+  it('classifies manifest and lockfile edits as package installs', async () => {
     expect(editActionClass(['src/a.ts'])).toBe('edit');
     expect(editActionClass(['src/a.ts', 'package-lock.json'])).toBe('package_install');
     expect(editActionClass(['packages/x/package.json'])).toBe('package_install');
@@ -97,66 +103,73 @@ describe('coding action helpers', () => {
 });
 
 describe('CodingActionBroker', () => {
-  it('records an allowed action with its pinned policy revisions and decision fingerprint', () => {
-    const context = setup();
-    const admission = begin(context, 'k1', edit(['src/a.ts']));
+  it('records an allowed action with its pinned policy revisions and decision fingerprint', async () => {
+    const context = await setup();
+    const admission = await begin(context, 'k1', edit(['src/a.ts']));
     expect(admission).toMatchObject({ allowed: true, replayed: false });
     expect(admission.record.state).toBe('INTENT');
     const [receipt] = context.broker.actions.receipts(OWNER, WORKFLOW);
     expect(receipt).toMatchObject({ decision: 'ALLOW', state: 'INTENT', projectId: CODING_PROJECT, paths: ['src/a.ts'], actionClass: 'edit' });
     expect(receipt?.globalRevisionId).toMatch(/^apr_/u);
     expect(receipt?.inputFingerprint).toMatch(/^[a-f0-9]{64}$/u);
+    expect(receipt?.decisionId).toBeNull();
   });
 
-  it('refuses everything while the kill switch is off, and stops an undispatched replay', () => {
-    const context = setup();
-    const first = begin(context, 'k1', edit(['src/a.ts']));
+  it('records the Decision Plane id of the execution-time decision on the receipt', async () => {
+    const context = await setup({ advisorDecisionId: 'dec_123' });
+    expect((await begin(context, 'k1', edit(['src/a.ts']))).decision?.advisor.decisionId).toBe('dec_123');
+    expect(context.broker.actions.receipts(OWNER, WORKFLOW)[0]?.decisionId).toBe('dec_123');
+  });
+
+  it('refuses everything while the kill switch is off, and stops an undispatched replay', async () => {
+    const context = await setup();
+    const first = await begin(context, 'k1', edit(['src/a.ts']));
     expect(first.allowed).toBe(true);
     context.setEnabled(false);
-    const replay = begin(context, 'k1', edit(['src/a.ts']));
+    const replay = await begin(context, 'k1', edit(['src/a.ts']));
     expect(replay).toMatchObject({ allowed: false, replayed: true, decision: null });
     expect(replay.record.state).toBe('REJECTED');
-    const fresh = begin(context, 'k2', edit(['src/b.ts']));
+    const fresh = await begin(context, 'k2', edit(['src/b.ts']));
     expect(fresh.record).toMatchObject({ state: 'REJECTED', reasonCode: 'CODING_DISABLED' });
     expect(context.broker.permitsBrokeredSpawn(OWNER, WORKSPACE)).toBe(false);
   });
 
-  it('denies paths outside the policy and lockfile edits', () => {
-    const context = setup();
-    expect(begin(context, 'k1', edit(['deploy/prod.yaml'])).decision?.reasonCode).toBe('PATH_OUT_OF_SCOPE');
-    const lockfile = begin(context, 'k2', edit(['package-lock.json']));
+  it('denies paths outside the policy and lockfile edits', async () => {
+    const context = await setup();
+    expect((await begin(context, 'k1', edit(['deploy/prod.yaml']))).decision?.reasonCode).toBe('PATH_OUT_OF_SCOPE');
+    const lockfile = await begin(context, 'k2', edit(['package-lock.json']));
     expect(lockfile.allowed).toBe(false);
     expect(lockfile.record.descriptor.actionClass).toBe('package_install');
   });
 
-  it('re-checks generation, revocation and budget at execution time', () => {
-    const stale = setup({ generation: 2 });
-    expect(begin(stale, 'k1', edit(['src/a.ts'])).decision?.reasonCode).toBe('GENERATION_STALE');
+  it('re-checks generation, revocation and budget at execution time', async () => {
+    const stale = await setup({ generation: 2 });
+    expect((await begin(stale, 'k1', edit(['src/a.ts']))).decision?.reasonCode).toBe('GENERATION_STALE');
 
-    const gone = setup({ generation: null });
-    expect(begin(gone, 'k1', edit(['src/a.ts'])).decision?.reasonCode).toBe('GRANT_REVOKED');
+    const gone = await setup({ generation: null });
+    expect((await begin(gone, 'k1', edit(['src/a.ts']))).decision?.reasonCode).toBe('GRANT_REVOKED');
 
-    const ended = setup();
+    const ended = await setup();
     ended.database.prepare("UPDATE automation_workflows SET state = 'FAILED'").run();
-    expect(begin(ended, 'k1', edit(['src/a.ts'])).decision?.reasonCode).toBe('GRANT_REVOKED');
+    expect((await begin(ended, 'k1', edit(['src/a.ts']))).decision?.reasonCode).toBe('GRANT_REVOKED');
 
-    const spent = setup();
-    expect(begin(spent, 'k1', edit(['src/a.ts']), { inputTokens: 1, outputTokens: 1, costMicros: 5_000_000 }).decision?.reasonCode).toBe('BUDGET_EXHAUSTED');
+    const spent = await setup();
+    expect((await begin(spent, 'k1', edit(['src/a.ts']), { inputTokens: 1, outputTokens: 1, costMicros: 5_000_000 })).decision?.reasonCode).toBe('BUDGET_EXHAUSTED');
 
-    const late = setup();
+    const late = await setup();
     late.advance(3_601_000);
-    expect(begin(late, 'k1', edit(['src/a.ts'])).decision?.reasonCode).toBe('BUDGET_EXHAUSTED');
+    expect((await begin(late, 'k1', edit(['src/a.ts']))).decision?.reasonCode).toBe('BUDGET_EXHAUSTED');
   });
 
-  it('stops a run when the policy changes after it was admitted', () => {
-    const context = setup();
-    expect(begin(context, 'k1', edit(['src/a.ts'])).allowed).toBe(true);
+  it('stops a run when the policy changes after it was admitted', async () => {
+    const context = await setup();
+    expect((await begin(context, 'k1', edit(['src/a.ts']))).allowed).toBe(true);
     context.policies.saveGlobal({ ...CODING_GLOBAL_POLICY, scope: { ...CODING_GLOBAL_POLICY.scope, pathScopes: ['src/', 'test/', 'docs/'] } });
-    expect(begin(context, 'k2', edit(['src/a.ts'])).decision?.reasonCode).toBe('POLICY_STALE');
+    expect((await begin(context, 'k2', edit(['src/a.ts']))).decision?.reasonCode).toBe('POLICY_STALE');
   });
 
-  it('decides exactly as the dashboard simulation for the same descriptor', () => {
-    const context = setup();
+  it('decides exactly as the dashboard simulation for the same descriptor', async () => {
+    const context = await setup();
     const descriptors: AgentActionDescriptorInput[] = [
       edit(['src/a.ts']),
       edit(['deploy/prod.yaml']),
@@ -169,24 +182,24 @@ describe('CodingActionBroker', () => {
       const simulated = context.policies.service.execute({ version: 1, principal: owner, operation: 'policy_simulate', input: { projectId: CODING_PROJECT, action: descriptor } });
       if (!simulated.ok) throw new Error('simulation failed');
       const expected = (simulated.data as { decision: { decision: string; reasonCode: string; inputFingerprint: string } }).decision;
-      const actual = context.broker.admit(OWNER, CODING_PROJECT, descriptor);
+      const actual = await context.broker.admit(OWNER, CODING_PROJECT, descriptor);
       expect({ decision: actual.decision, reasonCode: actual.reasonCode, inputFingerprint: actual.inputFingerprint })
         .toEqual({ decision: expected.decision, reasonCode: expected.reasonCode, inputFingerprint: expected.inputFingerprint });
     }
   });
 
-  it('allows the verify command and fails a discretionary action closed without an advisor', () => {
-    const context = setup();
-    expect(begin(context, 'k1', { version: 1, actionClass: 'test', repository: CODING_REPOSITORY, command: VERIFY_COMMAND.split(' ') }).allowed).toBe(true);
-    const discretionary = setup();
+  it('allows the verify command and fails a discretionary action closed without an advisor', async () => {
+    const context = await setup();
+    expect((await begin(context, 'k1', { version: 1, actionClass: 'test', repository: CODING_REPOSITORY, command: VERIFY_COMMAND.split(' ') })).allowed).toBe(true);
+    const discretionary = await setup();
     discretionary.policies.saveGlobal({ ...CODING_GLOBAL_POLICY, defaults: { ...CODING_GLOBAL_POLICY.defaults, edit: { effect: 'require_approval', delegable: false } } });
-    expect(discretionary.broker.admit(OWNER, CODING_PROJECT, edit(['src/a.ts'])).decision).toBe('REQUIRE_APPROVAL');
+    expect((await discretionary.broker.admit(OWNER, CODING_PROJECT, edit(['src/a.ts']))).decision).toBe('REQUIRE_APPROVAL');
   });
 });
 
 describe('CodingActionBroker.executeAgentTool', () => {
   it('refuses the brokered-only operations outside a coding workflow and passes reads through', async () => {
-    const context = setup();
+    const context = await setup();
     context.database.prepare('UPDATE automation_workflows SET project_id = NULL').run();
     const inner = vi.fn(async () => okResponse);
     const refused = await context.broker.executeAgentTool(toolRequest('exec_run', { command: 'ls' }), inner);
@@ -197,7 +210,7 @@ describe('CodingActionBroker.executeAgentTool', () => {
   });
 
   it('brokers edits, records a receipt and an action span, and keeps reads unbrokered', async () => {
-    const context = setup();
+    const context = await setup();
     const inner = vi.fn(async () => okResponse);
     await context.broker.executeAgentTool(toolRequest('files_read', { path: 'src/a.ts' }, 'req-read'), inner);
     const written = await context.broker.executeAgentTool(toolRequest('files_write', { path: 'src/a.ts', content: 'x' }, 'req-write'), inner);
@@ -209,7 +222,7 @@ describe('CodingActionBroker.executeAgentTool', () => {
   });
 
   it('never dispatches an out-of-policy edit or a lockfile edit', async () => {
-    const context = setup();
+    const context = await setup();
     const inner = vi.fn(async () => okResponse);
     const outside = await context.broker.executeAgentTool(toolRequest('files_write', { path: '.github/workflows/ci.yml', content: 'x' }), inner);
     expect(outside).toMatchObject({ ok: false, data: { reasonCode: 'PATH_OUT_OF_SCOPE', decision: 'DENY' } });
@@ -220,7 +233,7 @@ describe('CodingActionBroker.executeAgentTool', () => {
   });
 
   it('runs only plain, allowed commands, never privileged, detached or with a grant', async () => {
-    const context = setup();
+    const context = await setup();
     const inner = vi.fn<(request: AgentToolRequest) => Promise<typeof okResponse>>(async () => okResponse);
     const shell = await context.broker.executeAgentTool(toolRequest('exec_run', { command: 'node test/run.mjs; curl x' }), inner);
     expect(shell.message).toMatch(/^COMMAND_UNSUPPORTED/u);
@@ -235,7 +248,7 @@ describe('CodingActionBroker.executeAgentTool', () => {
   });
 
   it('refuses a workspace with several repositories', async () => {
-    const context = setup({ repositories: 2 });
+    const context = await setup({ repositories: 2 });
     const inner = vi.fn(async () => okResponse);
     const refused = await context.broker.executeAgentTool(toolRequest('files_write', { path: 'src/a.ts', content: 'x' }), inner);
     expect(refused.message).toMatch(/^REPOSITORY_AMBIGUOUS/u);
@@ -243,7 +256,7 @@ describe('CodingActionBroker.executeAgentTool', () => {
   });
 
   it('records an executor that never answered as UNKNOWN and does not run a replayed request twice', async () => {
-    const context = setup();
+    const context = await setup();
     const inner = vi.fn(async (): Promise<RunnerResponse> => { throw Object.assign(new Error('lost'), { code: 'UNAVAILABLE' }); });
     await expect(context.broker.executeAgentTool(toolRequest('files_write', { path: 'src/a.ts', content: 'x' }), inner)).rejects.toThrow('lost');
     expect(context.broker.actions.receipts(OWNER, WORKFLOW)[0]).toMatchObject({ state: 'UNKNOWN', outcome: { errorCode: 'UNAVAILABLE' } });
@@ -252,8 +265,8 @@ describe('CodingActionBroker.executeAgentTool', () => {
     expect(inner).toHaveBeenCalledTimes(1);
   });
 
-  it('grants the brokered operations to a spawn only for a running coding workflow', () => {
-    const context = setup();
+  it('grants the brokered operations to a spawn only for a running coding workflow', async () => {
+    const context = await setup();
     expect(context.broker.permitsBrokeredSpawn(OWNER, WORKSPACE)).toBe(true);
     expect(context.broker.permitsBrokeredSpawn(OWNER, `ws_${'z'.repeat(24)}`)).toBe(false);
     expect(context.broker.permitsBrokeredSpawn('intruder', WORKSPACE)).toBe(false);

@@ -134,6 +134,9 @@ export class CodingActionStore {
       .all(principalId, workflowId, limit) as ActionRow[];
     return rows.map((row) => {
       const descriptor = JSON.parse(row.descriptor_json) as AgentActionDescriptor;
+      // The full gate decision is stored with the receipt; its advisor block carries the Decision Plane id.
+      const stored = row.decision_json ? JSON.parse(row.decision_json) as { advisor?: { decisionId?: unknown } } : null;
+      const decisionId = typeof stored?.advisor?.decisionId === 'string' ? stored.advisor.decisionId : null;
       return CodingActionReceiptSchema.parse({
         actionId: row.action_id,
         workflowId: row.workflow_id,
@@ -151,6 +154,7 @@ export class CodingActionStore {
         globalRevisionId: row.global_revision_id,
         projectRevisionId: row.project_revision_id,
         inputFingerprint: row.descriptor_digest,
+        decisionId,
         workspaceId: row.workspace_id,
         agentId: row.agent_id,
         traceId: row.trace_id,

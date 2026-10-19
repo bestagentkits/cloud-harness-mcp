@@ -130,8 +130,8 @@ export class CodingWorkflowEngine {
    * Admits a coding workflow: the rule's repository must be readable under the owner's policy for the
    * rule's project. The revisions it was admitted under are pinned, so a later policy change stops it.
    */
-  admit(ownerId: string, projectId: string, repository: string): { ok: true; fields: Record<string, string | number> } | { ok: false; code: string } {
-    const decision = this.broker.admit(ownerId, projectId, { version: 1, actionClass: 'read', repository });
+  async admit(ownerId: string, projectId: string, repository: string): Promise<{ ok: true; fields: Record<string, string | number> } | { ok: false; code: string }> {
+    const decision = await this.broker.admit(ownerId, projectId, { version: 1, actionClass: 'read', repository });
     if (decision.decision !== 'ALLOW') return { ok: false, code: refusalCode({ decision }) };
     return {
       ok: true,
@@ -185,7 +185,7 @@ export class CodingWorkflowEngine {
     if (lockfile.packages.length === 0) return { ok: true };
     const records: CodingActionRecord[] = [];
     for (const locked of lockfile.packages) {
-      const admission = this.broker.begin({
+      const admission = await this.broker.begin({
         binding, origin: 'runner', step: 'install', idempotencyKey: `automation:${row.id}:install:${locked.name}`,
         descriptor: { version: 1, actionClass: 'package_install', repository: binding.repository, package: { ecosystem: 'npm', name: locked.name, registry: locked.registryHost } }
       });
@@ -252,7 +252,7 @@ export class CodingWorkflowEngine {
       this.host.fail(row.id, workspaceId ? 'COMMAND_UNSUPPORTED' : 'WORKSPACE_LOST');
       return;
     }
-    const admission = this.gate(row, binding, 'verify', `automation:${row.id}:verify`, { version: 1, actionClass: 'test', repository: binding.repository, command: argv });
+    const admission = await this.gate(row, binding, 'verify', `automation:${row.id}:verify`, { version: 1, actionClass: 'test', repository: binding.repository, command: argv });
     if (!admission) return;
     const { record } = admission;
     if (record.state === 'APPLIED') return this.phase(row, 'COMMIT');
@@ -284,7 +284,7 @@ export class CodingWorkflowEngine {
 
   /** Nothing is committed when verification fails; the diff is kept as an artifact for the owner instead. */
   private async verifyFailed(row: CodingWorkflowRow, binding: CodingBinding, workspaceId: string): Promise<void> {
-    const admission = this.broker.begin({
+    const admission = await this.broker.begin({
       binding, origin: 'runner', step: 'diff_artifact', idempotencyKey: `automation:${row.id}:diff`,
       descriptor: { version: 1, actionClass: 'read', repository: binding.repository }
     });
@@ -338,14 +338,14 @@ export class CodingWorkflowEngine {
       }
       for (let index = 0; index * AGENT_POLICY_LIMITS.maxPathsPerAction < paths.length; index += 1) {
         const chunk = paths.slice(index * AGENT_POLICY_LIMITS.maxPathsPerAction, (index + 1) * AGENT_POLICY_LIMITS.maxPathsPerAction);
-        const check = this.gate(row, binding, 'commit', `${key}:paths:${index}`, {
+        const check = await this.gate(row, binding, 'commit', `${key}:paths:${index}`, {
           version: 1, actionClass: editActionClass(chunk), repository: binding.repository, branch, paths: chunk
         });
         if (!check) return;
         if (check.record.state === 'INTENT') this.broker.settle(binding, check.record, 'APPLIED', { branch }, this.host.now());
       }
     }
-    const admission = this.gate(row, binding, 'commit', key, { version: 1, actionClass: 'vcs_local', repository: binding.repository, branch });
+    const admission = await this.gate(row, binding, 'commit', key, { version: 1, actionClass: 'vcs_local', repository: binding.repository, branch });
     if (!admission) return;
     const { record } = admission;
     if (record.state === 'APPLIED' && record.outcome.commitSha) return this.phase(row, 'PUSH', { commit_sha: record.outcome.commitSha });
@@ -400,7 +400,7 @@ export class CodingWorkflowEngine {
       return;
     }
     const key = `automation:${row.id}:push`;
-    const admission = this.gate(row, binding, 'push', key, { version: 1, actionClass: 'publish_branch', repository: binding.repository, branch });
+    const admission = await this.gate(row, binding, 'push', key, { version: 1, actionClass: 'publish_branch', repository: binding.repository, branch });
     if (!admission) return;
     const { record } = admission;
     if (record.state === 'APPLIED') return this.phase(row, 'PR');
@@ -446,7 +446,7 @@ export class CodingWorkflowEngine {
       this.host.fail(row.id, 'WORKSPACE_LOST');
       return;
     }
-    const admission = this.gate(row, binding, 'open_pr', `automation:${row.id}:pr`, { version: 1, actionClass: 'open_pr', repository: binding.repository, branch });
+    const admission = await this.gate(row, binding, 'open_pr', `automation:${row.id}:pr`, { version: 1, actionClass: 'open_pr', repository: binding.repository, branch });
     if (!admission) return;
     const { record } = admission;
     if (record.state === 'APPLIED' && record.outcome.prNumber && record.outcome.prUrl) return this.done(row, record.outcome.prNumber, record.outcome.prUrl);
@@ -490,8 +490,8 @@ export class CodingWorkflowEngine {
   // ---------------------------------------------------------------- helpers
 
   /** Records and decides a step; on a refusal the workflow fails and nothing is dispatched. */
-  private gate(row: CodingWorkflowRow, binding: CodingBinding, step: CodingActionStep, idempotencyKey: string, descriptor: AgentActionDescriptorInput): BrokeredAdmission | null {
-    const admission = this.broker.begin({ binding, origin: 'runner', step, idempotencyKey, descriptor });
+  private async gate(row: CodingWorkflowRow, binding: CodingBinding, step: CodingActionStep, idempotencyKey: string, descriptor: AgentActionDescriptorInput): Promise<BrokeredAdmission | null> {
+    const admission = await this.broker.begin({ binding, origin: 'runner', step, idempotencyKey, descriptor });
     if (admission.allowed) return admission;
     this.broker.traceRefusal(binding, admission.record);
     this.host.fail(row.id, refusalCode(admission));

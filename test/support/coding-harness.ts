@@ -229,7 +229,7 @@ export async function createCodingHarness(options: CodingHarnessOptions = {}) {
   const newBroker = () => new CodingActionBroker({
     database: store.database,
     enabled: () => codingEnabled,
-    resolver: policies.service.resolver,
+    policies: policies.service,
     workspaces: {
       generation: (workspaceId) => {
         const record = store.byId(workspaceId);

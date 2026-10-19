@@ -19,9 +19,9 @@ import {
 } from '@cloud-harness/contracts';
 import type { AgentActionTraceSink } from '../agent-trace-recorder.js';
 import { traceInputDigest } from '../agent-trace-recorder.js';
-import { PURE_GATE_EVALUATOR } from './gate-evaluator.js';
 import { CodingActionStore, type CodingActionRecord } from './action-store.js';
-import { AGENT_GOVERNANCE_PORTS_VERSION, type ActionBroker, type GateEvaluator, type PolicyResolver } from './ports.js';
+import type { AgentPolicyService } from './policy-service.js';
+import { AGENT_GOVERNANCE_PORTS_VERSION, type ActionBroker } from './ports.js';
 
 /** Token shape the policy command scope uses; anything else is shell syntax the gate cannot analyze. */
 const PLAIN_COMMAND = /^[A-Za-z0-9._:@/=+-]+(?: [A-Za-z0-9._:@/=+-]+)*$/u;
@@ -76,8 +76,8 @@ export type CodingActionBrokerOptions = {
   database: DatabaseSync;
   /** `AGENT_CODING_ENABLED`, read on every action so turning it off stops running workflows. */
   enabled: () => boolean;
-  resolver: PolicyResolver;
-  evaluator?: GateEvaluator | undefined;
+  /** The execution-time gate: the policy service's `decide`, which consults the advisor only for a pending discretionary action. */
+  policies: Pick<AgentPolicyService, 'decide'>;
   workspaces: CodingWorkspaceFacts;
   traces?: AgentActionTraceSink | undefined;
   now?: () => number;
@@ -104,6 +104,8 @@ export type BrokeredStep = {
   descriptor: AgentActionDescriptorInput;
   usage?: CodingUsage | undefined;
   agent?: { agentId: string; generation: number; requestId: string } | undefined;
+  /** Aborts an advisor call the gate makes for this step. */
+  signal?: AbortSignal | undefined;
 };
 
 export type BrokeredAdmission = {
@@ -163,8 +165,7 @@ export class CodingActionBroker implements ActionBroker {
   readonly actions: CodingActionStore;
   private readonly database: DatabaseSync;
   private readonly enabled: () => boolean;
-  private readonly resolver: PolicyResolver;
-  private readonly evaluator: GateEvaluator;
+  private readonly policies: Pick<AgentPolicyService, 'decide'>;
   readonly workspaces: CodingWorkspaceFacts;
   private readonly traces: AgentActionTraceSink | undefined;
   private readonly now: () => number;
@@ -172,8 +173,7 @@ export class CodingActionBroker implements ActionBroker {
   constructor(options: CodingActionBrokerOptions) {
     this.database = options.database;
     this.enabled = options.enabled;
-    this.resolver = options.resolver;
-    this.evaluator = options.evaluator ?? PURE_GATE_EVALUATOR;
+    this.policies = options.policies;
     this.workspaces = options.workspaces;
     this.traces = options.traces;
     this.now = options.now ?? Date.now;
@@ -186,25 +186,22 @@ export class CodingActionBroker implements ActionBroker {
 
   /** The ActionBroker port: one decision with no receipt, for callers that hold their own context. */
   authorize(request: { principalId: string; projectId: string | null; runId: string; descriptor: AgentActionDescriptor; context: GateContext }): Promise<GateDecision> {
-    return Promise.resolve(this.executionDecision(request.principalId, request.projectId, request.descriptor, request.context));
+    return this.executionDecision(request.principalId, request.projectId, request.descriptor, request.context);
   }
 
   /** The policy decision a run is admitted under; the caller pins its revisions on the workflow. */
-  admit(principalId: string, projectId: string, descriptor: AgentActionDescriptorInput): GateDecision {
+  admit(principalId: string, projectId: string, descriptor: AgentActionDescriptorInput): Promise<GateDecision> {
     return this.executionDecision(principalId, projectId, AgentActionDescriptorSchema.parse(descriptor), undefined);
   }
 
   /**
-   * The single execution-time gate call every brokered action goes through. It runs the evaluator's
-   * `decide` with no advisor, so a discretionary action resolves to REQUIRE_APPROVAL and fails closed.
+   * The single execution-time gate call every brokered action goes through: the policy service's
+   * `decide` on the evaluated descriptor. It consults the advisor only for a pending discretionary
+   * action and takes the policy fallback when the advisor fails, so nothing here can lower a decision.
+   * The stored decision carries the advisor's Decision Plane id, which the receipt reports.
    */
-  private executionDecision(principalId: string, projectId: string | null, descriptor: AgentActionDescriptor, context: GateContext | undefined): GateDecision {
-    return this.evaluator.decide({
-      descriptor,
-      snapshot: this.resolver.resolve(principalId, projectId),
-      ...(context ? { context } : {}),
-      advisorAvailable: false
-    });
+  private executionDecision(principalId: string, projectId: string | null, descriptor: AgentActionDescriptor, context: GateContext | undefined, signal?: AbortSignal): Promise<GateDecision> {
+    return this.policies.decide(principalId, projectId, descriptor, context, signal ? { signal } : {});
   }
 
   /** The automation workflow that holds this workspace, coding or not; used to label agent traces. */
@@ -243,7 +240,7 @@ export class CodingActionBroker implements ActionBroker {
    * gate again, so a step that has not finished cannot outlive a revocation or a policy change; an
    * undispatched replay that is now refused is moved to REJECTED.
    */
-  begin(step: BrokeredStep): BrokeredAdmission {
+  async begin(step: BrokeredStep): Promise<BrokeredAdmission> {
     const descriptor = AgentActionDescriptorSchema.parse(step.descriptor);
     const base = {
       principalId: step.binding.principalId, workflowId: step.binding.workflowId, workspaceId: step.binding.workspaceId,
@@ -255,7 +252,7 @@ export class CodingActionBroker implements ActionBroker {
       if (recorded.replayed) this.actions.transition(recorded.record.actionId, ['INTENT'], 'REJECTED', { errorCode: 'CODING_DISABLED' });
       return { record: this.actions.get(recorded.record.actionId) ?? recorded.record, replayed: recorded.replayed, decision: null, allowed: false };
     }
-    const decision = this.decide(step.binding, descriptor, step.usage ?? step.binding.usage);
+    const decision = await this.decide(step.binding, descriptor, step.usage ?? step.binding.usage, step.signal);
     const allowed = decision.decision === 'ALLOW';
     const recorded = this.actions.record({ ...base, decision, state: allowed ? 'INTENT' : 'REJECTED' });
     if (recorded.replayed && !allowed) {
@@ -345,7 +342,7 @@ export class CodingActionBroker implements ActionBroker {
       return refusal('REPOSITORY_AMBIGUOUS', 'the coding workspace holds more than one repository', { actionId: record.actionId });
     }
     const startedAt = this.now();
-    const admission = this.begin({ ...base, step, descriptor });
+    const admission = await this.begin({ ...base, step, descriptor, signal: request.signal });
     if (!admission.allowed) {
       this.traceRefusal(binding, admission.record, request.requestId);
       const code = admission.decision === null ? 'CODING_DISABLED'
@@ -373,8 +370,8 @@ export class CodingActionBroker implements ActionBroker {
     }
   }
 
-  private decide(binding: CodingBinding, descriptor: AgentActionDescriptor, usage: CodingUsage | null): GateDecision {
-    return this.executionDecision(binding.principalId, binding.projectId, descriptor, this.context(binding, usage));
+  private decide(binding: CodingBinding, descriptor: AgentActionDescriptor, usage: CodingUsage | null, signal: AbortSignal | undefined): Promise<GateDecision> {
+    return this.executionDecision(binding.principalId, binding.projectId, descriptor, this.context(binding, usage), signal);
   }
 
   /** Runtime facts the gate re-checks: usage, pinned revisions, workspace generation and revocation. */

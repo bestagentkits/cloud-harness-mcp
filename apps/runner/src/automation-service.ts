@@ -869,7 +869,7 @@ export class AutomationService {
       }
       if (row.project_id === null) {
         // Repository and project come from the owner's rule, never from the webhook payload.
-        const admitted = this.coding.admit(row.owner_id, coding.projectId, snapshot.match.repository);
+        const admitted = await this.coding.admit(row.owner_id, coding.projectId, snapshot.match.repository);
         if (!admitted.ok) {
           this.finish(row.id, ['STARTING'], 'FAILED', admitted.code, 'system', {});
           return;

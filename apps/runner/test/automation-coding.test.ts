@@ -25,16 +25,16 @@ afterEach(() => {
 
 const text = (output: string): AutomationOperationResult => ({ ok: true, data: { output } });
 
-function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; install?: CodingInstallPort } = {}) {
+async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; install?: CodingInstallPort } = {}) {
   const database = new DatabaseSync(':memory:');
   databases.push(database);
   const policies = createPolicyService(database, (selector) => (selector.kind === 'owner' ? selector.ownerId : 'external'), owner);
   policies.saveGlobal(options.policy ?? CODING_GLOBAL_POLICY);
   const broker = new CodingActionBroker({
-    database, enabled: () => true, resolver: policies.service.resolver,
+    database, enabled: () => true, policies: policies.service,
     workspaces: { generation: () => 1, repositoryCount: () => 1 }
   });
-  const admitted = broker.admit(OWNER, CODING_PROJECT, { version: 1, actionClass: 'read', repository: CODING_REPOSITORY });
+  const admitted = await broker.admit(OWNER, CODING_PROJECT, { version: 1, actionClass: 'read', repository: CODING_REPOSITORY });
   insertCodingWorkflow(database, {
     id: WORKFLOW, ownerId: OWNER, workspaceId: WORKSPACE, codingPhase: options.phase ?? 'VERIFY', baseOid: BASE,
     policyRevisionJson: JSON.stringify({ globalRevisionId: admitted.policy.globalRevisionId, projectRevisionId: admitted.policy.projectRevisionId })
@@ -84,19 +84,19 @@ function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; instal
 }
 
 describe('coding workflow helpers', () => {
-  it('derives the branch from the issue number and workflow id only', () => {
+  it('derives the branch from the issue number and workflow id only', async () => {
     expect(BRANCH).toBe('agent/7-eeeeeeee');
     expect(codingBranch(12, `wfl_${'0123456789abcdef'.repeat(2)}`)).toBe('agent/12-01234567');
   });
 
-  it('reads changed paths from short status output, renames included', () => {
+  it('reads changed paths from short status output, renames included', async () => {
     expect(changedPaths('## main\n M src/a.ts\nR  old.ts -> src/new.ts\n?? "src/with space.ts"\n')).toEqual(['old.ts', 'src/a.ts', 'src/new.ts', 'src/with space.ts']);
   });
 });
 
 describe('CodingWorkflowEngine', () => {
   it('verifies, commits, pushes a new agent branch and opens a pull request against the rule base', async () => {
-    const context = setup();
+    const context = await setup();
     await context.run();
     expect(context.outcome).toMatchObject({ state: 'COMPLETED', fields: { coding_phase: 'DONE', pr_number: 12 } });
     expect(context.calls.find((call) => call.operation === 'git_commit')?.input).toMatchObject({ expectedHeadOid: BASE, idempotencyKey: `automation:${WORKFLOW}:commit` });
@@ -111,7 +111,7 @@ describe('CodingWorkflowEngine', () => {
   });
 
   it('keeps the diff as an artifact and commits nothing when verification fails', async () => {
-    const context = setup();
+    const context = await setup();
     context.handlers.exec_run = () => ({ ok: true, data: { exitCode: 1 } });
     await context.run();
     expect(context.outcome).toMatchObject({ state: 'FAILED', code: 'CODING_VERIFY_FAILED' });
@@ -120,7 +120,7 @@ describe('CodingWorkflowEngine', () => {
   });
 
   it('retries verification after a transient executor failure', async () => {
-    const context = setup();
+    const context = await setup();
     context.handlers.exec_run = vi.fn()
       .mockResolvedValueOnce({ ok: false, error: { code: 'UNAVAILABLE', retryable: true } })
       .mockResolvedValue({ ok: true, data: { exitCode: 0 } });
@@ -132,18 +132,18 @@ describe('CodingWorkflowEngine', () => {
   });
 
   it('refuses to commit a path outside the policy or nothing at all', async () => {
-    const outside = setup({ phase: 'COMMIT' });
+    const outside = await setup({ phase: 'COMMIT' });
     outside.handlers.git_status = () => text('## main\n M src/a.ts\n M .github/workflows/ci.yml\n');
     await outside.run();
     expect(outside.outcome.code).toBe('ACTION_DENIED:PATH_OUT_OF_SCOPE');
     expect(outside.count('git_add') + outside.count('git_commit')).toBe(0);
 
-    const empty = setup({ phase: 'COMMIT' });
+    const empty = await setup({ phase: 'COMMIT' });
     empty.handlers.git_status = () => text('## main\n');
     await empty.run();
     expect(empty.outcome.code).toBe('CODING_NO_CHANGES');
 
-    const lockfile = setup({ phase: 'COMMIT' });
+    const lockfile = await setup({ phase: 'COMMIT' });
     lockfile.handlers.git_status = () => text('## main\n M src/a.ts\n M package-lock.json\n');
     await lockfile.run();
     expect(lockfile.outcome.code).toMatch(/^ACTION_DENIED:/u);
@@ -151,14 +151,14 @@ describe('CodingWorkflowEngine', () => {
   });
 
   it('recognises its own earlier commit when the commit answer was lost', async () => {
-    const context = setup({ phase: 'COMMIT' });
+    const context = await setup({ phase: 'COMMIT' });
     context.handlers.git_commit = () => ({ ok: false, error: { code: 'STALE_HEAD' } });
     await context.engine.advance(context.row());
     expect(context.row()).toMatchObject({ coding_phase: 'PUSH', commit_sha: COMMIT });
   });
 
   it('reconciles a push whose answer was lost by reading the remote branch', async () => {
-    const context = setup({ phase: 'COMMIT' });
+    const context = await setup({ phase: 'COMMIT' });
     await context.engine.advance(context.row());
     context.handlers.git_push = () => ({ ok: false, error: { code: 'TIMEOUT', retryable: true } });
     context.handlers.github_read = (input) => (input.action === 'ref_get' ? text(JSON.stringify({ exists: true, oid: COMMIT })) : text('[]'));
@@ -168,7 +168,7 @@ describe('CodingWorkflowEngine', () => {
   });
 
   it('blocks with EFFECT_UNKNOWN when the remote cannot be read after an ambiguous push', async () => {
-    const context = setup({ phase: 'COMMIT' });
+    const context = await setup({ phase: 'COMMIT' });
     await context.engine.advance(context.row());
     context.handlers.git_push = () => ({ ok: false, error: { code: 'TIMEOUT', retryable: true } });
     context.handlers.github_read = () => ({ ok: false, error: { code: 'UNAVAILABLE', retryable: true } });
@@ -179,7 +179,7 @@ describe('CodingWorkflowEngine', () => {
   });
 
   it('never overwrites a branch that holds another commit, and retries a push proven absent', async () => {
-    const taken = setup({ phase: 'COMMIT' });
+    const taken = await setup({ phase: 'COMMIT' });
     await taken.engine.advance(taken.row());
     taken.handlers.git_push = () => ({ ok: false, error: { code: 'CONFLICT' } });
     taken.handlers.github_read = () => text(JSON.stringify({ exists: true, oid: 'f'.repeat(40) }));
@@ -187,7 +187,7 @@ describe('CodingWorkflowEngine', () => {
     expect(taken.outcome.code).toBe('CODING_PUBLISH_FAILED');
     expect(taken.receipts().find((receipt) => receipt.step === 'push')?.outcome.errorCode).toBe('BRANCH_EXISTS');
 
-    const absent = setup({ phase: 'COMMIT' });
+    const absent = await setup({ phase: 'COMMIT' });
     await absent.engine.advance(absent.row());
     absent.handlers.git_push = vi.fn()
       .mockResolvedValueOnce({ ok: false, error: { code: 'GITHUB_RATE_LIMITED', retryable: true } })
@@ -199,7 +199,7 @@ describe('CodingWorkflowEngine', () => {
   });
 
   it('adopts an existing pull request for the branch instead of opening a second one', async () => {
-    const context = setup({ phase: 'COMMIT' });
+    const context = await setup({ phase: 'COMMIT' });
     await context.engine.advance(context.row());
     await context.engine.advance(context.row());
     context.handlers.github_read = () => text(JSON.stringify([{ number: 9, headRefName: BRANCH, url: 'https://github.com/acme/widgets/pull/9' }]));
@@ -209,7 +209,7 @@ describe('CodingWorkflowEngine', () => {
   });
 
   it('blocks when a pull request may exist but the list cannot be read', async () => {
-    const context = setup({ phase: 'COMMIT' });
+    const context = await setup({ phase: 'COMMIT' });
     await context.engine.advance(context.row());
     await context.engine.advance(context.row());
     context.handlers.github_action = () => ({ ok: false, error: { code: 'TIMEOUT', retryable: true } });
@@ -219,7 +219,7 @@ describe('CodingWorkflowEngine', () => {
   });
 
   it('fails closed when publishing needs approval, with no effect', async () => {
-    const context = setup({ phase: 'COMMIT', policy: { ...CODING_GLOBAL_POLICY, defaults: { ...CODING_GLOBAL_POLICY.defaults, publish_branch: { effect: 'require_approval', delegable: false } } } });
+    const context = await setup({ phase: 'COMMIT', policy: { ...CODING_GLOBAL_POLICY, defaults: { ...CODING_GLOBAL_POLICY.defaults, publish_branch: { effect: 'require_approval', delegable: false } } } });
     await context.run();
     expect(context.outcome.code).toMatch(/^ACTION_REQUIRES_APPROVAL:/u);
     expect(context.count('git_push')).toBe(0);
@@ -244,17 +244,17 @@ describe('CodingWorkflowEngine.installDependencies', () => {
     scope: { ...CODING_GLOBAL_POLICY.scope, packages: ['npm:left-pad'], registries: ['registry.npmjs.org'] }
   };
 
-  function withLockfile(context: ReturnType<typeof setup>) {
+  function withLockfile(context: Awaited<ReturnType<typeof setup>>) {
     context.handlers.files_list = () => ({ ok: true, data: { entries: [{ name: 'package-lock.json', type: 'file' }] } });
     context.handlers.files_read = () => ({ ok: true, data: { content: lock, totalBytes: lock.length } });
   }
 
   it('does nothing while the install flag is off or without a lockfile', async () => {
     const run = vi.fn();
-    const off = setup({ install: { enabled: () => false, registry, run } });
+    const off = await setup({ install: { enabled: () => false, registry, run } });
     withLockfile(off);
     expect(await off.engine.installDependencies(off.row(), WORKSPACE)).toEqual({ ok: true });
-    const none = setup({ install: { enabled: () => true, registry, run } });
+    const none = await setup({ install: { enabled: () => true, registry, run } });
     none.handlers.files_list = () => ({ ok: true, data: { entries: [{ name: 'src', type: 'directory' }] } });
     expect(await none.engine.installDependencies(none.row(), WORKSPACE)).toEqual({ ok: true });
     expect(run).not.toHaveBeenCalled();
@@ -262,7 +262,7 @@ describe('CodingWorkflowEngine.installDependencies', () => {
 
   it('denies every package by default before anything is fetched', async () => {
     const run = vi.fn();
-    const context = setup({ install: { enabled: () => true, registry, run } });
+    const context = await setup({ install: { enabled: () => true, registry, run } });
     withLockfile(context);
     const result = await context.engine.installDependencies(context.row(), WORKSPACE);
     expect(result).toMatchObject({ ok: false, retry: false });
@@ -272,7 +272,7 @@ describe('CodingWorkflowEngine.installDependencies', () => {
 
   it('refuses a lockfile that fails supply-chain admission', async () => {
     const run = vi.fn();
-    const context = setup({ policy: installPolicy, install: { enabled: () => true, registry, run } });
+    const context = await setup({ policy: installPolicy, install: { enabled: () => true, registry, run } });
     withLockfile(context);
     context.handlers.files_read = () => ({ ok: true, data: { content: lock.replace(registry, 'https://evil.example.com/'), totalBytes: lock.length } });
     expect(await context.engine.installDependencies(context.row(), WORKSPACE)).toEqual({ ok: false, code: 'LOCKFILE_REJECTED', retry: false });
@@ -281,7 +281,7 @@ describe('CodingWorkflowEngine.installDependencies', () => {
 
   it('installs once when the policy allows every locked package, and a replay does not install again', async () => {
     const run = vi.fn(async () => ({ ok: true as const, exitCode: 0 as const }));
-    const context = setup({ policy: installPolicy, install: { enabled: () => true, registry, run } });
+    const context = await setup({ policy: installPolicy, install: { enabled: () => true, registry, run } });
     withLockfile(context);
     expect(await context.engine.installDependencies(context.row(), WORKSPACE)).toEqual({ ok: true });
     expect(await context.engine.installDependencies(context.row(), WORKSPACE)).toEqual({ ok: true });
@@ -291,7 +291,7 @@ describe('CodingWorkflowEngine.installDependencies', () => {
 
   it('fails closed when the dependency egress attestation fails', async () => {
     const run = vi.fn(async () => { throw Object.assign(new Error('no attestation'), { code: 'DEPENDENCY_EGRESS_UNAVAILABLE' }); });
-    const context = setup({ policy: installPolicy, install: { enabled: () => true, registry, run } });
+    const context = await setup({ policy: installPolicy, install: { enabled: () => true, registry, run } });
     withLockfile(context);
     expect(await context.engine.installDependencies(context.row(), WORKSPACE)).toEqual({ ok: false, code: 'DEPENDENCY_EGRESS_UNAVAILABLE', retry: false });
     expect(context.receipts()[0]).toMatchObject({ state: 'REJECTED', outcome: { errorCode: 'DEPENDENCY_EGRESS_UNAVAILABLE' } });

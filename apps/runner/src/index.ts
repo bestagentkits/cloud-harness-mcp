@@ -107,7 +107,7 @@ const agentPolicies = new AgentPolicyService({
 const codingBroker = new CodingActionBroker({
   database: store.database,
   enabled: () => config.agentCodingEnabled,
-  resolver: agentPolicies.resolver,
+  policies: agentPolicies,
   workspaces: service.codingWorkspaceFacts(),
   traces: service.actionTraces
 });

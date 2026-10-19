@@ -108,6 +108,8 @@ export const CodingActionReceiptSchema = z.object({
   projectRevisionId: AgentPolicyRevisionIdSchema.nullable(),
   /** sha256 of the canonical descriptor the gate decided. */
   inputFingerprint: z.string().regex(/^[a-f0-9]{64}$/u).nullable(),
+  /** The Decision Plane evaluation id when the gate consulted the advisor for this action; `null` otherwise. */
+  decisionId: z.string().max(200).nullable().default(null),
   workspaceId: z.string().nullable(),
   agentId: z.string().nullable(),
   traceId: z.string().nullable(),
