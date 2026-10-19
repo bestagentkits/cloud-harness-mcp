@@ -26,10 +26,10 @@ describe('state schema v14', () => {
   it('adds the catalog snapshot table idempotently', () => {
     const { store } = open();
     try {
-      expect(schemaVersion(store.database)).toBe(15);
+      expect(schemaVersion(store.database)).toBe(16);
       expect(hasSnapshots(store.database)).toBe(true);
       migratePrincipalSchema(store.database);
-      expect(schemaVersion(store.database)).toBe(15);
+      expect(schemaVersion(store.database)).toBe(16);
     } finally {
       store.close();
     }
@@ -64,7 +64,7 @@ describe('state schema v14', () => {
 
     const reopened = new StateStore(path);
     try {
-      expect(schemaVersion(reopened.database)).toBe(15);
+      expect(schemaVersion(reopened.database)).toBe(16);
       expect(hasSnapshots(reopened.database)).toBe(true);
       downgradeStateSchemaToV12(reopened.database);
       expect(schemaVersion(reopened.database)).toBe(12);
