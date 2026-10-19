@@ -732,8 +732,9 @@ export class WorkspaceService {
     await this.packageService?.shutdown();
   }
   /**
-   * Removes managed containers no active workspace owns. One that Docker will not remove is reported and left
-   * for the next startup (a fixed-name executor rebuild also removes it first), so it never aborts this one.
+   * Removes managed containers no active workspace owns. A workspace executor that Docker will not remove is
+   * reported and left for the next startup (a fixed-name rebuild also removes it first) instead of aborting this
+   * one. Ephemeral helpers stay strict: package startup cleanup relies on every builder being gone.
    */
   private async reconcileContainers(failures: StartupReconcileFailure[]): Promise<void> {
     const managed = await runDocker([
