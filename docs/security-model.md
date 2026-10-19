@@ -509,10 +509,20 @@ unchanged and the checkouts share the workspace byte ceiling.
   executor is paused from the last check through the change, and the change is
   refused (retryable `CONFLICT`) while a privileged command, transfer helper,
   or other container that mounts the tree runs, or with `UNAVAILABLE` when the
-  executor cannot be paused. An add clones into a staging directory outside
-  every container mount and moves it into place only while the path is still
-  free, so a failed add removes only the directory it created; an existing
-  path is refused rather than overwritten. Remove refuses while the checkout
+  executor cannot be paused. A pause that fails or times out is undone before
+  the refusal, and the resume is retried; an executor still paused after a
+  committed change is reported (`executorResumed: false`) rather than turning
+  that change into a failure, and `workspace_recover` or a runner restart
+  resumes it. Only a paused container carrying this workspace's managed labels
+  is resumed, and never while the runner itself holds the pause. An add
+  clones into a staging directory outside the executor's and the privileged
+  and skill helpers' mounts (only the trusted clone, Git-transfer, and size
+  helpers mount the workspace root) and moves it into place only while the
+  path is still free, so a failed add removes only the directory it created;
+  an existing path is refused rather than overwritten. At startup, after every
+  helper container is gone, the runner removes the add and Git-transfer
+  staging directories a crash left directly in a retained workspace,
+  matching only real directories with the exact staging name. Remove refuses while the checkout
   holds work no remote has or anything runs inside it, and runs that check
   inside the paused window, so it cannot discard work the owner did not save.
 

@@ -202,6 +202,12 @@ tree, and `UNAVAILABLE` when the executor cannot be paused.
   repository in open order. The registry row is deleted first, then the
   checkout directory; `checkoutRemoved: false` reports a directory that could
   not be deleted, which then counts as unsaved work at auto-close.
+- Both changes pause the executor. When the change committed but the executor
+  could not be resumed afterwards, the result still reports the change, adds
+  `executorResumed: false`, and says so in its message; replaying the key
+  returns the committed result. Commands in the workspace fail until
+  `workspace_recover` with `mode: "resume"` (or a runner restart) resumes the
+  executor.
 
 `grep_search`, `symbols_search`, and `symbols_references` accept
 `scope: "all"`, mutually exclusive with `repositoryId`, to search every

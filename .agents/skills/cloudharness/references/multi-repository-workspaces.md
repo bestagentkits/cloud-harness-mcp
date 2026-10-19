@@ -97,6 +97,9 @@ Remove one checkout and its directory.
   primary promotes the next repository.
 - `checkoutRemoved: false` means the directory could not be deleted; it then
   blocks auto-close like other unsaved files.
+- `executorResumed: false` (add or remove) means the change committed but the
+  executor stayed paused; call `workspace_recover` with `mode: "resume"`
+  before running more commands.
 
 <!-- cloudharness-example:workspace_repo_remove
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","repositoryId":"docs","idempotencyKey":"remove-docs-20261019"}

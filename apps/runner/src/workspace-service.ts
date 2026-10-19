@@ -144,6 +144,10 @@ const countedStatus = new Set<WorkspaceRecord['status']>(COUNTED_WORKSPACE_STATU
  */
 const AUTO_CLOSE_RETRY_MS = 3_600_000;
 const AUTO_CLOSE_DEFERRED_PREFIX = 'auto-close deferred: ';
+/** Waits before each attempt to unpause an executor; a busy daemon usually completes the first or second. */
+const EXECUTOR_RESUME_RETRY_DELAYS_MS = [0, 250, 1_000] as const;
+/** Per-call staging directories a crashed runner can leave directly inside a retained workspace directory. */
+const WORKSPACE_STAGING_DIRECTORY = /^(?:repository-add|git-transfer)-[0-9a-f]{24}$/;
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
 ]);
@@ -405,6 +409,12 @@ export class WorkspaceService {
   private readonly frozenTrees = new Set<string>();
   /** In-flight helper containers that mount a workspace tree read-write, by workspace. */
   private readonly treeWriters = new Map<string, number>();
+  /**
+   * Workspaces whose executor this runner has paused for an atomic step. Only one pause may be held at a
+   * time, so a failed pause can be undone without resuming someone else's, and a paused executor found
+   * outside this set was left behind by a failed resume and may be resumed.
+   */
+  private readonly pausedExecutors = new Set<string>();
   private reaper?: NodeJS.Timeout | undefined;
   private reaperRunning = false;
   /** Toolbox containers this runner is running now; the semaphore count and the sweep's exclusion list. */
@@ -668,6 +678,8 @@ export class WorkspaceService {
             continue;
           }
         }
+        // A runner that stopped mid-pause leaves the executor paused; resume it before the restart.
+        if (inspection) await this.resumeLeftoverPause(record, inspection);
         const restarted = await runDocker(['restart', record.containerName], { timeoutMs: 30_000, maxBytes: 65_536 });
         if (restarted.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'executor restart reconciliation failed', 503, true);
       }
@@ -750,7 +762,28 @@ export class WorkspaceService {
       const record = this.store.byId(entry.name);
       if (!record || (!activeStatus.has(record.status) && record.status !== 'EXPIRED_RECOVERABLE')) {
         await this.safeRemovePath(join(this.config.jobsRoot, entry.name));
+      } else {
+        // A leftover only costs disk until the workspace closes, so a failed sweep does not block startup.
+        await this.removeLeftoverStaging(record, join(this.config.jobsRoot, entry.name)).catch((error: unknown) => {
+          console.warn('[runner] leftover workspace staging cleanup failed', record.id, error instanceof Error ? error.message : String(error));
+        });
       }
+    }
+  }
+
+  /**
+   * Removes the clone and Git-transfer staging directories a runner that stopped mid-call left in a retained
+   * workspace. Runs at startup after every helper container is gone, and touches only real directories that
+   * sit directly in the workspace's canonical directory and match the exact staging name.
+   */
+  private async removeLeftoverStaging(record: WorkspaceRecord, workspaceDirectory: string): Promise<void> {
+    if (resolve(record.workspacePath) !== resolve(workspaceDirectory)) return;
+    for (const entry of await readdir(workspaceDirectory, { withFileTypes: true })) {
+      if (!WORKSPACE_STAGING_DIRECTORY.test(entry.name)) continue;
+      const path = join(workspaceDirectory, entry.name);
+      const stats = await lstat(path).catch(() => undefined);
+      if (!stats?.isDirectory() || stats.isSymbolicLink()) continue;
+      await this.safeRemovePath(path);
     }
   }
 
@@ -1127,8 +1160,9 @@ export class WorkspaceService {
     } else if (record.containerName) {
       const inspected = await inspectContainer(record.containerName);
       if (inspected) {
-        const state = inspected.State as { Running?: boolean } | undefined;
-        if (state?.Running) {
+        const state = inspected.State as { Running?: boolean; Paused?: boolean } | undefined;
+        // A paused executor reports Running; one a failed resume left paused is resumed, else rebuilt.
+        if (state?.Running && await this.resumeLeftoverPause(record, inspected)) {
           return record;
         }
         const started = await runDocker(['start', record.containerName], { timeoutMs: 30_000 });
@@ -2184,18 +2218,69 @@ export class WorkspaceService {
   }
 
   private async withPausedExecutor<T>(record: WorkspaceRecord, action: () => Promise<T>, purpose = 'an atomic Git transfer'): Promise<T> {
-    if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
-    const paused = await runDocker(['pause', record.containerName], { timeoutMs: 30_000, maxBytes: 8_192 });
-    if (paused.exitCode !== 0) throw new HarnessError('UNAVAILABLE', `executor could not be paused for ${purpose}`, 503, true);
-    let value: T | undefined;
-    let actionError: unknown;
+    const { value, resumed } = await this.runWithPausedExecutor(record, action, purpose);
+    if (!resumed) throw new HarnessError('UNAVAILABLE', `executor could not be resumed after ${purpose}`, 503, true);
+    return value;
+  }
+
+  /**
+   * Pauses the executor for `action` and always tries to resume it. A pause that fails or times out may still
+   * have taken effect in the daemon, so it is undone before the refusal. `resumed: false` reports an executor
+   * left paused after a completed action; the caller decides whether that action's result still stands.
+   */
+  private async runWithPausedExecutor<T>(record: WorkspaceRecord, action: () => Promise<T>, purpose: string): Promise<{ value: T; resumed: boolean }> {
+    const containerName = record.containerName;
+    if (!containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
+    if (this.pausedExecutors.has(record.id)) {
+      throw new HarnessError('UNAVAILABLE', `executor could not be paused for ${purpose}: it is paused for another change; retry shortly`, 503, true);
+    }
+    this.pausedExecutors.add(record.id);
     try {
-      value = await action();
-    } catch (error) { actionError = error; }
-    const resumed = await runDocker(['unpause', record.containerName], { timeoutMs: 30_000, maxBytes: 8_192 });
-    if (resumed.exitCode !== 0) throw new HarnessError('UNAVAILABLE', `executor could not be resumed after ${purpose}`, 503, true);
-    if (actionError) throw actionError;
-    return value!;
+      const paused = await runDocker(['pause', containerName], { timeoutMs: 30_000, maxBytes: 8_192 }).catch(() => undefined);
+      if (paused?.exitCode !== 0) {
+        await this.resumeExecutor(containerName);
+        throw new HarnessError('UNAVAILABLE', `executor could not be paused for ${purpose}`, 503, true);
+      }
+      let value: T | undefined;
+      let actionError: unknown;
+      try {
+        value = await action();
+      } catch (error) { actionError = error; }
+      const resumed = await this.resumeExecutor(containerName);
+      if (!resumed) console.warn('[runner] executor could not be resumed', record.id, purpose);
+      if (actionError) throw actionError;
+      return { value: value as T, resumed };
+    } finally {
+      this.pausedExecutors.delete(record.id);
+    }
+  }
+
+  /** Unpauses an executor, retrying with a short backoff; an executor that is not paused counts as resumed. */
+  private async resumeExecutor(containerName: string): Promise<boolean> {
+    for (const delayMs of EXECUTOR_RESUME_RETRY_DELAYS_MS) {
+      if (delayMs > 0) await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+      const resumed = await runDocker(['unpause', containerName], { timeoutMs: 30_000, maxBytes: 8_192 }).catch(() => undefined);
+      if (resumed && (resumed.exitCode === 0 || /is not paused/i.test(resumed.stderr))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Resumes this workspace's own managed executor when a failed resume left it paused. A pause this runner
+   * holds right now is not touched, and a container without this workspace's managed labels is left as it
+   * is. Returns false only when resuming this workspace's executor failed.
+   */
+  private async resumeLeftoverPause(record: WorkspaceRecord, inspected: Record<string, unknown>): Promise<boolean> {
+    const state = inspected.State as { Paused?: boolean } | undefined;
+    if (!state?.Paused || !record.containerName) return true;
+    const labels = (inspected.Config as { Labels?: Record<string, string> } | undefined)?.Labels ?? {};
+    if (labels['cloud-harness.managed'] !== 'true' || labels['cloud-harness.instance'] !== this.instanceId || labels['cloud-harness.workspace'] !== record.id) {
+      return true;
+    }
+    if (this.pausedExecutors.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'the executor is paused for a repository change or Git transfer; retry shortly', 409, true);
+    }
+    return await this.resumeExecutor(record.containerName);
   }
 
   /**
@@ -2207,14 +2292,14 @@ export class WorkspaceService {
    * refuses the change. Agent containers mount no workspace tree; they reach it through the executor.
    * Every failure to establish the freeze refuses the change instead of running it unfrozen.
    */
-  private async withFrozenWorkspaceTree<T>(record: WorkspaceRecord, action: () => Promise<T>): Promise<T> {
+  private async withFrozenWorkspaceTree<T>(record: WorkspaceRecord, action: () => Promise<T>): Promise<{ value: T; resumed: boolean }> {
     if (this.frozenTrees.has(record.id)) throw new HarnessError('CONFLICT', 'the workspace tree is frozen for another change; retry shortly', 409, true);
     this.frozenTrees.add(record.id);
     try {
       if ((this.treeWriters.get(record.id) ?? 0) > 0) {
         throw new HarnessError('CONFLICT', 'a privileged command or Git transfer is writing to the workspace tree; retry once it finishes', 409, true);
       }
-      return await this.withPausedExecutor(record, async () => {
+      return await this.runWithPausedExecutor(record, async () => {
         await this.assertNoOtherTreeContainers(record);
         return await action();
       }, 'a repository change');
@@ -2553,8 +2638,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     };
     const view = scopedRecordView(record, entry);
     await this.assertCheckoutPathFree(view);
-    // The clone lands in a staging directory beside the tree, outside every container mount of it, so the
-    // executor can reach neither the clone nor its retry cleanup, and nothing it writes is ever removed.
+    // The clone lands in a staging directory beside the tree, outside the executor's and the privileged and
+    // skill helpers' mounts, so the executor can reach neither the clone nor its retry cleanup, and nothing it
+    // writes is ever removed. Only the trusted clone, Git-transfer and size helpers mount the workspace root.
     const stagingName = `repository-add-${randomBytes(12).toString('hex')}`;
     const stagingRoot = join(record.workspacePath, stagingName);
     try {
@@ -2577,7 +2663,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         },
         truncated: false
       };
-      await this.withFrozenWorkspaceTree(record, async () => {
+      const { resumed } = await this.withFrozenWorkspaceTree(record, async () => {
         const identity = await this.placeStagedCheckout(view, staged);
         try {
           this.store.addWorkspaceRepository(entry, { generation: record.generation, limit, urlKey: normalizedRepositoryUrlKey }, {
@@ -2591,7 +2677,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         }
       });
       this.auditWorkspaceMutation(ownerId, 'workspace.repository_added', view, { operation: 'workspace_repo_add' });
-      return result;
+      return resumed ? result : withExecutorLeftPaused(result);
     } catch (error) {
       if (error instanceof HarnessError && !(error.message.startsWith(`repository ${alias}`))) {
         throw new HarnessError(error.code, `repository ${alias}: ${error.message}`.slice(0, 2_000), error.status, error.retryable);
@@ -2688,7 +2774,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     });
     // Everything in the workspace that can write to the tree stays frozen from the unsaved-work check through
     // the removal, so no work can land in the checkout, and no link can be swapped into it, once it was checked.
-    const checkoutRemoved = await this.withFrozenWorkspaceTree(record, async () => {
+    const { value: checkoutRemoved, resumed } = await this.withFrozenWorkspaceTree(record, async () => {
       // A checkout that is already gone has nothing left to lose; a link or file in its place is refused.
       const present = await lstat(checkoutHostPath(view)).then(() => true, () => false);
       let identity: CheckoutIdentity | undefined;
@@ -2717,7 +2803,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
     });
     this.auditWorkspaceMutation(ownerId, 'workspace.repository_removed', view, { operation: 'workspace_repo_remove', checkoutRemoved });
-    return result(checkoutRemoved);
+    return resumed ? result(checkoutRemoved) : withExecutorLeftPaused(result(checkoutRemoved));
   }
 
   /**
@@ -6039,6 +6125,19 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 }
 
 /** Helpers that hold contents:write and need no checkout. */
+/**
+ * A committed repository change stands even when the executor could not be resumed afterwards: the result
+ * reports it, and the stored replay keeps the committed result. `workspace_recover` with mode `resume`
+ * resumes the executor.
+ */
+function withExecutorLeftPaused(result: RunnerResponse): RunnerResponse {
+  return {
+    ...result,
+    message: `${result.message}; the executor could not be resumed afterwards, so commands fail until workspace_recover with mode "resume" resumes it`,
+    data: { ...(result.data as Record<string, unknown>), executorResumed: false }
+  };
+}
+
 const GITHUB_CHECKOUT_FREE_ACTIONS: ReadonlySet<string> = new Set(['pr_merge', 'pr_auto_merge_enable']);
 
 /** Mutations that can duplicate a visible side effect, so an `idempotencyKey` replays the first result. */

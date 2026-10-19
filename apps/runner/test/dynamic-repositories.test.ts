@@ -18,10 +18,14 @@ const docker = vi.hoisted(() => ({
   workerHandler: undefined as ((operation: string, root: string, input: Record<string, unknown>) => Record<string, unknown> | undefined) | undefined,
   onCommand: undefined as ((args: string[]) => void) | undefined,
   failPause: false,
+  timeoutPause: false,
+  failUnpause: false,
   psOutput: '',
   runDocker: vi.fn(async (args: string[], options?: { stdin?: string }) => {
     docker.onCommand?.(args);
     if (args[0] === 'pause' && docker.failPause) return { stdout: '', stderr: 'cannot pause', exitCode: 1, truncated: false };
+    if (args[0] === 'pause' && docker.timeoutPause) throw Object.assign(new Error('Docker operation timed out'), { code: 'TIMEOUT' });
+    if (args[0] === 'unpause' && docker.failUnpause) return { stdout: '', stderr: 'cannot unpause', exitCode: 1, truncated: false };
     if (args[0] === 'ps') return { stdout: docker.psOutput, stderr: '', exitCode: 0, truncated: false };
     if (args.includes('/opt/harness/clone-helper.sh')) {
       // The host side of `<host>:/job` may itself contain a drive colon.
@@ -171,6 +175,8 @@ afterEach(() => {
   docker.workerHandler = undefined;
   docker.onCommand = undefined;
   docker.failPause = false;
+  docker.timeoutPause = false;
+  docker.failUnpause = false;
   docker.psOutput = '';
   vi.clearAllMocks();
   for (const store of openStores.splice(0)) {
@@ -600,6 +606,138 @@ describe('workspace_repo_remove', () => {
     const result = await service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-gone-key' });
     expect(result.data).toMatchObject({ checkoutRemoved: true });
     expect(store.workspaceRepositories(workspaceId)).toHaveLength(1);
+  });
+});
+
+describe('executor pause and resume', () => {
+  type PauseInternals = {
+    instanceId: string;
+    withPausedExecutor<T>(record: unknown, action: () => Promise<T>): Promise<T>;
+    auditWorkspaceMutation(...args: unknown[]): void;
+  };
+  const internals = (service: WorkspaceService) => service as unknown as PauseInternals;
+  const managedLabels = (service: WorkspaceService, workspaceId: string) => ({
+    'cloud-harness.managed': 'true', 'cloud-harness.instance': internals(service).instanceId, 'cloud-harness.workspace': workspaceId
+  });
+
+  it('keeps a committed removal, audits it, and resumes the executor on the next recover when the resume fails', async () => {
+    const { service, store, jobsRoot } = fixture();
+    const { workspaceId } = await openMulti(service);
+    const audit = vi.spyOn(internals(service), 'auditWorkspaceMutation');
+    docker.failUnpause = true;
+    const before = docker.runDocker.mock.calls.length;
+
+    const removed = await service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-stuck' });
+    expect(removed.ok).toBe(true);
+    expect(removed.message).toContain('could not be resumed');
+    expect(removed.data).toMatchObject({ checkoutRemoved: true, executorResumed: false });
+    expect(existsSync(checkout(jobsRoot, workspaceId, 'web'))).toBe(false);
+    expect(store.workspaceRepositories(workspaceId)).toHaveLength(1);
+    expect(audit).toHaveBeenCalledWith(expect.any(String), 'workspace.repository_removed', expect.anything(), expect.objectContaining({ checkoutRemoved: true }));
+    // The resume is retried with a backoff before the result reports the executor still paused.
+    const verbs = docker.runDocker.mock.calls.slice(before).map((call) => call[0][0]);
+    expect(verbs.filter((verb) => verb === 'unpause')).toHaveLength(3);
+
+    // The replay agrees with what was committed.
+    const replay = await service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-stuck' });
+    expect(replay.data).toMatchObject({ checkoutRemoved: true });
+
+    docker.failUnpause = false;
+    const containerName = store.byId(workspaceId)!.containerName!;
+    docker.inspectContainer.mockResolvedValueOnce({ State: { Running: true, Paused: true }, Config: { Labels: managedLabels(service, workspaceId) } } as never);
+    const beforeRecover = docker.runDocker.mock.calls.length;
+    const recovered = await service.execute(principal, 'workspace_recover', { workspaceId, mode: 'resume' });
+    expect(recovered.ok).toBe(true);
+    expect(docker.runDocker.mock.calls.slice(beforeRecover).map((call) => call[0])).toContainEqual(['unpause', containerName]);
+    expect(store.byId(workspaceId)!.containerName).toBe(containerName);
+  }, 10_000);
+
+  it('reports a committed add whose resume failed instead of failing it', async () => {
+    const { service, store } = fixture();
+    const { workspaceId } = await openMulti(service);
+    const audit = vi.spyOn(internals(service), 'auditWorkspaceMutation');
+    docker.failUnpause = true;
+    const added = await service.execute(principal, 'workspace_repo_add', addDocs(workspaceId));
+    expect(added.data).toMatchObject({ repository: { alias: 'docs' }, executorResumed: false });
+    expect(store.workspaceRepositories(workspaceId)).toHaveLength(3);
+    expect(audit).toHaveBeenCalledWith(expect.any(String), 'workspace.repository_added', expect.anything(), expect.anything());
+  }, 10_000);
+
+  it('undoes a pause that timed out before refusing the change', async () => {
+    const { service, store, jobsRoot } = fixture();
+    const { workspaceId } = await openMulti(service);
+    docker.timeoutPause = true;
+    const before = docker.runDocker.mock.calls.length;
+    await expect(service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-pause-timeout' }))
+      .rejects.toMatchObject({ code: 'UNAVAILABLE', message: expect.stringContaining('could not be paused') });
+    const verbs = docker.runDocker.mock.calls.slice(before).map((call) => call[0][0]);
+    expect(verbs).toEqual(['pause', 'unpause']);
+    expect(existsSync(checkout(jobsRoot, workspaceId, 'web'))).toBe(true);
+    expect(store.workspaceRepositories(workspaceId)).toHaveLength(2);
+  });
+
+  it('never resumes a pause it does not own', async () => {
+    const { service, store } = fixture();
+    const { workspaceId } = await openMulti(service);
+    // While one pause is held, a second pause and a recover are refused without unpausing the executor.
+    let nested: Promise<unknown> | undefined;
+    let recoverDuringFreeze: Promise<unknown> | undefined;
+    docker.onWorker = (operation) => {
+      if (operation !== 'workspace_recover' || nested) return;
+      nested = internals(service).withPausedExecutor(store.byId(workspaceId), async () => undefined).catch((error: unknown) => error);
+      docker.inspectContainer.mockResolvedValueOnce({ State: { Running: true, Paused: true }, Config: { Labels: managedLabels(service, workspaceId) } } as never);
+      recoverDuringFreeze = service.execute(principal, 'workspace_recover', { workspaceId, mode: 'resume' }).catch((error: unknown) => error);
+    };
+    const before = docker.runDocker.mock.calls.length;
+    await service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-nested' });
+    expect(await nested).toMatchObject({ code: 'UNAVAILABLE', message: expect.stringContaining('paused for another change') });
+    expect(await recoverDuringFreeze).toMatchObject({ code: 'CONFLICT', retryable: true });
+    const verbs = docker.runDocker.mock.calls.slice(before).map((call) => call[0][0]);
+    expect(verbs.filter((verb) => verb === 'pause')).toHaveLength(1);
+    expect(verbs.filter((verb) => verb === 'unpause')).toHaveLength(1);
+    expect(verbs.at(-1)).toBe('unpause');
+
+    // A paused container without this workspace's managed labels is left alone.
+    docker.inspectContainer.mockResolvedValueOnce({ State: { Running: true, Paused: true }, Config: { Labels: { 'cloud-harness.workspace': 'ws_other' } } } as never);
+    const afterRemove = docker.runDocker.mock.calls.length;
+    await service.execute(principal, 'workspace_recover', { workspaceId, mode: 'resume' });
+    expect(docker.runDocker.mock.calls.slice(afterRemove).some((call) => call[0][0] === 'unpause')).toBe(false);
+  });
+
+  it('resumes a paused executor and sweeps leftover staging directories at startup', async () => {
+    const { service, store, jobsRoot } = fixture();
+    const { workspaceId } = await openMulti(service);
+    const containerName = store.byId(workspaceId)!.containerName!;
+    const workspaceDirectory = join(jobsRoot, workspaceId);
+    const stale = 'a'.repeat(24);
+    mkdirSync(join(workspaceDirectory, `repository-add-${stale}`, 'docs', '.git'), { recursive: true });
+    mkdirSync(join(workspaceDirectory, `git-transfer-${stale}`));
+    mkdirSync(join(workspaceDirectory, 'repository-add-notes'));
+    writeFileSync(join(workspaceDirectory, `git-transfer-${'b'.repeat(24)}`), 'not a directory');
+    const outside = join(jobsRoot, '..', 'outside-target');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'state.db'), 'precious');
+    symlinkSync(outside, join(workspaceDirectory, `repository-add-${'c'.repeat(24)}`), 'junction');
+
+    const paused = { State: { Running: true, Paused: true }, HostConfig: { NetworkMode: 'none' }, Config: { Labels: managedLabels(service, workspaceId) } };
+    docker.inspectContainer.mockResolvedValueOnce(paused as never).mockResolvedValueOnce(paused as never);
+    const before = docker.runDocker.mock.calls.length;
+    await service.start();
+    try {
+      const calls = docker.runDocker.mock.calls.slice(before).map((call) => call[0]);
+      const unpause = calls.findIndex((args) => args[0] === 'unpause' && args[1] === containerName);
+      expect(unpause).toBeGreaterThanOrEqual(0);
+      expect(calls.findIndex((args) => args[0] === 'restart' && args[1] === containerName)).toBeGreaterThan(unpause);
+
+      const remaining = readdirSync(workspaceDirectory);
+      expect(remaining).not.toContain(`repository-add-${stale}`);
+      expect(remaining).not.toContain(`git-transfer-${stale}`);
+      expect(remaining).toEqual(expect.arrayContaining(['repo', 'repository-add-notes', `git-transfer-${'b'.repeat(24)}`, `repository-add-${'c'.repeat(24)}`]));
+      expect(readFileSync(join(outside, 'state.db'), 'utf8')).toBe('precious');
+      expect(existsSync(checkout(jobsRoot, workspaceId, 'web'))).toBe(true);
+    } finally {
+      await service.stop();
+    }
   });
 });
 

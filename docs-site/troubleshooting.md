@@ -416,6 +416,7 @@ File and command tools without `repositoryId` work on the workspace root, so pat
 - `CONFLICT: repository <alias> has work that removing it would lose: ...` lists uncommitted or untracked paths, stashes, linked worktrees, or commits on no remote.
 - `CONFLICT: repository <alias> is in use by ...` names the tasks, shells, sessions, terminals, or operations running inside the checkout, or says an agent is running in the workspace. It is retryable.
 - `CONFLICT: a privileged command or Git transfer is writing to the workspace tree` or `another container is using the workspace tree` means a helper that can write to the checkouts is running. Each change pauses the executor and refuses to run beside such a helper. It is retryable. `UNAVAILABLE: executor could not be paused` means the executor could not be frozen, so nothing was changed.
+- A result with `executorResumed: false` (and a message saying the executor could not be resumed) means the add or remove was committed and audited, but the executor stayed paused afterwards. Commands, shells, and file tools fail until it is resumed. Replaying the same idempotency key returns the committed result.
 - `INVALID_INPUT: the last repository of a workspace cannot be removed` means only one checkout is left.
 - `CONFLICT: Idempotency key reused with different repository change parameters` means the key was already used for another change.
 - `EXPIRED` means the workspace was closed, expired, or recovered during the change. Nothing was registered or removed.
@@ -426,3 +427,4 @@ File and command tools without `repositoryId` work on the workspace root, so pat
 3. Wait for the named work to finish, or cancel it with `tasks_cancel`, `shell_close`, `sessions_close`, or `agent_cancel`, then retry.
 4. To end the last checkout, close the workspace with `workspace_close`.
 5. Use a new idempotency key for each distinct change.
+6. After `executorResumed: false`, call `workspace_recover` with `mode: "resume"`; it resumes the paused executor (a runner restart does too). If it cannot, the executor is rebuilt from the retained checkouts.
