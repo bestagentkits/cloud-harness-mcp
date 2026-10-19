@@ -201,7 +201,8 @@ export const ANY_INDEX_KEY = '';
  */
 export function ruleIndexKeys(match: AutomationRuleMatch): { scope: string; trigger: string } {
   if (match.provider === 'linear') return { scope: (match.teamKey ?? ANY_INDEX_KEY).toLowerCase(), trigger: (match.label ?? match.toState ?? ANY_INDEX_KEY).toLowerCase() };
-  if (match.provider === 'jira') return { scope: match.projectKey.toLowerCase(), trigger: (match.label ?? match.toStatus ?? ANY_INDEX_KEY).toLowerCase() };
+  // One Jira update can add several labels and move the status, so only the project narrows the candidates.
+  if (match.provider === 'jira') return { scope: match.projectKey.toLowerCase(), trigger: ANY_INDEX_KEY };
   if (match.provider === 'custom') return { scope: match.event.toLowerCase(), trigger: (match.label ?? ANY_INDEX_KEY).toLowerCase() };
   return { scope: match.repository.toLowerCase(), trigger: match.label.toLowerCase() };
 }
