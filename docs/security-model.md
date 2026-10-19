@@ -1257,6 +1257,44 @@ it. The store and its checks are owned by
 - Closing or expiring the workspace deletes its sessions, and sealed sessions
   are purged after their retention.
 
+### Durable agent engine
+
+`AGENT_DURABLE_RUNTIME_ENABLED` lets an agent run on the pi-durable engine
+instead of the default coding runtime. The session store, its claim, and its
+bounds are owned by
+[`apps/runner/src/durable-session-store.ts`](../apps/runner/src/durable-session-store.ts)
+and [`apps/runner/src/agent-runtime-adapter.ts`](../apps/runner/src/agent-runtime-adapter.ts):
+
+- The agent container still holds no session state, mount, or database path.
+  Every storage call is a bounded request on the existing protocol channel to
+  the runner, which keeps one SQLite database per continuation lineage under
+  `agent-sessions/` beside its state database, private to the runner user. Only
+  an allowlist of storage methods with checked argument shapes runs, at a
+  bounded rate and record size.
+- One run owns a lineage's store at a time. The run claims it at launch with
+  the runner epoch and its depth in the lineage, a continuation claims it at a
+  greater position, and a stale or losing run is fenced from every further
+  request, also across a runner restart. Each lineage has at most one successor,
+  so of two racing continuations only one can claim.
+- The model lease is issued per run and is never written to the store; the
+  engine reaches the model through the same gateway, lease, and budget as the
+  default runtime. Usage counts only what the run itself consumed, and resumed
+  work is charged to the continuation's own lease and caps.
+- Continuation is never automatic, as for persisted sessions. A continuation
+  of a cancelled agent cancels its unfinished work instead of resuming it.
+  Turning the flag off refuses new durable spawns and continuations; running
+  ones finish.
+- The store is bounded on disk by `AGENT_DURABLE_MAX_LINEAGE_BYTES`; a run that
+  exceeds it ends as `LIMIT_EXCEEDED`. Closing or expiring the workspace deletes
+  its lineage databases, and the reaper deletes a lineage's database once
+  retention has purged every session of it.
+
+Accepted risk: the runner depends on the upstream pi-durable package to read
+and write these databases. It is pinned in the lockfile, imported only while
+the flag is on, and handed JSON data only; with the flag off it is never
+loaded. The agent image carries the engine only when built with
+`INCLUDE_DURABLE_RUNTIME=true`, so the default image runs no pi-durable code.
+
 ### Agent tool effect receipts
 
 The runner records every proxied agent tool call in an owner- and
