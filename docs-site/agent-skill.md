@@ -27,6 +27,7 @@ codex plugin add cloud-harness@bestagentkits
 - **Atomic File Edits:** Applying targeted patches with `files_apply_patch` instead of rewriting massive files.
 - **Clean Git Handoffs:** Verifying commit status before calling `git_push`.
 - **Native Pull Request Reviews:** Submitting `COMMENT`, `APPROVE`, or `REQUEST_CHANGES` reviews, inline file/line comments, thread replies and resolution, reviewer requests, draft/ready changes, and merges through `github_action`.
+- **Webhook Automations:** Drafting [automation](/dashboard/automations) rules with the `automation_*` tools (always saved disabled for the owner to review), disabling rules with their generation, and reading or cancelling runs.
 
 ## Example: Agent-Driven Pull Request Review
 

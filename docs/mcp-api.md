@@ -540,6 +540,55 @@ These tests use a mock callback receiver; they are not evidence of a live
 ChatGPT subscription (see
 [operations](operations.md#mcp-events-deployment-verification)).
 
+## Automation management tools
+
+The remote Streamable HTTP endpoints (`/mcp`, `/mcp/workspaces/<workspaceId>`,
+and the managed API-key lane) list six tools beside the workspace tools for
+owner management of [webhook automations](security-model.md#webhook-automation-ingress):
+`automation_rules_list`, `automation_rule_create`, `automation_rule_disable`,
+`automation_runs_list`, `automation_run_get`, and `automation_run_cancel`. Local
+stdio and local HTTP backends do not list them. Their names, inputs,
+annotations, and required scopes are owned by `AUTOMATION_TOOL_SPECS` in
+[`packages/contracts/src/automation-tool-schemas.ts`](../packages/contracts/src/automation-tool-schemas.ts);
+the result shaping and error mapping by
+[`apps/api/src/automations/automation-tools.ts`](../apps/api/src/automations/automation-tools.ts).
+
+Decisions that are easy to misread:
+
+- **One channel operation per tool, never ingest.** Each tool calls exactly one
+  owner-scoped operation of the runner's automations channel with the session
+  principal; no input names an owner, and `webhook_ingest` is not reachable.
+  The public webhook ingress, in turn, never reaches these operations.
+- **Scopes come from the session.** Read tools need `workspace:read` and
+  mutating tools `workspace:write`, checked against the authenticated
+  session's scopes before the runner is called; a missing scope is `FORBIDDEN`.
+  Every current authentication lane grants both (`apps/api/src/auth.ts`), so
+  the check matters for any narrower credential added later. Another
+  principal's rule or run is `NOT_FOUND`.
+- **Created rules are disabled.** `automation_rule_create` always saves the rule
+  disabled whatever the input, so a model can draft a rule but only the owner,
+  on the Dashboard, can let deliveries start runs. There is no MCP tool to
+  enable a rule, delete one, or touch connections, secrets, or outbound
+  credentials.
+- **Disable is generation-fenced.** `automation_rule_disable` needs the
+  `expectedGeneration` from `automation_rules_list`; a moved generation is
+  `CONFLICT`, and disabling an already disabled rule still bumps it. Queued runs
+  of the rule are cancelled before they start.
+- **Cancel is idempotent.** Cancelling a finished run returns it unchanged. A
+  running run's cancellation is published to its source like any other end.
+- **Off means `UNAVAILABLE`.** With `AUTOMATIONS_ENABLED` off the tools stay
+  listed and answer `UNAVAILABLE`, so a client's tool list does not change with
+  the flag.
+- **Bounded lists.** List results stop at the requested limit or the serialized
+  size bound in `AUTOMATION_TOOL_LIMITS` and set `truncated` when items were
+  dropped. `automation_run_get` returns the agent answer as bounded, untrusted
+  model output.
+
+Tests:
+[`apps/api/test/mcp-automation-tools.test.ts`](../apps/api/test/mcp-automation-tools.test.ts)
+and
+[`packages/contracts/test/automation-tool-contract.test.ts`](../packages/contracts/test/automation-tool-contract.test.ts).
+
 ## Semantics that are easy to misread
 
 - `files_apply_patch` is not a unified-diff parser. It performs one exact
@@ -707,8 +756,8 @@ ChatGPT subscription (see
   `pr_auto_merge_disable`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`,
   `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`,
   `issue_update`, `issue_publish`, `commit_list`, `compare`, `release_list`, `tag_list`,
-  `commit_status_create`, `workflow_dispatch`, `workflow_run_rerun_failed`, and the
-  `github_read` actions) through an
+  `commit_status_create`, `check_run_create`, `check_run_update`, `workflow_dispatch`,
+  `workflow_run_rerun_failed`, and the `github_read` actions) through an
   ephemeral helper container using short-lived tokens
   minted from the configured GitHub App. `pr_create` supports draft PRs and labels; `pr_update` supports
   updating title, body, base branch, and closing or reopening PRs; `pr_comment` adds comments with
@@ -730,7 +779,11 @@ ChatGPT subscription (see
   `githubActions`. The schemas in `packages/contracts/src/tool-schemas.ts` own the inputs.
   The merge-train actions let an automated routine coordinate without running CI itself:
   `commit_status_create` posts a commit status (`state`, `context`, optional `description`
-  and https `targetUrl`) on a full commit SHA; `commit_status_get` returns the combined
+  and https `targetUrl`) on a full commit SHA; `check_run_create` creates a check run on a
+  full commit SHA (`name`, `status`, a `conclusion` only with `status: completed`, and
+  `title` with `summary` set together; it accepts an `idempotencyKey`) and
+  `check_run_update` moves an existing `checkRunId` forward, both needing the App's
+  `checks` write permission; `commit_status_get` returns the combined
   status and `check_runs_list` the latest check runs for a SHA; `pr_reviews` returns
   every review plus each reviewer's latest verdict (`latestByReviewer`,
   `changesRequestedBy`, `approvedBy`; a later `COMMENTED` review does not clear an

@@ -34,13 +34,19 @@ MCP Events webhook delivery
   -> client-registered public HTTPS callback over an API-owned, address-pinned
      outbound socket (Standard Webhooks signature)
 
-GitHub webhook automation (optional)
+Webhook automation, GitHub / Linear / Jira / custom (optional)
   -> existing nginx /integrations/webhooks/ (no Access, no bearer)
   -> credential-free TCP ingress proxy -> API (host check, own rate window,
-     raw bytes forwarded unparsed)
-  -> runner internal automations channel (signature, dedupe, rule matching)
+     provider header allowlist, raw bytes forwarded unparsed)
+  -> runner internal automations channel (provider adapter: signature and
+     timestamp, dedupe, normalization, rule matching)
   -> runner automation engine -> the runner's own workspace and agent
-     operations -> optional brokered GitHub comment
+     operations -> optional post-back: brokered GitHub comment and check run,
+     or a Linear/Jira comment from the runner with a sealed outbound credential
+
+Automation management (MCP)
+  -> authenticated /mcp tools automation_* -> API -> runner automations
+     channel (owner-scoped operations only, never ingest)
 
 Dashboard Terminal (browser)
   -> /dashboard BFF on the API (session cookie, Origin, CSRF)
@@ -176,10 +182,17 @@ API never holds the provider credential.
 
 Webhook automations live in the runner under
 [`apps/runner/src/automation-service.ts`](../apps/runner/src/automation-service.ts).
+Each provider is one adapter (verify, event name, delivery id, normalize,
+match, optional publish) registered in
+[`apps/runner/src/automation-providers.ts`](../apps/runner/src/automation-providers.ts),
+with the interface in
+[`apps/runner/src/automation-adapter.ts`](../apps/runner/src/automation-adapter.ts);
+the service and engine are provider-neutral.
 The API owns only the public ingress
-([`apps/api/src/automations/webhook-ingress.ts`](../apps/api/src/automations/webhook-ingress.ts))
-and the Dashboard BFF routes; both reach the runner over the internal
-automations channel whose schema is
+([`apps/api/src/automations/webhook-ingress.ts`](../apps/api/src/automations/webhook-ingress.ts)),
+the Dashboard BFF routes, and the `automation_*` MCP tools
+([`apps/api/src/automations/automation-tools.ts`](../apps/api/src/automations/automation-tools.ts));
+all reach the runner over the internal automations channel whose schema is
 [`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
 Ingest only verifies, deduplicates, and stores a normalized delivery, so a
 webhook returns quickly; an in-process engine tick, outside any request path,
@@ -188,7 +201,8 @@ matches deliveries to rules and drives each workflow through the same
 and `workspace_close` operations an MCP client uses, under the rule owner's
 principal. Every step carries an idempotency key derived from the workflow id,
 so a runner restart resumes rather than duplicates a workspace, agent, or
-comment. Success is the agent's authoritative status, never log scraping; the
+comment; the publisher's last reference (comment or check run id) is stored
+with the workflow so later phases edit instead of re-posting. Success is the agent's authoritative status, never log scraping; the
 logs supply only the final answer text. The terminal transition and its
 [MCP event](mcp-api.md#mcp-events-webhook-delivery) commit together. The
 tables are additive and unversioned

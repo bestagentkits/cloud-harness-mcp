@@ -54,6 +54,7 @@ choose the narrowest permission level:
 | Merge pull requests or enable auto-merge (`pr_merge`, `pr_auto_merge_enable`) | **Pull requests: Read and write** and **Contents: Read and write** |
 | Read or post commit statuses (`commit_status_get`, `commit_status_create`) | **Commit statuses: Read-only** or **Read and write**, and **Contents: Read-only** |
 | List check runs for a commit (`check_runs_list`) | **Checks: Read-only** and **Contents: Read-only** |
+| Create or update check runs (`check_run_create`, `check_run_update`), including the check run a pull request automation reports | **Checks: Read and write** and **Contents: Read-only** |
 | List or view workflow runs; dispatch a workflow or re-run failed jobs (`workflow_runs_list`, `workflow_run_view`, `workflow_dispatch`, `workflow_run_rerun_failed`) | **Actions: Read-only** or **Read and write**, and **Contents: Read-only** |
 | Use a branch as a create-only, compare-and-swap, or delete-if-match lock through `git_push` leases | **Contents: Read and write** |
 

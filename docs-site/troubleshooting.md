@@ -375,17 +375,25 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 
 ---
 
-### 32. GitHub automation deliveries fail, or no run starts
-**Cause:** A [webhook automation](/dashboard/automations) delivery is refused before it reaches a rule, or it reaches the rules and none of them starts a run. GitHub's webhook **Recent Deliveries** view shows the response; the Dashboard **Automations → Deliveries** view shows what happened next.
+### 32. Automation deliveries fail, or no run starts
+**Cause:** A [webhook automation](/dashboard/automations) delivery is refused before it reaches a rule, or it reaches the rules and none of them starts a run. The sender sees the response (for GitHub, in the webhook's **Recent Deliveries**); the Dashboard **Automations → Deliveries** view shows what happened next. Refused deliveries are not listed there.
 **Fix:**
-1. `404` or an nginx page: automations are off on the API (`AUTOMATIONS_ENABLED`), or the server is missing the managed `/integrations/webhooks/` nginx route. A Cloudflare Access login page means Access is protecting the path; the operator must add an Access bypass for `/integrations/webhooks/` only.
-2. `401`: the connection id in the URL is wrong, the connection is disabled or deleted, or the secret does not match. The response is the same for all of these on purpose. After **Rotate secret**, paste the new secret into GitHub; old signatures are refused immediately.
-3. `415`: set the GitHub webhook content type to `application/json`.
-4. `429`: too many deliveries in a minute. GitHub does not retry by itself; use **Redeliver** in GitHub after a minute.
-5. `503`: the runner is not answering, has automations off while the API has them on, or has no secret keyring. Ask the operator to check both services.
-6. `202` with `ignored`: the event is not a label addition on an issue or pull request (GitHub's `ping` is always ignored), or the body was malformed (listed as quarantined).
-7. Processed but no run: the delivery's outcome names the reason, such as `no_matching_rule`, `bot_sender`, `self_trigger`, `actor_not_allowed`, `coalesced` (a run for that issue is already active), or `cooldown`. Check that the rule is enabled and use **Test event** on it.
-8. A run ends `FAILED`, `EXPIRED`, or with **Publish failed**: its error code names the step. A private repository or a comment needs the [GitHub App](/dashboard/github) to have access to that repository (and issue write access for comments).
+1. `404` or an nginx page: automations are off on the API (`AUTOMATIONS_ENABLED`), the provider segment of the URL is wrong (it must be `github`, `linear`, `jira`, or `custom`), or the server is missing the managed `/integrations/webhooks/` nginx route. A Cloudflare Access login page means Access is protecting the path; the operator must add an Access bypass for `/integrations/webhooks/` only.
+2. `401`: the connection id or provider in the URL is wrong, the connection is disabled or deleted, the secret does not match, or the timestamp is outside the allowed window. The response is the same for all of these on purpose. Then check:
+   - After **Rotate secret**, update the provider at once; old signatures are refused immediately.
+   - **Linear:** a webhook created on Linear's settings page signs with Linear's own secret and is always refused. Create it through the API with this connection's secret ([setup](/dashboard/automations#_2-register-the-webhook-with-the-provider)).
+   - **Jira:** paste this connection's secret into the webhook's **Secret** field; a generated one never matches. Jira retries a failed delivery 5 to 15 minutes later, which can be past the timestamp window, so do not count on its retries.
+   - **Custom:** sign `<timestamp>.<raw body>` exactly as sent, prefix the hex digest with `v1=`, and send the current Unix time in seconds; a clock more than five minutes off is refused.
+3. `400`: a required provider header is missing, such as `Linear-Delivery`, or `X-CloudHarness-Delivery` or `X-CloudHarness-Timestamp` for a custom sender.
+4. `415`: the request is not `application/json`. For GitHub, set the webhook content type to `application/json`.
+5. `429`: too many deliveries in a minute. GitHub does not retry by itself; use **Redeliver** in GitHub after a minute.
+6. `503`: the runner is not answering, has automations off while the API has them on, or has no secret keyring. Ask the operator to check both services.
+7. `202` with `ignored`: the event is not a label or state change a rule can use (GitHub's `ping` is always ignored), or the body verified but could not be read (listed as quarantined; filter **Deliveries** by **Quarantined (dead letter)** to see the reason). A custom body must be exactly the documented envelope.
+8. `202` with `duplicate`: that delivery id, or the exact same body, was already received; nothing new runs. Give each custom event a new `X-CloudHarness-Delivery`.
+9. Processed but no run: the delivery's outcome names the reason, such as `no_matching_rule`, `bot_sender`, `self_trigger`, `actor_not_allowed`, `coalesced` (a run for that resource is already active), `cooldown`, or `already_triggered` after a replay. Check that the rule is enabled and use **Test event** on it.
+10. A run ends `FAILED` or `EXPIRED`: its error code names the step. A private repository needs the [GitHub App](/dashboard/github) to have access to it.
+11. **Publish failed:** the answer is still on the run page; the operator's runner log has the code. `OUTBOUND_NOT_CONFIGURED` means the Linear or Jira connection has no outbound credential; `LINEAR_UNAUTHORIZED` or `JIRA_HTTP_401`/`JIRA_HTTP_403` means the credential was refused; `JIRA_ADDRESS_FORBIDDEN` means the Jira site resolved to a private address. On GitHub, comments need the App's issue write access on that repository.
+12. No check run on a GitHub pull request: the rule does not post back, or the [GitHub App](/dashboard/github) lacks the **Checks** write permission, so only the comment is posted. Grant it and accept the new permission on the installation; runs that already started stay comment-only.
 
 ---
 
