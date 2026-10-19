@@ -37,7 +37,7 @@ const rule = { id: ruleId, connectionId, name: 'Triage', enabled: false, generat
 const workflow = {
   id: workflowId, ruleId, ruleGeneration: 1, connectionId, deliveryId, eventType: 'github.issue.label_added',
   repository: 'example/project', resourceNumber: 7, resourceUrl: 'https://github.com/example/project/issues/7', label: 'triage',
-  state: 'RUNNING', workspaceId: null, agentId: null, agentStatus: null, errorCode: null, publishState: 'NONE', usage: null,
+  state: 'RUNNING', workspaceId: null, agentId: null, agentStatus: null, errorCode: null, publishState: 'NONE', usage: null, coding: null,
   createdAt: at, updatedAt: at, terminalAt: null
 };
 const delivery = {
@@ -58,7 +58,7 @@ const dataFor: Record<string, unknown> = {
   rule_delete: { deleted: true },
   rule_preview: { matched: true, reason: 'label matched' },
   workflows_list: { workflows: [workflow] },
-  workflow_get: { workflow, result: null, transitions: [{ fromState: null, toState: 'QUEUED', actor: 'system', code: null, at }] },
+  workflow_get: { workflow, result: null, transitions: [{ fromState: null, toState: 'QUEUED', actor: 'system', code: null, at }], actions: [] },
   workflow_cancel: { workflow: { ...workflow, state: 'CANCELLED' } },
   deliveries_list: { deliveries: [delivery] }
 };
