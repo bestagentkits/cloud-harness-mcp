@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentActionDescriptorInput, RunnerPrincipalSelector, RunnerResponse } from '@cloud-harness/contracts';
+import type { AgentActionDescriptorInput, GlobalExecutionPolicy, RunnerPrincipalSelector, RunnerResponse } from '@cloud-harness/contracts';
 import { CodingActionBroker, editActionClass, plainArgv, type AgentToolRequest } from '../src/agent-governance/action-broker.js';
 import { CodingActionCursorError } from '../src/agent-governance/action-store.js';
 import type { AgentActionTraceSink, TraceActionEvent } from '../src/agent-trace-recorder.js';
@@ -24,11 +24,11 @@ afterEach(() => {
   for (const database of databases.splice(0)) database.close();
 });
 
-async function setup(options: { enabled?: boolean; generation?: number | null; repositories?: number; policy?: boolean; advisorDecisionId?: string } = {}) {
+async function setup(options: { enabled?: boolean; generation?: number | null; repositories?: number; policy?: boolean | GlobalExecutionPolicy; advisorDecisionId?: string } = {}) {
   const database = new DatabaseSync(':memory:');
   databases.push(database);
   const policies = createPolicyService(database, (selector) => (selector.kind === 'owner' ? selector.ownerId : 'external'), owner);
-  if (options.policy !== false) policies.saveGlobal(CODING_GLOBAL_POLICY);
+  if (options.policy !== false) policies.saveGlobal(typeof options.policy === 'object' ? options.policy : CODING_GLOBAL_POLICY);
   let enabled = options.enabled ?? true;
   const facts = { generation: options.generation === undefined ? 1 : options.generation, repositories: options.repositories ?? 1 };
   const actions: TraceActionEvent[] = [];
@@ -221,15 +221,56 @@ describe('CodingActionBroker', () => {
     expect(replay).toMatchObject({ replayed: true, record: { state: 'REJECTED' } });
   });
 
-  it('records a gate refusal decided outside begin on the receipt', async () => {
-    const context = await setup();
-    const descriptor = edit(['deploy/prod.yaml']);
-    const checked = context.broker.precheck(context.binding(), [edit(['src/a.ts']), descriptor]);
-    expect(checked).toMatchObject({ descriptor, decision: { decision: 'DENY', reasonCode: 'PATH_OUT_OF_SCOPE' } });
-    expect(context.broker.precheck(context.binding(), [edit(['src/a.ts'])])).toBeNull();
-    const record = context.broker.reject({ binding: context.binding(), origin: 'runner', step: 'path_check', idempotencyKey: 'k1', descriptor }, checked!.decision);
-    expect(record).toMatchObject({ state: 'REJECTED', decision: 'DENY', reasonCode: 'PATH_OUT_OF_SCOPE' });
-    expect(context.actions.at(-1)).toMatchObject({ step: 'path_check', state: 'REJECTED' });
+  describe('beginLockfileInstall', () => {
+    const installPolicy: GlobalExecutionPolicy = {
+      ...CODING_GLOBAL_POLICY,
+      allowedActionClasses: [...CODING_GLOBAL_POLICY.allowedActionClasses, 'package_install'],
+      defaults: { ...CODING_GLOBAL_POLICY.defaults, package_install: { effect: 'allow', delegable: false } },
+      scope: { ...CODING_GLOBAL_POLICY.scope, packages: ['npm:left-pad', 'npm:right-pad'], registries: ['registry.npmjs.org'] }
+    };
+    const locked = (name: string): AgentActionDescriptorInput => ({
+      version: 1, actionClass: 'package_install', repository: CODING_REPOSITORY, package: { ecosystem: 'npm', name, registry: 'registry.npmjs.org' }
+    });
+    const install = (context: Setup, key = 'install:1') => ({
+      binding: context.binding(), origin: 'runner' as const, step: 'install' as const, idempotencyKey: key,
+      descriptor: { version: 1 as const, actionClass: 'package_install' as const, repository: CODING_REPOSITORY, paths: ['package-lock.json'], reason: 'npm ci of 2 locked packages' }
+    });
+
+    it('records one install receipt that describes the lockfile when every package is allowed', async () => {
+      const context = await setup({ policy: installPolicy });
+      const admission = context.broker.beginLockfileInstall(install(context), [locked('left-pad'), locked('right-pad')]);
+      expect(admission).toMatchObject({ allowed: true, replayed: false, refusal: null, record: { state: 'INTENT', step: 'install', decision: 'ALLOW' } });
+      expect(admission.record.descriptor).toMatchObject({ paths: ['package-lock.json'] });
+      expect(admission.record.descriptor.package).toBeUndefined();
+      // The same package set replays; another set under the same key is refused.
+      expect(context.broker.beginLockfileInstall(install(context), [locked('right-pad'), locked('left-pad')])).toMatchObject({ allowed: true, replayed: true });
+      expect(context.broker.beginLockfileInstall(install(context), [locked('left-pad')])).toMatchObject({ allowed: false, refusal: 'IDEMPOTENCY_KEY_REUSED' });
+    });
+
+    it('records a refused package on the install receipt with the gate decision', async () => {
+      const context = await setup({ policy: { ...installPolicy, scope: { ...installPolicy.scope, packages: ['npm:left-pad'] } } });
+      const admission = context.broker.beginLockfileInstall(install(context), [locked('left-pad'), locked('right-pad')]);
+      expect(admission).toMatchObject({ allowed: false, refusal: null, decision: { decision: 'DENY' }, record: { state: 'REJECTED', step: 'install' } });
+      expect(admission.record.descriptor).toMatchObject({ package: { name: 'right-pad' }, reason: 'npm ci of 2 locked packages' });
+      expect(context.actions.at(-1)).toMatchObject({ step: 'install', state: 'REJECTED' });
+    });
+
+    it('refuses a package that would need the advisor instead of clearing it in bulk', async () => {
+      const context = await setup({ policy: { ...installPolicy, defaults: { ...installPolicy.defaults, package_install: { effect: 'require_approval', delegable: true } } } });
+      const admission = context.broker.beginLockfileInstall(install(context), [locked('left-pad')]);
+      expect(admission.allowed).toBe(false);
+      expect(admission.decision?.decision).not.toBe('ALLOW');
+    });
+
+    it('moves an undispatched install to REJECTED when coding is switched off, and refuses an unlisted package', async () => {
+      const context = await setup({ policy: installPolicy });
+      expect(context.broker.beginLockfileInstall(install(context), [locked('left-pad')]).allowed).toBe(true);
+      context.setEnabled(false);
+      const disabled = context.broker.beginLockfileInstall(install(context), [locked('left-pad')]);
+      expect(disabled).toMatchObject({ allowed: false, decision: null, record: { state: 'REJECTED' } });
+      context.setEnabled(true);
+      expect(context.broker.beginLockfileInstall(install(context, 'install:2'), [locked('evil')]).record.state).toBe('REJECTED');
+    });
   });
 
   it('pages receipts newest first with a keyset cursor and refuses a forged cursor', async () => {

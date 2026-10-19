@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   AGENT_POLICY_LIMITS,
@@ -206,24 +207,10 @@ export class CodingActionBroker implements ActionBroker {
   }
 
   /**
-   * The pure gate decision (no advisor, no receipt) for each descriptor under the run's live context: the
-   * first one that is not ALLOW, or null when all are. A lockfile install checks every locked package this
-   * way and then brokers the install as one action.
+   * Records a step the gate already refused with that decision, so the receipt names the gate's reason.
+   * A step recorded earlier but not yet dispatched is moved to REJECTED.
    */
-  precheck(binding: CodingBinding, descriptors: readonly AgentActionDescriptorInput[]): { descriptor: AgentActionDescriptorInput; decision: GateDecision } | null {
-    const context = this.context(binding, binding.usage);
-    for (const input of descriptors) {
-      const decision = this.policies.evaluate(binding.principalId, binding.projectId, AgentActionDescriptorSchema.parse(input), context);
-      if (decision.decision !== 'ALLOW') return { descriptor: input, decision };
-    }
-    return null;
-  }
-
-  /**
-   * Records a step the gate already refused (a `precheck` result) with that decision, so the receipt
-   * names the gate's reason. A step recorded earlier but not yet dispatched is moved to REJECTED.
-   */
-  reject(step: BrokeredStep, decision: GateDecision): CodingActionRecord {
+  private reject(step: BrokeredStep, decision: GateDecision): CodingActionRecord {
     const descriptor = AgentActionDescriptorSchema.parse(step.descriptor);
     const recorded = this.actions.record({
       principalId: step.binding.principalId, workflowId: step.binding.workflowId, workspaceId: step.binding.workspaceId,
@@ -235,6 +222,53 @@ export class CodingActionBroker implements ActionBroker {
     const record = this.actions.get(recorded.record.actionId) ?? recorded.record;
     this.trace(step.binding, record, undefined, this.now(), this.now());
     return record;
+  }
+
+  /**
+   * Records and decides a lockfile install as one action. Every locked package is decided by the pure
+   * gate under the run's live context; there is no advisor call, so a package that would need advisor
+   * clearance is refused, never cleared in bulk. A refusal is recorded with the refused package's
+   * descriptor and decision, so the receipt names it. Otherwise the receipt describes the install
+   * itself (`step.descriptor`: the lockfile, with a reason naming the package count and digest) under
+   * the gate's ALLOW, whose input fingerprint covers every package's, so a replay of the key over a
+   * different package set is refused as IDEMPOTENCY_KEY_REUSED.
+   */
+  beginLockfileInstall(step: BrokeredStep, packages: readonly AgentActionDescriptorInput[]): BrokeredAdmission {
+    const binding = step.binding;
+    const replayed = this.actions.byKey(binding.principalId, binding.workflowId, step.idempotencyKey) !== undefined;
+    const summary = AgentActionDescriptorSchema.parse(step.descriptor);
+    const base = {
+      principalId: binding.principalId, workflowId: binding.workflowId, workspaceId: binding.workspaceId,
+      agentId: binding.agentId, agentGeneration: binding.agentGeneration,
+      idempotencyKey: step.idempotencyKey, origin: step.origin, step: step.step, descriptor: summary, projectId: binding.projectId
+    };
+    if (!this.enabled()) {
+      const recorded = this.actions.record({ ...base, decision: null, refusal: { reasonCode: 'CODING_DISABLED' }, state: 'REJECTED' });
+      if (recorded.replayed) this.actions.transition(recorded.record.actionId, ['INTENT'], 'REJECTED', { errorCode: 'CODING_DISABLED' });
+      return { record: this.actions.get(recorded.record.actionId) ?? recorded.record, replayed: recorded.replayed, decision: null, allowed: false, refusal: null };
+    }
+    if (packages.length === 0) throw new Error('a lockfile install covers at least one package');
+    const context = this.context(binding, step.usage ?? binding.usage);
+    const fingerprints: string[] = [];
+    let allowed: GateDecision | undefined;
+    for (const input of packages) {
+      const decision = this.policies.evaluate(binding.principalId, binding.projectId, AgentActionDescriptorSchema.parse(input), context);
+      if (decision.decision !== 'ALLOW') {
+        const record = this.reject({ ...step, descriptor: { ...input, ...(summary.reason ? { reason: summary.reason } : {}) } }, decision);
+        return { record, replayed, decision, allowed: false, refusal: null };
+      }
+      fingerprints.push(decision.inputFingerprint);
+      allowed = decision;
+    }
+    // The free-text reason is a description, not part of what is decided.
+    const install = { ...summary, reason: undefined };
+    const inputFingerprint = createHash('sha256').update(JSON.stringify({ install, packages: fingerprints.sort() })).digest('hex');
+    const decision: GateDecision = { ...allowed!, inputFingerprint };
+    const recorded = this.actions.record({ ...base, decision, state: 'INTENT' });
+    if (recorded.replayed && recorded.record.inputFingerprint !== null && recorded.record.inputFingerprint !== inputFingerprint) {
+      return { record: recorded.record, replayed: true, decision, allowed: false, refusal: 'IDEMPOTENCY_KEY_REUSED' };
+    }
+    return { record: this.actions.get(recorded.record.actionId) ?? recorded.record, replayed: recorded.replayed, decision, allowed: true, refusal: null };
   }
 
   /**

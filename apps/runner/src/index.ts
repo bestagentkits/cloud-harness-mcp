@@ -11,11 +11,11 @@ import { GitHubBindingService, GitHubSetupStateStore } from './github-binding-se
 import { SqliteGitHubInstallationStore } from './github-installation-sqlite-store.js';
 import { MetadataStore } from './metadata-store.js';
 import { McpEventService } from './mcp-event-service.js';
-import { AutomationService } from './automation-service.js';
+import { AutomationService, type AutomationOperationResult } from './automation-service.js';
 import { AgentPolicyService } from './agent-governance/policy-service.js';
 import { CodingActionBroker } from './agent-governance/action-broker.js';
 import { DEFAULT_NPM_REGISTRY } from './package-builder.js';
-import { HarnessError } from '@cloud-harness/contracts';
+import { HarnessError, type RunnerResponse } from '@cloud-harness/contracts';
 import { SecretKeyring } from './secret-keyring.js';
 import { createRunnerDecisionPlane } from './decision-plane/runner-decision-plane.js';
 import { ExecutionRiskAdvisor } from './decision-plane/execution-risk-advisor.js';
@@ -112,6 +112,19 @@ const codingBroker = new CodingActionBroker({
   traces: service.actionTraces
 });
 service.useCodingBroker(codingBroker);
+/** A runner response as the automation engine sees it; a harness error becomes a failed result. */
+async function automationResult(run: () => Promise<RunnerResponse>): Promise<AutomationOperationResult> {
+  try {
+    const result = await run();
+    return {
+      ok: result.ok, data: result.data, error: result.error ? { code: result.error.code, retryable: result.error.retryable } : undefined,
+      cursor: result.cursor, truncated: result.truncated
+    };
+  } catch (error) {
+    if (error instanceof HarnessError) return { ok: false, error: { code: error.code, retryable: error.retryable } };
+    throw error;
+  }
+}
 const automations = new AutomationService({
   database: store.database,
   enabled: config.automationsEnabled,
@@ -120,18 +133,7 @@ const automations = new AutomationService({
   keyring,
   selfLogin: config.githubApp?.appSlug ? `${config.githubApp.appSlug}[bot]` : undefined,
   operations: {
-    execute: async (ownerId, operation, input) => {
-      try {
-        const result = await service.execute(ownerId, operation, input);
-        return {
-          ok: result.ok, data: result.data, error: result.error ? { code: result.error.code, retryable: result.error.retryable } : undefined,
-          cursor: result.cursor, truncated: result.truncated
-        };
-      } catch (error) {
-        if (error instanceof HarnessError) return { ok: false, error: { code: error.code, retryable: error.retryable } };
-        throw error;
-      }
-    }
+    execute: async (ownerId, operation, input) => await automationResult(async () => await service.execute(ownerId, operation, input))
   },
   audit: (database, principalId, action, subjectType, subjectId, generation, details) => {
     metadata.recordAuditInTransaction(database, principalId, action, subjectType, subjectId, generation, details);
@@ -143,7 +145,9 @@ const automations = new AutomationService({
     registry: DEFAULT_NPM_REGISTRY,
     run: async (ownerId, workspaceId, signal) => await service.installCodingDependencies(ownerId, workspaceId, signal)
   },
-  codingGit: async (ownerId, workspaceId, args, signal) => await service.runCodingGit(ownerId, workspaceId, args, signal)
+  codingGit: async (ownerId, workspaceId, args, signal) => await service.runCodingGit(ownerId, workspaceId, args, signal),
+  codingPublish: async (ownerId, input, verifier) =>
+    await automationResult(async () => await service.execute(ownerId, 'git_push', input, undefined, { pushVerifier: verifier }))
 });
 automations.start();
 // Agent trace retention: traces past their retention period are removed hourly in bounded,

@@ -126,10 +126,12 @@ needs [Agent Policies](/dashboard/agent-policies) and automations to be on.
    `agent/<issue>-<id>` branch, and opens a pull request against your base branch,
    with `Closes #<issue>` in its description. The agent never holds the credential
    that publishes, a push never overwrites an existing branch, and nothing is ever
-   merged or deployed. Cloud Harness reads the checkout itself before committing and
-   reads the commit again before pushing: if something else committed
-   (`HEAD_MOVED`), the commit is not its own (`COMMIT_UNVERIFIED`), or the commit
-   touches a path the policy does not allow, nothing is pushed.
+   merged or deployed. Cloud Harness reads the checkout itself before committing. It
+   then checks the commit again in the isolated copy it pushes from, so settings or
+   history the agent left in the checkout cannot hide anything. Nothing is pushed if
+   something else committed (`HEAD_MOVED`), the run's branch already exists
+   (`BRANCH_EXISTS`), the commit is not its own (`COMMIT_UNVERIFIED`), or the commit
+   touches a path the policy does not allow.
 
 A run over the policy's concurrent-run limit waits to start until an earlier coding
 run finishes.

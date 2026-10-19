@@ -3,8 +3,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GlobalExecutionPolicy, RunnerOperation, RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { CodingActionBroker } from '../src/agent-governance/action-broker.js';
-import { createCodingGitPort, nulPaths, porcelainPaths, type CodingGitCommit, type CodingGitPort } from '../src/agent-governance/coding-git.js';
-import { codingBranch, CodingWorkflowEngine, packagesDigest, workflowTrailer, type CodingInstallPort, type CodingWorkflowRow } from '../src/automation-coding.js';
+import {
+  createCodingGitPort, nulPaths, parseCommitObject, parseTransferInspection, porcelainPaths,
+  type CodingGitCommit, type CodingGitPort, type PushVerifier
+} from '../src/agent-governance/coding-git.js';
+import {
+  codingBranch, CodingWorkflowEngine, packagesDigest, workflowTrailer,
+  type CodingInstallPort, type CodingPublishPort, type CodingWorkflowRow
+} from '../src/automation-coding.js';
 import type { AutomationOperationResult } from '../src/automation-service.js';
 import { CODING_GLOBAL_POLICY, CODING_PROJECT, CODING_REPOSITORY, createPolicyService, insertCodingWorkflow } from './support/coding-policy.js';
 
@@ -26,16 +32,24 @@ afterEach(() => {
 });
 
 const text = (output: string): AutomationOperationResult => ({ ok: true, data: { output, exitCode: 0 } });
+/** A raw commit object as `git cat-file commit` prints it. */
+const rawCommit = (parents: string[], message: string) =>
+  `tree ${'1'.repeat(40)}\n${parents.map((parent) => `parent ${parent}\n`).join('')}author A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\n\n${message}`;
 
 type CheckoutState = {
   head: string;
   paths: string[];
   truncated: boolean;
-  /** The commit HEAD names once the runner (or anything else) committed. */
+  /** The commit HEAD names once the runner (or anything else) committed, as the checkout reports it. */
   commit: CodingGitCommit;
+  /**
+   * The commit as the staged transfer clone holds it, read with a clean configuration; `undefined` means
+   * the same as `commit`, `null` that the clone holds no such commit.
+   */
+  transfer?: CodingGitCommit | null;
 };
 
-async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; install?: CodingInstallPort; git?: false } = {}) {
+async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; install?: CodingInstallPort; git?: false; publish?: false } = {}) {
   const database = new DatabaseSync(':memory:');
   databases.push(database);
   const policies = createPolicyService(database, (selector) => (selector.kind === 'owner' ? selector.ownerId : 'external'), owner);
@@ -85,6 +99,17 @@ async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; 
       return { ok: true, data: { ...checkout.commit, paths: [...checkout.commit.paths] } };
     }
   };
+  const verifiers: PushVerifier[] = [];
+  // As the workspace service runs a verified push: the staged clone is read and decided before anything
+  // is sent, and a refusal sends nothing (only a sent push is recorded as a `git_push` call).
+  const publish: CodingPublishPort = async (_owner, input, verifier) => {
+    verifiers.push(verifier);
+    const staged = checkout.transfer === undefined ? checkout.commit : checkout.transfer;
+    const refusal = await verifier.verify(staged ? { ...staged, paths: [...staged.paths] } : null);
+    if (refusal !== null) return { ok: false, error: { code: 'FORBIDDEN', retryable: false } };
+    calls.push({ operation: 'git_push', input });
+    return await handlers.git_push!(input);
+  };
   const outcome: { state: string; code: string | null; fields: Record<string, unknown> } = { state: 'RUNNING', code: null, fields: {} };
   let clock = Date.now();
   const engine = new CodingWorkflowEngine(broker, {
@@ -103,7 +128,8 @@ async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; 
     complete: (_id, fields) => { outcome.state = 'COMPLETED'; outcome.fields = fields; },
     now: () => (clock += 10),
     ...(options.install ? { install: options.install } : {}),
-    ...(options.git === false ? {} : { git })
+    ...(options.git === false ? {} : { git }),
+    ...(options.publish === false ? {} : { publish })
   });
   const row = (): CodingWorkflowRow => database.prepare('SELECT * FROM automation_workflows WHERE id = ?').get(WORKFLOW) as CodingWorkflowRow;
   /** Advances until the workflow leaves RUNNING or stops making progress. */
@@ -113,7 +139,7 @@ async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; 
   const count = (operation: RunnerOperation) => calls.filter((call) => call.operation === operation).length;
   /** Receipts oldest first (the store pages newest first). */
   const receipts = () => broker.actions.receipts(OWNER, WORKFLOW).receipts.reverse();
-  return { database, broker, engine, handlers, calls, outcome, row, run, count, receipts, policies, checkout, inspections };
+  return { database, broker, engine, handlers, calls, outcome, row, run, count, receipts, policies, checkout, inspections, verifiers };
 }
 
 describe('coding workflow helpers', () => {
@@ -125,6 +151,26 @@ describe('coding workflow helpers', () => {
   it('reads NUL-separated listings without unquoting, spaces, arrows and quotes included', async () => {
     expect(porcelainPaths(' M src/a.ts\0?? src/with space.ts\0D  "quoted".ts\0A  a -> b.ts\0')).toEqual(['"quoted".ts', 'a -> b.ts', 'src/a.ts', 'src/with space.ts']);
     expect(nulPaths('src/b.ts\0src/a.ts\0src/a.ts\0')).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('takes commit parents from the raw object headers only', async () => {
+    const signed = `tree ${'1'.repeat(40)}\nparent ${BASE}\nauthor A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\ngpgsig -----BEGIN-----\n parent ${'d'.repeat(40)}\n -----END-----\n\n${OWN_MESSAGE}`;
+    expect(parseCommitObject(signed)).toEqual({ parents: [BASE], message: OWN_MESSAGE });
+    // A `parent` line in the message is not a parent.
+    expect(parseCommitObject(rawCommit([], `subject\n\nparent ${BASE}\n`))).toEqual({ parents: [], message: `subject\n\nparent ${BASE}\n` });
+    expect(parseCommitObject(rawCommit([BASE, 'd'.repeat(40)], 'merge\n'))?.parents).toEqual([BASE, 'd'.repeat(40)]);
+    expect(parseCommitObject('blob\n\nx')).toBeNull();
+    expect(parseCommitObject(`tree ${'1'.repeat(40)}\nparent not-an-id\n\nx`)).toBeNull();
+  });
+
+  it('reads the transfer helper inspect answer, and nothing malformed', async () => {
+    const encoded = Buffer.from(rawCommit([BASE], OWN_MESSAGE)).toString('base64');
+    expect(parseTransferInspection(`${COMMIT}\n${encoded}\npaths\nsrc/b.ts\0src/a.ts\0`, false))
+      .toEqual({ sha: COMMIT, parents: [BASE], message: OWN_MESSAGE, paths: ['src/a.ts', 'src/b.ts'], truncated: false });
+    expect(parseTransferInspection(`${COMMIT}\n${encoded}\nno-base\n`, true)).toEqual({ sha: COMMIT, parents: [BASE], message: OWN_MESSAGE, paths: [], truncated: true });
+    for (const malformed of ['\n', `${COMMIT}\n`, `${COMMIT}\n${encoded}\n`, `${COMMIT}\n${encoded}\nother\n`, `${COMMIT}\n!!\npaths\n`, `HEAD\n${encoded}\npaths\n`]) {
+      expect(parseTransferInspection(malformed, false), JSON.stringify(malformed)).toBeNull();
+    }
   });
 
   it('digests the locked package list independently of its order', async () => {
@@ -141,20 +187,31 @@ describe('createCodingGitPort', () => {
     const port = createCodingGitPort(async (_owner, _workspace, args) => {
       seen.push([...args]);
       if (args[0] === 'rev-parse') return { exitCode: 0, stdout: `${COMMIT}\n`, truncated: false };
-      if (args[0] === 'rev-list') return { exitCode: 0, stdout: `${COMMIT} ${BASE}\n`, truncated: false };
-      if (args[0] === 'log') return { exitCode: 0, stdout: OWN_MESSAGE, truncated: false };
-      if (args[0] === 'diff') return { exitCode: 0, stdout: 'src/a.ts\0', truncated: true };
+      if (args[0] === 'cat-file') return { exitCode: 0, stdout: rawCommit([BASE], OWN_MESSAGE), truncated: false };
+      if (args[0] === 'diff-tree') return { exitCode: 0, stdout: 'src/a.ts\0', truncated: true };
       return { exitCode: 0, stdout: ' M src/a.ts\0', truncated: false };
     });
     const status = await port.status(OWNER, WORKSPACE, AbortSignal.timeout(1_000));
     expect(status).toEqual({ ok: true, data: { head: COMMIT, paths: ['src/a.ts'], truncated: false } });
     const commit = await port.commit(OWNER, WORKSPACE, 'HEAD', BASE, AbortSignal.timeout(1_000));
     expect(commit).toEqual({ ok: true, data: { sha: COMMIT, parents: [BASE], message: OWN_MESSAGE, paths: ['src/a.ts'], truncated: true } });
-    expect(seen.map((args) => args[0])).toEqual(['rev-parse', 'status', 'rev-parse', 'rev-list', 'log', 'diff']);
-    expect(seen.find((args) => args[0] === 'diff')).toEqual(['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-only', '-z', BASE, COMMIT, '--']);
+    expect(seen.map((args) => args[0])).toEqual(['rev-parse', 'status', 'rev-parse', 'cat-file', 'diff-tree']);
+    expect(seen.find((args) => args[0] === 'cat-file')).toEqual(['cat-file', 'commit', COMMIT]);
+    expect(seen.find((args) => args[0] === 'diff-tree')).toEqual(['diff-tree', '-r', '--no-renames', '--no-commit-id', '--name-only', '-z', BASE, COMMIT, '--']);
     // A revision that is not HEAD or an object id never reaches Git.
     expect(await port.commit(OWNER, WORKSPACE, '--output=/tmp/x', BASE, AbortSignal.timeout(1_000))).toMatchObject({ ok: false });
-    expect(seen).toHaveLength(6);
+    expect(seen).toHaveLength(5);
+  });
+
+  it('refuses a commit object it cannot read completely', async () => {
+    const answers = (raw: { stdout: string; truncated: boolean }) => createCodingGitPort(async (_owner, _workspace, args) => {
+      if (args[0] === 'rev-parse') return { exitCode: 0, stdout: `${COMMIT}\n`, truncated: false };
+      if (args[0] === 'cat-file') return { exitCode: 0, ...raw };
+      return { exitCode: 0, stdout: 'src/a.ts\0', truncated: false };
+    });
+    const signal = AbortSignal.timeout(1_000);
+    expect(await answers({ stdout: rawCommit([BASE], OWN_MESSAGE), truncated: true }).commit(OWNER, WORKSPACE, 'HEAD', BASE, signal)).toMatchObject({ ok: false, code: 'GIT_INSPECT_FAILED' });
+    expect(await answers({ stdout: 'not a commit', truncated: false }).commit(OWNER, WORKSPACE, 'HEAD', BASE, signal)).toMatchObject({ ok: false, code: 'GIT_INSPECT_FAILED' });
   });
 
   it('reports a failed or unavailable inspection with its retryability', async () => {
@@ -177,10 +234,12 @@ describe('CodingWorkflowEngine', () => {
     expect(pr).toMatchObject({ action: 'pr_create', head: BRANCH, base: 'main' });
     expect(String(pr?.body)).toContain('Closes #7');
     expect(context.receipts().map((receipt) => [receipt.step, receipt.state])).toEqual([
-      ['verify', 'APPLIED'], ['path_check', 'APPLIED'], ['commit', 'APPLIED'], ['path_check', 'APPLIED'], ['push', 'APPLIED'], ['open_pr', 'APPLIED']
+      ['verify', 'APPLIED'], ['path_check', 'APPLIED'], ['commit', 'APPLIED'], ['push', 'APPLIED'], ['path_check', 'APPLIED'], ['open_pr', 'APPLIED']
     ]);
     expect(context.receipts().find((receipt) => receipt.step === 'commit')?.outcome.commitSha).toBe(COMMIT);
     expect(context.count('git_push')).toBe(1);
+    // The push was decided on the staged clone, for the recorded commit against the base.
+    expect(context.verifiers).toEqual([expect.objectContaining({ sha: COMMIT, base: BASE })]);
   });
 
   it('keeps the diff as an artifact and commits nothing when verification fails', async () => {
@@ -254,22 +313,31 @@ describe('CodingWorkflowEngine', () => {
     expect(context.count('git_commit')).toBe(0);
   });
 
-  it('adopts its own earlier commit when the commit answer was lost, and nothing else', async () => {
+  /** Lets the first `git_commit` commit and then lose the runner, leaving the commit step dispatched. */
+  function crashAfterCommit(context: Awaited<ReturnType<typeof setup>>) {
+    context.handlers.git_commit = vi.fn()
+      .mockImplementationOnce(() => {
+        context.checkout.head = COMMIT;
+        throw new Error('runner lost');
+      })
+      .mockImplementation(() => ({ ok: false, error: { code: 'STALE_HEAD' } }));
+  }
+
+  it('adopts its own earlier commit on a replay whose first answer was lost, and nothing else', async () => {
     const own = await setup({ phase: 'COMMIT' });
-    own.handlers.git_commit = () => {
-      own.checkout.head = COMMIT;
-      return { ok: false, error: { code: 'STALE_HEAD' } };
-    };
+    crashAfterCommit(own);
+    await expect(own.engine.advance(own.row())).rejects.toThrow('runner lost');
+    expect(own.receipts().find((receipt) => receipt.step === 'commit')?.state).toBe('DISPATCHED');
     await own.engine.advance(own.row());
     expect(own.row()).toMatchObject({ coding_phase: 'PUSH', commit_sha: COMMIT });
+    // The replay found the branch it created on the first attempt.
+    expect(own.calls.filter((call) => call.operation === 'git_checkout').map((call) => call.input.create)).toEqual([true, true]);
 
     // A commit without this workflow's trailer is never adopted.
     const foreign = await setup({ phase: 'COMMIT' });
     foreign.checkout.commit = { ...foreign.checkout.commit, message: 'chore: tidy\n' };
-    foreign.handlers.git_commit = () => {
-      foreign.checkout.head = COMMIT;
-      return { ok: false, error: { code: 'STALE_HEAD' } };
-    };
+    crashAfterCommit(foreign);
+    await expect(foreign.engine.advance(foreign.row())).rejects.toThrow('runner lost');
     await foreign.run();
     expect(foreign.outcome.code).toBe('COMMIT_UNVERIFIED');
     expect(foreign.receipts().find((receipt) => receipt.step === 'commit')).toMatchObject({ state: 'REJECTED', outcome: { errorCode: 'COMMIT_UNVERIFIED' } });
@@ -283,26 +351,57 @@ describe('CodingWorkflowEngine', () => {
     expect(stacked.count('git_push')).toBe(0);
   });
 
-  it('gates every path of the commit before it is pushed', async () => {
-    for (const [paths, code] of [[['src/a.ts', '.github/workflows/ci.yml'], 'ACTION_DENIED:PATH_OUT_OF_SCOPE'], [['src/a.ts', 'package.json'], /^ACTION_DENIED:/u]] as const) {
+  it('never adopts a moved HEAD or an existing branch on a first attempt', async () => {
+    // Something committed between the status read and the commit.
+    const raced = await setup({ phase: 'COMMIT' });
+    raced.handlers.git_commit = () => {
+      raced.checkout.head = COMMIT;
+      return { ok: false, error: { code: 'STALE_HEAD' } };
+    };
+    await raced.run();
+    expect(raced.outcome).toMatchObject({ state: 'FAILED', code: 'HEAD_MOVED' });
+    expect(raced.receipts().find((receipt) => receipt.step === 'commit')).toMatchObject({ state: 'REJECTED', outcome: { errorCode: 'HEAD_MOVED' } });
+    expect(raced.count('git_push')).toBe(0);
+
+    // The workflow's branch already exists: someone else made it, so it is never checked out.
+    const planted = await setup({ phase: 'COMMIT' });
+    planted.handlers.git_checkout = (input) => (input.create === true ? { ok: false, error: { code: 'CONFLICT' } } : { ok: true, data: {} });
+    await planted.run();
+    expect(planted.outcome).toMatchObject({ state: 'FAILED', code: 'BRANCH_EXISTS' });
+    expect(planted.calls.filter((call) => call.operation === 'git_checkout').map((call) => call.input.create)).toEqual([true]);
+    expect(planted.count('git_add') + planted.count('git_commit') + planted.count('git_push')).toBe(0);
+  });
+
+  it('decides the push on the staged clone, whatever the checkout reports', async () => {
+    const cases: [string, (context: Awaited<ReturnType<typeof setup>>) => void, string | RegExp][] = [
+      // A replace ref or graft in the checkout showed the base as the parent; the clone holds the real one.
+      ['parent', (context) => { context.checkout.transfer = { ...context.checkout.commit, parents: ['d'.repeat(40)] }; }, 'COMMIT_UNVERIFIED'],
+      ['trailer', (context) => { context.checkout.transfer = { ...context.checkout.commit, message: 'chore: tidy\n' }; }, 'COMMIT_UNVERIFIED'],
+      ['missing', (context) => { context.checkout.transfer = null; }, 'COMMIT_UNVERIFIED'],
+      ['other commit', (context) => { context.checkout.transfer = { ...context.checkout.commit, sha: 'e'.repeat(40) }; }, 'COMMIT_UNVERIFIED'],
+      // A relative or truncated listing in the checkout hid a path the clone's commit changes.
+      ['hidden path', (context) => { context.checkout.transfer = { ...context.checkout.commit, paths: ['src/a.ts', '.github/workflows/evil.yml'] }; }, 'ACTION_DENIED:PATH_OUT_OF_SCOPE'],
+      ['manifest', (context) => { context.checkout.transfer = { ...context.checkout.commit, paths: ['src/a.ts', 'package.json'] }; }, /^ACTION_DENIED:/u],
+      ['truncated', (context) => { context.checkout.transfer = { ...context.checkout.commit, truncated: true }; }, 'PATHS_UNVERIFIABLE'],
+      ['empty', (context) => { context.checkout.transfer = { ...context.checkout.commit, paths: [] }; }, 'PATHS_UNVERIFIABLE']
+    ];
+    for (const [name, plant, code] of cases) {
       const context = await setup({ phase: 'COMMIT' });
       await context.engine.advance(context.row());
-      expect(context.row().coding_phase).toBe('PUSH');
-      // Something staged more than the runner checked before the commit was made.
-      context.checkout.commit = { ...context.checkout.commit, paths: [...paths] };
+      expect(context.row().coding_phase, name).toBe('PUSH');
+      plant(context);
       await context.run();
-      expect(context.outcome.code).toMatch(code);
-      expect(context.count('git_push')).toBe(0);
-      expect(context.receipts().at(-1)).toMatchObject({ step: 'path_check', state: 'REJECTED' });
+      expect(context.outcome.code, name).toMatch(code);
+      expect(context.count('git_push'), name).toBe(0);
+      expect(context.receipts().find((receipt) => receipt.step === 'push'), name).toMatchObject({ state: 'REJECTED', outcome: { errorCode: expect.stringMatching(code) } });
     }
+  });
 
-    const truncated = await setup({ phase: 'COMMIT' });
-    await truncated.engine.advance(truncated.row());
-    truncated.checkout.commit = { ...truncated.checkout.commit, truncated: true };
-    await truncated.run();
-    expect(truncated.outcome.code).toBe('PATHS_UNVERIFIABLE');
-    expect(truncated.receipts().at(-1)).toMatchObject({ step: 'push', reasonCode: 'PATHS_UNVERIFIABLE', state: 'REJECTED' });
-    expect(truncated.count('git_push')).toBe(0);
+  it('fails closed without a verified publish port', async () => {
+    const context = await setup({ phase: 'COMMIT', publish: false });
+    await context.run();
+    expect(context.outcome.code).toBe('COMMIT_UNVERIFIED');
+    expect(context.count('git_push')).toBe(0);
   });
 
   it('reconciles a push whose answer was lost by reading the remote branch', async () => {
@@ -344,8 +443,9 @@ describe('CodingWorkflowEngine', () => {
     expect(absent.row().coding_phase).toBe('PUSH');
     await absent.engine.advance(absent.row());
     expect(absent.row().coding_phase).toBe('PR');
-    // The retry re-used the path checks of the first attempt instead of reading the commit again.
-    expect(absent.inspections.filter((entry) => entry.kind === 'commit' && entry.revision === COMMIT)).toHaveLength(1);
+    // Every attempt that sends is decided on its own staged clone; the path checks replay their first receipt.
+    expect(absent.verifiers).toHaveLength(2);
+    expect(absent.receipts().filter((receipt) => receipt.step === 'path_check')).toHaveLength(2);
   });
 
   it('adopts only its own pull request: same repository, same branch, the rule base', async () => {
@@ -473,6 +573,10 @@ describe('CodingWorkflowEngine.installDependencies', () => {
     expect(context.receipts()).toEqual([expect.objectContaining({
       step: 'install', actionClass: 'package_install', state: 'APPLIED', outcome: { exitCode: 0, packageCount: 2, packagesDigest: digest }
     })]);
+    // The receipt describes the install, not one of its packages.
+    const recorded = JSON.parse((context.database.prepare('SELECT descriptor_json FROM coding_actions').get() as { descriptor_json: string }).descriptor_json);
+    expect(recorded).toMatchObject({ actionClass: 'package_install', paths: ['package-lock.json'], reason: expect.stringContaining(`2 locked packages from package-lock.json (sha256 ${digest})`) });
+    expect(recorded.package).toBeUndefined();
 
     // A changed lockfile is a different install.
     withLockfile(context, lockOf({ 'node_modules/left-pad': entry('left-pad', '1.3.1') }));

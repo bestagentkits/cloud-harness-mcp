@@ -16,7 +16,8 @@ import {
   type RunnerResponse
 } from '@cloud-harness/contracts';
 import { CodingActionBroker, type AgentToolRequest } from '../../apps/runner/src/agent-governance/action-broker.js';
-import type { CodingGitRunner } from '../../apps/runner/src/agent-governance/coding-git.js';
+import { CODING_GIT_SUBCOMMANDS, parseTransferInspection, type CodingGitRunner } from '../../apps/runner/src/agent-governance/coding-git.js';
+import type { CodingPublishPort } from '../../apps/runner/src/automation-coding.js';
 import { AgentManager } from '../../apps/runner/src/agent-manager.js';
 import { AgentStateRepository } from '../../apps/runner/src/agent-state-repository.js';
 import { AgentTraceRecorder } from '../../apps/runner/src/agent-trace-recorder.js';
@@ -67,6 +68,8 @@ class LocalWorkspaces {
   readonly pushedRefspecs: string[] = [];
   /** Arguments of every Git inspection the engine ran. */
   readonly gitInspections: string[][] = [];
+  /** Reads of a staged transfer clone, one per push the engine asked for. */
+  transferInspections = 0;
   /** Makes every Git inspection report a truncated listing, as an executor at its output cap would. */
   truncateGit = false;
   /** Stands in for a repository pre_commit lifecycle hook: runs in the checkout right before `git_commit` commits. */
@@ -228,16 +231,79 @@ class LocalWorkspaces {
     return await this.github.afterEffect('commit', fault, ok(answer));
   }
 
-  /** The coding engine's read-only Git inspection, run in the checkout with the same output cap semantics. */
+  /**
+   * The coding engine's read-only Git inspection, run in the checkout with the workspace service's clean
+   * environment and overriding options, and the same output cap semantics.
+   */
   readonly runGit: CodingGitRunner = async (ownerId, workspaceId, args) => {
     const record = this.store.byId(workspaceId);
     if (!record || record.ownerId !== ownerId || record.status !== 'ACTIVE') throw Object.assign(new Error('workspace not found'), { code: 'NOT_FOUND', retryable: false });
+    if (!CODING_GIT_SUBCOMMANDS.has(args[0] ?? '')) throw Object.assign(new Error('not inspectable'), { code: 'FORBIDDEN', retryable: false });
     this.gitInspections.push([...args]);
-    const ran = spawnSync('git', ['--no-replace-objects', '-c', 'core.quotePath=false', ...args], { cwd: this.checkout(workspaceId), encoding: 'utf8', windowsHide: true });
+    const ran = cleanGit(this.checkout(workspaceId), ['--git-dir=.git', '--work-tree=.', ...args]);
     // Only a listing can reach the cap; a single object id never does.
-    const truncated = this.truncateGit && (args[0] === 'status' || args[0] === 'diff');
+    const truncated = this.truncateGit && (args[0] === 'status' || args[0] === 'diff-tree');
     return { exitCode: ran.status ?? 1, stdout: truncated ? ran.stdout.slice(0, Math.floor(ran.stdout.length / 2)) : ran.stdout, truncated };
   };
+
+  /**
+   * `git_push` with a verifier, as the workspace service runs it: an isolated bare clone of the checkout is
+   * staged, the commit is read in that clone with a clean configuration (the transfer helper's `inspect`
+   * output), the verifier decides it, and only then is it pushed from the same clone. A refusal pushes nothing.
+   */
+  readonly publish: CodingPublishPort = async (ownerId, raw, verifier) => {
+    const parsed = TOOL_SCHEMA_BY_NAME.git_push.safeParse(raw);
+    if (!parsed.success) return fail('INVALID_INPUT');
+    const input = parsed.data as Record<string, unknown>;
+    const workspaceId = String(input.workspaceId);
+    const record = this.store.byOwnerAndId(ownerId, workspaceId);
+    if (!record || record.status !== 'ACTIVE') return fail('NOT_FOUND');
+    const key = `${workspaceId}:${String(input.idempotencyKey)}`;
+    const replay = this.pushes.get(key);
+    if (replay) return replay;
+    const refspec = /^([a-f0-9]{40}):refs\/heads\/(.+)$/u.exec(String(input.refspec ?? ''));
+    if (!refspec || refspec[1] !== verifier.sha) return fail('INVALID_INPUT');
+    const staged = join(record.workspacePath, `git-transfer-${randomBytes(6).toString('hex')}`);
+    try {
+      const cloned = cleanGit(record.workspacePath, ['clone', '--quiet', '--bare', '--no-local', '--', this.checkout(workspaceId), staged]);
+      if (cloned.status !== 0) return fail('UNAVAILABLE', true);
+      this.transferInspections += 1;
+      let refusal: string | null;
+      try {
+        refusal = await verifier.verify(parseTransferInspection(inspectTransfer(staged, verifier.sha, verifier.base), false));
+      } catch {
+        refusal = 'COMMIT_UNVERIFIED';
+      }
+      if (refusal !== null) return fail('FORBIDDEN');
+      this.pushedRefspecs.push(String(input.refspec));
+      const pushed = await this.github.push(staged, refspec[1]!, refspec[2]!, input.expectedAbsent === true);
+      if (pushed.ok) this.pushes.set(key, pushed);
+      return pushed;
+    } finally {
+      rmSync(staged, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  };
+}
+
+/** Git with the transfer helper's clean environment and overriding options (see `worker/git-transfer-helper.sh`). */
+function cleanGit(cwd: string, args: string[]) {
+  return spawnSync('git', [
+    '--no-replace-objects', '-c', 'core.useReplaceRefs=false', '-c', 'diff.relative=false', '-c', 'core.hooksPath=/dev/null',
+    '-c', 'core.fsmonitor=false', '-c', 'core.quotePath=false', ...args
+  ], {
+    cwd, encoding: 'utf8', windowsHide: true,
+    env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_NO_REPLACE_OBJECTS: '1', GIT_GRAFT_FILE: '/dev/null', GIT_TERMINAL_PROMPT: '0' }
+  });
+}
+
+/** The transfer helper's `inspect` answer for a staged bare clone. */
+function inspectTransfer(staged: string, sha: string, base: string): string {
+  const resolved = cleanGit(staged, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]).stdout.trim();
+  if (!resolved) return '\n';
+  const raw = cleanGit(staged, ['cat-file', 'commit', resolved]).stdout;
+  const header = `${resolved}\n${Buffer.from(raw, 'utf8').toString('base64')}\n`;
+  if (cleanGit(staged, ['cat-file', '-e', `${base}^{commit}`]).status !== 0) return `${header}no-base\n`;
+  return `${header}paths\n${cleanGit(staged, ['diff-tree', '-r', '--no-renames', '--no-commit-id', '--name-only', '-z', base, resolved, '--']).stdout}`;
 }
 
 export type CodingHarnessOptions = {
@@ -331,7 +397,8 @@ export async function createCodingHarness(options: CodingHarnessOptions = {}) {
     selfLogin: 'cloud-harness[bot]',
     now,
     coding: broker,
-    codingGit: workspaces.runGit
+    codingGit: workspaces.runGit,
+    codingPublish: workspaces.publish
   });
   let service = newService();
 

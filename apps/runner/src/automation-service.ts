@@ -29,7 +29,7 @@ import type { EncryptedSecret, SecretKeyring } from './secret-keyring.js';
 import type { CodingActionBroker } from './agent-governance/action-broker.js';
 import { CodingActionCursorError, CodingActionStore } from './agent-governance/action-store.js';
 import { createCodingGitPort, type CodingGitRunner } from './agent-governance/coding-git.js';
-import { CodingWorkflowEngine, type CodingInstallPort } from './automation-coding.js';
+import { CodingWorkflowEngine, type CodingInstallPort, type CodingPublishPort } from './automation-coding.js';
 import { conformRuntime, PI_RUNTIME_MANIFEST } from './agent-governance/runtime-adapters.js';
 import { traceIdFor } from './agent-trace-store.js';
 
@@ -103,6 +103,8 @@ export type AutomationServiceOptions = {
   codingInstall?: CodingInstallPort | undefined;
   /** Read-only Git inspection of a coding checkout; without it a coding workflow never commits. */
   codingGit?: CodingGitRunner | undefined;
+  /** `git_push` decided on the staged transfer clone; without it a coding workflow never pushes. */
+  codingPublish?: CodingPublishPort | undefined;
 };
 
 type SealedSecret = { generation: number; keyVersion: number; nonce: string; ciphertext: string; authTag: string };
@@ -292,7 +294,8 @@ export class AutomationService {
       complete: (id, fields) => { this.finish(id, ['RUNNING'], 'COMPLETED', null, 'system', { ...fields, ...this.publishFields(id) }); },
       now: () => this.now(),
       ...(options.codingInstall ? { install: options.codingInstall } : {}),
-      ...(options.codingGit ? { git: createCodingGitPort(options.codingGit) } : {})
+      ...(options.codingGit ? { git: createCodingGitPort(options.codingGit) } : {}),
+      ...(options.codingPublish ? { publish: options.codingPublish } : {})
     }) : undefined;
   }
 

@@ -352,18 +352,32 @@ runner publishes":
   When verification fails, nothing is committed and the staged diff is kept as
   a workspace artifact.
 - **The runner trusts only what it reads itself.** The agent and the verify
-  command run arbitrary code in the checkout, so the runner reads HEAD and the
-  changed paths with its own fixed, read-only Git invocations (hooks, pager,
-  fsmonitor and replace objects off; NUL-separated, bounded output) instead of
-  the worker's tools. It refuses to stage unless HEAD is still the base
-  (`HEAD_MOVED`), gates every changed path in bounded chunks, and refuses a
-  listing it could not read completely (`PATHS_UNVERIFIABLE`). Before the push
-  it reads the commit again: exactly one parent, the base; this run's
-  `Cloud-Harness-Workflow` trailer; and every path the commit changes gated
-  again, so a path a commit hook added is caught (`COMMIT_UNVERIFIED` or
-  `ACTION_DENIED:PATH_OUT_OF_SCOPE`). The push names that commit by its id,
-  never `HEAD`, and an existing pull request is adopted only when it comes from
-  the same repository, the run's branch and the rule's base.
+  command run arbitrary code in the checkout, including its Git configuration,
+  replace refs and grafts. The runner therefore never asks the worker's tools.
+  Its own reads of HEAD and the changed paths run in a fresh, network-less,
+  read-only helper container. Each read uses an allowlisted subcommand, an
+  explicit Git directory and work tree, a clean environment, and `-c`
+  overrides, so a checkout's `core.worktree`, `diff.relative`,
+  `core.useReplaceRefs`, grafts, hooks, fsmonitor and pager cannot reshape it
+  ([`apps/runner/src/agent-governance/coding-git.ts`](../apps/runner/src/agent-governance/coding-git.ts)).
+  It refuses to stage unless HEAD is still the base (`HEAD_MOVED`), gates
+  every changed path in bounded chunks, and refuses a listing it could not
+  read completely (`PATHS_UNVERIFIABLE`). These checkout reads are defence in
+  depth. The authoritative check runs on the transfer clone that the push
+  sends from: the runner copies the checkout through the pack protocol (no
+  shared object files or alternates), then the transfer helper reads the raw
+  commit object and the paths it changes there, with replace objects and
+  grafts off. The commit must have exactly one parent, the base, and this
+  run's `Cloud-Harness-Workflow` trailer, and every path it changes is gated
+  again. On a refusal (`COMMIT_UNVERIFIED` or
+  `ACTION_DENIED:PATH_OUT_OF_SCOPE`) the clone is discarded and nothing is
+  pushed ([`worker/git-transfer-helper.sh`](../worker/git-transfer-helper.sh),
+  [`test/integration/coding-publish.docker.test.ts`](../test/integration/coding-publish.docker.test.ts)).
+  The push names that commit by its id, never `HEAD`. A first attempt refuses
+  a branch that already exists (`BRANCH_EXISTS`) instead of adopting it; only
+  a replay of the run's own recorded commit step may reuse its branch. An
+  existing pull request is adopted only when it comes from the same
+  repository, the run's branch and the rule's base.
 - **Concurrency is decided at admission.** The policy's `maxConcurrentRuns`
   counts the owner's coding runs in progress; a run over the limit waits in
   `STARTING` until a slot frees or the start window expires, rather than being
@@ -382,9 +396,10 @@ runner publishes":
 - **Installs are lockfile-only and separate.** With
   `AGENT_CODING_PACKAGE_INSTALL_ENABLED`, a checkout's npm lockfile is admitted
   only if every entry is a registry tarball with a sha512 integrity from an
-  allowed registry, each package is a `package_install` action the policy must
-  allow (one install receipt names the package count and the digest of the
-  locked package list), and `npm ci --ignore-scripts` runs once before the agent starts in a
+  allowed registry, and each package is a `package_install` action the policy
+  must allow outright. A package that would need advisor clearance is refused,
+  not cleared in bulk. One install receipt describes the lockfile with its
+  package count and digest. `npm ci --ignore-scripts` runs once before the agent starts in a
   one-shot `dependency-access` container that mounts only the checkout and
   receives no secrets, Docker socket, tools or caches
   ([`apps/runner/src/agent-governance/install-executor.ts`](../apps/runner/src/agent-governance/install-executor.ts)).

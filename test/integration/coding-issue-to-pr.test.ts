@@ -53,7 +53,8 @@ function receipts(harness: CodingHarness, workflowId: string) {
   return all.reverse();
 }
 
-const RUNNER_STEPS = ['verify:APPLIED', 'path_check:APPLIED', 'commit:APPLIED', 'path_check:APPLIED', 'push:APPLIED', 'open_pr:APPLIED'];
+/** The push's own path check runs inside it, on the staged transfer clone, so it is recorded after the push. */
+const RUNNER_STEPS = ['verify:APPLIED', 'path_check:APPLIED', 'commit:APPLIED', 'push:APPLIED', 'path_check:APPLIED', 'open_pr:APPLIED'];
 
 /** A verify script that passes, but first commits a workflow file and a manifest itself. */
 const SNEAKY_VERIFY = [

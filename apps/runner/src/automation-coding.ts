@@ -18,7 +18,7 @@ import {
   type CodingBinding
 } from './agent-governance/action-broker.js';
 import type { CodingActionRecord } from './agent-governance/action-store.js';
-import type { CodingGitPort } from './agent-governance/coding-git.js';
+import type { CodingGitCommit, CodingGitPort, PushVerifier } from './agent-governance/coding-git.js';
 import { ExecutionBackendError, WorkspaceExecutionBackend } from './agent-governance/workspace-execution-backend.js';
 import { admitNpmLockfile, INSTALL_TIMEOUT_MS, MAX_LOCKFILE_BYTES, NPM_LOCKFILE, type InstallResult } from './agent-governance/install-executor.js';
 import type { AutomationOperationResult } from './automation-service.js';
@@ -30,6 +30,8 @@ const VERIFY_TIMEOUT_MS = 300_000;
 const STEP_RETRY_MS = 5_000;
 /** Delay before a run held back by the concurrency limit asks to be admitted again. */
 const ADMIT_RETRY_MS = 15_000;
+/** Delay before a run whose admission raced another run's asks again, so racing runs do not spin. */
+const ADMIT_RACE_RETRY_MS = 1_000;
 /** Bound on one gate decision, including an advisor call it makes. */
 const GATE_TIMEOUT_MS = 60_000;
 /** Bound on one Git inspection of the checkout. */
@@ -71,7 +73,12 @@ export type CodingEngineHost = {
   install?: CodingInstallPort | undefined;
   /** Read-only Git inspection of the checkout. Without it nothing is committed (COMMIT_UNVERIFIED). */
   git?: CodingGitPort | undefined;
+  /** `git_push` decided by a verifier on the staged transfer clone. Without it nothing is pushed (COMMIT_UNVERIFIED). */
+  publish?: CodingPublishPort | undefined;
 };
+
+/** A `git_push` whose staged commit the verifier decides before anything is sent (see `PushVerifier`). */
+export type CodingPublishPort = (ownerId: string, input: Record<string, unknown>, verifier: PushVerifier) => Promise<AutomationOperationResult>;
 
 /** The lockfile install executor as the engine sees it. */
 export type CodingInstallPort = {
@@ -146,10 +153,12 @@ function verifiablePaths(paths: readonly string[]): boolean {
  * either way stops the workflow as BLOCKED with EFFECT_UNKNOWN. The engine never merges or deploys.
  *
  * The agent and its verify command run arbitrary code in the checkout, including Git. The runner
- * therefore reads the checkout itself: HEAD must still be the base before anything is staged, every
- * changed path is gated before the commit, and the commit it pushes must be its own (one parent, the
- * base, and this workflow's trailer) with every path it changes gated again. The push names that
- * commit by its id, never by HEAD.
+ * therefore reads the checkout itself: HEAD must still be the base before anything is staged and every
+ * changed path is gated before the commit. Those checkout reads are a defence in depth; the decision
+ * that counts is made on the staged transfer clone the push sends from, read with a clean
+ * configuration: the commit must be its own (one parent, the base, and this workflow's trailer) with
+ * every path it changes gated again, or nothing is sent. The push names that commit by its id, never
+ * by HEAD.
  */
 export class CodingWorkflowEngine {
   private readonly backend: WorkspaceExecutionBackend;
@@ -173,7 +182,7 @@ export class CodingWorkflowEngine {
     const decision = await this.broker.admit(row.owner_id, projectId, { version: 1, actionClass: 'read', repository }, active);
     // Another run was admitted while the gate decided: decide again against the new count. The check and
     // the update below run without yielding, so two runs can never both take the last slot.
-    if (this.broker.activeCodingRuns(row.owner_id) !== active) return { state: 'waiting', retryAt: this.host.now() };
+    if (this.broker.activeCodingRuns(row.owner_id) !== active) return { state: 'waiting', retryAt: this.host.now() + ADMIT_RACE_RETRY_MS };
     if (decision.decision !== 'ALLOW') {
       // At admission the only usage the gate sees is the concurrency count.
       if (decision.reasonCode === 'BUDGET_EXHAUSTED') return { state: 'waiting', retryAt: this.host.now() + ADMIT_RETRY_MS };
@@ -238,21 +247,19 @@ export class CodingWorkflowEngine {
         package: { ecosystem: 'npm', name: locked.name, registry: locked.registryHost }
       });
     }
-    const step = (descriptor: AgentActionDescriptorInput): BrokeredStep => ({
+    const step: BrokeredStep = {
       binding, origin: 'runner', step: 'install', idempotencyKey: `automation:${row.id}:install:${digest.slice(0, 16)}`,
-      descriptor: { ...descriptor, reason: `npm ci of ${packageCount} locked packages from ${NPM_LOCKFILE} (sha256 ${digest})` },
-      signal: gateSignal()
-    });
-    // Every package is decided by the pure gate first. A refusal is recorded on the install receipt with
-    // the package it names; a package the advisor would have to clear is not cleared in bulk.
-    const refused = this.broker.precheck(binding, [...descriptors.values()]);
-    if (refused) {
-      this.broker.reject(step(refused.descriptor), refused.decision);
-      return { ok: false, code: refusalCode({ decision: refused.decision }), retry: false };
-    }
-    const admission = await this.broker.begin(step(descriptors.values().next().value as AgentActionDescriptorInput));
+      descriptor: {
+        version: 1, actionClass: 'package_install', repository: binding.repository, paths: [NPM_LOCKFILE],
+        reason: `npm ci of ${packageCount} locked packages from ${NPM_LOCKFILE} (sha256 ${digest})`
+      }
+    };
+    // Every package is decided by the pure gate; one refusal is recorded on the install receipt with the
+    // package it names, and a package the advisor would have to clear is refused, not cleared in bulk.
+    const admission = this.broker.beginLockfileInstall(step, [...descriptors.values()]);
     if (!admission.allowed) {
-      this.broker.traceRefusal(binding, admission.record);
+      // A gate refusal is traced when it is recorded; a disabled switch or a reused key is traced here.
+      if (admission.decision === null || admission.refusal) this.broker.traceRefusal(binding, admission.record);
       return { ok: false, code: refusalCode(admission), retry: false };
     }
     const { record } = admission;
@@ -417,10 +424,20 @@ export class CodingWorkflowEngine {
       return;
     }
     const startedAt = this.host.now();
+    // Only a replay (the step was dispatched before) may find its own branch or commit from the first
+    // attempt; on a first attempt either one was made by someone else and is never adopted.
+    const replay = record.state !== 'INTENT';
     if (!this.broker.dispatched(record)) return;
     const created = await this.host.call(row.owner_id, 'git_checkout', { workspaceId, ref: branch, create: true });
     if (!created.ok) {
-      // A replay finds the branch already created by the first attempt.
+      if (!replay) {
+        if (retryable(created)) {
+          this.broker.settle(binding, record, 'UNKNOWN', { errorCode: bounded(created.error?.code ?? 'UNKNOWN') }, startedAt);
+          this.retryLater(row);
+          return;
+        }
+        return this.refused(row, binding, record, 'BRANCH_EXISTS', startedAt);
+      }
       const existing = await this.host.call(row.owner_id, 'git_checkout', { workspaceId, ref: branch, create: false });
       if (!existing.ok) return this.stepFailed(row, binding, record, existing, startedAt);
     }
@@ -442,7 +459,9 @@ export class CodingWorkflowEngine {
     });
     // The commit tool answers without the commit id, and a replay may find HEAD already past the base
     // (an earlier attempt committed and only its answer was lost). Either way the commit is read back
-    // from the checkout and adopted only if it is this workflow's own.
+    // from the checkout and adopted only if it is this workflow's own. A first attempt that finds HEAD
+    // moved was raced by something else in the checkout and stops.
+    if (!committed.ok && committed.error?.code === 'STALE_HEAD' && !replay) return this.refused(row, binding, record, 'HEAD_MOVED', startedAt);
     if (!committed.ok && committed.error?.code !== 'STALE_HEAD') return this.stepFailed(row, binding, record, committed, startedAt);
     const own = await this.ownCommit(row, workspaceId, 'HEAD');
     if (!own.ok) {
@@ -467,19 +486,14 @@ export class CodingWorkflowEngine {
       this.host.fail(row.id, 'WORKSPACE_LOST');
       return;
     }
+    const publish = this.host.publish;
+    if (!publish) {
+      this.host.fail(row.id, 'COMMIT_UNVERIFIED');
+      return;
+    }
+    const base = row.base_oid;
     const key = `automation:${row.id}:push`;
     const descriptor: AgentActionDescriptorInput = { version: 1, actionClass: 'publish_branch', repository: binding.repository, branch };
-    const earlier = this.broker.actions.byKey(row.owner_id, row.id, key);
-    if (!earlier || earlier.state === 'INTENT') {
-      // What is published is the commit, not the working tree: it must be this workflow's own, and every
-      // path it changes against the base is gated again before the first push attempt.
-      const own = await this.ownCommit(row, workspaceId, commitSha);
-      if (!own.ok) {
-        if (own.retryable) return this.retryLater(row);
-        return this.refuseStep(row, binding, 'push', key, descriptor, own.code);
-      }
-      if (!(await this.checkPaths(row, binding, key, branch, own.paths))) return;
-    }
     const admission = await this.gate(row, binding, 'push', key, descriptor);
     if (!admission) return;
     const { record } = admission;
@@ -492,10 +506,20 @@ export class CodingWorkflowEngine {
     if (!this.broker.dispatched(record)) return;
     // Create-only: the push succeeds only when the branch does not exist yet, so it never overwrites
     // anything, and a replay that finds its own commit there is recognised by the reconciliation below.
-    // The source is the verified commit id, so whatever HEAD points at now is never published.
-    const pushed = await this.host.call(row.owner_id, 'git_push', {
+    // The source is the commit id, so whatever HEAD points at now is never published. What is published
+    // is decided on the staged transfer clone the push sends from, before every attempt that sends.
+    const decided: { refusal: string | null } = { refusal: null };
+    const pushed = await publish(row.owner_id, {
       workspaceId, refspec: `${commitSha}:refs/heads/${branch}`, forceWithLease: true, expectedAbsent: true, idempotencyKey: key
+    }, {
+      sha: commitSha,
+      base,
+      verify: async (commit) => {
+        decided.refusal = await this.verifyPublished(row, binding, key, branch, commitSha, commit);
+        return decided.refusal;
+      }
     });
+    if (decided.refusal !== null) return this.refused(row, binding, record, decided.refusal, startedAt);
     if (pushed.ok) {
       this.broker.settle(binding, record, 'APPLIED', { branch, commitSha }, startedAt);
       return this.phase(row, 'PR');
@@ -582,22 +606,43 @@ export class CodingWorkflowEngine {
 
   /** Gates changed paths as edits, in chunks of the gate's per-action limit; false when one is refused. */
   private async checkPaths(row: CodingWorkflowRow, binding: CodingBinding, keyPrefix: string, branch: string, paths: readonly string[]): Promise<boolean> {
+    const refusal = await this.gatePaths(binding, keyPrefix, branch, paths);
+    if (refusal === null) return true;
+    this.host.fail(row.id, refusal);
+    return false;
+  }
+
+  /** Gates changed paths as edits, in chunks of the gate's per-action limit; the refusal code of the first refused chunk. */
+  private async gatePaths(binding: CodingBinding, keyPrefix: string, branch: string, paths: readonly string[]): Promise<string | null> {
     const size = AGENT_POLICY_LIMITS.maxPathsPerAction;
     for (let index = 0; index * size < paths.length; index += 1) {
       const chunk = paths.slice(index * size, (index + 1) * size);
-      const check = await this.gate(row, binding, 'path_check', `${keyPrefix}:paths:${index}`, {
-        version: 1, actionClass: editActionClass(chunk), repository: binding.repository, branch, paths: chunk
+      const check = await this.broker.begin({
+        binding, origin: 'runner', step: 'path_check', idempotencyKey: `${keyPrefix}:paths:${index}`,
+        descriptor: { version: 1, actionClass: editActionClass(chunk), repository: binding.repository, branch, paths: chunk }, signal: gateSignal()
       });
-      if (!check) return false;
+      if (!check.allowed) {
+        this.broker.traceRefusal(binding, check.record);
+        return refusalCode(check);
+      }
       if (check.record.state === 'INTENT') this.broker.settle(binding, check.record, 'APPLIED', { branch }, this.host.now());
     }
-    return true;
+    return null;
   }
 
   /**
-   * The commit `revision` names, accepted only as this workflow's own: exactly one parent, the base, and
-   * the workflow trailer in its message, with a complete, gateable list of the paths it changes.
+   * Whether a commit is this workflow's own: exactly one parent, the base, and the workflow trailer in
+   * its message, with a complete, gateable list of the paths it changes. Null when it is.
    */
+  private ownCommitRefusal(row: CodingWorkflowRow, base: string, commit: CodingGitCommit): 'COMMIT_UNVERIFIED' | 'PATHS_UNVERIFIABLE' | null {
+    const trailer = workflowTrailer(row.id);
+    const marked = commit.message.split('\n').some((line) => line.trim() === trailer);
+    if (commit.sha === base || commit.parents.length !== 1 || commit.parents[0] !== base || !marked) return 'COMMIT_UNVERIFIED';
+    if (commit.truncated || commit.paths.length === 0 || !verifiablePaths(commit.paths)) return 'PATHS_UNVERIFIABLE';
+    return null;
+  }
+
+  /** The commit `revision` names in the checkout, accepted only as this workflow's own (see `ownCommitRefusal`). */
   private async ownCommit(row: CodingWorkflowRow, workspaceId: string, revision: string): Promise<OwnCommit> {
     const base = row.base_oid;
     if (!this.host.git || !base) return { ok: false, code: 'COMMIT_UNVERIFIED', retryable: false };
@@ -606,12 +651,26 @@ export class CodingWorkflowEngine {
       const transient = inspected.retryable || RETRYABLE_CODES.has(inspected.code);
       return { ok: false, code: transient ? bounded(inspected.code) : 'COMMIT_UNVERIFIED', retryable: transient };
     }
-    const { sha, parents, message, paths, truncated } = inspected.data;
-    const trailer = workflowTrailer(row.id);
-    const marked = message.split('\n').some((line) => line.trim() === trailer);
-    if (sha === base || parents.length !== 1 || parents[0] !== base || !marked) return { ok: false, code: 'COMMIT_UNVERIFIED', retryable: false };
-    if (truncated || paths.length === 0 || !verifiablePaths(paths)) return { ok: false, code: 'PATHS_UNVERIFIABLE', retryable: false };
-    return { ok: true, sha, paths };
+    const refusal = this.ownCommitRefusal(row, base, inspected.data);
+    return refusal ? { ok: false, code: refusal, retryable: false } : { ok: true, sha: inspected.data.sha, paths: inspected.data.paths };
+  }
+
+  /**
+   * The push verifier: the commit read from the staged transfer clone must be the recorded commit and
+   * this workflow's own, and every path it changes against the base is gated again. Null allows the push.
+   */
+  private async verifyPublished(row: CodingWorkflowRow, binding: CodingBinding, keyPrefix: string, branch: string, commitSha: string, commit: CodingGitCommit | null): Promise<string | null> {
+    const base = row.base_oid;
+    if (!commit || !base || commit.sha !== commitSha) return 'COMMIT_UNVERIFIED';
+    const refusal = this.ownCommitRefusal(row, base, commit);
+    if (refusal) return refusal;
+    return await this.gatePaths(binding, keyPrefix, branch, commit.paths);
+  }
+
+  /** A dispatched step the runner refused itself: recorded with the code, and the workflow fails with it. */
+  private refused(row: CodingWorkflowRow, binding: CodingBinding, record: CodingActionRecord, code: string, startedAt: number): void {
+    this.broker.settle(binding, record, 'REJECTED', { errorCode: bounded(code) }, startedAt);
+    this.host.fail(row.id, bounded(code));
   }
 
   /** Records a refusal decided by the runner itself (not the gate) on the step's receipt and fails the workflow. */

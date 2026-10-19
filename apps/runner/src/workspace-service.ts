@@ -100,7 +100,7 @@ import { AgentTraceStore, executeAgentTraceOperation } from './agent-trace-store
 import { AgentTraceRecorder, type AgentActionTraceSink } from './agent-trace-recorder.js';
 import type { CodingActionBroker } from './agent-governance/action-broker.js';
 import { LockfileInstallExecutor, type InstallResult } from './agent-governance/install-executor.js';
-import { CODING_GIT_SUBCOMMANDS } from './agent-governance/coding-git.js';
+import { CODING_GIT_ARGS, CODING_GIT_ENV, CODING_GIT_SUBCOMMANDS, isCommitSha, parseTransferInspection, type PushVerifier } from './agent-governance/coding-git.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -554,36 +554,35 @@ export class WorkspaceService {
 
   /**
    * Runs one read-only Git inspection in a coding checkout for the coding engine (see
-   * `agent-governance/coding-git.ts`): owner-scoped, ACTIVE only, a fixed subcommand allow-list, and
-   * hooks, fsmonitor, pagers, path quoting and replace refs off, so nothing in the checkout's own
-   * configuration runs or reshapes the listing. Output is capped and the cap is reported.
+   * `agent-governance/coding-git.ts`): owner-scoped, ACTIVE only, and a fixed subcommand allow-list.
+   * Every read runs in a fresh, unprivileged helper container with the checkout mounted read-only, never
+   * through `docker exec` into the executor, so no process the agent left running there can observe or
+   * steer it. System and global configuration, replace refs (including a repository's own
+   * core.useReplaceRefs), grafts, hooks, fsmonitor, pagers, path quoting and relative diff listings are
+   * off, and the Git directory and work tree are named explicitly so a checkout's core.worktree cannot
+   * move them. This is a defence in depth: what is published is decided on the transfer clone (see
+   * `remotePush`). Output is capped and the cap is reported.
    */
   async runCodingGit(ownerId: string, workspaceId: string, args: readonly string[], signal?: AbortSignal): Promise<{ exitCode: number; stdout: string; truncated: boolean }> {
     if (!CODING_GIT_SUBCOMMANDS.has(args[0] ?? '')) throw new HarnessError('FORBIDDEN', 'git subcommand is not inspectable', 403, false);
     const record = this.store.byId(workspaceId);
     if (!record || record.ownerId !== ownerId || record.status !== 'ACTIVE') throw new HarnessError('NOT_FOUND', 'workspace not found', 404, false);
-    const gitArgs = [
-      '--no-replace-objects', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'core.pager=cat',
-      '-c', 'core.quotePath=false', ...args
-    ];
-    const options = { timeoutMs: 60_000, maxBytes: CODING_GIT_MAX_BYTES, ...(signal ? { signal } : {}) };
-    if (record.containerName) {
-      // The absolute path: the executor PATH starts in the checkout (`node_modules/.bin`), which the agent controls.
-      const result = await runDocker(['exec', ...scopedWorkdirArgs(record), record.containerName, CODING_GIT_BINARY, ...gitArgs], options);
-      return { exitCode: result.exitCode, stdout: result.stdout, truncated: result.truncated };
-    }
     const helperName = `chm-cg-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
     try {
       const result = await runDocker([
-        'run', '--rm', '--name', helperName,
-        '--label', 'cloud-harness.ephemeral=true',
+        'run', '--rm', '--pull', 'never', '--name', helperName,
+        '--label', 'cloud-harness.role=coding-git-inspect', '--label', 'cloud-harness.ephemeral=true',
+        '--label', `cloud-harness.instance=${this.instanceId}`, '--label', `cloud-harness.workspace=${record.id}`,
         '--network', 'none', '--user', '10001:10001', '--read-only',
+        '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=16m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+        '--pids-limit', '64', '--memory', '256m', '--memory-swap', '256m', '--cpus', '1',
+        ...CODING_GIT_ENV.flatMap((entry) => ['--env', entry]),
         '--volume', `${record.workspacePath}/repo:/workspace:ro`,
         '--workdir', checkoutContainerPath(record),
         '--entrypoint', CODING_GIT_BINARY,
         this.config.executorImage,
-        ...gitArgs
-      ], options);
+        ...CODING_GIT_ARGS, ...args
+      ], { timeoutMs: 60_000, maxBytes: CODING_GIT_MAX_BYTES, ...(signal ? { signal } : {}) });
       return { exitCode: result.exitCode, stdout: result.stdout, truncated: result.truncated };
     } finally {
       await removeContainer(helperName);
@@ -2216,7 +2215,7 @@ export class WorkspaceService {
 
   private async runGitTransferHelper(
     record: WorkspaceRecord,
-    mode: 'fetch' | 'import' | 'stage-push' | 'push',
+    mode: 'fetch' | 'import' | 'stage-push' | 'inspect' | 'push',
     transferName: string,
     argument: string,
     token: string | undefined,
@@ -2505,7 +2504,27 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return { entry, scoped };
   }
 
-  private async remotePush(record: WorkspaceRecord, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  /**
+   * The authoritative read of a verified push: the commit is read in the staged transfer clone (the
+   * exact repository the push sends from, outside the executor's mount) with a clean configuration, and
+   * the caller's verifier decides it. A refusal, or a read that cannot be made, throws before anything
+   * is sent; the caller's `finally` discards the clone.
+   */
+  private async verifyStagedPush(record: WorkspaceRecord, transferName: string, source: string, verifier: PushVerifier, signal?: AbortSignal): Promise<void> {
+    if (source !== verifier.sha || !isCommitSha(verifier.sha) || !isCommitSha(verifier.base)) {
+      throw new HarnessError('INVALID_INPUT', 'a verified push must name the verified commit id as its source', 400, false);
+    }
+    const inspected = await this.runGitTransferHelper(record, 'inspect', transferName, verifier.sha, undefined, verifier.base, signal);
+    let refusal: string | null;
+    try {
+      refusal = await verifier.verify(parseTransferInspection(inspected.stdout, inspected.truncated));
+    } catch {
+      refusal = 'COMMIT_UNVERIFIED';
+    }
+    if (refusal !== null) throw new HarnessError('FORBIDDEN', `push refused before anything was sent: ${refusal}`.slice(0, 200), 403, false);
+  }
+
+  private async remotePush(record: WorkspaceRecord, input: Record<string, unknown>, signal?: AbortSignal, verifier?: PushVerifier): Promise<RunnerResponse> {
     assertRepositoryWritable(record, 'push');
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
     const repoStr = this.extractRepositoryName(repositoryUrl);
@@ -2636,13 +2655,17 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
     const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
     try {
+      // A verified push stages an isolated copy (no object files shared with the checkout), so the commit
+      // inspected below is exactly what the push sends even after the executor resumes.
+      const stageArgument = verifier ? 'isolated' : '';
       if (record.containerName) {
         await this.withPausedExecutor(record, async () =>
-          await this.runGitTransferHelper(record, 'stage-push', transferName, '', undefined, undefined, signal)
+          await this.runGitTransferHelper(record, 'stage-push', transferName, stageArgument, undefined, undefined, signal)
         );
       } else {
-        await this.runGitTransferHelper(record, 'stage-push', transferName, '', undefined, undefined, signal);
+        await this.runGitTransferHelper(record, 'stage-push', transferName, stageArgument, undefined, undefined, signal);
       }
+      if (verifier) await this.verifyStagedPush(record, transferName, pushedSource, verifier, signal);
       let pushed: { exitCode: number; stdout: string; stderr: string; truncated: boolean };
       try {
         pushed = await this.runGitTransferHelper(record, 'push', transferName, refspec, token, lease, signal);
@@ -3159,7 +3182,17 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return await this.tracePurger.purgeExpired(now, signal ? { signal } : {});
   }
 
-  async execute(principal: PrincipalSelector | string, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  /**
+   * `internal` is never reachable from the public API: only in-process callers (the coding engine) pass
+   * it. `pushVerifier` makes a `git_push` decide the staged commit before anything is sent.
+   */
+  async execute(
+    principal: PrincipalSelector | string,
+    operation: RunnerOperation,
+    input: Record<string, unknown>,
+    signal?: AbortSignal,
+    internal: { pushVerifier?: PushVerifier } = {}
+  ): Promise<RunnerResponse> {
     const ownerId = this.store.resolvePrincipal(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal);
     RunnerOperationSchema.parse(operation);
     const validated = TOOL_SCHEMA_BY_NAME[operation].parse(input) as Record<string, unknown>;
@@ -4738,7 +4771,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       return result.ok ? { ...result, message: 'Git pull complete' } : result;
     }
     if (operation === 'git_push') {
-      const result = await this.remotePush(record, validated, signal);
+      const result = await this.remotePush(record, validated, signal, internal.pushVerifier);
       await this.enforceActiveLimits(record);
       return result;
     }

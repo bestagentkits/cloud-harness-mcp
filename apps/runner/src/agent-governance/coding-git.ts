@@ -1,9 +1,13 @@
 /**
- * Read-only Git inspection of a coding checkout, for the runner's own commit and push steps. The agent
- * and its verify command run arbitrary code in the checkout, so the runner never trusts a listing it did
- * not produce itself: it reads HEAD and the working-tree changes before staging, and the paths of the
- * exact commit it is about to push. Every listing is NUL-separated (no quoting to undo) and carries the
- * executor's truncation flag; a caller refuses to act on a truncated listing.
+ * Read-only Git inspection for the runner's own commit and push steps. The agent and its verify command
+ * run arbitrary code in the checkout, including Git and its configuration, so the runner never trusts a
+ * listing it did not produce itself, and the read that decides what is published happens on the staged
+ * transfer clone the push sends from (see `PushVerifier`), never on the checkout.
+ *
+ * The checkout reads here (HEAD and the working-tree changes before staging, and the commit just made)
+ * are a defence in depth: every listing is NUL-separated (no quoting to undo), carries the executor's
+ * truncation flag, and a caller refuses to act on a truncated listing. Commit parents are taken from the
+ * raw commit object, which grafts and replace refs cannot reshape.
  */
 
 /** One Git invocation in the checkout: fixed arguments, bounded output, never a shell. */
@@ -26,8 +30,41 @@ export type CodingGitPort = {
   commit(ownerId: string, workspaceId: string, revision: string, base: string, signal: AbortSignal): Promise<CodingGitResult<CodingGitCommit>>;
 };
 
+/**
+ * Decides a push from the staged transfer clone, after it is staged and before anything is sent. The
+ * workspace service reads the commit `sha` in that clone with a clean configuration and hands it over
+ * (`null` when the clone holds no such commit or the read is malformed); a returned code refuses the
+ * push, the clone is discarded, and nothing reaches the remote.
+ */
+export type PushVerifier = {
+  sha: string;
+  base: string;
+  verify(commit: CodingGitCommit | null): Promise<string | null>;
+};
+
 /** The only Git subcommands the inspection port runs; the workspace service refuses anything else. */
-export const CODING_GIT_SUBCOMMANDS = new Set(['rev-parse', 'status', 'rev-list', 'log', 'diff']);
+export const CODING_GIT_SUBCOMMANDS = new Set(['rev-parse', 'status', 'cat-file', 'diff-tree']);
+
+/**
+ * Environment of a checkout inspection: no system or global configuration, replace objects or grafts,
+ * and no optional index writes.
+ */
+export const CODING_GIT_ENV: readonly string[] = [
+  'HOME=/tmp', 'GIT_CONFIG_NOSYSTEM=1', 'GIT_CONFIG_GLOBAL=/dev/null', 'GIT_NO_REPLACE_OBJECTS=1', 'GIT_GRAFT_FILE=/dev/null',
+  'GIT_TERMINAL_PROMPT=0', 'GIT_OPTIONAL_LOCKS=0'
+];
+
+/**
+ * Options of a checkout inspection, run in the checkout root, that override what its own configuration
+ * sets: replace refs (a repository's core.useReplaceRefs re-enables them otherwise), relative diff
+ * listings, hooks, fsmonitor, pagers and path quoting. The Git directory and work tree are named
+ * explicitly, so core.worktree cannot move the listing elsewhere.
+ */
+export const CODING_GIT_ARGS: readonly string[] = [
+  '--no-replace-objects', '--git-dir=.git', '--work-tree=.',
+  '-c', 'core.useReplaceRefs=false', '-c', 'diff.relative=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+  '-c', 'core.pager=cat', '-c', 'core.quotePath=false'
+];
 
 const SHA = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
 const REVISION = /^(?:HEAD|[a-f0-9]{40}(?:[a-f0-9]{24})?)$/u;
@@ -49,6 +86,47 @@ export function nulPaths(output: string): string[] {
   return [...new Set(output.split('\0').filter((entry) => entry.length > 0))].sort();
 }
 
+/**
+ * Parents and message of a raw commit object (`git cat-file commit`). The parents are the object's own
+ * `parent` headers, so neither a graft nor a replace ref can change them. Null when it is not a commit.
+ */
+export function parseCommitObject(raw: string): { parents: string[]; message: string } | null {
+  const end = raw.indexOf('\n\n');
+  const header = end === -1 ? raw : raw.slice(0, end);
+  const lines = header.split('\n');
+  if (!/^tree [a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(lines[0] ?? '')) return null;
+  const parents: string[] = [];
+  for (const line of lines.slice(1)) {
+    if (!line.startsWith('parent ')) continue;
+    const parent = line.slice('parent '.length);
+    if (!SHA.test(parent)) return null;
+    parents.push(parent);
+  }
+  return { parents, message: end === -1 ? '' : raw.slice(end + 2) };
+}
+
+/**
+ * The transfer helper's `inspect` answer (see `worker/git-transfer-helper.sh`): the resolved commit id,
+ * the raw commit in base64, `paths` or `no-base`, then the NUL-separated paths against the base. Null
+ * when the clone holds no such commit or the answer is malformed; a base the clone lacks yields no paths
+ * (the parent check refuses such a commit anyway).
+ */
+export function parseTransferInspection(stdout: string, truncated: boolean): CodingGitCommit | null {
+  const first = stdout.indexOf('\n');
+  const second = first === -1 ? -1 : stdout.indexOf('\n', first + 1);
+  const third = second === -1 ? -1 : stdout.indexOf('\n', second + 1);
+  const sha = (first === -1 ? stdout : stdout.slice(0, first)).trim();
+  if (!SHA.test(sha) || second === -1) return null;
+  const encoded = stdout.slice(first + 1, second);
+  if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded)) return null;
+  const commit = parseCommitObject(Buffer.from(encoded, 'base64').toString('utf8'));
+  if (!commit) return null;
+  const marker = third === -1 ? stdout.slice(second + 1) : stdout.slice(second + 1, third);
+  if (marker === 'no-base') return { sha, ...commit, paths: [], truncated };
+  if (marker !== 'paths' || third === -1) return null;
+  return { sha, ...commit, paths: nulPaths(stdout.slice(third + 1)), truncated };
+}
+
 function failure(error: unknown): { ok: false; code: string; retryable: boolean } {
   const record = error as { code?: unknown; retryable?: unknown } | null;
   return {
@@ -58,21 +136,25 @@ function failure(error: unknown): { ok: false; code: string; retryable: boolean 
   };
 }
 
+const inspectFailed = () => Object.assign(new Error('git inspection failed'), { code: 'GIT_INSPECT_FAILED', retryable: false });
+
 export function createCodingGitPort(run: CodingGitRunner): CodingGitPort {
   const git = async (ownerId: string, workspaceId: string, args: readonly string[], signal: AbortSignal) => {
     const result = await run(ownerId, workspaceId, args, signal);
-    if (result.exitCode !== 0) throw Object.assign(new Error('git inspection failed'), { code: 'GIT_INSPECT_FAILED', retryable: false });
+    if (result.exitCode !== 0) throw inspectFailed();
     return result;
   };
   const resolve = async (ownerId: string, workspaceId: string, revision: string, signal: AbortSignal): Promise<string> => {
     const sha = (await git(ownerId, workspaceId, ['rev-parse', '--verify', '--quiet', `${revision}^{commit}`], signal)).stdout.trim();
-    if (!SHA.test(sha)) throw Object.assign(new Error('not a commit'), { code: 'GIT_INSPECT_FAILED', retryable: false });
+    if (!SHA.test(sha)) throw inspectFailed();
     return sha;
   };
   return {
     async status(ownerId, workspaceId, signal) {
       try {
         const head = await resolve(ownerId, workspaceId, 'HEAD', signal);
+        // Porcelain v1 is Git's stable machine format: status.* display settings do not apply to it, and
+        // unlike a raw index diff it compares content, not just file timestamps.
         const listed = await git(ownerId, workspaceId, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames', '--ignore-submodules=none'], signal);
         return { ok: true, data: { head, paths: porcelainPaths(listed.stdout), truncated: listed.truncated } };
       } catch (error) {
@@ -83,10 +165,11 @@ export function createCodingGitPort(run: CodingGitRunner): CodingGitPort {
       if (!REVISION.test(revision) || !SHA.test(base)) return { ok: false, code: 'GIT_INSPECT_FAILED', retryable: false };
       try {
         const sha = await resolve(ownerId, workspaceId, revision, signal);
-        const parents = (await git(ownerId, workspaceId, ['rev-list', '--parents', '-n', '1', sha, '--'], signal)).stdout.trim().split(' ').slice(1);
-        const message = await git(ownerId, workspaceId, ['log', '-1', '--format=%B', sha, '--'], signal);
-        const diff = await git(ownerId, workspaceId, ['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-only', '-z', base, sha, '--'], signal);
-        return { ok: true, data: { sha, parents, message: message.stdout, paths: nulPaths(diff.stdout), truncated: message.truncated || diff.truncated } };
+        const raw = await git(ownerId, workspaceId, ['cat-file', 'commit', sha], signal);
+        const parsed = raw.truncated ? null : parseCommitObject(raw.stdout);
+        if (!parsed) throw inspectFailed();
+        const diff = await git(ownerId, workspaceId, ['diff-tree', '-r', '--no-renames', '--no-commit-id', '--name-only', '-z', base, sha, '--'], signal);
+        return { ok: true, data: { sha, ...parsed, paths: nulPaths(diff.stdout), truncated: diff.truncated } };
       } catch (error) {
         return failure(error);
       }
