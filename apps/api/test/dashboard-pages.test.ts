@@ -56,6 +56,7 @@ describe('dashboard page registry', () => {
     expect(groups.map((group) => group.label)).toEqual(['Home', 'Operate', 'Configure', 'Data', 'Admin']);
     expect(groups.flatMap((group) => group.pages.map((page) => page.id))).toEqual([
       'overview',
+      'inbox',
       'workspaces',
       'agents',
       'traces',

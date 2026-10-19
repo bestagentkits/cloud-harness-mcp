@@ -45,6 +45,20 @@ export const DASHBOARD_PAGES = [
     icon: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>'
   },
   {
+    id: 'inbox',
+    route: '/dashboard/inbox',
+    label: 'Inbox',
+    group: 'home',
+    title: 'Inbox',
+    help: 'Notifications about finished automations and agents, approvals that need you, and where each one was delivered.',
+    palette: true,
+    paletteHint: 'Notifications and delivery preferences',
+    nav: true,
+    // The sidebar entry stays hidden until the server reports that notifications are enabled.
+    feature: 'notifications',
+    icon: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>'
+  },
+  {
     id: 'workspaces',
     route: '/dashboard/workspaces',
     label: 'Workspaces',
