@@ -127,8 +127,13 @@ Run bounded regular-expression text search.
   `maxResults` defaults to 100 and permits 1–500.
 - Results contain matching paths, line numbers, and bounded line text. The
   pattern uses ripgrep-compatible regular-expression behavior.
-- If truncated, narrow `path`, `glob`, or pattern; search results do not provide
-  a continuation cursor.
+- If truncated, narrow `path`, `glob`, or pattern; a search of one tree does
+  not provide a continuation cursor.
+- In a multi-repository workspace, `repositoryId` searches one checkout and
+  `scope: "all"` searches every checkout with attributed results and a
+  cursor over repositories; see
+  [multi-repository workspaces](multi-repository-workspaces.md#search-every-checkout).
+  The same applies to `symbols_search` and `symbols_references`.
 
 <!-- cloudharness-example:grep_search
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","pattern":"TODO|FIXME","path":"src","glob":"*.ts","maxResults":100}

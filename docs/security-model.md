@@ -498,6 +498,15 @@ unchanged and the checkouts share the workspace byte ceiling.
 - **No silent fallback.** Git-bound tools refuse an unselected call in a
   multi-repository workspace instead of defaulting to one checkout, so a commit
   or push cannot land in the wrong repository by omission.
+- **Adding and removing checkouts.** `workspace_repo_add` applies the open-time
+  policy and clone path, so an added repository gets the same brokered,
+  credential-free checkout. Both changes touch the host filesystem only at the
+  canonical `repos/<alias>` path, verified host-side to be a real directory
+  that resolves exactly there (never a symlink the executor swapped in) before
+  any removal, and the removal stays confined to the jobs root. A failed add
+  removes only the directory it created; an existing path is refused rather
+  than overwritten. Remove refuses while the checkout holds work no remote has
+  or anything runs inside it, so it cannot discard work the owner did not save.
 
 Scoping and the write refusal are owned by
 [`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts)

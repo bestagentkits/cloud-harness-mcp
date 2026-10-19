@@ -168,6 +168,59 @@ executor's `/workspace` is the tree root and each checkout lives at
 `hasUncommitted`, and the short Git status, or an `error` when that checkout
 cannot be read. Both are read-only.
 
+The repository set can change while the workspace is active. Both tools apply
+only to a multi-repository workspace (a single-repository one refuses with
+`INVALID_INPUT`), require an `idempotencyKey`, hold the workspace mutation
+lease, and commit their registry change fenced on the workspace generation, so
+a close, expiry, or recovery meanwhile fails the call with `EXPIRED` and leaves
+the registry unchanged. A replayed key returns the first result; the same key
+with different parameters is a `CONFLICT`. A second change to the same
+workspace while one is in flight is a retryable `CONFLICT`.
+
+- **`workspace_repo_add`** takes one `repositories` entry (`url`, `alias`,
+  optional `ref`, `access`). It applies the open-time rules: the
+  [repository opening policy](#repository-opening-policy), unique alias and
+  URL, and `MAX_WORKSPACE_REPOSITORIES` (`LIMIT_EXCEEDED`). It clones into
+  `repos/<alias>/` with the same brokered credentials and constrained clone
+  helper as open, using the default history (deepen it with `git_fetch`), and
+  writes the registry row only after the clone succeeded and the workspace
+  stayed inside its size bounds. A `repos/<alias>` path that already exists is
+  refused with `CONFLICT` and left untouched. Any failure removes only the new
+  checkout and names the repository. The added checkout is not the primary.
+- **`workspace_repo_remove`** takes a `repositoryId` and refuses, without
+  changing anything, while the checkout has uncommitted or untracked paths,
+  stashes, linked worktrees, or commits on no remote (non-retryable
+  `CONFLICT`, the same checks auto-close applies), or while a task, shell,
+  session, terminal, or operation runs inside it or an agent runs in the
+  workspace (retryable `CONFLICT`). The last repository cannot be removed;
+  close the workspace instead. Removing the primary promotes the next
+  repository in open order. The registry row is deleted first, then the
+  checkout directory; `checkoutRemoved: false` reports a directory that could
+  not be deleted, which then counts as unsaved work at auto-close.
+
+`grep_search`, `symbols_search`, and `symbols_references` accept
+`scope: "all"`, mutually exclusive with `repositoryId`, to search every
+checkout in registry order within one `maxResults` budget. Each result carries
+`repositoryId` and `alias`; line results become `{ repositoryId, alias, match }`
+(or `reference`) with the path relative to that checkout, and symbols keep
+their checkout-relative `path`. `data.repositories` summarizes each searched
+checkout's result count and `truncated` flag, or its `error` (the search fails
+only when no checkout could be searched). When the budget runs out the
+response is `truncated` and its top-level `cursor` names the next repository;
+pass it back with the same input to continue. A checkout cut short midway is
+not resumed; narrow it with `repositoryId`. A cursor that no longer names a
+repository is `INVALID_INPUT`. Without the scope these tools behave exactly as
+before and ignore `cursor`.
+
+`artifacts_snapshot` and `artifacts_restore` accept `repositoryId`. With it the
+path is resolved and confined inside that checkout; without it the path stays
+relative to the tree root. A snapshot taken with a selector in a
+multi-repository workspace records `repositoryId` and `repositoryAlias` as
+provenance, which `artifacts_list` and `artifacts_read` return. Restore never
+applies the recorded repository implicitly, because the artifact may be
+restored into another workspace; pass `repositoryId` to restore into a
+checkout.
+
 `read-only` refuses brokered writes for that repository (`git_push`, a pushing
 `workspace_finalize`, `workspace_recover` `export`, and GitHub write actions)
 with non-retryable `FORBIDDEN` whose `error.repository` names the alias, and
@@ -175,13 +228,14 @@ reports `repositoryAccess: "read-only"` with its write capabilities and
 operations clamped to `false` in `workspace_capabilities`. It is
 not isolation; see the
 [security model](security-model.md#multi-repository-workspaces). Local stdio
-mode rejects `repositoryId` and both repository tools. The schemas are owned by
+mode rejects `repositoryId`, `scope: "all"`, and the repository tools. The schemas are owned by
 [`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts),
 resolution and scoping by
 [`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts)
 and [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts),
 and the behaviour is exercised by
-[`apps/runner/test/multi-repository-workspaces.test.ts`](../apps/runner/test/multi-repository-workspaces.test.ts)
+[`apps/runner/test/multi-repository-workspaces.test.ts`](../apps/runner/test/multi-repository-workspaces.test.ts),
+[`apps/runner/test/dynamic-repositories.test.ts`](../apps/runner/test/dynamic-repositories.test.ts),
 and
 [`packages/contracts/test/multi-repository-contracts.test.ts`](../packages/contracts/test/multi-repository-contracts.test.ts).
 The design record is
@@ -1001,7 +1055,7 @@ When running Cloud Harness MCP over local stdio (`--transport stdio --workspace 
 1. **Pre-opened workspace:** The workspace is configured at process startup. Calling `workspace_open` returns `INVALID_INPUT` explaining that the workspace is already selected.
 2. **Lifecycle operations:** `workspace_list` lists the active local workspace. `workspace_status` and `workspace_capabilities` return structured repository and workspace capabilities (`mode: 'local'`, `gitNetwork`, `gitPush`, `sandboxed: false`, granular operations and permissions). `workspace_close` terminates owned child processes but **never deletes the local folder**.
 3. **Subprocess execution:** `exec_run`, `shell_*`, `sessions_*`, and `tasks_*` execute on the local host with the current user's permissions. Output is bounded by ring buffers and paginated with monotonic cursors.
-4. **Single checkout only:** `repositoryId`, `workspace_repos_list`, and `workspace_repo_status` return `INVALID_INPUT`, because a local workspace is one directory chosen at startup; [multi-repository workspaces](#multi-repository-workspaces) need the remote runner.
+4. **Single checkout only:** `repositoryId`, `scope: "all"` on the search tools, `workspace_repos_list`, `workspace_repo_status`, `workspace_repo_add`, and `workspace_repo_remove` return `INVALID_INPUT`, because a local workspace is one directory chosen at startup; [multi-repository workspaces](#multi-repository-workspaces) need the remote runner.
 5. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action`, `exec_run.privileged=true`, and `bash` with `target: "toolbox"` return structured unsupported errors; `bash` with `target: "workspace"` behaves like `exec_run`.
 6. **Filesystem operations:** File reading, writing, patching, deletion, and searching apply within the canonical workspace root. Traversal escapes are rejected.
 

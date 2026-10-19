@@ -44,6 +44,8 @@ export class ArtifactStore {
     projectId?: string;
     environmentId?: string;
     workspaceId?: string;
+    repositoryId?: string;
+    repositoryAlias?: string;
     retentionMs?: number;
     now?: number;
   }, audit?: (database: DatabaseSync, principalId: string, artifact: ArtifactMetadata) => void): ArtifactMetadata {
@@ -51,7 +53,7 @@ export class ArtifactStore {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(input.logicalName) || input.logicalName === '.' || input.logicalName === '..') {
       throw new ArtifactStoreError('INVALID_INPUT', 'invalid artifact logical name');
     }
-    for (const value of [input.projectId, input.environmentId, input.workspaceId]) this.validateProvenance(value);
+    for (const value of [input.projectId, input.environmentId, input.workspaceId, input.repositoryId, input.repositoryAlias]) this.validateProvenance(value);
     const content = Buffer.from(input.content);
     if (content.byteLength > this.options.maxArtifactBytes) throw new ArtifactStoreError('LIMIT_EXCEEDED', 'artifact exceeds per-artifact quota');
     const now = input.now ?? Date.now();
@@ -79,10 +81,11 @@ export class ArtifactStore {
       if (!Number.isSafeInteger(expiresAt)) throw new ArtifactStoreError('INVALID_INPUT', 'invalid artifact retention');
       this.database.prepare(`INSERT INTO artifacts
         (id, principal_id, logical_name, sha256, size_bytes, project_id, environment_id, workspace_id,
-         relative_path, created_at, updated_at, expires_at, retention_ms, generation)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`).run(
+         repository_id, repository_alias, relative_path, created_at, updated_at, expires_at, retention_ms, generation)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`).run(
         artifactId, principalId, input.logicalName, sha256, content.byteLength, input.projectId ?? null,
-        input.environmentId ?? null, input.workspaceId ?? null, staged.relativePath, now, now, expiresAt, retentionMs
+        input.environmentId ?? null, input.workspaceId ?? null, input.repositoryId ?? null, input.repositoryAlias ?? null,
+        staged.relativePath, now, now, expiresAt, retentionMs
       );
       const row = this.rowByOwner(principalId, artifactId);
       if (!row) throw new Error('artifact insert was not persisted');
@@ -113,6 +116,8 @@ export class ArtifactStore {
     sha256: string;
     eof: boolean;
     content: string;
+    repositoryId?: string;
+    repositoryAlias?: string;
   } {
     this.validatePrincipal(principalId);
     const now = input.now ?? Date.now();
@@ -124,6 +129,10 @@ export class ArtifactStore {
     const limit = input.limit ?? 65_536;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_048_576) throw new ArtifactStoreError('INVALID_INPUT', 'invalid artifact limit');
     const totalBytes = row.size_bytes;
+    const repository = {
+      ...(row.repository_id ? { repositoryId: row.repository_id } : {}),
+      ...(row.repository_alias ? { repositoryAlias: row.repository_alias } : {})
+    };
     if (offset >= totalBytes) {
       return {
         artifactId: row.id,
@@ -133,7 +142,8 @@ export class ArtifactStore {
         totalBytes,
         sha256: row.sha256,
         eof: true,
-        content: ''
+        content: '',
+        ...repository
       };
     }
     const readLength = Math.min(limit, totalBytes - offset);
@@ -158,7 +168,8 @@ export class ArtifactStore {
       totalBytes,
       sha256: row.sha256,
       eof,
-      content
+      content,
+      ...repository
     };
   }
 

@@ -196,6 +196,26 @@ export type WorkspaceRepositoryRecord = {
   primary: boolean;
 };
 
+/** A repository add or remove recorded under the caller's idempotency key. */
+export type RepositoryChangeRecord = { ownerId: string; key: string; operation: string; fingerprint: string; resultJson: string };
+export type RepositoryChangeReplay = { operation: string; fingerprint: string; resultJson: string };
+
+/** The workspace generation or status changed before a repository change could commit. */
+export class RepositoryRegistryFenceError extends Error {
+  constructor() {
+    super('workspace lifecycle changed during the repository change');
+    this.name = 'RepositoryRegistryFenceError';
+  }
+}
+
+/** The committed registry no longer admits the change (a concurrent add or remove, or a bound). */
+export class RepositoryRegistryConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RepositoryRegistryConflictError';
+  }
+}
+
 /** The checkout a scoped record view resolves to: `subpath` is relative to the workspace tree root. */
 export type WorkspaceRepositoryScope = {
   id: string;
@@ -558,6 +578,7 @@ export class StateStore {
         is_primary INTEGER NOT NULL,
         UNIQUE(workspace_id, alias)
       );
+      CREATE TABLE IF NOT EXISTS workspace_repository_changes (owner_id TEXT NOT NULL, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, operation TEXT NOT NULL, fingerprint TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, workspace_id, idempotency_key));
     `);
     const commentCols = (this.database.prepare('PRAGMA table_info(comment_idempotency)').all() as { name: string }[]).map((c) => c.name);
     if (!commentCols.includes('fingerprint')) {
@@ -659,6 +680,84 @@ export class StateStore {
       position: Number(row.position),
       primary: Number(row.is_primary) === 1
     }));
+  }
+
+  /** The recorded result of one repository add or remove, keyed like every other workspace write. */
+  repositoryChangeReplay(ownerId: string, workspaceId: string, key: string): RepositoryChangeReplay | undefined {
+    const row = this.database.prepare('SELECT operation, fingerprint, result_json FROM workspace_repository_changes WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?')
+      .get(ownerId, workspaceId, key) as { operation: string; fingerprint: string; result_json: string } | undefined;
+    return row ? { operation: row.operation, fingerprint: row.fingerprint, resultJson: row.result_json } : undefined;
+  }
+
+  /** Replaces a recorded result, as when the checkout of a removed repository could not be deleted. */
+  updateRepositoryChangeResult(ownerId: string, workspaceId: string, key: string, resultJson: string): void {
+    this.database.prepare('UPDATE workspace_repository_changes SET result_json = ? WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?')
+      .run(resultJson, ownerId, workspaceId, key);
+  }
+
+  /**
+   * Registers one more checkout of a multi-repository workspace and records the caller's replay in the
+   * same transaction. It is fenced on the workspace generation and active status, and rechecks the alias,
+   * URL, and size bounds against the committed registry, so a lost fence or a concurrent change leaves no
+   * row and no replay behind.
+   */
+  addWorkspaceRepository(
+    entry: WorkspaceRepositoryRecord,
+    fence: { generation: number; limit: number; urlKey: (url: string) => string },
+    replay: RepositoryChangeRecord
+  ): void {
+    this.inRepositoryChangeTransaction(entry.workspaceId, fence.generation, (current) => {
+      if (current.length === 0) throw new RepositoryRegistryConflictError('workspace has no repository registry');
+      if (current.length >= fence.limit) throw new RepositoryRegistryConflictError(`a workspace holds at most ${fence.limit} repositories on this instance`);
+      if (current.some((row) => row.alias === entry.alias)) throw new RepositoryRegistryConflictError(`duplicate repository alias: ${entry.alias}`);
+      if (current.some((row) => fence.urlKey(row.repositoryUrl) === fence.urlKey(entry.repositoryUrl))) throw new RepositoryRegistryConflictError('duplicate repository URL');
+      const position = Math.max(...current.map((row) => row.position)) + 1;
+      this.database.prepare(`INSERT INTO workspace_repositories
+        (id, workspace_id, alias, repository_url, repository_ref, access, position, is_primary) VALUES (?, ?, ?, ?, ?, ?, ?, 0)`)
+        .run(entry.id, entry.workspaceId, entry.alias, entry.repositoryUrl, entry.repositoryRef, entry.access, position);
+      this.insertRepositoryChange(entry.workspaceId, replay);
+    });
+  }
+
+  /**
+   * Deletes one checkout's registry row, fenced like `addWorkspaceRepository`. Removing the primary
+   * promotes the next repository in open order, and the workspace row's repository URL and ref follow it,
+   * because workspace-level status and capabilities describe the primary checkout.
+   */
+  removeWorkspaceRepository(workspaceId: string, repositoryId: string, generation: number, replay: RepositoryChangeRecord): void {
+    this.inRepositoryChangeTransaction(workspaceId, generation, (current) => {
+      const target = current.find((row) => row.id === repositoryId);
+      if (!target) throw new RepositoryRegistryConflictError('repository is no longer registered');
+      const remaining = current.filter((row) => row.id !== repositoryId);
+      if (remaining.length === 0) throw new RepositoryRegistryConflictError('the last repository of a workspace cannot be removed');
+      this.database.prepare('DELETE FROM workspace_repositories WHERE workspace_id = ? AND id = ?').run(workspaceId, repositoryId);
+      if (target.primary) {
+        const next = remaining[0]!;
+        this.database.prepare('UPDATE workspace_repositories SET is_primary = 1 WHERE workspace_id = ? AND id = ?').run(workspaceId, next.id);
+        this.database.prepare('UPDATE workspaces SET repository_url = ?, repository_ref = ? WHERE id = ? AND generation = ?')
+          .run(next.repositoryUrl, next.repositoryRef, workspaceId, generation);
+      }
+      this.insertRepositoryChange(workspaceId, replay);
+    });
+  }
+
+  private inRepositoryChangeTransaction(workspaceId: string, generation: number, change: (current: WorkspaceRepositoryRecord[]) => void): void {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const fenced = this.database.prepare("SELECT 1 FROM workspaces WHERE id = ? AND generation = ? AND status = 'ACTIVE'").get(workspaceId, generation);
+      if (!fenced) throw new RepositoryRegistryFenceError();
+      change(this.workspaceRepositories(workspaceId));
+      this.database.exec('COMMIT;');
+    } catch (error) {
+      try { this.database.exec('ROLLBACK;'); } catch { /* ignore rollback error */ }
+      throw error;
+    }
+  }
+
+  private insertRepositoryChange(workspaceId: string, replay: RepositoryChangeRecord): void {
+    this.database.prepare(`INSERT INTO workspace_repository_changes
+      (owner_id, workspace_id, idempotency_key, operation, fingerprint, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(replay.ownerId, workspaceId, replay.key, replay.operation, replay.fingerprint, replay.resultJson, Date.now());
   }
 
   /**
