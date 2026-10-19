@@ -51,9 +51,11 @@ Opening a trace shows:
   the end and reads `unknown`.
 
 A failed model call shows its error class. `budget` means the model gateway refused
-the call because the agent's token or cost budget could not cover it; the trace also
-shows a `budget.limit` span. Raise the agent's budget (`maxInputTokens`,
-`maxOutputTokens`, or `maxCostMicros`) to let it go further. `rate_limit` means the
+the call because the agent's token or cost budget could not cover it; unless the run
+already hit another limit, the trace also shows a `budget.limit` span. Raise the
+agent's budget (`maxInputTokens`, `maxOutputTokens`, or `maxCostMicros`) to let it go
+further; the model profile's limits cap that budget, so a run already at the profile
+ceiling needs a profile with higher limits. `rate_limit` means the
 provider throttled the call; waiting and retrying is the fix, not a bigger budget.
 
 A trace whose data is incomplete is marked **partial**: a span never closed, a model

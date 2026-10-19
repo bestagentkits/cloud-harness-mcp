@@ -77,7 +77,8 @@ Page through one trace's spans in recording order (span sequence, not start
 time): `agent_run`, `model_call`, `tool_call`, `budget`, and `gateway`. Tool
 calls carry the operation name, outcome, and an input digest, plus a redacted
 preview only when the operator enabled one. A failed model call's `errorClass`
-`budget` is a gateway budget refusal (raise the agent's budget); `rate_limit` is
+`budget` is a gateway budget refusal (raise the agent's budget, up to the model
+profile's limits); `rate_limit` is
 provider throttling (wait and retry).
 
 - Required: `traceId`. Optional: `kind`, `cursor`, `limit` (1–500, default 200).

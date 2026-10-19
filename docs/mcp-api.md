@@ -313,8 +313,8 @@ event-to-span mapping by
   Model Gateway budget refusal is `budget`, recognised by the gateway's
   structured refusal code `budget_exceeded` (owned by
   [`apps/model-gateway/src/budget.ts`](../apps/model-gateway/src/budget.ts)),
-  and it also records the run's `budget.limit` span with
-  `limit: "model_budget"`. Provider throttling, including a provider quota
+  and, unless the run already recorded another limit, the run's
+  `budget.limit` span with `limit: "model_budget"`. Provider throttling, including a provider quota
   429, stays `rate_limit`. Raise the agent's budget for the first; wait and
   retry for the second.
 - **Reconciliation.** When the agent ends, model-call span sums are compared

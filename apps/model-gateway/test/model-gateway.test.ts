@@ -716,7 +716,11 @@ describe('model gateway usage accounting', () => {
     expect(providerRequests).toBe(0);
   });
 
-  it('refuses a request the lease cost budget cannot cover with a structured budget refusal', async () => {
+  it.each([
+    ['input token', { maxInputTokens: 1 }],
+    ['input cost', { maxCostMicros: 1 }],
+    ['output cost', { maxCostMicros: 70 }]
+  ])('refuses a request the lease %s budget cannot cover with a structured budget refusal', async (_budget, lease) => {
     let providerRequests = 0;
     const provider = await fakeProvider((_request, response) => {
       providerRequests += 1;
@@ -724,7 +728,7 @@ describe('model gateway usage accounting', () => {
     });
     const running = await gateway(pricedProfile(provider.upstream));
     const response = await fetch(`${running.baseUrl}/v1/chat/completions`, {
-      method: 'POST', headers: headers(activate(running.runtime, { ...issue(), maxCostMicros: 1 })),
+      method: 'POST', headers: headers(activate(running.runtime, { ...issue(), ...lease })),
       body: '{"messages":[],"max_tokens":100}'
     });
     expect(response.status).toBe(429);
