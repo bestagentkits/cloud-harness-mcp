@@ -21,7 +21,7 @@ const serviceToken = 'runner-token-that-is-longer-than-32-characters';
 const DAY = 86_400_000;
 const workspaceId = `ws_${'w'.repeat(24)}`;
 
-type Booted = { client: Client; store: StateStore; traces: AgentTraceStore; close: () => Promise<void> };
+type Booted = { client: Client; store: StateStore; service: WorkspaceService; traces: AgentTraceStore; close: () => Promise<void> };
 const transcripts: unknown[] = [];
 
 const listen = async (server: Server) => {
@@ -58,7 +58,7 @@ async function boot(root: string, tracesEnabled: boolean): Promise<Booted> {
     requestInit: { headers: { authorization: `Bearer ${bearer}` } }
   }));
   return {
-    client, store, traces,
+    client, store, service, traces,
     close: async () => {
       await client.close();
       await runtime.close();
@@ -196,6 +196,25 @@ describe('agent trace tools over MCP HTTP', () => {
     const expired = await call(enabled, 'agent_trace_get', { traceId: expiredTrace });
     expect(expired.isError).toBe(true);
     expect(expired.envelope.error?.code).toBe('TRACE_EXPIRED');
+  });
+
+  it('returns the KPI summary on the first page only', async () => {
+    const first = await call(enabled, 'agent_traces_list', { limit: 1 });
+    expect(first.data.summary).not.toBeNull();
+    const next = await call(enabled, 'agent_traces_list', { limit: 1, cursor: first.data.nextCursor });
+    expect(next.isError).toBe(false);
+    expect(next.data.summary).toBeNull();
+    expect((await call(enabled, 'agent_traces_list', { limit: 1, includeSummary: false })).data.summary).toBeNull();
+  });
+
+  it('keeps purging past-retention traces while traces are turned off', async () => {
+    const principal = disabled.store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
+    const now = Date.now();
+    const old = seed(disabled, principal, now - 40 * DAY, { endedAt: now - 30 * DAY });
+    const recent = seed(disabled, principal, now - 60_000);
+    expect(await disabled.service.purgeAgentTraces(now)).toBe(1);
+    expect(disabled.traces.findTrace(old)).toBeUndefined();
+    expect(disabled.traces.findTrace(recent)).toBeDefined();
   });
 
   it('refuses a cursor issued for different filters', async () => {

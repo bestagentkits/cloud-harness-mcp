@@ -38,7 +38,8 @@ export function initializeAgentTraceSchema(database: DatabaseSync): void {
       truncated INTEGER NOT NULL DEFAULT 0 CHECK(truncated IN (0, 1)),
       expires_at INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS agent_traces_principal_started ON agent_traces(principal_id, started_at DESC);
+    DROP INDEX IF EXISTS agent_traces_principal_started;
+    CREATE INDEX IF NOT EXISTS agent_traces_principal_started_trace ON agent_traces(principal_id, started_at, trace_id);
     CREATE INDEX IF NOT EXISTS agent_traces_principal_profile ON agent_traces(principal_id, profile_id, started_at);
     CREATE INDEX IF NOT EXISTS agent_traces_agent ON agent_traces(agent_id);
     CREATE INDEX IF NOT EXISTS agent_traces_workflow ON agent_traces(workflow_id);

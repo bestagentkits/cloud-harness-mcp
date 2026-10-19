@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
+import type { z } from 'zod';
 import {
+  AGENT_TRACE_RESULT_SCHEMAS,
   HarnessError,
   TRACE_COHORT_MIN_SAMPLES,
   TraceAttributesSchema,
@@ -36,6 +38,9 @@ const RUNNING_ORPHAN_GRACE_MS = 7 * DAY_MS;
 const SUMMARY_TRACE_SAMPLE = 1_000;
 /** And at most this many model_call spans of those traces. */
 const SUMMARY_SPAN_SAMPLE = 20_000;
+/** Traces removed per purge transaction; the purge yields to the event loop between batches. */
+const PURGE_BATCH_DEFAULT = 200;
+const PURGE_BATCH_MAX = 500;
 const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567';
 
 export type AgentTraceStoreOptions = {
@@ -299,7 +304,6 @@ export class AgentTraceStore {
 
   /** Creates the trace if absent. Returns false when it already existed (a deterministic re-attach). */
   createTrace(row: NewTraceRow): boolean {
-    this.enforceQuota(row.principalId, 1);
     const result = this.database.prepare(`INSERT OR IGNORE INTO agent_traces(
         trace_id, principal_id, workspace_id, agent_id, generation, run_id, parent_trace_id, workflow_id, profile_id,
         profile_revision_id, state, started_at, cost_provenance, coverage, span_count, truncated, expires_at)
@@ -307,7 +311,11 @@ export class AgentTraceStore {
       row.traceId, row.principalId, row.workspaceId, row.agentId, row.generation, row.runId, row.parentTraceId,
       row.workflowId, row.profileId, row.profileRevisionId, row.startedAt, this.retentionDeadline(row.startedAt)
     );
-    return Number(result.changes) === 1;
+    if (Number(result.changes) !== 1) return false;
+    // Only a newly inserted trace counts against the quota; a re-attach changes nothing. The new
+    // trace is RUNNING, so eviction never removes it.
+    this.enforceQuota(row.principalId);
+    return true;
   }
 
   findTrace(traceId: string): TraceRow | undefined {
@@ -403,13 +411,25 @@ export class AgentTraceStore {
     }
   }
 
-  /** Removes expired traces and their spans. Returns the number of traces removed. */
-  purgeExpired(now: number): number {
-    const expired = this.database.prepare(`SELECT trace_id FROM agent_traces
-      WHERE expires_at <= ? AND (state <> 'RUNNING' OR expires_at <= ?) ORDER BY expires_at LIMIT 1000`)
-      .all(now, now - RUNNING_ORPHAN_GRACE_MS) as { trace_id: string }[];
-    for (const { trace_id: traceId } of expired) this.deleteTrace(traceId);
-    return expired.length;
+  /**
+   * Removes expired traces and their spans in bounded batches: one transaction per batch, yielding to
+   * the event loop between batches so a large backlog never blocks the runner. Returns the number of
+   * traces removed.
+   */
+  async purgeExpired(now: number, options: { batchSize?: number; yieldBetween?: () => Promise<void> } = {}): Promise<number> {
+    const batchSize = Math.max(1, Math.min(PURGE_BATCH_MAX, options.batchSize ?? PURGE_BATCH_DEFAULT));
+    const yieldBetween = options.yieldBetween ?? (() => new Promise<void>((resolve) => { setImmediate(resolve); }));
+    const select = this.database.prepare(`SELECT trace_id FROM agent_traces
+      WHERE expires_at <= ? AND (state <> 'RUNNING' OR expires_at <= ?) ORDER BY expires_at LIMIT ?`);
+    let removed = 0;
+    for (;;) {
+      const expired = (select.all(now, now - RUNNING_ORPHAN_GRACE_MS, batchSize) as { trace_id: string }[]).map((row) => row.trace_id);
+      if (expired.length === 0) return removed;
+      this.deleteTraces(expired);
+      removed += expired.length;
+      if (expired.length < batchSize) return removed;
+      await yieldBetween();
+    }
   }
 
   /** Keeps a principal below its trace quota by removing its oldest finished traces. */
@@ -419,15 +439,17 @@ export class AgentTraceStore {
     if (excess <= 0) return 0;
     const victims = this.database.prepare(`SELECT trace_id FROM agent_traces WHERE principal_id = ? AND state <> 'RUNNING'
       ORDER BY started_at, trace_id LIMIT ?`).all(principalId, excess) as { trace_id: string }[];
-    for (const { trace_id: traceId } of victims) this.deleteTrace(traceId);
+    if (victims.length > 0) this.deleteTraces(victims.map((victim) => victim.trace_id));
     return victims.length;
   }
 
-  private deleteTrace(traceId: string): void {
+  /** Deletes a bounded set of traces and their spans in one transaction. */
+  private deleteTraces(traceIds: readonly string[]): void {
+    const placeholders = traceIds.map(() => '?').join(', ');
     this.database.exec('SAVEPOINT agent_trace_delete');
     try {
-      this.database.prepare('DELETE FROM agent_trace_spans WHERE trace_id = ?').run(traceId);
-      this.database.prepare('DELETE FROM agent_traces WHERE trace_id = ?').run(traceId);
+      this.database.prepare(`DELETE FROM agent_trace_spans WHERE trace_id IN (${placeholders})`).run(...traceIds);
+      this.database.prepare(`DELETE FROM agent_traces WHERE trace_id IN (${placeholders})`).run(...traceIds);
       this.database.exec('RELEASE agent_trace_delete');
     } catch (error) {
       this.database.exec('ROLLBACK TO agent_trace_delete');
@@ -474,8 +496,8 @@ export class AgentTraceStore {
       if (!anchor || anchor.expiresAt <= now) {
         throw new HarnessError('TRACE_EXPIRED', 'the trace page this cursor continues from was removed by retention; restart the listing without a cursor', 410, false, { resumeAction: 'restart_without_cursor' });
       }
-      where.push('(started_at < ? OR (started_at = ? AND trace_id < ?))');
-      values.push(cursor.s, cursor.s, cursor.t);
+      where.push('(started_at, trace_id) < (?, ?)');
+      values.push(cursor.s, cursor.t);
     }
     const rows = (this.database.prepare(`SELECT * FROM agent_traces WHERE ${where.join(' AND ')}
       ORDER BY started_at DESC, trace_id DESC LIMIT ?`).all(...values, input.limit + 1) as TraceDbRow[]).map(toRow);
@@ -484,9 +506,11 @@ export class AgentTraceStore {
     const nextCursor = rows.length > input.limit && last
       ? encodeCursor({ k: 'l', s: last.startedAt, t: last.traceId, p: principalPrint, f: filterPrint })
       : null;
+    // The summary covers the whole window, so only the first page computes it, and only on request.
+    const wantSummary = input.cursor === undefined && input.includeSummary !== false;
     return {
       traces: page.map(summaryOf),
-      summary: this.summary(windowWhere, windowValues),
+      summary: wantSummary ? this.summary(windowWhere, windowValues) : null,
       nextCursor
     };
   }
@@ -531,7 +555,7 @@ export class AgentTraceStore {
         output: sumNullable(traces.map((trace) => trace.outputTokens)),
         reasoning: sumNullable(traces.map((trace) => trace.reasoningTokens))
       },
-      costMicros: known.reduce((total, trace) => total + (trace.costMicros ?? 0), 0),
+      costMicros: known.length === 0 ? null : known.reduce((total, trace) => total + (trace.costMicros ?? 0), 0),
       unknownCostTraces: traces.length - known.length,
       errorTraces: traces.filter((trace) => trace.state === 'FAILED' || trace.state === 'TIMED_OUT' || trace.state === 'EXPIRED').length,
       partialTraces: traces.filter((trace) => trace.coverage === 'partial').length,
@@ -663,24 +687,39 @@ export function executeAgentTraceOperation(
   }
   switch (operation) {
     case 'agent_traces_list': {
-      const data = store.list(principalId, input as AgentTracesListInput, options.now);
+      const data = traceResult(operation, store.list(principalId, input as AgentTracesListInput, options.now));
       return { ok: true, message: `Listed ${data.traces.length} agent traces`, data, truncated: data.nextCursor !== null };
     }
     case 'agent_trace_get':
-      return { ok: true, message: 'Agent trace', data: store.get(principalId, input.traceId as string, options.now), truncated: false };
+      return { ok: true, message: 'Agent trace', data: traceResult(operation, store.get(principalId, input.traceId as string, options.now)), truncated: false };
     case 'agent_trace_spans': {
-      const data = store.spans(principalId, {
+      const data = traceResult(operation, store.spans(principalId, {
         traceId: input.traceId as string,
         kind: input.kind as TraceSpanKind | undefined,
         cursor: input.cursor as string | undefined,
         limit: input.limit as number
-      }, options.now);
+      }, options.now));
       return { ok: true, message: `Listed ${data.spans.length} trace spans`, data, truncated: data.nextCursor !== null };
     }
     case 'agent_trace_export': {
       const { trace, spans } = store.exportable(principalId, input.traceId as string, options.now, options.maxSpans);
-      const data = renderTraceExport(trace, spans, input.format as TraceExportFormat);
+      const data = traceResult(operation, renderTraceExport(trace, spans, input.format as TraceExportFormat));
       return { ok: true, message: `Exported agent trace as ${data.format}`, data, truncated: data.truncated };
     }
   }
+}
+
+/**
+ * Parses a trace result against the operation's strict public result schema, so a field the schema
+ * does not list fails the call instead of reaching the caller.
+ */
+function traceResult<Operation extends AgentTraceOperation>(
+  operation: Operation,
+  data: unknown
+): z.infer<(typeof AGENT_TRACE_RESULT_SCHEMAS)[Operation]> {
+  const parsed = AGENT_TRACE_RESULT_SCHEMAS[operation].safeParse(data);
+  if (!parsed.success) {
+    throw new HarnessError('INTERNAL_ERROR', `${operation} produced a result outside its contract`, 500, false);
+  }
+  return parsed.data as z.infer<(typeof AGENT_TRACE_RESULT_SCHEMAS)[Operation]>;
 }

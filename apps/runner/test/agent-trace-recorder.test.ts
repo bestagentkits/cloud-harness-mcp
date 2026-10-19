@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AgentTracesListInputSchema, HarnessError, TraceSpanSchema, type TraceSpan } from '@cloud-harness/contracts';
+import { AgentProxyOperationSchema, AgentTracesListInputSchema, HarnessError, TRACE_SPAN_KINDS, TraceSpanSchema, type TraceSpan } from '@cloud-harness/contracts';
 import type { AgentLeaseSettlement } from '../src/agent-gateway-control.js';
 import { AgentTraceRecorder, redactTraceText, redactTraceValue, traceInputDigest, type TraceRunKey } from '../src/agent-trace-recorder.js';
 import { renderTraceExport } from '../src/agent-trace-export.js';
@@ -249,7 +249,7 @@ describe('agent trace recorder failure matrix', () => {
     expect(trace.tokens.prompt).toBe(30);
   });
 
-  it('expires and purges a finished trace past retention', () => {
+  it('expires and purges a finished trace past retention', async () => {
     const t = setup({ retentionDays: 1 });
     const key = t.begin();
     t.turn(key);
@@ -258,7 +258,7 @@ describe('agent trace recorder failure matrix', () => {
     const traceId = traceIdFor(key.agentId, key.generation);
     const later = Date.now() + 2 * 86_400_000;
     expect(() => t.store.get(PRINCIPAL, traceId, later)).toThrowError(HarnessError);
-    expect(t.store.purgeExpired(later)).toBe(1);
+    expect(await t.store.purgeExpired(later)).toBe(1);
     expect(t.store.findTrace(traceId)).toBeUndefined();
     expect(t.state.database.prepare('SELECT COUNT(*) AS count FROM agent_trace_spans WHERE trace_id = ?').get(traceId)).toEqual({ count: 0 });
   });
@@ -301,7 +301,219 @@ describe('agent trace recorder failure matrix', () => {
     };
     const few = count(1);
     expect(count(500)).toBe(few);
-    expect(few).toBeLessThanOrEqual(3 * 2 + 3);
+    // Two writes per turn (open, close) plus a constant: the root's open and close and the budget and
+    // gateway settlement spans.
+    expect(few).toBeLessThanOrEqual(3 * 2 + 4);
+  });
+});
+
+describe('agent trace redaction cost', () => {
+  // A run of identifier characters with no separator was quadratic for the unbounded key pattern:
+  // 200 KB took seconds. Every quantifier is now bounded and strings are cut before matching.
+  const adversarial = [
+    'a'.repeat(1_000_000),
+    `${'token'.repeat(200_000)}`,
+    `${'x_'.repeat(500_000)}`,
+    `Bearer ${'A'.repeat(1_000_000)}`,
+    `-----BEGIN PRIVATE KEY-----${'Q'.repeat(1_000_000)}`
+  ];
+
+  it.each(adversarial.map((text, index) => [index, text] as const))('digests and previews adversarial input %i within a time budget', (_index, text) => {
+    for (const previewBytes of [0, 512]) {
+      const t = setup({ previewBytes });
+      const key = t.begin();
+      t.event(key, { kind: 'lifecycle', phase: 'turn_started' });
+      const started = performance.now();
+      t.recorder.toolRequested(key, { requestId: 'req-big', operation: 'files_write', input: { path: 'big.txt', content: text, nested: [text] } }, t.tick());
+      expect(performance.now() - started).toBeLessThan(1_500);
+      const tool = t.read(key).byKind('tool_call')[0]!;
+      expect(tool.inputDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+      if (previewBytes > 0) expect(Buffer.byteLength(String(tool.attributes.preview), 'utf8')).toBeLessThanOrEqual(512);
+      else expect(tool.attributes.preview).toBeUndefined();
+    }
+    const started = performance.now();
+    redactTraceText(text);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it('bounds the preview walk however wide the input is', () => {
+    const wide = Object.fromEntries(Array.from({ length: 5_000 }, (_, index) => [`field_${index}`, 'v'.repeat(2_000)]));
+    const started = performance.now();
+    const redacted = redactTraceValue(wide) as Record<string, unknown>;
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(Object.keys(redacted).length).toBeLessThan(256);
+  });
+
+  it('digests without matching values: credential-named keys are dropped, everything else counts', () => {
+    const base = { path: 'a.ts', content: 'hello', headers: { authorization: 'Bearer one' } };
+    expect(traceInputDigest(base)).toBe(traceInputDigest({ ...base, headers: { authorization: 'Bearer two' } }));
+    expect(traceInputDigest(base)).not.toBe(traceInputDigest({ ...base, content: 'hello!' }));
+    expect(traceInputDigest({ b: 1, a: 2 })).toBe(traceInputDigest({ a: 2, b: 1 }));
+    expect(traceInputDigest(undefined)).toMatch(/^sha256:[a-f0-9]{64}$/u);
+  });
+});
+
+describe('agent trace usage semantics', () => {
+  it('reports uncached prompt tokens on the settlement-only path, keeping the gateway total in reconciliation', () => {
+    const t = setup();
+    const key = t.begin();
+    t.turn(key, { outcome: 'stop', usage: null });
+    t.settle(key, { promptTokens: 1_000, cacheReadTokens: 600, cacheWriteTokens: 100, outputTokens: 50, costMicros: 70, requests: 1 });
+    t.finish(key, 'SUCCEEDED', { inputTokens: 0, outputTokens: 0, costMicros: 0 });
+    const { trace, byKind } = t.read(key);
+    // `prompt` is uncached input on every path: the runtime reports it so, the gateway total is reduced.
+    expect(trace.tokens).toMatchObject({ prompt: 300, cacheRead: 600, cacheWrite: 100, output: 50 });
+    expect(byKind('gateway')[0]!.tokens).toMatchObject({ prompt: 300, cacheRead: 600, cacheWrite: 100 });
+    expect(trace.reconciliation.gateway?.promptTokens).toBe(1_000);
+  });
+
+  it('keeps the runtime path uncached: cache counters are separate from the prompt', () => {
+    const t = setup();
+    const key = t.begin();
+    t.event(key, { kind: 'lifecycle', phase: 'turn_started' });
+    t.event(key, { kind: 'lifecycle', phase: 'turn_ended', outcome: 'stop' });
+    t.recorder.observeUsage(key, { inputTokens: 300, outputTokens: 50, costMicros: 70, cacheReadTotal: 600, cacheWriteTotal: 100 }, t.tick());
+    t.settle(key, { promptTokens: 1_000, cacheReadTokens: 600, cacheWriteTokens: 100, outputTokens: 50, costMicros: 70, requests: 1 });
+    t.finish(key, 'SUCCEEDED', { inputTokens: 300, outputTokens: 50, costMicros: 70 });
+    expect(t.read(key).trace.tokens).toMatchObject({ prompt: 300, cacheRead: 600, cacheWrite: 100 });
+  });
+
+  it('treats a billed call with zero counted tokens as reported usage', () => {
+    const t = setup();
+    const key = t.begin();
+    t.turn(key, { outcome: 'stop', usage: [0, 0, 25] });
+    t.settle(key, { promptTokens: 0, outputTokens: 0, costMicros: 25, requests: 1 });
+    t.finish(key, 'SUCCEEDED', { inputTokens: 0, outputTokens: 0, costMicros: 25 });
+    const { trace, byKind } = t.read(key);
+    expect(byKind('model_call')[0]).toMatchObject({ state: 'OK', costMicros: 25 });
+    expect(byKind('model_call')[0]!.attributes.usage_missing).toBeUndefined();
+    expect(trace.reconciliation.reasons).not.toContain('cost_out_of_tolerance');
+    expect(trace.reconciliationStatus).toBe('reconciled');
+  });
+});
+
+describe('agent trace coverage rule', () => {
+  // Coverage is about data completeness, not the run's outcome: a failed run can be fully covered and
+  // a completed one can be partial.
+  it('marks a FAILED run with complete data full', () => {
+    const t = setup();
+    const key = t.begin();
+    t.turn(key, { usage: [10, 2, 3] });
+    t.settle(key, { promptTokens: 10, outputTokens: 2, costMicros: 3, requests: 1 });
+    t.finish(key, 'FAILED', { inputTokens: 10, outputTokens: 2, costMicros: 3 });
+    expect(t.read(key).trace).toMatchObject({ state: 'FAILED', coverage: 'full' });
+  });
+
+  it.each([
+    ['usage missing on a call', (t: ReturnType<typeof setup>, key: TraceRunKey) => {
+      t.turn(key, { usage: null });
+      t.settle(key, { promptTokens: 10, outputTokens: 2, costMicros: 3, requests: 1 });
+    }],
+    ['no settlement', (t: ReturnType<typeof setup>, key: TraceRunKey) => { t.turn(key, { usage: [10, 2, 3] }); }],
+    ['a request without usage at the gateway', (t: ReturnType<typeof setup>, key: TraceRunKey) => {
+      t.turn(key, { usage: [10, 2, 3] });
+      t.settle(key, { promptTokens: 10, outputTokens: 2, costMicros: 3, requests: 2, requestsWithoutUsage: 1 });
+    }],
+    ['a span left open', (t: ReturnType<typeof setup>, key: TraceRunKey) => {
+      t.turn(key, { usage: [10, 2, 3] });
+      t.event(key, { kind: 'lifecycle', phase: 'turn_started' });
+      t.settle(key, { promptTokens: 10, outputTokens: 2, costMicros: 3, requests: 1 });
+    }]
+  ] as const)('marks a COMPLETED run partial with %s', (_label, arrange) => {
+    const t = setup();
+    const key = t.begin();
+    arrange(t, key);
+    t.finish(key, 'SUCCEEDED', { inputTokens: 10, outputTokens: 2, costMicros: 3 });
+    expect(t.read(key).trace).toMatchObject({ state: 'COMPLETED', coverage: 'partial' });
+  });
+
+  it('is the rule the public docs and the agent skill state', () => {
+    for (const relative of ['../../../docs/mcp-api.md', '../../../.agents/skills/cloudharness/references/agent-traces.md']) {
+      const text = readFileSync(new URL(relative, import.meta.url), 'utf8').replace(/\s+/gu, ' ');
+      expect(text, relative).toMatch(/data completeness/u);
+      expect(text, relative).toMatch(/failed (?:or cancelled )?run (?:with|whose) (?:complete data|every span closed with usage) is `"full"`/u);
+      expect(text, relative).not.toMatch(/Anything but `COMPLETED` has `coverage: "partial"`/u);
+      expect(text, relative).not.toMatch(/did not complete normally/u);
+    }
+  });
+});
+
+describe('agent trace budget and hook spans', () => {
+  it('records the reservation, the lease issue, the limit once and the settlement as budget spans', () => {
+    const t = setup();
+    const key = t.begin();
+    t.recorder.budget(key, { phase: 'reserve', reservedCostMicros: 500_000, at: t.tick() });
+    const issueStart = t.tick();
+    t.recorder.budget(key, { phase: 'lease_issue', outcome: 'issued', startedAt: issueStart, endedAt: t.tick(5) });
+    t.turn(key, { usage: [10, 2, 3] });
+    t.recorder.budget(key, { phase: 'limit', limit: 'output_bytes', at: t.tick() });
+    t.recorder.budget(key, { phase: 'limit', limit: 'output_bytes', at: t.tick() });
+    t.settle(key, { promptTokens: 10, outputTokens: 2, costMicros: 3, requests: 1 });
+    t.finish(key, 'LIMIT_EXCEEDED', { inputTokens: 10, outputTokens: 2, costMicros: 3 });
+    const { trace, byKind } = t.read(key);
+    const budget = byKind('budget');
+    expect(budget.map((span) => [span.name, span.state, span.errorClass])).toEqual([
+      ['budget.reserve', 'OK', null],
+      ['budget.lease_issue', 'OK', null],
+      ['budget.limit', 'ERROR', 'budget'],
+      ['budget.settle', 'OK', null]
+    ]);
+    expect(budget[0]!.attributes).toEqual({ reserved_cost_micros: 500_000 });
+    expect(budget[1]!.durationMs).toBe(5);
+    expect(budget[2]!.attributes).toEqual({ limit: 'output_bytes' });
+    expect(budget[3]!.attributes).toMatchObject({ reserved_cost_micros: 500_000, settled_cost_micros: 3, settlement_reason: 'revoked' });
+    // Budget spans carry no cost of their own, so span sums still reconcile with the ledger.
+    expect(budget.every((span) => span.costMicros === null)).toBe(true);
+    expect(trace).toMatchObject({ state: 'FAILED', finishReason: 'limit_exceeded', reconciliationStatus: 'reconciled' });
+  });
+
+  it('marks a refused lease issue as a budget error and an ambiguous one unknown', () => {
+    const t = setup();
+    const refused = t.begin();
+    t.recorder.budget(refused, { phase: 'lease_issue', outcome: 'refused', startedAt: t.tick(), endedAt: t.tick() });
+    const ambiguous = t.begin();
+    t.recorder.budget(ambiguous, { phase: 'lease_issue', outcome: 'unknown', startedAt: t.tick(), endedAt: t.tick() });
+    expect(t.read(refused).byKind('budget')[0]).toMatchObject({ state: 'ERROR', errorClass: 'budget', attributes: { outcome: 'refused' } });
+    expect(t.read(ambiguous).byKind('budget')[0]).toMatchObject({ state: 'UNKNOWN', errorClass: null, attributes: { outcome: 'unknown' } });
+  });
+
+  it('records an unknown settlement when the drain returned none', () => {
+    const t = setup();
+    const key = t.begin();
+    t.turn(key, { usage: [10, 2, 3] });
+    t.recorder.settled(key, undefined, t.tick());
+    t.finish(key, 'CANCELLED', { inputTokens: 10, outputTokens: 2, costMicros: 3 });
+    expect(t.read(key).byKind('budget')).toEqual([expect.objectContaining({ name: 'budget.settle', state: 'UNKNOWN' })]);
+  });
+
+  it('keeps the hook kind reserved: no agent-reachable operation runs a workspace hook', () => {
+    // Workspace lifecycle hooks run only on commit, finalize, checkout and workspace open. An agent
+    // reaches the workspace only through the brokered proxy operations, none of which runs a hook,
+    // so a hook span cannot occur inside an agent run. The kind stays in the contract for that path.
+    expect(TRACE_SPAN_KINDS).toContain('hook');
+    const hookTriggering = ['git_commit', 'workspace_finalize', 'git_checkout', 'workspace_open', 'hooks_run', 'repository_add'];
+    for (const operation of AgentProxyOperationSchema.options) expect(hookTriggering).not.toContain(operation);
+    expect(AgentProxyOperationSchema.options.every((operation) => /^(files|grep|symbols)_/u.test(operation))).toBe(true);
+
+    const t = setup();
+    const key = t.begin();
+    t.recorder.budget(key, { phase: 'reserve', reservedCostMicros: 1, at: t.tick() });
+    t.turn(key, { tools: [{ id: 'call-1', operation: 'files_write', input: { path: 'a' } }] });
+    t.settle(key);
+    t.finish(key, 'SUCCEEDED', { inputTokens: 100, outputTokens: 20, costMicros: 50 });
+    expect(t.read(key).byKind('hook')).toEqual([]);
+  });
+});
+
+describe('agent trace finish', () => {
+  it('drops the in-memory run even when the trace row is already gone', () => {
+    const t = setup();
+    const key = t.begin();
+    t.turn(key);
+    expect(t.recorder.openRuns).toBe(1);
+    t.state.database.prepare('DELETE FROM agent_traces WHERE trace_id = ?').run(traceIdFor(key.agentId, key.generation));
+    t.finish(key, 'SUCCEEDED', null);
+    expect(t.recorder.openRuns).toBe(0);
   });
 });
 

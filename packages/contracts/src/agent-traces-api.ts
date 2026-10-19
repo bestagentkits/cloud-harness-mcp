@@ -32,7 +32,7 @@ export type TraceCoverage = z.infer<typeof TraceCoverageSchema>;
 
 /** Bounded classification of a failed model call or tool call; never the provider's raw message. */
 export const TRACE_ERROR_CLASSES = [
-  'auth', 'rate_limit', 'server', 'timeout', 'network', 'context_length', 'aborted', 'invalid_request', 'tool', 'other'
+  'auth', 'rate_limit', 'server', 'timeout', 'network', 'context_length', 'aborted', 'invalid_request', 'tool', 'budget', 'other'
 ] as const;
 export const TraceErrorClassSchema = z.enum(TRACE_ERROR_CLASSES);
 export type TraceErrorClass = z.infer<typeof TraceErrorClassSchema>;
@@ -62,6 +62,10 @@ const count = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const nullableCount = count.nullable();
 const durationMs = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable();
 
+/**
+ * Token counts. `prompt` is uncached input tokens only, on every path: cache reads and cache writes are
+ * counted separately, so a model call's whole prompt is `prompt + cacheRead + cacheWrite`.
+ */
 export const TraceTokensSchema = z.object({
   prompt: nullableCount,
   cacheRead: nullableCount,
@@ -149,7 +153,8 @@ export type TraceDetail = z.infer<typeof TraceDetailSchema>;
 export const TRACE_ATTRIBUTE_KEYS = [
   'operation', 'tool_call_id', 'request_id', 'outcome', 'retry_count', 'retried', 'brokered',
   'requests', 'requests_without_usage', 'reasoning_tokens', 'overrun_cost_micros', 'settlement_reason',
-  'terminal_status', 'marker', 'dropped_spans', 'preview', 'usage_missing', 'turn'
+  'terminal_status', 'marker', 'dropped_spans', 'preview', 'usage_missing', 'turn',
+  'reserved_cost_micros', 'settled_cost_micros', 'limit'
 ] as const;
 export const TraceAttributeKeySchema = z.enum(TRACE_ATTRIBUTE_KEYS);
 export const TraceAttributeValueSchema = z.union([z.string().max(512), z.number().finite(), z.boolean(), z.null()]);
@@ -170,7 +175,7 @@ export const TraceSpanSchema = z.object({
   tokens: z.object({ prompt: nullableCount, output: nullableCount, cacheRead: nullableCount, cacheWrite: nullableCount }).strict(),
   costMicros: nullableCount,
   attributes: TraceAttributesSchema,
-  /** `sha256:` digest of the canonical, redacted tool input; the input itself is never stored. */
+  /** `sha256:` digest of the canonical tool input with credential-named key values removed; the input itself is never stored. */
   inputDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u).nullable(),
   errorClass: TraceErrorClassSchema.nullable()
 }).strict();
@@ -191,7 +196,8 @@ export const TraceListSummarySchema = z.object({
   traces: count,
   byState: z.partialRecord(TraceStateSchema, count),
   tokens: TraceTokensSchema,
-  costMicros: count,
+  /** Sum over traces with a known cost; null when no trace in the window has one. */
+  costMicros: nullableCount,
   /** Traces whose cost is unknown are counted here and excluded from `costMicros`. */
   unknownCostTraces: count,
   errorTraces: count,
@@ -218,7 +224,8 @@ const traceFilters = {
 export const AgentTracesListInputSchema = z.object({
   ...traceFilters,
   cursor: TraceCursorSchema.optional(),
-  limit: z.number().int().min(1).max(100).default(25)
+  limit: z.number().int().min(1).max(100).default(25),
+  includeSummary: z.boolean().default(true).describe('Compute the KPI summary for the filtered window. It is computed only for the first page (no cursor); later pages and a false value return null.')
 }).strict().refine((input) => input.since === undefined || input.until === undefined || Date.parse(input.since) < Date.parse(input.until), {
   message: 'since must be before until', path: ['since']
 });
@@ -236,7 +243,8 @@ export const AgentTraceExportInputSchema = z.object({
 
 export const AgentTracesListResultSchema = z.object({
   traces: z.array(TraceSummarySchema).max(100),
-  summary: TraceListSummarySchema,
+  /** The window's KPI summary; null on a cursor page or when `includeSummary` is false. */
+  summary: TraceListSummarySchema.nullable(),
   nextCursor: TraceCursorSchema.nullable()
 }).strict();
 export const AgentTraceGetResultSchema = z.object({ trace: TraceDetailSchema }).strict();

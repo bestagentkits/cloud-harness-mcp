@@ -37,6 +37,16 @@ export type TraceUsageDelta = {
 
 export type TraceLedgerTotals = { inputTokens: number; outputTokens: number; costMicros: number };
 
+/**
+ * One budget event of a run, recorded as a `budget` span: the spawn's cost reservation, the gateway
+ * lease issue, and the run limit that ended it. The settlement against the reservation is recorded
+ * from `settled` when the trace finishes.
+ */
+export type TraceBudgetEvent =
+  | { phase: 'reserve'; reservedCostMicros: number; at: number }
+  | { phase: 'lease_issue'; outcome: 'issued' | 'refused' | 'unknown'; startedAt: number; endedAt: number }
+  | { phase: 'limit'; limit: 'output_bytes'; at: number };
+
 export type TraceFinish = {
   terminal: TraceTerminalStatus;
   reason: string;
@@ -51,6 +61,7 @@ export interface AgentTraceHooks {
   observeUsage(key: TraceRunKey, usage: TraceUsageDelta, at: number): void;
   toolRequested(key: TraceRunKey, request: { requestId: string; toolCallId?: string | undefined; operation: string; input: unknown }, at: number): void;
   toolCompleted(key: TraceRunKey, requestId: string, outcome: { ok: boolean }, at: number): void;
+  budget(key: TraceRunKey, event: TraceBudgetEvent): void;
   settled(key: TraceRunKey, settlement: AgentLeaseSettlement | undefined, at: number): void;
   finish(key: TraceRunKey, finish: TraceFinish): void;
   markIncomplete(key: TraceRunKey, reason: string, at: number): void;
@@ -64,37 +75,69 @@ export type AgentTraceRecorderOptions = {
   log?: ((entry: Record<string, unknown>) => void) | undefined;
 };
 
-/** Spans reserved for the truncation marker and the gateway settlement span written at finish. */
-const RESERVED_SPANS = 2;
+/** Spans reserved for the truncation marker and the gateway and budget settlement spans written at finish. */
+const RESERVED_SPANS = 3;
 const MAX_SPAN_NAME = 128;
 const REDACTED = '[REDACTED]';
 const SENSITIVE_KEY = /authorization|api[-_]?key|token|lease|secret|credential|cookie|password|passwd|private[-_]?key|session|header|env/iu;
+/**
+ * Every quantifier is bounded, so each pattern does bounded work per start position and a string is
+ * matched in linear time. Strings are also cut to REDACT_MAX_CHARS before matching.
+ */
 const SECRET_PATTERNS: readonly RegExp[] = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu,
-  /\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{6,}/giu,
-  /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}\b/gu,
-  /\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{16,}\b/gu,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/gu,
+  /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----[\s\S]{0,4096}?(?:-----END [A-Z ]{0,40}PRIVATE KEY-----|$)/gu,
+  /\b(bearer|basic)\s{1,8}[A-Za-z0-9._~+/=-]{6,1024}/giu,
+  /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,512}/gu,
+  /\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{16,255}/gu,
+  /\bxox[abprs]-[A-Za-z0-9-]{10,255}/gu,
   /\bAKIA[0-9A-Z]{16}\b/gu,
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/gu,
-  /\b([A-Za-z0-9_]*(?:key|token|secret|password|passwd|credential)[A-Za-z0-9_]*)\s*[=:]\s*("[^"]*"|'[^']*'|[^\s,;&]+)/giu
+  /\beyJ[A-Za-z0-9_-]{8,2048}\.[A-Za-z0-9_-]{8,2048}\.[A-Za-z0-9_-]{8,2048}/gu,
+  /\b([A-Za-z0-9_]{0,64}(?:key|token|secret|password|passwd|credential)[A-Za-z0-9_]{0,64})\s{0,8}[=:]\s{0,8}("[^"]{0,512}"|'[^']{0,512}'|[^\s,;&]{1,512})/giu
 ];
+/**
+ * Longest string prefix the redactor matches. Redaction feeds only the preview, which is at most 512
+ * bytes of the serialized input, so a cut at this length always falls outside what can be stored.
+ */
+const REDACT_MAX_CHARS = 4_096;
+/** Characters of string content one preview redaction visits before it stops descending. */
+const PREVIEW_SCAN_CHARS = 16_384;
+/** Longest key the sensitive-key test reads. */
+const KEY_TEST_CHARS = 128;
+const MAX_DIGEST_DEPTH = 64;
+
+function sensitiveKey(key: string): boolean {
+  return SENSITIVE_KEY.test(key.length > KEY_TEST_CHARS ? key.slice(0, KEY_TEST_CHARS) : key);
+}
 
 /**
- * Removes credential-shaped content from a value before it is digested or previewed. Sensitive keys
- * lose their values entirely and secret-shaped substrings are replaced, so neither a preview nor a
- * digest is ever derived from a raw secret.
+ * Removes credential-shaped content from a value for the optional preview. Sensitive keys lose their
+ * values entirely and secret-shaped substrings are replaced. The walk is bounded: it visits at most
+ * PREVIEW_SCAN_CHARS of string content and matches at most REDACT_MAX_CHARS of each string, so its
+ * cost does not grow with the size of the input.
  */
-export function redactTraceValue(value: unknown, depth = 0): unknown {
+export function redactTraceValue(value: unknown, depth = 0, budget: { chars: number } = { chars: PREVIEW_SCAN_CHARS }): unknown {
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  if (typeof value === 'string') return redactTraceText(value);
+  if (budget.chars <= 0) return '[TRUNCATED]';
+  if (typeof value === 'string') {
+    budget.chars -= Math.min(value.length, REDACT_MAX_CHARS);
+    return redactTraceText(value);
+  }
   if (depth >= 8) return '[TRUNCATED]';
-  if (Array.isArray(value)) return value.slice(0, 256).map((item) => redactTraceValue(item, depth + 1));
+  if (Array.isArray(value)) {
+    const items: unknown[] = [];
+    for (const item of value.slice(0, 256)) {
+      if (budget.chars <= 0) break;
+      items.push(redactTraceValue(item, depth + 1, budget));
+    }
+    return items;
+  }
   if (typeof value === 'object') {
     const output: Record<string, unknown> = {};
     for (const key of Object.keys(value).sort().slice(0, 256)) {
-      output[key] = SENSITIVE_KEY.test(key) ? REDACTED : redactTraceValue((value as Record<string, unknown>)[key], depth + 1);
+      if (budget.chars <= 0) break;
+      budget.chars -= Math.min(key.length, KEY_TEST_CHARS);
+      output[key] = sensitiveKey(key) ? REDACTED : redactTraceValue((value as Record<string, unknown>)[key], depth + 1, budget);
     }
     return output;
   }
@@ -102,7 +145,7 @@ export function redactTraceValue(value: unknown, depth = 0): unknown {
 }
 
 export function redactTraceText(text: string): string {
-  let output = text;
+  let output = text.length > REDACT_MAX_CHARS ? `${text.slice(0, REDACT_MAX_CHARS)}[TRUNCATED]` : text;
   for (const pattern of SECRET_PATTERNS) {
     output = output.replace(pattern, (match: string, prefix: unknown) => {
       if (typeof prefix === 'string' && /^(?:bearer|basic)$/iu.test(prefix)) return `${prefix} ${REDACTED}`;
@@ -119,9 +162,31 @@ function truncateUtf8(value: string, maxBytes: number): string {
   return new TextDecoder().decode(encoded.subarray(0, maxBytes)).replace(/�+$/u, '');
 }
 
-/** `sha256:` digest of the canonical (sorted-key) JSON of the redacted input. */
+/**
+ * Canonical form for the input digest: keys sorted, values of credential-named keys dropped. No
+ * pattern is matched against values, so the digest costs one linear pass however large the input.
+ */
+function digestForm(value: unknown, depth: number): unknown {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (depth >= MAX_DIGEST_DEPTH) return '[TRUNCATED]';
+  if (Array.isArray(value)) return value.map((item) => digestForm(item, depth + 1));
+  if (typeof value === 'object') {
+    const output: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      output[key] = sensitiveKey(key) ? REDACTED : digestForm((value as Record<string, unknown>)[key], depth + 1);
+    }
+    return output;
+  }
+  return null;
+}
+
+/**
+ * `sha256:` digest of the canonical (sorted-key) JSON of the input, with the values of
+ * credential-named keys removed. Only the one-way digest is stored, never the input.
+ */
 export function traceInputDigest(input: unknown): string {
-  return `sha256:${createHash('sha256').update(JSON.stringify(redactTraceValue(input))).digest('hex')}`;
+  return `sha256:${createHash('sha256').update(JSON.stringify(digestForm(input, 0)) ?? 'null').digest('hex')}`;
 }
 
 const LifecycleEventSchema = z.object({
@@ -188,6 +253,9 @@ type Run = {
   unknownSpans: boolean;
   unattributedUsage: boolean;
   settlement: AgentLeaseSettlement | undefined;
+  settledAt: number | null;
+  reservedCostMicros: number | null;
+  limitRecorded: boolean;
   degraded: boolean;
 };
 
@@ -327,7 +395,8 @@ export class AgentTraceRecorder implements AgentTraceHooks {
       run.totals.costMicros += usage.costMicros;
       run.totals.cacheRead += cacheRead;
       run.totals.cacheWrite += cacheWrite;
-      const reported = usage.inputTokens > 0 || usage.outputTokens > 0;
+      // Any positive figure is a report: a call can be billed (cost) with zero counted tokens.
+      const reported = usage.inputTokens > 0 || usage.outputTokens > 0 || usage.costMicros > 0;
       if (reported) run.totals.usageSeen = true;
       const delta = { input: usage.inputTokens, output: usage.outputTokens, cost: usage.costMicros, cacheRead, cacheWrite };
       if (run.awaitingUsage) {
@@ -335,7 +404,7 @@ export class AgentTraceRecorder implements AgentTraceHooks {
         run.awaitingUsage = null;
         return;
       }
-      if (!reported && usage.costMicros === 0) return;
+      if (!reported) return;
       // Usage reported outside a model turn (for example at agent end) belongs to the latest call.
       if (run.lastModel) {
         const last = run.lastModel;
@@ -400,24 +469,49 @@ export class AgentTraceRecorder implements AgentTraceHooks {
     });
   }
 
-  settled(key: TraceRunKey, settlement: AgentLeaseSettlement | undefined): void {
+  budget(key: TraceRunKey, event: TraceBudgetEvent): void {
+    const traceId = traceIdFor(key.agentId, key.generation);
+    this.guard(traceId, () => {
+      const run = this.runs.get(traceId);
+      if (!run) return;
+      if (event.phase === 'reserve') {
+        run.reservedCostMicros = event.reservedCostMicros;
+        this.writeBudget(run, 'reserve', 'OK', event.at, event.at, { reserved_cost_micros: event.reservedCostMicros });
+      } else if (event.phase === 'lease_issue') {
+        const state: TraceSpanState = event.outcome === 'issued' ? 'OK' : (event.outcome === 'refused' ? 'ERROR' : 'UNKNOWN');
+        this.writeBudget(run, 'lease_issue', state, event.startedAt, event.endedAt, { outcome: event.outcome });
+      } else {
+        // Every later write past the limit fails the same way; the run records the limit once.
+        if (run.limitRecorded) return;
+        run.limitRecorded = true;
+        this.writeBudget(run, 'limit', 'ERROR', event.at, event.at, { limit: event.limit });
+      }
+    });
+  }
+
+  settled(key: TraceRunKey, settlement: AgentLeaseSettlement | undefined, at: number): void {
     const traceId = traceIdFor(key.agentId, key.generation);
     this.guard(traceId, () => {
       const run = this.runs.get(traceId) ?? this.attach(traceId);
-      if (run && settlement) run.settlement = settlement;
+      if (!run) return;
+      run.settledAt = at;
+      if (settlement) run.settlement = settlement;
     });
   }
 
   finish(key: TraceRunKey, finish: TraceFinish): void {
     const traceId = traceIdFor(key.agentId, key.generation);
     this.guard(traceId, () => {
+      // The run ends here whatever the stored trace says, so its in-memory state never outlives it.
+      const live = this.runs.get(traceId);
+      this.runs.delete(traceId);
       const existing = this.store.findTrace(traceId);
       // A finished trace is final; only a running or restart-interrupted one is closed here.
       if (!existing || (existing.state !== 'RUNNING' && existing.state !== 'INCOMPLETE')) return;
       if (existing.state === 'INCOMPLETE' && existing.reconciliation !== null) return;
-      const run = this.runs.get(traceId) ?? this.attach(traceId);
-      if (!run) return;
+      const run = live ?? this.attach(traceId);
       this.runs.delete(traceId);
+      if (!run) return;
       const at = finish.at;
       if (run.awaitingUsage) {
         this.closeModel(run, run.awaitingUsage, null);
@@ -441,13 +535,39 @@ export class AgentTraceRecorder implements AgentTraceHooks {
         this.writeTool(run, tool, 'UNKNOWN', at, null);
       }
       const settlement = run.settlement;
+      // The gateway's promptTokens is the whole prompt, cached tokens included; trace and span
+      // `prompt` figures are uncached input, so the cached share is taken out here. The
+      // reconciliation keeps the gateway's own total.
+      const uncachedPrompt = settlement
+        ? Math.max(0, settlement.promptTokens - settlement.cacheReadTokens - settlement.cacheWriteTokens)
+        : null;
+      if (run.settledAt !== null) {
+        // The budget view of the settlement: what the lease reserved against what it actually cost.
+        const seq = run.nextSeq;
+        run.nextSeq += 1;
+        const attributes: TraceAttributes = {};
+        if (run.reservedCostMicros !== null) attributes.reserved_cost_micros = run.reservedCostMicros;
+        if (settlement) {
+          attributes.settled_cost_micros = settlement.costMicros;
+          attributes.overrun_cost_micros = settlement.overrunCostMicros;
+          attributes.settlement_reason = settlement.reason;
+        }
+        const settledAt = Math.max(run.startedAt, run.settledAt);
+        this.store.writeSpan({
+          traceId, spanSeq: seq, spanId: spanIdFor(traceId, seq), parentSpanId: run.rootSpanId, kind: 'budget',
+          name: 'budget.settle', state: settlement ? 'OK' : 'UNKNOWN', startedAt: settledAt, endedAt: settledAt, ttftMs: null,
+          promptTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costMicros: null,
+          attributes, inputDigest: null, errorClass: null
+        });
+        run.written += 1;
+      }
       if (settlement) {
         const seq = run.nextSeq;
         run.nextSeq += 1;
         this.store.writeSpan({
           traceId, spanSeq: seq, spanId: spanIdFor(traceId, seq), parentSpanId: run.rootSpanId, kind: 'gateway',
           name: 'gateway.settlement', state: 'OK', startedAt: run.startedAt, endedAt: Math.max(run.startedAt, at), ttftMs: null,
-          promptTokens: settlement.promptTokens, outputTokens: settlement.outputTokens,
+          promptTokens: uncachedPrompt, outputTokens: settlement.outputTokens,
           cacheReadTokens: settlement.cacheReadTokens, cacheWriteTokens: settlement.cacheWriteTokens,
           costMicros: settlement.costMicros,
           attributes: {
@@ -513,7 +633,7 @@ export class AgentTraceRecorder implements AgentTraceHooks {
         state,
         finishReason: incomplete ? (existing.finishReason ?? 'runner_restart') : finishReasonOf(finish.terminal, state),
         endedAt: existing.endedAt ?? Math.max(run.startedAt, at),
-        promptTokens: usageSeen ? totals.input : (settlement?.promptTokens ?? null),
+        promptTokens: usageSeen ? totals.input : uncachedPrompt,
         outputTokens: usageSeen ? totals.output : (settlement?.outputTokens ?? null),
         cacheReadTokens: usageSeen ? totals.cacheRead : (settlement?.cacheReadTokens ?? null),
         cacheWriteTokens: usageSeen ? totals.cacheWrite : (settlement?.cacheWriteTokens ?? null),
@@ -597,7 +717,7 @@ export class AgentTraceRecorder implements AgentTraceHooks {
       tools: new Map(), proxies: new Map(), pendingRetries: 0, turn: 0,
       totals: { input: 0, output: 0, costMicros: 0, cacheRead: 0, cacheWrite: 0, usageSeen: false },
       lastCache: { read: 0, write: 0 }, usageMissing: false, unknownSpans: false, unattributedUsage: false,
-      settlement: undefined, degraded: false
+      settlement: undefined, settledAt: null, reservedCostMicros: null, limitRecorded: false, degraded: false
     };
   }
 
@@ -635,6 +755,18 @@ export class AgentTraceRecorder implements AgentTraceHooks {
       name: span.name, state: span.state, startedAt: span.startedAt, endedAt: span.endedAt, ttftMs: null,
       promptTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costMicros: null,
       attributes: {}, inputDigest: null, errorClass: null
+    });
+  }
+
+  private writeBudget(run: Run, phase: 'reserve' | 'lease_issue' | 'limit', state: TraceSpanState, startedAt: number, endedAt: number, attributes: TraceAttributes): void {
+    const seq = this.allocate(run, startedAt);
+    if (seq === null) return;
+    const start = Math.max(run.startedAt, startedAt);
+    this.store.writeSpan({
+      traceId: run.traceId, spanSeq: seq, spanId: spanIdFor(run.traceId, seq), parentSpanId: run.rootSpanId, kind: 'budget',
+      name: `budget.${phase}`, state, startedAt: start, endedAt: Math.max(start, endedAt), ttftMs: null,
+      promptTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costMicros: null,
+      attributes, inputDigest: null, errorClass: state === 'ERROR' ? 'budget' : null
     });
   }
 

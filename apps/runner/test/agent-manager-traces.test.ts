@@ -72,6 +72,35 @@ describe('agent traces through AgentManager', () => {
     ]);
     expect(tools.every((span) => span.parentSpanId === models[0]!.spanId)).toBe(true);
     expect(spans.filter((span) => span.kind === 'gateway')).toHaveLength(1);
+    const budget = spans.filter((span) => span.kind === 'budget');
+    expect(budget.map((span) => [span.name, span.state])).toEqual([
+      ['budget.reserve', 'OK'], ['budget.lease_issue', 'OK'], ['budget.settle', 'OK']
+    ]);
+    expect(budget[0]!.attributes.reserved_cost_micros).toBe(1_000_000);
+    expect(budget[2]!.attributes).toMatchObject({ reserved_cost_micros: 1_000_000, settled_cost_micros: 140 });
+  });
+
+  it('records a lease issue whose outcome is unknown when the gateway call fails', async () => {
+    const { harness, read } = tracedHarness();
+    harness.gateway.failIssue = true;
+    const agentId = await harness.spawn();
+    await harness.waitForStatus(agentId, ['FAILED', 'INTERRUPTED']);
+    await vi.waitFor(() => expect(read(agentId).spans.some((span) => span.name === 'budget.lease_issue')).toBe(true));
+    expect(read(agentId).spans.find((span) => span.name === 'budget.lease_issue')).toMatchObject({ state: 'UNKNOWN', attributes: { outcome: 'unknown' } });
+  });
+
+  it('records the output limit that ended a run as a budget error span', async () => {
+    const { harness, read } = tracedHarness();
+    const agentId = await harness.spawn({ maxOutputBytes: 1_024 });
+    await harness.waitForStatus(agentId, 'RUNNING');
+    harness.send(agentId, new RecordScript().openTurn(Array.from({ length: 8 }, () => 'y'.repeat(400))));
+    await harness.waitForStatus(agentId, 'LIMIT_EXCEEDED');
+    await vi.waitFor(() => expect(read(agentId).trace.state).toBe('FAILED'));
+    const { trace, spans } = read(agentId);
+    expect(trace).toMatchObject({ finishReason: 'limit_exceeded' });
+    expect(spans.filter((span) => span.name === 'budget.limit')).toEqual([
+      expect.objectContaining({ kind: 'budget', state: 'ERROR', errorClass: 'budget', attributes: { limit: 'output_bytes' } })
+    ]);
   });
 
   it('records the profile revision of a spawned agent', async () => {

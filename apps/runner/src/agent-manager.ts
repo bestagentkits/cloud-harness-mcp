@@ -380,6 +380,9 @@ export class AgentManager {
       profileRevisionId: profile.revisionId,
       at: now
     }));
+    this.traced(reservation.record, (traces) => traces.budget(traceKey(reservation.record), {
+      phase: 'reserve', reservedCostMicros: budget.maxCostMicros, at: now
+    }));
     const repositoryContext = (input.repositoryContext as AgentRepositoryContext | undefined) ?? 'codex';
     const launch = this.launch(reservation.record, prompt, profile, repositoryContext, dashboardManaged)
       .finally(() => this.launches.delete(reservation.record.id));
@@ -468,6 +471,7 @@ export class AgentManager {
       leaseMayExist = true;
       this.spendLedger.markIssuing(record.gatewayLeaseId);
       let grant: Awaited<ReturnType<AgentGatewayControl['issue']>>;
+      const issueStartedAt = this.now();
       try {
         grant = await this.gateway.issue({
           leaseId: record.gatewayLeaseId,
@@ -480,9 +484,16 @@ export class AgentManager {
         });
       } catch (error) {
         // An explicit refusal means no lease exists; any other failure may have issued one.
-        if (isDefiniteIssueRefusal(error)) this.spendLedger.releaseRefusedIssue(record.gatewayLeaseId, this.now());
+        const refused = isDefiniteIssueRefusal(error);
+        this.traced(record, (traces) => traces.budget(traceKey(record), {
+          phase: 'lease_issue', outcome: refused ? 'refused' : 'unknown', startedAt: issueStartedAt, endedAt: this.now()
+        }));
+        if (refused) this.spendLedger.releaseRefusedIssue(record.gatewayLeaseId, this.now());
         throw error;
       }
+      this.traced(record, (traces) => traces.budget(traceKey(record), {
+        phase: 'lease_issue', outcome: 'issued', startedAt: issueStartedAt, endedAt: this.now()
+      }));
       if (grant.gatewayBootId !== undefined) this.spendLedger.recordGatewayBoot(record.gatewayLeaseId, grant.gatewayBootId);
       const runtime = await this.launcher.launch(spec);
       const lease = grant.lease;
@@ -1065,6 +1076,7 @@ export class AgentManager {
       this.repository.appendLog(record.ownerId, record.workspaceId, record.id, record.generation, type, content.slice(0, 65_536), this.now());
     } catch (error) {
       if (error instanceof HarnessError && error.code === 'LIMIT_EXCEEDED') {
+        this.traced(record, (traces) => traces.budget(traceKey(record), { phase: 'limit', limit: 'output_bytes', at: this.now() }));
         void this.cancelOne(record, error.message, 'LIMIT_EXCEEDED');
         return;
       }

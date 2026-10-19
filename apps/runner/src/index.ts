@@ -106,18 +106,24 @@ const automations = new AutomationService({
   log: (record) => logger.warn(record, 'automation')
 });
 automations.start();
-// Agent trace retention: finished traces past their retention period are removed hourly. A no-op
-// when traces are disabled; a failure is logged and retried on the next tick.
-const purgeAgentTraces = () => {
+// Agent trace retention: traces past their retention period are removed hourly in bounded,
+// yielding batches, also while traces are disabled. A failure is logged and retried on the next
+// tick, and a tick never overlaps a purge still in progress.
+let agentTracePurgeRunning = false;
+const purgeAgentTraces = async (): Promise<void> => {
+  if (agentTracePurgeRunning) return;
+  agentTracePurgeRunning = true;
   try {
-    const removed = service.purgeAgentTraces();
+    const removed = await service.purgeAgentTraces();
     if (removed > 0) logger.info({ removed }, 'agent traces purged');
   } catch (error) {
     logger.warn({ error: error instanceof Error ? error.message : 'unknown' }, 'agent trace purge failed');
+  } finally {
+    agentTracePurgeRunning = false;
   }
 };
-purgeAgentTraces();
-const agentTracePurge = setInterval(purgeAgentTraces, 3_600_000);
+void purgeAgentTraces();
+const agentTracePurge = setInterval(() => { void purgeAgentTraces(); }, 3_600_000);
 agentTracePurge.unref();
 // New installs default to the provider-maximum grant. This never blocks startup and
 // never overwrites a value an operator set explicitly; failures surface in Settings.

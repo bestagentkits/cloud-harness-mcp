@@ -59,7 +59,9 @@ describe('agent trace contracts', () => {
   });
 
   it('bounds list, span and export inputs', () => {
-    expect(AgentTracesListInputSchema.parse({})).toEqual({ limit: 25 });
+    expect(AgentTracesListInputSchema.parse({})).toEqual({ limit: 25, includeSummary: true });
+    expect(AgentTracesListInputSchema.parse({ includeSummary: false })).toEqual({ limit: 25, includeSummary: false });
+    expect(AgentTracesListInputSchema.safeParse({ includeSummary: 'false' }).success).toBe(false);
     expect(AgentTracesListInputSchema.safeParse({ limit: 101 }).success).toBe(false);
     expect(AgentTracesListInputSchema.safeParse({ cursor: 'not-a-cursor' }).success).toBe(false);
     expect(AgentTracesListInputSchema.safeParse({ since: '2026-10-19T10:00:00Z', until: '2026-10-19T09:00:00Z' }).success).toBe(false);

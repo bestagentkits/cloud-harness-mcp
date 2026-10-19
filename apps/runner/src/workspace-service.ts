@@ -362,6 +362,7 @@ export class WorkspaceService {
   private readonly agentManager?: AgentManager | undefined;
   /** Present only when agent traces are enabled; the trace tools report FEATURE_DISABLED otherwise. */
   private readonly traceStore: AgentTraceStore | undefined;
+  private readonly tracePurger: AgentTraceStore;
   private readonly metadata?: MetadataStore | undefined;
   private failureIntelligence?: FailureIntelligence | undefined;
   constructor(
@@ -387,6 +388,11 @@ export class WorkspaceService {
     this.traceStore = traceConfig?.enabled === true
       ? new AgentTraceStore(store.database, { retentionDays: traceConfig.retentionDays, maxTracesPerPrincipal: traceConfig.maxTracesPerPrincipal })
       : undefined;
+    // The trace tables always exist (the state store creates them), and every row carries its own
+    // retention deadline, so retention is enforced even while recording and reading are off.
+    this.tracePurger = this.traceStore ?? new AgentTraceStore(store.database, {
+      retentionDays: traceConfig?.retentionDays ?? 14, maxTracesPerPrincipal: traceConfig?.maxTracesPerPrincipal ?? 5_000
+    });
     const traceRecorder = managerDependencies.traceRecorder ?? (this.traceStore && traceConfig
       ? new AgentTraceRecorder(this.traceStore, { maxSpansPerTrace: traceConfig.maxSpansPerTrace, previewBytes: traceConfig.previewBytes })
       : undefined);
@@ -2986,9 +2992,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return op;
   }
 
-  /** Removes agent traces past their retention. Returns how many were removed; 0 when traces are disabled. */
-  purgeAgentTraces(now = Date.now()): number {
-    return this.traceStore?.purgeExpired(now) ?? 0;
+  /**
+   * Removes agent traces past their retention, in bounded batches. It runs whether or not traces
+   * are enabled, so turning the feature off never keeps old traces past their retention.
+   */
+  async purgeAgentTraces(now = Date.now()): Promise<number> {
+    return await this.tracePurger.purgeExpired(now);
   }
 
   async execute(principal: PrincipalSelector | string, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
