@@ -144,3 +144,41 @@ A code-only rollback reads and writes existing GitHub rows unchanged. Before rol
 | MCP tools | MCP tool registration in `apps/api/src` and the contract tool schemas. Keep the webhook ingress free of management operations. |
 
 Do not edit `AUTOMATION_WEBHOOK_HEADERS`, the ingress, or the schema migration except for the provider being added.
+
+## Tooling operations
+
+These operations are owner-scoped runner operations in `AutomationsRunnerRequestSchema`. Their outputs are defined in `AutomationsRunnerDataSchemas` in `packages/contracts/src/automations-api.ts`, which is the authority for both. A delivery, connection or rule that another principal owns returns `NOT_FOUND`.
+
+| Operation | Input | Output |
+| --- | --- | --- |
+| `deliveries_list` | `{ connectionId?, state?, limit }`. `state: QUARANTINED` is the dead-letter view. | `{ deliveries }`. Each summary carries `replayable` and a runner reason code in `outcome`. It never carries provider body text. |
+| `workflows_list` | `{ ruleId?, state?, publishState?, limit }`. `publishState: FAILED` lists runs whose result could not be posted. | `{ workflows }` |
+| `delivery_replay` | `{ id, expectedState? }` | `{ delivery, outcome, workflowIds }` |
+| `connection_health` | `{ connectionId? }` | `{ health: [{ connectionId, provider, enabled, outboundConfigured, lastDeliveryAt, lastQuarantine: { at, reason } \| null, last24h, last7d }] }`. Each count is keyed `RECEIVED`, `PROCESSED`, `IGNORED` and `QUARANTINED`. |
+| `automation_metrics` | `{ windowDays }`, an integer from 1 to 30 (the retention), default 7 | `{ windowDays, since, providers: [{ provider, ...m }], rules: [{ ruleId, name, provider, deleted, ...m }] }`. `rules` is capped at the list limit, busiest first. |
+
+In `automation_metrics`, `m` is `{ workflows, active, completed, failed, cancelled, expired, successRate, costMicros, inputTokens, outputTokens, latencyP50Ms, latencyP95Ms }`.
+
+**Replay**
+
+- Replay re-matches the stored normalized `event_json` against the current rules, through the same `createWorkflows` path that ingest uses. The raw payload is never stored.
+- It honours each rule's enabled flag, the cooldown, and the limit of one active run per rule and resource.
+- `UNIQUE(delivery_id, rule_id)` holds, so a rule that already has a run from this delivery is skipped with `already_triggered`. Replay therefore cannot re-run a failed run of the same rule.
+- Replay refuses:
+  - a `RECEIVED` delivery, with `CONFLICT`;
+  - an `expectedState` that does not match, with `CONFLICT`;
+  - a disabled or deleted connection, with `CONFLICT`;
+  - a delivery without an event, with `INVALID_INPUT`.
+- After replay, the delivery becomes `PROCESSED` with `outcome: replayed:<reason>` and is audited as `automation.delivery.replayed`.
+
+**Metrics:** success rate is `completed / (completed + failed + cancelled + expired)`, or null before any run finishes. The p50 and p95 latencies use the nearest-rank method over completed runs, from `createdAt` to `terminalAt`. They are computed in SQL with window functions and are not loaded into memory.
+
+**Rejected signatures:** these are not counted. Counting them would turn unauthenticated requests to a public URL into database writes.
+
+**Dashboard BFF routes**, under `/dashboard/api/v1/automations`:
+
+- `GET /deliveries?state=`
+- `GET /workflows?publishState=`
+- `POST /deliveries/:id/replay`, which takes the body `{ expectedState? }` and requires CSRF
+- `GET /health?connectionId=`
+- `GET /metrics?windowDays=`
