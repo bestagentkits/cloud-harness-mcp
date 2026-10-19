@@ -139,7 +139,11 @@ editor. No MCP tool is added.
   platform deny cannot be approved. The gate analyses argv only and never parses
   shell syntax: shell strings are never analysed; they always require approval.
   Earlier attempts to read a subset of bash kept missing cases bash runs
-  differently, so a script string is unanalyzable whatever it contains. A
+  differently, so a script string is unanalyzable whatever it contains. The
+  gate is a policy layer, not a sandbox: unknown programs that the owner's
+  command scope admits are not modelled for argument-borne execution, and
+  containment comes from the executor restrictions in
+  `apps/runner/src/workspace-service.ts`. A
   command the analysis cannot read exactly needs a mandatory owner approval
   (`PLATFORM_COMMAND_UNANALYZABLE`) that no advisor or project rule lowers, so ordinary commands such as
   `grep -r docker .` stay usable. The analysis does not read files a command

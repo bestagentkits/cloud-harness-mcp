@@ -17,7 +17,7 @@ import {
   type PolicyRuleEffect,
   type ProjectExecutionPolicy
 } from '@cloud-harness/contracts';
-import { analyzeCommand, isValidBranchName } from '../src/agent-governance/command-analysis.js';
+import { analyzeCommand, DATA_ONLY_PROGRAMS, isValidBranchName } from '../src/agent-governance/command-analysis.js';
 import { combineAdvisor, decide, evaluateGate, isAdvisorPending, platformViolation, PURE_GATE_EVALUATOR, type PolicySnapshot } from '../src/agent-governance/gate-evaluator.js';
 
 const PROJECT = `prj_${'p'.repeat(32)}`;
@@ -584,8 +584,7 @@ describe('the command analysis fails closed', () => {
     [['sh', '-c', 'cat <<EOF\nok\nEOF\nsudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
     [['rg', '--pre', './x.sh', 'pattern'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['sort', '--compress=./x.sh', 'big.txt'], 'PLATFORM_COMMAND_UNANALYZABLE'],
-    [['less', '+!./x.sh', 'notes.txt'], 'PLATFORM_COMMAND_UNANALYZABLE'],
-    [['less', '--lesskey-src=keys', 'notes.txt'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+
     [['sh', '-c', "printf -v 'a[x]' %s 1"], 'PLATFORM_COMMAND_UNANALYZABLE'],
     // Launchers that were not unwrapped before.
     [['setsid', '-f', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
@@ -755,6 +754,51 @@ describe('the command analysis fails closed', () => {
       expect(run(['EDITOR=x', 'sudo', 'id'])).toMatchObject({ decision: 'DENY', reasonCode: 'PLATFORM_PRIVILEGE_ESCALATION' });
       expect(run(['sh', '-c', 'npm test; docker ps'])).toMatchObject({ decision: 'DENY', reasonCode: 'PLATFORM_DOCKER_ACCESS' });
     });
+  });
+
+  // One row per data-only program: its modelled option that runs another program needs approval,
+  // or the program has no such option and a benign use is allowed.
+  it.each([
+    ['grep', null, ['grep', '-rn', 'docker', '.']],
+    ['egrep', null, ['egrep', 'a|b', 'x.txt']],
+    ['fgrep', null, ['fgrep', 'sudo', 'x.txt']],
+    ['rg', ['rg', '--pre', './x.sh', 'x'], ['rg', '-n', 'sudo', '.']],
+    ['rg', ['rg', '--pre=./x.sh', 'x'], null],
+    ['rg', ['rg', '-z', 'x'], null],
+    ['rg', ['rg', '--search-zip', 'x'], null],
+    ['cat', null, ['cat', 'x']],
+    ['head', null, ['head', '-n', '5', 'x']],
+    ['tail', null, ['tail', '-n', '5', 'x']],
+    ['wc', null, ['wc', '-l', 'x']],
+    ['ls', null, ['ls', '-la']],
+    ['echo', null, ['echo', 'bash']],
+    ['printf', ['printf', '-v', 'a[x]', '%s', '1'], ['printf', '%s\\n', 'x']],
+    ['sort', ['sort', '--compress-program=./x.sh', 'x'], ['sort', '-u', 'x']],
+    ['sort', ['sort', '--compress=./x.sh', 'x'], null],
+    ['uniq', null, ['uniq', '-c', 'x']],
+    ['diff', ['diff', '-l', 'a', 'b'], ['diff', '-u', 'a', 'b']],
+    ['diff', ['diff', '--paginate', 'a', 'b'], null],
+    ['cut', null, ['cut', '-d', ',', '-f', '1', 'x']],
+    ['tr', null, ['tr', 'a', 'b']],
+    ['jq', null, ['jq', '.', 'x.json']],
+    ['true', null, ['true']],
+    ['false', null, ['false']]
+  ] as Array<[string, string[] | null, string[] | null]>)('data-only %s: exec option %j needs approval, %j is allowed', (program, exec, benign) => {
+    expect(DATA_ONLY_PROGRAMS.has(program)).toBe(true);
+    if (exec) expect(run(exec)).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'PLATFORM_COMMAND_UNANALYZABLE' });
+    if (benign) expect(run(benign).reasonCode).toBe('RULE_ALLOW');
+  });
+
+  it('covers every data-only program in the table and keeps less out of the list', () => {
+    expect([...DATA_ONLY_PROGRAMS].sort()).toEqual(['cat', 'cut', 'diff', 'echo', 'egrep', 'false', 'fgrep', 'grep', 'head', 'jq', 'ls', 'printf', 'rg', 'sort', 'tail', 'tr', 'true', 'uniq', 'wc']);
+    // less loads a lesskey file from the home directory, which argv cannot show, so it is an ordinary program.
+    expect(DATA_ONLY_PROGRAMS.has('less')).toBe(false);
+  });
+
+  it('leaves an unknown program outside the command scope denied', () => {
+    // GLOBAL admits only `npm test` and `npx vitest run`; unknown programs are leaves judged by that scope.
+    expect(evaluate(action('vcs_local', { command: ['mytool', '--run', 'x'] }))).toMatchObject({ decision: 'DENY', reasonCode: 'COMMAND_NOT_ALLOWED' });
+    expect(evaluate(action('vcs_local', { command: ['npm', 'test'] })).decision).not.toBe('DENY');
   });
 
   it('bounds nested command substitutions without throwing', () => {
