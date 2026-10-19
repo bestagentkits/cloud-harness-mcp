@@ -45,6 +45,7 @@ import { DashboardControlService } from '../src/dashboard-control-service.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { StateStore } from '../src/state-store.js';
 import { WorkspaceService } from '../src/workspace-service.js';
+import { isWindows } from './platform-support.js';
 
 const roots: string[] = [];
 const cleanups: (() => void)[] = [];
@@ -149,7 +150,9 @@ const errorOf = async (promise: Promise<unknown>) => {
   throw new Error('expected the call to fail');
 };
 
-describe('skills extension workspace binding', () => {
+// Workspace and repository tiers verify each opened descriptor through /proc/self/fd, which only
+// the runner's Linux host provides, so a Windows host cannot serve them.
+describe.skipIf(isWindows)('skills extension workspace binding', () => {
   it('never shows workspace or repository skills to an unbound request', async () => {
     const { openWorkspace, write, list, get, read } = setup();
     const repo = openWorkspace(WS_A);
@@ -221,7 +224,7 @@ describe('skills extension workspace binding', () => {
   });
 });
 
-describe('skills extension repository content safety', () => {
+describe.skipIf(isWindows)('skills extension repository content safety', () => {
   it('does not serve a repository skill that holds a symlink, even one pointing outside the checkout', async () => {
     const { openWorkspace, write, list, get, read } = setup();
     const repo = openWorkspace(WS_A);
@@ -305,7 +308,7 @@ describe('skills extension repository content safety', () => {
   });
 });
 
-describe('skills extension workspace bounds', () => {
+describe.skipIf(isWindows)('skills extension workspace bounds', () => {
   it('considers at most 60 skill directories per root and serves nothing past the bound', async () => {
     const { openWorkspace, write, listPage, get } = setup();
     const repo = openWorkspace(WS_A);
@@ -352,7 +355,7 @@ describe('skills extension workspace bounds', () => {
   });
 });
 
-describe('skills extension workspace snapshots', () => {
+describe.skipIf(isWindows)('skills extension workspace snapshots', () => {
   it('refuses a file whose digest differs from the one the caller pinned', async () => {
     const { openWorkspace, write, get, read } = setup();
     const dir = write(join(openWorkspace(WS_A), '.agents/skills/alpha'), { 'SKILL.md': document('alpha'), 'a.md': 'before' });
@@ -393,7 +396,7 @@ describe('skills extension workspace snapshots', () => {
   });
 });
 
-describe('skills extension workspace tiers and precedence', () => {
+describe.skipIf(isWindows)('skills extension workspace tiers and precedence', () => {
   it('serves every tier at its own URI and resolves repository roots by their rank', async () => {
     const { builtinRoot, openWorkspace, write, list, read } = setup();
     const repo = openWorkspace(WS_A);

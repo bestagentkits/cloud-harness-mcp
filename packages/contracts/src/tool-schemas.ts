@@ -13,6 +13,7 @@ import {
   ModelSpendSummaryToolInputSchema
 } from './model-tool-schemas.js';
 import { ModelCatalogSearchInputSchema } from './model-catalog-schemas.js';
+import { AgentTraceExportInputSchema, AgentTraceGetInputSchema, AgentTraceSpansInputSchema, AgentTracesListInputSchema } from './agent-traces-api.js';
 import { PackagesApplyInputSchema, PackagesListInputSchema, PackagesPlanInputSchema, PackagesRemoveInputSchema, PackagesRollbackInputSchema, PackagesStatusInputSchema } from './package-schemas.js';
 import {
   JournalTypeSchema,
@@ -968,6 +969,10 @@ const schemas = {
   model_profile_create: ModelProfileCreateToolInputSchema,
   model_profile_update: ModelProfileUpdateToolInputSchema,
   model_spend_summary: ModelSpendSummaryToolInputSchema,
+  agent_traces_list: AgentTracesListInputSchema,
+  agent_trace_get: AgentTraceGetInputSchema,
+  agent_trace_spans: AgentTraceSpansInputSchema,
+  agent_trace_export: AgentTraceExportInputSchema,
   shell_open: z.object({ ...workspace, ...repository, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
   shell_io: z.object({ ...workspace, shellId: ShellIdSchema, input: z.string().max(65_536).optional(), cursor: z.string().max(256).optional(), waitMs: z.number().int().min(0).max(5_000).default(100) }),
   shell_close: z.object({ ...workspace, shellId: ShellIdSchema }),
@@ -1311,6 +1316,7 @@ const titles: Record<RunnerOperation, string> = {
   model_provider_list: 'List model providers', model_catalog_search: 'Search model catalog', model_connection_verify: 'Check model connection',
   model_profile_list: 'List agent model profiles', model_profile_validate: 'Dry-run agent model profile change', model_profile_create: 'Create agent model profile',
   model_profile_update: 'Update agent model profile', model_spend_summary: 'Read estimated model spend',
+  agent_traces_list: 'List agent traces', agent_trace_get: 'Read agent trace', agent_trace_spans: 'List agent trace spans', agent_trace_export: 'Export agent trace',
   shell_open: 'Open shell', shell_io: 'Use shell', shell_close: 'Close shell', tasks_list: 'List tasks', tasks_run: 'Run task', tasks_status: 'Task status', tasks_cancel: 'Cancel task',
   sessions_list: 'List coding sessions', sessions_open: 'Open coding session', sessions_io: 'Use coding session', sessions_close: 'Close coding session',
   tasks_graph: 'Read task dependency graph',
@@ -1446,7 +1452,11 @@ const descriptions: Record<RunnerOperation, string> = {
   agent_logs: 'Read bounded streaming diagnostic and tool events from one coding agent.',
   agent_message: 'Send an idempotent steering or follow-up message to a running coding agent.',
   agent_cancel: 'Cancel an in-flight coding agent and cascade cancellation to all its child agents.',
-  agent_list: 'List coding agents in a workspace with bounded pagination.'
+  agent_list: 'List coding agents in a workspace with bounded pagination.',
+  agent_traces_list: 'List your durable coding-agent run traces, newest first, with KPI aggregates on the first page (state counts, tokens, cost, model-call p50/p95 latency and time to first token, per-profile cohorts). Filter by workspaceId, agentId, profileId, state, workflowId, and a since/until start-time window; page with the opaque cursor. Read-only. Traces outlive their workspace until retention removes them; a cursor whose position was removed fails with TRACE_EXPIRED. Returns FEATURE_DISABLED when the operator has not enabled agent traces.',
+  agent_trace_get: 'Read one agent trace: state and finish reason, the immutable model profile revision, token and cost totals with their provenance, coverage, and the reconciliation of model-call spans against the agent usage ledger and the gateway settlement. Read-only; no prompts, model output, or tool arguments.',
+  agent_trace_spans: 'Page through the spans of one agent trace in recording order (span sequence, not start time): the agent run, each model call (timings, time to first token, tokens, cost, error class), each tool call (operation, outcome, input digest, and a redacted input preview only when the operator enabled one), budget reservation, lease issue, settlement and limit spans, and the gateway settlement. Optional kind filter. Read-only.',
+  agent_trace_export: 'Export one agent trace as a bounded pull-only document: json (the trace and all spans), csv (one row per span), or otlp-json (OpenTelemetry OTLP/JSON resource spans). Nothing is pushed to any collector. Read-only and redaction-safe.'
 };
 
 const readOnly = new Set<RunnerOperation>([
@@ -1460,7 +1470,8 @@ const readOnly = new Set<RunnerOperation>([
   'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read',
   'packages_list', 'packages_status',
   'agent_status', 'agent_logs', 'agent_list',
-  'model_provider_list', 'model_catalog_search', 'model_profile_list', 'model_profile_validate', 'model_spend_summary'
+  'model_provider_list', 'model_catalog_search', 'model_profile_list', 'model_profile_validate', 'model_spend_summary',
+  'agent_traces_list', 'agent_trace_get', 'agent_trace_spans', 'agent_trace_export'
 ]);
 const destructive = new Set<RunnerOperation>([
   'workspace_close', 'workspace_recover', 'workspace_finalize', 'workspace_repo_remove',
@@ -1489,7 +1500,8 @@ const idempotent = new Set<RunnerOperation>([
   'packages_apply', 'packages_list', 'packages_status', 'packages_rollback',
   'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list',
   'model_provider_list', 'model_catalog_search', 'model_profile_list', 'model_profile_validate', 'model_profile_create', 'model_profile_update',
-  'model_spend_summary'
+  'model_spend_summary',
+  'agent_traces_list', 'agent_trace_get', 'agent_trace_spans', 'agent_trace_export'
 ]);
 const openWorld = new Set<RunnerOperation>([
   'workspace_open', 'workspace_repo_add', 'workspace_finalize', 'exec_run', 'bash', 'shell_io', 'sessions_io', 'tasks_run',

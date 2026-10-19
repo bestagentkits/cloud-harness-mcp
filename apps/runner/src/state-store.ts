@@ -25,6 +25,7 @@ import {
 } from './principal-store.js';
 
 import { KnowledgeStore } from './knowledge-store.js';
+import { initializeAgentTraceSchema } from './agent-trace-schema.js';
 export { KnowledgeStore } from './knowledge-store.js';
 export type {
   CreateKnowledgeItemParams,
@@ -595,6 +596,8 @@ export class StateStore {
       this.database.prepare('INSERT OR IGNORE INTO runtime_meta(key, value) VALUES (?, ?)')
         .run('runner_instance_id', randomBytes(18).toString('hex'));
       this.knowledge = new KnowledgeStore(this.database);
+      // Inert unless agent traces are enabled; created unconditionally so enabling them needs no migration.
+      initializeAgentTraceSchema(this.database);
     } catch (err) {
       try { this.database.close(); } catch { /* ignore */ }
       throw err;

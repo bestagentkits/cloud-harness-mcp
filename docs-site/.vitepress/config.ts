@@ -130,6 +130,7 @@ export default defineConfig({
           { text: 'Workspaces', link: '/dashboard/workspaces' },
           { text: 'Terminal', link: '/dashboard/terminal' },
           { text: 'Agents', link: '/dashboard/agents' },
+          { text: 'Traces', link: '/dashboard/traces' },
           { text: 'Automations', link: '/dashboard/automations' },
           { text: 'Activity', link: '/dashboard/activity' },
           { text: 'Approvals', link: '/dashboard/approvals' },

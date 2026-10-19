@@ -431,7 +431,9 @@ export function renderAgentDetail({ agent, logs = [] } = {}) {
   const usagePanel = `<section class="panel" aria-labelledby="agent-usage-heading"><h2 id="agent-usage-heading">Usage</h2><dl class="facts"><dt>Input tokens</dt><dd>${escape(countOf(usage.inputTokens))} of ${escape(countOf(budget.maxInputTokens))} (${escape(percentOf(usage.inputTokens, budget.maxInputTokens))})</dd><dt>Output tokens</dt><dd>${escape(countOf(usage.outputTokens))} of ${escape(countOf(budget.maxOutputTokens))} (${escape(percentOf(usage.outputTokens, budget.maxOutputTokens))})</dd><dt>Cost</dt><dd>${escape(costOf(usage.costMicros))} of ${escape(costOf(budget.maxCostMicros))} (${escape(percentOf(usage.costMicros, budget.maxCostMicros))})</dd><dt>Output bytes</dt><dd>${escape(countOf(usage.outputBytes))} of ${escape(countOf(budget.maxOutputBytes))}</dd><dt>Tool time</dt><dd>${escape(countOf(usage.toolTimeMs))} ms</dd><dt>Wall time</dt><dd>${escape(countOf(usage.wallTimeMs))} ms</dd><dt>Events</dt><dd>${escape(countOf(usage.eventCount))}</dd></dl><p class="page-note">Usage is the runner's reported counters; a limit that was never configured reads as “Not reported”.</p></section>`;
   const logsPanel = `<section class="panel" aria-labelledby="agent-logs-heading"><h2 id="agent-logs-heading">Logs</h2><p class="page-note">Bounded and redacted: large events are truncated before they reach this page.</p><ul class="agent-log-list">${logRows}</ul></section>`;
   const messagesPanel = `<section class="panel" aria-labelledby="agent-messages-heading"><h2 id="agent-messages-heading">Messages</h2><form id="agent-message-form" class="stack-form"><label for="agent-message-mode">Delivery</label><select id="agent-message-mode" name="mode"><option value="steer" selected>Steer the running agent</option><option value="followUp">Queue a follow-up</option></select><label for="agent-message-text">Message</label><textarea id="agent-message-text" name="message" rows="3" required maxlength="65536"></textarea><div class="form-row-actions"><button type="submit" class="accent-btn">Send message</button><button id="cancel-agent" class="danger" type="button">Cancel agent</button></div><p class="form-status" aria-live="polite"></p></form></section>`;
-  return `${overview}${usagePanel}${logsPanel}${messagesPanel}`;
+  // Filled by the trace views once they answer; it stays hidden when traces are turned off.
+  const tracesPanel = '<section class="panel" id="agent-traces" aria-labelledby="agent-traces-heading" hidden><h2 id="agent-traces-heading">Traces</h2><p class="empty-note">Loading traces…</p></section>';
+  return `${overview}${usagePanel}${tracesPanel}${logsPanel}${messagesPanel}`;
 }
 
 const TASK_STATUS_LABELS = {
@@ -2782,6 +2784,7 @@ export function renderAutomationRunDetail({ workflow, result = null, transitions
         <dt>Delivery</dt><dd class="mono wrap">${escape(workflow.deliveryId)}</dd>
         <dt>Workspace / agent</dt><dd>${automationWorkspaceLinks(workflow, true)}</dd>
         <dt>Agent status</dt><dd class="mono">${automationText(workflow.agentStatus, 'Not started')}</dd>
+        <dt>Trace</dt><dd>${/^agent_[A-Za-z0-9_-]{20,80}$/.test(String(workflow.agentId ?? '')) ? `<a href="/dashboard/traces?agentId=${encodeURIComponent(workflow.agentId)}">View trace</a>` : 'Not started'}</dd>
         <dt>Error</dt><dd class="mono wrap">${automationText(workflow.errorCode, 'None')}</dd>
         <dt>Publish</dt><dd>${automationPill(AUTOMATION_PUBLISH_STATE, workflow.publishState)}</dd>
         <dt>Usage</dt><dd>${automationUsage(workflow.usage)}</dd>

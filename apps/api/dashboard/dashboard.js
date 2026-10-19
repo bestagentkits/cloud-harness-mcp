@@ -93,6 +93,7 @@ import {
 } from './dashboard-render.js';
 import { mountTerminalPane } from './dashboard-terminal.js';
 import { createModelWizard, createSpendPanel, renderModelsPage, verificationLabel } from './dashboard-models.js';
+import { createTracesView, tracesAvailable } from './dashboard-traces.js';
 import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -729,7 +730,7 @@ function navigateTo(target) {
 export function renderSidebarNavMarkup(groups = navGroups()) {
   return groups.map((group) => [
     `<p class="nav-group">${escapeHtml(group.label)}</p>`,
-    ...group.pages.map((page) => `<a href="${escapeHtml(page.route)}" data-section="${escapeHtml(page.id)}"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${page.icon}</svg>${escapeHtml(page.label)}${page.id === 'approvals' ? '<span class="nav-badge" id="nav-badge-approvals" hidden></span>' : ''}</a>`)
+    ...group.pages.map((page) => `<a href="${escapeHtml(page.route)}" data-section="${escapeHtml(page.id)}"${page.feature ? ` data-feature="${escapeHtml(page.feature)}" hidden` : ''}><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${page.icon}</svg>${escapeHtml(page.label)}${page.id === 'approvals' ? '<span class="nav-badge" id="nav-badge-approvals" hidden></span>' : ''}</a>`)
   ].join('')).join('');
 }
 
@@ -1123,6 +1124,11 @@ export function initializeDashboard() {
   // The sidebar is registry output; index.html ships an empty container so a page
   // label cannot live in two places.
   insertRendered(document.querySelector('#sidebar-nav'), renderSidebarNavMarkup());
+  // A feature-gated entry is revealed only when its feature answers; an instance with traces turned off
+  // never shows the Traces entry.
+  void tracesAvailable().then((available) => {
+    for (const link of sidebar.querySelectorAll('a[data-feature="agentTraces"]')) link.hidden = !available;
+  });
   const dialog = document.querySelector('#confirm-dialog'); const menuButton = document.querySelector('#menu-button');
   const revealDialog = document.querySelector('#api-key-reveal-dialog');
   const confirm = createAsyncDialogController({ dialog, cancelButton: dialog.querySelector('[data-cancel]'), actionButton: document.querySelector('#confirm-action'), status: document.querySelector('#confirm-status'), reportError: showError });
@@ -1347,6 +1353,8 @@ export function initializeDashboard() {
       });
     }
   }
+  /** The Traces page, one trace's detail, and the agent Traces panel share the Dashboard's one polling controller. */
+  const traceViews = createTracesView({ insert: insertRendered, navigate: navigateTo, createPoller: createImportPollingController, announce });
   // Static pages resolve through the registry; detail routes keep their own matchers
   // because they need the captured id.
   const PAGE_LOADERS = {
@@ -1360,6 +1368,7 @@ export function initializeDashboard() {
     integrations: loadGitHub,
     'mcp-servers': loadMcpServers,
     automations: () => loadAutomations(),
+    traces: loadTraces,
     knowledge: loadKnowledge,
     agents: loadAgents,
     activity: loadActivity,
@@ -1376,6 +1385,7 @@ export function initializeDashboard() {
   function load() {
     loadController?.abort();
     disposeTerminalPane();
+    traceViews.dispose();
     const controller = new globalThis.AbortController();
     loadController = controller;
     const queued = loadQueue.catch(() => undefined).then(async () => {
@@ -1396,6 +1406,7 @@ export function initializeDashboard() {
       const mcpServerMatch = pathname.match(/^\/dashboard\/mcp-servers\/(mcps_[A-Za-z0-9_-]{20,80})$/);
       const agentMatch = pathname.match(/^\/dashboard\/agents\/(agent_[A-Za-z0-9_-]{20,80})$/);
       const automationRunMatch = pathname.match(/^\/dashboard\/automations\/runs\/(wfl_[a-f0-9]{32})$/);
+      const traceMatch = pathname.match(/^\/dashboard\/traces\/(trc_[a-z2-7]{26})$/);
       const page = pageForPath(pathname);
       if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
       else if (pathMatch?.[2] === 'runtime') await loadRuntime(pathMatch[1]);
@@ -1405,6 +1416,7 @@ export function initializeDashboard() {
       else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
       else if (agentMatch) await loadAgentDetail(agentMatch[1]);
       else if (automationRunMatch) await loadAutomations(automationRunMatch[1]);
+      else if (traceMatch) await loadTraceDetail(traceMatch[1]);
       else if (page && PAGE_LOADERS[page.id]) await PAGE_LOADERS[page.id]();
       else throw Object.assign(new Error('Dashboard page not found.'), { status: 404 });
       if (signal.aborted) return;
@@ -4258,6 +4270,19 @@ export function initializeDashboard() {
     setTitle('Agent detail', 'One coding agent: status, usage, bounded logs, and control.');
     insertRendered(content, renderAgentDetail({ agent, logs: logsResult?.data?.events ?? [] }));
     bindAgentControls(agent, agentId);
+    // Traces enrich the page: the panel loads on its own and stays hidden when traces are off.
+    void traceViews.loadAgentPanel(content.querySelector('#agent-traces'), agentId);
+  }
+  async function loadTraces() {
+    selectNavigation('traces');
+    document.querySelector('#command-surface').hidden = true;
+    await traceViews.loadList(content, location.search);
+  }
+  async function loadTraceDetail(traceId) {
+    selectNavigation('traces');
+    document.querySelector('#command-surface').hidden = true;
+    setTitle('Trace', 'One agent run: spans, timings, tokens, cost, and reconciliation with usage.');
+    await traceViews.loadDetail(content, traceId);
   }
   function bindAgentControls(agent, agentId) {
     const form = document.querySelector('#agent-message-form');

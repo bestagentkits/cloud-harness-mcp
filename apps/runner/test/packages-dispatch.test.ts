@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HarnessError, PackageApplyResultSchema, PackagePlanResultSchema, type RunnerConfig } from '@cloud-harness/contracts';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
@@ -186,7 +186,7 @@ describe('managed package dispatch', () => {
     const target = `/opt/chm-packages/${releaseId}`;
     const volumeIndex = create.findIndex((arg) => arg.endsWith(`:${target}:ro`));
     expect(create[volumeIndex - 1]).toBe('--volume');
-    expect(create[volumeIndex]!.startsWith(`${join(f.config.packagesRoot, 'releases')}/`)).toBe(true);
+    expect(create[volumeIndex]!.startsWith(`${join(f.config.packagesRoot, 'releases')}${sep}`)).toBe(true);
     const path = create.find((arg) => arg.startsWith('PATH='))!.slice('PATH='.length).split(':');
     expect(path.indexOf(`${target}/bin`)).toBeGreaterThan(path.indexOf('/tmp/cloud-harness-home/.local/bin'));
     expect(path.indexOf(`${target}/bin`)).toBeLessThan(path.indexOf('/usr/local/sbin'));
