@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { gitTransferVolumes } from '../../apps/runner/src/workspace-service.js';
+import { gitTransferRepositoryPath, gitTransferVolumes } from '../../apps/runner/src/workspace-service.js';
 
 let volumeName: string;
 
@@ -91,23 +91,24 @@ describe('transfer repository isolation', () => {
     '--entrypoint', '/bin/bash', image, '-c', script
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
-  // Creates the transfer directory on the host the way the runner does before the helper starts.
+  // Creates the transfer directory on the host the way the runner does before the helper starts: owned by
+  // another UID, so the repository the helper creates inside it must still be accepted by Git.
   const transferDirectory = (name: string) => {
-    asOwner(`mkdir /job/${name}`);
-    return join(root, name);
+    execFileSync('docker', ['run', '--rm', '--user', '0:0', '--volume', `${root}:/job:rw`, '--entrypoint', '/bin/sh', image, '-c', `mkdir /job/${name} && chmod 0777 /job/${name}`], { stdio: 'ignore' });
   };
+  const repositoryOf = (name: string) => gitTransferRepositoryPath(name);
 
   const transfer = (mode: 'fetch' | 'import' | 'stage-push' | 'push', name: string, argument = '', extraVolumes: string[] = []) => execFileSync('docker', [
     'run', '-i', '--rm', '--network', 'none', '--user', '10001:10001', '--read-only', '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m',
-    ...gitTransferVolumes(mode, join(root, 'repo'), '/job/repo', join(root, name), name), ...extraVolumes,
-    '--entrypoint', '/opt/harness/git-transfer-helper.sh', image, mode, '/job/remote.git', '/job/repo', `/job/${name}`, argument, ''
+    ...gitTransferVolumes(mode, root, name), ...extraVolumes,
+    '--entrypoint', '/opt/harness/git-transfer-helper.sh', image, mode, '/job/remote.git', '/job/repo', repositoryOf(name), argument, ''
   ], { input: '\n', encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
 
   // Stands in for any command the repository configures and Git runs during the transfer: it runs with
   // exactly the mounts the helper gets and tries to rewrite every other transfer repository it can see.
   const tamper = (volumes: string[]) => execFileSync('docker', [
     'run', '--rm', '--network', 'none', '--user', '10001:10001', '--read-only', ...volumes, '--entrypoint', '/bin/bash', image, '-c',
-    'for d in /job/git-transfer-*; do [ -d "$d" ] || continue; git --git-dir="$d" update-ref refs/heads/main "$(git --git-dir="$d" rev-parse refs/heads/main^)" 2>/dev/null && echo "tampered $d"; done; true'
+    'for d in /job/git-transfer-*/repository.git; do [ -d "$d" ] || continue; git --git-dir="$d" update-ref refs/heads/main "$(git --git-dir="$d" rev-parse refs/heads/main^)" 2>/dev/null && echo "tampered $d"; done; true'
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
   beforeAll(() => {
@@ -133,23 +134,23 @@ describe('transfer repository isolation', () => {
     const decoy = `git-transfer-${randomBytes(12).toString('hex')}`;
     transferDirectory(decoy);
     transfer('stage-push', decoy);
-    expect(tamper(['--volume', `${root}:/job:rw`])).toContain(`tampered /job/${decoy}`);
+    expect(tamper(['--volume', `${root}:/job:rw`])).toContain(`tampered ${repositoryOf(decoy)}`);
     asOwner(`rm -rf /job/${decoy}`);
 
     const staged = `git-transfer-${randomBytes(12).toString('hex')}`;
     const fetched = `git-transfer-${randomBytes(12).toString('hex')}`;
     transferDirectory(staged);
-    const fetchedPath = transferDirectory(fetched);
+    transferDirectory(fetched);
     transfer('stage-push', staged);
-    const stagedHead = asOwner(`git --git-dir=/job/${staged} rev-parse refs/heads/main`);
+    const stagedHead = asOwner(`git --git-dir=${repositoryOf(staged)} rev-parse refs/heads/main`);
     expect(stagedHead).toBe(asOwner('git -C /job/repo rev-parse HEAD'));
 
     // A concurrent fetch and import, and a second push's stage, see only their own transfer repositories.
     const remote = ['--volume', `${join(root, 'remote.git')}:/job/remote.git:ro`];
-    expect(tamper(gitTransferVolumes('import', join(root, 'repo'), '/job/repo', fetchedPath, fetched))).toBe('');
-    expect(tamper(gitTransferVolumes('stage-push', join(root, 'repo'), '/job/repo', fetchedPath, fetched))).toBe('');
-    expect(tamper(gitTransferVolumes('fetch', join(root, 'repo'), '/job/repo', fetchedPath, fetched))).toBe('');
-    expect(asOwner(`git --git-dir=/job/${staged} rev-parse refs/heads/main`)).toBe(stagedHead);
+    expect(tamper(gitTransferVolumes('import', root, fetched))).toBe('');
+    expect(tamper(gitTransferVolumes('stage-push', root, fetched))).toBe('');
+    expect(tamper(gitTransferVolumes('fetch', root, fetched))).toBe('');
+    expect(asOwner(`git --git-dir=${repositoryOf(staged)} rev-parse refs/heads/main`)).toBe(stagedHead);
 
     // The narrowed mounts still carry a real transfer: the push sends the staged commit, and a fetch then
     // imports it into the checkout through a read-only transfer repository.

@@ -26,7 +26,7 @@ vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
 }));
 
 import type * as GitHubAppBroker from '../src/github-app-broker.js';
-import { WorkspaceService } from '../src/workspace-service.js';
+import { WorkspaceService, gitTransferVolumes } from '../src/workspace-service.js';
 
 const temporaryDirectories: string[] = [];
 afterEach(() => {
@@ -102,17 +102,28 @@ describe('remote Git credential boundary', () => {
       for (const args of helperCalls) expect(volumes(args).some((volume) => volume.startsWith(`${workspacePath}:`))).toBe(false);
 
       const staged = transferOf(byMode('stage-push'));
+      const stagedDirectory = staged.slice(0, -'/repository.git'.length);
+      const hostOf = (directory: string) => `${workspacePath}${directory.slice('/job'.length)}`;
+      expect(staged).toMatch(/^\/job\/git-transfer-[0-9a-f]{24}\/repository\.git$/);
       expect(transferOf(byMode('push'))).toBe(staged);
-      expect(volumes(byMode('stage-push'))).toEqual([`${workspacePath}/repo:/job/repo:ro`, `${workspacePath}${staged.slice('/job'.length)}:${staged}:rw`]);
-      expect(volumes(byMode('push'))).toEqual([`${workspacePath}${staged.slice('/job'.length)}:${staged}:rw`]);
+      expect(volumes(byMode('stage-push'))).toEqual([`${workspacePath}/repo:/job/repo:ro`, `${hostOf(stagedDirectory)}:${stagedDirectory}:rw`]);
+      expect(volumes(byMode('push'))).toEqual([`${hostOf(stagedDirectory)}:${stagedDirectory}:rw`]);
 
       const fetched = transferOf(byMode('fetch'));
-      expect(fetched).not.toBe(staged);
-      expect(volumes(byMode('fetch'))).toEqual([`${workspacePath}${fetched.slice('/job'.length)}:${fetched}:rw`]);
-      expect(volumes(byMode('import'))).toEqual([`${workspacePath}/repo:/job/repo:rw`, `${workspacePath}${fetched.slice('/job'.length)}:${fetched}:ro`]);
-      expect(JSON.stringify(volumes(byMode('import')))).not.toContain(staged);
+      const fetchedDirectory = fetched.slice(0, -'/repository.git'.length);
+      expect(fetchedDirectory).not.toBe(stagedDirectory);
+      expect(volumes(byMode('fetch'))).toEqual([`${hostOf(fetchedDirectory)}:${fetchedDirectory}:rw`]);
+      expect(volumes(byMode('import'))).toEqual([`${workspacePath}/repo:/job/repo:rw`, `${hostOf(fetchedDirectory)}:${fetchedDirectory}:ro`]);
+      expect(JSON.stringify(volumes(byMode('import')))).not.toContain(stagedDirectory);
     } finally {
       store.close();
+    }
+  });
+
+  it('binds the checkout tree root, never a scoped checkout path the executor could swap for a symlink', () => {
+    for (const mode of ['fetch', 'import', 'stage-push', 'push'] as const) {
+      const sources = gitTransferVolumes(mode, '/jobs/ws_a', 'git-transfer-x').filter((value) => value !== '--volume').map((value) => value.split(':')[0]);
+      for (const source of sources) expect(['/jobs/ws_a/repo', '/jobs/ws_a/git-transfer-x']).toContain(source);
     }
   });
 

@@ -639,7 +639,12 @@ workspace directory. A command the repository configures that Git runs during an
 import or a stage therefore cannot reach another transfer's repository, so
 nothing can rewrite a staged push clone between its stage and its push. The
 checkout is read-only while it is staged and the fetched transfer repository is
-read-only while it is imported. The executable boundary
+read-only while it is imported. The checkout is always bound from its tree root,
+never a scoped `repos/<alias>` path: the executor can replace that path with a
+symlink, and Docker would follow it on the host, while the helper resolves it
+inside its own mounts. Because the checkout and the staged clone are separate
+mounts, staging copies objects instead of hardlinking them, so the resumed
+executor cannot edit a staged object in place; the copy is the cost of that. The executable boundary
 and its evidence are
 [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts),
 [`worker/git-transfer-helper.sh`](../worker/git-transfer-helper.sh),
