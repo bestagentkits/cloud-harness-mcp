@@ -48,7 +48,8 @@ async function listed(client: Client): Promise<Listed[]> {
   return (await call(client, 'workspace_list', {})).data!.workspaces as Listed[];
 }
 
-describe('local multi-workspace server (real binary)', () => {
+// By default the server refuses local mode on Windows (apps/api/src/index.ts), so the real binary cannot run here.
+describe.skipIf(process.platform === 'win32')('local multi-workspace server (real binary)', () => {
   let base: string;
   let configPath: string;
   const children: ChildProcess[] = [];

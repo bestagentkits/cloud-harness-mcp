@@ -32,9 +32,18 @@ import { ModelSpendLedger } from '../../apps/runner/src/model-spend-ledger.js';
 import type { WorkspaceService } from '../../apps/runner/src/workspace-service.js';
 const tempDbPath = () => join(tmpdir(), `test-dyn-models-${randomBytes(8).toString('hex')}.sqlite`);
 
+const defaultCert = resolve('.cloud-harness-test-fixtures/model-gateway/server-cert.pem');
+const defaultKey = resolve('.cloud-harness-test-fixtures/model-gateway/server-key.pem');
+
+/**
+ * Windows hosts rarely have `openssl` on PATH, so the TLS tests skip there unless the generated
+ * fixtures already exist. Linux always runs them: CI generates the fixtures before testing.
+ */
+const tlsFixturesUnavailable = process.platform === 'win32'
+  && !(existsSync(defaultCert) && existsSync(defaultKey))
+  && spawnSync('openssl', ['version'], { stdio: 'ignore' }).status !== 0;
+
 async function ensureTlsFixtures(): Promise<{ certFile: string; keyFile: string }> {
-  const defaultCert = resolve('.cloud-harness-test-fixtures/model-gateway/server-cert.pem');
-  const defaultKey = resolve('.cloud-harness-test-fixtures/model-gateway/server-key.pem');
   if (existsSync(defaultCert) && existsSync(defaultKey)) {
     return { certFile: defaultCert, keyFile: defaultKey };
   }
@@ -275,7 +284,7 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     await manager.stop();
   });
 
-  it('retains revision N with credential 1 after update to N+1 with credential 2 across Gateway restart', async () => {
+  it.skipIf(tlsFixturesUnavailable)('retains revision N with credential 1 after update to N+1 with credential 2 across Gateway restart', async () => {
     const { repo, p, store } = setup();
     const { certFile, keyFile } = await ensureTlsFixtures();
     const cert = readFileSync(certFile);
@@ -429,7 +438,7 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     }
   });
 
-  it('executes real HTTP requests through Model Gateway for both chat-completions and responses modes with dynamic snapshot', async () => {
+  it.skipIf(tlsFixturesUnavailable)('executes real HTTP requests through Model Gateway for both chat-completions and responses modes with dynamic snapshot', async () => {
     const { repo, p } = setup();
     const { certFile, keyFile } = await ensureTlsFixtures();
     const cert = readFileSync(certFile);
@@ -769,7 +778,7 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     await manager.stop();
     await gwRuntime.close();
   });
-  it('applies a snapshot carrying cache and tier prices to the gateway and serves requests from it', async () => {
+  it.skipIf(tlsFixturesUnavailable)('applies a snapshot carrying cache and tier prices to the gateway and serves requests from it', async () => {
     const { repo, p } = setup();
     const { certFile, keyFile } = await ensureTlsFixtures();
     const upstreamServer: TlsServer = createTlsServer({ cert: readFileSync(certFile), key: readFileSync(keyFile) }, (_req, res) => {
@@ -1281,7 +1290,7 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     }
   });
 
-  it('sends the OpenCode Go session header with the agent id through a synced snapshot', async () => {
+  it.skipIf(tlsFixturesUnavailable)('sends the OpenCode Go session header with the agent id through a synced snapshot', async () => {
     const { repo, p } = setup();
     const { certFile, keyFile } = await ensureTlsFixtures();
     const received: Array<{ path: string; session: string | undefined; authorization: string | undefined; custom: string | undefined }> = [];

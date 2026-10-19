@@ -121,9 +121,14 @@ current:
 3. Run the narrowest relevant test first, then the applicable repository gate:
    - Normal code changes: `npm run verify`. On Windows or non-POSIX hosts, use
      targeted suites (`npm run test:unit`, `npm run test:integration`, `npm run lint`,
-     `npm run typecheck`) as your baseline; shell fixture tests in
-     `test/deploy-release-runtime.test.ts` and `test/upgrade-nginx-routes.test.ts`
-     require a POSIX host and are verified in Linux CI.
+     `npm run typecheck`) as your baseline. POSIX-only tests skip on win32
+     with a stated reason and are verified in Linux CI; the "Windows hosts"
+     section of `docs/development.md` lists them and the failures still
+     unexplained. Guard a new POSIX-only test the same way
+     (`apps/runner/test/platform-support.ts`) and add it to that list. The nginx
+     upgrade script refuses its test root when run as root, so in a root-only
+     container run that suite as an unprivileged user instead of treating the
+     failure as a regression.
    - Compose or network-boundary changes: `npm run verify:compose` and
      `npm run verify`.
    - Shell changes: run the syntax check owned by `.github/workflows/ci.yml`.
