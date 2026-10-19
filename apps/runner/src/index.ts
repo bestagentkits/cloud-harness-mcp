@@ -113,7 +113,7 @@ const agentPolicies = new AgentPolicyService({
   resolvePrincipal: (principal) => store.resolvePrincipal(principal),
   // Project identity is the metadata projects table, never a name or id taken from an event payload.
   projectState: (principalId, projectId) => (metadata.validateArtifactProvenance(principalId, { projectId }) ? 'active' : 'unknown'),
-  activeProjectIds: (principalId) => new Set(metadata.listProjects(principalId).map((project) => project.id)),
+  activeProjectIds: (principalId) => metadata.activeProjectIds(principalId),
   audit: (database, principalId, action, subjectType, subjectId, generation, details) => {
     metadata.recordAuditInTransaction(database, principalId, action, subjectType, subjectId, generation, details);
   }
