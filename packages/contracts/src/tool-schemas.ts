@@ -1133,7 +1133,10 @@ const schemas = {
     // family plus shared REVIEW.md/DESIGN.md). Left without a schema default so omitting it keeps
     // the idempotency payload of existing callers unchanged.
     repositoryContext: z.enum(['codex', 'claude', 'cursor', 'aider', 'all', 'none']).optional()
-      .describe('Repository guidance profile placed before the task; omitted uses codex, none sends the task alone.')
+      .describe('Repository guidance profile placed before the task; omitted uses codex, none sends the task alone.'),
+    // Optional, and without a default, so omitting it keeps the idempotency payload unchanged.
+    continueFrom: AgentIdSchema.optional()
+      .describe('A terminal agent of this workspace whose persisted session the new agent continues; needs session persistence on the instance. The new agent gets a new id, container, lease, and budget.')
   }).strict(),
   agent_status: agentLookup,
   agent_logs: z.object({

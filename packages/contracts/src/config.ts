@@ -45,6 +45,10 @@ const deweeGatewayUrl = z.url().refine((value) => {
 const positiveBoundedInteger = (maximum: number, defaultValue: number) =>
   z.coerce.number().int().min(1).max(maximum).default(defaultValue);
 
+/** Upper bounds of a persisted agent session; the agent runtime's `start` schema accepts no more. */
+export const MAX_AGENT_SESSION_MESSAGES = 10_000;
+export const MAX_AGENT_SESSION_BYTES = 7_864_320;
+
 const gatewayUrl = z.url().refine((value) => {
   try {
     const url = new URL(value);
@@ -105,7 +109,12 @@ export const RunnerAgentLimitsSchema = z.object({
   cleanupRetryLimit: positiveBoundedInteger(1_000, 20),
   cleanupRetryMaxDelayMs: positiveBoundedInteger(86_400_000, 3_600_000),
   retentionSeconds: positiveBoundedInteger(31_536_000, 604_800),
-  lookupHorizonSeconds: positiveBoundedInteger(31_536_000, 2_592_000)
+  lookupHorizonSeconds: positiveBoundedInteger(31_536_000, 2_592_000),
+  // Persisted Pi session bounds. A continuation seeds the whole log through one `start` protocol
+  // record (8 MiB, which also carries a prompt of up to 256 KiB), so the byte bound stays below it.
+  maxSessionMessages: positiveBoundedInteger(MAX_AGENT_SESSION_MESSAGES, 2_000),
+  maxSessionBytes: positiveBoundedInteger(MAX_AGENT_SESSION_BYTES, 7_340_032),
+  sessionRetentionMs: positiveBoundedInteger(31_536_000_000, 604_800_000)
 }).strict().superRefine((limits, context) => {
   if (limits.minTtlSeconds > limits.maxTtlSeconds) {
     context.addIssue({ code: 'custom', path: ['minTtlSeconds'], message: 'minimum agent TTL cannot exceed maximum agent TTL' });
@@ -147,6 +156,10 @@ export const RunnerAgentsConfigSchema = z.object({
     (profiles) => new Set(profiles.map((profile) => profile.id)).size === profiles.length,
     'agent profile IDs must be unique'
   ),
+  // Instance switch for persisted Pi sessions and `agent_spawn.continueFrom`. The decision is made
+  // per agent at spawn: turning it off refuses new continuations and stops recording for agents
+  // spawned afterwards; stored sessions age out through retention.
+  sessionPersistenceEnabled: enabled,
   limits: RunnerAgentLimitsSchema.default(DEFAULT_RUNNER_AGENT_LIMITS)
 }).strict();
 
