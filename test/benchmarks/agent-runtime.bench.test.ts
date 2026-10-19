@@ -2,340 +2,51 @@
  * Agent runtime benchmark harness.
  *
  * The offline suite always runs. It drives the real AgentWorker, the real proxy tool broker and a
- * real Pi session in-process, against a scripted pi-ai faux model and an in-memory stand-in for the
- * runner's proxy tool executor, and measures the current `pi-coding` runtime on five use cases. No
- * model, network or container is involved, so every number is the cost of the runtime itself.
+ * real Pi session in-process against a scripted pi-ai faux model, and measures each registered
+ * runtime on five use cases with identical scripts, limits and tool grants:
+ * - `pi-coding`: the shipped runtime; the benchmark answers proxy tools in place of the runner.
+ * - `pi-coding+persisted`: the same worker with session persistence behind the real runner
+ *   (`AgentManager`, `AgentStateRepository`, effect ledger) and an in-process launcher.
+ * No model, network or container is involved, so every number is the cost of the runtime itself.
  *
- * The live suite runs only with RUN_AGENT_RUNTIME_BENCHMARK=live plus a gateway URL and lease, and
- * needs a registered live driver. Without the prerequisites it skips; it never fabricates numbers.
- * Results are written to AGENT_RUNTIME_BENCHMARK_OUT when set.
+ * The live suite runs only with RUN_AGENT_RUNTIME_BENCHMARK=live. It drives a local Compose stack
+ * over MCP (see `agent-runtime/live-driver.ts`) and fails loudly when its prerequisites are
+ * missing; it never fabricates numbers. Results are written to AGENT_RUNTIME_BENCHMARK_OUT when set.
  *
- * Runtimes plug in through `RuntimeUnderTest`: a runtime executes one worker lifetime for a task and
- * may accept a continuation handle from an earlier lifetime. The baseline does not support
- * continuation, and records what it observes instead.
+ * Runtimes plug in through `RuntimeUnderTest` (`agent-runtime/harness.ts`): a runtime executes one
+ * worker lifetime for a task and may accept a continuation handle from an earlier lifetime.
  */
-import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { PassThrough } from 'node:stream';
-import { InMemoryCredentialStore, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type FauxResponseStep } from '@earendil-works/pi-ai';
-import { ModelRuntime, SessionManager, SettingsManager, createAgentSession } from '@earendil-works/pi-coding-agent';
+import { writeFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { AgentWorker } from '../../apps/agent-runtime/src/agent-worker.js';
-import { ControlledResourceLoader } from '../../apps/agent-runtime/src/controlled-resources.js';
-import { JsonlWriter, ProtocolError } from '../../apps/agent-runtime/src/jsonl.js';
-import { BoundedOutput } from '../../apps/agent-runtime/src/output.js';
-import { assertExactTools, type AgentSessionFactory, type AgentSessionLike } from '../../apps/agent-runtime/src/pi-session.js';
-import type { AgentProxyOperation, OutputRecord, StartRecord, TerminalState } from '../../apps/agent-runtime/src/protocol-schemas.js';
-import { createStartRecord } from '../../apps/agent-runtime/test/helpers.js';
+import { FakeWorkspace, fixture, type RuntimeUnderTest, type ScenarioSpec, type TaskOutcome, type TaskRun } from './agent-runtime/harness.js';
+import { runLiveBenchmark } from './agent-runtime/live-driver.js';
+import { piCodingBaseline } from './agent-runtime/pi-coding.js';
+import { piCodingPersisted } from './agent-runtime/pi-coding-persisted.js';
 
-type ModelStep = { text: string } | { toolCalls: Array<{ name: string; args: Record<string, unknown> }> };
-type ScenarioSpec = {
-  title: string;
-  prompt: string;
-  followUpPrompt?: string;
-  tools: AgentProxyOperation[];
-  model: ModelStep[];
-  followUpModel?: ModelStep[];
-  killAtToolRequest?: number;
-  cancelAtToolRequest?: number;
-  children?: number;
-};
-type ScenarioFixture = { workspace: Record<string, string>; scenarios: Record<string, ScenarioSpec> };
-
-const fixture = JSON.parse(readFileSync(new URL('../fixtures/agent-runtime/scenarios.json', import.meta.url), 'utf8')) as ScenarioFixture;
-
-const MUTATING = new Set<AgentProxyOperation>(['files_write', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir']);
 const REPETITIONS = Math.max(1, Number.parseInt(process.env.AGENT_RUNTIME_BENCHMARK_REPS ?? '20', 10) || 20);
 
-/* ------------------------------------------------------------------------------------------------
- * Runtime-under-test contract
- * --------------------------------------------------------------------------------------------- */
-
-/** How a task ends: left to finish, killed like a crashed process, or cancelled by the owner. */
-type Interrupt = { atToolRequest: number; mode: 'kill' | 'cancel' };
-
-interface TaskRun {
-  prompt: string;
-  tools: AgentProxyOperation[];
-  model: ModelStep[];
-  workspace: FakeWorkspace;
-  interrupt?: Interrupt;
-  /** Handle returned by an earlier lifetime of the same runtime. Runtimes that cannot continue ignore it. */
-  continueFrom?: unknown;
-}
-
-interface TaskOutcome {
-  state: TerminalState;
-  error?: string;
-  wallMs: number;
-  /** Time from the start record to the first record the worker wrote. */
-  firstRecordMs: number;
-  modelRequests: number;
-  toolRoundTrips: number;
-  toolCancels: number;
-  recordBytes: number;
-  /** Messages the model saw on its first request, and on the last one. */
-  firstRequestMessages: number;
-  lastRequestMessages: number;
-  lastRequestBytes: number;
-  /** Messages and serialized size of the session transcript when the worker finished. */
-  transcriptMessages: number;
-  transcriptBytes: number;
-  rssDeltaBytes: number;
-  /** True when this lifetime started from a transcript supplied by an earlier lifetime. */
-  continued: boolean;
-  /** Whether the worker refused input after reaching a terminal state. */
-  postTerminalInputRefused: boolean;
-  /** Opaque value a later lifetime of the same runtime can continue from. */
-  handle?: unknown;
-}
-
-interface RuntimeUnderTest {
-  readonly id: string;
-  readonly description: string;
-  run(task: TaskRun): Promise<TaskOutcome>;
-}
-
-/* ------------------------------------------------------------------------------------------------
- * In-memory proxy tool executor
- * --------------------------------------------------------------------------------------------- */
-
-interface Effect { operation: AgentProxyOperation; target: string; payloadHash: string }
-
-class FakeWorkspace {
-  readonly files: Map<string, string>;
-  readonly effects: Effect[] = [];
-
-  constructor(files: Record<string, string>) {
-    this.files = new Map(Object.entries(files));
-  }
-
-  /** Executes a proxy operation the way the runner would, returning the tool result text. */
-  execute(operation: AgentProxyOperation, input: Record<string, unknown>): { isError: boolean; text: string } {
-    const path = String(input.path ?? input.source ?? '');
-    if (MUTATING.has(operation)) {
-      this.effects.push({ operation, target: path, payloadHash: createHash('sha256').update(JSON.stringify({ operation, input })).digest('hex') });
-    }
-    switch (operation) {
-      case 'files_list': {
-        const prefix = path === '' ? '' : `${path.replace(/\/$/u, '')}/`;
-        return { isError: false, text: [...this.files.keys()].filter((name) => name.startsWith(prefix)).sort().join('\n') };
-      }
-      case 'files_read': {
-        const content = this.files.get(path);
-        return content === undefined ? { isError: true, text: `not found: ${path}` } : { isError: false, text: content };
-      }
-      case 'files_write':
-        this.files.set(path, String(input.content ?? ''));
-        return { isError: false, text: `wrote ${path}` };
-      case 'files_apply_patch': {
-        const current = this.files.get(path);
-        const oldText = String(input.oldText ?? '');
-        if (current === undefined || !current.includes(oldText)) return { isError: true, text: `patch does not apply: ${path}` };
-        this.files.set(path, current.replace(oldText, String(input.newText ?? '')));
-        return { isError: false, text: `patched ${path}` };
-      }
-      case 'grep_search': {
-        const pattern = String(input.pattern ?? '');
-        const hits = [...this.files].flatMap(([name, content]) => content.split('\n').flatMap((line, index) => (line.includes(pattern) ? [`${name}:${index + 1}:${line}`] : [])));
-        return { isError: false, text: hits.join('\n') };
-      }
-      default:
-        return { isError: false, text: `${operation} ok` };
-    }
-  }
-
-  /** Mutations whose exact payload was applied more than once. */
-  get duplicateEffects(): number {
-    const seen = new Set<string>();
-    let duplicates = 0;
-    for (const effect of this.effects) {
-      const key = `${effect.operation}:${effect.payloadHash}`;
-      if (seen.has(key)) duplicates += 1;
-      seen.add(key);
-    }
-    return duplicates;
-  }
-}
-
-/* ------------------------------------------------------------------------------------------------
- * Baseline runtime: the shipped pi-coding worker, with a scripted model in place of the gateway
- * --------------------------------------------------------------------------------------------- */
-
-const GATEWAY_PROVIDER_ID_FOR_BENCH = 'faux';
-const RUNTIME_CWD = '/runtime';
-
-function scriptedResponses(steps: ModelStep[], onRequest: (messageCount: number, bytes: number) => void): FauxResponseStep[] {
-  let sequence = 0;
-  return steps.map((step): FauxResponseStep => (context) => {
-    onRequest(context.messages.length, Buffer.byteLength(JSON.stringify(context.messages), 'utf8'));
-    if ('text' in step) return fauxAssistantMessage([fauxText(step.text)]);
-    return fauxAssistantMessage(step.toolCalls.map((call) => fauxToolCall(call.name, call.args as never, { id: `call_${(sequence += 1)}` })), { stopReason: 'toolUse' });
-  });
-}
-
 /**
- * Builds the same controlled Pi session as the production factory (no extensions, only the proxy
- * tools, in-memory transcript) with the gateway provider swapped for a scripted faux provider.
+ * The opt-in durable runtime (`pi-durable`). It is registered here, with its own expectations in
+ * the offline suite, once its package is wired; until then it is not measured.
  */
-function fauxSessionFactory(steps: ModelStep[], onRequest: (messageCount: number, bytes: number) => void, capture: (session: AgentSessionLike) => void): AgentSessionFactory {
-  return async (start: StartRecord, broker) => {
-    const faux = fauxProvider({ provider: GATEWAY_PROVIDER_ID_FOR_BENCH, models: [{ id: start.model.id, contextWindow: start.model.contextWindow, maxTokens: start.model.maxTokens, cost: start.model.cost }] });
-    faux.setResponses(scriptedResponses(steps, onRequest));
-    const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
-    modelRuntime.registerNativeProvider(faux.provider);
-    const model = modelRuntime.getModel(faux.provider.id, start.model.id);
-    if (!model) throw new Error('faux model is unavailable');
-    const { session, extensionsResult } = await createAgentSession({
-      cwd: RUNTIME_CWD,
-      agentDir: RUNTIME_CWD,
-      model,
-      modelRuntime,
-      thinkingLevel: 'off',
-      noTools: 'all',
-      tools: start.tools,
-      customTools: broker.createDefinitions(start.tools),
-      resourceLoader: new ControlledResourceLoader(),
-      sessionManager: SessionManager.inMemory(RUNTIME_CWD),
-      settingsManager: SettingsManager.inMemory({
-        compaction: { enabled: false },
-        retry: { enabled: false, maxRetries: 0, provider: { timeoutMs: start.limits.deadlineMs, maxRetries: 0, maxRetryDelayMs: 0 } },
-        images: { autoResize: false, blockImages: true },
-        enableSkillCommands: false,
-        enableInstallTelemetry: false,
-        enableAnalytics: false,
-        packages: [], extensions: [], skills: [], prompts: [], themes: [],
-        defaultTools: start.tools
-      })
-    });
-    if (extensionsResult.extensions.length !== 0 || extensionsResult.errors.length !== 0) throw new Error('controlled Pi session loaded an extension');
-    assertExactTools(session, start.tools);
-    capture(session);
-    return session;
-  };
-}
-
-let agentCounter = 0;
-
-const piCodingBaseline: RuntimeUnderTest = {
-  id: 'pi-coding',
-  description: 'Shipped runtime: one-shot Pi session, in-memory transcript, container-local state',
-  async run(task) {
-    const startRecord = createStartRecord({
-      agentId: `agent_${String((agentCounter += 1)).padStart(20, '0')}`,
-      prompt: task.prompt,
-      tools: task.tools,
-      limits: { deadlineMs: 60_000, maxEvents: 10_000, maxOutputBytes: 8 * 1024 * 1024, maxEventBytes: 16_384, maxToolResultBytes: 1024 * 1024 }
-    });
-    const stream = new PassThrough();
-    const output = new BoundedOutput(new JsonlWriter(stream));
-    let session: AgentSessionLike | undefined;
-    let modelRequests = 0;
-    let firstRequestMessages = 0;
-    let lastRequestMessages = 0;
-    let lastRequestBytes = 0;
-    const worker = new AgentWorker(output, fauxSessionFactory(task.model, (messages, bytes) => {
-      modelRequests += 1;
-      if (modelRequests === 1) firstRequestMessages = messages;
-      lastRequestMessages = messages;
-      lastRequestBytes = bytes;
-    }, (created) => { session = created; }));
-
-    const rssBefore = process.memoryUsage().rss;
-    const startedAt = performance.now();
-    let firstRecordAt: number | undefined;
-    let recordBytes = 0;
-    let toolRoundTrips = 0;
-    let toolCancels = 0;
-    let terminal: Extract<OutputRecord, { type: 'terminal' }> | undefined;
-    let buffered = '';
-    const answered = new Set<string>();
-
-    const stop = (mode: 'kill' | 'cancel') => {
-      // Defer so the request that triggered the stop has been fully recorded first.
-      setImmediate(() => {
-        if (mode === 'kill') worker.interrupt(new Error('runtime received termination signal'));
-        else worker.receive({ type: 'cancel', requestId: 'cancel-1', reason: 'owner cancelled' });
-      });
-    };
-
-    stream.on('data', (chunk: Buffer) => {
-      firstRecordAt ??= performance.now();
-      recordBytes += chunk.length;
-      buffered += chunk.toString('utf8');
-      const lines = buffered.split('\n');
-      buffered = lines.pop() ?? '';
-      for (const line of lines) {
-        const record = JSON.parse(line) as OutputRecord;
-        if (record.type === 'terminal') terminal = record;
-        else if (record.type === 'tool_cancel') toolCancels += 1;
-        else if (record.type === 'tool_request') {
-          toolRoundTrips += 1;
-          const reached = task.interrupt && toolRoundTrips >= task.interrupt.atToolRequest;
-          if (reached) {
-            if (toolRoundTrips === task.interrupt!.atToolRequest) stop(task.interrupt!.mode);
-            continue; // the request stays in flight: no result is ever delivered
-          }
-          if (answered.has(record.requestId)) continue;
-          answered.add(record.requestId);
-          const result = task.workspace.execute(record.operation, record.input as Record<string, unknown>);
-          setImmediate(() => {
-            try {
-              worker.receive({ type: 'tool_result', requestId: record.requestId, final: true, isError: result.isError, content: [{ type: 'text', text: result.text }] });
-            } catch {
-              // The worker already reached a terminal state; the late result is dropped like the runner does.
-            }
-          });
-        }
-      }
-    });
-
-    worker.receive(startRecord);
-    await worker.completion;
-    const wallMs = performance.now() - startedAt;
-    await new Promise((resolve) => setImmediate(resolve));
-
-    let postTerminalInputRefused = false;
-    try {
-      worker.receive({ type: 'message', requestId: 'late-1', behavior: 'followUp', text: 'continue' });
-    } catch (error) {
-      postTerminalInputRefused = error instanceof ProtocolError;
-    }
-
-    const transcript = session ? JSON.stringify(session.messages) : '[]';
-    return {
-      state: terminal?.state ?? 'FAILED',
-      error: terminal?.error,
-      wallMs,
-      firstRecordMs: (firstRecordAt ?? performance.now()) - startedAt,
-      modelRequests,
-      toolRoundTrips,
-      toolCancels,
-      recordBytes,
-      firstRequestMessages,
-      lastRequestMessages,
-      lastRequestBytes,
-      transcriptMessages: session?.messages.length ?? 0,
-      transcriptBytes: Buffer.byteLength(transcript, 'utf8'),
-      rssDeltaBytes: process.memoryUsage().rss - rssBefore,
-      continued: false,
-      postTerminalInputRefused,
-      handle: undefined
-    };
-  }
-};
+const PI_DURABLE_RUNTIME: RuntimeUnderTest | undefined = undefined;
 
 /* ------------------------------------------------------------------------------------------------
  * Scenarios (runtime-agnostic)
  * --------------------------------------------------------------------------------------------- */
 
+type Facts = Record<string, string | number | boolean | null>;
+
 interface ScenarioObservation {
-  /** Deterministic facts about the scenario outcome; identical on every repetition. */
-  facts: Record<string, string | number | boolean | null>;
+  /** Deterministic facts about the scenario outcome; identical on every repetition except sizes. */
+  facts: Facts;
   /** Timing and memory samples for this repetition, aggregated across repetitions. */
   samples: { wallMs: number; firstRecordMs: number; rssDeltaBytes: number };
   /** Counters summed across the task lifetimes of this repetition. */
-  totals: { toolRoundTrips: number; toolEffects: number; recordBytes: number; modelRequests: number };
+  totals: {
+    toolRoundTrips: number; toolEffects: number; modelRequests: number; storageRows: number;
+    recordBytes: number; storageBytes: number; inputTokens: number; outputTokens: number;
+  };
 }
 
 interface Scenario {
@@ -354,12 +65,31 @@ function taskFor(scenario: ScenarioSpec, workspace: FakeWorkspace, extra: Partia
   return { prompt: scenario.prompt, tools: scenario.tools, model: scenario.model, workspace, ...extra };
 }
 
-function observation(outcomes: TaskOutcome[], workspace: FakeWorkspace, facts: ScenarioObservation['facts']): ScenarioObservation {
+/** Closes the workspace through the runtime, then summarizes the lifetimes of one repetition. */
+async function observation(runtime: RuntimeUnderTest, outcomes: TaskOutcome[], workspace: FakeWorkspace, facts: Facts): Promise<ScenarioObservation> {
+  const closed = await runtime.closeWorkspace?.(workspace);
   const sum = (pick: (outcome: TaskOutcome) => number) => outcomes.reduce((total, outcome) => total + pick(outcome), 0);
   return {
-    facts,
+    facts: closed ? { ...facts, leftoverSessionRows: closed.leftoverSessionRows, leftoverEffectRows: closed.leftoverEffectRows } : facts,
     samples: { wallMs: sum((o) => o.wallMs), firstRecordMs: outcomes[0]!.firstRecordMs, rssDeltaBytes: sum((o) => o.rssDeltaBytes) },
-    totals: { toolRoundTrips: sum((o) => o.toolRoundTrips), toolEffects: workspace.effects.length, recordBytes: sum((o) => o.recordBytes), modelRequests: sum((o) => o.modelRequests) }
+    totals: {
+      toolRoundTrips: sum((o) => o.toolRoundTrips), toolEffects: workspace.effects.length, modelRequests: sum((o) => o.modelRequests),
+      storageRows: sum((o) => o.storageRows), recordBytes: sum((o) => o.recordBytes), storageBytes: sum((o) => o.storageBytes),
+      inputTokens: sum((o) => o.inputTokens), outputTokens: sum((o) => o.outputTokens)
+    }
+  };
+}
+
+function singleRunFacts(outcome: TaskOutcome, workspace: FakeWorkspace): Facts {
+  return {
+    state: outcome.state,
+    toolEffects: workspace.effects.length,
+    contextMessagesAtEnd: outcome.transcriptMessages,
+    contextBytesAtEnd: outcome.transcriptBytes,
+    lastRequestMessages: outcome.lastRequestMessages,
+    lastRequestBytes: outcome.lastRequestBytes,
+    modelRequests: outcome.modelRequests,
+    toolCancels: outcome.toolCancels
   };
 }
 
@@ -368,38 +98,18 @@ const SCENARIOS: Scenario[] = [
     id: 'pr-review',
     useCase: 'short PR review',
     async run(runtime) {
-      const scenario = spec('pr-review');
       const workspace = new FakeWorkspace(fixture.workspace);
-      const outcome = await runtime.run(taskFor(scenario, workspace));
-      return observation([outcome], workspace, {
-        state: outcome.state,
-        toolEffects: workspace.effects.length,
-        contextMessagesAtEnd: outcome.transcriptMessages,
-        contextBytesAtEnd: outcome.transcriptBytes,
-        lastRequestMessages: outcome.lastRequestMessages,
-        lastRequestBytes: outcome.lastRequestBytes,
-        modelRequests: outcome.modelRequests,
-        toolCancels: outcome.toolCancels
-      });
+      const outcome = await runtime.run(taskFor(spec('pr-review'), workspace));
+      return await observation(runtime, [outcome], workspace, singleRunFacts(outcome, workspace));
     }
   },
   {
     id: 'multi-step-task',
     useCase: 'multi-step repository task',
     async run(runtime) {
-      const scenario = spec('multi-step-task');
       const workspace = new FakeWorkspace(fixture.workspace);
-      const outcome = await runtime.run(taskFor(scenario, workspace));
-      return observation([outcome], workspace, {
-        state: outcome.state,
-        toolEffects: workspace.effects.length,
-        contextMessagesAtEnd: outcome.transcriptMessages,
-        contextBytesAtEnd: outcome.transcriptBytes,
-        lastRequestMessages: outcome.lastRequestMessages,
-        lastRequestBytes: outcome.lastRequestBytes,
-        modelRequests: outcome.modelRequests,
-        toolCancels: outcome.toolCancels
-      });
+      const outcome = await runtime.run(taskFor(spec('multi-step-task'), workspace));
+      return await observation(runtime, [outcome], workspace, singleRunFacts(outcome, workspace));
     }
   },
   {
@@ -413,14 +123,18 @@ const SCENARIOS: Scenario[] = [
       const second = await runtime.run({
         prompt: scenario.followUpPrompt!, tools: scenario.tools, model: scenario.followUpModel!, workspace, continueFrom: first.handle
       });
-      const retained = second.firstRequestMessages > 1;
-      return observation([first, second], workspace, {
+      const launches = first.launch && second.launch ? { first: first.launch, second: second.launch } : undefined;
+      return await observation(runtime, [first, second], workspace, {
         firstState: first.state,
         sameProcessFollowUpRefused: first.postTerminalInputRefused,
         firstTranscriptMessages: first.transcriptMessages,
         followUpContinued: second.continued,
         followUpFirstRequestMessages: second.firstRequestMessages,
-        priorContextRetained: retained,
+        priorContextRetained: second.firstRequestMessages > 1,
+        // The follow-up's first request carries the whole earlier transcript plus its own prompt.
+        allPriorMessagesInFirstRequest: second.firstRequestMessages >= first.transcriptMessages + 1,
+        followUpNewContainer: launches ? launches.first.container !== launches.second.container : null,
+        followUpNewLease: launches ? launches.first.leaseId !== launches.second.leaseId : null,
         followUpState: second.state,
         followUpOutcome: second.continued ? 'CONTINUED' : 'CONTEXT_LOST'
       });
@@ -434,19 +148,23 @@ const SCENARIOS: Scenario[] = [
       const workspace = new FakeWorkspace(fixture.workspace);
       const killed = await runtime.run(taskFor(scenario, workspace, { interrupt: { atToolRequest: scenario.killAtToolRequest!, mode: 'kill' } }));
       const effectsAtKill = workspace.effects.length;
-      // Every request still pending at termination is cancelled by the worker, so this counts requests in flight.
+      // Requests still pending at termination are cancelled, so this counts requests in flight.
       const inFlightAtKill = killed.toolCancels;
       // The owner starts the same task again; the runtime may only use the handle from the killed run.
       const restarted = await runtime.run(taskFor(scenario, workspace, { continueFrom: killed.handle }));
-      return observation([killed, restarted], workspace, {
+      return await observation(runtime, [killed, restarted], workspace, {
         killedState: killed.state,
         reportedSuccess: killed.state === 'SUCCEEDED',
         effectsAtKill,
         inFlightAtKill,
+        effectsUnknownAfterKill: killed.effectsUnknown ?? null,
         restartContinued: restarted.continued,
         restartState: restarted.state,
         totalEffects: workspace.effects.length,
+        // Zero tolerance: a logical mutation (same operation and input) applied more than once.
         duplicateEffects: workspace.duplicateEffects,
+        // Executor invocations of a logical mutation beyond the first, whether or not they applied.
+        repeatedInvocations: workspace.repeatedInvocations,
         restartOutcome: restarted.continued ? 'CONTINUED' : 'REPLAYED_FROM_START'
       });
     }
@@ -460,7 +178,7 @@ const SCENARIOS: Scenario[] = [
       const lifetimes = 1 + (scenario.children ?? 0);
       // Parent and children each hold one tool call in flight when the owner cancels.
       const outcomes = await Promise.all(Array.from({ length: lifetimes }, () => runtime.run(taskFor(scenario, workspace, { interrupt: { atToolRequest: scenario.cancelAtToolRequest!, mode: 'cancel' } }))));
-      return observation(outcomes, workspace, {
+      return await observation(runtime, outcomes, workspace, {
         agents: lifetimes,
         cancelled: outcomes.filter((outcome) => outcome.state === 'CANCELLED').length,
         toolCancelsEmitted: outcomes.reduce((total, outcome) => total + outcome.toolCancels, 0),
@@ -486,7 +204,7 @@ interface ScenarioReport {
   scenario: string;
   useCase: string;
   repetitions: number;
-  facts: ScenarioObservation['facts'];
+  facts: Facts;
   totals: ScenarioObservation['totals'];
   wallMs: { p50: number; p95: number };
   firstRecordMs: { p50: number; p95: number };
@@ -499,28 +217,32 @@ interface RuntimeReport {
   scenarios: ScenarioReport[];
 }
 
-/** JSON written to AGENT_RUNTIME_BENCHMARK_OUT; the live driver emits the same shape. */
+/** JSON written to AGENT_RUNTIME_BENCHMARK_OUT by the offline suite. */
 interface AgentRuntimeBenchmarkReport {
   schema: 1;
-  mode: 'offline' | 'live';
+  mode: 'offline';
   timestamp: string;
   node: string;
   repetitions: number;
   runtimes: RuntimeReport[];
 }
 
+// Serialized sizes vary by a few bytes because messages embed timestamps, and token estimates
+// follow them; they are reported as medians. Every other fact and counter must be identical.
+const isVariable = (key: string) => /Bytes|Tokens/u.test(key);
+const stable = <T extends object>(values: T) => Object.fromEntries(Object.entries(values).filter(([key]) => !isVariable(key)));
+const median = <T extends object>(runs: T[]): T => Object.fromEntries(Object.entries(runs[0]!).map(([key, value]) => [
+  key, isVariable(key) ? percentile(runs.map((run) => Number((run as Record<string, unknown>)[key])), 0.5) : value
+])) as T;
+
 async function measure(runtime: RuntimeUnderTest, scenario: Scenario): Promise<ScenarioReport> {
   const runs: ScenarioObservation[] = [];
   for (let index = 0; index < REPETITIONS; index += 1) runs.push(await scenario.run(runtime));
   const first = runs[0]!;
-  // Serialized sizes vary by a few bytes because messages embed timestamps; every other fact must not.
-  const isSize = (key: string) => /Bytes/u.test(key);
-  const stable = (facts: ScenarioObservation['facts']) => Object.fromEntries(Object.entries(facts).filter(([key]) => !isSize(key)));
   for (const run of runs) {
     expect(stable(run.facts), `${runtime.id}/${scenario.id} must be deterministic across repetitions`).toEqual(stable(first.facts));
-    expect({ ...run.totals, recordBytes: 0 }, `${runtime.id}/${scenario.id} counters must be deterministic`).toEqual({ ...first.totals, recordBytes: 0 });
+    expect(stable(run.totals), `${runtime.id}/${scenario.id} counters must be deterministic`).toEqual(stable(first.totals));
   }
-  const facts = Object.fromEntries(Object.entries(first.facts).map(([key, value]) => [key, isSize(key) ? percentile(runs.map((run) => Number(run.facts[key])), 0.5) : value]));
   const spread = (pick: (run: ScenarioObservation) => number) => {
     const values = runs.map(pick);
     return { p50: round(percentile(values, 0.5)), p95: round(percentile(values, 0.95)) };
@@ -529,8 +251,8 @@ async function measure(runtime: RuntimeUnderTest, scenario: Scenario): Promise<S
     scenario: scenario.id,
     useCase: scenario.useCase,
     repetitions: runs.length,
-    facts,
-    totals: { ...first.totals, recordBytes: percentile(runs.map((run) => run.totals.recordBytes), 0.5) },
+    facts: median(runs.map((run) => run.facts)),
+    totals: median(runs.map((run) => run.totals)),
     wallMs: spread((run) => run.samples.wallMs),
     firstRecordMs: spread((run) => run.samples.firstRecordMs),
     rssDeltaBytes: spread((run) => run.samples.rssDeltaBytes)
@@ -549,9 +271,10 @@ function summarize(report: AgentRuntimeBenchmarkReport): string {
     lines.push(`runtime ${runtime.runtime}: ${runtime.description}`);
     for (const row of runtime.scenarios) {
       lines.push(
-        `  ${row.scenario.padEnd(24)} wall p50/p95 ${row.wallMs.p50}/${row.wallMs.p95} ms | first record p50 ${row.firstRecordMs.p50} ms | `
+        `  ${row.scenario.padEnd(24)} wall p50/p95 ${row.wallMs.p50}/${row.wallMs.p95} ms | first record p50/p95 ${row.firstRecordMs.p50}/${row.firstRecordMs.p95} ms | `
         + `tool round trips ${row.totals.toolRoundTrips} | effects ${row.totals.toolEffects} | protocol ${row.totals.recordBytes} B | `
-        + `rss delta p50 ${Math.round(row.rssDeltaBytes.p50 / 1024)} KiB`
+        + `tokens in/out ${row.totals.inputTokens}/${row.totals.outputTokens} | storage ${row.totals.storageRows} rows ${row.totals.storageBytes} B | `
+        + `rss delta p50/p95 ${Math.round(row.rssDeltaBytes.p50 / 1024)}/${Math.round(row.rssDeltaBytes.p95 / 1024)} KiB`
       );
       lines.push(`    ${JSON.stringify(row.facts)}`);
     }
@@ -559,50 +282,64 @@ function summarize(report: AgentRuntimeBenchmarkReport): string {
   return lines.join('\n');
 }
 
-function publish(report: AgentRuntimeBenchmarkReport): void {
-  if (process.env.AGENT_RUNTIME_BENCHMARK_OUT) writeFileSync(process.env.AGENT_RUNTIME_BENCHMARK_OUT, `${JSON.stringify(report, null, 2)}\n`);
-  console.log(summarize(report));
-}
-
 /* ------------------------------------------------------------------------------------------------
  * Offline suite
  * --------------------------------------------------------------------------------------------- */
 
 describe('agent runtime benchmark (offline, scripted faux model)', () => {
-  it('measures the pi-coding baseline on the five use cases', async () => {
+  it('measures every registered runtime on the five use cases', async () => {
     const baseline = await measureRuntime(piCodingBaseline);
-    const byId = Object.fromEntries(baseline.scenarios.map((row) => [row.scenario, row]));
+    const byId = (report: RuntimeReport) => Object.fromEntries(report.scenarios.map((row) => [row.scenario, row.facts]));
 
-    expect(byId['pr-review']!.facts).toMatchObject({ state: 'SUCCEEDED', toolEffects: 0 });
-    expect(byId['multi-step-task']!.facts).toMatchObject({ state: 'SUCCEEDED', toolEffects: 2 });
+    const base = byId(baseline);
+    expect(base['pr-review']).toMatchObject({ state: 'SUCCEEDED', toolEffects: 0 });
+    expect(base['multi-step-task']).toMatchObject({ state: 'SUCCEEDED', toolEffects: 2 });
     // A completed worker refuses further input, and a fresh worker starts without the earlier transcript.
-    expect(byId['restart-followup']!.facts).toMatchObject({ firstState: 'SUCCEEDED', sameProcessFollowUpRefused: true, priorContextRetained: false, followUpOutcome: 'CONTEXT_LOST' });
+    expect(base['restart-followup']).toMatchObject({ firstState: 'SUCCEEDED', sameProcessFollowUpRefused: true, priorContextRetained: false, followUpOutcome: 'CONTEXT_LOST' });
     // A killed run never reports success, and replaying the task from the start repeats the applied write.
-    expect(byId['killed-run-with-effects']!.facts).toMatchObject({ killedState: 'INTERRUPTED', reportedSuccess: false, effectsAtKill: 1, restartOutcome: 'REPLAYED_FROM_START' });
-    expect(Number(byId['killed-run-with-effects']!.facts.duplicateEffects)).toBeGreaterThan(0);
+    expect(base['killed-run-with-effects']).toMatchObject({ killedState: 'INTERRUPTED', reportedSuccess: false, effectsAtKill: 1, restartOutcome: 'REPLAYED_FROM_START' });
+    expect(Number(base['killed-run-with-effects']!.duplicateEffects)).toBeGreaterThan(0);
     // Every in-flight tool call of every agent is cancelled with the agent.
-    expect(byId['parent-child-cleanup']!.facts).toMatchObject({ agents: 3, cancelled: 3, toolCancelsEmitted: 3 });
+    expect(base['parent-child-cleanup']).toMatchObject({ agents: 3, cancelled: 3, toolCancelsEmitted: 3 });
 
-    publish({ schema: 1, mode: 'offline', timestamp: new Date().toISOString(), node: process.version, repetitions: REPETITIONS, runtimes: [baseline] });
-  }, 300_000);
+    const persisted = await measureRuntime(piCodingPersisted);
+    const kept = byId(persisted);
+    expect(kept['pr-review']).toMatchObject({ state: 'SUCCEEDED', toolEffects: 0, leftoverSessionRows: 0, leftoverEffectRows: 0 });
+    expect(kept['multi-step-task']).toMatchObject({ state: 'SUCCEEDED', toolEffects: 2, leftoverSessionRows: 0, leftoverEffectRows: 0 });
+    // The follow-up is a new agent in a new container with a new lease, and its first model request
+    // carries every message of the earlier transcript.
+    expect(kept['restart-followup']).toMatchObject({
+      firstState: 'SUCCEEDED', sameProcessFollowUpRefused: true, followUpContinued: true, priorContextRetained: true,
+      allPriorMessagesInFirstRequest: true, followUpNewContainer: true, followUpNewLease: true,
+      followUpState: 'SUCCEEDED', followUpOutcome: 'CONTINUED', leftoverSessionRows: 0
+    });
+    // Killed after the executor applied the in-flight patch and before its result returned: the run
+    // is INTERRUPTED, the ledger records the patch as unknown, and the continuation repeats no
+    // completed effect. Zero tolerance for an effect applied twice.
+    expect(kept['killed-run-with-effects']).toMatchObject({
+      killedState: 'INTERRUPTED', reportedSuccess: false, inFlightAtKill: 1, effectsUnknownAfterKill: 1,
+      restartContinued: true, restartOutcome: 'CONTINUED', duplicateEffects: 0, leftoverSessionRows: 0, leftoverEffectRows: 0
+    });
+    expect(kept['parent-child-cleanup']).toMatchObject({ agents: 3, cancelled: 3, toolCancelsEmitted: 3, toolEffects: 0, leftoverSessionRows: 0, leftoverEffectRows: 0 });
+
+    const runtimes = [baseline, persisted];
+    if (PI_DURABLE_RUNTIME) runtimes.push(await measureRuntime(PI_DURABLE_RUNTIME));
+    const report: AgentRuntimeBenchmarkReport = { schema: 1, mode: 'offline', timestamp: new Date().toISOString(), node: process.version, repetitions: REPETITIONS, runtimes };
+    if (process.env.AGENT_RUNTIME_BENCHMARK_OUT && process.env.RUN_AGENT_RUNTIME_BENCHMARK !== 'live') {
+      writeFileSync(process.env.AGENT_RUNTIME_BENCHMARK_OUT, `${JSON.stringify(report, null, 2)}\n`);
+    }
+    console.log(summarize(report));
+  }, 600_000);
 });
 
 /* ------------------------------------------------------------------------------------------------
- * Live suite (opt-in)
+ * Live suite (opt-in, local Compose stack over MCP)
  * --------------------------------------------------------------------------------------------- */
 
-const live = process.env.RUN_AGENT_RUNTIME_BENCHMARK === 'live'
-  && Boolean(process.env.AGENT_RUNTIME_BENCHMARK_GATEWAY_URL)
-  && Boolean(process.env.AGENT_RUNTIME_BENCHMARK_LEASE);
-
-/** Live drivers talk to a real gateway through the same `RuntimeUnderTest` contract. */
-const LIVE_RUNTIMES: RuntimeUnderTest[] = [];
-
-describe.skipIf(!live)('agent runtime live benchmark (real gateway)', () => {
-  it('measures every registered live runtime', async () => {
-    expect(LIVE_RUNTIMES.length, 'register a live RuntimeUnderTest before enabling the live benchmark').toBeGreaterThan(0);
-    const runtimes: RuntimeReport[] = [];
-    for (const runtime of LIVE_RUNTIMES) runtimes.push(await measureRuntime(runtime));
-    publish({ schema: 1, mode: 'live', timestamp: new Date().toISOString(), node: process.version, repetitions: REPETITIONS, runtimes });
-  }, 1_800_000);
+describe.skipIf(process.env.RUN_AGENT_RUNTIME_BENCHMARK !== 'live')('agent runtime live benchmark (local Compose stack)', () => {
+  it('measures the live runtimes under the cumulative cost cap', async () => {
+    const report = await runLiveBenchmark(process.env);
+    console.log(JSON.stringify(report.summary, null, 2));
+    expect(report.spentMicros).toBeLessThanOrEqual(report.costCapMicros);
+  }, 4 * 60 * 60 * 1_000);
 });
