@@ -13,7 +13,9 @@ import { insertNotification, insertNotificationDelivery, notificationPreferenceE
 /**
  * Writes inbox notifications in the same savepoint as the transition that caused them. Every emitter
  * here is a no-op while notifications are off, and a failure is caught, counted and logged inside a
- * nested savepoint: a notification can never roll back or abort the transition it describes.
+ * nested savepoint, so a failed notification never rolls back the transition it describes. The one
+ * exception is an error after which SQLite has already rolled back the enclosing transaction: that
+ * error is re-thrown, because the transition is lost either way.
  *
  * Channels: `inbox` is always written and starts DELIVERED. `mcp_event` records the
  * `cloudharness.notification.created` MCP event through the existing subscription path and gets a
@@ -80,11 +82,16 @@ export function notificationIdFor(dedupeKey: string): string {
 /** Titles are redacted for credential shapes, stripped of control characters and bounded. */
 export function boundedNotificationTitle(value: string): string {
   const cleaned = redactTraceText(value).replace(/[\p{Cc}\p{Cf}]+/gu, ' ').replace(/\s+/gu, ' ').trim();
-  const chars = Array.from(cleaned);
-  const bounded = chars.length > NOTIFICATION_LIMITS.maxTitleChars
-    ? `${chars.slice(0, NOTIFICATION_LIMITS.maxTitleChars - 1).join('')}…`
-    : cleaned;
-  return bounded.length > 0 ? bounded : 'Notification';
+  if (cleaned.length === 0) return 'Notification';
+  // The contract bounds titles in UTF-16 code units (string length), so the cut is measured the same
+  // way, never splitting a surrogate pair, and leaves one unit for the ellipsis.
+  if (cleaned.length <= NOTIFICATION_LIMITS.maxTitleChars) return cleaned;
+  let bounded = '';
+  for (const char of cleaned) {
+    if (bounded.length + char.length > NOTIFICATION_LIMITS.maxTitleChars - 1) break;
+    bounded += char;
+  }
+  return `${bounded}…`;
 }
 
 function tableExists(database: DatabaseSync, name: string): boolean {
@@ -143,9 +150,14 @@ function write(database: DatabaseSync, input: NotificationEmission, now: number)
  */
 export function emitNotification(database: DatabaseSync, input: NotificationEmission, now: number): string | null {
   if (!runtime.enabled) return null;
+  const outer = database.isTransaction;
   try {
     return withEventSavepoint(database, () => write(database, input, now));
   } catch (error) {
+    // SQLite rolls the whole transaction back on some errors (SQLITE_FULL, IOERR, NOMEM). The parent
+    // transition is then already lost, and swallowing the error would let the caller's following
+    // writes autocommit outside it, so the error is the caller's to handle.
+    if (outer && !database.isTransaction) throw error;
     recordFailure(error);
     return null;
   }
@@ -196,6 +208,7 @@ export function emitAutomationTerminalNotification(database: DatabaseSync, workf
   emitNotification(database, { ...base, kind: 'automation.failed', title: `Automation ${row.state.toLowerCase()}: ${resource}${reason}` }, now);
 }
 
+const AUTOMATION_SPAWN_KEY = /^automation:wfl_[a-f0-9]{32}:spawn$/u;
 const FAILED_AGENT_STATUSES = new Set(['FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED']);
 
 /**
@@ -212,8 +225,11 @@ export function emitAgentTerminalNotification(
   const succeeded = agent.status === 'SUCCEEDED';
   if (!succeeded && !FAILED_AGENT_STATUSES.has(agent.status)) return;
   try {
-    if (tableExists(database, 'automation_workflows')
-      && database.prepare('SELECT 1 FROM automation_workflows WHERE agent_id = ?').get(agent.agentId) !== undefined) return;
+    // An automation spawns with `automation:<workflowId>:spawn`. The key is on the agent row from
+    // admission, before the workflow records `agent_id`, so an agent that ends early still defers to
+    // its workflow's notification; the indexed primary-key read also avoids scanning workflows.
+    const spawned = database.prepare('SELECT idempotency_key FROM agents WHERE id = ?').get(agent.agentId) as { idempotency_key: string } | undefined;
+    if (spawned && AUTOMATION_SPAWN_KEY.test(spawned.idempotency_key)) return;
   } catch (error) {
     recordFailure(error);
     return;

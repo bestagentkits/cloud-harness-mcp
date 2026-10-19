@@ -76,7 +76,8 @@ export class McpEventNotificationAdapter implements NotificationAdapter {
   }
 
   async revoke(): Promise<void> {
-    // Event deliveries follow their subscription's lifecycle; revoking the notification sends nothing.
+    // Nothing to call: the store abandons the pending MCP event deliveries in the same transaction
+    // that revokes the notification delivery, so the API egress worker never sends them.
   }
 }
 

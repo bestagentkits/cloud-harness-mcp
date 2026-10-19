@@ -10,9 +10,15 @@ import {
   type NotificationSubjectType,
   type NotificationSummary
 } from '@cloud-harness/contracts';
+import { eventIdForSource } from '../event-outbox.js';
 
 /** Finished notifications are kept this long, then the purge removes them. */
 export const NOTIFICATION_RETENTION_MS = 30 * 86_400_000;
+/**
+ * A delivery still unsettled this long after its notification was created is failed as `expired`, so
+ * a channel that never answers cannot pin a notification past retention.
+ */
+export const NOTIFICATION_HARD_CUTOFF_MS = NOTIFICATION_RETENTION_MS * 2;
 /** Notifications kept per principal; the oldest settled ones are removed first. */
 export const NOTIFICATION_MAX_PER_PRINCIPAL = 5_000;
 const CHANNEL_ORDER = ['inbox', 'mcp_event', 'github'];
@@ -78,6 +84,17 @@ function immediate<T>(database: DatabaseSync, action: () => T): T {
     database.exec('ROLLBACK');
     throw error;
   }
+}
+
+/**
+ * Stops the MCP event behind revoked `mcp_event` deliveries: its still-pending webhook deliveries are
+ * abandoned, so the API egress worker never sends them. A webhook already leased to the worker may
+ * still be in flight, but its report is refused and it is never retried. Runs in the caller's transaction.
+ */
+function abandonNotificationEvents(database: DatabaseSync, notificationIds: readonly string[], now: number): void {
+  const abandon = database.prepare(`UPDATE event_deliveries SET status = 'ABANDONED', completed_at = ?, lease_token = NULL,
+    lease_until = NULL, last_error = 'preference_disabled' WHERE event_id = ? AND status = 'PENDING'`);
+  for (const notificationId of notificationIds) abandon.run(now, eventIdForSource(`notification:${notificationId}`));
 }
 
 /** Inserts one notification unless its dedupe key exists. Runs inside the caller's savepoint. */
@@ -147,20 +164,24 @@ export class NotificationStore {
       const claimed: ClaimedNotificationDelivery[] = [];
       for (const row of rows) {
         if (!notificationPreferenceEnabled(this.database, row.principal_id, row.channel, row.kind)) {
-          this.database.prepare(`UPDATE notification_deliveries SET state = 'REVOKED', lease_token = NULL, lease_until = NULL,
+          const revoked = this.database.prepare(`UPDATE notification_deliveries SET state = 'REVOKED', lease_token = NULL, lease_until = NULL,
             last_error_class = 'preference_disabled', updated_at = ? WHERE notification_id = ? AND channel = ? AND state = ?`)
             .run(now, row.notification_id, row.channel, row.state);
+          if (Number(revoked.changes) === 1 && row.channel === 'mcp_event') abandonNotificationEvents(this.database, [row.notification_id], now);
           continue;
         }
+        // A lease that expired belonged to a dispatcher that stopped mid-send: that attempt counts.
+        const lostAttempt = row.state === 'CLAIMED' ? 1 : 0;
         const leaseToken = randomBytes(16).toString('base64url');
-        const leased = this.database.prepare(`UPDATE notification_deliveries SET state = 'CLAIMED', lease_token = ?, lease_until = ?, updated_at = ?
+        const leased = this.database.prepare(`UPDATE notification_deliveries SET state = 'CLAIMED', lease_token = ?, lease_until = ?,
+            attempts = attempts + ?, updated_at = ?
           WHERE notification_id = ? AND channel = ? AND state = ? AND lease_token IS ?`)
-          .run(leaseToken, now + leaseMs, now, row.notification_id, row.channel, row.state, row.lease_token);
+          .run(leaseToken, now + leaseMs, lostAttempt, now, row.notification_id, row.channel, row.state, row.lease_token);
         if (Number(leased.changes) !== 1) continue;
         claimed.push({
           notificationId: row.notification_id, principalId: row.principal_id, channel: row.channel, kind: row.kind,
           subjectType: row.subject_type, subjectId: row.subject_id, title: row.title, payloadJson: row.payload_json,
-          attempts: row.attempts, leaseToken
+          attempts: row.attempts + lostAttempt, leaseToken
         });
       }
       return claimed;
@@ -236,14 +257,18 @@ export class NotificationStore {
 
   /**
    * Marks notifications read. Every named id must belong to the principal; otherwise nothing changes
-   * and NOT_FOUND is returned, so a foreign id reveals nothing about its existence.
+   * and NOT_FOUND is returned, so a foreign id reveals nothing about its existence. `all` with `before`
+   * marks only notifications created at or before that instant, so one that arrived after the owner
+   * loaded the inbox stays unread.
    */
-  markRead(principalId: string, target: { notificationIds: readonly string[] } | { all: true }): number {
+  markRead(principalId: string, target: { notificationIds: readonly string[] } | { all: true; before?: string | undefined }): number {
     return immediate(this.database, () => {
       const now = this.now();
       if ('all' in target) {
-        return Number(this.database.prepare('UPDATE notifications SET read_at = ? WHERE principal_id = ? AND read_at IS NULL')
-          .run(now, principalId).changes);
+        const before = target.before === undefined ? null : Date.parse(target.before);
+        if (before !== null && !Number.isFinite(before)) throw new NotificationStoreError('INVALID_INPUT', 'before must be an ISO timestamp');
+        return Number(this.database.prepare(`UPDATE notifications SET read_at = ? WHERE principal_id = ? AND read_at IS NULL
+          AND (? IS NULL OR created_at <= ?)`).run(now, principalId, before, before).changes);
       }
       const ids = [...new Set(target.notificationIds)];
       const placeholders = ids.map(() => '?').join(', ');
@@ -279,11 +304,14 @@ export class NotificationStore {
           ON CONFLICT(principal_id, channel, kind) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at`)
           .run(principalId, preference.channel, preference.kind, preference.enabled ? 1 : 0, now);
         if (preference.enabled) continue;
-        revoked += Number(this.database.prepare(`UPDATE notification_deliveries SET state = 'REVOKED', lease_token = NULL, lease_until = NULL,
-            last_error_class = 'preference_disabled', updated_at = ?
-          WHERE channel = ? AND state IN ('PENDING', 'CLAIMED') AND notification_id IN (
-            SELECT notification_id FROM notifications WHERE principal_id = ? AND kind = ?)`)
-          .run(now, preference.channel, principalId, preference.kind).changes);
+        const ids = (this.database.prepare(`SELECT d.notification_id FROM notification_deliveries d
+            JOIN notifications n ON n.notification_id = d.notification_id
+          WHERE d.channel = ? AND d.state IN ('PENDING', 'CLAIMED') AND n.principal_id = ? AND n.kind = ?`)
+          .all(preference.channel, principalId, preference.kind) as { notification_id: string }[]).map((row) => row.notification_id);
+        const revoke = this.database.prepare(`UPDATE notification_deliveries SET state = 'REVOKED', lease_token = NULL, lease_until = NULL,
+          last_error_class = 'preference_disabled', updated_at = ? WHERE notification_id = ? AND channel = ? AND state IN ('PENDING', 'CLAIMED')`);
+        for (const id of ids) revoked += Number(revoke.run(now, id, preference.channel).changes);
+        if (preference.channel === 'mcp_event') abandonNotificationEvents(this.database, ids, now);
       }
       return revoked;
     });
@@ -291,10 +319,15 @@ export class NotificationStore {
 
   /**
    * Removes notifications past retention, and the oldest beyond the per-principal cap, together with
-   * their deliveries. A notification with a delivery still pending or leased is kept.
+   * their deliveries. A notification with a delivery still pending or leased is kept, until the hard
+   * cutoff fails that delivery as `expired` so it can no longer pin the notification.
    */
   purge(now: number = this.now()): number {
     return immediate(this.database, () => {
+      this.database.prepare(`UPDATE notification_deliveries SET state = 'FAILED', lease_token = NULL, lease_until = NULL,
+          last_error_class = 'expired', updated_at = ?
+        WHERE state IN ('PENDING', 'CLAIMED') AND notification_id IN (SELECT notification_id FROM notifications WHERE created_at < ?)`)
+        .run(now, now - NOTIFICATION_HARD_CUTOFF_MS);
       const unsettled = `NOT EXISTS (SELECT 1 FROM notification_deliveries d WHERE d.notification_id = notifications.notification_id
         AND d.state IN ('PENDING', 'CLAIMED'))`;
       let removed = Number(this.database.prepare(`DELETE FROM notifications WHERE created_at < ? AND ${unsettled}`)

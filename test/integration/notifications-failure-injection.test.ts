@@ -10,7 +10,7 @@ import { GithubNotificationAdapter, McpEventNotificationAdapter } from '../../ap
 import {
   NOTIFICATION_LEASE_MS, NOTIFICATION_MAX_ATTEMPTS, NOTIFICATION_MIRROR_POLL_MS, NOTIFICATION_RETRY_DELAYS_MS, NotificationDispatcher
 } from '../../apps/runner/src/notifications/notification-dispatcher.js';
-import { notificationEmitFailures } from '../../apps/runner/src/notifications/notification-emitter.js';
+import { emitNotification, notificationEmitFailures, notificationIdFor } from '../../apps/runner/src/notifications/notification-emitter.js';
 import { NotificationService } from '../../apps/runner/src/notifications/notification-service.js';
 import { NotificationStore } from '../../apps/runner/src/notifications/notification-store.js';
 import { SecretKeyring } from '../../apps/runner/src/secret-keyring.js';
@@ -260,11 +260,12 @@ describe('notification failure injection', () => {
     expect(await second.dispatcher.tick()).toMatchObject({ claimed: 1, delivered: 1 });
     await ticks(second, 3, 3_600_000);
     expect(second.fake.sends).toHaveLength(1);
-    expect(delivery(second, 'fake_chat')).toMatchObject({ state: 'DELIVERED', attempts: 1 });
+    // The lease the dead process lost counts as an attempt, so a crash loop still reaches the cap.
+    expect(delivery(second, 'fake_chat')).toMatchObject({ state: 'DELIVERED', attempts: 2 });
     expectSingleLaunch(first, second);
   });
 
-  it('two dispatchers on separate connections claim a delivery once (CAS)', async () => {
+  it('a lease taken on one connection blocks another, and its stale token cannot settle after a reclaim', async () => {
     const clock = { now: T0 };
     const path = newPath();
     const left = runner(path, clock, { channels: 'fake' });
@@ -274,8 +275,24 @@ describe('notification failure injection', () => {
     const results = await Promise.all([left.dispatcher.tick(), right.dispatcher.tick()]);
     expect(results.map((result) => result.claimed).sort()).toEqual([0, 1]);
     expect(left.fake.sends.length + right.fake.sends.length).toBe(1);
-    expect(delivery(right, 'fake_chat')).toMatchObject({ state: 'DELIVERED', attempts: 1 });
     expectSingleLaunch(left, right);
+
+    // Contest the token itself: a stalled holder on one connection loses its lease to the other.
+    const contested = notificationIdFor(`${left.ownerId}:agent:${`agent_${'c'.repeat(24)}`}:terminal`);
+    emitNotification(left.database, {
+      principalId: left.ownerId, kind: 'agent.failed', subjectType: 'agent', subjectId: `agent_${'c'.repeat(24)}`, transition: 'terminal',
+      title: 'Agent run ended: failed', link: null
+    }, clock.now);
+    const [stalled] = left.notificationStore.claim(['fake_chat'], 10, NOTIFICATION_LEASE_MS);
+    expect(stalled).toMatchObject({ notificationId: contested });
+    expect(await right.dispatcher.tick()).toMatchObject({ claimed: 0 });
+    clock.now += NOTIFICATION_LEASE_MS;
+    expect(await right.dispatcher.tick()).toMatchObject({ claimed: 1, delivered: 1 });
+    expect(left.notificationStore.report(contested, 'fake_chat', stalled!.leaseToken, {
+      state: 'FAILED', attempts: 5, nextAttemptAt: clock.now, errorClass: 'late'
+    })).toBe(false);
+    expect(right.notificationStore.deliveryState(contested, 'fake_chat')).toBe('DELIVERED');
+    expect(right.fake.sends.filter((send) => send.notificationId === contested)).toHaveLength(1);
   });
 
   it('retries 429 then delivers, and fails a channel that keeps answering 500 with the error class visible', async () => {
@@ -328,6 +345,8 @@ describe('notification failure injection', () => {
     }));
     // Only the pending MCP Events delivery stops; the settled GitHub mirror is history and stays delivered.
     expect(saved.revoked).toBe(1);
+    // Turning MCP Events off also stops the real webhook: the API egress worker finds nothing to send.
+    expect(context.events.claim(10, 30_000)).toEqual([]);
 
     await ticks(context, 6, 3_600_000);
     expect(context.fake.sends).toHaveLength(1);

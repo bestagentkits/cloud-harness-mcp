@@ -1,3 +1,4 @@
+import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { NotificationCreatedPayloadSchema } from '@cloud-harness/contracts';
 import { withEventSavepoint } from '../src/event-outbox.js';
@@ -29,6 +30,20 @@ function open() {
 }
 
 const AGENT = `agent_${'b'.repeat(24)}`;
+
+/** A bare agent row carrying only what the emitter reads; the workspace foreign key is not under test. */
+function insertAgentRow(database: DatabaseSync, ownerId: string, agentId: string, idempotencyKey: string): void {
+  database.exec('PRAGMA foreign_keys = OFF');
+  try {
+    database.prepare(`INSERT INTO agents (id, owner_id, workspace_id, workspace_generation, idempotency_key, payload_hash, prompt_hash,
+        profile_id, proxy_operations_json, max_ttl_seconds, max_output_bytes, max_input_tokens, max_output_tokens, max_cost_micros,
+        container_name, network_name, gateway_lease_id, status, generation, created_at, expires_at)
+      VALUES (?, ?, 'wks_test', 1, ?, 'h', 'h', 'p', '[]', 60, 1, 1, 1, 1, 'c', 'n', ?, 'RUNNING', 1, ?, ?)`)
+      .run(agentId, ownerId, idempotencyKey, `lease-${agentId}`, T0, T0 + 60_000);
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON');
+  }
+}
 
 describe('notification emitter', () => {
   it('writes nothing while notifications are disabled', () => {
@@ -109,7 +124,29 @@ describe('notification emitter', () => {
     expect(notificationRows(database)[0]!.notification_id).toBe(notificationIdFor(`${ownerId}:automation_workflow:${workflowId}:terminal`));
   });
 
-  it('never aborts or rolls back the parent transition when the notification write fails', () => {
+  it('re-throws when SQLite already rolled back the enclosing transaction, instead of letting later writes autocommit', () => {
+    const { database, ownerId } = open();
+    const errors: unknown[] = [];
+    enableNotifications([], (error) => errors.push(error));
+    // RAISE(ROLLBACK) ends the whole transaction, as SQLITE_FULL or an I/O error can.
+    database.exec(`CREATE TRIGGER notifications_abort BEFORE INSERT ON notifications BEGIN SELECT RAISE(ROLLBACK, 'disk full'); END`);
+    const workflowId = insertWorkflow(database, { ownerId });
+    database.exec('BEGIN IMMEDIATE');
+    setWorkflowState(database, workflowId, 'COMPLETED');
+    expect(() => emitNotification(database, {
+      principalId: ownerId, kind: 'agent.failed', subjectType: 'agent', subjectId: `${AGENT}7`, transition: 'terminal', title: 'x', link: null
+    }, T0)).toThrow('disk full');
+    expect(database.isTransaction).toBe(false);
+    expect((database.prepare('SELECT state FROM automation_workflows WHERE id = ?').get(workflowId) as { state: string }).state).toBe('RUNNING');
+    expect(errors).toEqual([]);
+    // Without an enclosing transaction there is no parent to lose, so the same failure is swallowed.
+    expect(emitNotification(database, {
+      principalId: ownerId, kind: 'agent.failed', subjectType: 'agent', subjectId: `${AGENT}8`, transition: 'terminal', title: 'x', link: null
+    }, T0)).toBeNull();
+    expect(errors).toHaveLength(1);
+  });
+
+  it('does not roll back the parent transition when the notification write fails', () => {
     const { database, ownerId } = open();
     const errors: unknown[] = [];
     enableNotifications(['mcp_event'], (error) => errors.push(error));
@@ -139,18 +176,24 @@ describe('notification emitter', () => {
     expect(notificationRows(database)).toHaveLength(0);
   });
 
-  it('notifies only top-level agents that no automation workflow owns', () => {
+  it('notifies only top-level agents that no automation workflow spawned', () => {
     const { database, ownerId } = open();
     enableNotifications();
     const base = { ownerId, parentAgentId: null, occurredAt: T0 };
     emitAgentTerminalNotification(database, { ...base, agentId: `${AGENT}1`, parentAgentId: `${AGENT}0`, status: 'SUCCEEDED' }, T0);
-    insertWorkflow(database, { ownerId, agentId: `${AGENT}2` });
+    // An automation's agent can end before its workflow records `agent_id`; the spawn key on the agent
+    // row identifies it either way, so it defers to the workflow's own notification.
+    const workflowId = insertWorkflow(database, { ownerId, agentId: null });
+    insertAgentRow(database, ownerId, `${AGENT}2`, `automation:${workflowId}:spawn`);
     emitAgentTerminalNotification(database, { ...base, agentId: `${AGENT}2`, status: 'FAILED' }, T0);
+    // A caller's own key that merely starts with `automation:` does not hide its agent.
+    insertAgentRow(database, ownerId, `${AGENT}6`, 'automation:mine');
+    emitAgentTerminalNotification(database, { ...base, agentId: `${AGENT}6`, status: 'CANCELLED' }, T0);
     emitAgentTerminalNotification(database, { ...base, agentId: `${AGENT}3`, status: 'RUNNING' }, T0);
     emitAgentTerminalNotification(database, { ...base, agentId: `${AGENT}4`, status: 'TIMED_OUT' }, T0);
     emitAgentTerminalNotification(database, { ...base, agentId: `${AGENT}5`, status: 'SUCCEEDED' }, T0);
     expect(notificationRows(database).map((row) => `${row.kind}:${row.title}`).sort()).toEqual([
-      'agent.completed:Agent run completed', 'agent.failed:Agent run ended: timed out'
+      'agent.completed:Agent run completed', 'agent.failed:Agent run ended: cancelled', 'agent.failed:Agent run ended: timed out'
     ]);
   });
 
@@ -181,11 +224,24 @@ describe('notification emitter', () => {
     const row = notificationRows(database).find((entry) => entry.notification_id === id)!;
     expect(row.title).not.toContain('ghp_');
     expect(row.title).toContain('[REDACTED]');
-    expect(Array.from(row.title).length).toBeLessThanOrEqual(160);
+    expect(row.title.length).toBeLessThanOrEqual(160);
     expect(row.title.includes('\u0000')).toBe(false);
     expect(row.title.includes('\n')).toBe(false);
     expect(JSON.parse(row.payload_json).link).toBeNull();
     expect(boundedNotificationTitle('   ')).toBe('Notification');
+  });
+
+  it('bounds emoji titles in UTF-16 units, as the contract counts them, without splitting a surrogate pair', () => {
+    for (const title of ['😀'.repeat(200), `a${'😀'.repeat(200)}`, '😀'.repeat(80), `${'a'.repeat(159)}😀`]) {
+      const bounded = boundedNotificationTitle(title);
+      expect(bounded.length).toBeLessThanOrEqual(160);
+      // encodeURIComponent throws on a lone surrogate.
+      expect(() => encodeURIComponent(bounded)).not.toThrow();
+      expect(NotificationCreatedPayloadSchema.shape.title.safeParse(bounded).success).toBe(true);
+    }
+    expect(boundedNotificationTitle('😀'.repeat(80))).toBe('😀'.repeat(80));
+    expect(boundedNotificationTitle('😀'.repeat(200))).toBe(`${'😀'.repeat(79)}…`);
+    expect(boundedNotificationTitle(`a${'😀'.repeat(200)}`)).toBe(`a${'😀'.repeat(79)}…`);
   });
 
   it('refuses malformed subject ids without throwing into the caller', () => {

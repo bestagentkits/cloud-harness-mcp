@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CONFIGURABLE_NOTIFICATION_CHANNELS,
   NOTIFICATION_KINDS,
+  NotificationCreatedPayloadSchema,
   NotificationLinkSchema,
   NotificationSummarySchema,
   NotificationsRunnerDataSchemas,
@@ -38,6 +39,9 @@ describe('notifications contract', () => {
 
   it('bounds mark-read and preference writes', () => {
     expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { all: true })).success).toBe(true);
+    expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { all: true, before: '2026-10-20T00:00:00.000Z' })).success).toBe(true);
+    expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { all: true, before: 'yesterday' })).success).toBe(false);
+    expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { notificationIds: [ID], before: '2026-10-20T00:00:00.000Z' })).success).toBe(false);
     expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { notificationIds: [ID] })).success).toBe(true);
     expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { notificationIds: [] })).success).toBe(false);
     expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { notificationIds: Array(101).fill(ID) })).success).toBe(false);
@@ -61,6 +65,20 @@ describe('notifications contract', () => {
     expect(NotificationSummarySchema.safeParse({ ...summary, title: 'x'.repeat(161) }).success).toBe(false);
     expect(NotificationSummarySchema.safeParse({ ...summary, prompt: 'leak' }).success).toBe(false);
     expect(NotificationsRunnerDataSchemas.inbox_list.safeParse({ notifications: [summary], nextCursor: null, unread: 1 }).success).toBe(true);
+  });
+
+  it('holds the MCP event payload to the same link and subject bounds as the inbox', () => {
+    const payload = {
+      notificationId: ID, kind: 'agent.failed', subjectType: 'agent', subjectId: 'agent_1', title: 'Agent run ended: failed',
+      link: '/dashboard/agents/agent_1', createdAt: '2026-10-20T00:00:00.000Z'
+    };
+    expect(NotificationCreatedPayloadSchema.safeParse(payload).success).toBe(true);
+    expect(NotificationCreatedPayloadSchema.safeParse({ ...payload, link: null }).success).toBe(true);
+    for (const link of ['https://evil.example.com/', '/dashboard/../api']) {
+      expect(NotificationCreatedPayloadSchema.safeParse({ ...payload, link }).success, link).toBe(false);
+    }
+    expect(NotificationCreatedPayloadSchema.safeParse({ ...payload, subjectId: '' }).success).toBe(false);
+    expect(NotificationCreatedPayloadSchema.safeParse({ ...payload, subjectId: 'x'.repeat(101) }).success).toBe(false);
   });
 
   it('defaults NOTIFICATIONS_ENABLED to off', () => {

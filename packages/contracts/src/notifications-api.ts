@@ -84,9 +84,9 @@ export const NotificationCreatedPayloadSchema = z.object({
   notificationId: NotificationIdSchema,
   kind: NotificationKindSchema,
   subjectType: NotificationSubjectTypeSchema,
-  subjectId: z.string(),
+  subjectId: z.string().min(1).max(NOTIFICATION_LIMITS.maxSubjectIdChars),
   title: z.string().max(NOTIFICATION_LIMITS.maxTitleChars),
-  link: z.string().nullable(),
+  link: NotificationLinkSchema.nullable(),
   createdAt: instant
 }).strict();
 
@@ -108,7 +108,8 @@ export const NotificationsRunnerRequestSchema = z.discriminatedUnion('operation'
   }).strict()),
   owner('inbox_mark_read', z.union([
     z.object({ notificationIds: z.array(NotificationIdSchema).min(1).max(NOTIFICATION_LIMITS.maxMarkRead) }).strict(),
-    z.object({ all: z.literal(true) }).strict()
+    // `before` bounds the bulk update to what the owner has seen, so a later arrival stays unread.
+    z.object({ all: z.literal(true), before: z.iso.datetime({ offset: true }).optional() }).strict()
   ])),
   owner('preferences_get', z.object({}).strict()),
   owner('preferences_put', z.object({

@@ -25,8 +25,12 @@ export function withEventSavepoint<T>(database: DatabaseSync, action: () => T): 
     database.exec(`RELEASE ${name}`);
     return result;
   } catch (error) {
-    database.exec(`ROLLBACK TO ${name}`);
-    database.exec(`RELEASE ${name}`);
+    // After an error that made SQLite roll back the whole transaction the savepoint is gone; the
+    // original error is the one worth reporting, not a "no such savepoint" from the cleanup.
+    if (database.isTransaction) {
+      database.exec(`ROLLBACK TO ${name}`);
+      database.exec(`RELEASE ${name}`);
+    }
     throw error;
   }
 }
@@ -134,8 +138,8 @@ export function emitAgentTerminalEvent(database: DatabaseSync, ownerId: string, 
     FROM agents WHERE owner_id = ? AND workspace_id = ? AND id = ?`).get(ownerId, workspaceId, agentId) as AgentEventRow | undefined;
   if (!row) return;
   const occurredAt = row.terminal_at ?? now;
-  // The inbox notification commits with the same savepoint; it is a no-op while notifications are off
-  // and can never abort the transition.
+  // The inbox notification commits with the same savepoint; it is a no-op while notifications are off,
+  // and its own failure is swallowed unless SQLite has already rolled back the enclosing transaction.
   emitAgentTerminalNotification(database, {
     ownerId: row.owner_id, agentId: row.id, parentAgentId: row.parent_agent_id, status: row.status, occurredAt
   }, now);
