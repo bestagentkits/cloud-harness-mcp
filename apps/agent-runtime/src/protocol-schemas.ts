@@ -127,7 +127,7 @@ export const InputRecordSchema = z.discriminatedUnion('type', [
 export const TurnOutcomeSchema = z.enum(['stop', 'length', 'toolUse', 'error', 'aborted', 'deferred', 'pending', 'unknown']);
 /** Bounded classification of a failed model turn. */
 export const TurnErrorClassSchema = z.enum([
-  'auth', 'rate_limit', 'server', 'timeout', 'network', 'context_length', 'aborted', 'invalid_request', 'other'
+  'auth', 'rate_limit', 'budget', 'server', 'timeout', 'network', 'context_length', 'aborted', 'invalid_request', 'other'
 ]);
 
 export const SafeEventSchema = z.discriminatedUnion('kind', [

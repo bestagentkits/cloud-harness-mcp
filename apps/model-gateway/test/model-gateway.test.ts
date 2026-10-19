@@ -716,6 +716,30 @@ describe('model gateway usage accounting', () => {
     expect(providerRequests).toBe(0);
   });
 
+  it.each([
+    ['input token', { maxInputTokens: 1 }],
+    ['input cost', { maxCostMicros: 1 }],
+    ['output cost', { maxCostMicros: 70 }]
+  ])('refuses a request the lease %s budget cannot cover with a structured budget refusal', async (_budget, lease) => {
+    let providerRequests = 0;
+    const provider = await fakeProvider((_request, response) => {
+      providerRequests += 1;
+      response.end();
+    });
+    const running = await gateway(pricedProfile(provider.upstream));
+    const response = await fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers(activate(running.runtime, { ...issue(), ...lease })),
+      body: '{"messages":[],"max_tokens":100}'
+    });
+    expect(response.status).toBe(429);
+    const payload = await response.json() as { error: { code: string; type: string; message: string } };
+    // The refusal code also leads the message, which is all some provider SDKs pass on.
+    expect(payload.error).toEqual({
+      code: 'model_budget_exhausted', type: 'budget_exceeded', message: 'budget_exceeded: model budget exhausted'
+    });
+    expect(providerRequests).toBe(0);
+  });
+
   it('never reserves more than the lease cap across concurrent requests', async () => {
     const pending: Array<() => void> = [];
     const provider = await fakeProvider((_request, response) => {

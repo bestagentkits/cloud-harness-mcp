@@ -106,7 +106,7 @@ describe('AgentSession worker lifecycle', () => {
 
   it('maps gateway budget/bound errors and output-token exhaustion to LIMIT_EXCEEDED', async () => {
     const failures = [
-      { stopReason: 'error', errorMessage: '429 model_budget_exhausted: model budget exhausted' },
+      { stopReason: 'error', errorMessage: '429 budget_exceeded: model budget exhausted' },
       { stopReason: 'error', errorMessage: '413 model_bound_exceeded' },
       { stopReason: 'length' }
     ];
