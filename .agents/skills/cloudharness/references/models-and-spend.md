@@ -123,6 +123,10 @@ To change a profile: `model_profile_list` → `model_profile_validate` with
 - Required: `idempotencyKey`, `profileId`, `displayName`, `credentialId`,
   `model`, `apiMode`, `pricing`, `limits`, and `maxProxyOperations`. Optional:
   `customUpstreamUrl` (Custom only), `catalogPriceRef`, `verificationRef`.
+- `maxProxyOperations` is the ceiling an agent on this profile may request.
+  Include `exec_run`, `git_status` or `git_diff` only for a profile the owner
+  uses in a coding automation: an `agent_spawn` that requests them is refused
+  with `FORBIDDEN` (403, not retryable), so run commands yourself instead.
 - The result is `{profile, replayed, activation: "dashboard_required"}` and the
   profile is always `DISABLED`. Tell the owner to review its limits, prices,
   and proxy operations and activate it: a create is not checked against a

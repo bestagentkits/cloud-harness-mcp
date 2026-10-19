@@ -144,3 +144,41 @@ editor. No MCP tool is added.
   execution.
 - Turning the flag off makes the two policy tables inert. No existing table
   changes.
+
+## Implementation notes: the coding broker
+
+The coding broker that the consequences above anticipated ships behind
+`AGENT_CODING_ENABLED` (off by default; it needs `AGENT_POLICIES_ENABLED` and
+`AUTOMATIONS_ENABLED`). These notes record what it settled; the trust
+boundary is described in the
+[security model](../security-model.md#coding-automations).
+
+- **Opt-in per rule.** An automation rule's optional `coding` block (project,
+  verify command, base branch) selects coding mode. Without it a rule keeps the
+  read-only workflow unchanged. The broker is always attached to the engine, so
+  the kill switch and the receipts work the same whichever mode a rule uses.
+- **One execution call site.** Every agent and runner action reaches the gate
+  through `CodingActionBroker.executionDecision` in
+  [`action-broker.ts`](../../apps/runner/src/agent-governance/action-broker.ts),
+  which calls the evaluator's `decide` with no advisor, so a discretionary
+  effect resolves to `REQUIRE_APPROVAL` and fails closed. When the advisor
+  service lands, that method is the only place to switch over.
+- **Ports.** `ActionBroker` (`CodingActionBroker`) and `ExecutionBackend`
+  (`WorkspaceExecutionBackend`) are now implemented. `RuntimeAdapter` start and
+  cancel are not: the Pi runtime declares the actions it can broker in a
+  manifest, and the engine checks a coding spawn against it
+  ([`runtime-adapters.ts`](../../apps/runner/src/agent-governance/runtime-adapters.ts))
+  so a runtime that cannot broker an operation is never granted it.
+- **Package manifests are installs.** A write to a lockfile or package manifest
+  is classified `package_install`, not `edit`, so a policy that allows edits
+  does not silently allow dependency changes. The lockfile install runs once,
+  before the agent starts, with one receipt per locked package.
+- **Receipts over foreign keys.** `coding_actions` rows reference workflows by
+  id without a foreign key, so they outlive the workspace and are purged with
+  their workflow.
+
+Rollback: set `AGENT_CODING_ENABLED=false` and restart the runner. Running
+coding workflows fail with `CODING_DISABLED` before publishing anything more;
+published branches and pull requests stay for the owner. The tables are
+additive, so an older runner ignores them and re-enabling needs no migration
+([configuration](../configuration.md#coding-automations)).

@@ -300,22 +300,83 @@ cannot authenticate to Cloudflare Access. The decisions that keep that safe:
   when `GITHUB_APP_SLUG` is configured, always ignores this harness's own
   GitHub App. Posted comments do not raise label events, so the harness cannot
   re-trigger itself either way. An optional actor allowlist narrows it further.
-- **The agent is read-only.** Each run opens a fresh `network-none` workspace
-  on the rule's ref (the default branch unless set) and spawns an agent whose
-  proxy operations are limited by the rule contract to the read-only set, with
-  the rule's budget. A pull request's head is not checked out. Its only GitHub write is an optional single comment through the
-  brokered `issue_comment` action, with `@` mentions neutralized.
+- **The agent is read-only unless the rule opts into coding.** Each run opens
+  a fresh `network-none` workspace on the rule's ref (the default branch unless
+  set) and spawns an agent whose proxy operations are limited by the rule
+  contract to the read-only set, with the rule's budget. A pull request's head
+  is not checked out. Its only GitHub write is an optional single comment
+  through the brokered `issue_comment` action, with `@` mentions neutralized. A
+  rule with a `coding` action follows [Coding automations](#coding-automations)
+  instead.
 
 Residual risk: anyone who can add a label in a watched repository can spend
 that rule's budget, bounded by cooldown, per-rule and instance concurrency, and
 the per-connection delivery rate; prompt injection through issue text can still
-shape the read-only answer that may be posted. Approvals, write-capable runs,
-non-GitHub providers, and MCP tools for automation management are not
-supported. The executable owners are
+shape the answer that may be posted. Approval grants, non-GitHub providers, and
+MCP tools for automation management are not supported. The executable owners are
 [`apps/api/src/automations/webhook-ingress.ts`](../apps/api/src/automations/webhook-ingress.ts),
 [`apps/runner/src/automation-github.ts`](../apps/runner/src/automation-github.ts),
 [`apps/runner/src/automation-service.ts`](../apps/runner/src/automation-service.ts),
 and [`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
+
+## Coding automations
+
+A rule with a `coding` action (off unless `AGENT_CODING_ENABLED`, which needs
+`AGENT_POLICIES_ENABLED` and `AUTOMATIONS_ENABLED`) lets a labelled issue
+become a pull request. The agent may now change files and run commands, so the
+boundary moves from "read-only" to "every action is decided, and only the
+runner publishes":
+
+- **Identity comes from the rule, never the payload.** The principal is the
+  rule's owner, the project is the rule's `coding.projectId`, and the policy is
+  the owner's global and project head, pinned on the workflow when it starts.
+  Fields in the webhook body that name a principal, project, policy or base
+  branch are ignored.
+- **Every action goes through one gate.** The coding broker
+  ([`apps/runner/src/agent-governance/action-broker.ts`](../apps/runner/src/agent-governance/action-broker.ts))
+  sits between the agent's tool calls and the workspace. Edits, `exec_run`,
+  `git_status` and `git_diff` are described as an action and decided by the
+  same evaluator the Dashboard simulation uses. The revisions the run started
+  under are pinned, so a policy edit or rollback stops it, and each call
+  re-checks revocation (workflow state and workspace generation), the run's
+  budget and the kill switch. Only `ALLOW` runs. `REQUIRE_APPROVAL` fails closed
+  with `ACTION_REQUIRES_APPROVAL`, because this release grants no approvals. A
+  refused call never reaches the workspace. Editing a lockfile or package
+  manifest is a `package_install` action, not an `edit`.
+- **The agent never publishes.** It stays on `network-none` with no Git or
+  GitHub credential and is told not to commit. After it ends, the runner runs
+  the rule's verify command (argv only, no shell), and only if it passes does
+  the runner re-check the changed paths, commit, push a create-only
+  `agent/<issue>-<id>` branch, and open a pull request against the rule's
+  explicit base. It never merges, deploys, or pushes to an existing branch.
+  When verification fails, nothing is committed and the staged diff is kept as
+  a workspace artifact.
+- **Effects are recorded before they happen.** Each step writes a receipt in
+  `coding_actions` (intent, dispatched, then applied, rejected, unknown or
+  blocked) under an idempotency key, so a redelivery, a restart or a crash
+  replays the step instead of repeating it. An answer lost after the effect is
+  reconciled by reading the remote branch or pull request list; when GitHub
+  cannot be read, the step stops as `EFFECT_UNKNOWN` and is never retried
+  blindly. Receipts have no foreign key, so they stay readable after the
+  workspace closes, and each one is joined to the agent's trace by an `action`
+  span.
+- **Installs are lockfile-only and separate.** With
+  `AGENT_CODING_PACKAGE_INSTALL_ENABLED`, a checkout's npm lockfile is admitted
+  only if every entry is a registry tarball with a sha512 integrity from an
+  allowed registry, each package is a `package_install` action the policy must
+  allow, and `npm ci --ignore-scripts` runs once before the agent starts in a
+  one-shot `dependency-access` container that mounts only the checkout and
+  receives no secrets, Docker socket, tools or caches
+  ([`apps/runner/src/agent-governance/install-executor.ts`](../apps/runner/src/agent-governance/install-executor.ts)).
+  The workspace and the agent stay on `network-none`.
+
+Residual risk: within what the policy allows, the agent can write any content
+to allowed paths, and the verify command runs that content inside the executor.
+A reviewer must read the pull request before merging; the executor isolation,
+not the gate, contains what the code does when it runs. Evidence is
+[`test/integration/coding-issue-to-pr.test.ts`](../test/integration/coding-issue-to-pr.test.ts)
+and
+[`test/integration/install-executor.docker.test.ts`](../test/integration/install-executor.docker.test.ts).
 
 ## Downstream MCP OAuth client
 
