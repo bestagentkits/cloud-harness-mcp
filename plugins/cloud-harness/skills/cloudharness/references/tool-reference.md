@@ -74,6 +74,17 @@ See [models and spend](models-and-spend.md).
 Profiles created here arrive disabled; keys, activation, deletion, and spend
 policies stay with the owner on the Dashboard.
 
+## Webhook automations
+
+See [webhook automations](webhook-automations.md). Remote HTTP endpoint only;
+these take no `workspaceId`.
+
+`automation_rules_list` `automation_rule_create` `automation_rule_disable`
+`automation_runs_list` `automation_run_get` `automation_run_cancel`
+
+Rules created here arrive disabled; enabling, deletion, and connections stay
+with the owner on the Dashboard.
+
 ## Retained artifacts
 
 See [retained artifacts](artifacts.md).

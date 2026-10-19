@@ -2,7 +2,14 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { RunnerOperationSchema, TOOL_SCHEMA_BY_NAME, TOOL_SPECS } from '../src/index.js';
+import {
+  AUTOMATION_TOOL_SCHEMA_BY_NAME,
+  AUTOMATION_TOOL_SPECS,
+  RunnerOperationSchema,
+  TOOL_SCHEMA_BY_NAME,
+  TOOL_SPECS,
+  type AutomationToolName
+} from '../src/index.js';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const skillRoot = join(repositoryRoot, '.agents', 'skills', 'cloudharness');
@@ -25,6 +32,10 @@ function toolsFrom(markdown: string) {
   return [...markdown.matchAll(/<!-- cloudharness-tool:([a-z_]+) -->/g)].map((entry) => entry[1]);
 }
 
+/** The remote endpoints list the automation tools beside the workspace operations. */
+const automationToolNames = AUTOMATION_TOOL_SPECS.map((spec) => spec.name);
+const isAutomationTool = (name: string): name is AutomationToolName => Object.hasOwn(AUTOMATION_TOOL_SCHEMA_BY_NAME, name);
+
 function examplesFrom(markdown: string) {
   return [...markdown.matchAll(/<!-- cloudharness-example:([a-z_]+)\n([\s\S]*?)\n-->/g)].map((entry) => ({
     operation: entry[1],
@@ -40,8 +51,21 @@ describe('cloudharness skill contract', () => {
     const registeredOperations = TOOL_SPECS.map((spec) => spec.name);
 
     expect(new Set(toolNames).size).toBe(toolNames.length);
-    expect(sorted(toolNames)).toEqual(sorted(schemaOperations));
+    expect(sorted(toolNames)).toEqual(sorted([...schemaOperations, ...automationToolNames]));
     expect(sorted(registeredOperations)).toEqual(sorted(schemaOperations));
+  });
+
+  it('documents every automation tool exactly once, apart from the workspace operations', async () => {
+    const markdownFiles = (await filesBelow(skillRoot)).filter((path) => path.endsWith('.md'));
+    const toolNames = (await Promise.all(markdownFiles.map(async (path) => toolsFrom(await readFile(path, 'utf8'))))).flat();
+    const documented = toolNames.filter((name) => automationToolNames.includes(name as AutomationToolName));
+
+    expect(new Set(automationToolNames).size).toBe(automationToolNames.length);
+    expect(sorted(automationToolNames)).toEqual(sorted(Object.keys(AUTOMATION_TOOL_SCHEMA_BY_NAME)));
+    expect(sorted(documented)).toEqual(sorted(automationToolNames));
+    for (const name of automationToolNames) {
+      expect(RunnerOperationSchema.safeParse(name).success, name).toBe(false);
+    }
   });
 
   it('keeps every marked example valid against its public input schema', async () => {
@@ -49,7 +73,12 @@ describe('cloudharness skill contract', () => {
     const examples = (await Promise.all(markdownFiles.map(async (path) => examplesFrom(await readFile(path, 'utf8'))))).flat();
 
     expect(examples.length).toBeGreaterThanOrEqual(8);
+    expect(examples.some(({ operation }) => isAutomationTool(operation))).toBe(true);
     for (const { operation, input } of examples) {
+      if (isAutomationTool(operation)) {
+        expect(() => AUTOMATION_TOOL_SCHEMA_BY_NAME[operation].parse(input), operation).not.toThrow();
+        continue;
+      }
       const parsedOperation = RunnerOperationSchema.parse(operation);
       expect(() => TOOL_SCHEMA_BY_NAME[parsedOperation].parse(input)).not.toThrow();
     }
