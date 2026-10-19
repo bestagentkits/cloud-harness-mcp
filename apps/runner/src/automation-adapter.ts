@@ -96,6 +96,10 @@ export type AutomationOperationResult = {
   ok: boolean;
   data?: unknown;
   error?: { code: string; retryable?: boolean } | undefined;
+  /** The next page of a paginated operation. */
+  cursor?: string | undefined;
+  /** The operation's output was cut at its size cap; a caller that gates on the output must not trust it. */
+  truncated?: boolean | undefined;
 };
 
 /** What a publisher stored about its provider object (a comment id, a check run id). */

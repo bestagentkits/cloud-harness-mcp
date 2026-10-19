@@ -861,6 +861,14 @@ describe('provider adapters', () => {
     // A pinned Linear match on its own connection is refused when it targets another provider.
     expect(rule({ ...linearRule(connection.id), match: { provider: 'custom', event: 'deploy.failed' } }))
       .toMatchObject(invalid(/connection's linear provider/u));
+    // Coding runs open a GitHub pull request for a GitHub issue; other providers cannot opt in, on create or update.
+    const coding = { projectId: `prj_${'c'.repeat(32)}`, verifyCommand: 'npm test', baseBranch: 'main' };
+    const linearAction = linearRule(connection.id).action as Record<string, unknown>;
+    expect(rule({ ...linearRule(connection.id), action: { ...linearAction, coding } })).toMatchObject(invalid(/only for GitHub rules/u));
+    expect(context.service.execute({
+      version: 1, principal: context.owner, operation: 'rule_update',
+      input: { id: created.id, expectedGeneration: created.generation, action: { ...linearAction, coding } }
+    })).toMatchObject(invalid(/only for GitHub rules/u));
   });
 
   it('checks out the pinned repository whatever the event names, and publishes progress and the answer', async () => {

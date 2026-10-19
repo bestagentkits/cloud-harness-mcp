@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { AutomationProviderSchema } from '@cloud-harness/contracts';
+import { initializeCodingActionSchema } from './agent-governance/action-schema.js';
 
 /** Every provider the stored CHECK must admit, as SQL string literals. */
 const PROVIDER_LITERALS = AutomationProviderSchema.options.map((provider) => `'${provider}'`);
@@ -177,4 +178,6 @@ export function initializeAutomationSchema(database: DatabaseSync): void {
     );
   `);
   addMissingColumns(database);
+  // Coding receipts and the nullable coding columns, added in place on existing databases.
+  initializeCodingActionSchema(database);
 }

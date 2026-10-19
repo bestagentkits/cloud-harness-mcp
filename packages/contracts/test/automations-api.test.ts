@@ -9,6 +9,7 @@ import {
   AutomationRuleMatchSchema,
   AutomationSampleEventSchema,
   AutomationsRunnerRequestSchema,
+  automationCodingProblem,
   automationMatchProvider,
   automationRuleProblem
 } from '../src/index.js';
@@ -52,6 +53,21 @@ describe('automation rule contracts', () => {
       { provider: 'linear', trigger: 'label_added', label: 'claude', repository: 'acme/widgets' }
     ];
     for (const match of invalid) expect(AutomationRuleMatchSchema.safeParse(match).success, JSON.stringify(match)).toBe(false);
+  });
+
+  it('allows coding runs only on GitHub rules', () => {
+    const coding = { projectId: `prj_${'c'.repeat(32)}`, verifyCommand: 'npm test', baseBranch: 'main' };
+    const linear = AutomationRuleMatchSchema.parse({ provider: 'linear', trigger: 'label_added', label: 'claude' });
+    expect(automationCodingProblem(AutomationRuleMatchSchema.parse(githubMatch), { coding })).toBeUndefined();
+    expect(automationCodingProblem(linear, {})).toBeUndefined();
+    expect(automationCodingProblem(linear, { coding })).toMatch(/only for GitHub rules/u);
+
+    const rule = (match: unknown, ruleAction: Record<string, unknown>) =>
+      AutomationRuleInputSchema.safeParse({ connectionId: CONNECTION, name: 'Fix', match, action: ruleAction });
+    expect(rule(githubMatch, { ...action, coding }).success).toBe(true);
+    const custom = rule({ provider: 'custom', event: 'deploy.failed' }, { ...action, repository: 'acme/widgets', coding });
+    expect(custom.success).toBe(false);
+    expect(custom.error?.issues.map((issue) => issue.path.join('.'))).toEqual(['action.coding']);
   });
 
   it('takes the repository from the GitHub match and requires every other provider to pin it', () => {

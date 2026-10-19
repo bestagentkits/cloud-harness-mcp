@@ -863,7 +863,8 @@ describe('contracts', () => {
     expect(() => AgentIdSchema.parse(`agent_${'x'.repeat(19)}`)).toThrow();
     expect(AgentProxyOperationSchema.options).toEqual([
       'files_list', 'files_read', 'files_write', 'files_apply_patch', 'files_delete',
-      'files_move', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references'
+      'files_move', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references',
+      'exec_run', 'git_status', 'git_diff'
     ]);
     expect(() => TOOL_SCHEMA_BY_NAME.agent_spawn.parse({
       workspaceId,

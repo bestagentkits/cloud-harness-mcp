@@ -132,8 +132,8 @@ export class AgentPolicyService {
    * an unanalyzable command, a plain ALLOW) is returned without consulting the advisor, so nothing
    * leaves the runner for it. The advisor cannot lower a decision; a failure takes the policy fallback.
    * The advisor is told the subject the evaluator judged (for example `publish_branch` for a declared
-   * `test` that runs `git push`), never only the declared class. The coding broker is the caller;
-   * nothing in this release calls it yet. A descriptor that does not match the contract is refused.
+   * `test` that runs `git push`), never only the declared class. The coding broker's execution-time
+   * gate is the caller. A descriptor that does not match the contract is refused.
    */
   async decide(principalId: string, projectId: string | null, input: AgentActionDescriptor, context?: GateContext, options: AgentPolicyDecideOptions = {}): Promise<GateDecision> {
     const parsed = AgentActionDescriptorSchema.safeParse(input);

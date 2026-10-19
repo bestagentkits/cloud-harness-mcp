@@ -7,6 +7,9 @@ import {
   AutomationRuleMatchSchema,
   AutomationsRunnerDataSchemas,
   AutomationsRunnerRequestSchema,
+  CODING_PROXY_OPERATIONS,
+  CodingPhaseSchema,
+  automationCodingProblem,
   automationMatchProvider,
   automationRuleProblem,
   type AutomationConnectionCreateInput,
@@ -50,6 +53,12 @@ import { AUTOMATION_PROVIDER_ADAPTERS, type AutomationProviderRegistry } from '.
 import { initializeAutomationSchema } from './automation-schema.js';
 import { emitAutomationTerminalEvent, withEventSavepoint } from './event-outbox.js';
 import type { EncryptedSecret, SecretKeyring } from './secret-keyring.js';
+import type { CodingActionBroker } from './agent-governance/action-broker.js';
+import { CodingActionCursorError, CodingActionStore } from './agent-governance/action-store.js';
+import { createCodingGitPort, type CodingGitRunner } from './agent-governance/coding-git.js';
+import { CodingWorkflowEngine, type CodingInstallPort, type CodingPublishPort } from './automation-coding.js';
+import { conformRuntime, PI_RUNTIME_MANIFEST } from './agent-governance/runtime-adapters.js';
+import { traceIdFor } from './agent-trace-store.js';
 
 export type { AutomationOperationResult } from './automation-adapter.js';
 
@@ -60,6 +69,8 @@ export const AUTOMATION_PUBLISH_RETRY_DELAYS_MS = [30_000, 120_000, 300_000, 900
 const TICK_INTERVAL_MS = 2_000;
 const PURGE_INTERVAL_MS = 3_600_000;
 const BATCH = 50;
+/** Consecutive thrown steps after which a starting or running workflow fails as STEP_FAILED. */
+const MAX_STEP_FAILURES = 5;
 const SECRET_CONTEXT = 'automation-webhook-connection';
 /** Outbound API credentials are sealed under their own context, so neither secret can stand in for the other. */
 const OUTBOUND_CONTEXT = 'automation-outbound-credential';
@@ -109,6 +120,17 @@ export type AutomationServiceOptions = {
   audit?: AutomationAudit;
   now?: () => number;
   log?: (record: Record<string, unknown>) => void;
+  /**
+   * The coding action broker. Without it a rule with a `coding` action fails as CODING_DISABLED; with
+   * it, the broker's kill switch is checked on every step.
+   */
+  coding?: CodingActionBroker | undefined;
+  /** The lockfile install executor; used only while its own flag is on (AGENT_CODING_PACKAGE_INSTALL_ENABLED). */
+  codingInstall?: CodingInstallPort | undefined;
+  /** Read-only Git inspection of a coding checkout; without it a coding workflow never commits. */
+  codingGit?: CodingGitRunner | undefined;
+  /** `git_push` decided on the staged transfer clone; without it a coding workflow never pushes. */
+  codingPublish?: CodingPublishPort | undefined;
 };
 
 type SealedSecret = { generation: number; keyVersion: number; nonce: string; ciphertext: string; authTag: string };
@@ -140,6 +162,9 @@ type WorkflowRow = {
   usage_json: string | null; publish_state: AutomationWorkflowSummary['publishState']; publish_attempts: number;
   next_attempt_at: number; start_attempts: number; workspace_closed: number; created_at: number; updated_at: number;
   terminal_at: number | null; provider: string | null; resource_ref: string | null; publish_ref_json: string | null;
+  /** Coding columns; null for read-only workflows. */
+  project_id: string | null; coding_phase: string | null; base_oid: string | null; branch: string | null; commit_sha: string | null;
+  pr_number: number | null; pr_url: string | null; trace_id: string | null;
 };
 
 type RuleSnapshot = { name: string; match: AutomationRuleMatch; action: AutomationRuleAction };
@@ -261,7 +286,8 @@ const trustedSource = (event: NormalizedAutomationEvent): boolean => event.provi
 
 /** Builds the agent task: owner instructions, trusted trigger context, then fenced untrusted event data. */
 export function buildAutomationPrompt(snapshot: RuleSnapshot, event: NormalizedAutomationEvent): string {
-  const tools = snapshot.action.proxyOperations.join(', ');
+  const coding = snapshot.action.coding;
+  const tools = (coding ? CODING_PROXY_OPERATIONS : snapshot.action.proxyOperations).join(', ');
   const provider = PROVIDER_NAMES[event.provider];
   const actorType = event.actor.type ?? (event.actor.isBot ? 'Bot' : 'User');
   return [
@@ -272,6 +298,13 @@ export function buildAutomationPrompt(snapshot: RuleSnapshot, event: NormalizedA
     `- Source: ${trustedSource(event) ? event.resourceUrl || '(no link)' : '(see the event data)'}`,
     `- Checked-out ref: ${snapshot.action.ref ?? 'the repository default branch'}`,
     `- Workspace tools available to you: ${tools}.`,
+    ...(coding
+      ? [
+          '- This is a coding task: change the files to resolve it, and use exec_run to build and run tests until they pass.',
+          `- When you finish, Cloud Harness runs \`${coding.verifyCommand}\`; only if it passes does Cloud Harness commit your changes to a new branch, push it, and open a pull request against ${coding.baseBranch}. Do not commit, push or open pull requests yourself.`,
+          '- Every tool call is checked against the owner\'s policy; a refused call returns ACTION_DENIED with the reason. Commands are plain space-separated words without shell syntax. Dependency manifests and lockfiles are not editable.'
+        ]
+      : []),
     snapshot.action.publishComment
       ? '- Your final message will be posted as one comment on the source. Make it a complete, self-contained answer.'
       : `- Your final message is stored on the Dashboard only; it is not posted to ${provider}.`,
@@ -411,6 +444,9 @@ export class AutomationService {
   /** Network-bound steps by workflow id. A slow clone or API call holds only its own workflow. */
   private readonly steps = new Map<string, Promise<void>>();
   private lastPurgeAt = 0;
+  private readonly coding: CodingWorkflowEngine | undefined;
+  /** Receipts stay readable (and are purged) whether or not coding is enabled now. */
+  private readonly codingActions: CodingActionStore;
 
   constructor(options: AutomationServiceOptions) {
     this.database = options.database;
@@ -426,6 +462,32 @@ export class AutomationService {
     this.now = options.now ?? Date.now;
     this.log = options.log ?? (() => undefined);
     initializeAutomationSchema(this.database);
+    this.codingActions = new CodingActionStore(this.database, this.now);
+    this.coding = options.coding ? new CodingWorkflowEngine(options.coding, {
+      call: async (ownerId, operation, input) => await this.call(ownerId, operation, input),
+      update: (id, fields) => this.updateRunning(id, fields),
+      fail: (id, code, fields) => { this.finish(id, ['STARTING', 'RUNNING'], 'FAILED', code, 'system', { ...fields, ...this.publishFields(id) }); },
+      complete: (id, fields) => { this.finish(id, ['RUNNING'], 'COMPLETED', null, 'system', { ...fields, ...this.publishFields(id) }); },
+      now: () => this.now(),
+      ...(options.codingInstall ? { install: options.codingInstall } : {}),
+      ...(options.codingGit ? { git: createCodingGitPort(options.codingGit) } : {}),
+      ...(options.codingPublish ? { publish: options.codingPublish } : {})
+    }) : undefined;
+  }
+
+  /** Coding workflows post their outcome when the rule asks for a comment, whichever way they end. */
+  private publishFields(id: string): Record<string, string> {
+    const row = this.database.prepare('SELECT rule_snapshot_json FROM automation_workflows WHERE id = ?').get(id) as { rule_snapshot_json: string } | undefined;
+    if (!row) return {};
+    return { publish_state: (JSON.parse(row.rule_snapshot_json) as RuleSnapshot).action.publishComment ? 'PENDING' : 'NONE' };
+  }
+
+  /** Updates columns of a workflow only while it is still running. */
+  private updateRunning(id: string, fields: Record<string, string | number | null>): boolean {
+    const assignments = Object.keys(fields).map((key) => `, ${key} = ?`).join('');
+    const result = this.database.prepare(`UPDATE automation_workflows SET updated_at = ?${assignments} WHERE id = ? AND state IN ('STARTING', 'RUNNING')`)
+      .run(this.now(), ...Object.values(fields), id);
+    return Number(result.changes) === 1;
   }
 
   start(): void {
@@ -487,7 +549,7 @@ export class AutomationService {
       case 'rule_delete': return this.deleteRule(ownerId, request.input.id, request.input.expectedGeneration);
       case 'rule_preview': return this.previewRule(ownerId, request.input.id, request.input.sample);
       case 'workflows_list': return { workflows: this.listWorkflows(ownerId, request.input).map((row) => this.workflowSummary(row)) };
-      case 'workflow_get': return this.getWorkflow(ownerId, request.input.id);
+      case 'workflow_get': return this.getWorkflow(ownerId, request.input.id, request.input.actionsCursor);
       case 'workflow_cancel': return this.cancelWorkflow(ownerId, request.input.id, request.input.reason);
       case 'deliveries_list': return { deliveries: this.listDeliveries(ownerId, request.input).map((row) => this.deliverySummary(row)) };
       case 'delivery_replay': return this.replayDelivery(ownerId, request.input.id, request.input.expectedState);
@@ -734,6 +796,8 @@ export class AutomationService {
     if (automationMatchProvider(match) !== provider) throw new AutomationsError('INVALID_INPUT', `the rule match must target the connection's ${provider} provider`);
     const problem = automationRuleProblem(match, action);
     if (problem) throw new AutomationsError('INVALID_INPUT', problem);
+    const codingProblem = automationCodingProblem(match, action);
+    if (codingProblem) throw new AutomationsError('INVALID_INPUT', codingProblem);
     if (action.publishComment && !adapter.publish) throw new AutomationsError('INVALID_INPUT', `the ${provider} provider cannot publish comments`);
     // Checked only when the action is saved, so a rule can still be renamed, enabled or disabled after
     // its credentials were cleared; such a rule fails each publish with OUTBOUND_NOT_CONFIGURED.
@@ -847,14 +911,24 @@ export class AutomationService {
     return row;
   }
 
-  private getWorkflow(ownerId: string, id: string) {
+  private getWorkflow(ownerId: string, id: string, actionsCursor: string | undefined) {
     const row = this.ownedWorkflow(ownerId, id);
     const transitions = this.database.prepare('SELECT from_state, to_state, actor, code, at FROM automation_transitions WHERE workflow_id = ? ORDER BY seq')
       .all(id) as { from_state: AutomationWorkflowState | null; to_state: AutomationWorkflowState; actor: 'system' | 'owner'; code: string | null; at: number }[];
+    let page: ReturnType<CodingActionStore['receipts']>;
+    try {
+      // Newest first, so the runner's own steps (which come last) are always on the first page.
+      page = this.codingActions.receipts(ownerId, id, { cursor: actionsCursor });
+    } catch (error) {
+      if (error instanceof CodingActionCursorError) throw new AutomationsError('INVALID_INPUT', 'invalid actions cursor');
+      throw error;
+    }
     return {
       workflow: this.workflowSummary(row),
       result: row.result_text,
-      transitions: transitions.map((entry) => ({ fromState: entry.from_state, toState: entry.to_state, actor: entry.actor, code: entry.code, at: iso(entry.at) }))
+      transitions: transitions.map((entry) => ({ fromState: entry.from_state, toState: entry.to_state, actor: entry.actor, code: entry.code, at: iso(entry.at) })),
+      actions: page.receipts,
+      actionsCursor: page.cursor
     };
   }
 
@@ -1018,6 +1092,15 @@ export class AutomationService {
       errorCode: row.error_code,
       publishState: row.publish_state,
       usage,
+      coding: row.project_id === null ? null : {
+        projectId: row.project_id,
+        phase: CodingPhaseSchema.catch('AGENT').parse(row.coding_phase),
+        branch: row.branch,
+        commitSha: row.commit_sha,
+        prNumber: row.pr_number,
+        prUrl: row.pr_url,
+        traceId: row.trace_id
+      },
       createdAt: iso(row.created_at),
       updatedAt: iso(row.updated_at),
       terminalAt: row.terminal_at === null ? null : iso(row.terminal_at)
@@ -1051,20 +1134,44 @@ export class AutomationService {
     this.processDeliveries();
     this.admitQueued();
     // Each list is read only after the previous launches, so a row already busy is skipped by id.
-    for (const row of this.due('STARTING')) this.launch(row, () => this.startWorkflow(row));
-    for (const row of this.due('RUNNING')) this.launch(row, () => this.poll(row));
+    for (const row of this.due('STARTING')) this.launch(row, () => this.startWorkflow(row), true);
+    for (const row of this.due('RUNNING')) this.launch(row, () => this.poll(row), true);
     for (const row of this.duePublish()) this.launch(row, () => this.publish(row));
     for (const row of this.dueCleanup()) this.launch(row, () => this.cleanup(row));
     this.purge();
     await Promise.resolve();
   }
 
-  private launch(row: WorkflowRow, step: () => Promise<void>): void {
+  /**
+   * Runs one step of a workflow. A step of a starting or running workflow that throws (a gate or store
+   * failure, not an operation's own error result) is retried with backoff instead of on the next tick,
+   * and the workflow fails as STEP_FAILED after MAX_STEP_FAILURES consecutive throws.
+   */
+  private launch(row: WorkflowRow, step: () => Promise<void>, counted = false): void {
     if (this.steps.has(row.id)) return;
-    const running = step().catch((error: unknown) => {
+    const running = step().then(() => {
+      if (counted) this.database.prepare('UPDATE automation_workflows SET step_failures = 0 WHERE id = ? AND step_failures != 0').run(row.id);
+    }).catch((error: unknown) => {
       this.log({ event: 'automation_step_failed', workflowId: row.id, error: error instanceof Error ? error.name : 'unknown' });
+      if (counted) this.stepThrew(row.id);
     }).finally(() => { this.steps.delete(row.id); });
     this.steps.set(row.id, running);
+  }
+
+  private stepThrew(id: string): void {
+    try {
+      const current = this.database.prepare('SELECT step_failures FROM automation_workflows WHERE id = ?').get(id) as { step_failures: number } | undefined;
+      if (!current) return;
+      const failures = current.step_failures + 1;
+      if (failures >= MAX_STEP_FAILURES) {
+        this.finish(id, ['STARTING', 'RUNNING'], 'FAILED', 'STEP_FAILED', 'system', { step_failures: failures, ...this.publishFields(id) });
+        return;
+      }
+      this.database.prepare(`UPDATE automation_workflows SET step_failures = ?, next_attempt_at = ?, updated_at = ? WHERE id = ? AND state IN ('STARTING', 'RUNNING')`)
+        .run(failures, this.now() + this.backoff(failures), this.now(), id);
+    } catch (error) {
+      this.log({ event: 'automation_step_backoff_failed', workflowId: id, error: error instanceof Error ? error.name : 'unknown' });
+    }
   }
 
   private processDeliveries(): void {
@@ -1243,6 +1350,35 @@ export class AutomationService {
       this.finish(row.id, ['STARTING'], 'EXPIRED', 'START_EXPIRED', 'system', {});
       return;
     }
+    const coding = snapshot.action.coding;
+    if (coding) {
+      // The kill switch is read on every step; a coding rule on an instance without coding never starts.
+      if (!this.coding?.enabled) {
+        this.finish(row.id, ['STARTING'], 'FAILED', 'CODING_DISABLED', 'system', {});
+        return;
+      }
+      // Stored GitHub matches may omit `provider`, so the provider is read through the contract helper.
+      const repository = automationMatchProvider(snapshot.match) === 'github' && 'repository' in snapshot.match ? snapshot.match.repository : undefined;
+      if (repository === undefined) {
+        // Rule validation refuses this; a snapshot that predates it still never runs code.
+        this.finish(row.id, ['STARTING'], 'FAILED', 'CODING_UNSUPPORTED', 'system', {});
+        return;
+      }
+      if (row.project_id === null) {
+        // Repository and project come from the owner's rule, never from the webhook payload.
+        const admitted = await this.coding.admit(row, coding.projectId, repository);
+        if (admitted.state === 'refused') {
+          this.finish(row.id, ['STARTING'], 'FAILED', admitted.code, 'system', {});
+          return;
+        }
+        if (admitted.state === 'waiting') {
+          // Held back by the policy's concurrency limit; it stays STARTING until a slot frees or it expires.
+          this.updateRunning(row.id, { next_attempt_at: admitted.retryAt });
+          return;
+        }
+        if (admitted.state === 'gone') return;
+      }
+    }
     let workspaceId = row.workspace_id;
     if (!workspaceId) {
       const opened = await this.openWorkspace(row, snapshot);
@@ -1262,20 +1398,51 @@ export class AutomationService {
       // Stored regardless of state so a workflow cancelled meanwhile still has its workspace closed.
       this.database.prepare('UPDATE automation_workflows SET workspace_id = ?, updated_at = ? WHERE id = ?').run(workspaceId, this.now(), row.id);
     }
-    const current = this.database.prepare('SELECT state FROM automation_workflows WHERE id = ?').get(row.id) as { state: string } | undefined;
+    const current = this.database.prepare('SELECT state, workspace_generation FROM automation_workflows WHERE id = ?')
+      .get(row.id) as { state: string; workspace_generation: number | null } | undefined;
     if (current?.state !== 'STARTING') return;
+    if (coding && this.coding && current.workspace_generation === null) {
+      const bound = await this.coding.bindWorkspace(row, workspaceId);
+      if (!bound.ok) {
+        if (bound.retry) {
+          this.database.prepare('UPDATE automation_workflows SET next_attempt_at = ?, start_attempts = start_attempts + 1, updated_at = ? WHERE id = ? AND state = ?')
+            .run(this.now() + this.backoff(row.start_attempts), this.now(), row.id, 'STARTING');
+        } else {
+          this.finish(row.id, ['STARTING'], 'FAILED', bound.code, 'system', {});
+        }
+        return;
+      }
+    }
+    if (coding && this.coding) {
+      const installed = await this.coding.installDependencies(row, workspaceId);
+      if (!installed.ok) {
+        if (installed.retry) {
+          this.database.prepare('UPDATE automation_workflows SET next_attempt_at = ?, start_attempts = start_attempts + 1, updated_at = ? WHERE id = ? AND state = ?')
+            .run(this.now() + this.backoff(row.start_attempts), this.now(), row.id, 'STARTING');
+        } else {
+          this.finish(row.id, ['STARTING'], 'FAILED', installed.code, 'system', {});
+        }
+        return;
+      }
+    }
+    // A coding agent may only be granted actions its runtime brokers; anything else fails closed.
+    const runtime = coding ? conformRuntime(PI_RUNTIME_MANIFEST, CODING_PROXY_OPERATIONS) : null;
+    if (runtime && !runtime.ok) {
+      this.finish(row.id, ['STARTING'], 'FAILED', 'RUNTIME_UNSUPPORTED', 'system', {});
+      return;
+    }
     const spawned = await this.call(row.owner_id, 'agent_spawn', {
       workspaceId,
       prompt: row.prompt,
       idempotencyKey: `automation:${row.id}:spawn`,
       profileId: snapshot.action.profileId,
-      proxyOperations: snapshot.action.proxyOperations,
+      proxyOperations: runtime ? runtime.operations : snapshot.action.proxyOperations,
       ttlSeconds: snapshot.action.budget.ttlSeconds,
       maxInputTokens: snapshot.action.budget.maxInputTokens,
       maxOutputTokens: snapshot.action.budget.maxOutputTokens,
       maxCostMicros: snapshot.action.budget.maxCostMicros
     });
-    const spawnedData = spawned.data as { agentId?: unknown; status?: unknown } | undefined;
+    const spawnedData = spawned.data as { agentId?: unknown; status?: unknown; generation?: unknown } | undefined;
     if (!spawned.ok || typeof spawnedData?.agentId !== 'string') {
       if (retryable(spawned)) {
         this.database.prepare('UPDATE automation_workflows SET next_attempt_at = ?, start_attempts = start_attempts + 1, updated_at = ? WHERE id = ? AND state = ?')
@@ -1287,6 +1454,11 @@ export class AutomationService {
     }
     this.database.prepare('UPDATE automation_workflows SET agent_id = ?, agent_status = ?, updated_at = ? WHERE id = ?')
       .run(spawnedData.agentId, typeof spawnedData.status === 'string' ? spawnedData.status : null, this.now(), row.id);
+    if (coding && typeof spawnedData.generation === 'number') {
+      // Lets receipts and runner-step spans join the agent's trace after the agent has finished.
+      this.database.prepare('UPDATE automation_workflows SET agent_generation = ?, trace_id = ? WHERE id = ?')
+        .run(spawnedData.generation, traceIdFor(spawnedData.agentId, spawnedData.generation), row.id);
+    }
     if (this.transition(row.id, ['STARTING'], 'RUNNING', null, { next_attempt_at: this.now() }) && snapshot.action.publishComment) {
       await this.publishStarted(row.id);
     }
@@ -1305,9 +1477,11 @@ export class AutomationService {
   }
 
   private async openWorkspace(row: WorkflowRow, snapshot: RuleSnapshot): Promise<AutomationOperationResult> {
+    // A coding workflow starts from its pull request's base, so the change it publishes is made against it.
+    const ref = snapshot.action.coding ? snapshot.action.coding.baseBranch : snapshot.action.ref;
     return await this.call(row.owner_id, 'workspace_open', {
       repositoryUrl: `https://github.com/${row.repository}.git`,
-      ...(snapshot.action.ref ? { ref: snapshot.action.ref } : {}),
+      ...(ref ? { ref } : {}),
       idempotencyKey: `automation:${row.id}:open`,
       networkProfile: 'network-none'
     });
@@ -1329,6 +1503,17 @@ export class AutomationService {
     if (!row.workspace_id || !row.agent_id) {
       this.finish(row.id, ['RUNNING'], 'FAILED', 'WORKSPACE_LOST', 'system', {});
       return;
+    }
+    if (row.project_id !== null) {
+      if (!this.coding?.enabled) {
+        // The kill switch: a running coding workflow stops at its next tick, and the cleanup cancels its agent.
+        this.finish(row.id, ['RUNNING'], 'FAILED', 'CODING_DISABLED', 'system', this.publishFields(row.id));
+        return;
+      }
+      if (row.coding_phase !== 'AGENT') {
+        await this.coding.advance(row);
+        return;
+      }
     }
     const status = await this.call(row.owner_id, 'agent_status', { workspaceId: row.workspace_id, agentId: row.agent_id });
     if (!status.ok) {
@@ -1356,6 +1541,17 @@ export class AutomationService {
     }
     const result = await this.collectResult(row.owner_id, row.workspace_id, row.agent_id);
     const succeeded = agentStatus === 'SUCCEEDED';
+    if (row.project_id !== null && succeeded) {
+      // The agent is done editing; the runner-owned phases start with verification on the next tick.
+      this.updateRunning(row.id, {
+        agent_status: agentStatus,
+        result_text: result || null,
+        usage_json: usageJson,
+        coding_phase: 'VERIFY',
+        next_attempt_at: this.now()
+      });
+      return;
+    }
     this.finish(row.id, ['RUNNING'], succeeded ? 'COMPLETED' : 'FAILED', succeeded ? null : bounded(`AGENT_${agentStatus}`, 100), 'system', {
       agent_status: agentStatus,
       result_text: result || null,
@@ -1394,7 +1590,10 @@ export class AutomationService {
     const footer = `<sub>Workflow \`${row.id}\`. This comment was written by an automated agent; verify it before acting on it.</sub>`;
     if (phase === 'started') return [heading, this.triggerLine(row), '', 'The agent has started; its answer will follow.', '', footer].join('\n');
     const result = row.result_text ?? (row.error_code ? `The run ended without an answer (\`${row.error_code}\`).` : '(the agent produced no final message)');
-    return [heading, this.triggerLine(row), '', neutralizeMentions(result), '', footer].join('\n');
+    const coding = row.project_id === null ? [] : row.pr_url
+      ? [`Opened pull request ${row.pr_url} from \`${row.branch ?? ''}\`.`, '']
+      : [`No pull request was opened (${(row.error_code ?? 'unknown').replace(/`/gu, "'")}).`, ''];
+    return [heading, this.triggerLine(row), '', ...coding, neutralizeMentions(result), '', footer].join('\n');
   }
 
   private publishRef(row: WorkflowRow): AutomationPublishRef | null {
@@ -1504,6 +1703,8 @@ export class AutomationService {
       this.database.prepare(`DELETE FROM automation_workflows WHERE terminal_at IS NOT NULL AND terminal_at < ?
         AND (workspace_id IS NULL OR workspace_closed = 1) AND publish_state != 'PENDING'`).run(horizon);
       this.database.prepare(`DELETE FROM automation_deliveries WHERE received_at < ? AND state != 'RECEIVED'`).run(horizon);
+      // Receipts carry no foreign key; they go with their workflow's retention.
+      this.codingActions.purgeOrphans(horizon);
     });
   }
 

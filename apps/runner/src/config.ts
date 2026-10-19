@@ -252,7 +252,9 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
         lookupHorizonSeconds: process.env.AGENT_LOOKUP_HORIZON_SECONDS
       }
     } : undefined,
-    agentPoliciesEnabled: process.env.AGENT_POLICIES_ENABLED
+    agentPoliciesEnabled: process.env.AGENT_POLICIES_ENABLED,
+    agentCodingEnabled: process.env.AGENT_CODING_ENABLED,
+    agentCodingPackageInstallEnabled: process.env.AGENT_CODING_PACKAGE_INSTALL_ENABLED
   });
   if (packageApprovalUnavailable(config)) {
     console.warn('[runner-config] PACKAGES_APPROVAL_MODE=required has no Dashboard approver in owner-bearer mode: packages_apply is refused until PACKAGES_APPROVAL_MODE=none');

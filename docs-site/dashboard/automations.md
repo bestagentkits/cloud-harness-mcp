@@ -1,6 +1,6 @@
 ---
 title: Automations
-description: Start a budgeted, read-only agent run when a GitHub, Linear, Jira, or custom webhook reports a label or state change.
+description: Start a budgeted agent run when a GitHub, Linear, Jira, or custom webhook reports a label or state change, read-only by default or, for GitHub coding rules, ending in a pull request.
 ---
 
 # Automations
@@ -112,6 +112,9 @@ On **Rules**, choose **New rule**, pick the connection, and fill in:
   rule always uses its own repository), the model profile, your instructions, an
   optional branch or tag, the workspace tools the agent may use, and whether to post
   the answer back.
+- **Coding (optional, GitHub rules only):** a policy project, a verify command, and a
+  pull request base branch. Leave all three empty for a read-only run; see
+  [Coding runs](#coding-runs).
 - **Limits:** the run's time, token, and cost budget, a cooldown, and how many runs of
   this rule may hold a workspace at once.
 
@@ -242,7 +245,11 @@ runs keep completing but stop posting their answer back.
 - **Runs** lists every run with its state, source issue or ticket, rule, workspace and
   agent, error code, publish status, and usage. A run's page shows its facts, the
   agent's answer, and the timeline of state changes, and offers **Cancel run** while
-  it is still active.
+  it is still active. A coding run's page adds a **Coding** section: its phase,
+  branch, commit, pull request, and every action the policy decided, with the
+  decision, reason, and outcome, newest first, with **Show older actions** for
+  earlier pages. These receipts stay readable after the workspace closes. They show
+  commands and paths exactly as decided, so keep secrets out of verify commands.
 - **Rules** lists rules with **Edit**, **Test event**, **Enable**/**Disable**, and
   **Delete**. A rule stays on the connection it was created for.
 - **Connections** shows each connection's provider, webhook URL, last delivery, when
@@ -284,9 +291,9 @@ credentials are managed only on this page.
 
 ## Safety defaults
 
-- **Read-only agent.** The agent can only list, read, and search files, and nothing is
-  pushed: the only thing a run can write to the source is the optional comment (and,
-  on GitHub, the check run).
+- **Read-only agent.** Without a coding block the agent can only list, read, and
+  search files, and nothing is pushed: the only thing a run can write to the source is
+  the optional comment (and, on GitHub, the check run).
 - **No network in the workspace,** and the agent is held to the rule's budget.
 - **Event text is untrusted.** The title and body, and other text the provider chooses
   (state names, added labels, links, a custom event's resource id), are passed to the
@@ -307,9 +314,61 @@ MCP clients that support events, such as ChatGPT, can subscribe to
 narrowed to one rule or run. An event carries ids and status only; read the answer on
 the run page or with `automation_run_get`.
 
+## Coding runs
+
+A GitHub rule with the **Coding** fields filled turns a labelled issue into a pull
+request. Linear, Jira, and custom rules cannot use coding fields. It needs the operator to set `AGENT_CODING_ENABLED=true` on the runner, which in turn
+needs [Agent Policies](/dashboard/agent-policies) and automations to be on.
+
+1. The run starts only if the project's execution policy allows it. The policy
+   revisions it started under are pinned: editing or rolling back the policy stops
+   the run.
+2. The agent gets a fixed coding tool set: read, write, and patch files, run
+   commands, and see the Git status and diff. Each write or command is checked against
+   the policy before it happens. A refused call never reaches the workspace, and the
+   agent sees why. Editing a lockfile or `package.json` counts as installing a
+   package, not as an edit.
+3. When the agent ends, Cloud Harness runs your verify command. If it fails, nothing
+   is committed, the run fails with `CODING_VERIFY_FAILED`, and the diff is kept as a
+   workspace artifact.
+4. If it passes, Cloud Harness itself commits the change, pushes a new
+   `agent/<issue>-<id>` branch, and opens a pull request against your base branch,
+   with `Closes #<issue>` in its description. The agent never holds the credential
+   that publishes, a push never overwrites an existing branch, and nothing is ever
+   merged or deployed. Cloud Harness reads the checkout itself before committing. It
+   then checks the commit again in the isolated copy it pushes from, so settings or
+   history the agent left in the checkout cannot hide anything. Nothing is pushed if
+   something else committed (`HEAD_MOVED`), the run's branch already exists
+   (`BRANCH_EXISTS`), the commit is not its own (`COMMIT_UNVERIFIED`), or the commit
+   touches a path the policy does not allow.
+
+A run over the policy's concurrent-run limit waits to start until an earlier coding
+run finishes.
+
+Every step is recorded before it runs, so a redelivered webhook, a restart, or a
+crash continues the same run instead of starting over or pushing twice. If GitHub
+cannot confirm whether a push or pull request happened, the run stops with
+`EFFECT_UNKNOWN` and is not retried: check the repository before labelling again.
+
+A policy decision of **Require approval** fails the run, because approvals are not
+granted yet. To stop all coding runs at once, the operator sets
+`AGENT_CODING_ENABLED=false`; running ones fail with `CODING_DISABLED` before
+anything else is published. Branches and pull requests already opened stay for you
+to review or close.
+
+The workspace still has no network. If the operator also sets
+`AGENT_CODING_PACKAGE_INSTALL_ENABLED=true` and the policy allows each package, the
+repository's npm lockfile is installed once before the agent starts, in a separate
+short-lived container with install scripts off. Only lockfiles that pin every package
+to a registry tarball with a sha512 integrity are accepted.
+
+The rule's model profile must allow the coding tools, including the policy-gated
+`exec_run`, `git_status`, and `git_diff`; see
+[Models](/dashboard/models) for how to add them.
+
 ## Not yet supported
 
-Approvals before a run continues; runs that edit code, push, or open pull requests;
+Approvals before a run continues; coding runs for Linear, Jira, or custom rules;
 Linear or Jira OAuth apps; and custom payload mappings other than the fixed envelope.
 
 If deliveries fail or runs do not start, see
