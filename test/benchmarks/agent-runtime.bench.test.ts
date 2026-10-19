@@ -357,5 +357,7 @@ describe.skipIf(process.env.RUN_AGENT_RUNTIME_BENCHMARK !== 'live')('agent runti
     const report = await runLiveBenchmark(process.env);
     console.log(JSON.stringify(report.summary, null, 2));
     expect(report.spentMicros).toBeLessThanOrEqual(report.costCapMicros);
+    // Only the cost cap may stop the matrix early; any other stop is reported after the JSON is written.
+    expect(report.aborted === null || report.aborted.includes('cost cap'), report.aborted ?? '').toBe(true);
   }, 4 * 60 * 60 * 1_000);
 });
