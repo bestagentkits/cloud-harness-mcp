@@ -58,6 +58,17 @@ estimated spend. Three things stay with you on the Dashboard [Models page](/dash
 provider tokens, so a client that asks before such tools will prompt for them. The full flow is
 in [Model Providers](/reference/model-providers#api-and-mcp-examples).
 
+## Continuing Subagent Work
+
+By default each `agent_spawn` agent is one-shot: when it ends, its conversation is gone, and a
+follow-up is a new agent that your AI tool briefs again. When the operator turns on session
+persistence, your tool can pass `continueFrom` with an ended agent's ID, and the new agent starts
+with that agent's conversation on the same model profile. An opt-in durable engine
+(`runtime: "pi-durable"`) is available for long tasks that may be interrupted; leave `runtime`
+out otherwise. Both are off unless the operator enables them, and a stopped agent is never
+reported as successful. Field details are in the [tool reference](/reference/tools#agent-spawn),
+and the errors you may see are in [Troubleshooting](/troubleshooting#_32-agent-spawn-returns-not-supported-for-continuefrom-or-runtime-pi-durable).
+
 ---
 
 ## Security Best Practices for Clients
