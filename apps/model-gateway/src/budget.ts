@@ -141,7 +141,7 @@ function requestedOutputTokens(body: Record<string, unknown>, profile: GatewayPr
   for (const field of fields) {
     const value = body[field];
     if (value === undefined) continue;
-    if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`${field} must be a positive integer`);
+    if (!Number.isSafeInteger(value) || (value as number) < 1) refuse(`${field} must be a positive integer`);
     requested.push(value as number);
   }
   return requested.length === 0 ? profile.limits.maxOutputTokens : Math.min(...requested);
