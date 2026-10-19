@@ -1,17 +1,13 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-/**
- * Creates the webhook automation tables. Additive and idempotent, with no schema version bump and
- * no foreign keys, so an older release ignores them and a code-only rollback needs no data change.
- * Raw webhook payloads are never stored: a delivery keeps only its digest and the bounded,
- * normalized fields a rule matches on and an agent prompt quotes.
- */
-export function initializeAutomationSchema(database: DatabaseSync): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS automation_connections (
+/** Columns shared by every version of `automation_connections`, in their original order. */
+const CONNECTION_COLUMNS = 'id, owner_id, provider, name, enabled, generation, secret_generation, secret_json, secret_rotated_at, last_delivery_at, created_at, updated_at';
+
+const connectionsTable = (name: string): string => `
+    CREATE TABLE ${name} (
       id TEXT PRIMARY KEY,
       owner_id TEXT NOT NULL,
-      provider TEXT NOT NULL CHECK(provider IN ('github')),
+      provider TEXT NOT NULL CHECK(provider IN ('github', 'linear', 'jira', 'custom')),
       name TEXT NOT NULL,
       enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
       generation INTEGER NOT NULL CHECK(generation > 0),
@@ -20,8 +16,69 @@ export function initializeAutomationSchema(database: DatabaseSync): void {
       secret_rotated_at INTEGER NOT NULL,
       last_delivery_at INTEGER,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
+      updated_at INTEGER NOT NULL,
+      outbound_json TEXT,
+      config_json TEXT
+    )`;
+
+/** Columns added after a table first shipped; all nullable, so older code that names its columns still writes rows. */
+const ADDED_COLUMNS: readonly [table: string, column: string][] = [
+  ['automation_deliveries', 'provider TEXT'],
+  ['automation_deliveries', 'event_json TEXT'],
+  ['automation_workflows', 'provider TEXT'],
+  ['automation_workflows', 'resource_ref TEXT'],
+  ['automation_workflows', 'publish_ref_json TEXT']
+];
+
+/**
+ * The first release limited `provider` to GitHub with a CHECK constraint, which SQLite can only
+ * change by rebuilding the table. The copy keeps every row and column value, runs in one
+ * savepoint, and is skipped once the stored definition admits the other providers.
+ */
+function widenConnectionProviders(database: DatabaseSync): void {
+  const table = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'automation_connections'").get() as { sql: string } | undefined;
+  if (!table) {
+    database.exec(`${connectionsTable('automation_connections')};`);
+    return;
+  }
+  if (table.sql.includes("'custom'")) return;
+  database.exec('SAVEPOINT automation_connections_widen');
+  try {
+    database.exec(`${connectionsTable('automation_connections_widened')};
+      INSERT INTO automation_connections_widened (${CONNECTION_COLUMNS}) SELECT ${CONNECTION_COLUMNS} FROM automation_connections;
+      DROP TABLE automation_connections;
+      ALTER TABLE automation_connections_widened RENAME TO automation_connections;`);
+    database.exec('RELEASE automation_connections_widen');
+  } catch (error) {
+    database.exec('ROLLBACK TO automation_connections_widen');
+    database.exec('RELEASE automation_connections_widen');
+    throw error;
+  }
+}
+
+function addMissingColumns(database: DatabaseSync): void {
+  for (const [table, definition] of ADDED_COLUMNS) {
+    const column = definition.split(' ', 1)[0]!;
+    const present = (database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((entry) => entry.name === column);
+    if (!present) database.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+  }
+}
+
+/**
+ * Creates the webhook automation tables. Additive and idempotent, with no schema version bump and
+ * no foreign keys, so an older release ignores them and a code-only rollback needs no data change:
+ * older code reads rows with `SELECT *` and maps only the fields it knows, and inserts with an
+ * explicit column list, so the added nullable columns are invisible to it.
+ * Raw webhook payloads are never stored: a delivery keeps only its digest and the bounded,
+ * normalized fields a rule matches on and an agent prompt quotes.
+ *
+ * Rule index columns are provider-neutral despite their names: `repository_key` holds the rule's
+ * scope (repository, team key, project key, custom event name) and `label_key` its trigger value,
+ * with an empty string for an omitted optional filter.
+ */
+export function initializeAutomationSchema(database: DatabaseSync): void {
+  widenConnectionProviders(database);
+  database.exec(`
     CREATE INDEX IF NOT EXISTS automation_connections_owner ON automation_connections(owner_id);
     CREATE TABLE IF NOT EXISTS automation_rules (
       id TEXT PRIMARY KEY,
@@ -114,4 +171,5 @@ export function initializeAutomationSchema(database: DatabaseSync): void {
       PRIMARY KEY(workflow_id, seq)
     );
   `);
+  addMissingColumns(database);
 }

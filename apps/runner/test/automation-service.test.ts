@@ -11,7 +11,14 @@ import {
   finalAnswerFromLogs,
   type AutomationOperationResult
 } from '../src/automation-service.js';
+import { rejectActor } from '../src/automation-adapter.js';
 import { normalizeGitHubEvent, verifyGitHubSignature } from '../src/automation-github.js';
+import {
+  AUTOMATION_PROVIDER_ADAPTERS,
+  type AutomationProviderRegistry,
+  type AutomationPublishRequest,
+  type ProviderAdapter
+} from '../src/automation-providers.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
 
@@ -65,7 +72,16 @@ class FakeOperations {
   }
 }
 
-function setup(options: { enabled?: boolean; keyring?: boolean; maxConcurrent?: number; path?: string; clock?: { now: number } } = {}) {
+type SetupOptions = {
+  enabled?: boolean;
+  keyring?: boolean | SecretKeyring;
+  maxConcurrent?: number;
+  path?: string;
+  clock?: { now: number };
+  adapters?: AutomationProviderRegistry;
+};
+
+function setup(options: SetupOptions = {}) {
   let path = options.path;
   if (!path) {
     const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-automations-'));
@@ -74,7 +90,8 @@ function setup(options: { enabled?: boolean; keyring?: boolean; maxConcurrent?: 
   }
   const store = new StateStore(path);
   closers.push(() => store.close());
-  const keyring = options.keyring === false ? undefined : new SecretKeyring(1, [{ version: 1, key: Buffer.alloc(32, 7) }]);
+  const keyring = options.keyring instanceof SecretKeyring ? options.keyring
+    : options.keyring === false ? undefined : new SecretKeyring(1, [{ version: 1, key: Buffer.alloc(32, 7) }]);
   const clock = options.clock ?? { now: Date.parse('2026-10-17T00:00:00Z') };
   const operations = new FakeOperations();
   const audits: string[] = [];
@@ -85,6 +102,7 @@ function setup(options: { enabled?: boolean; keyring?: boolean; maxConcurrent?: 
     resolvePrincipal: (principal) => store.resolvePrincipal(principal),
     operations,
     keyring,
+    ...(options.adapters ? { adapters: options.adapters } : {}),
     selfLogin: 'cloud-harness[bot]',
     audit: (_database, _principal, action) => { audits.push(action); },
     now: () => clock.now
@@ -624,5 +642,217 @@ describe('AutomationService engine', () => {
     expect(events[0]!.name).toBe('cloudharness.automation.completed');
     expect(JSON.parse(events[0]!.payload_json)).toMatchObject({ workflowId: workflow!.id, status: 'COMPLETED', workspaceId: WS, agentId: AGENT });
     expect(events[0]!.payload_json).not.toContain('Final answer');
+  });
+});
+
+// A stand-in for a provider adapter: signs with a hex HMAC header and scopes on a team key.
+const LINEAR_KEY = 'lin_api_outbound_credential_value';
+
+function fakeLinearAdapter(published: AutomationPublishRequest[]): ProviderAdapter {
+  return {
+    provider: 'linear',
+    displayName: 'Linear',
+    verify: ({ secret, body, headers }) => {
+      const expected = createHmac('sha256', secret).update(body).digest('hex');
+      return headers['linear-signature'] === expected ? { ok: true } : { ok: false, reason: 'bad_signature' };
+    },
+    eventName: (headers) => headers['linear-event'],
+    deliveryId: (headers) => headers['linear-delivery'],
+    normalize: (_event, body) => {
+      const data = JSON.parse(body.toString()) as { team: string; id: string; label: string; actor: string; title: string };
+      return {
+        kind: 'event',
+        event: {
+          provider: 'linear',
+          eventType: 'linear.issue.label_added',
+          scope: data.team,
+          resourceKey: `linear:${data.id.toLowerCase()}`,
+          resourceRef: data.id,
+          resourceUrl: `https://linear.app/acme/issue/${data.id}`,
+          label: data.label,
+          actor: { login: data.actor, isBot: false },
+          title: data.title,
+          body: 'Issue description',
+          extras: { issueId: 'issue-uuid' }
+        }
+      };
+    },
+    matches: (match, event, context) => {
+      if (match.provider !== 'linear') return { matched: false, reason: 'provider_mismatch' };
+      if (match.teamKey && match.teamKey.toLowerCase() !== event.scope.toLowerCase()) return { matched: false, reason: 'team_mismatch' };
+      if (match.label && match.label.toLowerCase() !== event.label?.toLowerCase()) return { matched: false, reason: 'label_mismatch' };
+      return rejectActor(match, event.actor, context.selfLogin) ?? { matched: true, reason: 'matched' };
+    },
+    publish: async (request) => {
+      published.push(request);
+      return { ok: true, publishRef: { commentId: `comment-${request.phase}` } };
+    }
+  };
+}
+
+describe('provider adapters', () => {
+  function linearSetup(options: SetupOptions = {}) {
+    const published: AutomationPublishRequest[] = [];
+    const context = setup({ adapters: { ...AUTOMATION_PROVIDER_ADAPTERS, linear: fakeLinearAdapter(published) }, ...options });
+    return { ...context, published };
+  }
+
+  function createLinearConnection(context: Setup, input: Record<string, unknown> = { apiKey: LINEAR_KEY }) {
+    return ok<{ connection: { id: string; generation: number; webhookPath: string; outboundConfigured?: boolean }; secret: string }>(
+      context.service.execute({ version: 1, principal: context.owner, operation: 'connection_create', input: { provider: 'linear', name: 'acme', ...input } })
+    );
+  }
+
+  const linearRule = (connectionId: string, overrides: { match?: Record<string, unknown>; action?: Record<string, unknown> } = {}) => ({
+    connectionId,
+    name: 'Linear triage',
+    enabled: true,
+    match: { provider: 'linear', teamKey: 'ENG', trigger: 'label_added', label: 'claude', ...overrides.match },
+    action: { profileId: 'default', instructions: 'Analyse the issue.', cooldownSeconds: 0, repository: REPO, publishComment: true, ...overrides.action }
+  });
+
+  function deliverLinear(context: Setup, connectionId: string, secret: string) {
+    const body = Buffer.from(JSON.stringify({ team: 'ENG', id: 'ENG-12', label: 'Claude', actor: 'alice', title: 'Crash', repository: 'evil/repo' }));
+    return context.service.execute({
+      version: 1,
+      operation: 'webhook_ingest',
+      input: {
+        provider: 'linear',
+        connectionId,
+        headers: {
+          'linear-event': 'Issue',
+          'linear-delivery': `delivery-${Math.random().toString(16).slice(2)}`,
+          'linear-signature': createHmac('sha256', secret).update(body).digest('hex')
+        },
+        bodyBase64: body.toString('base64')
+      }
+    });
+  }
+
+  it('rejects connections and deliveries for a provider this runner has no adapter for', () => {
+    const context = setup();
+    const created = context.service.execute({ version: 1, principal: context.owner, operation: 'connection_create', input: { provider: 'linear', name: 'acme' } });
+    expect(created).toMatchObject({ ok: false, error: { code: 'INVALID_INPUT', message: 'the linear provider is not available on this instance' } });
+    const { connection, secret } = createConnection(context);
+    const unknown = context.service.execute({
+      version: 1,
+      operation: 'webhook_ingest',
+      input: { provider: 'jira', connectionId: connection.id, headers: { 'x-hub-signature': 'sha256=00' }, bodyBase64: '' }
+    });
+    expect(unknown).toEqual(deliver(context, connection.id, secret, payload(), { signature: `sha256=${'0'.repeat(64)}` }));
+  });
+
+  it('requires a pinned repository on non-GitHub rules and refuses one on GitHub rules', () => {
+    const context = linearSetup();
+    const { connection } = createLinearConnection(context);
+    const rule = (input: Record<string, unknown>) => context.service.execute({ version: 1, principal: context.owner, operation: 'rule_create', input });
+    const unpinned = linearRule(connection.id);
+    delete (unpinned.action as { repository?: string }).repository;
+    const invalid = (message: RegExp) => ({ ok: false, error: { code: 'INVALID_INPUT', message: expect.stringMatching(message) } });
+    expect(rule(unpinned)).toMatchObject(invalid(/must pin action\.repository/u));
+    // A GitHub match on a Linear connection is refused even with a pin.
+    expect(rule({ ...linearRule(connection.id), match: { repository: REPO, events: ['issues'], label: 'claude' } }))
+      .toMatchObject(invalid(/GitHub rules take the repository|connection's linear provider/u));
+    const github = createConnection(context);
+    expect(rule({
+      connectionId: github.connection.id, name: 'x', enabled: true,
+      match: { repository: REPO, events: ['issues'], label: 'claude' },
+      action: { profileId: 'default', instructions: 'x', repository: REPO }
+    })).toMatchObject(invalid(/GitHub rules take the repository/u));
+    const created = ok<{ rule: { id: string; generation: number } }>(rule(linearRule(connection.id))).rule;
+    // An update cannot drop the pin either.
+    const update = context.service.execute({
+      version: 1, principal: context.owner, operation: 'rule_update',
+      input: { id: created.id, expectedGeneration: created.generation, action: { profileId: 'default', instructions: 'x' } }
+    });
+    expect(update).toMatchObject(invalid(/must pin action\.repository/u));
+    // A pinned Linear match on its own connection is refused when it targets another provider.
+    expect(rule({ ...linearRule(connection.id), match: { provider: 'custom', event: 'deploy.failed' } }))
+      .toMatchObject(invalid(/connection's linear provider/u));
+  });
+
+  it('checks out the pinned repository whatever the event names, and publishes progress and the answer', async () => {
+    const context = linearSetup();
+    const { connection, secret } = createLinearConnection(context);
+    ok(context.service.execute({ version: 1, principal: context.owner, operation: 'rule_create', input: linearRule(connection.id) }));
+    expect(deliverLinear(context, connection.id, secret)).toEqual({ ok: true, data: { outcome: 'accepted' } });
+    await drive(context, 2);
+    expect(workflows(context)[0]?.state).toBe('RUNNING');
+    context.operations.agentStatus = 'SUCCEEDED';
+    await drive(context, 3);
+
+    const [workflow] = workflows(context);
+    expect(workflow).toMatchObject({ state: 'COMPLETED', publishState: 'DELIVERED', provider: 'linear', resourceRef: 'ENG-12', resourceNumber: null });
+    const open = context.operations.calls.find((call) => call.operation === 'workspace_open')!;
+    expect(open.input.repositoryUrl).toBe(`https://github.com/${REPO}.git`);
+    expect(JSON.stringify(context.operations.calls)).not.toContain('evil/repo');
+    expect(context.operations.count('github_action')).toBe(0);
+
+    expect(context.published.map((request) => request.phase)).toEqual(['started', 'completed']);
+    const [started, completed] = context.published;
+    expect(started!.idempotencyKey).toBe(`automation:${workflow!.id}:started`);
+    expect(completed!.idempotencyKey).toBe(`automation:${workflow!.id}:comment`);
+    expect(completed!.outbound).toEqual({ apiKey: LINEAR_KEY });
+    expect(completed!.publishRef).toEqual({ commentId: 'comment-started' });
+    expect(completed!.workflow).toMatchObject({ provider: 'linear', repository: REPO, resourceRef: 'ENG-12', resultText: 'Final answer for @team' });
+    expect(completed!.body).toContain('Final answer for @​team');
+    const stored = context.store.database.prepare('SELECT publish_ref_json FROM automation_workflows').get() as { publish_ref_json: string };
+    expect(JSON.parse(stored.publish_ref_json)).toEqual({ commentId: 'comment-completed' });
+  });
+
+  it('never returns, forwards or stores the outbound credential in plaintext', async () => {
+    const context = linearSetup();
+    const created = createLinearConnection(context);
+    expect(created.connection.outboundConfigured).toBe(true);
+    const { connection, secret } = created;
+    const rule = ok(context.service.execute({ version: 1, principal: context.owner, operation: 'rule_create', input: linearRule(connection.id) }));
+    deliverLinear(context, connection.id, secret);
+    await drive(context, 2);
+    context.operations.agentStatus = 'SUCCEEDED';
+    await drive(context, 3);
+    const responses = [
+      created,
+      rule,
+      context.service.execute({ version: 1, principal: context.owner, operation: 'connections_list', input: {} }),
+      context.service.execute({ version: 1, principal: context.owner, operation: 'rules_list', input: { connectionId: connection.id } }),
+      context.service.execute({ version: 1, principal: context.owner, operation: 'workflows_list', input: {} }),
+      context.service.execute({ version: 1, principal: context.owner, operation: 'deliveries_list', input: {} }),
+      context.service.execute({ version: 1, principal: context.owner, operation: 'connection_update', input: { id: connection.id, expectedGeneration: 1, name: 'renamed' } })
+    ];
+    for (const response of responses) expect(JSON.stringify(response)).not.toContain(LINEAR_KEY);
+    expect(JSON.stringify(context.operations.calls)).not.toContain(LINEAR_KEY);
+    const tables = ['automation_connections', 'automation_rules', 'automation_deliveries', 'automation_workflows', 'automation_transitions', 'event_outbox'];
+    for (const table of tables) expect(JSON.stringify(context.store.database.prepare(`SELECT * FROM ${table}`).all())).not.toContain(LINEAR_KEY);
+  });
+
+  it('replaces, clears and re-encrypts the outbound credential', async () => {
+    const context = linearSetup({ keyring: new SecretKeyring(1, [{ version: 1, key: Buffer.alloc(32, 7) }]) });
+    const { connection, secret } = createLinearConnection(context);
+    const replaced = ok<{ connection: { generation: number; outboundConfigured: boolean } }>(context.service.execute({
+      version: 1, principal: context.owner, operation: 'connection_update', input: { id: connection.id, expectedGeneration: 1, apiKey: 'lin_api_replacement_value' }
+    }));
+    expect(replaced.connection.outboundConfigured).toBe(true);
+    // Jira credentials do not fit a Linear connection.
+    expect(context.service.execute({
+      version: 1, principal: context.owner, operation: 'connection_update',
+      input: { id: connection.id, expectedGeneration: replaced.connection.generation, email: 'a@example.com', apiToken: 'jira-token-value' }
+    })).toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
+
+    const rotated = linearSetup({ path: context.path, keyring: new SecretKeyring(2, [{ version: 1, key: Buffer.alloc(32, 7) }, { version: 2, key: Buffer.alloc(32, 9) }]) });
+    expect(rotated.service.reencrypt()).toBe(1);
+    const row = rotated.store.database.prepare('SELECT secret_json, outbound_json FROM automation_connections').get() as { secret_json: string; outbound_json: string };
+    expect(JSON.parse(row.secret_json).keyVersion).toBe(2);
+    expect(JSON.parse(row.outbound_json).keyVersion).toBe(2);
+    ok(rotated.service.execute({ version: 1, principal: rotated.owner, operation: 'rule_create', input: linearRule(connection.id) }));
+    deliverLinear(rotated, connection.id, secret);
+    await drive(rotated, 2);
+    expect(rotated.published[0]?.outbound).toEqual({ apiKey: 'lin_api_replacement_value' });
+
+    const cleared = ok<{ connection: { outboundConfigured: boolean } }>(rotated.service.execute({
+      version: 1, principal: rotated.owner, operation: 'connection_update',
+      input: { id: connection.id, expectedGeneration: replaced.connection.generation, clearOutbound: true }
+    }));
+    expect(cleared.connection.outboundConfigured).toBe(false);
+    expect(rotated.store.database.prepare('SELECT outbound_json FROM automation_connections').get()).toEqual({ outbound_json: null });
   });
 });

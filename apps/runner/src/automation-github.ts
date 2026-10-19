@@ -1,5 +1,17 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { AUTOMATION_LIMITS, type AutomationEventType } from '@cloud-harness/contracts';
+import { AUTOMATION_LIMITS, type AutomationRuleMatch } from '@cloud-harness/contracts';
+import {
+  boundedText,
+  isRetryableResult,
+  record,
+  rejectActor,
+  type AutomationMatchVerdict,
+  type AutomationNormalization,
+  type AutomationPublishRequest,
+  type AutomationPublishResult,
+  type NormalizedAutomationEvent,
+  type ProviderAdapter
+} from './automation-adapter.js';
 
 /**
  * GitHub webhook verification and normalization. Everything a webhook carries is untrusted: the
@@ -11,6 +23,7 @@ const SIGNATURE_PREFIX = 'sha256=';
 const REPOSITORY = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/u;
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/u;
 const SENDER_TYPES = new Set(['User', 'Bot', 'Organization']);
+const EVENT_NAME = /^[a-z_]{1,64}$/u;
 
 /** Constant-time check of `X-Hub-Signature-256` (HMAC-SHA256 of the raw body, hex). */
 export function verifyGitHubSignature(secret: string, body: Buffer, signature: string): boolean {
@@ -21,41 +34,15 @@ export function verifyGitHubSignature(secret: string, body: Buffer, signature: s
   return timingSafeEqual(expected, Buffer.from(provided, 'hex'));
 }
 
-export type NormalizedGitHubEvent = {
-  eventType: AutomationEventType;
-  repository: string;
-  resourceNumber: number;
-  resourceUrl: string;
-  label: string;
-  senderLogin: string;
-  senderType: 'User' | 'Bot' | 'Organization';
-  title: string;
-  body: string;
-};
-
-export type GitHubNormalization =
-  | { kind: 'event'; event: NormalizedGitHubEvent }
-  | { kind: 'ignored'; reason: string }
-  | { kind: 'quarantined'; reason: string };
-
-/** Removes control characters other than tab and newline, then bounds the text by characters. */
-export function boundedText(value: unknown, maxChars: number): string {
-  if (typeof value !== 'string') return '';
-  // eslint-disable-next-line no-control-regex
-  const cleaned = value.replace(/\r\n?/gu, '\n').replace(/[\u0000-\u0008\u000B-\u001F\u007F]/gu, '');
-  const characters = Array.from(cleaned);
-  return characters.length <= maxChars ? cleaned : `${characters.slice(0, maxChars).join('')}…`;
-}
-
-const record = (value: unknown): Record<string, unknown> | undefined =>
-  value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+/** GitHub senders are bots by type or by the `[bot]` login suffix GitHub Apps carry. */
+export const isGitHubBot = (login: string, type: string): boolean => type === 'Bot' || login.endsWith('[bot]');
 
 /**
  * Maps a verified GitHub delivery onto one of the admitted normalized event types. Event kinds and
  * actions no rule can match are `ignored` (GitHub's `ping` included); an admitted kind whose body
  * does not have the documented shape is `quarantined`.
  */
-export function normalizeGitHubEvent(providerEvent: string, body: Buffer): GitHubNormalization {
+export function normalizeGitHubEvent(providerEvent: string, body: Buffer): AutomationNormalization {
   if (providerEvent !== 'issues' && providerEvent !== 'pull_request') return { kind: 'ignored', reason: 'unsupported_event' };
   let parsed: unknown;
   try {
@@ -83,15 +70,63 @@ export function normalizeGitHubEvent(providerEvent: string, body: Buffer): GitHu
   return {
     kind: 'event',
     event: {
+      provider: 'github',
       eventType: providerEvent === 'issues' ? 'github.issue.label_added' : 'github.pull_request.label_added',
-      repository,
+      scope: repository,
+      resourceKey: `${repository.toLowerCase()}#${number}`,
+      resourceRef: `#${number}`,
       resourceNumber: number,
       resourceUrl: url,
       label,
-      senderLogin,
-      senderType: senderType as NormalizedGitHubEvent['senderType'],
+      actor: { login: senderLogin, isBot: isGitHubBot(senderLogin, senderType), type: senderType },
       title: boundedText(resource.title, AUTOMATION_LIMITS.maxUntrustedTitleChars),
       body: boundedText(resource.body, AUTOMATION_LIMITS.maxUntrustedBodyChars)
     }
   };
 }
+
+/** Evaluates one GitHub rule: event kind, exact repository and label, then the actor filters. */
+export function matchGitHubRule(match: AutomationRuleMatch, event: NormalizedAutomationEvent, selfLogin: string | undefined): AutomationMatchVerdict {
+  if (match.provider === 'linear' || match.provider === 'jira' || match.provider === 'custom' || event.provider !== 'github') {
+    return { matched: false, reason: 'provider_mismatch' };
+  }
+  const selected = event.eventType === 'github.issue.label_added' ? 'issues' : event.eventType === 'github.pull_request.label_added' ? 'pull_request' : undefined;
+  if (!selected || !match.events.includes(selected)) return { matched: false, reason: 'event_not_selected' };
+  if (match.repository.toLowerCase() !== event.scope.toLowerCase()) return { matched: false, reason: 'repository_mismatch' };
+  if (match.label.toLowerCase() !== (event.label ?? '').toLowerCase()) return { matched: false, reason: 'label_mismatch' };
+  return rejectActor(match, event.actor, selfLogin) ?? { matched: true, reason: 'matched' };
+}
+
+/**
+ * Posts the agent's answer as one comment through the brokered `issue_comment` action, which runs
+ * with the workspace's GitHub App installation. Nothing is posted when the agent starts.
+ */
+async function publishGitHubComment(request: AutomationPublishRequest): Promise<AutomationPublishResult> {
+  if (request.phase !== 'completed') return { ok: true };
+  const { workspaceId, resourceNumber } = request.workflow;
+  if (!workspaceId || resourceNumber === null) return { ok: false, code: 'WORKSPACE_LOST', retryable: false };
+  const posted = await request.call('github_action', {
+    workspaceId,
+    action: 'issue_comment',
+    issueNumber: resourceNumber,
+    body: request.body,
+    idempotencyKey: request.idempotencyKey
+  });
+  return posted.ok ? { ok: true } : { ok: false, code: posted.error?.code ?? 'UNKNOWN', retryable: isRetryableResult(posted) };
+}
+
+export const githubAdapter: ProviderAdapter = {
+  provider: 'github',
+  displayName: 'GitHub',
+  verify: ({ secret, body, headers }) => (verifyGitHubSignature(secret, body, headers['x-hub-signature-256'] ?? '')
+    ? { ok: true }
+    : { ok: false, reason: 'bad_signature' }),
+  eventName: (headers) => {
+    const event = headers['x-github-event'];
+    return event !== undefined && EVENT_NAME.test(event) ? event : undefined;
+  },
+  deliveryId: (headers) => headers['x-github-delivery'],
+  normalize: (providerEvent, body) => normalizeGitHubEvent(providerEvent, body),
+  matches: (match, event, context) => matchGitHubRule(match, event, context.selfLogin),
+  publish: publishGitHubComment
+};

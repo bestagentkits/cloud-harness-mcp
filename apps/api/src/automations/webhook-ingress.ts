@@ -1,21 +1,20 @@
 import express, { Router, type NextFunction, type Request, type Response } from 'express';
 import {
   AUTOMATION_LIMITS,
+  AUTOMATION_WEBHOOK_HEADERS,
   AutomationConnectionIdSchema,
+  AutomationProviderSchema,
   AutomationsRunnerDataSchemas,
   type ApiConfig,
+  type AutomationProvider,
   type AutomationsRunnerRequest,
   type AutomationsRunnerResponse
 } from '@cloud-harness/contracts';
 import { apiLogger } from '../logging.js';
 import { requestSecurity, webhookIngressLimits } from '../request-security.js';
 
-export const GITHUB_WEBHOOK_INGRESS_PATH = '/integrations/webhooks/github/:connectionId';
+export const AUTOMATION_WEBHOOK_INGRESS_PATH = '/integrations/webhooks/:provider/:connectionId';
 
-/** Bounds mirror the runner's `webhook_ingest` input schema so a request that reaches it always parses. */
-const MAX_EVENT_CHARS = 64;
-const MAX_DELIVERY_ID_CHARS = 100;
-const MAX_SIGNATURE_CHARS = 200;
 const RESOURCE_EXHAUSTED_RETRY_AFTER_SECONDS = '60';
 
 export type AutomationIngressRunner = {
@@ -34,31 +33,53 @@ const singleHeader = (request: Request, name: string): string | undefined => {
 const unauthorized = (response: Response): void => { response.status(401).json({ error: 'unauthorized' }); };
 const unavailable = (response: Response): void => { response.status(503).json({ error: 'unavailable' }); };
 
+const providerOf = (request: Request): AutomationProvider => AutomationProviderSchema.parse(request.params.provider);
+
 /**
- * Public GitHub webhook ingress. There is deliberately no bearer or Access authentication: the
- * runner verifies the per-connection HMAC over the exact raw bytes forwarded here, so this layer
- * only checks the host, bounds the request, and never parses, logs, or alters the body or signature.
+ * Collects the provider's allowlisted headers, bounded as the runner's `webhook_ingest` schema
+ * expects, so a request that reaches the runner always parses. A missing or overlong required
+ * header is a 400, a missing or overlong signature the shared 401; other headers never leave here.
+ */
+function allowlistedHeaders(request: Request, provider: AutomationProvider): { headers: Record<string, string> } | { status: 400 | 401 } {
+  const headers: Record<string, string> = {};
+  let signatureMissing = false;
+  for (const header of AUTOMATION_WEBHOOK_HEADERS[provider]) {
+    const value = singleHeader(request, header.name);
+    const valid = value !== undefined && value.length <= header.maxChars;
+    if (valid) headers[header.name] = value;
+    else if (header.role === 'required' || (header.role === 'optional' && value !== undefined)) return { status: 400 };
+    else if (header.role === 'signature') signatureMissing = true;
+  }
+  return signatureMissing ? { status: 401 } : { headers };
+}
+
+/**
+ * Public webhook ingress for every automation provider. There is deliberately no bearer or Access
+ * authentication: the runner verifies the per-connection signature over the exact raw bytes
+ * forwarded here, so this layer only checks the host, bounds the request, and never parses, logs,
+ * or alters the body or signature.
  */
 export function createAutomationWebhookIngress(config: Pick<ApiConfig, 'publicHosts' | 'allowedOrigins'>, runner: AutomationIngressRunner): Router {
   const router = Router();
   const rawBody = express.raw({ type: () => true, limit: AUTOMATION_LIMITS.maxRawBodyBytes, inflate: false });
+
+  // An unknown provider is not a route at all; it falls through to the ordinary 404.
+  const validateProvider = (request: Request, _response: Response, next: NextFunction): void => {
+    next(AutomationProviderSchema.safeParse(request.params.provider).success ? undefined : 'route');
+  };
 
   const validateHeaders = (request: Request, response: Response, next: NextFunction): void => {
     if (!request.is('application/json')) {
       response.status(415).json({ error: 'unsupported_media_type' });
       return;
     }
-    const event = singleHeader(request, 'x-github-event');
-    const deliveryId = singleHeader(request, 'x-github-delivery');
-    if (!event || event.length > MAX_EVENT_CHARS || !deliveryId || deliveryId.length > MAX_DELIVERY_ID_CHARS) {
-      response.status(400).json({ error: 'invalid_request' });
+    const collected = allowlistedHeaders(request, providerOf(request));
+    if ('status' in collected) {
+      if (collected.status === 401) unauthorized(response);
+      else response.status(400).json({ error: 'invalid_request' });
       return;
     }
-    const signature = singleHeader(request, 'x-hub-signature-256');
-    if (!signature || signature.length > MAX_SIGNATURE_CHARS) {
-      unauthorized(response);
-      return;
-    }
+    response.locals.webhookHeaders = collected.headers;
     next();
   };
 
@@ -84,32 +105,30 @@ export function createAutomationWebhookIngress(config: Pick<ApiConfig, 'publicHo
     });
   };
 
-  router.post(GITHUB_WEBHOOK_INGRESS_PATH, requestSecurity(config), validateConnectionId, webhookIngressLimits(), validateHeaders, parseBody, async (request: Request, response: Response) => {
+  router.post(AUTOMATION_WEBHOOK_INGRESS_PATH, validateProvider, requestSecurity(config), validateConnectionId, webhookIngressLimits(), validateHeaders, parseBody, async (request: Request, response: Response) => {
     const body = Buffer.isBuffer(request.body) ? request.body : Buffer.alloc(0);
-    const event = singleHeader(request, 'x-github-event')!;
+    const provider = providerOf(request);
     let result: AutomationsRunnerResponse;
     try {
       result = await runner.callAutomations({
         version: 1,
         operation: 'webhook_ingest',
         input: {
-          provider: 'github',
+          provider,
           connectionId: String(request.params.connectionId),
-          event,
-          deliveryId: singleHeader(request, 'x-github-delivery')!,
-          signature: singleHeader(request, 'x-hub-signature-256')!,
+          headers: response.locals.webhookHeaders as Record<string, string>,
           bodyBase64: body.toString('base64')
         }
       });
     } catch (error) {
-      apiLogger.warn({ event, reason: error instanceof Error ? error.name : 'unknown' }, 'automation webhook forwarding failed');
+      apiLogger.warn({ provider, reason: error instanceof Error ? error.name : 'unknown' }, 'automation webhook forwarding failed');
       unavailable(response);
       return;
     }
     if (result.ok) {
       const data = AutomationsRunnerDataSchemas.webhook_ingest.safeParse(result.data);
       if (!data.success) {
-        apiLogger.warn({ event }, 'automation webhook runner returned an unexpected result');
+        apiLogger.warn({ provider }, 'automation webhook runner returned an unexpected result');
         unavailable(response);
         return;
       }
@@ -128,7 +147,7 @@ export function createAutomationWebhookIngress(config: Pick<ApiConfig, 'publicHo
         response.status(429).json({ error: 'rate_limited' });
         return;
       default:
-        apiLogger.warn({ event, code: result.error.code }, 'automation webhook ingest unavailable');
+        apiLogger.warn({ provider, code: result.error.code }, 'automation webhook ingest unavailable');
         unavailable(response);
     }
   });
