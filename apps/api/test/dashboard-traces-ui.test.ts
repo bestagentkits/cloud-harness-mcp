@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import './dashboard-test-dom.js';
 import {
   TRACE_STATES, buildSpanTree, createTracesView, renderAgentTracesPanel, renderTraceDetail, renderTraceKpis, renderTraceTable,
-  renderTraceWaterfall, traceCost, traceCount, traceDuration, traceExportHref, traceFiltersFromSearch, traceListPath, tracesAvailable,
-  tracesDisabled
+  renderTraceWaterfall, renderTracesPage, traceCost, traceCount, traceDuration, traceExportHref, traceFiltersFromSearch, traceListPath,
+  tracesAvailable, tracesDisabled, traceWindowSince
 } from '../dashboard/dashboard-traces.js';
 import { FakeElement } from './dashboard-test-dom.js';
 
@@ -38,6 +38,15 @@ describe('trace formatting', () => {
     const kpis = renderTraceKpis({ traces: 2, tokens: { prompt: null, output: 3 }, costMicros: null, modelLatency: { samples: 0, p50Ms: null, p95Ms: null } });
     expect(kpis).toContain('unknown in');
     expect(kpis).not.toContain('p50');
+  });
+
+  it('shows an unknown window cost as unknown, never $0.00', () => {
+    const kpis = renderTraceKpis({ traces: 2, costMicros: null, unknownCostTraces: 2 });
+    expect(kpis).toContain('<span class="metric-value small">unknown</span>');
+    expect(kpis).not.toContain('$0.00');
+    expect(kpis).toContain('2 trace(s) with unknown cost excluded');
+    // A page without a summary (a later page, or a poll) still renders.
+    expect(renderTracesPage({ traces: [trace()], summary: null })).toContain(traceId);
   });
 
   it('shows percentiles only when timed samples exist', () => {
@@ -75,10 +84,16 @@ describe('trace navigation inputs', () => {
 
   it('turns a window into a since bound and carries the cursor', () => {
     const now = Date.parse('2026-10-19T12:00:00.000Z');
-    const path = traceListPath({ state: 'RUNNING', window: '1h' }, { cursor: 'tc1.abc', limit: 10, now });
+    const since = traceWindowSince({ window: '1h' }, now);
+    expect(since).toBe('2026-10-19T11:00:00.000Z');
+    expect(traceWindowSince({}, now)).toBeUndefined();
+    const path = traceListPath({ state: 'RUNNING', window: '1h' }, { cursor: 'tc1.abc', limit: 10, since });
     const query = new URLSearchParams(path.split('?')[1]);
     expect(path.startsWith('/traces?')).toBe(true);
-    expect(Object.fromEntries(query)).toEqual({ state: 'RUNNING', since: '2026-10-19T11:00:00.000Z', cursor: 'tc1.abc', limit: '10' });
+    expect(Object.fromEntries(query)).toEqual({ state: 'RUNNING', since, cursor: 'tc1.abc', limit: '10', includeSummary: 'false' });
+    // Only a first page that asks for it requests the summary.
+    expect(new URLSearchParams(traceListPath({}, { includeSummary: true }).split('?')[1]).has('includeSummary')).toBe(false);
+    expect(new URLSearchParams(traceListPath({}, { includeSummary: true, cursor: 'tc1.x' }).split('?')[1]).get('includeSummary')).toBe('false');
   });
 });
 
@@ -115,10 +130,10 @@ describe('span tree and waterfall', () => {
 
 type Poller = { options: any; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> };
 
-function harness(responses: (path: string) => unknown) {
+function harness(responses: (path: string) => unknown, elements: Record<string, FakeElement> = {}) {
   const pollers: Poller[] = [];
   const container = new FakeElement() as FakeElement & { querySelector: (selector: string) => FakeElement | null };
-  container.querySelector = () => null;
+  container.querySelector = (selector: string) => elements[selector] ?? null;
   const insert = vi.fn((element: FakeElement, markup: string) => { element.markup = markup; });
   const fetcher = vi.fn(async (path: string) => {
     const value = responses(path);
@@ -190,11 +205,69 @@ describe('traces view controller', () => {
     expect(section.markup).toContain('No traces were recorded');
   });
 
-  it('reports availability from the feature flag answer only', async () => {
+  it('reports availability from the status route, and from the feature flag answer only', async () => {
     expect(tracesDisabled({ code: 'feature_disabled' })).toBe(true);
-    expect(await tracesAvailable(async () => ({ data: {} }))).toBe(true);
+    const status = vi.fn(async () => ({ data: { enabled: false } }));
+    expect(await tracesAvailable(status)).toBe(false);
+    expect(status).toHaveBeenCalledWith('/traces/status');
+    expect(await tracesAvailable(async () => ({ data: { enabled: true } }))).toBe(true);
     expect(await tracesAvailable(async () => { throw Object.assign(new Error('off'), { code: 'feature_disabled' }); })).toBe(false);
     expect(await tracesAvailable(async () => { throw Object.assign(new Error('boom'), { code: 'internal_error' }); })).toBe(true);
+  });
+});
+
+describe('trace list paging and polling', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const queryOf = (path: string) => new URLSearchParams(path.split('?')[1]);
+
+  it('reuses the window bound for "Load more" while the clock advances', async () => {
+    let clock = Date.parse('2026-10-19T12:00:00.000Z');
+    vi.spyOn(Date, 'now').mockImplementation(() => { clock += 7_000; return clock; });
+    const more = new FakeElement();
+    const rows = new FakeElement();
+    const issued = new Map<string, string>();
+    // A fetcher that, like the runner, accepts a cursor only with the exact filters it was issued for.
+    const { view, container, fetcher } = harness((path) => {
+      const query = queryOf(path);
+      const cursor = query.get('cursor');
+      if (cursor && issued.get(cursor) !== query.get('since')) return Object.assign(new Error('out of date'), { code: 'invalid_input' });
+      const next = cursor ? null : 'tc1.next';
+      if (next) issued.set(next, query.get('since') ?? '');
+      return { data: { traces: [trace({ traceId: cursor ? `trc_${'d'.repeat(26)}` : traceId })], summary: cursor ? null : { traces: 2 }, nextCursor: next } };
+    }, { '#trace-load-more': more, '#trace-rows': rows });
+    await view.loadList(container, '?window=1h');
+    more.dispatch('click', {});
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(more.disabled).toBe(false));
+    const [first, second] = fetcher.mock.calls.map(([path]) => queryOf(path as string));
+    expect(first!.get('since')).toBeTruthy();
+    expect(second!.get('since')).toBe(first!.get('since'));
+    expect(first!.has('includeSummary')).toBe(false);
+    expect(second!.get('includeSummary')).toBe('false');
+    expect(rows.markup).toContain(`trc_${'d'.repeat(26)}`);
+    expect(more.hidden).toBe(true);
+  });
+
+  it('refreshes only the rows on a poll: no summary request and the filter form is untouched', async () => {
+    const running = trace({ state: 'RUNNING', endedAt: null, durationMs: null });
+    const form = new FakeElement();
+    const list = new FakeElement();
+    const { view, container, pollers, fetcher, insert } = harness(() => listResponse([running]), { '#trace-filters': form, '#trace-list': list });
+    await view.loadList(container, '?window=24h&state=RUNNING');
+    const page = container.markup;
+    const since = queryOf(fetcher.mock.calls[0]![0] as string).get('since');
+    await pollers[0]!.options.fetchJob();
+    const polled = queryOf(fetcher.mock.calls.at(-1)![0] as string);
+    expect(polled.get('includeSummary')).toBe('false');
+    expect(polled.get('since')).toBe(since);
+    insert.mockClear();
+    pollers[0]!.options.onState({ data: { traces: [trace({ state: 'RUNNING', traceId: `trc_${'e'.repeat(26)}`, endedAt: null, durationMs: null })], summary: null, nextCursor: null } });
+    expect(insert).toHaveBeenCalledTimes(1);
+    expect(insert.mock.calls[0]![0]).toBe(list);
+    expect(list.markup).toContain(`trc_${'e'.repeat(26)}`);
+    // The page (filter form and KPI strip) was not re-rendered.
+    expect(container.markup).toBe(page);
   });
 });
 

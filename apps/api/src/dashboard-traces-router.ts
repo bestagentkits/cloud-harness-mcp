@@ -23,7 +23,8 @@ const listQuery = z.object({
   since: z.string().optional(),
   until: z.string().optional(),
   cursor: z.string().optional(),
-  limit: z.coerce.number().int().optional()
+  limit: z.coerce.number().int().optional(),
+  includeSummary: z.enum(['true', 'false']).transform((value) => value === 'true').optional()
 }).strict();
 const spansQuery = z.object({
   kind: z.string().optional(),
@@ -87,6 +88,21 @@ export function registerDashboardTraceRoutes(
   router.get('/api/v1/traces', endpoint('agent_traces_list', (request) => (
     AgentTracesListInputSchema.parse(withoutUndefined(listQuery.parse(request.query)))
   )));
+  // Whether traces are recorded, without computing a summary: one bounded, indexed list read. A
+  // disabled feature is an answer here, not an error.
+  router.get('/api/v1/traces/status', async (request: DashboardRequest, response: Response, next: NextFunction) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      const input = AgentTracesListInputSchema.parse({ limit: 1, includeSummary: false });
+      const result = await runner.call('agent_traces_list', input, selected);
+      if (!result.ok && result.error?.code === 'FEATURE_DISABLED') {
+        response.json({ data: { enabled: false } });
+        return;
+      }
+      if (send(response, 'agent_traces_list', result)) response.json({ data: { enabled: true } });
+    } catch (error) { next(error); }
+  });
   router.get('/api/v1/traces/:traceId', endpoint('agent_trace_get', (request) => (
     AgentTraceGetInputSchema.parse({ traceId: traceOf(request) })
   )));

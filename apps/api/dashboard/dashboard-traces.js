@@ -107,13 +107,26 @@ export function traceFiltersFromSearch(search) {
 
 const WINDOW_MS = { '1h': 3_600_000, '24h': 86_400_000, '7d': 604_800_000 };
 
-/** The list API path for a filter set and an optional cursor. */
-export function traceListPath(filters = {}, { cursor, limit = 50, now = Date.now() } = {}) {
+/**
+ * The lower bound of a filter set's time window, or undefined for "any time". A list computes it once
+ * and reuses it for every later page and poll: the cursor is bound to the exact filters it was issued
+ * for, so a bound recomputed from a moving clock would invalidate it.
+ */
+export function traceWindowSince(filters = {}, now = Date.now()) {
+  return filters.window && WINDOW_MS[filters.window] ? new Date(now - WINDOW_MS[filters.window]).toISOString() : undefined;
+}
+
+/**
+ * The list API path for a filter set. `since` is the window bound from `traceWindowSince`; the KPI
+ * summary is asked for only when `includeSummary` is true and no cursor is given.
+ */
+export function traceListPath(filters = {}, { cursor, limit = 50, since, includeSummary = false } = {}) {
   const query = new URLSearchParams();
   for (const key of ['state', 'profileId', 'agentId', 'workspaceId']) if (filters[key]) query.set(key, filters[key]);
-  if (filters.window && WINDOW_MS[filters.window]) query.set('since', new Date(now - WINDOW_MS[filters.window]).toISOString());
+  if (since) query.set('since', since);
   if (cursor) query.set('cursor', cursor);
   query.set('limit', String(limit));
+  if (!includeSummary || cursor) query.set('includeSummary', 'false');
   return `/traces?${query}`;
 }
 
@@ -184,9 +197,9 @@ export function renderTraceTable(traces = [], { nextCursor = null, caption = '' 
 
 /** The whole Traces page body for one list response. */
 export function renderTracesPage({ traces = [], summary = {}, filters = {}, nextCursor = null } = {}) {
-  return `<div class="page-note"><strong>Agent traces.</strong> One trace per coding agent run: model calls, tool calls and the gateway settlement, with identifiers, timings, tokens and cost only. Prompts, model output and tool arguments are never recorded.</div>`
+  return `<div class="page-note"><strong>Agent traces.</strong> One trace per coding agent run: model calls, tool calls, budget events and the gateway settlement, with identifiers, timings, tokens and cost. Prompts and model output are never recorded; tool arguments are recorded only as a digest, unless the operator turns on a bounded, redacted preview.</div>`
     + `<div class="resource-filters">${renderTraceFilters(filters)}</div>`
-    + `<div class="resource-body traces">${renderTraceKpis(summary)}<section aria-labelledby="trace-list-heading"><h2 id="trace-list-heading">Traces</h2>${renderTraceTable(traces, { nextCursor })}</section>${renderCohorts(summary.cohorts)}</div>`;
+    + `<div class="resource-body traces">${renderTraceKpis(summary ?? {})}<section aria-labelledby="trace-list-heading"><h2 id="trace-list-heading">Traces</h2><div id="trace-list">${renderTraceTable(traces, { nextCursor })}</div></section>${renderCohorts(summary?.cohorts)}</div>`;
 }
 
 /**
@@ -350,27 +363,34 @@ export function createTracesView({ insert, navigate, createPoller, announce = ()
   async function loadList(container, search) {
     stopPolling();
     const filters = traceFiltersFromSearch(search);
-    const result = await fetcher(traceListPath(filters));
+    // The window bound is fixed for this list: every later page and poll reuses it.
+    const since = traceWindowSince(filters);
+    const result = await fetcher(traceListPath(filters, { since, includeSummary: true }));
     const data = result?.data ?? {};
-    const state = { traces: data.traces ?? [], nextCursor: data.nextCursor ?? null };
+    const state = { traces: data.traces ?? [], nextCursor: data.nextCursor ?? null, since };
     insert(container, renderTracesPage({ ...state, summary: data.summary ?? {}, filters }));
-    bindList(container, filters, state);
+    bindFilters(container);
+    bindMore(container, filters, state);
     if (state.traces.some((trace) => trace.state === 'RUNNING')) {
       poll(
-        () => fetcher(traceListPath(filters)),
+        // A poll refreshes the rows only: the KPI summary is not recomputed, and the filter form keeps
+        // whatever the user is typing.
+        () => fetcher(traceListPath(filters, { since })),
         (next) => {
           // Only the first page refreshes in place; "Load more" stops polling before it pages further.
           const fresh = next?.data ?? {};
-          insert(container, renderTracesPage({ traces: fresh.traces ?? [], nextCursor: fresh.nextCursor ?? null, summary: fresh.summary ?? {}, filters }));
           Object.assign(state, { traces: fresh.traces ?? [], nextCursor: fresh.nextCursor ?? null });
-          bindList(container, filters, state);
+          const list = container.querySelector?.('#trace-list');
+          if (!list) return;
+          insert(list, renderTraceTable(state.traces, { nextCursor: state.nextCursor }));
+          bindMore(container, filters, state);
         },
         (next) => !(next?.data?.traces ?? []).some((trace) => trace.state === 'RUNNING')
       );
     }
   }
 
-  function bindList(container, filters, state) {
+  function bindFilters(container) {
     const form = container.querySelector?.('#trace-filters');
     form?.addEventListener?.('submit', (event) => {
       event.preventDefault();
@@ -378,13 +398,16 @@ export function createTracesView({ insert, navigate, createPoller, announce = ()
       for (const [key, value] of new FormData(event.currentTarget)) if (String(value).trim()) next.set(key, String(value).trim());
       navigate(`/dashboard/traces${next.size ? `?${next}` : ''}`);
     });
+  }
+
+  function bindMore(container, filters, state) {
     const more = container.querySelector?.('#trace-load-more');
     more?.addEventListener?.('click', async () => {
       if (!state.nextCursor) return;
       stopPolling();
       more.disabled = true;
       try {
-        const page = await fetcher(traceListPath(filters, { cursor: state.nextCursor }));
+        const page = await fetcher(traceListPath(filters, { cursor: state.nextCursor, since: state.since }));
         const rows = page?.data?.traces ?? [];
         state.traces.push(...rows);
         state.nextCursor = page?.data?.nextCursor ?? null;
@@ -443,11 +466,14 @@ export function createTracesView({ insert, navigate, createPoller, announce = ()
   return { loadList, loadDetail, loadAgentPanel, dispose: stopPolling, polling: () => poller !== undefined };
 }
 
-/** Whether this server records traces: false only when the list answers that the feature is off. */
+/**
+ * Whether this server records traces, from the cheap status route. Only an answer that the feature is
+ * off hides the Traces views; any other failure keeps them, so a transient error never hides the page.
+ */
 export async function tracesAvailable(fetcher = api) {
   try {
-    await fetcher('/traces?limit=1');
-    return true;
+    const result = await fetcher('/traces/status');
+    return result?.data?.enabled !== false;
   } catch (error) {
     return !tracesDisabled(error);
   }

@@ -68,7 +68,14 @@ let server: Server | undefined;
 let port = 0;
 let calls: Call[] = [];
 
+async function stop(): Promise<void> {
+  const current = server;
+  server = undefined;
+  if (current) await new Promise<void>((resolve) => { current.closeAllConnections(); current.close(() => resolve()); });
+}
+
 async function start(handler: Handler = defaultHandler): Promise<void> {
+  await stop();
   calls = [];
   const runner: DashboardRunnerClient = {
     call: vi.fn(async (operation, input, selected) => {
@@ -87,11 +94,7 @@ async function start(handler: Handler = defaultHandler): Promise<void> {
   port = address.port;
 }
 
-afterEach(async () => {
-  const current = server;
-  server = undefined;
-  if (current) await new Promise<void>((resolve) => { current.closeAllConnections(); current.close(() => resolve()); });
-});
+afterEach(stop);
 
 function get(path: string): Promise<Reply> {
   return new Promise((resolve, reject) => {
@@ -114,8 +117,9 @@ describe('dashboard trace routes', () => {
   it('dispatches each route to its trace operation with the session principal', async () => {
     await start();
     const cases: Array<[string, string, Record<string, unknown>]> = [
-      ['/api/v1/traces', 'agent_traces_list', { limit: 25 }],
-      [`/api/v1/traces?state=FAILED&profileId=fast&agentId=${agentId}&limit=10`, 'agent_traces_list', { state: 'FAILED', profileId: 'fast', agentId, limit: 10 }],
+      ['/api/v1/traces', 'agent_traces_list', { limit: 25, includeSummary: true }],
+      [`/api/v1/traces?state=FAILED&profileId=fast&agentId=${agentId}&limit=10`, 'agent_traces_list', { state: 'FAILED', profileId: 'fast', agentId, limit: 10, includeSummary: true }],
+      ['/api/v1/traces?includeSummary=false', 'agent_traces_list', { limit: 25, includeSummary: false }],
       [`/api/v1/traces/${traceId}`, 'agent_trace_get', { traceId }],
       [`/api/v1/traces/${traceId}/spans?kind=model_call&limit=500`, 'agent_trace_spans', { traceId, kind: 'model_call', limit: 500 }],
       [`/api/v1/traces/${traceId}/export?format=csv`, 'agent_trace_export', { traceId, format: 'csv' }]
@@ -138,6 +142,31 @@ describe('dashboard trace routes', () => {
     expect(leaked.status).toBe(502);
     expect(leaked.text).not.toContain('secret prompt');
     expect(leaked.text).not.toContain('internal-owner');
+  });
+
+  it('answers the status route from one summary-free list read', async () => {
+    await start(async () => ok({ traces: [], summary: null, nextCursor: null }));
+    const enabled = await get('/api/v1/traces/status');
+    expect(enabled.status).toBe(200);
+    expect(enabled.json).toEqual({ data: { enabled: true } });
+    expect(calls).toEqual([{ operation: 'agent_traces_list', input: { limit: 1, includeSummary: false }, principal }]);
+
+    await start(async () => failure('FEATURE_DISABLED'));
+    const disabled = await get('/api/v1/traces/status');
+    expect(disabled.status).toBe(200);
+    expect(disabled.json).toEqual({ data: { enabled: false } });
+
+    await start(async () => failure('UNAVAILABLE'));
+    const unavailable = await get('/api/v1/traces/status');
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.text).not.toContain('/var/lib/secret');
+  });
+
+  it('passes a null summary and a null window cost through the strict schema', async () => {
+    await start(async () => ok({ traces: [summary], summary: { ...listSummary, costMicros: null, unknownCostTraces: 1 }, nextCursor: null }));
+    expect((await get('/api/v1/traces')).json.data.summary.costMicros).toBeNull();
+    await start(async () => ok({ traces: [summary], summary: null, nextCursor: null }));
+    expect((await get('/api/v1/traces?includeSummary=false')).json.data.summary).toBeNull();
   });
 
   it('sends exports as attachments with their own media type', async () => {
@@ -169,6 +198,7 @@ describe('dashboard trace routes', () => {
       '/api/v1/traces/trc_UPPERCASE',
       '/api/v1/traces?ownerId=someone',
       '/api/v1/traces?limit=1000',
+      '/api/v1/traces?includeSummary=yes',
       `/api/v1/traces/${traceId}/export?format=html`,
       `/api/v1/traces/${traceId}/spans?principalId=other`
     ]) {
