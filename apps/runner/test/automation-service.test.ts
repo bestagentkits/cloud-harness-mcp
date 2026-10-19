@@ -635,6 +635,31 @@ describe('AutomationService engine', () => {
       .toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
   });
 
+  it('refuses to delete a connection with an unfinished run, then removes its deliveries and runs with it', async () => {
+    const context = setup();
+    const { connection, secret } = createConnection(context);
+    createRule(context, connection.id);
+    const kept = createConnection(context);
+    createRule(context, kept.connection.id);
+    deliver(context, connection.id, secret, payload(), { deliveryId: 'gone' });
+    deliver(context, kept.connection.id, kept.secret, payload({ number: 8 }), { deliveryId: 'kept' });
+    await drive(context, 2);
+    const remove = () => context.service.execute({ version: 1, principal: context.owner, operation: 'connection_delete', input: { id: connection.id, expectedGeneration: 1 } });
+    expect(remove()).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    const running = workflows(context).find((workflow) => workflow.resourceNumber === 7)!;
+    ok(context.service.execute({ version: 1, principal: context.owner, operation: 'workflow_cancel', input: { id: running.id } }));
+    // Still refused until the cancelled run has closed its workspace.
+    expect(remove()).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    await drive(context, 1);
+    expect(ok(remove())).toEqual({ deleted: true });
+    const count = (table: string) => (context.store.database.prepare(`SELECT connection_id AS id, COUNT(*) AS count FROM ${table} GROUP BY connection_id`).all());
+    expect(count('automation_workflows')).toEqual([{ id: kept.connection.id, count: 1 }]);
+    expect(count('automation_deliveries')).toEqual([{ id: kept.connection.id, count: 1 }]);
+    expect(count('automation_rules')).toEqual([{ id: kept.connection.id, count: 1 }]);
+    expect(context.store.database.prepare('SELECT COUNT(*) AS count FROM automation_transitions WHERE workflow_id = ?').get(running.id)).toEqual({ count: 0 });
+    expect(context.store.database.prepare('SELECT COUNT(*) AS count FROM automation_transitions').get()).not.toEqual({ count: 0 });
+  });
+
   it('cancels queued workflows of a disabled rule', async () => {
     const context = setup({ maxConcurrent: 1 });
     const { connection, secret } = createConnection(context);

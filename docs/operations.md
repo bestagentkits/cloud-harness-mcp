@@ -368,12 +368,16 @@ a delivery keeps only bounded normalized fields, which is what replay re-matches
 Adding the Linear, Jira, and custom providers rebuilt `automation_connections`
 in place to widen its provider check and added nullable columns. A code-only
 rollback to a GitHub-only release still reads and writes GitHub rows unchanged,
-but that release's response schemas accept only GitHub connections and rule
-matches, so any other provider's connection or rule makes its connection and
-rule lists fail. Before such a rollback, delete every non-GitHub rule and
-connection on the Dashboard (and remove the matching provider webhooks).
-Terminal workflows and deliveries are purged after the retention window in
-[`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
+but that release's response schemas accept only GitHub connections, rule
+matches, deliveries, and workflows, so any other provider's row makes its
+connection, rule, delivery, or run lists fail. Before such a rollback, delete
+every non-GitHub connection on the Dashboard (and remove the matching provider
+webhooks). Deleting a connection removes its rules, deliveries, runs, and their
+transitions with it, and is refused with `CONFLICT` while any of its runs is
+queued, running, still publishing, or still closing its workspace: cancel those
+runs from their run pages and wait for cleanup first. A GitHub rule whose match
+was saved with an explicit `"provider": "github"` also fails the older strict
+match schema; save it again without that field before rolling back.
 
 To stop new runs, disable the connection (its deliveries then return `401`) or
 the rule (its queued workflows are cancelled) on the Dashboard. A workflow that

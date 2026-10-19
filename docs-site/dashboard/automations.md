@@ -248,7 +248,10 @@ runs keep completing but stop posting their answer back.
   its secret was last rotated, whether an outbound credential is set, and its health:
   deliveries by state over the last day and week, and the last quarantine reason. It
   offers **Rotate secret**, **Outbound credentials** (Linear and Jira),
-  **Enable**/**Disable**, and **Delete**.
+  **Enable**/**Disable**, and **Delete**. Deleting a connection also removes its rules,
+  deliveries, and runs; it is refused while one of its runs is still active,
+  publishing, or closing its workspace, so cancel those runs and wait for them to end
+  first.
 - **Deliveries** lists what each provider sent and what happened: processed, ignored,
   or quarantined, the outcome, and how many runs it started. Filter by **Quarantined
   (dead letter)** to see deliveries that verified but could not be read; fix the

@@ -660,7 +660,19 @@ export class AutomationService {
     return withEventSavepoint(this.database, () => {
       const row = this.ownedConnection(ownerId, id);
       if (row.generation !== expectedGeneration) throw new AutomationsError('CONFLICT', 'connection changed; reload and retry');
-      // Rules go with their connection; queued workflows of those rules are cancelled by the engine.
+      // A run still holding or about to hold a workspace, or still publishing, is never cut off here;
+      // the owner cancels it (or lets it finish) first. Everything else of the connection goes with it,
+      // so no row is left that names a connection, provider or event type that no longer exists.
+      const unfinished = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE owner_id = ? AND connection_id = ?
+        AND (state IN ('QUEUED', 'STARTING', 'RUNNING') OR publish_state = 'PENDING' OR (workspace_id IS NOT NULL AND workspace_closed = 0))`)
+        .get(ownerId, id) as { count: number };
+      if (unfinished.count > 0) {
+        throw new AutomationsError('CONFLICT', `connection has ${unfinished.count} unfinished run(s); cancel them or wait for them to finish, then delete`);
+      }
+      this.database.prepare(`DELETE FROM automation_transitions WHERE workflow_id IN
+        (SELECT id FROM automation_workflows WHERE owner_id = ? AND connection_id = ?)`).run(ownerId, id);
+      this.database.prepare('DELETE FROM automation_workflows WHERE owner_id = ? AND connection_id = ?').run(ownerId, id);
+      this.database.prepare('DELETE FROM automation_deliveries WHERE owner_id = ? AND connection_id = ?').run(ownerId, id);
       this.database.prepare('DELETE FROM automation_rules WHERE owner_id = ? AND connection_id = ?').run(ownerId, id);
       this.database.prepare('DELETE FROM automation_connections WHERE id = ?').run(id);
       this.audit(this.database, ownerId, 'automation.connection.deleted', 'automation_connection', id, row.generation, {});

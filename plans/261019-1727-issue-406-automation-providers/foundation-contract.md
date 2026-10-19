@@ -132,7 +132,7 @@ A `label_added` trigger requires exactly one `label`, and a state trigger takes 
 
 There is no version bump and no foreign keys.
 
-A code-only rollback reads and writes existing GitHub rows unchanged. Before rolling back, delete any non-GitHub connections and their rules. The older release's response schemas accept only `github` connections and the GitHub match, so their presence fails `connections_list` and `rules_list`.
+A code-only rollback reads and writes existing GitHub rows unchanged. The older release's response schemas accept only `github` connections, the GitHub match, GitHub event types and positive resource numbers, so any non-GitHub connection, rule, delivery or workflow fails `connections_list`, `rules_list`, `deliveries_list` or `workflows_list`. Before rolling back, delete every non-GitHub connection: `connection_delete` removes its rules, deliveries, workflows and their transitions, scoped by owner and connection id, and refuses with `CONFLICT` while any of its workflows is queued, starting, running, publishing, or still holding an open workspace (cancel those and let cleanup finish first). A GitHub rule saved with an explicit `provider: 'github'` must be saved again without it, because the older match schema is strict.
 
 ## Where later phases work
 
