@@ -863,29 +863,49 @@ changes simulation results only.
   is the advisor: a discretionary action shows as pending (`ADVISOR_REQUIRED`,
   which is REQUIRE_APPROVAL) because the advisor's answer exists only at
   execution time. The descriptor's free-text reason is never read.
-- **Platform invariants are partly best-effort.** Credential and Docker
-  access, network escalation, paths outside the workspace and privilege
-  escalation deny before any policy is read. For commands the gate looks
-  through common launchers (`env` and `VAR=value` prefixes, `nice`, `timeout`,
-  `nohup`, `xargs`, `npx` and similar) and through `sh`, `bash` or `zsh -c`
-  strings, splitting them on `;`, `&&`, `||`, `|` and command substitution. A
-  command nested too deeply to analyse is denied. This is static analysis of
-  an argv, not a sandbox: a script file, an interpreter's inline code or a
-  build tool can still reach a forbidden program, so the executor's isolation
-  stays the boundary for those, and the gate is defence in depth.
+- **Platform invariants deny first, and command analysis fails closed.**
+  Credential and Docker access, network escalation, paths outside the
+  workspace and privilege escalation deny before any policy is read. The gate
+  reads every program a command runs: it unwraps the launchers whose options
+  it knows exactly (such as `env`, `nice`, `timeout`, `xargs`, `setsid`,
+  `npx`, `npm exec` and `busybox`), reads `sh`, `bash`, `zsh`, `dash` and
+  `ksh` `-c` strings with their value-taking options, and splits shell strings
+  on every separator, keyword, redirection and command substitution. A word
+  anywhere in the command that names a container runtime or a privilege tool
+  denies. Anything the analysis cannot read exactly is denied with
+  `PLATFORM_COMMAND_UNANALYZABLE`. That covers:
+  - an unknown launcher option;
+  - a program name computed at run time;
+  - `eval` and `source`;
+  - an interpreter's inline code;
+  - a shell reading standard input;
+  - a `git -c` setting outside a small safe list, or a git alias;
+  - an unknown program that is handed a shell, launcher or interpreter;
+  - nesting beyond the analysis bounds.
+
+  The analysis does not read the content of files a command runs (a script, a
+  Makefile, a package script, git hooks). The executor's isolation stays the
+  boundary for those, and the gate is defence in depth.
 - **Branches are checked, not trusted.** Branch names must pass the basic
-  `git check-ref-format` rules. A `git push` must declare a branch, every
-  pushed refspec must target that branch inside the branch prefixes, and
-  `--all`, `--mirror`, `--tags` and deletions are refused.
+  `git check-ref-format` rules. A command that runs `git push` is also judged
+  as `publish_branch`, and the stricter decision wins, so declaring it as
+  another class cannot avoid a publish hard deny, approval or rule. A push
+  must declare a branch and name an explicit refspec. Every pushed refspec
+  must target that branch inside the branch prefixes, and `--all`,
+  `--mirror`, `--tags` and deletions are refused.
 - **Advisors only escalate.** An advisor may answer `no_change` or `escalate`.
   A discretionary action stays at REQUIRE_APPROVAL until a valid `no_change`
   arrives; a missing or malformed answer escalates. No advisor, project or
   prompt can override a hard deny or a mandatory approval.
 - **Weakening is explicit and recorded.** A save, rollback or removal that
   loosens the effective policy requires a confirmation bound to a digest of
-  the weakening list the owner reviewed, the global revision and the target
-  head version, so a confirmation given before another save is refused. A
-  stale client gets a version conflict before any policy check. Revisions are
+  the weakening list the owner reviewed, the operation (save, rollback or
+  removal), the global revision, the target head version and the highest
+  version the policy ever had. A confirmation given before another save or
+  removal, or for another operation, is refused. The digest covers only a list
+  shown in full: a change with more weakenings than one review can show is
+  refused and must be made in smaller steps. A stale client gets a version
+  conflict before any policy check. Revisions are
   immutable, the head moves by compare-and-swap, and every change is audited.
   Simulations are read-only and not audited.
 

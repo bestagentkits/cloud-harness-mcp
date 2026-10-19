@@ -81,8 +81,10 @@ change.
 
 **Save policy** checks the draft again. When the change lets agents do more
 than before, you confirm the listed weakenings first. Your confirmation covers
-exactly that list: if another save changes it before yours lands, the page
-shows the current list and asks you to confirm again. If someone saved the
+exactly that list and that operation: if another save or removal changes it
+before yours lands, the page shows the current list and asks you to confirm
+again. A change that weakens the policy in more ways than one confirmation can
+show is refused; save it in smaller steps. If someone saved the
 policy while you were editing, the page keeps your draft, reloads the saved
 version, and asks you to check again.
 
@@ -99,6 +101,12 @@ advisor is configured, an **Advisor or approval** action shows as **Requires
 approval** with `ADVISOR_REQUIRED`, because the advisor answers only at
 execution time. It becomes **Allow** only if the advisor answers that nothing
 needs to change.
+
+A command is denied with `PLATFORM_COMMAND_UNANALYZABLE` when the runner cannot
+read exactly what it runs, for example `eval`, a program name built from a
+variable, inline interpreter code, or a `git -c` setting that could change what
+git runs. A command that runs `git push` is also judged as **Publish branch**,
+and the stricter decision applies.
 
 Tick **Evaluate the unsaved editor draft** to try a change before saving it.
 Simulations are read-only and are not recorded in the audit log.

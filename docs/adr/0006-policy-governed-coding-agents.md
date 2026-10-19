@@ -42,9 +42,10 @@ Revisions are immutable rows in the runner SQLite. The head moves by
 compare-and-swap on the expected version, rollback writes a new revision, and
 every write, removal and rollback is audited. A stale version is a conflict
 before any policy check. A change that weakens the effective policy needs a
-confirmation bound to a digest of the weakening list the owner reviewed, the
-global revision and the target head version, so a confirmation cannot be
-replayed after the policy moved. Simulations are read-only and not audited.
+confirmation bound to a digest of the weakening list the owner reviewed (shown
+in full), the operation, the global revision, the target head version and the
+policy's highest version, so a confirmation cannot be replayed after the policy
+moved or was deleted, or for another operation. Simulations are read-only and not audited.
 While no global policy is stored, a read-only default applies that allows only
 `read`.
 
@@ -133,7 +134,8 @@ editor. No MCP tool is added.
 - This release ships the policy store, the evaluator and the simulation; it
   does not enforce anything on a running agent. Enforcement arrives with the
   coding broker and reuses this resolver and evaluator unchanged.
-- Command analysis for platform invariants is static and best-effort; the
-  executor's isolation stays the boundary for indirect execution.
+- Command analysis for platform invariants is static and fails closed: what
+  it cannot read exactly is denied. It does not read files a command runs, so
+  the executor's isolation stays the boundary for that indirect execution.
 - Turning the flag off makes the two policy tables inert. No existing table
   changes.
