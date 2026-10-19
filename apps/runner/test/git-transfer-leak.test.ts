@@ -120,15 +120,13 @@ describe('remote Git credential boundary', () => {
     }
   });
 
-  it('mounts an inspection on the staged clone alone, read-only', () => {
-    expect(gitTransferVolumes('inspect', '/jobs/ws_a', 'git-transfer-x')).toEqual(['--volume', '/jobs/ws_a/git-transfer-x:/job/git-transfer-x:ro']);
-  });
-
   it('binds the checkout tree root, never a scoped checkout path the executor could swap for a symlink', () => {
     for (const mode of ['fetch', 'import', 'stage-push', 'inspect', 'push'] as const) {
       const sources = gitTransferVolumes(mode, '/jobs/ws_a', 'git-transfer-x').filter((value) => value !== '--volume').map((value) => value.split(':')[0]);
       for (const source of sources) expect(['/jobs/ws_a/repo', '/jobs/ws_a/git-transfer-x']).toContain(source);
     }
+    // An inspection only reads the staged clone, so it mounts that alone and read-only.
+    expect(gitTransferVolumes('inspect', '/jobs/ws_a', 'git-transfer-x')).toEqual(['--volume', '/jobs/ws_a/git-transfer-x:/job/git-transfer-x:ro']);
   });
 
   it('orchestrates pull as credentialed fetch plus uncredentialed rebase inside the executor', async () => {
