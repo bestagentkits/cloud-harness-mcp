@@ -136,7 +136,10 @@ editor. No MCP tool is added.
   coding broker and reuses this resolver and evaluator unchanged.
 - Command analysis for platform invariants is static and has two outcomes. A
   container runtime or privilege tool in program position denies, because a
-  platform deny cannot be approved. A command the analysis cannot read exactly
+  platform deny cannot be approved. The analysis reads only a deliberately small
+  shell grammar instead of emulating bash, so substitutions, compound commands,
+  unquoted here-document expansion and unlisted environment assignments are
+  unanalyzable rather than guessed. A command the analysis cannot read exactly
   needs a mandatory owner approval (`PLATFORM_COMMAND_UNANALYZABLE`) that no
   advisor or project rule lowers, so ordinary commands such as
   `grep -r docker .` stay usable. The analysis does not read files a command
