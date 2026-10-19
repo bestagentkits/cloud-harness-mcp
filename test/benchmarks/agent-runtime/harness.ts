@@ -236,25 +236,42 @@ function stepCompleted(step: ModelStep, messages: readonly ContextMessage[]): bo
     && typeof call.id === 'string' && succeeded.has(call.id)));
 }
 
+/** Builds a faux provider's assistant message; each runtime's pi-ai version supplies its own. */
+export interface ScriptMessageBuilders<Message> {
+  text(text: string): Message;
+  toolCalls(calls: Array<{ name: string; args: Record<string, unknown>; id: string }>): Message;
+}
+
 /**
  * One scripted model for every runtime. It plays its steps in order, but skips a step whose tool
  * calls the conversation already shows as completed, as a model that sees its earlier work would.
  * A runtime without history therefore replays the whole script, and one with history picks up
- * where the earlier lifetime stopped. Tool call IDs are unique across lifetimes and fixed-width.
+ * where the earlier lifetime stopped; past the end it keeps giving the final answer. Tool call IDs
+ * are unique across lifetimes and fixed-width. Message counts exclude system messages, which one
+ * engine sends in the transcript and the other beside it.
  */
-export function scriptedResponses(steps: ModelStep[], onRequest: (messageCount: number, bytes: number) => void): FauxResponseStep[] {
+export function scriptedResponder<Message>(
+  steps: ModelStep[],
+  onRequest: (messageCount: number, bytes: number) => void,
+  build: ScriptMessageBuilders<Message>
+): (context: { messages: readonly unknown[] }) => Message {
   let cursor = 0;
-  const respond: FauxResponseStep = (context) => {
-    onRequest(context.messages.length, Buffer.byteLength(JSON.stringify(context.messages), 'utf8'));
-    while (cursor < steps.length - 1 && stepCompleted(steps[cursor]!, context.messages as readonly ContextMessage[])) cursor += 1;
+  return (context) => {
+    const messages = (context.messages as readonly ContextMessage[]).filter((message) => message.role !== 'system');
+    onRequest(messages.length, Buffer.byteLength(JSON.stringify(messages), 'utf8'));
+    while (cursor < steps.length - 1 && stepCompleted(steps[cursor]!, messages)) cursor += 1;
     const step = steps[Math.min(cursor, steps.length - 1)]!;
     cursor += 1;
-    if ('text' in step) return fauxAssistantMessage([fauxText(step.text)]);
-    return fauxAssistantMessage(
-      step.toolCalls.map((call) => fauxToolCall(call.name, call.args as never, { id: `call_${String((toolCallSequence += 1)).padStart(10, '0')}` })),
-      { stopReason: 'toolUse' }
-    );
+    if ('text' in step) return build.text(step.text);
+    return build.toolCalls(step.toolCalls.map((call) => ({ ...call, id: `call_${String((toolCallSequence += 1)).padStart(10, '0')}` })));
   };
+}
+
+export function scriptedResponses(steps: ModelStep[], onRequest: (messageCount: number, bytes: number) => void): FauxResponseStep[] {
+  const respond: FauxResponseStep = scriptedResponder(steps, onRequest, {
+    text: (text) => fauxAssistantMessage([fauxText(text)]),
+    toolCalls: (calls) => fauxAssistantMessage(calls.map((call) => fauxToolCall(call.name, call.args as never, { id: call.id })), { stopReason: 'toolUse' })
+  });
   return steps.map(() => respond);
 }
 

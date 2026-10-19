@@ -7,6 +7,8 @@
  * - `pi-coding`: the shipped runtime; the benchmark answers proxy tools in place of the runner.
  * - `pi-coding+persisted`: the same worker with session persistence behind the real runner
  *   (`AgentManager`, `AgentStateRepository`, effect ledger) and an in-process launcher.
+ * - `pi-durable`: the opt-in durable engine behind the same runner, with its session store hosted
+ *   by the runner over the storage RPC.
  * No model, network or container is involved, so every number is the cost of the runtime itself.
  *
  * The live suite runs only with RUN_AGENT_RUNTIME_BENCHMARK=live. It drives a local Compose stack
@@ -22,14 +24,9 @@ import { FakeWorkspace, fixture, type RuntimeUnderTest, type ScenarioSpec, type 
 import { runLiveBenchmark } from './agent-runtime/live-driver.js';
 import { piCodingBaseline } from './agent-runtime/pi-coding.js';
 import { piCodingPersisted } from './agent-runtime/pi-coding-persisted.js';
+import { piDurable } from './agent-runtime/pi-durable.js';
 
 const REPETITIONS = Math.max(1, Number.parseInt(process.env.AGENT_RUNTIME_BENCHMARK_REPS ?? '20', 10) || 20);
-
-/**
- * The opt-in durable runtime (`pi-durable`). It is registered here, with its own expectations in
- * the offline suite, once its package is wired; until then it is not measured.
- */
-const PI_DURABLE_RUNTIME: RuntimeUnderTest | undefined = undefined;
 
 /* ------------------------------------------------------------------------------------------------
  * Scenarios (runtime-agnostic)
@@ -315,15 +312,34 @@ describe('agent runtime benchmark (offline, scripted faux model)', () => {
     });
     // Killed after the executor applied the in-flight patch and before its result returned: the run
     // is INTERRUPTED, the ledger records the patch as unknown, and the continuation repeats no
-    // completed effect. Zero tolerance for an effect applied twice.
+    // completed effect. Zero tolerance for an effect applied twice. The continuation sees the
+    // interrupted call's observed outcome, so it does not even re-issue it.
     expect(kept['killed-run-with-effects']).toMatchObject({
       killedState: 'INTERRUPTED', reportedSuccess: false, inFlightAtKill: 1, effectsUnknownAfterKill: 1,
-      restartContinued: true, restartOutcome: 'CONTINUED', duplicateEffects: 0, leftoverSessionRows: 0, leftoverEffectRows: 0
+      restartContinued: true, restartOutcome: 'CONTINUED', duplicateEffects: 0, repeatedInvocations: 0, leftoverSessionRows: 0, leftoverEffectRows: 0
     });
     expect(kept['parent-child-cleanup']).toMatchObject({ agents: 3, cancelled: 3, toolCancelsEmitted: 3, toolEffects: 0, leftoverSessionRows: 0, leftoverEffectRows: 0 });
 
-    const runtimes = [baseline, persisted];
-    if (PI_DURABLE_RUNTIME) runtimes.push(await measureRuntime(PI_DURABLE_RUNTIME));
+    const durable = await measureRuntime(piDurable);
+    const engine = byId(durable);
+    expect(engine['pr-review']).toMatchObject({ state: 'SUCCEEDED', toolEffects: 0, leftoverSessionRows: 0, leftoverEffectRows: 0 });
+    expect(engine['multi-step-task']).toMatchObject({ state: 'SUCCEEDED', toolEffects: 2, leftoverSessionRows: 0, leftoverEffectRows: 0 });
+    // The follow-up resumes the runner-hosted session in a new container with a new lease; the
+    // engine carries the earlier conversation itself, without a replayed transcript.
+    expect(engine['restart-followup']).toMatchObject({
+      firstState: 'SUCCEEDED', sameProcessFollowUpRefused: true, followUpContinued: true, priorContextRetained: true,
+      allPriorMessagesInFirstRequest: true, followUpNewContainer: true, followUpNewLease: true,
+      followUpState: 'SUCCEEDED', followUpOutcome: 'CONTINUED', leftoverSessionRows: 0
+    });
+    // Killed at the same point: never reported as success, the in-flight patch is UNKNOWN in the
+    // ledger, and the resumed run applies no logical effect twice.
+    expect(engine['killed-run-with-effects']).toMatchObject({
+      killedState: 'INTERRUPTED', reportedSuccess: false, inFlightAtKill: 1, effectsUnknownAfterKill: 1,
+      restartContinued: true, restartOutcome: 'CONTINUED', duplicateEffects: 0, leftoverSessionRows: 0, leftoverEffectRows: 0
+    });
+    expect(engine['parent-child-cleanup']).toMatchObject({ agents: 3, cancelled: 3, toolCancelsEmitted: 3, toolEffects: 0, leftoverSessionRows: 0, leftoverEffectRows: 0 });
+
+    const runtimes = [baseline, persisted, durable];
     const report: AgentRuntimeBenchmarkReport = { schema: 1, mode: 'offline', timestamp: new Date().toISOString(), node: process.version, repetitions: REPETITIONS, runtimes };
     if (process.env.AGENT_RUNTIME_BENCHMARK_OUT && process.env.RUN_AGENT_RUNTIME_BENCHMARK !== 'live') {
       writeFileSync(process.env.AGENT_RUNTIME_BENCHMARK_OUT, `${JSON.stringify(report, null, 2)}\n`);
