@@ -111,8 +111,36 @@ export const StartRecordSchema = z.object({
     toolOutcomes: z.array(ToolOutcomeSchema).max(MAX_TOOL_OUTCOMES)
       .refine((outcomes) => new Set(outcomes.map((item) => item.toolCallId)).size === outcomes.length, 'duplicate tool outcome')
       .optional()
-  }).strict().optional()
+  }).strict().optional(),
+  // The agent engine; absent selects the default coding runtime.
+  runtime: z.enum(['pi-coding', 'pi-durable']).optional()
 }).strict();
+
+// Durable-runtime session storage RPC, aligned with apps/runner/src/agent-protocol.ts. Payloads are
+// the session's own records, bounded by the record size limit rather than the JSON shape bounds.
+export const STORAGE_METHODS = [
+  'commit', 'mintId', 'conversation', 'scanConversations', 'entry', 'findLatestHeadMarker',
+  'scanEntries', 'task', 'scanTasks', 'submission', 'scanSubmissions', 'submissionByRequest',
+  'findDocument', 'document', 'scanDocuments', 'close'
+] as const;
+export const STORAGE_ERROR_CODES = ['request', 'closed', 'fenced', 'limit', 'rate_limited', 'unavailable', 'failed'] as const;
+
+export const StorageRequestRecordSchema = z.object({
+  type: z.literal('storage_request'),
+  id: RequestIdSchema,
+  method: z.enum(STORAGE_METHODS),
+  args: z.array(z.unknown()).max(4)
+}).strict();
+
+export const StorageResponseRecordSchema = z.discriminatedUnion('ok', [
+  z.object({ type: z.literal('storage_response'), id: RequestIdSchema, ok: z.literal(true), result: z.unknown().optional() }).strict(),
+  z.object({
+    type: z.literal('storage_response'),
+    id: RequestIdSchema,
+    ok: z.literal(false),
+    error: z.object({ code: z.enum(STORAGE_ERROR_CODES), message: z.string().max(4_096), retryable: z.boolean() }).strict()
+  }).strict()
+]);
 
 export const ToolResultRecordSchema = z.object({
   type: z.literal('tool_result'),
@@ -147,7 +175,8 @@ export const InputRecordSchema = z.discriminatedUnion('type', [
   ToolResultRecordSchema,
   ToolCancelRecordSchema,
   MessageRecordSchema,
-  CancelRecordSchema
+  CancelRecordSchema,
+  StorageResponseRecordSchema
 ]);
 
 export const SafeEventSchema = z.discriminatedUnion('kind', [
@@ -214,6 +243,7 @@ export const OutputRecordSchema = z.discriminatedUnion('type', [
   ToolCancelRecordSchema,
   UsageRecordSchema,
   SessionMessageRecordSchema,
+  StorageRequestRecordSchema,
   TerminalRecordSchema
 ]);
 
@@ -228,3 +258,5 @@ export type OutputRecord = z.infer<typeof OutputRecordSchema>;
 
 export type MessageRecord = z.infer<typeof MessageRecordSchema>;
 export type SessionMessageRecord = z.infer<typeof SessionMessageRecordSchema>;
+export type StorageRequestRecord = z.infer<typeof StorageRequestRecordSchema>;
+export type StorageResponseRecord = z.infer<typeof StorageResponseRecordSchema>;
