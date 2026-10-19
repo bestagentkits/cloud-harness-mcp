@@ -140,6 +140,20 @@ describe('automation schema', () => {
     expect(widened.prepare('SELECT count(*) AS count FROM automation_connections').get()).toEqual({ count: 1 });
   });
 
+  it('widens a table that admits only some providers and keeps its later columns', () => {
+    const database = open();
+    database.exec(FIRST_RELEASE_DDL.replace("CHECK(provider IN ('github'))", "CHECK(provider IN ('github', 'custom'))"));
+    database.exec('ALTER TABLE automation_connections ADD COLUMN outbound_json TEXT; ALTER TABLE automation_connections ADD COLUMN config_json TEXT');
+    insertConnection(database, 'ahc_custom', 'custom');
+    database.prepare("UPDATE automation_connections SET outbound_json = '{\"sealed\":1}', config_json = '{\"baseUrl\":\"x\"}'").run();
+
+    initializeAutomationSchema(database);
+
+    insertConnection(database, 'ahc_jira', 'jira');
+    expect(database.prepare("SELECT outbound_json, config_json FROM automation_connections WHERE id = 'ahc_custom'").get())
+      .toEqual({ outbound_json: '{"sealed":1}', config_json: '{"baseUrl":"x"}' });
+  });
+
   it('leaves the original table intact when the widening copy fails', () => {
     const database = open();
     database.exec(FIRST_RELEASE_DDL);

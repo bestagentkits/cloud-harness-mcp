@@ -1,13 +1,14 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { AutomationProviderSchema } from '@cloud-harness/contracts';
 
-/** Columns shared by every version of `automation_connections`, in their original order. */
-const CONNECTION_COLUMNS = 'id, owner_id, provider, name, enabled, generation, secret_generation, secret_json, secret_rotated_at, last_delivery_at, created_at, updated_at';
+/** Every provider the stored CHECK must admit, as SQL string literals. */
+const PROVIDER_LITERALS = AutomationProviderSchema.options.map((provider) => `'${provider}'`);
 
 const connectionsTable = (name: string): string => `
     CREATE TABLE ${name} (
       id TEXT PRIMARY KEY,
       owner_id TEXT NOT NULL,
-      provider TEXT NOT NULL CHECK(provider IN ('github', 'linear', 'jira', 'custom')),
+      provider TEXT NOT NULL CHECK(provider IN (${PROVIDER_LITERALS.join(', ')})),
       name TEXT NOT NULL,
       enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
       generation INTEGER NOT NULL CHECK(generation > 0),
@@ -30,10 +31,13 @@ const ADDED_COLUMNS: readonly [table: string, column: string][] = [
   ['automation_workflows', 'publish_ref_json TEXT']
 ];
 
+const tableColumns = (database: DatabaseSync, table: string): string[] =>
+  (database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((entry) => entry.name);
+
 /**
  * The first release limited `provider` to GitHub with a CHECK constraint, which SQLite can only
- * change by rebuilding the table. The copy keeps every row and column value, runs in one
- * savepoint, and is skipped once the stored definition admits the other providers.
+ * change by rebuilding the table. The copy keeps every row and every column both definitions share,
+ * runs in one savepoint, and is skipped once the stored definition admits every current provider.
  */
 function widenConnectionProviders(database: DatabaseSync): void {
   const table = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'automation_connections'").get() as { sql: string } | undefined;
@@ -41,11 +45,13 @@ function widenConnectionProviders(database: DatabaseSync): void {
     database.exec(`${connectionsTable('automation_connections')};`);
     return;
   }
-  if (table.sql.includes("'custom'")) return;
+  if (PROVIDER_LITERALS.every((literal) => table.sql.includes(literal))) return;
   database.exec('SAVEPOINT automation_connections_widen');
   try {
-    database.exec(`${connectionsTable('automation_connections_widened')};
-      INSERT INTO automation_connections_widened (${CONNECTION_COLUMNS}) SELECT ${CONNECTION_COLUMNS} FROM automation_connections;
+    database.exec(`${connectionsTable('automation_connections_widened')};`);
+    const kept = new Set(tableColumns(database, 'automation_connections'));
+    const shared = tableColumns(database, 'automation_connections_widened').filter((column) => kept.has(column)).join(', ');
+    database.exec(`INSERT INTO automation_connections_widened (${shared}) SELECT ${shared} FROM automation_connections;
       DROP TABLE automation_connections;
       ALTER TABLE automation_connections_widened RENAME TO automation_connections;`);
     database.exec('RELEASE automation_connections_widen');
@@ -59,8 +65,7 @@ function widenConnectionProviders(database: DatabaseSync): void {
 function addMissingColumns(database: DatabaseSync): void {
   for (const [table, definition] of ADDED_COLUMNS) {
     const column = definition.split(' ', 1)[0]!;
-    const present = (database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((entry) => entry.name === column);
-    if (!present) database.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+    if (!tableColumns(database, table).includes(column)) database.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
   }
 }
 
