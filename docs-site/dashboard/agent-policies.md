@@ -105,21 +105,22 @@ needs to change.
 Commands have two platform outcomes. A command that runs a container runtime or
 a privilege tool such as `sudo` is denied, and no policy or approval can allow
 it. A command the runner cannot read exactly **Requires approval** with
-`PLATFORM_COMMAND_UNANALYZABLE`. Examples are `eval`, a program name built from
-a variable, inline interpreter code, a here-document fed to a shell, a
-`git -c` setting that could change what git runs, and, inside a `sh -c` string,
-command substitution (`$(...)`, backticks), `${...}`, arithmetic, parentheses,
-braces, comments, `if`/`for`/`case` blocks or function definitions. Setting an
-environment variable also needs approval unless it is `CI`, `NODE_ENV`,
-`FORCE_COLOR`, `NO_COLOR`, `TZ`, `LANG`, `LC_ALL`, `DEBUG` or a harmless
-`npm_config_*` setting, because variables such as `PAGER`, `EDITOR` or
-`GIT_SSH_COMMAND` make a program run another one. A here-document is plain
-data only when its delimiter is quoted (`<<'EOF'`) or its body contains no `$`
-or backtick. That approval is always required: an advisor or a project rule
-cannot clear it. Ordinary commands such as `grep -r docker .`,
-`cat <<'EOF' > notes.txt` or `vitest --environment node` are not affected. A command that runs `git push` is also judged as **Publish branch**,
-and the stricter decision applies.
-
+`PLATFORM_COMMAND_UNANALYZABLE`. The runner reads commands as argv and never
+parses shell syntax: shell strings are never analysed; they always require
+approval. That covers `sh -c`, `bash -c`, `eval`, `source` and inline
+interpreter code such as `python -c` or `node -e`, whatever the string
+contains, so run commands as argv when you can. A shell string that starts a
+command with `docker` or `sudo` is still denied. Other examples are a program
+name containing shell syntax, a `git -c` setting that could change what git
+runs, and setting an environment variable other than `CI`, `NODE_ENV`,
+`FORCE_COLOR`, `NO_COLOR`, `TZ`, `LANG`, `LC_ALL`, `DEBUG` or the npm settings
+`loglevel`, `color`, `progress`, `fund`, `audit`, `update_notifier` and `yes`,
+because variables such as `PAGER`, `EDITOR` or `npm_config_call` make a program
+run another one. That approval is always required: an advisor or a project
+rule cannot clear it. Ordinary commands such as `grep -r docker .`,
+`command -v docker` or `vitest --environment node` are not affected. A command
+that runs `git push` is also judged as **Publish branch**, and the stricter
+decision applies.
 Tick **Evaluate the unsaved editor draft** to try a change before saving it.
 Simulations are read-only and are not recorded in the audit log.
 
