@@ -61,6 +61,34 @@ dashboard can read: a lease inside its threshold, a failed workspace, a quaranti
 The sections are contextual: they never appear as rail entries, because a workspace
 capability is not a global destination.
 
+## Repository explorer
+
+A multi-repository workspace adds a **Repositories** panel to **Summary**. Each repository
+shows its alias, `owner/name`, ref, checkout path, **Primary** or **Read-only** badges, its
+branch, whether it has uncommitted changes, and how many commits are unpushed or behind
+its upstream, with links that open its **Files**, **Git**, or **Terminal** view. The
+dashboard reads this status from inside the executor, so it appears only while the
+workspace is active. If a checkout cannot be read, that repository shows **Status
+unavailable** rather than looking clean. A branch with no upstream shows **No upstream
+branch** instead of "Nothing unpushed".
+
+**Files**, **Git**, and **Terminal** show a **Repository** selector above the view, and
+the choice stays in the address (`?repository=<alias>`), so links and reloads keep it:
+
+- **Files** browses and edits inside the selected repository, or the workspace root
+  when **Workspace root** is chosen.
+- **Git** needs a repository: until you choose one it shows **Choose a repository**
+  instead of defaulting to the primary. Every read and operation (fetch, pull,
+  checkout, branch, merge, rebase, worktrees) acts on the selected repository.
+- **Terminal** opens new sessions in `repos/<alias>`, and the re-attach list shows the
+  directory of each session that did not start at the workspace root.
+- **Finalize** commits the repository selected in the current **Files**, **Git**, or
+  **Terminal** view. In a multi-repository workspace, choose a repository before you
+  finalize. From another section, no repository is selected and the harness refuses
+  the request.
+
+A single-repository workspace shows no selector and behaves exactly as before.
+
 ## Runtime
 
 Tasks and sessions are volatile — they disappear when the workspace is reaped, unlike
