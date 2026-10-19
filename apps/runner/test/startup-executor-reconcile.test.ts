@@ -7,9 +7,9 @@ import { StateStore } from '../src/state-store.js';
 
 type DockerResult = { stdout: string; stderr: string; exitCode: number; truncated: boolean };
 const dockerMocks = vi.hoisted(() => ({
-  runDocker: vi.fn(async (_args: string[], _options?: unknown): Promise<DockerResult> => ({ stdout: '', stderr: '', exitCode: 0, truncated: false })),
-  inspectContainer: vi.fn(async (_name: string): Promise<Record<string, unknown> | undefined> => undefined),
-  removeContainer: vi.fn(async (_name: string) => undefined)
+  runDocker: vi.fn<(args: string[], options?: unknown) => Promise<DockerResult>>(async () => ({ stdout: '', stderr: '', exitCode: 0, truncated: false })),
+  inspectContainer: vi.fn<(name: string) => Promise<Record<string, unknown> | undefined>>(async () => undefined),
+  removeContainer: vi.fn<(name: string) => Promise<undefined>>(async () => undefined)
 }));
 
 vi.mock('../src/docker-engine.js', () => dockerMocks);
@@ -35,7 +35,7 @@ function runnerConfig(directory: string): RunnerConfig {
 }
 
 /** Opens two retained workspaces with one runner, then hands back a fresh runner over the same state. */
-async function retainedWorkspaces(): Promise<{ config: RunnerConfig; stuck: { id: string; container: string }; healthy: { id: string; container: string } }> {
+async function retainedWorkspaces(options: { keepStuckCheckout?: boolean } = {}): Promise<{ config: RunnerConfig; stuck: { id: string; container: string }; healthy: { id: string; container: string } }> {
   const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-startup-reconcile-'));
   temporaryDirectories.push(directory);
   const config = runnerConfig(directory);
@@ -52,10 +52,10 @@ async function retainedWorkspaces(): Promise<{ config: RunnerConfig; stuck: { id
   } finally {
     await service.stop();
   }
-  const [stuck, healthy] = ids.map((id) => {
+  const [stuck, healthy] = ids.map((id, index) => {
     const record = store.byId(id)!;
     // The mocked clone writes nothing, so give each checkout the directory a rebuild requires.
-    mkdirSync(join(record.workspacePath, 'repo'), { recursive: true });
+    if (index > 0 || options.keepStuckCheckout !== false) mkdirSync(join(record.workspacePath, 'repo'), { recursive: true });
     return { id, container: record.containerName! };
   });
   store.close();
@@ -80,11 +80,14 @@ describe('startup executor reconciliation', () => {
     const store = new StateStore(config.stateDb);
     const service = new WorkspaceService(config, store);
     try {
-      await expect(service.start()).resolves.toBeUndefined();
+      await expect(service.start()).resolves.toEqual([]);
       const calls = dockerMocks.runDocker.mock.calls.map(([args]) => args);
       expect(calls).toContainEqual(['restart', healthy.container]);
       expect(dockerMocks.removeContainer).toHaveBeenCalledWith(stuck.container);
-      expect(calls.filter((args) => args[0] === 'create')).toHaveLength(1);
+      const created = calls.filter((args) => args[0] === 'create');
+      expect(created).toHaveLength(1);
+      expect(created[0]).toContain(stuck.container);
+      expect(created[0]).not.toContain(healthy.container);
       const rebuilt = store.byId(stuck.id)!;
       expect(rebuilt.status).toBe('ACTIVE');
       expect(rebuilt.containerName).toBeTruthy();
@@ -101,7 +104,7 @@ describe('startup executor reconciliation', () => {
     const store = new StateStore(config.stateDb);
     const service = new WorkspaceService(config, store);
     try {
-      await expect(service.start()).resolves.toBeUndefined();
+      await expect(service.start()).resolves.toEqual([{ workspaceId: stuck.id, reason: expect.any(String) }]);
       const held = store.byId(stuck.id)!;
       expect(held.status).toBe('EXPIRED_RECOVERABLE');
       expect(held.containerName).toBeNull();
@@ -109,6 +112,23 @@ describe('startup executor reconciliation', () => {
       expect(held.error).toMatch(/^executor reconciliation failed during startup: /);
       expect(store.byId(healthy.id)!).toMatchObject({ status: 'ACTIVE', containerName: healthy.container });
       expect(dockerMocks.runDocker.mock.calls.map(([args]) => args)).toContainEqual(['restart', healthy.container]);
+    } finally {
+      await service.stop();
+      store.close();
+    }
+  });
+
+  it('closes a workspace whose checkout is gone instead of holding it for a recovery that cannot succeed', async () => {
+    const { config, stuck, healthy } = await retainedWorkspaces({ keepStuckCheckout: false });
+    failing((args) => args[0] === 'restart' && args[1] === stuck.container);
+    const store = new StateStore(config.stateDb);
+    const service = new WorkspaceService(config, store);
+    try {
+      const failures = await service.start();
+      expect(failures).toEqual([{ workspaceId: stuck.id, reason: expect.stringMatching(/no longer retained on disk/) }]);
+      expect(store.byId(stuck.id)!.status).toBe('CLOSED');
+      expect(store.byId(healthy.id)!).toMatchObject({ status: 'ACTIVE', containerName: healthy.container });
+      expect(dockerMocks.runDocker.mock.calls.filter(([args]) => args[0] === 'create')).toHaveLength(0);
     } finally {
       await service.stop();
       store.close();

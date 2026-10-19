@@ -139,6 +139,12 @@ const countedStatus = new Set<WorkspaceRecord['status']>(COUNTED_WORKSPACE_STATU
  * an operator or agent to act, and every check starts a short-lived helper container.
  */
 const AUTO_CLOSE_RETRY_MS = 3_600_000;
+
+/** A retained workspace that startup reconciliation could not bring back; the runner logs each one. */
+export interface StartupReconcileFailure {
+  workspaceId: string;
+  reason: string;
+}
 const AUTO_CLOSE_DEFERRED_PREFIX = 'auto-close deferred: ';
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
@@ -551,7 +557,11 @@ export class WorkspaceService {
     }
   }
 
-  async start(): Promise<void> {
+  /**
+   * Returns the workspaces startup could not reconcile; each is already closed or held for recovery,
+   * so the caller only reports them.
+   */
+  async start(): Promise<StartupReconcileFailure[]> {
     if ((this.config.authMode ?? 'owner-bearer') === 'cloudflare-access') {
       const legacyOwners = this.store.legacyWorkspaceOwnerIds();
       if (legacyOwners.length > 0 && !this.config.legacyPrincipalMapping) {
@@ -572,11 +582,19 @@ export class WorkspaceService {
       });
     }
     await mkdir(this.config.jobsRoot, { recursive: true, mode: 0o700 });
+    const failures: StartupReconcileFailure[] = [];
     for (const record of this.store.active()) {
       try {
         await this.reconcileRetainedWorkspace(record);
       } catch (error) {
-        await this.holdForRecovery(record, `executor reconciliation failed during startup: ${error instanceof Error ? error.message : String(error)}`);
+        const reason = error instanceof Error ? error.message : String(error);
+        failures.push({ workspaceId: record.id, reason });
+        if (error instanceof HarnessError && error.code === 'EXPIRED') {
+          // The checkout is gone, so there is nothing to recover; close it like a missing executor.
+          await this.closeRecord(record, `executor reconciliation failed during startup: ${reason}`).catch(() => undefined);
+        } else {
+          await this.holdForRecovery(record, `executor reconciliation failed during startup: ${reason}`);
+        }
       }
     }
     await this.toolkitCacheManager.reconcileStartup().catch(() => undefined);
@@ -591,6 +609,7 @@ export class WorkspaceService {
       void this.reapExpired().catch(() => undefined).finally(() => { this.reaperRunning = false; });
     }, this.config.reaperIntervalSeconds * 1_000);
     this.reaper.unref();
+    return failures;
   }
 
   /**

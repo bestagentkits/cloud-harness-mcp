@@ -42,7 +42,8 @@ from prior process boots to `FAILED` with `error_code: "RUNNER_RESTARTED"` while
 preserving completed task metadata and file logs.
 Startup also restarts each retained workspace executor. One that will not
 restart is replaced from its kept checkout; if that fails too, only that
-workspace moves to `EXPIRED_RECOVERABLE` for `workspace_recover`, and startup
+workspace moves to `EXPIRED_RECOVERABLE` for `workspace_recover` (or closes, if
+its checkout is gone), the runner logs a warning naming it, and startup
 continues for the others
 ([troubleshooting](troubleshooting.md#containers-and-cleanup)).
 Workspace clones are operational, TTL-bound data and are deleted on
