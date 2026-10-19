@@ -38,10 +38,13 @@ describe('notifications contract', () => {
   });
 
   it('bounds mark-read and preference writes', () => {
-    expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { all: true })).success).toBe(true);
-    expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { all: true, before: '2026-10-20T00:00:00.000Z' })).success).toBe(true);
-    expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { all: true, before: 'yesterday' })).success).toBe(false);
-    expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { notificationIds: [ID], before: '2026-10-20T00:00:00.000Z' })).success).toBe(false);
+    // Mark-all is always bounded by the insertion watermark of a list the owner saw.
+    expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { all: true, through: 42 })).success).toBe(true);
+    expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { all: true })).success).toBe(false);
+    for (const through of [0, -1, 1.5, '42']) {
+      expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { all: true, through })).success, String(through)).toBe(false);
+    }
+    expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { notificationIds: [ID], through: 42 })).success).toBe(false);
     expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { notificationIds: [ID] })).success).toBe(true);
     expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { notificationIds: [] })).success).toBe(false);
     expect(NotificationsRunnerRequestSchema.safeParse(request('inbox_mark_read', { notificationIds: Array(101).fill(ID) })).success).toBe(false);
@@ -64,7 +67,8 @@ describe('notifications contract', () => {
     expect(NotificationSummarySchema.safeParse(summary).success).toBe(true);
     expect(NotificationSummarySchema.safeParse({ ...summary, title: 'x'.repeat(161) }).success).toBe(false);
     expect(NotificationSummarySchema.safeParse({ ...summary, prompt: 'leak' }).success).toBe(false);
-    expect(NotificationsRunnerDataSchemas.inbox_list.safeParse({ notifications: [summary], nextCursor: null, unread: 1 }).success).toBe(true);
+    expect(NotificationsRunnerDataSchemas.inbox_list.safeParse({ notifications: [summary], nextCursor: null, unread: 1, readThrough: 1 }).success).toBe(true);
+    expect(NotificationsRunnerDataSchemas.inbox_list.safeParse({ notifications: [], nextCursor: null, unread: 0, readThrough: null }).success).toBe(true);
   });
 
   it('holds the MCP event payload to the same link and subject bounds as the inbox', () => {

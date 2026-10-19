@@ -642,12 +642,15 @@ column reports the state of the comment the automation already posts.
 Each channel keeps its own delivery state (`PENDING`, `CLAIMED`, `DELIVERED`,
 `FAILED`, `REVOKED`) and last error class, visible on the Dashboard Inbox.
 Delivery is leased and compare-and-set, so a restarted runner or a second
-dispatcher delivers once; retries back off up to a bounded attempt count; and
-turning a channel off stops its pending deliveries, including the not yet sent
-webhook deliveries of the `cloudharness.notification.created` event. A delivery
-still open after twice the retention window is failed as `expired` and purged.
-Mark-all accepts a `before` instant so a notification that arrived after the
-owner loaded the inbox stays unread. Notification work never
+dispatcher delivers once; retries back off up to a bounded attempt count, and
+a lease lost to a stopped dispatcher counts as a failed attempt (`lease_lost`)
+with the same backoff and cap; and turning a channel off stops its pending
+deliveries, including the not yet sent webhook deliveries of the
+`cloudharness.notification.created` event. A delivery still open after twice
+the retention window is failed as `expired` and purged. Mark-all requires the
+`readThrough` insertion watermark of an inbox list, so a notification written
+after the owner loaded the inbox stays unread whatever its transition time.
+Notification work never
 relaunches an agent or repeats a transition. The inbox is read and marked only
 by its owner, through the Dashboard (`/dashboard/api/v1/inbox`,
 `/dashboard/api/v1/notification-preferences`); there is no MCP tool for it.

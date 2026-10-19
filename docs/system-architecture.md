@@ -441,7 +441,9 @@ since the transition is lost either way. Turning the MCP Events channel off
 revokes its pending notification deliveries and, in the same transaction,
 abandons the pending webhook deliveries of their events, so nothing is sent
 afterwards. The dispatcher leases due deliveries with a compare-and-set token,
-backs off retries to a bounded attempt count, fails a delivery still open past
+backs off retries to a bounded attempt count (an expired lease counts as a
+failed attempt and backs off too, so a delivery that keeps crashing its
+dispatcher still stops), fails a delivery still open past
 twice the retention window, and keeps purging old notifications while the
 feature is off. The owners
 are

@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { eventIdForSource } from '../src/event-outbox.js';
 import { emitNotification } from '../src/notifications/notification-emitter.js';
 import {
-  NOTIFICATION_HARD_CUTOFF_MS, NOTIFICATION_RETENTION_MS, NotificationStore, NotificationStoreError
+  NOTIFICATION_HARD_CUTOFF_MS, NOTIFICATION_MAX_ATTEMPTS, NOTIFICATION_RETENTION_MS, NOTIFICATION_RETRY_DELAYS_MS, NotificationStore,
+  NotificationStoreError
 } from '../src/notifications/notification-store.js';
 import {
   T0, deliveries, disableNotifications, enableNotifications, insertSubscription, openNotificationDatabase
@@ -32,24 +33,46 @@ function setup() {
 }
 
 describe('notification store', () => {
-  it('leases a delivery to one holder and reclaims it only after the lease expires', () => {
+  it('leases a delivery to one holder and re-leases it only after the lost lease backs off', () => {
     const { store, emit, clock, database } = setup();
     const id = emit();
+    const fakeChat = () => deliveries(database, id).find((row) => row.channel === 'fake_chat')!;
     const [first] = store.claim(['fake_chat'], 10, 30_000);
     expect(first).toMatchObject({ notificationId: id, channel: 'fake_chat', attempts: 0 });
     expect(store.claim(['fake_chat'], 10, 30_000)).toEqual([]);
-    expect(deliveries(database, id).find((row) => row.channel === 'fake_chat')!.state).toBe('CLAIMED');
+    expect(fakeChat().state).toBe('CLAIMED');
     clock.now += 30_000;
+    // The expired lease counts as a failed attempt and waits out the first retry delay.
+    expect(store.claim(['fake_chat'], 10, 30_000)).toEqual([]);
+    expect(fakeChat()).toMatchObject({ state: 'PENDING', attempts: 1, last_error_class: 'lease_lost' });
+    clock.now += NOTIFICATION_RETRY_DELAYS_MS[0] - 1;
+    expect(store.claim(['fake_chat'], 10, 30_000)).toEqual([]);
+    clock.now += 1;
     const [second] = store.claim(['fake_chat'], 10, 30_000);
     expect(second!.leaseToken).not.toBe(first!.leaseToken);
-    // The lost lease counts as one attempt, so a holder that keeps crashing still reaches the cap.
     expect(second!.attempts).toBe(1);
-    expect(deliveries(database, id).find((row) => row.channel === 'fake_chat')!.attempts).toBe(1);
     // The first holder's late report is refused; only the current lease settles the delivery.
     expect(store.report(id, 'fake_chat', first!.leaseToken, { state: 'DELIVERED', attempts: 1, nextAttemptAt: clock.now, errorClass: null })).toBe(false);
     expect(store.report(id, 'fake_chat', second!.leaseToken, { state: 'DELIVERED', attempts: 1, nextAttemptAt: clock.now, errorClass: null })).toBe(true);
     expect(store.report(id, 'fake_chat', second!.leaseToken, { state: 'FAILED', attempts: 2, nextAttemptAt: clock.now, errorClass: 'x' })).toBe(false);
     expect(store.deliveryState(id, 'fake_chat')).toBe('DELIVERED');
+  });
+
+  it('fails a delivery whose dispatcher crashes on every attempt once the lost leases reach the cap', () => {
+    const { store, emit, clock, database } = setup();
+    const id = emit();
+    const fakeChat = () => deliveries(database, id).find((row) => row.channel === 'fake_chat')!;
+    let leases = 0;
+    // Each pass leases the delivery, "crashes" without reporting, and lets the lease and backoff lapse.
+    for (let pass = 0; pass < NOTIFICATION_MAX_ATTEMPTS + 3; pass += 1) {
+      leases += store.claim(['fake_chat'], 10, 30_000).length;
+      clock.now += 30_000;
+      store.claim(['fake_chat'], 10, 30_000);
+      clock.now += Math.max(...NOTIFICATION_RETRY_DELAYS_MS);
+    }
+    expect(leases).toBe(NOTIFICATION_MAX_ATTEMPTS);
+    expect(fakeChat()).toMatchObject({ state: 'FAILED', attempts: NOTIFICATION_MAX_ATTEMPTS, last_error_class: 'lease_lost' });
+    expect(store.claim(['fake_chat'], 10, 30_000)).toEqual([]);
   });
 
   it('does not claim a delivery before its next attempt time or for another channel', () => {
@@ -90,18 +113,24 @@ describe('notification store', () => {
     // The refused request changed nothing, including the caller's own notification.
     expect(store.unreadCount(ownerId)).toBe(1);
     expect(store.unreadCount(otherId)).toBe(1);
-    expect(store.markRead(ownerId, { all: true })).toBe(1);
+    // Another principal's later rows do not widen the watermark into their inbox either.
+    const through = store.list(otherId, { limit: 10, unreadOnly: false }).readThrough!;
+    expect(store.markRead(ownerId, { all: true, through })).toBe(1);
     expect(store.unreadCount(otherId)).toBe(1);
   });
 
-  it('marks all read only up to the given instant, leaving later arrivals unread', () => {
-    const { store, emit, clock, ownerId } = setup();
-    emit(ownerId, 'agent.failed', T0);
-    const later = emit(ownerId, 'agent.failed', T0 + 1_000);
+  it('marks all read only through the list watermark, leaving rows written later unread whatever their transition time', () => {
+    const { store, emit, clock, ownerId, otherId } = setup();
+    expect(store.list(ownerId, { limit: 10, unreadOnly: false }).readThrough).toBeNull();
+    emit(ownerId, 'agent.failed', T0 + 1_000);
+    const { readThrough } = store.list(ownerId, { limit: 10, unreadOnly: false });
+    // Written after the owner loaded the list, but for a transition that happened earlier.
+    const lateWritten = emit(ownerId, 'agent.failed', T0);
+    emit(otherId, 'agent.failed', T0);
     clock.now = T0 + 2_000;
-    expect(store.markRead(ownerId, { all: true, before: new Date(T0).toISOString() })).toBe(1);
-    expect(store.list(ownerId, { limit: 10, unreadOnly: true }).notifications.map((entry) => entry.notificationId)).toEqual([later]);
-    expect(() => store.markRead(ownerId, { all: true, before: 'not-a-time' })).toThrow(expect.objectContaining({ code: 'INVALID_INPUT' }));
+    expect(store.markRead(ownerId, { all: true, through: readThrough! })).toBe(1);
+    expect(store.list(ownerId, { limit: 10, unreadOnly: true }).notifications.map((entry) => entry.notificationId)).toEqual([lateWritten]);
+    expect(() => store.markRead(ownerId, { all: true, through: 0 })).toThrow(expect.objectContaining({ code: 'INVALID_INPUT' }));
   });
 
   it('fills preference defaults and revokes pending and leased deliveries when a channel is turned off', () => {

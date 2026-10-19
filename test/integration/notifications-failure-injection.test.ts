@@ -257,10 +257,13 @@ describe('notification failure injection', () => {
     expect(delivery(second, 'fake_chat')).toMatchObject({ state: 'CLAIMED' });
     expect(await second.dispatcher.tick()).toMatchObject({ claimed: 0 });
     clock.now += NOTIFICATION_LEASE_MS;
+    // The lost lease counts as an attempt and backs off before the delivery is leased again.
+    expect(await second.dispatcher.tick()).toMatchObject({ claimed: 0 });
+    expect(delivery(second, 'fake_chat')).toMatchObject({ state: 'PENDING', attempts: 1, lastErrorClass: 'lease_lost' });
+    clock.now += NOTIFICATION_RETRY_DELAYS_MS[0];
     expect(await second.dispatcher.tick()).toMatchObject({ claimed: 1, delivered: 1 });
     await ticks(second, 3, 3_600_000);
     expect(second.fake.sends).toHaveLength(1);
-    // The lease the dead process lost counts as an attempt, so a crash loop still reaches the cap.
     expect(delivery(second, 'fake_chat')).toMatchObject({ state: 'DELIVERED', attempts: 2 });
     expectSingleLaunch(first, second);
   });
@@ -287,6 +290,8 @@ describe('notification failure injection', () => {
     expect(stalled).toMatchObject({ notificationId: contested });
     expect(await right.dispatcher.tick()).toMatchObject({ claimed: 0 });
     clock.now += NOTIFICATION_LEASE_MS;
+    expect(await right.dispatcher.tick()).toMatchObject({ claimed: 0 });
+    clock.now += NOTIFICATION_RETRY_DELAYS_MS[0];
     expect(await right.dispatcher.tick()).toMatchObject({ claimed: 1, delivered: 1 });
     expect(left.notificationStore.report(contested, 'fake_chat', stalled!.leaseToken, {
       state: 'FAILED', attempts: 5, nextAttemptAt: clock.now, errorClass: 'late'
@@ -379,7 +384,7 @@ describe('notification failure injection', () => {
       version: 1, principal: other, operation: 'inbox_mark_read', input: { notificationIds: [notification!.notificationId] }
     });
     expect(refused).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
-    ok(context.notifications.execute({ version: 1, principal: other, operation: 'inbox_mark_read', input: { all: true } }));
+    ok(context.notifications.execute({ version: 1, principal: other, operation: 'inbox_mark_read', input: { all: true, through: Number.MAX_SAFE_INTEGER } }));
     expect(inbox(context)).toMatchObject({ unread: 1 });
     expect(inbox(context).notifications[0]!.readAt).toBeNull();
     expectSingleLaunch(context);

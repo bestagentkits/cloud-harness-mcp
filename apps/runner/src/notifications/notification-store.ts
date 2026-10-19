@@ -19,6 +19,23 @@ export const NOTIFICATION_RETENTION_MS = 30 * 86_400_000;
  * a channel that never answers cannot pin a notification past retention.
  */
 export const NOTIFICATION_HARD_CUTOFF_MS = NOTIFICATION_RETENTION_MS * 2;
+/** Delay before the next attempt after the Nth failed or lost attempt (429, 5xx, adapter error, lost lease). */
+export const NOTIFICATION_RETRY_DELAYS_MS = [5_000, 30_000, 120_000, 600_000] as const;
+/** A delivery whose attempts reach this count without success is FAILED. */
+export const NOTIFICATION_MAX_ATTEMPTS = NOTIFICATION_RETRY_DELAYS_MS.length + 1;
+
+/** How many attempts a delivery gets and how long it waits between them. */
+export type NotificationRetryPolicy = { maxAttempts: number; retryDelaysMs: readonly number[] };
+
+/** The wait before the attempt that follows `attempts` failed ones. */
+export function notificationRetryDelay(policy: NotificationRetryPolicy, attempts: number): number {
+  return policy.retryDelaysMs[Math.min(attempts, policy.retryDelaysMs.length) - 1] ?? policy.retryDelaysMs[0] ?? 5_000;
+}
+
+const DEFAULT_RETRY_POLICY: NotificationRetryPolicy = {
+  maxAttempts: NOTIFICATION_MAX_ATTEMPTS, retryDelaysMs: NOTIFICATION_RETRY_DELAYS_MS
+};
+
 /** Notifications kept per principal; the oldest settled ones are removed first. */
 export const NOTIFICATION_MAX_PER_PRINCIPAL = 5_000;
 const CHANNEL_ORDER = ['inbox', 'mcp_event', 'github'];
@@ -150,8 +167,15 @@ export class NotificationStore {
    * time has passed, or CLAIMED with an expired lease (its dispatcher stopped mid-claim). The lease is
    * a compare-and-swap on the row's current state and token, so two dispatchers never hold the same
    * delivery. A delivery whose channel the owner has since turned off is revoked instead of leased.
+   *
+   * An expired lease is not leased again at once. Its dispatcher stopped mid-send, so the lost lease
+   * counts as a failed attempt (`lease_lost`): the delivery is FAILED when that reaches the attempt cap,
+   * and otherwise waits out the retry delay as PENDING. A delivery that crashes its dispatcher every
+   * time therefore backs off and stops, like one that keeps failing.
    */
-  claim(channels: readonly string[], limit: number, leaseMs: number): ClaimedNotificationDelivery[] {
+  claim(
+    channels: readonly string[], limit: number, leaseMs: number, policy: NotificationRetryPolicy = DEFAULT_RETRY_POLICY
+  ): ClaimedNotificationDelivery[] {
     if (channels.length === 0) return [];
     return immediate(this.database, () => {
       const now = this.now();
@@ -170,18 +194,25 @@ export class NotificationStore {
           if (Number(revoked.changes) === 1 && row.channel === 'mcp_event') abandonNotificationEvents(this.database, [row.notification_id], now);
           continue;
         }
-        // A lease that expired belonged to a dispatcher that stopped mid-send: that attempt counts.
-        const lostAttempt = row.state === 'CLAIMED' ? 1 : 0;
+        if (row.state === 'CLAIMED') {
+          const attempts = row.attempts + 1;
+          const exhausted = attempts >= policy.maxAttempts;
+          this.database.prepare(`UPDATE notification_deliveries SET state = ?, attempts = ?, next_attempt_at = ?, lease_token = NULL,
+              lease_until = NULL, last_error_class = 'lease_lost', updated_at = ?
+            WHERE notification_id = ? AND channel = ? AND state = 'CLAIMED' AND lease_token IS ?`)
+            .run(exhausted ? 'FAILED' : 'PENDING', attempts, exhausted ? now : now + notificationRetryDelay(policy, attempts), now,
+              row.notification_id, row.channel, row.lease_token);
+          continue;
+        }
         const leaseToken = randomBytes(16).toString('base64url');
-        const leased = this.database.prepare(`UPDATE notification_deliveries SET state = 'CLAIMED', lease_token = ?, lease_until = ?,
-            attempts = attempts + ?, updated_at = ?
-          WHERE notification_id = ? AND channel = ? AND state = ? AND lease_token IS ?`)
-          .run(leaseToken, now + leaseMs, lostAttempt, now, row.notification_id, row.channel, row.state, row.lease_token);
+        const leased = this.database.prepare(`UPDATE notification_deliveries SET state = 'CLAIMED', lease_token = ?, lease_until = ?, updated_at = ?
+          WHERE notification_id = ? AND channel = ? AND state = 'PENDING' AND lease_token IS ?`)
+          .run(leaseToken, now + leaseMs, now, row.notification_id, row.channel, row.lease_token);
         if (Number(leased.changes) !== 1) continue;
         claimed.push({
           notificationId: row.notification_id, principalId: row.principal_id, channel: row.channel, kind: row.kind,
           subjectType: row.subject_type, subjectId: row.subject_id, title: row.title, payloadJson: row.payload_json,
-          attempts: row.attempts + lostAttempt, leaseToken
+          attempts: row.attempts, leaseToken
         });
       }
       return claimed;
@@ -208,8 +239,12 @@ export class NotificationStore {
   }
 
   list(principalId: string, options: { cursor?: string | undefined; limit: number; unreadOnly: boolean }): {
-    notifications: NotificationSummary[]; nextCursor: string | null;
+    notifications: NotificationSummary[]; nextCursor: string | null; readThrough: number | null;
   } {
+    // Rows are ordered by insertion (rowid); `created_at` is the transition time and a row can be
+    // written well after it, so only the insertion watermark bounds "everything listed so far".
+    const watermark = this.database.prepare('SELECT max(rowid) AS through FROM notifications WHERE principal_id = ?')
+      .get(principalId) as { through: number | null };
     const after = options.cursor === undefined ? undefined : decodeCursor(options.cursor);
     const rows = this.database.prepare(`SELECT * FROM notifications WHERE principal_id = ?
         ${options.unreadOnly ? 'AND read_at IS NULL' : ''}
@@ -245,7 +280,8 @@ export class NotificationStore {
           deliveries: deliveries.get(row.notification_id) ?? []
         };
       }),
-      nextCursor: rows.length > options.limit && last ? encodeCursor(last.created_at, last.notification_id) : null
+      nextCursor: rows.length > options.limit && last ? encodeCursor(last.created_at, last.notification_id) : null,
+      readThrough: watermark.through === null ? null : Number(watermark.through)
     };
   }
 
@@ -257,18 +293,17 @@ export class NotificationStore {
 
   /**
    * Marks notifications read. Every named id must belong to the principal; otherwise nothing changes
-   * and NOT_FOUND is returned, so a foreign id reveals nothing about its existence. `all` with `before`
-   * marks only notifications created at or before that instant, so one that arrived after the owner
-   * loaded the inbox stays unread.
+   * and NOT_FOUND is returned, so a foreign id reveals nothing about its existence. `all` marks only
+   * notifications written up to the `readThrough` watermark of a list, so one written after the owner
+   * loaded the inbox stays unread, however old its transition time.
    */
-  markRead(principalId: string, target: { notificationIds: readonly string[] } | { all: true; before?: string | undefined }): number {
+  markRead(principalId: string, target: { notificationIds: readonly string[] } | { all: true; through: number }): number {
     return immediate(this.database, () => {
       const now = this.now();
       if ('all' in target) {
-        const before = target.before === undefined ? null : Date.parse(target.before);
-        if (before !== null && !Number.isFinite(before)) throw new NotificationStoreError('INVALID_INPUT', 'before must be an ISO timestamp');
+        if (!Number.isSafeInteger(target.through) || target.through < 1) throw new NotificationStoreError('INVALID_INPUT', 'invalid watermark');
         return Number(this.database.prepare(`UPDATE notifications SET read_at = ? WHERE principal_id = ? AND read_at IS NULL
-          AND (? IS NULL OR created_at <= ?)`).run(now, principalId, before, before).changes);
+          AND rowid <= ?`).run(now, principalId, target.through).changes);
       }
       const ids = [...new Set(target.notificationIds)];
       const placeholders = ids.map(() => '?').join(', ');

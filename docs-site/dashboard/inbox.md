@@ -22,9 +22,9 @@ credentials, and titles are shortened and redacted.
 ## Reading the list
 
 Notifications are newest first. Unread ones are marked **Unread**; use
-**Mark read** on one, or **Mark all read**, which covers the notifications up to the
-newest one the page showed; anything that arrived after you opened the page stays
-unread. **Show unread only** filters the list,
+**Mark read** on one, or **Mark all read**, which covers the notifications that
+existed when you opened the page; anything written after that stays unread, even
+when it is about something that finished earlier. **Show unread only** filters the list,
 and **Load more** pages further back. Notifications are kept for a limited time, and
 the oldest read ones are removed when the inbox grows large.
 

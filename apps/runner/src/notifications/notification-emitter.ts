@@ -208,7 +208,7 @@ export function emitAutomationTerminalNotification(database: DatabaseSync, workf
   emitNotification(database, { ...base, kind: 'automation.failed', title: `Automation ${row.state.toLowerCase()}: ${resource}${reason}` }, now);
 }
 
-const AUTOMATION_SPAWN_KEY = /^automation:wfl_[a-f0-9]{32}:spawn$/u;
+const AUTOMATION_SPAWN_KEY = /^automation:(wfl_[a-f0-9]{32}):spawn$/u;
 const FAILED_AGENT_STATUSES = new Set(['FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED']);
 
 /**
@@ -227,9 +227,12 @@ export function emitAgentTerminalNotification(
   try {
     // An automation spawns with `automation:<workflowId>:spawn`. The key is on the agent row from
     // admission, before the workflow records `agent_id`, so an agent that ends early still defers to
-    // its workflow's notification; the indexed primary-key read also avoids scanning workflows.
+    // its workflow's notification. A caller can choose the same key shape, so the workflow it names
+    // must exist for this owner too. Both reads are primary-key lookups.
     const spawned = database.prepare('SELECT idempotency_key FROM agents WHERE id = ?').get(agent.agentId) as { idempotency_key: string } | undefined;
-    if (spawned && AUTOMATION_SPAWN_KEY.test(spawned.idempotency_key)) return;
+    const workflowId = spawned ? AUTOMATION_SPAWN_KEY.exec(spawned.idempotency_key)?.[1] : undefined;
+    if (workflowId !== undefined && tableExists(database, 'automation_workflows')
+      && database.prepare('SELECT 1 FROM automation_workflows WHERE id = ? AND owner_id = ?').get(workflowId, agent.ownerId) !== undefined) return;
   } catch (error) {
     recordFailure(error);
     return;

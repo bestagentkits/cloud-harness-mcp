@@ -113,19 +113,32 @@ describe('inbox controller', () => {
     expect(onUnread).toHaveBeenLastCalledWith(0);
   });
 
-  it('marks all read only through the newest notification this page load showed', async () => {
+  it('marks all read only through the insertion watermark of the loaded list', async () => {
     const all = new FakeElement() as FakeElement & { disabled?: boolean };
     const rows = new FakeElement();
-    const later = '2026-10-20T00:05:00.000Z';
     const responses = (path: string, options?: any) => (path.startsWith('/inbox?')
-      ? { data: { notifications: [notification({ createdAt: later }), notification({ notificationId: id('b') })], nextCursor: null, unread: 2 } }
+      ? { data: { notifications: [notification(), notification({ notificationId: id('b') })], nextCursor: null, unread: 2, readThrough: 42 } }
       : pageResponses(path, options));
     const { view, container, fetcher, announce } = harness(responses, { '#inbox-mark-all': all, '#inbox-rows': rows });
     await view.load(container, '');
     all.dispatch('click', {});
     await vi.waitFor(() => expect(announce).toHaveBeenCalledWith('1 notification(s) marked read.'));
-    expect(fetcher).toHaveBeenCalledWith('/inbox/read', { method: 'POST', body: JSON.stringify({ all: true, before: later }) });
+    expect(fetcher).toHaveBeenCalledWith('/inbox/read', { method: 'POST', body: JSON.stringify({ all: true, through: 42 }) });
     expect(rows.markup).not.toContain('data-mark-read');
+  });
+
+  it('never sends an unbounded mark-all when the list carried no watermark', async () => {
+    const all = new FakeElement() as FakeElement & { disabled?: boolean };
+    const responses = (path: string, options?: any) => (path.startsWith('/inbox?')
+      ? { data: { notifications: [], nextCursor: null, unread: 0, readThrough: null } }
+      : pageResponses(path, options));
+    const { view, container, fetcher } = harness(responses, { '#inbox-mark-all': all });
+    await view.load(container, '');
+    expect(all.disabled).toBe(true);
+    fetcher.mockClear();
+    all.dispatch('click', {});
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it('ignores a click whose target carries a malformed id', async () => {

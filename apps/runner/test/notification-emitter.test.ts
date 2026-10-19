@@ -186,14 +186,18 @@ describe('notification emitter', () => {
     const workflowId = insertWorkflow(database, { ownerId, agentId: null });
     insertAgentRow(database, ownerId, `${AGENT}2`, `automation:${workflowId}:spawn`);
     emitAgentTerminalNotification(database, { ...base, agentId: `${AGENT}2`, status: 'FAILED' }, T0);
-    // A caller's own key that merely starts with `automation:` does not hide its agent.
+    // A caller's own key that merely starts with `automation:` does not hide its agent, nor does one in
+    // the exact spawn shape that names no workflow of this owner.
     insertAgentRow(database, ownerId, `${AGENT}6`, 'automation:mine');
     emitAgentTerminalNotification(database, { ...base, agentId: `${AGENT}6`, status: 'CANCELLED' }, T0);
+    insertAgentRow(database, ownerId, `${AGENT}7`, `automation:wfl_${'f'.repeat(32)}:spawn`);
+    emitAgentTerminalNotification(database, { ...base, agentId: `${AGENT}7`, status: 'LIMIT_EXCEEDED' }, T0);
     emitAgentTerminalNotification(database, { ...base, agentId: `${AGENT}3`, status: 'RUNNING' }, T0);
     emitAgentTerminalNotification(database, { ...base, agentId: `${AGENT}4`, status: 'TIMED_OUT' }, T0);
     emitAgentTerminalNotification(database, { ...base, agentId: `${AGENT}5`, status: 'SUCCEEDED' }, T0);
     expect(notificationRows(database).map((row) => `${row.kind}:${row.title}`).sort()).toEqual([
-      'agent.completed:Agent run completed', 'agent.failed:Agent run ended: cancelled', 'agent.failed:Agent run ended: timed out'
+      'agent.completed:Agent run completed', 'agent.failed:Agent run ended: cancelled', 'agent.failed:Agent run ended: limit exceeded',
+      'agent.failed:Agent run ended: timed out'
     ]);
   });
 

@@ -34,7 +34,7 @@ const summary = {
 const preferences = [{ channel: 'mcp_event', kind: 'automation.failed', enabled: false }];
 const dataFor: Record<string, unknown> = {
   inbox_status: { enabled: true, unread: 1 },
-  inbox_list: { notifications: [summary], nextCursor: null, unread: 1 },
+  inbox_list: { notifications: [summary], nextCursor: null, unread: 1, readThrough: 3 },
   inbox_mark_read: { updated: 1, unread: 0 },
   preferences_get: { preferences },
   preferences_put: { preferences, revoked: 2 }
@@ -119,8 +119,7 @@ describe('dashboard inbox BFF', () => {
     const headers = await mutationHeaders();
     const cases: Array<[string, string, string, Record<string, unknown>]> = [
       ['POST', '/api/v1/inbox/read', 'inbox_mark_read', { notificationIds: [notificationId] }],
-      ['POST', '/api/v1/inbox/read', 'inbox_mark_read', { all: true }],
-      ['POST', '/api/v1/inbox/read', 'inbox_mark_read', { all: true, before: '2026-10-20T08:00:00.000Z' }],
+      ['POST', '/api/v1/inbox/read', 'inbox_mark_read', { all: true, through: 7 }],
       ['PUT', '/api/v1/notification-preferences', 'preferences_put', { preferences }]
     ];
     for (const [method, path, operation, body] of cases) {
@@ -129,13 +128,17 @@ describe('dashboard inbox BFF', () => {
       expect(response.json.data).toEqual(dataFor[operation]);
       expect(requests.at(-1)).toEqual({ version: 1, principal, operation, input: body });
     }
-    const forged = await send('/api/v1/inbox/read', { method: 'POST', headers, body: JSON.stringify({ all: true, principal: { kind: 'owner', ownerId: 'x' } }) });
+    const forged = await send('/api/v1/inbox/read', { method: 'POST', headers, body: JSON.stringify({ all: true, through: 7, principal: { kind: 'owner', ownerId: 'x' } }) });
     expect(forged.status).toBe(400);
+    // An unbounded mark-all is refused before it reaches the runner.
+    const before = requests.length;
+    expect((await send('/api/v1/inbox/read', { method: 'POST', headers, body: JSON.stringify({ all: true }) })).status).toBe(400);
+    expect(requests).toHaveLength(before);
   });
 
   it('refuses mutations without CSRF or Origin before reaching the runner', async () => {
     const headers = await mutationHeaders();
-    const body = JSON.stringify({ all: true });
+    const body = JSON.stringify({ all: true, through: 7 });
     expect((await send('/api/v1/inbox/read', { method: 'POST', headers: { ...headers, 'x-csrf-token': 'wrong' }, body })).status).toBe(403);
     const { origin: _origin, ...withoutOrigin } = headers;
     void _origin;

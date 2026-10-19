@@ -98,6 +98,8 @@ const owner = <O extends string, I extends z.ZodType>(operation: O, input: I) =>
   z.object({ ...principalScoped, operation: z.literal(operation), input }).strict();
 /** Opaque keyset cursor: `<createdAtMs>.<notificationId>` encoded base64url. */
 export const NotificationCursorSchema = z.string().regex(/^[A-Za-z0-9_-]{1,120}$/u);
+/** Insertion-order watermark for mark-all; ordered by when the row was written, not by its transition time. */
+export const NotificationReadThroughSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 
 export const NotificationsRunnerRequestSchema = z.discriminatedUnion('operation', [
   owner('inbox_status', z.object({}).strict()),
@@ -108,8 +110,9 @@ export const NotificationsRunnerRequestSchema = z.discriminatedUnion('operation'
   }).strict()),
   owner('inbox_mark_read', z.union([
     z.object({ notificationIds: z.array(NotificationIdSchema).min(1).max(NOTIFICATION_LIMITS.maxMarkRead) }).strict(),
-    // `before` bounds the bulk update to what the owner has seen, so a later arrival stays unread.
-    z.object({ all: z.literal(true), before: z.iso.datetime({ offset: true }).optional() }).strict()
+    // `through` is the `readThrough` watermark of an inbox_list: everything written up to that list is
+    // marked, and a notification written later (whatever its transition time) stays unread.
+    z.object({ all: z.literal(true), through: NotificationReadThroughSchema }).strict()
   ])),
   owner('preferences_get', z.object({}).strict()),
   owner('preferences_put', z.object({
@@ -122,7 +125,9 @@ export const NotificationsRunnerDataSchemas = {
   inbox_list: z.object({
     notifications: z.array(NotificationSummarySchema).max(NOTIFICATION_LIMITS.maxListLimit),
     nextCursor: NotificationCursorSchema.nullable(),
-    unread: z.number().int().nonnegative()
+    unread: z.number().int().nonnegative(),
+    /** Insertion watermark of the principal's newest notification at list time; null when there is none. */
+    readThrough: NotificationReadThroughSchema.nullable()
   }).strict(),
   inbox_mark_read: z.object({ updated: z.number().int().nonnegative(), unread: z.number().int().nonnegative() }).strict(),
   preferences_get: z.object({ preferences: z.array(NotificationPreferenceSchema) }).strict(),

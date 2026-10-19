@@ -160,9 +160,14 @@ export function createInboxView({ insert, announce = () => {}, onUnread = () => 
       unread: Number(list?.data?.unread ?? 0) || 0,
       unreadOnly
     };
-    // "Mark all read" covers what this page load showed: the newest listed notification's server
-    // timestamp, so one that arrives later stays unread and browser clock skew cannot widen the cut.
-    state.loadedThrough = typeof state.notifications[0]?.createdAt === 'string' ? state.notifications[0].createdAt : null;
+    // "Mark all read" covers what existed when this page loaded: the server's insertion watermark, so a
+    // notification written later stays unread. Without one there is nothing to mark.
+    const through = list?.data?.readThrough;
+    state.readThrough = Number.isSafeInteger(through) && through > 0 ? through : null;
+    if (state.readThrough === null) {
+      const all = container.querySelector?.('#inbox-mark-all');
+      if (all) all.disabled = true;
+    }
     insert(container, renderInboxPage({ ...state, preferences: preferences?.data?.preferences ?? [] }));
     onUnread(state.unread);
     bindList(container, state);
@@ -186,13 +191,8 @@ export function createInboxView({ insert, announce = () => {}, onUnread = () => 
   async function markRead(container, state, input, readIds) {
     const result = await fetcher('/inbox/read', { method: 'POST', body: JSON.stringify(input) });
     const now = new Date().toISOString();
-    const through = readIds === 'all' && input.before ? Date.parse(input.before) : null;
     for (const notification of state.notifications) {
-      if (notification.readAt) continue;
-      const covered = readIds === 'all'
-        ? through === null || Date.parse(notification.createdAt) <= through
-        : readIds.has(notification.notificationId);
-      if (covered) notification.readAt = now;
+      if (!notification.readAt && (readIds === 'all' || readIds.has(notification.notificationId))) notification.readAt = now;
     }
     renderRows(container, state);
     setUnread(container, state, Number(result?.data?.unread ?? 0) || 0);
@@ -216,10 +216,10 @@ export function createInboxView({ insert, announce = () => {}, onUnread = () => 
     });
     const all = container.querySelector?.('#inbox-mark-all');
     all?.addEventListener?.('click', async () => {
+      if (state.readThrough === null) return;
       all.disabled = true;
       try {
-        const input = state.loadedThrough ? { all: true, before: state.loadedThrough } : { all: true };
-        const updated = await markRead(container, state, input, 'all');
+        const updated = await markRead(container, state, { all: true, through: state.readThrough }, 'all');
         announce(`${updated} notification(s) marked read.`);
       } catch {
         all.disabled = false;

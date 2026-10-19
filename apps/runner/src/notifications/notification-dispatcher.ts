@@ -1,10 +1,16 @@
 import type { NotificationAdapter, NotificationDispatch, NotificationSendResult } from './notification-adapters.js';
-import type { ClaimedNotificationDelivery, NotificationDeliveryUpdate, NotificationStore } from './notification-store.js';
+import {
+  NOTIFICATION_MAX_ATTEMPTS,
+  NOTIFICATION_RETRY_DELAYS_MS,
+  notificationRetryDelay,
+  type ClaimedNotificationDelivery,
+  type NotificationDeliveryUpdate,
+  type NotificationRetryPolicy,
+  type NotificationStore
+} from './notification-store.js';
 
-/** Delay before the next attempt after the Nth failed attempt (429, 5xx, adapter error). */
-export const NOTIFICATION_RETRY_DELAYS_MS = [5_000, 30_000, 120_000, 600_000] as const;
-/** A delivery whose attempts reach this count without success is FAILED. */
-export const NOTIFICATION_MAX_ATTEMPTS = NOTIFICATION_RETRY_DELAYS_MS.length + 1;
+// The retry policy lives with the store, which also applies it to lost leases; re-exported here for callers.
+export { NOTIFICATION_MAX_ATTEMPTS, NOTIFICATION_RETRY_DELAYS_MS };
 /** How long a claim is held; a dispatcher that stops mid-claim loses it after this. */
 export const NOTIFICATION_LEASE_MS = 60_000;
 /** How soon a mirror channel whose underlying delivery is still pending is checked again. */
@@ -41,8 +47,7 @@ export class NotificationDispatcher {
   private readonly now: () => number;
   private readonly leaseMs: number;
   private readonly batchSize: number;
-  private readonly maxAttempts: number;
-  private readonly retryDelaysMs: readonly number[];
+  private readonly retry: NotificationRetryPolicy;
   private readonly mirrorPollMs: number;
   private readonly log: (record: Record<string, string | number | boolean>) => void;
   private running: Promise<NotificationTickResult> | undefined;
@@ -56,8 +61,10 @@ export class NotificationDispatcher {
     this.now = options.now ?? Date.now;
     this.leaseMs = options.leaseMs ?? NOTIFICATION_LEASE_MS;
     this.batchSize = options.batchSize ?? 20;
-    this.maxAttempts = options.maxAttempts ?? NOTIFICATION_MAX_ATTEMPTS;
-    this.retryDelaysMs = options.retryDelaysMs ?? NOTIFICATION_RETRY_DELAYS_MS;
+    this.retry = {
+      maxAttempts: options.maxAttempts ?? NOTIFICATION_MAX_ATTEMPTS,
+      retryDelaysMs: options.retryDelaysMs ?? NOTIFICATION_RETRY_DELAYS_MS
+    };
     this.mirrorPollMs = options.mirrorPollMs ?? NOTIFICATION_MIRROR_POLL_MS;
     this.log = options.log ?? (() => undefined);
   }
@@ -103,7 +110,7 @@ export class NotificationDispatcher {
       for (const adapter of this.adapters.values()) {
         if (await this.healthy(adapter)) healthy.push(adapter.channel);
       }
-      const claimed = this.store.claim(healthy, this.batchSize, this.leaseMs);
+      const claimed = this.store.claim(healthy, this.batchSize, this.leaseMs, this.retry);
       result.claimed = claimed.length;
       for (const delivery of claimed) await this.deliver(delivery, result);
     } catch (error) {
@@ -164,9 +171,8 @@ export class NotificationDispatcher {
         return { state: 'FAILED', attempts: delivery.attempts + 1, nextAttemptAt: now, errorClass: boundedClass(sent.errorClass) };
       case 'retry': {
         const attempts = delivery.attempts + 1;
-        if (attempts >= this.maxAttempts) return { state: 'FAILED', attempts, nextAttemptAt: now, errorClass: boundedClass(sent.errorClass) };
-        const delay = this.retryDelaysMs[Math.min(attempts, this.retryDelaysMs.length) - 1] ?? this.retryDelaysMs[0] ?? 5_000;
-        return { state: 'PENDING', attempts, nextAttemptAt: now + delay, errorClass: boundedClass(sent.errorClass) };
+        if (attempts >= this.retry.maxAttempts) return { state: 'FAILED', attempts, nextAttemptAt: now, errorClass: boundedClass(sent.errorClass) };
+        return { state: 'PENDING', attempts, nextAttemptAt: now + notificationRetryDelay(this.retry, attempts), errorClass: boundedClass(sent.errorClass) };
       }
     }
   }
