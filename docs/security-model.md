@@ -836,6 +836,36 @@ the owner has stored a TypeSafe integration key.
   metrics at `GET /api/v1/decision-plane/status` are in-memory, instance-wide
   aggregates, not per owner, and reset when the runner restarts.
 
+## Agent execution policies
+
+Coding-agent actions are governed by an owner-authored execution policy
+([ADR 0006](adr/0006-policy-governed-coding-agents.md)), behind
+`AGENT_POLICIES_ENABLED`.
+
+- **One authority.** Only the owner writes policy, through owner-authenticated
+  Dashboard routes with the usual Origin and CSRF checks. The principal comes
+  from the session and the project from the route path, after the body is
+  read. Webhook payloads, repository files, agent output and request bodies
+  cannot select the principal, the project or the policy.
+- **Projects only narrow.** A project policy may remove classes, add denies or
+  mandatory approvals, shorten scope lists and lower budgets. A save that
+  widens the global policy is refused, and evaluation ignores any widening
+  field. A project can choose a class's effect only where the owner marked the
+  class delegable. A policy for a project that no longer exists denies every
+  action bound to it.
+- **One pure gate.** Execution, the Dashboard preview and the simulation call
+  the same evaluator on the same resolved snapshot. Platform invariants
+  (credential and Docker access, network escalation, paths outside the
+  workspace, privilege escalation) deny before any policy is read. The
+  descriptor's free-text reason is never read.
+- **Advisors only escalate.** An advisor may answer `no_change` or `escalate`.
+  A missing or malformed answer escalates, and no advisor, project or prompt
+  can override a hard deny or a mandatory approval.
+- **Weakening is explicit and recorded.** A save, rollback or removal that
+  loosens the effective policy requires a confirmation flag the Dashboard sets
+  only after the owner confirms the listed changes. Revisions are immutable,
+  the head moves by compare-and-swap, and every change and simulation is
+  audited.
 ## Storage and state limits
 
 Workspace paths are server-generated and checked beneath the configured jobs

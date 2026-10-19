@@ -623,6 +623,20 @@ The public route needs the managed nginx location and, in Access mode, an
 Access bypass for that path only; see
 [deployment](deployment.md#webhook-automations-rollout).
 
+## Agent policies
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AGENT_POLICIES_ENABLED` | off | Runner only. Turns on the owner's execution policies for coding agents: the Dashboard editor, simulation, history and rollback, and the policy store. While off, the runner answers `FEATURE_DISABLED` and the Dashboard shows how to enable it. |
+
+The policy document shape, its bounds and the read-only default that applies
+until the owner saves a global policy are owned by
+[`packages/contracts/src/agent-policy-api.ts`](../packages/contracts/src/agent-policy-api.ts).
+Precedence is owned by
+[`apps/runner/src/agent-governance/gate-evaluator.ts`](../apps/runner/src/agent-governance/gate-evaluator.ts),
+and the rationale by [ADR 0006](adr/0006-policy-governed-coding-agents.md).
+Policies are stored per owner in the runner state database, so they survive
+restarts and are covered by its backups.
 ## Compose and logging overrides
 
 `CLOUD_HARNESS_ENV_FILE` selects the runtime environment file. `API_HOST_PORT`

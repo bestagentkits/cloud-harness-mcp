@@ -146,6 +146,7 @@ export default defineConfig({
           { text: 'API Access', link: '/dashboard/api-keys' },
           { text: 'Audit Logs', link: '/dashboard/audit' },
           { text: 'Settings', link: '/dashboard/settings' },
+          { text: 'Agent Policies', link: '/dashboard/agent-policies' },
           { text: 'Profile & Themes', link: '/dashboard/profile' }
         ]
       },
