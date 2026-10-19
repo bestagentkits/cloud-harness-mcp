@@ -517,9 +517,10 @@ export class AutomationService {
     if (providerEvent === undefined || !EVENT_NAME.test(providerEvent)) throw new AutomationsError('INVALID_INPUT', 'invalid event name');
     const now = this.now();
     return withEventSavepoint(this.database, () => {
-      // The delivery id header is not covered by the signature, so a captured body replayed under a new
-      // id is caught by its hash. GitHub's own redeliveries repeat both the id and the exact bytes.
-      const payloadSha256 = createHash('sha256').update(body).digest('hex');
+      // The delivery id header is not covered by the signature, so a captured delivery replayed under a
+      // new id is caught by the digest of what was signed. GitHub's own redeliveries repeat both the id
+      // and the exact bytes.
+      const payloadSha256 = adapter.signedDigest?.(headers, body) ?? createHash('sha256').update(body).digest('hex');
       const existing = this.database.prepare('SELECT 1 FROM automation_deliveries WHERE connection_id = ? AND (provider_delivery_id = ? OR payload_sha256 = ?)')
         .get(connection.id, deliveryId, payloadSha256);
       if (existing) return { outcome: 'duplicate' as const };

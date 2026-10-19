@@ -160,7 +160,7 @@ Every request carries three headers:
 | Header | Value |
 | --- | --- |
 | `X-CloudHarness-Timestamp` | Current Unix time in seconds. Requests more than five minutes from the server's clock are refused. |
-| `X-CloudHarness-Delivery` | A unique id per event (letters, digits, `.`, `_`, `:`, `-`). A repeated id, or a repeated body, is a duplicate. |
+| `X-CloudHarness-Delivery` | A unique id per event (letters, digits, `.`, `_`, `:`, `-`). A repeated id, or the same timestamp and body again, is a duplicate; the same body sent later with a new timestamp and id is a new event. |
 | `X-CloudHarness-Signature` | `v1=` followed by the hex HMAC-SHA256 of `<timestamp>.<raw body>`, keyed by the connection secret. |
 
 Sign the exact bytes you send. In a shell:

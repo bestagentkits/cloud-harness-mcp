@@ -156,6 +156,13 @@ export interface ProviderAdapter {
   eventName(headers: Readonly<Record<string, string>>, body: Buffer): string | undefined;
   /** The provider's dedupe key, from a header or the verified body; undefined when missing. */
   deliveryId(headers: Readonly<Record<string, string>>, body: Buffer): string | undefined;
+  /**
+   * Hex SHA-256 of exactly what the signature covers, so a captured delivery replayed under a new
+   * (unsigned) delivery id is a duplicate. Defaults to the digest of the body. A provider that also
+   * signs a header, such as the custom timestamp, includes it, so a later event with the same body
+   * is a new delivery rather than a replay.
+   */
+  signedDigest?(headers: Readonly<Record<string, string>>, body: Buffer): string;
   normalize(providerEvent: string, body: Buffer, connection: AutomationConnectionContext): AutomationNormalization;
   /** Deterministic; never consults a model. The reason names the first filter that rejected. */
   matches(match: AutomationRuleMatch, event: NormalizedAutomationEvent, context: AutomationMatchContext): AutomationMatchVerdict;

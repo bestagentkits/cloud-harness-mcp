@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { AUTOMATION_LIMITS, AutomationCustomEnvelopeSchema, type AutomationRuleMatch } from '@cloud-harness/contracts';
 import {
   boundedText,
@@ -19,8 +19,8 @@ import {
  *   X-CloudHarness-Signature: v1=<hex HMAC-SHA256 of `${timestamp}.${rawBody}` keyed by the connection secret>
  *
  * The timestamp is part of the signed text and must be within five minutes of the runner's clock, and
- * the delivery id (and the exact body) are deduplicated by the service, so a captured request cannot
- * be replayed. The body is the fixed envelope in `AutomationCustomEnvelopeSchema`; it cannot name a
+ * the delivery id and the signed text (timestamp and body) are deduplicated by the service, so a
+ * captured request cannot be replayed, while the same body sent again later is a new event. The body is the fixed envelope in `AutomationCustomEnvelopeSchema`; it cannot name a
  * repository, workspace, profile, tool, command or instruction.
  */
 
@@ -104,6 +104,8 @@ export const customAdapter: ProviderAdapter = {
     return typeof event === 'string' && EVENT_NAME.test(event) ? event : 'custom.event';
   },
   deliveryId: (headers) => headers['x-cloudharness-delivery'],
+  // The signature covers the timestamp too, so the same body sent again later is a new event.
+  signedDigest: (headers, body) => createHash('sha256').update(`${headers['x-cloudharness-timestamp'] ?? ''}.`).update(body).digest('hex'),
   normalize: (_providerEvent, body) => normalizeCustomEvent(body),
   matches: (match, event, context) => matchCustomRule(match, event, context.selfLogin)
 };

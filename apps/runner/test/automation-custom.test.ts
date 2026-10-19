@@ -264,6 +264,18 @@ describe('custom webhook through the service', () => {
     expect(deliveries(context)).toHaveLength(1);
   });
 
+  it('accepts the same envelope sent again later under a new timestamp and delivery id', () => {
+    const context = setup();
+    const { id, secret } = connect(context);
+    ok(createRule(context, id));
+    const body = bytes(envelope());
+    expect(deliver(context, id, secret, body, { deliveryId: 'monday', timestamp: SECONDS - 120 })).toEqual({ ok: true, data: { outcome: 'accepted' } });
+    expect(deliver(context, id, secret, body, { deliveryId: 'tuesday', timestamp: SECONDS })).toEqual({ ok: true, data: { outcome: 'accepted' } });
+    // A repeated delivery id is still a duplicate, whatever it is signed with.
+    expect(deliver(context, id, secret, body, { deliveryId: 'tuesday', timestamp: SECONDS + 60 })).toEqual({ ok: true, data: { outcome: 'duplicate' } });
+    expect(deliveries(context)).toHaveLength(2);
+  });
+
   it('stores unknown-keyed and repository or command injecting bodies as quarantined deliveries without a workflow', async () => {
     const context = setup();
     const { id, secret } = connect(context);

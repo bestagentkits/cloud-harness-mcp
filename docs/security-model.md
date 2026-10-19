@@ -310,8 +310,9 @@ cannot authenticate to Cloudflare Access. The decisions that keep that safe:
   `401`, and keeps a process-local rate window per connection id, so traffic
   aimed at other ids cannot exhaust a real connection's window and a webhook
   burst cannot consume the MCP pre-auth budget. The runner adds
-  per-connection delivery dedupe, by delivery id and by body digest so a
-  captured body replayed under a new delivery id is a duplicate, and a
+  per-connection delivery dedupe, by delivery id and by a digest of the signed
+  content (the body, plus the signed timestamp for custom webhooks) so a
+  captured request replayed under a new delivery id is a duplicate, and a
   per-connection delivery rate.
 - **Event data is untrusted input.** Each adapter admits only label and state
   transitions (GitHub label additions; Linear transitions derived from
