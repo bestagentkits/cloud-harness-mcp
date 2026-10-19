@@ -3,6 +3,8 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import { AUTOMATION_LIMITS, AutomationJiraBaseUrlSchema } from '@cloud-harness/contracts';
 import {
   boundedText,
+  eventAddedLabels,
+  packAddedLabels,
   record,
   rejectActor,
   type AutomationMatchVerdict,
@@ -37,8 +39,6 @@ const EVENT_NAME = /^[A-Za-z0-9._:-]{1,64}$/u;
 const PROJECT_KEY = /^[A-Za-z][A-Za-z0-9_]{0,19}$/u;
 const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9_]{0,19}-[0-9]{1,10}$/u;
 const COMMENT_ID = /^[0-9]{1,20}$/u;
-/** Room for the space-joined labels of one update inside a flat `extras` value. */
-const MAX_LABELS_CHARS = 200;
 const PUBLISH_TIMEOUT_MS = 15_000;
 
 function parseBody(body: Buffer): Record<string, unknown> | undefined {
@@ -122,13 +122,7 @@ function normalizeUpdate(payload: Record<string, unknown>, baseUrl: string | und
   if (!changes) return { kind: 'quarantined', reason: 'invalid_changelog' };
   if (changes.toStatus === undefined && changes.addedLabels.length === 0) return { kind: 'ignored', reason: 'no_relevant_change' };
 
-  const added: string[] = [];
-  let used = 0;
-  for (const name of changes.addedLabels) {
-    if (used + name.length + (added.length > 0 ? 1 : 0) > MAX_LABELS_CHARS) break;
-    used += name.length + (added.length > 0 ? 1 : 0);
-    added.push(name);
-  }
+  const added = packAddedLabels(changes.addedLabels, ' ');
   const event: NormalizedAutomationEvent = {
     provider: 'jira',
     eventType: changes.toStatus === undefined ? 'jira.issue.label_added' : 'jira.issue.status_changed',
@@ -136,7 +130,7 @@ function normalizeUpdate(payload: Record<string, unknown>, baseUrl: string | und
     resourceKey: `jira:${key.toLowerCase()}`,
     resourceRef: key,
     resourceUrl: `${parsedBase.data}/browse/${key}`,
-    ...(added[0] === undefined ? {} : { label: added[0] }),
+    ...(added.labels[0] === undefined ? {} : { label: added.labels[0] }),
     ...(changes.toStatus === undefined ? {} : { fromState: changes.fromStatus ?? '', toState: changes.toStatus }),
     actor: {
       login,
@@ -146,22 +140,17 @@ function normalizeUpdate(payload: Record<string, unknown>, baseUrl: string | und
     },
     title: boundedText(fields?.summary, AUTOMATION_LIMITS.maxUntrustedTitleChars),
     body: descriptionText(fields?.description),
-    ...(added.length === 0 ? {} : { extras: { addedLabels: added.join(' ') } })
+    ...(added.extras === undefined ? {} : { extras: added.extras })
   };
   return { kind: 'event', event };
 }
-
-const addedLabels = (event: NormalizedAutomationEvent): string[] => {
-  const listed = event.extras?.addedLabels;
-  return typeof listed === 'string' ? listed.split(' ').filter(Boolean) : event.label ? [event.label] : [];
-};
 
 function matchJiraRule(match: Parameters<ProviderAdapter['matches']>[0], event: NormalizedAutomationEvent, selfLogin: string | undefined): AutomationMatchVerdict {
   if (match.provider !== 'jira' || event.provider !== 'jira') return { matched: false, reason: 'provider_mismatch' };
   if (match.projectKey.toLowerCase() !== event.scope.toLowerCase()) return { matched: false, reason: 'project_mismatch' };
   if (match.trigger === 'label_added') {
     const wanted = match.label?.toLowerCase();
-    if (!addedLabels(event).some((name) => name.toLowerCase() === wanted)) return { matched: false, reason: 'label_mismatch' };
+    if (!eventAddedLabels(event, ' ').some((name) => name.toLowerCase() === wanted)) return { matched: false, reason: 'label_mismatch' };
   } else {
     if (event.eventType !== 'jira.issue.status_changed') return { matched: false, reason: 'status_not_changed' };
     if (match.toStatus !== undefined && match.toStatus.toLowerCase() !== (event.toState ?? '').toLowerCase()) return { matched: false, reason: 'status_mismatch' };

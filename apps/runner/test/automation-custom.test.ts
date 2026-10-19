@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { AutomationRuleMatch } from '@cloud-harness/contracts';
+import { AutomationRuleMatchSchema, type AutomationRuleMatch } from '@cloud-harness/contracts';
 import type { NormalizedAutomationEvent } from '../src/automation-adapter.js';
 import { customAdapter, matchCustomRule, normalizeCustomEvent, verifyCustomSignature } from '../src/automation-custom.js';
 import { AutomationService, type AutomationOperationResult } from '../src/automation-service.js';
@@ -79,14 +79,18 @@ describe('custom envelope', () => {
       kind: 'event',
       event: {
         provider: 'custom', eventType: 'custom.event', scope: 'deploy.failed', resourceKey: 'custom:svc-42', resourceRef: 'svc-42',
-        resourceUrl: 'https://ci.example.com/runs/42', label: 'Claude', actor: { login: 'ci', isBot: true }, title: 'Deploy failed', body: 'Exit code 1'
+        resourceUrl: 'https://ci.example.com/runs/42', label: 'Claude', actor: { login: 'ci', isBot: true }, title: 'Deploy failed', body: 'Exit code 1',
+        extras: { addedLabels: 'Claude' }
       }
     });
   });
 
-  it('defaults the actor and takes the first of labelsAdded', () => {
-    const result = normalizeCustomEvent(bytes({ version: 1, event: 'ping', resource: { id: '1' }, labelsAdded: ['a', 'b'] }));
-    expect(result).toMatchObject({ kind: 'event', event: { label: 'a', actor: { login: 'webhook', isBot: false }, resourceUrl: '' } });
+  it('defaults the actor, labels the event with the first of labelsAdded and lists them all', () => {
+    const result = normalizeCustomEvent(bytes({ version: 1, event: 'ping', resource: { id: '1' }, labelsAdded: ['a', 'b c'] }));
+    expect(result).toMatchObject({ kind: 'event', event: { label: 'a', extras: { addedLabels: 'a\tb c' }, actor: { login: 'webhook', isBot: false }, resourceUrl: '' } });
+    const rule = AutomationRuleMatchSchema.parse({ provider: 'custom', event: 'ping', label: 'B C' });
+    expect(result.kind === 'event' && matchCustomRule(rule, result.event, undefined)).toEqual({ matched: true, reason: 'matched' });
+    expect(result.kind === 'event' && matchCustomRule({ ...rule, label: 'c' }, result.event, undefined).matched).toBe(false);
     const unlabelled = normalizeCustomEvent(bytes({ version: 1, event: 'ping', resource: { id: '1' } }));
     expect(unlabelled.kind === 'event' && 'label' in unlabelled.event).toBe(false);
   });
@@ -139,7 +143,8 @@ describe('custom rule matching', () => {
     expect(matchCustomRule(rule({ event: 'Deploy.Failed', label: 'claude' }), event(), undefined)).toEqual({ matched: true, reason: 'matched' });
     expect(matchCustomRule(rule({ event: 'deploy.ok' }), event(), undefined)).toEqual({ matched: false, reason: 'event_mismatch' });
     expect(matchCustomRule(rule({ label: 'other' }), event(), undefined)).toEqual({ matched: false, reason: 'label_mismatch' });
-    expect(matchCustomRule(rule({ label: 'claude' }), event({ label: undefined }), undefined)).toEqual({ matched: false, reason: 'label_mismatch' });
+    const unlabelled = normalizeCustomEvent(bytes(envelope({ label: undefined })));
+    expect(unlabelled.kind === 'event' && matchCustomRule(rule({ label: 'claude' }), unlabelled.event, undefined)).toEqual({ matched: false, reason: 'label_mismatch' });
   });
 
   it('refuses other providers and the harness own login but not ordinary bot senders', () => {

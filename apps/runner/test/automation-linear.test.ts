@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AutomationRuleMatchSchema, type RunnerOperation } from '@cloud-harness/contracts';
-import type { AutomationPublishRequest, NormalizedAutomationEvent } from '../src/automation-adapter.js';
+import { normalizedEventProblem, type AutomationPublishRequest, type NormalizedAutomationEvent } from '../src/automation-adapter.js';
 import { linearAdapter, normalizeLinearEvent, verifyLinearSignature } from '../src/automation-linear.js';
 import { AUTOMATION_PROVIDER_ADAPTERS } from '../src/automation-providers.js';
 import { AutomationService, type AutomationOperationResult } from '../src/automation-service.js';
@@ -134,9 +134,13 @@ describe('Linear normalization', () => {
     });
   });
 
-  it('picks the first added label when several arrive in one change', () => {
-    const extra = { id: 'label-extra', name: 'Extra', color: '#000000' };
-    expect(normalized({ labels: [LABEL_BUG, extra, LABEL_CLAUDE], updatedFrom: { labelIds: [LABEL_BUG.id] } })).toMatchObject({ label: 'Extra' });
+  it('lists every added label, tab-separated so names with spaces survive, and labels the event with the first', () => {
+    const spaced = { id: 'label-spaced', name: 'Needs triage', color: '#000000' };
+    const tabbed = { id: 'label-tabbed', name: 'a\tb', color: '#000000' };
+    const event = normalized({ labels: [LABEL_BUG, spaced, tabbed, LABEL_CLAUDE], updatedFrom: { labelIds: [LABEL_BUG.id] } }) as NormalizedAutomationEvent;
+    expect(event).toMatchObject({ eventType: 'linear.issue.label_added', label: 'Needs triage' });
+    expect(event.extras).toEqual({ issueId: ISSUE_ID, addedLabels: 'Needs triage\tClaude' });
+    expect(normalizedEventProblem(event)).toBeUndefined();
   });
 
   it('derives a state transition from updatedFrom.stateId', () => {
@@ -160,8 +164,13 @@ describe('Linear normalization', () => {
     expect(normalized({ state: STATE_TODO, updatedFrom: { stateId: STATE_TODO.id } })).toBe('ignored:no_transition');
   });
 
-  it('prefers the label when one change adds a label and moves the state', () => {
-    expect(normalized({ state: STATE_PROGRESS, updatedFrom: { labelIds: [LABEL_BUG.id], stateId: STATE_TODO.id } })).toMatchObject({ eventType: 'linear.issue.label_added' });
+  it('keeps both transitions when one change adds a label and moves the state', () => {
+    expect(normalized({ state: STATE_PROGRESS, updatedFrom: { labelIds: [LABEL_BUG.id], stateId: STATE_TODO.id } })).toMatchObject({
+      eventType: 'linear.issue.state_changed',
+      toState: 'In Progress',
+      label: 'Claude',
+      extras: { addedLabels: 'Claude' }
+    });
   });
 
   it('flags integrations, OAuth apps and system changes as bots', () => {
@@ -213,6 +222,16 @@ describe('Linear rule matching', () => {
     expect(linearAdapter.matches(rule({ teamKey: 'OPS', trigger: 'label_added', label: 'claude' }), event(), context).reason).toBe('team_mismatch');
     expect(linearAdapter.matches(rule({ trigger: 'label_added', label: 'other' }), event(), context).reason).toBe('label_mismatch');
     expect(linearAdapter.matches(rule({ trigger: 'state_changed' }), event(), context).reason).toBe('event_not_selected');
+  });
+
+  it('matches a rule for any label added in one update, and a label rule and a state rule on the same update', () => {
+    const extra = { id: 'label-extra', name: 'Extra Work', color: '#000000' };
+    const both = event({ labels: [LABEL_BUG, extra, LABEL_CLAUDE], state: STATE_PROGRESS, updatedFrom: { labelIds: [LABEL_BUG.id], stateId: STATE_TODO.id } });
+    for (const label of ['extra work', 'claude']) {
+      expect(linearAdapter.matches(rule({ trigger: 'label_added', label }), both, context).matched).toBe(true);
+    }
+    expect(linearAdapter.matches(rule({ trigger: 'label_added', label: 'bug' }), both, context).reason).toBe('label_mismatch');
+    expect(linearAdapter.matches(rule({ trigger: 'state_changed', toState: 'In Progress' }), both, context).matched).toBe(true);
   });
 
   it('matches a state trigger on the target state, or any state when omitted', () => {
@@ -434,6 +453,25 @@ describe('Linear provider through the service', () => {
     expect(deliver(context, connection.id, secret, issuePayload())).toEqual({ ok: true, data: { outcome: 'accepted' } });
     expect(deliver(context, connection.id, secret, issuePayload())).toEqual({ ok: true, data: { outcome: 'duplicate' } });
     expect(deliver(context, connection.id, secret, issuePayload(), 'delivery-2')).toEqual({ ok: true, data: { outcome: 'duplicate' } });
+  });
+
+  it('fires a rule on the second of two labels added together, and a label rule and a state rule from one update', () => {
+    const context = setup(graphqlDouble(okResponses).fetch);
+    const { connection, secret } = connect(context);
+    const rule = (name: string, match: Record<string, unknown>) => context.data<{ rule: { id: string } }>(
+      context.run('rule_create', { ...ruleInput(connection.id), name, match: { provider: 'linear', teamKey: 'ENG', ...match } })
+    ).rule.id;
+    const second = rule('second label', { trigger: 'label_added', label: 'claude' });
+    const state = rule('state', { trigger: 'state_changed', toState: 'In Progress' });
+    const unrelated = rule('unrelated', { trigger: 'label_added', label: 'bug' });
+    const extra = { id: 'label-extra', name: 'Extra', color: '#000000' };
+    deliver(context, connection.id, secret, issuePayload({
+      labels: [LABEL_BUG, extra, LABEL_CLAUDE], state: STATE_PROGRESS, updatedFrom: { labelIds: [LABEL_BUG.id], stateId: STATE_TODO.id }
+    }));
+    context.service.tick();
+    const fired = context.store.database.prepare('SELECT rule_id FROM automation_workflows').all().map((row) => (row as { rule_id: string }).rule_id).sort();
+    expect(fired).toEqual([second, state].sort());
+    expect(fired).not.toContain(unrelated);
   });
 
   it('rejects a bad signature and a stale timestamp with the shared unauthorized error', () => {

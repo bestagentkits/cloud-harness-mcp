@@ -2,6 +2,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { AUTOMATION_LIMITS, AutomationCustomEnvelopeSchema, type AutomationRuleMatch } from '@cloud-harness/contracts';
 import {
   boundedText,
+  eventAddedLabels,
+  packAddedLabels,
   rejectActor,
   type AutomationMatchVerdict,
   type AutomationNormalization,
@@ -27,6 +29,12 @@ const TIMESTAMP = /^\d{1,12}$/u;
 const EVENT_NAME = /^[A-Za-z0-9._:-]{1,64}$/u;
 /** How far the signed timestamp may be from the runner's clock, in either direction. */
 export const CUSTOM_TIMESTAMP_TOLERANCE_SECONDS = 300;
+
+/**
+ * Custom labels may contain spaces, so `extras.addedLabels` joins them with a tab. A label that itself
+ * contains a tab cannot be told apart in that list and is never matched.
+ */
+const ADDED_LABELS_SEPARATOR = '\t';
 
 /** Constant-time check of `X-CloudHarness-Signature` over `${timestamp}.${rawBody}`, within the time window. */
 export function verifyCustomSignature(secret: string, body: Buffer, headers: Readonly<Record<string, string>>, nowMs: number): boolean {
@@ -55,7 +63,8 @@ export function normalizeCustomEvent(body: Buffer): AutomationNormalization {
   const result = AutomationCustomEnvelopeSchema.safeParse(parsed);
   if (!result.success) return { kind: 'quarantined', reason: 'invalid_envelope' };
   const { event, resource, actor } = result.data;
-  const label = result.data.label ?? result.data.labelsAdded?.[0];
+  const added = packAddedLabels(result.data.label === undefined ? result.data.labelsAdded ?? [] : [result.data.label], ADDED_LABELS_SEPARATOR);
+  const label = added.labels[0];
   const normalized: NormalizedAutomationEvent = {
     provider: 'custom',
     eventType: 'custom.event',
@@ -66,7 +75,8 @@ export function normalizeCustomEvent(body: Buffer): AutomationNormalization {
     ...(label === undefined ? {} : { label }),
     actor: { login: actor?.login ?? 'webhook', ...(actor?.id === undefined ? {} : { id: actor.id }), isBot: actor?.isBot ?? false },
     title: boundedText(resource.title, AUTOMATION_LIMITS.maxUntrustedTitleChars),
-    body: boundedText(resource.body, AUTOMATION_LIMITS.maxUntrustedBodyChars)
+    body: boundedText(resource.body, AUTOMATION_LIMITS.maxUntrustedBodyChars),
+    ...(added.extras === undefined ? {} : { extras: added.extras })
   };
   return { kind: 'event', event: normalized };
 }
@@ -75,7 +85,8 @@ export function normalizeCustomEvent(body: Buffer): AutomationNormalization {
 export function matchCustomRule(match: AutomationRuleMatch, event: NormalizedAutomationEvent, selfLogin: string | undefined): AutomationMatchVerdict {
   if (match.provider !== 'custom' || event.provider !== 'custom') return { matched: false, reason: 'provider_mismatch' };
   if (match.event.toLowerCase() !== event.scope.toLowerCase()) return { matched: false, reason: 'event_mismatch' };
-  if (match.label !== undefined && match.label.toLowerCase() !== (event.label ?? '').toLowerCase()) return { matched: false, reason: 'label_mismatch' };
+  const wanted = match.label?.toLowerCase();
+  if (wanted !== undefined && !eventAddedLabels(event, ADDED_LABELS_SEPARATOR).some((name) => name.toLowerCase() === wanted)) return { matched: false, reason: 'label_mismatch' };
   // Custom rules carry no bot or allowlist filters; the sender is the owner's own system.
   return rejectActor({ ignoreBots: false }, event.actor, selfLogin) ?? { matched: true, reason: 'matched' };
 }
