@@ -66,11 +66,11 @@ export class PolicyStore {
     return row ? { revisionId: row.revision_id, version: row.version, digest: row.digest, updatedAt: iso(row.updated_at) } : null;
   }
 
-  /** Project heads of one principal, newest first. */
-  projectHeads(principalId: string): Array<{ projectId: string; head: PolicyHeadSummary }> {
+  /** Project heads of one principal, most recently changed first, at most limit of them. */
+  projectHeads(principalId: string, limit = 1_000): Array<{ projectId: string; head: PolicyHeadSummary }> {
     const rows = this.database.prepare(`SELECT h.project_id, h.revision_id, h.version, h.updated_at, r.digest FROM agent_policy_heads h
       JOIN agent_policy_revisions r ON r.revision_id = h.revision_id
-      WHERE h.principal_id = ? AND h.scope = 'project' ORDER BY h.updated_at DESC, h.project_id LIMIT 1000`).all(principalId) as
+      WHERE h.principal_id = ? AND h.scope = 'project' ORDER BY h.updated_at DESC, h.project_id LIMIT ?`).all(principalId, limit) as
       Array<{ project_id: string; revision_id: string; version: number; updated_at: number; digest: string }>;
     return rows.map((row) => ({ projectId: row.project_id, head: { revisionId: row.revision_id, version: row.version, digest: row.digest, updatedAt: iso(row.updated_at) } }));
   }

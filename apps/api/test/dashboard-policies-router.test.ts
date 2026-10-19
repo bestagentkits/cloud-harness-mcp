@@ -49,9 +49,9 @@ const decision = {
   approval: { ttlSeconds: 3_600, approverRoles: ['owner'] }
 };
 const dataFor: Record<string, unknown> = {
-  policy_overview: { global: null, projects: [], defaultGlobal: DEFAULT_GLOBAL_EXECUTION_POLICY },
+  policy_overview: { global: null, projects: [], projectsTruncated: false, defaultGlobal: DEFAULT_GLOBAL_EXECUTION_POLICY },
   policy_get: { scope: 'global', projectId: null, projectState: null, head: null, global: { revision: null, document: DEFAULT_GLOBAL_EXECUTION_POLICY, source: 'default' }, effective },
-  policy_validate: { valid: true, errors: [], widenings: [], weakenings: [], changes: [], effective },
+  policy_validate: { valid: true, errors: [], widenings: [], weakenings: [], changes: [], effective, weakeningDigest: null },
   policy_put: { head: revision, weakenings: [] },
   policy_delete: { deleted: true },
   policy_history: { revisions: [], headRevisionId: null, nextBeforeVersion: null },

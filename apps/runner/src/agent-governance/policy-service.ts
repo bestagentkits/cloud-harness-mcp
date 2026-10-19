@@ -21,8 +21,8 @@ import {
   type RunnerPrincipalSelector
 } from '@cloud-harness/contracts';
 import { withEventSavepoint } from '../event-outbox.js';
-import { evaluateGate, type PolicySnapshot } from './gate-evaluator.js';
-import { diffPolicyDocuments, policyWeakenings, resolveEffectivePolicy } from './policy-merge.js';
+import { PURE_GATE_EVALUATOR, type PolicySnapshot } from './gate-evaluator.js';
+import { canonicalJson, diffPolicyDocuments, policyWeakenings, resolveEffectivePolicy, sha256 } from './policy-merge.js';
 import { StorePolicyResolver, type ProjectStateLookup } from './policy-resolver.js';
 import { PolicyStore, PolicyStoreError } from './policy-store.js';
 
@@ -41,9 +41,19 @@ export type AgentPolicyServiceOptions = {
   enabled: boolean;
   resolvePrincipal: (selector: RunnerPrincipalSelector) => string;
   projectState: ProjectStateLookup;
+  /** Every active project id of a principal, in one query (the overview marks orphaned policies with it). */
+  activeProjectIds: (principalId: string) => ReadonlySet<string>;
   audit: AgentPolicyAudit;
+  /**
+   * Whether a DecisionAdvisor will be consulted for discretionary actions. Execution and simulation read
+   * the same value, so a preview shows the same pending or approval outcome execution starts from.
+   */
+  advisorAvailable?: () => boolean;
   now?: () => number;
 };
+
+/** The overview lists at most this many project policies, most recently changed first. */
+export const OVERVIEW_PROJECT_LIMIT = 1_000;
 
 export class AgentPolicyError extends Error {
   constructor(readonly code: AgentPoliciesRunnerErrorCode, message: string, readonly details?: string[]) {
@@ -73,14 +83,18 @@ export class AgentPolicyService {
   private readonly enabled: boolean;
   private readonly resolvePrincipal: (selector: RunnerPrincipalSelector) => string;
   private readonly projectState: ProjectStateLookup;
+  private readonly activeProjectIds: (principalId: string) => ReadonlySet<string>;
   private readonly audit: AgentPolicyAudit;
+  private readonly advisorAvailable: () => boolean;
 
   constructor(options: AgentPolicyServiceOptions) {
     this.database = options.database;
     this.enabled = options.enabled;
     this.resolvePrincipal = options.resolvePrincipal;
     this.projectState = options.projectState;
+    this.activeProjectIds = options.activeProjectIds;
     this.audit = options.audit;
+    this.advisorAvailable = options.advisorAvailable ?? (() => false);
     this.store = new PolicyStore(options.database, options.now);
     this.resolver = new StorePolicyResolver(this.store, options.projectState);
   }
@@ -89,9 +103,13 @@ export class AgentPolicyService {
     return this.enabled;
   }
 
-  /** The decision path execution uses: resolve the current heads, then the pure evaluator. */
-  evaluate(principalId: string, projectId: string | null, descriptor: AgentActionDescriptor, context?: GateContext, advisorAvailable = false): GateDecision {
-    return evaluateGate({ descriptor, snapshot: this.resolver.resolve(principalId, projectId), context, advisorAvailable });
+  /**
+   * The deterministic decision execution starts from: resolve the current heads, then the pure
+   * evaluator. A discretionary action comes back pending (`ADVISOR_REQUIRED`) when an advisor is
+   * configured; the broker settles it with `PURE_GATE_EVALUATOR.combineAdvisor`.
+   */
+  evaluate(principalId: string, projectId: string | null, descriptor: AgentActionDescriptor, context?: GateContext): GateDecision {
+    return PURE_GATE_EVALUATOR.evaluate({ descriptor, snapshot: this.resolver.resolve(principalId, projectId), context, advisorAvailable: this.advisorAvailable() });
   }
 
   execute(request: unknown): AgentPoliciesRunnerResponse {
@@ -129,11 +147,20 @@ export class AgentPolicyService {
   // ---------------------------------------------------------------- reads
 
   private overview(principalId: string) {
+    const heads = this.store.projectHeads(principalId, OVERVIEW_PROJECT_LIMIT + 1);
+    const active = this.activeProjectIds(principalId);
     return {
       global: this.store.headSummary(principalId, 'global', null),
-      projects: this.store.projectHeads(principalId).map(({ projectId, head }) => ({ projectId, head, orphaned: this.projectState(principalId, projectId) !== 'active' })),
+      projects: heads.slice(0, OVERVIEW_PROJECT_LIMIT).map(({ projectId, head }) => ({ projectId, head, orphaned: !active.has(projectId) })),
+      projectsTruncated: heads.length > OVERVIEW_PROJECT_LIMIT,
       defaultGlobal: DEFAULT_GLOBAL_EXECUTION_POLICY
     };
+  }
+
+  /** What the snapshot permits, or `null` when an orphaned or unknown project denies every action. */
+  private effectiveFor(snapshot: PolicySnapshot): EffectivePolicy | null {
+    if (snapshot.project?.state === 'unknown') return null;
+    return resolveEffectivePolicy(snapshot.global.document, snapshot.project?.document ?? null);
   }
 
   private get(principalId: string, scope: AgentPolicyScope, projectId: string | null) {
@@ -151,7 +178,7 @@ export class AgentPolicyService {
       projectState: project.state,
       head: this.store.head(principalId, 'project', projectId),
       global,
-      effective: resolveEffectivePolicy(snapshot.global.document, project.document)
+      effective: this.effectiveFor(snapshot)
     };
   }
 
@@ -215,7 +242,7 @@ export class AgentPolicyService {
     const projectId = input.projectId ?? null;
     if (projectId !== null) this.requireActiveProject(principalId, projectId);
     const parsed = input.scope === 'global' ? GlobalExecutionPolicySchema.safeParse(input.document) : ProjectExecutionPolicySchema.safeParse(input.document);
-    if (!parsed.success) return { valid: false, errors: issues(parsed.error), widenings: [], weakenings: [], changes: [], effective: null };
+    if (!parsed.success) return { valid: false, errors: issues(parsed.error), widenings: [], weakenings: [], changes: [], effective: null, weakeningDigest: null };
     const assessment = this.assess(principalId, input.scope, projectId, parsed.data);
     return {
       valid: assessment.widenings.length === 0,
@@ -223,8 +250,30 @@ export class AgentPolicyService {
       widenings: details(assessment.widenings),
       weakenings: details(assessment.weakenings),
       changes: assessment.changes,
-      effective: assessment.effective
+      effective: assessment.effective,
+      weakeningDigest: assessment.weakenings.length > 0 ? this.weakeningDigest(principalId, input.scope, projectId, assessment.snapshot, assessment.weakenings) : null
     };
+  }
+
+  /**
+   * Identifies the confirmation the owner gave: the weakening list as shown, for this policy, against
+   * the current global head and the target head version. A different list or a moved head changes it.
+   */
+  private weakeningDigest(principalId: string, scope: AgentPolicyScope, projectId: string | null, snapshot: PolicySnapshot, weakenings: readonly string[]): string {
+    const headVersion = this.store.headSummary(principalId, scope, projectId)?.version ?? 0;
+    return sha256(canonicalJson({ scope, projectId, globalRevisionId: snapshot.global.revisionId, headVersion, weakenings: [...weakenings] }));
+  }
+
+  /** Stale clients get CONFLICT before any policy check, so they reload instead of answering a stale prompt. */
+  private requireHeadVersion(principalId: string, scope: AgentPolicyScope, projectId: string | null, expectedVersion: number): void {
+    const current = this.store.headSummary(principalId, scope, projectId)?.version ?? 0;
+    if (current !== expectedVersion) throw new PolicyStoreError('CONFLICT', `the policy is at version ${current}, not ${expectedVersion}`);
+  }
+
+  /** A weakening needs `confirmWeakening` and the digest of exactly this weakening list. */
+  private requireConfirmation(confirmed: { confirmWeakening: boolean; weakeningDigest?: string | undefined }, expected: string | null, weakenings: string[], message: string): void {
+    if (expected === null) return;
+    if (!confirmed.confirmWeakening || confirmed.weakeningDigest !== expected) throw new AgentPolicyError('CONFIRMATION_REQUIRED', message, weakenings);
   }
 
   // ---------------------------------------------------------------- writes
@@ -236,16 +285,16 @@ export class AgentPolicyService {
     projectId: string | null,
     document: Document,
     expectedVersion: number,
-    confirmWeakening: boolean,
+    confirmation: { confirmWeakening: boolean; weakeningDigest?: string | undefined },
     audit: { action: string; note: string | null; rollbackOf: string | null }
   ): { head: AgentPolicyRevision; weakenings: string[] } {
     return withEventSavepoint(this.database, () => {
       if (projectId !== null) this.requireActiveProject(principalId, projectId);
+      this.requireHeadVersion(principalId, scope, projectId, expectedVersion);
       const assessment = this.assess(principalId, scope, projectId, document);
       if (assessment.widenings.length > 0) throw new AgentPolicyError('POLICY_WIDENS', 'a project policy can only narrow the global policy', assessment.widenings);
-      if (assessment.weakenings.length > 0 && !confirmWeakening) {
-        throw new AgentPolicyError('CONFIRMATION_REQUIRED', 'this change weakens the effective policy; confirm it explicitly', assessment.weakenings);
-      }
+      const digest = assessment.weakenings.length > 0 ? this.weakeningDigest(principalId, scope, projectId, assessment.snapshot, assessment.weakenings) : null;
+      this.requireConfirmation(confirmation, digest, assessment.weakenings, 'this change weakens the effective policy; confirm the listed weakenings explicitly');
       const head = this.store.put(principalId, scope, projectId, document, expectedVersion, { rollbackOf: audit.rollbackOf, note: audit.note });
       this.audit(this.database, principalId, audit.action, 'agent_policy', projectSubject(scope, projectId), head.version, {
         scope,
@@ -261,14 +310,14 @@ export class AgentPolicyService {
 
   private put(principalId: string, input: Request<'policy_put'>) {
     const document = this.parseDocument(input.scope, input.document);
-    return this.write(principalId, input.scope, input.projectId ?? null, document, input.expectedVersion, input.confirmWeakening, {
+    return this.write(principalId, input.scope, input.projectId ?? null, document, input.expectedVersion, input, {
       action: 'agent_policy.updated', note: input.note ?? null, rollbackOf: null
     });
   }
 
   private rollback(principalId: string, input: Request<'policy_rollback'>) {
     const target = this.ownedRevision(principalId, input.revisionId);
-    return this.write(principalId, target.scope, target.projectId, target.document, input.expectedVersion, input.confirmWeakening, {
+    return this.write(principalId, target.scope, target.projectId, target.document, input.expectedVersion, input, {
       action: 'agent_policy.rolled_back', note: input.note ?? null, rollbackOf: target.revisionId
     });
   }
@@ -279,13 +328,13 @@ export class AgentPolicyService {
       const snapshot = this.resolver.resolve(principalId, input.projectId);
       const current = snapshot.project?.document;
       if (!current) throw new AgentPolicyError('NOT_FOUND', 'the project has no policy');
+      this.requireHeadVersion(principalId, 'project', input.projectId, input.expectedVersion);
       // An orphaned policy no longer governs anything (the evaluator denies its project), so removing it weakens nothing.
       const weakenings = snapshot.project?.state === 'active'
         ? policyWeakenings(resolveEffectivePolicy(snapshot.global.document, current), resolveEffectivePolicy(snapshot.global.document, null))
         : [];
-      if (weakenings.length > 0 && !input.confirmWeakening) {
-        throw new AgentPolicyError('CONFIRMATION_REQUIRED', 'removing this policy weakens the effective policy; confirm it explicitly', weakenings);
-      }
+      const digest = weakenings.length > 0 ? this.weakeningDigest(principalId, 'project', input.projectId, snapshot, weakenings) : null;
+      this.requireConfirmation(input, digest, weakenings, 'removing this policy weakens the effective policy; confirm the listed weakenings explicitly');
       this.store.deleteProjectHead(principalId, input.projectId, input.expectedVersion);
       this.audit(this.database, principalId, 'agent_policy.deleted', 'agent_policy', input.projectId, input.expectedVersion, {
         scope: 'project', weakened: weakenings.length > 0, weakenings: weakenings.length
@@ -297,10 +346,12 @@ export class AgentPolicyService {
   // ---------------------------------------------------------------- simulation
 
   /**
-   * Evaluates one descriptor with `evaluateGate`, the same function execution uses. A draft replaces
-   * the stored document for its scope only; the other scope still comes from storage.
+   * Evaluates one descriptor with the same evaluator and advisor availability execution uses. A draft
+   * replaces the stored document for its scope only; the other scope still comes from storage. A
+   * discretionary action shows as pending (`ADVISOR_REQUIRED`) when an advisor is configured, because
+   * the advisor's answer only exists at execution time. Simulations are read-only and not audited.
    */
-  private simulate(principalId: string, input: Request<'policy_simulate'>): { decision: GateDecision; effective: EffectivePolicy } {
+  private simulate(principalId: string, input: Request<'policy_simulate'>): { decision: GateDecision; effective: EffectivePolicy | null } {
     const projectId = input.projectId ?? null;
     let snapshot: PolicySnapshot = this.resolver.resolve(principalId, projectId);
     if (input.draft) {
@@ -312,16 +363,7 @@ export class AgentPolicyService {
         snapshot = { ...snapshot, project: { ...snapshot.project, revisionId: null, document: document as ProjectExecutionPolicy, source: 'draft' } };
       }
     }
-    const decision = evaluateGate({ descriptor: input.action, snapshot, context: input.context, advisorAvailable: false });
-    const project = snapshot.project?.state === 'active' ? snapshot.project.document : null;
-    const effective = resolveEffectivePolicy(snapshot.global.document, project);
-    withEventSavepoint(this.database, () => this.audit(this.database, principalId, 'agent_policy.simulated', 'agent_policy', projectSubject(projectId ? 'project' : 'global', projectId), 1, {
-      actionClass: decision.actionClass,
-      decision: decision.decision,
-      reasonCode: decision.reasonCode,
-      inputFingerprint: decision.inputFingerprint,
-      draft: input.draft !== undefined
-    }));
-    return { decision, effective };
+    const decision = PURE_GATE_EVALUATOR.evaluate({ descriptor: input.action, snapshot, context: input.context, advisorAvailable: this.advisorAvailable() });
+    return { decision, effective: this.effectiveFor(snapshot) };
   }
 }
