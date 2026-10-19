@@ -250,6 +250,7 @@ export function automationRuleInput(values) {
   if (cooldownSeconds === undefined) errors.cooldownSeconds = 'Enter a cooldown from 0 to 86400 seconds.';
   const maxConcurrent = automationInteger(values.get('maxConcurrent'), 1, 5);
   if (maxConcurrent === undefined) errors.maxConcurrent = 'Enter from 1 to 5 concurrent runs.';
+  const coding = automationCodingInput(values, errors);
   if (Object.keys(errors).length) return { errors };
   return {
     errors: {},
@@ -266,10 +267,30 @@ export function automationRuleInput(values) {
         budget: { ttlSeconds, maxInputTokens, maxOutputTokens, maxCostMicros },
         publishComment: values.has('publishComment'),
         cooldownSeconds,
-        maxConcurrent
+        maxConcurrent,
+        ...(coding ? { coding } : {})
       }
     }
   };
+}
+
+/**
+ * The optional coding block: all three fields or none. The runner validates it again; these checks only
+ * keep an obviously invalid value from reaching it. An edit that leaves the fields filled keeps coding on.
+ */
+function automationCodingInput(values, errors) {
+  const projectId = automationField(values, 'codingProjectId').trim();
+  const verifyCommand = automationField(values, 'codingVerifyCommand').trim();
+  const baseBranch = automationField(values, 'codingBaseBranch').trim();
+  if (!projectId && !verifyCommand && !baseBranch) return undefined;
+  if (!/^prj_[A-Za-z0-9_-]{20,80}$/.test(projectId)) errors.codingProjectId = 'Enter the policy project id (prj_…).';
+  if (verifyCommand.length > 512 || !/^[A-Za-z0-9._:@/=+-]+(?: [A-Za-z0-9._:@/=+-]+)*$/.test(verifyCommand)) {
+    errors.codingVerifyCommand = 'Enter the verify command as plain words separated by single spaces, without shell syntax.';
+  }
+  if (baseBranch.length > 200 || !/^[A-Za-z0-9._/-]+$/.test(baseBranch) || baseBranch.startsWith('-') || baseBranch.includes('..') || baseBranch.startsWith('agent/')) {
+    errors.codingBaseBranch = 'Enter the base branch name, for example main. It cannot be an agent/ branch.';
+  }
+  return { projectId, verifyCommand, baseBranch };
 }
 
 /** The rule update body: the full replacement match and action plus the generation the form loaded. */
@@ -3218,11 +3239,11 @@ export function initializeDashboard() {
   }
   async function loadAutomationRunDetail(workflowId) {
     const [detailResult, rulesResult] = await Promise.all([getAutomationWorkflow(workflowId), listAutomationRules().catch(() => undefined)]);
-    const { workflow, result, transitions } = detailResult.data ?? {};
+    const { workflow, result, transitions, actions } = detailResult.data ?? {};
     if (!workflow) throw Object.assign(new Error('This automation run was not found.'), { status: 404 });
     const rule = automationArray(rulesResult?.data?.rules).find((entry) => entry.id === workflow.ruleId);
     setTitle(`${workflow.repository}#${workflow.resourceNumber}`, 'Automation run: state, transitions, and the agent result.');
-    insertRendered(content, renderAutomationRunDetail({ workflow, result, transitions, ruleName: rule?.name }));
+    insertRendered(content, renderAutomationRunDetail({ workflow, result, transitions, ruleName: rule?.name, actions: automationArray(actions) }));
     content.querySelector('[data-automation-cancel]')?.addEventListener('click', (event) => confirmAction({
       title: 'Cancel this run?',
       description: 'The run stops and ends as cancelled. A cancelled run is not retried.',

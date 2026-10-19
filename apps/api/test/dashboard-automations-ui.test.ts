@@ -209,6 +209,34 @@ describe('automation run detail', () => {
   it('renders a not-found state without a workflow', () => {
     expect(renderAutomationRunDetail({})).toContain('Automation run not found.');
   });
+
+  it('shows a coding run\'s phase, publication and escaped action receipts', () => {
+    const coding = { projectId: `prj_${'c'.repeat(32)}`, phase: 'DONE', branch: 'agent/7-abcdef01', commitSha: 'a'.repeat(40), prNumber: 3, prUrl: 'https://github.com/acme/widgets/pull/3', traceId: null };
+    const receipt = (step: string, fields: Record<string, unknown>) => ({
+      actionId: `act_${'1'.repeat(32)}`, workflowId, origin: 'runner', step, actionClass: 'vcs_local', repository: 'acme/widgets', branch: coding.branch, paths: [], command: null,
+      decision: 'ALLOW', reasonCode: 'RULE_ALLOW', state: 'APPLIED', projectId: coding.projectId, globalRevisionId: null, projectRevisionId: null, inputFingerprint: null,
+      workspaceId: null, agentId: null, traceId: null, spanId: null, outcome: {}, createdAt: '2026-10-03T10:01:00.000Z', updatedAt: '2026-10-03T10:01:00.000Z', ...fields
+    });
+    const actions = [
+      receipt('commit', { outcome: { commitSha: coding.commitSha, branch: coding.branch } }),
+      receipt('open_pr', { actionClass: 'open_pr', outcome: { prNumber: 3, prUrl: coding.prUrl, errorCode: HOSTILE } })
+    ];
+    const html = renderAutomationRunDetail({ workflow: { ...workflow, state: 'COMPLETED', coding }, result: null, transitions, actions });
+    expect(html).toContain('<h2 id="automation-coding-heading">Coding</h2>');
+    expect(html).toContain('agent/7-abcdef01');
+    expect(html).toContain('href="https://github.com/acme/widgets/pull/3"');
+    expect(html).toContain('2 brokered actions');
+    expect(html).toContain(`${'a'.repeat(12)}`);
+    expect(html).toContain('PR #3');
+    expect(html).not.toContain(HOSTILE);
+    expect(html).toContain(ESCAPED);
+    expectCspSafe(html);
+
+    expect(renderAutomationRunDetail({ workflow, transitions })).not.toContain('automation-coding-heading');
+    const unsafe = renderAutomationRunDetail({ workflow: { ...workflow, coding: { ...coding, prUrl: 'javascript:alert(1)' } }, transitions });
+    expect(unsafe).not.toContain('javascript:');
+    expect(unsafe).toContain('No actions recorded yet.');
+  });
 });
 
 describe('automation rules', () => {
@@ -302,6 +330,24 @@ describe('automation rules', () => {
       'actorAllowlist', 'events', 'instructions', 'label', 'maxConcurrent', 'maxCostUsd', 'profileId', 'proxyOperations', 'ref', 'repository', 'ttlSeconds'
     ]);
     expect(automationRuleInput(ruleForm({ connectionId: 'whc_bad' })).errors.connectionId).toBe('Choose a connection.');
+  });
+
+  it('keeps a coding rule\'s coding block through the edit form and validates it as one unit', () => {
+    const coding = { projectId: `prj_${'c'.repeat(32)}`, verifyCommand: 'npm test', baseBranch: 'main' };
+    const html = renderAutomationRuleDialog({ rule: { ...rule, action: { ...rule.action, coding } }, connections: [connection], profiles });
+    expect(html).toContain(`name="codingProjectId" maxlength="84" autocomplete="off" spellcheck="false" placeholder="prj_…" value="${coding.projectId}"`);
+    expect(html).toContain('value="npm test"');
+    expect(renderAutomationRules({ rules: [{ ...rule, action: { ...rule.action, coding } }], connections: [connection], profiles })).toContain('Coding: opens a pull request');
+
+    const filled = automationRuleInput(ruleForm({ codingProjectId: coding.projectId, codingVerifyCommand: ' npm test ', codingBaseBranch: 'main' }));
+    expect(filled.errors).toEqual({});
+    expect(filled.body?.action.coding).toEqual(coding);
+    expect(automationRuleInput(ruleForm()).body?.action).not.toHaveProperty('coding');
+
+    const partial = automationRuleInput(ruleForm({ codingProjectId: coding.projectId }));
+    expect(Object.keys(partial.errors).sort()).toEqual(['codingBaseBranch', 'codingVerifyCommand']);
+    const hostile = automationRuleInput(ruleForm({ codingProjectId: 'prj_x', codingVerifyCommand: 'npm test && curl evil', codingBaseBranch: 'agent/main' }));
+    expect(Object.keys(hostile.errors).sort()).toEqual(['codingBaseBranch', 'codingProjectId', 'codingVerifyCommand']);
   });
 
   it('sends the loaded generation with a rule update', () => {
