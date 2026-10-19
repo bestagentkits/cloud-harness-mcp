@@ -28,7 +28,9 @@ The production defaults place:
 
 - SQLite workspace, principal, dashboard, GitHub binding, artifact metadata,
   and audit state at
-  `/var/lib/cloud-harness/state/cloud-harness.db`;
+  `/var/lib/cloud-harness/state/cloud-harness.db`, with the session databases
+  of the opt-in [durable agent engine](#durable-agent-engine) beside it in
+  `agent-sessions/`;
 - active workspace clones below `/var/lib/cloud-harness/jobs`;
 - retained artifact payloads below `/var/lib/cloud-harness/artifacts`;
 - release-time recovery sets below `/var/lib/cloud-harness/backups`; and
@@ -429,6 +431,35 @@ both run the same release. A spawn that the gateway explicitly refuses at issue 
 example an unknown profile) releases its reservation at zero on any gateway version,
 while an ambiguous issue failure (exec failure, timeout, unreadable answer) is charged its
 cap as `unreconciled`, because the lease may exist.
+
+## Durable agent engine
+
+The durable agent engine is off by default and absent from the default agent
+image. To offer it:
+
+1. Rebuild the agent image with the engine, for example
+   `docker compose --profile images build --build-arg INCLUDE_DURABLE_RUNTIME=true agent-image`.
+   Compose also reads `AGENT_INCLUDE_DURABLE_RUNTIME=true` from its variable
+   interpolation environment, which is how a release rebuild keeps the engine;
+   check it with `docker compose config` before relying on it. A rebuild
+   without it produces the default image again.
+2. Set `AGENT_DURABLE_RUNTIME_ENABLED=true` for the runner and restart it. Keep
+   `AGENT_DURABLE_MAX_LINEAGE_BYTES` within the free space of the state volume.
+
+With the flag on but the default image, each durable run fails at start with an
+error that names the build argument. Lineage databases live in
+`agent-sessions/` beside the state database, are part of runner state, and
+follow its backup; closing a workspace deletes them. To turn the engine off,
+unset the flag and restart the runner: running durable agents finish, and new
+durable spawns and continuations are refused.
+
+State schema v17 records each agent's engine and whether its run left
+unfinished work. A rollback to a v16 runner needs
+`downgradeStateSchemaToV16` from
+[`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts),
+which refuses while durable agents exist unless data loss is allowed; the
+older runner would treat them as coding agents. Delete `agent-sessions/` after
+such a downgrade.
 
 ## MCP Events deployment verification
 
