@@ -33,6 +33,15 @@ See [execution and tasks](execution-and-tasks.md).
 `tasks_status` `tasks_cancel` `tasks_graph` `operation_status`
 `operation_cancel` `operation_wait`
 
+Coding agents: `agent_spawn` `agent_status` `agent_logs` `agent_message`
+`agent_cancel` `agent_list`.
+
+## Agent traces
+
+See [agent traces](agent-traces.md).
+
+`agent_traces_list` `agent_trace_get` `agent_trace_spans` `agent_trace_export`
+
 ## Managed toolbox packages
 
 See [managed packages](managed-packages.md).

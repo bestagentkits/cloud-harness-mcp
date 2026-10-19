@@ -103,6 +103,7 @@ import {
   type PackageBuilderRunSpec
 } from '../src/package-builder.js';
 import { EXECUTOR_HARDENING_ARGS } from '../src/toolbox-runner.js';
+import { isWindows } from './platform-support.js';
 
 const instanceId = 'b'.repeat(36);
 const releaseId = 'pkr_abcdefghijklmnopqrstuv';
@@ -361,7 +362,8 @@ describe('builder output parsers', () => {
   });
 });
 
-describe('release tree verification', () => {
+// Release verification reads symlinks, POSIX mode bits, and FIFOs, which a Windows host lacks.
+describe.skipIf(isWindows)('release tree verification', () => {
   let root: string;
   let staging: string;
   const mount = `/opt/chm-packages/${releaseId}`;
@@ -575,6 +577,8 @@ describe('PackageBuilder against a fake Docker CLI', () => {
     await expect(builder({ proxy: undefined }).probeRegistries('npm')).resolves.toBeUndefined();
   });
 
+  // Staged releases need symlinks and execute bits, which a Windows host cannot report, so the
+  // tests that verify one skip there.
   describe('apply builds', () => {
     const lockText = JSON.stringify({ packageJson: '{"name":"chm-release","private":true,"dependencies":{"chm-hello":"1.0.0"}}', lock: npmLock() });
     const job = (overrides: Record<string, unknown> = {}) => ({
@@ -593,7 +597,7 @@ describe('PackageBuilder against a fake Docker CLI', () => {
 
     beforeEach(() => mkdirSync(join(root, 'staging', releaseId), { recursive: true }));
 
-    it('builds, verifies, and launch-checks without network from the read-only final path', async () => {
+    it.skipIf(isWindows)('builds, verifies, and launch-checks without network from the read-only final path', async () => {
       daemon.builder = { stdout: '{"node":"24.11.0","npm":"11.6.1"}', stderr: 'added 2 packages\n', exitCode: 0, hang: false, stage };
       const phases: string[] = [];
       const output: string[] = [];
@@ -623,7 +627,7 @@ describe('PackageBuilder against a fake Docker CLI', () => {
       expect(inspected).toBeLessThan(daemon.calls.indexOf(create));
     });
 
-    it('fails verification when a binary does not launch', async () => {
+    it.skipIf(isWindows)('fails verification when a binary does not launch', async () => {
       daemon.builder = { stdout: '{"node":"24.11.0","npm":"11.6.1"}', stderr: '', exitCode: 0, hang: false, stage };
       daemon.launchExit = 1;
       await expect(builder().build(job())).rejects.toMatchObject({ code: 'PACKAGE_VERIFICATION_FAILED', message: expect.stringMatching(/launch check/) });
@@ -636,7 +640,7 @@ describe('PackageBuilder against a fake Docker CLI', () => {
       expect(builderCalls()).toEqual([]);
     });
 
-    it('passes lifecycle permission only when the plan asked for it', async () => {
+    it.skipIf(isWindows)('passes lifecycle permission only when the plan asked for it', async () => {
       daemon.builder = { stdout: '{"node":"24.11.0","npm":"11.6.1"}', stderr: '', exitCode: 0, hang: false, stage };
       await builder().build(job({ lifecycleScripts: true }));
       expect(builderCalls()[0]!.slice(-3)).toEqual([releaseId, 'allow', 'chm-hello']);

@@ -19,6 +19,7 @@ import { SkillExtensionService, parseSkillFrontmatter } from '../src/skill-exten
 import { StateStore } from '../src/state-store.js';
 import { ToolkitCacheManager } from '../src/toolkit-cache-manager.js';
 import type { WorkspaceService } from '../src/workspace-service.js';
+import { symlinksSupported } from './platform-support.js';
 import { makeZip } from './skill-zip-fixture.js';
 
 const roots: string[] = [];
@@ -153,7 +154,7 @@ describe('skills extension entries', () => {
     expect(skills.map((skill) => skill.uri)).toEqual(['skill://cloud-harness/built-in/declared-name/SKILL.md']);
   });
 
-  it('does not serve a skill containing a symlink or one whose directory is a symlink', async () => {
+  it.skipIf(!symlinksSupported)('does not serve a skill containing a symlink or one whose directory is a symlink', async () => {
     const { builtin, builtinRoot, list } = setup();
     const linked = builtin('linked', { 'SKILL.md': document('linked') });
     symlinkSync('/etc/hostname', join(linked, 'escape.txt'));
@@ -319,7 +320,7 @@ describe('skills extension reads', () => {
     await expect(get('skill://cloud-harness/owner/alpha/SKILL.md')).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
-  it('refuses a file that becomes a symlink after it was listed', async () => {
+  it.skipIf(!symlinksSupported)('refuses a file that becomes a symlink after it was listed', async () => {
     const { builtin, read } = setup();
     const dir = builtin('alpha', { 'SKILL.md': document('alpha'), 'a.md': 'a' });
     rmSync(join(dir, 'a.md'));
@@ -413,7 +414,7 @@ describe('skills extension serving bounds', () => {
     expect((await tight.list('owner', { limit: 100 })).skills).toHaveLength(1);
   });
 
-  it('serves neither same-named skill when one of them cannot be hashed', async () => {
+  it.skipIf(!symlinksSupported)('serves neither same-named skill when one of them cannot be hashed', async () => {
     const { builtin, list, get } = setup();
     builtin('first', { 'SKILL.md': document('dup') });
     const broken = builtin('second', { 'SKILL.md': document('dup') });

@@ -605,6 +605,24 @@ the call bounds by
 and the rationale by [ADR 0004](adr/0004-decision-plane.md). Live counters are
 at `GET /api/v1/decision-plane/status`.
 
+## Agent traces
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AGENT_TRACES_ENABLED` | off | Runner only. Records one durable trace per coding-agent run and enables the four `agent_trace*` tools and the Dashboard Traces page. Off, the tools answer `FEATURE_DISABLED` and the page stays hidden. |
+| `AGENT_TRACE_RETENTION_DAYS` | see schema | How long a finished trace is kept before the hourly purge removes it. |
+| `AGENT_TRACE_MAX_SPANS` | see schema | Spans kept per trace; later spans are dropped behind one truncation marker. |
+| `AGENT_TRACE_MAX_PER_PRINCIPAL` | see schema | Traces kept per principal; the oldest finished traces are evicted first. |
+| `AGENT_TRACE_PREVIEW_BYTES` | `0` | Bytes of redacted tool-input preview per tool span. `0` stores digests only; raise it only when a bounded, redacted preview is worth the extra stored data. |
+
+Code defaults and ranges are owned by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts). Traces
+live in the runner's state database; turning the flag off stops recording and
+reading, while the hourly purge keeps removing traces past retention, so the
+retention period holds with the flag off.
+What a trace may contain is described in
+[security model](security-model.md#agent-traces).
+
 ## Webhook automations
 
 | Variable | Default | Decision |

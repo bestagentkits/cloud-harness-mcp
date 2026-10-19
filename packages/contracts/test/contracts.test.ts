@@ -919,12 +919,13 @@ describe('contracts', () => {
   it('publishes exact truthful agent annotations', () => {
     const specs = Object.fromEntries(TOOL_SPECS.filter(({ name }) => name.startsWith('agent_')).map((spec) => [spec.name, spec]));
     expect(Object.keys(specs).sort()).toEqual([
-      'agent_cancel', 'agent_list', 'agent_logs', 'agent_message', 'agent_spawn', 'agent_status'
-    ]);
+      'agent_cancel', 'agent_list', 'agent_logs', 'agent_message', 'agent_spawn', 'agent_status',
+      'agent_trace_export', 'agent_trace_get', 'agent_trace_spans', 'agent_traces_list'
+    ].sort());
     expect(specs.agent_spawn).toMatchObject({ title: 'Spawn coding agent', readOnly: false, destructive: true, idempotent: true, openWorld: true });
     expect(specs.agent_message).toMatchObject({ title: 'Message coding agent', readOnly: false, destructive: true, idempotent: true, openWorld: true });
     expect(specs.agent_cancel).toMatchObject({ title: 'Cancel coding agent', readOnly: false, destructive: true, idempotent: true, openWorld: false });
-    for (const name of ['agent_status', 'agent_logs', 'agent_list']) {
+    for (const name of ['agent_status', 'agent_logs', 'agent_list', 'agent_traces_list', 'agent_trace_get', 'agent_trace_spans', 'agent_trace_export']) {
       expect(specs[name]).toMatchObject({ readOnly: true, destructive: false, idempotent: true, openWorld: false });
     }
   });

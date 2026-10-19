@@ -58,6 +58,7 @@ describe('dashboard page registry', () => {
       'overview',
       'workspaces',
       'agents',
+      'traces',
       'automations',
       'activity',
       'approvals',

@@ -1378,3 +1378,32 @@ dialog .stack-form { margin-block: 0; max-width: none; }
 
 .repository-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
 .repository-list li { overflow-wrap: anywhere; }
+
+/* traces */
+/* The KPI strip reuses the metric tiles; values are text so "unknown" never reads as a zero. */
+.trace-kpis { margin-block-end: var(--space-6); }
+.trace-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
+.trace-runs { margin-block-end: var(--space-4); }
+.trace-runs small, #trace-table th small { display: block; color: var(--ink-faint); font-size: var(--text-11); overflow-wrap: anywhere; }
+.trace-exports { flex-wrap: wrap; }
+.trace-export-link { display: inline-flex; align-items: center; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: .25rem var(--space-3); font-size: var(--text-12); color: var(--ink); text-decoration: none; background: var(--surface-raised); }
+.trace-export-link:hover { border-color: var(--accent-line); color: var(--accent-strong); }
+/* The waterfall: a label column and a bar on the shared time axis. Bars are SVG geometry, never inline styles. */
+.trace-waterfall { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
+.trace-span { display: grid; grid-template-columns: minmax(12rem, 2fr) minmax(8rem, 3fr); gap: var(--space-1) var(--space-3); align-items: center; padding-block: var(--space-1); border-block-end: 1px solid var(--line); }
+.trace-span-label { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); align-items: baseline; min-width: 0; overflow-wrap: anywhere; }
+.trace-span-label small { color: var(--ink-faint); font-size: var(--text-11); }
+.trace-span-facts { grid-column: 1 / -1; margin: 0; color: var(--ink-muted); font-size: var(--text-11); overflow-wrap: anywhere; }
+.trace-span-facts:empty { display: none; }
+.trace-span.depth-1 .trace-span-label { padding-inline-start: var(--space-4); }
+.trace-span.depth-2 .trace-span-label { padding-inline-start: var(--space-8, 2rem); }
+.trace-span.depth-3 .trace-span-label, .trace-span.depth-4 .trace-span-label, .trace-span.depth-5 .trace-span-label, .trace-span.depth-6 .trace-span-label { padding-inline-start: 3rem; }
+.trace-bar { width: 100%; height: .75rem; display: block; }
+.trace-bar rect { fill: var(--info-line); }
+.trace-span.kind-model_call .trace-bar rect { fill: var(--accent-line); }
+.trace-span.kind-tool_call .trace-bar rect { fill: var(--success-line); }
+.trace-span.kind-gateway .trace-bar rect { fill: var(--warning-line); }
+.trace-bar.open rect { fill: none; stroke: var(--ink-faint); stroke-dasharray: 6 4; }
+@media (max-width: 40rem) {
+  .trace-span { grid-template-columns: minmax(0, 1fr); }
+}

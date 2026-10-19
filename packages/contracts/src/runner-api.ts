@@ -26,7 +26,8 @@ export const RunnerOperationSchema = z.enum([
   'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list',
   'model_provider_list', 'model_catalog_search', 'model_connection_verify',
   'model_profile_list', 'model_profile_validate', 'model_profile_create', 'model_profile_update',
-  'model_spend_summary'
+  'model_spend_summary',
+  'agent_traces_list', 'agent_trace_get', 'agent_trace_spans', 'agent_trace_export'
 ]);
 
 export const ExternalPrincipalSchema = z.object({

@@ -29,6 +29,11 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `API_KEY_GATEWAY_PUBLIC_URL` | `https://api.harness.zuey.me/mcp` | Optional | Optional configuration. |
 | `AUTOMATIONS_ENABLED` | `false` | Optional | Optional webhook-triggered automations. Set the same value for the API (public ingress at /integrations/webhooks/{provider}/{connectionId}) and the runner (workflow admission). |
 | `AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS` | `2` | Optional | Instance-wide ceiling on automation workflows holding a workspace at once (runner). |
+| `AGENT_TRACES_ENABLED` | `false` | Optional | Optional durable agent run traces (runner). Off by default. Traces store timings, tokens, cost, outcomes and digests, never prompts, model output or raw tool arguments. |
+| `AGENT_TRACE_RETENTION_DAYS` | `14` | Optional | Days a finished trace is kept before the retention purge removes it (1-90). |
+| `AGENT_TRACE_MAX_SPANS` | `2000` | Optional | Spans kept per trace; further spans are dropped behind one truncation marker (16-10000). |
+| `AGENT_TRACE_MAX_PER_PRINCIPAL` | `5000` | Optional | Traces kept per principal; the oldest finished traces are removed first (10-100000). |
+| `AGENT_TRACE_PREVIEW_BYTES` | `0` | Optional | Bytes of redacted tool-input preview stored per tool span; 0 stores digests only (0-512). |
 | `ACCESS_LEGACY_OWNER_ID` | `owner` | Optional | Exact one-time legacy owner binding for the first Access rollout: |
 | `ACCESS_LEGACY_ISSUER` | `https://your-team.cloudflareaccess.com` | Optional | Optional configuration. |
 | `ACCESS_LEGACY_SUBJECT` | `—` | Optional | Optional configuration. |

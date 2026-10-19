@@ -334,6 +334,16 @@ regardless. Recover or export the work, then `workspace_close`; the Settings
 panel counts these as retained by auto-close. See
 [expired workspaces and auto-close](operations.md#expired-workspaces-and-auto-close).
 
+An `EXPIRED_RECOVERABLE` workspace whose `error` starts `executor
+reconciliation failed during startup:` lost its executor across a runner
+restart: the retained container would not restart and a replacement could not
+be built. Startup holds only that workspace, logs the runner warning
+`workspace executor reconciliation failed during startup`, and finishes for the
+rest. During the recoverable grace `workspace_recover` rebuilds the executor
+once the cause in the message (for example a full disk or a missing executor
+image) is fixed; after it, auto-close treats the workspace like any expired
+one. A workspace whose checkout is already gone from disk is closed instead.
+
 Prefer `workspace_close`. If manual recovery is unavoidable, match the opaque
 workspace ID in SQLite, the Docker label, and the exact job directory first.
 Never remove the jobs root or unrelated Docker resources. Continue with the
