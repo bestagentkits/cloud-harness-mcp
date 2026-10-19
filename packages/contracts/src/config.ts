@@ -365,7 +365,9 @@ export const RunnerConfigSchema = z.object({
   /** Admits webhook-triggered automation workflows. Off by default. */
   automationsEnabled: enabled,
   /** Instance-wide ceiling on automation workflows holding a workspace at once. */
-  automationsMaxConcurrentWorkflows: positiveBoundedInteger(16, 2)
+  automationsMaxConcurrentWorkflows: positiveBoundedInteger(16, 2),
+  /** Enables the owner-authored agent execution policies and the gate simulation. Off by default. */
+  agentPoliciesEnabled: enabled
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
   if (config.packagesMaxReleaseBytes > config.packagesMaxOwnerBytes) {

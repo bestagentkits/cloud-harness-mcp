@@ -29,6 +29,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `API_KEY_GATEWAY_PUBLIC_URL` | `https://api.harness.zuey.me/mcp` | Optional | Optional configuration. |
 | `AUTOMATIONS_ENABLED` | `false` | Optional | Optional webhook-triggered automations. Set the same value for the API (public ingress at /integrations/webhooks/github/{connectionId}) and the runner (workflow admission). |
 | `AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS` | `2` | Optional | Instance-wide ceiling on automation workflows holding a workspace at once (runner). |
+| `AGENT_POLICIES_ENABLED` | `false` | Optional | Optional owner-authored agent execution policies (runner): Dashboard Settings > Agent policies, project policies and the gate simulation. Off by default; the Dashboard shows a notice while off. |
 | `ACCESS_LEGACY_OWNER_ID` | `owner` | Optional | Exact one-time legacy owner binding for the first Access rollout: |
 | `ACCESS_LEGACY_ISSUER` | `https://your-team.cloudflareaccess.com` | Optional | Optional configuration. |
 | `ACCESS_LEGACY_SUBJECT` | `—` | Optional | Optional configuration. |

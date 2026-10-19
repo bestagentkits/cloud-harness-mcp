@@ -12,6 +12,7 @@ import { SqliteGitHubInstallationStore } from './github-installation-sqlite-stor
 import { MetadataStore } from './metadata-store.js';
 import { McpEventService } from './mcp-event-service.js';
 import { AutomationService } from './automation-service.js';
+import { AgentPolicyService } from './agent-governance/policy-service.js';
 import { HarnessError } from '@cloud-harness/contracts';
 import { SecretKeyring } from './secret-keyring.js';
 import { createRunnerDecisionPlane } from './decision-plane/runner-decision-plane.js';
@@ -106,6 +107,16 @@ const automations = new AutomationService({
   log: (record) => logger.warn(record, 'automation')
 });
 automations.start();
+const agentPolicies = new AgentPolicyService({
+  database: store.database,
+  enabled: config.agentPoliciesEnabled,
+  resolvePrincipal: (principal) => store.resolvePrincipal(principal),
+  // Project identity is the metadata projects table, never a name or id taken from an event payload.
+  projectState: (principalId, projectId) => (metadata.validateArtifactProvenance(principalId, { projectId }) ? 'active' : 'unknown'),
+  audit: (database, principalId, action, subjectType, subjectId, generation, details) => {
+    metadata.recordAuditInTransaction(database, principalId, action, subjectType, subjectId, generation, details);
+  }
+});
 // New installs default to the provider-maximum grant. This never blocks startup and
 // never overwrites a value an operator set explicitly; failures surface in Settings.
 void oauthGrantSettings.reconcileDefault().then(
@@ -115,7 +126,7 @@ void oauthGrantSettings.reconcileDefault().then(
 const server = createServer(createRunnerApp(config, service, controls, apiKeys, {
   settings: oauthGrantSettings,
   resolvePrincipal: (principal) => store.resolvePrincipal(principal)
-}, events, automations));
+}, events, automations, agentPolicies));
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));
 
 async function shutdown(signal: string) {

@@ -1,0 +1,287 @@
+import {
+  AdvisorEffectSchema,
+  GATE_DECISION_RANK,
+  type AdvisorEffect,
+  type AgentActionClass,
+  type AgentActionDescriptor,
+  type AgentPlatformEffect,
+  type EffectivePolicy,
+  type GateContext,
+  type GateDecision,
+  type GateDecisionValue,
+  type GateReason,
+  type GateReasonCode,
+  type GlobalExecutionPolicy,
+  type PolicyScope,
+  type ProjectExecutionPolicy
+} from '@cloud-harness/contracts';
+import { actionFingerprint, commandAdmitted, listAdmits, normalizeWorkspacePath, resolveEffectivePolicy } from './policy-merge.js';
+
+/**
+ * The single gate every agent action passes. `evaluateGate` is a pure function of the descriptor,
+ * the policy snapshot and the runtime context: the Dashboard simulation, the effective-policy
+ * preview and the execution broker all call it, so a preview cannot drift from enforcement.
+ *
+ * Precedence, evaluated in order (the first terminal outcome wins):
+ *  1. Platform invariants (credentials, Docker, network escalation, paths outside the workspace) -> DENY
+ *  2. Runtime facts: orphaned/unknown project, revoked grant, stale generation, stale policy, budget -> DENY
+ *  3. Global hard-deny -> DENY
+ *  4. Repository, branch, path, command, package and host scope (deny on a miss) -> DENY
+ *  5. Class not in the global allowed classes -> DENY
+ *  6. Project narrowing (project hard-deny, class removed) -> DENY
+ *  7. Global or project mandatory approval -> REQUIRE_APPROVAL
+ *  8. Effective rule (global default, or a project rule the merge accepted) -> ALLOW / REQUIRE_APPROVAL
+ *  9. `advisor_or_approval`: ALLOW pending a mandatory advisor answer, or REQUIRE_APPROVAL with no advisor
+ *
+ * The descriptor's free-text `reason` is never read.
+ */
+
+export type GlobalPolicySnapshot = {
+  revisionId: string | null;
+  document: GlobalExecutionPolicy;
+  source: 'stored' | 'default' | 'draft';
+};
+
+export type ProjectPolicySnapshot = {
+  projectId: string;
+  /** Whether Cloud Harness still knows this project for the principal. */
+  state: 'active' | 'unknown';
+  revisionId: string | null;
+  document: ProjectExecutionPolicy | null;
+  source: 'stored' | 'absent' | 'draft';
+};
+
+export type PolicySnapshot = {
+  global: GlobalPolicySnapshot;
+  /** `null` when the action has no project binding. */
+  project: ProjectPolicySnapshot | null;
+};
+
+export type GateInput = {
+  descriptor: AgentActionDescriptor;
+  snapshot: PolicySnapshot;
+  context?: GateContext | undefined;
+  /** True only when an advisor is configured and will be consulted for this action. */
+  advisorAvailable?: boolean | undefined;
+};
+
+export type AdvisorAnswer = { effect: AdvisorEffect; decisionId?: string | null | undefined };
+
+type Verdict = { decision: GateDecisionValue; code: GateReasonCode; source: GateReason['source']; detail: string; rule?: string };
+
+const DOCKER_PROGRAMS = new Set(['docker', 'dockerd', 'podman', 'nerdctl', 'ctr', 'crictl', 'kubectl', 'buildah']);
+const PRIVILEGE_PROGRAMS = new Set(['sudo', 'su', 'doas', 'nsenter', 'chroot', 'unshare', 'setcap', 'capsh', 'pkexec']);
+const PLATFORM_EFFECT_CODES: Record<AgentPlatformEffect, GateReasonCode> = {
+  credential_access: 'PLATFORM_CREDENTIAL_ACCESS',
+  docker_access: 'PLATFORM_DOCKER_ACCESS',
+  network_escalation: 'PLATFORM_NETWORK_ESCALATION',
+  outside_workspace: 'PLATFORM_OUTSIDE_WORKSPACE',
+  privilege_escalation: 'PLATFORM_PRIVILEGE_ESCALATION'
+};
+const BRANCH_CLASSES = new Set<AgentActionClass>(['publish_branch', 'open_pr']);
+const BRANCH_CHECKED_CLASSES = new Set<AgentActionClass>(['publish_branch', 'open_pr', 'vcs_local']);
+
+const programName = (value: string) => (value.split('/').pop() ?? value).toLowerCase();
+
+function escapesWorkspace(path: string): boolean {
+  return path.startsWith('/') || /^[A-Za-z]:/u.test(path) || path.includes('\\') || path.split('/').includes('..');
+}
+
+/** Step 1. The broker's own classification, plus what the descriptor itself proves. */
+export function platformViolation(descriptor: AgentActionDescriptor): Verdict | undefined {
+  const effect = descriptor.platformEffects[0];
+  if (effect) {
+    return { decision: 'DENY', code: PLATFORM_EFFECT_CODES[effect], source: 'platform', detail: `the platform never permits ${effect.replaceAll('_', ' ')}` };
+  }
+  for (const path of descriptor.paths ?? []) {
+    if (escapesWorkspace(path)) return { decision: 'DENY', code: 'PLATFORM_OUTSIDE_WORKSPACE', source: 'platform', detail: 'a path leaves the workspace' };
+    if (descriptor.actionClass !== 'read' && normalizeWorkspacePath(path).split('/').includes('.git')) {
+      return { decision: 'DENY', code: 'PLATFORM_PROTECTED_PATH', source: 'platform', detail: 'repository metadata (.git) is runner-owned' };
+    }
+  }
+  const argv = descriptor.command ?? [];
+  const program = argv[0] ? programName(argv[0]) : undefined;
+  if ((program && DOCKER_PROGRAMS.has(program)) || argv.some((argument) => argument.includes('docker.sock'))) {
+    return { decision: 'DENY', code: 'PLATFORM_DOCKER_ACCESS', source: 'platform', detail: 'container runtimes are never reachable from an agent' };
+  }
+  if (program && PRIVILEGE_PROGRAMS.has(program)) {
+    return { decision: 'DENY', code: 'PLATFORM_PRIVILEGE_ESCALATION', source: 'platform', detail: 'privilege changes are never permitted' };
+  }
+  return undefined;
+}
+
+/** Step 2. Facts that only exist at execution time. */
+function runtimeViolation(input: GateInput, effective: EffectivePolicy): Verdict | undefined {
+  const { snapshot, context } = input;
+  const project = snapshot.project;
+  if (project && project.state === 'unknown') {
+    return project.document
+      ? { decision: 'DENY', code: 'PROJECT_POLICY_ORPHANED', source: 'runtime', detail: 'the project this policy belongs to no longer exists' }
+      : { decision: 'DENY', code: 'PROJECT_UNKNOWN', source: 'runtime', detail: 'the bound project is not known to Cloud Harness' };
+  }
+  if (context?.revoked) return { decision: 'DENY', code: 'GRANT_REVOKED', source: 'runtime', detail: 'the grant for this run was revoked' };
+  const generation = context?.workspaceGeneration;
+  if (generation && generation.pinned !== generation.current) {
+    return { decision: 'DENY', code: 'GENERATION_STALE', source: 'runtime', detail: `workspace generation ${generation.pinned} is no longer current` };
+  }
+  const pinned = context?.pinned;
+  if (pinned && (pinned.globalRevisionId !== snapshot.global.revisionId || pinned.projectRevisionId !== (project?.revisionId ?? null))) {
+    return { decision: 'DENY', code: 'POLICY_STALE', source: 'runtime', detail: 'the policy changed after this run was admitted' };
+  }
+  const usage = context?.usage;
+  if (usage) {
+    const limits: Array<[number | undefined, number, string]> = [
+      [usage.costMicros, effective.budget.maxCostMicrosPerRun, 'cost'],
+      [usage.inputTokens, effective.budget.maxInputTokensPerRun, 'input tokens'],
+      [usage.outputTokens, effective.budget.maxOutputTokensPerRun, 'output tokens'],
+      [usage.elapsedSeconds, effective.budget.maxRunSeconds, 'run time'],
+      [usage.concurrentRuns, effective.budget.maxConcurrentRuns, 'concurrent runs']
+    ];
+    for (const [used, limit, label] of limits) {
+      if (used !== undefined && used >= limit) return { decision: 'DENY', code: 'BUDGET_EXHAUSTED', source: 'runtime', detail: `${label} reached the limit of ${limit}` };
+    }
+  }
+  return undefined;
+}
+
+/** Step 4. Deny on any miss; a class that needs a target and has none is denied too. */
+function scopeViolation(descriptor: AgentActionDescriptor, scope: PolicyScope, source: 'global' | 'project'): Verdict | undefined {
+  const deny = (code: GateReasonCode, detail: string): Verdict => ({ decision: 'DENY', code, source, detail, rule: `${source}.scope` });
+  const actionClass = descriptor.actionClass;
+  if (!listAdmits('repositories', scope.repositories, descriptor.repository)) return deny('REPOSITORY_OUT_OF_SCOPE', `${source} repositories do not include this repository`);
+  if (BRANCH_CLASSES.has(actionClass) && !descriptor.branch) return deny('BRANCH_REQUIRED', `${actionClass} must name its branch`);
+  if (descriptor.branch && BRANCH_CHECKED_CLASSES.has(actionClass) && !listAdmits('branchPrefixes', scope.branchPrefixes, descriptor.branch)) {
+    return deny('BRANCH_OUT_OF_SCOPE', `${source} branch prefixes do not include this branch`);
+  }
+  if (actionClass === 'edit' && !(descriptor.paths?.length)) return deny('PATH_REQUIRED', 'edit must name the paths it changes');
+  for (const path of descriptor.paths ?? []) {
+    if (!listAdmits('pathScopes', scope.pathScopes, path)) return deny('PATH_OUT_OF_SCOPE', `${source} path scopes do not include a requested path`);
+  }
+  if (actionClass === 'test' && !descriptor.command) return deny('COMMAND_REQUIRED', 'test must name its command');
+  if (descriptor.command && !commandAdmitted(scope.commands, descriptor.command)) return deny('COMMAND_NOT_ALLOWED', `${source} commands do not include this command`);
+  if (actionClass === 'package_install') {
+    const requested = descriptor.package;
+    if (!requested) return deny('PACKAGE_REQUIRED', 'package_install must name its package');
+    if (!listAdmits('packages', scope.packages, `${requested.ecosystem}:${requested.name}`)) return deny('PACKAGE_NOT_ALLOWED', `${source} packages do not include this package`);
+    if (!listAdmits('registries', scope.registries, requested.registry)) return deny('REGISTRY_NOT_ALLOWED', `${source} registries do not include this registry`);
+  }
+  if (actionClass === 'network') {
+    if (!descriptor.host) return deny('HOST_REQUIRED', 'network must name its host');
+    if (!listAdmits('networkHosts', scope.networkHosts, descriptor.host)) return deny('HOST_NOT_ALLOWED', `${source} network hosts do not include this host`);
+  }
+  return undefined;
+}
+
+function projectSource(snapshot: PolicySnapshot): GateDecision['policy']['projectSource'] {
+  const project = snapshot.project;
+  if (!project) return 'none';
+  if (project.state === 'unknown') return project.document ? 'orphaned' : 'unknown';
+  return project.source;
+}
+
+export function evaluateGate(input: GateInput): GateDecision {
+  const { descriptor, snapshot } = input;
+  const actionClass = descriptor.actionClass;
+  const global = snapshot.global.document;
+  const project = snapshot.project?.state === 'active' ? snapshot.project.document : null;
+  const effective = resolveEffectivePolicy(global, project);
+  const reasons: GateReason[] = [];
+  const matchedRules: string[] = [];
+  if (snapshot.global.source === 'default') reasons.push({ code: 'GLOBAL_POLICY_DEFAULT', source: 'default', detail: 'no global policy is saved; the read-only default applies' });
+  if (snapshot.project?.state === 'active' && !snapshot.project.document) reasons.push({ code: 'PROJECT_POLICY_ABSENT', source: 'default', detail: 'the project has no policy; the global policy applies alone' });
+  if (effective.ignoredProjectFields.length > 0) {
+    reasons.push({ code: 'PROJECT_WIDENING_IGNORED', source: 'project', detail: `${effective.ignoredProjectFields.length} project field(s) would widen the global policy and were ignored` });
+  }
+
+  const finish = (verdict: Verdict, advisorRequired = false): GateDecision => {
+    reasons.unshift({ code: verdict.code, source: verdict.source, detail: verdict.detail.slice(0, 300) });
+    if (verdict.rule) matchedRules.unshift(verdict.rule);
+    return {
+      version: 1,
+      decision: verdict.decision,
+      reasonCode: verdict.code,
+      reasons: reasons.slice(0, 50),
+      matchedRules: matchedRules.slice(0, 50),
+      actionClass,
+      policy: {
+        globalRevisionId: snapshot.global.revisionId,
+        globalSource: snapshot.global.source,
+        projectId: snapshot.project?.projectId ?? null,
+        projectRevisionId: snapshot.project?.revisionId ?? null,
+        projectSource: projectSource(snapshot)
+      },
+      inputFingerprint: actionFingerprint(descriptor),
+      advisor: { required: advisorRequired, consulted: false, effect: null, decisionId: null },
+      approval: { ttlSeconds: effective.approval.ttlSeconds, approverRoles: [...effective.approval.approverRoles] }
+    };
+  };
+
+  const platform = platformViolation(descriptor);
+  if (platform) return finish({ ...platform, rule: 'platform' });
+  const runtime = runtimeViolation(input, effective);
+  if (runtime) return finish({ ...runtime, rule: 'runtime' });
+  if (global.hardDeny.includes(actionClass)) {
+    return finish({ decision: 'DENY', code: 'GLOBAL_HARD_DENY', source: 'global', detail: `the global policy hard-denies ${actionClass}`, rule: `global.hardDeny.${actionClass}` });
+  }
+  const scope = scopeViolation(descriptor, global.scope, 'global') ?? scopeViolation(descriptor, effective.scope, 'project');
+  if (scope) return finish(scope);
+  if (!global.allowedActionClasses.includes(actionClass)) {
+    return finish({ decision: 'DENY', code: 'ACTION_CLASS_NOT_ALLOWED', source: snapshot.global.source === 'default' ? 'default' : 'global', detail: `the global policy does not allow ${actionClass}`, rule: 'global.allowedActionClasses' });
+  }
+  if (project?.hardDeny?.includes(actionClass)) {
+    return finish({ decision: 'DENY', code: 'PROJECT_HARD_DENY', source: 'project', detail: `the project policy denies ${actionClass}`, rule: `project.hardDeny.${actionClass}` });
+  }
+  if (!effective.allowedActionClasses.includes(actionClass)) {
+    return finish({ decision: 'DENY', code: 'PROJECT_CLASS_REMOVED', source: 'project', detail: `the project policy does not allow ${actionClass}`, rule: 'project.allowedActionClasses' });
+  }
+  if (global.mandatoryApproval.includes(actionClass)) {
+    return finish({ decision: 'REQUIRE_APPROVAL', code: 'MANDATORY_APPROVAL', source: 'global', detail: `the global policy always requires approval for ${actionClass}`, rule: `global.mandatoryApproval.${actionClass}` });
+  }
+  if (effective.mandatoryApproval.includes(actionClass)) {
+    return finish({ decision: 'REQUIRE_APPROVAL', code: 'PROJECT_MANDATORY_APPROVAL', source: 'project', detail: `the project policy always requires approval for ${actionClass}`, rule: `project.mandatoryApproval.${actionClass}` });
+  }
+  const rule = effective.effects.find((entry) => entry.actionClass === actionClass);
+  // The merge returns an effect for every allowed class; a missing one would be a merge defect, so fail closed.
+  if (!rule) return finish({ decision: 'DENY', code: 'ACTION_CLASS_NOT_ALLOWED', source: 'global', detail: `no effect resolved for ${actionClass}` });
+  const ruleName = `${rule.source}.${rule.source === 'project' ? 'rules' : 'defaults'}.${actionClass}`;
+  if (rule.effect === 'allow') return finish({ decision: 'ALLOW', code: 'RULE_ALLOW', source: rule.source, detail: `${actionClass} is allowed by the ${rule.source} policy`, rule: ruleName });
+  if (rule.effect === 'require_approval') {
+    return finish({ decision: 'REQUIRE_APPROVAL', code: 'RULE_REQUIRE_APPROVAL', source: rule.source, detail: `${actionClass} requires approval under the ${rule.source} policy`, rule: ruleName });
+  }
+  if (input.advisorAvailable) {
+    return finish({ decision: 'ALLOW', code: 'ADVISOR_REQUIRED', source: rule.source, detail: `${actionClass} is discretionary and must be cleared by the advisor`, rule: ruleName }, true);
+  }
+  return finish({ decision: 'REQUIRE_APPROVAL', code: 'ADVISOR_UNAVAILABLE', source: rule.source, detail: `${actionClass} is discretionary and no advisor is available`, rule: ruleName });
+}
+
+/**
+ * Applies an advisor answer: `final = max(deterministic, advisor)` over ALLOW < REQUIRE_APPROVAL < DENY.
+ * The advisor can only escalate an ALLOW. A missing, malformed or unknown answer counts as
+ * `escalate` when the advisor was required, so a failed advisor never lets a discretionary action
+ * through. A DENY or REQUIRE_APPROVAL is returned unchanged apart from the advisor record.
+ */
+export function combineAdvisor(decision: GateDecision, answer: AdvisorAnswer | null): GateDecision {
+  const parsed = AdvisorEffectSchema.safeParse(answer?.effect);
+  const consulted = answer !== null && parsed.success;
+  if (!consulted && !decision.advisor.required) return decision;
+  const effect: AdvisorEffect = consulted ? parsed.data : 'escalate';
+  const decisionId = consulted && typeof answer?.decisionId === 'string' ? answer.decisionId.slice(0, 200) : null;
+  const advisor = { required: decision.advisor.required, consulted, effect: consulted ? effect : null, decisionId };
+  const escalated: GateDecisionValue = effect === 'escalate' ? 'REQUIRE_APPROVAL' : 'ALLOW';
+  if (GATE_DECISION_RANK[escalated] <= GATE_DECISION_RANK[decision.decision]) {
+    if (decision.decision !== 'ALLOW') return { ...decision, advisor };
+    return {
+      ...decision,
+      advisor,
+      reasons: [...decision.reasons, { code: 'ADVISOR_NO_CHANGE' as const, source: 'advisor' as const, detail: 'the advisor left the decision unchanged' }].slice(0, 50)
+    };
+  }
+  return {
+    ...decision,
+    decision: escalated,
+    reasonCode: 'ADVISOR_ESCALATED',
+    advisor,
+    reasons: [{ code: 'ADVISOR_ESCALATED' as const, source: 'advisor' as const, detail: consulted ? 'the advisor asked for human approval' : 'the advisor did not answer; approval is required' }, ...decision.reasons].slice(0, 50),
+    matchedRules: ['advisor', ...decision.matchedRules].slice(0, 50)
+  };
+}
