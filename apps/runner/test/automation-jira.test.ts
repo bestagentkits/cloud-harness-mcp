@@ -284,7 +284,20 @@ describe('Jira rule matching', () => {
     expect(verdict(jiraMatch({ ignoreBots: false }), app).matched).toBe(true);
     expect(verdict(jiraMatch({ actorAllowlist: ['someone-else'] }), fixture())).toEqual({ matched: false, reason: 'actor_not_allowed' });
     expect(verdict(jiraMatch({ actorAllowlist: ['5B10A2844C20165700EDE21G'] }), fixture()).matched).toBe(true);
+    expect(verdict(jiraMatch({ actorAllowlist: ['Alice Doe'] }), fixture())).toEqual({ matched: false, reason: 'actor_not_allowed' });
     expect(jiraAdapter.matches({ provider: 'custom', event: 'x' }, eventOf(fixture()), {})).toEqual({ matched: false, reason: 'provider_mismatch' });
+  });
+
+  it('does not let a display name set to an allowed account id pass the allowlist', () => {
+    const allowed = '5b10a2844c20165700ede21g';
+    const spoofed = JSON.parse(fixture().toString()) as { user: Record<string, unknown> };
+    spoofed.user = { ...spoofed.user, accountId: '70121:mallory', displayName: allowed };
+    const body = Buffer.from(JSON.stringify(spoofed));
+    expect(eventOf(body).actor).toMatchObject({ login: allowed, id: '70121:mallory' });
+    expect(verdict(jiraMatch({ actorAllowlist: [allowed] }), body)).toEqual({ matched: false, reason: 'actor_not_allowed' });
+    // Without an account id there is no identity to allow.
+    spoofed.user = { displayName: allowed, accountType: 'atlassian' };
+    expect(verdict(jiraMatch({ actorAllowlist: [allowed] }), Buffer.from(JSON.stringify(spoofed)))).toEqual({ matched: false, reason: 'actor_not_allowed' });
   });
 });
 

@@ -88,7 +88,7 @@ export function matchCustomRule(match: AutomationRuleMatch, event: NormalizedAut
   const wanted = match.label?.toLowerCase();
   if (wanted !== undefined && !eventAddedLabels(event, ADDED_LABELS_SEPARATOR).some((name) => name.toLowerCase() === wanted)) return { matched: false, reason: 'label_mismatch' };
   // Custom rules carry no bot or allowlist filters; the sender is the owner's own system.
-  return rejectActor({ ignoreBots: false }, event.actor, selfLogin) ?? { matched: true, reason: 'matched' };
+  return rejectActor({ ignoreBots: false }, event.actor, selfLogin, []) ?? { matched: true, reason: 'matched' };
 }
 
 export const customAdapter: ProviderAdapter = {

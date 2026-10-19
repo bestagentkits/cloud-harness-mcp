@@ -19,10 +19,16 @@ import {
 
 /** Who caused the event, as the provider reports it. */
 export type AutomationEventActor = {
-  /** GitHub login, Linear user email or name, Jira account id or display name. */
+  /**
+   * Who to name in prompts and on the Dashboard: GitHub login, Linear user email or name, Jira
+   * display name. Linear names and Jira display names are editable by their users, so only the
+   * GitHub login (unique and stable per account) is ever compared with an actor allowlist.
+   */
   login: string;
   /** Stable provider id when it differs from `login` (Linear user id, Jira account id). */
   id?: string;
+  /** Linear user email, when the payload carries one; unique per Linear account. */
+  email?: string;
   /** Bots, apps and integrations; ignored by rules unless the owner opts in. */
   isBot: boolean;
   /** Provider actor kind shown to the agent, such as GitHub's `User` or `Bot`. */
@@ -176,19 +182,22 @@ export const record = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 
 /**
- * The shared actor filters, in order: this harness's own app, bots, then the allowlist (compared
- * with the actor's login or id, case-insensitively). Undefined when the actor passes.
+ * The shared actor filters, in order: this harness's own app, bots, then the allowlist. The
+ * allowlist is compared, case-insensitively, only with `identities`: the stable identifiers the
+ * adapter vouches for (a GitHub login, a Jira account id, a Linear user id or email). A display
+ * name is never one of them, because anyone can set theirs to an allowed id. Undefined when the
+ * actor passes.
  */
 export function rejectActor(
   filters: { ignoreBots?: boolean | undefined; actorAllowlist?: readonly string[] | undefined },
   actor: AutomationEventActor,
-  selfLogin: string | undefined
+  selfLogin: string | undefined,
+  identities: readonly (string | undefined)[]
 ): AutomationMatchVerdict | undefined {
-  const login = actor.login.toLowerCase();
-  if (selfLogin && login === selfLogin.toLowerCase()) return { matched: false, reason: 'self_trigger' };
+  if (selfLogin && actor.login.toLowerCase() === selfLogin.toLowerCase()) return { matched: false, reason: 'self_trigger' };
   if (filters.ignoreBots !== false && actor.isBot) return { matched: false, reason: 'bot_sender' };
-  const id = actor.id?.toLowerCase();
-  if (filters.actorAllowlist && !filters.actorAllowlist.some((entry) => entry.toLowerCase() === login || entry.toLowerCase() === id)) {
+  const stable = identities.filter((value): value is string => typeof value === 'string' && value !== '').map((value) => value.toLowerCase());
+  if (filters.actorAllowlist && !filters.actorAllowlist.some((entry) => stable.includes(entry.toLowerCase()))) {
     return { matched: false, reason: 'actor_not_allowed' };
   }
   return undefined;
@@ -265,7 +274,7 @@ export function normalizedEventProblem(event: NormalizedAutomationEvent): string
   if (typeof event.resourceUrl !== 'string' || event.resourceUrl.length > 300 || (event.resourceUrl !== '' && !event.resourceUrl.startsWith('https://'))) return 'resourceUrl';
   if (!optionalLine(event.label, 100) || event.label === '') return 'label';
   if (!optionalLine(event.fromState, 100) || !optionalLine(event.toState, 100)) return 'state';
-  if (!record(event.actor) || !line(event.actor.login, 254) || !optionalLine(event.actor.id, 200) || !optionalLine(event.actor.type, 40) || typeof event.actor.isBot !== 'boolean') return 'actor';
+  if (!record(event.actor) || !line(event.actor.login, 254) || !optionalLine(event.actor.id, 200) || !optionalLine(event.actor.email, 254) || !optionalLine(event.actor.type, 40) || typeof event.actor.isBot !== 'boolean') return 'actor';
   if (typeof event.title !== 'string' || Array.from(event.title).length > AUTOMATION_LIMITS.maxUntrustedTitleChars + 1) return 'title';
   if (typeof event.body !== 'string' || Array.from(event.body).length > AUTOMATION_LIMITS.maxUntrustedBodyChars + 1) return 'body';
   if (event.extras !== undefined) {

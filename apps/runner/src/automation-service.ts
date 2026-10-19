@@ -308,7 +308,8 @@ function sampleEvent(sample: AutomationSampleEvent): NormalizedAutomationEvent {
     ...(sample.label === undefined ? {} : { label: sample.label }),
     ...(sample.fromState === undefined ? {} : { fromState: sample.fromState }),
     ...(sample.toState === undefined ? {} : { toState: sample.toState }),
-    actor: { login: sample.actor.login, isBot: sample.actor.isBot }
+    // A sample names the actor by the identifier an allowlist holds, so it stands in for the stable id too.
+    actor: { login: sample.actor.login, id: sample.actor.login, isBot: sample.actor.isBot }
   };
 }
 

@@ -333,7 +333,9 @@ cannot authenticate to Cloudflare Access. The decisions that keep that safe:
   starts disabled, ignores bot senders by default, and, when `GITHUB_APP_SLUG`
   is configured, always ignores this harness's own GitHub App. Posted comments
   do not raise label events, so the harness cannot re-trigger itself either
-  way. An optional actor allowlist narrows it further.
+  way. An optional actor allowlist narrows it further; it is compared only with
+  stable identifiers (GitHub login, Linear user id or email, Jira account id),
+  never with a display name the actor can edit.
 - **The agent is read-only.** Each run opens a fresh `network-none` workspace
   on the rule's ref (the default branch unless set) and spawns an agent whose
   proxy operations are limited by the rule contract to the read-only set, with

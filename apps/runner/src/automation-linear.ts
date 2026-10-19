@@ -87,6 +87,7 @@ function linearActor(value: unknown): AutomationEventActor | undefined {
   return {
     login: login as string,
     ...(line(actor.id, 200) ? { id: actor.id } : {}),
+    ...(line(actor.email, 254) ? { email: actor.email } : {}),
     isBot: type.toLowerCase() !== 'user',
     type
   };
@@ -197,7 +198,8 @@ export function matchLinearRule(
     if (event.eventType !== 'linear.issue.state_changed') return { matched: false, reason: 'event_not_selected' };
     if (match.toState !== undefined && match.toState.toLowerCase() !== (event.toState ?? '').toLowerCase()) return { matched: false, reason: 'state_mismatch' };
   }
-  return rejectActor(match, event.actor, selfLogin) ?? { matched: true, reason: 'matched' };
+  // The user id, and the email when Linear sends one, identify a user; the name is editable.
+  return rejectActor(match, event.actor, selfLogin, [event.actor.id, event.actor.email]) ?? { matched: true, reason: 'matched' };
 }
 
 // ---------------------------------------------------------------- publishing

@@ -101,7 +101,8 @@ export function matchGitHubRule(match: AutomationRuleMatch, event: NormalizedAut
   if (!selected || !match.events.includes(selected)) return { matched: false, reason: 'event_not_selected' };
   if (match.repository.toLowerCase() !== event.scope.toLowerCase()) return { matched: false, reason: 'repository_mismatch' };
   if (match.label.toLowerCase() !== (event.label ?? '').toLowerCase()) return { matched: false, reason: 'label_mismatch' };
-  return rejectActor(match, event.actor, selfLogin) ?? { matched: true, reason: 'matched' };
+  // A GitHub login is unique and stable per account, so it is the identity an allowlist names.
+  return rejectActor(match, event.actor, selfLogin, [event.actor.login]) ?? { matched: true, reason: 'matched' };
 }
 
 /** GitHub's limit on a check run summary; the contract also bounds its UTF-8 bytes to the same number. */

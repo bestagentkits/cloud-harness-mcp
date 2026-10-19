@@ -249,7 +249,19 @@ describe('Linear rule matching', () => {
     expect(linearAdapter.matches(rule({ ...base, ignoreBots: false }), bot, context).matched).toBe(true);
     expect(linearAdapter.matches(rule({ ...base, actorAllowlist: ['bob@example.com'] }), event(), context).reason).toBe('actor_not_allowed');
     expect(linearAdapter.matches(rule({ ...base, actorAllowlist: ['USER-1'] }), event(), context).matched).toBe(true);
+    expect(linearAdapter.matches(rule({ ...base, actorAllowlist: ['Alice@Example.com'] }), event(), context).matched).toBe(true);
     expect(linearAdapter.matches(rule(base), event(), { selfLogin: 'alice@example.com' }).reason).toBe('self_trigger');
+  });
+
+  it('does not let a user name set to an allowed id or email pass the allowlist', () => {
+    const base = { trigger: 'label_added', label: 'claude' };
+    // Without an email the actor is shown by name, which its user can set to anything.
+    const spoofed = event({ actor: { id: 'user-9', type: 'user', name: 'user-1' } });
+    expect(spoofed.actor).toMatchObject({ login: 'user-1', id: 'user-9' });
+    expect(linearAdapter.matches(rule({ ...base, actorAllowlist: ['user-1'] }), spoofed, context).reason).toBe('actor_not_allowed');
+    const named = event({ actor: { id: 'user-9', type: 'user', name: 'alice@example.com' } });
+    expect(linearAdapter.matches(rule({ ...base, actorAllowlist: ['alice@example.com'] }), named, context).reason).toBe('actor_not_allowed');
+    expect(linearAdapter.matches(rule({ ...base, actorAllowlist: ['user-9'] }), named, context).matched).toBe(true);
   });
 
   it('refuses another provider on either side', () => {

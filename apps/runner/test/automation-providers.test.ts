@@ -60,13 +60,20 @@ describe('automation provider registry', () => {
 
   it('applies the shared actor filters in a fixed order', () => {
     const human = { login: 'Alice', id: 'u-1', isBot: false };
-    expect(rejectActor({ ignoreBots: true }, human, undefined)).toBeUndefined();
-    expect(rejectActor({ ignoreBots: true }, { login: 'app[bot]', isBot: true }, 'APP[bot]')?.reason).toBe('self_trigger');
-    expect(rejectActor({ ignoreBots: true }, { login: 'ci', isBot: true }, undefined)?.reason).toBe('bot_sender');
-    expect(rejectActor({ ignoreBots: false }, { login: 'ci', isBot: true }, undefined)).toBeUndefined();
-    expect(rejectActor({ actorAllowlist: ['U-1'] }, human, undefined)).toBeUndefined();
-    expect(rejectActor({ actorAllowlist: ['alice'] }, human, undefined)).toBeUndefined();
-    expect(rejectActor({ actorAllowlist: ['bob'] }, human, undefined)?.reason).toBe('actor_not_allowed');
+    expect(rejectActor({ ignoreBots: true }, human, undefined, [human.id])).toBeUndefined();
+    expect(rejectActor({ ignoreBots: true }, { login: 'app[bot]', isBot: true }, 'APP[bot]', [])?.reason).toBe('self_trigger');
+    expect(rejectActor({ ignoreBots: true }, { login: 'ci', isBot: true }, undefined, [])?.reason).toBe('bot_sender');
+    expect(rejectActor({ ignoreBots: false }, { login: 'ci', isBot: true }, undefined, [])).toBeUndefined();
+    expect(rejectActor({ actorAllowlist: ['U-1'] }, human, undefined, [human.id])).toBeUndefined();
+    expect(rejectActor({ actorAllowlist: ['bob'] }, human, undefined, [human.id])?.reason).toBe('actor_not_allowed');
+  });
+
+  it('compares an actor allowlist only with the identities the adapter vouches for', () => {
+    // A display name set to an allowed id is not that user.
+    const impostor = { login: 'u-1', id: 'u-2', isBot: false };
+    expect(rejectActor({ actorAllowlist: ['u-1'] }, impostor, undefined, [impostor.id])?.reason).toBe('actor_not_allowed');
+    expect(rejectActor({ actorAllowlist: ['u-1'] }, impostor, undefined, [undefined, ''])?.reason).toBe('actor_not_allowed');
+    expect(rejectActor({ actorAllowlist: ['Alice'] }, { login: 'alice', isBot: false }, undefined, ['alice'])).toBeUndefined();
   });
 
   it('indexes every provider rule by scope and trigger, with an empty key for an omitted filter', () => {

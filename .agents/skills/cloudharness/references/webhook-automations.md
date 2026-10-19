@@ -46,6 +46,9 @@ Boundaries:
   - Jira: `provider: "jira"`, `projectKey`, `trigger` `label_added` (with
     `label`) or `status_changed` (optional `toStatus`); same actor filters.
   - Custom: `provider: "custom"`, `event`; optional `label`.
+- `actorAllowlist` entries must be stable identifiers: GitHub logins, Linear
+  user ids (or emails, matched only when the webhook carries the email), and
+  Jira account ids. Display names never match, because users can edit them.
 - `action` requires `profileId` and `instructions`. GitHub rules check out
   `match.repository` and must leave `action.repository` unset; every other
   provider must pin `action.repository` (`owner/name`), because an event can

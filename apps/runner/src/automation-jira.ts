@@ -159,7 +159,8 @@ function matchJiraRule(match: Parameters<ProviderAdapter['matches']>[0], event: 
     if (event.eventType !== 'jira.issue.status_changed') return { matched: false, reason: 'status_not_changed' };
     if (match.toStatus !== undefined && match.toStatus.toLowerCase() !== (event.toState ?? '').toLowerCase()) return { matched: false, reason: 'status_mismatch' };
   }
-  return rejectActor(match, event.actor, selfLogin) ?? { matched: true, reason: 'matched' };
+  // Only the account id identifies a Jira user; the display name is editable by its owner.
+  return rejectActor(match, event.actor, selfLogin, [event.actor.id]) ?? { matched: true, reason: 'matched' };
 }
 
 /** Resolves a host to its addresses; injectable so tests never touch DNS. */

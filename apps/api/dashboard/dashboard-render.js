@@ -2825,8 +2825,8 @@ function automationActorFields(match, provider) {
   const github = provider === 'github';
   const bots = github ? "Ignore bot senders (this harness's own GitHub App is always ignored when its slug is configured)" : 'Ignore bot and integration actors';
   return `<label class="checkbox-label"><input type="checkbox" name="ignoreBots"${automationChecked(match.ignoreBots !== false)}><span>${escape(bots)}</span></label>
-      ${automationTextField({ id: 'automation-rule-actors', name: 'actorAllowlist', label: 'Allowed actors (optional)', value: automationList(match.actorAllowlist).join(', '), maxlength: 13000, placeholder: github ? 'octocat, hubot' : 'user id or email',
-    help: github ? 'Comma-separated GitHub logins. Leave empty to let anyone who can label trigger the rule.' : `Comma-separated ${provider === 'jira' ? 'Jira account ids' : 'Linear user ids or emails'}. Leave empty to let anyone trigger the rule.` })}`;
+      ${automationTextField({ id: 'automation-rule-actors', name: 'actorAllowlist', label: 'Allowed actors (optional)', value: automationList(match.actorAllowlist).join(', '), maxlength: 13000, placeholder: github ? 'octocat, hubot' : provider === 'jira' ? 'account id' : 'user id or email',
+    help: github ? 'Comma-separated GitHub logins. Leave empty to let anyone who can label trigger the rule.' : `Comma-separated ${provider === 'jira' ? 'Jira account ids' : 'Linear user ids or emails'}; display names never match. Leave empty to let anyone trigger the rule.` })}`;
 }
 
 /**

@@ -104,7 +104,10 @@ On **Rules**, choose **New rule**, pick the connection, and fill in:
   for Linear, an optional team key and either a label or a target workflow state; for
   Jira, the project key and either a label or a target status; for a custom
   connection, the event name and an optional label. GitHub, Linear, and Jira rules can
-  ignore bot senders and name the actors allowed to trigger them.
+  ignore bot senders and name the actors allowed to trigger them. Name each actor by a
+  stable identifier: a GitHub login, a Linear user id (or email; an email matches only
+  when Linear includes it in the webhook), or a Jira account id. Display names never
+  match, because anyone can change theirs.
 - **Then:** the repository to check out (Linear, Jira, and custom rules only; a GitHub
   rule always uses its own repository), the model profile, your instructions, an
   optional branch or tag, the workspace tools the agent may use, and whether to post

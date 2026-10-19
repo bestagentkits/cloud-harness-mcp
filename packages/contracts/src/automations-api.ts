@@ -103,7 +103,11 @@ const providerActor = z.string().min(1).max(254).regex(/^[^\s\0]+$/u, 'actor can
 const actorFilters = {
   /** Bot and integration actors are ignored unless the owner opts in. */
   ignoreBots: z.boolean().default(true),
-  /** When set, only these actors may trigger the rule. */
+  /**
+   * When set, only these actors may trigger the rule. Entries are compared only with stable
+   * identifiers: a Jira account id, or a Linear user id or (when the webhook carries it) email.
+   * Display names are editable by their users and never match.
+   */
   actorAllowlist: z.array(providerActor).max(50).optional()
 };
 

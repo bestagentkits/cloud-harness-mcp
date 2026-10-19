@@ -691,7 +691,7 @@ function fakeLinearAdapter(published: AutomationPublishRequest[]): ProviderAdapt
       if (match.provider !== 'linear') return { matched: false, reason: 'provider_mismatch' };
       if (match.teamKey && match.teamKey.toLowerCase() !== event.scope.toLowerCase()) return { matched: false, reason: 'team_mismatch' };
       if (match.label && match.label.toLowerCase() !== event.label?.toLowerCase()) return { matched: false, reason: 'label_mismatch' };
-      return rejectActor(match, event.actor, context.selfLogin) ?? { matched: true, reason: 'matched' };
+      return rejectActor(match, event.actor, context.selfLogin, [event.actor.id]) ?? { matched: true, reason: 'matched' };
     },
     publish: async (request) => {
       published.push(request);
