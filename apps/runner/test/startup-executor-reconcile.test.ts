@@ -134,4 +134,37 @@ describe('startup executor reconciliation', () => {
       store.close();
     }
   });
+
+  it('finishes startup when a held workspace leaves a container Docker cannot remove', async () => {
+    const { config, stuck, healthy } = await retainedWorkspaces();
+    dockerMocks.runDocker.mockImplementation(async (args: string[]) => {
+      if ((args[0] === 'restart' && args[1] === stuck.container) || args[0] === 'create') {
+        return { stdout: '', stderr: 'Error response from daemon: container is stuck', exitCode: 1, truncated: false };
+      }
+      if (args[0] === 'ps' && args.includes('label=cloud-harness.managed=true')) {
+        return { stdout: `${stuck.container}\t${stuck.id}\n${healthy.container}\t${healthy.id}\n`, stderr: '', exitCode: 0, truncated: false };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, truncated: false };
+    });
+    dockerMocks.removeContainer.mockImplementation(async (name: string) => {
+      if (name === stuck.container) throw new Error('Docker could not remove the workspace container');
+      return undefined;
+    });
+    const store = new StateStore(config.stateDb);
+    const service = new WorkspaceService(config, store);
+    try {
+      const failures = await service.start();
+      expect(failures).toEqual([
+        { workspaceId: stuck.id, reason: expect.stringMatching(/^executor creation failed: /) },
+        { workspaceId: stuck.id, reason: expect.stringMatching(new RegExp(`^leftover container ${stuck.container} could not be removed`)) }
+      ]);
+      expect(store.byId(stuck.id)!).toMatchObject({ status: 'EXPIRED_RECOVERABLE', containerName: null });
+      expect(store.byId(healthy.id)!).toMatchObject({ status: 'ACTIVE', containerName: healthy.container });
+      expect(dockerMocks.removeContainer).not.toHaveBeenCalledWith(healthy.container);
+    } finally {
+      dockerMocks.removeContainer.mockImplementation(async () => undefined);
+      await service.stop();
+      store.close();
+    }
+  });
 });
