@@ -39,7 +39,7 @@ Every agent action has a class: **Read**, **Edit files**, **Run tests**,
 - **Mandatory approval**: always waits for your approval.
 - **Default effect**: **Allow**, **Require approval**, or **Advisor or
   approval**. With no advisor configured, **Advisor or approval** waits for
-  your approval.
+  your approval (see [Execution-risk advisor](#execution-risk-advisor)).
 - **Projects may choose**: lets a project policy pick this class's effect. On a
   class with no default effect it saves **Require approval** as the default,
   which projects may then change.
@@ -52,6 +52,39 @@ global policy, a read-only default applies that allows only **Read**.
 Some actions are denied whatever the policy says: access to credentials or the
 Docker socket, network escalation, privilege escalation, and paths outside the
 workspace.
+
+## Execution-risk advisor
+
+The **Execution-risk advisor** section lets TypeSafe Jev clear routine
+**Advisor or approval** actions so you are asked only about the risky ones. It
+needs three things:
+
+1. Your TypeSafe key, stored in [TypeSafe](/dashboard/typesafe).
+2. The operator listing `execution-risk` in `DECISION_PLANE_PURPOSES` (see
+   [environment variables](/reference/environment-variables)).
+3. **Let the advisor clear Advisor or approval actions** ticked in the global
+   policy.
+
+Without all three, nothing is sent to TypeSafe and every **Advisor or
+approval** action waits for you.
+
+Jev is asked only about an action that already passed every other check, and
+it receives a summary of counts and categories, not your paths, commands,
+branch or repository names. It answers with a risk score and how confident it
+is. The action runs without you only when the risk is below **Escalate at
+risk** and the confidence is at least **Minimum confidence**. Otherwise it
+waits for your approval.
+
+**When the advisor cannot answer** decides what happens on a timeout, rate
+limit, invalid or unsure answer, missing key, or a disabled purpose:
+**Require approval** (the default) or **Deny**. The advisor can never lift a
+hard deny, a mandatory approval or an unanalyzable command, and it never turns
+an action into a deny on its own.
+
+A project policy can turn the advisor off, lower the risk threshold, raise the
+minimum confidence, or choose **Deny** as its fallback. It cannot turn the
+advisor on or loosen it. Turning the advisor on or loosening it globally is a
+weakening you confirm when you save.
 
 ## Project policies only narrow
 
@@ -99,8 +132,12 @@ snapshot and advisor setting that the coding broker will use, so its answer is
 the decision execution starts from. The one difference is the advisor: when an
 advisor is configured, an **Advisor or approval** action shows as **Requires
 approval** with `ADVISOR_REQUIRED`, because the advisor answers only at
-execution time. It becomes **Allow** only if the advisor answers that nothing
-needs to change.
+execution time. A simulation never sends anything to TypeSafe. At execution the
+action becomes **Allow** only if the advisor answers that nothing needs to
+change. When the policy enables the advisor but it is unavailable, the
+simulation already shows the fallback and its reason, such as **Jev not
+consulted (no TypeSafe key)**. An executed decision shows whether Jev was
+consulted, with its decision id, risk and confidence.
 
 Commands have two platform outcomes. A command that runs a container runtime or
 a privilege tool such as `sudo` is denied, and no policy or approval can allow

@@ -812,11 +812,18 @@ the owner has stored a TypeSafe integration key.
   filtering already allowed, and it can attach `data.diagnosis` to a generic
   GitHub failure. It cannot add a tool, change an error code or `retryable`,
   retry anything, or grant access. The API rejects an ordering that is not an
-  exact permutation of the candidates it sent.
+  exact permutation of the candidates it sent. For `execution-risk` it can
+  only keep or escalate an agent action the policy already marked
+  discretionary; see [Agent execution policies](#agent-execution-policies).
 - **What leaves the runner.** For `mcp-routing`: the search query plus the
   names and shortened descriptions of the allowed candidate tools. For
   `failure-classification`: the action name, exit code, network profile, and a
-  tail of the stderr and stdout. Repository contents are never sent.
+  tail of the stderr and stdout. For `execution-risk`: a typed summary of the
+  action (its class, counts of touched, test, manifest, CI and hidden paths, a
+  command category with its argument count and a short digest, whether a
+  branch or network host is named, the package ecosystem, diff size and test
+  result). Paths, arguments, branch, repository and package names and the
+  action's free-text reason are not sent. Repository contents are never sent.
 - **Redaction fails closed, and comes before any cut.** Output and
   descriptions are redacted whole and only then shortened, so a secret that
   straddles the cut is replaced, never left as an unrecognised fragment. Every
@@ -862,7 +869,22 @@ changes simulation results only.
   so a simulation returns what execution will start from. The one difference
   is the advisor: a discretionary action shows as pending (`ADVISOR_REQUIRED`,
   which is REQUIRE_APPROVAL) because the advisor's answer exists only at
-  execution time. The descriptor's free-text reason is never read.
+  execution time. A simulation never calls the advisor. The descriptor's
+  free-text reason is never read.
+- **The advisor can only keep or escalate.** The Jev execution-risk advisor
+  runs only when three opt-ins hold: the owner stored a TypeSafe key, the
+  operator listed `execution-risk` in `DECISION_PLANE_PURPOSES`, and the
+  global policy's `advisor.enabled` is true. A project may turn it off or make
+  it stricter, never enable or loosen it, and enabling or loosening it is a
+  weakening the owner confirms. It is asked only about an
+  `advisor_or_approval` action that passed every deterministic check, and a
+  confident low-risk answer is the only thing that lets that action run
+  without a human. Every other outcome (advisor off or unconfigured, timeout,
+  rate limit, invalid answer, low confidence, redaction failure) applies the
+  policy's fallback: approval by default, or deny. The decision records the
+  Jev decision id, risk and confidence, or the fallback reason. No answer
+  lowers a deny or a required approval, including
+  `PLATFORM_COMMAND_UNANALYZABLE`.
 - **Platform invariants have two outcomes.** Credential and Docker access,
   network escalation, paths outside the workspace and privilege escalation
   deny before any policy is read. For commands, the gate reads every program a

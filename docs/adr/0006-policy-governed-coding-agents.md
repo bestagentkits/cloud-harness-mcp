@@ -92,6 +92,17 @@ decision, and `decide` combines evaluation and the answer in one call. With no
 advisor configured the effect resolves to `REQUIRE_APPROVAL`. An advisor, a
 project or prompt text can never override a hard deny or a mandatory approval.
 
+The advisor is a policy setting, not only a runtime capability. The global
+policy's `advisor` block enables it and holds the risk threshold, the minimum
+confidence and the fallback mode (`require_approval` by default, or `deny`).
+A project can only turn it off or make it stricter. When the policy enables the
+advisor but it cannot answer (purpose off, no key, timeout, rate limit, invalid
+answer, low confidence, redaction failure) the fallback mode applies and the
+decision records the reason. A confident `escalate` is always
+`REQUIRE_APPROVAL`; only the owner's own fallback mode can turn an advisor
+outcome into `DENY`. The decision records the advisor's decision id, risk and
+confidence.
+
 ### The orchestrator owns publishing
 
 An agent edits inside its workspace. Publishing a branch and opening a pull
@@ -105,8 +116,10 @@ policy's branch prefixes. The agent never holds the credential that publishes.
 versions the boundaries later work builds on: `RuntimeAdapter`,
 `ExecutionBackend`, `ActionBroker`, `PolicyResolver`, `GateEvaluator`,
 `DecisionAdvisor`, `EventStore` and `NotificationAdapter`. This release
-implements `PolicyResolver` (`StorePolicyResolver`) and `GateEvaluator`
-(`PURE_GATE_EVALUATOR`); the others are interfaces for later work. Each implementation
+implements `PolicyResolver` (`StorePolicyResolver`), `GateEvaluator`
+(`PURE_GATE_EVALUATOR`) and `DecisionAdvisor` (`ExecutionRiskAdvisor`, the
+Decision Plane `execution-risk` purpose); the others are interfaces for later
+work. Each implementation
 declares the contract version it serves as a literal type, so an adapter
 written against another version fails to compile. A breaking change adds a new
 version instead of editing the current one.
