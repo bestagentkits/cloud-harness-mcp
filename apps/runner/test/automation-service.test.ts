@@ -12,7 +12,13 @@ import {
   type AutomationOperationResult
 } from '../src/automation-service.js';
 import { rejectActor } from '../src/automation-adapter.js';
-import { normalizeGitHubEvent, verifyGitHubSignature } from '../src/automation-github.js';
+import {
+  boundedCheckSummary,
+  CHECK_RUN_SUMMARY_MAX,
+  checkRunConclusion,
+  normalizeGitHubEvent,
+  verifyGitHubSignature
+} from '../src/automation-github.js';
 import {
   AUTOMATION_PROVIDER_ADAPTERS,
   type AutomationProviderRegistry,
@@ -373,8 +379,10 @@ describe('AutomationService engine', () => {
     const spawn = context.operations.calls.find((call) => call.operation === 'agent_spawn')!;
     expect(spawn.input).toMatchObject({ profileId: 'default', idempotencyKey: `automation:${workflow!.id}:spawn`, proxyOperations: ['files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references'] });
     expect(String(spawn.input.prompt)).toContain('<untrusted_event_data>');
-    const comment = context.operations.calls.find((call) => call.operation === 'github_action')!;
-    expect(comment.input).toMatchObject({ action: 'issue_comment', issueNumber: 7, idempotencyKey: `automation:${workflow!.id}:comment` });
+    const [started, comment] = context.operations.calls.filter((call) => call.operation === 'github_action');
+    expect(started!.input).toMatchObject({ action: 'issue_comment', issueNumber: 7, idempotencyKey: `automation:${workflow!.id}:started` });
+    // The fake broker returns no comment URL, so there is no comment to edit and the answer is posted.
+    expect(comment!.input).toMatchObject({ action: 'issue_comment', issueNumber: 7, idempotencyKey: `automation:${workflow!.id}:comment` });
     expect(String(comment.input.body)).toContain('Final answer for @​team');
     expect(context.operations.count('workspace_close')).toBe(1);
     const detail = ok<{ result: string; transitions: { toState: string }[] }>(context.service.execute({ version: 1, principal: context.owner, operation: 'workflow_get', input: { id: workflow!.id } }));
@@ -567,9 +575,11 @@ describe('AutomationService engine', () => {
       await drive(context, 1);
     }
     expect(workflows(context)[0]).toMatchObject({ publishState: 'FAILED' });
-    const comments = context.operations.calls.filter((call) => call.operation === 'github_action');
+    const comments = context.operations.calls.filter((call) => call.operation === 'github_action' && String(call.input.idempotencyKey).endsWith(':comment'));
     expect(comments).toHaveLength(AUTOMATION_PUBLISH_RETRY_DELAYS_MS.length + 1);
     expect(new Set(comments.map((call) => call.input.idempotencyKey)).size).toBe(1);
+    // The progress comment is attempted once when the agent starts and never retried.
+    expect(context.operations.count('github_action')).toBe(AUTOMATION_PUBLISH_RETRY_DELAYS_MS.length + 2);
     await drive(context, 1);
     expect(context.operations.count('workspace_close')).toBe(1);
   });
@@ -854,5 +864,277 @@ describe('provider adapters', () => {
     }));
     expect(cleared.connection.outboundConfigured).toBe(false);
     expect(rotated.store.database.prepare('SELECT outbound_json FROM automation_connections').get()).toEqual({ outbound_json: null });
+  });
+});
+
+describe('GitHub progress comment and check runs', () => {
+  const COMMENT_URL = `https://github.com/${REPO}/issues/7#issuecomment-555\n`;
+  const HEAD = 'c'.repeat(40);
+
+  function prPayload(headSha: unknown = HEAD) {
+    payloadSequence += 1;
+    return Buffer.from(JSON.stringify({
+      action: 'labeled',
+      updated_at: new Date(Date.UTC(2026, 9, 17, 0, 0, payloadSequence)).toISOString(),
+      label: { name: 'claude' },
+      pull_request: { number: 7, html_url: `https://github.com/${REPO}/pull/7`, title: 'Fix crash', body: 'Please review', head: { sha: headSha } },
+      repository: { full_name: REPO },
+      sender: { login: 'alice', type: 'User' }
+    }));
+  }
+
+  /** A broker stand-in that prints what the GitHub helper prints: a comment URL, or a check run as JSON. */
+  function fakeGitHub(context: Setup, overrides: Record<string, Handler> = {}) {
+    context.operations.handlers.github_action = (call) => {
+      const action = String(call.input.action);
+      const override = overrides[action];
+      if (override) return override(call);
+      if (action === 'issue_comment') return { ok: true, data: { output: COMMENT_URL } };
+      if (action === 'check_run_create') return { ok: true, data: { output: '{"id":777,"status":"in_progress"}' } };
+      return { ok: true, data: { output: '{}' } };
+    };
+    return () => context.operations.calls.filter((call) => call.operation === 'github_action').map((call) => call.input);
+  }
+
+  const publishRef = (context: Setup) =>
+    JSON.parse((context.store.database.prepare('SELECT publish_ref_json AS ref FROM automation_workflows').get() as { ref: string }).ref) as Record<string, unknown>;
+
+  async function start(context: Setup, events: ('issues' | 'pull_request')[], body: Buffer) {
+    const { connection, secret } = createConnection(context);
+    createRule(context, connection.id, { match: { events }, action: { publishComment: true } });
+    deliver(context, connection.id, secret, body, { event: events[0] });
+    await drive(context, 2);
+    expect(workflows(context)[0]?.state).toBe('RUNNING');
+  }
+
+  async function finish(context: Setup, agentStatus = 'SUCCEEDED') {
+    context.operations.agentStatus = agentStatus;
+    await drive(context, 3);
+  }
+
+  it('posts one progress comment on start and edits it with the answer', async () => {
+    const context = setup();
+    const actions = fakeGitHub(context);
+    await start(context, ['issues'], payload());
+    const id = workflows(context)[0]!.id;
+    expect(actions()).toEqual([expect.objectContaining({ action: 'issue_comment', issueNumber: 7, idempotencyKey: `automation:${id}:started` })]);
+    expect(String(actions()[0]!.body)).toContain('The agent has started');
+    expect(String(actions()[0]!.body)).toContain(`Workflow \`${id}\``);
+    expect(publishRef(context)).toEqual({ commentId: 555 });
+
+    await finish(context);
+    expect(workflows(context)[0]).toMatchObject({ state: 'COMPLETED', publishState: 'DELIVERED' });
+    expect(actions().map((input) => input.action)).toEqual(['issue_comment', 'issue_comment_update']);
+    expect(actions()[1]).toMatchObject({ commentId: 555, workspaceId: WS });
+    expect(String(actions()[1]!.body)).toContain('Final answer for @​team');
+    // An issue workflow has no commit to anchor a check run on.
+    expect(actions().some((input) => String(input.action).startsWith('check_run'))).toBe(false);
+  });
+
+  it('creates the comment on completion when the start left no reference', async () => {
+    const context = setup();
+    let started = true;
+    const actions = fakeGitHub(context, {
+      issue_comment: () => started ? { ok: false, error: { code: 'UNAVAILABLE', retryable: true } } : { ok: true, data: { output: COMMENT_URL } }
+    });
+    await start(context, ['issues'], payload());
+    started = false;
+    await finish(context);
+    const id = workflows(context)[0]!.id;
+    expect(workflows(context)[0]).toMatchObject({ publishState: 'DELIVERED' });
+    expect(actions().map((input) => [input.action, input.idempotencyKey])).toEqual([
+      ['issue_comment', `automation:${id}:started`],
+      ['issue_comment', `automation:${id}:comment`]
+    ]);
+    expect(publishRef(context)).toEqual({ commentId: 555 });
+  });
+
+  it('creates a new comment when the progress comment was deleted', async () => {
+    const context = setup();
+    const actions = fakeGitHub(context, { issue_comment_update: () => ({ ok: false, error: { code: 'NOT_FOUND', retryable: false } }) });
+    await start(context, ['issues'], payload());
+    await finish(context);
+    const id = workflows(context)[0]!.id;
+    expect(workflows(context)[0]).toMatchObject({ publishState: 'DELIVERED' });
+    expect(actions().map((input) => [input.action, input.idempotencyKey])).toEqual([
+      ['issue_comment', `automation:${id}:started`],
+      ['issue_comment_update', undefined],
+      ['issue_comment', `automation:${id}:comment`]
+    ]);
+  });
+
+  it('retries a failed edit without posting a second comment', async () => {
+    const context = setup();
+    let edits = 0;
+    const actions = fakeGitHub(context, {
+      issue_comment_update: () => (edits += 1) === 1 ? { ok: false, error: { code: 'UNAVAILABLE', retryable: true } } : { ok: true, data: { output: '{}' } }
+    });
+    await start(context, ['issues'], payload());
+    await finish(context);
+    expect(workflows(context)[0]).toMatchObject({ publishState: 'PENDING' });
+    context.clock.now += AUTOMATION_PUBLISH_RETRY_DELAYS_MS[0]!;
+    await drive(context, 1);
+    expect(workflows(context)[0]).toMatchObject({ publishState: 'DELIVERED' });
+    expect(actions().map((input) => input.action)).toEqual(['issue_comment', 'issue_comment_update', 'issue_comment_update']);
+  });
+
+  it('creates a check run on the signed head commit of a pull request and completes it', async () => {
+    const context = setup();
+    const actions = fakeGitHub(context);
+    await start(context, ['pull_request'], prPayload());
+    const id = workflows(context)[0]!.id;
+    expect(actions()[1]).toMatchObject({
+      action: 'check_run_create', workspaceId: WS, sha: HEAD, name: 'Cloud Harness: Triage', status: 'in_progress',
+      externalId: id, title: 'Agent running', idempotencyKey: `automation:${id}:started:check`
+    });
+    expect(actions()[1]!.conclusion).toBeUndefined();
+    expect(publishRef(context)).toEqual({ commentId: 555, checkRunId: 777 });
+
+    await finish(context);
+    expect(workflows(context)[0]).toMatchObject({ state: 'COMPLETED', publishState: 'DELIVERED' });
+    expect(actions().map((input) => input.action)).toEqual(['issue_comment', 'check_run_create', 'issue_comment_update', 'check_run_update']);
+    expect(actions()[3]).toMatchObject({ checkRunId: 777, status: 'completed', conclusion: 'success', title: 'Agent completed' });
+    expect(String(actions()[3]!.summary)).toContain('Final answer for @​team');
+    expect(publishRef(context)).toEqual({ commentId: 555, checkRunId: 777 });
+  });
+
+  it('maps an agent timeout to a timed_out conclusion', async () => {
+    const context = setup();
+    const actions = fakeGitHub(context);
+    await start(context, ['pull_request'], prPayload());
+    await finish(context, 'TIMED_OUT');
+    expect(workflows(context)[0]).toMatchObject({ state: 'FAILED', errorCode: 'AGENT_TIMED_OUT', publishState: 'DELIVERED' });
+    expect(actions().at(-1)).toMatchObject({ action: 'check_run_update', conclusion: 'timed_out', title: 'Agent timed out (AGENT_TIMED_OUT)' });
+  });
+
+  it('publishes an owner cancellation of a running workflow to the comment and the check run', async () => {
+    const context = setup();
+    const actions = fakeGitHub(context);
+    await start(context, ['pull_request'], prPayload());
+    const id = workflows(context)[0]!.id;
+    ok(context.service.execute({ version: 1, principal: context.owner, operation: 'workflow_cancel', input: { id } }));
+    await drive(context, 2);
+    expect(workflows(context)[0]).toMatchObject({ state: 'CANCELLED', publishState: 'DELIVERED' });
+    expect(actions().slice(2).map((input) => [input.action, input.conclusion])).toEqual([['issue_comment_update', undefined], ['check_run_update', 'cancelled']]);
+    expect(context.operations.count('workspace_close')).toBe(1);
+  });
+
+  it('falls back to the comment alone once when the App lacks the checks permission', async () => {
+    const context = setup();
+    const actions = fakeGitHub(context, { check_run_create: () => ({ ok: false, error: { code: 'GITHUB_PERMISSION_MISSING', retryable: false } }) });
+    await start(context, ['pull_request'], prPayload());
+    expect(publishRef(context)).toEqual({ commentId: 555, checks: 'unavailable' });
+    await finish(context);
+    expect(workflows(context)[0]).toMatchObject({ state: 'COMPLETED', publishState: 'DELIVERED' });
+    expect(actions().map((input) => input.action)).toEqual(['issue_comment', 'check_run_create', 'issue_comment_update']);
+    expect(publishRef(context)).toEqual({ commentId: 555, checks: 'unavailable' });
+  });
+
+  it('keeps a check run created on start even when the progress comment failed', async () => {
+    const context = setup();
+    let started = true;
+    const actions = fakeGitHub(context, {
+      issue_comment: () => started ? { ok: false, error: { code: 'UNAVAILABLE', retryable: true } } : { ok: true, data: { output: COMMENT_URL } }
+    });
+    await start(context, ['pull_request'], prPayload());
+    expect(publishRef(context)).toEqual({ checkRunId: 777 });
+    started = false;
+    await finish(context);
+    expect(actions().map((input) => input.action)).toEqual(['issue_comment', 'check_run_create', 'issue_comment', 'check_run_update']);
+    expect(publishRef(context)).toEqual({ checkRunId: 777, commentId: 555 });
+  });
+
+  it('retries a transient check run failure on completion without posting a second comment', async () => {
+    const context = setup();
+    let updates = 0;
+    const actions = fakeGitHub(context, {
+      check_run_update: () => (updates += 1) === 1 ? { ok: false, error: { code: 'UNAVAILABLE', retryable: true } } : { ok: true, data: { output: '{}' } }
+    });
+    await start(context, ['pull_request'], prPayload());
+    await finish(context);
+    expect(workflows(context)[0]).toMatchObject({ publishState: 'PENDING' });
+    context.clock.now += AUTOMATION_PUBLISH_RETRY_DELAYS_MS[0]!;
+    await drive(context, 1);
+    expect(workflows(context)[0]).toMatchObject({ publishState: 'DELIVERED' });
+    expect(actions().filter((input) => input.action === 'issue_comment')).toHaveLength(1);
+    expect(actions().filter((input) => input.action === 'check_run_update')).toHaveLength(2);
+  });
+
+  it('does not fail the publish on a check run failure that retrying cannot fix', async () => {
+    const context = setup();
+    fakeGitHub(context, { check_run_update: () => ({ ok: false, error: { code: 'GITHUB_ACTION_FAILED', retryable: false } }) });
+    await start(context, ['pull_request'], prPayload());
+    await finish(context);
+    expect(workflows(context)[0]).toMatchObject({ publishState: 'DELIVERED' });
+  });
+
+  it('skips the check run when the signed payload carries no valid head commit', async () => {
+    const context = setup();
+    const actions = fakeGitHub(context);
+    await start(context, ['pull_request'], prPayload('main'));
+    await finish(context);
+    expect(actions().map((input) => input.action)).toEqual(['issue_comment', 'issue_comment_update']);
+    expect(workflows(context)[0]).toMatchObject({ publishState: 'DELIVERED' });
+  });
+
+  it('bounds the check run summary to the GitHub limit', async () => {
+    const context = setup();
+    const actions = fakeGitHub(context);
+    context.operations.handlers.agent_logs = () => ({
+      ok: true,
+      data: { events: [{ type: 'event', content: JSON.stringify({ kind: 'text_delta', text: 'é'.repeat(70_000) }) }], hasMore: false }
+    });
+    await start(context, ['pull_request'], prPayload());
+    await finish(context);
+    const summary = String(actions().find((input) => input.action === 'check_run_update')!.summary);
+    // The answer is already bounded to the result limit; the summary still fits GitHub's limit in bytes.
+    expect(Buffer.byteLength(summary)).toBeLessThanOrEqual(CHECK_RUN_SUMMARY_MAX);
+    expect(summary).toContain(`${'é'.repeat(100)}…`);
+    expect(summary.startsWith('**Cloud Harness automation: Triage** (completed)')).toBe(true);
+  });
+
+  it('bounds summaries by UTF-8 bytes and characters', () => {
+    expect(boundedCheckSummary('short')).toBe('short');
+    const ascii = boundedCheckSummary('a'.repeat(CHECK_RUN_SUMMARY_MAX + 10));
+    expect(Array.from(ascii).length).toBeGreaterThan(CHECK_RUN_SUMMARY_MAX - 4);
+    expect(Buffer.byteLength(ascii)).toBeLessThanOrEqual(CHECK_RUN_SUMMARY_MAX);
+    const emoji = boundedCheckSummary('😀'.repeat(20_000));
+    expect(Buffer.byteLength(emoji)).toBeLessThanOrEqual(CHECK_RUN_SUMMARY_MAX);
+    expect(emoji.endsWith('…')).toBe(true);
+    expect(boundedCheckSummary('a\u0000b')).toBe('ab');
+  });
+
+  it('maps every terminal workflow state onto a check run conclusion', () => {
+    expect(checkRunConclusion({ state: 'COMPLETED', errorCode: null })).toBe('success');
+    expect(checkRunConclusion({ state: 'FAILED', errorCode: 'AGENT_FAILED' })).toBe('failure');
+    expect(checkRunConclusion({ state: 'FAILED', errorCode: 'AGENT_LIMIT_EXCEEDED' })).toBe('failure');
+    expect(checkRunConclusion({ state: 'FAILED', errorCode: 'AGENT_TIMED_OUT' })).toBe('timed_out');
+    expect(checkRunConclusion({ state: 'FAILED', errorCode: 'AGENT_CANCELLED' })).toBe('cancelled');
+    expect(checkRunConclusion({ state: 'CANCELLED', errorCode: 'OWNER_CANCELLED' })).toBe('cancelled');
+    expect(checkRunConclusion({ state: 'EXPIRED', errorCode: 'START_EXPIRED' })).toBe('timed_out');
+  });
+
+  it('keeps the head commit only from a well-formed signed pull request payload', () => {
+    const valid = normalizeGitHubEvent('pull_request', prPayload());
+    expect(valid.kind === 'event' && valid.event.extras).toEqual({ headSha: HEAD });
+    for (const bad of ['main', 'C'.repeat(40), 'c'.repeat(64), 12, null]) {
+      const normalized = normalizeGitHubEvent('pull_request', prPayload(bad));
+      expect(normalized.kind).toBe('event');
+      expect(normalized.kind === 'event' && normalized.event.extras).toBeUndefined();
+    }
+    expect((normalizeGitHubEvent('issues', payload()) as { event: { extras?: unknown } }).event.extras).toBeUndefined();
+  });
+
+  it('never retriggers on its own comment edits or check runs', async () => {
+    const context = setup();
+    const { connection, secret } = createConnection(context);
+    createRule(context, connection.id, { match: { events: ['issues', 'pull_request'] }, action: { publishComment: true } });
+    const app = { login: 'cloud-harness[bot]', type: 'Bot' };
+    const edited = Buffer.from(JSON.stringify({ action: 'edited', comment: { id: 555, body: 'x' }, issue: { number: 7 }, repository: { full_name: REPO }, sender: app }));
+    const check = Buffer.from(JSON.stringify({ action: 'completed', check_run: { id: 777, head_sha: HEAD }, repository: { full_name: REPO }, sender: app }));
+    expect(deliver(context, connection.id, secret, edited, { event: 'issue_comment', deliveryId: 'edit' })).toMatchObject({ ok: true, data: { outcome: 'ignored' } });
+    expect(deliver(context, connection.id, secret, check, { event: 'check_run', deliveryId: 'check' })).toMatchObject({ ok: true, data: { outcome: 'ignored' } });
+    await drive(context, 1);
+    expect(workflows(context)).toEqual([]);
   });
 });

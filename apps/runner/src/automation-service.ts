@@ -761,7 +761,10 @@ export class AutomationService {
   private cancelWorkflow(ownerId: string, id: string, reason: string | undefined) {
     const row = this.ownedWorkflow(ownerId, id);
     if (!TERMINAL_STATES.has(row.state)) {
-      this.finish(row.id, ['QUEUED', 'STARTING', 'RUNNING'], 'CANCELLED', 'OWNER_CANCELLED', 'owner', {});
+      // A running workflow has already published its start, so the cancellation is published too:
+      // otherwise its progress comment and check run would read as running forever.
+      const publish = row.state === 'RUNNING' && this.snapshot(row).action.publishComment;
+      this.finish(row.id, ['QUEUED', 'STARTING', 'RUNNING'], 'CANCELLED', 'OWNER_CANCELLED', 'owner', publish ? { publish_state: 'PENDING' } : {});
       // Workflows are immutable snapshots, so the audited generation is the rule generation they ran.
       this.audit(this.database, ownerId, 'automation.workflow.cancelled', 'automation_workflow', row.id, row.rule_generation,
         reason ? { reason: boundedText(reason, 500) } : {});
@@ -1186,6 +1189,13 @@ export class AutomationService {
     this.database.prepare('UPDATE automation_workflows SET publish_ref_json = ? WHERE id = ?').run(json, id);
   }
 
+  /** The triggering event's `extras`, re-validated from its delivery; empty once the delivery is purged. */
+  private publishExtras(row: WorkflowRow): Readonly<Record<string, string | number | boolean>> {
+    const delivery = this.database.prepare('SELECT * FROM automation_deliveries WHERE id = ? AND owner_id = ?')
+      .get(row.delivery_id, row.owner_id) as DeliveryRow | undefined;
+    return (delivery ? this.deliveryEvent(delivery)?.extras : undefined) ?? {};
+  }
+
   /** Calls the adapter's publisher with the connection's settings; the outbound credential is unsealed only for this call. */
   private async runPublish(adapter: ProviderAdapter, row: WorkflowRow, phase: 'started' | 'completed'): Promise<AutomationPublishResult> {
     if (!adapter.publish) return { ok: false, code: 'PUBLISH_UNSUPPORTED', retryable: false };
@@ -1200,7 +1210,8 @@ export class AutomationService {
           id: row.id, state: row.state, ruleName: snapshot.name, provider: providerOf(row.provider),
           eventType: row.event_type as AutomationEventType, repository: row.repository, resourceKey: row.resource_key,
           resourceRef: row.resource_ref ?? `#${row.resource_number}`, resourceNumber: row.resource_number > 0 ? row.resource_number : null,
-          resourceUrl: row.resource_url, label: row.label, workspaceId: row.workspace_id, agentId: row.agent_id, resultText: row.result_text
+          resourceUrl: row.resource_url, label: row.label, workspaceId: row.workspace_id, agentId: row.agent_id, resultText: row.result_text,
+          errorCode: row.error_code, extras: this.publishExtras(row)
         },
         body: this.commentBody(row, phase),
         idempotencyKey: `automation:${row.id}:${phase === 'completed' ? 'comment' : 'started'}`,
