@@ -145,6 +145,9 @@ services:
     build:
       context: .
       dockerfile: docker/agent.Dockerfile
+      args:
+        # The opt-in durable agent engine; the default image omits it (docs/operations.md).
+        INCLUDE_DURABLE_RUNTIME: ${AGENT_INCLUDE_DURABLE_RUNTIME:-false}
     profiles: [images]
     command: ["true"]
 
