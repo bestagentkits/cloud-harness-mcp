@@ -1,0 +1,252 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  AgentActionDescriptorSchema, DEFAULT_GLOBAL_EXECUTION_POLICY, GlobalExecutionPolicySchema, ProjectExecutionPolicySchema
+} from '@cloud-harness/contracts';
+import './dashboard-test-dom.js';
+import {
+  actionFromSimulationForm, createAgentPolicyEditor, globalPolicyFromForm, linesToList, projectPolicyFromForm,
+  renderAgentPolicyPage, renderPolicyDecision, renderPolicyValidation
+} from '../dashboard/dashboard-policies.js';
+import { FakeElement } from './dashboard-test-dom.js';
+
+const PROJECT = `prj_${'a'.repeat(32)}`;
+const REVISION = `apr_${'1'.repeat(32)}`;
+const OLDER = `apr_${'2'.repeat(32)}`;
+
+/** FormData stand-in: the controller reads fields only through get/getAll. */
+class Values {
+  constructor(private readonly fields: Record<string, string | string[]>) {}
+  get(name: string) { const value = this.fields[name]; return Array.isArray(value) ? value[0] ?? null : value ?? null; }
+  getAll(name: string) { const value = this.fields[name]; return value === undefined ? [] : Array.isArray(value) ? value : [value]; }
+}
+
+/** The form fields the global editor renders for a document, so a round trip proves form and schema agree. */
+function globalFields(document: typeof DEFAULT_GLOBAL_EXECUTION_POLICY): Record<string, string | string[]> {
+  const fields: Record<string, string | string[]> = {
+    hardDeny: [...document.hardDeny], mandatoryApproval: [...document.mandatoryApproval], allowedActionClasses: [...document.allowedActionClasses],
+    'approval-ttlSeconds': String(document.approval.ttlSeconds)
+  };
+  for (const [actionClass, rule] of Object.entries(document.defaults)) {
+    if (!rule) continue;
+    fields[`effect-${actionClass}`] = rule.effect;
+    if (rule.delegable) fields[`delegable-${actionClass}`] = 'on';
+  }
+  for (const [key, value] of Object.entries(document.scope)) fields[`scope-${key}`] = (value as string[]).join('\n');
+  for (const [key, value] of Object.entries(document.budget)) fields[`budget-${key}`] = String(value);
+  return fields;
+}
+
+const effective = {
+  hardDeny: [], mandatoryApproval: [], allowedActionClasses: ['read'],
+  effects: [{ actionClass: 'read', effect: 'allow', source: 'global', delegable: false, mandatoryApproval: false }],
+  scope: DEFAULT_GLOBAL_EXECUTION_POLICY.scope, budget: DEFAULT_GLOBAL_EXECUTION_POLICY.budget, approval: DEFAULT_GLOBAL_EXECUTION_POLICY.approval,
+  ignoredProjectFields: []
+};
+const revision = (version: number, revisionId: string, document: unknown) => ({
+  revisionId, scope: 'global', projectId: null, version, digest: 'd'.repeat(64), createdAt: '2026-10-19T00:00:00.000Z', createdBy: 'owner', rollbackOf: null, note: null, document
+});
+const decision = (value: 'ALLOW' | 'REQUIRE_APPROVAL' | 'DENY', detail = 'checked') => ({
+  version: 1, decision: value, reasonCode: value === 'DENY' ? 'HARD_DENY' : 'ALLOWED_BY_POLICY',
+  reasons: [{ code: value === 'DENY' ? 'HARD_DENY' : 'ALLOWED_BY_POLICY', source: 'global', detail }],
+  matchedRules: ['global.defaults.edit'], actionClass: 'edit',
+  policy: { globalRevisionId: REVISION, globalSource: 'stored', projectId: null, projectRevisionId: null, projectSource: 'none' },
+  inputFingerprint: 'f'.repeat(64), advisor: { required: false, consulted: false, effect: null, decisionId: null },
+  approval: { ttlSeconds: 3600, approverRoles: ['owner'] }
+});
+
+describe('agent policy form mapping', () => {
+  it('splits textareas into trimmed unique lines', () => {
+    expect(linesToList(' a \r\n\nb\na\n')).toEqual(['a', 'b']);
+    expect(linesToList(undefined)).toEqual([]);
+  });
+
+  it('round-trips the default global policy through the form into a schema-valid document', () => {
+    const document = globalPolicyFromForm(new Values(globalFields(DEFAULT_GLOBAL_EXECUTION_POLICY)));
+    expect(GlobalExecutionPolicySchema.parse(document)).toEqual(DEFAULT_GLOBAL_EXECUTION_POLICY);
+  });
+
+  it('sends a malformed number as typed so the runner names the field instead of the browser dropping it', () => {
+    const document = globalPolicyFromForm(new Values({ ...globalFields(DEFAULT_GLOBAL_EXECUTION_POLICY), 'budget-maxRunSeconds': '15 minutes' }));
+    expect(document.budget.maxRunSeconds).toBe('15 minutes');
+    expect(GlobalExecutionPolicySchema.safeParse(document).success).toBe(false);
+  });
+
+  it('builds a project document that only carries the fields the owner chose to narrow', () => {
+    expect(projectPolicyFromForm(new Values({}))).toEqual({ version: 1 });
+    const document = projectPolicyFromForm(new Values({
+      hardDeny: ['network', 'not-a-class'], restrictClasses: 'on', allowedActionClasses: ['read', 'edit'], 'rule-edit': 'require_approval',
+      'override-repositories': 'on', 'scope-repositories': 'acme/widgets', 'scope-commands': 'npm test', 'budget-maxRunSeconds': '600'
+    }));
+    expect(document).toEqual({
+      version: 1, hardDeny: ['network'], allowedActionClasses: ['read', 'edit'], rules: { edit: 'require_approval' },
+      scope: { repositories: ['acme/widgets'] }, budget: { maxRunSeconds: 600 }
+    });
+    expect(ProjectExecutionPolicySchema.parse(document)).toEqual(document);
+  });
+
+  it('builds a schema-valid action descriptor and never carries a reason', () => {
+    const action = actionFromSimulationForm(new Values({
+      actionClass: 'package_install', repository: 'acme/widgets', branch: '', command: ' npm  install ', paths: 'src/a.ts\nsrc/a.ts',
+      packageEcosystem: 'npm', packageName: 'left-pad', packageRegistry: 'registry.npmjs.org', platformEffects: ['docker_access', 'bogus'], reason: 'please allow'
+    }));
+    expect(action).toEqual({
+      version: 1, actionClass: 'package_install', repository: 'acme/widgets', paths: ['src/a.ts'], command: ['npm', 'install'],
+      package: { ecosystem: 'npm', name: 'left-pad', registry: 'registry.npmjs.org' }, platformEffects: ['docker_access']
+    });
+    expect(AgentActionDescriptorSchema.safeParse(action).success).toBe(true);
+  });
+});
+
+describe('agent policy renderers', () => {
+  const hostile = '<img src=x onerror=alert(1)>';
+
+  it('escapes every runner-supplied string and uses no inline style or script', () => {
+    const markup = [
+      renderPolicyValidation({ valid: false, errors: [hostile], widenings: [hostile], weakenings: [hostile], changes: [{ path: hostile, before: hostile, after: null }], effective }),
+      renderPolicyDecision(decision('DENY', hostile)),
+      renderAgentPolicyPage({
+        status: 'ready', scope: 'global', mode: 'json', jsonText: hostile, note: hostile, document: DEFAULT_GLOBAL_EXECUTION_POLICY, head: null, effective,
+        history: { revisions: [], headRevisionId: null, nextBeforeVersion: null },
+        overview: { projects: [{ projectId: PROJECT, head: { version: 1 }, orphaned: true }] }, projectNames: { [PROJECT]: hostile }
+      })
+    ].join('');
+    expect(markup).not.toContain('<img');
+    expect(markup).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    // Escaped text and quoted attribute values may still read "onerror="; only a real attribute name would run.
+    expect(markup.replace(/"[^"]*"/gu, '""')).not.toMatch(/<[^>]*\s(?:style|on[a-z]+)=|<script/iu);
+  });
+
+  it('marks each gate outcome with its own status tone', () => {
+    expect(renderPolicyDecision(decision('ALLOW'))).toContain('class="status active"');
+    expect(renderPolicyDecision({ ...decision('REQUIRE_APPROVAL'), reasonCode: 'APPROVAL_REQUIRED' })).toContain('class="status pending"');
+    expect(renderPolicyDecision(decision('DENY'))).toContain('class="status failed"');
+  });
+
+  it('separates refused widenings from weakenings that need confirmation', () => {
+    const refused = renderPolicyValidation({ valid: false, errors: [], widenings: ['scope.repositories adds *'], weakenings: [], changes: [], effective: null });
+    expect(refused).toContain('refused');
+    expect(refused).toContain('Widens the global policy');
+    const weaker = renderPolicyValidation({ valid: true, errors: [], widenings: [], weakenings: ['edit is no longer hard-denied'], changes: [], effective });
+    expect(weaker).toContain('weakens');
+    expect(weaker).toContain('edit is no longer hard-denied');
+  });
+
+  it('shows the off switch instead of an editor while the feature is disabled', () => {
+    const markup = renderAgentPolicyPage({ status: 'disabled' });
+    expect(markup).toContain('AGENT_POLICIES_ENABLED=true');
+    expect(markup).not.toContain('policy-form');
+  });
+});
+
+/** A root that hands the controller form doubles carrying the values the owner "typed". */
+class Root extends FakeElement {
+  forms: Record<string, FakeElement & { values?: Values }> = {};
+  querySelector(selector: string) { return this.forms[selector.replace('#', '')] ?? null; }
+}
+
+function form(id: string, values: Values) {
+  const element = Object.assign(new FakeElement(), { id, values });
+  (element as unknown as { querySelector: () => FakeElement }).querySelector = () => new FakeElement();
+  return element;
+}
+
+const flush = async () => { for (let index = 0; index < 10; index += 1) await Promise.resolve(); };
+
+describe('agent policy editor controller', () => {
+  let root: Root;
+  let api: ReturnType<typeof vi.fn>;
+  let confirm: ReturnType<typeof vi.fn>;
+  let weakenings: string[];
+  let putStatus: number | null;
+
+  beforeEach(() => {
+    vi.stubGlobal('FormData', class { constructor(element: { values: Values }) { return element.values; } });
+    root = new Root();
+    weakenings = [];
+    putStatus = null;
+    confirm = vi.fn();
+    const stored = revision(1, REVISION, DEFAULT_GLOBAL_EXECUTION_POLICY);
+    api = vi.fn(async (path: string, init?: { method?: string; body?: string }) => {
+      if (path === '/agent-policies/global' && !init) {
+        return { data: { scope: 'global', projectId: null, projectState: null, head: stored, global: { revision: stored, document: DEFAULT_GLOBAL_EXECUTION_POLICY, source: 'stored' }, effective } };
+      }
+      if (path === '/agent-policies/global/history') return { data: { revisions: [stored, revision(0, OLDER, DEFAULT_GLOBAL_EXECUTION_POLICY)], headRevisionId: REVISION, nextBeforeVersion: null } };
+      if (path === '/agent-policies') return { data: { global: null, projects: [], defaultGlobal: DEFAULT_GLOBAL_EXECUTION_POLICY } };
+      if (path === '/agent-policies/global/validate') return { data: { valid: true, errors: [], widenings: [], weakenings, changes: [], effective } };
+      if (path === '/agent-policies/global' && init?.method === 'PUT') {
+        if (putStatus) throw Object.assign(new Error('The policy changed.'), { status: putStatus, code: 'conflict' });
+        return { data: { head: stored, weakenings } };
+      }
+      if (path === '/agent-policies/simulate') return { data: { decision: decision('ALLOW'), effective } };
+      throw new Error(`unexpected ${path}`);
+    });
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  async function mount() {
+    const editor = createAgentPolicyEditor({ root, insert: (target: FakeElement, markup: string) => { target.innerHTML = markup; }, api, confirm, scope: 'global' });
+    await editor.load();
+    return editor;
+  }
+  const submit = (id: string, fields: Record<string, string | string[]>) => {
+    const element = form(id, new Values(fields));
+    root.forms['policy-form'] = id === 'policy-form' ? element : root.forms['policy-form'] ?? form('policy-form', new Values({ ...globalFields(DEFAULT_GLOBAL_EXECUTION_POLICY), note: '' }));
+    root.dispatch('submit', { target: element, preventDefault: vi.fn() });
+  };
+  const puts = () => api.mock.calls.filter(([, init]) => init?.method === 'PUT');
+
+  it('loads the saved policy, its history and the effective preview', async () => {
+    await mount();
+    expect(root.innerHTML).toContain('Global policy');
+    expect(root.innerHTML).toContain('Effective policy preview');
+    expect(root.innerHTML).toContain('Roll back to v0');
+  });
+
+  it('saves a non-weakening change without asking, with the head version as the CAS token', async () => {
+    await mount();
+    submit('policy-form', { ...globalFields(DEFAULT_GLOBAL_EXECUTION_POLICY), note: 'tighten' });
+    await flush();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(JSON.parse(puts()[0][1].body)).toMatchObject({ expectedVersion: 1, confirmWeakening: false, note: 'tighten' });
+  });
+
+  it('asks before saving a weaker policy and only then sends the confirmation flag', async () => {
+    weakenings = ['edit is now allowed'];
+    await mount();
+    submit('policy-form', { ...globalFields(DEFAULT_GLOBAL_EXECUTION_POLICY), allowedActionClasses: ['read', 'edit'], note: '' });
+    await flush();
+    expect(puts()).toHaveLength(0);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm.mock.calls[0][0].target).toContain('edit is now allowed');
+    await confirm.mock.calls[0][0].action();
+    await flush();
+    expect(JSON.parse(puts()[0][1].body)).toMatchObject({ confirmWeakening: true });
+  });
+
+  it('keeps the draft and explains a concurrent save', async () => {
+    putStatus = 409;
+    const editor = await mount();
+    submit('policy-form', { ...globalFields(DEFAULT_GLOBAL_EXECUTION_POLICY), hardDeny: ['network'], note: '' });
+    await flush();
+    expect(editor.view.document.hardDeny).toEqual(['network']);
+    expect(root.innerHTML).toContain('Someone saved this policy while you were editing');
+  });
+
+  it('simulates through the runner evaluator, with the unsaved draft only when asked', async () => {
+    await mount();
+    submit('policy-simulate-form', { actionClass: 'edit', repository: 'acme/widgets', useDraft: 'on' });
+    await flush();
+    const call = api.mock.calls.find(([path]) => path === '/agent-policies/simulate');
+    const body = JSON.parse(call![1].body);
+    expect(body.action).toEqual({ version: 1, actionClass: 'edit', repository: 'acme/widgets' });
+    expect(body.draft.scope).toBe('global');
+    expect(GlobalExecutionPolicySchema.parse(body.draft.document)).toEqual(DEFAULT_GLOBAL_EXECUTION_POLICY);
+    expect(root.innerHTML).toContain('class="status active"');
+  });
+
+  it('shows the disabled notice when the runner reports the feature off', async () => {
+    api.mockImplementation(async () => { throw Object.assign(new Error('off'), { status: 503, code: 'feature_disabled' }); });
+    await mount();
+    expect(root.innerHTML).toContain('AGENT_POLICIES_ENABLED=true');
+  });
+});

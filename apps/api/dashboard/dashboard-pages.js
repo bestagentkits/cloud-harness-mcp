@@ -263,6 +263,20 @@ export const DASHBOARD_PAGES = [
     icon: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z"/>'
   },
   {
+    id: 'agent-policies',
+    // Reached from Settings and from each project; it keeps the Settings entry current.
+    route: '/dashboard/settings/agent-policies',
+    label: 'Agent policies',
+    group: 'admin',
+    title: 'Agent policies',
+    help: 'The global execution policy coding agents run under: allowed actions, hard denies, mandatory approvals, scope, and budgets.',
+    palette: true,
+    paletteHint: 'Execution policy for coding agents, with simulation and history',
+    nav: false,
+    navParent: 'settings',
+    icon: '<path d="M12 3 5 6v5c0 4.5 3 8.3 7 10 4-1.7 7-5.5 7-10V6z"/><path d="m9 12 2 2 4-4"/>'
+  },
+  {
     id: 'profile',
     // The top-bar profile chip is the visible entry point; the sidebar must not
     // spend a slot on it, so this page is palette- and URL-reachable only.
