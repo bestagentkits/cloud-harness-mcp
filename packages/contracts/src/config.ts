@@ -382,7 +382,9 @@ export const RunnerConfigSchema = z.object({
   /** Enables the owner-authored agent execution policies and the gate simulation. Off by default. */
   agentPoliciesEnabled: enabled,
   /** Durable agent run traces recorded by the runner. Off by default; the schema is created either way. */
-  agentTraces: AgentTracesConfigSchema
+  agentTraces: AgentTracesConfigSchema,
+  /** Records the notification inbox and dispatches its channels. Off by default; the schema is created either way. */
+  notificationsEnabled: enabled
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
   if (config.packagesMaxReleaseBytes > config.packagesMaxOwnerBytes) {
