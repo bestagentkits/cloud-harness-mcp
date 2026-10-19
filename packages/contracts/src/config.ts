@@ -272,7 +272,7 @@ export const RunnerConfigSchema = z.object({
   typesafeEgress: z.enum(['on', 'off']).default('on'),
   // Decision Plane purposes the operator opted into. Empty (the default) keeps every path on its
   // deterministic behaviour; an enabled purpose still needs the owner's TypeSafe credential.
-  decisionPlanePurposes: z.array(ImplementedDecisionPurposeSchema).max(2)
+  decisionPlanePurposes: z.array(ImplementedDecisionPurposeSchema).max(3)
     .refine((values) => new Set(values).size === values.length, 'decision plane purposes must be unique')
     .default([]),
   // Concurrent toolbox containers per runner. Each one holds the executor memory, CPU, and pid bounds, so
@@ -379,6 +379,8 @@ export const RunnerConfigSchema = z.object({
   automationsEnabled: enabled,
   /** Instance-wide ceiling on automation workflows holding a workspace at once. */
   automationsMaxConcurrentWorkflows: positiveBoundedInteger(16, 2),
+  /** Enables the owner-authored agent execution policies and the gate simulation. Off by default. */
+  agentPoliciesEnabled: enabled,
   /** Durable agent run traces recorded by the runner. Off by default; the schema is created either way. */
   agentTraces: AgentTracesConfigSchema
 }).superRefine((config, context) => {

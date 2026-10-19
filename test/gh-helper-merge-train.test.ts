@@ -106,7 +106,8 @@ function workspace() {
   return { directory, run, calls };
 }
 
-describe('gh-helper merge-train actions', () => {
+// gh-helper.sh and its stub binaries are POSIX shell scripts that run only inside the Linux executor container.
+describe.skipIf(process.platform === 'win32')('gh-helper merge-train actions', () => {
   it('round-trips a commit status: create then read the combined status for the SHA', () => {
     const { run, calls } = workspace();
     expect(run(['commit_status_get', HEAD_SHA]).json()).toMatchObject({ sha: HEAD_SHA, state: 'pending', totalCount: 0, statuses: [] });

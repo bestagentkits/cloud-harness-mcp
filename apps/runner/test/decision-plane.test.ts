@@ -317,8 +317,15 @@ describe('decision plane configuration', () => {
   it('is off by default and accepts only implemented purposes', () => {
     expect(RunnerConfigSchema.parse(base).decisionPlanePurposes).toEqual([]);
     expect(RunnerConfigSchema.parse({ ...base, decisionPlanePurposes: ['mcp-routing'] }).decisionPlanePurposes).toEqual(['mcp-routing']);
-    expect(RunnerConfigSchema.safeParse({ ...base, decisionPlanePurposes: ['execution-risk'] }).success).toBe(false);
+    expect(RunnerConfigSchema.parse({ ...base, decisionPlanePurposes: ['execution-risk'] }).decisionPlanePurposes).toEqual(['execution-risk']);
+    const all = ['failure-classification', 'mcp-routing', 'execution-risk'];
+    expect(RunnerConfigSchema.parse({ ...base, decisionPlanePurposes: all }).decisionPlanePurposes).toEqual(all);
+    // Reserved purposes stay refused until they are implemented.
+    for (const reserved of ['agent-supervision', 'context-relevance', 'task-selection', 'unknown-purpose']) {
+      expect(RunnerConfigSchema.safeParse({ ...base, decisionPlanePurposes: [reserved] }).success, reserved).toBe(false);
+    }
     expect(RunnerConfigSchema.safeParse({ ...base, decisionPlanePurposes: ['mcp-routing', 'mcp-routing'] }).success).toBe(false);
+    expect(RunnerConfigSchema.safeParse({ ...base, decisionPlanePurposes: [...all, 'mcp-routing'] }).success).toBe(false);
   });
 });
 

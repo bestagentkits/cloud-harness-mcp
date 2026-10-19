@@ -1381,6 +1381,31 @@ dialog .stack-form { margin-block: 0; max-width: none; }
 .repository-scope select { min-width: 0; max-width: 100%; }
 .repository-explorer td small { display: block; margin-block-start: .125rem; color: var(--ink-faint); font-size: var(--text-11); }
 
+/* Agent policies: Settings > Agent policies and Project > Agent policies. */
+.page-action-link { display: inline-flex; align-items: center; min-height: 2.25rem; padding: 0 var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm, 6px); color: inherit; text-decoration: none; }
+.page-action-link:hover { border-color: var(--accent-line); }
+.policy-page { display: grid; gap: var(--space-4); }
+.policy-page .panel { display: grid; gap: var(--space-3); }
+.policy-form { display: grid; gap: var(--space-3); }
+.policy-fieldset { border: 1px solid var(--line); border-radius: var(--radius-sm, 6px); padding: var(--space-3); margin: 0; display: grid; gap: var(--space-2); min-width: 0; }
+.policy-grid { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr)); }
+.policy-field { display: grid; gap: var(--space-1); }
+.policy-field textarea, .policy-form textarea.mono { width: 100%; box-sizing: border-box; font-family: var(--font-mono); }
+.policy-scroll { overflow-x: auto; max-width: 100%; }
+.policy-matrix td, .policy-matrix th { white-space: nowrap; }
+.policy-check { display: inline-flex; gap: var(--space-1); align-items: center; margin-inline-end: var(--space-3); }
+.policy-muted { color: var(--muted); }
+.policy-verdict { margin: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: baseline; }
+.policy-callout { border: 1px solid var(--line); border-radius: var(--radius-sm, 6px); padding: var(--space-2) var(--space-3); }
+.policy-callout h3 { margin: 0 0 var(--space-1); font-size: 0.95rem; }
+.policy-callout ul, .policy-reasons { margin: 0; padding-inline-start: var(--space-4); }
+.policy-callout.error { border-color: var(--danger-line, var(--line)); }
+.policy-callout.warning { border-color: var(--warning-line, var(--line)); }
+.policy-facts { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-3); margin: 0; }
+.policy-facts dt { color: var(--muted); }
+.policy-facts dd { margin: 0; overflow-wrap: anywhere; }
+.policy-modes button[aria-pressed="true"] { border-color: var(--accent-line); }
+.policy-project { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: baseline; }
 /* traces */
 /* The KPI strip reuses the metric tiles; values are text so "unknown" never reads as a zero. */
 .trace-kpis { margin-block-end: var(--space-6); }

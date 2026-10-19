@@ -172,6 +172,30 @@ export function builtinSkillsMountArgs(builtinSkillsRoot: string | undefined): s
   return ['--volume', `${builtinSkillsRoot}:/opt/cloud-harness/skills:ro`];
 }
 
+/**
+ * The bind mounts of one Git transfer helper: its own transfer directory and, when the mode reads or
+ * writes the checkout, the checkout tree. Never the whole workspace directory, so a repository-configured
+ * command that runs during one transfer (an import's fetch, a stage's clone) cannot reach the transfer
+ * repository of another; above all, nothing can write a staged push clone between its stage and its push.
+ * The checkout is read-only while it is staged and writable only for an import, which updates its refs.
+ * The checkout source is always the tree root the executor mounts, never a scoped subdirectory: the
+ * executor can replace `repos/<alias>` with a symlink, and Docker resolves a bind source on the host,
+ * whereas the helper resolves the scoped path inside its own mount namespace.
+ */
+export function gitTransferVolumes(mode: 'fetch' | 'import' | 'stage-push' | 'push', workspacePath: string, transferName: string): string[] {
+  const transfer = ['--volume', `${join(workspacePath, transferName)}:/job/${transferName}:${mode === 'import' ? 'ro' : 'rw'}`];
+  if (mode === 'fetch' || mode === 'push') return transfer;
+  return ['--volume', `${join(workspacePath, 'repo')}:/job/repo:${mode === 'import' ? 'rw' : 'ro'}`, ...transfer];
+}
+
+/**
+ * The transfer repository sits one level inside its mounted directory, so the helper creates it and owns
+ * it: Git refuses a repository owned by another UID, and the runner's UID need not be the helper's.
+ */
+export function gitTransferRepositoryPath(transferName: string): string {
+  return `/job/${transferName}/repository.git`;
+}
+
 export function computeWorkspaceOpenFingerprint(input: {
   repositoryUrl?: string | URL | undefined;
   repositories?: Array<{ url: string; alias: string; ref?: string | undefined; access: string }> | undefined;
@@ -687,7 +711,7 @@ export class WorkspaceService {
       }
     }
     await this.toolkitCacheManager.reconcileStartup().catch(() => undefined);
-    await this.reconcileContainers();
+    await this.reconcileContainers(failures);
     // After leftover containers are gone, so no builder can still be writing below the packages root.
     if (this.config.packagesEnabled === true) await this.packages.reconcileStartup();
     await this.reconcileJobDirectories();
@@ -803,7 +827,12 @@ export class WorkspaceService {
     await this.agentManager?.stop();
     await this.packageService?.shutdown();
   }
-  private async reconcileContainers(): Promise<void> {
+  /**
+   * Removes managed containers no active workspace owns. A workspace executor that Docker will not remove is
+   * reported and left for the next startup (a fixed-name rebuild also removes it first) instead of aborting this
+   * one. Ephemeral helpers stay strict: package startup cleanup relies on every builder being gone.
+   */
+  private async reconcileContainers(failures: StartupReconcileFailure[]): Promise<void> {
     const managed = await runDocker([
       'ps', '-a', '--filter', 'label=cloud-harness.managed=true',
       '--filter', `label=cloud-harness.instance=${this.instanceId}`,
@@ -814,7 +843,12 @@ export class WorkspaceService {
       const [name, workspaceId] = line.split('\t');
       if (!name) continue;
       const record = workspaceId ? this.store.byId(workspaceId) : undefined;
-      if (!record || !activeStatus.has(record.status) || record.containerName !== name) await removeContainer(name);
+      if (record && activeStatus.has(record.status) && record.containerName === name) continue;
+      try {
+        await removeContainer(name);
+      } catch (error) {
+        failures.push({ workspaceId: workspaceId || name, reason: `leftover container ${name} could not be removed: ${error instanceof Error ? error.message : String(error)}` });
+      }
     }
 
     const helpers = await runDocker([
@@ -2246,6 +2280,7 @@ export class WorkspaceService {
     const network = mode === 'fetch' || mode === 'push' ? 'bridge' : 'none';
     const releaseTreeWriter = this.claimTreeWriter(record);
     try {
+      if (mode === 'fetch' || mode === 'stage-push') await this.createTransferDirectory(join(record.workspacePath, transferName));
       const result = await runDocker([
         'run', '-i', '--rm', '--pull', 'never', '--name', helperName,
         '--label', 'cloud-harness.role=git-transfer-helper', '--label', 'cloud-harness.ephemeral=true',
@@ -2254,8 +2289,9 @@ export class WorkspaceService {
         '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
         '--pids-limit', '128', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
         '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_TERMINAL_PROMPT=0',
-        '--volume', `${record.workspacePath}:/job:rw`, '--entrypoint', '/opt/harness/git-transfer-helper.sh',
-        this.config.executorImage, mode, record.repositoryUrl, checkoutJobPath(record), `/job/${transferName}`, argument, expectedRemoteOid ?? '', historySpec
+        ...gitTransferVolumes(mode, record.workspacePath, transferName),
+        '--entrypoint', '/opt/harness/git-transfer-helper.sh',
+        this.config.executorImage, mode, record.repositoryUrl, checkoutJobPath(record), gitTransferRepositoryPath(transferName), argument, expectedRemoteOid ?? '', historySpec
       ], {
         stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes,
         ...(signal ? { signal } : {})
@@ -5735,6 +5771,25 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       throw new HarnessError('CONFLICT', 'workspace could not be closed', 409);
     }
     return { ok: true, message: 'Workspace closed', data: publicRecord(finalRecord), truncated: false };
+  }
+
+  /**
+   * A transfer directory is bind-mounted on its own, so it must exist before its helper starts (Docker
+   * would otherwise create it as root) and be writable by the helper's UID.
+   */
+  private async createTransferDirectory(path: string): Promise<void> {
+    try {
+      await mkdir(path, { mode: 0o700 });
+      try {
+        await chown(path, 10001, 10001);
+      } catch {
+        // A runner that is neither root nor UID 10001 cannot hand the directory over, so it opens it the way
+        // it opens the workspace directory itself.
+        await chmod(path, 0o777);
+      }
+    } catch (error) {
+      throw new HarnessError('UNAVAILABLE', `Git transfer directory could not be created (${(error as Error).message})`.slice(0, 2_000), 503, true);
+    }
   }
 
   private async safeRemovePath(path: string): Promise<void> {

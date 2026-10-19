@@ -91,6 +91,10 @@ describe('dashboard application mount', () => {
     expect(models.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
     expect(await models.text()).toContain('createModelWizard');
 
+    const policies = await fetch(`${root}/${encodeURIComponent(manifestVersion)}/dashboard-policies.js`);
+    expect(policies.status).toBe(200);
+    expect(await policies.text()).toContain('createAgentPolicyEditor');
+
     const legacy = await fetch(`${root}/dashboard-pages.js`);
     expect(legacy.status).toBe(200);
     expect(legacy.headers.get('cache-control')).toBe('private, no-cache');

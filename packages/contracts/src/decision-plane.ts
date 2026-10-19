@@ -24,7 +24,7 @@ export const DecisionPurposeSchema = z.enum(DECISION_PURPOSES);
 export type DecisionPurpose = z.infer<typeof DecisionPurposeSchema>;
 
 /** The purposes this release integrates. Configuration refuses any other value. */
-export const IMPLEMENTED_DECISION_PURPOSES = ['failure-classification', 'mcp-routing'] as const;
+export const IMPLEMENTED_DECISION_PURPOSES = ['failure-classification', 'mcp-routing', 'execution-risk'] as const;
 export const ImplementedDecisionPurposeSchema = z.enum(IMPLEMENTED_DECISION_PURPOSES);
 export type ImplementedDecisionPurpose = z.infer<typeof ImplementedDecisionPurposeSchema>;
 
@@ -126,6 +126,22 @@ export const FailureDiagnosisSchema = z.object({
   priorFailures: z.number().int().min(0)
 }).strict();
 export type FailureDiagnosis = z.infer<typeof FailureDiagnosisSchema>;
+
+/** The typed questions an `execution-risk` decision asks. Keys are stable: audit rows and fixtures use them. */
+export const EXECUTION_RISK_QUESTION_KEYS = { risk: 'risk', uncertainSideEffects: 'uncertain_side_effects', humanRequired: 'human_required' } as const;
+
+/**
+ * The validated answer of one `execution-risk` decision. It is advisory: an agent policy turns it into
+ * `no_change` or `escalate` and never into an authorization.
+ */
+export const ExecutionRiskAssessmentSchema = z.object({
+  decisionId: z.string().min(1).max(64),
+  risk: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1),
+  uncertainSideEffects: z.number().min(0).max(1),
+  humanRequired: z.number().min(0).max(1)
+}).strict();
+export type ExecutionRiskAssessment = z.infer<typeof ExecutionRiskAssessmentSchema>;
 
 /** Gateway -> runner: rerank a lexical candidate pool that is already permission-filtered. */
 export const DecisionRerankToolsInputSchema = z.object({
