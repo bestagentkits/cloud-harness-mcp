@@ -716,6 +716,22 @@ describe('model gateway usage accounting', () => {
     expect(providerRequests).toBe(0);
   });
 
+  it.each([0, 1.5, '100'])('refuses max_tokens %j as an invalid request naming the field', async (maxTokens) => {
+    let providerRequests = 0;
+    const provider = await fakeProvider((_request, response) => {
+      providerRequests += 1;
+      response.end();
+    });
+    const running = await gateway(pricedProfile(provider.upstream));
+    const response = await fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers(activate(running.runtime, issue())),
+      body: JSON.stringify({ messages: [], max_tokens: maxTokens })
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: { code: 'invalid_model_request', message: 'max_tokens must be a positive integer' } });
+    expect(providerRequests).toBe(0);
+  });
+
   it.each([
     ['input token', { maxInputTokens: 1 }],
     ['input cost', { maxCostMicros: 1 }],
