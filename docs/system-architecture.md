@@ -438,6 +438,20 @@ crossing of a policy's warning threshold writes one structured
 [`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts), and
 [`packages/contracts/src/model-spend-schemas.ts`](../packages/contracts/src/model-spend-schemas.ts).
 
+Agent traces, when enabled, add `agent_traces` and `agent_trace_spans` to the
+runner state database, created by an idempotent initializer without a schema
+version bump and without foreign keys, so a trace outlives its workspace and
+agent rows. The agent manager feeds a recorder from the same runtime events,
+proxy tool calls, and gateway settlement it already handles; the recorder
+writes only at span boundaries (never per stream delta), and a store failure is
+logged once and marks the trace degraded instead of affecting the agent. At
+startup, traces left `RUNNING` by a previous runner epoch become `INCOMPLETE`;
+an hourly purge removes traces past retention. The owners are
+[`apps/runner/src/agent-trace-schema.ts`](../apps/runner/src/agent-trace-schema.ts),
+[`apps/runner/src/agent-trace-recorder.ts`](../apps/runner/src/agent-trace-recorder.ts),
+and
+[`apps/runner/src/agent-trace-store.ts`](../apps/runner/src/agent-trace-store.ts).
+
 The admission policy permits up to `MAX_ACTIVE_WORKSPACES_PER_OWNER` concurrent
 counted workspaces per principal (default 3; `1` restores single-workspace
 behaviour). Admission and promotion are counted atomically in

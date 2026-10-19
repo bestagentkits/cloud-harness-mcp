@@ -881,6 +881,28 @@ state is in-memory and disappears on runner restart. Startup restarts surviving
 executors to stop processes whose handles were lost; this remains a durability
 limitation, not a security guarantee.
 
+### Agent traces
+
+Agent traces are off unless the operator sets `AGENT_TRACES_ENABLED`. When on,
+the runner stores, per coding-agent run, span identifiers, timings, token
+counts, cost, outcomes, bounded error classes, a closed allowlist of span
+attributes, and a `sha256:` digest of each tool input taken after redaction.
+It never stores prompts, model output, raw tool arguments, auth headers,
+tokens, or the agent environment. The only optional content is a tool-input
+preview, default `0` bytes and capped at 512, built from the same redacted
+value (credential-named keys lose their values; token- and key-shaped strings
+are replaced). The redaction and attribute allowlist are owned by
+[`apps/runner/src/agent-trace-recorder.ts`](../apps/runner/src/agent-trace-recorder.ts)
+and
+[`packages/contracts/src/agent-traces-api.ts`](../packages/contracts/src/agent-traces-api.ts).
+
+Every read is scoped to the caller's principal, and a foreign trace is
+reported exactly like a missing one. The API and Dashboard parse runner
+results through the strict trace schemas, so an unexpected field fails closed
+instead of reaching a client. Traces have bounded retention, a per-trace span
+cap, and a per-principal quota. Exports are pull-only documents returned to
+the owner; the harness opens no egress to a trace collector.
+
 ## Local stdio security model
 
 Local stdio mode intentionally alters the trust boundary compared to the remote Docker executor:

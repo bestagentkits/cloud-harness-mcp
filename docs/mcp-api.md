@@ -254,6 +254,52 @@ writes. Any active agent from a prior runner epoch is reconciled: its model
 lease is revoked, its container is removed, and its status transitions to
 `INTERRUPTED` with `outcomeUnknown: true`.
 
+### Agent traces
+
+When the operator sets `AGENT_TRACES_ENABLED=true`, every agent run also
+writes one durable trace: an `agent_run` span, one span per model call and
+tool call, and a `gateway` settlement span. Four read-only, idempotent tools
+read them: `agent_traces_list`, `agent_trace_get`, `agent_trace_spans`, and
+`agent_trace_export`. Input and result shapes are owned by
+[`packages/contracts/src/agent-traces-api.ts`](../packages/contracts/src/agent-traces-api.ts);
+storage, cursors, and retention by
+[`apps/runner/src/agent-trace-store.ts`](../apps/runner/src/agent-trace-store.ts);
+event-to-span mapping by
+[`apps/runner/src/agent-trace-recorder.ts`](../apps/runner/src/agent-trace-recorder.ts).
+
+- **Scope.** Reads are bound to the caller's principal and are independent of
+  any workspace: a trace outlives its workspace until retention removes it.
+  Another principal's trace is `NOT_FOUND`, indistinguishable from a missing
+  one. With traces disabled every tool returns `FEATURE_DISABLED` (409).
+- **Cursors.** List and span cursors are opaque `tc1.` tokens bound to the
+  caller and the exact filter set; reusing one with other filters is
+  `INVALID_INPUT`. The list is keyset-paged by start time and trace ID, so
+  traces written during a walk never shift or duplicate a page. A cursor whose
+  anchor trace was removed by retention or the per-principal quota fails with
+  `TRACE_EXPIRED` (410) and `resumeAction: "restart_without_cursor"`; reading
+  an expired trace directly is also `TRACE_EXPIRED`.
+- **States.** A trace is `RUNNING` until the agent ends, then takes the
+  agent's terminal state: `COMPLETED`, `FAILED`, `CANCELLED`, `TIMED_OUT`,
+  `EXPIRED` (model lease expired), or `INCOMPLETE` (a runner restart ended the
+  run; `INTERRUPTED` agents map to `FAILED` with `runtime_exited`). Anything
+  but `COMPLETED` has `coverage: "partial"`, and spans the run never closed
+  read `UNKNOWN`. Spans past the per-trace cap are dropped behind a single
+  truncation marker with `truncated: true`.
+- **Nulls and percentiles.** A figure that was not observed is `null`, never
+  `0`. Model-call p50/p95 and time to first token are nearest-rank
+  percentiles over spans that have the timestamps; with no samples they are
+  `null`. Per-profile cohorts report percentiles only at 20 or more traces and
+  `insufficient_sample` otherwise.
+- **Reconciliation.** When the agent ends, model-call span sums are compared
+  with the agent usage ledger. Tokens must match exactly; cost may differ by a
+  tolerance of one micro-dollar per model-call span (per-call rounding). A
+  mismatch is `unreconciled` with machine-readable reasons; the gateway
+  settlement is reported alongside for comparison.
+- **Export.** `agent_trace_export` returns a bounded document in the result
+  (`json`, `csv`, or `otlp-json`), with `truncated` when it hit its size
+  bound. It is pull-only: the harness never pushes traces to a collector. The
+  Dashboard serves the same export as a download.
+
 ### Model setup and spend
 
 Eight tools let a client choose a model for `agent_spawn` and prepare its
