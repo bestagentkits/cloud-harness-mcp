@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { lookup as dnsLookup } from 'node:dns/promises';
 import { AUTOMATION_LIMITS, AutomationJiraBaseUrlSchema } from '@cloud-harness/contracts';
 import {
   boundedText,
@@ -13,7 +12,7 @@ import {
   type ProviderAdapter
 } from './automation-adapter.js';
 import { verifyGitHubSignature } from './automation-github.js';
-import { isPrivate } from './repository-policy.js';
+import { createProviderHttpClient, ProviderHttpError, type ProviderHttpClient, type ProviderHttpResponse } from './model-provider-http.js';
 
 /**
  * Jira Cloud webhook verification, normalization and comment publishing. A Jira admin webhook with
@@ -40,6 +39,7 @@ const COMMENT_ID = /^[0-9]{1,20}$/u;
 /** Room for the space-joined labels of one update inside a flat `extras` value. */
 const MAX_LABELS_CHARS = 200;
 const PUBLISH_TIMEOUT_MS = 15_000;
+const MAX_RESPONSE_BYTES = 256 * 1024;
 
 function parseBody(body: Buffer): Record<string, unknown> | undefined {
   try {
@@ -170,10 +170,7 @@ function matchJiraRule(match: Parameters<ProviderAdapter['matches']>[0], event: 
 }
 
 /** Resolves a host to its addresses; injectable so tests never touch DNS. */
-export type JiraHostLookup = (host: string) => Promise<{ address: string }[]>;
-
-/** IPv4-mapped IPv6 addresses (`::ffff:10.0.0.1`) are judged by the IPv4 address they carry. */
-const forbiddenAddress = (address: string): boolean => isPrivate(address.toLowerCase().startsWith('::ffff:') ? address.slice(7) : address);
+export type JiraHostLookup = NonNullable<NonNullable<Parameters<typeof createProviderHttpClient>[0]>['lookup']>;
 
 const failure = (code: string, retryable: boolean): AutomationPublishResult => ({ ok: false, code, retryable });
 
@@ -191,7 +188,7 @@ function commentDocument(markdown: string): { type: 'doc'; version: 1; content: 
   };
 }
 
-function createPublisher(resolve: JiraHostLookup) {
+function createPublisher(http: ProviderHttpClient) {
   return async function publishJiraComment(request: AutomationPublishRequest): Promise<AutomationPublishResult> {
     const { email, apiToken } = request.outbound ?? {};
     if (!email || !apiToken) return failure('OUTBOUND_NOT_CONFIGURED', false);
@@ -199,40 +196,30 @@ function createPublisher(resolve: JiraHostLookup) {
     const key = request.workflow.resourceRef;
     if (!base.success || !ISSUE_KEY.test(key)) return failure('INVALID_TARGET', false);
 
-    // The name is resolved before the credential leaves this process. The fetch resolves it again,
-    // so this narrows rebinding rather than closing it; the owner configures the site, not the event.
-    let addresses: { address: string }[];
-    try {
-      addresses = await resolve(new URL(base.data).hostname);
-    } catch {
-      return failure('JIRA_DNS_FAILED', true);
-    }
-    if (addresses.length === 0 || addresses.some(({ address }) => forbiddenAddress(address))) return failure('JIRA_ADDRESS_FORBIDDEN', false);
-
     const existing = request.publishRef?.commentId;
     const commentId = typeof existing === 'string' || typeof existing === 'number' ? String(existing) : undefined;
     if (commentId !== undefined && !COMMENT_ID.test(commentId)) return failure('INVALID_TARGET', false);
     const url = `${base.data}/rest/api/3/issue/${encodeURIComponent(key)}/comment${commentId === undefined ? '' : `/${commentId}`}`;
-    let response: Response;
+    // The provider client resolves the site once, refuses private and reserved addresses, and pins
+    // the socket to the address it checked, so a rebind cannot redirect the credential. It never
+    // follows redirects, so a 3xx is just a non-retryable status.
+    let response: ProviderHttpResponse;
     try {
-      response = await request.fetch(url, {
+      response = await http.request({
+        url,
         method: commentId === undefined ? 'POST' : 'PUT',
-        headers: {
-          authorization: `Basic ${Buffer.from(`${email}:${apiToken}`).toString('base64')}`,
-          accept: 'application/json',
-          'content-type': 'application/json'
-        },
+        headers: { authorization: `Basic ${Buffer.from(`${email}:${apiToken}`).toString('base64')}` },
         body: JSON.stringify({ body: commentDocument(request.body) }),
-        redirect: 'manual',
-        signal: AbortSignal.timeout(PUBLISH_TIMEOUT_MS)
+        timeoutMs: PUBLISH_TIMEOUT_MS,
+        maxResponseBytes: MAX_RESPONSE_BYTES
       });
-    } catch {
-      return failure('JIRA_NETWORK', true);
+    } catch (error) {
+      return error instanceof ProviderHttpError && error.kind === 'forbidden_host' ? failure('JIRA_ADDRESS_FORBIDDEN', false) : failure('JIRA_NETWORK', true);
     }
-    if (!response.ok) return statusFailure(response.status);
+    if (response.status < 200 || response.status > 299) return statusFailure(response.status);
     if (commentId !== undefined) return { ok: true, publishRef: { commentId } };
     try {
-      const created = record(await response.json())?.id;
+      const created = record(JSON.parse(response.body))?.id;
       const id = typeof created === 'number' ? String(created) : created;
       return typeof id === 'string' && COMMENT_ID.test(id) ? { ok: true, publishRef: { commentId: id } } : failure('JIRA_BAD_RESPONSE', false);
     } catch {
@@ -242,7 +229,7 @@ function createPublisher(resolve: JiraHostLookup) {
 }
 
 export function createJiraAdapter(options: { lookup?: JiraHostLookup } = {}): ProviderAdapter {
-  const resolve = options.lookup ?? ((host) => dnsLookup(host, { all: true, verbatim: true }));
+  const http = createProviderHttpClient(options.lookup ? { lookup: options.lookup } : {});
   return {
     provider: 'jira',
     displayName: 'Jira',
@@ -268,7 +255,7 @@ export function createJiraAdapter(options: { lookup?: JiraHostLookup } = {}): Pr
       return payload ? normalizeUpdate(payload, connection.config.baseUrl) : { kind: 'quarantined', reason: 'malformed_payload' };
     },
     matches: (match, event, context) => matchJiraRule(match, event, context.selfLogin),
-    publish: createPublisher(resolve)
+    publish: createPublisher(http)
   };
 }
 

@@ -2,7 +2,7 @@ import { isIP } from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { HarnessError } from '@cloud-harness/contracts';
 
-export function isPrivate(address: string): boolean {
+function isPrivate(address: string): boolean {
   if (address === '::1' || address === '0.0.0.0' || address === '::') return true;
   if (isIP(address) === 4) {
     const [a = 0, b = 0] = address.split('.').map(Number);

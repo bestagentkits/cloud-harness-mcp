@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AUTOMATION_LIMITS, type AutomationRuleMatch, type RunnerOperation } from '@cloud-harness/contracts';
 import type { AutomationOperationResult } from '../src/automation-adapter.js';
 import { createJiraAdapter, JIRA_MAX_AGE_MS, JIRA_MAX_FUTURE_SKEW_MS, jiraAdapter, type JiraHostLookup } from '../src/automation-jira.js';
@@ -28,7 +28,66 @@ const API_TOKEN = 'jira-api-token-fixture-value';
 const REPO = 'acme/widgets';
 const WS = `ws_${'a'.repeat(24)}`;
 const AGENT = `agent_${'b'.repeat(24)}`;
-const PUBLIC_LOOKUP: JiraHostLookup = async () => [{ address: '104.192.141.1' }];
+const PUBLIC_LOOKUP: JiraHostLookup = async () => [{ address: '104.192.141.1', family: 4 }];
+
+type WireRequest = {
+  url: string;
+  method: string;
+  hostname: string;
+  servername: string | undefined;
+  port: number;
+  headers: Record<string, string>;
+  body: { body: { content: unknown[] } };
+  /** What the socket's lookup answers, i.e. the address the connection is pinned to. */
+  pinned: { address: string; family: number };
+};
+
+// The publisher talks to Jira through the provider HTTP client, never through the injected fetch.
+const unusedFetch = (async () => { throw new Error('the injected fetch must not be used'); }) as unknown as typeof fetch;
+
+// Stands in for the TLS socket: records what the provider client would send and where it would connect.
+const wire = vi.hoisted(() => {
+  const state = {
+    sent: [] as unknown[],
+    respond: (() => new Response('{}')) as (call: number) => Response | Error,
+    reset(respond: (call: number) => Response | Error) {
+      state.sent = [];
+      state.respond = respond;
+      return state.sent as WireRequest[];
+    }
+  };
+  return state;
+});
+
+vi.mock('node:https', async (importOriginal) => {
+  const { EventEmitter } = await import('node:events');
+  const actual = await importOriginal<Record<string, unknown>>();
+  const request = (options: Record<string, any>, callback: (incoming: unknown) => void) => {
+    const outgoing = new EventEmitter() as EventEmitter & { end(body?: string): void; destroy(): void };
+    outgoing.destroy = () => undefined;
+    outgoing.end = (body) => {
+      let pinned = { address: '', family: 0 };
+      options.lookup(options.hostname, {}, (_error: unknown, address: string, family: number) => { pinned = { address, family }; });
+      const call = wire.sent.push({
+        url: `https://${options.hostname}${options.path}`, method: options.method, hostname: options.hostname, servername: options.servername,
+        port: options.port, headers: options.headers, body: JSON.parse(body ?? 'null'), pinned
+      });
+      const next = wire.respond(call);
+      if (next instanceof Error) {
+        queueMicrotask(() => outgoing.emit('error', next));
+        return;
+      }
+      void next.text().then((text) => {
+        const incoming = Object.assign(new EventEmitter(), { statusCode: next.status, headers: {}, destroy: () => undefined });
+        callback(incoming);
+        incoming.emit('data', Buffer.from(text));
+        incoming.emit('end');
+      });
+    };
+    return outgoing;
+  };
+  return { ...actual, default: { ...actual, request }, request };
+});
 
 const sign = (body: Buffer, secret = SECRET) => `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
 
@@ -230,16 +289,8 @@ describe('Jira rule matching', () => {
 });
 
 describe('Jira comment publishing', () => {
-  type Sent = { url: string; method: string; headers: Record<string, string>; body: { body: { content: unknown[] } } };
-
   function publisher(lookup: JiraHostLookup, respond: (call: number) => Response | Error) {
-    const sent: Sent[] = [];
-    const fetcher = (async (url: string, init: RequestInit) => {
-      sent.push({ url, method: init.method ?? 'GET', headers: init.headers as Record<string, string>, body: JSON.parse(String(init.body)) });
-      const next = respond(sent.length);
-      if (next instanceof Error) throw next;
-      return next;
-    }) as unknown as typeof fetch;
+    const sent = wire.reset(respond);
     const adapter = createJiraAdapter({ lookup });
     const request = (overrides: Partial<AutomationPublishRequest> = {}): AutomationPublishRequest => ({
       phase: 'started',
@@ -250,7 +301,7 @@ describe('Jira comment publishing', () => {
       outbound: { email: EMAIL, apiToken: API_TOKEN },
       config: { baseUrl: BASE_URL },
       call: async () => ({ ok: true }),
-      fetch: fetcher,
+      fetch: unusedFetch,
       ...overrides
     });
     return { sent, publish: (overrides?: Partial<AutomationPublishRequest>) => adapter.publish!(request(overrides)) };
@@ -262,7 +313,7 @@ describe('Jira comment publishing', () => {
     const { sent, publish } = publisher(PUBLIC_LOOKUP, (call) => (call === 1 ? json(201, { id: '10050' }) : json(200)));
     const created = await publish();
     expect(created).toEqual({ ok: true, publishRef: { commentId: '10050' } });
-    expect(sent[0]).toMatchObject({ url: `${BASE_URL}/rest/api/3/issue/OPS-12/comment`, method: 'POST' });
+    expect(sent[0]).toMatchObject({ url: `${BASE_URL}/rest/api/3/issue/OPS-12/comment`, method: 'POST', pinned: { address: '104.192.141.1' } });
     expect(sent[0]!.headers.authorization).toBe(`Basic ${Buffer.from(`${EMAIL}:${API_TOKEN}`).toString('base64')}`);
     expect(sent[0]!.body.body).toMatchObject({ type: 'doc', version: 1 });
     expect(sent[0]!.body.body.content).toHaveLength(2);
@@ -271,18 +322,28 @@ describe('Jira comment publishing', () => {
     expect(sent[1]).toMatchObject({ url: `${BASE_URL}/rest/api/3/issue/OPS-12/comment/10050`, method: 'PUT' });
   });
 
-  it('refuses private, loopback and link-local addresses before any request', async () => {
-    for (const address of ['10.0.0.5', '127.0.0.1', '169.254.169.254', '192.168.1.9', '::1', 'fd00::1', '::ffff:10.0.0.5']) {
-      const { sent, publish } = publisher(async () => [{ address }], () => json(201, { id: '1' }));
+  it('refuses a site that resolves only to private, loopback or link-local addresses before any request', async () => {
+    for (const address of ['10.0.0.5', '127.0.0.1', '169.254.169.254', '192.168.1.9', '100.64.0.1', '::1', 'fd00::1', '::ffff:10.0.0.5']) {
+      const { sent, publish } = publisher(async () => [{ address, family: address.includes(':') ? 6 : 4 }], () => json(201, { id: '1' }));
       expect(await publish()).toEqual({ ok: false, code: 'JIRA_ADDRESS_FORBIDDEN', retryable: false });
       expect(sent).toHaveLength(0);
     }
-    const mixed = publisher(async () => [{ address: '104.192.141.1' }, { address: '10.0.0.5' }], () => json(201, { id: '1' }));
-    expect(await mixed.publish()).toMatchObject({ ok: false, code: 'JIRA_ADDRESS_FORBIDDEN' });
-    expect(mixed.sent).toHaveLength(0);
     const unresolved = publisher(async () => { throw new Error('ENOTFOUND'); }, () => json(201, { id: '1' }));
-    expect(await unresolved.publish()).toEqual({ ok: false, code: 'JIRA_DNS_FAILED', retryable: true });
+    expect(await unresolved.publish()).toEqual({ ok: false, code: 'JIRA_NETWORK', retryable: true });
     expect(unresolved.sent).toHaveLength(0);
+  });
+
+  it('connects to the address it validated, not to whatever the name resolves to later', async () => {
+    let resolutions = 0;
+    const lookup: JiraHostLookup = async () => {
+      resolutions += 1;
+      // A rebinding resolver would answer differently on a second query; the socket must not ask again.
+      return resolutions === 1 ? [{ address: '10.0.0.5', family: 4 }, { address: '104.192.141.1', family: 4 }] : [{ address: '10.0.0.5', family: 4 }];
+    };
+    const { sent, publish } = publisher(lookup, () => json(201, { id: '10050' }));
+    expect(await publish()).toEqual({ ok: true, publishRef: { commentId: '10050' } });
+    expect(resolutions).toBe(1);
+    expect(sent[0]).toMatchObject({ hostname: 'acme.atlassian.net', servername: 'acme.atlassian.net', port: 443, pinned: { address: '104.192.141.1', family: 4 } });
   });
 
   it('refuses a stored base URL that is not a public https origin', async () => {
@@ -343,13 +404,12 @@ describe('Jira through the automation service', () => {
   }
 
   function setup(options: { lookup?: JiraHostLookup; respond?: (call: number) => Response } = {}) {
+    const sent = wire.reset(options.respond ?? ((call: number) => new Response(JSON.stringify(call === 1 ? { id: '10050' } : {}), { status: call === 1 ? 201 : 200 })));
     const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-jira-'));
     directories.push(directory);
     const store = new StateStore(join(directory, 'state.db'));
     closers.push(() => store.close());
     const operations = new Operations();
-    const sent: { url: string; method: string }[] = [];
-    const respond = options.respond ?? ((call: number) => new Response(JSON.stringify(call === 1 ? { id: '10050' } : {}), { status: call === 1 ? 201 : 200 }));
     const service = new AutomationService({
       database: store.database,
       enabled: true,
@@ -358,10 +418,7 @@ describe('Jira through the automation service', () => {
       operations,
       keyring: new SecretKeyring(1, [{ version: 1, key: Buffer.alloc(32, 7) }]),
       adapters: { ...AUTOMATION_PROVIDER_ADAPTERS, jira: createJiraAdapter({ lookup: options.lookup ?? PUBLIC_LOOKUP }) },
-      fetch: (async (url: string, init: RequestInit) => {
-        sent.push({ url, method: init.method ?? 'GET' });
-        return respond(sent.length);
-      }) as unknown as typeof fetch,
+      fetch: unusedFetch,
       now: () => NOW
     });
     const owner = { kind: 'owner' as const, ownerId: 'owner' };
@@ -467,14 +524,14 @@ describe('Jira through the automation service', () => {
     const [workflow] = listWorkflows(context);
     expect(workflow).toMatchObject({ state: 'COMPLETED', publishState: 'DELIVERED', provider: 'jira', resourceRef: 'OPS-12' });
     expect(context.operations.calls.find((call) => call.operation === 'workspace_open')!.input.repositoryUrl).toBe(`https://github.com/${REPO}.git`);
-    expect(context.sent).toEqual([
+    expect(context.sent.map(({ url, method }) => ({ url, method }))).toEqual([
       { url: `${BASE_URL}/rest/api/3/issue/OPS-12/comment`, method: 'POST' },
       { url: `${BASE_URL}/rest/api/3/issue/OPS-12/comment/10050`, method: 'PUT' }
     ]);
   });
 
   it('never calls Jira when the site resolves to a private address, and marks the publish failed', async () => {
-    const context = setup({ lookup: async () => [{ address: '10.1.2.3' }] });
+    const context = setup({ lookup: async () => [{ address: '10.1.2.3', family: 4 }] });
     const { connection, secret } = connect(context);
     addRule(context, connection.id);
     ingest(context, connection.id, secret, fixture());
