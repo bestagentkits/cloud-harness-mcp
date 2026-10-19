@@ -112,6 +112,10 @@ export type AutomationPublishWorkflow = {
   agentId: string | null;
   /** The agent's final answer, unescaped; present for `completed`. */
   resultText: string | null;
+  /** Why a terminal workflow did not complete, such as `AGENT_TIMED_OUT` or `OWNER_CANCELLED`. */
+  errorCode: string | null;
+  /** The normalized event's `extras`, re-checked when stored; empty once the delivery is purged. */
+  extras: Readonly<Record<string, string | number | boolean>>;
 };
 
 export type AutomationPublishRequest = {
