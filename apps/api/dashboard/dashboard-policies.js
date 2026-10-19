@@ -68,7 +68,10 @@ export function globalPolicyFromForm(values) {
   const defaults = {};
   for (const actionClass of POLICY_ACTION_CLASSES) {
     const effect = String(values.get(`effect-${actionClass}`) ?? '');
-    if (POLICY_EFFECTS.includes(effect)) defaults[actionClass] = { effect, delegable: values.get(`delegable-${actionClass}`) === 'on' };
+    const delegable = values.get(`delegable-${actionClass}`) === 'on';
+    if (POLICY_EFFECTS.includes(effect)) defaults[actionClass] = { effect, delegable };
+    // "No default" means require approval; keeping the delegation turns it into that explicit default.
+    else if (delegable) defaults[actionClass] = { effect: 'require_approval', delegable: true };
   }
   const scope = {};
   for (const field of POLICY_SCOPE_FIELDS) scope[field.key] = linesToList(values.get(`scope-${field.key}`));
@@ -162,7 +165,7 @@ function renderClassMatrix(scope, document) {
     : '<tr><th scope="col">Action</th><th scope="col">Allowed classes</th><th scope="col">Hard deny</th><th scope="col">Mandatory approval</th><th scope="col">Rule</th></tr>';
   const restrict = scope === 'project'
     ? `<p class="field-help">${checkbox('restrictClasses', 'on', Array.isArray(document?.allowedActionClasses), 'Restrict this project to the classes marked Keep')}</p>`
-    : '';
+    : '<p class="field-help">With no default effect a class requires approval. Ticking Projects may choose on such a class saves Require approval as its default, which projects may then change.</p>';
   return `<fieldset class="policy-fieldset"><legend>Action classes</legend>${restrict}<div class="policy-scroll"><table class="data-table policy-matrix"><thead>${head}</thead><tbody>${rows}</tbody></table></div></fieldset>`;
 }
 
@@ -340,14 +343,17 @@ export function renderPolicyHistory(view) {
 export function renderPolicyProjects(overview, projectNames = {}) {
   const projects = list(overview?.projects);
   if (!projects.length) return '<section class="panel" aria-labelledby="policy-projects-title"><h2 id="policy-projects-title">Project policies</h2><p class="empty-note">No project narrows the global policy. Open a project to add one.</p></section>';
-  return `<section class="panel" aria-labelledby="policy-projects-title"><h2 id="policy-projects-title">Project policies</h2><ul class="record-list">${projects.map((entry) => `<li class="policy-project">
+  const truncated = overview?.projectsTruncated === true
+    ? `<p class="page-note">Showing the ${escape(projects.length)} most recently changed project policies. Open a project to see a policy that is not listed.</p>`
+    : '';
+  return `<section class="panel" aria-labelledby="policy-projects-title"><h2 id="policy-projects-title">Project policies</h2>${truncated}<ul class="record-list">${projects.map((entry) => `<li class="policy-project">
     <a href="/dashboard/projects/${encodeURIComponent(entry.projectId)}/agent-policies">${escape(projectNames[entry.projectId] ?? entry.projectId)}</a>
     <span class="tag-badge">v${escape(entry.head?.version ?? '')}</span>${entry.orphaned ? ' <span class="status failed">orphaned</span>' : ''}</li>`).join('')}</ul></section>`;
 }
 
 /** Shown instead of the editor while `AGENT_POLICIES_ENABLED` is off. */
 export function renderPoliciesDisabled() {
-  return '<div class="empty policy-disabled"><h3>Agent policies are off on this instance.</h3><p>Set <code>AGENT_POLICIES_ENABLED=true</code> on the runner and restart it to edit execution policies. Until then no agent action is governed by a saved policy.</p></div>';
+  return '<div class="empty policy-disabled"><h3>Agent policies are off on this instance.</h3><p>Set <code>AGENT_POLICIES_ENABLED=true</code> on the runner and restart it to edit, check and simulate execution policies. While it is off the runner refuses every policy operation.</p></div>';
 }
 
 function renderHeader(view) {
@@ -369,7 +375,7 @@ export function renderAgentPolicyPage(view) {
   return `<div class="policy-page">${renderHeader(view)}
     ${renderPolicyEditor(view)}
     ${renderPolicyValidation(view.validation)}
-    <section class="panel" aria-labelledby="policy-effective-title"><h2 id="policy-effective-title">Effective policy preview</h2>${renderEffectivePolicy(view.effective, 'Saved effective policy')}</section>
+    <section class="panel" aria-labelledby="policy-effective-title"><h2 id="policy-effective-title">Effective policy preview</h2>${view.effective ? renderEffectivePolicy(view.effective, 'Saved effective policy') : '<p class="empty-note">No effective permissions: this project no longer exists, so every agent action for it is denied.</p>'}</section>
     ${view.scope === 'project' ? renderPolicyInheritance(view.globalDocument, view.savedDocument, view.effective) : ''}
     ${renderPolicySimulation(view)}
     ${renderPolicyHistory(view)}
@@ -385,9 +391,9 @@ const clone = (value) => (value === undefined || value === null ? value : JSON.p
 /**
  * Mounts the editor on `root`. Dependencies are injected so the module stays testable and holds no
  * global state: `api(path, init)` is the CSRF-aware Dashboard client, `confirm` the shared
- * confirmation dialog, `insert` the CSP-safe renderer.
+ * confirmation dialog, `insert` the CSP-safe renderer, `defer` schedules a task after the current dialog closes.
  */
-export function createAgentPolicyEditor({ root, insert, api, announce = () => {}, confirm, scope, projectId = null, projectNames = {} }) {
+export function createAgentPolicyEditor({ root, insert, api, announce = () => {}, confirm, scope, projectId = null, projectNames = {}, defer = (task) => globalThis.setTimeout(task, 0) }) {
   const base = scope === 'global' ? '/agent-policies/global' : `/agent-policies/projects/${encodeURIComponent(projectId)}`;
   const view = {
     status: 'loading', scope, projectId, projectNames, mode: 'form', document: null, jsonText: '', note: '',
@@ -466,11 +472,34 @@ export function createAgentPolicyEditor({ root, insert, api, announce = () => {}
     }
   }
 
-  async function put(document, confirmWeakening) {
+  /** The confirmation fields for a write: bound to the digest of the weakening list the owner saw. */
+  const confirmation = (weakeningDigest) => (weakeningDigest ? { confirmWeakening: true, weakeningDigest } : { confirmWeakening: false });
+
+  /**
+   * A 428 means the weakenings changed after the owner reviewed them (another save moved a head). The
+   * confirmation dialog is still closing, so the fresh review opens on the next task.
+   */
+  function reconfirm(text, reopen) {
+    setMessage(text, 'error');
+    defer(reopen);
+  }
+
+  function promptWeakening(document, result, invoker, description) {
+    confirm({
+      title: 'Save a weaker policy?',
+      description: description ?? 'This change lets agents do more than the current effective policy allows. Confirm only if you intend to loosen it.',
+      target: result.weakenings.join('; '),
+      label: 'Save weaker policy',
+      pendingLabel: 'Saving…',
+      action: () => run(() => put(document, result.weakeningDigest, invoker))
+    }, invoker);
+  }
+
+  async function put(document, weakeningDigest, invoker) {
     view.busy = true;
     setMessage('Saving…');
     try {
-      await api(base, { method: 'PUT', body: JSON.stringify({ document, expectedVersion: view.head?.version ?? 0, confirmWeakening, ...(view.note.trim() ? { note: view.note.trim() } : {}) }) });
+      await api(base, { method: 'PUT', body: JSON.stringify({ document, expectedVersion: view.head?.version ?? 0, ...confirmation(weakeningDigest), ...(view.note.trim() ? { note: view.note.trim() } : {}) }) });
       view.validation = null;
       view.note = '';
       view.busy = false;
@@ -486,6 +515,16 @@ export function createAgentPolicyEditor({ root, insert, api, announce = () => {}
         Object.assign(view, draft);
         return setMessage('Someone saved this policy while you were editing. The saved version was reloaded; check your draft again before saving.', 'error');
       }
+      if (error?.status === 428) {
+        let result;
+        try {
+          result = await check(document);
+        } catch (checkError) {
+          return setMessage(errorText(checkError, 'The draft could not be checked.'), 'error');
+        }
+        if (!result.valid || !result.weakenings.length) return setMessage('The effective policy changed after your check. Review the check result below and save again.', 'error');
+        return reconfirm('The weakenings changed after you reviewed them. Confirm the current list to save.', () => promptWeakening(document, result, invoker, 'The effective policy changed after your review. This is the current list of weakenings this save would make.'));
+      }
       setMessage(errorText(error, 'The policy could not be saved.'), 'error');
     }
   }
@@ -500,31 +539,25 @@ export function createAgentPolicyEditor({ root, insert, api, announce = () => {}
       return setMessage(errorText(error, 'The draft could not be checked.'), 'error');
     }
     if (!result.valid) return setMessage('The draft cannot be saved as it is. See the check result below.', 'error');
-    if (!result.weakenings.length) return await put(draft.document, false);
+    if (!result.weakenings.length) return await put(draft.document, null, invoker);
     render();
-    confirm({
-      title: 'Save a weaker policy?',
-      description: 'This change lets agents do more than the current effective policy allows. Confirm only if you intend to loosen it.',
-      target: result.weakenings.join('; '),
-      label: 'Save weaker policy',
-      pendingLabel: 'Saving…',
-      action: () => run(() => put(draft.document, true))
-    }, invoker);
+    promptWeakening(draft.document, result, invoker);
   }
 
-  async function revisionWeakenings(revisionId) {
+  async function revisionCheck(revisionId) {
     const { data } = await api(`/agent-policies/revisions/${encodeURIComponent(revisionId)}`);
-    return (await check(data.revision.document)).weakenings;
+    return check(data.revision.document);
   }
 
   async function rollback(button) {
     const revisionId = button.dataset.revisionId;
-    let weakenings;
+    let result;
     try {
-      weakenings = await revisionWeakenings(revisionId);
+      result = await revisionCheck(revisionId);
     } catch (error) {
       return setMessage(errorText(error, 'The revision could not be checked.'), 'error');
     }
+    const weakenings = list(result.weakenings);
     render();
     confirm({
       title: `Roll back to v${button.dataset.version}?`,
@@ -536,12 +569,13 @@ export function createAgentPolicyEditor({ root, insert, api, announce = () => {}
       pendingLabel: 'Rolling back…',
       action: () => run(async () => {
         try {
-          await api(`/agent-policies/revisions/${encodeURIComponent(revisionId)}/rollback`, { method: 'POST', body: JSON.stringify({ expectedVersion: view.head?.version ?? 0, confirmWeakening: weakenings.length > 0 }) });
+          await api(`/agent-policies/revisions/${encodeURIComponent(revisionId)}/rollback`, { method: 'POST', body: JSON.stringify({ expectedVersion: view.head?.version ?? 0, ...confirmation(result.weakeningDigest) }) });
           announce('Agent policy rolled back.');
           view.comparison = null;
           await refresh();
         } catch (error) {
           if (error?.status === 409) await load();
+          if (error?.status === 428) return reconfirm('The weakenings changed after you reviewed them. Review the rollback again.', () => void run(() => rollback(button)));
           setMessage(errorText(error, 'The rollback failed.'), 'error');
         }
       })
@@ -549,12 +583,14 @@ export function createAgentPolicyEditor({ root, insert, api, announce = () => {}
   }
 
   async function removeProjectPolicy(button) {
-    let weakenings = [];
+    let result = { weakenings: [], weakeningDigest: null };
     try {
-      weakenings = view.projectState === 'active' ? (await check({ version: 1 })).weakenings : [];
+      // Validating an empty project document previews exactly what removing the policy does.
+      if (view.projectState === 'active') result = await check({ version: 1 });
     } catch (error) {
       return setMessage(errorText(error, 'The removal could not be checked.'), 'error');
     }
+    const weakenings = list(result.weakenings);
     render();
     confirm({
       title: 'Remove the project policy?',
@@ -564,12 +600,13 @@ export function createAgentPolicyEditor({ root, insert, api, announce = () => {}
       pendingLabel: 'Removing…',
       action: () => run(async () => {
         try {
-          await api(base, { method: 'DELETE', body: JSON.stringify({ expectedVersion: view.head?.version ?? 0, confirmWeakening: weakenings.length > 0 }) });
+          await api(base, { method: 'DELETE', body: JSON.stringify({ expectedVersion: view.head?.version ?? 0, ...confirmation(result.weakeningDigest) }) });
           announce('Project policy removed.');
           view.validation = null;
           await refresh();
         } catch (error) {
           if (error?.status === 409) await load();
+          if (error?.status === 428) return reconfirm('The weakenings changed after you reviewed them. Review the removal again.', () => void run(() => removeProjectPolicy(button)));
           setMessage(errorText(error, 'The policy could not be removed.'), 'error');
         }
       })

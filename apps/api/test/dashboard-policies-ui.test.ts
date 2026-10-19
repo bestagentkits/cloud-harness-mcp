@@ -65,6 +65,14 @@ describe('agent policy form mapping', () => {
     expect(GlobalExecutionPolicySchema.parse(document)).toEqual(DEFAULT_GLOBAL_EXECUTION_POLICY);
   });
 
+  it('keeps "Projects may choose" on a class with no default effect as an explicit delegable approval', () => {
+    const fields = { ...globalFields(DEFAULT_GLOBAL_EXECUTION_POLICY), allowedActionClasses: ['read', 'edit'], 'delegable-edit': 'on' };
+    const document = globalPolicyFromForm(new Values(fields));
+    expect(document.defaults.edit).toEqual({ effect: 'require_approval', delegable: true });
+    expect(GlobalExecutionPolicySchema.safeParse(document).success).toBe(true);
+    expect(globalPolicyFromForm(new Values({ ...fields, 'delegable-edit': [] })).defaults.edit).toBeUndefined();
+  });
+
   it('sends a malformed number as typed so the runner names the field instead of the browser dropping it', () => {
     const document = globalPolicyFromForm(new Values({ ...globalFields(DEFAULT_GLOBAL_EXECUTION_POLICY), 'budget-maxRunSeconds': '15 minutes' }));
     expect(document.budget.maxRunSeconds).toBe('15 minutes');
@@ -134,7 +142,28 @@ describe('agent policy renderers', () => {
   it('shows the off switch instead of an editor while the feature is disabled', () => {
     const markup = renderAgentPolicyPage({ status: 'disabled' });
     expect(markup).toContain('AGENT_POLICIES_ENABLED=true');
+    expect(markup).toContain('refuses every policy operation');
     expect(markup).not.toContain('policy-form');
+  });
+
+  it('shows no effective permissions for an orphaned project', () => {
+    const markup = renderAgentPolicyPage({
+      status: 'ready', scope: 'project', projectId: PROJECT, projectState: 'unknown', mode: 'form', document: { version: 1 }, head: revision(1, REVISION, { version: 1 }),
+      effective: null, globalDocument: DEFAULT_GLOBAL_EXECUTION_POLICY, savedDocument: { version: 1 }, history: { revisions: [], headRevisionId: null, nextBeforeVersion: null }
+    });
+    expect(markup).toContain('every agent action for it is denied');
+    expect(markup).not.toContain('Saved effective policy');
+    expect(markup).not.toContain('policy-inheritance');
+  });
+
+  it('says when the project list is truncated', () => {
+    const page = (projectsTruncated: boolean) => renderAgentPolicyPage({
+      status: 'ready', scope: 'global', mode: 'form', document: DEFAULT_GLOBAL_EXECUTION_POLICY, head: null, effective,
+      history: { revisions: [], headRevisionId: null, nextBeforeVersion: null },
+      overview: { projects: [{ projectId: PROJECT, head: { version: 1 }, orphaned: false }], projectsTruncated }
+    });
+    expect(page(true)).toContain('most recently changed project policies');
+    expect(page(false)).not.toContain('most recently changed project policies');
   });
 });
 
@@ -157,13 +186,17 @@ describe('agent policy editor controller', () => {
   let api: ReturnType<typeof vi.fn>;
   let confirm: ReturnType<typeof vi.fn>;
   let weakenings: string[];
-  let putStatus: number | null;
+  let digest: string;
+  let putStatus: number[];
+  let deferred: Array<() => void>;
 
   beforeEach(() => {
     vi.stubGlobal('FormData', class { constructor(element: { values: Values }) { return element.values; } });
     root = new Root();
     weakenings = [];
-    putStatus = null;
+    digest = 'a'.repeat(64);
+    putStatus = [];
+    deferred = [];
     confirm = vi.fn();
     const stored = revision(1, REVISION, DEFAULT_GLOBAL_EXECUTION_POLICY);
     api = vi.fn(async (path: string, init?: { method?: string; body?: string }) => {
@@ -172,9 +205,10 @@ describe('agent policy editor controller', () => {
       }
       if (path === '/agent-policies/global/history') return { data: { revisions: [stored, revision(0, OLDER, DEFAULT_GLOBAL_EXECUTION_POLICY)], headRevisionId: REVISION, nextBeforeVersion: null } };
       if (path === '/agent-policies') return { data: { global: null, projects: [], defaultGlobal: DEFAULT_GLOBAL_EXECUTION_POLICY } };
-      if (path === '/agent-policies/global/validate') return { data: { valid: true, errors: [], widenings: [], weakenings, changes: [], effective } };
+      if (path === '/agent-policies/global/validate') return { data: { valid: true, errors: [], widenings: [], weakenings, changes: [], effective, weakeningDigest: weakenings.length ? digest : null } };
       if (path === '/agent-policies/global' && init?.method === 'PUT') {
-        if (putStatus) throw Object.assign(new Error('The policy changed.'), { status: putStatus, code: 'conflict' });
+        const status = putStatus.shift();
+        if (status) throw Object.assign(new Error('The policy changed.'), { status, code: status === 409 ? 'conflict' : 'confirmation_required' });
         return { data: { head: stored, weakenings } };
       }
       if (path === '/agent-policies/simulate') return { data: { decision: decision('ALLOW'), effective } };
@@ -184,7 +218,7 @@ describe('agent policy editor controller', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
   async function mount() {
-    const editor = createAgentPolicyEditor({ root, insert: (target: FakeElement, markup: string) => { target.innerHTML = markup; }, api, confirm, scope: 'global' });
+    const editor = createAgentPolicyEditor({ root, insert: (target: FakeElement, markup: string) => { target.innerHTML = markup; }, api, confirm, scope: 'global', defer: (task: () => void) => { deferred.push(task); } });
     await editor.load();
     return editor;
   }
@@ -220,11 +254,36 @@ describe('agent policy editor controller', () => {
     expect(confirm.mock.calls[0][0].target).toContain('edit is now allowed');
     await confirm.mock.calls[0][0].action();
     await flush();
-    expect(JSON.parse(puts()[0][1].body)).toMatchObject({ confirmWeakening: true });
+    expect(JSON.parse(puts()[0][1].body)).toMatchObject({ confirmWeakening: true, weakeningDigest: digest });
+  });
+
+  it('asks again with the current weakenings when the runner answers 428', async () => {
+    weakenings = ['edit is now allowed'];
+    putStatus = [428];
+    await mount();
+    submit('policy-form', { ...globalFields(DEFAULT_GLOBAL_EXECUTION_POLICY), allowedActionClasses: ['read', 'edit'], note: '' });
+    await flush();
+    // Another save moved the head: the runner refuses the stale confirmation.
+    weakenings = ['edit is now allowed', 'budget.maxConcurrentRuns: 1 becomes 2'];
+    digest = 'b'.repeat(64);
+    await confirm.mock.calls[0][0].action();
+    await flush();
+    expect(root.innerHTML).toContain('The weakenings changed after you reviewed them');
+    // The fresh review opens once the first dialog has closed, listing the current weakenings.
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(deferred).toHaveLength(1);
+    deferred[0]?.();
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(confirm.mock.calls[1][0].target).toContain('budget.maxConcurrentRuns: 1 becomes 2');
+    await confirm.mock.calls[1][0].action();
+    await flush();
+    expect(puts()).toHaveLength(2);
+    expect(JSON.parse(puts()[1][1].body)).toMatchObject({ confirmWeakening: true, weakeningDigest: 'b'.repeat(64) });
+    expect(root.innerHTML).toContain('Saved.');
   });
 
   it('keeps the draft and explains a concurrent save', async () => {
-    putStatus = 409;
+    putStatus = [409];
     const editor = await mount();
     submit('policy-form', { ...globalFields(DEFAULT_GLOBAL_EXECUTION_POLICY), hardDeny: ['network'], note: '' });
     await flush();
