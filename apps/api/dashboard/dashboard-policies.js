@@ -33,6 +33,13 @@ export const POLICY_BUDGET_FIELDS = Object.freeze([
   { key: 'maxRunSeconds', label: 'Run time (seconds)' },
   { key: 'maxConcurrentRuns', label: 'Concurrent runs' }
 ]);
+/** The execution-risk advisor (Jev). Absent from a global policy means off with these settings. */
+export const POLICY_ADVISOR_DEFAULTS = Object.freeze({ enabled: false, riskThreshold: 0.5, minConfidence: 0.7, fallback: 'require_approval' });
+export const POLICY_ADVISOR_FALLBACK_LABELS = Object.freeze({ require_approval: 'Require approval', deny: 'Deny' });
+export const POLICY_ADVISOR_REASON_LABELS = Object.freeze({
+  disabled: 'not enabled', unconfigured: 'no TypeSafe key', timeout: 'timed out', rate_limited: 'rate limited',
+  invalid_answer: 'invalid answer', low_confidence: 'low confidence', redaction_failed: 'redaction failed', unavailable: 'unavailable'
+});
 export const POLICY_PLATFORM_EFFECTS = Object.freeze(['credential_access', 'docker_access', 'network_escalation', 'outside_workspace', 'privilege_escalation']);
 const DECISION_STATUS = Object.freeze({ ALLOW: 'active', REQUIRE_APPROVAL: 'pending', DENY: 'failed' });
 const DECISION_LABELS = Object.freeze({ ALLOW: 'Allow', REQUIRE_APPROVAL: 'Requires approval', DENY: 'Deny' });
@@ -61,6 +68,12 @@ function numberField(text) {
   if (value === '') return undefined;
   return /^\d{1,15}$/u.test(value) ? Number(value) : value;
 }
+/** A value between 0 and 1 becomes a number; anything else is sent as typed so the runner reports the field. */
+function unitField(text) {
+  const value = String(text ?? '').trim();
+  if (value === '') return undefined;
+  return /^(?:0|1|0?\.\d{1,6}|1\.0{1,6})$/u.test(value) ? Number(value) : value;
+}
 const selected = (values, name) => values.getAll(name).map(String).filter((value) => POLICY_ACTION_CLASSES.includes(value));
 
 /** The global policy document a submitted form describes. `values` is FormData or anything with get/getAll. */
@@ -85,8 +98,22 @@ export function globalPolicyFromForm(values) {
     defaults,
     scope,
     budget,
-    approval: { ttlSeconds: numberField(values.get('approval-ttlSeconds')), approverRoles: ['owner'] }
+    approval: { ttlSeconds: numberField(values.get('approval-ttlSeconds')), approverRoles: ['owner'] },
+    ...globalAdvisorFromForm(values)
   };
+}
+
+function globalAdvisorFromForm(values) {
+  const fallback = String(values.get('advisor-fallback') ?? '');
+  const advisor = {
+    enabled: values.get('advisor-enabled') === 'on',
+    riskThreshold: unitField(values.get('advisor-riskThreshold')) ?? POLICY_ADVISOR_DEFAULTS.riskThreshold,
+    minConfidence: unitField(values.get('advisor-minConfidence')) ?? POLICY_ADVISOR_DEFAULTS.minConfidence,
+    fallback: Object.hasOwn(POLICY_ADVISOR_FALLBACK_LABELS, fallback) ? fallback : POLICY_ADVISOR_DEFAULTS.fallback
+  };
+  // An untouched, disabled advisor is the same as none, so a policy that never used it stays unchanged.
+  const untouched = Object.keys(POLICY_ADVISOR_DEFAULTS).every((key) => advisor[key] === POLICY_ADVISOR_DEFAULTS[key]);
+  return untouched ? {} : { advisor };
 }
 
 /** The project policy document a submitted form describes. Absent fields inherit the global value. */
@@ -116,6 +143,14 @@ export function projectPolicyFromForm(values) {
   if (Object.keys(budget).length) document.budget = budget;
   const ttlSeconds = numberField(values.get('approval-ttlSeconds'));
   if (ttlSeconds !== undefined) document.approval = { ttlSeconds };
+  const advisor = {};
+  if (values.get('advisor-enabled') === 'off') advisor.enabled = false;
+  const riskThreshold = unitField(values.get('advisor-riskThreshold'));
+  if (riskThreshold !== undefined) advisor.riskThreshold = riskThreshold;
+  const minConfidence = unitField(values.get('advisor-minConfidence'));
+  if (minConfidence !== undefined) advisor.minConfidence = minConfidence;
+  if (values.get('advisor-fallback') === 'deny') advisor.fallback = 'deny';
+  if (Object.keys(advisor).length) document.advisor = advisor;
   return document;
 }
 
@@ -188,6 +223,48 @@ function renderBudgetFields(scope, document) {
   return `<fieldset class="policy-fieldset"><legend>Budget and approval</legend><div class="policy-grid">${fields}<label>Approval expiry (seconds)<input name="approval-ttlSeconds" inputmode="numeric" value="${escape(ttl ?? '')}"${scope === 'project' ? ' placeholder="Inherit"' : ''}></label></div>${scope === 'project' ? '<p class="field-help">A project value can only be lower than the global value.</p>' : ''}</fieldset>`;
 }
 
+function renderAdvisorFields(scope, document) {
+  const advisor = document?.advisor ?? {};
+  const project = scope === 'project';
+  const number = (key, text) => `<label>${escape(text)}<input name="advisor-${escape(key)}" inputmode="decimal" value="${escape(advisor[key] ?? (project ? '' : POLICY_ADVISOR_DEFAULTS[key]))}"${project ? ' placeholder="Inherit"' : ''}></label>`;
+  const enabled = project
+    ? `<label class="policy-select">Advisor<select name="advisor-enabled">${options(['off'], advisor.enabled === false ? 'off' : '', { off: 'Turn off for this project' }, 'Inherit')}</select></label>`
+    : checkbox('advisor-enabled', 'on', advisor.enabled === true, 'Let the advisor clear Advisor or approval actions');
+  const fallback = project
+    ? options(['deny'], advisor.fallback === 'deny' ? 'deny' : '', POLICY_ADVISOR_FALLBACK_LABELS, 'Inherit')
+    : options(Object.keys(POLICY_ADVISOR_FALLBACK_LABELS), advisor.fallback ?? POLICY_ADVISOR_DEFAULTS.fallback, POLICY_ADVISOR_FALLBACK_LABELS);
+  const help = project
+    ? 'A project can only turn the advisor off, lower the risk threshold, raise the confidence floor or fall back to Deny.'
+    : 'Applies only to actions whose effect is Advisor or approval. The advisor can clear such an action or escalate it to a human; it never overrides a deny or a required approval. It also needs a TypeSafe key and the execution-risk Decision Plane purpose.';
+  return `<fieldset class="policy-fieldset"><legend>Execution-risk advisor</legend>${enabled}<div class="policy-grid">${number('riskThreshold', 'Escalate at risk (0 to 1)')}${number('minConfidence', 'Minimum confidence (0 to 1)')}<label class="policy-select">When the advisor cannot answer<select name="advisor-fallback">${fallback}</select></label></div><p class="field-help">${escape(help)}</p></fieldset>`;
+}
+
+/** The effective advisor as one line. */
+function advisorSummary(advisor) {
+  const value = { ...POLICY_ADVISOR_DEFAULTS, ...(advisor ?? {}) };
+  if (!value.enabled) return 'Off';
+  return `On: escalates at risk ${escape(value.riskThreshold)} or above, needs confidence ${escape(value.minConfidence)}, otherwise ${escape(POLICY_ADVISOR_FALLBACK_LABELS[value.fallback] ?? value.fallback)}`;
+}
+
+/** What the advisor contributed to one gate decision. */
+function decisionAdvisorSummary(advisor) {
+  if (!advisor) return 'Not required';
+  const details = [
+    typeof advisor.risk === 'number' ? `risk ${escape(advisor.risk)}` : '',
+    typeof advisor.confidence === 'number' ? `confidence ${escape(advisor.confidence)}` : ''
+  ].filter(Boolean).join(', ');
+  const id = advisor.decisionId ? ` ${renderCopyChip({ value: advisor.decisionId, label: 'Advisor decision' })}` : '';
+  if (advisor.consulted) {
+    return `Jev consulted: ${advisor.effect === 'escalate' ? 'escalated to a human' : 'no change'}${details ? ` (${details})` : ''}${id}`;
+  }
+  if (advisor.fallbackReason) {
+    const reason = escape(POLICY_ADVISOR_REASON_LABELS[advisor.fallbackReason] ?? advisor.fallbackReason);
+    const fallback = advisor.fallback ? `, falls back to ${escape(POLICY_ADVISOR_FALLBACK_LABELS[advisor.fallback] ?? advisor.fallback)}` : '';
+    return `Jev not consulted (${reason})${fallback}${details ? `; ${details}` : ''}${id}`;
+  }
+  return advisor.required ? 'Required before the action runs' : 'Not required';
+}
+
 /** The editor: a form or a JSON view of the same draft document. */
 export function renderPolicyEditor(view) {
   const tabs = `<div class="row-actions policy-modes" role="group" aria-label="Editor view">
@@ -196,7 +273,7 @@ export function renderPolicyEditor(view) {
   const body = view.mode === 'json'
     ? `<label for="policy-json">Policy document (JSON)</label><textarea id="policy-json" name="document" rows="18" spellcheck="false" class="mono">${escape(view.jsonText ?? '')}</textarea>
       <div class="row-actions"><button type="button" data-policy-action="json-to-form">Load JSON into form</button></div>`
-    : `${renderClassMatrix(view.scope, view.document)}${renderScopeFields(view.scope, view.document)}${renderBudgetFields(view.scope, view.document)}`;
+    : `${renderClassMatrix(view.scope, view.document)}${renderScopeFields(view.scope, view.document)}${renderBudgetFields(view.scope, view.document)}${renderAdvisorFields(view.scope, view.document)}`;
   const remove = view.scope === 'project' && view.head
     ? '<button type="button" class="danger" data-policy-action="delete">Remove project policy</button>'
     : '';
@@ -248,7 +325,7 @@ export function renderEffectivePolicy(effective, title = 'Effective policy') {
   const budget = POLICY_BUDGET_FIELDS.map((field) => `<dt>${escape(field.label)}</dt><dd>${escape(effective.budget?.[field.key] ?? '')}</dd>`).join('');
   const ignored = list(effective.ignoredProjectFields);
   return `<h3>${escape(title)}</h3><div class="policy-scroll"><table class="data-table policy-effective"><thead><tr><th scope="col">Action</th><th scope="col">Outcome</th><th scope="col">Source</th><th scope="col">Delegable</th></tr></thead><tbody>${rows}</tbody></table></div>
-    <dl class="policy-facts">${scope}${budget}<dt>Approval expiry (seconds)</dt><dd>${escape(effective.approval?.ttlSeconds ?? '')}</dd></dl>
+    <dl class="policy-facts">${scope}${budget}<dt>Approval expiry (seconds)</dt><dd>${escape(effective.approval?.ttlSeconds ?? '')}</dd><dt>Execution-risk advisor</dt><dd>${advisorSummary(effective.advisor)}</dd></dl>
     ${ignored.length ? `<div class="policy-callout warning"><h3>Ignored project fields</h3><ul>${ignored.map((item) => `<li>${escape(item)}</li>`).join('')}</ul></div>` : ''}`;
 }
 
@@ -273,9 +350,18 @@ export function renderPolicyInheritance(global, project, effective) {
   const scopeRows = POLICY_SCOPE_FIELDS.map((field) => row(field.label, entries(global.scope?.[field.key]), project?.scope?.[field.key] ? entries(project.scope[field.key]) : inherit, entries(effective.scope?.[field.key])));
   const budgetRows = POLICY_BUDGET_FIELDS.map((field) => row(field.label, escape(global.budget?.[field.key] ?? ''), project?.budget?.[field.key] !== undefined ? escape(project.budget[field.key]) : inherit, escape(effective.budget?.[field.key] ?? '')));
   budgetRows.push(row('Approval expiry (seconds)', escape(global.approval?.ttlSeconds ?? ''), project?.approval?.ttlSeconds !== undefined ? escape(project.approval.ttlSeconds) : inherit, escape(effective.approval?.ttlSeconds ?? '')));
+  const advisorValue = (source, key) => {
+    if (key === 'enabled') return source.enabled ? 'On' : 'Off';
+    if (key === 'fallback') return escape(POLICY_ADVISOR_FALLBACK_LABELS[source.fallback] ?? source.fallback);
+    return escape(source[key]);
+  };
+  const advisorRows = [['enabled', 'Advisor'], ['riskThreshold', 'Advisor risk threshold'], ['minConfidence', 'Advisor minimum confidence'], ['fallback', 'Advisor fallback']].map(([key, name]) => row(name,
+    advisorValue({ ...POLICY_ADVISOR_DEFAULTS, ...(global.advisor ?? {}) }, key),
+    project?.advisor?.[key] !== undefined ? advisorValue(project.advisor, key) : inherit,
+    advisorValue({ ...POLICY_ADVISOR_DEFAULTS, ...(effective.advisor ?? {}) }, key)));
   return `<section class="panel" aria-labelledby="policy-inheritance-title"><h2 id="policy-inheritance-title">Inheritance</h2>
     <p class="page-note">A project policy can only narrow the global policy. Where the owner marked a class as delegable, the project may choose its effect.</p>
-    <div class="policy-scroll"><table class="data-table policy-inheritance"><thead><tr><th scope="col">Field</th><th scope="col">Global</th><th scope="col">Project</th><th scope="col">Effective</th></tr></thead><tbody>${[...classRows, ...effectRows, ...scopeRows, ...budgetRows].join('')}</tbody></table></div></section>`;
+    <div class="policy-scroll"><table class="data-table policy-inheritance"><thead><tr><th scope="col">Field</th><th scope="col">Global</th><th scope="col">Project</th><th scope="col">Effective</th></tr></thead><tbody>${[...classRows, ...effectRows, ...scopeRows, ...budgetRows, ...advisorRows].join('')}</tbody></table></div></section>`;
 }
 
 /** One gate decision, as the runner's evaluator returned it. */
@@ -291,7 +377,7 @@ export function renderPolicyDecision(decision) {
       <dt>Matched rules</dt><dd>${entries(decision.matchedRules)}</dd>
       <dt>Global policy</dt><dd>${escape(policy.globalSource ?? '')}${policy.globalRevisionId ? ` ${renderCopyChip({ value: policy.globalRevisionId, label: 'Global revision' })}` : ''}</dd>
       <dt>Project policy</dt><dd>${escape(policy.projectSource ?? '')}${policy.projectRevisionId ? ` ${renderCopyChip({ value: policy.projectRevisionId, label: 'Project revision' })}` : ''}</dd>
-      <dt>Advisor</dt><dd>${decision.advisor?.required ? 'Required before the action runs' : 'Not required'}</dd>
+      <dt>Advisor</dt><dd>${decisionAdvisorSummary(decision.advisor)}</dd>
       <dt>Approval expiry</dt><dd>${escape(decision.approval?.ttlSeconds ?? '')} seconds</dd>
       <dt>Input fingerprint</dt><dd>${renderCopyChip({ value: decision.inputFingerprint ?? '', label: 'Input fingerprint' })}</dd>
     </dl></div>`;
