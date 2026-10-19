@@ -236,6 +236,47 @@ then given the new `prompt`.
 - Closing or expiring the workspace deletes its persisted sessions; sealed
   sessions are otherwise purged after the configured retention.
 
+#### Agent tool receipts and replay
+
+An agent's proxied workspace tool calls are not MCP tools, but the runner keeps
+an effect ledger for them so that a call delivered twice never acts twice. The
+agent runtime names each proxy request after the model's tool call ID, and the
+runner keys the ledger by that request ID, the operation, and the agent's
+lineage (an agent and every `continueFrom` successor of it), so a continuation
+repeating an earlier call finds the earlier outcome. Each operation's replay
+class is `AGENT_PROXY_REPLAY_CLASS` in
+[`packages/contracts/src/runner-api.ts`](../packages/contracts/src/runner-api.ts);
+the ledger and its fences are in
+[`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts) and
+[`apps/runner/src/agent-effect-reconciler.ts`](../apps/runner/src/agent-effect-reconciler.ts).
+
+- A first call's result is unchanged. The runner records the call before it
+  reaches the executor and stores the exact result text it sends the model
+  (its receipt) before sending it.
+- A repeated call whose outcome is recorded returns the stored result bytes
+  exactly, applied or rejected, and runs nothing.
+- A repeated read-safe call whose receipt was purged runs again, and its result
+  carries `replayed: "re-executed"`. A repeated read whose earlier outcome was
+  lost runs again unmarked, since the model never saw a result.
+- A mutation is never issued again by the runner. A repeated mutation whose
+  receipt was purged returns `EFFECT_RECEIPT_UNAVAILABLE`. One whose outcome was
+  lost (a crash or restart mid-call) is reconciled from workspace state: a
+  conditional write is applied when its target holds the content recorded at
+  dispatch, and a delete or move is applied only when its path or source is
+  gone (and, for a move, its destination exists). An applied outcome returns a
+  result with `reconciled: true`; a write whose target still holds its earlier
+  content returns `EFFECT_NOT_APPLIED` (retryable with a new tool call); any
+  other state returns `EFFECT_UNKNOWN` and the owner should inspect the affected
+  paths before the work is repeated.
+- The same request ID with a different payload returns `CONFLICT` without
+  running.
+- Only the agent of the current runner epoch and agent generation can record an
+  outcome, add usage, or append session messages; recording an outcome also
+  needs the active workspace generation, and an agent that a successor
+  continued can do none of these.
+  Receipts are kept for the session retention and deleted with the workspace's
+  sessions.
+
 ### Model setup and spend
 
 Eight tools let a client choose a model for `agent_spawn` and prepare its
