@@ -1066,6 +1066,16 @@ describe('GitHub progress comment and check runs', () => {
     expect(actions().map((input) => input.action)).toEqual(['issue_comment', 'issue_comment_update', 'issue_comment_update']);
   });
 
+  it('does not create a second check run when the first one was created but its id cannot be read', async () => {
+    const context = setup();
+    const actions = fakeGitHub(context, { check_run_create: () => ({ ok: true, data: { output: 'not json' } }) });
+    await start(context, ['pull_request'], prPayload());
+    expect(publishRef(context)).toEqual({ commentId: 555, checks: 'untracked' });
+    await finish(context);
+    expect(workflows(context)[0]).toMatchObject({ state: 'COMPLETED', publishState: 'DELIVERED' });
+    expect(actions().map((input) => input.action)).toEqual(['issue_comment', 'check_run_create', 'issue_comment_update']);
+  });
+
   it('creates a check run on the signed head commit of a pull request and completes it', async () => {
     const context = setup();
     const actions = fakeGitHub(context);

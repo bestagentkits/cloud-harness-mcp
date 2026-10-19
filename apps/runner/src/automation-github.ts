@@ -114,6 +114,11 @@ const COMMENT_URL_ID = /#issuecomment-([1-9][0-9]{0,18})\b/u;
 const CHECKS_UNAVAILABLE_CODES = new Set(['GITHUB_PERMISSION_MISSING', 'FORBIDDEN']);
 /** Recorded in the publish ref once checks are unavailable, so later phases do not ask again. */
 export const CHECKS_UNAVAILABLE = 'unavailable';
+/**
+ * Recorded when a check run was created but its id could not be read back. Completion then leaves it
+ * alone rather than creating a second check run; the comment still carries the final state.
+ */
+export const CHECKS_UNTRACKED = 'untracked';
 
 type CheckConclusion = 'success' | 'failure' | 'cancelled' | 'timed_out';
 type Failure = { ok: false; code: string; retryable: boolean };
@@ -206,7 +211,7 @@ async function publishProgressComment(request: AutomationPublishRequest, workspa
  */
 async function publishCheckRun(request: AutomationPublishRequest, workspaceId: string): Promise<{ checkRunId?: number; checks?: string } | Failure> {
   const { workflow, publishRef } = request;
-  if (workflow.eventType !== 'github.pull_request.label_added' || publishRef?.checks === CHECKS_UNAVAILABLE) return {};
+  if (workflow.eventType !== 'github.pull_request.label_added' || publishRef?.checks === CHECKS_UNAVAILABLE || publishRef?.checks === CHECKS_UNTRACKED) return {};
   const previous = positiveId(publishRef?.checkRunId);
   const completed = request.phase === 'completed';
   if (previous !== undefined && !completed) return { checkRunId: previous };
@@ -233,7 +238,8 @@ async function publishCheckRun(request: AutomationPublishRequest, workspaceId: s
     });
   if (!result.ok) return CHECKS_UNAVAILABLE_CODES.has(result.error?.code ?? '') ? { checks: CHECKS_UNAVAILABLE } : failure(result);
   const checkRunId = previous ?? createdCheckRunId(result);
-  return checkRunId === undefined ? {} : { checkRunId };
+  if (checkRunId !== undefined) return { checkRunId };
+  return completed ? {} : { checks: CHECKS_UNTRACKED };
 }
 
 /**
