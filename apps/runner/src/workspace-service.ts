@@ -49,7 +49,8 @@ import {
   type WorkspaceLifecycleSettingName,
   type WorkspaceLifecycleSettingsUpdate,
   type WorkspaceLifecycleSettingsView,
-  TERMINAL_MAX_INPUT_BYTES
+  TERMINAL_MAX_INPUT_BYTES,
+  isAgentTraceOperation
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
 import { EXECUTOR_HARDENING_ARGS, EXECUTOR_RESOURCE_CEILINGS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
@@ -94,6 +95,8 @@ import {
   resolveGitHubFallbackToken
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
+import { AgentTraceStore, executeAgentTraceOperation } from './agent-trace-store.js';
+import { AgentTraceRecorder } from './agent-trace-recorder.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -363,6 +366,9 @@ export class WorkspaceService {
 
   public readonly networkProfileManager: NetworkProfileManager;
   private readonly agentManager?: AgentManager | undefined;
+  /** Present only when agent traces are enabled; the trace tools report FEATURE_DISABLED otherwise. */
+  private readonly traceStore: AgentTraceStore | undefined;
+  private readonly tracePurger: AgentTraceStore;
   private readonly metadata?: MetadataStore | undefined;
   private failureIntelligence?: FailureIntelligence | undefined;
   constructor(
@@ -384,9 +390,22 @@ export class WorkspaceService {
     this.metadata = metadata;
     this.instanceId = store.instanceId();
     const { manager, ...managerDependencies } = agentDeps ?? {};
+    const traceConfig = config.agentTraces;
+    this.traceStore = traceConfig?.enabled === true
+      ? new AgentTraceStore(store.database, { retentionDays: traceConfig.retentionDays, maxTracesPerPrincipal: traceConfig.maxTracesPerPrincipal })
+      : undefined;
+    // The trace tables always exist (the state store creates them), and every row carries its own
+    // retention deadline, so retention is enforced even while recording and reading are off.
+    this.tracePurger = this.traceStore ?? new AgentTraceStore(store.database, {
+      retentionDays: traceConfig?.retentionDays ?? 14, maxTracesPerPrincipal: traceConfig?.maxTracesPerPrincipal ?? 5_000
+    });
+    const traceRecorder = managerDependencies.traceRecorder ?? (this.traceStore && traceConfig
+      ? new AgentTraceRecorder(this.traceStore, { maxSpansPerTrace: traceConfig.maxSpansPerTrace, previewBytes: traceConfig.previewBytes })
+      : undefined);
     this.agentManager = manager ?? (config.agents
       ? new AgentManager(config.agents, store, {
           ...managerDependencies,
+          traceRecorder,
           toolExecutor: async (request) => await this.executeAgentProxy(request),
           repositoryGuidance: async (request) => {
             const record = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
@@ -3022,6 +3041,14 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return op;
   }
 
+  /**
+   * Removes agent traces past their retention, in bounded batches. It runs whether or not traces
+   * are enabled, so turning the feature off never keeps old traces past their retention.
+   */
+  async purgeAgentTraces(now = Date.now(), signal?: AbortSignal): Promise<number> {
+    return await this.tracePurger.purgeExpired(now, signal ? { signal } : {});
+  }
+
   async execute(principal: PrincipalSelector | string, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     const ownerId = this.store.resolvePrincipal(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal);
     RunnerOperationSchema.parse(operation);
@@ -3032,6 +3059,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (operation === 'bash' && validated.target === 'toolbox') return await this.runToolbox(ownerId, validated, signal);
     // Package operations are owner-scoped and never take a workspace mutation lock.
     if (isPackageOperation(operation)) return await this.runPackageOperation(ownerId, operation, validated, signal);
+    // Trace reads are owner-scoped and workspace-independent: a trace outlives its workspace.
+    if (isAgentTraceOperation(operation)) {
+      return executeAgentTraceOperation(this.traceStore, ownerId, operation, validated, {
+        now: Date.now(), maxSpans: this.config.agentTraces?.maxSpansPerTrace ?? 2_000
+      });
+    }
     if (operation === 'operation_status') {
       const op = this.ownedOperation(ownerId, validated.operationId as string);
       const offset = validated.cursor ? Number(validated.cursor) : 0;

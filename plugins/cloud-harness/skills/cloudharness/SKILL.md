@@ -27,6 +27,7 @@ network isolation.
 | Read/run repository skills, hooks, knowledge (memories & journals), or deployments | [Repository automation](references/repository-automation.md) |
 | Snapshot, list, read, restore, or delete retained artifacts | [Retained artifacts](references/artifacts.md) |
 | Choose a subagent model, check a connection, save an agent model profile, or read estimated model spend | [Models and spend](references/models-and-spend.md) |
+| Explain where a finished coding-agent run spent time, tokens, and cost; compare profiles; export a run trace | [Agent traces](references/agent-traces.md) |
 
 Read a reference before using an unfamiliar, destructive, networked, or
 recovery-sensitive operation. The references are bundled with this skill and do

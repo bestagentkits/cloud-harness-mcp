@@ -26,3 +26,4 @@ export * from './package-schemas.js';
 export * from './events-api.js';
 export * from './automations-api.js';
 export * from './workspace-lifecycle.js';
+export * from './agent-traces-api.js';
