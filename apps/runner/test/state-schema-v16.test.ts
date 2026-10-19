@@ -65,13 +65,13 @@ describe('state schema v16', () => {
   it('adds the receipt columns and lineage indexes idempotently', () => {
     const { store } = open();
     try {
-      expect(schemaVersion(store.database)).toBe(16);
+      expect(schemaVersion(store.database)).toBe(17);
       expect(columns(store.database, 'agent_effects')).toEqual(expect.arrayContaining(RECEIPT_COLUMNS));
       for (const index of ['agent_effects_lineage', 'agent_effects_workspace', 'agent_effects_receipt_retention', 'agent_effects_receipt_bytes']) {
         expect(hasIndex(store.database, index)).toBe(true);
       }
       migratePrincipalSchema(store.database);
-      expect(schemaVersion(store.database)).toBe(16);
+      expect(schemaVersion(store.database)).toBe(17);
     } finally {
       store.close();
     }
@@ -91,7 +91,7 @@ describe('state schema v16', () => {
 
     const reopened = new StateStore(path);
     try {
-      expect(schemaVersion(reopened.database)).toBe(16);
+      expect(schemaVersion(reopened.database)).toBe(17);
       expect(reopened.database.prepare('SELECT root_agent_id, workspace_generation, result_json, result_reconciled FROM agent_effects').get())
         .toEqual({ root_agent_id: 'agent_lineage_root', workspace_generation: 3, result_json: null, result_reconciled: 0 });
       // The lineage key is unique: the same request cannot be recorded twice for one lineage.
@@ -114,7 +114,7 @@ describe('state schema v16', () => {
         VALUES (?, ?, ?, 1, 1, 'call-1', 'files_read', ?, 'APPLIED', 1, 1, ?, '{"ok":true}', ?)`)
         .run(ownerId, workspaceId, agentId, 'h'.repeat(64), agentId, 'r'.repeat(64));
       expect(() => downgradeStateSchemaToV15(store.database)).toThrow(/receipts exist/);
-      expect(schemaVersion(store.database)).toBe(16);
+      expect(schemaVersion(store.database)).toBe(17);
       downgradeStateSchemaToV15(store.database, true);
       expect(schemaVersion(store.database)).toBe(15);
       expect(columns(store.database, 'agent_effects')).not.toContain('result_json');

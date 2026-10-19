@@ -126,3 +126,12 @@ export class EngineRouter implements EngineWorker {
     if (loading.interrupted !== undefined) worker.interrupt(loading.interrupted);
   }
 }
+
+// A fixed message, so no module path or stack reaches the run's record. The default agent image
+// omits the durable engine; only an image built with INCLUDE_DURABLE_RUNTIME=true carries it.
+export function durableLoadFailure(error: unknown): string {
+  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+  return code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND'
+    ? 'the durable agent runtime is not installed in this agent image; rebuild the image with INCLUDE_DURABLE_RUNTIME=true'
+    : 'durable agent runtime is unavailable';
+}

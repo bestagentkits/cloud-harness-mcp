@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { appendFile, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -30,6 +30,40 @@ async function createStore(options: Partial<ConstructorParameters<typeof Durable
   const store = new DurableSessionStore({ stateDir: await stateDir(), enabled: true, ...options });
   stores.push(store);
   return store;
+}
+
+/**
+ * A storage backend that reports the task statuses in `live` and grows its database file by
+ * `commitBytes` per commit, so size and pending-work checks run without the real engine.
+ */
+function fakeBackend(commitBytes = 0) {
+  const state = {
+    live: new Set<string>(),
+    queries: [] as Array<{ status: string; abortRequested: boolean }>,
+    commits: 0,
+    closed: 0,
+    loader: undefined as unknown as DurableStorageBackendLoader
+  };
+  let minted = 0;
+  state.loader = {
+    isRequestError: () => false,
+    async open(path: string) {
+      return {
+        async mintId() { minted += 1; return minted; },
+        async commit() {
+          state.commits += 1;
+          await appendFile(path, Buffer.alloc(commitBytes));
+          return [];
+        },
+        async scanTasks(query: { status: string; abortRequested: boolean }) {
+          state.queries.push(query);
+          return { items: state.live.has(query.status) ? [{ id: 1 }] : [], next: undefined };
+        },
+        async close() { state.closed += 1; }
+      } as never;
+    }
+  };
+  return state;
 }
 
 function request(id: string, method: string, args: unknown[] = []): unknown {
@@ -150,6 +184,77 @@ describe('DurableSessionStore', () => {
     const dir = await stateDir();
     await expect(deleteDurableSessionFiles(dir, LINEAGE)).resolves.toBeUndefined();
     await expect(deleteDurableSessionFiles(dir, 'not-a-lineage')).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  });
+
+  it('reports unfinished tasks when a claim is sealed or an unclaimed lineage is inspected', async () => {
+    const backend = fakeBackend();
+    const store = await createStore({ loader: backend.loader });
+    const claim = await store.claim(LINEAGE, OWNER, 1, 0);
+    backend.live.add('running');
+    expect(await store.seal(claim)).toEqual({ pendingTasks: true });
+    // A sealed claim is released: it is fenced and the database is closed.
+    expect(await store.handle(claim, request('r-1', 'mintId'))).toMatchObject({ ok: false, error: { code: 'fenced' } });
+    expect(backend.closed).toBe(1);
+    expect(await store.inspectPending(LINEAGE)).toEqual({ pendingTasks: true });
+    backend.live.clear();
+    expect(await store.inspectPending(LINEAGE)).toEqual({ pendingTasks: false });
+    // Only tasks nobody asked to abort count as unfinished.
+    expect(backend.queries.every((query) => query.abortRequested === false)).toBe(true);
+    expect(new Set(backend.queries.map((query) => query.status))).toEqual(new Set(['pending', 'running', 'waiting']));
+  });
+
+  it('reports no unfinished tasks for a superseded claim, an absent database, or a disabled store', async () => {
+    const backend = fakeBackend();
+    const store = await createStore({ loader: backend.loader });
+    const first = await store.claim(LINEAGE, OWNER, 1, 0);
+    await store.claim(LINEAGE, SUCCESSOR, 1, 1);
+    backend.live.add('pending');
+    expect(await store.seal(first)).toEqual({ pendingTasks: false });
+    expect(await store.inspectPending(OWNER)).toEqual({ pendingTasks: false });
+    const disabled = await createStore({ enabled: false, loader: backend.loader });
+    expect(await disabled.inspectPending(LINEAGE)).toEqual({ pendingTasks: false });
+  });
+
+  it('refuses commits once the lineage database outgrows its cap, and keeps reads working', async () => {
+    const backend = fakeBackend(600);
+    const store = await createStore({ loader: backend.loader, maxLineageBytes: 1_000 });
+    const claim = await store.claim(LINEAGE, OWNER, 1, 0);
+    expect(await store.handle(claim, request('r-1', 'commit', [[]]))).toMatchObject({ ok: true });
+    expect(store.limitExceeded(claim)).toBe(false);
+    // This commit lands, but leaves the database over the cap.
+    expect(await store.handle(claim, request('r-2', 'commit', [[]]))).toMatchObject({ ok: true });
+    expect(store.limitExceeded(claim)).toBe(true);
+    expect(await store.handle(claim, request('r-3', 'commit', [[]]))).toMatchObject({ ok: false, error: { code: 'limit', retryable: false } });
+    expect(backend.commits).toBe(2);
+    expect(await store.handle(claim, request('r-4', 'mintId'))).toMatchObject({ ok: true });
+  });
+
+  it('refuses the first commit of a lineage already over its cap, as after a restart', async () => {
+    const backend = fakeBackend(2_000);
+    const dir = await stateDir();
+    const before = new DurableSessionStore({ stateDir: dir, enabled: true, loader: backend.loader });
+    const claim = await before.claim(LINEAGE, OWNER, 1, 0);
+    await before.handle(claim, request('r-1', 'commit', [[]]));
+    await before.close();
+    const after = new DurableSessionStore({ stateDir: dir, enabled: true, loader: backend.loader, maxLineageBytes: 1_000 });
+    stores.push(after);
+    const resumed = await after.claim(LINEAGE, SUCCESSOR, 2, 1);
+    expect(await after.handle(resumed, request('r-2', 'commit', [[]]))).toMatchObject({ ok: false, error: { code: 'limit' } });
+    expect(after.limitExceeded(resumed)).toBe(true);
+    expect(backend.commits).toBe(1);
+  });
+
+  it('deletes every listed lineage once', async () => {
+    const dir = await stateDir();
+    const store = new DurableSessionStore({ stateDir: dir, enabled: true });
+    stores.push(store);
+    for (const lineage of [LINEAGE, SUCCESSOR]) {
+      const claim = await store.claim(lineage, OWNER, 1, 0);
+      await store.handle(claim, request('r-1', 'mintId'));
+    }
+    await store.deleteLineages([LINEAGE, SUCCESSOR, LINEAGE]);
+    expect(existsSync(join(dir, `${LINEAGE}.sqlite`))).toBe(false);
+    expect(existsSync(join(dir, `${SUCCESSOR}.sqlite`))).toBe(false);
   });
 
   it.skipIf(process.platform === 'win32')('keeps the database and its directory private to the runner user', async () => {

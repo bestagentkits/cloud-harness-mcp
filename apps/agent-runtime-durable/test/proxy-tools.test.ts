@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { AGENT_PROXY_REPLAY_CLASS } from '@cloud-harness/contracts';
 import { AgentProxyOperationSchema } from '../../agent-runtime/src/protocol-schemas.js';
 import { ProxyToolBroker } from '../../agent-runtime/src/proxy-tools.js';
 import { createRedactor } from '../../agent-runtime/src/redaction.js';
@@ -22,25 +23,17 @@ describe('durable proxy tools', () => {
     }
   });
 
-  it('lets only read-only operations rerun after a crash', () => {
+  it('lets only operations the contracts classify as read-safe rerun after a crash', () => {
     const tools = new DurableToolBroker(() => undefined, createRedactor(), 1_024).createTools(PROXY_OPERATIONS);
     const replay = Object.fromEntries(tools.map((tool) => [tool.name, tool.replay]));
-    expect(replay).toEqual({
-      files_list: 'safe',
-      files_read: 'safe',
-      files_write: 'unsafe',
-      files_apply_patch: 'unsafe',
-      files_delete: 'unsafe',
-      files_move: 'unsafe',
-      files_mkdir: 'unsafe',
-      grep_search: 'safe',
-      symbols_search: 'safe',
-      symbols_references: 'safe'
-    });
+    expect(replay).toEqual(Object.fromEntries(PROXY_OPERATIONS.map((operation) => [
+      operation,
+      AGENT_PROXY_REPLAY_CLASS[operation] === 'read-safe' ? 'safe' : 'unsafe'
+    ])));
+    // Every mutation, conditional or destructive, is interrupted rather than rerun.
     expect([...REPLAY_SAFE_OPERATIONS].sort()).toEqual(['files_list', 'files_read', 'grep_search', 'symbols_references', 'symbols_search']);
   });
 });
-
 describe('durable event projection', () => {
   const assistant = (text: string) => ({
     role: 'assistant' as const,

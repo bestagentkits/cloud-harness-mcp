@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
-import { AgentProxyOperationSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
+import { AgentProxyOperationSchema, AgentRuntimeKindSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
 import { SkillSuggestInputSchema } from './typesafe-schemas.js';
 import { GitHubRepositoryCreateInputSchema } from './github-repository-schemas.js';
 import {
@@ -1140,7 +1140,10 @@ const schemas = {
       .describe('Repository guidance profile placed before the task; omitted uses codex, none sends the task alone.'),
     // Optional, and without a default, so omitting it keeps the idempotency payload unchanged.
     continueFrom: AgentIdSchema.optional()
-      .describe('A terminal agent of this workspace whose persisted session the new agent continues; needs session persistence on the instance. The new agent gets a new id, container, lease, and budget.')
+      .describe('A terminal agent of this workspace whose persisted session the new agent continues; needs session persistence on the instance. The new agent gets a new id, container, lease, and budget.'),
+    // Optional, and without a default, so omitting it keeps the idempotency payload unchanged.
+    runtime: AgentRuntimeKindSchema.optional()
+      .describe('Agent engine. Omitted means pi-coding, or the engine of the agent named by continueFrom; a continuation refuses a different engine. pi-durable is refused unless the instance enables it.')
   }).strict().superRefine((input, context) => {
     if (input.profileId === undefined && input.continueFrom === undefined) {
       context.addIssue({ code: 'custom', path: ['profileId'], message: 'profileId is required unless continueFrom is set' });

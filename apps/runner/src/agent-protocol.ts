@@ -113,6 +113,11 @@ export type AgentStartRecord = {
   session?: { messages: unknown[]; headSha256: string; toolOutcomes?: AgentToolOutcome[] };
   /** The agent engine; absent selects the default coding runtime. */
   runtime?: 'pi-coding' | 'pi-durable';
+  /**
+   * Durable engine only, for a continuation: `continue` resumes the unfinished tasks of the
+   * lineage's session store, `abort` cancels them first (the predecessor was cancelled).
+   */
+  durableResume?: 'continue' | 'abort';
 };
 export type AgentInputRecord = AgentStartRecord | {
   type: 'message'; requestId: string; behavior: 'steer' | 'followUp'; text: string;
@@ -125,6 +130,7 @@ export class AgentProtocolChannel {
   private pending = Buffer.alloc(0);
   private writeChain = Promise.resolve();
   private readChain = Promise.resolve();
+  private storageChain = Promise.resolve();
   private closed = false;
 
   constructor(
@@ -133,7 +139,13 @@ export class AgentProtocolChannel {
     stderr: Readable,
     private readonly onRecord: (record: AgentOutputRecord) => Promise<void>,
     private readonly onStderr: (content: string) => Promise<void>,
-    private readonly onError: (error: Error) => void
+    private readonly onError: (error: Error) => void,
+    /**
+     * Receives durable-runtime storage requests, in order, on a chain of their own: a long tool
+     * call on the record chain must not hold up the session store the run is committing to.
+     * Without it a storage request fails the channel like any unknown record.
+     */
+    private readonly onStorage?: (request: AgentStorageRequestRecord) => Promise<void>
   ) {
     output.on('data', (chunk: Buffer) => this.feed(chunk));
     output.once('end', () => {
@@ -175,7 +187,7 @@ export class AgentProtocolChannel {
   }
 
   async drain(): Promise<void> {
-    await Promise.allSettled([this.writeChain, this.readChain]);
+    await Promise.allSettled([this.writeChain, this.readChain, this.storageChain]);
   }
   async drainWrites(): Promise<void> {
     await Promise.allSettled([this.writeChain]);
@@ -210,7 +222,14 @@ export class AgentProtocolChannel {
         return;
       }
       try {
-        const record = AgentOutputRecordSchema.parse(JSON.parse(line.toString('utf8')));
+        const parsed: unknown = JSON.parse(line.toString('utf8'));
+        const onStorage = this.onStorage;
+        if (onStorage && typeof parsed === 'object' && parsed !== null && (parsed as { type?: unknown }).type === 'storage_request') {
+          const request = AgentStorageRequestRecordSchema.parse(parsed);
+          this.storageChain = this.storageChain.then(() => onStorage(request)).catch((error: unknown) => this.fail(asError(error)));
+          continue;
+        }
+        const record = AgentOutputRecordSchema.parse(parsed);
         this.readChain = this.readChain.then(() => this.onRecord(record)).catch((error: unknown) => this.fail(asError(error)));
       } catch (error) {
         this.fail(asError(error));

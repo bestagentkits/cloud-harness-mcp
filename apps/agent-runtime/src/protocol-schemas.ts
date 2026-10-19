@@ -114,7 +114,9 @@ export const StartRecordSchema = z.object({
       .optional()
   }).strict().optional(),
   // The agent engine; absent selects the default coding runtime.
-  runtime: z.enum(['pi-coding', 'pi-durable']).optional()
+  runtime: z.enum(['pi-coding', 'pi-durable']).optional(),
+  // Durable engine only, for a continuation: resume the lineage's unfinished tasks or cancel them first.
+  durableResume: z.enum(['continue', 'abort']).optional()
 }).strict();
 
 // Durable-runtime session storage RPC, aligned with apps/runner/src/agent-protocol.ts. Payloads are
