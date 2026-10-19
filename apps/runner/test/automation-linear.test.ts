@@ -558,16 +558,29 @@ describe('Linear provider through the service', () => {
     for (const table of tables) expect(JSON.stringify(context.store.database.prepare(`SELECT * FROM ${table}`).all())).not.toContain(API_KEY);
   });
 
-  it('records a non-retryable publish failure when the connection has no outbound credential', async () => {
+  it('refuses to save a publishing rule on a connection without an outbound credential', () => {
+    const context = setup(graphqlDouble(okResponses).fetch);
+    const { connection } = connect(context, {});
+    expect(context.run('rule_create', ruleInput(connection.id))).toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
+    const quiet = { ...ruleInput(connection.id), action: { ...ruleInput(connection.id).action, publishComment: false } };
+    const rule = context.data<{ rule: { id: string; generation: number } }>(context.run('rule_create', quiet)).rule;
+    expect(context.run('rule_update', { id: rule.id, expectedGeneration: rule.generation, action: ruleInput(connection.id).action }))
+      .toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
+  });
+
+  it('records a non-retryable publish failure when the outbound credential was cleared after the rule was saved', async () => {
     const double = graphqlDouble(okResponses);
     const context = setup(double.fetch);
-    const { connection, secret } = connect(context, {});
-    context.data(context.run('rule_create', ruleInput(connection.id)));
+    const { connection, secret } = connect(context);
+    const rule = context.data<{ rule: { id: string; generation: number } }>(context.run('rule_create', ruleInput(connection.id))).rule;
+    context.data(context.run('connection_update', { id: connection.id, expectedGeneration: 1, clearOutbound: true }));
     deliver(context, connection.id, secret, issuePayload());
     await drive(context, 2);
     context.finish();
     await drive(context, 3);
     expect(double.calls).toHaveLength(0);
     expect(context.store.database.prepare('SELECT state, publish_state FROM automation_workflows').get()).toEqual({ state: 'COMPLETED', publish_state: 'FAILED' });
+    // The rule can still be disabled without first giving up publishing.
+    expect(context.run('rule_update', { id: rule.id, expectedGeneration: rule.generation, enabled: false })).toMatchObject({ ok: true });
   });
 });

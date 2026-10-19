@@ -305,5 +305,6 @@ export const linearAdapter: ProviderAdapter = {
   deliveryId: (headers) => headers['linear-delivery'],
   normalize: (providerEvent, body) => normalizeLinearEvent(providerEvent, body),
   matches: (match, event, context) => matchLinearRule(match, event, context.selfLogin),
-  publish: publishLinearComment
+  publish: publishLinearComment,
+  publishNeedsOutbound: true
 };

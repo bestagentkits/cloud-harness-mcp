@@ -112,8 +112,8 @@ Boundaries:
   (often a private repository without GitHub App access) or
   `AGENT_SPAWN_FAILED:*` (profile or budget).
 - `publishState: FAILED` means the answer could not be posted (for Linear or
-  Jira, often a connection without an outbound credential); the answer is
-  still on the run.
+  Jira, often an outbound credential cleared after the rule was saved; a
+  publishing rule cannot be saved without one); the answer is still on the run.
 - For results without polling, clients with MCP Events can subscribe to
   `cloudharness.automation.completed` and `cloudharness.automation.failed`
   ([native events](../SKILL.md#mcp-events)).

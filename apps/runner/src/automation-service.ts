@@ -728,18 +728,24 @@ export class AutomationService {
    * A rule must target its connection's provider, keep the repository owner-authored (see
    * `automationRuleProblem`), and may only publish where the provider has a publisher.
    */
-  private assertRuleFits(provider: AutomationProvider, match: AutomationRuleMatch, action: AutomationRuleAction): void {
+  private assertRuleFits(connection: Pick<ConnectionRow, 'provider' | 'outbound_json'>, match: AutomationRuleMatch, action: AutomationRuleAction, actionSaved = true): void {
+    const { provider } = connection;
     const adapter = this.adapterFor(provider);
     if (automationMatchProvider(match) !== provider) throw new AutomationsError('INVALID_INPUT', `the rule match must target the connection's ${provider} provider`);
     const problem = automationRuleProblem(match, action);
     if (problem) throw new AutomationsError('INVALID_INPUT', problem);
     if (action.publishComment && !adapter.publish) throw new AutomationsError('INVALID_INPUT', `the ${provider} provider cannot publish comments`);
+    // Checked only when the action is saved, so a rule can still be renamed, enabled or disabled after
+    // its credentials were cleared; such a rule fails each publish with OUTBOUND_NOT_CONFIGURED.
+    if (actionSaved && action.publishComment && adapter.publishNeedsOutbound && connection.outbound_json === null) {
+      throw new AutomationsError('INVALID_INPUT', `set the connection's outbound credentials before a ${adapter.displayName} rule can publish comments`);
+    }
   }
 
   private createRule(ownerId: string, input: Extract<AutomationsRunnerRequest, { operation: 'rule_create' }>['input']) {
     return withEventSavepoint(this.database, () => {
       const connection = this.ownedConnection(ownerId, input.connectionId);
-      this.assertRuleFits(connection.provider, input.match, input.action);
+      this.assertRuleFits(connection, input.match, input.action);
       const count = this.database.prepare('SELECT COUNT(*) AS count FROM automation_rules WHERE owner_id = ?').get(ownerId) as { count: number };
       if (count.count >= AUTOMATION_LIMITS.maxRulesPerPrincipal) throw new AutomationsError('RESOURCE_EXHAUSTED', 'rule limit reached');
       const id = `arl_${hex(16)}`;
@@ -761,7 +767,7 @@ export class AutomationService {
       if (row.generation !== input.expectedGeneration) throw new AutomationsError('CONFLICT', 'rule changed; reload and retry');
       const match = input.match ?? this.ruleMatch(row);
       const action = input.action ?? this.ruleAction(row);
-      this.assertRuleFits(this.ownedConnection(ownerId, row.connection_id).provider, match, action);
+      this.assertRuleFits(this.ownedConnection(ownerId, row.connection_id), match, action, input.action !== undefined);
       const enabled = input.enabled ?? row.enabled === 1;
       const generation = row.generation + 1;
       const keys = ruleIndexKeys(match);

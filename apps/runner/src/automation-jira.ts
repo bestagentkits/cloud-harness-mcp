@@ -252,7 +252,8 @@ export function createJiraAdapter(options: { lookup?: JiraHostLookup } = {}): Pr
       return payload ? normalizeUpdate(payload, connection.config.baseUrl) : { kind: 'quarantined', reason: 'malformed_payload' };
     },
     matches: (match, event, context) => matchJiraRule(match, event, context.selfLogin),
-    publish: createPublisher(http)
+    publish: createPublisher(http),
+    publishNeedsOutbound: true
   };
 }
 

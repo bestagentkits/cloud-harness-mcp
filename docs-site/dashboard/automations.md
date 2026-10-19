@@ -212,9 +212,10 @@ Posting is opt-in per rule. When it is on:
   access on that repository (and pull request access for pull requests), and a private
   repository needs the App's repository access to open.
 - **Linear** and **Jira** keep one comment per run in the same way, posted with the
-  connection's outbound credential. Without one, the run still completes and keeps its
-  answer, but shows **Publish failed**; the operator's runner log records the code
-  `OUTBOUND_NOT_CONFIGURED`.
+  connection's outbound credential. A rule that posts the agent's answer cannot be
+  saved on a connection that has none. If the credential is cleared later, the run still completes
+  and keeps its answer, but shows **Publish failed**; the operator's runner log records
+  the code `OUTBOUND_NOT_CONFIGURED`.
 
 `@` mentions in a posted comment are neutralised, and posting never raises a new event
 that could re-trigger the rule.

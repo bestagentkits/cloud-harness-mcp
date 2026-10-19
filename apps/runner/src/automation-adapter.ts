@@ -168,6 +168,8 @@ export interface ProviderAdapter {
   matches(match: AutomationRuleMatch, event: NormalizedAutomationEvent, context: AutomationMatchContext): AutomationMatchVerdict;
   /** Posts progress back to the source. Without it, rules of this provider cannot `publishComment`. */
   publish?(request: AutomationPublishRequest): Promise<AutomationPublishResult>;
+  /** `publish` authenticates with the connection's outbound credential, so a publishing rule needs one. */
+  readonly publishNeedsOutbound?: boolean;
 }
 
 const RETRYABLE_CODES = new Set(['UNAVAILABLE', 'TIMEOUT', 'GITHUB_RATE_LIMITED', 'INTERNAL']);
