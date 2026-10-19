@@ -95,7 +95,7 @@ export const AUTOMATION_TOOL_SPECS: AutomationToolSpec[] = [
     name: 'automation_rule_disable',
     operation: 'rule_update',
     title: 'Disable automation rule',
-    description: 'Disable one of your automation rules so new deliveries no longer start runs; its queued runs are cancelled before they start.Needs the generation you last read (expectedGeneration from automation_rules_list); a moved generation returns CONFLICT, so re-read and retry. Disabling an already disabled rule still bumps its generation. Re-enabling is done by the owner on the Dashboard. ' + DISABLED_NOTE,
+    description: 'Disable one of your automation rules so new deliveries no longer start runs; its queued runs are cancelled before they start. Needs the generation you last read (expectedGeneration from automation_rules_list); a moved generation returns CONFLICT, so re-read and retry. Disabling an already disabled rule still bumps its generation. Re-enabling is done by the owner on the Dashboard. ' + DISABLED_NOTE,
     inputSchema: schemas.automation_rule_disable,
     readOnly: false, destructive: true, idempotent: false, openWorld: false, requiredScope: AUTOMATION_TOOL_SCOPES.write
   },
