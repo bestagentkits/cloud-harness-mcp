@@ -39,7 +39,11 @@ export const ErrorCodeSchema = z.enum([
   'PACKAGE_VERIFICATION_FAILED',
   // A model profile change raises spend capacity, widens agent permissions, or sends a
   // key to a new host; only the owner can make it, on the Dashboard.
-  'OWNER_APPROVAL_REQUIRED'
+  'OWNER_APPROVAL_REQUIRED',
+  // The operation belongs to a feature the operator has not enabled on this instance.
+  'FEATURE_DISABLED',
+  // An agent trace, or the page position a trace cursor points at, was removed by retention.
+  'TRACE_EXPIRED'
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 export const ToolResultSchema = z.object({

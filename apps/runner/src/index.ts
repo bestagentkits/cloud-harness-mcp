@@ -106,6 +106,19 @@ const automations = new AutomationService({
   log: (record) => logger.warn(record, 'automation')
 });
 automations.start();
+// Agent trace retention: finished traces past their retention period are removed hourly. A no-op
+// when traces are disabled; a failure is logged and retried on the next tick.
+const purgeAgentTraces = () => {
+  try {
+    const removed = service.purgeAgentTraces();
+    if (removed > 0) logger.info({ removed }, 'agent traces purged');
+  } catch (error) {
+    logger.warn({ error: error instanceof Error ? error.message : 'unknown' }, 'agent trace purge failed');
+  }
+};
+purgeAgentTraces();
+const agentTracePurge = setInterval(purgeAgentTraces, 3_600_000);
+agentTracePurge.unref();
 // New installs default to the provider-maximum grant. This never blocks startup and
 // never overwrites a value an operator set explicitly; failures surface in Settings.
 void oauthGrantSettings.reconcileDefault().then(
@@ -121,6 +134,7 @@ server.listen(config.port, config.host, () => logger.info({ host: config.host, p
 async function shutdown(signal: string) {
   logger.info({ signal }, 'runner shutting down');
   server.close();
+  clearInterval(agentTracePurge);
   await automations.stop();
   await service.stop();
   metadata.close();
