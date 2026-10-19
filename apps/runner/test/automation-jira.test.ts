@@ -477,6 +477,17 @@ describe('Jira through the automation service', () => {
     expect(ingest(context, connection.id, secret, fixture({ timestamp: NOW + JIRA_MAX_FUTURE_SKEW_MS + 1 }))).toMatchObject(unauthorized);
   });
 
+  it('accepts a retry twenty minutes after the event once, dedupes its repeat, and refuses one past the window', () => {
+    const context = setup();
+    const { connection, secret } = connect(context);
+    addRule(context, connection.id);
+    const retried = fixture({ timestamp: NOW - 20 * 60_000 });
+    expect(ingest(context, connection.id, secret, retried, headersFor(retried, 'retry-1', secret))).toEqual({ ok: true, data: { outcome: 'accepted' } });
+    expect(ingest(context, connection.id, secret, retried, headersFor(retried, 'retry-1', secret))).toEqual({ ok: true, data: { outcome: 'duplicate' } });
+    const expired = fixture({ timestamp: NOW - JIRA_MAX_AGE_MS - 1 });
+    expect(ingest(context, connection.id, secret, expired, headersFor(expired, 'retry-2', secret))).toMatchObject({ ok: false, error: { code: 'UNAUTHORIZED' } });
+  });
+
   it('dedupes by body when the identifier header is missing', () => {
     const context = setup();
     const { connection, secret } = connect(context);

@@ -25,10 +25,14 @@ import { createProviderHttpClient, ProviderHttpError, type ProviderHttpClient, t
 
 /**
  * The signature does not cover the delivery headers, so replay is bounded by the body's own
- * `timestamp` (epoch ms, covered by the signature): older than five minutes, or more than one
- * minute ahead of this host's clock, is rejected.
+ * `timestamp` (epoch ms, covered by the signature): older than the window below, or more than one
+ * minute ahead of this host's clock, is rejected. A retry repeats the original body, so its
+ * timestamp is the original event time. Atlassian retries a failed delivery for up to roughly 30
+ * minutes after the first failure (and warns that delivery itself can lag by that much), so the
+ * window is 90 minutes: the full retry schedule plus slack. Replay inside it is bounded by delivery
+ * dedupe on `X-Atlassian-Webhook-Identifier` (identical across retries) and by the body digest.
  */
-export const JIRA_MAX_AGE_MS = 5 * 60_000;
+export const JIRA_MAX_AGE_MS = 90 * 60_000;
 export const JIRA_MAX_FUTURE_SKEW_MS = 60_000;
 
 const UPDATED_EVENT = 'jira:issue_updated';

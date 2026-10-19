@@ -290,7 +290,9 @@ cannot authenticate to Cloudflare Access. The decisions that keep that safe:
   and the custom `X-CloudHarness-Timestamp`, which is part of the signed text),
   so a captured body cannot be replayed once dedupe retention lapses. The
   windows are owned by each adapter. The cost is that a provider retry sent
-  after the window is refused; Jira's delayed retries can fall outside it.
+  after the window is refused. Jira's window is wide enough to cover its
+  documented retry schedule, and its retries are deduped on the webhook
+  identifier, which stays the same across them.
 - **Only allowlisted headers cross the boundary.** The ingress forwards the
   body and the provider's headers named in `AUTOMATION_WEBHOOK_HEADERS`, and the
   runner schema refuses any other header, so no request metadata reaches

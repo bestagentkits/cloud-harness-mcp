@@ -382,7 +382,7 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 2. `401`: the connection id or provider in the URL is wrong, the connection is disabled or deleted, the secret does not match, or the timestamp is outside the allowed window. The response is the same for all of these on purpose. Then check:
    - After **Rotate secret**, update the provider at once; old signatures are refused immediately.
    - **Linear:** a webhook created on Linear's settings page signs with Linear's own secret and is always refused. Create it through the API with this connection's secret ([setup](/dashboard/automations#_2-register-the-webhook-with-the-provider)).
-   - **Jira:** paste this connection's secret into the webhook's **Secret** field; a generated one never matches. Jira retries a failed delivery 5 to 15 minutes later, which can be past the timestamp window, so do not count on its retries.
+   - **Jira:** paste this connection's secret into the webhook's **Secret** field; a generated one never matches. Jira retries a failed delivery for up to about 30 minutes, and Cloud Harness accepts a Jira event up to 90 minutes after its timestamp, so retries are accepted once (the repeat of the same delivery is ignored). A delivery older than that, or from a host whose clock is far off, is refused.
    - **Custom:** sign `<timestamp>.<raw body>` exactly as sent, prefix the hex digest with `v1=`, and send the current Unix time in seconds; a clock more than five minutes off is refused.
 3. `400`: a required provider header is missing, such as `Linear-Delivery`, or `X-CloudHarness-Delivery` or `X-CloudHarness-Timestamp` for a custom sender.
 4. `415`: the request is not `application/json`. For GitHub, set the webhook content type to `application/json`.
