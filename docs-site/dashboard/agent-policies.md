@@ -49,6 +49,11 @@ for publishing, paths, commands, packages, registries and network hosts), per
 run budgets, and how long an approval request stays open. Until you save a
 global policy, a read-only default applies that allows only **Read**.
 
+A command scope entry is a prefix match on the command's arguments, word by
+word. `npm test` admits `npm test` and `npm test -- --watch`, but a bare
+program name such as `git` admits every git subcommand, and `*` admits any
+command.
+
 Some actions are denied whatever the policy says: access to credentials or the
 Docker socket, network escalation, privilege escalation, and paths outside the
 workspace.
@@ -167,7 +172,10 @@ runs, and setting an environment variable other than `CI`, `NODE_ENV`,
 because variables such as `PAGER`, `EDITOR` or `npm_config_call` make a program
 run another one. That approval is always required: an advisor or a project
 rule cannot clear it. Ordinary commands such as `grep -r docker .`,
-`command -v docker` or `vitest --environment node` are not affected. A command
+`command -v docker` or `vitest --environment node` are not affected. The gate
+is a policy layer, not a sandbox: it does not model what a program you admit in
+the command scope runs through its own arguments, so admit only programs you
+trust there. The workspace container's restrictions are what contain them. A command
 that runs `git push` is also judged as **Publish branch**, and the stricter
 decision applies.
 Tick **Evaluate the unsaved editor draft** to try a change before saving it.

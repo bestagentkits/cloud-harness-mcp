@@ -51,21 +51,30 @@ export type CommandAnalysis =
 export const DOCKER_PROGRAMS: ReadonlySet<string> = new Set(['docker', 'dockerd', 'podman', 'nerdctl', 'ctr', 'crictl', 'kubectl', 'buildah']);
 /** Privilege-changing tools; one in program position is a definite platform match. */
 export const PRIVILEGE_PROGRAMS: ReadonlySet<string> = new Set(['sudo', 'su', 'doas', 'nsenter', 'chroot', 'unshare', 'setcap', 'capsh', 'pkexec']);
-/** Programs that only read or print data: their arguments are never programs. */
-export const DATA_ONLY_PROGRAMS: ReadonlySet<string> = new Set([
-  'grep', 'rg', 'egrep', 'fgrep', 'cat', 'head', 'tail', 'less', 'wc', 'ls', 'echo', 'printf', 'sort', 'uniq', 'diff', 'cut', 'tr', 'jq', 'true', 'false'
-]);
 /**
- * Whether an argument makes a data-only program run another program or evaluate code: `rg --pre`,
- * `sort --compress-program` (GNU accepts any unique prefix such as `--compress`), `less` with a
- * startup command (`+cmd`) or a lesskey file, and `printf -v`, whose array subscript bash evaluates.
+ * Programs that only read or print data: their arguments are never programs. Every option that
+ * makes one of them run another program, filter or pager is modelled in `runsAnotherProgram`; a tool
+ * whose program execution cannot be read from its argv alone (such as `less`, which loads a lesskey
+ * file from the home directory) is not listed and is judged like any other program.
+ */
+export const DATA_ONLY_PROGRAMS: ReadonlySet<string> = new Set([
+  'grep', 'rg', 'egrep', 'fgrep', 'cat', 'head', 'tail', 'wc', 'ls', 'echo', 'printf', 'sort', 'uniq', 'diff', 'cut', 'tr', 'jq', 'true', 'false'
+]);
+/** GNU long options accept any unique prefix of at least `minimum` characters. */
+const longPrefix = (name: string, option: string, minimum: number) => name.length >= minimum && option.startsWith(name);
+/**
+ * Whether an argument makes a data-only program run another program or evaluate code:
+ * `rg --pre` and `rg -z`/`--search-zip` (decompression programs), `sort --compress-program`,
+ * `diff -l`/`--paginate` (`pr`), and `printf -v`, whose array subscript bash evaluates. A short
+ * option cluster is matched conservatively, so `-ez` counts as well.
  */
 function runsAnotherProgram(program: string, token: string): boolean {
   const name = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
-  if (program === 'rg') return name === '--pre';
-  if (program === 'sort') return name.length >= 4 && '--compress-program'.startsWith(name);
-  if (program === 'less') return token.startsWith('+') || /^-[A-Za-z]*k/u.test(token) || name.startsWith('--lesskey');
-  if (program === 'printf') return /^-[A-Za-z]*v/u.test(token);
+  const short = (letter: string) => new RegExp(`^-[A-Za-z0-9]*${letter}`, 'u').test(token);
+  if (program === 'rg') return name === '--pre' || name === '--search-zip' || short('z');
+  if (program === 'sort') return longPrefix(name, '--compress-program', 4);
+  if (program === 'diff') return longPrefix(name, '--paginate', 4) || short('l');
+  if (program === 'printf') return short('v');
   return false;
 }
 
@@ -98,7 +107,8 @@ function isSafeVariable(name: string): boolean {
   const lower = name.toLowerCase();
   return lower.startsWith('npm_config_') && NPM_SAFE_SETTINGS.has(lower.slice('npm_config_'.length));
 }
-/** Programs that run code the gate cannot read. */const UNANALYZABLE_PROGRAMS = new Set([
+/** Programs that run code the gate cannot read. */
+const UNANALYZABLE_PROGRAMS = new Set([
   'eval', 'source', '.', 'trap', 'coproc', 'alias', 'hash', 'enable', 'fc', 'fish', 'csh', 'tcsh', 'pwsh', 'powershell',
   'script', 'watch', 'flock', 'parallel', 'expect', 'tmux', 'screen', 'at', 'batch', 'crontab', 'systemd-run', 'runuser',
   'sg', 'newgrp', 'chpst', 'setpriv', 'busybox-sh'

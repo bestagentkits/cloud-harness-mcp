@@ -904,6 +904,15 @@ changes simulation results only.
   interpreter's inline code are all unanalyzable, whatever the string
   contains. Run commands as argv to keep them readable.
 
+  The gate is a policy layer, not a sandbox. A program it does not know is a
+  leaf command: when the owner's command scope admits it, the gate does not
+  model whether its arguments make it run something else (a test runner's
+  plugin option, a build tool's hook). Containment for that comes from the
+  executor restrictions owned by `apps/runner/src/workspace-service.ts`, and
+  in the coding flow the runner, not the executor, pushes branches and opens
+  pull requests. The analysis itself lives in
+  `apps/runner/src/agent-governance/command-analysis.ts`.
+
   A container runtime or privilege tool in program position, or the Docker
   socket handed to a program, is a definite match and denies. Inside a shell
   string, such a program at the start of a command also denies, and a
@@ -932,7 +941,9 @@ changes simulation results only.
   `command -v` and `command -V` only look a name up and are not a match.
   Data-only programs (`grep`, `rg`, `cat`, `echo`, `jq` and similar) are never
   treated as running their arguments, unless an option tells them to run a
-  program (`rg --pre`, `sort --compress-program`, a `less` startup command).
+  program (`rg --pre` or `-z`, `sort --compress-program`, `diff --paginate`).
+  A tool whose program execution argv cannot show, such as `less` with its
+  lesskey file, is not data-only.
   The analysis does not read the content of files a command runs (a script, a
   Makefile, a package script, git hooks). The executor's isolation stays the
   boundary for those, and the gate is defence in depth.

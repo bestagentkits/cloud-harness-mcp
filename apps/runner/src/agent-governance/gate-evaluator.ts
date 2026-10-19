@@ -169,6 +169,8 @@ function inspectUnchecked(descriptor: AgentActionDescriptor): Inspection {
  */
 function definitePlatformAccess(segments: readonly string[][]): Verdict | undefined {
   const programs = segments.map((segment) => programName(segment[0] ?? ''));
+  // The exemption for data-only programs (`grep docker.sock docs/`) is safe only because that list
+  // holds no tool that can run another program; `runsAnotherProgram` gates every such option.
   const socket = segments.some((segment) => !DATA_ONLY_PROGRAMS.has(programName(segment[0] ?? '')) && segment.some((word) => word.includes('docker.sock')));
   if (socket || programs.some((program) => DOCKER_PROGRAMS.has(program))) {
     return { decision: 'DENY', code: 'PLATFORM_DOCKER_ACCESS', source: 'platform', detail: 'container runtimes are never reachable from an agent' };
