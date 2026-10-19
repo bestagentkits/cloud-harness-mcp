@@ -537,6 +537,34 @@ describe('Jira through the automation service', () => {
     expect(listWorkflows(context).map((workflow) => workflow.resourceRef).sort()).toEqual(['OPS-12', 'OPS-13']);
   });
 
+  it('records, prompts and posts the trigger each rule matched when one update adds a label and moves the status', async () => {
+    const context = setup({ respond: (call) => new Response(JSON.stringify({ id: String(10050 + call) }), { status: 201 }) });
+    const { connection, secret } = connect(context);
+    addRule(context, connection.id);
+    addRule(context, connection.id, { trigger: 'status_changed', label: undefined, toStatus: 'In Review' });
+    ingest(context, connection.id, secret, fixture({ items: [labelItem('bug', 'bug claude'), statusItem('To Do', 'In Review')] }));
+    await drive(context, 2);
+
+    const runs = ok<{ workflows: { id: string; label: string; eventType: string }[] }>(
+      context.service.execute({ version: 1, principal: context.owner, operation: 'workflows_list', input: {} })
+    ).workflows;
+    expect(runs.map((run) => run.label).sort()).toEqual(['In Review', 'claude']);
+    const prompt = (label: string) => {
+      const id = runs.find((run) => run.label === label)!.id;
+      return String(context.operations.calls.find((call) => call.operation === 'agent_spawn' && call.input.idempotencyKey === `automation:${id}:spawn`)!.input.prompt);
+    };
+    expect(prompt('claude')).toContain('the label "claude" was added to issue OPS-12 in OPS');
+    expect(prompt('claude')).not.toContain('moved from');
+    expect(prompt('In Review')).toContain('issue OPS-12 in OPS moved from "To Do" to "In Review"');
+    expect(prompt('In Review')).not.toContain('the label');
+
+    const comments = context.sent.map((request) => JSON.stringify(request.body));
+    expect(comments).toHaveLength(2);
+    expect(comments.filter((body) => body.includes('Triggered by the `claude` label.'))).toHaveLength(1);
+    expect(comments.filter((body) => body.includes('Triggered by the move to `In Review`.'))).toHaveLength(1);
+    expect(comments.some((body) => body.includes('move to `claude`'))).toBe(false);
+  });
+
   it('checks out the pinned repository, then posts one comment and edits it with the answer', async () => {
     const context = setup();
     const { connection, secret } = connect(context);
