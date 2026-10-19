@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { ZodError } from 'zod';
 import {
   AGENT_POLICY_LIMITS,
+  AgentActionDescriptorSchema,
   AgentPoliciesRunnerDataSchemas,
   AgentPoliciesRunnerRequestSchema,
   DEFAULT_GLOBAL_EXECUTION_POLICY,
@@ -22,7 +23,8 @@ import {
   type RunnerPrincipalSelector
 } from '@cloud-harness/contracts';
 import { withEventSavepoint } from '../event-outbox.js';
-import { PURE_GATE_EVALUATOR, type PolicySnapshot } from './gate-evaluator.js';
+import { isAdvisorPending, PURE_GATE_EVALUATOR, type AdvisorAnswer, type GateInput, type PolicySnapshot } from './gate-evaluator.js';
+import type { AdvisorAvailability, AdvisorFacts, DecisionAdvisor } from './ports.js';
 import { canonicalJson, diffPolicyDocuments, policyWeakenings, resolveEffectivePolicy, sha256 } from './policy-merge.js';
 import { StorePolicyResolver, type ProjectStateLookup } from './policy-resolver.js';
 import { PolicyStore, PolicyStoreError } from './policy-store.js';
@@ -46,11 +48,18 @@ export type AgentPolicyServiceOptions = {
   activeProjectIds: (principalId: string) => ReadonlySet<string>;
   audit: AgentPolicyAudit;
   /**
-   * Whether a DecisionAdvisor will be consulted for discretionary actions. Execution and simulation read
-   * the same value, so a preview shows the same pending or approval outcome execution starts from.
+   * The advisor for discretionary actions whose policy enables it. Execution and simulation read the same
+   * per-principal availability, so a preview shows the same pending or fallback outcome execution starts
+   * from. Without one, every advisor-enabled discretionary action takes the policy's fallback (`disabled`).
    */
-  advisorAvailable?: () => boolean;
+  advisor?: DecisionAdvisor | undefined;
   now?: () => number;
+};
+
+export type AgentPolicyDecideOptions = {
+  /** Typed counts and flags the broker knows about the action; never text. */
+  facts?: AdvisorFacts | undefined;
+  signal?: AbortSignal | undefined;
 };
 
 /** The overview lists at most this many project policies, most recently changed first. */
@@ -90,7 +99,7 @@ export class AgentPolicyService {
   private readonly projectState: ProjectStateLookup;
   private readonly activeProjectIds: (principalId: string) => ReadonlySet<string>;
   private readonly audit: AgentPolicyAudit;
-  private readonly advisorAvailable: () => boolean;
+  private readonly advisor: DecisionAdvisor | undefined;
 
   constructor(options: AgentPolicyServiceOptions) {
     this.database = options.database;
@@ -99,7 +108,7 @@ export class AgentPolicyService {
     this.projectState = options.projectState;
     this.activeProjectIds = options.activeProjectIds;
     this.audit = options.audit;
-    this.advisorAvailable = options.advisorAvailable ?? (() => false);
+    this.advisor = options.advisor;
     this.store = new PolicyStore(options.database, options.now);
     this.resolver = new StorePolicyResolver(this.store, options.projectState);
   }
@@ -110,11 +119,58 @@ export class AgentPolicyService {
 
   /**
    * The deterministic decision execution starts from: resolve the current heads, then the pure
-   * evaluator. A discretionary action comes back pending (`ADVISOR_REQUIRED`) when an advisor is
-   * configured; the broker settles it with `PURE_GATE_EVALUATOR.combineAdvisor`.
+   * evaluator. A discretionary action comes back pending (`ADVISOR_REQUIRED`) when the policy enables
+   * the advisor and it is available; `decide` settles it.
    */
   evaluate(principalId: string, projectId: string | null, descriptor: AgentActionDescriptor, context?: GateContext): GateDecision {
-    return PURE_GATE_EVALUATOR.evaluate({ descriptor, snapshot: this.resolver.resolve(principalId, projectId), context, advisorAvailable: this.advisorAvailable() });
+    return PURE_GATE_EVALUATOR.evaluate(this.gateInput(principalId, this.resolver.resolve(principalId, projectId), descriptor, context));
+  }
+
+  /**
+   * The execution decision: `evaluate`, then, only for a pending discretionary action, one advisor call
+   * whose answer `combineAdvisor` applies. Every other decision (any DENY, mandatory or rule approval,
+   * an unanalyzable command, a plain ALLOW) is returned without consulting the advisor, so nothing
+   * leaves the runner for it. The advisor cannot lower a decision; a failure takes the policy fallback.
+   * The advisor is told the subject the evaluator judged (for example `publish_branch` for a declared
+   * `test` that runs `git push`), never only the declared class. The coding broker is the caller;
+   * nothing in this release calls it yet. A descriptor that does not match the contract is refused.
+   */
+  async decide(principalId: string, projectId: string | null, input: AgentActionDescriptor, context?: GateContext, options: AgentPolicyDecideOptions = {}): Promise<GateDecision> {
+    const parsed = AgentActionDescriptorSchema.safeParse(input);
+    if (!parsed.success) throw new AgentPolicyError('INVALID_INPUT', bounded(issues(parsed.error)[0] ?? 'invalid action descriptor', 500));
+    const descriptor = parsed.data;
+    const snapshot = this.resolver.resolve(principalId, projectId);
+    const { decision, subject } = PURE_GATE_EVALUATOR.evaluateSubject(this.gateInput(principalId, snapshot, descriptor, context));
+    if (!isAdvisorPending(decision) || !this.advisor) return decision;
+    const settings = resolveEffectivePolicy(snapshot.global.document, snapshot.project?.state === 'active' ? snapshot.project.document : null).advisor;
+    let answer: AdvisorAnswer | null;
+    try {
+      answer = await this.advisor.advise({ principalId, descriptor, decision, subject, settings, facts: options.facts, signal: options.signal });
+    } catch {
+      answer = null;
+    }
+    return PURE_GATE_EVALUATOR.combineAdvisor(decision, answer);
+  }
+
+  /** Execution and simulation build the gate input here, so both see the same advisor availability. */
+  private gateInput(principalId: string, snapshot: PolicySnapshot, descriptor: AgentActionDescriptor, context: GateContext | undefined): GateInput {
+    const availability = this.advisorAvailability(principalId);
+    return {
+      descriptor,
+      snapshot,
+      context,
+      advisorAvailable: availability.available,
+      ...(availability.available ? {} : { advisorUnavailableReason: availability.reason })
+    };
+  }
+
+  private advisorAvailability(principalId: string): AdvisorAvailability {
+    if (!this.advisor) return { available: false, reason: 'disabled' };
+    try {
+      return this.advisor.availability(principalId);
+    } catch {
+      return { available: false, reason: 'unavailable' };
+    }
   }
 
   execute(request: unknown): AgentPoliciesRunnerResponse {
@@ -367,8 +423,9 @@ export class AgentPolicyService {
   /**
    * Evaluates one descriptor with the same evaluator and advisor availability execution uses. A draft
    * replaces the stored document for its scope only; the other scope still comes from storage. A
-   * discretionary action shows as pending (`ADVISOR_REQUIRED`) when an advisor is configured, because
-   * the advisor's answer only exists at execution time. Simulations are read-only and not audited.
+   * simulation never calls the advisor, so it sends nothing: a discretionary action shows as pending
+   * (`ADVISOR_REQUIRED`) when the advisor would be consulted at execution, or with the fallback and its
+   * reason (`disabled`, `unconfigured`) when it would not. Simulations are read-only and not audited.
    */
   private simulate(principalId: string, input: Request<'policy_simulate'>): { decision: GateDecision; effective: EffectivePolicy | null } {
     const projectId = input.projectId ?? null;
@@ -382,7 +439,7 @@ export class AgentPolicyService {
         snapshot = { ...snapshot, project: { ...snapshot.project, revisionId: null, document: document as ProjectExecutionPolicy, source: 'draft' } };
       }
     }
-    const decision = PURE_GATE_EVALUATOR.evaluate({ descriptor: input.action, snapshot, context: input.context, advisorAvailable: this.advisorAvailable() });
+    const decision = PURE_GATE_EVALUATOR.evaluate(this.gateInput(principalId, snapshot, input.action, input.context));
     return { decision, effective: this.effectiveFor(snapshot) };
   }
 }

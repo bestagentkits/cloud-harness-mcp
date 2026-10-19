@@ -12,6 +12,7 @@ import {
 } from '@cloud-harness/contracts';
 import { evaluateGate, PURE_GATE_EVALUATOR } from '../src/agent-governance/gate-evaluator.js';
 import { AgentPolicyService, OVERVIEW_PROJECT_LIMIT } from '../src/agent-governance/policy-service.js';
+import type { DecisionAdvisor } from '../src/agent-governance/ports.js';
 
 const PROJECT = `prj_${'p'.repeat(32)}`;
 const OTHER_PROJECT = `prj_${'q'.repeat(32)}`;
@@ -21,6 +22,13 @@ const intruder = { kind: 'owner', ownerId: 'intruder' } as const;
 const databases: DatabaseSync[] = [];
 afterEach(() => {
   for (const database of databases.splice(0)) database.close();
+});
+
+/** An advisor that is available or not, and escalates whenever it is asked. */
+const stubAdvisor = (available: boolean): DecisionAdvisor => ({
+  contractVersion: 1,
+  availability: () => (available ? { available: true } : { available: false, reason: 'disabled' }),
+  advise: async () => ({ effect: 'escalate', decisionId: null, fallbackReason: null })
 });
 
 type AuditRecord = { principalId: string; action: string; subjectId: string; details: Record<string, string | number | boolean> };
@@ -39,7 +47,7 @@ function setup(options: { enabled?: boolean; advisorAvailable?: boolean } = {}) 
     audit: (_database, principalId, action, _subjectType, subjectId, _generation, details) => {
       audits.push({ principalId, action, subjectId, details });
     },
-    ...(options.advisorAvailable === undefined ? {} : { advisorAvailable: () => options.advisorAvailable === true })
+    ...(options.advisorAvailable === undefined ? {} : { advisor: stubAdvisor(options.advisorAvailable) })
   });
   const call = (operation: string, input: Record<string, unknown>, principal: RunnerPrincipalSelector = owner): AgentPoliciesRunnerResponse =>
     service.execute({ version: 1, principal, operation, input });
@@ -303,7 +311,11 @@ describe('AgentPolicyService', () => {
   });
 
   it('previews the pending advisor state execution starts from when an advisor is configured', () => {
-    const discretionary: GlobalExecutionPolicy = { ...WIDE_GLOBAL, defaults: { ...WIDE_GLOBAL.defaults, edit: { effect: 'advisor_or_approval', delegable: false } } };
+    const discretionary: GlobalExecutionPolicy = {
+      ...WIDE_GLOBAL,
+      defaults: { ...WIDE_GLOBAL.defaults, edit: { effect: 'advisor_or_approval', delegable: false } },
+      advisor: { enabled: true, riskThreshold: 0.5, minConfidence: 0.7, fallback: 'require_approval' }
+    };
     for (const advisorAvailable of [true, false]) {
       const { service, data, confirmFor } = setup({ advisorAvailable });
       data('policy_put', { scope: 'global', document: discretionary, expectedVersion: 0, ...confirmFor('global', discretionary) });
@@ -315,7 +327,7 @@ describe('AgentPolicyService', () => {
       const input = { descriptor, snapshot: service.resolver.resolve('owner', null), advisorAvailable };
       expect(PURE_GATE_EVALUATOR.evaluate(input)).toEqual(simulated.decision);
       expect(PURE_GATE_EVALUATOR.decide(input).decision).toBe('REQUIRE_APPROVAL');
-      expect(PURE_GATE_EVALUATOR.decide(input, { effect: 'no_change', decisionId: 'd1' }).decision).toBe(advisorAvailable ? 'ALLOW' : 'REQUIRE_APPROVAL');
+      expect(PURE_GATE_EVALUATOR.decide(input, { effect: 'no_change', decisionId: 'd1', confidence: 0.9 }).decision).toBe(advisorAvailable ? 'ALLOW' : 'REQUIRE_APPROVAL');
     }
   });
 

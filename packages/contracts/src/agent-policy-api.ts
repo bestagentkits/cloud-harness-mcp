@@ -59,6 +59,34 @@ export const GATE_DECISION_RANK = { ALLOW: 0, REQUIRE_APPROVAL: 1, DENY: 2 } as 
 /** The only answers an advisor can give. Neither can lower a decision. */
 export const AdvisorEffectSchema = z.enum(['no_change', 'escalate']);
 
+/**
+ * Why the advisor gave no usable answer. Every reason is conservative: the discretionary action is held
+ * for approval (or denied, when the policy's `fallback` says so). `disabled` and `unconfigured` are
+ * known before any call, so they never send anything.
+ */
+export const ADVISOR_FALLBACK_REASONS = [
+  'disabled', 'unconfigured', 'timeout', 'rate_limited', 'invalid_answer', 'low_confidence', 'redaction_failed', 'unavailable'
+] as const;
+export const AdvisorFallbackReasonSchema = z.enum(ADVISOR_FALLBACK_REASONS);
+/** What a discretionary action becomes when the advisor cannot answer. Never ALLOW. */
+export const AdvisorFallbackModeSchema = z.enum(['require_approval', 'deny']);
+
+const unitInterval = z.number().min(0).max(1);
+
+/**
+ * The owner's opt-in to the `execution-risk` advisor for `advisor_or_approval` classes. It is consulted
+ * only when this is enabled, the instance enables the `execution-risk` Decision Plane purpose with
+ * TypeSafe egress on, and the owner has a TypeSafe credential. A risk at or above `riskThreshold`, a
+ * confidence below `minConfidence`, or a raised side-effect or human-review flag escalates to approval.
+ */
+export const PolicyAdvisorSchema = z.object({
+  enabled: z.boolean(),
+  riskThreshold: unitInterval,
+  minConfidence: unitInterval,
+  fallback: AdvisorFallbackModeSchema
+}).strict();
+export const DEFAULT_POLICY_ADVISOR: PolicyAdvisor = Object.freeze({ enabled: false, riskThreshold: 0.5, minConfidence: 0.7, fallback: 'require_approval' });
+
 export const AgentPolicyRevisionIdSchema = z.string().regex(/^apr_[a-f0-9]{32}$/u);
 export const AgentPolicyProjectIdSchema = z.string().regex(/^prj_[A-Za-z0-9_-]{20,80}$/u);
 export const AgentPolicyScopeSchema = z.enum(['global', 'project']);
@@ -165,7 +193,9 @@ export const GlobalExecutionPolicySchema = z.object({
   defaults: perClass(PolicyDefaultRuleSchema),
   scope: PolicyScopeSchema,
   budget: PolicyBudgetSchema,
-  approval: PolicyApprovalSchema
+  approval: PolicyApprovalSchema,
+  /** The execution-risk advisor for `advisor_or_approval` classes. Absent means disabled. */
+  advisor: PolicyAdvisorSchema.optional()
 }).strict()
   .refine((policy) => disjoint(policy.hardDeny, policy.allowedActionClasses), 'a class cannot be both hard-denied and allowed')
   .refine((policy) => disjoint(policy.hardDeny, policy.mandatoryApproval), 'a class cannot be both hard-denied and mandatory-approval');
@@ -185,7 +215,12 @@ export const ProjectExecutionPolicySchema = z.object({
   scope: PolicyScopeSchema.partial().strict().optional(),
   /** Each value must not exceed the global value. */
   budget: PolicyBudgetSchema.partial().strict().optional(),
-  approval: z.object({ ttlSeconds: PolicyApprovalSchema.shape.ttlSeconds }).partial().strict().optional()
+  approval: z.object({ ttlSeconds: PolicyApprovalSchema.shape.ttlSeconds }).partial().strict().optional(),
+  /**
+   * May only make the advisor stricter: turn it off (discretionary actions then need approval), lower the
+   * risk threshold, raise the minimum confidence, or make the fallback `deny`.
+   */
+  advisor: PolicyAdvisorSchema.partial().strict().optional()
 }).strict();
 
 /**
@@ -261,7 +296,8 @@ export const GATE_REASON_CODES = [
   'ACTION_CLASS_NOT_ALLOWED', 'PROJECT_HARD_DENY', 'PROJECT_CLASS_REMOVED',
   'MANDATORY_APPROVAL', 'PROJECT_MANDATORY_APPROVAL',
   'RULE_ALLOW', 'RULE_REQUIRE_APPROVAL', 'ADVISOR_REQUIRED', 'ADVISOR_UNAVAILABLE', 'ADVISOR_ESCALATED', 'ADVISOR_NO_CHANGE',
-  'GLOBAL_POLICY_DEFAULT', 'PROJECT_POLICY_ABSENT', 'PROJECT_WIDENING_IGNORED'
+  'GLOBAL_POLICY_DEFAULT', 'PROJECT_POLICY_ABSENT', 'PROJECT_WIDENING_IGNORED',
+  'ADVISOR_FALLBACK_DENY'
 ] as const;
 export const GateReasonCodeSchema = z.enum(GATE_REASON_CODES);
 
@@ -291,9 +327,24 @@ export const GateDecisionSchema = z.object({
   inputFingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
   advisor: z.object({
     required: z.boolean(),
+    /** True only when the advisor returned a valid, confident answer. */
     consulted: z.boolean(),
     effect: AdvisorEffectSchema.nullable(),
-    decisionId: z.string().max(200).nullable()
+    /** The Decision Plane evaluation id (also on its `decision.evaluated` audit row), when a call was made. */
+    decisionId: z.string().max(200).nullable(),
+    /** The advisor's risk score in [0, 1], when it answered. */
+    risk: unitInterval.nullable().default(null),
+    /** The advisor's confidence in its risk score, when it answered. */
+    confidence: unitInterval.nullable().default(null),
+    /** Why the advisor gave no usable answer; `null` when it answered or was not involved. */
+    fallbackReason: AdvisorFallbackReasonSchema.nullable().default(null),
+    /** The policy's fallback for this decision while the advisor is involved; `null` otherwise. */
+    fallback: AdvisorFallbackModeSchema.nullable().default(null),
+    /**
+     * The policy's confidence floor while the advisor is involved; `null` otherwise. The gate enforces it
+     * itself, so no advisor can clear an action with a `no_change` below it.
+     */
+    minConfidence: unitInterval.nullable().default(null)
   }).strict(),
   /** The approval terms that apply when this decision (or an advisor escalation of it) holds the action for a human. */
   approval: z.object({ ttlSeconds: z.number().int().positive(), approverRoles: z.array(PolicyApproverRoleSchema) }).strict()
@@ -318,6 +369,7 @@ export const EffectivePolicySchema = z.object({
   }),
   budget: PolicyBudgetSchema,
   approval: PolicyApprovalSchema,
+  advisor: PolicyAdvisorSchema,
   /** Project fields that would widen the global policy; the evaluator ignores them. */
   ignoredProjectFields: z.array(z.string().max(300)).max(AGENT_POLICY_LIMITS.maxDetails * 4)
 }).strict();
@@ -467,6 +519,9 @@ export type AgentPlatformEffect = z.infer<typeof AgentPlatformEffectSchema>;
 export type PolicyRuleEffect = z.infer<typeof PolicyRuleEffectSchema>;
 export type GateDecisionValue = z.infer<typeof GateDecisionValueSchema>;
 export type AdvisorEffect = z.infer<typeof AdvisorEffectSchema>;
+export type AdvisorFallbackReason = z.infer<typeof AdvisorFallbackReasonSchema>;
+export type AdvisorFallbackMode = z.infer<typeof AdvisorFallbackModeSchema>;
+export type PolicyAdvisor = z.infer<typeof PolicyAdvisorSchema>;
 export type PolicyScope = z.infer<typeof PolicyScopeSchema>;
 export type PolicyBudget = z.infer<typeof PolicyBudgetSchema>;
 export type GlobalExecutionPolicy = z.infer<typeof GlobalExecutionPolicySchema>;

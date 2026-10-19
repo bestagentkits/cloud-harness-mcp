@@ -592,12 +592,21 @@ An example file is in the
 
 | Variable | Default | Decision |
 |---|---|---|
-| `DECISION_PLANE_PURPOSES` | empty (off) | Runner flag. A comma-separated subset of `mcp-routing` and `failure-classification`. A listed purpose is evaluated only for owners who stored a TypeSafe integration key. Any other value fails startup. |
+| `DECISION_PLANE_PURPOSES` | empty (off) | Runner flag. A comma-separated subset of `mcp-routing`, `failure-classification` and `execution-risk`. A listed purpose is evaluated only for owners who stored a TypeSafe integration key. Any other value fails startup. |
 | `TYPESAFE_EGRESS` | `on` | Runner flag. `off` stops every TypeSafe call, both skill suggestions and the Decision Plane, even for owners with a stored key. `typesafe_status` then reports `enabled: false`. |
 
 `mcp-routing` reranks MCP gateway `search` results. `failure-classification`
 adds an advisory `data.diagnosis` to GitHub actions that end in the generic
 `GITHUB_ACTION_FAILED`. Both fall back to the deterministic result on any error.
+`execution-risk` lets the agent policy gate ask Jev about an action whose effect
+is `advisor_or_approval`. It also needs the owner to enable the advisor in the
+global agent policy (see [Agent execution policies](security-model.md#agent-execution-policies));
+its threshold, confidence floor and fallback live in that policy, not here. Any
+failure falls back to approval, or to deny when the policy says so. The
+advisor is consulted when an agent action executes, which arrives with the
+coding broker; until then listing the purpose sends nothing.
+Before rolling back to a release that predates `execution-risk`, remove it from
+`DECISION_PLANE_PURPOSES`: older runners reject the value and fail startup.
 The purpose list is owned by
 [`packages/contracts/src/decision-plane.ts`](../packages/contracts/src/decision-plane.ts),
 the call bounds by
