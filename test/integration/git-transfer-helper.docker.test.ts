@@ -124,7 +124,7 @@ describe('transfer repository isolation', () => {
 
   afterAll(() => {
     if (root) {
-      execFileSync('docker', ['run', '--rm', '--user', '0:0', '--volume', `${root}:/job:rw`, '--entrypoint', '/bin/sh', image, '-c', 'find /job -mindepth 1 -delete'], { stdio: 'ignore' });
+      execFileSync('docker', ['run', '--rm', '--user', '0:0', '--volume', `${root}:/job:rw`, '--entrypoint', '/bin/sh', image, '-c', `find /job -mindepth 1 -delete && chown ${process.getuid?.() ?? 0}:${process.getgid?.() ?? 0} /job`], { stdio: 'ignore' });
       rmSync(root, { recursive: true, force: true });
     }
   });
