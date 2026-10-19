@@ -2,6 +2,7 @@ import type { AutomationProvider } from '@cloud-harness/contracts';
 import type { ProviderAdapter } from './automation-adapter.js';
 import { customAdapter } from './automation-custom.js';
 import { githubAdapter } from './automation-github.js';
+import { jiraAdapter } from './automation-jira.js';
 import { linearAdapter } from './automation-linear.js';
 
 // The adapter contract lives in its own module so adapters import it without importing this
@@ -18,5 +19,6 @@ export type AutomationProviderRegistry = Readonly<Partial<Record<AutomationProvi
 export const AUTOMATION_PROVIDER_ADAPTERS: AutomationProviderRegistry = {
   github: githubAdapter,
   linear: linearAdapter,
+  jira: jiraAdapter,
   custom: customAdapter
 };

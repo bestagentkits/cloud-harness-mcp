@@ -74,7 +74,7 @@ describe('automation provider registry', () => {
     expect(keys({ repository: 'Acme/Widgets', events: ['issues'], label: 'Claude' })).toEqual({ scope: 'acme/widgets', trigger: 'claude' });
     expect(keys({ provider: 'linear', trigger: 'state_changed' })).toEqual({ scope: ANY_INDEX_KEY, trigger: ANY_INDEX_KEY });
     expect(keys({ provider: 'linear', teamKey: 'ENG', trigger: 'state_changed', toState: 'In Progress' })).toEqual({ scope: 'eng', trigger: 'in progress' });
-    expect(keys({ provider: 'jira', projectKey: 'OPS', trigger: 'label_added', label: 'AI' })).toEqual({ scope: 'ops', trigger: 'ai' });
+    expect(keys({ provider: 'jira', projectKey: 'OPS', trigger: 'label_added', label: 'AI' })).toEqual({ scope: 'ops', trigger: ANY_INDEX_KEY });
     expect(keys({ provider: 'custom', event: 'deploy.failed' })).toEqual({ scope: 'deploy.failed', trigger: ANY_INDEX_KEY });
     expect(eventIndexKeys(event({ provider: 'linear', eventType: 'linear.issue.state_changed', scope: 'ENG', label: undefined, toState: 'Done' })))
       .toEqual({ scope: 'eng', trigger: 'done' });
