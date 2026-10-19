@@ -44,6 +44,9 @@ function workspace(lockfile?: string): { workspaceId: string; workspacePath: str
   git(['init', '--quiet', '--initial-branch=main']);
   git(['add', '-A']);
   git(['commit', '--quiet', '-m', 'Fixture']);
+  // A workspace checkout, `.git` included, belongs to the executor user; let it write here as it would there.
+  const writable = spawnSync('chmod', ['-R', 'a+rwX', repo], { encoding: 'utf8' });
+  if (writable.status !== 0) throw new Error(`chmod failed: ${writable.stderr}`);
   return { workspaceId, workspacePath, repo };
 }
 
@@ -113,6 +116,9 @@ describe.skipIf(prerequisiteIssue !== undefined)('coding lockfile install in a r
     expect(existsSync(join(target.repo, 'node_modules', 'chm-hello', 'postinstall-ran'))).toBe(false);
     // The installed tree never reaches the commit the runner makes later.
     expect(readFileSync(join(target.repo, '.git', 'info', 'exclude'), 'utf8').split('\n')).toContain('/node_modules/');
+    const status = spawnSync('git', ['-c', `safe.directory=${target.repo}`, 'status', '--porcelain', '--untracked-files=all'], { cwd: target.repo, encoding: 'utf8' });
+    expect(status.status).toBe(0);
+    expect(status.stdout).not.toContain('node_modules');
     // The lockfile is frozen: the install did not rewrite it.
     expect(readFileSync(join(target.repo, NPM_LOCKFILE), 'utf8')).toBe(lockText);
     expect(await installContainers()).toEqual([]);
