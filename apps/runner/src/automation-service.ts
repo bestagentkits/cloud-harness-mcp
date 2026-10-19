@@ -799,10 +799,7 @@ export class AutomationService {
   private cancelWorkflow(ownerId: string, id: string, reason: string | undefined) {
     const row = this.ownedWorkflow(ownerId, id);
     if (!TERMINAL_STATES.has(row.state)) {
-      // A running workflow has already published its start, so the cancellation is published too:
-      // otherwise its progress comment and check run would read as running forever.
-      const publish = row.state === 'RUNNING' && this.snapshot(row).action.publishComment;
-      this.finish(row.id, ['QUEUED', 'STARTING', 'RUNNING'], 'CANCELLED', 'OWNER_CANCELLED', 'owner', publish ? { publish_state: 'PENDING' } : {});
+      this.finish(row.id, ['QUEUED', 'STARTING', 'RUNNING'], 'CANCELLED', 'OWNER_CANCELLED', 'owner', {});
       // Workflows are immutable snapshots, so the audited generation is the rule generation they ran.
       this.audit(this.database, ownerId, 'automation.workflow.cancelled', 'automation_workflow', row.id, row.rule_generation,
         reason ? { reason: boundedText(reason, 500) } : {});
@@ -1292,13 +1289,11 @@ export class AutomationService {
       ? { inputTokens: data.usage.inputTokens, outputTokens: data.usage.outputTokens, costMicros: data.usage.costMicros }
       : null;
     const result = await this.collectResult(row.owner_id, row.workspace_id, row.agent_id);
-    const snapshot = this.snapshot(row);
     const succeeded = agentStatus === 'SUCCEEDED';
     this.finish(row.id, ['RUNNING'], succeeded ? 'COMPLETED' : 'FAILED', succeeded ? null : bounded(`AGENT_${agentStatus}`, 100), 'system', {
       agent_status: agentStatus,
       result_text: result || null,
-      usage_json: usage ? JSON.stringify(usage) : null,
-      publish_state: snapshot.action.publishComment ? 'PENDING' : 'NONE'
+      usage_json: usage ? JSON.stringify(usage) : null
     });
   }
 
@@ -1330,7 +1325,7 @@ export class AutomationService {
     const heading = `**Cloud Harness automation: ${neutralizeMentions(snapshot.name)}** (${phase === 'started' ? 'running' : row.state.toLowerCase()})`;
     const footer = `<sub>Workflow \`${row.id}\`. This comment was written by an automated agent; verify it before acting on it.</sub>`;
     if (phase === 'started') return [heading, this.triggerLine(row), '', 'The agent has started; its answer will follow.', '', footer].join('\n');
-    const result = row.result_text ?? '(the agent produced no final message)';
+    const result = row.result_text ?? (row.error_code ? `The run ended without an answer (\`${row.error_code}\`).` : '(the agent produced no final message)');
     return [heading, this.triggerLine(row), '', neutralizeMentions(result), '', footer].join('\n');
   }
 
@@ -1469,6 +1464,10 @@ export class AutomationService {
   /**
    * Moves a workflow into a terminal state and emits its MCP event in the same savepoint, so the
    * state change and the event commit or roll back together.
+   *
+   * A RUNNING workflow of a `publishComment` rule has published its start, so however it ends
+   * (answer, agent failure, lost workspace, owner cancel) its final state is queued for
+   * publishing too; otherwise its progress comment and check run would read as running forever.
    */
   private finish(
     id: string,
@@ -1479,12 +1478,15 @@ export class AutomationService {
     fields: Record<string, number | string | null>
   ): boolean {
     return withEventSavepoint(this.database, () => {
-      const row = this.database.prepare('SELECT state FROM automation_workflows WHERE id = ?').get(id) as { state: AutomationWorkflowState } | undefined;
+      const row = this.database.prepare('SELECT state, rule_snapshot_json FROM automation_workflows WHERE id = ?')
+        .get(id) as { state: AutomationWorkflowState; rule_snapshot_json: string } | undefined;
       if (!row || !from.includes(row.state)) return false;
       const now = this.now();
-      const assignments = Object.keys(fields).map((key) => `, ${key} = ?`).join('');
+      const started = row.state === 'RUNNING' && (JSON.parse(row.rule_snapshot_json) as RuleSnapshot).action.publishComment;
+      const values: Record<string, number | string | null> = { ...fields, publish_state: started ? 'PENDING' : 'NONE' };
+      const assignments = Object.keys(values).map((key) => `, ${key} = ?`).join('');
       this.database.prepare(`UPDATE automation_workflows SET state = ?, error_code = ?, terminal_at = ?, updated_at = ?, next_attempt_at = ?${assignments}
-        WHERE id = ? AND state = ?`).run(to, code, now, now, now, ...Object.values(fields), id, row.state);
+        WHERE id = ? AND state = ?`).run(to, code, now, now, now, ...Object.values(values), id, row.state);
       this.recordTransition(id, row.state, to, actor, code, now);
       emitAutomationTerminalEvent(this.database, id, now);
       return true;

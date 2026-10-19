@@ -810,6 +810,34 @@ describe('provider adapters', () => {
     expect(JSON.parse(stored.publish_ref_json)).toEqual({ commentId: 'comment-completed' });
   });
 
+  it('publishes the final state when the workspace of a running workflow is lost', async () => {
+    const context = linearSetup();
+    const { connection, secret } = createLinearConnection(context);
+    ok(context.service.execute({ version: 1, principal: context.owner, operation: 'rule_create', input: linearRule(connection.id) }));
+    deliverLinear(context, connection.id, secret);
+    await drive(context, 2);
+    expect(context.published.map((request) => request.phase)).toEqual(['started']);
+    context.operations.handlers.agent_status = () => ({ ok: false, error: { code: 'NOT_FOUND', retryable: false } });
+    await drive(context, 2);
+    expect(workflows(context)[0]).toMatchObject({ state: 'FAILED', errorCode: 'WORKSPACE_LOST', publishState: 'DELIVERED' });
+    expect(context.published.map((request) => request.phase)).toEqual(['started', 'completed']);
+    const completed = context.published[1]!;
+    expect(completed.workflow).toMatchObject({ state: 'FAILED', errorCode: 'WORKSPACE_LOST' });
+    expect(completed.publishRef).toEqual({ commentId: 'comment-started' });
+    expect(completed.body).toContain('(failed)');
+  });
+
+  it('publishes nothing for a workflow that fails before it started', async () => {
+    const context = linearSetup();
+    const { connection, secret } = createLinearConnection(context);
+    ok(context.service.execute({ version: 1, principal: context.owner, operation: 'rule_create', input: linearRule(connection.id) }));
+    context.operations.handlers.agent_spawn = () => ({ ok: false, error: { code: 'INVALID_INPUT', retryable: false } });
+    deliverLinear(context, connection.id, secret);
+    await drive(context, 3);
+    expect(workflows(context)[0]).toMatchObject({ state: 'FAILED', publishState: 'NONE' });
+    expect(context.published).toEqual([]);
+  });
+
   it('never returns, forwards or stores the outbound credential in plaintext', async () => {
     const context = linearSetup();
     const created = createLinearConnection(context);
@@ -1016,6 +1044,21 @@ describe('GitHub progress comment and check runs', () => {
     await drive(context, 2);
     expect(workflows(context)[0]).toMatchObject({ state: 'CANCELLED', publishState: 'DELIVERED' });
     expect(actions().slice(2).map((input) => [input.action, input.conclusion])).toEqual([['issue_comment_update', undefined], ['check_run_update', 'cancelled']]);
+    expect(context.operations.count('workspace_close')).toBe(1);
+  });
+
+  it('publishes a system failure of a running workflow to the comment and a failed check run', async () => {
+    const context = setup();
+    const actions = fakeGitHub(context);
+    await start(context, ['pull_request'], prPayload());
+    context.operations.handlers.agent_status = () => ({ ok: false, error: { code: 'FORBIDDEN', retryable: false } });
+    await drive(context, 3);
+    expect(workflows(context)[0]).toMatchObject({ state: 'FAILED', errorCode: 'AGENT_STATUS_FAILED:FORBIDDEN', publishState: 'DELIVERED' });
+    expect(actions().slice(2).map((input) => [input.action, input.conclusion])).toEqual([['issue_comment_update', undefined], ['check_run_update', 'failure']]);
+    const edited = String(actions()[2]!.body);
+    expect(edited).toContain('(failed)');
+    expect(edited).toContain('AGENT_STATUS_FAILED:FORBIDDEN');
+    expect(edited).not.toContain('The agent has started');
     expect(context.operations.count('workspace_close')).toBe(1);
   });
 

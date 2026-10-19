@@ -203,7 +203,8 @@ back.
 Posting is opt-in per rule. When it is on:
 
 - **GitHub** keeps one progress comment per run: it is posted when the agent starts and
-  edited with the answer when the run ends, including when you cancel a running one. For a run
+  edited with the answer, or with the error code, when the run ends: whether it completes,
+  fails, loses its workspace, or you cancel it. For a run
   triggered from a pull request, a **Cloud Harness** check run on the pull request's
   head commit shows the same progress and ends as success, failure, cancelled, or timed
   out. If the [GitHub App](/dashboard/github) lacks the **Checks** permission, the
