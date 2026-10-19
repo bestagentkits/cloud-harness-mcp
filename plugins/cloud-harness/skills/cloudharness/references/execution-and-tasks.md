@@ -207,10 +207,10 @@ Wait for an operation to reach a terminal state with a server timeout.
 
 Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.
 
-- Required: `prompt`, `idempotencyKey`, `profileId`, `proxyOperations`.
+- Required: `prompt`, `idempotencyKey`, `proxyOperations`, and `profileId` unless `continueFrom` is set.
 - Optional: `workspaceId`, `parentAgentId`, `ttlSeconds`, `maxOutputBytes`, `maxInputTokens`, `maxOutputTokens`, `maxCostMicros`, `repositoryContext`, `continueFrom`.
 - `continueFrom` starts a new agent (own ID, container, budget) that replays an ended agent's conversation before your `prompt`, when its `agent_status` reports `session.continuable`; it never resumes the old run (`run.resumable` is always `false`).
-- Each agent is continued once (`CONFLICT` names the successor to continue instead); `NOT_SUPPORTED` means session persistence is off, so restate the context in `prompt`.
+- A continuation runs on the earlier agent's profile: omit `profileId` (another one is `INVALID_INPUT`). Each agent is continued once (`CONFLICT` names the successor); `NOT_SUPPORTED` means persistence is off, so restate the context in `prompt`.
 - The agent's first message automatically carries the workspace's applicable
   repository guidance (for example `AGENTS.md`, `REVIEW.md`, `DESIGN.md`) in a
   delimited untrusted block before your verbatim task, so do not paste those

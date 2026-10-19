@@ -198,6 +198,12 @@ starts a *new* agent, with its own ID, container, model lease, and budget,
 whose session is first loaded with the earlier agent's verified history and
 then given the new `prompt`.
 
+- A continuation runs on the earlier agent's model profile, because its history
+  was produced by that model and replaying it into another provider or model
+  is not supported. `profileId` may be omitted on a `continueFrom` spawn and
+  then inherits that profile; a `profileId` that resolves to a different
+  profile is refused with `INVALID_INPUT`. Every other spawn still requires
+  `profileId`.
 - `agent_status` and `agent_list` add `session` (`persisted`, `continuable`,
   `messages`, `bytes`), `run.resumable` (always `false` for Pi agents), and
   `continuedFrom` for an agent spawned with persistence. Agents spawned with

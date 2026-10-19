@@ -1084,6 +1084,10 @@ describe('agent repository guidance bootstrap', () => {
 
 describe('AgentManager persisted sessions', () => {
   const persistingConfig = RunnerAgentsConfigSchema.parse({ ...agentsConfig, sessionPersistenceEnabled: true });
+  const twoProfileConfig = RunnerAgentsConfigSchema.parse({
+    ...persistingConfig,
+    profiles: [...persistingConfig.profiles, { ...persistingConfig.profiles[0]!, id: 'other', displayName: 'Other' }]
+  });
   const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2, cost: 0 };
   const userMessage = (text: string) => ({ role: 'user', content: [{ type: 'text', text }], timestamp: 1 });
   const assistantCall = { role: 'assistant', content: [{ type: 'toolCall', id: 'call-1', name: 'files_read', arguments: { path: 'README.md' } }], stopReason: 'toolUse', timestamp: 2 };
@@ -1379,6 +1383,36 @@ describe('AgentManager persisted sessions', () => {
     }))).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('no longer enabled') });
     expect(launcher.launches).toHaveLength(0);
     expect(repository.findSuccessor(predecessorId)).toBeUndefined();
+    await manager.stop();
+  });
+
+  it('runs a continuation on the predecessor\'s profile when profileId is omitted', async () => {
+    const context = setup('network-none', twoProfileConfig);
+    const { manager, record, launcher, repository } = context;
+    const predecessorId = await sealedPredecessor(context);
+    const input: Record<string, unknown> = spawnInput(record, { idempotencyKey: 'inherit-key', continueFrom: predecessorId });
+    delete input.profileId;
+    const response = await manager.dispatch(record.ownerId, record, 'agent_spawn', input);
+    const successorId = (response.data as { agentId: string }).agentId;
+    const start = await startOf(launcher, 1);
+    expect(start.agentId).toBe(successorId);
+    expect(repository.findAgent(record.ownerId, record.id, successorId)?.profileId).toBe('default');
+    await manager.stop();
+  });
+
+  it('refuses a continuation on a different profile than its predecessor', async () => {
+    const context = setup('network-none', twoProfileConfig);
+    const { manager, record, launcher, repository } = context;
+    const predecessorId = await sealedPredecessor(context);
+    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, {
+      idempotencyKey: 'mismatch-key', profileId: 'other', continueFrom: predecessorId
+    }))).rejects.toMatchObject({ code: 'INVALID_INPUT', message: expect.stringContaining('model profile of the agent it continues') });
+    expect(launcher.launches).toHaveLength(1);
+    expect(repository.findSuccessor(predecessorId)).toBeUndefined();
+    // Naming the predecessor's own profile explicitly is accepted.
+    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, {
+      idempotencyKey: 'same-profile-key', profileId: 'default', continueFrom: predecessorId
+    }))).resolves.toMatchObject({ data: { replayed: false } });
     await manager.stop();
   });
 

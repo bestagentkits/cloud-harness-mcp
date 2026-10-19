@@ -304,7 +304,13 @@ export class AgentManager {
     if (workspace.networkProfile !== 'network-none') {
       throw new HarnessError('CONFLICT', 'agents require a network-disabled workspace; open a separate workspace with networkProfile "network-none"', 409, false);
     }
-    const profile = this.profile(input.profileId as string, ownerId);
+    const continueFrom = input.continueFrom as string | undefined;
+    if (continueFrom !== undefined && !this.config.sessionPersistenceEnabled) {
+      throw new HarnessError('NOT_SUPPORTED', 'continueFrom needs agent session persistence, which is off on this instance', 400, false);
+    }
+    const profile = continueFrom === undefined
+      ? this.profile(input.profileId as string, ownerId)
+      : this.continuationProfile(ownerId, workspace.id, continueFrom, input.profileId as string | undefined);
     const dashboardManaged = this.modelProfiles !== undefined
       && (profile.id.startsWith('rev_') || this.config.profiles.every((p) => p.id !== profile.id));
     if (dashboardManaged) await this.ensureGatewaySynced();
@@ -327,10 +333,6 @@ export class AgentManager {
     const prompt = input.prompt as string;
     if (Buffer.byteLength(prompt, 'utf8') > this.config.limits.maxPromptBytes) {
       throw new HarnessError('LIMIT_EXCEEDED', 'agent prompt exceeds the configured byte limit', 413, false);
-    }
-    const continueFrom = input.continueFrom as string | undefined;
-    if (continueFrom !== undefined && !this.config.sessionPersistenceEnabled) {
-      throw new HarnessError('NOT_SUPPORTED', 'continueFrom needs agent session persistence, which is off on this instance', 400, false);
     }
     const now = this.now();
     const agentId = `agent_${randomBytes(24).toString('base64url')}`;
@@ -1103,6 +1105,26 @@ export class AgentManager {
   // Cache prices resolve through the same defaults the gateway snapshot uses, so the
   // agent's self-reported cost never treats cached usage as free. The agent reports
   // base-tier prices only; the gateway charges long-prompt tiers.
+  /**
+   * A continuation runs on its predecessor's profile: the replayed transcript was produced by that
+   * model, and replaying it into another provider or model is not supported. An omitted profileId
+   * inherits it; a profileId that resolves to anything else is refused.
+   */
+  private continuationProfile(ownerId: string, workspaceId: string, continueFrom: string, requested: string | undefined): PricedAgentModelProfile {
+    const predecessor = this.repository.findAgent(ownerId, workspaceId, continueFrom);
+    if (!predecessor) throw new HarnessError('NOT_FOUND', 'the agent to continue was not found in this workspace', 404, false);
+    let inherited: PricedAgentModelProfile;
+    try {
+      inherited = this.profile(predecessor.profileId, ownerId);
+    } catch {
+      throw new HarnessError('CONFLICT', 'the model profile of the agent to continue is no longer enabled', 409, false);
+    }
+    if (requested !== undefined && this.profile(requested, ownerId).id !== inherited.id) {
+      throw new HarnessError('INVALID_INPUT', 'a continuation runs on the model profile of the agent it continues; omit profileId or pass that profile');
+    }
+    return inherited;
+  }
+
   private profile(id: string, ownerId?: string): PricedAgentModelProfile {
     if (ownerId && this.modelProfiles) {
       const activeProfiles = this.modelProfiles.listProfiles(ownerId);

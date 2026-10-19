@@ -96,7 +96,8 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    `LIMIT_EXCEEDED`; lower `maxCostMicros` or wait for running agents to
    finish rather than retrying unchanged. To follow up on an ended agent, spawn
    with `continueFrom` when its `agent_status` reports `session.continuable`;
-   that is a new agent with the earlier conversation, never a resumed run.
+   that is a new agent with the earlier conversation and model profile (omit
+   `profileId`), never a resumed run.
    `model_spend_summary` shows the
    headroom; no MCP tool changes policies, only the owner can, through the
    dashboard. A profile you save with `model_profile_create` stays disabled
