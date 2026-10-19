@@ -400,13 +400,31 @@ export const AutomationsRunnerRequestSchema = z.discriminatedUnion('operation', 
   owner('workflows_list', z.object({
     ruleId: AutomationRuleIdSchema.optional(),
     state: AutomationWorkflowStateSchema.optional(),
+    /** `FAILED` lists workflows whose result could not be posted back to the source. */
+    publishState: AutomationPublishStateSchema.optional(),
     limit: z.number().int().min(1).max(AUTOMATION_LIMITS.maxListLimit).default(50)
   }).strict()),
   owner('workflow_get', z.object({ id: AutomationWorkflowIdSchema }).strict()),
   owner('workflow_cancel', z.object({ id: AutomationWorkflowIdSchema, reason: z.string().max(500).optional() }).strict()),
   owner('deliveries_list', z.object({
     connectionId: AutomationConnectionIdSchema.optional(),
+    /** `QUARANTINED` is the dead-letter view: deliveries that verified but could not be normalized. */
+    state: AutomationDeliveryStateSchema.optional(),
     limit: z.number().int().min(1).max(AUTOMATION_LIMITS.maxListLimit).default(50)
+  }).strict()),
+  /**
+   * Re-runs rule matching for a stored delivery from its normalized event, never from the raw
+   * payload (which is not stored). Matching uses the rules as they are now and creates workflows
+   * exactly as ingest would: disabled rules, the cooldown and one active workflow per rule and
+   * resource all apply, and a rule that already has a workflow from this delivery is skipped.
+   * `expectedState` refuses the replay with CONFLICT when the delivery has moved on.
+   */
+  owner('delivery_replay', z.object({ id: AutomationDeliveryIdSchema, expectedState: AutomationDeliveryStateSchema.optional() }).strict()),
+  /** Delivery health per connection (one connection when `connectionId` is set). */
+  owner('connection_health', z.object({ connectionId: AutomationConnectionIdSchema.optional() }).strict()),
+  /** Workflow outcomes, cost and latency per provider and per rule, for workflows created in the window. */
+  owner('automation_metrics', z.object({
+    windowDays: z.number().int().min(1).max(AUTOMATION_LIMITS.retentionMs / 86_400_000).default(7)
   }).strict())
 ]);
 
@@ -491,9 +509,66 @@ export const AutomationDeliverySummarySchema = z.object({
   resourceRef: z.string().nullable().optional(),
   label: z.string().nullable(),
   state: AutomationDeliveryStateSchema,
+  /** A runner-chosen reason code (`no_matching_rule`, `malformed_json`, ...); never provider text. */
   outcome: z.string().nullable(),
   workflowsCreated: z.number().int().nonnegative(),
+  /** Whether `delivery_replay` accepts it: matching has finished and a normalized event is stored. */
+  replayable: z.boolean().optional(),
   receivedAt: instant
+}).strict();
+
+const deliveryStateCounts = z.object({
+  RECEIVED: z.number().int().nonnegative(),
+  PROCESSED: z.number().int().nonnegative(),
+  IGNORED: z.number().int().nonnegative(),
+  QUARANTINED: z.number().int().nonnegative()
+}).strict();
+
+/**
+ * Delivery health of one connection. Only signed, accepted deliveries are counted: requests that
+ * fail verification are refused without a write, so rejected signatures are not tracked.
+ */
+export const AutomationConnectionHealthSchema = z.object({
+  connectionId: AutomationConnectionIdSchema,
+  provider: AutomationProviderSchema,
+  enabled: z.boolean(),
+  outboundConfigured: z.boolean(),
+  lastDeliveryAt: instant.nullable(),
+  /** The most recent quarantined delivery still retained, with its reason code. */
+  lastQuarantine: z.object({ at: instant, reason: z.string().nullable() }).strict().nullable(),
+  /** Deliveries received in the last 24 hours and the last 7 days, by state. */
+  last24h: deliveryStateCounts,
+  last7d: deliveryStateCounts
+}).strict();
+
+/**
+ * Outcomes of the workflows created in the window. `successRate` is completed over terminal
+ * workflows (null before any finishes); latency is created-to-terminal of completed workflows,
+ * as nearest-rank percentiles in milliseconds (null when none completed).
+ */
+const automationMetrics = {
+  workflows: z.number().int().nonnegative(),
+  active: z.number().int().nonnegative(),
+  completed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  cancelled: z.number().int().nonnegative(),
+  expired: z.number().int().nonnegative(),
+  successRate: z.number().min(0).max(1).nullable(),
+  costMicros: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  latencyP50Ms: z.number().int().nonnegative().nullable(),
+  latencyP95Ms: z.number().int().nonnegative().nullable()
+};
+
+export const AutomationProviderMetricsSchema = z.object({ provider: AutomationProviderSchema, ...automationMetrics }).strict();
+export const AutomationRuleMetricsSchema = z.object({
+  ruleId: AutomationRuleIdSchema,
+  /** The rule's current name, or the name it ran under when it has since been deleted. */
+  name: z.string(),
+  provider: AutomationProviderSchema,
+  deleted: z.boolean(),
+  ...automationMetrics
 }).strict();
 
 export const AutomationsRunnerDataSchemas = {
@@ -515,7 +590,22 @@ export const AutomationsRunnerDataSchemas = {
     transitions: z.array(AutomationWorkflowTransitionSchema)
   }).strict(),
   workflow_cancel: z.object({ workflow: AutomationWorkflowSummarySchema }).strict(),
-  deliveries_list: z.object({ deliveries: z.array(AutomationDeliverySummarySchema) }).strict()
+  deliveries_list: z.object({ deliveries: z.array(AutomationDeliverySummarySchema) }).strict(),
+  delivery_replay: z.object({
+    delivery: AutomationDeliverySummarySchema,
+    /** The matching outcome of this replay: `workflows_created`, `no_matching_rule`, or the skip reasons. */
+    outcome: z.string(),
+    /** Workflows this replay created; empty when every rule was skipped. */
+    workflowIds: z.array(AutomationWorkflowIdSchema)
+  }).strict(),
+  connection_health: z.object({ health: z.array(AutomationConnectionHealthSchema) }).strict(),
+  automation_metrics: z.object({
+    windowDays: z.number().int().positive(),
+    since: instant,
+    providers: z.array(AutomationProviderMetricsSchema),
+    /** Busiest rules first, at most `maxListLimit`. */
+    rules: z.array(AutomationRuleMetricsSchema)
+  }).strict()
 } as const;
 
 /**
@@ -558,3 +648,6 @@ export type AutomationConnectionSummary = z.infer<typeof AutomationConnectionSum
 export type AutomationRuleSummary = z.infer<typeof AutomationRuleSummarySchema>;
 export type AutomationWorkflowSummary = z.infer<typeof AutomationWorkflowSummarySchema>;
 export type AutomationDeliverySummary = z.infer<typeof AutomationDeliverySummarySchema>;
+export type AutomationConnectionHealth = z.infer<typeof AutomationConnectionHealthSchema>;
+export type AutomationProviderMetrics = z.infer<typeof AutomationProviderMetricsSchema>;
+export type AutomationRuleMetrics = z.infer<typeof AutomationRuleMetricsSchema>;

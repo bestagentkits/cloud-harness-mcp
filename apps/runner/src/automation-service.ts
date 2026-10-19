@@ -10,6 +10,7 @@ import {
   automationMatchProvider,
   automationRuleProblem,
   type AutomationConnectionCreateInput,
+  type AutomationConnectionHealth,
   type AutomationConnectionSummary,
   type AutomationConnectionUpdateInput,
   type AutomationDeliverySummary,
@@ -151,6 +152,43 @@ const bounded = (value: string, max: number): string => (value.length <= max ? v
 const providerOf = (value: string | null): AutomationProvider => AutomationProviderSchema.safeParse(value).data ?? 'github';
 
 const PROVIDER_NAMES: Record<AutomationProvider, string> = { github: 'GitHub', linear: 'Linear', jira: 'Jira', custom: 'custom webhook' };
+
+/** `owner_id = ?` plus an equality clause for each set filter. Column names are fixed by the callers. */
+function ownerFilter(ownerId: string, filters: Record<string, string | undefined>): { sql: string; values: string[] } {
+  const clauses = ['owner_id = ?'];
+  const values = [ownerId];
+  for (const [column, value] of Object.entries(filters)) {
+    if (value === undefined) continue;
+    clauses.push(`${column} = ?`);
+    values.push(value);
+  }
+  return { sql: clauses.join(' AND '), values };
+}
+
+type MetricsRow = {
+  group_key: string; provider: string | null; workflows: number; active: number; completed: number; failed: number; cancelled: number;
+  expired: number; cost: number | null; input: number | null; output: number | null; name: unknown;
+};
+type LatencyRow = { group_key: string; p50: number | null; p95: number | null };
+
+function metricsOf(row: MetricsRow, latency: LatencyRow | undefined) {
+  const terminal = row.completed + row.failed + row.cancelled + row.expired;
+  const count = (value: number | null) => Math.max(0, Math.trunc(value ?? 0));
+  return {
+    workflows: row.workflows,
+    active: row.active,
+    completed: row.completed,
+    failed: row.failed,
+    cancelled: row.cancelled,
+    expired: row.expired,
+    successRate: terminal === 0 ? null : row.completed / terminal,
+    costMicros: count(row.cost),
+    inputTokens: count(row.input),
+    outputTokens: count(row.output),
+    latencyP50Ms: latency?.p50 ?? null,
+    latencyP95Ms: latency?.p95 ?? null
+  };
+}
 
 /** Neutralizes `@` mentions so a posted comment cannot ping users or teams. */
 export function neutralizeMentions(value: string): string {
@@ -408,6 +446,9 @@ export class AutomationService {
       case 'workflow_get': return this.getWorkflow(ownerId, request.input.id);
       case 'workflow_cancel': return this.cancelWorkflow(ownerId, request.input.id, request.input.reason);
       case 'deliveries_list': return { deliveries: this.listDeliveries(ownerId, request.input).map((row) => this.deliverySummary(row)) };
+      case 'delivery_replay': return this.replayDelivery(ownerId, request.input.id, request.input.expectedState);
+      case 'connection_health': return { health: this.connectionHealth(ownerId, request.input.connectionId) };
+      case 'automation_metrics': return this.metrics(ownerId, request.input.windowDays);
     }
   }
 
@@ -731,14 +772,10 @@ export class AutomationService {
 
   // ---------------------------------------------------------------- workflows and deliveries (owner reads)
 
-  private listWorkflows(ownerId: string, input: { ruleId?: string | undefined; state?: AutomationWorkflowState | undefined; limit: number }): WorkflowRow[] {
-    const clauses = ['owner_id = ?'];
-    const values: (string | number)[] = [ownerId];
-    if (input.ruleId) { clauses.push('rule_id = ?'); values.push(input.ruleId); }
-    if (input.state) { clauses.push('state = ?'); values.push(input.state); }
-    values.push(input.limit);
-    return this.database.prepare(`SELECT * FROM automation_workflows WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC, id LIMIT ?`)
-      .all(...values) as WorkflowRow[];
+  private listWorkflows(ownerId: string, input: Extract<AutomationsRunnerRequest, { operation: 'workflows_list' }>['input']): WorkflowRow[] {
+    const { sql, values } = ownerFilter(ownerId, { rule_id: input.ruleId, state: input.state, publish_state: input.publishState });
+    return this.database.prepare(`SELECT * FROM automation_workflows WHERE ${sql} ORDER BY created_at DESC, id LIMIT ?`)
+      .all(...values, input.limit) as WorkflowRow[];
   }
 
   private ownedWorkflow(ownerId: string, id: string): WorkflowRow {
@@ -772,13 +809,124 @@ export class AutomationService {
     return { workflow: this.workflowSummary(this.ownedWorkflow(ownerId, id)) };
   }
 
-  private listDeliveries(ownerId: string, input: { connectionId?: string | undefined; limit: number }): DeliveryRow[] {
-    if (input.connectionId) {
-      return this.database.prepare('SELECT * FROM automation_deliveries WHERE owner_id = ? AND connection_id = ? ORDER BY received_at DESC, id LIMIT ?')
-        .all(ownerId, input.connectionId, input.limit) as DeliveryRow[];
-    }
-    return this.database.prepare('SELECT * FROM automation_deliveries WHERE owner_id = ? ORDER BY received_at DESC, id LIMIT ?')
-      .all(ownerId, input.limit) as DeliveryRow[];
+  private listDeliveries(ownerId: string, input: Extract<AutomationsRunnerRequest, { operation: 'deliveries_list' }>['input']): DeliveryRow[] {
+    const { sql, values } = ownerFilter(ownerId, { connection_id: input.connectionId, state: input.state });
+    return this.database.prepare(`SELECT * FROM automation_deliveries WHERE ${sql} ORDER BY received_at DESC, id LIMIT ?`)
+      .all(...values, input.limit) as DeliveryRow[];
+  }
+
+  private ownedDelivery(ownerId: string, id: string): DeliveryRow {
+    const row = this.database.prepare('SELECT * FROM automation_deliveries WHERE id = ? AND owner_id = ?').get(id, ownerId) as DeliveryRow | undefined;
+    if (!row) throw new AutomationsError('NOT_FOUND', 'delivery not found');
+    return row;
+  }
+
+  /**
+   * Re-runs matching for a stored delivery from its normalized event, as ingest would for the same
+   * connection: the connection must still be enabled, and the current enabled rules, cooldown and
+   * one-active-workflow guard apply. Untrusted title and body were cleared after the first match,
+   * so a replayed workflow's prompt carries none. Replaying again creates nothing new: a rule that
+   * already has a workflow from this delivery is skipped.
+   */
+  private replayDelivery(ownerId: string, id: string, expectedState: AutomationDeliverySummary['state'] | undefined) {
+    return withEventSavepoint(this.database, () => {
+      const row = this.ownedDelivery(ownerId, id);
+      if (expectedState !== undefined && row.state !== expectedState) throw new AutomationsError('CONFLICT', 'delivery changed; reload and retry');
+      if (row.state === 'RECEIVED') throw new AutomationsError('CONFLICT', 'the delivery is still being matched; try again shortly');
+      const event = this.deliveryEvent(row);
+      if (!event) throw new AutomationsError('INVALID_INPUT', 'the delivery has no normalized event to replay');
+      const connection = this.database.prepare('SELECT enabled FROM automation_connections WHERE id = ? AND owner_id = ?')
+        .get(row.connection_id, ownerId) as { enabled: number } | undefined;
+      if (connection?.enabled !== 1) throw new AutomationsError('CONFLICT', 'the delivery\'s connection is disabled or deleted');
+      const now = this.now();
+      const matched = this.createWorkflows(row, event, now);
+      const outcome = bounded(`replayed:${matched.outcome}`, 200);
+      this.database.prepare(`UPDATE automation_deliveries SET state = 'PROCESSED', outcome = ?, workflows_created = workflows_created + ?,
+        processed_at = ?, title = NULL, body = NULL WHERE id = ?`).run(outcome, matched.workflowIds.length, now, row.id);
+      this.audit(this.database, ownerId, 'automation.delivery.replayed', 'automation_delivery', row.id, 1,
+        { previousState: row.state, workflowsCreated: matched.workflowIds.length });
+      return { delivery: this.deliverySummary(this.ownedDelivery(ownerId, row.id)), outcome: matched.outcome, workflowIds: matched.workflowIds };
+    });
+  }
+
+  /**
+   * Delivery counts per connection over the last 24 hours and 7 days, read from the owner's
+   * `(owner_id, received_at)` index. Unverified requests are refused without a write (recording
+   * them would let anyone holding a webhook URL turn requests into database writes), so rejected
+   * signatures are not counted.
+   */
+  private connectionHealth(ownerId: string, connectionId: string | undefined): AutomationConnectionHealth[] {
+    const connections = connectionId ? [this.ownedConnection(ownerId, connectionId)] : this.connectionsFor(ownerId);
+    const now = this.now();
+    const dayAgo = now - 86_400_000;
+    const counts = this.database.prepare(`SELECT connection_id, state, COUNT(*) AS week, SUM(received_at > ?) AS day FROM automation_deliveries
+      WHERE owner_id = ? AND received_at > ? GROUP BY connection_id, state`).all(dayAgo, ownerId, now - 7 * 86_400_000) as
+      { connection_id: string; state: AutomationDeliverySummary['state']; week: number; day: number | null }[];
+    const lastQuarantine = this.database.prepare(`SELECT outcome, received_at FROM automation_deliveries WHERE connection_id = ? AND owner_id = ?
+      AND state = 'QUARANTINED' ORDER BY received_at DESC LIMIT 1`);
+    const empty = (): AutomationConnectionHealth['last24h'] => ({ RECEIVED: 0, PROCESSED: 0, IGNORED: 0, QUARANTINED: 0 });
+    return connections.map((connection) => {
+      const last24h = empty();
+      const last7d = empty();
+      for (const entry of counts) {
+        if (entry.connection_id !== connection.id || !(entry.state in last7d)) continue;
+        last7d[entry.state] = entry.week;
+        last24h[entry.state] = entry.day ?? 0;
+      }
+      const quarantined = lastQuarantine.get(connection.id, ownerId) as { outcome: string | null; received_at: number } | undefined;
+      return {
+        connectionId: connection.id,
+        provider: connection.provider,
+        enabled: connection.enabled === 1,
+        outboundConfigured: connection.outbound_json !== null,
+        lastDeliveryAt: connection.last_delivery_at === null ? null : iso(connection.last_delivery_at),
+        lastQuarantine: quarantined ? { at: iso(quarantined.received_at), reason: quarantined.outcome } : null,
+        last24h,
+        last7d
+      };
+    });
+  }
+
+  /**
+   * Outcomes of the owner's workflows created in the window, per provider and per rule. Counts,
+   * cost and tokens are SQL aggregates; latency percentiles are nearest-rank, ranked in SQL with
+   * window functions, so no workflow rows are held in memory.
+   */
+  private metrics(ownerId: string, windowDays: number) {
+    const since = this.now() - windowDays * 86_400_000;
+    const providerKey = "COALESCE(provider, 'github')";
+    const aggregate = (key: string) => this.database.prepare(`SELECT ${key} AS group_key, MAX(${providerKey}) AS provider, COUNT(*) AS workflows,
+        SUM(state IN ('QUEUED', 'STARTING', 'RUNNING')) AS active, SUM(state = 'COMPLETED') AS completed, SUM(state = 'FAILED') AS failed,
+        SUM(state = 'CANCELLED') AS cancelled, SUM(state = 'EXPIRED') AS expired,
+        SUM(COALESCE(CAST(json_extract(usage_json, '$.costMicros') AS INTEGER), 0)) AS cost,
+        SUM(COALESCE(CAST(json_extract(usage_json, '$.inputTokens') AS INTEGER), 0)) AS input,
+        SUM(COALESCE(CAST(json_extract(usage_json, '$.outputTokens') AS INTEGER), 0)) AS output,
+        MAX(json_extract(rule_snapshot_json, '$.name')) AS name
+      FROM automation_workflows WHERE owner_id = ? AND created_at >= ? GROUP BY ${key} ORDER BY workflows DESC, group_key LIMIT ?`)
+      .all(ownerId, since, AUTOMATION_LIMITS.maxListLimit) as MetricsRow[];
+    // Nearest rank: the ceil(p * n)-th smallest latency, in integer arithmetic.
+    const latency = (key: string) => new Map((this.database.prepare(`WITH ranked AS (
+        SELECT ${key} AS group_key, terminal_at - created_at AS latency,
+          ROW_NUMBER() OVER (PARTITION BY ${key} ORDER BY terminal_at - created_at) AS position, COUNT(*) OVER (PARTITION BY ${key}) AS total
+        FROM automation_workflows WHERE owner_id = ? AND created_at >= ? AND state = 'COMPLETED' AND terminal_at IS NOT NULL)
+      SELECT group_key, MAX(CASE WHEN position = (total * 50 + 99) / 100 THEN latency END) AS p50,
+        MAX(CASE WHEN position = (total * 95 + 99) / 100 THEN latency END) AS p95 FROM ranked GROUP BY group_key`)
+      .all(ownerId, since) as LatencyRow[]).map((row) => [row.group_key, row]));
+    const providerLatency = latency(providerKey);
+    const ruleLatency = latency('rule_id');
+    const rules = new Map(this.rulesFor(ownerId).map((rule) => [rule.id, rule]));
+    return {
+      windowDays,
+      since: iso(since),
+      providers: aggregate(providerKey).map((row) => ({ provider: providerOf(row.group_key), ...metricsOf(row, providerLatency.get(row.group_key)) })),
+      rules: aggregate('rule_id').map((row) => ({
+        ruleId: row.group_key,
+        name: rules.get(row.group_key)?.name ?? (typeof row.name === 'string' && row.name ? row.name : row.group_key),
+        provider: providerOf(row.provider),
+        deleted: !rules.has(row.group_key),
+        ...metricsOf(row, ruleLatency.get(row.group_key))
+      }))
+    };
   }
 
   private workflowSummary(row: WorkflowRow): AutomationWorkflowSummary {
@@ -832,6 +980,7 @@ export class AutomationService {
       state: row.state,
       outcome: row.outcome,
       workflowsCreated: row.workflows_created,
+      replayable: row.state !== 'RECEIVED' && event !== undefined,
       receivedAt: iso(row.received_at)
     };
   }
@@ -903,19 +1052,34 @@ export class AutomationService {
       .run(bounded(outcome, 200), created, now, delivery.id);
     const event = this.deliveryEvent(delivery);
     if (!event) { processed('invalid_event', 0); return; }
+    const matched = this.createWorkflows(delivery, event, now);
+    processed(matched.outcome, matched.workflowIds.length);
+  }
+
+  /**
+   * Creates a QUEUED workflow for every enabled rule of the delivery's connection that matches the
+   * event, unless the rule already has a workflow from this delivery, an active one for the same
+   * resource, or ended one within its cooldown. Shared by ingest and replay, so both admit alike.
+   */
+  private createWorkflows(delivery: DeliveryRow, event: NormalizedAutomationEvent, now: number): { workflowIds: string[]; outcome: string } {
     const keys = eventIndexKeys(event);
     // The index keys only narrow the candidates; each rule's adapter decides below.
     const rules = this.database.prepare(`SELECT * FROM automation_rules WHERE owner_id = ? AND connection_id = ? AND enabled = 1
       AND repository_key IN (?, ?) AND label_key IN (?, ?) ORDER BY created_at, id`)
       .all(delivery.owner_id, delivery.connection_id, keys.scope, ANY_INDEX_KEY, keys.trigger, ANY_INDEX_KEY) as RuleRow[];
     const reasons = new Set<string>();
-    let created = 0;
+    const workflowIds: string[] = [];
     for (const rule of rules) {
       const snapshot: RuleSnapshot = { name: rule.name, match: this.ruleMatch(rule), action: this.ruleAction(rule) };
       const verdict = this.evaluate(snapshot.match, event);
       if (!verdict.matched) { reasons.add(verdict.reason); continue; }
       const repository = checkoutRepository(snapshot, event);
       if (!repository) { reasons.add('repository_not_pinned'); continue; }
+      // One workflow per rule and delivery, ever: a replay never repeats a rule this delivery already started.
+      if (this.database.prepare('SELECT 1 FROM automation_workflows WHERE delivery_id = ? AND rule_id = ?').get(delivery.id, rule.id)) {
+        reasons.add('already_triggered');
+        continue;
+      }
       const active = this.database.prepare(`SELECT 1 FROM automation_workflows WHERE rule_id = ? AND resource_key = ?
         AND state IN ('QUEUED', 'STARTING', 'RUNNING')`).get(rule.id, event.resourceKey);
       if (active) { reasons.add('coalesced'); continue; }
@@ -931,9 +1095,10 @@ export class AutomationService {
         buildAutomationPrompt(snapshot, event), now, now, now, event.provider, event.resourceRef
       );
       this.recordTransition(id, null, 'QUEUED', 'system', null, now);
-      created += 1;
+      workflowIds.push(id);
     }
-    processed(created > 0 ? 'workflows_created' : rules.length === 0 ? 'no_matching_rule' : [...reasons].join(','), created);
+    const outcome = workflowIds.length > 0 ? 'workflows_created' : rules.length === 0 ? 'no_matching_rule' : [...reasons].join(',');
+    return { workflowIds, outcome: bounded(outcome, 200) };
   }
 
   private admitQueued(): void {

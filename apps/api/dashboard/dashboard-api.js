@@ -116,7 +116,8 @@ const automationQuery = (params = {}) => {
 };
 const automationPath = (collection, id, suffix = '') => `/automations/${collection}/${encodeURIComponent(id)}${suffix}`;
 export const listAutomationConnections = () => api('/automations/connections');
-export const createAutomationConnection = (name) => api('/automations/connections', { method: 'POST', body: JSON.stringify({ provider: 'github', name }) });
+/** `payload` is one `AutomationConnectionCreateInputSchema` variant: `{ provider, name, ...provider fields }`. */
+export const createAutomationConnection = (payload) => api('/automations/connections', { method: 'POST', body: JSON.stringify(payload) });
 export const updateAutomationConnection = (id, payload) => api(automationPath('connections', id), { method: 'PATCH', body: JSON.stringify(payload) });
 export const rotateAutomationConnectionSecret = (id, expectedGeneration) => api(automationPath('connections', id, '/rotate-secret'), { method: 'POST', body: JSON.stringify({ expectedGeneration }) });
 export const deleteAutomationConnection = (id, expectedGeneration) => api(automationPath('connections', id), { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
@@ -125,10 +126,13 @@ export const createAutomationRule = (payload) => api('/automations/rules', { met
 export const updateAutomationRule = (id, payload) => api(automationPath('rules', id), { method: 'PATCH', body: JSON.stringify(payload) });
 export const deleteAutomationRule = (id, expectedGeneration) => api(automationPath('rules', id), { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
 export const previewAutomationRule = (id, sample) => api(automationPath('rules', id, '/preview'), { method: 'POST', body: JSON.stringify({ sample }) });
-export const listAutomationWorkflows = ({ ruleId, state, limit } = {}) => api(`/automations/workflows${automationQuery({ ruleId, state, limit })}`);
+export const listAutomationWorkflows = ({ ruleId, state, publishState, limit } = {}) => api(`/automations/workflows${automationQuery({ ruleId, state, publishState, limit })}`);
 export const getAutomationWorkflow = (id) => api(automationPath('workflows', id));
 export const cancelAutomationWorkflow = (id, reason) => api(automationPath('workflows', id, '/cancel'), { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) });
-export const listAutomationDeliveries = ({ connectionId, limit } = {}) => api(`/automations/deliveries${automationQuery({ connectionId, limit })}`);
+export const listAutomationDeliveries = ({ connectionId, state, limit } = {}) => api(`/automations/deliveries${automationQuery({ connectionId, state, limit })}`);
+export const replayAutomationDelivery = (id, expectedState) => api(automationPath('deliveries', id, '/replay'), { method: 'POST', body: JSON.stringify(expectedState ? { expectedState } : {}) });
+export const getAutomationHealth = (connectionId) => api(`/automations/health${automationQuery({ connectionId })}`);
+export const getAutomationMetrics = (windowDays) => api(`/automations/metrics${automationQuery({ windowDays })}`);
 
 async function problem(response) {
   let body = {};
