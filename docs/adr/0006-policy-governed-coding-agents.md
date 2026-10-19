@@ -154,12 +154,12 @@ editor. No MCP tool is added.
   coding broker and reuses this resolver and evaluator unchanged.
 - Command analysis for platform invariants is static and has two outcomes. A
   container runtime or privilege tool in program position denies, because a
-  platform deny cannot be approved. The analysis reads only a deliberately small
-  shell grammar instead of emulating bash, so substitutions, compound commands,
-  unquoted here-document expansion and unlisted environment assignments are
-  unanalyzable rather than guessed. A command the analysis cannot read exactly
-  needs a mandatory owner approval (`PLATFORM_COMMAND_UNANALYZABLE`) that no
-  advisor or project rule lowers, so ordinary commands such as
+  platform deny cannot be approved. The gate analyses argv only and never parses
+  shell syntax: shell strings are never analysed; they always require approval.
+  Earlier attempts to read a subset of bash kept missing cases bash runs
+  differently, so a script string is unanalyzable whatever it contains. A
+  command the analysis cannot read exactly needs a mandatory owner approval
+  (`PLATFORM_COMMAND_UNANALYZABLE`) that no advisor or project rule lowers, so ordinary commands such as
   `grep -r docker .` stay usable. The analysis does not read files a command
   runs, so the executor's isolation stays the boundary for that indirect
   execution.

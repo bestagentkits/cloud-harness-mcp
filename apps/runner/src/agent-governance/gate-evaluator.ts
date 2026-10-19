@@ -154,7 +154,7 @@ function inspectUnchecked(descriptor: AgentActionDescriptor): Inspection {
   }
   const argv = descriptor.command ?? [];
   if (argv.length === 0) return { pushes: [] };
-  // Every program the command line runs, looking through launchers and shell strings. The segments
+  // Every program the argv runs, looking through launchers; a shell string is never read. The segments
   // read before an analysis failure still count, so a definite match denies even then.
   const analysis = analyzeCommand(argv);
   const definite = definitePlatformAccess(analysis.segments);
