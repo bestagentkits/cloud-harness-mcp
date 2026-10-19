@@ -25,4 +25,5 @@ export * from './terminal-schemas.js';
 export * from './package-schemas.js';
 export * from './events-api.js';
 export * from './automations-api.js';
+export * from './automation-tool-schemas.js';
 export * from './workspace-lifecycle.js';
