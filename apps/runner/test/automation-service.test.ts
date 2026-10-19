@@ -635,6 +635,28 @@ describe('AutomationService engine', () => {
       .toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
   });
 
+  it('keeps the usage a running agent reported when the run is cancelled or ends without a report', async () => {
+    const usage = { inputTokens: 10, outputTokens: 5, costMicros: 42 };
+    const cancelled = setup();
+    const first = createConnection(cancelled);
+    createRule(cancelled, first.connection.id);
+    deliver(cancelled, first.connection.id, first.secret, payload());
+    await drive(cancelled, 3);
+    const running = workflows(cancelled)[0]!;
+    expect(running).toMatchObject({ state: 'RUNNING', usage });
+    ok(cancelled.service.execute({ version: 1, principal: cancelled.owner, operation: 'workflow_cancel', input: { id: running.id } }));
+    expect(workflows(cancelled)[0]).toMatchObject({ state: 'CANCELLED', usage });
+
+    const unreported = setup();
+    const second = createConnection(unreported);
+    createRule(unreported, second.connection.id);
+    deliver(unreported, second.connection.id, second.secret, payload());
+    await drive(unreported, 3);
+    unreported.operations.handlers.agent_status = () => ({ ok: true, data: { status: 'FAILED' } });
+    await drive(unreported, 1);
+    expect(workflows(unreported)[0]).toMatchObject({ state: 'FAILED', errorCode: 'AGENT_FAILED', usage });
+  });
+
   it('refuses to delete a connection with an unfinished run, then removes its deliveries and runs with it', async () => {
     const context = setup();
     const { connection, secret } = createConnection(context);

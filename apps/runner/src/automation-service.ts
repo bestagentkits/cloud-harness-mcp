@@ -1341,21 +1341,25 @@ export class AutomationService {
     }
     const data = status.data as { status?: unknown; usage?: { inputTokens?: unknown; outputTokens?: unknown; costMicros?: unknown } } | undefined;
     const agentStatus = typeof data?.status === 'string' ? data.status : 'UNKNOWN';
+    // Usage reported while the agent runs is kept, so a run later cancelled, expired or failed by the
+    // system still counts what it spent; a poll without usage keeps the last report.
+    const reported = data?.usage && typeof data.usage.inputTokens === 'number' && typeof data.usage.outputTokens === 'number' && typeof data.usage.costMicros === 'number'
+      ? JSON.stringify({ inputTokens: data.usage.inputTokens, outputTokens: data.usage.outputTokens, costMicros: data.usage.costMicros })
+      : null;
+    const usageJson = reported ?? row.usage_json;
     if (!TERMINAL_AGENT_STATUSES.has(agentStatus)) {
-      if (agentStatus !== row.agent_status) {
-        this.database.prepare('UPDATE automation_workflows SET agent_status = ?, updated_at = ? WHERE id = ?').run(agentStatus, this.now(), row.id);
+      if (agentStatus !== row.agent_status || usageJson !== row.usage_json) {
+        this.database.prepare('UPDATE automation_workflows SET agent_status = ?, usage_json = ?, updated_at = ? WHERE id = ? AND state = \'RUNNING\'')
+          .run(agentStatus, usageJson, this.now(), row.id);
       }
       return;
     }
-    const usage = data?.usage && typeof data.usage.inputTokens === 'number' && typeof data.usage.outputTokens === 'number' && typeof data.usage.costMicros === 'number'
-      ? { inputTokens: data.usage.inputTokens, outputTokens: data.usage.outputTokens, costMicros: data.usage.costMicros }
-      : null;
     const result = await this.collectResult(row.owner_id, row.workspace_id, row.agent_id);
     const succeeded = agentStatus === 'SUCCEEDED';
     this.finish(row.id, ['RUNNING'], succeeded ? 'COMPLETED' : 'FAILED', succeeded ? null : bounded(`AGENT_${agentStatus}`, 100), 'system', {
       agent_status: agentStatus,
       result_text: result || null,
-      usage_json: usage ? JSON.stringify(usage) : null
+      usage_json: usageJson
     });
   }
 

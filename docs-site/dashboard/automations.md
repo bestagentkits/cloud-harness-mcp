@@ -259,7 +259,9 @@ runs keep completing but stop posting their answer back.
   sender and send the event again. Deliveries whose signature failed are refused and
   never listed.
 - **Metrics** shows runs, success rate, cost, tokens, and latency (median and 95th
-  percentile) per provider and per rule, over the last 1, 7, or 30 days.
+  percentile) per provider and per rule, over the last 1, 7, or 30 days. Cost and
+  tokens include what the agent last reported for runs that were cancelled, expired,
+  or failed.
 
 ### Replay
 
