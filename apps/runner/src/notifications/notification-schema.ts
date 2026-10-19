@@ -10,6 +10,8 @@ import type { DatabaseSync } from 'node:sqlite';
  * - `notification_deliveries` holds one row per enabled channel. `lease_token` makes a claim a
  *   compare-and-swap: only the holder of the current lease can report an outcome.
  * - `notification_preferences` stores owner overrides; a missing row means the channel is on.
+ * - The mark-all watermark is the implicit rowid, which relies on rowids only growing: retention deletes
+ *   only old settled rows and nothing VACUUMs. If either changes, switch to an AUTOINCREMENT sequence column.
  */
 export function initializeNotificationSchema(database: DatabaseSync): void {
   database.exec(`

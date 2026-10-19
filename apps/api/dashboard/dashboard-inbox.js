@@ -112,12 +112,17 @@ export function renderInboxPreferences(preferences = []) {
     + '<div class="row-actions"><button type="submit">Save preferences</button></div></form></section>';
 }
 
-export function renderInboxPage({ notifications = [], nextCursor = null, unread = 0, unreadOnly = false, preferences = [] } = {}) {
+/** Mark-all needs something unread and the server's watermark to bound it; it is never sent unbounded. */
+function markAllEnabled(unread, readThrough) {
+  return unread > 0 && readThrough !== null;
+}
+
+export function renderInboxPage({ notifications = [], nextCursor = null, unread = 0, unreadOnly = false, preferences = [], readThrough = null } = {}) {
   const filter = unreadOnly
     ? '<a href="/dashboard/inbox">Show all</a>'
     : '<a href="/dashboard/inbox?unread=1">Show unread only</a>';
   return `<div class="row-actions inbox-toolbar"><p class="metric-note" id="inbox-unread-count">${escape(`${unread} unread`)}</p>${filter}`
-    + `<button id="inbox-mark-all" type="button"${unread > 0 ? '' : ' disabled'}>Mark all read</button></div>`
+    + `<button id="inbox-mark-all" type="button"${markAllEnabled(unread, readThrough) ? '' : ' disabled'}>Mark all read</button></div>`
     + `<section id="inbox-list" aria-label="Notifications">${renderInboxTable(notifications, { nextCursor, unreadOnly })}</section>`
     + renderInboxPreferences(preferences);
 }
@@ -154,24 +159,24 @@ export function createInboxView({ insert, announce = () => {}, onUnread = () => 
       fetcher(inboxListPath({ unreadOnly })),
       fetcher('/notification-preferences')
     ]);
-    const state = {
-      notifications: list?.data?.notifications ?? [],
-      nextCursor: list?.data?.nextCursor ?? null,
-      unread: Number(list?.data?.unread ?? 0) || 0,
-      unreadOnly
-    };
-    // "Mark all read" covers what existed when this page loaded: the server's insertion watermark, so a
-    // notification written later stays unread. Without one there is nothing to mark.
-    const through = list?.data?.readThrough;
-    state.readThrough = Number.isSafeInteger(through) && through > 0 ? through : null;
-    if (state.readThrough === null) {
-      const all = container.querySelector?.('#inbox-mark-all');
-      if (all) all.disabled = true;
-    }
+    const state = { unreadOnly };
+    applyList(state, list);
     insert(container, renderInboxPage({ ...state, preferences: preferences?.data?.preferences ?? [] }));
     onUnread(state.unread);
     bindList(container, state);
     bindPreferences(container);
+  }
+
+  /**
+   * Takes a first-page list response. "Mark all read" covers what existed when it was listed: the
+   * server's insertion watermark, so a notification written later stays unread.
+   */
+  function applyList(state, list) {
+    state.notifications = list?.data?.notifications ?? [];
+    state.nextCursor = list?.data?.nextCursor ?? null;
+    state.unread = Number(list?.data?.unread ?? 0) || 0;
+    const through = list?.data?.readThrough;
+    state.readThrough = Number.isSafeInteger(through) && through > 0 ? through : null;
   }
 
   function setUnread(container, state, unread) {
@@ -180,7 +185,28 @@ export function createInboxView({ insert, announce = () => {}, onUnread = () => 
     const count = container.querySelector?.('#inbox-unread-count');
     if (count) count.textContent = `${unread} unread`;
     const all = container.querySelector?.('#inbox-mark-all');
-    if (all) all.disabled = unread === 0;
+    if (all) all.disabled = !markAllEnabled(unread, state.readThrough);
+  }
+
+  /**
+   * The server marks only rows written up to the watermark, and a page loaded later through "Load more"
+   * can hold rows written after it, so the list is re-read instead of guessing which rows were covered.
+   */
+  async function markAll(container, state) {
+    const result = await fetcher('/inbox/read', { method: 'POST', body: JSON.stringify({ all: true, through: state.readThrough }) });
+    let unread = Number(result?.data?.unread ?? 0) || 0;
+    try {
+      const list = await fetcher(inboxListPath({ unreadOnly: state.unreadOnly }));
+      applyList(state, list);
+      unread = state.unread;
+      renderRows(container, state);
+      const more = container.querySelector?.('#inbox-load-more');
+      if (more) more.hidden = !state.nextCursor;
+    } catch {
+      // The rows stay as they were until the next load; the count still comes from the server.
+    }
+    setUnread(container, state, unread);
+    return Number(result?.data?.updated ?? 0) || 0;
   }
 
   function renderRows(container, state) {
@@ -188,11 +214,11 @@ export function createInboxView({ insert, announce = () => {}, onUnread = () => 
     if (body) insert(body, renderInboxRows(state.notifications));
   }
 
-  async function markRead(container, state, input, readIds) {
-    const result = await fetcher('/inbox/read', { method: 'POST', body: JSON.stringify(input) });
+  async function markRead(container, state, id) {
+    const result = await fetcher('/inbox/read', { method: 'POST', body: JSON.stringify({ notificationIds: [id] }) });
     const now = new Date().toISOString();
     for (const notification of state.notifications) {
-      if (!notification.readAt && (readIds === 'all' || readIds.has(notification.notificationId))) notification.readAt = now;
+      if (!notification.readAt && notification.notificationId === id) notification.readAt = now;
     }
     renderRows(container, state);
     setUnread(container, state, Number(result?.data?.unread ?? 0) || 0);
@@ -207,7 +233,7 @@ export function createInboxView({ insert, announce = () => {}, onUnread = () => 
       if (!button || !NOTIFICATION_ID.test(String(id))) return;
       button.disabled = true;
       try {
-        await markRead(container, state, { notificationIds: [id] }, new Set([id]));
+        await markRead(container, state, id);
         announce('Notification marked read.');
       } catch {
         button.disabled = false;
@@ -219,7 +245,7 @@ export function createInboxView({ insert, announce = () => {}, onUnread = () => 
       if (state.readThrough === null) return;
       all.disabled = true;
       try {
-        const updated = await markRead(container, state, { all: true, through: state.readThrough }, 'all');
+        const updated = await markAll(container, state);
         announce(`${updated} notification(s) marked read.`);
       } catch {
         all.disabled = false;

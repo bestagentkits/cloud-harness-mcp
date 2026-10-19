@@ -241,8 +241,8 @@ export class NotificationStore {
   list(principalId: string, options: { cursor?: string | undefined; limit: number; unreadOnly: boolean }): {
     notifications: NotificationSummary[]; nextCursor: string | null; readThrough: number | null;
   } {
-    // Rows are ordered by insertion (rowid); `created_at` is the transition time and a row can be
-    // written well after it, so only the insertion watermark bounds "everything listed so far".
+    // The page is sorted by `created_at`, the transition time, and a row can be written well after it.
+    // Only the watermark uses insertion order (rowid), so it alone bounds "everything that existed now".
     const watermark = this.database.prepare('SELECT max(rowid) AS through FROM notifications WHERE principal_id = ?')
       .get(principalId) as { through: number | null };
     const after = options.cursor === undefined ? undefined : decodeCursor(options.cursor);

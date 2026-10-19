@@ -113,28 +113,52 @@ describe('inbox controller', () => {
     expect(onUnread).toHaveBeenLastCalledWith(0);
   });
 
-  it('marks all read only through the insertion watermark of the loaded list', async () => {
+  it('marks all read through the loaded watermark and re-reads the list instead of guessing the covered rows', async () => {
     const all = new FakeElement() as FakeElement & { disabled?: boolean };
     const rows = new FakeElement();
-    const responses = (path: string, options?: any) => (path.startsWith('/inbox?')
-      ? { data: { notifications: [notification(), notification({ notificationId: id('b') })], nextCursor: null, unread: 2, readThrough: 42 } }
-      : pageResponses(path, options));
-    const { view, container, fetcher, announce } = harness(responses, { '#inbox-mark-all': all, '#inbox-rows': rows });
+    const more = new FakeElement() as FakeElement & { hidden?: boolean };
+    const count = new FakeElement();
+    const lateWritten = notification({ notificationId: id('b'), title: 'Written after the watermark' });
+    let marked = false;
+    const responses = (path: string, options?: any) => {
+      if (path === '/inbox/read') {
+        marked = true;
+        return { data: { updated: 1, unread: 1 } };
+      }
+      if (path.includes('cursor=')) return { data: { notifications: [lateWritten], nextCursor: null, unread: 2, readThrough: 43 } };
+      if (path.startsWith('/inbox?')) {
+        return marked
+          ? { data: { notifications: [notification({ readAt: at }), lateWritten], nextCursor: null, unread: 1, readThrough: 43 } }
+          : { data: { notifications: [notification()], nextCursor: 'page2', unread: 2, readThrough: 42 } };
+      }
+      return pageResponses(path, options);
+    };
+    const { view, container, fetcher, announce } = harness(responses, {
+      '#inbox-mark-all': all, '#inbox-rows': rows, '#inbox-load-more': more, '#inbox-unread-count': count
+    });
     await view.load(container, '');
+    more.dispatch('click', {});
+    await vi.waitFor(() => expect(announce).toHaveBeenCalledWith('1 more notification(s) loaded.'));
     all.dispatch('click', {});
     await vi.waitFor(() => expect(announce).toHaveBeenCalledWith('1 notification(s) marked read.'));
     expect(fetcher).toHaveBeenCalledWith('/inbox/read', { method: 'POST', body: JSON.stringify({ all: true, through: 42 }) });
-    expect(rows.markup).not.toContain('data-mark-read');
+    // The row written after the watermark stays unread: only it still offers "Mark read".
+    expect(rows.markup.match(/data-mark-read=/g)).toHaveLength(1);
+    expect(rows.markup).toContain(`data-mark-read="${id('b')}"`);
+    expect(count.textContent).toBe('1 unread');
+    expect(all.disabled).toBe(false);
   });
 
-  it('never sends an unbounded mark-all when the list carried no watermark', async () => {
+  it('renders mark-all disabled and never sends it unbounded when the list carried no watermark', async () => {
     const all = new FakeElement() as FakeElement & { disabled?: boolean };
     const responses = (path: string, options?: any) => (path.startsWith('/inbox?')
-      ? { data: { notifications: [], nextCursor: null, unread: 0, readThrough: null } }
+      ? { data: { notifications: [notification()], nextCursor: null, unread: 1, readThrough: null } }
       : pageResponses(path, options));
     const { view, container, fetcher } = harness(responses, { '#inbox-mark-all': all });
     await view.load(container, '');
-    expect(all.disabled).toBe(true);
+    // Asserted on the rendered markup, so a fix that only touches a stale element cannot pass.
+    expect(container.markup).toContain('id="inbox-mark-all" type="button" disabled');
+    expect(renderInboxPage({ unread: 1, readThrough: 42 })).toContain('id="inbox-mark-all" type="button">');
     fetcher.mockClear();
     all.dispatch('click', {});
     await new Promise((resolve) => setTimeout(resolve, 5));
