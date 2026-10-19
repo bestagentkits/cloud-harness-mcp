@@ -102,10 +102,15 @@ approval** with `ADVISOR_REQUIRED`, because the advisor answers only at
 execution time. It becomes **Allow** only if the advisor answers that nothing
 needs to change.
 
-A command is denied with `PLATFORM_COMMAND_UNANALYZABLE` when the runner cannot
-read exactly what it runs, for example `eval`, a program name built from a
-variable, inline interpreter code, or a `git -c` setting that could change what
-git runs. A command that runs `git push` is also judged as **Publish branch**,
+Commands have two platform outcomes. A command that runs a container runtime or
+a privilege tool such as `sudo` is denied, and no policy or approval can allow
+it. A command the runner cannot read exactly **Requires approval** with
+`PLATFORM_COMMAND_UNANALYZABLE`. Examples are `eval`, a program name built from
+a variable, inline interpreter code, a here-document fed to a shell, or a
+`git -c` setting that could change what git runs. That approval is always
+required: an advisor or a project rule cannot clear it. Ordinary commands such
+as `grep -r docker .`, `cat <<EOF` or `vitest --environment node` are not
+affected. A command that runs `git push` is also judged as **Publish branch**,
 and the stricter decision applies.
 
 Tick **Evaluate the unsaved editor draft** to try a change before saving it.

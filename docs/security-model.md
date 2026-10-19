@@ -863,29 +863,42 @@ changes simulation results only.
   is the advisor: a discretionary action shows as pending (`ADVISOR_REQUIRED`,
   which is REQUIRE_APPROVAL) because the advisor's answer exists only at
   execution time. The descriptor's free-text reason is never read.
-- **Platform invariants deny first, and command analysis fails closed.**
-  Credential and Docker access, network escalation, paths outside the
-  workspace and privilege escalation deny before any policy is read. The gate
-  reads every program a command runs: it unwraps the launchers whose options
-  it knows exactly (such as `env`, `nice`, `timeout`, `xargs`, `setsid`,
-  `npx`, `npm exec` and `busybox`), reads `sh`, `bash`, `zsh`, `dash` and
-  `ksh` `-c` strings with their value-taking options, and splits shell strings
-  on every separator, keyword, redirection and command substitution. A word
-  anywhere in the command that names a container runtime or a privilege tool
-  denies. Anything the analysis cannot read exactly is denied with
-  `PLATFORM_COMMAND_UNANALYZABLE`. That covers:
+- **Platform invariants have two outcomes.** Credential and Docker access,
+  network escalation, paths outside the workspace and privilege escalation
+  deny before any policy is read. For commands, the gate reads every program a
+  command runs:
+  - it unwraps the launchers whose options it knows exactly (such as `env`,
+    `nice`, `timeout`, `xargs`, `setsid`, `npx`, `npm exec` and `busybox`);
+  - it reads `sh`, `bash`, `zsh`, `dash` and `ksh` `-c` strings with their
+    value-taking options;
+  - it splits shell strings on every separator, keyword, redirection and
+    command substitution, and skips here-document bodies.
+
+  A container runtime or privilege tool in program position, or the Docker
+  socket handed to a program, is a definite match and denies. A command the
+  analysis cannot read exactly is not denied: it needs owner approval with
+  `PLATFORM_COMMAND_UNANALYZABLE`. That approval is mandatory, so no advisor
+  answer, project rule or delegation lowers it, while a hard deny, a scope
+  deny or the `publish_branch` evaluation of a detected push still wins. The
+  following are unanalyzable:
   - an unknown launcher option;
   - a program name computed at run time;
   - `eval` and `source`;
   - an interpreter's inline code;
-  - a shell reading standard input;
+  - a shell or interpreter fed by standard input, a here-document or a
+    here-string;
   - a `git -c` setting outside a small safe list, or a git alias;
-  - an unknown program that is handed a shell, launcher or interpreter;
+  - an unknown program given a shell, launcher, git, interpreter, container
+    or privilege name as an argument (an option's value only counts when it
+    names a shell, launcher, git, container runtime or privilege tool);
   - nesting beyond the analysis bounds.
 
-  The analysis does not read the content of files a command runs (a script, a
-  Makefile, a package script, git hooks). The executor's isolation stays the
-  boundary for those, and the gate is defence in depth.
+  Data-only programs (`grep`, `rg`, `cat`, `echo`, `jq` and similar) are never
+  treated as running their arguments, and a here-document is data to them,
+  unless an option tells them to run a program (`rg --pre`). The analysis
+  does not read the content of files a command runs (a script, a Makefile, a
+  package script, git hooks). The executor's isolation stays the boundary for
+  those, and the gate is defence in depth.
 - **Branches are checked, not trusted.** Branch names must pass the basic
   `git check-ref-format` rules. A command that runs `git push` is also judged
   as `publish_branch`, and the stricter decision wins, so declaring it as

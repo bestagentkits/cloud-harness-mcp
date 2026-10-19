@@ -134,8 +134,13 @@ editor. No MCP tool is added.
 - This release ships the policy store, the evaluator and the simulation; it
   does not enforce anything on a running agent. Enforcement arrives with the
   coding broker and reuses this resolver and evaluator unchanged.
-- Command analysis for platform invariants is static and fails closed: what
-  it cannot read exactly is denied. It does not read files a command runs, so
-  the executor's isolation stays the boundary for that indirect execution.
+- Command analysis for platform invariants is static and has two outcomes. A
+  container runtime or privilege tool in program position denies, because a
+  platform deny cannot be approved. A command the analysis cannot read exactly
+  needs a mandatory owner approval (`PLATFORM_COMMAND_UNANALYZABLE`) that no
+  advisor or project rule lowers, so ordinary commands such as
+  `grep -r docker .` stay usable. The analysis does not read files a command
+  runs, so the executor's isolation stays the boundary for that indirect
+  execution.
 - Turning the flag off makes the two policy tables inert. No existing table
   changes.
