@@ -856,3 +856,236 @@ describe('provider adapters', () => {
     expect(rotated.store.database.prepare('SELECT outbound_json FROM automation_connections').get()).toEqual({ outbound_json: null });
   });
 });
+
+describe('delivery replay', () => {
+  type Replay = { delivery: { id: string; state: string; outcome: string; workflowsCreated: number; replayable: boolean }; outcome: string; workflowIds: string[] };
+  const replay = (context: Setup, id: string, extra: Record<string, unknown> = {}, principal: Setup['owner'] | Setup['other'] = context.owner) =>
+    context.service.execute({ version: 1, principal, operation: 'delivery_replay', input: { id, ...extra } });
+  const deliveryIds = (context: Setup) => Object.fromEntries((context.store.database.prepare('SELECT provider_delivery_id AS provider, id FROM automation_deliveries').all() as { provider: string; id: string }[])
+    .map((row) => [row.provider, row.id]));
+  const enable = (context: Setup, rule: { id: string; generation: number }) => ok(context.service.execute({
+    version: 1, principal: context.owner, operation: 'rule_update', input: { id: rule.id, expectedGeneration: rule.generation, enabled: true }
+  }));
+
+  it('creates the workflow a fixed rule now matches, once, however often it is replayed', async () => {
+    const context = setup();
+    const { connection, secret } = createConnection(context);
+    const rule = createRule(context, connection.id, { enabled: false });
+    deliver(context, connection.id, secret, payload(), { deliveryId: 'missed' });
+    await drive(context, 1);
+    const id = deliveryIds(context).missed!;
+    // A disabled rule is ignored by a replay exactly as by ingest.
+    expect(ok<Replay>(replay(context, id))).toMatchObject({ outcome: 'no_matching_rule', workflowIds: [] });
+    expect(workflows(context)).toEqual([]);
+
+    enable(context, { id: rule.id, generation: rule.generation });
+    const first = ok<Replay>(replay(context, id, { expectedState: 'PROCESSED' }));
+    expect(first.outcome).toBe('workflows_created');
+    expect(first.workflowIds).toHaveLength(1);
+    expect(first.delivery).toMatchObject({ id, state: 'PROCESSED', outcome: 'replayed:workflows_created', workflowsCreated: 1, replayable: true });
+    const second = ok<Replay>(replay(context, id));
+    expect(second).toMatchObject({ outcome: 'already_triggered', workflowIds: [] });
+    expect(workflows(context)).toHaveLength(1);
+    expect(context.audits.filter((action) => action === 'automation.delivery.replayed')).toHaveLength(3);
+
+    // The replayed workflow runs like any other; its delivery text was cleared after the first match.
+    await drive(context, 2);
+    const spawn = context.operations.calls.find((call) => call.operation === 'agent_spawn')!;
+    expect(String(spawn.input.prompt)).not.toContain('Ignore previous instructions');
+    context.operations.agentStatus = 'SUCCEEDED';
+    await drive(context, 3);
+    expect(ok<Replay>(replay(context, id)).workflowIds).toEqual([]);
+    expect(workflows(context)).toHaveLength(1);
+  });
+
+  it('keeps one active workflow per resource and honours the cooldown', async () => {
+    const context = setup();
+    const { connection, secret } = createConnection(context);
+    createRule(context, connection.id, { action: { cooldownSeconds: 600 } });
+    deliver(context, connection.id, secret, payload(), { deliveryId: 'first' });
+    context.clock.now += 1_000;
+    deliver(context, connection.id, secret, payload(), { deliveryId: 'repeat' });
+    await drive(context, 1);
+    const ids = deliveryIds(context);
+    expect(ok<Replay>(replay(context, ids.repeat!))).toMatchObject({ outcome: 'coalesced', workflowIds: [] });
+    context.operations.agentStatus = 'SUCCEEDED';
+    await drive(context, 4);
+    expect(ok<Replay>(replay(context, ids.repeat!))).toMatchObject({ outcome: 'cooldown', workflowIds: [] });
+    context.clock.now += 601_000;
+    expect(ok<Replay>(replay(context, ids.repeat!)).workflowIds).toHaveLength(1);
+    expect(workflows(context)).toHaveLength(2);
+  });
+
+  it('refuses foreign, unmatched, eventless and stale deliveries', async () => {
+    const context = setup();
+    const { connection, secret } = createConnection(context);
+    createRule(context, connection.id);
+    deliver(context, connection.id, secret, payload(), { deliveryId: 'pending' });
+    deliver(context, connection.id, secret, Buffer.from('not json'), { deliveryId: 'broken' });
+    deliver(context, connection.id, secret, Buffer.from('{"zen":"x"}'), { deliveryId: 'ping', event: 'ping' });
+    const ids = deliveryIds(context);
+    expect(replay(context, ids.pending!)).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(replay(context, ids.broken!)).toMatchObject({ ok: false, error: { code: 'INVALID_INPUT', message: 'the delivery has no normalized event to replay' } });
+    expect(replay(context, ids.ping!)).toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
+    await drive(context, 1);
+    expect(replay(context, ids.pending!, {}, context.other)).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
+    expect(replay(context, `dlv_${'0'.repeat(32)}`)).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
+    expect(replay(context, ids.pending!, { expectedState: 'QUARANTINED' })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    ok(context.service.execute({ version: 1, principal: context.owner, operation: 'connection_update', input: { id: connection.id, expectedGeneration: 1, enabled: false } }));
+    expect(replay(context, ids.pending!)).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(workflows(context)).toHaveLength(1);
+    expect(context.audits).not.toContain('automation.delivery.replayed');
+  });
+
+  it('lists the dead-letter view, replayable flags and failed publishes', async () => {
+    const context = setup();
+    const { connection, secret } = createConnection(context);
+    deliver(context, connection.id, secret, payload(), { deliveryId: 'fine' });
+    deliver(context, connection.id, secret, Buffer.from('not json'), { deliveryId: 'broken' });
+    await drive(context, 1);
+    type Listed = { deliveries: { providerDeliveryId: string; state: string; outcome: string | null; replayable: boolean }[] };
+    const list = (input: Record<string, unknown>) => ok<Listed>(context.service.execute({ version: 1, principal: context.owner, operation: 'deliveries_list', input })).deliveries;
+    expect(list({ state: 'QUARANTINED' })).toEqual([expect.objectContaining({ providerDeliveryId: 'broken', outcome: 'malformed_json', replayable: false })]);
+    expect(list({ state: 'PROCESSED', connectionId: connection.id })).toEqual([expect.objectContaining({ providerDeliveryId: 'fine', replayable: true })]);
+    expect(context.service.execute({ version: 1, principal: context.owner, operation: 'deliveries_list', input: { state: 'LOST' } })).toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
+
+    createRule(context, connection.id, { action: { publishComment: true } });
+    deliver(context, connection.id, secret, payload({ number: 9 }), { deliveryId: 'published' });
+    context.operations.handlers.github_action = () => ({ ok: false, error: { code: 'FORBIDDEN', retryable: false } });
+    await drive(context, 2);
+    context.operations.agentStatus = 'SUCCEEDED';
+    await drive(context, 3);
+    const failed = (input: Record<string, unknown>) => ok<{ workflows: { publishState: string }[] }>(context.service.execute({ version: 1, principal: context.owner, operation: 'workflows_list', input })).workflows;
+    expect(failed({ publishState: 'FAILED' })).toEqual([expect.objectContaining({ publishState: 'FAILED' })]);
+    expect(failed({ publishState: 'DELIVERED' })).toEqual([]);
+  });
+
+  it('replays a non-GitHub delivery from its stored normalized event', async () => {
+    const context = setup({ adapters: { ...AUTOMATION_PROVIDER_ADAPTERS, linear: fakeLinearAdapter([]) } });
+    const created = ok<{ connection: { id: string }; secret: string }>(context.service.execute({ version: 1, principal: context.owner, operation: 'connection_create', input: { provider: 'linear', name: 'acme' } }));
+    const body = Buffer.from(JSON.stringify({ team: 'ENG', id: 'ENG-12', label: 'Claude', actor: 'alice', title: 'Crash' }));
+    context.service.execute({ version: 1, operation: 'webhook_ingest', input: {
+      provider: 'linear', connectionId: created.connection.id, bodyBase64: body.toString('base64'),
+      headers: { 'linear-event': 'Issue', 'linear-delivery': 'lin-1', 'linear-signature': createHmac('sha256', created.secret).update(body).digest('hex') }
+    } });
+    await drive(context, 1);
+    ok(context.service.execute({ version: 1, principal: context.owner, operation: 'rule_create', input: {
+      connectionId: created.connection.id, name: 'Linear', enabled: true,
+      match: { provider: 'linear', teamKey: 'ENG', trigger: 'label_added', label: 'claude' },
+      action: { profileId: 'default', instructions: 'Analyse.', repository: REPO, cooldownSeconds: 0 }
+    } }));
+    const replayed = ok<Replay>(replay(context, deliveryIds(context)['lin-1']!));
+    expect(replayed.workflowIds).toHaveLength(1);
+    expect(workflows(context)[0]).toMatchObject({ provider: 'linear', resourceRef: 'ENG-12', repository: REPO });
+  });
+});
+
+describe('connection health', () => {
+  it('counts deliveries by state over 24 hours and 7 days and reports the last quarantine', async () => {
+    const context = setup();
+    const { connection, secret } = createConnection(context);
+    context.clock.now += 1;
+    const quiet = createConnection(context).connection;
+    deliver(context, connection.id, secret, Buffer.from('not json'), { deliveryId: 'old-broken' });
+    deliver(context, connection.id, secret, payload(), { deliveryId: 'old' });
+    context.clock.now += 2 * 86_400_000;
+    deliver(context, connection.id, secret, payload(), { deliveryId: 'new' });
+    deliver(context, connection.id, secret, payload({ action: 'unlabeled' }), { deliveryId: 'new-ignored' });
+    context.clock.now += 1_000;
+    deliver(context, connection.id, secret, Buffer.from('"text"'), { deliveryId: 'new-broken' });
+    // Bad signatures are refused without being recorded.
+    deliver(context, connection.id, secret, payload(), { deliveryId: 'forged', signature: `sha256=${'0'.repeat(64)}` });
+    await drive(context, 1);
+    type Health = { health: { connectionId: string; outboundConfigured: boolean; lastDeliveryAt: string | null; lastQuarantine: { at: string; reason: string | null } | null; last24h: Record<string, number>; last7d: Record<string, number> }[] };
+    const health = ok<Health>(context.service.execute({ version: 1, principal: context.owner, operation: 'connection_health', input: {} })).health;
+    expect(health.map((entry) => entry.connectionId)).toEqual([connection.id, quiet.id]);
+    expect(health[0]).toMatchObject({
+      outboundConfigured: false,
+      lastDeliveryAt: new Date(context.clock.now).toISOString(),
+      lastQuarantine: { at: new Date(context.clock.now).toISOString(), reason: 'malformed_payload' },
+      last24h: { RECEIVED: 0, PROCESSED: 1, IGNORED: 1, QUARANTINED: 1 },
+      last7d: { RECEIVED: 0, PROCESSED: 2, IGNORED: 1, QUARANTINED: 2 }
+    });
+    expect(health[1]).toMatchObject({ lastDeliveryAt: null, lastQuarantine: null, last7d: { RECEIVED: 0, PROCESSED: 0, IGNORED: 0, QUARANTINED: 0 } });
+    const one = ok<Health>(context.service.execute({ version: 1, principal: context.owner, operation: 'connection_health', input: { connectionId: quiet.id } })).health;
+    expect(one.map((entry) => entry.connectionId)).toEqual([quiet.id]);
+    expect(context.service.execute({ version: 1, principal: context.other, operation: 'connection_health', input: { connectionId: quiet.id } }))
+      .toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
+    expect(ok<Health>(context.service.execute({ version: 1, principal: context.other, operation: 'connection_health', input: {} })).health).toEqual([]);
+  });
+});
+
+describe('automation metrics', () => {
+  type Metrics = {
+    windowDays: number;
+    providers: Record<string, unknown>[];
+    rules: { ruleId: string; name: string; deleted: boolean; [key: string]: unknown }[];
+  };
+
+  it('computes outcomes, success rate, cost, tokens and nearest-rank latency per provider and rule', () => {
+    const context = setup();
+    const { connection } = createConnection(context);
+    const rule = createRule(context, connection.id);
+    const deletedRule = `arl_${'9'.repeat(32)}`;
+    const ownerId = (context.store.database.prepare('SELECT owner_id FROM automation_connections').get() as { owner_id: string }).owner_id;
+    const now = context.clock.now;
+    let sequence = 0;
+    const insert = (values: { ruleId: string; provider?: string | null; state: string; latencyMs?: number; ageMs?: number; usage?: Record<string, number>; owner?: string }) => {
+      sequence += 1;
+      const createdAt = now - (values.ageMs ?? 3_600_000);
+      const terminal = ['COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(values.state);
+      context.store.database.prepare(`INSERT INTO automation_workflows (id, owner_id, rule_id, rule_generation, rule_snapshot_json, connection_id,
+        delivery_id, event_type, repository, resource_number, resource_url, resource_key, label, prompt, state, publish_state, next_attempt_at,
+        created_at, updated_at, terminal_at, usage_json, provider) VALUES (?, ?, ?, 1, ?, ?, ?, 'github.issue.label_added', ?, 1, '', ?, 'x', 'p', ?, 'NONE', 0, ?, ?, ?, ?, ?)`).run(
+        `wfl_${sequence.toString(16).padStart(32, '0')}`, values.owner ?? ownerId, values.ruleId, JSON.stringify({ name: 'Old name' }), connection.id,
+        `dlv_${sequence.toString(16).padStart(32, '0')}`, REPO, `key-${sequence}`, values.state, createdAt, createdAt,
+        terminal ? createdAt + (values.latencyMs ?? 0) : null, values.usage ? JSON.stringify(values.usage) : null, values.provider === undefined ? 'github' : values.provider
+      );
+    };
+    for (let index = 1; index <= 10; index += 1) {
+      // Pre-provider GitHub rows carry no provider column.
+      insert({ ruleId: rule.id, provider: index % 2 ? null : 'github', state: 'COMPLETED', latencyMs: index * 1_000, usage: { inputTokens: 100, outputTokens: 10, costMicros: 1_500 } });
+    }
+    insert({ ruleId: rule.id, state: 'FAILED', latencyMs: 50, usage: { inputTokens: 7, outputTokens: 3, costMicros: 500 } });
+    insert({ ruleId: rule.id, state: 'CANCELLED', latencyMs: 60 });
+    insert({ ruleId: rule.id, state: 'EXPIRED', latencyMs: 70 });
+    insert({ ruleId: rule.id, state: 'RUNNING' });
+    for (const latencyMs of [300, 100, 200]) insert({ ruleId: deletedRule, provider: 'linear', state: 'COMPLETED', latencyMs, usage: { inputTokens: 1, outputTokens: 1, costMicros: 10 } });
+    // Outside the window, and another owner's workflow: neither counts.
+    insert({ ruleId: rule.id, state: 'COMPLETED', latencyMs: 1, ageMs: 8 * 86_400_000, usage: { inputTokens: 1, outputTokens: 1, costMicros: 999_999 } });
+    insert({ ruleId: rule.id, state: 'COMPLETED', latencyMs: 1, owner: 'someone-else', usage: { inputTokens: 1, outputTokens: 1, costMicros: 999_999 } });
+
+    const metrics = ok<Metrics>(context.service.execute({ version: 1, principal: context.owner, operation: 'automation_metrics', input: {} }));
+    expect(metrics.windowDays).toBe(7);
+    const github = {
+      workflows: 14, active: 1, completed: 10, failed: 1, cancelled: 1, expired: 1, successRate: 10 / 13,
+      costMicros: 15_500, inputTokens: 1_007, outputTokens: 103, latencyP50Ms: 5_000, latencyP95Ms: 10_000
+    };
+    expect(metrics.providers).toEqual([
+      { provider: 'github', ...github },
+      { provider: 'linear', workflows: 3, active: 0, completed: 3, failed: 0, cancelled: 0, expired: 0, successRate: 1, costMicros: 30, inputTokens: 3, outputTokens: 3, latencyP50Ms: 200, latencyP95Ms: 300 }
+    ]);
+    expect(metrics.rules).toEqual([
+      { ruleId: rule.id, name: 'Triage', provider: 'github', deleted: false, ...github },
+      expect.objectContaining({ ruleId: deletedRule, name: 'Old name', provider: 'linear', deleted: true, latencyP50Ms: 200 })
+    ]);
+
+    const wide = ok<Metrics>(context.service.execute({ version: 1, principal: context.owner, operation: 'automation_metrics', input: { windowDays: 30 } }));
+    expect(wide.providers[0]).toMatchObject({ workflows: 15, costMicros: 1_015_499 });
+    expect(context.service.execute({ version: 1, principal: context.owner, operation: 'automation_metrics', input: { windowDays: 31 } }))
+      .toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
+    const empty = ok<Metrics>(context.service.execute({ version: 1, principal: context.other, operation: 'automation_metrics', input: {} }));
+    expect(empty).toMatchObject({ providers: [], rules: [] });
+  });
+
+  it('reports no success rate or latency before any workflow finishes', () => {
+    const context = setup();
+    const { connection, secret } = createConnection(context);
+    createRule(context, connection.id);
+    deliver(context, connection.id, secret, payload());
+    return drive(context, 1).then(() => {
+      const metrics = ok<Metrics>(context.service.execute({ version: 1, principal: context.owner, operation: 'automation_metrics', input: { windowDays: 1 } }));
+      expect(metrics.providers).toEqual([expect.objectContaining({ provider: 'github', workflows: 1, active: 1, successRate: null, latencyP50Ms: null, latencyP95Ms: null, costMicros: 0 })]);
+    });
+  });
+});
