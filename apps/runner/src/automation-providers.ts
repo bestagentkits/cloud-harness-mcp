@@ -1,5 +1,6 @@
 import type { AutomationProvider } from '@cloud-harness/contracts';
 import type { ProviderAdapter } from './automation-adapter.js';
+import { customAdapter } from './automation-custom.js';
 import { githubAdapter } from './automation-github.js';
 
 // The adapter contract lives in its own module so adapters import it without importing this
@@ -14,5 +15,6 @@ export type AutomationProviderRegistry = Readonly<Partial<Record<AutomationProvi
  * rule for it answers INVALID_INPUT, and its webhooks get the shared UNAUTHORIZED.
  */
 export const AUTOMATION_PROVIDER_ADAPTERS: AutomationProviderRegistry = {
-  github: githubAdapter
+  github: githubAdapter,
+  custom: customAdapter
 };
