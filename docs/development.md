@@ -73,6 +73,13 @@ npm run test:docker
 npm run test:e2e
 ```
 
+The durable agent engine e2e also needs an agent image built with the engine,
+and skips without it:
+
+```bash
+docker build -f docker/agent.Dockerfile --build-arg INCLUDE_DURABLE_RUNTIME=true -t cloud-harness-agent-durable:local .
+```
+
 These tests create real containers and clone a public repository, so Docker
 and network access are prerequisites. They verify the MCP workflow and selected
 container boundaries; the current test files, not a hand-maintained checklist,

@@ -610,11 +610,18 @@ Session persistence is an opt-in:
 | `AGENT_MAX_SESSION_MESSAGES` | `2000` | The most messages one persisted session may hold. Past it the run continues, but the session is no longer continuable. |
 | `AGENT_MAX_SESSION_BYTES` | `7340032` (7 MiB) | The most message bytes one persisted session may hold, with the same outcome. Its maximum keeps a full session, the prompt, and the rest of the start record inside the 8 MiB agent protocol record. |
 | `AGENT_SESSION_RETENTION_MS` | `604800000` (7 days) | How long a sealed session stays continuable after its agent ends. The runner then purges its messages. Closing or expiring the workspace deletes its sessions sooner. |
+| `AGENT_DURABLE_RUNTIME_ENABLED` | `false` | Runner flag for the opt-in durable engine. On, `agent_spawn.runtime: "pi-durable"` runs an agent on pi-durable, whose session store the runner keeps per lineage under `agent-sessions/` beside the state database, and a continuation resumes the lineage's unfinished work. Off, durable spawns and durable continuations are refused with `NOT_SUPPORTED`, agents already running finish, and nothing resumes on its own. The runner loads the engine only while it is on. It needs an agent image built with the durable engine; see [operations](operations.md#durable-agent-engine). |
+| `AGENT_DURABLE_MAX_LINEAGE_BYTES` | `268435456` (256 MiB) | The most bytes one durable lineage's session database may hold on disk, write-ahead log included; bounded between 1 MiB and 4 GiB. A commit that leaves it over the cap ends the run as `LIMIT_EXCEEDED`, and the runner refuses further commits to it. |
 
 The [security model](security-model.md#persisted-agent-sessions) describes
 what the session store holds and who can read it. The
 [agent tools](mcp-api.md#persisted-sessions-and-continuefrom) describe
 `continueFrom` and the status fields.
+
+The durable engine ships only in an agent image built with the
+`INCLUDE_DURABLE_RUNTIME=true` build argument, so the default image and its size
+are unchanged. Turning `AGENT_DURABLE_RUNTIME_ENABLED` on without that image fails
+each durable run at start with an error that names the build argument.
 
 ## Compose and logging overrides
 

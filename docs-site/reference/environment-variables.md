@@ -96,6 +96,8 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `AGENT_MAX_SESSION_MESSAGES` | `2000` | Optional | Most messages one persisted session may hold; past it the run continues but is no longer continuable. |
 | `AGENT_MAX_SESSION_BYTES` | `7340032` | Optional | Most message bytes one persisted session may hold (at most 7864320, to fit the 8 MiB agent start record). |
 | `AGENT_SESSION_RETENTION_MS` | `604800000` | Optional | How long a sealed session stays continuable after its agent ends (7 days); workspace close deletes it sooner. |
+| `AGENT_DURABLE_RUNTIME_ENABLED` | `false` | Optional | Opt-in durable agent engine (runner): agent_spawn.runtime "pi-durable" runs the agent on the pi-durable engine, whose session store lives in the runner state directory, so a continuation resumes unfinished work. Needs an agent image built with the INCLUDE_DURABLE_RUNTIME=true build argument; see docs/operations.md. Off, durable spawns and continuations are refused with NOT_SUPPORTED and nothing resumes on its own. |
+| `AGENT_DURABLE_MAX_LINEAGE_BYTES` | `268435456` | Optional | Most bytes one durable lineage's session database may hold (256 MiB); past it the run ends LIMIT_EXCEEDED. |
 | `GITHUB_APP_ID` | `—` | Optional | Optional GitHub App repository access; required fields depend on AUTH_MODE: |
 | `GITHUB_APP_INSTALLATION_ID` | `—` | Optional | Required in owner-bearer mode; omit in Access mode, where each principal binds an installation: |
 | `GITHUB_APP_SLUG` | `—` | Optional | Required in Access mode for the installation redirect: |
