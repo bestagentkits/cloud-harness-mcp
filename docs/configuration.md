@@ -636,7 +636,10 @@ Precedence is owned by
 [`apps/runner/src/agent-governance/gate-evaluator.ts`](../apps/runner/src/agent-governance/gate-evaluator.ts),
 and the rationale by [ADR 0006](adr/0006-policy-governed-coding-agents.md).
 Policies are stored per owner in the runner state database, so they survive
-restarts and are covered by its backups.
+restarts and are covered by its backups. This release stores, checks and
+simulates policies; enforcement on running agents arrives with the coding
+broker.
+
 ## Compose and logging overrides
 
 `CLOUD_HARNESS_ENV_FILE` selects the runtime environment file. `API_HOST_PORT`

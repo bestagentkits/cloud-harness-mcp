@@ -201,7 +201,9 @@ Agent execution policies live in the runner under
 ([ADR 0006](adr/0006-policy-governed-coding-agents.md)). The policy store keeps
 immutable revisions and compare-and-swap heads in the runner state database;
 the resolver turns the global and project heads into a frozen snapshot; the
-pure gate evaluator decides. The API holds no policy state: the Dashboard BFF
+pure gate evaluator (`PURE_GATE_EVALUATOR`) decides. Today it serves the
+Dashboard simulation; action enforcement arrives with the coding broker, which
+reuses it. The API holds no policy state: the Dashboard BFF
 ([`apps/api/src/dashboard-policies-router.ts`](../apps/api/src/dashboard-policies-router.ts))
 forwards validated owner requests over the internal agent-policies channel,
 whose schema is

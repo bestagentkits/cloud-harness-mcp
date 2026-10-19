@@ -838,9 +838,13 @@ the owner has stored a TypeSafe integration key.
 
 ## Agent execution policies
 
-Coding-agent actions are governed by an owner-authored execution policy
-([ADR 0006](adr/0006-policy-governed-coding-agents.md)), behind
-`AGENT_POLICIES_ENABLED`.
+Coding-agent execution policies are owner-authored
+([ADR 0006](adr/0006-policy-governed-coding-agents.md)) and sit behind
+`AGENT_POLICIES_ENABLED`. This release ships the policy store, the gate
+evaluator and the Dashboard simulation. It does not yet enforce anything on a
+running agent: action enforcement arrives with the coding broker, which calls
+the same evaluator through the `GateEvaluator` port. Until then a saved policy
+changes simulation results only.
 
 - **One authority.** Only the owner writes policy, through owner-authenticated
   Dashboard routes with the usual Origin and CSRF checks. The principal comes
@@ -852,20 +856,39 @@ Coding-agent actions are governed by an owner-authored execution policy
   widens the global policy is refused, and evaluation ignores any widening
   field. A project can choose a class's effect only where the owner marked the
   class delegable. A policy for a project that no longer exists denies every
-  action bound to it.
-- **One pure gate.** Execution, the Dashboard preview and the simulation call
-  the same evaluator on the same resolved snapshot. Platform invariants
-  (credential and Docker access, network escalation, paths outside the
-  workspace, privilege escalation) deny before any policy is read. The
-  descriptor's free-text reason is never read.
+  action bound to it, and its effective-policy preview is empty.
+- **One pure gate.** The simulation and the future broker use one frozen
+  evaluator instance and the same resolved snapshot and advisor availability,
+  so a simulation returns what execution will start from. The one difference
+  is the advisor: a discretionary action shows as pending (`ADVISOR_REQUIRED`,
+  which is REQUIRE_APPROVAL) because the advisor's answer exists only at
+  execution time. The descriptor's free-text reason is never read.
+- **Platform invariants are partly best-effort.** Credential and Docker
+  access, network escalation, paths outside the workspace and privilege
+  escalation deny before any policy is read. For commands the gate looks
+  through common launchers (`env` and `VAR=value` prefixes, `nice`, `timeout`,
+  `nohup`, `xargs`, `npx` and similar) and through `sh`, `bash` or `zsh -c`
+  strings, splitting them on `;`, `&&`, `||`, `|` and command substitution. A
+  command nested too deeply to analyse is denied. This is static analysis of
+  an argv, not a sandbox: a script file, an interpreter's inline code or a
+  build tool can still reach a forbidden program, so the executor's isolation
+  stays the boundary for those, and the gate is defence in depth.
+- **Branches are checked, not trusted.** Branch names must pass the basic
+  `git check-ref-format` rules. A `git push` must declare a branch, every
+  pushed refspec must target that branch inside the branch prefixes, and
+  `--all`, `--mirror`, `--tags` and deletions are refused.
 - **Advisors only escalate.** An advisor may answer `no_change` or `escalate`.
-  A missing or malformed answer escalates, and no advisor, project or prompt
-  can override a hard deny or a mandatory approval.
+  A discretionary action stays at REQUIRE_APPROVAL until a valid `no_change`
+  arrives; a missing or malformed answer escalates. No advisor, project or
+  prompt can override a hard deny or a mandatory approval.
 - **Weakening is explicit and recorded.** A save, rollback or removal that
-  loosens the effective policy requires a confirmation flag the Dashboard sets
-  only after the owner confirms the listed changes. Revisions are immutable,
-  the head moves by compare-and-swap, and every change and simulation is
-  audited.
+  loosens the effective policy requires a confirmation bound to a digest of
+  the weakening list the owner reviewed, the global revision and the target
+  head version, so a confirmation given before another save is refused. A
+  stale client gets a version conflict before any policy check. Revisions are
+  immutable, the head moves by compare-and-swap, and every change is audited.
+  Simulations are read-only and not audited.
+
 ## Storage and state limits
 
 Workspace paths are server-generated and checked beneath the configured jobs

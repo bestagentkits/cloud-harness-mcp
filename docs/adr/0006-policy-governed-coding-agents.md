@@ -40,8 +40,13 @@ field at evaluation time and reports it as ignored.
 
 Revisions are immutable rows in the runner SQLite. The head moves by
 compare-and-swap on the expected version, rollback writes a new revision, and
-every write, removal, rollback and simulation is audited. While no global
-policy is stored, a read-only default applies that allows only `read`.
+every write, removal and rollback is audited. A stale version is a conflict
+before any policy check. A change that weakens the effective policy needs a
+confirmation bound to a digest of the weakening list the owner reviewed, the
+global revision and the target head version, so a confirmation cannot be
+replayed after the policy moved. Simulations are read-only and not audited.
+While no global policy is stored, a read-only default applies that allows only
+`read`.
 
 ### Cloud Harness owns identity
 
@@ -66,17 +71,25 @@ classes, project narrowing, mandatory approval, and finally the effective rule.
 The first terminal result wins. The descriptor's free-text `reason` is never
 read.
 
-The Dashboard simulation calls the same function with the same resolver as
-execution, so a preview cannot drift from enforcement.
+`PURE_GATE_EVALUATOR`, a frozen instance of the `GateEvaluator` port, wraps
+that function. The Dashboard simulation and the execution entry point
+(`AgentPolicyService.evaluate`, which the coding broker will call) both use it,
+with the same resolver and the same advisor-availability setting, so a preview
+cannot drift from the decision execution starts from. The only difference is
+the advisor's answer, which exists only at execution time: a simulation shows
+a discretionary action as pending.
 
 ### Advisors can only escalate
 
-`advisor_or_approval` is the one discretionary effect. A `DecisionAdvisor`
-answers `no_change` or `escalate`, nothing else. `combineAdvisor` never lowers
-a decision. A missing, late or malformed answer counts as `escalate`, and with
-no advisor configured the effect resolves to `REQUIRE_APPROVAL`. An advisor,
-a project or prompt text can never override a hard deny or a mandatory
-approval.
+`advisor_or_approval` is the one discretionary effect. With an advisor
+configured the gate returns `REQUIRE_APPROVAL` with `ADVISOR_REQUIRED`, so a
+caller that reads only the decision never lets a pending action run. A
+`DecisionAdvisor` answers `no_change` or `escalate`, nothing else. Only a valid
+`no_change` turns the pending decision into `ALLOW`; a missing, late or
+malformed answer counts as `escalate`. `combineAdvisor` never lowers any other
+decision, and `decide` combines evaluation and the answer in one call. With no
+advisor configured the effect resolves to `REQUIRE_APPROVAL`. An advisor, a
+project or prompt text can never override a hard deny or a mandatory approval.
 
 ### The orchestrator owns publishing
 
@@ -90,7 +103,9 @@ policy's branch prefixes. The agent never holds the credential that publishes.
 [`apps/runner/src/agent-governance/ports.ts`](../apps/runner/src/agent-governance/ports.ts)
 versions the boundaries later work builds on: `RuntimeAdapter`,
 `ExecutionBackend`, `ActionBroker`, `PolicyResolver`, `GateEvaluator`,
-`DecisionAdvisor`, `EventStore` and `NotificationAdapter`. Each implementation
+`DecisionAdvisor`, `EventStore` and `NotificationAdapter`. This release
+implements `PolicyResolver` (`StorePolicyResolver`) and `GateEvaluator`
+(`PURE_GATE_EVALUATOR`); the others are interfaces for later work. Each implementation
 declares the contract version it serves as a literal type, so an adapter
 written against another version fails to compile. A breaking change adds a new
 version instead of editing the current one.
@@ -115,7 +130,10 @@ editor. No MCP tool is added.
 
 - Every governed action has one auditable decision with the revisions it used.
 - The owner can test a draft against real actions before saving it.
-- Enforcement on real actions arrives separately and reuses this resolver and
-  evaluator unchanged.
+- This release ships the policy store, the evaluator and the simulation; it
+  does not enforce anything on a running agent. Enforcement arrives with the
+  coding broker and reuses this resolver and evaluator unchanged.
+- Command analysis for platform invariants is static and best-effort; the
+  executor's isolation stays the boundary for indirect execution.
 - Turning the flag off makes the two policy tables inert. No existing table
   changes.
