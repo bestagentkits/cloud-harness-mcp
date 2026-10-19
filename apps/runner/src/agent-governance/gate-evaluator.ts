@@ -15,7 +15,7 @@ import {
   type ProjectExecutionPolicy
 } from '@cloud-harness/contracts';
 import { AGENT_GOVERNANCE_PORTS_VERSION, type GateEvaluator as GateEvaluatorPort } from './ports.js';
-import { commandSegments, gitPushes, isValidBranchName, programName } from './command-analysis.js';
+import { analyzeCommand, isValidBranchName, programName, type GitPush } from './command-analysis.js';
 import { actionFingerprint, commandAdmitted, listAdmits, normalizeWorkspacePath, resolveEffectivePolicy } from './policy-merge.js';
 
 /**
@@ -24,7 +24,8 @@ import { actionFingerprint, commandAdmitted, listAdmits, normalizeWorkspacePath,
  * preview and the execution broker all call it, so a preview cannot drift from enforcement.
  *
  * Precedence, evaluated in order (the first terminal outcome wins):
- *  1. Platform invariants (credentials, Docker, network escalation, paths outside the workspace) -> DENY
+ *  1. Platform invariants (credentials, Docker, network escalation, paths outside the workspace, and any
+ *     command the fail-closed analysis in `command-analysis.ts` cannot read completely) -> DENY
  *  2. Runtime facts: orphaned/unknown project, revoked grant, stale generation, stale policy, budget -> DENY
  *  3. Global hard-deny -> DENY
  *  4. Repository, branch, path, command, package and host scope (deny on a miss) -> DENY
@@ -35,6 +36,10 @@ import { actionFingerprint, commandAdmitted, listAdmits, normalizeWorkspacePath,
  *  9. `advisor_or_approval`: REQUIRE_APPROVAL (`ADVISOR_REQUIRED`, pending) when an advisor is configured,
  *     which only `combineAdvisor`/`decide` with a valid `no_change` answer turns into ALLOW;
  *     REQUIRE_APPROVAL (`ADVISOR_UNAVAILABLE`) with no advisor
+ *
+ * A command that runs `git push` is evaluated twice, as its declared class and as `publish_branch`, and
+ * the stricter decision wins, so a push cannot escape a publish hard deny, approval or rule by being
+ * declared as `test`, `read` or `vcs_local`.
  *
  * The descriptor's free-text `reason` is never read.
  */
@@ -88,30 +93,53 @@ function escapesWorkspace(path: string): boolean {
   return path.startsWith('/') || /^[A-Za-z]:/u.test(path) || path.includes('\\') || path.split('/').includes('..');
 }
 
+type Inspection = { verdict?: Verdict | undefined; pushes: GitPush[] };
+
+const unanalyzable = (detail: string): Verdict => ({ decision: 'DENY', code: 'PLATFORM_COMMAND_UNANALYZABLE', source: 'platform', detail });
+
+/** Step 1, plus the `git push` invocations the command runs. Any failure here denies. */
+function inspect(descriptor: AgentActionDescriptor): Inspection {
+  try {
+    return inspectUnchecked(descriptor);
+  } catch {
+    return { verdict: unanalyzable('the command could not be analysed'), pushes: [] };
+  }
+}
+
 /** Step 1. The broker's own classification, plus what the descriptor itself proves. */
 export function platformViolation(descriptor: AgentActionDescriptor): Verdict | undefined {
+  return inspect(descriptor).verdict;
+}
+
+function inspectUnchecked(descriptor: AgentActionDescriptor): Inspection {
   const effect = descriptor.platformEffects[0];
   if (effect) {
-    return { decision: 'DENY', code: PLATFORM_EFFECT_CODES[effect], source: 'platform', detail: `the platform never permits ${effect.replaceAll('_', ' ')}` };
+    return { verdict: { decision: 'DENY', code: PLATFORM_EFFECT_CODES[effect], source: 'platform', detail: `the platform never permits ${effect.replaceAll('_', ' ')}` }, pushes: [] };
   }
   for (const path of descriptor.paths ?? []) {
-    if (escapesWorkspace(path)) return { decision: 'DENY', code: 'PLATFORM_OUTSIDE_WORKSPACE', source: 'platform', detail: 'a path leaves the workspace' };
+    if (escapesWorkspace(path)) return { verdict: { decision: 'DENY', code: 'PLATFORM_OUTSIDE_WORKSPACE', source: 'platform', detail: 'a path leaves the workspace' }, pushes: [] };
     if (descriptor.actionClass !== 'read' && normalizeWorkspacePath(path).split('/').includes('.git')) {
-      return { decision: 'DENY', code: 'PLATFORM_PROTECTED_PATH', source: 'platform', detail: 'repository metadata (.git) is runner-owned' };
+      return { verdict: { decision: 'DENY', code: 'PLATFORM_PROTECTED_PATH', source: 'platform', detail: 'repository metadata (.git) is runner-owned' }, pushes: [] };
     }
   }
   const argv = descriptor.command ?? [];
-  if (argv.length === 0) return undefined;
-  // Every program the command line runs, looking through launchers and `sh -c` strings (best effort).
-  const segments = commandSegments(argv);
-  if (segments.some((segment) => segment[0] === '<truncated>')) {
-    return { decision: 'DENY', code: 'PLATFORM_COMMAND_UNANALYZABLE', source: 'platform', detail: 'the command nests too many launchers or shell strings to analyse' };
-  }
-  const tokens = [...argv, ...segments.flat()];
-  if (segments.some((segment) => DOCKER_PROGRAMS.has(programName(segment[0] ?? ''))) || tokens.some((argument) => argument.includes('docker.sock'))) {
+  if (argv.length === 0) return { pushes: [] };
+  // Every program the command line runs, looking through launchers and shell strings; anything unreadable denies.
+  const analysis = analyzeCommand(argv);
+  // Any word naming a container runtime or privilege tool denies, not only a program word: a program
+  // the analysis treats as a leaf could be a wrapper that runs its arguments (`strace sudo id`). The
+  // literal argv is checked even when the analysis fails, so the specific reason wins.
+  const named = namedPlatformAccess(analysis.ok ? [...argv, ...analysis.segments.flat()] : argv);
+  if (named) return { verdict: named, pushes: [] };
+  if (!analysis.ok) return { verdict: unanalyzable(`the command cannot be analysed: ${analysis.reason}`), pushes: [] };
+  return { pushes: analysis.pushes };
+}
+
+function namedPlatformAccess(words: readonly string[]): Verdict | undefined {
+  if (words.some((word) => DOCKER_PROGRAMS.has(programName(word)) || word.includes('docker.sock'))) {
     return { decision: 'DENY', code: 'PLATFORM_DOCKER_ACCESS', source: 'platform', detail: 'container runtimes are never reachable from an agent' };
   }
-  if (segments.some((segment) => PRIVILEGE_PROGRAMS.has(programName(segment[0] ?? '')))) {
+  if (words.some((word) => PRIVILEGE_PROGRAMS.has(programName(word)))) {
     return { decision: 'DENY', code: 'PLATFORM_PRIVILEGE_ESCALATION', source: 'platform', detail: 'privilege changes are never permitted' };
   }
   return undefined;
@@ -152,17 +180,22 @@ function runtimeViolation(input: GateInput, effective: EffectivePolicy): Verdict
 }
 
 /** Step 4. Deny on any miss; a class that needs a target and has none is denied too. */
-function scopeViolation(descriptor: AgentActionDescriptor, scope: PolicyScope, source: 'global' | 'project'): Verdict | undefined {
+function scopeViolation(
+  descriptor: AgentActionDescriptor,
+  actionClass: AgentActionClass,
+  pushes: readonly GitPush[],
+  scope: PolicyScope,
+  source: 'global' | 'project'
+): Verdict | undefined {
   const deny = (code: GateReasonCode, detail: string): Verdict => ({ decision: 'DENY', code, source, detail, rule: `${source}.scope` });
-  const actionClass = descriptor.actionClass;
   if (!listAdmits('repositories', scope.repositories, descriptor.repository)) return deny('REPOSITORY_OUT_OF_SCOPE', `${source} repositories do not include this repository`);
-  const pushes = descriptor.command ? gitPushes(descriptor.command) : [];
   if ((BRANCH_CLASSES.has(actionClass) || pushes.length > 0) && !descriptor.branch) return deny('BRANCH_REQUIRED', `${pushes.length > 0 ? 'git push' : actionClass} must name its branch`);
   if (descriptor.branch && !isValidBranchName(descriptor.branch)) return deny('BRANCH_INVALID', 'the branch is not a valid git branch name');
   if (descriptor.branch && (BRANCH_CHECKED_CLASSES.has(actionClass) || pushes.length > 0) && !listAdmits('branchPrefixes', scope.branchPrefixes, descriptor.branch)) {
     return deny('BRANCH_OUT_OF_SCOPE', `${source} branch prefixes do not include this branch`);
   }
   for (const push of pushes) {
+    if (push.implicit) return deny('BRANCH_REQUIRED', 'git push must name its refspec; without one git configuration decides what is pushed');
     if (push.broad) return deny('BRANCH_OUT_OF_SCOPE', 'git push may only update named branches (no --all, --mirror, --tags or deletions)');
     for (const destination of push.destinations) {
       if (!isValidBranchName(destination)) return deny('BRANCH_INVALID', 'a git push destination is not a valid branch name');
@@ -197,9 +230,24 @@ function projectSource(snapshot: PolicySnapshot): GateDecision['policy']['projec
   return project.source;
 }
 
+/** Orders decisions by strictness; a pending advisor decision is weaker than a plain approval because it can clear. */
+function strictness(decision: GateDecision): number {
+  if (decision.decision === 'DENY') return 4;
+  if (decision.decision === 'REQUIRE_APPROVAL') return isAdvisorPending(decision) ? 2 : 3;
+  return 0;
+}
+
 export function evaluateGate(input: GateInput): GateDecision {
+  const inspection = inspect(input.descriptor);
+  const declared = evaluateAs(input, input.descriptor.actionClass, inspection);
+  if (inspection.verdict || inspection.pushes.length === 0 || input.descriptor.actionClass === 'publish_branch') return declared;
+  const publish = evaluateAs(input, 'publish_branch', inspection);
+  return strictness(publish) >= strictness(declared) ? publish : declared;
+}
+
+/** Steps 1-9 for one action class. The decision always reports the descriptor's declared class. */
+function evaluateAs(input: GateInput, actionClass: AgentActionClass, inspection: Inspection): GateDecision {
   const { descriptor, snapshot } = input;
-  const actionClass = descriptor.actionClass;
   const global = snapshot.global.document;
   const project = snapshot.project?.state === 'active' ? snapshot.project.document : null;
   const effective = resolveEffectivePolicy(global, project);
@@ -220,7 +268,7 @@ export function evaluateGate(input: GateInput): GateDecision {
       reasonCode: verdict.code,
       reasons: reasons.slice(0, 50),
       matchedRules: matchedRules.slice(0, 50),
-      actionClass,
+      actionClass: descriptor.actionClass,
       policy: {
         globalRevisionId: snapshot.global.revisionId,
         globalSource: snapshot.global.source,
@@ -234,14 +282,13 @@ export function evaluateGate(input: GateInput): GateDecision {
     };
   };
 
-  const platform = platformViolation(descriptor);
-  if (platform) return finish({ ...platform, rule: 'platform' });
+  if (inspection.verdict) return finish({ ...inspection.verdict, rule: 'platform' });
   const runtime = runtimeViolation(input, effective);
   if (runtime) return finish({ ...runtime, rule: 'runtime' });
   if (global.hardDeny.includes(actionClass)) {
     return finish({ decision: 'DENY', code: 'GLOBAL_HARD_DENY', source: 'global', detail: `the global policy hard-denies ${actionClass}`, rule: `global.hardDeny.${actionClass}` });
   }
-  const scope = scopeViolation(descriptor, global.scope, 'global') ?? scopeViolation(descriptor, effective.scope, 'project');
+  const scope = scopeViolation(descriptor, actionClass, inspection.pushes, global.scope, 'global') ?? scopeViolation(descriptor, actionClass, inspection.pushes, effective.scope, 'project');
   if (scope) return finish(scope);
   if (!global.allowedActionClasses.includes(actionClass)) {
     return finish({ decision: 'DENY', code: 'ACTION_CLASS_NOT_ALLOWED', source: snapshot.global.source === 'default' ? 'default' : 'global', detail: `the global policy does not allow ${actionClass}`, rule: 'global.allowedActionClasses' });

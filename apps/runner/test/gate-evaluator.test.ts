@@ -17,8 +17,8 @@ import {
   type PolicyRuleEffect,
   type ProjectExecutionPolicy
 } from '@cloud-harness/contracts';
-import { commandSegments, gitPushes, isValidBranchName } from '../src/agent-governance/command-analysis.js';
-import { combineAdvisor, decide, evaluateGate, isAdvisorPending, PURE_GATE_EVALUATOR, type PolicySnapshot } from '../src/agent-governance/gate-evaluator.js';
+import { analyzeCommand, isValidBranchName } from '../src/agent-governance/command-analysis.js';
+import { combineAdvisor, decide, evaluateGate, isAdvisorPending, platformViolation, PURE_GATE_EVALUATOR, type PolicySnapshot } from '../src/agent-governance/gate-evaluator.js';
 
 const PROJECT = `prj_${'p'.repeat(32)}`;
 const GLOBAL_REVISION = `apr_${'1'.repeat(32)}`;
@@ -436,8 +436,9 @@ describe('git push is bound to the declared branch', () => {
   });
 
   it('checks every refspec against the declared branch and the branch scope', () => {
-    expect(push(['git', 'push', 'origin', 'agent/fix-1'], 'agent/fix-1')).toBe('RULE_ALLOW');
-    expect(push(['git', 'push', '-u', 'origin', 'HEAD:refs/heads/agent/fix-1'], 'agent/fix-1')).toBe('RULE_ALLOW');
+    // In scope, the push is judged as publish_branch, which this policy gates behind approval.
+    expect(push(['git', 'push', 'origin', 'agent/fix-1'], 'agent/fix-1')).toBe('RULE_REQUIRE_APPROVAL');
+    expect(push(['git', 'push', '-u', 'origin', 'HEAD:refs/heads/agent/fix-1'], 'agent/fix-1')).toBe('RULE_REQUIRE_APPROVAL');
     expect(push(['git', 'push', 'origin', 'HEAD:main'], 'agent/fix-1')).toBe('BRANCH_OUT_OF_SCOPE');
     expect(push(['git', 'push', 'origin', 'agent/fix-1', 'agent/other'], 'agent/fix-1')).toBe('BRANCH_OUT_OF_SCOPE');
     expect(push(['git', 'push', 'origin', 'main'], 'main')).toBe('BRANCH_OUT_OF_SCOPE');
@@ -448,16 +449,190 @@ describe('git push is bound to the declared branch', () => {
   });
 });
 
-describe('command analysis helpers', () => {
-  it('splits shell strings into the commands they run', () => {
-    expect(commandSegments(['sh', '-c', "a 'b c'; d && e | f"])).toEqual([['sh', '-c', "a 'b c'; d && e | f"], ['a', 'b c'], ['d'], ['e'], ['f']]);
-    expect(commandSegments(['timeout', '10', 'npm', 'test'])).toEqual([['timeout', '10', 'npm', 'test'], ['npm', 'test']]);
+describe('a git push is judged as publish_branch whatever class it declares', () => {
+  const allowedWithoutPublish = AGENT_ACTION_CLASSES.filter((value) => value !== 'publish_branch');
+  const denyPublish = global({ hardDeny: ['publish_branch'], allowedActionClasses: allowedWithoutPublish, scope: { ...GLOBAL.scope, commands: ['*'] } });
+  const run = (actionClass: AgentActionClass, command: string[], policy: GlobalExecutionPolicy, branch: string | undefined = 'agent/x') =>
+    evaluate(action(actionClass, { command, ...(branch === undefined ? {} : { branch }) }), { global: policy });
+
+  it.each([
+    ['test', ['git', 'push', 'origin', 'agent/x']],
+    ['read', ['git', 'push', 'origin', 'agent/x']],
+    ['vcs_local', ['git', 'push', 'origin']],
+    ['vcs_local', ['sh', '-c', 'npm test && git push origin agent/x']]
+  ] as Array<[AgentActionClass, string[]]>)('%s carrying %j hits the publish hard deny', (actionClass, command) => {
+    const decision = run(actionClass, command, denyPublish);
+    expect(decision).toMatchObject({ decision: 'DENY', reasonCode: 'GLOBAL_HARD_DENY', actionClass });
+    expect(decision.matchedRules).toContain('global.hardDeny.publish_branch');
   });
 
-  it('parses push refspecs', () => {
-    expect(gitPushes(['git', 'push', 'origin', '+HEAD:agent/x'])).toEqual([{ destinations: ['agent/x'], broad: false }]);
-    expect(gitPushes(['git', 'push', '--tags'])).toEqual([{ destinations: [], broad: true }]);
-    expect(gitPushes(['git', 'status'])).toEqual([]);
+  it('applies publish mandatory approval and rules to a push declared as another class', () => {
+    const mandatory = global({ mandatoryApproval: ['publish_branch'], scope: { ...GLOBAL.scope, commands: ['*'] } });
+    expect(run('test', ['git', 'push', 'origin', 'agent/x'], mandatory)).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'MANDATORY_APPROVAL' });
+    const permissive = global({ scope: { ...GLOBAL.scope, commands: ['*'] } });
+    expect(run('vcs_local', ['git', 'push', 'origin', 'agent/x'], permissive)).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'RULE_REQUIRE_APPROVAL' });
+    // A stricter declared class still wins over the publish evaluation.
+    const allowPublish = global({ defaults: { ...GLOBAL.defaults, publish_branch: { effect: 'allow', delegable: false }, test: { effect: 'require_approval', delegable: false } }, scope: { ...GLOBAL.scope, commands: ['*'] } });
+    expect(run('test', ['git', 'push', 'origin', 'agent/x'], allowPublish)).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'RULE_REQUIRE_APPROVAL', matchedRules: ['global.defaults.test'] });
+  });
+
+  it('denies a push without an explicit refspec', () => {
+    const permissive = global({ scope: { ...GLOBAL.scope, commands: ['*'] } });
+    for (const command of [['git', 'push'], ['git', 'push', 'origin'], ['git', 'push', '-u', 'origin']]) {
+      expect(run('vcs_local', command, permissive).reasonCode, command.join(' ')).toBe('BRANCH_REQUIRED');
+    }
+  });
+
+  it.each([
+    ['git', '-c', 'alias.p=push', 'p', 'origin', 'main'],
+    ['git', '-c', 'remote.origin.url=https://example.com/x.git', 'push', 'origin', 'agent/x'],
+    ['git', '-c', 'push.default=matching', 'push', 'origin', 'agent/x'],
+    ['git', '-c', 'url.https://evil.example/.insteadOf=https://github.com/', 'push', 'origin', 'agent/x'],
+    ['git', '-c', 'core.sshCommand=./x.sh', 'fetch'],
+    ['git', '-calias.p=push', 'p'],
+    ['git', '--config-env=alias.p=P', 'p'],
+    ['git', '--exec-path=/tmp', 'push', 'origin', 'agent/x'],
+    ['git', 'p', 'origin', 'main'],
+    ['git', 'config', 'alias.p', 'push'],
+    ['git', 'push', '--receive-pack=./x.sh', 'origin', 'agent/x'],
+    ['git', 'rebase', '--exec', 'npm test', 'main'],
+    ['git', 'bisect', 'run', 'npm', 'test'],
+    ['git', 'submodule', 'foreach', 'npm test'],
+    ['xargs', 'git', 'push', 'origin', 'agent/x'],
+    ['xargs', 'git']
+  ].map((command) => [command]))('%j is unanalyzable', (command) => {
+    expect(run('vcs_local', command, global({ scope: { ...GLOBAL.scope, commands: ['*'] } })).reasonCode).toBe('PLATFORM_COMMAND_UNANALYZABLE');
+  });
+
+  it('accepts the safe git settings and read-only config', () => {
+    const permissive = global({ scope: { ...GLOBAL.scope, commands: ['*'] } });
+    expect(run('vcs_local', ['git', '-c', 'user.name=Agent', '-C', '.', 'commit', '-m', 'fix'], permissive).reasonCode).toBe('RULE_ALLOW');
+    expect(run('read', ['git', 'config', '--get', 'user.name'], permissive).reasonCode).toBe('RULE_ALLOW');
+  });
+});
+
+describe('the command analysis fails closed', () => {
+  const permissive = global({ scope: { ...GLOBAL.scope, commands: ['*'] } });
+  const run = (command: string[]) => evaluate(action('vcs_local', { command }), { global: permissive });
+
+  it.each([
+    // Shell options that take a value before -c.
+    [['bash', '-o', 'pipefail', '-c', 'sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['bash', '-euo', 'pipefail', '-c', 'sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['bash', '-O', 'extglob', '-c', 'sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['bash', '+O', 'extglob', '-c', 'docker ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['bash', '--rcfile', 'x', '-c', 'sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['bash', '--unknown', '-c', 'sudo id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['bash', 'script.sh', '-c', 'npm test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['bash', '-s'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['bash'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', "bash <<<'id'"], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'bash < x.sh'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    // Attached and split launcher forms.
+    [['env', '-Ssudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['env', '-iSsudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['env', '--split-string=sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['env', '-', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['env', '--frobnicate', 'id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['npx', '--call=sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['npx', '--call', 'docker ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['nice', '-n5', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['busybox', 'chroot', '/'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    // Keywords, negation and builtins in the program position.
+    [['sh', '-c', 'if sudo id; then :; fi'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['sh', '-c', 'while docker ps; do :; done'], 'PLATFORM_DOCKER_ACCESS'],
+    [['sh', '-c', 'for x in 1; do sudo id; done'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['!', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['sh', '-c', '! docker ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['sh', '-c', '{ sudo id; }'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['sh', '-c', 'coproc sudo id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['eval', 'sudo id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'source ./x.sh'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', '. ./x.sh'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['builtin', 'exec', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['exec', '-a', 'x', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['command', 'docker', 'ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['time', '-p', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    // Leading redirections.
+    [['sh', '-c', '</dev/null sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['sh', '-c', '2>/dev/null docker ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['sh', '-c', '> out 2>&1 sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['sh', '-c', 'cat <<EOF\nsudo id\nEOF'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    // Launchers that were not unwrapped before.
+    [['setsid', '-f', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['flock', '/tmp/l', 'npm', 'test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['script', '-c', 'npm test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['watch', 'npm test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['find', '.', '-exec', 'npm', 'test', ';'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['npm', 'exec', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['npm', 'x', '--', 'docker', 'ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['npm', '--prefix', 'x', 'exec', 'npm', 'test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['pnpm', 'dlx', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['yarn', 'dlx', 'docker', 'ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['bun', 'exec', 'sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['fish', '-c', 'npm test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['strace', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['strace', 'bash', '-c', 'npm test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['python3', '-c', 'import os'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['node', '-e', 'process.exit()'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    // Program names computed at run time.
+    [['sh', '-c', '$(echo sudo) id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'doc$(echo ker) ps'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', '"$X" id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', '/usr/bin/su* id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'GIT_SSH_COMMAND=x git fetch'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'export LD_PRELOAD=/tmp/x.so'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    // xargs appends arguments at run time.
+    [['xargs', 'env'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['xargs', 'nice', '-n', '5'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['xargs', '-I{}', 'sh', '-c', '{}'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'echo x | xargs sh -c'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    // Malformed input.
+    [['sh', '-c', "echo 'unclosed"], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'echo $(id'], 'PLATFORM_COMMAND_UNANALYZABLE']
+  ])('%j is denied', (command, reason) => {
+    expect(run(command)).toMatchObject({ decision: 'DENY', reasonCode: reason });
+  });
+
+  it('still allows ordinary commands', () => {
+    for (const command of [
+      ['sh', '-c', 'npm test 2>&1 | tee out.log'],
+      ['bash', '-euo', 'pipefail', '-c', 'npm ci && npm test'],
+      ['sh', '-c', 'echo "$(git rev-parse HEAD)" > sha.txt'],
+      ['env', '-u', 'HOME', 'CI=1', 'npx', 'vitest', 'run'],
+      ['timeout', '--signal=KILL', '30', 'npm', 'test'],
+      ['xargs', '-0', 'rm', '-f'],
+      ['sh', 'scripts/check.sh'],
+      ['npm', 'run', 'lint', '--', '--fix']
+    ]) {
+      expect(run(command).reasonCode, command.join(' ')).toBe('RULE_ALLOW');
+    }
+  });
+
+  it('bounds nested command substitutions without throwing', () => {
+    const levels = 10_000;
+    const quoted = `echo ${'"$('.repeat(levels)}id${')"'.repeat(levels)}`;
+    const bare = `echo ${'$('.repeat(levels)}id${')'.repeat(levels)}`;
+    const started = performance.now();
+    for (const source of [quoted, bare]) {
+      expect(analyzeCommand(['sh', '-c', source])).toMatchObject({ ok: false });
+      // The raw descriptor bypasses schema limits, as a broker bug might.
+      const descriptor = { ...action('vcs_local'), command: ['sh', '-c', source] };
+      expect(platformViolation(descriptor)).toMatchObject({ code: 'PLATFORM_COMMAND_UNANALYZABLE' });
+      expect(evaluateGate({ descriptor, snapshot: snapshot({ global: permissive }) }).reasonCode).toBe('PLATFORM_COMMAND_UNANALYZABLE');
+    }
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+});
+
+describe('command analysis helpers', () => {
+  it('lists the commands a shell string runs and the pushes among them', () => {
+    expect(analyzeCommand(['sh', '-c', "a 'b c'; d && e | f"])).toEqual({ ok: true, segments: [['sh', '-c', "a 'b c'; d && e | f"], ['a', 'b c'], ['d'], ['e'], ['f']], pushes: [] });
+    expect(analyzeCommand(['timeout', '10', 'npm', 'test'])).toMatchObject({ ok: true, segments: [['timeout', '10', 'npm', 'test'], ['npm', 'test']] });
+    expect(analyzeCommand(['git', 'push', 'origin', '+HEAD:agent/x'])).toMatchObject({ pushes: [{ destinations: ['agent/x'], broad: false, implicit: false }] });
+    expect(analyzeCommand(['git', 'push', '--tags'])).toMatchObject({ pushes: [{ destinations: [], broad: true, implicit: false }] });
+    expect(analyzeCommand(['git', 'push', '--signed=if-asked', 'origin'])).toMatchObject({ pushes: [{ destinations: [], broad: false, implicit: true }] });
+    expect(analyzeCommand(['git', 'status'])).toMatchObject({ ok: true, pushes: [] });
   });
 
   it('follows git check-ref-format basics', () => {
@@ -467,7 +642,6 @@ describe('command analysis helpers', () => {
     }
   });
 });
-
 /** Small deterministic generator so property failures reproduce. */
 function generator(seed: number) {
   let state = seed >>> 0;
