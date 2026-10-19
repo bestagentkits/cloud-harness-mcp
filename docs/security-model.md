@@ -975,6 +975,35 @@ the boundary is explicit; the composer is
 - A failed scan fails the agent closed instead of starting it silently without
   guidance; `repositoryContext: "none"` is the caller's explicit opt-out.
 
+### Persisted agent sessions
+
+With `AGENT_SESSION_PERSISTENCE_ENABLED`, the runner keeps each agent's Pi
+conversation (prompts, replies, tool calls, and tool results, which can include
+repository content) so `agent_spawn.continueFrom` can start a new agent from
+it. The store and its checks are owned by
+[`apps/runner/src/agent-state-repository.ts`](../apps/runner/src/agent-state-repository.ts):
+
+- Sessions live only in the runner's state database, scoped to the owner,
+  workspace, and workspace generation that created them. The agent gets no
+  mount, database path, or credential for them: the runner sends the history
+  in the agent's start record over the existing protocol channel, and the
+  agent reports new messages back the same way. No MCP tool returns session
+  content; status reports only counts and flags.
+- The agent's model lease is redacted from every reported message. Nothing
+  else is changed, so the history replays exactly.
+- The runner appends a message only from the running agent of the current
+  runner epoch and agent generation, and only at the next sequence number.
+  Each log carries a chained SHA-256 digest that the runner and the runtime
+  both verify before replay, so a gap, a stale writer, or a corrupted row
+  stops continuation instead of feeding a model altered history. Message count
+  and bytes are bounded.
+- Continuation is never automatic. It needs an explicit spawn by the same
+  owner in the same workspace generation, passes normal spawn admission and
+  budgets, and gets a fresh container and lease. Each session has at most one
+  successor.
+- Closing or expiring the workspace deletes its sessions, and sealed sessions
+  are purged after their retention.
+
 ### Scoped SQLite memories with optimistic concurrency
 
 - Memories are stored in SQLite `StateStore` (schema v5), isolated by `principal_id`:
