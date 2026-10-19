@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { Type, type TSchema } from '@earendil-works/pi-ai';
 import { defineTool, type AgentToolResult, type AgentToolUpdateCallback, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { BoundedJsonSchema, type AgentProxyOperation, type OutputRecord, type ToolResultRecord } from './protocol-schemas.js';
@@ -75,6 +75,26 @@ function boundedToolCallId(value: string): string {
   return `call_${createHash('sha256').update(value).digest('hex').slice(0, 32)}`;
 }
 
+/** The part of Pi's tool context the broker reads: the session's recorded entries. */
+type ToolSessionContext = { sessionManager?: { getEntries?: () => readonly unknown[] } } | undefined;
+
+/** How many tool results the session already records for a tool call ID, including replayed history. */
+function recordedResults(ctx: ToolSessionContext, toolCallId: string): number {
+  try {
+    const entries = ctx?.sessionManager?.getEntries?.() ?? [];
+    let count = 0;
+    for (const entry of entries) {
+      const message = typeof entry === 'object' && entry !== null ? (entry as { type?: unknown; message?: unknown }).message : undefined;
+      if ((entry as { type?: unknown }).type !== 'message' || typeof message !== 'object' || message === null) continue;
+      const { role, toolCallId: id } = message as { role?: unknown; toolCallId?: unknown };
+      if (role === 'toolResult' && id === toolCallId) count += 1;
+    }
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
 export class ToolResultLimitError extends Error {}
 
 
@@ -84,6 +104,8 @@ export class ProxyToolBroker {
   readonly #maxResultBytes: number;
   readonly #pending = new Map<string, PendingToolCall>();
   readonly #cancelled = new Set<string>();
+  /** The next use index of each tool call ID, so an ID a provider repeats still names a new request. */
+  readonly #uses = new Map<string, number>();
 
   constructor(emit: ToolRecordEmitter, redactor: Redactor, maxResultBytes: number) {
     this.#emit = emit;
@@ -97,8 +119,8 @@ export class ProxyToolBroker {
       label: operation,
       description: `Execute the bounded ${operation} operation in the validated workspace.`,
       parameters: PROXY_PARAMETERS[operation],
-      execute: (toolCallId, params, signal, onUpdate) =>
-        this.#execute(operation, toolCallId, params, signal, onUpdate)
+      execute: (toolCallId, params, signal, onUpdate, ctx) =>
+        this.#execute(operation, toolCallId, params, signal, onUpdate, ctx as ToolSessionContext)
     }));
   }
 
@@ -147,15 +169,21 @@ export class ProxyToolBroker {
     toolCallId: string,
     params: unknown,
     signal: AbortSignal | undefined,
-    onUpdate: AgentToolUpdateCallback<unknown> | undefined
+    onUpdate: AgentToolUpdateCallback<unknown> | undefined,
+    ctx?: ToolSessionContext
   ): Promise<AgentToolResult<unknown>> {
     const input = BoundedJsonSchema.parse(params);
-    const requestId = randomUUID();
     const { promise, resolve, reject } = Promise.withResolvers<AgentToolResult<unknown>>();
     if (signal?.aborted) {
       reject(new Error('tool call aborted'));
       return promise;
     }
+    const requestId = this.#requestIdFor(toolCallId, ctx);
+    if (this.#pending.has(requestId)) {
+      reject(new Error('tool call is already in flight'));
+      return promise;
+    }
+    this.#cancelled.delete(requestId);
     const abort = () => {
       const pending = this.#pending.get(requestId);
       if (!pending) return;
@@ -177,6 +205,19 @@ export class ProxyToolBroker {
       input
     });
     return promise;
+  }
+
+  /**
+   * Derives the proxy request ID from the model's tool call ID, so the runner can recognize the
+   * same call when it is delivered again, including by a continuation replaying this session. A
+   * tool call ID the session already used (some providers repeat or omit IDs) gets a distinct,
+   * deterministic suffix from its use count, which a replay of the same history reproduces.
+   */
+  #requestIdFor(toolCallId: string, ctx: ToolSessionContext): string {
+    const base = boundedToolCallId(toolCallId);
+    const index = this.#uses.get(base) ?? recordedResults(ctx, toolCallId);
+    this.#uses.set(base, index + 1);
+    return index === 0 ? base : `call_${createHash('sha256').update(`${base}#${index}`).digest('hex').slice(0, 32)}`;
   }
 
   #settleError(requestId: string, error: Error): void {
