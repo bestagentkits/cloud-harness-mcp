@@ -35,6 +35,8 @@ Cloud Harness solves this with an **ephemeral sibling Git helper**:
 4. The helper executes the push against the remote origin and immediately exits.
 5. The container is destroyed. The token is never written to disk or `.git/config`.
 
+Every push and fetch uses its own transfer repository, and each helper mounts only that repository plus, when it needs it, the checkout. A concurrent `git_fetch` or `git_pull` therefore cannot change a clone that a `git_push` has staged but not yet sent: the push sends exactly the commits staged from the checkout.
+
 ## Compare-and-Swap (CAS) & Concurrency Control
 
 - **`git_commit` HEAD Guard (`expectedHeadOid`):** Prevents commits on top of unexpected intermediate state. If the workspace HEAD has moved, the commit is rejected with `STALE_HEAD`.

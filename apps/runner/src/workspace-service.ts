@@ -164,6 +164,25 @@ export function builtinSkillsMountArgs(builtinSkillsRoot: string | undefined): s
   return ['--volume', `${builtinSkillsRoot}:/opt/cloud-harness/skills:ro`];
 }
 
+/**
+ * The bind mounts of one Git transfer helper: its own transfer repository and, when the mode reads or
+ * writes the checkout, that checkout. Never the whole workspace directory, so a repository-configured
+ * command that runs during one transfer (an import's fetch, a stage's clone) cannot reach the transfer
+ * repository of another; above all, nothing can write a staged push clone between its stage and its push.
+ * The checkout is read-only while it is staged and writable only for an import, which updates its refs.
+ */
+export function gitTransferVolumes(
+  mode: 'fetch' | 'import' | 'stage-push' | 'push',
+  checkoutHostPath: string,
+  checkoutJobPath: string,
+  transferHostPath: string,
+  transferName: string
+): string[] {
+  const transfer = ['--volume', `${transferHostPath}:/job/${transferName}:${mode === 'import' ? 'ro' : 'rw'}`];
+  if (mode === 'fetch' || mode === 'push') return transfer;
+  return ['--volume', `${checkoutHostPath}:${checkoutJobPath}:${mode === 'import' ? 'rw' : 'ro'}`, ...transfer];
+}
+
 export function computeWorkspaceOpenFingerprint(input: {
   repositoryUrl?: string | URL | undefined;
   repositories?: Array<{ url: string; alias: string; ref?: string | undefined; access: string }> | undefined;
@@ -2126,6 +2145,8 @@ export class WorkspaceService {
   ) {
     const helperName = `chm-git-${mode.replaceAll('-', '').slice(0, 5)}-${randomBytes(6).toString('hex')}`;
     const network = mode === 'fetch' || mode === 'push' ? 'bridge' : 'none';
+    const transferPath = join(record.workspacePath, transferName);
+    if (mode === 'fetch' || mode === 'stage-push') await this.createTransferDirectory(transferPath);
     try {
       const result = await runDocker([
         'run', '-i', '--rm', '--pull', 'never', '--name', helperName,
@@ -2135,7 +2156,8 @@ export class WorkspaceService {
         '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
         '--pids-limit', '128', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
         '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_TERMINAL_PROMPT=0',
-        '--volume', `${record.workspacePath}:/job:rw`, '--entrypoint', '/opt/harness/git-transfer-helper.sh',
+        ...gitTransferVolumes(mode, checkoutHostPath(record), checkoutJobPath(record), transferPath, transferName),
+        '--entrypoint', '/opt/harness/git-transfer-helper.sh',
         this.config.executorImage, mode, record.repositoryUrl, checkoutJobPath(record), `/job/${transferName}`, argument, expectedRemoteOid ?? '', historySpec
       ], {
         stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes,
@@ -5124,6 +5146,22 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       throw new HarnessError('CONFLICT', 'workspace could not be closed', 409);
     }
     return { ok: true, message: 'Workspace closed', data: publicRecord(finalRecord), truncated: false };
+  }
+
+  /**
+   * A transfer repository is bind-mounted on its own, so it must exist before its helper starts (Docker
+   * would otherwise create it as root) and be writable by the helper's UID. It is empty, which `git init`
+   * and `git clone` both accept as a destination.
+   */
+  private async createTransferDirectory(path: string): Promise<void> {
+    await mkdir(path, { mode: 0o700 });
+    try {
+      await chown(path, 10001, 10001);
+    } catch {
+      // A runner that is neither root nor UID 10001 cannot hand the directory over, so it opens it the way
+      // it opens the workspace directory itself.
+      await chmod(path, 0o777);
+    }
   }
 
   private async safeRemovePath(path: string): Promise<void> {

@@ -633,7 +633,13 @@ through a lease: an expected object ID (compare-and-swap or delete-if-match) or
 an expected-absent create. Policy refusals from the remote (`[remote rejected]`)
 are reported as non-retryable `FORBIDDEN`, never as a transport failure. Private clone/fetch/pull require GitHub App Contents read
 access, or the operator fallback above; push requires Contents read and write
-access, or the operator fallback above. The executable boundary
+access, or the operator fallback above. Each transfer helper mounts only its own
+transfer repository and, when its mode needs it, the checkout: never the whole
+workspace directory. A command the repository configures that Git runs during an
+import or a stage therefore cannot reach another transfer's repository, so
+nothing can rewrite a staged push clone between its stage and its push. The
+checkout is read-only while it is staged and the fetched transfer repository is
+read-only while it is imported. The executable boundary
 and its evidence are
 [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts),
 [`worker/git-transfer-helper.sh`](../worker/git-transfer-helper.sh),

@@ -89,6 +89,33 @@ describe('remote Git credential boundary', () => {
   });
 
 
+  it('mounts each transfer helper on its own transfer repository, never the whole workspace', async () => {
+    const { workspaceId, store, service } = fixture('d');
+    try {
+      const workspacePath = store.byId(workspaceId)!.workspacePath;
+      await service.execute('owner', 'git_push', { workspaceId, remote: 'origin', forceWithLease: false });
+      await service.execute('owner', 'git_fetch', { workspaceId, remote: 'origin', branch: 'main' });
+      const helperCalls = docker.runDocker.mock.calls.map(([args]) => args).filter((args) => args.includes('/opt/harness/git-transfer-helper.sh'));
+      const volumes = (args: string[]) => args.flatMap((value, index) => args[index - 1] === '--volume' ? [value] : []);
+      const byMode = (mode: string) => helperCalls.find((args) => args[args.indexOf('executor') + 1] === mode)!;
+      const transferOf = (args: string[]) => args[args.indexOf('executor') + 4]!;
+      for (const args of helperCalls) expect(volumes(args).some((volume) => volume.startsWith(`${workspacePath}:`))).toBe(false);
+
+      const staged = transferOf(byMode('stage-push'));
+      expect(transferOf(byMode('push'))).toBe(staged);
+      expect(volumes(byMode('stage-push'))).toEqual([`${workspacePath}/repo:/job/repo:ro`, `${workspacePath}${staged.slice('/job'.length)}:${staged}:rw`]);
+      expect(volumes(byMode('push'))).toEqual([`${workspacePath}${staged.slice('/job'.length)}:${staged}:rw`]);
+
+      const fetched = transferOf(byMode('fetch'));
+      expect(fetched).not.toBe(staged);
+      expect(volumes(byMode('fetch'))).toEqual([`${workspacePath}${fetched.slice('/job'.length)}:${fetched}:rw`]);
+      expect(volumes(byMode('import'))).toEqual([`${workspacePath}/repo:/job/repo:rw`, `${workspacePath}${fetched.slice('/job'.length)}:${fetched}:ro`]);
+      expect(JSON.stringify(volumes(byMode('import')))).not.toContain(staged);
+    } finally {
+      store.close();
+    }
+  });
+
   it('orchestrates pull as credentialed fetch plus uncredentialed rebase inside the executor', async () => {
     const { workspaceId, store, service } = fixture('b');
     try {
