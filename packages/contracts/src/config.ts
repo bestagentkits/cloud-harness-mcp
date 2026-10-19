@@ -29,6 +29,19 @@ const principalRelink = z.object({
 const positiveBoundedInteger = (maximum: number, defaultValue: number) =>
   z.coerce.number().int().min(1).max(maximum).default(defaultValue);
 
+/**
+ * Durable agent traces. `previewBytes` bounds an optional redacted preview of tool input; the
+ * default 0 stores digests only.
+ */
+export const AgentTracesConfigSchema = z.object({
+  enabled,
+  retentionDays: positiveBoundedInteger(90, 14),
+  maxSpansPerTrace: z.coerce.number().int().min(16).max(10_000).default(2_000),
+  maxTracesPerPrincipal: z.coerce.number().int().min(10).max(100_000).default(5_000),
+  previewBytes: z.coerce.number().int().min(0).max(512).default(0)
+}).strict().prefault({});
+export type AgentTracesConfig = z.infer<typeof AgentTracesConfigSchema>;
+
 const gatewayUrl = z.url().refine((value) => {
   try {
     const url = new URL(value);
@@ -367,7 +380,9 @@ export const RunnerConfigSchema = z.object({
   /** Instance-wide ceiling on automation workflows holding a workspace at once. */
   automationsMaxConcurrentWorkflows: positiveBoundedInteger(16, 2),
   /** Enables the owner-authored agent execution policies and the gate simulation. Off by default. */
-  agentPoliciesEnabled: enabled
+  agentPoliciesEnabled: enabled,
+  /** Durable agent run traces recorded by the runner. Off by default; the schema is created either way. */
+  agentTraces: AgentTracesConfigSchema
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
   if (config.packagesMaxReleaseBytes > config.packagesMaxOwnerBytes) {

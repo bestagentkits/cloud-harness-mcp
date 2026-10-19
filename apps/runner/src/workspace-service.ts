@@ -49,7 +49,8 @@ import {
   type WorkspaceLifecycleSettingName,
   type WorkspaceLifecycleSettingsUpdate,
   type WorkspaceLifecycleSettingsView,
-  TERMINAL_MAX_INPUT_BYTES
+  TERMINAL_MAX_INPUT_BYTES,
+  isAgentTraceOperation
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
 import { EXECUTOR_HARDENING_ARGS, EXECUTOR_RESOURCE_CEILINGS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
@@ -94,6 +95,8 @@ import {
   resolveGitHubFallbackToken
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
+import { AgentTraceStore, executeAgentTraceOperation } from './agent-trace-store.js';
+import { AgentTraceRecorder } from './agent-trace-recorder.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -139,6 +142,12 @@ const countedStatus = new Set<WorkspaceRecord['status']>(COUNTED_WORKSPACE_STATU
  * an operator or agent to act, and every check starts a short-lived helper container.
  */
 const AUTO_CLOSE_RETRY_MS = 3_600_000;
+
+/** A retained workspace that startup reconciliation could not bring back; the runner logs each one. */
+export interface StartupReconcileFailure {
+  workspaceId: string;
+  reason: string;
+}
 const AUTO_CLOSE_DEFERRED_PREFIX = 'auto-close deferred: ';
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
@@ -357,6 +366,9 @@ export class WorkspaceService {
 
   public readonly networkProfileManager: NetworkProfileManager;
   private readonly agentManager?: AgentManager | undefined;
+  /** Present only when agent traces are enabled; the trace tools report FEATURE_DISABLED otherwise. */
+  private readonly traceStore: AgentTraceStore | undefined;
+  private readonly tracePurger: AgentTraceStore;
   private readonly metadata?: MetadataStore | undefined;
   private failureIntelligence?: FailureIntelligence | undefined;
   constructor(
@@ -378,9 +390,22 @@ export class WorkspaceService {
     this.metadata = metadata;
     this.instanceId = store.instanceId();
     const { manager, ...managerDependencies } = agentDeps ?? {};
+    const traceConfig = config.agentTraces;
+    this.traceStore = traceConfig?.enabled === true
+      ? new AgentTraceStore(store.database, { retentionDays: traceConfig.retentionDays, maxTracesPerPrincipal: traceConfig.maxTracesPerPrincipal })
+      : undefined;
+    // The trace tables always exist (the state store creates them), and every row carries its own
+    // retention deadline, so retention is enforced even while recording and reading are off.
+    this.tracePurger = this.traceStore ?? new AgentTraceStore(store.database, {
+      retentionDays: traceConfig?.retentionDays ?? 14, maxTracesPerPrincipal: traceConfig?.maxTracesPerPrincipal ?? 5_000
+    });
+    const traceRecorder = managerDependencies.traceRecorder ?? (this.traceStore && traceConfig
+      ? new AgentTraceRecorder(this.traceStore, { maxSpansPerTrace: traceConfig.maxSpansPerTrace, previewBytes: traceConfig.previewBytes })
+      : undefined);
     this.agentManager = manager ?? (config.agents
       ? new AgentManager(config.agents, store, {
           ...managerDependencies,
+          traceRecorder,
           toolExecutor: async (request) => await this.executeAgentProxy(request),
           repositoryGuidance: async (request) => {
             const record = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
@@ -551,7 +576,11 @@ export class WorkspaceService {
     }
   }
 
-  async start(): Promise<void> {
+  /**
+   * Returns the workspaces startup could not reconcile; each is already closed or held for recovery,
+   * so the caller only reports them.
+   */
+  async start(): Promise<StartupReconcileFailure[]> {
     if ((this.config.authMode ?? 'owner-bearer') === 'cloudflare-access') {
       const legacyOwners = this.store.legacyWorkspaceOwnerIds();
       if (legacyOwners.length > 0 && !this.config.legacyPrincipalMapping) {
@@ -572,46 +601,19 @@ export class WorkspaceService {
       });
     }
     await mkdir(this.config.jobsRoot, { recursive: true, mode: 0o700 });
+    const failures: StartupReconcileFailure[] = [];
     for (const record of this.store.active()) {
-      if (record.status === 'NETWORK_QUARANTINED') {
-        if (record.containerName) {
-          try {
-            await removeContainer(record.containerName);
-            this.store.update(record.id, { containerName: null });
-          } catch {
-            // retain record.containerName for retry
-          }
+      try {
+        await this.reconcileRetainedWorkspace(record);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        failures.push({ workspaceId: record.id, reason });
+        if (error instanceof HarnessError && error.code === 'EXPIRED') {
+          // The checkout is gone, so there is nothing to recover; close it like a missing executor.
+          await this.closeRecord(record, `executor reconciliation failed during startup: ${reason}`).catch(() => undefined);
+        } else {
+          await this.holdForRecovery(record, `executor reconciliation failed during startup: ${reason}`);
         }
-        continue;
-      }
-      if (record.status === 'CREATING') await this.closeRecord(record, 'runner restarted during workspace creation');
-      else if (!record.containerName || !(await inspectContainer(record.containerName))) await this.closeRecord(record, 'executor missing during startup reconciliation');
-      else {
-        const inspection = await inspectContainer(record.containerName);
-        const hostConfig = inspection?.HostConfig as { NetworkMode?: string } | undefined;
-        const expectedNetwork = record.networkProfile === 'network-none' ? 'none' : (this.config.dependencyNetworkName ?? 'cloud-harness-dependency-access');
-        if (hostConfig?.NetworkMode !== expectedNetwork) {
-          await removeContainer(record.containerName).catch(() => undefined);
-          if (record.networkProfile === 'dependency-access') {
-            const readiness = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
-            if (!readiness.ok) {
-              this.store.update(record.id, { containerName: null, status: 'NETWORK_QUARANTINED', error: `dependency-access network unavailable: ${readiness.reason}` });
-              continue;
-            }
-          }
-          await this.ensureActiveExecutor(record);
-          continue;
-        }
-        if (record.networkProfile === 'dependency-access') {
-          const readiness = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
-          if (!readiness.ok) {
-            await removeContainer(record.containerName).catch(() => undefined);
-            this.store.update(record.id, { containerName: null, status: 'NETWORK_QUARANTINED', error: `dependency-access network unavailable: ${readiness.reason}` });
-            continue;
-          }
-        }
-        const restarted = await runDocker(['restart', record.containerName], { timeoutMs: 30_000, maxBytes: 65_536 });
-        if (restarted.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'executor restart reconciliation failed', 503, true);
       }
     }
     await this.toolkitCacheManager.reconcileStartup().catch(() => undefined);
@@ -626,6 +628,71 @@ export class WorkspaceService {
       void this.reapExpired().catch(() => undefined).finally(() => { this.reaperRunning = false; });
     }, this.config.reaperIntervalSeconds * 1_000);
     this.reaper.unref();
+    return failures;
+  }
+
+  /**
+   * Brings one retained workspace back to a usable executor after a runner restart. A failure here
+   * belongs to this workspace alone; the caller holds it for recovery so startup finishes for the rest.
+   */
+  private async reconcileRetainedWorkspace(record: WorkspaceRecord): Promise<void> {
+    if (record.status === 'NETWORK_QUARANTINED') {
+      if (record.containerName) {
+        try {
+          await removeContainer(record.containerName);
+          this.store.update(record.id, { containerName: null });
+        } catch {
+          // retain record.containerName for retry
+        }
+      }
+      return;
+    }
+    if (record.status === 'CREATING') await this.closeRecord(record, 'runner restarted during workspace creation');
+    else if (!record.containerName || !(await inspectContainer(record.containerName))) await this.closeRecord(record, 'executor missing during startup reconciliation');
+    else {
+      const inspection = await inspectContainer(record.containerName);
+      const hostConfig = inspection?.HostConfig as { NetworkMode?: string } | undefined;
+      const expectedNetwork = record.networkProfile === 'network-none' ? 'none' : (this.config.dependencyNetworkName ?? 'cloud-harness-dependency-access');
+      if (hostConfig?.NetworkMode !== expectedNetwork) {
+        await removeContainer(record.containerName).catch(() => undefined);
+        if (record.networkProfile === 'dependency-access') {
+          const readiness = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
+          if (!readiness.ok) {
+            this.store.update(record.id, { containerName: null, status: 'NETWORK_QUARANTINED', error: `dependency-access network unavailable: ${readiness.reason}` });
+            return;
+          }
+        }
+        await this.ensureActiveExecutor(record);
+        return;
+      }
+      if (record.networkProfile === 'dependency-access') {
+        const readiness = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
+        if (!readiness.ok) {
+          await removeContainer(record.containerName).catch(() => undefined);
+          this.store.update(record.id, { containerName: null, status: 'NETWORK_QUARANTINED', error: `dependency-access network unavailable: ${readiness.reason}` });
+          return;
+        }
+      }
+      const restarted = await runDocker(['restart', record.containerName], { timeoutMs: 30_000, maxBytes: 65_536 });
+      if (restarted.exitCode !== 0) {
+        // A container that will not restart is replaced; the checkout lives on the host, not in it.
+        await removeContainer(record.containerName).catch(() => undefined);
+        await this.ensureActiveExecutor({ ...record, containerName: null });
+      }
+    }
+  }
+
+  /**
+   * Moves a workspace whose executor could not be reconciled into the recoverable state an idle expiry
+   * leaves, so its checkout is kept and `workspace_recover` rebuilds the executor. Any other state
+   * (closed, quarantined, or already demoted by a failed close) is left as it is.
+   */
+  private async holdForRecovery(record: WorkspaceRecord, reason: string): Promise<void> {
+    const current = this.store.byId(record.id);
+    if (!current || current.status !== 'ACTIVE' || !this.store.claimForReaping(current.id, current.generation, true)) return;
+    const claimed = this.store.byId(current.id)!;
+    if (claimed.containerName) await removeContainer(claimed.containerName).catch(() => undefined);
+    this.markExpiredRecoverable(claimed, Date.now(), reason);
   }
 
   /**
@@ -747,10 +814,11 @@ export class WorkspaceService {
    * Finishes an expiry claimed with `claimForExpiry`: the executor is already gone, the slot is released,
    * and the recoverable window opens from the expiry itself rather than from the last tool activity.
    */
-  private markExpiredRecoverable(claimed: WorkspaceRecord, now: number): WorkspaceRecord | undefined {
+  private markExpiredRecoverable(claimed: WorkspaceRecord, now: number, error?: string): WorkspaceRecord | undefined {
     return this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
       status: 'EXPIRED_RECOVERABLE',
       containerName: null,
+      ...(error ? { error } : {}),
       lastActivityAt: now,
       expiredAt: now,
       recoverableUntil: now + this.recoverableGraceSecondsFor(claimed) * 1_000
@@ -2973,6 +3041,14 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return op;
   }
 
+  /**
+   * Removes agent traces past their retention, in bounded batches. It runs whether or not traces
+   * are enabled, so turning the feature off never keeps old traces past their retention.
+   */
+  async purgeAgentTraces(now = Date.now(), signal?: AbortSignal): Promise<number> {
+    return await this.tracePurger.purgeExpired(now, signal ? { signal } : {});
+  }
+
   async execute(principal: PrincipalSelector | string, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     const ownerId = this.store.resolvePrincipal(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal);
     RunnerOperationSchema.parse(operation);
@@ -2983,6 +3059,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (operation === 'bash' && validated.target === 'toolbox') return await this.runToolbox(ownerId, validated, signal);
     // Package operations are owner-scoped and never take a workspace mutation lock.
     if (isPackageOperation(operation)) return await this.runPackageOperation(ownerId, operation, validated, signal);
+    // Trace reads are owner-scoped and workspace-independent: a trace outlives its workspace.
+    if (isAgentTraceOperation(operation)) {
+      return executeAgentTraceOperation(this.traceStore, ownerId, operation, validated, {
+        now: Date.now(), maxSpans: this.config.agentTraces?.maxSpansPerTrace ?? 2_000
+      });
+    }
     if (operation === 'operation_status') {
       const op = this.ownedOperation(ownerId, validated.operationId as string);
       const offset = validated.cursor ? Number(validated.cursor) : 0;

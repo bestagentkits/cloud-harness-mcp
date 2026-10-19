@@ -69,6 +69,20 @@ export const DASHBOARD_PAGES = [
     icon: '<circle cx="12" cy="8" r="3.2"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/><path d="M4 10H2.5"/><path d="M21.5 10H20"/>'
   },
   {
+    id: 'traces',
+    route: '/dashboard/traces',
+    label: 'Traces',
+    group: 'operate',
+    title: 'Traces',
+    help: 'Agent run traces: model and tool calls, latency, tokens, cost, and reconciliation with usage.',
+    palette: true,
+    paletteHint: 'Agent run traces, latency, tokens, and cost',
+    nav: true,
+    // The sidebar entry stays hidden until the server reports that agent traces are enabled.
+    feature: 'agentTraces',
+    icon: '<path d="M3 6h8"/><path d="M7 12h10"/><path d="M11 18h10"/><path d="M3 4v4"/><path d="M7 10v4"/><path d="M11 16v4"/>'
+  },
+  {
     id: 'automations',
     route: '/dashboard/automations',
     label: 'Automations',

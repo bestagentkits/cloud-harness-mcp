@@ -29,6 +29,8 @@ docker compose --profile images build executor-image
 **Cause:** The workspace reached its wall-clock lifetime or idle timeout (15 and 5 minutes by default; the operator can change both in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle) for workspaces opened afterwards).
 **Fix:** Workspaces are ephemeral by design. While the workspace is `EXPIRED_RECOVERABLE`, `workspace_recover` restores or exports its work. Otherwise re-open a workspace using `workspace_open` with a fresh idempotency key.
 
+If the workspace `error` starts `executor reconciliation failed during startup:`, the workspace did not time out: its executor could not be restarted or rebuilt after a runner restart. Other workspaces are unaffected. During the recoverable grace its checkout is kept, so `workspace_recover` rebuilds the executor once the cause in the message is fixed; afterwards it is auto-closed like any expired workspace.
+
 ---
 
 ### 4. API Key Denied (`401 Unauthorized`)
@@ -404,3 +406,16 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 4. For a failed clone, fix that repository's URL, ref, or access, then open again with a new idempotency key.
 
 File and command tools without `repositoryId` work on the workspace root, so paths start with `repos/<alias>/`. `read-only` is not isolation: commands in the workspace can still change files in every checkout.
+
+### 34. Agent traces: `FEATURE_DISABLED`, `TRACE_EXPIRED`, `NOT_FOUND`, or a trace marked `unreconciled`
+**Cause:**
+- `FEATURE_DISABLED` (409) from any `agent_trace*` tool, or no **Traces** entry in the Dashboard sidebar, means the operator has not set `AGENT_TRACES_ENABLED=true` on the runner.
+- `TRACE_EXPIRED` (410) means retention or the per-principal quota removed the trace, or the trace a list cursor continued from.
+- `NOT_FOUND` means the trace does not exist or belongs to another identity; the two are reported the same way on purpose.
+- `unreconciled` means the model-call spans and the agent usage ledger disagree beyond the rounding tolerance. Its `reasons` name why, for example usage missing from a model call or `recorder_degraded` when a trace write failed during the run.
+
+**Fix:**
+1. Ask the operator to enable agent traces (see [Environment Variables](/reference/environment-variables)). Runs from before the flag was on have no trace.
+2. For `TRACE_EXPIRED` on a list, start the listing again without a cursor. To keep traces longer, ask the operator to raise `AGENT_TRACE_RETENTION_DAYS`.
+3. Copy `traceId` exactly from a list result under the same identity that ran the agent.
+4. Treat an `unreconciled` trace's totals as approximate; `agent_status` usage and the gateway settlement on the trace are the reference figures.

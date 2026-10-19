@@ -213,6 +213,13 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     cloudflareAccessOAuth: cloudflareAccessOAuth(),
     automationsEnabled: process.env.AUTOMATIONS_ENABLED,
     automationsMaxConcurrentWorkflows: process.env.AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS,
+    agentTraces: {
+      enabled: process.env.AGENT_TRACES_ENABLED,
+      retentionDays: process.env.AGENT_TRACE_RETENTION_DAYS,
+      maxSpansPerTrace: process.env.AGENT_TRACE_MAX_SPANS,
+      maxTracesPerPrincipal: process.env.AGENT_TRACE_MAX_PER_PRINCIPAL,
+      previewBytes: process.env.AGENT_TRACE_PREVIEW_BYTES
+    },
     agents: agentConfigurationPresent ? {
       image: process.env.AGENT_IMAGE,
       networkMode: process.env.AGENT_NETWORK_MODE,

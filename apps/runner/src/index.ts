@@ -82,7 +82,9 @@ const oauthGrantSettings = new OAuthGrantSettingsService(
   config.cloudflareAccessOAuth ? new CloudflareAccessOAuthProvider(config.cloudflareAccessOAuth) : undefined,
   (ownerId, action, details) => metadata.recordAudit(ownerId, action, 'instance', 'oauth_grant_settings', 1, details)
 );
-await service.start();
+for (const failure of await service.start()) {
+  logger.warn(failure, 'workspace executor reconciliation failed during startup');
+}
 const automations = new AutomationService({
   database: store.database,
   enabled: config.automationsEnabled,
@@ -118,6 +120,31 @@ const agentPolicies = new AgentPolicyService({
     metadata.recordAuditInTransaction(database, principalId, action, subjectType, subjectId, generation, details);
   }
 });
+// Agent trace retention: traces past their retention period are removed hourly in bounded,
+// yielding batches, also while traces are disabled. A failure is logged and retried on the next
+// tick, and a tick never overlaps a purge still in progress. Shutdown aborts the purge between
+// batches and waits for it before the database closes.
+const agentTracePurgeAbort = new AbortController();
+let agentTracePurgeRunning: Promise<void> | undefined;
+const purgeAgentTraces = async (): Promise<void> => {
+  if (agentTracePurgeRunning || agentTracePurgeAbort.signal.aborted) return;
+  agentTracePurgeRunning = (async () => {
+    try {
+      const removed = await service.purgeAgentTraces(Date.now(), agentTracePurgeAbort.signal);
+      if (removed > 0) logger.info({ removed }, 'agent traces purged');
+    } catch (error) {
+      logger.warn({ error: error instanceof Error ? error.message : 'unknown' }, 'agent trace purge failed');
+    }
+  })();
+  try {
+    await agentTracePurgeRunning;
+  } finally {
+    agentTracePurgeRunning = undefined;
+  }
+};
+void purgeAgentTraces();
+const agentTracePurge = setInterval(() => { void purgeAgentTraces(); }, 3_600_000);
+agentTracePurge.unref();
 // New installs default to the provider-maximum grant. This never blocks startup and
 // never overwrites a value an operator set explicitly; failures surface in Settings.
 void oauthGrantSettings.reconcileDefault().then(
@@ -133,6 +160,9 @@ server.listen(config.port, config.host, () => logger.info({ host: config.host, p
 async function shutdown(signal: string) {
   logger.info({ signal }, 'runner shutting down');
   server.close();
+  clearInterval(agentTracePurge);
+  agentTracePurgeAbort.abort();
+  await agentTracePurgeRunning;
   await automations.stop();
   await service.stop();
   metadata.close();
