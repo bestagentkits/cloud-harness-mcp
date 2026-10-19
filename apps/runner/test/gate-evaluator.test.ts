@@ -17,7 +17,8 @@ import {
   type PolicyRuleEffect,
   type ProjectExecutionPolicy
 } from '@cloud-harness/contracts';
-import { combineAdvisor, evaluateGate, type PolicySnapshot } from '../src/agent-governance/gate-evaluator.js';
+import { commandSegments, gitPushes, isValidBranchName } from '../src/agent-governance/command-analysis.js';
+import { combineAdvisor, decide, evaluateGate, isAdvisorPending, PURE_GATE_EVALUATOR, type PolicySnapshot } from '../src/agent-governance/gate-evaluator.js';
 
 const PROJECT = `prj_${'p'.repeat(32)}`;
 const GLOBAL_REVISION = `apr_${'1'.repeat(32)}`;
@@ -254,7 +255,7 @@ const ROWS: Row[] = [
   { name: 'credential access marked by the broker', descriptor: action('read', { platformEffects: ['credential_access'] }), decision: 'DENY', reason: 'PLATFORM_CREDENTIAL_ACCESS' },
   { name: 'network escalation marked by the broker', descriptor: action('network', { platformEffects: ['network_escalation'] }), decision: 'DENY', reason: 'PLATFORM_NETWORK_ESCALATION' },
   { name: 'ADVISOR_OR_APPROVAL without an advisor', descriptor: action('open_pr'), decision: 'REQUIRE_APPROVAL', reason: 'ADVISOR_UNAVAILABLE' },
-  { name: 'ADVISOR_OR_APPROVAL with an advisor', descriptor: action('open_pr'), advisor: true, decision: 'ALLOW', reason: 'ADVISOR_REQUIRED' },
+  { name: 'ADVISOR_OR_APPROVAL with an advisor', descriptor: action('open_pr'), advisor: true, decision: 'REQUIRE_APPROVAL', reason: 'ADVISOR_REQUIRED' },
   { name: 'class without a global default requires approval', descriptor: action('read'), options: { global: global({ defaults: {} }) }, decision: 'REQUIRE_APPROVAL', reason: 'RULE_REQUIRE_APPROVAL' }
 ];
 
@@ -312,9 +313,20 @@ describe('evaluateGate decision matrix', () => {
 describe('combineAdvisor', () => {
   const required = () => evaluate(action('open_pr'), {}, undefined, true);
 
-  it('keeps a required ALLOW only on an explicit no_change', () => {
+  it('holds a discretionary action at approval until the advisor answers', () => {
+    const pending = required();
+    expect(pending).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_REQUIRED', advisor: { required: true, consulted: false } });
+    expect(isAdvisorPending(pending)).toBe(true);
+  });
+
+  it('clears a pending discretionary action only on an explicit no_change', () => {
     const decision = combineAdvisor(required(), { effect: 'no_change', decisionId: 'adv_1' });
     expect(decision.decision).toBe('ALLOW');
+    expect(decision.reasonCode).toBe('ADVISOR_NO_CHANGE');
+    expect(decision.matchedRules[0]).toBe('advisor');
+    expect(isAdvisorPending(decision)).toBe(false);
+    // The cleared decision is final: a second answer cannot clear or lower anything again.
+    expect(combineAdvisor(decision, { effect: 'escalate' }).decision).toBe('REQUIRE_APPROVAL');
     expect(decision.advisor).toEqual({ required: true, consulted: true, effect: 'no_change', decisionId: 'adv_1' });
     expect(decision.reasons.map((reason) => reason.code)).toContain('ADVISOR_NO_CHANGE');
   });
@@ -341,6 +353,118 @@ describe('combineAdvisor', () => {
     const allow = evaluate(action('edit'));
     expect(combineAdvisor(allow, null)).toEqual(allow);
     expect(combineAdvisor(allow, { effect: 'escalate' }).decision).toBe('REQUIRE_APPROVAL');
+  });
+});
+
+describe('decide', () => {
+  const input = (advisorAvailable: boolean) => ({ descriptor: action('open_pr'), snapshot: snapshot(), advisorAvailable });
+
+  it('never returns ALLOW for a discretionary action without a no_change answer', () => {
+    expect(decide(input(true))).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_ESCALATED' });
+    expect(decide(input(true), null).decision).toBe('REQUIRE_APPROVAL');
+    expect(decide(input(true), { effect: 'escalate' }).decision).toBe('REQUIRE_APPROVAL');
+    expect(decide(input(true), { effect: 'no_change', decisionId: 'adv_1' })).toMatchObject({ decision: 'ALLOW', reasonCode: 'ADVISOR_NO_CHANGE' });
+    // Without an advisor the action needs approval, and an answer that nobody asked for changes nothing.
+    expect(decide(input(false), { effect: 'no_change' })).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_UNAVAILABLE' });
+  });
+
+  it('returns the evaluation unchanged when no advisor is involved', () => {
+    const plain = { descriptor: action('publish_branch', { branch: 'main' }), snapshot: snapshot() };
+    expect(decide(plain, { effect: 'no_change' })).toEqual(evaluateGate(plain));
+    expect(PURE_GATE_EVALUATOR.decide(plain)).toEqual(evaluateGate(plain));
+    expect(PURE_GATE_EVALUATOR.evaluate(plain)).toEqual(evaluateGate(plain));
+    expect(Object.isFrozen(PURE_GATE_EVALUATOR)).toBe(true);
+  });
+});
+
+describe('platform invariants look through launchers and shell strings', () => {
+  const permissive = global({ scope: { ...GLOBAL.scope, commands: ['*'] } });
+  const run = (command: string[], extra: Partial<AgentActionDescriptorInput> = {}) =>
+    evaluate(action('vcs_local', { command, ...extra }), { global: permissive }).reasonCode;
+
+  it.each([
+    [['env', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['env', '-u', 'HOME', 'FOO=1', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['HOME=/root', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['env', '-S', 'docker ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['nice', '-n', '5', 'docker', 'ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['timeout', '-s', 'KILL', '30', 'docker', 'ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['nohup', 'su', 'root'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['xargs', '-n', '1', 'doas', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['npx', '--yes', 'docker', 'ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['npx', '-c', 'docker ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['sh', '-c', 'docker ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['/bin/bash', '-lc', 'npm test && sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['zsh', '-c', 'npm test; docker ps'], 'PLATFORM_DOCKER_ACCESS'],
+    [['sh', '-c', 'npm test || sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['sh', '-c', 'cat x | sudo tee /etc/x'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['sh', '-c', 'echo "$(docker ps)"'], 'PLATFORM_DOCKER_ACCESS'],
+    [['sh', '-c', 'echo `sudo id`'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['sh', '-c', "bash -c 'env sudo id'"], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['sh', '-c', 'curl --unix-socket /var/run/docker.sock http://x/containers/json'], 'PLATFORM_DOCKER_ACCESS']
+  ])('%j is judged by the program it runs', (command, reason) => {
+    expect(run(command)).toBe(reason);
+  });
+
+  it('fails closed on a command nested beyond analysis', () => {
+    expect(run([...Array.from({ length: 12 }, () => 'nice'), 'npm', 'test'])).toBe('PLATFORM_COMMAND_UNANALYZABLE');
+    expect(run(['sh', '-c', Array.from({ length: 80 }, () => 'true').join(';')])).toBe('PLATFORM_COMMAND_UNANALYZABLE');
+  });
+
+  it('leaves ordinary wrapped commands to the policy', () => {
+    expect(run(['env', 'CI=1', 'npm', 'test'])).toBe('RULE_ALLOW');
+    expect(run(['sh', '-c', 'npm test && npx vitest run'])).toBe('RULE_ALLOW');
+    expect(run(['sh', '-c', "echo 'docker ps is just text'"])).toBe('RULE_ALLOW');
+  });
+});
+
+describe('git push is bound to the declared branch', () => {
+  const permissive = global({ scope: { ...GLOBAL.scope, commands: ['*'] } });
+  const push = (command: string[], branch?: string) =>
+    evaluate(action('vcs_local', { command, ...(branch === undefined ? {} : { branch }) }), { global: permissive }).reasonCode;
+
+  it('requires a branch for a push', () => {
+    expect(push(['git', 'push', 'origin', 'main'])).toBe('BRANCH_REQUIRED');
+    expect(push(['sh', '-c', 'git push origin main'])).toBe('BRANCH_REQUIRED');
+    expect(push(['git', '-C', '.', 'push'])).toBe('BRANCH_REQUIRED');
+  });
+
+  it('rejects invalid branch names', () => {
+    expect(push(['git', 'push', 'origin', 'agent/../main'], 'agent/../main')).toBe('BRANCH_INVALID');
+    expect(evaluate(action('publish_branch', { branch: 'agent/../main' })).reasonCode).toBe('BRANCH_INVALID');
+    expect(push(['git', 'push', 'origin', 'HEAD:agent/a..b'], 'agent/fix-1')).toBe('BRANCH_INVALID');
+  });
+
+  it('checks every refspec against the declared branch and the branch scope', () => {
+    expect(push(['git', 'push', 'origin', 'agent/fix-1'], 'agent/fix-1')).toBe('RULE_ALLOW');
+    expect(push(['git', 'push', '-u', 'origin', 'HEAD:refs/heads/agent/fix-1'], 'agent/fix-1')).toBe('RULE_ALLOW');
+    expect(push(['git', 'push', 'origin', 'HEAD:main'], 'agent/fix-1')).toBe('BRANCH_OUT_OF_SCOPE');
+    expect(push(['git', 'push', 'origin', 'agent/fix-1', 'agent/other'], 'agent/fix-1')).toBe('BRANCH_OUT_OF_SCOPE');
+    expect(push(['git', 'push', 'origin', 'main'], 'main')).toBe('BRANCH_OUT_OF_SCOPE');
+    expect(push(['git', 'push', '--all', 'origin'], 'agent/fix-1')).toBe('BRANCH_OUT_OF_SCOPE');
+    expect(push(['git', 'push', '--mirror', 'origin'], 'agent/fix-1')).toBe('BRANCH_OUT_OF_SCOPE');
+    expect(push(['git', 'push', 'origin', ':agent/fix-1'], 'agent/fix-1')).toBe('BRANCH_OUT_OF_SCOPE');
+    expect(push(['git', 'push', '--delete', 'origin', 'agent/fix-1'], 'agent/fix-1')).toBe('BRANCH_OUT_OF_SCOPE');
+  });
+});
+
+describe('command analysis helpers', () => {
+  it('splits shell strings into the commands they run', () => {
+    expect(commandSegments(['sh', '-c', "a 'b c'; d && e | f"])).toEqual([['sh', '-c', "a 'b c'; d && e | f"], ['a', 'b c'], ['d'], ['e'], ['f']]);
+    expect(commandSegments(['timeout', '10', 'npm', 'test'])).toEqual([['timeout', '10', 'npm', 'test'], ['npm', 'test']]);
+  });
+
+  it('parses push refspecs', () => {
+    expect(gitPushes(['git', 'push', 'origin', '+HEAD:agent/x'])).toEqual([{ destinations: ['agent/x'], broad: false }]);
+    expect(gitPushes(['git', 'push', '--tags'])).toEqual([{ destinations: [], broad: true }]);
+    expect(gitPushes(['git', 'status'])).toEqual([]);
+  });
+
+  it('follows git check-ref-format basics', () => {
+    for (const valid of ['agent/fix-1', 'agent/a.b', 'feature/x_y']) expect(isValidBranchName(valid), valid).toBe(true);
+    for (const invalid of ['agent/../main', 'agent//x', '/agent', 'agent/', 'agent/x.lock', 'agent/.x', 'a b', 'a~1', 'a^', 'a:b', 'a?', 'a*', 'a[', 'a\\b', 'a@{1}', '@', '-x', 'x.', '']) {
+      expect(isValidBranchName(invalid), invalid).toBe(false);
+    }
   });
 });
 
@@ -393,6 +517,13 @@ describe('gate properties', () => {
       for (const answer of [null, { effect: 'no_change' as const }, { effect: 'escalate' as const }]) {
         for (const decision of [without, withProject]) {
           const combined = combineAdvisor(decision, answer);
+          if (isAdvisorPending(decision)) {
+            // The single exception: a pending discretionary decision, cleared only by a valid no_change.
+            expect(combined).toMatchObject(answer?.effect === 'no_change'
+              ? { decision: 'ALLOW', reasonCode: 'ADVISOR_NO_CHANGE' }
+              : { decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_ESCALATED' });
+            continue;
+          }
           expect(GATE_DECISION_RANK[combined.decision]).toBeGreaterThanOrEqual(GATE_DECISION_RANK[decision.decision]);
           if (decision.decision !== 'ALLOW') expect(combined.decision).toBe(decision.decision);
         }

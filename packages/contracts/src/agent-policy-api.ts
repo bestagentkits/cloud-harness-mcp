@@ -67,8 +67,13 @@ const noControl = (value: string) => ![...value].some((character) => {
   const code = character.codePointAt(0) ?? 0;
   return code < 0x20 || code === 0x7f;
 });
-const uniqueList = <T extends z.ZodType<string>>(item: T, max: number = AGENT_POLICY_LIMITS.maxListEntries) => z.array(item).max(max)
-  .refine((values) => new Set(values.map((value) => value.toLowerCase())).size === values.length, 'entries must be unique');
+/**
+ * Duplicates are rejected using the same case rule the gate matches with: repositories, packages, registries
+ * and hosts compare case-insensitively; paths, branch prefixes and commands are case-sensitive, so src/ and
+ * Src/ are different entries.
+ */
+const uniqueList = <T extends z.ZodType<string>>(item: T, max: number = AGENT_POLICY_LIMITS.maxListEntries, caseInsensitive = false) => z.array(item).max(max)
+  .refine((values) => new Set(values.map((value) => (caseInsensitive ? value.toLowerCase() : value))).size === values.length, 'entries must be unique');
 const classList = uniqueList(AgentActionClassSchema, AGENT_ACTION_CLASSES.length);
 
 const hostLabel = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
@@ -111,13 +116,13 @@ export const PolicyNetworkHostSchema = z.string().min(1).max(255).refine(
 );
 
 export const PolicyScopeSchema = z.object({
-  repositories: uniqueList(PolicyRepositoryPatternSchema).min(1),
+  repositories: uniqueList(PolicyRepositoryPatternSchema, undefined, true).min(1),
   branchPrefixes: uniqueList(PolicyBranchPrefixSchema).min(1),
   pathScopes: uniqueList(PolicyPathScopeSchema).min(1),
   commands: uniqueList(PolicyCommandSchema),
-  packages: uniqueList(PolicyPackageSchema),
-  registries: uniqueList(PolicyRegistrySchema),
-  networkHosts: uniqueList(PolicyNetworkHostSchema)
+  packages: uniqueList(PolicyPackageSchema, undefined, true),
+  registries: uniqueList(PolicyRegistrySchema, undefined, true),
+  networkHosts: uniqueList(PolicyNetworkHostSchema, undefined, true)
 }).strict();
 
 export const PolicyBudgetSchema = z.object({
@@ -247,10 +252,10 @@ export const GateContextSchema = z.object({
 
 export const GATE_REASON_CODES = [
   'PLATFORM_CREDENTIAL_ACCESS', 'PLATFORM_DOCKER_ACCESS', 'PLATFORM_NETWORK_ESCALATION', 'PLATFORM_OUTSIDE_WORKSPACE',
-  'PLATFORM_PRIVILEGE_ESCALATION', 'PLATFORM_PROTECTED_PATH',
+  'PLATFORM_PRIVILEGE_ESCALATION', 'PLATFORM_PROTECTED_PATH', 'PLATFORM_COMMAND_UNANALYZABLE',
   'POLICY_STALE', 'GENERATION_STALE', 'GRANT_REVOKED', 'BUDGET_EXHAUSTED', 'PROJECT_POLICY_ORPHANED', 'PROJECT_UNKNOWN',
   'GLOBAL_HARD_DENY',
-  'REPOSITORY_OUT_OF_SCOPE', 'BRANCH_REQUIRED', 'BRANCH_OUT_OF_SCOPE', 'PATH_REQUIRED', 'PATH_OUT_OF_SCOPE',
+  'REPOSITORY_OUT_OF_SCOPE', 'BRANCH_REQUIRED', 'BRANCH_INVALID', 'BRANCH_OUT_OF_SCOPE', 'PATH_REQUIRED', 'PATH_OUT_OF_SCOPE',
   'COMMAND_REQUIRED', 'COMMAND_NOT_ALLOWED', 'PACKAGE_REQUIRED', 'PACKAGE_NOT_ALLOWED', 'REGISTRY_NOT_ALLOWED',
   'HOST_REQUIRED', 'HOST_NOT_ALLOWED',
   'ACTION_CLASS_NOT_ALLOWED', 'PROJECT_HARD_DENY', 'PROJECT_CLASS_REMOVED',
@@ -349,6 +354,13 @@ const target = {
 };
 const targetRefine = (value: { scope: 'global' | 'project'; projectId?: string | undefined }) => (value.scope === 'project') === (value.projectId !== undefined);
 const targetMessage = 'projectId is required for the project scope and not allowed for the global scope';
+/**
+ * Binds a confirmation to the exact weakening list the owner was shown (policy_validate returns it). A
+ * write that weakens the effective policy needs confirmWeakening and this digest; any change underneath
+ * (another weakening, a new global head) changes the digest and the write is refused again.
+ */
+export const AgentPolicyWeakeningDigestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
+const weakeningDigest = AgentPolicyWeakeningDigestSchema.optional();
 const note = z.string().max(AGENT_POLICY_LIMITS.maxNoteChars).refine(noControl, 'note cannot contain control characters').optional();
 
 export const AgentPoliciesRunnerRequestSchema = z.discriminatedUnion('operation', [
@@ -356,9 +368,9 @@ export const AgentPoliciesRunnerRequestSchema = z.discriminatedUnion('operation'
   owner('policy_get', z.object(target).strict().refine(targetRefine, targetMessage)),
   owner('policy_validate', z.object({ ...target, document: z.unknown() }).strict().refine(targetRefine, targetMessage)),
   owner('policy_put', z.object({
-    ...target, document: z.unknown(), expectedVersion, confirmWeakening: z.boolean().default(false), note
+    ...target, document: z.unknown(), expectedVersion, confirmWeakening: z.boolean().default(false), weakeningDigest, note
   }).strict().refine(targetRefine, targetMessage)),
-  owner('policy_delete', z.object({ projectId: AgentPolicyProjectIdSchema, expectedVersion: z.number().int().positive(), confirmWeakening: z.boolean().default(false) }).strict()),
+  owner('policy_delete', z.object({ projectId: AgentPolicyProjectIdSchema, expectedVersion: z.number().int().positive(), confirmWeakening: z.boolean().default(false), weakeningDigest }).strict()),
   owner('policy_history', z.object({
     ...target,
     beforeVersion: z.number().int().positive().optional(),
@@ -367,7 +379,7 @@ export const AgentPoliciesRunnerRequestSchema = z.discriminatedUnion('operation'
   owner('policy_revision_get', z.object({ revisionId: AgentPolicyRevisionIdSchema }).strict()),
   owner('policy_diff', z.object({ fromRevisionId: AgentPolicyRevisionIdSchema, toRevisionId: AgentPolicyRevisionIdSchema }).strict()),
   owner('policy_rollback', z.object({
-    revisionId: AgentPolicyRevisionIdSchema, expectedVersion, confirmWeakening: z.boolean().default(false), note
+    revisionId: AgentPolicyRevisionIdSchema, expectedVersion, confirmWeakening: z.boolean().default(false), weakeningDigest, note
   }).strict()),
   owner('policy_simulate', z.object({
     projectId: AgentPolicyProjectIdSchema.optional(),
@@ -387,6 +399,8 @@ export const AgentPoliciesRunnerDataSchemas = {
   policy_overview: z.object({
     global: headSummary.nullable(),
     projects: z.array(z.object({ projectId: AgentPolicyProjectIdSchema, head: headSummary, orphaned: z.boolean() }).strict()),
+    /** True when more project policies exist than the overview lists (most recently changed first). */
+    projectsTruncated: z.boolean(),
     defaultGlobal: GlobalExecutionPolicySchema
   }).strict(),
   policy_get: z.object({
@@ -396,7 +410,9 @@ export const AgentPoliciesRunnerDataSchemas = {
     head,
     /** The global policy a project inherits from (stored or default). */
     global: z.object({ revision: head, document: GlobalExecutionPolicySchema, source: z.enum(['stored', 'default']) }).strict(),
-    effective: EffectivePolicySchema
+    /** 
+ull when nothing is permitted because the project no longer exists (PROJECT_POLICY_ORPHANED). */
+    effective: EffectivePolicySchema.nullable()
   }).strict(),
   policy_validate: z.object({
     valid: z.boolean(),
@@ -404,7 +420,9 @@ export const AgentPoliciesRunnerDataSchemas = {
     widenings: z.array(z.string().max(300)).max(AGENT_POLICY_LIMITS.maxDetails * 4),
     weakenings: z.array(z.string().max(300)).max(AGENT_POLICY_LIMITS.maxDetails * 4),
     changes: z.array(PolicyChangeSchema).max(500),
-    effective: EffectivePolicySchema.nullable()
+    effective: EffectivePolicySchema.nullable(),
+    /** Present when the change weakens the effective policy; send it back with confirmWeakening. */
+    weakeningDigest: AgentPolicyWeakeningDigestSchema.nullable()
   }).strict(),
   policy_put: z.object({ head: AgentPolicyRevisionSchema, weakenings: z.array(z.string().max(300)) }).strict(),
   policy_delete: z.object({ deleted: z.literal(true) }).strict(),
@@ -416,7 +434,7 @@ export const AgentPoliciesRunnerDataSchemas = {
   policy_revision_get: z.object({ revision: AgentPolicyRevisionSchema }).strict(),
   policy_diff: z.object({ changes: z.array(PolicyChangeSchema).max(500) }).strict(),
   policy_rollback: z.object({ head: AgentPolicyRevisionSchema, weakenings: z.array(z.string().max(300)) }).strict(),
-  policy_simulate: z.object({ decision: GateDecisionSchema, effective: EffectivePolicySchema }).strict()
+  policy_simulate: z.object({ decision: GateDecisionSchema, effective: EffectivePolicySchema.nullable() }).strict()
 } as const;
 
 /**

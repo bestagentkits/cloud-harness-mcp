@@ -1,6 +1,5 @@
 import {
   AdvisorEffectSchema,
-  GATE_DECISION_RANK,
   type AdvisorEffect,
   type AgentActionClass,
   type AgentActionDescriptor,
@@ -15,6 +14,8 @@ import {
   type PolicyScope,
   type ProjectExecutionPolicy
 } from '@cloud-harness/contracts';
+import { AGENT_GOVERNANCE_PORTS_VERSION, type GateEvaluator as GateEvaluatorPort } from './ports.js';
+import { commandSegments, gitPushes, isValidBranchName, programName } from './command-analysis.js';
 import { actionFingerprint, commandAdmitted, listAdmits, normalizeWorkspacePath, resolveEffectivePolicy } from './policy-merge.js';
 
 /**
@@ -31,7 +32,9 @@ import { actionFingerprint, commandAdmitted, listAdmits, normalizeWorkspacePath,
  *  6. Project narrowing (project hard-deny, class removed) -> DENY
  *  7. Global or project mandatory approval -> REQUIRE_APPROVAL
  *  8. Effective rule (global default, or a project rule the merge accepted) -> ALLOW / REQUIRE_APPROVAL
- *  9. `advisor_or_approval`: ALLOW pending a mandatory advisor answer, or REQUIRE_APPROVAL with no advisor
+ *  9. `advisor_or_approval`: REQUIRE_APPROVAL (`ADVISOR_REQUIRED`, pending) when an advisor is configured,
+ *     which only `combineAdvisor`/`decide` with a valid `no_change` answer turns into ALLOW;
+ *     REQUIRE_APPROVAL (`ADVISOR_UNAVAILABLE`) with no advisor
  *
  * The descriptor's free-text `reason` is never read.
  */
@@ -81,8 +84,6 @@ const PLATFORM_EFFECT_CODES: Record<AgentPlatformEffect, GateReasonCode> = {
 const BRANCH_CLASSES = new Set<AgentActionClass>(['publish_branch', 'open_pr']);
 const BRANCH_CHECKED_CLASSES = new Set<AgentActionClass>(['publish_branch', 'open_pr', 'vcs_local']);
 
-const programName = (value: string) => (value.split('/').pop() ?? value).toLowerCase();
-
 function escapesWorkspace(path: string): boolean {
   return path.startsWith('/') || /^[A-Za-z]:/u.test(path) || path.includes('\\') || path.split('/').includes('..');
 }
@@ -100,11 +101,17 @@ export function platformViolation(descriptor: AgentActionDescriptor): Verdict | 
     }
   }
   const argv = descriptor.command ?? [];
-  const program = argv[0] ? programName(argv[0]) : undefined;
-  if ((program && DOCKER_PROGRAMS.has(program)) || argv.some((argument) => argument.includes('docker.sock'))) {
+  if (argv.length === 0) return undefined;
+  // Every program the command line runs, looking through launchers and `sh -c` strings (best effort).
+  const segments = commandSegments(argv);
+  if (segments.some((segment) => segment[0] === '<truncated>')) {
+    return { decision: 'DENY', code: 'PLATFORM_COMMAND_UNANALYZABLE', source: 'platform', detail: 'the command nests too many launchers or shell strings to analyse' };
+  }
+  const tokens = [...argv, ...segments.flat()];
+  if (segments.some((segment) => DOCKER_PROGRAMS.has(programName(segment[0] ?? ''))) || tokens.some((argument) => argument.includes('docker.sock'))) {
     return { decision: 'DENY', code: 'PLATFORM_DOCKER_ACCESS', source: 'platform', detail: 'container runtimes are never reachable from an agent' };
   }
-  if (program && PRIVILEGE_PROGRAMS.has(program)) {
+  if (segments.some((segment) => PRIVILEGE_PROGRAMS.has(programName(segment[0] ?? '')))) {
     return { decision: 'DENY', code: 'PLATFORM_PRIVILEGE_ESCALATION', source: 'platform', detail: 'privilege changes are never permitted' };
   }
   return undefined;
@@ -149,9 +156,20 @@ function scopeViolation(descriptor: AgentActionDescriptor, scope: PolicyScope, s
   const deny = (code: GateReasonCode, detail: string): Verdict => ({ decision: 'DENY', code, source, detail, rule: `${source}.scope` });
   const actionClass = descriptor.actionClass;
   if (!listAdmits('repositories', scope.repositories, descriptor.repository)) return deny('REPOSITORY_OUT_OF_SCOPE', `${source} repositories do not include this repository`);
-  if (BRANCH_CLASSES.has(actionClass) && !descriptor.branch) return deny('BRANCH_REQUIRED', `${actionClass} must name its branch`);
-  if (descriptor.branch && BRANCH_CHECKED_CLASSES.has(actionClass) && !listAdmits('branchPrefixes', scope.branchPrefixes, descriptor.branch)) {
+  const pushes = descriptor.command ? gitPushes(descriptor.command) : [];
+  if ((BRANCH_CLASSES.has(actionClass) || pushes.length > 0) && !descriptor.branch) return deny('BRANCH_REQUIRED', `${pushes.length > 0 ? 'git push' : actionClass} must name its branch`);
+  if (descriptor.branch && !isValidBranchName(descriptor.branch)) return deny('BRANCH_INVALID', 'the branch is not a valid git branch name');
+  if (descriptor.branch && (BRANCH_CHECKED_CLASSES.has(actionClass) || pushes.length > 0) && !listAdmits('branchPrefixes', scope.branchPrefixes, descriptor.branch)) {
     return deny('BRANCH_OUT_OF_SCOPE', `${source} branch prefixes do not include this branch`);
+  }
+  for (const push of pushes) {
+    if (push.broad) return deny('BRANCH_OUT_OF_SCOPE', 'git push may only update named branches (no --all, --mirror, --tags or deletions)');
+    for (const destination of push.destinations) {
+      if (!isValidBranchName(destination)) return deny('BRANCH_INVALID', 'a git push destination is not a valid branch name');
+      if (destination !== descriptor.branch || !listAdmits('branchPrefixes', scope.branchPrefixes, destination)) {
+        return deny('BRANCH_OUT_OF_SCOPE', `git push must target the declared branch inside the ${source} branch prefixes`);
+      }
+    }
   }
   if (actionClass === 'edit' && !(descriptor.paths?.length)) return deny('PATH_REQUIRED', 'edit must name the paths it changes');
   for (const path of descriptor.paths ?? []) {
@@ -249,39 +267,69 @@ export function evaluateGate(input: GateInput): GateDecision {
     return finish({ decision: 'REQUIRE_APPROVAL', code: 'RULE_REQUIRE_APPROVAL', source: rule.source, detail: `${actionClass} requires approval under the ${rule.source} policy`, rule: ruleName });
   }
   if (input.advisorAvailable) {
-    return finish({ decision: 'ALLOW', code: 'ADVISOR_REQUIRED', source: rule.source, detail: `${actionClass} is discretionary and must be cleared by the advisor`, rule: ruleName }, true);
+    return finish({ decision: 'REQUIRE_APPROVAL', code: 'ADVISOR_REQUIRED', source: rule.source, detail: `${actionClass} is discretionary and must be cleared by the advisor`, rule: ruleName }, true);
   }
   return finish({ decision: 'REQUIRE_APPROVAL', code: 'ADVISOR_UNAVAILABLE', source: rule.source, detail: `${actionClass} is discretionary and no advisor is available`, rule: ruleName });
 }
 
+/** True for the one decision an advisor may clear: discretionary, advisor required, not yet consulted. */
+export function isAdvisorPending(decision: GateDecision): boolean {
+  return decision.decision === 'REQUIRE_APPROVAL' && decision.reasonCode === 'ADVISOR_REQUIRED' && decision.advisor.required && !decision.advisor.consulted;
+}
+
 /**
- * Applies an advisor answer: `final = max(deterministic, advisor)` over ALLOW < REQUIRE_APPROVAL < DENY.
- * The advisor can only escalate an ALLOW. A missing, malformed or unknown answer counts as
- * `escalate` when the advisor was required, so a failed advisor never lets a discretionary action
- * through. A DENY or REQUIRE_APPROVAL is returned unchanged apart from the advisor record.
+ * Applies an advisor answer.
+ *
+ * - A pending discretionary decision (`ADVISOR_REQUIRED`) becomes ALLOW only on a valid `no_change`.
+ *   Any other answer, no answer, or a malformed one leaves it at REQUIRE_APPROVAL (`ADVISOR_ESCALATED`).
+ * - Every other decision is monotonic: `final = max(decision, advisor)` over ALLOW < REQUIRE_APPROVAL < DENY,
+ *   so a hard deny, a scope deny, a mandatory approval or a rule approval is never lowered.
  */
 export function combineAdvisor(decision: GateDecision, answer: AdvisorAnswer | null): GateDecision {
   const parsed = AdvisorEffectSchema.safeParse(answer?.effect);
   const consulted = answer !== null && parsed.success;
-  if (!consulted && !decision.advisor.required) return decision;
-  const effect: AdvisorEffect = consulted ? parsed.data : 'escalate';
   const decisionId = consulted && typeof answer?.decisionId === 'string' ? answer.decisionId.slice(0, 200) : null;
-  const advisor = { required: decision.advisor.required, consulted, effect: consulted ? effect : null, decisionId };
-  const escalated: GateDecisionValue = effect === 'escalate' ? 'REQUIRE_APPROVAL' : 'ALLOW';
-  if (GATE_DECISION_RANK[escalated] <= GATE_DECISION_RANK[decision.decision]) {
-    if (decision.decision !== 'ALLOW') return { ...decision, advisor };
-    return {
-      ...decision,
-      advisor,
-      reasons: [...decision.reasons, { code: 'ADVISOR_NO_CHANGE' as const, source: 'advisor' as const, detail: 'the advisor left the decision unchanged' }].slice(0, 50)
-    };
-  }
-  return {
+  const advisor = { required: decision.advisor.required, consulted, effect: consulted ? parsed.data : null, decisionId };
+  const escalate = (detail: string): GateDecision => ({
     ...decision,
-    decision: escalated,
+    decision: 'REQUIRE_APPROVAL',
     reasonCode: 'ADVISOR_ESCALATED',
     advisor,
-    reasons: [{ code: 'ADVISOR_ESCALATED' as const, source: 'advisor' as const, detail: consulted ? 'the advisor asked for human approval' : 'the advisor did not answer; approval is required' }, ...decision.reasons].slice(0, 50),
+    reasons: [{ code: 'ADVISOR_ESCALATED' as const, source: 'advisor' as const, detail }, ...decision.reasons].slice(0, 50),
     matchedRules: ['advisor', ...decision.matchedRules].slice(0, 50)
-  };
+  });
+  if (isAdvisorPending(decision)) {
+    if (consulted && parsed.data === 'no_change') {
+      return {
+        ...decision,
+        decision: 'ALLOW',
+        reasonCode: 'ADVISOR_NO_CHANGE',
+        advisor,
+        reasons: [{ code: 'ADVISOR_NO_CHANGE' as const, source: 'advisor' as const, detail: 'the advisor cleared the discretionary action' }, ...decision.reasons].slice(0, 50),
+        matchedRules: ['advisor', ...decision.matchedRules].slice(0, 50)
+      };
+    }
+    return escalate(consulted ? 'the advisor asked for human approval' : 'the advisor did not answer; approval is required');
+  }
+  if (!consulted) return decision;
+  if (parsed.data === 'escalate' && decision.decision === 'ALLOW') return escalate('the advisor asked for human approval');
+  return { ...decision, advisor };
 }
+
+/**
+ * The whole gate in one call: evaluate, then apply the advisor when the decision is waiting for one.
+ * `answer` is ignored for decisions that do not need an advisor and treated as no answer when absent,
+ * so a caller that forgets to ask can never turn a pending decision into ALLOW.
+ */
+export function decide(input: GateInput, answer: AdvisorAnswer | null = null): GateDecision {
+  const decision = evaluateGate(input);
+  return isAdvisorPending(decision) ? combineAdvisor(decision, answer) : decision;
+}
+
+/** The pure evaluator behind the `GateEvaluator` port; simulation and the broker share this instance. */
+export const PURE_GATE_EVALUATOR: GateEvaluatorPort = Object.freeze({
+  contractVersion: AGENT_GOVERNANCE_PORTS_VERSION,
+  evaluate: (input: GateInput) => evaluateGate(input),
+  combineAdvisor,
+  decide
+});

@@ -17,6 +17,9 @@ import type { PolicySnapshot } from './gate-evaluator.js';
  */
 export const AGENT_GOVERNANCE_PORTS_VERSION = 1 as const;
 
+type GateEvaluationInput = { descriptor: AgentActionDescriptor; snapshot: PolicySnapshot; context?: GateContext | undefined; advisorAvailable?: boolean | undefined };
+type AdvisorAnswerInput = { effect: AdvisorEffect; decisionId?: string | null | undefined };
+
 type Versioned = { readonly contractVersion: typeof AGENT_GOVERNANCE_PORTS_VERSION };
 
 /**
@@ -29,9 +32,14 @@ export interface PolicyResolver extends Versioned {
 
 /** The pure decision function. The Dashboard simulation and the ActionBroker use the same instance. */
 export interface GateEvaluator extends Versioned {
-  evaluate(input: { descriptor: AgentActionDescriptor; snapshot: PolicySnapshot; context?: GateContext; advisorAvailable?: boolean }): GateDecision;
-  /** Monotonic: the result is never lower than `decision`. */
-  combineAdvisor(decision: GateDecision, answer: { effect: AdvisorEffect; decisionId?: string | null } | null): GateDecision;
+  evaluate(input: GateEvaluationInput): GateDecision;
+  /**
+   * Never lowers a decision, except that a pending discretionary decision (`ADVISOR_REQUIRED`) becomes
+   * ALLOW on a valid `no_change` answer.
+   */
+  combineAdvisor(decision: GateDecision, answer: AdvisorAnswerInput | null): GateDecision;
+  /** `evaluate`, then `combineAdvisor` when an advisor is pending: the only call a broker needs. */
+  decide(input: GateEvaluationInput, answer?: AdvisorAnswerInput | null): GateDecision;
 }
 
 /**

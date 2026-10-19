@@ -102,4 +102,25 @@ describe('agent policy contract', () => {
     expect(request({ action, principal: owner }, 'policy_simulate').success).toBe(false);
     expect(AgentPoliciesRunnerRequestSchema.safeParse({ version: 1, operation: 'policy_overview', input: {} }).success).toBe(false);
   });
+
+  it('dedupes case-sensitive lists exactly and host-like lists case-insensitively', () => {
+    const base = structuredClone(DEFAULT_GLOBAL_EXECUTION_POLICY);
+    const withScope = (scope: Record<string, string[]>) => GlobalExecutionPolicySchema.safeParse({ ...base, scope: { ...base.scope, ...scope } }).success;
+    // Paths, branches and commands are case-sensitive on the executor, so `src/` and `Src/` are distinct.
+    expect(withScope({ pathScopes: ['src/', 'Src/'] })).toBe(true);
+    expect(withScope({ pathScopes: ['src/', 'src/'] })).toBe(false);
+    expect(withScope({ branchPrefixes: ['agent/', 'Agent/'] })).toBe(true);
+    expect(withScope({ commands: ['npm test', 'NPM test'] })).toBe(true);
+    // Repositories and hosts compare case-insensitively.
+    expect(withScope({ repositories: ['acme/*', 'ACME/*'] })).toBe(false);
+    expect(withScope({ networkHosts: ['api.github.com', 'API.github.com'] })).toBe(false);
+  });
+
+  it('binds a weakening confirmation to a digest', () => {
+    const put = (input: Record<string, unknown>) => AgentPoliciesRunnerRequestSchema.safeParse({ version: 1, principal: owner, operation: 'policy_put', input: { scope: 'global', document: {}, expectedVersion: 0, confirmWeakening: true, ...input } }).success;
+    expect(put({ weakeningDigest: 'a'.repeat(64) })).toBe(true);
+    expect(put({})).toBe(true);
+    expect(put({ weakeningDigest: 'not-a-digest' })).toBe(false);
+    expect(put({ weakeningDigest: 'A'.repeat(64) })).toBe(false);
+  });
 });
