@@ -29,10 +29,13 @@ import {
 } from './agent-state-repository.js';
 import {
   capturePatchImages,
+  danglingToolCalls,
   effectErrorText,
   reconcileEffect,
   reconciledResultText,
   writeImages,
+  unknownEffectText,
+  type DanglingToolCall,
   type EffectImages,
   type EffectStateReader
 } from './agent-effect-reconciler.js';
@@ -51,10 +54,16 @@ import {
 } from './model-spend-ledger.js';
 import {
   AgentProtocolChannel,
+  MAX_AGENT_TOOL_OUTCOME_ID_LENGTH,
+  MAX_AGENT_TOOL_OUTCOME_TEXT_BYTES,
+  MAX_AGENT_TOOL_OUTCOMES,
+  MAX_PROTOCOL_RECORD_BYTES,
   MAX_TOOL_RESULT_RECORD_BYTES,
   MAX_TOOL_RESULT_TEXT_BYTES,
   type AgentInputRecord,
-  type AgentOutputRecord
+  type AgentOutputRecord,
+  type AgentStartRecord,
+  type AgentToolOutcome
 } from './agent-protocol.js';
 import { DockerAgentLauncher, type AgentLaunchSpec, type AgentLauncher, type AgentRuntimeProcess } from './agent-launcher.js';
 import type { StateStore, WorkspaceRecord } from './state-store.js';
@@ -563,7 +572,12 @@ export class AgentManager {
       const deadlineMs = Math.max(1_000, running.expiresAt - this.now());
       context.deadline = setTimeout(() => { void this.cancelOne(running, 'agent TTL expired', 'TIMED_OUT'); }, deadlineMs);
       context.deadline.unref();
-      await channel.send(this.startRecord(running, initialPrompt, profile, lease, sessionLog));
+      // A continuation learns what became of the tool calls its predecessor left unanswered before
+      // its first turn, so it never issues an applied mutation again under a new tool call ID.
+      // A cancel that lands meanwhile closes the channel, so the send below fails into failLaunch,
+      // which leaves the cancel's cleanup in charge.
+      const toolOutcomes = sessionLog ? await this.danglingToolOutcomes(context, sessionLog.messages) : [];
+      await channel.send(this.startRecord(running, initialPrompt, profile, lease, sessionLog && { ...sessionLog, toolOutcomes }));
       void runtime.exited.then(({ code }) => {
         if (!context.terminalSeen) void this.interrupt(running, `agent runtime exited before terminal record (${code ?? 'signal'})`);
       }).catch((error: unknown) => { void this.interrupt(running, error instanceof Error ? error.message : 'agent runtime failed'); });
@@ -871,7 +885,7 @@ export class AgentManager {
     }
     let images: EffectImages = { preImageSha256: null, intendedSha256: null };
     if (output.operation === 'files_write') images = writeImages(toolInput);
-    if (output.operation === 'files_apply_patch') images = await capturePatchImages(this.stateReader(call), toolInput);
+    if (output.operation === 'files_apply_patch') images = await capturePatchImages(this.stateReader(record, output.requestId, call.signal), toolInput);
     if (!this.repository.dispatchEffect({ ...key, fence, expectedStates, ...images, now: this.now() })) {
       await this.sendFenceLost(context, output.requestId);
       return;
@@ -913,39 +927,143 @@ export class AgentManager {
    * again: workspace state decides whether it applied, and an undecidable outcome stays unknown.
    */
   private async reconcileLostEffect(call: ProxyCall, effect: AgentEffectRecord): Promise<void> {
-    const { context, output, fence, key } = call;
+    const { context, output } = call;
     let toolInput: Record<string, unknown>;
     try {
       toolInput = this.parseToolInput(call);
     } catch {
       toolInput = {};
     }
-    const reconciliation = await reconcileEffect(this.stateReader(call), output.operation, toolInput, {
-      preImageSha256: effect.preImageSha256, intendedSha256: effect.intendedSha256
-    });
-    if (!this.stillRunnable(call.record)) {
+    const settled = await this.settleLostEffect(call.record, call.key, call.fence, toolInput, effect, call.signal);
+    if (!settled) {
       await this.sendFenceLost(context, output.requestId);
       return;
     }
+    await this.sendToolText(context, output.requestId, settled.text, settled.isError);
+  }
+
+  /**
+   * Decides a lost mutation's outcome from workspace state and records it: an applied effect gets a
+   * reconciled receipt, an effect that never landed is rejected with a retryable error, and an
+   * undecidable one stays unknown. Returns the result text the model receives for it, or undefined
+   * when the agent lost its fence while the workspace was observed.
+   */
+  private async settleLostEffect(
+    record: AgentRecord,
+    key: AgentEffectKey,
+    fence: AgentEffectFence,
+    toolInput: Record<string, unknown>,
+    effect: AgentEffectRecord,
+    signal: AbortSignal
+  ): Promise<{ outcome: 'APPLIED' | 'NOT_APPLIED' | 'UNKNOWN'; text: string; isError: boolean } | undefined> {
+    const operation = key.kind as AgentProxyOperation;
+    const reconciliation = await reconcileEffect(this.stateReader(record, key.requestId, signal), operation, toolInput, {
+      preImageSha256: effect.preImageSha256, intendedSha256: effect.intendedSha256
+    });
+    if (!this.stillRunnable(record)) return undefined;
     const expectedStates = [effect.state];
     if (reconciliation.outcome === 'APPLIED') {
-      const text = reconciledResultText(output.operation, reconciliation.observed);
+      const text = reconciledResultText(operation, reconciliation.observed);
       this.repository.completeEffect({ ...key, fence, expectedStates, state: 'APPLIED', receipt: { text, reconciled: true }, now: this.now() });
-      await this.sendToolText(context, output.requestId, text, false);
-      return;
+      return { outcome: 'APPLIED', text, isError: false };
     }
     if (reconciliation.outcome === 'NOT_APPLIED') {
       const text = effectErrorText('EFFECT_NOT_APPLIED',
-        `${output.operation} was interrupted and did not take effect: ${reconciliation.reason}. Issue it again as a new tool call if it is still needed.`, true);
+        `${operation} was interrupted and did not take effect: ${reconciliation.reason}. Issue it again as a new tool call if it is still needed.`, true);
       this.repository.completeEffect({ ...key, fence, expectedStates, state: 'REJECTED', receipt: { text }, now: this.now() });
-      await this.sendToolText(context, output.requestId, text, true);
-      return;
+      return { outcome: 'NOT_APPLIED', text, isError: true };
     }
     this.repository.completeEffect({ ...key, fence, expectedStates, state: 'UNKNOWN', now: this.now() });
-    const text = effectErrorText('EFFECT_UNKNOWN',
-      `${output.operation} was interrupted and its outcome could not be determined: ${reconciliation.reason}. `
-      + 'It was not issued again. Inspect the affected paths and ask the owner before repeating it.', false);
-    await this.sendToolText(context, output.requestId, text, true);
+    return { outcome: 'UNKNOWN', text: unknownEffectText(operation, reconciliation.reason), isError: true };
+  }
+
+  /**
+   * The outcomes of the tool calls a continued transcript left unanswered, which the runtime uses
+   * to close those calls instead of a generic interruption. Each call is found in the lineage's
+   * effect ledger by the request ID the runtime proxied it under; a mutation whose outcome was lost
+   * is reconciled from workspace state first, so the model learns that an applied write landed and
+   * does not issue it again under a new tool call ID. A call that never reached the executor, or a
+   * read that is safe to repeat, gets no entry and keeps the generic interruption.
+   */
+  private async danglingToolOutcomes(context: RuntimeContext, messages: readonly unknown[]): Promise<AgentToolOutcome[]> {
+    const record = context.record;
+    const calls = danglingToolCalls(messages);
+    if (calls.length === 0) return [];
+    const rootAgentId = this.repository.lineageRoot(record.id);
+    const fence: AgentEffectFence = {
+      ownerId: record.ownerId, workspaceId: record.workspaceId, agentId: record.id,
+      agentGeneration: record.generation, runnerEpoch: this.epoch
+    };
+    const controller = new AbortController();
+    let settle!: () => void;
+    const completion = new Promise<void>((resolve) => { settle = resolve; });
+    // Registered like a proxied call, so a cancel during reconciliation aborts its reads.
+    const registration = `reconcile:${randomUUID()}`;
+    context.proxy.set(registration, { controller, completion });
+    const outcomes: AgentToolOutcome[] = [];
+    try {
+      for (const call of calls) {
+        if (outcomes.length >= MAX_AGENT_TOOL_OUTCOMES || controller.signal.aborted) break;
+        // A cancel that waits for this launch must not wait for further workspace reads.
+        if (this.repository.findAgent(record.ownerId, record.workspaceId, record.id)?.status !== 'RUNNING') break;
+        if (call.toolCallId.length > MAX_AGENT_TOOL_OUTCOME_ID_LENGTH) continue;
+        const parsed = AgentProxyOperationSchema.safeParse(call.name);
+        if (!parsed.success) continue;
+        const operation = parsed.data;
+        const key: AgentEffectKey = { rootAgentId, requestId: call.requestId, kind: operation };
+        const effect = this.repository.findEffect(key);
+        if (!effect || effect.ownerId !== record.ownerId || effect.workspaceId !== record.workspaceId) continue;
+        const outcome = await this.danglingOutcome(record, key, fence, call, effect, controller.signal);
+        if (outcome) outcomes.push({ toolCallId: call.toolCallId, ...outcome, text: redactLease(outcome.text, context.lease) });
+      }
+    } finally {
+      context.proxy.delete(registration);
+      settle();
+    }
+    return outcomes;
+  }
+
+  private async danglingOutcome(
+    record: AgentRecord,
+    key: AgentEffectKey,
+    fence: AgentEffectFence,
+    call: DanglingToolCall,
+    effect: AgentEffectRecord,
+    signal: AbortSignal
+  ): Promise<Omit<AgentToolOutcome, 'toolCallId'> | undefined> {
+    const operation = key.kind as AgentProxyOperation;
+    const readSafe = AGENT_PROXY_REPLAY_CLASS[operation] === 'read-safe';
+    if (effect.state === 'APPLIED' || effect.state === 'REJECTED') {
+      if (effect.resultJson !== null) {
+        return { outcome: effect.state, isError: effect.state === 'REJECTED', text: boundedOutcomeText(operation, effect.state, effect.resultJson) };
+      }
+      if (readSafe) return undefined;
+      return {
+        outcome: effect.state, isError: true,
+        text: effectErrorText('EFFECT_RECEIPT_UNAVAILABLE', `${operation} completed before the previous run ended, but its result is no longer `
+          + 'retained. It may have taken effect: inspect the target with a read before any retry.', false)
+      };
+    }
+    // An intent never reached the executor, and a read is safe to issue again.
+    if (effect.state === 'INTENT' || readSafe) return undefined;
+    const raw = typeof call.arguments === 'object' && call.arguments !== null && !Array.isArray(call.arguments)
+      ? call.arguments as Record<string, unknown>
+      : {};
+    const payloadHash = createHash('sha256').update(JSON.stringify({ operation, input: raw })).digest('hex');
+    let toolInput: Record<string, unknown> | undefined;
+    if (payloadHash === effect.payloadHash) {
+      const parsed = TOOL_SCHEMA_BY_NAME[operation].safeParse({ ...raw, workspaceId: record.workspaceId });
+      if (parsed.success) toolInput = parsed.data as Record<string, unknown>;
+    }
+    // Arguments that do not match the dispatched payload cannot be used to observe its target.
+    if (!toolInput) {
+      return { outcome: 'UNKNOWN', isError: true, text: unknownEffectText(operation, 'the transcript does not match the dispatched request') };
+    }
+    try {
+      return await this.settleLostEffect(record, key, fence, toolInput, effect, signal);
+    } catch {
+      return { outcome: 'UNKNOWN', isError: true, text: unknownEffectText(operation, 'the workspace could not be observed') };
+    }
   }
 
   private parseToolInput(call: ProxyCall): Record<string, unknown> {
@@ -953,13 +1071,12 @@ export class AgentManager {
   }
 
   /** Reads workspace state for reconciliation through the same fenced executor path as the agent's own reads. */
-  private stateReader(call: ProxyCall): EffectStateReader {
-    const { record } = call;
+  private stateReader(record: AgentRecord, requestId: string, signal: AbortSignal): EffectStateReader {
     return async (operation, input) => await this.dependencies.toolExecutor({
       ownerId: record.ownerId, workspaceId: record.workspaceId, workspaceGeneration: record.workspaceGeneration,
-      agentId: record.id, agentGeneration: record.generation, requestId: call.output.requestId,
+      agentId: record.id, agentGeneration: record.generation, requestId,
       operation, toolInput: TOOL_SCHEMA_BY_NAME[operation].parse({ ...input, workspaceId: record.workspaceId }) as Record<string, unknown>,
-      signal: call.signal
+      signal
     });
   }
 
@@ -1387,10 +1504,10 @@ export class AgentManager {
     prompt: string,
     profile: PricedAgentModelProfile,
     lease: string,
-    session?: { messages: unknown[]; headSha256: string }
+    session?: { messages: unknown[]; headSha256: string; toolOutcomes: AgentToolOutcome[] }
   ): AgentInputRecord {
     const contextWindow = Math.min(2_000_000, profile.maxInputTokens + profile.maxOutputTokens);
-    return {
+    const start: AgentStartRecord = {
       type: 'start', requestId: randomUUID(), agentId: record.id, prompt, tools: record.proxyOperations,
       gateway: { profile: profile.id, lease },
       model: {
@@ -1413,6 +1530,19 @@ export class AgentManager {
       // Appended last and only for a persisting agent, so every other start record is unchanged.
       ...(session ? { session: { messages: session.messages, headSha256: session.headSha256 } } : {})
     };
+    if (!session || session.toolOutcomes.length === 0 || !start.session) return start;
+    // Outcomes are added only while the record stays within the protocol bound; one that does not
+    // fit is left out, and the runtime closes that call with the generic interruption.
+    let remaining = MAX_PROTOCOL_RECORD_BYTES - Buffer.byteLength(JSON.stringify(start), 'utf8') - 1_024;
+    const toolOutcomes: AgentToolOutcome[] = [];
+    for (const outcome of session.toolOutcomes) {
+      const bytes = Buffer.byteLength(JSON.stringify(outcome), 'utf8') + 1;
+      if (bytes > remaining) continue;
+      remaining -= bytes;
+      toolOutcomes.push(outcome);
+    }
+    if (toolOutcomes.length > 0) start.session.toolOutcomes = toolOutcomes;
+    return start;
   }
 }
 
@@ -1441,6 +1571,18 @@ function toolError(requestId: string, message: string, code?: string): AgentInpu
 }
 
 /** Receipts outlive the run, so the run's gateway lease never reaches them even if a result echoed it. */
+/**
+ * A stored result to close an unanswered call with, kept within the outcome bound. A result too
+ * large to repeat is summarized rather than cut, since a cut JSON result would not parse.
+ */
+function boundedOutcomeText(operation: AgentProxyOperation, state: 'APPLIED' | 'REJECTED', text: string): string {
+  if (Buffer.byteLength(text, 'utf8') <= MAX_AGENT_TOOL_OUTCOME_TEXT_BYTES) return text;
+  const message = state === 'APPLIED'
+    ? `${operation} completed before the previous run ended; its result is too large to repeat here. Inspect the target with a read instead of issuing it again.`
+    : `${operation} failed before the previous run ended; its error is too large to repeat here.`;
+  return JSON.stringify({ ok: state === 'APPLIED', message, truncated: true });
+}
+
 function redactLease(text: string, lease: string): string {
   return lease.length >= 16 && text.includes(lease) ? text.split(lease).join('[REDACTED]') : text;
 }

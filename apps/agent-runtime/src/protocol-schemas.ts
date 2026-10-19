@@ -58,6 +58,16 @@ export const MAX_SESSION_MESSAGES = 10_000;
 // trip; its size is bounded by the protocol record limit instead of the shape bounds above.
 const SessionMessageSchema = z.unknown().refine(isSessionMessage, 'session message must be a user, assistant, or toolResult message');
 
+// Aligned with the runner's tool outcome bounds in apps/runner/src/agent-protocol.ts.
+export const MAX_TOOL_OUTCOMES = 64;
+const MAX_TOOL_OUTCOME_TEXT_BYTES = 64 * 1024;
+const ToolOutcomeSchema = z.object({
+  toolCallId: z.string().min(1).max(1_024),
+  outcome: z.enum(['APPLIED', 'REJECTED', 'NOT_APPLIED', 'UNKNOWN']),
+  isError: z.boolean(),
+  text: z.string().min(1).refine((text) => Buffer.byteLength(text, 'utf8') <= MAX_TOOL_OUTCOME_TEXT_BYTES, 'tool outcome text is too large')
+}).strict();
+
 const CostSchema = z.object({
   input: z.number().finite().nonnegative().max(1_000_000),
   output: z.number().finite().nonnegative().max(1_000_000),
@@ -95,7 +105,12 @@ export const StartRecordSchema = z.object({
   // Present only for an agent that persists its session: the verified history to replay first.
   session: z.object({
     messages: z.array(SessionMessageSchema).max(MAX_SESSION_MESSAGES),
-    headSha256: z.string().regex(/^[0-9a-f]{64}$/)
+    headSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    // What became of tool calls the history left unanswered, as the runner settled them; a call
+    // without an entry is closed with the generic interruption.
+    toolOutcomes: z.array(ToolOutcomeSchema).max(MAX_TOOL_OUTCOMES)
+      .refine((outcomes) => new Set(outcomes.map((item) => item.toolCallId)).size === outcomes.length, 'duplicate tool outcome')
+      .optional()
   }).strict().optional()
 }).strict();
 

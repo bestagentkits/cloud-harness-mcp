@@ -267,13 +267,32 @@ async function request(
 }
 
 /** Records a user turn and an unanswered tool call so the session is continuable after a crash. */
-async function recordToolCall(context: Context, runner: Runner, index: number, agentId: string, requestId: string): Promise<void> {
+async function recordToolCall(
+  context: Context,
+  runner: Runner,
+  index: number,
+  agentId: string,
+  requestId: string,
+  calls: Array<{ id?: string; name: string; arguments: Record<string, unknown> }> = [{ name: 'files_write', arguments: {} }]
+): Promise<void> {
   runner.launcher.emit(index, { type: 'session_message', seq: 0, message: { role: 'user', content: [{ type: 'text', text: 'edit' }], timestamp: 1 } });
   runner.launcher.emit(index, {
     type: 'session_message', seq: 1,
-    message: { role: 'assistant', content: [{ type: 'toolCall', id: requestId, name: 'files_write', arguments: {} }], stopReason: 'toolUse', timestamp: 2 }
+    message: {
+      role: 'assistant', stopReason: 'toolUse', timestamp: 2,
+      content: calls.map((call) => ({ type: 'toolCall', id: call.id ?? requestId, name: call.name, arguments: call.arguments }))
+    }
   });
   await vi.waitFor(() => expect(runner.repository.findSession(agentId)?.messageCount).toBe(2));
+}
+
+type ToolOutcome = { toolCallId: string; outcome: string; isError: boolean; text: string };
+
+/** The tool outcomes the runner put in a runtime's start record, if any. */
+async function startOutcomes(launcher: FakeLauncher, index: number): Promise<ToolOutcome[] | undefined> {
+  const find = () => launcher.received(index).find((item) => item.type === 'start') as { session?: { toolOutcomes?: ToolOutcome[] } } | undefined;
+  await vi.waitFor(() => expect(find()?.session).toBeDefined());
+  return find()!.session!.toolOutcomes;
 }
 
 /** Kills the first runner at its current point and starts a second one, which reconciles every agent. */
@@ -568,5 +587,141 @@ describe('agent effect receipts and replay', () => {
     const result = await request(first.launcher, 2, 'toolu_child', 'files_read', { path: 'a.txt' });
     expect(result.body).toMatchObject({ ok: true, data: { content: 'a' } });
     expect(fs.executions('files_read')).toBe(1);
+  });
+});
+
+describe('outcomes of unanswered tool calls in a continued transcript', () => {
+  it('closes an unguarded write that applied before the crash with its original result, so it is written exactly once', async () => {
+    const context = setup();
+    const { first, fs } = context;
+    const input = { path: 'out.txt', content: 'v1' };
+    const agentId = await spawnRunning(context, first, 'outcome-applied');
+    await recordToolCall(context, first, 0, agentId, 'toolu_w', [{ name: 'files_write', arguments: input }]);
+    const original = await request(first.launcher, 0, 'toolu_w', 'files_write', input);
+    expect(original.body).toMatchObject({ ok: true, message: 'File written' });
+    // The runner dies after the receipt was stored but before the session recorded the result.
+    const second = await crashAndRestart(context, agentId);
+    await continueAgent(context, second, agentId, 'outcome-applied-continue');
+    expect(await startOutcomes(second.launcher, 0)).toEqual([{ toolCallId: 'toolu_w', outcome: 'APPLIED', isError: false, text: original.text }]);
+    expect(fs.executions('files_write')).toBe(1);
+    expect(fs.applied).toEqual(['files_write']);
+  });
+
+  it('reconciles a write whose result was lost before the continuation starts and closes the call as applied', async () => {
+    const context = setup();
+    const { first, fs } = context;
+    const input = { path: 'out.txt', content: 'v1' };
+    const agentId = await spawnRunning(context, first, 'outcome-reconciled');
+    await recordToolCall(context, first, 0, agentId, 'toolu_w', [{ name: 'files_write', arguments: input }]);
+    fs.interrupt('files_write', 'after');
+    first.launcher.emit(0, { type: 'tool_request', requestId: 'toolu_w', toolCallId: 'toolu_w', operation: 'files_write', input });
+    await vi.waitFor(() => expect(fs.files.get('out.txt')).toBe('v1'));
+    const second = await crashAndRestart(context, agentId);
+    await continueAgent(context, second, agentId, 'outcome-reconciled-continue');
+    const outcomes = await startOutcomes(second.launcher, 0);
+    expect(outcomes).toEqual([{ toolCallId: 'toolu_w', outcome: 'APPLIED', isError: false, text: expect.any(String) }]);
+    expect(JSON.parse(outcomes![0]!.text)).toMatchObject({ ok: true, reconciled: true, data: { path: 'out.txt', sha256: sha256('v1') } });
+    expect(second.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_w', kind: 'files_write' }))
+      .toMatchObject({ state: 'APPLIED', reconciled: true, resultJson: outcomes![0]!.text });
+    expect(fs.executions('files_write')).toBe(1);
+  });
+
+  it('tells the model to read the target first when a lost mutation cannot be proven either way', async () => {
+    const context = setup();
+    const { first, fs } = context;
+    fs.files.set('keep.txt', 'keep');
+    const input = { source: 'keep.txt', destination: 'moved.txt' };
+    const agentId = await spawnRunning(context, first, 'outcome-unknown');
+    await recordToolCall(context, first, 0, agentId, 'toolu_m', [{ name: 'files_move', arguments: input }]);
+    fs.interrupt('files_move', 'before');
+    first.launcher.emit(0, { type: 'tool_request', requestId: 'toolu_m', toolCallId: 'toolu_m', operation: 'files_move', input });
+    await vi.waitFor(() => expect(fs.executions('files_move')).toBe(1));
+    const second = await crashAndRestart(context, agentId);
+    await continueAgent(context, second, agentId, 'outcome-unknown-continue');
+    const outcomes = await startOutcomes(second.launcher, 0);
+    expect(outcomes).toEqual([{ toolCallId: 'toolu_m', outcome: 'UNKNOWN', isError: true, text: expect.any(String) }]);
+    const body = JSON.parse(outcomes![0]!.text) as { message: string; error: { code: string } };
+    expect(body.error.code).toBe('EFFECT_UNKNOWN');
+    expect(body.message).toContain('may have taken effect');
+    expect(body.message).toContain('Inspect the target with a read before any retry');
+    expect(fs.executions('files_move')).toBe(1);
+    expect(fs.files.get('keep.txt')).toBe('keep');
+    expect(second.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_m', kind: 'files_move' })).toMatchObject({ state: 'UNKNOWN', resultJson: null });
+  });
+
+  it('closes a patch that never reached its file as not applied and records that outcome', async () => {
+    const context = setup();
+    const { first, fs } = context;
+    fs.files.set('a.txt', 'alpha\n');
+    const input = { path: 'a.txt', oldText: 'alpha', newText: 'ALPHA' };
+    const agentId = await spawnRunning(context, first, 'outcome-not-applied');
+    await recordToolCall(context, first, 0, agentId, 'toolu_p', [{ name: 'files_apply_patch', arguments: input }]);
+    fs.interrupt('files_apply_patch', 'before');
+    first.launcher.emit(0, { type: 'tool_request', requestId: 'toolu_p', toolCallId: 'toolu_p', operation: 'files_apply_patch', input });
+    await vi.waitFor(() => expect(fs.executions('files_apply_patch')).toBe(1));
+    const second = await crashAndRestart(context, agentId);
+    await continueAgent(context, second, agentId, 'outcome-not-applied-continue');
+    const outcomes = await startOutcomes(second.launcher, 0);
+    expect(outcomes).toEqual([{ toolCallId: 'toolu_p', outcome: 'NOT_APPLIED', isError: true, text: expect.any(String) }]);
+    expect(JSON.parse(outcomes![0]!.text)).toMatchObject({ ok: false, error: { code: 'EFFECT_NOT_APPLIED', retryable: true } });
+    expect(second.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_p', kind: 'files_apply_patch' }))
+      .toMatchObject({ state: 'REJECTED', resultJson: outcomes![0]!.text });
+    expect(fs.files.get('a.txt')).toBe('alpha\n');
+    expect(fs.applied).toEqual([]);
+  });
+
+  it('leaves a never-dispatched call, a repeatable read, and a call that does not match its effect without a settled result', async () => {
+    const context = setup();
+    const { first, fs, record } = context;
+    const agentId = await spawnRunning(context, first, 'outcome-none');
+    await recordToolCall(context, first, 0, agentId, 'toolu_new', [
+      { name: 'files_write', arguments: { path: 'new.txt', content: 'never sent' } },
+      { id: 'toolu_read', name: 'files_read', arguments: { path: 'r.txt' } },
+      { id: 'toolu_other', name: 'files_write', arguments: { path: 'm.txt', content: 'not what was sent' } }
+    ]);
+    first.repository.reserveEffect({
+      ownerId: record.ownerId, workspaceId: record.id, agentId, agentGeneration: 1, runnerEpoch: 1,
+      requestId: 'toolu_read', kind: 'files_read', payloadHash: sha256('read'), now: Date.now()
+    });
+    fs.interrupt('files_write', 'before');
+    first.launcher.emit(0, { type: 'tool_request', requestId: 'toolu_other', toolCallId: 'toolu_other', operation: 'files_write', input: { path: 'm.txt', content: 'sent' } });
+    await vi.waitFor(() => expect(fs.executions('files_write')).toBe(1));
+    context.store.database.prepare("UPDATE agent_effects SET state='DISPATCHED' WHERE request_id='toolu_read'").run();
+    const second = await crashAndRestart(context, agentId);
+    await continueAgent(context, second, agentId, 'outcome-none-continue');
+    const outcomes = await startOutcomes(second.launcher, 0);
+    expect(outcomes).toEqual([{ toolCallId: 'toolu_other', outcome: 'UNKNOWN', isError: true, text: expect.stringContaining('does not match the dispatched request') }]);
+    // A transcript that does not match the dispatched payload is never used to observe or settle it.
+    expect(fs.executions('files_read')).toBe(0);
+    expect(second.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_other', kind: 'files_write' })).toMatchObject({ state: 'UNKNOWN' });
+    expect(fs.executions('files_write')).toBe(1);
+  });
+
+  it('bounds the settled outcomes in count and size and redacts the gateway lease from them', async () => {
+    const context = setup();
+    const { first, record } = context;
+    const agentId = await spawnRunning(context, first, 'outcome-bounds');
+    const calls = Array.from({ length: 70 }, (_, index) => ({ id: `toolu_${index}`, name: 'files_mkdir', arguments: { path: `d${index}` } }));
+    await recordToolCall(context, first, 0, agentId, 'toolu_0', calls);
+    for (const call of calls) {
+      first.repository.reserveEffect({
+        ownerId: record.ownerId, workspaceId: record.id, agentId, agentGeneration: 1, runnerEpoch: 1,
+        requestId: call.id, kind: 'files_mkdir', payloadHash: sha256(call.id), now: Date.now()
+      });
+    }
+    const receipt = (text: string) => JSON.stringify({ ok: true, message: text, data: {}, truncated: false });
+    const update = context.store.database.prepare("UPDATE agent_effects SET state='APPLIED', result_json=? WHERE request_id=?");
+    for (const call of calls) update.run(receipt(`made ${call.arguments.path}`), call.id);
+    update.run(receipt('x'.repeat(100 * 1024)), 'toolu_0');
+    update.run(receipt(`leaked ${LEASE}`), 'toolu_1');
+    const second = await crashAndRestart(context, agentId);
+    await continueAgent(context, second, agentId, 'outcome-bounds-continue');
+    const outcomes = (await startOutcomes(second.launcher, 0))!;
+    expect(outcomes.map((outcome) => outcome.toolCallId)).toEqual(calls.slice(0, 64).map((call) => call.id));
+    expect(Buffer.byteLength(outcomes[0]!.text)).toBeLessThan(1_024);
+    expect(JSON.parse(outcomes[0]!.text)).toMatchObject({ ok: true, truncated: true });
+    expect(outcomes[0]!.text).toContain('Inspect the target with a read');
+    expect(outcomes[1]!.text).toBe(receipt('leaked [REDACTED]'));
+    expect(outcomes[2]!.text).toBe(receipt('made d2'));
   });
 });
