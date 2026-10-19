@@ -23,8 +23,33 @@ export type TraceRunStart = TraceRunKey & {
   parent: TraceRunKey | null;
   profileId: string | null;
   profileRevisionId: string | null;
+  /** The automation workflow that started this run, resolved by the runner; null for interactive runs. */
+  workflowId?: string | null | undefined;
   at: number;
 };
+
+/** One brokered coding action, as the action span records it. Identifiers and outcomes only. */
+export type TraceActionEvent = {
+  actionId: string;
+  step: string;
+  actionClass: string;
+  decision: string;
+  reasonCode: string;
+  state: string;
+  /** The proxied tool request this action brokered; absent for runner pipeline steps. */
+  requestId?: string | undefined;
+  branch?: string | undefined;
+  commitSha?: string | undefined;
+  prNumber?: number | undefined;
+  inputDigest?: string | undefined;
+  startedAt: number;
+  endedAt: number;
+};
+
+/** The part of the recorder the coding broker drives. */
+export interface AgentActionTraceSink {
+  action(key: TraceRunKey, event: TraceActionEvent): { traceId: string; spanId: string } | null;
+}
 
 /** One reconcileUsage step: the deltas charged to the agent usage ledger plus the runtime's cumulative cache counters. */
 export type TraceUsageDelta = {
@@ -300,7 +325,7 @@ function rootStateOf(state: TraceState): TraceSpanState {
  * guarded: a storage failure degrades the trace to partial coverage, is logged once per trace, and
  * never reaches the agent lifecycle.
  */
-export class AgentTraceRecorder implements AgentTraceHooks {
+export class AgentTraceRecorder implements AgentTraceHooks, AgentActionTraceSink {
   private readonly runs = new Map<string, Run>();
   private readonly loggedFailures = new Set<string>();
   private readonly log: (entry: Record<string, unknown>) => void;
@@ -328,7 +353,7 @@ export class AgentTraceRecorder implements AgentTraceHooks {
         generation: start.generation,
         runId: null,
         parentTraceId: start.parent ? traceIdFor(start.parent.agentId, start.parent.generation) : null,
-        workflowId: null,
+        workflowId: start.workflowId ?? null,
         profileId: start.profileId,
         profileRevisionId: start.profileRevisionId,
         startedAt: start.at
@@ -648,6 +673,51 @@ export class AgentTraceRecorder implements AgentTraceHooks {
         expiresAt: this.store.retentionDeadline(Math.max(run.startedAt, at))
       });
     });
+  }
+
+  /**
+   * Records one brokered action as an `action` span and returns where it landed. A live run allocates
+   * the span like any other and parents it to the proxied tool call's span; a finished trace (the
+   * runner commits and publishes after the agent ends) appends after its last span, under the root.
+   * Returns null when the trace does not exist (traces off) or recording failed.
+   */
+  action(key: TraceRunKey, event: TraceActionEvent): { traceId: string; spanId: string } | null {
+    const traceId = traceIdFor(key.agentId, key.generation);
+    let placed: { traceId: string; spanId: string } | null = null;
+    this.guard(traceId, () => {
+      const run = this.runs.get(traceId);
+      let seq: number | null;
+      let parentSpanId: string;
+      if (run) {
+        seq = this.allocate(run, event.startedAt);
+        parentSpanId = (event.requestId === undefined ? undefined : run.proxies.get(event.requestId)?.spanId) ?? run.rootSpanId;
+      } else {
+        const existing = this.store.findTrace(traceId);
+        if (!existing || existing.spanCount >= this.options.maxSpansPerTrace) return;
+        seq = this.store.nextSpanSeq(traceId);
+        parentSpanId = spanIdFor(traceId, 0);
+      }
+      if (seq === null) return;
+      const spanId = spanIdFor(traceId, seq);
+      const attributes: TraceAttributes = {
+        action_id: event.actionId, action_class: event.actionClass, decision: event.decision,
+        reason_code: event.reasonCode, action_state: event.state, workflow_step: event.step
+      };
+      if (event.requestId !== undefined) attributes.request_id = event.requestId;
+      if (event.branch !== undefined) attributes.branch = event.branch;
+      if (event.commitSha !== undefined) attributes.commit_sha = event.commitSha;
+      if (event.prNumber !== undefined) attributes.pr_number = event.prNumber;
+      const state: TraceSpanState = event.state === 'APPLIED' ? 'OK' : (event.state === 'REJECTED' ? 'ERROR' : 'UNKNOWN');
+      const start = Math.max(0, event.startedAt);
+      this.store.writeSpan({
+        traceId, spanSeq: seq, spanId, parentSpanId, kind: 'action', name: `action.${event.step}`.slice(0, MAX_SPAN_NAME),
+        state, startedAt: start, endedAt: Math.max(start, event.endedAt), ttftMs: null,
+        promptTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costMicros: null,
+        attributes, inputDigest: event.inputDigest ?? null, errorClass: state === 'ERROR' ? 'tool' : null
+      });
+      placed = { traceId, spanId };
+    });
+    return placed;
   }
 
   markIncomplete(key: TraceRunKey, reason: string, at: number): void {

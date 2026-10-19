@@ -490,10 +490,11 @@ describe('agent trace budget and hook spans', () => {
     // Workspace lifecycle hooks run only on commit, finalize, checkout and workspace open. An agent
     // reaches the workspace only through the brokered proxy operations, none of which runs a hook,
     // so a hook span cannot occur inside an agent run. The kind stays in the contract for that path.
+    // Commits, checkouts and pushes of a coding workflow are runner steps, never agent operations.
     expect(TRACE_SPAN_KINDS).toContain('hook');
     const hookTriggering = ['git_commit', 'workspace_finalize', 'git_checkout', 'workspace_open', 'hooks_run', 'repository_add'];
     for (const operation of AgentProxyOperationSchema.options) expect(hookTriggering).not.toContain(operation);
-    expect(AgentProxyOperationSchema.options.every((operation) => /^(files|grep|symbols)_/u.test(operation))).toBe(true);
+    expect(AgentProxyOperationSchema.options.every((operation) => /^(?:(?:files|grep|symbols)_|exec_run$|git_status$|git_diff$)/u.test(operation))).toBe(true);
 
     const t = setup();
     const key = t.begin();
