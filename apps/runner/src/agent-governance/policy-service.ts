@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { ZodError } from 'zod';
 import {
   AGENT_POLICY_LIMITS,
+  AgentActionDescriptorSchema,
   AgentPoliciesRunnerDataSchemas,
   AgentPoliciesRunnerRequestSchema,
   DEFAULT_GLOBAL_EXECUTION_POLICY,
@@ -130,15 +131,21 @@ export class AgentPolicyService {
    * whose answer `combineAdvisor` applies. Every other decision (any DENY, mandatory or rule approval,
    * an unanalyzable command, a plain ALLOW) is returned without consulting the advisor, so nothing
    * leaves the runner for it. The advisor cannot lower a decision; a failure takes the policy fallback.
+   * The advisor is told the subject the evaluator judged (for example `publish_branch` for a declared
+   * `test` that runs `git push`), never only the declared class. The coding broker is the caller;
+   * nothing in this release calls it yet. A descriptor that does not match the contract is refused.
    */
-  async decide(principalId: string, projectId: string | null, descriptor: AgentActionDescriptor, context?: GateContext, options: AgentPolicyDecideOptions = {}): Promise<GateDecision> {
+  async decide(principalId: string, projectId: string | null, input: AgentActionDescriptor, context?: GateContext, options: AgentPolicyDecideOptions = {}): Promise<GateDecision> {
+    const parsed = AgentActionDescriptorSchema.safeParse(input);
+    if (!parsed.success) throw new AgentPolicyError('INVALID_INPUT', bounded(issues(parsed.error)[0] ?? 'invalid action descriptor', 500));
+    const descriptor = parsed.data;
     const snapshot = this.resolver.resolve(principalId, projectId);
-    const decision = PURE_GATE_EVALUATOR.evaluate(this.gateInput(principalId, snapshot, descriptor, context));
+    const { decision, subject } = PURE_GATE_EVALUATOR.evaluateSubject(this.gateInput(principalId, snapshot, descriptor, context));
     if (!isAdvisorPending(decision) || !this.advisor) return decision;
     const settings = resolveEffectivePolicy(snapshot.global.document, snapshot.project?.state === 'active' ? snapshot.project.document : null).advisor;
     let answer: AdvisorAnswer | null;
     try {
-      answer = await this.advisor.advise({ principalId, descriptor, decision, settings, facts: options.facts, signal: options.signal });
+      answer = await this.advisor.advise({ principalId, descriptor, decision, subject, settings, facts: options.facts, signal: options.signal });
     } catch {
       answer = null;
     }

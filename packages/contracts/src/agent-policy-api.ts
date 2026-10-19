@@ -339,7 +339,12 @@ export const GateDecisionSchema = z.object({
     /** Why the advisor gave no usable answer; `null` when it answered or was not involved. */
     fallbackReason: AdvisorFallbackReasonSchema.nullable().default(null),
     /** The policy's fallback for this decision while the advisor is involved; `null` otherwise. */
-    fallback: AdvisorFallbackModeSchema.nullable().default(null)
+    fallback: AdvisorFallbackModeSchema.nullable().default(null),
+    /**
+     * The policy's confidence floor while the advisor is involved; `null` otherwise. The gate enforces it
+     * itself, so no advisor can clear an action with a `no_change` below it.
+     */
+    minConfidence: unitInterval.nullable().default(null)
   }).strict(),
   /** The approval terms that apply when this decision (or an advisor escalation of it) holds the action for a human. */
   approval: z.object({ ttlSeconds: z.number().int().positive(), approverRoles: z.array(PolicyApproverRoleSchema) }).strict()

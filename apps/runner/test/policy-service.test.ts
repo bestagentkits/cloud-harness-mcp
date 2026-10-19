@@ -327,7 +327,7 @@ describe('AgentPolicyService', () => {
       const input = { descriptor, snapshot: service.resolver.resolve('owner', null), advisorAvailable };
       expect(PURE_GATE_EVALUATOR.evaluate(input)).toEqual(simulated.decision);
       expect(PURE_GATE_EVALUATOR.decide(input).decision).toBe('REQUIRE_APPROVAL');
-      expect(PURE_GATE_EVALUATOR.decide(input, { effect: 'no_change', decisionId: 'd1' }).decision).toBe(advisorAvailable ? 'ALLOW' : 'REQUIRE_APPROVAL');
+      expect(PURE_GATE_EVALUATOR.decide(input, { effect: 'no_change', decisionId: 'd1', confidence: 0.9 }).decision).toBe(advisorAvailable ? 'ALLOW' : 'REQUIRE_APPROVAL');
     }
   });
 

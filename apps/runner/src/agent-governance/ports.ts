@@ -5,7 +5,7 @@ import type {
   GateDecision,
   PolicyAdvisor
 } from '@cloud-harness/contracts';
-import type { AdvisorAnswer, PolicySnapshot } from './gate-evaluator.js';
+import type { AdvisorAnswer, GateEvaluation, GateSubject, PolicySnapshot } from './gate-evaluator.js';
 
 /**
  * Port contracts for policy-governed coding agents (ADR 0006). Interfaces only: this module holds
@@ -53,6 +53,8 @@ export interface PolicyResolver extends Versioned {
 /** The pure decision function. The Dashboard simulation and the ActionBroker use the same instance. */
 export interface GateEvaluator extends Versioned {
   evaluate(input: GateEvaluationInput): GateDecision;
+  /** `evaluate` plus the subject of the decision: the class its rule belongs to and whether a `git push` runs. */
+  evaluateSubject(input: GateEvaluationInput): GateEvaluation;
   /**
    * Never lowers a decision, except that a pending discretionary decision (`ADVISOR_REQUIRED`) becomes
    * ALLOW on a valid `no_change` answer.
@@ -74,6 +76,8 @@ export interface DecisionAdvisor extends Versioned {
     principalId: string;
     descriptor: AgentActionDescriptor;
     decision: GateDecision;
+    /** What the pending decision is about, from the evaluator. Describe this, not the declared class alone. */
+    subject: GateSubject;
     /** The effective policy's thresholds; the advisor turns its assessment into an effect with them. */
     settings: Pick<PolicyAdvisor, 'riskThreshold' | 'minConfidence'>;
     facts?: AdvisorFacts | undefined;

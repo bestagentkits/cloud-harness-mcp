@@ -46,7 +46,7 @@ const decision = {
   matchedRules: ['global.allowedActionClasses'], actionClass: 'edit',
   policy: { globalRevisionId: null, globalSource: 'default', projectId: null, projectRevisionId: null, projectSource: 'none' },
   inputFingerprint: 'b'.repeat(64),
-  advisor: { required: false, consulted: false, effect: null, decisionId: null, risk: null, confidence: null, fallbackReason: null, fallback: null },
+  advisor: { required: false, consulted: false, effect: null, decisionId: null, risk: null, confidence: null, fallbackReason: null, fallback: null, minConfidence: null },
   approval: { ttlSeconds: 3_600, approverRoles: ['owner'] }
 };
 const dataFor: Record<string, unknown> = {

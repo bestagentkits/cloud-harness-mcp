@@ -99,8 +99,12 @@ describe('advisor combination with the real gate evaluator', () => {
       expect(GateDecisionSchema.parse(combined)).toEqual(combined);
       expect(decide(input, answer)).toEqual(isAdvisorPending(decision) ? combined : decision);
       if (isAdvisorPending(decision)) {
-        const cleared = answer !== null && answer.effect === 'no_change' && answer.fallbackReason === null;
-        const expected = cleared ? 'ALLOW' : answer?.fallbackReason !== null && policy.advisor?.fallback === 'deny' ? 'DENY' : 'REQUIRE_APPROVAL';
+        // The gate holds the policy's confidence floor: a no_change below it is a low-confidence fallback.
+        const unsure = answer !== null && answer.effect === 'no_change' && answer.fallbackReason === null && (answer.confidence ?? 0) < ADVISOR.minConfidence;
+        const cleared = answer !== null && answer.effect === 'no_change' && answer.fallbackReason === null && !unsure;
+        const fellBack = answer === null || answer.fallbackReason !== null || unsure;
+        const expected = cleared ? 'ALLOW' : fellBack && policy.advisor?.fallback === 'deny' ? 'DENY' : 'REQUIRE_APPROVAL';
+        if (unsure) expect(combined.advisor.fallbackReason).toBe('low_confidence');
         expect(combined.decision, `iteration ${iteration}`).toBe(expected);
         continue;
       }
@@ -138,7 +142,7 @@ describe('advisor combination with the real gate evaluator', () => {
     const input = { descriptor: action('edit'), snapshot: snapshot(globalPolicy()), advisorAvailable: true };
     const escalated = decide(input, { effect: 'escalate', decisionId: 'dec_1', risk: 0.9, confidence: 0.8, fallbackReason: null });
     expect(escalated).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_ESCALATED' });
-    expect(escalated.advisor).toEqual({ required: true, consulted: true, effect: 'escalate', decisionId: 'dec_1', risk: 0.9, confidence: 0.8, fallbackReason: null, fallback: 'require_approval' });
+    expect(escalated.advisor).toEqual({ required: true, consulted: true, effect: 'escalate', decisionId: 'dec_1', risk: 0.9, confidence: 0.8, fallbackReason: null, fallback: 'require_approval', minConfidence: 0.7 });
     // A value outside [0, 1] is not recorded, and an unknown fallback reason is treated as unavailable.
     const odd = decide(input, { effect: 'no_change', risk: 7, confidence: Number.NaN, fallbackReason: 'surprise' as never });
     expect(odd).toMatchObject({ decision: 'REQUIRE_APPROVAL', advisor: { risk: null, confidence: null, fallbackReason: 'unavailable', consulted: false } });

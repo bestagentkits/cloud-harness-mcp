@@ -321,14 +321,19 @@ describe('combineAdvisor', () => {
   });
 
   it('clears a pending discretionary action only on an explicit no_change', () => {
-    const decision = combineAdvisor(required(), { effect: 'no_change', decisionId: 'adv_1' });
+    const decision = combineAdvisor(required(), { effect: 'no_change', decisionId: 'adv_1', confidence: 0.9 });
     expect(decision.decision).toBe('ALLOW');
     expect(decision.reasonCode).toBe('ADVISOR_NO_CHANGE');
     expect(decision.matchedRules[0]).toBe('advisor');
     expect(isAdvisorPending(decision)).toBe(false);
     // The cleared decision is final: a second answer cannot clear or lower anything again.
     expect(combineAdvisor(decision, { effect: 'escalate' }).decision).toBe('REQUIRE_APPROVAL');
-    expect(decision.advisor).toEqual({ required: true, consulted: true, effect: 'no_change', decisionId: 'adv_1', risk: null, confidence: null, fallbackReason: null, fallback: 'require_approval' });
+    expect(decision.advisor).toEqual({ required: true, consulted: true, effect: 'no_change', decisionId: 'adv_1', risk: null, confidence: 0.9, fallbackReason: null, fallback: 'require_approval', minConfidence: 0.7 });
+    // The gate enforces the policy's confidence floor itself, whatever advisor answered.
+    for (const confidence of [undefined, 0.69, Number.NaN]) {
+      expect(combineAdvisor(required(), { effect: 'no_change', confidence })).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_ESCALATED', advisor: { consulted: false, fallbackReason: 'low_confidence' } });
+    }
+    expect(combineAdvisor(required(), { effect: 'no_change', confidence: 0.7 }).decision).toBe('ALLOW');
     expect(decision.reasons.map((reason) => reason.code)).toContain('ADVISOR_NO_CHANGE');
   });
 
@@ -364,7 +369,7 @@ describe('decide', () => {
     expect(decide(input(true))).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_ESCALATED' });
     expect(decide(input(true), null).decision).toBe('REQUIRE_APPROVAL');
     expect(decide(input(true), { effect: 'escalate' }).decision).toBe('REQUIRE_APPROVAL');
-    expect(decide(input(true), { effect: 'no_change', decisionId: 'adv_1' })).toMatchObject({ decision: 'ALLOW', reasonCode: 'ADVISOR_NO_CHANGE' });
+    expect(decide(input(true), { effect: 'no_change', decisionId: 'adv_1', confidence: 0.9 })).toMatchObject({ decision: 'ALLOW', reasonCode: 'ADVISOR_NO_CHANGE' });
     // Without an advisor the action needs approval, and an answer that nobody asked for changes nothing.
     expect(decide(input(false), { effect: 'no_change' })).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_UNAVAILABLE' });
   });
@@ -811,7 +816,7 @@ describe('gate properties', () => {
         expect(globalPolicy.defaults[actionClass]?.delegable, `iteration ${iteration}`).toBe(true);
         expect(withProject.reasons[0]?.source).toBe('project');
       }
-      for (const answer of [null, { effect: 'no_change' as const }, { effect: 'escalate' as const }]) {
+      for (const answer of [null, { effect: 'no_change' as const, confidence: 0.9 }, { effect: 'escalate' as const }]) {
         for (const decision of [without, withProject]) {
           const combined = combineAdvisor(decision, answer);
           if (isAdvisorPending(decision)) {

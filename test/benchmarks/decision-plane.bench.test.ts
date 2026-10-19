@@ -36,7 +36,7 @@ const routing = fixture<RoutingFixture>('mcp-routing.json');
 const failures = fixture<FailureFixture>('failure-classification.json');
 const executionRisk = fixture<ExecutionRiskFixture>('execution-risk.json');
 const adviseCase = (advisor: ExecutionRiskAdvisor, entry: ExecutionRiskFixture['cases'][number]) => advisor.advise({
-  principalId: 'owner', descriptor: AgentActionDescriptorSchema.parse(entry.action), decision: {} as GateDecision, settings: executionRisk.settings, facts: entry.facts
+  principalId: 'owner', descriptor: AgentActionDescriptorSchema.parse(entry.action), subject: { actionClass: AgentActionDescriptorSchema.parse(entry.action).actionClass, gitPush: false }, decision: {} as GateDecision, settings: executionRisk.settings, facts: entry.facts
 });
 
 const catalog: McpGatewayToolView[] = routing.tools.map((entry, index) => ({

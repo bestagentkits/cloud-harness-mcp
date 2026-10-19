@@ -99,7 +99,7 @@ export type AdvisorAnswer = {
 };
 
 type AdvisorRecord = GateDecision['advisor'];
-const NO_ADVISOR: AdvisorRecord = { required: false, consulted: false, effect: null, decisionId: null, risk: null, confidence: null, fallbackReason: null, fallback: null };
+const NO_ADVISOR: AdvisorRecord = { required: false, consulted: false, effect: null, decisionId: null, risk: null, confidence: null, fallbackReason: null, fallback: null, minConfidence: null };
 
 type Verdict = { decision: GateDecisionValue; code: GateReasonCode; source: GateReason['source']; detail: string; rule?: string };
 
@@ -271,13 +271,34 @@ function strictness(decision: GateDecision): number {
   return 0;
 }
 
-export function evaluateGate(input: GateInput): GateDecision {
+/**
+ * What a decision is actually about: the class whose rule produced it (`publish_branch` when a
+ * declared `test`, `read` or `vcs_local` runs `git push` and the publish evaluation is the stricter
+ * one) and whether the command runs `git push` at all. An advisor is told this, not only the
+ * declared class.
+ */
+export type GateSubject = { actionClass: AgentActionClass; gitPush: boolean };
+
+export type GateEvaluation = { decision: GateDecision; subject: GateSubject };
+
+/** `evaluateGate` together with the subject of the decision it returns. */
+export function evaluateGateSubject(input: GateInput): GateEvaluation {
   const inspection = inspect(input.descriptor);
+  const gitPush = inspection.pushes.length > 0;
   const declared = evaluateAs(input, input.descriptor.actionClass, inspection);
-  const decision = inspection.verdict || inspection.pushes.length === 0 || input.descriptor.actionClass === 'publish_branch'
-    ? declared
-    : [evaluateAs(input, 'publish_branch', inspection), declared].reduce((stricter, next) => (strictness(next) > strictness(stricter) ? next : stricter));
-  return inspection.unanalyzable ? requireUnanalyzableApproval(decision, inspection.unanalyzable) : decision;
+  let evaluation: GateEvaluation = { decision: declared, subject: { actionClass: input.descriptor.actionClass, gitPush } };
+  // On a tie the publish evaluation wins, so the subject names the class a human would approve.
+  if (!inspection.verdict && gitPush && input.descriptor.actionClass !== 'publish_branch') {
+    const publish = evaluateAs(input, 'publish_branch', inspection);
+    if (strictness(publish) >= strictness(declared)) evaluation = { decision: publish, subject: { actionClass: 'publish_branch', gitPush } };
+  }
+  return inspection.unanalyzable
+    ? { ...evaluation, decision: requireUnanalyzableApproval(evaluation.decision, inspection.unanalyzable) }
+    : evaluation;
+}
+
+export function evaluateGate(input: GateInput): GateDecision {
+  return evaluateGateSubject(input).decision;
 }
 
 /**
@@ -372,7 +393,7 @@ function evaluateAs(input: GateInput, actionClass: AgentActionClass, inspection:
   if (input.advisorAvailable) {
     return finish(
       { decision: 'REQUIRE_APPROVAL', code: 'ADVISOR_REQUIRED', source: rule.source, detail: `${actionClass} is discretionary and must be cleared by the advisor`, rule: ruleName },
-      { required: true, fallback: advisorPolicy.fallback }
+      { required: true, fallback: advisorPolicy.fallback, minConfidence: advisorPolicy.minConfidence }
     );
   }
   // The policy relies on an advisor this instance or principal cannot reach: its conservative fallback applies.
@@ -393,17 +414,23 @@ const unit = (value: unknown): number | null => (typeof value === 'number' && Nu
 /** The advisor record an answer produces. A malformed answer records nothing but its failure. */
 function advisorRecord(decision: GateDecision, answer: AdvisorAnswer | null): AdvisorRecord {
   const parsed = AdvisorEffectSchema.safeParse(answer?.effect);
-  const base = { ...NO_ADVISOR, required: decision.advisor.required, fallback: decision.advisor.fallback };
+  const base = { ...NO_ADVISOR, required: decision.advisor.required, fallback: decision.advisor.fallback, minConfidence: decision.advisor.minConfidence };
   if (answer === null) return { ...base, fallbackReason: 'unavailable' };
   if (!parsed.success) return { ...base, fallbackReason: 'invalid_answer' };
-  const reported = answer.fallbackReason === null || answer.fallbackReason === undefined ? null : AdvisorFallbackReasonSchema.catch('unavailable').parse(answer.fallbackReason);
+  const confidence = unit(answer.confidence);
+  let reported = answer.fallbackReason === null || answer.fallbackReason === undefined ? null : AdvisorFallbackReasonSchema.catch('unavailable').parse(answer.fallbackReason);
+  // The gate holds the policy's confidence floor itself: whichever advisor answered, a `no_change` below
+  // it, or one that states no confidence at all, is a low-confidence fallback and clears nothing.
+  if (reported === null && parsed.data === 'no_change' && base.minConfidence !== null && (confidence === null || confidence < base.minConfidence)) {
+    reported = 'low_confidence';
+  }
   return {
     ...base,
     consulted: reported === null,
     effect: parsed.data,
     decisionId: typeof answer.decisionId === 'string' ? answer.decisionId.slice(0, 200) : null,
     risk: unit(answer.risk),
-    confidence: unit(answer.confidence),
+    confidence,
     fallbackReason: reported
   };
 }
@@ -473,6 +500,7 @@ export function decide(input: GateInput, answer: AdvisorAnswer | null = null): G
 export const PURE_GATE_EVALUATOR: GateEvaluatorPort = Object.freeze({
   contractVersion: AGENT_GOVERNANCE_PORTS_VERSION,
   evaluate: (input: GateInput) => evaluateGate(input),
+  evaluateSubject: (input: GateInput) => evaluateGateSubject(input),
   combineAdvisor,
   decide
 });

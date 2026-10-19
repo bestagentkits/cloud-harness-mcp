@@ -50,7 +50,7 @@ const decision = (value: 'ALLOW' | 'REQUIRE_APPROVAL' | 'DENY', detail = 'checke
   reasons: [{ code: value === 'DENY' ? 'HARD_DENY' : 'ALLOWED_BY_POLICY', source: 'global', detail }],
   matchedRules: ['global.defaults.edit'], actionClass: 'edit',
   policy: { globalRevisionId: REVISION, globalSource: 'stored', projectId: null, projectRevisionId: null, projectSource: 'none' },
-  inputFingerprint: 'f'.repeat(64), advisor: { required: false, consulted: false, effect: null, decisionId: null, risk: null, confidence: null, fallbackReason: null, fallback: null },
+  inputFingerprint: 'f'.repeat(64), advisor: { required: false, consulted: false, effect: null, decisionId: null, risk: null, confidence: null, fallbackReason: null, fallback: null, minConfidence: null },
   approval: { ttlSeconds: 3600, approverRoles: ['owner'] }
 });
 

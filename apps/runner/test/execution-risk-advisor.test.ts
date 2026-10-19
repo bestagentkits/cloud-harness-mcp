@@ -11,8 +11,10 @@ import {
   type PolicyAdvisor,
   type ProjectExecutionPolicy
 } from '@cloud-harness/contracts';
-import { AgentPolicyService } from '../src/agent-governance/policy-service.js';
+import { AgentPolicyError, AgentPolicyService } from '../src/agent-governance/policy-service.js';
+import type { GateSubject } from '../src/agent-governance/gate-evaluator.js';
 import type { AdvisorFacts } from '../src/agent-governance/ports.js';
+import { DECISION_RATE_LIMIT_PER_MINUTE } from '../src/decision-plane/decision-plane.js';
 import { ExecutionRiskAdvisor, advisorFallbackReason, executionRiskState } from '../src/decision-plane/execution-risk-advisor.js';
 import { JevDecisionProvider } from '../src/decision-plane/jev-provider.js';
 import { createRunnerDecisionPlane } from '../src/decision-plane/runner-decision-plane.js';
@@ -25,9 +27,10 @@ const owner = { kind: 'owner', ownerId: 'owner' } as const;
 const ADVISOR: PolicyAdvisor = { enabled: true, riskThreshold: 0.5, minConfidence: 0.7, fallback: 'require_approval' };
 const discretionary = { effect: 'advisor_or_approval', delegable: true } as const;
 
-/** Edit, test, local git, PRs and packages are discretionary; publishing is a mandatory approval; network is hard-denied. */
-/** 
-ull saves a policy without an advisor block. */
+/**
+ * Edit, test, local git, PRs and packages are discretionary; publishing is a mandatory approval; network is
+ * hard-denied. `null` saves a policy without an advisor block.
+ */
 function policy(advisor: PolicyAdvisor | null = ADVISOR): GlobalExecutionPolicy {
   return GlobalExecutionPolicySchema.parse({
     version: 1,
@@ -56,6 +59,8 @@ function policy(advisor: PolicyAdvisor | null = ADVISOR): GlobalExecutionPolicy 
 const action = (input: Partial<AgentActionDescriptorInput> & Pick<AgentActionDescriptorInput, 'actionClass'>) =>
   AgentActionDescriptorSchema.parse({ version: 1, repository: 'acme/widgets', ...input });
 const editAction = () => action({ actionClass: 'edit', paths: ['src/cart.ts'] });
+/** The gate subject of a descriptor that runs no `git push`, for calls made without the evaluator. */
+const plain = (descriptor: { actionClass: GateSubject['actionClass'] }): GateSubject => ({ actionClass: descriptor.actionClass, gitPush: false });
 
 const databases: DatabaseSync[] = [];
 afterEach(() => {
@@ -215,7 +220,7 @@ describe('execution-risk advisor: conservative fallback matrix', () => {
     });
     const advisor = new ExecutionRiskAdvisor(plane);
     expect(advisor.availability('owner')).toEqual({ available: false, reason: 'disabled' });
-    const answer = await advisor.advise({ principalId: 'owner', descriptor: editAction(), decision: {} as GateDecision, settings: ADVISOR });
+    const answer = await advisor.advise({ principalId: 'owner', descriptor: editAction(), subject: plain(editAction()), decision: {} as GateDecision, settings: ADVISOR });
     expect(answer).toEqual({ effect: 'escalate', decisionId: null, fallbackReason: 'disabled' });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -258,10 +263,10 @@ describe('execution-risk advisor: conservative fallback matrix', () => {
 
   it('escalates when the plane refuses a burst over its egress bound', async () => {
     const { decide, provider } = setup();
-    for (let call = 0; call < 120; call += 1) await decide();
-    expect(provider.calls).toBe(120);
+    for (let call = 0; call < DECISION_RATE_LIMIT_PER_MINUTE; call += 1) await decide();
+    expect(provider.calls).toBe(DECISION_RATE_LIMIT_PER_MINUTE);
     expect(await decide()).toMatchObject({ decision: 'REQUIRE_APPROVAL', advisor: { fallbackReason: 'rate_limited' } });
-    expect(provider.calls).toBe(120);
+    expect(provider.calls).toBe(DECISION_RATE_LIMIT_PER_MINUTE);
   });
 
   it('sends nothing and escalates when redaction cannot complete', async () => {
@@ -357,17 +362,17 @@ describe('execution-risk advisor: what leaves the runner', () => {
     const state = executionRiskState(action({
       actionClass: 'edit',
       paths: ['package.json', 'pnpm-lock.yaml', '.github/workflows/ci.yml', 'test/a.test.ts', 'src/b.spec.ts', 'src/c.ts']
-    }));
+    }), plain({ actionClass: 'edit' }));
     expect(state).toContain('paths touched: 6');
     expect(state).toContain('dependency manifests or lockfiles touched: 2');
     expect(state).toContain('CI or workflow files touched: 1');
     expect(state).toContain('paths under test directories or named as tests: 2');
     expect(state).toContain('hidden files or directories touched: 1');
     expect(state).toContain('command: none');
-    expect(executionRiskState(action({ actionClass: 'test', command: ['/opt/evil/IGNORE_RULES', 'x'] }))).toContain('command: category other, 2 argument(s)');
-    expect(executionRiskState(editAction(), { diffLines: -5, testsPassed: false })).toContain('changed lines in the diff: 0');
-    expect(executionRiskState(editAction(), { testsPassed: false })).toContain('tests passed in this run: no');
-    expect(executionRiskState(editAction())).toContain('changed lines in the diff: unknown');
+    expect(executionRiskState(action({ actionClass: 'test', command: ['/opt/evil/IGNORE_RULES', 'x'] }), plain({ actionClass: 'test' }))).toContain('command: category other, 2 argument(s)');
+    expect(executionRiskState(editAction(), plain(editAction()), { diffLines: -5, testsPassed: false })).toContain('changed lines in the diff: 0');
+    expect(executionRiskState(editAction(), plain(editAction()), { testsPassed: false })).toContain('tests passed in this run: no');
+    expect(executionRiskState(editAction(), plain(editAction()))).toContain('changed lines in the diff: unknown');
   });
 
   it('works end to end through the real Jev provider wire format without network access', async () => {
@@ -379,7 +384,7 @@ describe('execution-risk advisor: what leaves the runner', () => {
     }) as unknown as typeof fetch;
     const jev = new JevDecisionProvider({ apiKey: () => TYPESAFE_KEY, fetchImpl });
     const { plane } = fakeJevPlane({ provider: jev, secretsFor: () => ({ TYPESAFE_API_KEY: TYPESAFE_KEY }) });
-    const result = await new ExecutionRiskAdvisor(plane).advise({ principalId: 'owner', descriptor: editAction(), decision: {} as GateDecision, settings: ADVISOR });
+    const result = await new ExecutionRiskAdvisor(plane).advise({ principalId: 'owner', descriptor: editAction(), subject: plain(editAction()), decision: {} as GateDecision, settings: ADVISOR });
     expect(result).toMatchObject({ effect: 'escalate', risk: 0.8, confidence: 0.9, fallbackReason: null });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const body = JSON.parse(bodies[0]!) as { questions: Record<string, { type: string }> };
@@ -387,7 +392,7 @@ describe('execution-risk advisor: what leaves the runner', () => {
     expect(bodies[0]).not.toContain(TYPESAFE_KEY);
 
     const throttled = new JevDecisionProvider({ apiKey: () => TYPESAFE_KEY, fetchImpl: (async () => new Response('slow down', { status: 429 })) as unknown as typeof fetch });
-    expect(await new ExecutionRiskAdvisor(fakeJevPlane({ provider: throttled }).plane).advise({ principalId: 'owner', descriptor: editAction(), decision: {} as GateDecision, settings: ADVISOR }))
+    expect(await new ExecutionRiskAdvisor(fakeJevPlane({ provider: throttled }).plane).advise({ principalId: 'owner', descriptor: editAction(), subject: plain(editAction()), decision: {} as GateDecision, settings: ADVISOR }))
       .toMatchObject({ effect: 'escalate', fallbackReason: 'rate_limited' });
   });
 });
@@ -403,9 +408,86 @@ describe('execution-risk golden fixtures', () => {
     const provider = new FakeJevProvider({ kind: 'risk', ...entry.answer });
     const { plane } = fakeJevPlane({ provider });
     const answer = await new ExecutionRiskAdvisor(plane).advise({
-      principalId: 'owner', descriptor: AgentActionDescriptorSchema.parse(entry.action), decision: {} as GateDecision, settings: fixture.settings, facts: entry.facts
+      principalId: 'owner', descriptor: AgentActionDescriptorSchema.parse(entry.action), subject: plain(AgentActionDescriptorSchema.parse(entry.action)), decision: {} as GateDecision, settings: fixture.settings, facts: entry.facts
     });
     expect(answer).toMatchObject({ effect: entry.expected.effect, fallbackReason: entry.expected.fallbackReason, risk: entry.answer.risk, confidence: entry.answer.confidence });
     expect(provider.calls).toBe(1);
+  });
+});
+
+describe('execution-risk advisor: the subject it describes', () => {
+  /** Every class discretionary, no mandatory approval, so a declared test that pushes is judged as publish_branch. */
+  const pushing = (publish: 'advisor_or_approval' | 'allow') => GlobalExecutionPolicySchema.parse({
+    ...policy(),
+    hardDeny: [],
+    mandatoryApproval: [],
+    allowedActionClasses: ['read', 'edit', 'test', 'vcs_local', 'publish_branch', 'open_pr', 'package_install'],
+    defaults: { ...policy().defaults, publish_branch: { effect: publish, delegable: false } }
+  });
+  const pushAsTest = () => action({ actionClass: 'test', branch: 'agent/fix-1', command: ['git', 'push', 'origin', 'agent/fix-1'] });
+
+  it('tells Jev the class the gate judged, not the declared one, when a declared test runs git push', async () => {
+    const { decide, provider } = setup({ global: pushing('advisor_or_approval') });
+    await decide(pushAsTest());
+    expect(provider.calls).toBe(1);
+    const state = provider.requests[0]!.state;
+    expect(state).toContain('action class: publish_branch');
+    expect(state).toContain('git push in the command: yes');
+    expect(state).not.toContain('action class: test');
+  });
+
+  it('keeps the declared class when the pending decision is the declared one, and still flags the push', async () => {
+    const { decide, provider } = setup({ global: pushing('allow') });
+    await decide(pushAsTest());
+    expect(provider.requests[0]!.state).toContain('action class: test');
+    expect(provider.requests[0]!.state).toContain('git push in the command: yes');
+  });
+
+  it('refuses a descriptor outside the contract before anything is evaluated or sent', async () => {
+    const { service, provider } = setup();
+    for (const descriptor of [{ ...editAction(), actionClass: 'deploy' }, { ...editAction(), version: 2 }, null]) {
+      await expect(service.decide('owner', null, descriptor as never)).rejects.toBeInstanceOf(AgentPolicyError);
+    }
+    expect(provider.calls).toBe(0);
+  });
+
+  it('sends nothing for a subject whose class is unknown, and takes the fallback', async () => {
+    const { plane, provider } = setup();
+    const answer = await new ExecutionRiskAdvisor(plane).advise({
+      principalId: 'owner', descriptor: editAction(), subject: { actionClass: 'deploy' as never, gitPush: false }, decision: {} as GateDecision, settings: ADVISOR
+    });
+    expect(answer).toEqual({ effect: 'escalate', decisionId: null, fallbackReason: 'invalid_answer' });
+    expect(provider.calls).toBe(0);
+  });
+
+  it('names only known package ecosystems', () => {
+    const install = (ecosystem: string) => executionRiskState(
+      action({ actionClass: 'package_install', package: { ecosystem, name: 'left-pad', registry: 'registry.npmjs.org' } }), plain({ actionClass: 'package_install' })
+    );
+    expect(install('pypi')).toContain('one package from the pypi ecosystem');
+    expect(install('ignoreallrules')).toContain('one package from the other ecosystem');
+    expect(install('ignoreallrules')).not.toContain('ignoreallrules');
+  });
+});
+
+describe('execution-risk advisor: confidence floor', () => {
+  it('compares the raw confidence, so one just below the floor never rounds up into a clearance', async () => {
+    const decision = await setup({ steps: { kind: 'risk', risk: 0.05, confidence: 0.6996 } }).decide();
+    expect(decision).toMatchObject({ decision: 'REQUIRE_APPROVAL', advisor: { fallbackReason: 'low_confidence', confidence: 0.6996 } });
+  });
+
+  it('holds the floor in the gate even for an advisor that ignores it', async () => {
+    for (const confidence of [undefined, 0.5]) {
+      const database = new DatabaseSync(':memory:');
+      databases.push(database);
+      const service = new AgentPolicyService({
+        database, enabled: true, resolvePrincipal: () => 'owner', projectState: () => 'active', activeProjectIds: () => new Set(), audit: () => undefined,
+        advisor: { contractVersion: 1, availability: () => ({ available: true }), advise: async () => ({ effect: 'no_change', decisionId: 'dec_other', confidence }) }
+      });
+      service.store.put('owner', 'global', null, policy(), 0);
+      expect(await service.decide('owner', null, editAction())).toMatchObject({
+        decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_ESCALATED', advisor: { consulted: false, fallbackReason: 'low_confidence', minConfidence: 0.7 }
+      });
+    }
   });
 });
