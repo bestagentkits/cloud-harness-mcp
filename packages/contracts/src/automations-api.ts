@@ -147,12 +147,44 @@ export const AutomationJiraRuleMatchSchema = z.object({
   ? match.label !== undefined && match.toStatus === undefined
   : match.label === undefined), { message: LABEL_TRIGGER_MESSAGE, path: ['trigger'] });
 
+const customEventName = z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/u);
+
 /** A signed custom event with this name, optionally carrying this label. */
 export const AutomationCustomRuleMatchSchema = z.object({
   provider: z.literal('custom'),
-  event: z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/u),
+  event: customEventName,
   label: label.optional()
 }).strict();
+
+const singleLine = (max: number) => z.string().min(1).max(max).refine((value) => !/[\0\r\n]/u.test(value), 'value cannot contain control characters');
+
+/**
+ * The one body shape a custom webhook sends. It is fixed on purpose: there is no field that names a
+ * repository, workspace, profile, tool, command or instruction, and unknown keys are rejected, so a
+ * sender can only say what happened to which resource. The rule pins everything else.
+ */
+export const AutomationCustomEnvelopeSchema = z.object({
+  version: z.literal(1),
+  event: customEventName,
+  resource: z.object({
+    id: singleLine(100),
+    title: z.string().max(AUTOMATION_LIMITS.maxUntrustedTitleChars).optional(),
+    body: z.string().max(AUTOMATION_LIMITS.maxUntrustedBodyChars).optional(),
+    url: z.string().max(300).url().startsWith('https://').optional()
+  }).strict(),
+  /** One label added. Mutually exclusive with `labelsAdded`. */
+  label: label.optional(),
+  /** Labels added; the first one is the event's label, so send one event per label to trigger several. */
+  labelsAdded: z.array(label).min(1).max(20).optional(),
+  actor: z.object({
+    login: singleLine(254),
+    id: singleLine(200).optional(),
+    isBot: z.boolean().optional()
+  }).strict().optional()
+}).strict().refine((envelope) => envelope.label === undefined || envelope.labelsAdded === undefined, {
+  message: 'send label or labelsAdded, not both',
+  path: ['labelsAdded']
+});
 
 /**
  * Provider-specific trigger. The rule's connection fixes the provider; the runner refuses a match
@@ -516,6 +548,7 @@ export type AutomationGitHubRuleMatch = z.infer<typeof AutomationGitHubRuleMatch
 export type AutomationLinearRuleMatch = z.infer<typeof AutomationLinearRuleMatchSchema>;
 export type AutomationJiraRuleMatch = z.infer<typeof AutomationJiraRuleMatchSchema>;
 export type AutomationCustomRuleMatch = z.infer<typeof AutomationCustomRuleMatchSchema>;
+export type AutomationCustomEnvelope = z.infer<typeof AutomationCustomEnvelopeSchema>;
 export type AutomationConnectionCreateInput = z.infer<typeof AutomationConnectionCreateInputSchema>;
 export type AutomationConnectionUpdateInput = z.infer<typeof AutomationConnectionUpdateInputSchema>;
 export type AutomationWebhookHeader = (typeof AUTOMATION_WEBHOOK_HEADERS)[AutomationProvider][number];
