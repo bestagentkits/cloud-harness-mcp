@@ -23,10 +23,11 @@ const optionalQuery = (value: unknown): Record<string, string | null> | undefine
 const queryFields = (query: Record<string, unknown>, names: readonly string[]): Record<string, unknown> => Object.fromEntries(
   names.flatMap((name) => { const entry = optionalQuery(query[name]); return entry ? [[name, entry.value]] : []; })
 );
-/** A decimal `limit` becomes a number; anything else is forwarded as-is so the schema rejects it. */
-const withNumericLimit = (fields: Record<string, unknown>): Record<string, unknown> => (
-  typeof fields.limit === 'string' && /^\d{1,6}$/u.test(fields.limit) ? { ...fields, limit: Number(fields.limit) } : fields
-);
+/** A decimal `field` (default `limit`) becomes a number; anything else is forwarded as-is so the schema rejects it. */
+const withNumericField = (fields: Record<string, unknown>, field = 'limit'): Record<string, unknown> => {
+  const value = fields[field];
+  return typeof value === 'string' && /^\d{1,6}$/u.test(value) ? { ...fields, [field]: Number(value) } : fields;
+};
 const jsonObject = (value: unknown): Record<string, unknown> => (
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 );
@@ -261,10 +262,13 @@ export function registerDashboardControlRoutes(
   router.patch('/api/v1/automations/rules/:id', automationsEndpoint('rule_update', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
   router.delete('/api/v1/automations/rules/:id', automationsEndpoint('rule_delete', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
   router.post('/api/v1/automations/rules/:id/preview', automationsEndpoint('rule_preview', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
-  router.get('/api/v1/automations/workflows', automationsEndpoint('workflows_list', (request) => withNumericLimit(queryFields(request.query, ['ruleId', 'state', 'limit']))));
+  router.get('/api/v1/automations/workflows', automationsEndpoint('workflows_list', (request) => withNumericField(queryFields(request.query, ['ruleId', 'state', 'publishState', 'limit']))));
   router.get('/api/v1/automations/workflows/:id', automationsEndpoint('workflow_get', (request) => ({ id: request.params.id })));
   router.post('/api/v1/automations/workflows/:id/cancel', automationsEndpoint('workflow_cancel', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
-  router.get('/api/v1/automations/deliveries', automationsEndpoint('deliveries_list', (request) => withNumericLimit(queryFields(request.query, ['connectionId', 'limit']))));
+  router.get('/api/v1/automations/deliveries', automationsEndpoint('deliveries_list', (request) => withNumericField(queryFields(request.query, ['connectionId', 'state', 'limit']))));
+  router.post('/api/v1/automations/deliveries/:id/replay', automationsEndpoint('delivery_replay', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
+  router.get('/api/v1/automations/health', automationsEndpoint('connection_health', (request) => queryFields(request.query, ['connectionId'])));
+  router.get('/api/v1/automations/metrics', automationsEndpoint('automation_metrics', (request) => withNumericField(queryFields(request.query, ['windowDays']), 'windowDays')));
   router.get('/api/v1/knowledge', endpoint('knowledge_dashboard_list', (request) => ({
     ...(request.query.kind ? { kind: String(request.query.kind) } : {}),
     ...(request.query.scope ? { scope: String(request.query.scope) } : {}),
