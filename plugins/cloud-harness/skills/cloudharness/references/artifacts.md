@@ -15,8 +15,8 @@ not volatile task/session buffers, and not generic object storage.
 Preserve one workspace file as a principal-owned, TTL-retained artifact snapshot.
 
 - Required: `path` (workspace-relative), `logicalName` (1–128 ASCII alphanumeric, `_`, `.`, `-`).
-- Optional: `workspaceId`, `retentionSeconds` (60..2,592,000; defaults to server retention).
-- Returns: `{ artifactId, logicalName, sha256, sizeBytes, projectId, environmentId, workspaceId, createdAt, updatedAt, expiresAt, retentionMs, generation }`.
+- Optional: `workspaceId`, `repositoryId` (read `path` inside that checkout of a multi-repository workspace), `retentionSeconds` (60..2,592,000; defaults to server retention).
+- Returns: `{ artifactId, logicalName, sha256, sizeBytes, projectId, environmentId, workspaceId, createdAt, updatedAt, expiresAt, retentionMs, generation }`, plus `repositoryId` and `repositoryAlias` when a checkout was selected. `artifacts_list` and `artifacts_read` return the same provenance.
 
 <!-- cloudharness-example:artifacts_snapshot
 {
@@ -65,7 +65,8 @@ Read a bounded chunk of base64-encoded bytes from an unexpired principal-owned a
 Restore an unexpired principal-owned artifact into an active workspace file.
 
 - Required: `artifactId`, `path` (destination workspace-relative path).
-- Optional: `workspaceId`, `overwrite` (defaults to false), `expectedSha256` (64-hex SHA-256).
+- Optional: `workspaceId`, `repositoryId` (restore `path` inside that checkout), `overwrite` (defaults to false), `expectedSha256` (64-hex SHA-256).
+- The artifact's recorded repository is never applied for you: without `repositoryId` the path is relative to the workspace root.
 - Rejects overwrite with `CONFLICT` unless `overwrite: true` is explicitly passed.
 - Returns: `{ artifactId, workspaceId, path, sizeBytes, sha256 }`.
 
