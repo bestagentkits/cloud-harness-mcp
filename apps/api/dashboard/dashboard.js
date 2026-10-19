@@ -1033,7 +1033,8 @@ export function initializeDashboard() {
     holder.className = 'global-terminal-workspace';
     holder.setAttribute('role', 'tabpanel');
     holder.setAttribute('aria-labelledby', 'global-terminal-tab-' + tabId);
-    dockPanels.append(holder);
+    if (dockSessions.size === 0) dockPanels.replaceChildren(holder);
+    else dockPanels.append(holder);
     const label = dockSelect.selectedOptions[0]?.textContent ?? workspaceId.slice(0, 12);
     dockSessions.set(tabId, { element: holder, workspaceId, label, pane: undefined });
     selectDockTab(tabId);

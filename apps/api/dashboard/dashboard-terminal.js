@@ -450,7 +450,7 @@ export function mountTerminalPane({ root, workspaceId, api, announce = () => {},
     const observer = new view.ResizeObserver(() => {
       view.clearTimeout(resizeTimer);
       resizeTimer = view.setTimeout(() => {
-        if (!term || disposed || surface.hidden) return;
+        if (!term || disposed || surface.hidden || surface.getClientRects?.().length === 0) return;
         fit.fit();
         void session?.resize(term.cols, term.rows);
       }, RESIZE_DEBOUNCE_MS);
