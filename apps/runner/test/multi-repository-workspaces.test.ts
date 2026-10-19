@@ -117,12 +117,13 @@ describe('multi-repository workspaces', () => {
     expect(existsSync(join(jobsRoot, opened.workspaceId, 'repo', 'repos', 'api'))).toBe(true);
     expect(existsSync(join(jobsRoot, opened.workspaceId, 'repo', 'repos', 'web'))).toBe(true);
 
-    const clones = docker.runDocker.mock.calls.filter((call) => call[0].includes('/opt/harness/clone-helper.sh')).map((call) => call[0]);
-    expect(clones.map((args) => args.slice(-5, -3))).toEqual([
-      ['https://github.com/acme/api.git', '/job/repo/repos/api'],
-      ['https://github.com/acme/web.git', '/job/repo/repos/web']
+    // Repositories clone in parallel, so order the helper calls by destination before comparing.
+    const clones = docker.runDocker.mock.calls.filter((call) => call[0].includes('/opt/harness/clone-helper.sh')).map((call) => call[0])
+      .sort((left, right) => left.at(-4)!.localeCompare(right.at(-4)!));
+    expect(clones.map((args) => args.slice(-5, -2))).toEqual([
+      ['https://github.com/acme/api.git', '/job/repo/repos/api', ''],
+      ['https://github.com/acme/web.git', '/job/repo/repos/web', 'develop']
     ]);
-    expect(clones[1]!.at(-3)).toBe('develop');
     const helperNames = clones.map((args) => args[args.indexOf('--name') + 1]);
     expect(new Set(helperNames).size).toBe(2);
 
