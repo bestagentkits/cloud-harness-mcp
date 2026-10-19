@@ -3043,9 +3043,9 @@ function automationSecretInstructions(connection) {
   const name = `<strong>${escape(connection?.name ?? 'this connection')}</strong>`;
   switch (connection?.provider) {
     case 'linear':
-      return `<p>In Linear, open <strong>Settings → API → Webhooks</strong> and create a webhook for ${name} with this URL and signing secret, content type <code>application/json</code>, and the <strong>Issues</strong> resource.</p>`;
+      return `<p>In Linear, a webhook made on the settings page signs with Linear's own secret, so create the webhook for ${name} through Linear's GraphQL API instead: as a workspace admin, call <code>webhookCreate</code> with this URL as <code>url</code>, this secret as <code>secret</code>, <code>resourceTypes: ["Issue"]</code>, and a <code>teamId</code> or <code>allPublicTeams: true</code>. After a rotation, set the new secret with <code>webhookUpdate</code>. Linear posts <code>application/json</code>.</p>`;
     case 'jira':
-      return `<p>In Jira, open <strong>System → WebHooks → Create a WebHook</strong> for ${name}, paste this URL and secret, and select the <strong>Issue updated</strong> event. Jira posts <code>application/json</code>.</p>`;
+      return `<p>In Jira, as an admin, open <strong>Settings → System → WebHooks → Create a WebHook</strong> for ${name}, paste this URL and this secret into its <strong>Secret</strong> field, and select the <strong>Issue updated</strong> event. Jira posts <code>application/json</code>.</p>`;
     case 'custom':
       return `<p>Your sender posts <code>application/json</code> to this URL for ${name} with the <code>x-cloudharness-delivery</code>, <code>x-cloudharness-timestamp</code> and <code>x-cloudharness-signature</code> headers, signed with this secret.</p>`;
     default:
