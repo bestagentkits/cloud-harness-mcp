@@ -115,8 +115,10 @@ const CHECKS_UNAVAILABLE_CODES = new Set(['GITHUB_PERMISSION_MISSING', 'FORBIDDE
 /** Recorded in the publish ref once checks are unavailable, so later phases do not ask again. */
 export const CHECKS_UNAVAILABLE = 'unavailable';
 /**
- * Recorded when a check run was created but its id could not be read back. Completion then leaves it
- * alone rather than creating a second check run; the comment still carries the final state.
+ * Recorded when a check run was created but its id could not be read back. Completion never creates a
+ * second check run: it looks the first one up by its external id (the workflow id) on the head commit
+ * and completes it, or, if the lookup fails or finds nothing, leaves it to the comment, which carries
+ * the final state.
  */
 export const CHECKS_UNTRACKED = 'untracked';
 
@@ -145,6 +147,23 @@ function createdCheckRunId(result: AutomationOperationResult): number | undefine
   } catch {
     return undefined;
   }
+}
+
+/** The id of the check run `check_runs_list` printed whose external id is `externalId`. */
+function listedCheckRunId(result: AutomationOperationResult, externalId: string): number | undefined {
+  const output = record(result.data)?.output;
+  if (typeof output !== 'string') return undefined;
+  try {
+    const runs = record(JSON.parse(output))?.checkRuns;
+    if (!Array.isArray(runs)) return undefined;
+    for (const run of runs) {
+      const entry = record(run);
+      if (entry?.externalId === externalId) return positiveId(entry.id);
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 /** Maps a terminal workflow onto a check run conclusion. */
@@ -211,12 +230,22 @@ async function publishProgressComment(request: AutomationPublishRequest, workspa
  */
 async function publishCheckRun(request: AutomationPublishRequest, workspaceId: string): Promise<{ checkRunId?: number; checks?: string } | Failure> {
   const { workflow, publishRef } = request;
-  if (workflow.eventType !== 'github.pull_request.label_added' || publishRef?.checks === CHECKS_UNAVAILABLE || publishRef?.checks === CHECKS_UNTRACKED) return {};
-  const previous = positiveId(publishRef?.checkRunId);
+  if (workflow.eventType !== 'github.pull_request.label_added' || publishRef?.checks === CHECKS_UNAVAILABLE) return {};
   const completed = request.phase === 'completed';
-  if (previous !== undefined && !completed) return { checkRunId: previous };
+  const name = singleLine(`Cloud Harness: ${workflow.ruleName}`);
   const headSha = workflow.extras.headSha;
+  let previous = positiveId(publishRef?.checkRunId);
+  if (previous !== undefined && !completed) return { checkRunId: previous };
   if (previous === undefined && (typeof headSha !== 'string' || !HEAD_SHA.test(headSha))) return {};
+  if (previous === undefined && publishRef?.checks === CHECKS_UNTRACKED) {
+    if (!completed) return {};
+    // Only the latest check run per name is listed, so a later run of the same rule on the same commit
+    // can hide this one; it is then left to the comment.
+    const listed = await request.call('github_action', { workspaceId, action: 'check_runs_list', sha: headSha, checkName: name, limit: 100 });
+    // Finding it is best effort: a failed lookup never fails a publish whose comment already carries the result.
+    previous = listed.ok ? listedCheckRunId(listed, workflow.id) : undefined;
+    if (previous === undefined) return {};
+  }
 
   const conclusion = completed ? checkRunConclusion(workflow) : undefined;
   const detail = conclusion && conclusion !== 'success' && workflow.errorCode ? ` (${workflow.errorCode})` : '';
@@ -232,7 +261,7 @@ async function publishCheckRun(request: AutomationPublishRequest, workspaceId: s
       ...fields,
       action: 'check_run_create',
       sha: headSha,
-      name: singleLine(`Cloud Harness: ${workflow.ruleName}`),
+      name,
       externalId: workflow.id,
       idempotencyKey: `${request.idempotencyKey}:check`
     });
@@ -261,7 +290,10 @@ async function publishGitHubProgress(request: AutomationPublishRequest): Promise
     return request.phase === 'started' && Object.keys(checkRef).length > 0 ? { ok: true, publishRef: { ...request.publishRef, ...checkRef } } : comment;
   }
   if ('ok' in check && check.retryable && request.phase === 'completed') return check;
-  return { ok: true, publishRef: { ...request.publishRef, ...comment, ...checkRef } };
+  const previous = { ...request.publishRef };
+  // A check run found again by its external id is tracked from then on.
+  if ('checkRunId' in checkRef) delete previous.checks;
+  return { ok: true, publishRef: { ...previous, ...comment, ...checkRef } };
 }
 
 export const githubAdapter: ProviderAdapter = {

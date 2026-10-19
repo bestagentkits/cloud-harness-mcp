@@ -57,7 +57,8 @@ All on `github_read` (no approval prompts):
   `limit` (default 100). Returns the combined `state` and each context's
   latest status.
 - `check_runs_list`: required `sha`; optional `checkName`, `limit` (default
-  100). Returns the latest check runs with `status` and `conclusion`.
+  100). Returns the latest check runs with `status`, `conclusion`, and the
+  `externalId` set at creation.
 - `workflow_runs_list`: optional `workflow` (numeric ID or file name such as
   `ci.yml`), `headSha`, `branch`, `event`, `status`, `limit` (default 20,
   max 100).

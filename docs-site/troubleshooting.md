@@ -396,6 +396,7 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 10. A run ends `FAILED` or `EXPIRED`: its error code names the step. A private repository needs the [GitHub App](/dashboard/github) to have access to it.
 11. **Publish failed:** the answer is still on the run page; the operator's runner log has the code. `OUTBOUND_NOT_CONFIGURED` means the Linear or Jira connection has no outbound credential; `LINEAR_UNAUTHORIZED` or `JIRA_HTTP_401`/`JIRA_HTTP_403` means the credential was refused; `JIRA_ADDRESS_FORBIDDEN` means the Jira site resolved to a private address. On GitHub, comments need the App's issue write access on that repository.
 12. No check run on a GitHub pull request: the rule does not post back, or the [GitHub App](/dashboard/github) lacks the **Checks** write permission, so only the comment is posted. Grant it and accept the new permission on the installation; runs that already started stay comment-only.
+13. **Delete** on a connection is refused long after its runs ended: a finished run is still trying to close its workspace. Cancel any run that is still active. A close that keeps failing stops being retried 25 hours after the run ended, when the runner's own cleanup owns the workspace, and the delete then succeeds; ask the operator to check the runner log for `automation_cleanup_released` and the close error.
 
 ---
 

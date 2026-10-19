@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RunnerOperation } from '@cloud-harness/contracts';
 import {
+  AUTOMATION_CLEANUP_WINDOW_MS,
   AUTOMATION_PUBLISH_RETRY_DELAYS_MS,
   AutomationService,
   buildAutomationPrompt,
@@ -101,6 +102,7 @@ function setup(options: SetupOptions = {}) {
   const clock = options.clock ?? { now: Date.parse('2026-10-17T00:00:00Z') };
   const operations = new FakeOperations();
   const audits: string[] = [];
+  const logs: Record<string, unknown>[] = [];
   const service = new AutomationService({
     database: store.database,
     enabled: options.enabled ?? true,
@@ -111,11 +113,12 @@ function setup(options: SetupOptions = {}) {
     ...(options.adapters ? { adapters: options.adapters } : {}),
     selfLogin: 'cloud-harness[bot]',
     audit: (_database, _principal, action) => { audits.push(action); },
-    now: () => clock.now
+    now: () => clock.now,
+    log: (entry) => { logs.push(entry); }
   });
   const owner = { kind: 'owner' as const, ownerId: 'owner' };
   const other = { kind: 'external' as const, issuer: 'https://issuer.example.com', subject: 'someone-else' };
-  return { store, service, operations, clock, owner, other, audits, path };
+  return { store, service, operations, clock, owner, other, audits, logs, path };
 }
 
 type Setup = ReturnType<typeof setup>;
@@ -682,6 +685,40 @@ describe('AutomationService engine', () => {
     expect(context.store.database.prepare('SELECT COUNT(*) AS count FROM automation_transitions').get()).not.toEqual({ count: 0 });
   });
 
+  it('stops retrying a workspace close that keeps failing once the reaper owns the workspace, then lets the connection go', async () => {
+    const context = setup();
+    const { connection, secret } = createConnection(context);
+    createRule(context, connection.id);
+    context.operations.handlers.workspace_close = () => ({ ok: false, error: { code: 'INTERNAL', retryable: true } });
+    deliver(context, connection.id, secret, payload());
+    await drive(context, 2);
+    const [running] = workflows(context);
+    ok(context.service.execute({ version: 1, principal: context.owner, operation: 'workflow_cancel', input: { id: running!.id } }));
+    await drive(context, 1);
+    const remove = () => context.service.execute({ version: 1, principal: context.owner, operation: 'connection_delete', input: { id: connection.id, expectedGeneration: 1 } });
+    const closes = () => context.operations.count('workspace_close');
+    expect(closes()).toBe(1);
+    expect(remove()).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+
+    context.clock.now += AUTOMATION_CLEANUP_WINDOW_MS - 1;
+    await drive(context, 1);
+    expect(closes()).toBe(2);
+    expect(remove()).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+
+    context.clock.now += 1;
+    await drive(context, 1);
+    expect(closes()).toBe(2);
+    context.clock.now += 60_000;
+    await drive(context, 1);
+    expect(closes()).toBe(3);
+    expect(context.store.database.prepare('SELECT workspace_closed AS closed FROM automation_workflows').get()).toEqual({ closed: 1 });
+    expect(context.logs.some((entry) => entry.event === 'automation_cleanup_released' && entry.code === 'INTERNAL')).toBe(true);
+    context.clock.now += 60_000;
+    await drive(context, 1);
+    expect(closes()).toBe(3);
+    expect(ok(remove())).toEqual({ deleted: true });
+  });
+
   it('cancels queued workflows of a disabled rule', async () => {
     const context = setup({ maxConcurrent: 1 });
     const { connection, secret } = createConnection(context);
@@ -1088,14 +1125,47 @@ describe('GitHub progress comment and check runs', () => {
     expect(actions().map((input) => input.action)).toEqual(['issue_comment', 'issue_comment_update', 'issue_comment_update']);
   });
 
-  it('does not create a second check run when the first one was created but its id cannot be read', async () => {
+  it('completes a check run whose id could not be read by finding it through its external id', async () => {
     const context = setup();
-    const actions = fakeGitHub(context, { check_run_create: () => ({ ok: true, data: { output: 'not json' } }) });
+    const actions = fakeGitHub(context, {
+      check_run_create: () => ({ ok: true, data: { output: 'not json' } }),
+      check_runs_list: () => ({ ok: true, data: { output: JSON.stringify({ totalCount: 2, checkRuns: [
+        { id: 900, name: 'Cloud Harness: Triage', externalId: 'wfl_someone_else' },
+        { id: 901, name: 'Cloud Harness: Triage', externalId: workflows(context)[0]!.id }
+      ] }) } })
+    });
     await start(context, ['pull_request'], prPayload());
     expect(publishRef(context)).toEqual({ commentId: 555, checks: 'untracked' });
     await finish(context);
     expect(workflows(context)[0]).toMatchObject({ state: 'COMPLETED', publishState: 'DELIVERED' });
-    expect(actions().map((input) => input.action)).toEqual(['issue_comment', 'check_run_create', 'issue_comment_update']);
+    expect(actions().map((input) => input.action)).toEqual(['issue_comment', 'check_run_create', 'issue_comment_update', 'check_runs_list', 'check_run_update']);
+    expect(actions()[3]).toMatchObject({ workspaceId: WS, sha: HEAD, checkName: 'Cloud Harness: Triage' });
+    expect(actions()[4]).toMatchObject({ checkRunId: 901, status: 'completed', conclusion: 'success' });
+    expect(publishRef(context)).toEqual({ commentId: 555, checkRunId: 901 });
+  });
+
+  it('leaves a check run whose id could not be read to the comment when looking it up fails', async () => {
+    const context = setup();
+    const actions = fakeGitHub(context, {
+      check_run_create: () => ({ ok: true, data: { output: 'not json' } }),
+      check_runs_list: () => ({ ok: false, error: { code: 'GITHUB_RATE_LIMITED', retryable: true } })
+    });
+    await start(context, ['pull_request'], prPayload());
+    await finish(context);
+    expect(workflows(context)[0]).toMatchObject({ state: 'COMPLETED', publishState: 'DELIVERED' });
+    expect(actions().map((input) => input.action)).toEqual(['issue_comment', 'check_run_create', 'issue_comment_update', 'check_runs_list']);
+  });
+
+  it('does not create a second check run when the one whose id could not be read is not found', async () => {
+    const context = setup();
+    const actions = fakeGitHub(context, {
+      check_run_create: () => ({ ok: true, data: { output: 'not json' } }),
+      check_runs_list: () => ({ ok: true, data: { output: '{"totalCount":0,"checkRuns":[]}' } })
+    });
+    await start(context, ['pull_request'], prPayload());
+    await finish(context);
+    expect(workflows(context)[0]).toMatchObject({ state: 'COMPLETED', publishState: 'DELIVERED' });
+    expect(actions().map((input) => input.action)).toEqual(['issue_comment', 'check_run_create', 'issue_comment_update', 'check_runs_list']);
   });
 
   it('creates a check run on the signed head commit of a pull request and completes it', async () => {
