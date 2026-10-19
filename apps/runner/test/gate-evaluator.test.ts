@@ -17,7 +17,7 @@ import {
   type PolicyRuleEffect,
   type ProjectExecutionPolicy
 } from '@cloud-harness/contracts';
-import { analyzeCommand, isValidBranchName } from '../src/agent-governance/command-analysis.js';
+import { analyzeCommand, DATA_ONLY_PROGRAMS, isValidBranchName } from '../src/agent-governance/command-analysis.js';
 import { combineAdvisor, decide, evaluateGate, isAdvisorPending, platformViolation, PURE_GATE_EVALUATOR, type PolicySnapshot } from '../src/agent-governance/gate-evaluator.js';
 
 const PROJECT = `prj_${'p'.repeat(32)}`;
@@ -49,7 +49,8 @@ const GLOBAL: GlobalExecutionPolicy = GlobalExecutionPolicySchema.parse({
     networkHosts: ['*.github.com', 'registry.npmjs.org']
   },
   budget: { maxCostMicrosPerRun: 1_000_000, maxInputTokensPerRun: 100_000, maxOutputTokensPerRun: 10_000, maxRunSeconds: 600, maxConcurrentRuns: 2 },
-  approval: { ttlSeconds: 3_600, approverRoles: ['owner'] }
+  approval: { ttlSeconds: 3_600, approverRoles: ['owner'] },
+  advisor: { enabled: true, riskThreshold: 0.5, minConfidence: 0.7, fallback: 'require_approval' }
 });
 
 const global = (patch: Partial<GlobalExecutionPolicy> = {}): GlobalExecutionPolicy => GlobalExecutionPolicySchema.parse({ ...structuredClone(GLOBAL), ...patch });
@@ -320,14 +321,19 @@ describe('combineAdvisor', () => {
   });
 
   it('clears a pending discretionary action only on an explicit no_change', () => {
-    const decision = combineAdvisor(required(), { effect: 'no_change', decisionId: 'adv_1' });
+    const decision = combineAdvisor(required(), { effect: 'no_change', decisionId: 'adv_1', confidence: 0.9 });
     expect(decision.decision).toBe('ALLOW');
     expect(decision.reasonCode).toBe('ADVISOR_NO_CHANGE');
     expect(decision.matchedRules[0]).toBe('advisor');
     expect(isAdvisorPending(decision)).toBe(false);
     // The cleared decision is final: a second answer cannot clear or lower anything again.
     expect(combineAdvisor(decision, { effect: 'escalate' }).decision).toBe('REQUIRE_APPROVAL');
-    expect(decision.advisor).toEqual({ required: true, consulted: true, effect: 'no_change', decisionId: 'adv_1' });
+    expect(decision.advisor).toEqual({ required: true, consulted: true, effect: 'no_change', decisionId: 'adv_1', risk: null, confidence: 0.9, fallbackReason: null, fallback: 'require_approval', minConfidence: 0.7 });
+    // The gate enforces the policy's confidence floor itself, whatever advisor answered.
+    for (const confidence of [undefined, 0.69, Number.NaN]) {
+      expect(combineAdvisor(required(), { effect: 'no_change', confidence })).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_ESCALATED', advisor: { consulted: false, fallbackReason: 'low_confidence' } });
+    }
+    expect(combineAdvisor(required(), { effect: 'no_change', confidence: 0.7 }).decision).toBe('ALLOW');
     expect(decision.reasons.map((reason) => reason.code)).toContain('ADVISOR_NO_CHANGE');
   });
 
@@ -363,7 +369,7 @@ describe('decide', () => {
     expect(decide(input(true))).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_ESCALATED' });
     expect(decide(input(true), null).decision).toBe('REQUIRE_APPROVAL');
     expect(decide(input(true), { effect: 'escalate' }).decision).toBe('REQUIRE_APPROVAL');
-    expect(decide(input(true), { effect: 'no_change', decisionId: 'adv_1' })).toMatchObject({ decision: 'ALLOW', reasonCode: 'ADVISOR_NO_CHANGE' });
+    expect(decide(input(true), { effect: 'no_change', decisionId: 'adv_1', confidence: 0.9 })).toMatchObject({ decision: 'ALLOW', reasonCode: 'ADVISOR_NO_CHANGE' });
     // Without an advisor the action needs approval, and an answer that nobody asked for changes nothing.
     expect(decide(input(false), { effect: 'no_change' })).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_UNAVAILABLE' });
   });
@@ -400,7 +406,7 @@ describe('platform invariants look through launchers and shell strings', () => {
     [['sh', '-c', 'cat x | sudo tee /etc/x'], 'PLATFORM_PRIVILEGE_ESCALATION'],
     [['sh', '-c', 'echo "$(docker ps)"'], 'PLATFORM_DOCKER_ACCESS'],
     [['sh', '-c', 'echo `sudo id`'], 'PLATFORM_PRIVILEGE_ESCALATION'],
-    [['sh', '-c', "bash -c 'env sudo id'"], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['sh', '-c', "bash -c 'env sudo id'"], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['sh', '-c', 'curl --unix-socket /var/run/docker.sock http://x/containers/json'], 'PLATFORM_DOCKER_ACCESS']
   ])('%j is judged by the program it runs', (command, reason) => {
     expect(run(command)).toBe(reason);
@@ -411,10 +417,10 @@ describe('platform invariants look through launchers and shell strings', () => {
     expect(run(['sh', '-c', Array.from({ length: 80 }, () => 'true').join(';')])).toBe('PLATFORM_COMMAND_UNANALYZABLE');
   });
 
-  it('leaves ordinary wrapped commands to the policy', () => {
+  it('leaves ordinary wrapped argv to the policy and holds every shell string for approval', () => {
     expect(run(['env', 'CI=1', 'npm', 'test'])).toBe('RULE_ALLOW');
-    expect(run(['sh', '-c', 'npm test && npx vitest run'])).toBe('RULE_ALLOW');
-    expect(run(['sh', '-c', "echo 'docker ps is just text'"])).toBe('RULE_ALLOW');
+    expect(run(['sh', '-c', 'npm test && npx vitest run'])).toBe('PLATFORM_COMMAND_UNANALYZABLE');
+    expect(run(['sh', '-c', "echo 'docker ps is just text'"])).toBe('PLATFORM_COMMAND_UNANALYZABLE');
   });
 });
 
@@ -542,31 +548,50 @@ describe('the command analysis fails closed', () => {
     [['npx', '--call', 'docker ps'], 'PLATFORM_DOCKER_ACCESS'],
     [['nice', '-n5', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
     [['busybox', 'chroot', '/'], 'PLATFORM_PRIVILEGE_ESCALATION'],
-    // Keywords, negation and builtins in the program position.
-    [['sh', '-c', 'if sudo id; then :; fi'], 'PLATFORM_PRIVILEGE_ESCALATION'],
-    [['sh', '-c', 'while docker ps; do :; done'], 'PLATFORM_DOCKER_ACCESS'],
-    [['sh', '-c', 'for x in 1; do sudo id; done'], 'PLATFORM_PRIVILEGE_ESCALATION'],
-    [['!', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    // Shell syntax is never parsed; a privilege tool or runtime at the start of a command still denies.
+    [['sh', '-c', 'if sudo id; then :; fi'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'while docker ps; do :; done'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'for x in 1; do sudo id; done'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['!', 'sudo', 'id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['sh', '-c', '! docker ps'], 'PLATFORM_DOCKER_ACCESS'],
     [['sh', '-c', '{ sudo id; }'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['sh', '-c', 'case x in x) sudo id;; esac'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['sh', '-c', 'f() { npm test; }; f'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'function grep { npm test; }; grep x'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'select x in a; do npm test; done'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'let x=1'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'echo $((1 + 1))'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'echo $[1 + 1]'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', '[[ CI -eq 0 ]]'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', '(npm test)'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'diff <(npm test) out.txt'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'npm test > >(tee log)'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'echo ${HOME}'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', "rg $'--pre=./x.sh' x"], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'git push origin {agent/x,main}'], 'BRANCH_REQUIRED'],
+    [['sh', '-c', 'npm test # )'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['sh', '-c', 'coproc sudo id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
-    [['eval', 'sudo id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['eval', 'sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
+    [['eval', 'npm test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['sh', '-c', 'source ./x.sh'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['sh', '-c', '. ./x.sh'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['builtin', 'exec', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
     [['exec', '-a', 'x', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
     [['command', 'docker', 'ps'], 'PLATFORM_DOCKER_ACCESS'],
     [['time', '-p', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
-    // Leading redirections.
-    [['sh', '-c', '</dev/null sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
-    [['sh', '-c', '2>/dev/null docker ps'], 'PLATFORM_DOCKER_ACCESS'],
-    [['sh', '-c', '> out 2>&1 sudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
-    [['sh', '-c', 'bash <<EOF\nsudo id\nEOF'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    // Redirections and here-documents inside a shell string.
+    [['sh', '-c', '</dev/null sudo id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', '2>/dev/null docker ps'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', '> out 2>&1 sudo id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'bash <<EOF\nsudo id\nEOF'], 'PLATFORM_PRIVILEGE_ESCALATION'],
     [['sh', '-c', "python3 <<'EOF'\nimport os\nEOF"], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['sh', '-c', "node <<<'process.exit()'"], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['sh', '-c', 'echo "<<X"\nsudo id\nX'], 'PLATFORM_PRIVILEGE_ESCALATION'],
     [['sh', '-c', 'cat <<EOF\nok\nEOF\nsudo id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
     [['rg', '--pre', './x.sh', 'pattern'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sort', '--compress=./x.sh', 'big.txt'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+
+    [['sh', '-c', "printf -v 'a[x]' %s 1"], 'PLATFORM_COMMAND_UNANALYZABLE'],
     // Launchers that were not unwrapped before.
     [['setsid', '-f', 'sudo', 'id'], 'PLATFORM_PRIVILEGE_ESCALATION'],
     [['flock', '/tmp/l', 'npm', 'test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
@@ -592,6 +617,11 @@ describe('the command analysis fails closed', () => {
     [['sh', '-c', '/usr/bin/su* id'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['sh', '-c', 'GIT_SSH_COMMAND=x git fetch'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['sh', '-c', 'export LD_PRELOAD=/tmp/x.so'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'declare -i CI'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'npm_config_script_shell=./x.sh npm test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['env', 'npm_config_node_options=--require=./x.js', 'npm', 'test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['env', 'FOO=1', 'npm', 'test'], 'PLATFORM_COMMAND_UNANALYZABLE'],
+    [['sh', '-c', 'GIT_DIR=. git status'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     // xargs appends arguments at run time.
     [['xargs', 'env'], 'PLATFORM_COMMAND_UNANALYZABLE'],
     [['xargs', 'nice', '-n', '5'], 'PLATFORM_COMMAND_UNANALYZABLE'],
@@ -609,9 +639,7 @@ describe('the command analysis fails closed', () => {
     ['grep', '-r', 'docker', '.'],
     ['rg', '-n', 'sudo', 'src'],
     ['echo', 'bash'],
-    ['sh', '-c', 'cat <<EOF > notes.txt\nrun sudo id or docker ps\nEOF'],
-    ['sh', '-c', "cat <<-'EOF'\n\tbash -c 'sudo id'\n\tEOF"],
-    ['sh', '-c', 'jq . <<<\'{"a":1}\''],
+
     ['vitest', '--environment', 'node'],
     ['vitest', 'run', '-o', 'report.json'],
     ['npm', 'test'],
@@ -619,7 +647,13 @@ describe('the command analysis fails closed', () => {
     ['git', 'status'],
     ['git', 'diff'],
     ['git', 'commit', '-m', 'x'],
-    ['sh', '-c', 'git commit -m "x"']
+    ['grep', 'docker', 'README.md'],
+    ['rg', 'sudo', '.'],
+    ['cat', 'x'],
+    ['command', '-v', 'docker'],
+    ['command', '-V', 'sudo'],
+    ['CI=1', 'NODE_ENV=test', 'FORCE_COLOR=0', 'TZ=UTC', 'npm_config_loglevel=warn', 'npm', 'test'],
+    ['env', 'NO_COLOR=1', 'LANG=C', 'LC_ALL=C', 'DEBUG=x', 'npm_config_fund=false', 'npm_config_update_notifier=false', 'npx', 'vitest', 'run']
   ].map((command) => [command]))('%j is allowed', (command) => {
     expect(run(command).reasonCode).toBe('RULE_ALLOW');
   });
@@ -647,9 +681,8 @@ describe('the command analysis fails closed', () => {
 
   it('still allows ordinary commands', () => {
     for (const command of [
-      ['sh', '-c', 'npm test 2>&1 | tee out.log'],
-      ['bash', '-euo', 'pipefail', '-c', 'npm ci && npm test'],
-      ['sh', '-c', 'echo "$(git rev-parse HEAD)" > sha.txt'],
+
+
       ['env', '-u', 'HOME', 'CI=1', 'npx', 'vitest', 'run'],
       ['timeout', '--signal=KILL', '30', 'npm', 'test'],
       ['xargs', '-0', 'rm', '-f'],
@@ -658,6 +691,120 @@ describe('the command analysis fails closed', () => {
     ]) {
       expect(run(command).reasonCode, command.join(' ')).toBe('RULE_ALLOW');
     }
+  });
+
+  describe('never analyses a shell string', () => {
+    const scripts = [
+      // Redirections glued to the program word, and here-documents bash expands.
+      'docker>/dev/null run x', 'sudo</dev/null id', 'git>/dev/null push origin HEAD:main', 'cat x<<EOF\n$(sudo id)\nEOF',
+      'cat <<EOF\\\nEOF\n$(npm test)\nEOF', "cat <<'EOF' > notes.txt\nok\nEOF", 'cat <<EOF\n`npm test`\nEOF',
+      'cat <<EOF > notes.txt\nrun sudo id or docker ps\nEOF', "cat <<-'EOF'\n\tbash -c 'sudo id'\n\tEOF", 'jq . <<<\'{"a":1}\'',
+      'echo $(echo ")" # )\nnpm test)', 'echo $(case x in x) npm test;; esac)',
+      // Builtins that evaluate an array subscript, run a completion command or export a variable read at run time.
+      "unset 'a[$(npm test)]'", "test -v 'a[$(npm test)]'", "[ -v 'a[$(npm test)]' ]", "read 'a[$(npm test)]' < f",
+      "declare 'a[$(npm test)]=1'", "local 'a[$(npm test)]=1'", "typeset 'a[$(npm test)]=1'", "readonly 'a[$(npm test)]=1'",
+      'compgen -C ./x.sh x', 'complete -C ./x.sh x',
+      'read -r PAGER < f; export PAGER; git log', 'set -a; PAGER=./x.sh; git log',
+      'npm_config_call=./x.sh npm exec x', 'env npm_config_call=./x.sh npm exec x',
+      '/bin/s[h] -c id', 'npm test', 'git status'
+    ];
+    it.each(scripts.flatMap((script) => [[['sh', '-c', script]], [['bash', '-c', script]]]))('%j needs approval or is denied', (command) => {
+      expect(analyzeCommand(command)).toMatchObject({ ok: false });
+      const decision = run(command);
+      expect(decision.decision).not.toBe('ALLOW');
+      if (decision.decision === 'REQUIRE_APPROVAL') expect(decision.reasonCode).toBe('PLATFORM_COMMAND_UNANALYZABLE');
+      else expect(decision.reasonCode).toMatch(/^PLATFORM_(?:DOCKER_ACCESS|PRIVILEGE_ESCALATION)$/u);
+    });
+
+    it('denies a container runtime or privilege tool at the start of a command in a shell string', () => {
+      expect(run(['sh', '-c', 'docker>/dev/null run x'])).toMatchObject({ decision: 'DENY', reasonCode: 'PLATFORM_DOCKER_ACCESS' });
+      expect(run(['bash', '-c', 'sudo</dev/null id'])).toMatchObject({ decision: 'DENY', reasonCode: 'PLATFORM_PRIVILEGE_ESCALATION' });
+      expect(run(['sh', '-c', 'curl --unix-socket /var/run/docker.sock http://x/'])).toMatchObject({ decision: 'DENY', reasonCode: 'PLATFORM_DOCKER_ACCESS' });
+    });
+
+    it('denies a container runtime in direct argv and allows a name lookup', () => {
+      expect(run(['docker', 'run', 'x'])).toMatchObject({ decision: 'DENY', reasonCode: 'PLATFORM_DOCKER_ACCESS' });
+      expect(run(['env', 'CI=1', 'docker', 'ps'])).toMatchObject({ decision: 'DENY', reasonCode: 'PLATFORM_DOCKER_ACCESS' });
+      expect(run(['command', '-v', 'docker'])).toMatchObject({ decision: 'ALLOW' });
+      expect(run(['command', 'docker', 'ps'])).toMatchObject({ decision: 'DENY', reasonCode: 'PLATFORM_DOCKER_ACCESS' });
+    });
+
+    it('accepts only harmless npm settings in the environment', () => {
+      for (const command of [
+        ['env', 'npm_config_call=./x.sh', 'npm', 'exec', 'x'],
+        ['npm_config_call=./x.sh', 'npm', 'exec', 'x'],
+        ['env', 'npm_config_script_shell=./x.sh', 'npm', 'test'],
+        ['env', 'npm_config_userconfig=./x', 'npm', 'test'],
+        ['nice', '/bin/s[h]', '-c', 'id']
+      ]) {
+        expect(run(command), command.join(' ')).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'PLATFORM_COMMAND_UNANALYZABLE' });
+      }
+    });
+
+    // Only a short list of variables may be set; any other one can make a program run another.
+    const variables = ['EDITOR', 'VISUAL', 'PAGER', 'MANPAGER', 'LESSOPEN', 'LESSCLOSE', 'SSH_ASKPASS', 'BROWSER', 'GIT_EDITOR', 'GIT_PAGER', 'GIT_SSH_COMMAND', 'LD_PRELOAD', 'BASH_ENV', 'NODE_OPTIONS'];
+    it.each(variables.flatMap((name) => [
+      [`${name}=./x.sh`, 'git', 'commit'],
+      [`${name}=./x.sh`, 'less', 'notes.txt'],
+      ['env', `${name}=./x.sh`, 'git', 'commit'],
+      [`${name}=./x.sh`, 'env', 'less', 'notes.txt']
+    ]).map((command) => [command]))('%j needs approval', (command) => {
+      expect(analyzeCommand(command)).toMatchObject({ ok: false });
+      const decision = run(command);
+      expect(decision.decision).not.toBe('ALLOW');
+      expect(decision).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'PLATFORM_COMMAND_UNANALYZABLE' });
+    });
+
+    it('still denies a definite platform match next to an unreadable part', () => {
+      expect(run(['sh', '-c', 'PAGER=x git log; sudo id'])).toMatchObject({ decision: 'DENY', reasonCode: 'PLATFORM_PRIVILEGE_ESCALATION' });
+      expect(run(['EDITOR=x', 'sudo', 'id'])).toMatchObject({ decision: 'DENY', reasonCode: 'PLATFORM_PRIVILEGE_ESCALATION' });
+      expect(run(['sh', '-c', 'npm test; docker ps'])).toMatchObject({ decision: 'DENY', reasonCode: 'PLATFORM_DOCKER_ACCESS' });
+    });
+  });
+
+  // One row per data-only program: its modelled option that runs another program needs approval,
+  // or the program has no such option and a benign use is allowed.
+  it.each([
+    ['grep', null, ['grep', '-rn', 'docker', '.']],
+    ['egrep', null, ['egrep', 'a|b', 'x.txt']],
+    ['fgrep', null, ['fgrep', 'sudo', 'x.txt']],
+    ['rg', ['rg', '--pre', './x.sh', 'x'], ['rg', '-n', 'sudo', '.']],
+    ['rg', ['rg', '--pre=./x.sh', 'x'], null],
+    ['rg', ['rg', '-z', 'x'], null],
+    ['rg', ['rg', '--search-zip', 'x'], null],
+    ['cat', null, ['cat', 'x']],
+    ['head', null, ['head', '-n', '5', 'x']],
+    ['tail', null, ['tail', '-n', '5', 'x']],
+    ['wc', null, ['wc', '-l', 'x']],
+    ['ls', null, ['ls', '-la']],
+    ['echo', null, ['echo', 'bash']],
+    ['printf', ['printf', '-v', 'a[x]', '%s', '1'], ['printf', '%s\\n', 'x']],
+    ['sort', ['sort', '--compress-program=./x.sh', 'x'], ['sort', '-u', 'x']],
+    ['sort', ['sort', '--compress=./x.sh', 'x'], null],
+    ['uniq', null, ['uniq', '-c', 'x']],
+    ['diff', ['diff', '-l', 'a', 'b'], ['diff', '-u', 'a', 'b']],
+    ['diff', ['diff', '--paginate', 'a', 'b'], null],
+    ['cut', null, ['cut', '-d', ',', '-f', '1', 'x']],
+    ['tr', null, ['tr', 'a', 'b']],
+    ['jq', null, ['jq', '.', 'x.json']],
+    ['true', null, ['true']],
+    ['false', null, ['false']]
+  ] as Array<[string, string[] | null, string[] | null]>)('data-only %s: exec option %j needs approval, %j is allowed', (program, exec, benign) => {
+    expect(DATA_ONLY_PROGRAMS.has(program)).toBe(true);
+    if (exec) expect(run(exec)).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'PLATFORM_COMMAND_UNANALYZABLE' });
+    if (benign) expect(run(benign).reasonCode).toBe('RULE_ALLOW');
+  });
+
+  it('covers every data-only program in the table and keeps less out of the list', () => {
+    expect([...DATA_ONLY_PROGRAMS].sort()).toEqual(['cat', 'cut', 'diff', 'echo', 'egrep', 'false', 'fgrep', 'grep', 'head', 'jq', 'ls', 'printf', 'rg', 'sort', 'tail', 'tr', 'true', 'uniq', 'wc']);
+    // less loads a lesskey file from the home directory, which argv cannot show, so it is an ordinary program.
+    expect(DATA_ONLY_PROGRAMS.has('less')).toBe(false);
+  });
+
+  it('leaves an unknown program outside the command scope denied', () => {
+    // GLOBAL admits only `npm test` and `npx vitest run`; unknown programs are leaves judged by that scope.
+    expect(evaluate(action('vcs_local', { command: ['mytool', '--run', 'x'] }))).toMatchObject({ decision: 'DENY', reasonCode: 'COMMAND_NOT_ALLOWED' });
+    expect(evaluate(action('vcs_local', { command: ['npm', 'test'] })).decision).not.toBe('DENY');
   });
 
   it('bounds nested command substitutions without throwing', () => {
@@ -677,8 +824,9 @@ describe('the command analysis fails closed', () => {
 });
 
 describe('command analysis helpers', () => {
-  it('lists the commands a shell string runs and the pushes among them', () => {
-    expect(analyzeCommand(['sh', '-c', "a 'b c'; d && e | f"])).toEqual({ ok: true, segments: [['sh', '-c', "a 'b c'; d && e | f"], ['a', 'b c'], ['d'], ['e'], ['f']], pushes: [] });
+  it('lists the commands an argv runs and the pushes among them', () => {
+    expect(analyzeCommand(['sh', '-c', "a 'b c'; d && e | f"])).toEqual({ ok: false, reason: 'a shell or script string is never analysed', segments: [['sh', '-c', "a 'b c'; d && e | f"]], pushes: [] });
+    expect(analyzeCommand(['sh', '-c', 'npm test && git -C . push origin agent/x'])).toMatchObject({ ok: false, pushes: [{ destinations: [], broad: true, implicit: false }] });
     expect(analyzeCommand(['timeout', '10', 'npm', 'test'])).toMatchObject({ ok: true, segments: [['timeout', '10', 'npm', 'test'], ['npm', 'test']] });
     expect(analyzeCommand(['git', 'push', 'origin', '+HEAD:agent/x'])).toMatchObject({ pushes: [{ destinations: ['agent/x'], broad: false, implicit: false }] });
     expect(analyzeCommand(['git', 'push', '--tags'])).toMatchObject({ pushes: [{ destinations: [], broad: true, implicit: false }] });
@@ -739,7 +887,7 @@ describe('gate properties', () => {
         expect(globalPolicy.defaults[actionClass]?.delegable, `iteration ${iteration}`).toBe(true);
         expect(withProject.reasons[0]?.source).toBe('project');
       }
-      for (const answer of [null, { effect: 'no_change' as const }, { effect: 'escalate' as const }]) {
+      for (const answer of [null, { effect: 'no_change' as const, confidence: 0.9 }, { effect: 'escalate' as const }]) {
         for (const decision of [without, withProject]) {
           const combined = combineAdvisor(decision, answer);
           if (isAdvisorPending(decision)) {

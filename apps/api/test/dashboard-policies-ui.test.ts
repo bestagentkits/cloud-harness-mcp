@@ -50,7 +50,7 @@ const decision = (value: 'ALLOW' | 'REQUIRE_APPROVAL' | 'DENY', detail = 'checke
   reasons: [{ code: value === 'DENY' ? 'HARD_DENY' : 'ALLOWED_BY_POLICY', source: 'global', detail }],
   matchedRules: ['global.defaults.edit'], actionClass: 'edit',
   policy: { globalRevisionId: REVISION, globalSource: 'stored', projectId: null, projectRevisionId: null, projectSource: 'none' },
-  inputFingerprint: 'f'.repeat(64), advisor: { required: false, consulted: false, effect: null, decisionId: null },
+  inputFingerprint: 'f'.repeat(64), advisor: { required: false, consulted: false, effect: null, decisionId: null, risk: null, confidence: null, fallbackReason: null, fallback: null, minConfidence: null },
   approval: { ttlSeconds: 3600, approverRoles: ['owner'] }
 });
 
@@ -92,6 +92,24 @@ describe('agent policy form mapping', () => {
     expect(ProjectExecutionPolicySchema.parse(document)).toEqual(document);
   });
 
+  it('maps the execution-risk advisor fields, leaving an untouched disabled advisor out', () => {
+    const fields = globalFields(DEFAULT_GLOBAL_EXECUTION_POLICY);
+    const untouched = { ...fields, 'advisor-riskThreshold': '0.5', 'advisor-minConfidence': '0.7', 'advisor-fallback': 'require_approval' };
+    expect(globalPolicyFromForm(new Values(untouched))).not.toHaveProperty('advisor');
+    const enabled = globalPolicyFromForm(new Values({ ...untouched, 'advisor-enabled': 'on', 'advisor-riskThreshold': '.4', 'advisor-minConfidence': '0.85', 'advisor-fallback': 'deny' }));
+    expect(enabled.advisor).toEqual({ enabled: true, riskThreshold: 0.4, minConfidence: 0.85, fallback: 'deny' });
+    expect(GlobalExecutionPolicySchema.parse(enabled).advisor).toEqual(enabled.advisor);
+    // An unknown fallback falls back to the safe default; a malformed number is sent as typed for the runner to name.
+    const odd = globalPolicyFromForm(new Values({ ...untouched, 'advisor-enabled': 'on', 'advisor-riskThreshold': 'high', 'advisor-fallback': 'allow' }));
+    expect(odd.advisor).toMatchObject({ riskThreshold: 'high', fallback: 'require_approval' });
+    expect(GlobalExecutionPolicySchema.safeParse(odd).success).toBe(false);
+
+    expect(projectPolicyFromForm(new Values({ 'advisor-enabled': '', 'advisor-fallback': '' }))).toEqual({ version: 1 });
+    const project = projectPolicyFromForm(new Values({ 'advisor-enabled': 'off', 'advisor-riskThreshold': '0.25', 'advisor-minConfidence': '1', 'advisor-fallback': 'deny' }));
+    expect(project).toEqual({ version: 1, advisor: { enabled: false, riskThreshold: 0.25, minConfidence: 1, fallback: 'deny' } });
+    expect(ProjectExecutionPolicySchema.parse(project)).toEqual(project);
+  });
+
   it('builds a schema-valid action descriptor and never carries a reason', () => {
     const action = actionFromSimulationForm(new Values({
       actionClass: 'package_install', repository: 'acme/widgets', branch: '', command: ' npm  install ', paths: 'src/a.ts\nsrc/a.ts',
@@ -128,6 +146,43 @@ describe('agent policy renderers', () => {
     expect(renderPolicyDecision(decision('ALLOW'))).toContain('class="status active"');
     expect(renderPolicyDecision({ ...decision('REQUIRE_APPROVAL'), reasonCode: 'APPROVAL_REQUIRED' })).toContain('class="status pending"');
     expect(renderPolicyDecision(decision('DENY'))).toContain('class="status failed"');
+  });
+
+  it('says whether Jev was consulted, with its decision, risk and confidence or the fallback reason', () => {
+    const advised = (advisor: Record<string, unknown>) => renderPolicyDecision({ ...decision('REQUIRE_APPROVAL'), reasonCode: 'ADVISOR_ESCALATED', advisor: { ...decision('ALLOW').advisor, required: true, ...advisor } });
+    const consulted = advised({ consulted: true, effect: 'escalate', decisionId: 'dec_123', risk: 0.82, confidence: 0.9, fallback: 'require_approval' });
+    expect(consulted).toContain('Jev consulted: escalated to a human (risk 0.82, confidence 0.9)');
+    expect(consulted).toContain('dec_123');
+    expect(advised({ effect: 'escalate', decisionId: 'dec_9', fallbackReason: 'rate_limited', fallback: 'deny' })).toContain('Jev not consulted (rate limited), falls back to Deny');
+    expect(advised({ fallbackReason: 'unconfigured', fallback: 'require_approval' })).toContain('Jev not consulted (no TypeSafe key)');
+    expect(advised({})).toContain('Required before the action runs');
+    expect(renderPolicyDecision(decision('ALLOW'))).toContain('<dt>Advisor</dt><dd>Not required</dd>');
+  });
+
+  it('renders the advisor settings in both editors, the effective policy and the inheritance table', () => {
+    const page = (scope: 'global' | 'project', document: unknown, extra: Record<string, unknown> = {}) => renderAgentPolicyPage({
+      status: 'ready', scope, mode: 'form', document, head: null, effective: { ...effective, advisor: { enabled: true, riskThreshold: 0.4, minConfidence: 0.8, fallback: 'deny' } },
+      history: { revisions: [], headRevisionId: null, nextBeforeVersion: null }, ...extra
+    });
+    const global = page('global', { ...DEFAULT_GLOBAL_EXECUTION_POLICY, advisor: { enabled: true, riskThreshold: 0.4, minConfidence: 0.8, fallback: 'deny' } });
+    expect(global).toContain('<legend>Execution-risk advisor</legend>');
+    expect(global).toMatch(/name="advisor-enabled" value="on" checked/u);
+    expect(global).toContain('name="advisor-riskThreshold" inputmode="decimal" value="0.4"');
+    expect(global).toContain('<option value="deny" selected>Deny</option>');
+    expect(global).toContain('On: escalates at risk 0.4 or above, needs confidence 0.8, otherwise Deny');
+    // A global policy without an advisor block shows the defaults, unticked.
+    const unset = page('global', DEFAULT_GLOBAL_EXECUTION_POLICY);
+    expect(unset).toMatch(/name="advisor-enabled" value="on">/u);
+    expect(unset).toContain('name="advisor-minConfidence" inputmode="decimal" value="0.7"');
+    const projectDocument = { version: 1, advisor: { enabled: false } };
+    const project = page('project', projectDocument, {
+      projectId: PROJECT, savedDocument: projectDocument,
+      globalDocument: { ...DEFAULT_GLOBAL_EXECUTION_POLICY, advisor: { enabled: true, riskThreshold: 0.4, minConfidence: 0.8, fallback: 'deny' } }
+    });
+    expect(project).toContain('<option value="off" selected>Turn off for this project</option>');
+    expect(project).toContain('name="advisor-riskThreshold" inputmode="decimal" value="" placeholder="Inherit"');
+    expect(project).toContain('<tr><th scope="row">Advisor</th><td>On</td><td>Off</td><td>On</td></tr>');
+    expect(project).toContain('<tr><th scope="row">Advisor fallback</th><td>Deny</td><td><span class="policy-muted">inherit</span></td><td>Deny</td></tr>');
   });
 
   it('separates refused widenings from weakenings that need confirmation', () => {

@@ -3,6 +3,7 @@ import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_GLOBAL_EXECUTION_POLICY,
+  DEFAULT_POLICY_ADVISOR,
   type AgentPoliciesRunnerRequest,
   type AgentPoliciesRunnerResponse,
   type ApiConfig,
@@ -37,7 +38,7 @@ const effective = {
   hardDeny: [], mandatoryApproval: [], allowedActionClasses: ['read'],
   effects: [{ actionClass: 'read', effect: 'allow', source: 'global', delegable: false, mandatoryApproval: false }],
   scope: DEFAULT_GLOBAL_EXECUTION_POLICY.scope, budget: DEFAULT_GLOBAL_EXECUTION_POLICY.budget,
-  approval: DEFAULT_GLOBAL_EXECUTION_POLICY.approval, ignoredProjectFields: []
+  approval: DEFAULT_GLOBAL_EXECUTION_POLICY.approval, advisor: DEFAULT_POLICY_ADVISOR, ignoredProjectFields: []
 };
 const decision = {
   version: 1, decision: 'DENY', reasonCode: 'ACTION_CLASS_NOT_ALLOWED',
@@ -45,7 +46,7 @@ const decision = {
   matchedRules: ['global.allowedActionClasses'], actionClass: 'edit',
   policy: { globalRevisionId: null, globalSource: 'default', projectId: null, projectRevisionId: null, projectSource: 'none' },
   inputFingerprint: 'b'.repeat(64),
-  advisor: { required: false, consulted: false, effect: null, decisionId: null },
+  advisor: { required: false, consulted: false, effect: null, decisionId: null, risk: null, confidence: null, fallbackReason: null, fallback: null, minConfidence: null },
   approval: { ttlSeconds: 3_600, approverRoles: ['owner'] }
 };
 const dataFor: Record<string, unknown> = {

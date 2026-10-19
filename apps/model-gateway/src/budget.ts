@@ -64,6 +64,16 @@ export function saturatingAdd(...values: number[]): number {
 /** A request the caller must fix; its message is safe to return to the caller verbatim. */
 export class ModelRequestError extends Error {}
 
+/**
+ * The machine-readable refusal code the gateway returns when a lease's token or cost budget cannot
+ * cover a request. It travels in the error envelope's `type` and leads its message, because some
+ * provider SDKs surface only the message text to the agent runtime.
+ */
+export const BUDGET_REFUSAL_CODE = 'budget_exceeded';
+
+/** A request the remaining lease budget cannot cover; the gateway refuses it with 429. */
+export class BudgetRefusalError extends Error {}
+
 function costMicros(tokens: number, pricePerMillion: number): number {
   const micros = (BigInt(tokens) * BigInt(pricePerMillion) + 999_999n) / 1_000_000n;
   return micros > BigInt(MAX_SAFE) ? MAX_SAFE : Number(micros);
@@ -131,7 +141,7 @@ function requestedOutputTokens(body: Record<string, unknown>, profile: GatewayPr
   for (const field of fields) {
     const value = body[field];
     if (value === undefined) continue;
-    if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`${field} must be a positive integer`);
+    if (!Number.isSafeInteger(value) || (value as number) < 1) refuse(`${field} must be a positive integer`);
     requested.push(value as number);
   }
   return requested.length === 0 ? profile.limits.maxOutputTokens : Math.min(...requested);
@@ -232,11 +242,11 @@ export function reserveBudget(
   assertBoundedRequest(body, profile);
   const estimatedInputTokens = Math.max(1, bodyBytes) + mediaPartCount(body) * MEDIA_PART_RESERVE_TOKENS;
   const inputTokens = Math.min(estimatedInputTokens, lease.remainingInputTokens, profile.limits.maxInputTokens);
-  if (estimatedInputTokens > inputTokens) throw new Error('input token budget exceeded');
+  if (estimatedInputTokens > inputTokens) throw new BudgetRefusalError('input token budget exceeded');
   const prices = pricesForPrompt(profile, estimatedInputTokens);
   const inputPrice = Math.max(prices.inputMicrosPerMillionTokens, prices.cacheReadMicrosPerMillionTokens, prices.cacheWriteMicrosPerMillionTokens);
   const inputCost = costMicros(inputTokens, inputPrice);
-  if (inputCost > lease.remainingCostMicros) throw new Error('input cost budget exceeded');
+  if (inputCost > lease.remainingCostMicros) throw new BudgetRefusalError('input cost budget exceeded');
   const requested = Math.min(requestedOutputTokens(body, profile), lease.remainingOutputTokens, profile.limits.maxOutputTokens);
   let affordableOutput = requested;
   if (prices.outputMicrosPerMillionTokens !== 0) {
@@ -244,7 +254,7 @@ export function reserveBudget(
     affordableOutput = Number(affordable > BigInt(requested) ? BigInt(requested) : affordable);
   }
   const outputTokens = Math.min(requested, affordableOutput);
-  if (outputTokens < 1) throw new Error('output cost budget exhausted');
+  if (outputTokens < 1) throw new BudgetRefusalError('output cost budget exhausted');
   // The reserved cap is the only output limit sent upstream on every path.
   delete body.max_tokens;
   delete body.max_completion_tokens;

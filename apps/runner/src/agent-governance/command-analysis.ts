@@ -1,21 +1,23 @@
 /**
- * Fail-closed static analysis of an agent command line for the gate's platform invariants.
+ * Static analysis of an agent command line (an argv run through execve, with no shell) for the
+ * gate's platform invariants.
  *
- * The gate never executes anything, so it can only judge a command it can read completely. This
- * module unwraps the launchers it knows exactly (their every option, including attached forms such
- * as `-S'cmd'` or `--call=cmd`), reads `sh`/`bash`/`zsh`/`dash`/`ksh` `-c` strings with their
- * value-taking options, strips leading assignments, redirections and shell keywords, and splits
- * shell strings on every separator and command substitution. Whatever it cannot read exactly is
- * reported as unanalyzable, and the gate denies it: an unknown launcher option, a program computed
- * at run time (`$X`, globs, brace expansion), code handed to `eval`, `source`, an interpreter's
- * inline flag or a shell reading standard input, a `git -c` setting outside a small safe list, an
- * unknown git command (it could be an alias), and anything nested beyond the bounds below.
+ * The gate never executes anything and never parses shell syntax. It unwraps the launchers it knows
+ * exactly (their every option, including attached forms such as `-S'cmd'` or `--call=cmd`) and reads
+ * each wrapped argv. A script string is never analysed: a shell given `-c`, `env -S`, `npx -c`,
+ * `bun exec`, `eval`, `source` and an interpreter's inline code are all unanalyzable, and the gate
+ * requires a mandatory owner approval for them. The only things read inside a script string are a
+ * container runtime or privilege tool at the start of a command and a `git push`, so a definite
+ * platform match still denies and a push is never approved past the publish policy.
+ *
+ * Also unanalyzable: an environment assignment outside a short safe list, an unknown launcher
+ * option, a program name with shell metacharacters, a `git -c` setting outside a small safe list,
+ * an unknown git command (it could be an alias), and anything nested beyond the bounds below.
  *
  * What it deliberately does not read is the content of files a command runs (a script, a Makefile,
  * a package.json script, git hooks). The executor's isolation is the boundary for those, and
  * `docs/security-model.md` records it.
  */
-
 const MAX_DEPTH = 8;
 const MAX_SEGMENTS = 64;
 
@@ -49,192 +51,62 @@ export type CommandAnalysis =
 export const DOCKER_PROGRAMS: ReadonlySet<string> = new Set(['docker', 'dockerd', 'podman', 'nerdctl', 'ctr', 'crictl', 'kubectl', 'buildah']);
 /** Privilege-changing tools; one in program position is a definite platform match. */
 export const PRIVILEGE_PROGRAMS: ReadonlySet<string> = new Set(['sudo', 'su', 'doas', 'nsenter', 'chroot', 'unshare', 'setcap', 'capsh', 'pkexec']);
-/** Programs that only read or print data: their arguments are never programs, and a here-document is data to them. */
-export const DATA_ONLY_PROGRAMS: ReadonlySet<string> = new Set([
-  'grep', 'rg', 'egrep', 'fgrep', 'cat', 'head', 'tail', 'less', 'wc', 'ls', 'echo', 'printf', 'sort', 'uniq', 'diff', 'cut', 'tr', 'jq', 'true', 'false'
-]);
-/** Options of data-only programs that run another program (`rg --pre`, `sort --compress-program`). */
-const DATA_ONLY_EXEC = /^(?:--pre|--compress-program)(?:=|$)/u;
-
-// ---------------------------------------------------------------- shell tokens
-
-/** Operators that end a command. `{` and `}` only count as standalone words. */
-const SEGMENT_OPERATORS = new Set([';', '&&', '||', '|', '&', '|&', '(', ')', '{', '}', '\n']);
-const CHARACTER_OPERATORS = new Set([';', '|', '&', '(', ')', '\n']);
-
-/** Index of the character closing the substitution that opens at `start` (`$(` or a backtick). */
-function substitutionEnd(source: string, start: number): number {
-  if (source[start] === '`') {
-    for (let cursor = start + 1; cursor < source.length; cursor += 1) {
-      if (source[cursor] === '\\') cursor += 1;
-      else if (source[cursor] === '`') return cursor;
-    }
-    return source.length;
-  }
-  let depth = 0;
-  for (let cursor = start + 2; cursor < source.length; cursor += 1) {
-    if (source[cursor] === '\\') cursor += 1;
-    else if (source[cursor] === '(') depth += 1;
-    else if (source[cursor] === ')') {
-      if (depth === 0) return cursor;
-      depth -= 1;
-    }
-  }
-  return source.length;
-}
-
-const isWordEnd = (character: string | undefined) => character === undefined || /[\s;&|()]/u.test(character);
-
 /**
- * Splits a shell string into words and operators. Quotes and backslashes are honoured. A command
- * substitution (`$(...)` or backticks, quoted or not) is tokenized recursively, bounded by
- * `MAX_DEPTH`, and appended as its own command; the word it appeared in keeps a `$` so a program
- * name computed by a substitution is recognised as unreadable.
+ * Programs that only read or print data: their arguments are never programs. Every option that
+ * makes one of them run another program, filter or pager is modelled in `runsAnotherProgram`; a tool
+ * whose program execution cannot be read from its argv alone (such as `less`, which loads a lesskey
+ * file from the home directory) is not listed and is judged like any other program.
  */
-export function tokenizeShell(source: string, depth = 0): string[] {
-  if (depth > MAX_DEPTH) fail('command substitutions are nested too deeply');
-  const tokens: string[] = [];
-  const nested: string[] = [];
-  /** Tokenizes the substitution opening at `start` and returns the index of its closing character. */
-  const substitute = (start: number): number => {
-    const end = substitutionEnd(source, start);
-    if (end >= source.length) fail('a command substitution is not closed');
-    nested.push('\n', ...tokenizeShell(source.slice(start + (source[start] === '`' ? 1 : 2), end), depth + 1));
-    current += '$';
-    return end;
-  };
-  let current = '';
-  let quoted = false;
-  /** Here-documents whose bodies start after the next newline; `strip` is the `<<-` form. */
-  const heredocs: Array<{ delimiter: string; strip: boolean }> = [];
-  let delimiterFor: boolean | null = null;
-  /** True when the current word holds an unquoted `<<` operator (quoted `"<<x"` is plain text). */
-  let heredocWord = false;
-  const flush = () => {
-    if (current !== '' || quoted) {
-      tokens.push(current);
-      const attached = /^(?:\d+)?<<(-?)(.+)$/su.exec(current);
-      if (delimiterFor !== null) {
-        heredocs.push({ delimiter: current, strip: delimiterFor });
-        delimiterFor = null;
-      } else if (heredocWord && /^(?:\d+)?<<-?$/u.test(current)) {
-        delimiterFor = current.endsWith('-');
-      } else if (heredocWord && attached) {
-        heredocs.push({ delimiter: attached[2] as string, strip: attached[1] === '-' });
-      }
-    }
-    current = '';
-    quoted = false;
-    heredocWord = false;
-  };
-  /** Skips the bodies of pending here-documents, which start at `start`; returns the index after them. */
-  const skipHeredocBodies = (start: number): number => {
-    let position = start;
-    for (const { delimiter, strip } of heredocs.splice(0)) {
-      while (position < source.length) {
-        const end = source.indexOf('\n', position);
-        const line = source.slice(position, end === -1 ? source.length : end);
-        position = end === -1 ? source.length : end + 1;
-        if ((strip ? line.replace(/^\t+/u, '') : line) === delimiter) break;
-      }
-    }
-    return position;
-  };
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index] as string;
-    const next = source[index + 1];
-    if (character === "'") {
-      const end = source.indexOf("'", index + 1);
-      if (end === -1) fail('a quote is not closed');
-      current += source.slice(index + 1, end);
-      quoted = true;
-      index = end;
-    } else if (character === '"') {
-      let cursor = index + 1;
-      while (cursor < source.length && source[cursor] !== '"') {
-        if (source[cursor] === '\\' && cursor + 1 < source.length) {
-          current += source[cursor + 1];
-          cursor += 2;
-          continue;
-        }
-        if ((source[cursor] === '$' && source[cursor + 1] === '(') || source[cursor] === '`') {
-          // A substitution inside double quotes still runs: analyse its body as its own command.
-          cursor = substitute(cursor) + 1;
-          continue;
-        }
-        current += source[cursor];
-        cursor += 1;
-      }
-      if (cursor >= source.length) fail('a quote is not closed');
-      quoted = true;
-      index = cursor;
-    } else if (character === '\\' && next !== undefined) {
-      current += next === '\n' ? '' : next;
-      index += 1;
-    } else if (/\s/u.test(character) && character !== '\n') {
-      flush();
-    } else if ((character === '$' && next === '(') || character === '`') {
-      index = substitute(index);
-    } else if (character === '<' && next === '<') {
-      // `<<<` is a here-string; `<<` and `<<-` open a here-document whose body follows the line.
-      if (source[index + 2] === '<') {
-        current += '<<<';
-        index += 2;
-      } else {
-        heredocWord = current === '' || /^\d+$/u.test(current);
-        current += '<<';
-        index += 1;
-      }
-    } else if ((character === '{' || character === '}') && current === '' && !quoted && isWordEnd(next)) {
-      tokens.push(character);
-    } else if ((character === '&' && (next === '>' || /[<>]$/u.test(current))) || (character === '|' && />$/u.test(current))) {
-      // Part of a redirection (`&>`, `2>&1`, `>|`), not a separator.
-      current += character;
-    } else if ((character === '&' || character === '|') && (next === character || (character === '|' && next === '&'))) {
-      flush();
-      tokens.push(`${character}${next}`);
-      index += 1;
-    } else if (CHARACTER_OPERATORS.has(character)) {
-      flush();
-      tokens.push(character);
-      // A here-document body is data, not commands: skip it.
-      if (character === '\n' && heredocs.length > 0) index = skipHeredocBodies(index + 1) - 1;
-    } else if (character === '#' && current === '' && !quoted) {
-      const end = source.indexOf('\n', index);
-      index = end === -1 ? source.length : end - 1;
-    } else {
-      current += character;
-    }
-  }
-  flush();
-  return [...tokens, ...nested];
+export const DATA_ONLY_PROGRAMS: ReadonlySet<string> = new Set([
+  'grep', 'rg', 'egrep', 'fgrep', 'cat', 'head', 'tail', 'wc', 'ls', 'echo', 'printf', 'sort', 'uniq', 'diff', 'cut', 'tr', 'jq', 'true', 'false'
+]);
+/** GNU long options accept any unique prefix of at least `minimum` characters. */
+const longPrefix = (name: string, option: string, minimum: number) => name.length >= minimum && option.startsWith(name);
+/**
+ * Whether an argument makes a data-only program run another program or evaluate code:
+ * `rg --pre` and `rg -z`/`--search-zip` (decompression programs), `sort --compress-program`,
+ * `diff -l`/`--paginate` (`pr`), and `printf -v`, whose array subscript bash evaluates. A short
+ * option cluster is matched conservatively, so `-ez` counts as well.
+ */
+function runsAnotherProgram(program: string, token: string): boolean {
+  const name = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
+  const short = (letter: string) => new RegExp(`^-[A-Za-z0-9]*${letter}`, 'u').test(token);
+  if (program === 'rg') return name === '--pre' || name === '--search-zip' || short('z');
+  if (program === 'sort') return longPrefix(name, '--compress-program', 4);
+  if (program === 'diff') return longPrefix(name, '--paginate', 4) || short('l');
+  if (program === 'printf') return short('v');
+  return false;
 }
 
-/** Splits shell tokens into command segments on every operator. */
-function splitSegments(tokens: readonly string[]): string[][] {
-  const segments: string[][] = [];
-  let current: string[] = [];
-  for (const token of tokens) {
-    if (SEGMENT_OPERATORS.has(token)) {
-      if (current.length) segments.push(current);
-      current = [];
-    } else {
-      current.push(token);
-    }
-  }
-  if (current.length) segments.push(current);
-  return segments;
-}
+// ---------------------------------------------------------------- script strings
 
+/** The first word of each command in a script string: after its start or a separator, glued redirections cut off. */
+const COMMAND_WORD = /(?:^|[;&|(){}\n`!]|\$\()\s*(?:[^\s;&|(){}<>'"`$!]*\/)?([^\s;&|(){}<>'"`$!/]+)/gu;
+/** `git push` at the start of a command, possibly after global options. */
+const SCRIPT_PUSH = /(?:^|[;&|(){}\n`!]|\$\()\s*(?:[^\s;&|(){}<>'"`$]*\/)?git(?:\s+-[^\s;&|]*(?:\s+[^\s;&|-][^\s;&|]*)?)*\s+push(?![\w-])/u;
+
+/** Container runtimes and privilege tools a script string runs at the start of a command. */
+function scriptPlatformPrograms(source: string): string[] {
+  return [...source.matchAll(COMMAND_WORD)]
+    .map((match) => (match[1] as string).toLowerCase())
+    .filter((name) => DOCKER_PROGRAMS.has(name) || PRIVILEGE_PROGRAMS.has(name));
+}
 // ---------------------------------------------------------------- command words
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/u;
-/** Variables that make a later program run other code. */
-const RISKY_VARIABLE = /^(?:GIT_.*|LD_.*|DYLD_.*|BASH_ENV|ENV|BASH_FUNC_.*|SHELLOPTS|BASHOPTS|IFS|PS4|PROMPT_COMMAND|CDPATH)$/u;
-const REDIRECTION = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?(<<<|<<-?|<>|<&|>&|>>|>\||&>>|&>|<|>)(.*)$/su;
-/** Words that start a compound command or negate one; the command after them still runs. */
-const KEYWORDS = new Set(['!', 'if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'esac', '{', '}']);
-const DECLARATIONS = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
+const SAFE_VARIABLES = new Set(['CI', 'NODE_ENV', 'FORCE_COLOR', 'NO_COLOR', 'TZ', 'LANG', 'LC_ALL', 'DEBUG']);
+/** npm settings that only change output or prompts; any other one can name a program, script or config. */
+const NPM_SAFE_SETTINGS = new Set(['loglevel', 'color', 'progress', 'fund', 'audit', 'update_notifier', 'yes']);
+/**
+ * The only variables a command may set (leading `NAME=value` words or `env NAME=value`). Anything
+ * else (`PAGER`, `EDITOR`, `LESSOPEN`, `GIT_*`, `LD_*`, `npm_config_call`, ...) can make a program
+ * run another one.
+ */
+function isSafeVariable(name: string): boolean {
+  if (SAFE_VARIABLES.has(name)) return true;
+  const lower = name.toLowerCase();
+  return lower.startsWith('npm_config_') && NPM_SAFE_SETTINGS.has(lower.slice('npm_config_'.length));
+}
 /** Programs that run code the gate cannot read. */
 const UNANALYZABLE_PROGRAMS = new Set([
   'eval', 'source', '.', 'trap', 'coproc', 'alias', 'hash', 'enable', 'fc', 'fish', 'csh', 'tcsh', 'pwsh', 'powershell',
@@ -398,17 +270,24 @@ function rejectProgramArguments(program: string, rest: readonly string[]): void 
 // ---------------------------------------------------------------- analysis
 
 /**
- * Every command an argv runs, after unwrapping launchers and shell strings, and the `git push`
- * invocations among them. `ok: false` means something could not be read exactly.
+ * Every command an argv runs, after unwrapping launchers, and the `git push` invocations among them.
+ * `ok: false` means something could not be read exactly.
  */
 export function analyzeCommand(argv: readonly string[]): CommandAnalysis {
   const segments: string[][] = [];
   const pushes: GitPush[] = [];
 
-  const shellString = (source: string, depth: number) => {
-    for (const segment of splitSegments(tokenizeShell(source, depth))) visit(segment, depth, false, true);
+  /**
+   * A script string is never analysed, so it always ends the analysis as unanalyzable. A container
+   * runtime or privilege tool at the start of one of its commands is still recorded, so the gate
+   * denies it, and a `git push` in it is recorded as a push of unknown refs, which the publish policy
+   * and the branch scope then judge.
+   */
+  const scriptString = (source: string): never => {
+    for (const program of scriptPlatformPrograms(source)) segments.push([program]);
+    if (SCRIPT_PUSH.test(source)) pushes.push({ destinations: [], broad: true, implicit: false });
+    return fail('a shell or script string is never analysed');
   };
-
   const runLauncher = (rest: readonly string[], spec: LauncherSpec, depth: number, openArgs = false) => {
     const strings: string[] = [];
     let index = 1;
@@ -469,12 +348,12 @@ export function analyzeCommand(argv: readonly string[]): CommandAnalysis {
       index += consumed;
     }
     index += spec.positional;
-    for (const source of strings) shellString(source, depth + 1);
+    for (const source of strings) scriptString(source);
     if (index < rest.length) visit(rest.slice(index), depth + 1, openArgs);
     else if (openArgs) fail('xargs supplies the program at run time');
   };
 
-  const runShell = (rest: readonly string[], depth: number) => {
+  const runShell = (rest: readonly string[]) => {
     let index = 1;
     let command = false;
     while (index < rest.length) {
@@ -509,10 +388,8 @@ export function analyzeCommand(argv: readonly string[]): CommandAnalysis {
       }
       index += consumed;
     }
-    if (command) {
-      shellString(rest[index] ?? fail('-c has no command string'), depth + 1);
-      return;
-    }
+    if (command) scriptString(rest[index] ?? fail('-c has no command string'));
+
     // A script file is run, not read; with no file the shell reads commands from standard input.
     if (rest[index] === undefined) fail('the shell reads its commands from standard input');
     if (rest.slice(index + 1).some((token) => /^[-+][A-Za-z]*c/u.test(token))) fail('a -c after the script name is not analysed');
@@ -572,97 +449,59 @@ export function analyzeCommand(argv: readonly string[]): CommandAnalysis {
     const subcommand = rest[at] as string;
     if (manager.unanalyzable.has(subcommand)) fail(`${program} ${subcommand} runs a shell`);
     if (manager.shell.has(subcommand)) {
-      shellString(rest[at + 1] ?? fail(`${program} ${subcommand} has no command`), depth + 1);
-      return;
+      scriptString(rest[at + 1] ?? fail(`${program} ${subcommand} has no command`));
     }
     if (manager.launch.has(subcommand)) return runLauncher(rest.slice(at), NPX, depth, openArgs);
     rejectProgramArguments(program, rest);
   };
 
   /**
-   * Drops redirections from a tokenized shell command wherever they appear: they are not arguments,
-   * and a shell's input must not hide in one. A direct argv only loses leading ones (`leadingOnly`),
-   * because its later words are literal arguments.
-   */
-  const withoutRedirections = (segment: readonly string[], leadingOnly: boolean): { kept: string[]; feedsInput: boolean } => {
-    const kept: string[] = [];
-    let feedsInput = false;
-    for (let index = 0; index < segment.length; index += 1) {
-      if (leadingOnly && kept.length > 0) {
-        kept.push(segment[index] as string);
-        continue;
-      }
-      const redirection = REDIRECTION.exec(segment[index] as string);
-      if (!redirection) {
-        kept.push(segment[index] as string);
-        continue;
-      }
-      if (redirection[1] === '<<' || redirection[1] === '<<-' || redirection[1] === '<<<') feedsInput = true;
-      if (redirection[2] === '') index += 1;
-    }
-    return { kept, feedsInput };
-  };
-
-  /**
    * `openArgs` is true under `xargs`, which appends arguments read at run time: the command must then
    * name everything that decides what runs, and a `git push` must not receive extra refspecs.
-   * `fromShell` marks a segment tokenized from a shell string, where redirections may appear anywhere.
    */
-  function visit(raw: readonly string[], depth: number, openArgs = false, fromShell = false): void {
-    if (depth > MAX_DEPTH) fail('the command nests too many launchers or shell strings');
+  function visit(argv: readonly string[], depth: number, openArgs = false): void {
+    if (depth > MAX_DEPTH) fail('the command nests too many launchers');
     if (segments.length >= MAX_SEGMENTS) fail('the command runs too many commands');
-    const { kept: segment, feedsInput } = withoutRedirections(raw, !fromShell);
+    /** The first reason the argv cannot be read; raised once its program is recorded. */
+    let problem: string | undefined;
     let index = 0;
-    while (index < segment.length) {
-      const token = segment[index] as string;
-      const assignment = ASSIGNMENT.exec(token);
-      if (assignment) {
-        if (RISKY_VARIABLE.test(assignment[1] as string)) fail(`setting ${assignment[1]} changes what a later program runs`);
-        index += 1;
-        continue;
-      }
-      if (KEYWORDS.has(token)) {
-        index += 1;
-        continue;
-      }
-      break;
+    for (; index < argv.length; index += 1) {
+      const assignment = ASSIGNMENT.exec(argv[index] as string);
+      if (!assignment) break;
+      if (!isSafeVariable(assignment[1] as string)) problem ??= `setting ${assignment[1]} can change what a program runs`;
     }
-    const rest = segment.slice(index);
+    const rest = argv.slice(index);
     const head = rest[0];
     if (head === undefined) {
+      if (problem !== undefined) fail(problem);
       if (openArgs) fail('xargs supplies the program at run time');
       return;
     }
-    if (head !== '[' && head !== '[[' && /[$`*?[\]{}\\]/u.test(head)) fail('the program name is computed when the command runs');
+    if (/[$`*?[\]{}\\<>|;&()'"\s]/u.test(head)) fail('the program name contains shell syntax');
     segments.push([...rest]);
+    if (problem !== undefined) fail(problem);
     const program = programName(head);
     if (DATA_ONLY_PROGRAMS.has(program)) {
-      // Arguments and here-documents are data, unless an option makes the program run another one.
-      if (rest.some((token) => DATA_ONLY_EXEC.test(token))) fail(`${program} is told to run another program`);
+      // Arguments are data, unless an option makes the program run another one.
+      if (rest.slice(1).some((token) => runsAnotherProgram(program, token))) fail(`${program} is told to run another program`);
       return;
     }
-    if (feedsInput) fail(`a here-document or here-string feeds ${program}, which may run it`);
+    if (program === 'eval') scriptString(rest.slice(1).join(' '));
     if (UNANALYZABLE_PROGRAMS.has(program)) fail(`${program} runs code the gate cannot read`);
     for (const [name, flag] of INLINE_CODE) {
       if (name.test(program) && rest.slice(1).some((token) => flag.test(token))) fail(`${program} is given inline code`);
     }
-    if (DECLARATIONS.has(program)) {
-      for (const token of rest.slice(1)) {
-        const assignment = ASSIGNMENT.exec(token);
-        if (assignment && RISKY_VARIABLE.test(assignment[1] as string)) fail(`setting ${assignment[1]} changes what a later program runs`);
-      }
-      return;
-    }
+    // `command -v NAME` and `command -V NAME` only look a name up.
+    if (program === 'command' && rest.slice(1).some((token) => /^-[A-Za-z]*[vV]/u.test(token))) return;
     if (program === 'find' && rest.some((token) => /^-(?:exec|execdir|ok|okdir)$/u.test(token))) fail('find -exec runs a command');
     if ((program === 'fd' || program === 'fdfind') && rest.some((token) => /^(?:-x|-X|--exec|--exec-batch)(?:=|$)/u.test(token))) fail('fd --exec runs a command');
     if (program === 'git') return runGit(rest, openArgs);
     if (PACKAGE_MANAGERS[program]) return runPackageManager(rest, program, depth, openArgs);
-    if (SHELLS.has(program)) return runShell(rest, depth);
+    if (SHELLS.has(program)) return runShell(rest);
     const spec = LAUNCHERS[program];
     if (spec) return runLauncher(rest, spec, depth, openArgs || program === 'xargs');
     rejectProgramArguments(program, rest);
   }
-
   try {
     visit(argv, 0);
   } catch (error) {

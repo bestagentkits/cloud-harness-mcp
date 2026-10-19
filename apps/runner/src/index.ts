@@ -18,6 +18,7 @@ import { DEFAULT_NPM_REGISTRY } from './package-builder.js';
 import { HarnessError } from '@cloud-harness/contracts';
 import { SecretKeyring } from './secret-keyring.js';
 import { createRunnerDecisionPlane } from './decision-plane/runner-decision-plane.js';
+import { ExecutionRiskAdvisor } from './decision-plane/execution-risk-advisor.js';
 import { StateStore } from './state-store.js';
 import { WorkspaceService } from './workspace-service.js';
 import { DockerAgentGatewayControl } from './agent-gateway-control.js';
@@ -96,7 +97,10 @@ const agentPolicies = new AgentPolicyService({
   activeProjectIds: (principalId) => metadata.activeProjectIds(principalId),
   audit: (database, principalId, action, subjectType, subjectId, generation, details) => {
     metadata.recordAuditInTransaction(database, principalId, action, subjectType, subjectId, generation, details);
-  }
+  },
+  // Consulted only when DECISION_PLANE_PURPOSES includes execution-risk, TypeSafe egress is on, the owner has
+  // a TypeSafe credential and the policy enables the advisor; otherwise the policy fallback applies with no call.
+  advisor: new ExecutionRiskAdvisor(decisionPlane)
 });
 // The coding broker is always attached so the brokered-only agent tools stay refused outside a coding
 // workflow; AGENT_CODING_ENABLED is read on every brokered action and is also the kill switch.

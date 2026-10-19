@@ -1,6 +1,8 @@
 import {
   AdvisorEffectSchema,
+  AdvisorFallbackReasonSchema,
   type AdvisorEffect,
+  type AdvisorFallbackReason,
   type AgentActionClass,
   type AgentActionDescriptor,
   type AgentPlatformEffect,
@@ -33,9 +35,11 @@ import { actionFingerprint, commandAdmitted, listAdmits, normalizeWorkspacePath,
  *  6. Project narrowing (project hard-deny, class removed) -> DENY
  *  7. Global or project mandatory approval -> REQUIRE_APPROVAL
  *  8. Effective rule (global default, or a project rule the merge accepted) -> ALLOW / REQUIRE_APPROVAL
- *  9. `advisor_or_approval`: REQUIRE_APPROVAL (`ADVISOR_REQUIRED`, pending) when an advisor is configured,
- *     which only `combineAdvisor`/`decide` with a valid `no_change` answer turns into ALLOW;
- *     REQUIRE_APPROVAL (`ADVISOR_UNAVAILABLE`) with no advisor
+ *  9. `advisor_or_approval`: REQUIRE_APPROVAL (`ADVISOR_UNAVAILABLE`) when the effective policy does not
+ *     enable the advisor; REQUIRE_APPROVAL (`ADVISOR_REQUIRED`, pending) when it does and an advisor is
+ *     available, which only `combineAdvisor`/`decide` with a valid, confident `no_change` turns into ALLOW;
+ *     otherwise the policy's advisor fallback: REQUIRE_APPROVAL (`ADVISOR_UNAVAILABLE`) or DENY
+ *     (`ADVISOR_FALLBACK_DENY`), with the reason the advisor is unavailable
  *
  * A command the analysis in `command-analysis.ts` cannot read completely is not a definite violation:
  * steps 2-9 still run, and anything short of DENY becomes a mandatory REQUIRE_APPROVAL with
@@ -73,11 +77,29 @@ export type GateInput = {
   descriptor: AgentActionDescriptor;
   snapshot: PolicySnapshot;
   context?: GateContext | undefined;
-  /** True only when an advisor is configured and will be consulted for this action. */
+  /**
+   * True only when an advisor is configured for this principal and will be consulted. The policy must
+   * enable the advisor as well; this alone never makes an action pending.
+   */
   advisorAvailable?: boolean | undefined;
+  /** Why the advisor is not available (`disabled` when omitted); recorded on the fallback decision. */
+  advisorUnavailableReason?: AdvisorFallbackReason | undefined;
 };
 
-export type AdvisorAnswer = { effect: AdvisorEffect; decisionId?: string | null | undefined };
+/**
+ * What an advisor returned. `fallbackReason` marks an answer the advisor could not give (timeout, low
+ * confidence, ...): the effect is then `escalate` and the policy's fallback applies.
+ */
+export type AdvisorAnswer = {
+  effect: AdvisorEffect;
+  decisionId?: string | null | undefined;
+  risk?: number | null | undefined;
+  confidence?: number | null | undefined;
+  fallbackReason?: AdvisorFallbackReason | null | undefined;
+};
+
+type AdvisorRecord = GateDecision['advisor'];
+const NO_ADVISOR: AdvisorRecord = { required: false, consulted: false, effect: null, decisionId: null, risk: null, confidence: null, fallbackReason: null, fallback: null, minConfidence: null };
 
 type Verdict = { decision: GateDecisionValue; code: GateReasonCode; source: GateReason['source']; detail: string; rule?: string };
 
@@ -132,7 +154,7 @@ function inspectUnchecked(descriptor: AgentActionDescriptor): Inspection {
   }
   const argv = descriptor.command ?? [];
   if (argv.length === 0) return { pushes: [] };
-  // Every program the command line runs, looking through launchers and shell strings. The segments
+  // Every program the argv runs, looking through launchers; a shell string is never read. The segments
   // read before an analysis failure still count, so a definite match denies even then.
   const analysis = analyzeCommand(argv);
   const definite = definitePlatformAccess(analysis.segments);
@@ -147,6 +169,8 @@ function inspectUnchecked(descriptor: AgentActionDescriptor): Inspection {
  */
 function definitePlatformAccess(segments: readonly string[][]): Verdict | undefined {
   const programs = segments.map((segment) => programName(segment[0] ?? ''));
+  // The exemption for data-only programs (`grep docker.sock docs/`) is safe only because that list
+  // holds no tool that can run another program; `runsAnotherProgram` gates every such option.
   const socket = segments.some((segment) => !DATA_ONLY_PROGRAMS.has(programName(segment[0] ?? '')) && segment.some((word) => word.includes('docker.sock')));
   if (socket || programs.some((program) => DOCKER_PROGRAMS.has(program))) {
     return { decision: 'DENY', code: 'PLATFORM_DOCKER_ACCESS', source: 'platform', detail: 'container runtimes are never reachable from an agent' };
@@ -249,13 +273,34 @@ function strictness(decision: GateDecision): number {
   return 0;
 }
 
-export function evaluateGate(input: GateInput): GateDecision {
+/**
+ * What a decision is actually about: the class whose rule produced it (`publish_branch` when a
+ * declared `test`, `read` or `vcs_local` runs `git push` and the publish evaluation is the stricter
+ * one) and whether the command runs `git push` at all. An advisor is told this, not only the
+ * declared class.
+ */
+export type GateSubject = { actionClass: AgentActionClass; gitPush: boolean };
+
+export type GateEvaluation = { decision: GateDecision; subject: GateSubject };
+
+/** `evaluateGate` together with the subject of the decision it returns. */
+export function evaluateGateSubject(input: GateInput): GateEvaluation {
   const inspection = inspect(input.descriptor);
+  const gitPush = inspection.pushes.length > 0;
   const declared = evaluateAs(input, input.descriptor.actionClass, inspection);
-  const decision = inspection.verdict || inspection.pushes.length === 0 || input.descriptor.actionClass === 'publish_branch'
-    ? declared
-    : [evaluateAs(input, 'publish_branch', inspection), declared].reduce((stricter, next) => (strictness(next) > strictness(stricter) ? next : stricter));
-  return inspection.unanalyzable ? requireUnanalyzableApproval(decision, inspection.unanalyzable) : decision;
+  let evaluation: GateEvaluation = { decision: declared, subject: { actionClass: input.descriptor.actionClass, gitPush } };
+  // On a tie the publish evaluation wins, so the subject names the class a human would approve.
+  if (!inspection.verdict && gitPush && input.descriptor.actionClass !== 'publish_branch') {
+    const publish = evaluateAs(input, 'publish_branch', inspection);
+    if (strictness(publish) >= strictness(declared)) evaluation = { decision: publish, subject: { actionClass: 'publish_branch', gitPush } };
+  }
+  return inspection.unanalyzable
+    ? { ...evaluation, decision: requireUnanalyzableApproval(evaluation.decision, inspection.unanalyzable) }
+    : evaluation;
+}
+
+export function evaluateGate(input: GateInput): GateDecision {
+  return evaluateGateSubject(input).decision;
 }
 
 /**
@@ -289,7 +334,7 @@ function evaluateAs(input: GateInput, actionClass: AgentActionClass, inspection:
     reasons.push({ code: 'PROJECT_WIDENING_IGNORED', source: 'project', detail: `${effective.ignoredProjectFields.length} project field(s) would widen the global policy and were ignored` });
   }
 
-  const finish = (verdict: Verdict, advisorRequired = false): GateDecision => {
+  const finish = (verdict: Verdict, advisor: Partial<AdvisorRecord> = {}): GateDecision => {
     reasons.unshift({ code: verdict.code, source: verdict.source, detail: verdict.detail.slice(0, 300) });
     if (verdict.rule) matchedRules.unshift(verdict.rule);
     return {
@@ -307,7 +352,7 @@ function evaluateAs(input: GateInput, actionClass: AgentActionClass, inspection:
         projectSource: projectSource(snapshot)
       },
       inputFingerprint: actionFingerprint(descriptor),
-      advisor: { required: advisorRequired, consulted: false, effect: null, decisionId: null },
+      advisor: { ...NO_ADVISOR, ...advisor },
       approval: { ttlSeconds: effective.approval.ttlSeconds, approverRoles: [...effective.approval.approverRoles] }
     };
   };
@@ -343,10 +388,22 @@ function evaluateAs(input: GateInput, actionClass: AgentActionClass, inspection:
   if (rule.effect === 'require_approval') {
     return finish({ decision: 'REQUIRE_APPROVAL', code: 'RULE_REQUIRE_APPROVAL', source: rule.source, detail: `${actionClass} requires approval under the ${rule.source} policy`, rule: ruleName });
   }
-  if (input.advisorAvailable) {
-    return finish({ decision: 'REQUIRE_APPROVAL', code: 'ADVISOR_REQUIRED', source: rule.source, detail: `${actionClass} is discretionary and must be cleared by the advisor`, rule: ruleName }, true);
+  const advisorPolicy = effective.advisor;
+  if (!advisorPolicy.enabled) {
+    return finish({ decision: 'REQUIRE_APPROVAL', code: 'ADVISOR_UNAVAILABLE', source: rule.source, detail: `${actionClass} is discretionary and the policy does not enable the advisor`, rule: ruleName });
   }
-  return finish({ decision: 'REQUIRE_APPROVAL', code: 'ADVISOR_UNAVAILABLE', source: rule.source, detail: `${actionClass} is discretionary and no advisor is available`, rule: ruleName });
+  if (input.advisorAvailable) {
+    return finish(
+      { decision: 'REQUIRE_APPROVAL', code: 'ADVISOR_REQUIRED', source: rule.source, detail: `${actionClass} is discretionary and must be cleared by the advisor`, rule: ruleName },
+      { required: true, fallback: advisorPolicy.fallback, minConfidence: advisorPolicy.minConfidence }
+    );
+  }
+  // The policy relies on an advisor this instance or principal cannot reach: its conservative fallback applies.
+  const fallbackReason = AdvisorFallbackReasonSchema.catch('disabled').parse(input.advisorUnavailableReason ?? 'disabled');
+  const fallback = { fallback: advisorPolicy.fallback, fallbackReason };
+  return advisorPolicy.fallback === 'deny'
+    ? finish({ decision: 'DENY', code: 'ADVISOR_FALLBACK_DENY', source: rule.source, detail: `${actionClass} is discretionary, the advisor is unavailable (${fallbackReason}) and the policy denies on fallback`, rule: ruleName }, fallback)
+    : finish({ decision: 'REQUIRE_APPROVAL', code: 'ADVISOR_UNAVAILABLE', source: rule.source, detail: `${actionClass} is discretionary and the advisor is unavailable (${fallbackReason})`, rule: ruleName }, fallback);
 }
 
 /** True for the one decision an advisor may clear: discretionary, advisor required, not yet consulted. */
@@ -354,19 +411,45 @@ export function isAdvisorPending(decision: GateDecision): boolean {
   return decision.decision === 'REQUIRE_APPROVAL' && decision.reasonCode === 'ADVISOR_REQUIRED' && decision.advisor.required && !decision.advisor.consulted;
 }
 
+const unit = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null);
+
+/** The advisor record an answer produces. A malformed answer records nothing but its failure. */
+function advisorRecord(decision: GateDecision, answer: AdvisorAnswer | null): AdvisorRecord {
+  const parsed = AdvisorEffectSchema.safeParse(answer?.effect);
+  const base = { ...NO_ADVISOR, required: decision.advisor.required, fallback: decision.advisor.fallback, minConfidence: decision.advisor.minConfidence };
+  if (answer === null) return { ...base, fallbackReason: 'unavailable' };
+  if (!parsed.success) return { ...base, fallbackReason: 'invalid_answer' };
+  const confidence = unit(answer.confidence);
+  let reported = answer.fallbackReason === null || answer.fallbackReason === undefined ? null : AdvisorFallbackReasonSchema.catch('unavailable').parse(answer.fallbackReason);
+  // The gate holds the policy's confidence floor itself: whichever advisor answered, a `no_change` below
+  // it, or one that states no confidence at all, is a low-confidence fallback and clears nothing.
+  if (reported === null && parsed.data === 'no_change' && base.minConfidence !== null && (confidence === null || confidence < base.minConfidence)) {
+    reported = 'low_confidence';
+  }
+  return {
+    ...base,
+    consulted: reported === null,
+    effect: parsed.data,
+    decisionId: typeof answer.decisionId === 'string' ? answer.decisionId.slice(0, 200) : null,
+    risk: unit(answer.risk),
+    confidence,
+    fallbackReason: reported
+  };
+}
+
 /**
  * Applies an advisor answer.
  *
- * - A pending discretionary decision (`ADVISOR_REQUIRED`) becomes ALLOW only on a valid `no_change`.
- *   Any other answer, no answer, or a malformed one leaves it at REQUIRE_APPROVAL (`ADVISOR_ESCALATED`).
+ * - A pending discretionary decision (`ADVISOR_REQUIRED`) becomes ALLOW only on a valid, confident
+ *   `no_change`. Any other answer, no answer, a fallback or a malformed answer leaves it at
+ *   REQUIRE_APPROVAL (`ADVISOR_ESCALATED`), or DENY (`ADVISOR_FALLBACK_DENY`) on a fallback when the
+ *   policy's advisor fallback is `deny`.
  * - Every other decision is monotonic: `final = max(decision, advisor)` over ALLOW < REQUIRE_APPROVAL < DENY,
  *   so a hard deny, a scope deny, a mandatory approval or a rule approval is never lowered.
  */
 export function combineAdvisor(decision: GateDecision, answer: AdvisorAnswer | null): GateDecision {
-  const parsed = AdvisorEffectSchema.safeParse(answer?.effect);
-  const consulted = answer !== null && parsed.success;
-  const decisionId = consulted && typeof answer?.decisionId === 'string' ? answer.decisionId.slice(0, 200) : null;
-  const advisor = { required: decision.advisor.required, consulted, effect: consulted ? parsed.data : null, decisionId };
+  const advisor = advisorRecord(decision, answer);
+  const consulted = advisor.consulted;
   const escalate = (detail: string): GateDecision => ({
     ...decision,
     decision: 'REQUIRE_APPROVAL',
@@ -376,7 +459,7 @@ export function combineAdvisor(decision: GateDecision, answer: AdvisorAnswer | n
     matchedRules: ['advisor', ...decision.matchedRules].slice(0, 50)
   });
   if (isAdvisorPending(decision)) {
-    if (consulted && parsed.data === 'no_change') {
+    if (consulted && advisor.effect === 'no_change') {
       return {
         ...decision,
         decision: 'ALLOW',
@@ -386,10 +469,22 @@ export function combineAdvisor(decision: GateDecision, answer: AdvisorAnswer | n
         matchedRules: ['advisor', ...decision.matchedRules].slice(0, 50)
       };
     }
-    return escalate(consulted ? 'the advisor asked for human approval' : 'the advisor did not answer; approval is required');
+    if (advisor.fallbackReason !== null && decision.advisor.fallback === 'deny') {
+      return {
+        ...decision,
+        decision: 'DENY',
+        reasonCode: 'ADVISOR_FALLBACK_DENY',
+        advisor,
+        reasons: [{ code: 'ADVISOR_FALLBACK_DENY' as const, source: 'advisor' as const, detail: `the advisor gave no usable answer (${advisor.fallbackReason}) and the policy denies on fallback` }, ...decision.reasons].slice(0, 50),
+        matchedRules: ['advisor', ...decision.matchedRules].slice(0, 50)
+      };
+    }
+    return escalate(consulted
+      ? 'the advisor asked for human approval'
+      : `the advisor gave no usable answer (${advisor.fallbackReason ?? 'unavailable'}); approval is required`);
   }
-  if (!consulted) return decision;
-  if (parsed.data === 'escalate' && decision.decision === 'ALLOW') return escalate('the advisor asked for human approval');
+  if (advisor.effect === null) return decision;
+  if (advisor.effect === 'escalate' && decision.decision === 'ALLOW') return escalate('the advisor asked for human approval');
   return { ...decision, advisor };
 }
 
@@ -407,6 +502,7 @@ export function decide(input: GateInput, answer: AdvisorAnswer | null = null): G
 export const PURE_GATE_EVALUATOR: GateEvaluatorPort = Object.freeze({
   contractVersion: AGENT_GOVERNANCE_PORTS_VERSION,
   evaluate: (input: GateInput) => evaluateGate(input),
+  evaluateSubject: (input: GateInput) => evaluateGateSubject(input),
   combineAdvisor,
   decide
 });

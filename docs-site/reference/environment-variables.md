@@ -101,7 +101,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `PACKAGES_MAX_OWNER_BYTES` | `4294967296` | Optional | Total retained release bytes per owner (64 MiB to 64 GiB). |
 | `PACKAGES_MAX_BINDINGS` | `32` | Optional | Package bindings (one package in one scope) per owner. |
 | `PACKAGES_BUILD_TIMEOUT_MS` | `600000` | Optional | Wall-clock limit for one plan or apply builder container. |
-| `DECISION_PLANE_PURPOSES` | `—` | Optional | Decision Plane (runner): advisory semantic decisions, sent only when the owner has a TypeSafe integration key. Comma-separated subset of mcp-routing,failure-classification; empty keeps it off. |
+| `DECISION_PLANE_PURPOSES` | `—` | Optional | Decision Plane (runner): advisory semantic decisions, sent only when the owner has a TypeSafe integration key. Comma-separated subset of mcp-routing,failure-classification,execution-risk; empty keeps it off. |
 | `TYPESAFE_EGRESS` | `on` | Optional | Instance-wide TypeSafe egress switch (runner): off stops skill suggestions and the Decision Plane even when an owner has stored a key. Per owner, deleting the key does the same. |
 | `GITHUB_APP_ID` | `—` | Optional | Optional GitHub App repository access; required fields depend on AUTH_MODE: |
 | `GITHUB_APP_INSTALLATION_ID` | `—` | Optional | Required in owner-bearer mode; omit in Access mode, where each principal binds an installation: |

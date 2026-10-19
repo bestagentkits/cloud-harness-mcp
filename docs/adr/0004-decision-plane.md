@@ -100,3 +100,27 @@ every call; that path is checked offline.
   test selection) reuse the same interface, fallback, and audit shape. Each one
   needs its own implementation and benchmark before it is accepted in
   configuration.
+
+## Amendment: execution risk (2026-10-19)
+
+`execution-risk` is the third accepted purpose (issues #333 and #417). It is the
+`DecisionAdvisor` of the agent policy gate
+([ADR 0006](0006-policy-governed-coding-agents.md)) and follows every rule
+above: it advises only, and a failure is a deterministic fallback, never a
+pass. It is consulted only when an agent action executes, which the coding
+broker wires in a later change. Two things differ from the first two purposes:
+
+- **A third opt-in.** Besides the purpose list and the owner's key, the global
+  agent policy must enable the advisor. The policy also holds the risk
+  threshold, the confidence floor and whether a failure falls back to approval
+  or to deny, so simulation and execution read the same setting.
+- **Its fallback can be stricter than the deterministic result.** Without the
+  advisor the gate sends an `advisor_or_approval` action to a human, so every
+  failure does the same, or denies the action if the owner chose that. The
+  provider sees only a typed summary of the action, with no path, argument or
+  name.
+
+The offline benchmark replays `test/fixtures/decision-plane/execution-risk.json`
+and checks that an undecided provider never clears an action. The live run
+reports agreement with the owner's expected outcome and the count of missed
+escalations; no live numbers are recorded yet.

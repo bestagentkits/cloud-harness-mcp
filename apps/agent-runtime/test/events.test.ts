@@ -27,6 +27,13 @@ describe('turn outcome projection', () => {
   });
 
   it.each([
+    // What the OpenAI SDK reports for a gateway refusal: status and envelope message only.
+    ['429 budget_exceeded: model budget exhausted', 'budget'],
+    // What the Anthropic SDK reports: status and the serialized envelope.
+    ['429 {"error":{"code":"model_budget_exhausted","type":"budget_exceeded","message":"budget_exceeded: model budget exhausted"}}', 'budget'],
+    ['429 Too Many Requests', 'rate_limit'],
+    ['429 Rate limit reached for requests', 'rate_limit'],
+    ['429 You exceeded your current quota, please check your plan and billing details', 'rate_limit'],
     ['401 Unauthorized', 'auth'],
     ['Invalid API key provided', 'auth'],
     ['500 Internal Server Error', 'server'],
@@ -38,6 +45,14 @@ describe('turn outcome projection', () => {
     ['something odd', 'other']
   ])('classifies %s as %s', (message, expected) => {
     expect(classifyModelError(message)).toBe(expected);
+  });
+
+  it('reports a gateway budget refusal as budget, not as provider throttling', () => {
+    const refused = projectAgentEvent(turnEnd({
+      role: 'assistant', stopReason: 'error', errorMessage: '429 budget_exceeded: model budget exhausted'
+    }), redactor, 4_096);
+    expect(refused).toEqual({ kind: 'lifecycle', phase: 'turn_ended', outcome: 'error', errorClass: 'budget' });
+    expect(SafeEventSchema.parse(refused)).toEqual(refused);
   });
 
   it('marks aborted turns and tolerates messages without a stop reason', () => {
