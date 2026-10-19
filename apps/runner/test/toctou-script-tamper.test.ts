@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { executeWorkerRequest, sha256 } from '../../../worker/harness-worker.mjs';
+import { symlinksSupported } from './platform-support.js';
 
 /**
  * The worker stages a skill into a snapshot, verifies the digest of that snapshot, and then executes
@@ -15,7 +16,6 @@ import { executeWorkerRequest, sha256 } from '../../../worker/harness-worker.mjs
  * verification pass?" observable without depending on a shell.
  */
 const temporaryDirectories: string[] = [];
-let symlinksSupported = true;
 
 afterEach(() => {
   delete process.env.CH_WORKSPACE_ROOT;
@@ -38,20 +38,6 @@ function setupSkill(files: Record<string, string>) {
   }
   return { root, skillDir };
 }
-
-function probeSymlinkSupport() {
-  const probeRoot = mkdtempSync(join(tmpdir(), 'cloud-harness-symlink-probe-'));
-  try {
-    symlinkSync(join(probeRoot, 'target'), join(probeRoot, 'link'));
-    return true;
-  } catch {
-    return false;
-  } finally {
-    try { rmSync(probeRoot, { recursive: true, force: true }); } catch { /* ignore cleanup error */ }
-  }
-}
-
-symlinksSupported = probeSymlinkSupport();
 
 describe('skills_run time-of-check to time-of-use', () => {
   it('refuses to run bytes that changed after the caller computed the digest', async () => {

@@ -13,7 +13,7 @@ afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
 });
 
-function setup(options: { retentionDays?: number; maxTracesPerPrincipal?: number } = {}) {
+function setup(options: { retentionDays?: number; maxTracesPerPrincipal?: number; log?: (entry: Record<string, unknown>) => void } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'agent-trace-store-'));
   const state = new StateStore(join(directory, 'state.db'));
   cleanups.push(() => {
@@ -22,7 +22,8 @@ function setup(options: { retentionDays?: number; maxTracesPerPrincipal?: number
   });
   const traces = new AgentTraceStore(state.database, {
     retentionDays: options.retentionDays ?? 14,
-    maxTracesPerPrincipal: options.maxTracesPerPrincipal ?? 5_000
+    maxTracesPerPrincipal: options.maxTracesPerPrincipal ?? 5_000,
+    log: options.log
   });
   return { state, traces };
 }
@@ -242,6 +243,34 @@ describe('agent trace retention and quota', () => {
     expect(state.database.prepare('SELECT COUNT(*) AS count FROM agent_trace_spans WHERE trace_id <> ?').get(fresh)).toEqual({ count: 0 });
   });
 
+  it('stops a purge between batches once aborted', async () => {
+    const { traces } = setup({ retentionDays: 1 });
+    const now = Date.now();
+    for (let index = 0; index < 5; index += 1) addTrace(traces, { startedAt: now - 3 * DAY + index, endedAt: now - 3 * DAY + index + 1 });
+    const already = new AbortController();
+    already.abort();
+    expect(await traces.purgeExpired(now, { signal: already.signal })).toBe(0);
+    const controller = new AbortController();
+    expect(await traces.purgeExpired(now, { batchSize: 2, signal: controller.signal, yieldBetween: async () => { controller.abort(); } })).toBe(2);
+    expect(await traces.purgeExpired(now)).toBe(3);
+  });
+
+  it('evicts an excess larger than one batch in bounded batches after the cap is lowered', () => {
+    const { state, traces } = setup({ maxTracesPerPrincipal: 5_000 });
+    const base = Date.now() - 600_000;
+    // One outer transaction keeps the seeding fast; the eviction below runs outside it.
+    state.database.exec('BEGIN');
+    for (let index = 0; index < 1_210; index += 1) addTrace(traces, { startedAt: base + index });
+    state.database.exec('COMMIT');
+    const lowered = new AgentTraceStore(state.database, { retentionDays: 14, maxTracesPerPrincipal: 10 });
+    const deletes = vi.spyOn(lowered as unknown as { deleteTraces: (ids: readonly string[]) => void }, 'deleteTraces');
+    const fresh = addTrace(lowered, { startedAt: base + 5_000 });
+    // 1,210 + 1 against a cap of 10: 1,201 victims, at most 500 per statement.
+    expect(deletes.mock.calls.map(([ids]) => ids.length)).toEqual([500, 500, 201]);
+    expect(state.database.prepare("SELECT COUNT(*) AS count FROM agent_traces WHERE principal_id = 'principal-a'").get()).toEqual({ count: 10 });
+    expect(lowered.findTrace(fresh)).toBeDefined();
+  });
+
   it('enforces the quota only when a trace row is actually inserted', () => {
     const { traces } = setup({ maxTracesPerPrincipal: 10 });
     const base = Date.now() - 60_000;
@@ -334,10 +363,19 @@ describe('agent trace list summary', () => {
 });
 
 describe('agent trace operations', () => {
+  it('reads a span kind this build does not know as an unknown run-level span', () => {
+    const { state, traces } = setup();
+    const traceId = addTrace(traces, { startedAt: Date.now() - 10_000, modelCalls: [{ durationMs: 10, ttftMs: 1 }] });
+    state.database.prepare("UPDATE agent_trace_spans SET kind = 'future_kind' WHERE trace_id = ?").run(traceId);
+    const [span] = traces.spans('principal-a', { traceId, limit: 10 }, Date.now()).spans;
+    expect(span).toMatchObject({ kind: 'agent_run', state: 'UNKNOWN' });
+  });
+
   it('fails closed with INTERNAL_ERROR when a result falls outside its public schema', () => {
-    const { traces } = setup();
+    const log = vi.fn();
+    const { traces } = setup({ log });
     const traceId = addTrace(traces, { startedAt: Date.now() - 10_000 });
-    vi.spyOn(traces, 'get').mockReturnValue({ trace: { traceId, unexpected: 'field' } } as unknown as ReturnType<AgentTraceStore['get']>);
+    vi.spyOn(traces, 'get').mockReturnValue({ trace: { traceId, unexpected: 'field', profileId: 42 } } as unknown as ReturnType<AgentTraceStore['get']>);
     let caught: unknown;
     try {
       executeAgentTraceOperation(traces, 'principal-a', 'agent_trace_get', { traceId }, { now: Date.now(), maxSpans: 10 });
@@ -347,6 +385,13 @@ describe('agent trace operations', () => {
     expect(caught).toBeInstanceOf(HarnessError);
     expect((caught as HarnessError).code).toBe('INTERNAL_ERROR');
     expect((caught as HarnessError).message).not.toContain('unexpected');
+    // The failure is logged with issue paths and codes only, never the offending values.
+    expect(log).toHaveBeenCalledTimes(1);
+    const entry = log.mock.calls[0]![0] as { operation: string; issues: Array<{ path: string; code: string }> };
+    expect(entry.operation).toBe('agent_trace_get');
+    expect(entry.issues.map((issue) => issue.path)).toContain('trace.profileId');
+    expect(JSON.stringify(entry)).not.toContain('field');
+    expect(JSON.stringify(entry)).not.toContain('42');
     // A valid result passes through unchanged.
     vi.restoreAllMocks();
     const ok = executeAgentTraceOperation(traces, 'principal-a', 'agent_trace_get', { traceId }, { now: Date.now(), maxSpans: 10 });

@@ -49,7 +49,10 @@ async function startGateway(root: string) {
     get socketPath() { return socketPath; },
     async start() {
       generation += 1;
-      socketPath = join(root, `gw-${generation}.sock`);
+      // Windows serves `net` listeners on named pipes, not file-system socket paths.
+      socketPath = process.platform === 'win32'
+        ? `\\\\.\\pipe\\model-config-status-${randomBytes(6).toString('hex')}-${generation}`
+        : join(root, `gw-${generation}.sock`);
       const config = await loadGatewayConfig({
         MODEL_GATEWAY_MODE: 'test',
         MODEL_GATEWAY_CONTROL_SOCKET: socketPath,

@@ -46,6 +46,7 @@ const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567';
 export type AgentTraceStoreOptions = {
   retentionDays: number;
   maxTracesPerPrincipal: number;
+  log?: ((entry: Record<string, unknown>) => void) | undefined;
 };
 
 export type NewTraceRow = {
@@ -269,9 +270,10 @@ export function spanOf(row: SpanDbRow): TraceSpan {
     spanSeq: row.span_seq,
     spanId: row.span_id,
     parentSpanId: row.parent_span_id,
-    kind: kind.success ? kind.data : 'hook',
+    // A kind this build does not know reads as an unknown run-level span, never as another known kind.
+    kind: kind.success ? kind.data : 'agent_run',
     name: row.name,
-    state: row.state,
+    state: kind.success ? row.state : 'UNKNOWN',
     startedAt: new Date(row.started_at).toISOString(),
     endedAt: isoOrNull(row.ended_at),
     durationMs: durationOf(row.started_at, row.ended_at),
@@ -416,13 +418,15 @@ export class AgentTraceStore {
    * the event loop between batches so a large backlog never blocks the runner. Returns the number of
    * traces removed.
    */
-  async purgeExpired(now: number, options: { batchSize?: number; yieldBetween?: () => Promise<void> } = {}): Promise<number> {
+  async purgeExpired(now: number, options: { batchSize?: number; yieldBetween?: () => Promise<void>; signal?: AbortSignal } = {}): Promise<number> {
     const batchSize = Math.max(1, Math.min(PURGE_BATCH_MAX, options.batchSize ?? PURGE_BATCH_DEFAULT));
     const yieldBetween = options.yieldBetween ?? (() => new Promise<void>((resolve) => { setImmediate(resolve); }));
     const select = this.database.prepare(`SELECT trace_id FROM agent_traces
       WHERE expires_at <= ? AND (state <> 'RUNNING' OR expires_at <= ?) ORDER BY expires_at LIMIT ?`);
     let removed = 0;
     for (;;) {
+      // An abort (runner shutdown) stops between batches, never inside one.
+      if (options.signal?.aborted) return removed;
       const expired = (select.all(now, now - RUNNING_ORPHAN_GRACE_MS, batchSize) as { trace_id: string }[]).map((row) => row.trace_id);
       if (expired.length === 0) return removed;
       this.deleteTraces(expired);
@@ -432,15 +436,34 @@ export class AgentTraceStore {
     }
   }
 
-  /** Keeps a principal below its trace quota by removing its oldest finished traces. */
+  /**
+   * Keeps a principal below its trace quota by removing its oldest finished traces. The excess can be
+   * large after an operator lowers the cap, so it is removed in bounded batches (one transaction and
+   * one bounded IN list each), never in one statement past SQLite's variable limit.
+   */
   enforceQuota(principalId: string, incoming = 0): number {
     const row = this.database.prepare('SELECT COUNT(*) AS total FROM agent_traces WHERE principal_id = ?').get(principalId) as { total: number };
-    const excess = row.total + incoming - this.options.maxTracesPerPrincipal;
-    if (excess <= 0) return 0;
-    const victims = this.database.prepare(`SELECT trace_id FROM agent_traces WHERE principal_id = ? AND state <> 'RUNNING'
-      ORDER BY started_at, trace_id LIMIT ?`).all(principalId, excess) as { trace_id: string }[];
-    if (victims.length > 0) this.deleteTraces(victims.map((victim) => victim.trace_id));
-    return victims.length;
+    let excess = row.total + incoming - this.options.maxTracesPerPrincipal;
+    const select = this.database.prepare(`SELECT trace_id FROM agent_traces WHERE principal_id = ? AND state <> 'RUNNING'
+      ORDER BY started_at, trace_id LIMIT ?`);
+    let removed = 0;
+    while (excess > 0) {
+      const victims = (select.all(principalId, Math.min(excess, PURGE_BATCH_MAX)) as { trace_id: string }[]).map((victim) => victim.trace_id);
+      if (victims.length === 0) break;
+      this.deleteTraces(victims);
+      removed += victims.length;
+      excess -= victims.length;
+    }
+    return removed;
+  }
+
+  /** Logs a result that failed its public schema: the failing paths and issue codes only, never values. */
+  reportContractViolation(operation: string, issues: readonly { path: readonly PropertyKey[]; code: string }[]): void {
+    const log = this.options.log ?? ((entry: Record<string, unknown>) => { process.stderr.write(`${JSON.stringify(entry)}\n`); });
+    log({
+      level: 'error', time: Date.now(), msg: 'agent trace result outside its contract', operation,
+      issues: issues.slice(0, 20).map((issue) => ({ path: issue.path.map((part) => (typeof part === 'symbol' ? '?' : String(part).slice(0, 64))).join('.'), code: issue.code }))
+    });
   }
 
   /** Deletes a bounded set of traces and their spans in one transaction. */
@@ -687,13 +710,13 @@ export function executeAgentTraceOperation(
   }
   switch (operation) {
     case 'agent_traces_list': {
-      const data = traceResult(operation, store.list(principalId, input as AgentTracesListInput, options.now));
+      const data = traceResult(store, operation, store.list(principalId, input as AgentTracesListInput, options.now));
       return { ok: true, message: `Listed ${data.traces.length} agent traces`, data, truncated: data.nextCursor !== null };
     }
     case 'agent_trace_get':
-      return { ok: true, message: 'Agent trace', data: traceResult(operation, store.get(principalId, input.traceId as string, options.now)), truncated: false };
+      return { ok: true, message: 'Agent trace', data: traceResult(store, operation, store.get(principalId, input.traceId as string, options.now)), truncated: false };
     case 'agent_trace_spans': {
-      const data = traceResult(operation, store.spans(principalId, {
+      const data = traceResult(store, operation, store.spans(principalId, {
         traceId: input.traceId as string,
         kind: input.kind as TraceSpanKind | undefined,
         cursor: input.cursor as string | undefined,
@@ -703,7 +726,7 @@ export function executeAgentTraceOperation(
     }
     case 'agent_trace_export': {
       const { trace, spans } = store.exportable(principalId, input.traceId as string, options.now, options.maxSpans);
-      const data = traceResult(operation, renderTraceExport(trace, spans, input.format as TraceExportFormat));
+      const data = traceResult(store, operation, renderTraceExport(trace, spans, input.format as TraceExportFormat));
       return { ok: true, message: `Exported agent trace as ${data.format}`, data, truncated: data.truncated };
     }
   }
@@ -714,11 +737,13 @@ export function executeAgentTraceOperation(
  * does not list fails the call instead of reaching the caller.
  */
 function traceResult<Operation extends AgentTraceOperation>(
+  store: AgentTraceStore,
   operation: Operation,
   data: unknown
 ): z.infer<(typeof AGENT_TRACE_RESULT_SCHEMAS)[Operation]> {
   const parsed = AGENT_TRACE_RESULT_SCHEMAS[operation].safeParse(data);
   if (!parsed.success) {
+    store.reportContractViolation(operation, parsed.error.issues);
     throw new HarnessError('INTERNAL_ERROR', `${operation} produced a result outside its contract`, 500, false);
   }
   return parsed.data as z.infer<(typeof AGENT_TRACE_RESULT_SCHEMAS)[Operation]>;
