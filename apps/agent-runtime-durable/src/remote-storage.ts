@@ -83,6 +83,7 @@ export class RemoteStorage implements Storage {
   #nextId = 0;
   #closed = false;
   #failure: Error | undefined;
+  #lastError: StorageRpcError | undefined;
 
   constructor(send: (record: StorageRequestRecord) => Promise<void>, options: RemoteStorageOptions = {}) {
     this.#send = send;
@@ -111,6 +112,11 @@ export class RemoteStorage implements Storage {
 
   get pendingCount(): number {
     return this.#pending.size;
+  }
+
+  /** The last runner refusal that was fatal to the session, so the worker can say why its session closed. */
+  get lastError(): StorageRpcError | undefined {
+    return this.#lastError;
   }
 
   async commit(writes: readonly StorageWrite[], _context: Context): Promise<Seq> {
@@ -221,7 +227,8 @@ export class RemoteStorage implements Storage {
         continue;
       }
       if (response.error.code === 'request') throw new StorageRequestError(response.error.message);
-      throw new StorageRpcError(response.error.code, response.error.message);
+      this.#lastError = new StorageRpcError(response.error.code, response.error.message);
+      throw this.#lastError;
     }
   }
 

@@ -2,33 +2,23 @@
  * Pi-free view of the agent stdio protocol used by the durable runtime. The wire schemas that
  * validate these records live in apps/agent-runtime/src/protocol-schemas.ts (worker side) and
  * apps/runner/src/agent-protocol.ts (runner side); the lists below must stay aligned with them.
+ * The proxy operations and their replay classes come from the shared contracts.
  */
 
-export const PROXY_OPERATIONS = [
-  'files_list',
-  'files_read',
-  'files_write',
-  'files_apply_patch',
-  'files_delete',
-  'files_move',
-  'files_mkdir',
-  'grep_search',
-  'symbols_search',
-  'symbols_references'
-] as const;
+import { AGENT_PROXY_REPLAY_CLASS, AgentProxyOperationSchema } from '@cloud-harness/contracts';
+
+/** The proxy operations, in the order the default runtime offers them. */
+export const PROXY_OPERATIONS = AgentProxyOperationSchema.options;
 export type ProxyOperation = typeof PROXY_OPERATIONS[number];
 
 /**
- * Read-only operations: re-running one after a crash cannot change the workspace, so the durable
- * runtime registers them as replay-safe. Every other operation is replay-unsafe.
+ * Operations the contracts classify as read-safe: re-running one after a crash cannot change the
+ * workspace, so the durable runtime registers them as replay-safe. Every other operation is
+ * replay-unsafe and is interrupted, never rerun, when the run resumes.
  */
-export const REPLAY_SAFE_OPERATIONS: ReadonlySet<ProxyOperation> = new Set<ProxyOperation>([
-  'files_list',
-  'files_read',
-  'grep_search',
-  'symbols_search',
-  'symbols_references'
-]);
+export const REPLAY_SAFE_OPERATIONS: ReadonlySet<ProxyOperation> = new Set<ProxyOperation>(
+  PROXY_OPERATIONS.filter((operation) => AGENT_PROXY_REPLAY_CLASS[operation] === 'read-safe')
+);
 
 /** The Storage methods carried over the storage RPC; anything else is refused by the runner. */
 export const STORAGE_METHODS = [
@@ -109,6 +99,11 @@ export interface DurableStartRecord {
     maxToolResultBytes: number;
   };
   runtime?: 'pi-coding' | 'pi-durable' | undefined;
+  /**
+   * For a continuation: `continue` resumes the lineage's unfinished tasks before the prompt,
+   * `abort` cancels them first because the predecessor was cancelled. Absent for a fresh agent.
+   */
+  durableResume?: 'continue' | 'abort' | undefined;
   session?: unknown;
 }
 

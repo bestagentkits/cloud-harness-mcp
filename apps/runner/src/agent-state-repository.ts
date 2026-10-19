@@ -9,6 +9,7 @@ import {
   type AgentMessageMode,
   type AgentProxyOperation,
   type AgentProxyReplayClass,
+  type AgentRuntimeKind,
   type AgentStatus,
   type AgentUsage,
   type RunnerAgentLimits
@@ -57,6 +58,8 @@ export type AgentRecord = {
   terminalReason: string | null;
   cleanupReason: string | null;
   outcomeUnknown: boolean;
+  /** The agent engine; a continuation always keeps its predecessor's. */
+  runtime: AgentRuntimeKind;
 };
 
 export type AgentTombstone = {
@@ -178,6 +181,8 @@ export type AgentSpawnReservation = {
   networkName: string;
   gatewayLeaseId: string;
   runtimeEpoch?: number;
+  /** Omitted records the default coding runtime. */
+  runtime?: AgentRuntimeKind;
   now: number;
   expiresAt: number;
   /**
@@ -209,6 +214,8 @@ export type AgentStatusTransition = {
   terminalReason?: string | null;
   cleanupReason?: string | null;
   outcomeUnknown?: boolean;
+  /** For a terminal status: whether the agent's durable session still held unfinished tasks. */
+  runResumable?: boolean;
 };
 
 
@@ -229,6 +236,8 @@ export type AgentSessionRecord = {
   state: AgentSessionState;
   continuable: boolean;
   retainUntil: number | null;
+  /** A durable agent ended with unfinished tasks that a continuation would resume. */
+  runResumable: boolean;
   createdAt: number;
   updatedAt: number;
 };
@@ -319,6 +328,7 @@ type AgentRow = {
   terminal_reason: string | null;
   cleanup_reason: string | null;
   outcome_unknown: number;
+  runtime: AgentRuntimeKind;
 };
 
 type MessageRow = {
@@ -404,7 +414,8 @@ function agentFromRow(row: AgentRow): AgentRecord {
     expiresAt: row.expires_at,
     terminalReason: row.terminal_reason,
     cleanupReason: row.cleanup_reason,
-    outcomeUnknown: row.outcome_unknown === 1
+    outcomeUnknown: row.outcome_unknown === 1,
+    runtime: row.runtime ?? 'pi-coding'
   };
 }
 
@@ -465,6 +476,7 @@ type SessionRow = {
   state: AgentSessionState;
   continuable: number;
   retain_until: number | null;
+  run_resumable: number;
   created_at: number;
   updated_at: number;
 };
@@ -483,6 +495,7 @@ function sessionFromRow(row: SessionRow): AgentSessionRecord {
     state: row.state,
     continuable: row.continuable === 1,
     retainUntil: row.retain_until,
+    runResumable: row.run_resumable === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -771,6 +784,9 @@ export class AgentStateRepository {
         ? undefined
         : this.requireContinuable(input.ownerId, input.workspaceId, input.workspaceGeneration, input.session.continuedFrom);
       if (predecessor) {
+        if (predecessor.predecessor.runtime !== (input.runtime ?? 'pi-coding')) {
+          throw new HarnessError('INVALID_INPUT', 'a continuation runs on the agent engine of the agent it continues; omit runtime or pass that engine');
+        }
         // A corrupted log is refused here rather than copied into the new agent's session.
         this.loadSessionLog(predecessor.predecessor.id, predecessor.predecessor.generation);
         input.session?.admitContinuation?.(predecessor.predecessor);
@@ -782,13 +798,14 @@ export class AgentStateRepository {
          idempotency_key, payload_hash, prompt_hash, profile_id, proxy_operations_json,
          max_ttl_seconds, max_output_bytes, max_input_tokens, max_output_tokens, max_cost_micros,
          container_name, network_name, gateway_lease_id, status, generation, runner_epoch, spawn_admission_open, message_admission_open,
-         created_at, started_at, terminal_at, expires_at, terminal_reason, cleanup_reason, outcome_unknown)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SPAWNING', 1, ?, 1, 1, ?, NULL, NULL, ?, NULL, NULL, 0)`)
+         created_at, started_at, terminal_at, expires_at, terminal_reason, cleanup_reason, outcome_unknown, runtime)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SPAWNING', 1, ?, 1, 1, ?, NULL, NULL, ?, NULL, NULL, 0, ?)`)
         .run(
           input.id, input.ownerId, input.workspaceId, input.workspaceGeneration, input.parentAgentId ?? null, parentGeneration,
           input.idempotencyKey, input.payloadHash, input.promptHash, input.profileId, JSON.stringify(proxyOperations),
           input.budget.ttlSeconds, input.budget.maxOutputBytes, input.budget.maxInputTokens, input.budget.maxOutputTokens,
-          input.budget.maxCostMicros, input.containerName, input.networkName, input.gatewayLeaseId, input.runtimeEpoch ?? 1, input.now, input.expiresAt
+          input.budget.maxCostMicros, input.containerName, input.networkName, input.gatewayLeaseId, input.runtimeEpoch ?? 1, input.now, input.expiresAt,
+          input.runtime ?? 'pi-coding'
         );
       this.database.prepare(`INSERT INTO agent_usage
         (owner_id, workspace_id, agent_id, agent_generation) VALUES (?, ?, ?, 1)`)
@@ -845,7 +862,7 @@ export class AgentStateRepository {
       // A terminal record and its MCP event commit together; the outbox keys the event by agent id.
       ? withEventSavepoint(this.database, () => {
         if (Number(update().changes) !== 1) return false;
-        this.sealSession(input.agentId, input.status, input.now);
+        this.sealSession(input.agentId, input.status, input.now, input.runResumable === true);
         emitAgentTerminalEvent(this.database, input.ownerId, input.workspaceId, input.agentId, input.now);
         return true;
       })
@@ -1572,8 +1589,12 @@ export class AgentStateRepository {
     this.database.prepare(`UPDATE agent_sessions SET continuable=0, updated_at=? WHERE agent_id=? AND state='ACTIVE'`).run(now, agentId);
   }
 
-  /** Purges the logs of sealed sessions past their retention; the session row stays as PURGED. */
-  purgeExpiredSessions(now: number, limit = 100): number {
+  /**
+   * Purges the logs of sealed sessions past their retention; the session row stays as PURGED. The
+   * root of every durable lineage left with no unpurged session is added to purgedDurableLineages,
+   * so its runner-side session store can be deleted too.
+   */
+  purgeExpiredSessions(now: number, limit = 100, purgedDurableLineages?: string[]): number {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       throw new HarnessError('INVALID_INPUT', 'session purge page size is out of bounds');
     }
@@ -1587,8 +1608,17 @@ export class AgentStateRepository {
         .all(now, limit) as Array<{ agent_id: string }>;
       for (const row of rows) {
         this.database.prepare('DELETE FROM agent_session_messages WHERE agent_id=?').run(row.agent_id);
-        this.database.prepare(`UPDATE agent_sessions SET state='PURGED', continuable=0, message_count=0, bytes=0, updated_at=?
+        this.database.prepare(`UPDATE agent_sessions SET state='PURGED', continuable=0, message_count=0, bytes=0, run_resumable=0, updated_at=?
           WHERE agent_id=?`).run(now, row.agent_id);
+      }
+      if (purgedDurableLineages && rows.length > 0) {
+        const placeholders = rows.map(() => '?').join(',');
+        const roots = this.database.prepare(`SELECT DISTINCT purged.root_agent_id AS root FROM agent_sessions purged
+          JOIN agents ON agents.id=purged.agent_id AND agents.runtime='pi-durable'
+          WHERE purged.agent_id IN (${placeholders})
+            AND NOT EXISTS (SELECT 1 FROM agent_sessions live WHERE live.root_agent_id=purged.root_agent_id AND live.state<>'PURGED')`)
+          .all(...rows.map((row) => row.agent_id)) as Array<{ root: string }>;
+        purgedDurableLineages.push(...roots.map((root) => root.root));
       }
       return rows.length;
     });
@@ -1636,11 +1666,38 @@ export class AgentStateRepository {
       .run(input.id, continuation.predecessor.id, continuation.predecessor.generation);
   }
 
-  private sealSession(agentId: string, status: AgentStatus, now: number): void {
+  private sealSession(agentId: string, status: AgentStatus, now: number, runResumable: boolean): void {
     this.database.prepare(`UPDATE agent_sessions SET state='SEALED',
-      continuable=CASE WHEN ?=1 THEN continuable ELSE 0 END, retain_until=?, updated_at=?
+      continuable=CASE WHEN ?=1 THEN continuable ELSE 0 END, retain_until=?, run_resumable=?, updated_at=?
       WHERE agent_id=? AND state='ACTIVE'`)
-      .run(CONTINUABLE_TERMINAL_STATUSES.includes(status) ? 1 : 0, now + this.limits.sessionRetentionMs, now, agentId);
+      .run(CONTINUABLE_TERMINAL_STATUSES.includes(status) ? 1 : 0, now + this.limits.sessionRetentionMs, runResumable ? 1 : 0, now, agentId);
+  }
+
+  /**
+   * The position of an agent in its chain of continuations: 0 for a lineage root, 1 for the agent
+   * that continued it, and so on. A durable session claim is ordered by it, so a continuation
+   * always supersedes its predecessor's claim on the lineage's session store.
+   */
+  lineageDepth(agentId: string): number {
+    let depth = 0;
+    let current: string | null = agentId;
+    const seen = new Set<string>();
+    while (current !== null && !seen.has(current)) {
+      seen.add(current);
+      const row = this.database.prepare('SELECT continued_from FROM agent_sessions WHERE agent_id=?').get(current) as { continued_from: string | null } | undefined;
+      current = row?.continued_from ?? null;
+      if (current !== null) depth += 1;
+    }
+    return depth;
+  }
+
+  /** The lineage roots of a workspace's durable-runtime agents, whose session stores live in the runner. */
+  durableLineageRoots(ownerId: string, workspaceId: string): string[] {
+    const rows = this.database.prepare(`SELECT DISTINCT agent_sessions.root_agent_id AS root FROM agent_sessions
+      JOIN agents ON agents.id=agent_sessions.agent_id
+      WHERE agent_sessions.owner_id=? AND agent_sessions.workspace_id=? AND agents.runtime='pi-durable'`)
+      .all(ownerId, workspaceId) as Array<{ root: string }>;
+    return rows.map((row) => row.root);
   }
 
   private usageRow(ownerId: string, workspaceId: string, agentId: string, generation: number): UsageRow {

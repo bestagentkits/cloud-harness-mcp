@@ -10,6 +10,7 @@ import {
   type AgentModelProfile,
   type AgentModelProfileMetadata,
   type AgentProxyOperation,
+  type AgentRuntimeKind,
   type AgentStatus,
   type GuidanceProfile,
   type RepositoryGuidanceSnapshot,
@@ -63,8 +64,11 @@ import {
   type AgentInputRecord,
   type AgentOutputRecord,
   type AgentStartRecord,
+  type AgentStorageRequestRecord,
   type AgentToolOutcome
 } from './agent-protocol.js';
+import { piCodingAdapter, piDurableAdapter, type AgentRuntimeAdapter, type AgentRuntimeSession } from './agent-runtime-adapter.js';
+import { DurableSessionStore } from './durable-session-store.js';
 import { DockerAgentLauncher, type AgentLaunchSpec, type AgentLauncher, type AgentRuntimeProcess } from './agent-launcher.js';
 import type { StateStore, WorkspaceRecord } from './state-store.js';
 
@@ -111,6 +115,8 @@ type RuntimeContext = {
   channel: AgentProtocolChannel;
   /** The gateway lease handed to the runtime, held in memory only so receipts can redact it. */
   lease: string;
+  /** The engine side of the run: start-record shaping and, for the durable engine, its session store claim. */
+  session: AgentRuntimeSession;
   proxy: Map<string, { controller: AbortController; completion: Promise<void> }>;
   lastUsage: { input: number; output: number; costMicros: number; wallAt: number };
   terminalSeen: boolean;
@@ -153,6 +159,8 @@ export type AgentManagerDependencies = {
   repositoryGuidance?: AgentRepositoryGuidance | undefined;
   modelProfiles?: ModelProfileStateRepository | undefined;
   spendLedger?: ModelSpendLedger | undefined;
+  /** Runner-side session stores of durable-runtime agents; absent means no store, so durable runs cannot start. */
+  durableSessions?: DurableSessionStore | undefined;
   now?: (() => number) | undefined;
 };
 
@@ -162,6 +170,8 @@ export class AgentManager {
   private readonly launcher: AgentLauncher;
   private readonly modelProfiles?: ModelProfileStateRepository | undefined;
   private readonly spendLedger: ModelSpendLedger;
+  private readonly durableSessions: DurableSessionStore;
+  private readonly adapters: Readonly<Record<AgentRuntimeKind, AgentRuntimeAdapter>>;
   private lastSpendSweepAt = 0;
   private spendSweep?: Promise<void> | undefined;
   private readonly runtimes = new Map<string, RuntimeContext>();
@@ -185,6 +195,8 @@ export class AgentManager {
     this.now = dependencies.now ?? Date.now;
     // The ledger shares the state database so that admission commits atomically with the spawn.
     this.spendLedger = dependencies.spendLedger ?? new ModelSpendLedger(store.database);
+    this.durableSessions = dependencies.durableSessions ?? new DurableSessionStore({ stateDir: undefined, enabled: false });
+    this.adapters = { 'pi-coding': piCodingAdapter, 'pi-durable': piDurableAdapter(this.durableSessions) };
     this.epoch = this.repository.currentEpoch(store.instanceId());
     if (this.epoch === 0) {
       this.epoch = this.repository.bumpEpoch(store.instanceId(), this.now());
@@ -261,6 +273,7 @@ export class AgentManager {
     await Promise.allSettled(this.store.active().map((workspace) => this.stopWorkspaceForShutdown(workspace)));
     // A sweep never rejects; waiting keeps it from touching the store after shutdown.
     await this.spendSweep;
+    await this.durableSessions.close();
   }
 
   private async stopWorkspaceForShutdown(workspace: WorkspaceRecord): Promise<void> {
@@ -307,6 +320,9 @@ export class AgentManager {
   /** Stops every agent of a closing or expiring workspace, then deletes its persisted sessions. */
   async stopWorkspace(ownerId: string, workspaceId: string, reason: string, generation?: number): Promise<void> {
     await this.cancelWorkspaceAgents(ownerId, workspaceId, reason, generation);
+    // The session stores go first: the rows that name their lineages are deleted next, so a failed
+    // file removal leaves them in place for the retried close.
+    await this.durableSessions.deleteLineages(this.repository.durableLineageRoots(ownerId, workspaceId));
     this.repository.deleteWorkspaceSessions(ownerId, workspaceId);
   }
 
@@ -341,7 +357,14 @@ export class AgentManager {
       throw new HarnessError('CONFLICT', 'agents require a network-disabled workspace; open a separate workspace with networkProfile "network-none"', 409, false);
     }
     const continueFrom = input.continueFrom as string | undefined;
-    if (continueFrom !== undefined && !this.config.sessionPersistenceEnabled) {
+    if (continueFrom !== undefined && !this.config.sessionPersistenceEnabled && !this.config.durableRuntimeEnabled) {
+      throw new HarnessError('NOT_SUPPORTED', 'continueFrom needs agent session persistence, which is off on this instance', 400, false);
+    }
+    const runtime = this.spawnRuntime(ownerId, workspace.id, continueFrom, input.runtime as AgentRuntimeKind | undefined);
+    if (runtime === 'pi-durable' && !this.config.durableRuntimeEnabled) {
+      throw new HarnessError('NOT_SUPPORTED', 'the pi-durable agent runtime is off on this instance', 400, false);
+    }
+    if (continueFrom !== undefined && runtime === 'pi-coding' && !this.config.sessionPersistenceEnabled) {
       throw new HarnessError('NOT_SUPPORTED', 'continueFrom needs agent session persistence, which is off on this instance', 400, false);
     }
     const profile = continueFrom === undefined
@@ -392,9 +415,11 @@ export class AgentManager {
       networkName: `ch-agent-net-${suffix}`,
       gatewayLeaseId,
       runtimeEpoch: this.epoch,
+      runtime,
       now,
       expiresAt: Math.min(workspace.expiresAt, now + budget.ttlSeconds * 1_000),
-      ...(this.config.sessionPersistenceEnabled ? {
+      // A durable agent always records its lineage, which names its runner-side session store.
+      ...(this.config.sessionPersistenceEnabled || runtime === 'pi-durable' ? {
         session: continueFrom === undefined ? {} : {
           continuedFrom: continueFrom,
           admitContinuation: (predecessor: AgentRecord) => {
@@ -492,6 +517,7 @@ export class AgentManager {
   ): Promise<void> {
     const spec = this.launchSpec(record);
     let leaseMayExist = false;
+    let runSession: AgentRuntimeSession | undefined;
     try {
       if (this.epoch !== this.repository.currentEpoch(this.store.instanceId())) {
         throw new HarnessError('CONFLICT', 'agent launch lost its runtime epoch fence', 409, true);
@@ -511,9 +537,24 @@ export class AgentManager {
       if (!this.stillSpawning(record)) return;
       // A persisting agent always receives its log, empty for a fresh one, and it is verified
       // before any lease exists so a corrupted log costs nothing.
-      const sessionLog = this.repository.findSession(record.id)
+      const sessionLog = record.runtime === 'pi-coding' && this.repository.findSession(record.id)
         ? this.repository.loadSessionLog(record.id, record.generation)
         : undefined;
+      // The engine session is opened before any lease exists: for the durable engine this claims
+      // the lineage's session store, so a run that cannot own it costs nothing.
+      runSession = await this.adapters[record.runtime].open({
+        agentId: record.id,
+        lineageRootId: this.repository.lineageRoot(record.id),
+        epoch: this.epoch,
+        depth: this.repository.lineageDepth(record.id),
+        resume: this.durableResume(record),
+        sessionLog
+      });
+      const session = runSession;
+      if (!this.stillSpawning(record)) {
+        await session.seal();
+        return;
+      }
       // From here the lease may exist in the gateway, so an unsettled row is charged its whole cap.
       leaseMayExist = true;
       this.spendLedger.markIssuing(record.gatewayLeaseId);
@@ -546,10 +587,16 @@ export class AgentManager {
           await this.onRecord(contextRef.current, output);
         },
         async (content) => { this.appendLogOrLimit(record, 'stderr', content); },
-        (error) => { void this.interrupt(record, error.message); }
+        (error) => { void this.interrupt(record, error.message); },
+        record.runtime === 'pi-durable'
+          ? async (request) => {
+            if (!contextRef.current) throw new Error('agent runtime emitted output before initialization');
+            await this.onStorage(contextRef.current, request);
+          }
+          : undefined
       );
       const context: RuntimeContext = {
-        record, process: runtime, channel, lease, proxy: new Map(),
+        record, process: runtime, channel, lease, session, proxy: new Map(),
         lastUsage: { input: 0, output: 0, costMicros: 0, wallAt: this.now() }, terminalSeen: false,
         messageChain: Promise.resolve(),
         pendingMessages: 0,
@@ -572,12 +619,13 @@ export class AgentManager {
       const deadlineMs = Math.max(1_000, running.expiresAt - this.now());
       context.deadline = setTimeout(() => { void this.cancelOne(running, 'agent TTL expired', 'TIMED_OUT'); }, deadlineMs);
       context.deadline.unref();
-      // A continuation learns what became of the tool calls its predecessor left unanswered before
-      // its first turn, so it never issues an applied mutation again under a new tool call ID.
+      // A coding continuation learns what became of the tool calls its predecessor left unanswered
+      // before its first turn, so it never issues an applied mutation again under a new tool call
+      // ID. The durable engine settles its own interrupted calls when it resumes, so it gets none.
       // A cancel that lands meanwhile closes the channel, so the send below fails into failLaunch,
       // which leaves the cancel's cleanup in charge.
       const toolOutcomes = sessionLog ? await this.danglingToolOutcomes(context, sessionLog.messages) : [];
-      await channel.send(this.startRecord(running, initialPrompt, profile, lease, sessionLog && { ...sessionLog, toolOutcomes }));
+      await channel.send(this.startRecord(running, initialPrompt, profile, lease, session, toolOutcomes));
       void runtime.exited.then(({ code }) => {
         if (!context.terminalSeen) void this.interrupt(running, `agent runtime exited before terminal record (${code ?? 'signal'})`);
       }).catch((error: unknown) => { void this.interrupt(running, error instanceof Error ? error.message : 'agent runtime failed'); });
@@ -592,8 +640,46 @@ export class AgentManager {
           // The open row is settled later; ending the agent below matters more.
         }
       }
+      // Without a runtime context no cleanup will release the engine session, so it is released here.
+      if (runSession && !this.runtimes.has(record.id)) await runSession.seal().catch(() => undefined);
       await this.failLaunch(record, error instanceof Error ? error.message : 'agent launch failed');
     }
+  }
+
+  /**
+   * The engine of a new agent. A continuation runs on its predecessor's engine: an omitted runtime
+   * inherits it, and a different one is refused.
+   */
+  private spawnRuntime(ownerId: string, workspaceId: string, continueFrom: string | undefined, requested: AgentRuntimeKind | undefined): AgentRuntimeKind {
+    if (continueFrom === undefined) return requested ?? 'pi-coding';
+    const predecessor = this.repository.findAgent(ownerId, workspaceId, continueFrom);
+    if (!predecessor) throw new HarnessError('NOT_FOUND', 'the agent to continue was not found in this workspace', 404, false);
+    if (requested !== undefined && requested !== predecessor.runtime) {
+      throw new HarnessError('INVALID_INPUT', 'a continuation runs on the agent engine of the agent it continues; omit runtime or pass that engine');
+    }
+    return predecessor.runtime;
+  }
+
+  /**
+   * How a durable continuation treats its predecessor's unfinished work. A cancelled predecessor's
+   * tasks are cancelled, never continued; only the new prompt runs.
+   */
+  private durableResume(record: AgentRecord): 'continue' | 'abort' | undefined {
+    if (record.runtime !== 'pi-durable') return undefined;
+    const predecessorId = this.repository.findSession(record.id)?.continuedFrom;
+    if (!predecessorId) return undefined;
+    return this.repository.findAgent(record.ownerId, record.workspaceId, predecessorId)?.status === 'CANCELLED' ? 'abort' : 'continue';
+  }
+
+  /**
+   * Runs one durable-runtime storage request against the run's claim. A store over its size cap
+   * ends the run as LIMIT_EXCEEDED; the cancel is not awaited, because finishing the run may need
+   * further storage requests on this same chain.
+   */
+  private async onStorage(context: RuntimeContext, request: AgentStorageRequestRecord): Promise<void> {
+    const { response, limitExceeded } = await context.session.handleStorage(request);
+    if (!context.channel.isClosed) await context.channel.send(response);
+    if (limitExceeded) void this.cancelOne(context.record, 'durable agent session exceeded its size limit', 'LIMIT_EXCEEDED').catch(() => undefined);
   }
 
   private stillSpawning(record: AgentRecord): boolean {
@@ -1167,13 +1253,16 @@ export class AgentManager {
       if (drainErrors.length !== 0) {
         throw new Error(drainErrors.map((error) => safeError(error)).join('; '));
       }
+      // The engine session ends only once the runtime is gone, so nothing writes to it afterwards.
+      const runResumable = await this.sealRun(record, runtime, terminal);
       this.runtimes.delete(record.id);
       this.repository.clearCleanupRetry(record.ownerId, record.workspaceId, record.id, record.generation);
       const transitioned = this.repository.transitionStatus({
         ownerId: record.ownerId, workspaceId: record.workspaceId, agentId: record.id, generation: record.generation,
         expectedStatuses: record.status === 'CANCELLING' ? ['CANCELLING'] : [record.status],
         status: terminal, now: this.now(), terminalReason: reason.slice(0, 2_000),
-        ...(terminal === 'INTERRUPTED' ? { outcomeUnknown: true } : {})
+        ...(terminal === 'INTERRUPTED' ? { outcomeUnknown: true } : {}),
+        ...(runResumable ? { runResumable } : {})
       });
       if (!transitioned && !terminalStatuses.has(this.requireAgent(record.ownerId, record.workspaceId, record.id).status)) {
         throw new HarnessError('CONFLICT', 'agent terminal transition lost its lifecycle fence', 409, true);
@@ -1189,6 +1278,23 @@ export class AgentManager {
         lastError: safeError(error).slice(0, 2_000), updatedAt: this.now()
       });
       throw error;
+    }
+  }
+
+  /**
+   * Releases a durable run's session store and reports whether it still holds unfinished work. A
+   * cancelled run is never resumable: a continuation cancels its leftover tasks instead. A failure
+   * to read the store only reports nothing to resume; it never keeps the agent from ending.
+   */
+  private async sealRun(record: AgentRecord, runtime: RuntimeContext | undefined, terminal: TerminalAgentStatus): Promise<boolean> {
+    if (record.runtime !== 'pi-durable') return false;
+    try {
+      const sealed = runtime
+        ? await runtime.session.seal()
+        : await this.adapters[record.runtime].inspect(this.repository.lineageRoot(record.id));
+      return sealed.resumable && terminal !== 'CANCELLED';
+    } catch {
+      return false;
     }
   }
 
@@ -1263,12 +1369,15 @@ export class AgentManager {
       }
     }
     this.repository.maintainClosedWorkspaces(now);
+    const purgedLineages: string[] = [];
     try {
-      this.repository.purgeExpiredSessions(now);
+      this.repository.purgeExpiredSessions(now, 100, purgedLineages);
       this.repository.purgeExpiredReceipts(now);
     } catch {
       // A busy store only delays retention to the next tick; it must not skip the spend sweep.
     }
+    // A store left behind by a failed removal is deleted with its workspace.
+    if (purgedLineages.length > 0) await this.durableSessions.deleteLineages(purgedLineages).catch(() => undefined);
     if (now - this.lastSpendSweepAt >= SPEND_SWEEP_INTERVAL_MS) void this.sweepSpend(SPEND_SWEEP_MIN_AGE_MS);
   }
 
@@ -1458,7 +1567,9 @@ export class AgentManager {
       usage: this.repository.usage(record.ownerId, record.workspaceId, record.id, record.generation),
       terminalReason: record.terminalReason,
       outcomeUnknown: record.outcomeUnknown,
-      ...this.sessionStatus(record)
+      ...this.sessionStatus(record),
+      // Only a non-default engine is named, so the status of a coding-runtime agent is unchanged.
+      ...(record.runtime === 'pi-coding' ? {} : { runtime: record.runtime })
     };
   }
 
@@ -1473,8 +1584,9 @@ export class AgentManager {
         messages: session.messageCount,
         bytes: session.bytes
       },
-      // A Pi run is never resumed in place; a sealed session is continued by a new agent.
-      run: { resumable: false },
+      // A run is never resumed in place; a sealed session is continued by a new agent. Only a
+      // durable agent can leave unfinished work that the continuation resumes.
+      run: { resumable: record.runtime === 'pi-durable' && session.runResumable },
       continuedFrom: session.continuedFrom
     };
   }
@@ -1504,10 +1616,11 @@ export class AgentManager {
     prompt: string,
     profile: PricedAgentModelProfile,
     lease: string,
-    session?: { messages: unknown[]; headSha256: string; toolOutcomes: AgentToolOutcome[] }
-  ): AgentInputRecord {
+    session: AgentRuntimeSession,
+    toolOutcomes: readonly AgentToolOutcome[]
+  ): AgentStartRecord {
     const contextWindow = Math.min(2_000_000, profile.maxInputTokens + profile.maxOutputTokens);
-    const start: AgentStartRecord = {
+    const base: AgentStartRecord = {
       type: 'start', requestId: randomUUID(), agentId: record.id, prompt, tools: record.proxyOperations,
       gateway: { profile: profile.id, lease },
       model: {
@@ -1526,22 +1639,21 @@ export class AgentManager {
         maxOutputBytes: record.budget.maxOutputBytes,
         maxEventBytes: this.config.limits.maxLogEventBytes,
         maxToolResultBytes: MAX_TOOL_RESULT_RECORD_BYTES
-      },
-      // Appended last and only for a persisting agent, so every other start record is unchanged.
-      ...(session ? { session: { messages: session.messages, headSha256: session.headSha256 } } : {})
+      }
     };
-    if (!session || session.toolOutcomes.length === 0 || !start.session) return start;
+    const start = session.startRecord(base);
+    if (toolOutcomes.length === 0 || !start.session) return start;
     // Outcomes are added only while the record stays within the protocol bound; one that does not
     // fit is left out, and the runtime closes that call with the generic interruption.
     let remaining = MAX_PROTOCOL_RECORD_BYTES - Buffer.byteLength(JSON.stringify(start), 'utf8') - 1_024;
-    const toolOutcomes: AgentToolOutcome[] = [];
-    for (const outcome of session.toolOutcomes) {
+    const fitting: AgentToolOutcome[] = [];
+    for (const outcome of toolOutcomes) {
       const bytes = Buffer.byteLength(JSON.stringify(outcome), 'utf8') + 1;
       if (bytes > remaining) continue;
       remaining -= bytes;
-      toolOutcomes.push(outcome);
+      fitting.push(outcome);
     }
-    if (toolOutcomes.length > 0) start.session.toolOutcomes = toolOutcomes;
+    if (fitting.length > 0) start.session = { ...start.session, toolOutcomes: fitting };
     return start;
   }
 }

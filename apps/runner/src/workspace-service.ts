@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { chmod, chown, cp, mkdir, readFile, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
-import { join, relative, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
   DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
@@ -76,6 +76,7 @@ import {
   resolveGitHubFallbackToken
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
+import { DurableSessionStore } from './durable-session-store.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -336,6 +337,14 @@ export class WorkspaceService {
     this.agentManager = manager ?? (config.agents
       ? new AgentManager(config.agents, store, {
           ...managerDependencies,
+          // Durable-runtime session stores sit beside the state database. The store loads the
+          // experimental storage code only while the durable runtime is enabled; with it off it
+          // still deletes stores left by an earlier run when their workspace closes.
+          durableSessions: managerDependencies.durableSessions ?? new DurableSessionStore({
+            stateDir: join(dirname(config.stateDb), 'agent-sessions'),
+            enabled: config.agents.durableRuntimeEnabled,
+            maxLineageBytes: config.agents.limits.maxDurableLineageBytes
+          }),
           toolExecutor: async (request) => await this.executeAgentProxy(request),
           repositoryGuidance: async (request) => {
             const record = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);

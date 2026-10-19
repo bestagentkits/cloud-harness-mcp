@@ -25,7 +25,7 @@ import {
   type Usage
 } from './protocol.js';
 import { DurableToolBroker, ToolResultLimitError } from './proxy-tools.js';
-import { RemoteStorage, type RemoteStorageOptions } from './remote-storage.js';
+import { RemoteStorage, StorageRpcError, type RemoteStorageOptions } from './remote-storage.js';
 
 export const CONTROLLED_SYSTEM_PROMPT = [
   'You are a bounded coding agent.',
@@ -166,7 +166,13 @@ class DurableAgentWorker implements DurableWorker {
       const harness = await this.#open(context);
       this.#harness = harness;
       void harness.closed.then((end) => {
-        if (end.reason === 'failed') void this.#stop('INTERRUPTED', 'agent session storage failed');
+        if (end.reason !== 'failed') return;
+        // The runner refuses commits once the session store is over its size cap.
+        if (this.#storage.lastError instanceof StorageRpcError && this.#storage.lastError.code === 'limit') {
+          void this.#stop('LIMIT_EXCEEDED', 'agent session storage exceeded its size limit');
+          return;
+        }
+        void this.#stop('INTERRUPTED', 'agent session storage failed');
       });
       if (this.#stopping) return;
       const root = await harness.root(context, {
@@ -178,7 +184,15 @@ class DurableAgentWorker implements DurableWorker {
       this.#events = events;
       events.start(async (batch) => this.#onEvents(batch));
       if (this.#stopping) return;
-      const submission = await root.submit({ type: 'input', content: this.#start.prompt, requestId: this.#start.requestId, whenBusy: 'reject' }, context);
+      // A continuation opens its predecessor's session. A cancelled predecessor's unfinished tasks
+      // are cancelled, never continued; any other predecessor's resume, and the new prompt follows.
+      const resume = this.#start.durableResume;
+      if (resume === 'abort') await root.abort(context);
+      else if (resume === 'continue') harness.resume();
+      if (this.#stopping) return;
+      const submission = await root.submit({
+        type: 'input', content: this.#start.prompt, requestId: this.#start.requestId, whenBusy: resume === undefined ? 'reject' : 'followUp'
+      }, context);
       this.#promptAdmitted = true;
       this.#flushPendingMessages();
       let settled = await submission.wait(context);

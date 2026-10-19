@@ -1,4 +1,4 @@
-import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HarnessError } from '@cloud-harness/contracts';
 import {
@@ -48,13 +48,16 @@ export interface DurableStorageBackendLoader {
 }
 
 export interface DurableSessionStoreOptions {
-  readonly stateDir: string;
+  /** Where lineage databases live; without it the store refuses claims and deletes nothing. */
+  readonly stateDir: string | undefined;
   /** Durable sessions are opt-in; a disabled store refuses claims and never loads the backend. */
   readonly enabled: boolean;
   readonly maxRequestBytes?: number;
   readonly maxResponseBytes?: number;
   /** Token bucket per lineage: `burst` requests at once, refilled at `perSecond`. */
   readonly rate?: { readonly burst: number; readonly perSecond: number };
+  /** On-disk size cap of one lineage's database, checked around every commit. */
+  readonly maxLineageBytes?: number;
   readonly loader?: DurableStorageBackendLoader;
   readonly now?: () => number;
 }
@@ -76,6 +79,8 @@ interface OwnerMark {
 interface ClaimState extends DurableSessionClaim {
   readonly storage: StorageBackend;
   readonly responses: Map<string, Promise<AgentStorageResponseRecord>>;
+  /** Set once a commit left the database above its size cap; every later commit is refused. */
+  limitExceeded: boolean;
 }
 
 interface LineageState {
@@ -91,6 +96,9 @@ const MAX_REMEMBERED_RESPONSES = 256;
 // Room for the response envelope around the result.
 const RESPONSE_ENVELOPE_BYTES = 1_024;
 const DEFAULT_RATE = { burst: 1_000, perSecond: 200 } as const;
+const DEFAULT_MAX_LINEAGE_BYTES = 256 * 1024 * 1024;
+/** Task states from which a resumed harness continues work. */
+const LIVE_TASK_STATUSES = ['pending', 'running', 'waiting'] as const;
 const ALLOWED_METHODS: ReadonlySet<string> = new Set(AGENT_STORAGE_METHODS);
 
 function assertLineageId(lineageRootId: string): void {
@@ -203,6 +211,16 @@ export async function deleteDurableLineages(stateDir: string, lineageRootIds: It
   for (const lineageRootId of new Set(lineageRootIds)) await deleteDurableSessionFiles(stateDir, lineageRootId);
 }
 
+/** Whether a store holds a task a resumed harness would continue: live and not marked for abort. */
+async function hasLiveTasks(storage: StorageBackend): Promise<boolean> {
+  const scan = storage.scanTasks as (query: unknown, limit: number, cursor: unknown, context: RunnerContext) => Promise<{ items: readonly unknown[] }>;
+  for (const status of LIVE_TASK_STATUSES) {
+    const page = await scan.call(storage, { status, abortRequested: false }, 1, undefined, RUNNER_CONTEXT);
+    if (page.items.length > 0) return true;
+  }
+  return false;
+}
+
 const nodeSqliteLoader: DurableStorageBackendLoader = (() => {
   let requestError: (new (...args: never[]) => Error) | undefined;
   return {
@@ -221,8 +239,9 @@ const nodeSqliteLoader: DurableStorageBackendLoader = (() => {
 })();
 
 export class DurableSessionStore {
-  readonly #stateDir: string;
+  readonly #stateDir: string | undefined;
   readonly #enabled: boolean;
+  readonly #maxLineageBytes: number;
   readonly #maxRequestBytes: number;
   readonly #maxResponseBytes: number;
   readonly #rate: { readonly burst: number; readonly perSecond: number };
@@ -235,6 +254,8 @@ export class DurableSessionStore {
   constructor(options: DurableSessionStoreOptions) {
     this.#stateDir = options.stateDir;
     this.#enabled = options.enabled;
+    this.#maxLineageBytes = options.maxLineageBytes ?? DEFAULT_MAX_LINEAGE_BYTES;
+    if (!Number.isSafeInteger(this.#maxLineageBytes) || this.#maxLineageBytes < 1) throw new Error('durable session size cap must be a positive integer');
     this.#maxRequestBytes = options.maxRequestBytes ?? MAX_PROTOCOL_RECORD_BYTES;
     this.#maxResponseBytes = options.maxResponseBytes ?? MAX_PROTOCOL_RECORD_BYTES;
     this.#rate = options.rate ?? DEFAULT_RATE;
@@ -254,14 +275,15 @@ export class DurableSessionStore {
    * is refused as stale. The mark is persisted, so a stale run stays fenced across restarts.
    */
   async claim(lineageRootId: string, agentId: string, epoch: number, generation: number): Promise<DurableSessionClaim> {
-    if (!this.#enabled) throw new HarnessError('UNAVAILABLE', 'durable agent sessions are disabled', 503, false);
+    const stateDir = this.#stateDir;
+    if (!this.#enabled || stateDir === undefined) throw new HarnessError('UNAVAILABLE', 'durable agent sessions are disabled', 503, false);
     assertLineageId(lineageRootId);
     if (!LINEAGE_ID.test(agentId)) throw new HarnessError('INVALID_INPUT', 'durable session owner id is invalid', 400, false);
     assertMark(epoch, 'epoch');
     assertMark(generation, 'generation');
     return await this.#withLock(lineageRootId, async () => {
-      await this.#ensureDirectory();
-      const paths = sessionPaths(this.#stateDir, lineageRootId);
+      await this.#ensureDirectory(stateDir);
+      const paths = sessionPaths(stateDir, lineageRootId);
       const requested: OwnerMark = { agentId, epoch, generation };
       const stored = await readOwnerMark(paths.owner);
       const lineage = this.#lineage(lineageRootId);
@@ -276,7 +298,9 @@ export class DurableSessionStore {
       if (!stored || compareMarks(requested, stored) !== 0 || stored.agentId !== agentId) {
         await writePrivateFile(paths.owner, JSON.stringify(requested));
       }
-      const claim: ClaimState = { lineageRootId, agentId, epoch, generation, storage: lineage.storage, responses: new Map() };
+      const claim: ClaimState = {
+        lineageRootId, agentId, epoch, generation, storage: lineage.storage, responses: new Map(), limitExceeded: false
+      };
       lineage.active = claim;
       return claim;
     });
@@ -292,6 +316,60 @@ export class DurableSessionStore {
     });
   }
 
+  /**
+   * Ends a claim and reports whether its database still holds unfinished tasks, which a
+   * continuation would resume. A claim that is no longer current reports none and changes nothing.
+   */
+  async seal(claim: DurableSessionClaim): Promise<{ pendingTasks: boolean }> {
+    return await this.#withLock(claim.lineageRootId, async () => {
+      const lineage = this.#lineages.get(claim.lineageRootId);
+      if (!lineage || lineage.active !== claim) return { pendingTasks: false };
+      let pendingTasks = false;
+      try {
+        pendingTasks = await hasLiveTasks(lineage.active.storage);
+      } catch {
+        // An unreadable store is reported as holding nothing to resume.
+      }
+      lineage.active = undefined;
+      await this.#closeLineage(claim.lineageRootId, lineage);
+      return { pendingTasks };
+    });
+  }
+
+  /**
+   * Reports whether an unclaimed lineage's database holds unfinished tasks, for an agent whose run
+   * ended without a live claim (for example after a runner restart). A claimed lineage, a disabled
+   * store, an absent database, or a read failure all report none.
+   */
+  async inspectPending(lineageRootId: string): Promise<{ pendingTasks: boolean }> {
+    const stateDir = this.#stateDir;
+    if (!this.#enabled || stateDir === undefined) return { pendingTasks: false };
+    assertLineageId(lineageRootId);
+    return await this.#withLock(lineageRootId, async () => {
+      if (this.#lineages.get(lineageRootId)?.active) return { pendingTasks: false };
+      const paths = sessionPaths(stateDir, lineageRootId);
+      try {
+        await stat(paths.database);
+      } catch {
+        return { pendingTasks: false };
+      }
+      let storage: StorageBackend | undefined;
+      try {
+        storage = await this.#openDatabase(paths.database);
+        return { pendingTasks: await hasLiveTasks(storage) };
+      } catch {
+        return { pendingTasks: false };
+      } finally {
+        await storage?.close(RUNNER_CONTEXT).catch(() => undefined);
+      }
+    });
+  }
+
+  /** Whether a commit of this claim left its lineage's database above the size cap. */
+  limitExceeded(claim: DurableSessionClaim): boolean {
+    return (claim as Partial<ClaimState>).limitExceeded === true;
+  }
+
   /** Closes the lineage's database, fences every claim and removes its files. */
   async delete(lineageRootId: string): Promise<void> {
     assertLineageId(lineageRootId);
@@ -301,8 +379,13 @@ export class DurableSessionStore {
         lineage.active = undefined;
         await this.#closeLineage(lineageRootId, lineage);
       }
-      await deleteDurableSessionFiles(this.#stateDir, lineageRootId);
+      if (this.#stateDir !== undefined) await deleteDurableSessionFiles(this.#stateDir, lineageRootId);
     });
+  }
+
+  /** Deletes the session stores of every listed lineage. */
+  async deleteLineages(lineageRootIds: Iterable<string>): Promise<void> {
+    for (const lineageRootId of new Set(lineageRootIds)) await this.delete(lineageRootId);
   }
 
   /** Runs one storage request for a claim and returns the response record to send back. */
@@ -329,7 +412,18 @@ export class DurableSessionStore {
     // JSON has no undefined: the worker sends an omitted argument as null.
     const args = parsed.data.args.map((value) => value === null ? undefined : value);
     if (!argumentsMatch(parsed.data.method, args)) return failure(id, 'request', `invalid arguments for storage ${parsed.data.method}`);
-    const response = this.#run(id, state, parsed.data.method, args, lineage);
+    if (parsed.data.method === 'commit') {
+      if (state.limitExceeded || await this.#databaseBytes(claim.lineageRootId) > this.#maxLineageBytes) {
+        state.limitExceeded = true;
+        return failure(id, 'limit', 'durable session exceeds its size limit');
+      }
+    }
+    const response = this.#run(id, state, parsed.data.method, args, lineage).then(async (result) => {
+      if (parsed.data.method === 'commit' && result.ok && await this.#databaseBytes(claim.lineageRootId) > this.#maxLineageBytes) {
+        state.limitExceeded = true;
+      }
+      return result;
+    });
     state.responses.set(id, response);
     if (state.responses.size > MAX_REMEMBERED_RESPONSES) {
       const oldest = state.responses.keys().next().value as string | undefined;
@@ -414,10 +508,25 @@ export class DurableSessionStore {
     return storage;
   }
 
-  async #ensureDirectory(): Promise<void> {
+  /** The lineage database's size on disk, write-ahead log included. */
+  async #databaseBytes(lineageRootId: string): Promise<number> {
+    if (this.#stateDir === undefined) return 0;
+    const { database } = sessionPaths(this.#stateDir, lineageRootId);
+    let total = 0;
+    for (const path of [database, `${database}-wal`]) {
+      try {
+        total += (await stat(path)).size;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    return total;
+  }
+
+  async #ensureDirectory(stateDir: string): Promise<void> {
     this.#directoryReady ??= (async () => {
-      await mkdir(this.#stateDir, { recursive: true, mode: 0o700 });
-      await chmod(this.#stateDir, 0o700);
+      await mkdir(stateDir, { recursive: true, mode: 0o700 });
+      await chmod(stateDir, 0o700);
     })();
     try {
       await this.#directoryReady;
