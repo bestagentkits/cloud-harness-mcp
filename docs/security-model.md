@@ -1054,6 +1054,8 @@ writes are scoped to the session principal, and marking another principal's
 notification is reported as not found and changes nothing. Delivery adds no
 egress: the MCP Events channel uses the existing webhook sender and its callback
 rules, and the GitHub channel only reports the automation's own comment.
+Turning the MCP Events channel off also abandons the pending webhook deliveries
+of the affected notifications, so a disabled preference stops the external send.
 Owners:
 [`apps/runner/src/notifications/notification-emitter.ts`](../apps/runner/src/notifications/notification-emitter.ts)
 and

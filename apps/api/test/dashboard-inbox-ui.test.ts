@@ -53,7 +53,7 @@ describe('inbox rendering', () => {
   it('renders a checkbox per switchable channel and kind, defaulting to on', () => {
     const markup = renderInboxPreferences([{ channel: 'github', kind: 'agent.failed', enabled: false }]);
     expect(markup.match(/type="checkbox"/g)).toHaveLength(2 * Object.keys(NOTIFICATION_KIND_LABELS).length);
-    expect(markup).toContain('name="github:agent.failed" aria-label="GitHub comment for Agent failed">');
+    expect(markup).toContain('name="github:agent.failed" aria-label="GitHub comment status for Agent failed">');
     expect(markup).toContain('name="mcp_event:agent.failed" aria-label="MCP Events for Agent failed" checked>');
     expect(markup).not.toContain('name="inbox:');
   });
@@ -111,6 +111,21 @@ describe('inbox controller', () => {
     expect(rows.markup).not.toContain('data-mark-read');
     expect(count.textContent).toBe('0 unread');
     expect(onUnread).toHaveBeenLastCalledWith(0);
+  });
+
+  it('marks all read only through the newest notification this page load showed', async () => {
+    const all = new FakeElement() as FakeElement & { disabled?: boolean };
+    const rows = new FakeElement();
+    const later = '2026-10-20T00:05:00.000Z';
+    const responses = (path: string, options?: any) => (path.startsWith('/inbox?')
+      ? { data: { notifications: [notification({ createdAt: later }), notification({ notificationId: id('b') })], nextCursor: null, unread: 2 } }
+      : pageResponses(path, options));
+    const { view, container, fetcher, announce } = harness(responses, { '#inbox-mark-all': all, '#inbox-rows': rows });
+    await view.load(container, '');
+    all.dispatch('click', {});
+    await vi.waitFor(() => expect(announce).toHaveBeenCalledWith('1 notification(s) marked read.'));
+    expect(fetcher).toHaveBeenCalledWith('/inbox/read', { method: 'POST', body: JSON.stringify({ all: true, before: later }) });
+    expect(rows.markup).not.toContain('data-mark-read');
   });
 
   it('ignores a click whose target carries a malformed id', async () => {

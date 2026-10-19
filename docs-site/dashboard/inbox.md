@@ -22,7 +22,9 @@ credentials, and titles are shortened and redacted.
 ## Reading the list
 
 Notifications are newest first. Unread ones are marked **Unread**; use
-**Mark read** on one, or **Mark all read**. **Show unread only** filters the list,
+**Mark read** on one, or **Mark all read**, which covers the notifications up to the
+newest one the page showed; anything that arrived after you opened the page stays
+unread. **Show unread only** filters the list,
 and **Load more** pages further back. Notifications are kept for a limited time, and
 the oldest read ones are removed when the inbox grows large.
 
@@ -45,11 +47,13 @@ kind whether it is also delivered as:
   ChatGPT that has an active subscription for it (see
   [ChatGPT notifications](../ai-tools/chatgpt.md)). Without a subscription nothing is
   sent.
-- **GitHub comment**: for an automation that posts its result comment, the column
-  shows whether that comment was posted. It sends nothing extra.
+- **GitHub comment status**: for an automation that posts its result comment, the
+  column shows whether that comment was posted. It sends nothing extra, and turning
+  it off does not stop or retract the automation's comment.
 
 Everything starts on. Turning a channel off stops its deliveries that are still
-pending; deliveries already made stay as they are.
+pending, including an MCP Events webhook not yet sent; deliveries already made stay
+as they are.
 
 ## Troubleshooting
 

@@ -24,7 +24,7 @@ export const NOTIFICATION_KIND_LABELS = {
   'approval.decided': 'Approval decided'
 };
 /** Channels a preference can switch; the inbox is always on. */
-export const NOTIFICATION_CHANNEL_LABELS = { mcp_event: 'MCP Events', github: 'GitHub comment' };
+export const NOTIFICATION_CHANNEL_LABELS = { mcp_event: 'MCP Events', github: 'GitHub comment status' };
 const CHANNEL_LABELS = { inbox: 'Inbox', ...NOTIFICATION_CHANNEL_LABELS };
 const DELIVERY_LABELS = { PENDING: 'pending', CLAIMED: 'sending', DELIVERED: 'delivered', FAILED: 'failed', REVOKED: 'stopped' };
 /** Pill classes reuse the shared status palette; the label carries the meaning, never colour alone. */
@@ -160,6 +160,9 @@ export function createInboxView({ insert, announce = () => {}, onUnread = () => 
       unread: Number(list?.data?.unread ?? 0) || 0,
       unreadOnly
     };
+    // "Mark all read" covers what this page load showed: the newest listed notification's server
+    // timestamp, so one that arrives later stays unread and browser clock skew cannot widen the cut.
+    state.loadedThrough = typeof state.notifications[0]?.createdAt === 'string' ? state.notifications[0].createdAt : null;
     insert(container, renderInboxPage({ ...state, preferences: preferences?.data?.preferences ?? [] }));
     onUnread(state.unread);
     bindList(container, state);
@@ -183,8 +186,13 @@ export function createInboxView({ insert, announce = () => {}, onUnread = () => 
   async function markRead(container, state, input, readIds) {
     const result = await fetcher('/inbox/read', { method: 'POST', body: JSON.stringify(input) });
     const now = new Date().toISOString();
+    const through = readIds === 'all' && input.before ? Date.parse(input.before) : null;
     for (const notification of state.notifications) {
-      if (!notification.readAt && (readIds === 'all' || readIds.has(notification.notificationId))) notification.readAt = now;
+      if (notification.readAt) continue;
+      const covered = readIds === 'all'
+        ? through === null || Date.parse(notification.createdAt) <= through
+        : readIds.has(notification.notificationId);
+      if (covered) notification.readAt = now;
     }
     renderRows(container, state);
     setUnread(container, state, Number(result?.data?.unread ?? 0) || 0);
@@ -210,7 +218,8 @@ export function createInboxView({ insert, announce = () => {}, onUnread = () => 
     all?.addEventListener?.('click', async () => {
       all.disabled = true;
       try {
-        const updated = await markRead(container, state, { all: true }, 'all');
+        const input = state.loadedThrough ? { all: true, before: state.loadedThrough } : { all: true };
+        const updated = await markRead(container, state, input, 'all');
         announce(`${updated} notification(s) marked read.`);
       } catch {
         all.disabled = false;

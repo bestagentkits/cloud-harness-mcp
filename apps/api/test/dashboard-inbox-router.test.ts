@@ -120,6 +120,7 @@ describe('dashboard inbox BFF', () => {
     const cases: Array<[string, string, string, Record<string, unknown>]> = [
       ['POST', '/api/v1/inbox/read', 'inbox_mark_read', { notificationIds: [notificationId] }],
       ['POST', '/api/v1/inbox/read', 'inbox_mark_read', { all: true }],
+      ['POST', '/api/v1/inbox/read', 'inbox_mark_read', { all: true, before: '2026-10-20T08:00:00.000Z' }],
       ['PUT', '/api/v1/notification-preferences', 'preferences_put', { preferences }]
     ];
     for (const [method, path, operation, body] of cases) {
