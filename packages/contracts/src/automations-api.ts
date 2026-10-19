@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { AgentIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { RunnerPrincipalSelectorSchema } from './runner-api.js';
+import { CodingActionReceiptSchema, CodingRuleActionSchema, CodingWorkflowSummarySchema } from './coding-actions.js';
 
 /**
  * Webhook-triggered automations. A provider webhook reaches the API's public ingress, which forwards
@@ -47,8 +48,8 @@ export const AutomationPublishStateSchema = z.enum(['NONE', 'PENDING', 'DELIVERE
 /** Read-only by default: a webhook-triggered agent analyses and reports, it does not edit. */
 export const AUTOMATION_DEFAULT_PROXY_OPERATIONS = ['files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references'] as const;
 /**
- * Automation agents are read-only: a webhook may start one, but it can only inspect the checkout.
- * Code-changing runs need the approval flow automations do not have yet.
+ * Analyse-mode automation agents are read-only: a webhook may start one, but it can only inspect the
+ * checkout. Code-changing runs use the opt-in `coding` action, which the policy gate brokers.
  */
 export const AutomationProxyOperationSchema = z.enum(AUTOMATION_DEFAULT_PROXY_OPERATIONS);
 
@@ -94,7 +95,13 @@ export const AutomationRuleActionSchema = z.object({
   /** After a workflow for a resource ends, a repeat trigger on it is ignored for this long. */
   cooldownSeconds: z.number().int().min(0).max(86_400).default(300),
   /** Most workflows of this rule that may hold a workspace at once. */
-  maxConcurrent: z.number().int().min(1).max(5).default(1)
+  maxConcurrent: z.number().int().min(1).max(5).default(1),
+  /**
+   * Opt-in coding mode. The agent gets the fixed coding tool set (proxyOperations is ignored), every
+   * action is decided by the project's execution policy, and the runner publishes an `agent/` branch and
+   * a pull request. Absent: the read-only analyse-and-report workflow. Needs AGENT_CODING_ENABLED.
+   */
+  coding: CodingRuleActionSchema.optional()
 }).strict();
 
 export const AutomationRuleInputSchema = z.object({
@@ -209,6 +216,8 @@ export const AutomationWorkflowSummarySchema = z.object({
   errorCode: z.string().nullable(),
   publishState: AutomationPublishStateSchema,
   usage: z.object({ inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(), costMicros: z.number().int().nonnegative() }).strict().nullable(),
+  /** Present only for coding workflows. */
+  coding: CodingWorkflowSummarySchema.nullable().default(null),
   createdAt: instant,
   updatedAt: instant,
   terminalAt: instant.nullable()
@@ -253,7 +262,9 @@ export const AutomationsRunnerDataSchemas = {
   workflow_get: z.object({
     workflow: AutomationWorkflowSummarySchema,
     result: z.string().nullable(),
-    transitions: z.array(AutomationWorkflowTransitionSchema)
+    transitions: z.array(AutomationWorkflowTransitionSchema),
+    /** Action receipts of a coding workflow, oldest first; empty for read-only workflows. */
+    actions: z.array(CodingActionReceiptSchema).default([])
   }).strict(),
   workflow_cancel: z.object({ workflow: AutomationWorkflowSummarySchema }).strict(),
   deliveries_list: z.object({ deliveries: z.array(AutomationDeliverySummarySchema) }).strict()
