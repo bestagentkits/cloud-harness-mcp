@@ -618,7 +618,8 @@ at `GET /api/v1/decision-plane/status`.
 Code defaults and ranges are owned by
 [`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts). Traces
 live in the runner's state database; turning the flag off stops recording and
-reading but keeps existing rows until the flag is on again and the purge runs.
+reading, while the hourly purge keeps removing traces past retention, so the
+retention period holds with the flag off.
 What a trace may contain is described in
 [security model](security-model.md#agent-traces).
 

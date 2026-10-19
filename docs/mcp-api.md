@@ -258,7 +258,13 @@ lease is revoked, its container is removed, and its status transitions to
 
 When the operator sets `AGENT_TRACES_ENABLED=true`, every agent run also
 writes one durable trace: an `agent_run` span, one span per model call and
-tool call, and a `gateway` settlement span. Four read-only, idempotent tools
+tool call, `budget` spans (the cost reservation, the gateway lease issue, a
+run limit that ended the run, and the settlement against the reservation),
+and a `gateway` settlement span. The `hook` span kind is reserved: workspace
+lifecycle hooks run only on commit, finalize, checkout, and workspace open,
+and no operation an agent can reach runs one, so no agent run emits it. A spawn
+refused by a spend policy creates no agent and therefore no trace. Four
+read-only, idempotent tools
 read them: `agent_traces_list`, `agent_trace_get`, `agent_trace_spans`, and
 `agent_trace_export`. Input and result shapes are owned by
 [`packages/contracts/src/agent-traces-api.ts`](../packages/contracts/src/agent-traces-api.ts);
@@ -281,20 +287,35 @@ event-to-span mapping by
 - **States.** A trace is `RUNNING` until the agent ends, then takes the
   agent's terminal state: `COMPLETED`, `FAILED`, `CANCELLED`, `TIMED_OUT`,
   `EXPIRED` (model lease expired), or `INCOMPLETE` (a runner restart ended the
-  run; `INTERRUPTED` agents map to `FAILED` with `runtime_exited`). Anything
-  but `COMPLETED` has `coverage: "partial"`, and spans the run never closed
-  read `UNKNOWN`. Spans past the per-trace cap are dropped behind a single
-  truncation marker with `truncated: true`.
+  run; `INTERRUPTED` agents map to `FAILED` with `runtime_exited`). Spans the
+  run never closed read `UNKNOWN`. Spans past the per-trace cap are dropped
+  behind a single truncation marker with `truncated: true`.
+- **Coverage.** `coverage` describes data completeness, not the outcome. It is
+  `"partial"` when the run was interrupted by a runner restart, recording
+  degraded, the span cap truncated the trace, a model call reported no usage,
+  any span ended `UNKNOWN`, no gateway settlement arrived, or the settlement
+  counted requests without usage; otherwise `"full"`. A failed or cancelled run
+  whose every span closed with usage is `"full"`.
+- **Tokens.** `tokens.prompt` is uncached input on every path; the whole prompt
+  is `prompt + cacheRead + cacheWrite`. When no runtime usage was reported the
+  totals fall back to the gateway settlement with its cached share removed;
+  `reconciliation.gateway.promptTokens` keeps the gateway's own total.
 - **Nulls and percentiles.** A figure that was not observed is `null`, never
   `0`. Model-call p50/p95 and time to first token are nearest-rank
   percentiles over spans that have the timestamps; with no samples they are
   `null`. Per-profile cohorts report percentiles only at 20 or more traces and
-  `insufficient_sample` otherwise.
+  `insufficient_sample` otherwise. The list `summary` is computed only for a
+  first page (no `cursor`) unless `includeSummary: false`; otherwise it is
+  `null`. Its `costMicros` is `null` when no trace in the window has a known
+  cost.
+- **Spans** are returned in recording order (span sequence), not start time.
 - **Reconciliation.** When the agent ends, model-call span sums are compared
   with the agent usage ledger. Tokens must match exactly; cost may differ by a
   tolerance of one micro-dollar per model-call span (per-call rounding). A
   mismatch is `unreconciled` with machine-readable reasons; the gateway
-  settlement is reported alongside for comparison.
+  settlement is reported alongside for comparison. Every tool result is
+  validated against its strict result schema in the runner before it is
+  returned; a result outside the contract fails closed as `INTERNAL_ERROR`.
 - **Export.** `agent_trace_export` returns a bounded document in the result
   (`json`, `csv`, or `otlp-json`), with `truncated` when it hit its size
   bound. It is pull-only: the harness never pushes traces to a collector. The

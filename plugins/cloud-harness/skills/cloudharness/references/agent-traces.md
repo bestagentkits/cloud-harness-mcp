@@ -2,10 +2,12 @@
 
 Every coding-agent run (`agent_spawn`) leaves one durable trace when the
 operator has enabled agent traces. A trace records the run, each model call,
-each tool call, and the gateway settlement as spans with identifiers, timings,
-tokens, cost, and outcome only. Prompts, model output, tool arguments, and
-credentials are never recorded, so a trace is safe to read and share with the
-owner.
+each tool call, its budget events (cost reservation, lease issue, a limit that
+ended the run, and the settlement), and the gateway settlement as spans with
+identifiers, timings, tokens, cost, and outcome. Prompts, model output, and
+credentials are never recorded. Tool arguments are recorded only as a one-way
+digest, unless the operator sets `AGENT_TRACE_PREVIEW_BYTES` to keep a short,
+redacted preview (off by default, at most 512 bytes).
 
 Use traces to answer "where did the time and money go" after a run, to compare
 model profiles, and to explain a failed, cancelled, or timed-out run. Use
@@ -25,9 +27,15 @@ model profiles, and to explain a failed, cancelled, or timed-out run. Use
 - A figure the runner did not observe is `null`, never `0`. Latency
   percentiles and time to first token appear only when timed samples exist;
   per-profile cohorts need at least 20 traces.
-- `coverage: "partial"` marks a run that did not complete normally (cancelled,
-  timed out, failed, lease expired, or interrupted by a runner restart). Spans
-  the run never closed read `UNKNOWN`.
+- `coverage` is about data completeness, not the outcome. It is `"partial"`
+  when a runner restart interrupted the run, recording degraded, the span cap
+  truncated the trace, a model call reported no usage, a span ended `UNKNOWN`
+  (the run never closed it), no gateway settlement arrived, or the gateway
+  counted requests without usage. A failed run with complete data is `"full"`.
+- `tokens.prompt` is uncached input; the whole prompt is
+  `prompt + cacheRead + cacheWrite`.
+- The `hook` span kind is reserved: no operation an agent can reach runs a
+  workspace hook, so agent traces never contain one.
 - `reconciliationStatus` compares model-call span sums with the agent usage
   ledger: tokens must match exactly; cost may differ by one micro-dollar per
   model call of rounding. `unreconciled` lists its reasons on the trace.
@@ -35,13 +43,16 @@ model profiles, and to explain a failed, cancelled, or timed-out run. Use
 <!-- cloudharness-tool:agent_traces_list -->
 ### `agent_traces_list`
 
-List your traces, newest first, with KPI aggregates over the filtered window.
+List your traces, newest first, with KPI aggregates over the filtered window
+on the first page.
 
 - Optional filters: `workspaceId`, `agentId`, `profileId`, `state`,
   `workflowId`, `since`, `until` (ISO timestamps; `since` before `until`).
 - Optional paging: `cursor`, `limit` (1–100, default 25).
 - `summary` carries state counts, token and cost totals, model-call p50/p95,
-  time to first token, and per-profile cohorts.
+  time to first token, and per-profile cohorts. It is `null` on a page read
+  with a `cursor`, or with `includeSummary: false` (use that when you only
+  need rows). Its `costMicros` is `null` when no trace has a known cost.
 
 <!-- cloudharness-example:agent_traces_list
 {"agentId":"agent_aaaaaaaaaaaaaaaaaaaa","state":"FAILED","limit":25}
@@ -62,9 +73,10 @@ cost provenance, coverage, and the reconciliation detail.
 <!-- cloudharness-tool:agent_trace_spans -->
 ### `agent_trace_spans`
 
-Page through one trace's spans in start order: `agent_run`, `model_call`,
-`tool_call`, and `gateway`. Tool calls carry the operation name, outcome, and
-an input digest only.
+Page through one trace's spans in recording order (span sequence, not start
+time): `agent_run`, `model_call`, `tool_call`, `budget`, and `gateway`. Tool
+calls carry the operation name, outcome, and an input digest, plus a redacted
+preview only when the operator enabled one.
 
 - Required: `traceId`. Optional: `kind`, `cursor`, `limit` (1–500, default 200).
 

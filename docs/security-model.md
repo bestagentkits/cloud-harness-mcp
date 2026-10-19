@@ -886,12 +886,16 @@ limitation, not a security guarantee.
 Agent traces are off unless the operator sets `AGENT_TRACES_ENABLED`. When on,
 the runner stores, per coding-agent run, span identifiers, timings, token
 counts, cost, outcomes, bounded error classes, a closed allowlist of span
-attributes, and a `sha256:` digest of each tool input taken after redaction.
-It never stores prompts, model output, raw tool arguments, auth headers,
-tokens, or the agent environment. The only optional content is a tool-input
-preview, default `0` bytes and capped at 512, built from the same redacted
-value (credential-named keys lose their values; token- and key-shaped strings
-are replaced). The redaction and attribute allowlist are owned by
+attributes, and a one-way `sha256:` digest of each tool input's canonical JSON
+with the values of credential-named keys removed. It never stores prompts,
+model output, raw tool arguments, auth headers, tokens, or the agent
+environment. The only optional content is a tool-input preview, default `0`
+bytes and capped at 512, built from a redacted copy (credential-named keys lose
+their values; token- and key-shaped strings are replaced). Redaction runs only
+for the preview, uses bounded patterns over at most the first 4 KiB of each
+string, and walks a bounded share of the input, so an oversized or adversarial
+tool input cannot stall the runner; the digest matches no patterns at all. The
+redaction and attribute allowlist are owned by
 [`apps/runner/src/agent-trace-recorder.ts`](../apps/runner/src/agent-trace-recorder.ts)
 and
 [`packages/contracts/src/agent-traces-api.ts`](../packages/contracts/src/agent-traces-api.ts).

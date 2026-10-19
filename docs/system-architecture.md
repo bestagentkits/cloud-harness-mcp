@@ -445,8 +445,10 @@ agent rows. The agent manager feeds a recorder from the same runtime events,
 proxy tool calls, and gateway settlement it already handles; the recorder
 writes only at span boundaries (never per stream delta), and a store failure is
 logged once and marks the trace degraded instead of affecting the agent. At
-startup, traces left `RUNNING` by a previous runner epoch become `INCOMPLETE`;
-an hourly purge removes traces past retention. The owners are
+startup, traces left `RUNNING` by a previous runner epoch become `INCOMPLETE`.
+At startup and hourly, a purge removes traces past retention, even with traces
+disabled, in bounded batches of one transaction each that yield to the event
+loop between batches. The owners are
 [`apps/runner/src/agent-trace-schema.ts`](../apps/runner/src/agent-trace-schema.ts),
 [`apps/runner/src/agent-trace-recorder.ts`](../apps/runner/src/agent-trace-recorder.ts),
 and

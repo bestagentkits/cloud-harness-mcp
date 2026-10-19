@@ -1406,7 +1406,7 @@ Read-only, owner-scoped traces of coding-agent runs: list with KPI aggregates, r
 
 **List agent traces**
 
-List your durable coding-agent run traces, newest first, with KPI aggregates (state counts, tokens, cost, model-call p50/p95 latency and time to first token, per-profile cohorts). Filter by workspaceId, agentId, profileId, state, workflowId, and a since/until start-time window; page with the opaque cursor. Read-only. Traces outlive their workspace until retention removes them; a cursor whose position was removed fails with TRACE_EXPIRED. Returns FEATURE_DISABLED when the operator has not enabled agent traces.
+List your durable coding-agent run traces, newest first, with KPI aggregates on the first page (state counts, tokens, cost, model-call p50/p95 latency and time to first token, per-profile cohorts). Filter by workspaceId, agentId, profileId, state, workflowId, and a since/until start-time window; page with the opaque cursor. Read-only. Traces outlive their workspace until retention removes them; a cursor whose position was removed fails with TRACE_EXPIRED. Returns FEATURE_DISABLED when the operator has not enabled agent traces.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
 
@@ -1421,6 +1421,7 @@ List your durable coding-agent run traces, newest first, with KPI aggregates (st
 | `until` | `string` | No | Exclusive upper bound on the trace start time. (format: `date-time`, pattern: `^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|([+-](?:[01]\d|2[0-3]):[0-5]\d)))$`) |
 | `cursor` | `string` | No | pattern: `^tc1\.[A-Za-z0-9_-]{8,240}$` |
 | `limit` | `integer` | No | range: 1–100, default: `25` |
+| `includeSummary` | `boolean` | No | Compute the KPI summary for the filtered window. It is computed only for the first page (no cursor); later pages and a false value return null. (default: `true`) |
 
 ### `agent_trace_get`
 
@@ -1438,7 +1439,7 @@ Read one agent trace: state and finish reason, the immutable model profile revis
 
 **List agent trace spans**
 
-Page through the spans of one agent trace in start order: the agent run, each model call (timings, time to first token, tokens, cost, error class), each tool call (operation, outcome, input digest only), and the gateway settlement. Optional kind filter. Read-only.
+Page through the spans of one agent trace in recording order (span sequence, not start time): the agent run, each model call (timings, time to first token, tokens, cost, error class), each tool call (operation, outcome, input digest, and a redacted input preview only when the operator enabled one), budget reservation, lease issue, settlement and limit spans, and the gateway settlement. Optional kind filter. Read-only.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
 
