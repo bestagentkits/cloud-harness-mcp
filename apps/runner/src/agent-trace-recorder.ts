@@ -38,6 +38,12 @@ export type TraceUsageDelta = {
 export type TraceLedgerTotals = { inputTokens: number; outputTokens: number; costMicros: number };
 
 /**
+ * The limit that ended a run: the agent's output byte budget, or a Model Gateway refusal because the
+ * lease's token or cost budget could not cover a model request.
+ */
+type TraceLimit = 'output_bytes' | 'model_budget';
+
+/**
  * One budget event of a run, recorded as a `budget` span: the spawn's cost reservation, the gateway
  * lease issue, and the run limit that ended it. The settlement against the reservation is recorded
  * from `settled` when the trace finishes.
@@ -45,7 +51,7 @@ export type TraceLedgerTotals = { inputTokens: number; outputTokens: number; cos
 export type TraceBudgetEvent =
   | { phase: 'reserve'; reservedCostMicros: number; at: number }
   | { phase: 'lease_issue'; outcome: 'issued' | 'refused' | 'unknown'; startedAt: number; endedAt: number }
-  | { phase: 'limit'; limit: 'output_bytes'; at: number };
+  | { phase: 'limit'; limit: TraceLimit; at: number };
 
 export type TraceFinish = {
   terminal: TraceTerminalStatus;
@@ -481,10 +487,7 @@ export class AgentTraceRecorder implements AgentTraceHooks {
         const state: TraceSpanState = event.outcome === 'issued' ? 'OK' : (event.outcome === 'refused' ? 'ERROR' : 'UNKNOWN');
         this.writeBudget(run, 'lease_issue', state, event.startedAt, event.endedAt, { outcome: event.outcome });
       } else {
-        // Every later write past the limit fails the same way; the run records the limit once.
-        if (run.limitRecorded) return;
-        run.limitRecorded = true;
-        this.writeBudget(run, 'limit', 'ERROR', event.at, event.at, { limit: event.limit });
+        this.recordLimit(run, event.limit, event.at);
       }
     });
   }
@@ -758,6 +761,13 @@ export class AgentTraceRecorder implements AgentTraceHooks {
     });
   }
 
+  private recordLimit(run: Run, limit: TraceLimit, at: number): void {
+    // Every later write past the limit fails the same way; the run records the limit once.
+    if (run.limitRecorded) return;
+    run.limitRecorded = true;
+    this.writeBudget(run, 'limit', 'ERROR', at, at, { limit });
+  }
+
   private writeBudget(run: Run, phase: 'reserve' | 'lease_issue' | 'limit', state: TraceSpanState, startedAt: number, endedAt: number, attributes: TraceAttributes): void {
     const seq = this.allocate(run, startedAt);
     if (seq === null) return;
@@ -803,6 +813,8 @@ export class AgentTraceRecorder implements AgentTraceHooks {
     model.errorClass = outcome === 'error' || outcome === 'aborted' || errorClass !== undefined
       ? (errorClassOf(errorClass) ?? (outcome === 'aborted' ? 'aborted' : 'other'))
       : null;
+    // A gateway budget refusal is also the budget limit that stops the run, not a provider failure.
+    if (model.errorClass === 'budget') this.recordLimit(run, 'model_budget', at);
     run.awaitingUsage = model;
   }
 

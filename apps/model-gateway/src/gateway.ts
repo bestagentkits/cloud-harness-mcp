@@ -4,7 +4,7 @@ import type { DynamicGatewayRegistry } from './control.js';
 import type { Server as NetServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
-import { ModelRequestError, noOpBudgetHooks, reconcileBudget, reserveBudget, settleFailedRequest, type BudgetHooks, type ReconcileResult } from './budget.js';
+import { BUDGET_REFUSAL_CODE, BudgetRefusalError, ModelRequestError, noOpBudgetHooks, reconcileBudget, reserveBudget, settleFailedRequest, type BudgetHooks, type ReconcileResult } from './budget.js';
 import { startControlServer } from './control.js';
 import { LeaseRegistry } from './lease-registry.js';
 import { startUpstreamRequest, UpstreamError, type UpstreamHandle } from './upstream.js';
@@ -46,12 +46,12 @@ export interface GatewayRuntime {
   close(): Promise<void>;
 }
 
-function errorResponse(response: ServerResponse, status: number, code: string, message = code.replaceAll('_', ' ')): void {
+function errorResponse(response: ServerResponse, status: number, code: string, message = code.replaceAll('_', ' '), type?: string): void {
   if (response.headersSent || response.destroyed) {
     response.destroy();
     return;
   }
-  const body = Buffer.from(JSON.stringify({ error: { code, message } }));
+  const body = Buffer.from(JSON.stringify({ error: type === undefined ? { code, message } : { code, type, message } }));
   response.writeHead(status, {
     'content-type': 'application/json',
     'content-length': String(body.byteLength),
@@ -252,12 +252,16 @@ export function createGatewayRuntime(
           logger.warn({ requestId, agentId, profileId, status: 400, durationMs: Date.now() - startedAt, reasonCode: 400 }, 'model request failed');
           return;
         }
+        if (error instanceof BudgetRefusalError) {
+          errorResponse(response, 429, 'model_budget_exhausted', `${BUDGET_REFUSAL_CODE}: model budget exhausted`, BUDGET_REFUSAL_CODE);
+          logger.warn({ requestId, agentId, profileId, status: 429, durationMs: Date.now() - startedAt, reasonCode: 429 }, 'model request failed');
+          return;
+        }
         const reason = error instanceof Error ? error.message : 'gateway request failed';
         const status = reason.includes('too large') || reason.includes('limit exceeded') ? 413 :
-          reason.includes('budget') || reason.includes('cost') ? 429 :
           reason.includes('request body') ? 400 :
           reason.includes('cancel') || reason.includes('downstream closed') ? 499 : 502;
-        const code = status === 429 ? 'model_budget_exhausted' : status === 413 ? 'model_bound_exceeded' :
+        const code = status === 413 ? 'model_bound_exceeded' :
           status === 400 ? 'invalid_model_request' : 'model_gateway_failed';
         errorResponse(response, status, code);
         const errorCode = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;

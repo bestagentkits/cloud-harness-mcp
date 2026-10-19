@@ -26,9 +26,12 @@ type TurnErrorClass = Extract<SafeEvent, { kind: 'lifecycle' }>['errorClass'];
 
 /**
  * Maps a provider error message to a bounded class. Only the class leaves the runtime; the message,
- * which may quote request content, does not.
+ * which may quote request content, does not. A Model Gateway budget refusal is recognised by the
+ * refusal code the gateway puts in its error envelope (see `BUDGET_REFUSAL_CODE` in the gateway),
+ * not by keywords, so it is never mistaken for provider throttling.
  */
 export function classifyModelError(message: string): NonNullable<TurnErrorClass> {
+  if (/\bbudget_exceeded\b/u.test(message)) return 'budget';
   if (/context[\s_-]{0,3}(?:length|window)|maximum context|too many tokens|prompt is too long/iu.test(message)) return 'context_length';
   if (/\b429\b|rate[\s_-]?limit|too many requests|quota/iu.test(message)) return 'rate_limit';
   if (/\b40[13]\b|unauthori[sz]ed|forbidden|invalid[\s_-]api[\s_-]key|authentication/iu.test(message)) return 'auth';
