@@ -105,6 +105,24 @@ describe('automation webhook ingress', () => {
     }]);
   });
 
+  it('forwards only webhook_ingest, even when the request names a management operation', async () => {
+    const harness = await start();
+    const management = JSON.stringify({ version: 1, principal: { kind: 'owner', ownerId: 'owner' }, operation: 'rules_list', input: {} });
+    const response = await fetch(`${harness.origin}/integrations/webhooks/github/${connectionId}?operation=rule_create`, {
+      method: 'POST', headers: githubHeaders({ 'x-cloudharness-operation': 'rule_update', authorization: 'Bearer test-bearer-token-that-is-longer-than-32-characters' }), body: management
+    });
+    expect(response.status).toBe(202);
+    for (const path of ['rules_list', `rule_create/${connectionId}`, `github/${connectionId}/rules_list`]) {
+      expect((await fetch(`${harness.origin}/integrations/webhooks/${path}`, { method: 'POST', headers: githubHeaders(), body: management })).status, path).toBe(404);
+    }
+    expect(harness.requests).toHaveLength(1);
+    expect(harness.requests[0]).toEqual({
+      version: 1, operation: 'webhook_ingest',
+      input: { provider: 'github', connectionId, headers: expect.any(Object), bodyBase64: Buffer.from(management).toString('base64') }
+    });
+    expect(harness.requests[0]).not.toHaveProperty('principal');
+  });
+
   it.each([
     ['linear', { 'linear-event': 'Issue', 'linear-delivery': 'd-1' }, 401],
     ['linear', { 'linear-delivery': 'd-1', 'linear-signature': 's' }, 400],
