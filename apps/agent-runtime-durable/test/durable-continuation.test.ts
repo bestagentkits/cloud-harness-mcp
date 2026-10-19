@@ -330,6 +330,8 @@ describe('durable agent runtime through the runner', () => {
     expect(await settled(context, second, successorId)).toBe('SUCCEEDED');
     const start = second.launcher.launches[0]!.received.find((item) => item.type === 'start')!;
     expect(start).toMatchObject({ runtime: 'pi-durable', durableResume: 'continue' });
+    // The engine settles its interrupted calls itself on resume; it never receives a replayed transcript.
+    expect(start).not.toHaveProperty('session');
     expect(fs.applied).toEqual(['files_write']);
     expect(fs.executions('files_write')).toBe(1);
     expect(toolRequests(second.launcher.launches[0], 'files_write')).toEqual([]);
