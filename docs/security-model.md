@@ -382,10 +382,10 @@ runner publishes":
   overwritten, and the run stops as `BRANCH_EXISTS`. The
   helper also overrides the settings through which a checkout's configuration
   would make Git run a command (hooks, fsmonitor, the alternate refs command).
-  It does not serialise transfers: the clone is staged in the workspace's job
-  directory, where another transfer helper for the same workspace, such as an
-  owner's concurrent `git_fetch`, mounts it too, and nothing stops that one
-  from changing the clone between the check and the push. The runner commits
+  It does not serialise transfers, but the staged clone is mounted only into
+  the helpers for this push, and read-only while it is inspected, so another
+  transfer for the same workspace, such as an owner's concurrent `git_fetch`,
+  cannot change it between the check and the push. The runner commits
   first and reads HEAD afterwards, so a process the agent left running could
   still substitute a commit in between. That commit would have to match all
   of the above, including the runner's message and identity, and only paths
@@ -782,8 +782,9 @@ transfer repository and, when its mode needs it, the checkout: never the whole
 workspace directory. A command the repository configures that Git runs during an
 import or a stage therefore cannot reach another transfer's repository, so
 nothing can rewrite a staged push clone between its stage and its push. The
-checkout is read-only while it is staged and the fetched transfer repository is
-read-only while it is imported. The checkout is always bound from its tree root,
+checkout is read-only while it is staged, the staged clone is read-only while it
+is inspected, and the fetched transfer repository is read-only while it is
+imported. The checkout is always bound from its tree root,
 never a scoped `repos/<alias>` path: the executor can replace that path with a
 symlink, and Docker would follow it on the host, while the helper resolves it
 inside its own mounts. Because the checkout and the staged clone are separate

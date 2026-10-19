@@ -186,7 +186,7 @@ export function builtinSkillsMountArgs(builtinSkillsRoot: string | undefined): s
  * command that runs during one transfer (an import's fetch, a stage's clone) cannot reach the transfer
  * repository of another; above all, nothing can write a staged push clone between its stage and its push.
  * The checkout is read-only while it is staged and writable only for an import, which updates its refs.
- * An inspection only reads the staged clone, so it mounts that alone and read-only.
+ * An inspection only reads the staged clone, so it mounts that alone, read-only.
  * The checkout source is always the tree root the executor mounts, never a scoped subdirectory: the
  * executor can replace `repos/<alias>` with a symlink, and Docker resolves a bind source on the host,
  * whereas the helper resolves the scoped path inside its own mount namespace.
