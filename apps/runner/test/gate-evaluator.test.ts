@@ -49,7 +49,8 @@ const GLOBAL: GlobalExecutionPolicy = GlobalExecutionPolicySchema.parse({
     networkHosts: ['*.github.com', 'registry.npmjs.org']
   },
   budget: { maxCostMicrosPerRun: 1_000_000, maxInputTokensPerRun: 100_000, maxOutputTokensPerRun: 10_000, maxRunSeconds: 600, maxConcurrentRuns: 2 },
-  approval: { ttlSeconds: 3_600, approverRoles: ['owner'] }
+  approval: { ttlSeconds: 3_600, approverRoles: ['owner'] },
+  advisor: { enabled: true, riskThreshold: 0.5, minConfidence: 0.7, fallback: 'require_approval' }
 });
 
 const global = (patch: Partial<GlobalExecutionPolicy> = {}): GlobalExecutionPolicy => GlobalExecutionPolicySchema.parse({ ...structuredClone(GLOBAL), ...patch });
@@ -327,7 +328,7 @@ describe('combineAdvisor', () => {
     expect(isAdvisorPending(decision)).toBe(false);
     // The cleared decision is final: a second answer cannot clear or lower anything again.
     expect(combineAdvisor(decision, { effect: 'escalate' }).decision).toBe('REQUIRE_APPROVAL');
-    expect(decision.advisor).toEqual({ required: true, consulted: true, effect: 'no_change', decisionId: 'adv_1' });
+    expect(decision.advisor).toEqual({ required: true, consulted: true, effect: 'no_change', decisionId: 'adv_1', risk: null, confidence: null, fallbackReason: null, fallback: 'require_approval' });
     expect(decision.reasons.map((reason) => reason.code)).toContain('ADVISOR_NO_CHANGE');
   });
 

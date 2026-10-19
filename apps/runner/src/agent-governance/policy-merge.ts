@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import {
   AGENT_ACTION_CLASSES,
+  DEFAULT_POLICY_ADVISOR,
   POLICY_RULE_EFFECT_RANK,
   type AgentActionClass,
   type AgentActionDescriptor,
   type EffectivePolicy,
   type GlobalExecutionPolicy,
+  type PolicyAdvisor,
   type PolicyBudget,
   type PolicyChange,
   type PolicyRuleEffect,
@@ -197,7 +199,47 @@ export function resolveEffectivePolicy(global: GlobalExecutionPolicy, project: P
     if (ttl > global.approval.ttlSeconds) ignored.push(`approval.ttlSeconds: ${ttl} exceeds the global ${global.approval.ttlSeconds}`);
     else approval.ttlSeconds = ttl;
   }
-  return { hardDeny, mandatoryApproval, allowedActionClasses, effects, scope, budget, approval, ignoredProjectFields: ignored };
+  const advisor = resolveAdvisor(global.advisor ?? DEFAULT_POLICY_ADVISOR, project?.advisor, ignored);
+  return { hardDeny, mandatoryApproval, allowedActionClasses, effects, scope, budget, approval, advisor, ignoredProjectFields: ignored };
+}
+
+const FALLBACK_RANK = { require_approval: 0, deny: 1 } as const;
+
+/**
+ * A project can only make the advisor stricter. Enabling it would let a discretionary action clear
+ * without a human, so that is a widening; so are a higher risk threshold, a lower minimum confidence
+ * and a softer fallback.
+ */
+function resolveAdvisor(global: PolicyAdvisor, project: ProjectExecutionPolicy['advisor'], ignored: string[]): PolicyAdvisor {
+  const advisor = { ...global };
+  if (!project) return advisor;
+  if (project.enabled !== undefined) {
+    if (project.enabled && !global.enabled) ignored.push('advisor.enabled: the global policy does not enable the advisor');
+    else advisor.enabled = project.enabled;
+  }
+  if (project.riskThreshold !== undefined) {
+    if (project.riskThreshold > global.riskThreshold) ignored.push(`advisor.riskThreshold: ${project.riskThreshold} exceeds the global ${global.riskThreshold}`);
+    else advisor.riskThreshold = project.riskThreshold;
+  }
+  if (project.minConfidence !== undefined) {
+    if (project.minConfidence < global.minConfidence) ignored.push(`advisor.minConfidence: ${project.minConfidence} is below the global ${global.minConfidence}`);
+    else advisor.minConfidence = project.minConfidence;
+  }
+  if (project.fallback !== undefined) {
+    if (FALLBACK_RANK[project.fallback] < FALLBACK_RANK[global.fallback]) ignored.push(`advisor.fallback: ${project.fallback} is softer than the global ${global.fallback}`);
+    else advisor.fallback = project.fallback;
+  }
+  return advisor;
+}
+
+function advisorWeakenings(before: PolicyAdvisor, after: PolicyAdvisor): string[] {
+  if (!after.enabled) return [];
+  if (!before.enabled) return ['advisor: may now clear advisor_or_approval actions without a human'];
+  const changes: string[] = [];
+  if (after.riskThreshold > before.riskThreshold) changes.push(`advisor.riskThreshold: ${before.riskThreshold} becomes ${after.riskThreshold}`);
+  if (after.minConfidence < before.minConfidence) changes.push(`advisor.minConfidence: ${before.minConfidence} becomes ${after.minConfidence}`);
+  if (FALLBACK_RANK[after.fallback] < FALLBACK_RANK[before.fallback]) changes.push(`advisor.fallback: ${before.fallback} becomes ${after.fallback}`);
+  return changes;
 }
 
 /**
@@ -230,6 +272,7 @@ export function policyWeakenings(before: EffectivePolicy, after: EffectivePolicy
     if (after.budget[key] > before.budget[key]) changes.push(`budget.${key}: ${before.budget[key]} becomes ${after.budget[key]}`);
   }
   if (after.approval.ttlSeconds > before.approval.ttlSeconds) changes.push(`approval.ttlSeconds: ${before.approval.ttlSeconds} becomes ${after.approval.ttlSeconds}`);
+  changes.push(...advisorWeakenings(before.advisor, after.advisor));
   return changes;
 }
 

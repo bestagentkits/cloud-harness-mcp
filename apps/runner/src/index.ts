@@ -16,6 +16,7 @@ import { AgentPolicyService } from './agent-governance/policy-service.js';
 import { HarnessError } from '@cloud-harness/contracts';
 import { SecretKeyring } from './secret-keyring.js';
 import { createRunnerDecisionPlane } from './decision-plane/runner-decision-plane.js';
+import { ExecutionRiskAdvisor } from './decision-plane/execution-risk-advisor.js';
 import { StateStore } from './state-store.js';
 import { WorkspaceService } from './workspace-service.js';
 import { DockerAgentGatewayControl } from './agent-gateway-control.js';
@@ -118,7 +119,10 @@ const agentPolicies = new AgentPolicyService({
   activeProjectIds: (principalId) => metadata.activeProjectIds(principalId),
   audit: (database, principalId, action, subjectType, subjectId, generation, details) => {
     metadata.recordAuditInTransaction(database, principalId, action, subjectType, subjectId, generation, details);
-  }
+  },
+  // Consulted only when DECISION_PLANE_PURPOSES includes execution-risk, TypeSafe egress is on, the owner has
+  // a TypeSafe credential and the policy enables the advisor; otherwise the policy fallback applies with no call.
+  advisor: new ExecutionRiskAdvisor(decisionPlane)
 });
 // Agent trace retention: traces past their retention period are removed hourly in bounded,
 // yielding batches, also while traces are disabled. A failure is logged and retried on the next
