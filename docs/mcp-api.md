@@ -201,6 +201,13 @@ Agent calls do not refresh the parent workspace idle TTL.
   requested proxy-tool subset before launch. Its result is an acknowledgement
   with an opaque ID, generation, status, and replay flag—not prompt
   completion.
+  The proxy-tool enum also lists `exec_run`, `git_status` and `git_diff`, and
+  a profile's `maxProxyOperations` may hold up to 13 entries, so an owner can
+  build a profile for coding automations. Those three are granted only to an
+  agent a coding automation starts, where the coding broker decides each call
+  ([security model](security-model.md#coding-automations)); an MCP client that
+  requests them is refused with `FORBIDDEN` (403, not retryable) before any
+  agent exists.
   When the owner has set an aggregate model spend policy (daily or monthly,
   for the principal or for one model profile), the spawn also reserves its
   whole `maxCostMicros` against it. A spawn that would take any applicable
@@ -309,6 +316,15 @@ event-to-span mapping by
   `null`. Its `costMicros` is `null` when no trace in the window has a known
   cost.
 - **Spans** are returned in recording order (span sequence), not start time.
+- **Coding automations.** The trace of an agent a coding automation started
+  carries the run's `workflowId` (filterable in `agent_traces_list`), and each
+  brokered action adds an `action` span with its decision, reason code and
+  receipt state. The runner verifies, commits, pushes and opens the pull
+  request after the agent ends, so those spans are appended to a trace that is
+  already terminal; a finished trace's span list can still grow. The receipts
+  themselves are on the Dashboard Automations run page, read through the
+  runner's `workflow_get` newest first and keyset-paged by `actionsCursor`
+  ([`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts)).
 - **Error classes.** A failed model call carries a bounded `errorClass`. A
   Model Gateway budget refusal is `budget`, recognised by the gateway's
   structured refusal code `budget_exceeded` (owned by
@@ -556,7 +572,10 @@ Decisions that are easy to misread:
   its terminal `SUCCEEDED` record and released its runtime; a turn ending is
   never settlement. An automation event is recorded in the same transaction as
   the workflow's terminal transition, so a completed event can precede the
-  optional GitHub comment.
+  optional GitHub comment. A coding automation completes only once its pull
+  request is open; a refused, unverified or unreadable step fails it with its
+  code (for example `ACTION_DENIED:<reason>`, `CODING_VERIFY_FAILED` or
+  `EFFECT_UNKNOWN`), and the run page lists every action receipt.
 - **Payloads are notifications, not results.** They carry identifiers, status,
   exit or error codes, and timestamps only, never command text, output,
   prompts, or messages. Read the result with `tasks_status` or `agent_status`

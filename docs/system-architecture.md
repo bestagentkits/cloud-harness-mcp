@@ -41,6 +41,8 @@ GitHub webhook automation (optional)
   -> runner internal automations channel (signature, dedupe, rule matching)
   -> runner automation engine -> the runner's own workspace and agent
      operations -> optional brokered GitHub comment
+  -> coding rules only: coding broker (policy gate on every agent action)
+     -> verify -> runner commit, create-only agent/ branch push, pull request
 
 Dashboard Terminal (browser)
   -> /dashboard BFF on the API (session cookie, Origin, CSRF)
@@ -201,9 +203,8 @@ Agent execution policies live in the runner under
 ([ADR 0006](adr/0006-policy-governed-coding-agents.md)). The policy store keeps
 immutable revisions and compare-and-swap heads in the runner state database;
 the resolver turns the global and project heads into a frozen snapshot; the
-pure gate evaluator (`PURE_GATE_EVALUATOR`) decides. Today it serves the
-Dashboard simulation; action enforcement arrives with the coding broker, which
-reuses it. The API holds no policy state: the Dashboard BFF
+pure gate evaluator (`PURE_GATE_EVALUATOR`) decides. It serves both the
+Dashboard simulation and the coding broker. The API holds no policy state: the Dashboard BFF
 ([`apps/api/src/dashboard-policies-router.ts`](../apps/api/src/dashboard-policies-router.ts))
 forwards validated owner requests over the internal agent-policies channel,
 whose schema is
@@ -211,6 +212,28 @@ whose schema is
 The versioned ports in
 [`ports.ts`](../apps/runner/src/agent-governance/ports.ts) are the seams that
 runtime adapters, the action broker and advisors plug into.
+
+Coding automations (`AGENT_CODING_ENABLED`) extend the same engine. A rule's
+optional `coding` action admits the workflow against the policy and pins its
+revisions; the engine then runs one step per tick through
+[`apps/runner/src/automation-coding.ts`](../apps/runner/src/automation-coding.ts):
+the agent phase, verify, commit, push and pull request. The coding broker
+([`action-broker.ts`](../apps/runner/src/agent-governance/action-broker.ts))
+wraps the agent manager's tool executor, so the agent's edits and commands
+reach the workspace only after a gate decision, and it records every agent and
+runner action as a receipt in `coding_actions`
+([`action-store.ts`](../apps/runner/src/agent-governance/action-store.ts)) and
+as an `action` span on the agent's trace. Receipts are what make a restart
+safe: a step whose receipt is applied is skipped, and one whose effect is
+unknown is reconciled by reading GitHub before anything is repeated. Commits,
+pushes and pull requests use the runner's own `git_commit`, `git_push` and
+`github_action` operations, so publishing credentials stay in the runner. The
+optional lockfile install
+([`install-executor.ts`](../apps/runner/src/agent-governance/install-executor.ts))
+is a one-shot container the runner starts before the agent; it is not an agent
+tool. The trust decisions are in the
+[security model](security-model.md#coding-automations).
+
 Third-party agent toolkits are acquired and normalized via disposable clone helpers running on a dedicated internal Docker network (`cloud-harness-provisioning`). All helper egress routes through the dual-homed `provisioning-proxy` (port 3128) with DNS destination allowlists. Normalized bundles are published to runner Content-Addressed Storage (`TOOLKIT_CACHE_ROOT`) and mounted into executors read-only at `/opt/cloud-harness/owner-skills:ro` or staged into `.cloud-harness/skills` under explicit confirmation.
 
 ## Composition roots and transports

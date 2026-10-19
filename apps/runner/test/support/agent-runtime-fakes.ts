@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { vi } from 'vitest';
-import { RunnerAgentsConfigSchema, type AgentStatus, type RunnerAgentsConfig, type RunnerResponse } from '@cloud-harness/contracts';
+import { RunnerAgentsConfigSchema, type AgentProxyOperation, type AgentStatus, type RunnerAgentsConfig, type RunnerResponse } from '@cloud-harness/contracts';
 import { AgentManager, type AgentManagerDependencies } from '../../src/agent-manager.js';
 import type { AgentGatewayControl, AgentLeaseGrant, AgentLeaseRevocation, AgentLeaseSettlement } from '../../src/agent-gateway-control.js';
 import type { AgentLaunchSpec, AgentLauncher, AgentRuntimeProcess } from '../../src/agent-launcher.js';
@@ -122,7 +122,7 @@ function usageRecord(usage: CumulativeUsage) {
   return { input: usage.input, output: usage.output, cacheRead, cacheWrite, total: usage.input + usage.output + cacheRead + cacheWrite, cost: usage.cost };
 }
 
-export type ScriptedTool = { toolCallId: string; operation: 'files_read' | 'files_write'; input: Record<string, unknown>; isError?: boolean };
+export type ScriptedTool = { toolCallId: string; operation: AgentProxyOperation; input: Record<string, unknown>; isError?: boolean };
 
 export type ScriptedTurn = {
   textDeltas?: string[];

@@ -30,6 +30,8 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `AUTOMATIONS_ENABLED` | `false` | Optional | Optional webhook-triggered automations. Set the same value for the API (public ingress at /integrations/webhooks/github/{connectionId}) and the runner (workflow admission). |
 | `AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS` | `2` | Optional | Instance-wide ceiling on automation workflows holding a workspace at once (runner). |
 | `AGENT_POLICIES_ENABLED` | `false` | Optional | Optional owner-authored agent execution policies (runner): Dashboard Settings > Agent policies, project policies and the gate simulation. Off by default; the Dashboard shows a notice while off. |
+| `AGENT_CODING_ENABLED` | `false` | Optional | Optional policy-brokered coding automations (runner): a rule with a coding action may edit, test, commit, push an agent/ branch and open a pull request. Needs AGENT_POLICIES_ENABLED and AUTOMATIONS_ENABLED. Off by default; setting it back to false stops running coding workflows. |
+| `AGENT_CODING_PACKAGE_INSTALL_ENABLED` | `false` | Optional | Lockfile-only, scripts-off package installs for coding runs. Off by default; policy still decides. |
 | `AGENT_TRACES_ENABLED` | `false` | Optional | Optional durable agent run traces (runner). Off by default. Traces store timings, tokens, cost, outcomes and digests, never prompts, model output or raw tool arguments. |
 | `AGENT_TRACE_RETENTION_DAYS` | `14` | Optional | Days a finished trace is kept before the retention purge removes it (1-90). |
 | `AGENT_TRACE_MAX_SPANS` | `2000` | Optional | Spans kept per trace; further spans are dropped behind one truncation marker (16-10000). |

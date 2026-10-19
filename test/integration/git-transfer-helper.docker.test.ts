@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,12 +15,22 @@ function git(args: string[], cwd = '/job/repo'): string {
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
-function helper(mode: string, repositoryUrl: string, repositoryPath: string, transferPath: string, argument = '', expectedRemoteOid = ''): void {
-  execFileSync('docker', [
+/** Runs the helper; throws when it fails, and answers what it printed. */
+function helper(mode: string, repositoryUrl: string, repositoryPath: string, transferPath: string, argument = '', expectedRemoteOid = ''): { stdout: string; stderr: string } {
+  const result = spawnSync('docker', [
     'run', '--rm', '--network', 'none', '--user', '10001:10001',
     '--volume', `${volumeName}:/job:rw`, '--entrypoint', '/opt/harness/git-transfer-helper.sh',
     'cloud-harness-executor:local', mode, repositoryUrl, repositoryPath, transferPath, argument, expectedRemoteOid
-  ], { input: '\n', stdio: ['pipe', 'pipe', 'pipe'] });
+  ], { input: '\n', encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`helper ${mode} exited ${String(result.status)}: ${result.stderr}`);
+  return { stdout: result.stdout, stderr: result.stderr };
+}
+
+function exists(path: string): boolean {
+  return spawnSync('docker', [
+    'run', '--rm', '--network', 'none', '--volume', `${volumeName}:/job:ro`, '--entrypoint', '/bin/sh',
+    'cloud-harness-executor:local', '-c', `test -e ${path}`
+  ]).status === 0;
 }
 
 beforeAll(() => {
@@ -79,6 +89,31 @@ describe('credential-isolated Git transfer helper', () => {
     )).toThrow();
 
     expect(git(['--git-dir=/job/remote.git', 'rev-parse', 'refs/heads/main'], '/job')).toBe(competingOid);
+  });
+
+  it('never runs a command the checkout configures for its alternates, and prints no graft hint', () => {
+    git(['clone', '--no-local', '/job/remote.git', '/job/alternated'], '/job');
+    // The checkout borrows objects through an alternates file and names a command Git runs to list the
+    // alternate's refs whenever it negotiates a fetch into the checkout.
+    git(['config', 'core.alternateRefsCommand', 'touch /job/pwned-altcmd; :'], '/job/alternated');
+    execFileSync('docker', [
+      'run', '--rm', '--network', 'none', '--user', '10001:10001', '--volume', `${volumeName}:/job:rw`, '--entrypoint', '/bin/sh',
+      'cloud-harness-executor:local', '-c', 'echo /job/remote.git/objects > /job/alternated/.git/objects/info/alternates'
+    ], { stdio: 'ignore' });
+
+    const outputs = [
+      helper('fetch', '/job/remote.git', '/job/alternated', '/job/alternated-fetch', 'refs/heads/main'),
+      helper('import', '/job/remote.git', '/job/alternated', '/job/alternated-fetch', 'refs/heads/main'),
+      helper('stage-push', '/job/remote.git', '/job/alternated', '/job/alternated-stage', 'isolated'),
+      helper('inspect', '/job/remote.git', '/job/alternated', '/job/alternated-stage',
+        git(['rev-parse', 'HEAD'], '/job/alternated'), git(['rev-parse', 'HEAD~1'], '/job/alternated'))
+    ];
+
+    expect(exists('/job/pwned-altcmd')).toBe(false);
+    for (const output of outputs) {
+      // Neither the graft hint nor a complaint about the overridden alternate refs command.
+      expect(`${output.stdout}\n${output.stderr}`).not.toMatch(/graft|cannot run|alternateRefs/iu);
+    }
   });
 });
 

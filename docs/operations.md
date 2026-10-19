@@ -384,6 +384,17 @@ the connection and update the GitHub webhook at once: rotation has no grace
 window, so deliveries signed with the old secret return `401` until GitHub has
 the new one.
 
+Coding workflows add the `coding_actions` receipt table and coding columns on
+the workflow row, also additive. To stop coding at once, set
+`AGENT_CODING_ENABLED=false` and restart the runner: each running coding
+workflow fails with `CODING_DISABLED` at its next step, before anything more
+is published, and is cleaned up like any other workflow
+([configuration](configuration.md#coding-automations)). A workflow that failed
+with `EFFECT_UNKNOWN` stopped because GitHub could not confirm whether its push
+or pull request happened. Check the repository for its `agent/` branch and
+pull request before labelling the issue again; the harness never retries that
+step on its own.
+
 ## Model catalog state schema rollback
 
 The model catalog adds runner state schema v14: one table of last-good catalog

@@ -663,9 +663,29 @@ Precedence is owned by
 [`apps/runner/src/agent-governance/gate-evaluator.ts`](../apps/runner/src/agent-governance/gate-evaluator.ts),
 and the rationale by [ADR 0006](adr/0006-policy-governed-coding-agents.md).
 Policies are stored per owner in the runner state database, so they survive
-restarts and are covered by its backups. This release stores, checks and
-simulates policies; enforcement on running agents arrives with the coding
-broker.
+restarts and are covered by its backups. The coding broker below enforces
+them on every action a coding workflow takes.
+
+## Coding automations
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AGENT_CODING_ENABLED` | off | Runner only. Lets an automation rule with a `coding` action edit, test, commit, push an `agent/` branch and open a pull request, each action decided by the execution policy. Needs `AGENT_POLICIES_ENABLED` and `AUTOMATIONS_ENABLED`; the runner refuses to start otherwise. It is also the kill switch: setting it back to off fails running coding workflows with `CODING_DISABLED` at their next step, before anything else is published. |
+| `AGENT_CODING_PACKAGE_INSTALL_ENABLED` | off | Runner only. Lets a coding workflow install the checkout's npm lockfile once, before the agent starts, in a one-shot `dependency-access` container with lifecycle scripts off. Needs `AGENT_CODING_ENABLED`. Each locked package is still a `package_install` action the policy must allow; with the flag off, a lockfile is ignored and the agent works without installed dependencies. |
+
+Rule fields (`coding.projectId`, `verifyCommand`, `baseBranch`) and receipt
+shapes are owned by
+[`packages/contracts/src/coding-actions.ts`](../packages/contracts/src/coding-actions.ts);
+the pipeline by
+[`apps/runner/src/automation-coding.ts`](../apps/runner/src/automation-coding.ts);
+and the rationale by [ADR 0006](adr/0006-policy-governed-coding-agents.md).
+
+Rollback: set `AGENT_CODING_ENABLED=false` and restart the runner. Running
+coding workflows fail with `CODING_DISABLED` and their workspaces close;
+branches and pull requests already published stay on GitHub for the owner to
+review or delete. Receipts in `coding_actions` stay readable on the run page
+and are purged with their workflow. No table is dropped, so turning the flag on
+again needs no migration.
 
 ## Compose and logging overrides
 

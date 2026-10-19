@@ -272,6 +272,17 @@ describe('model profile wizard rules', () => {
     expect(updated.request.body).toMatchObject({ displayName: 'Renamed', expectedGeneration: 3 });
     expect(updated.request.body).not.toHaveProperty('profileId');
     expect(updated.request.body).not.toHaveProperty('customUpstreamUrl');
+
+    // Policy-gated operations the wizard does not offer survive an edit, but never a duplicate.
+    const gated = ['git_status', 'git_diff'];
+    const coding = profile({ activeRevision: { ...saved.activeRevision, maxProxyOperations: ['files_read', ...gated] } });
+    const codingEdit = initialWizardState({ mode: 'edit', profile: coding, profiles: [coding], credentials });
+    expect(codingEdit.operations).toEqual(['files_read']);
+    expect(buildProfileRequest(codingEdit, openai).request.body.maxProxyOperations).toEqual(['files_read', ...gated]);
+    const review = renderWizardStep(codingEdit, { providers, credentials, providersStatus: 'ready', catalog: { status: 'idle', entries: [] }, provider: openai });
+    expect(review).toContain('git_status, git_diff');
+    const codingCopy = initialWizardState({ mode: 'duplicate', profile: coding, profiles: [coding], credentials });
+    expect(buildProfileRequest(codingCopy, openai).request.body.maxProxyOperations).toEqual(['files_read']);
   });
 
   it('sends an unedited catalog price whole with its reference, and an edited price as typed', () => {

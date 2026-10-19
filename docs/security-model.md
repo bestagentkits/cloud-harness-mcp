@@ -300,22 +300,135 @@ cannot authenticate to Cloudflare Access. The decisions that keep that safe:
   when `GITHUB_APP_SLUG` is configured, always ignores this harness's own
   GitHub App. Posted comments do not raise label events, so the harness cannot
   re-trigger itself either way. An optional actor allowlist narrows it further.
-- **The agent is read-only.** Each run opens a fresh `network-none` workspace
-  on the rule's ref (the default branch unless set) and spawns an agent whose
-  proxy operations are limited by the rule contract to the read-only set, with
-  the rule's budget. A pull request's head is not checked out. Its only GitHub write is an optional single comment through the
-  brokered `issue_comment` action, with `@` mentions neutralized.
+- **The agent is read-only unless the rule opts into coding.** Each run opens
+  a fresh `network-none` workspace on the rule's ref (the default branch unless
+  set) and spawns an agent whose proxy operations are limited by the rule
+  contract to the read-only set, with the rule's budget. A pull request's head
+  is not checked out. Its only GitHub write is an optional single comment
+  through the brokered `issue_comment` action, with `@` mentions neutralized. A
+  rule with a `coding` action follows [Coding automations](#coding-automations)
+  instead.
 
 Residual risk: anyone who can add a label in a watched repository can spend
 that rule's budget, bounded by cooldown, per-rule and instance concurrency, and
 the per-connection delivery rate; prompt injection through issue text can still
-shape the read-only answer that may be posted. Approvals, write-capable runs,
-non-GitHub providers, and MCP tools for automation management are not
-supported. The executable owners are
+shape the answer that may be posted. Approval grants, non-GitHub providers, and
+MCP tools for automation management are not supported. The executable owners are
 [`apps/api/src/automations/webhook-ingress.ts`](../apps/api/src/automations/webhook-ingress.ts),
 [`apps/runner/src/automation-github.ts`](../apps/runner/src/automation-github.ts),
 [`apps/runner/src/automation-service.ts`](../apps/runner/src/automation-service.ts),
 and [`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
+
+## Coding automations
+
+A rule with a `coding` action (off unless `AGENT_CODING_ENABLED`, which needs
+`AGENT_POLICIES_ENABLED` and `AUTOMATIONS_ENABLED`) lets a labelled issue
+become a pull request. The agent may now change files and run commands, so the
+boundary moves from "read-only" to "every action is decided, and only the
+runner publishes":
+
+- **Identity comes from the rule, never the payload.** The principal is the
+  rule's owner, the project is the rule's `coding.projectId`, and the policy is
+  the owner's global and project head, pinned on the workflow when it starts.
+  Fields in the webhook body that name a principal, project, policy or base
+  branch are ignored.
+- **Every action goes through one gate.** The coding broker
+  ([`apps/runner/src/agent-governance/action-broker.ts`](../apps/runner/src/agent-governance/action-broker.ts))
+  sits between the agent's tool calls and the workspace. Edits, `exec_run`,
+  `git_status` and `git_diff` are described as an action and decided by the
+  same evaluator the Dashboard simulation uses. The revisions the run started
+  under are pinned, so a policy edit or rollback stops it, and each call
+  re-checks revocation (workflow state and workspace generation), the run's
+  budget and the kill switch. Only `ALLOW` runs. `REQUIRE_APPROVAL` fails closed
+  with `ACTION_REQUIRES_APPROVAL`, because this release grants no approvals. A
+  refused call never reaches the workspace. Editing a lockfile or package
+  manifest is a `package_install` action, not an `edit`.
+- **The agent never publishes.** It stays on `network-none` with no Git or
+  GitHub credential and is told not to commit. After it ends, the runner runs
+  the rule's verify command (argv only, no shell), and only if it passes does
+  the runner re-check the changed paths, commit, push a create-only
+  `agent/<issue>-<id>` branch, and open a pull request against the rule's
+  explicit base. It never merges, deploys, or pushes to an existing branch.
+  When verification fails, nothing is committed and the staged diff is kept as
+  a workspace artifact.
+- **The runner trusts only what it reads itself.** The agent and the verify
+  command run arbitrary code in the checkout, including its Git configuration,
+  replace refs and grafts. The runner therefore never asks the worker's tools.
+  Its own reads of HEAD and the changed paths run in a fresh, network-less,
+  read-only helper container. Each read uses an allowlisted subcommand, an
+  explicit Git directory and work tree, a clean environment, and `-c`
+  overrides, so a checkout's `core.worktree`, `diff.relative`,
+  `core.useReplaceRefs`, grafts, hooks, fsmonitor and pager cannot reshape it
+  ([`apps/runner/src/agent-governance/coding-git.ts`](../apps/runner/src/agent-governance/coding-git.ts)).
+  It refuses to stage unless HEAD is still the base (`HEAD_MOVED`), gates
+  every changed path in bounded chunks, and refuses a listing it could not
+  read completely (`PATHS_UNVERIFIABLE`). These checkout reads are defence in
+  depth. The authoritative check runs on the transfer clone that the push
+  sends from: the runner copies the checkout through the pack protocol (no
+  shared object files or alternates), then the transfer helper reads the raw
+  commit object and the paths it changes there, with replace objects and
+  grafts off. The commit must have exactly one parent, the base. Its author and
+  committer must be the runner's identity, and its message must be exactly the
+  runner's message, which carries this run's `Cloud-Harness-Workflow`
+  trailer (the worker commits with hooks off, so nothing may append to it). Every path it changes is gated again, and the listing must be
+  complete. On a refusal (`COMMIT_UNVERIFIED`, `PATHS_UNVERIFIABLE` or
+  `ACTION_DENIED:PATH_OUT_OF_SCOPE`) the clone is discarded and nothing is
+  pushed ([`worker/git-transfer-helper.sh`](../worker/git-transfer-helper.sh),
+  [`test/integration/coding-publish.docker.test.ts`](../test/integration/coding-publish.docker.test.ts)).
+  When the transfer helper fails to stage or read the copy three attempts in a
+  row, the run stops as `COMMIT_UNVERIFIED` instead of retrying until it times
+  out; failures around the helper, such as a credential or the remote probe,
+  are not counted. A branch that already holds another commit is never
+  overwritten, and the run stops as `BRANCH_EXISTS`. The
+  helper also overrides the settings through which a checkout's configuration
+  would make Git run a command (hooks, fsmonitor, the alternate refs command).
+  It does not serialise transfers: the clone is staged in the workspace's job
+  directory, where another transfer helper for the same workspace, such as an
+  owner's concurrent `git_fetch`, mounts it too, and nothing stops that one
+  from changing the clone between the check and the push. The runner commits
+  first and reads HEAD afterwards, so a process the agent left running could
+  still substitute a commit in between. That commit would have to match all
+  of the above, including the runner's message and identity, and only paths
+  the policy allows can be published through it.
+  The push names that commit by its id, never `HEAD`. A first attempt refuses
+  a branch that already exists (`BRANCH_EXISTS`) instead of adopting it; only
+  a replay of the run's own recorded commit step may reuse its branch. An
+  existing pull request is adopted only when it comes from the same
+  repository, the run's branch and the rule's base.
+- **Concurrency is decided at admission.** The policy's `maxConcurrentRuns`
+  counts the owner's coding runs in progress; a run over the limit waits in
+  `STARTING` until a slot frees or the start window expires, rather than being
+  admitted and stopped later.
+- **Effects are recorded before they happen.** Each step writes a receipt in
+  `coding_actions` (intent, dispatched, then applied, rejected, unknown or
+  blocked) under an idempotency key, so a redelivery, a restart or a crash
+  replays the step instead of repeating it. An answer lost after the effect is
+  reconciled by reading the remote branch or pull request list; when GitHub
+  cannot be read, the step stops as `EFFECT_UNKNOWN` and is never retried
+  blindly. Receipts have no foreign key, so they stay readable after the
+  workspace closes, and each one is joined to the agent's trace by an `action`
+  span. A receipt stores the action's argv and paths as decided, unredacted,
+  and the owner's Dashboard run page shows them; a verify command or path
+  should therefore never carry a secret.
+- **Installs are lockfile-only and separate.** With
+  `AGENT_CODING_PACKAGE_INSTALL_ENABLED`, a checkout's npm lockfile is admitted
+  only if every entry is a registry tarball with a sha512 integrity from an
+  allowed registry, and each package is a `package_install` action the policy
+  must allow outright. A package that would need advisor clearance is refused,
+  not cleared in bulk. One install receipt describes the lockfile with its
+  package count and digest. `npm ci --ignore-scripts` runs once before the agent starts in a
+  one-shot `dependency-access` container that mounts only the checkout and
+  receives no secrets, Docker socket, tools or caches
+  ([`apps/runner/src/agent-governance/install-executor.ts`](../apps/runner/src/agent-governance/install-executor.ts)).
+  The workspace and the agent stay on `network-none`.
+
+Residual risk: within what the policy allows, the agent can write any content
+to allowed paths, and the verify command runs that content inside the executor.
+A reviewer must read the pull request before merging; the executor isolation,
+not the gate, contains what the code does when it runs. Evidence is
+[`test/integration/coding-issue-to-pr.test.ts`](../test/integration/coding-issue-to-pr.test.ts)
+and
+[`test/integration/install-executor.docker.test.ts`](../test/integration/install-executor.docker.test.ts).
 
 ## Downstream MCP OAuth client
 
