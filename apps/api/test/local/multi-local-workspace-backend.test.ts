@@ -67,18 +67,22 @@ describe('MultiLocalWorkspaceBackend', () => {
     expect(absolute.ok).toBe(false);
   });
 
-  it('runs commands in the selected root', async () => {
+  // On Windows the local backend runs commands through cmd.exe, which has no `pwd`.
+  it.skipIf(process.platform === 'win32')('runs commands in the selected root', async () => {
     const result = await router.call('exec_run', { workspaceId: id('isekai'), command: 'pwd' });
     expect(result.ok).toBe(true);
     expect((result.data as { output: string }).output.trim()).toBe(join(base, 'isekai'));
   });
 
-  it('runs bash in the selected root and refuses the toolbox target without needing a workspace', async () => {
+  // Same `pwd` limitation as above.
+  it.skipIf(process.platform === 'win32')('runs bash in the selected root', async () => {
     const result = await router.call('bash', { workspaceId: id('netforge'), target: 'workspace', command: 'pwd' });
     expect(result.ok).toBe(true);
     expect(result.data).toMatchObject({ target: 'workspace' });
     expect((result.data as { output: string }).output.trim()).toBe(join(base, 'netforge'));
+  });
 
+  it('refuses the toolbox target, packages, and model tools without needing a workspace', async () => {
     const toolbox = await router.call('bash', { target: 'toolbox', command: 'pwd' });
     expect(toolbox.error?.code).toBe('INVALID_INPUT');
     expect(toolbox.message).toContain('toolbox target is unsupported in local mode');

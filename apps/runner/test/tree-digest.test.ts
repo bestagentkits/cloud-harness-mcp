@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { computeFullTreeDigest, computeFullTreeDigestAsync } from '../src/adapters/mattpocock-adapter.js';
+import { isWindows } from './platform-support.js';
 
 describe('streamed tree digest', () => {
   let root: string;
@@ -16,7 +17,8 @@ describe('streamed tree digest', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('matches the synchronous digest on nested directories, symlinks, modes, and empty files', async () => {
+  // Needs symlinks and POSIX mode bits: Windows reports 0o755 and 0o700 alike, and sizes links differently.
+  it.skipIf(isWindows)('matches the synchronous digest on nested directories, symlinks, modes, and empty files', async () => {
     mkdirSync(join(root, 'bin'));
     mkdirSync(join(root, 'lib', 'deep', 'deeper'), { recursive: true });
     mkdirSync(join(root, 'empty-dir'));
@@ -43,7 +45,8 @@ describe('streamed tree digest', () => {
     expect(changed).toEqual(computeFullTreeDigest(root));
   });
 
-  it('hashes a multi-MiB file across several streamed chunks', async () => {
+  // The expected manifest pins POSIX mode 644; Windows reports every writable file as 666.
+  it.skipIf(isWindows)('hashes a multi-MiB file across several streamed chunks', async () => {
     const content = randomBytes(5 * 1_048_576 + 123);
     writeFileSync(join(root, 'large.bin'), content);
     chmodSync(join(root, 'large.bin'), 0o644);

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { executeWorkerRequest } from '../../../worker/harness-worker.mjs';
+import { isWindows } from './platform-support.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -175,7 +176,8 @@ describe('workspace close check', () => {
     expect((await closeCheck()).data).toMatchObject({ uncommittedPaths: 2 });
   });
 
-  it('reads a worktree path that contains a newline whole', async () => {
+  // Windows file names cannot contain a newline.
+  it.skipIf(isWindows)('reads a worktree path that contains a newline whole', async () => {
     const clone = cleanClone();
     git(clone, 'worktree', 'add', '--quiet', '--detach', join('.worktrees', 'odd\nname'), 'HEAD');
     expect((await closeCheck()).data).toEqual({ uncommittedPaths: 0, stashes: 0, unpushedCommits: 0 });

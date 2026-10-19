@@ -47,6 +47,7 @@ vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
 import type * as GitHubAppBroker from '../src/github-app-broker.js';
 import { computeWorkspaceOpenFingerprint, WorkspaceService } from '../src/workspace-service.js';
 import { legacyRepositoryEntry } from '../src/workspace-repositories.js';
+import { symlinksSupported } from './platform-support.js';
 
 const temporaryDirectories: string[] = [];
 const openStores: StateStore[] = [];
@@ -277,7 +278,7 @@ describe('multi-repository workspaces', () => {
     expect(await autoCloseBlocker(store.byId(workspaceId) as WorkspaceRecord)).toBeUndefined();
   });
 
-  it('refuses a scoped call when the checkout directory was replaced by a symlink', async () => {
+  it.skipIf(!symlinksSupported)('refuses a scoped call when the checkout directory was replaced by a symlink', async () => {
     const { service, jobsRoot } = fixture();
     const { workspaceId } = await openMulti(service);
     const repos = join(jobsRoot, workspaceId, 'repo', 'repos');

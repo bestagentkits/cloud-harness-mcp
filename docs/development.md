@@ -31,6 +31,38 @@ npm test
 npm run build
 ```
 
+### Windows hosts
+
+The runner ships only as a Linux container, and local stdio mode is POSIX-only
+by default.
+Linux CI therefore runs every test. On a Windows host, tests that depend on
+POSIX behavior skip, and each skip is guarded by a comment that states the
+reason. A skipped test is a host limitation. A test that fails there is a
+regression unless it appears below as unexplained.
+
+| Skips on win32 | Reason |
+| --- | --- |
+| `apps/runner/test/skill-extension-workspace.test.ts` (whole file) | Workspace and repository skill tiers verify opened descriptors through `/proc/self/fd` |
+| `apps/runner/test/package-builder.test.ts`: release tree verification and the three apply builds that verify a release | Symlinks, POSIX mode and execute bits, setuid and sticky bits, and FIFOs |
+| `apps/runner/test/tree-digest.test.ts`: nested tree and multi-MiB file | Symlinks and POSIX mode bits |
+| `apps/runner/test/worker-close-check.test.ts`: newline worktree path | Windows file names cannot contain a newline |
+| `apps/api/test/local/multi-local-workspace-backend.test.ts`: two `pwd` tests | The local backend runs commands through `cmd.exe` |
+| `test/integration/mcp-local-multi-workspace.test.ts` (whole file) | The server refuses local mode on win32 unless `HARNESS_ALLOW_WIN32_STDIO=1` |
+| `test/integration/dynamic-model-profiles.test.ts`: four TLS tests | They need `openssl` on PATH or pre-generated fixtures |
+| `test/deploy-release-runtime.test.ts`, `test/upgrade-nginx-routes.test.ts`, `apps/runner/test/terminal-session-scripts.test.ts` | POSIX shell scripts |
+
+The remaining symlink fixtures in the runner tests skip only when `symlink`
+fails, so they run on a Windows host with Developer Mode or elevation. The
+guards live in
+[`apps/runner/test/platform-support.ts`](../apps/runner/test/platform-support.ts).
+The nginx upgrade suite also refuses its test root when run as root, so in a
+root-only container run it as an unprivileged user.
+
+`apps/runner/test/terminal-dispatch.test.ts` and `apps/runner/test/mcp-event-service.test.ts`
+also fail on Windows, but no POSIX dependency explains it yet. They are not
+skipped. [#435](https://github.com/bestagentkits/cloud-harness-mcp/issues/435)
+tracks the root cause.
+
 ### Running local stdio mode
 
 After building packages with `npm run build`, you can test local stdio mode directly:
