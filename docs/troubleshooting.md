@@ -269,6 +269,46 @@ a lost response; do not create a second key until the first result is resolved.
   and the configured artifact root; a database row without its matching
   payload indicates an incoherent restore.
 
+## Managed agent sessions
+
+Session persistence and the durable engine are off by default. The decision
+and its evidence are in
+[ADR 0006](adr/0006-agent-session-persistence.md); the error contract is in
+[agent sessions](mcp-api.md#persisted-sessions-and-continuefrom).
+
+- `agent_spawn` with `continueFrom` fails with `NOT_SUPPORTED` and
+  `continueFrom needs agent session persistence`: the instance runs with
+  `AGENT_SESSION_PERSISTENCE_ENABLED` off (and, for a durable predecessor,
+  `AGENT_DURABLE_RUNTIME_ENABLED` off). Nothing was created. Spawn a fresh agent
+  and brief it by hand, or ask the operator to enable the flag (see
+  [operations](operations.md#agent-session-persistence-and-the-durable-engine)).
+  An agent spawned while the flag was off has no stored session, so it cannot be
+  continued even after the flag is turned on (`CONFLICT`).
+- `agent_spawn` with `runtime: "pi-durable"` fails with `NOT_SUPPORTED` and
+  `the pi-durable agent runtime is off on this instance`: the durable engine
+  flag is off. Omit `runtime` to run the default `pi-coding` engine.
+- A durable agent ends `FAILED` right after it starts with `the durable agent
+  runtime is not installed in this agent image`: the runner flag is on but the
+  agent image was built without `INCLUDE_DURABLE_RUNTIME=true`. Rebuild the
+  agent image with it, or turn the runner flag off; the message is produced by
+  [`apps/agent-runtime/src/engine-selection.ts`](../apps/agent-runtime/src/engine-selection.ts).
+- A durable agent ends `LIMIT_EXCEEDED` with `durable agent session exceeded
+  its size limit`: its lineage's session database grew past
+  `AGENT_DURABLE_MAX_LINEAGE_BYTES`. The runner refuses further commits to it,
+  so continuing the same lineage hits the same cap. Start a new root agent
+  (without `continueFrom`), or ask the operator to raise the cap within its
+  bounds ([configuration](configuration.md#managed-agents)).
+- A continuation's model sees a tool result with `EFFECT_UNKNOWN`: the earlier
+  run was stopped while a write, delete, or move was in flight, and the runner
+  could not establish from the workspace whether it landed. The call was not
+  issued again. Read the affected path before repeating the change; the agent
+  is told the same. `EFFECT_NOT_APPLIED` means the write provably did not land
+  and may be retried with a new call. The rules are in
+  [`apps/runner/src/agent-effect-reconciler.ts`](../apps/runner/src/agent-effect-reconciler.ts).
+- An agent killed mid-run reports `INTERRUPTED`, never `SUCCEEDED`, whichever
+  engine ran it. For a durable agent, `run.resumable: true` means its store
+  still holds unfinished work that a `continueFrom` resumes first.
+
 ## MCP Events
 
 The error mapping is owned by

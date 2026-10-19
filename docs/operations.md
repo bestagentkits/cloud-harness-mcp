@@ -432,7 +432,54 @@ example an unknown profile) releases its reservation at zero on any gateway vers
 while an ambiguous issue failure (exec failure, timeout, unreadable answer) is charged its
 cap as `unreconciled`, because the lease may exist.
 
-## Durable agent engine
+## Agent session persistence and the durable engine
+
+Both are off by default, and `pi-coding` stays the default engine; the reasons
+and measurements are in [ADR 0006](adr/0006-agent-session-persistence.md). The
+flags are described in [configuration](configuration.md#managed-agents).
+
+### Canary
+
+Enable a flag on one instance before any other, in this order:
+
+1. Back up the runner state as for any upgrade; the flags write new rows and,
+   for the durable engine, files under `agent-sessions/`.
+2. Set `AGENT_SESSION_PERSISTENCE_ENABLED=true` (and, only when durable agents
+   are wanted, follow the durable steps below), then restart the runner.
+3. In a disposable `network-none` workspace, run a small agent on a cheap
+   profile, let it finish, and continue it with `continueFrom`. Check that
+   `agent_status` reports `session.continuable: true` for the first agent and
+   that the follow-up answers from the earlier context. For the durable engine,
+   repeat with `runtime: "pi-durable"`.
+4. Cancel a running agent and confirm that it ends `CANCELLED` (or
+   `INTERRUPTED` after a runner restart), never `SUCCEEDED`.
+5. Close the workspace and confirm that its sessions and, for durable agents,
+   its `agent-sessions/<lineage>.sqlite` files are gone.
+
+The live benchmark run recorded in the ADR exercised steps 2 to 4 on a local
+Compose stack. A production canary is an owner decision and follows the
+[real-provider canary runbook](#owner-authorized-real-provider-canary-runbook).
+
+### Kill switch and rollback
+
+Unsetting either flag and restarting the runner is the kill switch. Running
+agents finish; new `continueFrom` and durable spawns are refused with
+`NOT_SUPPORTED`; nothing resumes on its own. The default spawn path never reads
+the stored sessions, so turning the flags off needs no data change. Stored
+sessions, receipts, and durable lineage databases stay until the retention in
+`AGENT_SESSION_RETENTION_MS` purges them or their workspace closes.
+
+A rollback to a runner older than session persistence also needs the schema
+steps in
+[`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts):
+`downgradeStateSchemaToV14` steps v17 to v14 through `downgradeStateSchemaToV16`
+and `downgradeStateSchemaToV15`. Each step refuses while the data it drops
+exists (durable agents, effect receipts, persisted sessions) unless data loss is
+allowed. Turn the flags off and let retention purge, or close the affected
+workspaces, before stepping down without data loss. Delete `agent-sessions/`
+after a downgrade below v17.
+
+### Durable agent engine
 
 The durable agent engine is off by default and absent from the default agent
 image. To offer it:

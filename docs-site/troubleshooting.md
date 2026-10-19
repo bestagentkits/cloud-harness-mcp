@@ -373,3 +373,31 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 1. Run `model_profile_validate` with the same change: its `escalations` list shows exactly what a save would refuse. Drop those fields to save the rest over MCP.
 2. Otherwise, ask the owner to make the change on the Dashboard [Models page](/dashboard/models), where the same change is saved. Once the owner has saved a profile on a Custom upstream URL, MCP calls may use that URL with that credential.
 3. A profile created over MCP starts **Disabled**. `agent_spawn` cannot use it until the owner activates it on the Models page; no MCP tool activates, disables, or deletes a profile.
+
+---
+
+### 32. `agent_spawn` returns `NOT_SUPPORTED` for `continueFrom` or `runtime: "pi-durable"`
+**Cause:** Continuing an agent and the durable engine are off by default. `continueFrom needs agent session persistence, which is off on this instance` means the operator has not set `AGENT_SESSION_PERSISTENCE_ENABLED` (or, for a durable predecessor, `AGENT_DURABLE_RUNTIME_ENABLED`). `the pi-durable agent runtime is off on this instance` means `AGENT_DURABLE_RUNTIME_ENABLED` is off. Nothing was created.
+
+**Fix:**
+1. Without the flag, spawn a new agent and include what it needs from the earlier one in its prompt. Omit `runtime` to use the default engine.
+2. Otherwise ask the operator to enable the flag; see [Environment Variables](/reference/environment-variables). An agent that ran while persistence was off has no stored session and cannot be continued later (`CONFLICT`).
+3. A durable agent that ends `FAILED` with `the durable agent runtime is not installed in this agent image` needs an agent image built with `INCLUDE_DURABLE_RUNTIME=true`; this is an operator fix.
+
+---
+
+### 33. A durable agent ends `LIMIT_EXCEEDED` with `durable agent session exceeded its size limit`
+**Cause:** A durable agent and every agent that continues it share one session store. It grew past `AGENT_DURABLE_MAX_LINEAGE_BYTES`, so the runner ended the run and refuses further writes to that store. Continuing the same agent again hits the same limit.
+
+**Fix:**
+1. Start a new agent without `continueFrom`, and give it a summary of the earlier work.
+2. If long durable chains are expected, the operator can raise the cap within its documented bounds.
+
+---
+
+### 34. A continued agent reports `EFFECT_UNKNOWN` for a write, delete, or move
+**Cause:** The earlier agent was stopped (cancelled, killed, or interrupted by a runner restart) while that change was in flight, and the runner could not tell from the workspace whether it landed. It did not run the change again, and an interrupted agent is never reported as `SUCCEEDED`. `EFFECT_NOT_APPLIED` instead means the write provably did not land.
+
+**Fix:**
+1. Read the affected file or path before repeating the change; the agent receives the same instruction.
+2. For `EFFECT_NOT_APPLIED`, the agent may simply issue the change again.
