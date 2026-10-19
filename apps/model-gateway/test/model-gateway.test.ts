@@ -550,6 +550,36 @@ describe('model gateway security boundary', () => {
     await vi.waitFor(() => expect(upstreamClosed).toBe(true));
   });
 
+  it.each([
+    ['a terminated usage line', 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}\n\ndata: [DONE]\n\n'],
+    ['a final unterminated usage line', 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}']
+  ])('ends a stream past the output token cap with an in-band bound error (%s)', async (_label, tail) => {
+    const provider = await fakeProvider((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write('data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: {"choices":[{"delta":');
+      setTimeout(() => response.end(`{"content":"!"}}]}\n\n${tail}`), 10);
+    });
+    const running = await gateway(profile(provider.upstream));
+    const grant = activate(running.runtime, issue());
+    const response = await fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers(grant), body: '{"messages":[],"max_tokens":20}'
+    });
+    const events = (await response.text()).split(/\n\n+/u).filter((event) => event.length > 0);
+    expect(response.status).toBe(200);
+    expect(events.slice(0, 3)).toEqual([
+      'data: {"choices":[{"delta":{"content":"hi"}}]}',
+      'data: {"choices":[{"delta":{"content":"!"}}]}',
+      'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}'
+    ]);
+    expect(events).toHaveLength(4);
+    const [eventLine, dataLine] = events[3]!.split('\n');
+    expect(eventLine).toBe('event: error');
+    expect(JSON.parse(dataLine!.slice('data: '.length))).toEqual({
+      type: 'error',
+      error: { code: 'model_bound_exceeded', type: 'model_bound_exceeded', message: 'model_bound_exceeded: model output token limit exceeded' }
+    });
+  });
+
   it('aborts and drains upstream on explicit cancel, disconnect, and lease revocation', async () => {
     let closeCount = 0;
     let providerRequests = 0;

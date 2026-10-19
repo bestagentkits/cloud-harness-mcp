@@ -403,7 +403,10 @@ event-to-span mapping by
   and, unless the run already recorded another limit, the run's
   `budget.limit` span with `limit: "model_budget"`. Provider throttling, including a provider quota
   429, stays `rate_limit`. Raise the agent's budget for the first; wait and
-  retry for the second.
+  retry for the second. A stream the gateway cuts off at the reserved output
+  cap ends with an in-band SSE `error` event carrying `model_bound_exceeded`
+  ([`apps/model-gateway/src/upstream.ts`](../apps/model-gateway/src/upstream.ts)),
+  so the run ends `LIMIT_EXCEEDED` rather than as a dropped connection.
 - **Reconciliation.** When the agent ends, model-call span sums are compared
   with the agent usage ledger. Tokens must match exactly; cost may differ by a
   tolerance of one micro-dollar per model-call span (per-call rounding). A
