@@ -419,3 +419,16 @@ File and command tools without `repositoryId` work on the workspace root, so pat
 2. For `TRACE_EXPIRED` on a list, start the listing again without a cursor. To keep traces longer, ask the operator to raise `AGENT_TRACE_RETENTION_DAYS`.
 3. Copy `traceId` exactly from a list result under the same identity that ran the agent.
 4. Treat an `unreconciled` trace's totals as approximate; `agent_status` usage and the gateway settlement on the trace are the reference figures.
+
+### 35. Notifications: no Inbox entry, a channel stays pending, or failed
+**Cause:**
+- No **Inbox** entry in the Dashboard sidebar, or `FEATURE_DISABLED` from the inbox API, means the operator has not set `NOTIFICATIONS_ENABLED=true` on the runner.
+- An **MCP Events** delivery stays `pending` while its event waits in the webhook queue: the API's delivery worker is down or retrying the callback. It turns `stopped` when the subscription is revoked or lapses, and has no row at all when no `cloudharness.notification.created` subscription existed when the notification was written.
+- A **GitHub comment** delivery mirrors the automation's own comment: `pending` while the comment is retried, `failed` with `publish_failed` when it gave up. A rule that does not publish a comment has no GitHub row.
+- `stopped` with `preference_disabled` means you turned that channel off for that kind before it was delivered.
+
+**Fix:**
+1. Ask the operator to enable notifications (see [Environment Variables](/reference/environment-variables)). Runs from before the flag was on have no notification.
+2. For a stuck MCP Events delivery, check the subscription on `/dashboard/api/v1/event-subscriptions` and the API delivery worker; the notification follows the event once it is delivered.
+3. For a GitHub comment failure, open the automation run page and follow [troubleshooting 32](/troubleshooting#_32-github-automation-deliveries-fail-or-no-run-starts).
+4. Turn the channel back on under **Delivery preferences**; a stopped delivery is not resent, but later notifications are.

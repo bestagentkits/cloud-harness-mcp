@@ -557,6 +557,15 @@ Decisions that are easy to misread:
   never settlement. An automation event is recorded in the same transaction as
   the workflow's terminal transition, so a completed event can precede the
   optional GitHub comment.
+- **Notification event.** `cloudharness.notification.created` fires when a
+  notification enters the principal's inbox (see
+  [notification inbox](#notification-inbox)), with an optional `kind` filter.
+  Its payload is the notification id, kind, subject type and id, a bounded,
+  redacted title, a relative Dashboard link, and the creation time. It is
+  feature-flagged: it fires only while the operator sets
+  `NOTIFICATIONS_ENABLED=true` and the principal's MCP Events preference for
+  that kind is on. Turning the flag off (the rollback) stops new events;
+  existing subscriptions stay listed and simply receive nothing.
 - **Payloads are notifications, not results.** They carry identifiers, status,
   exit or error codes, and timestamps only, never command text, output,
   prompts, or messages. Read the result with `tasks_status` or `agent_status`
@@ -614,6 +623,37 @@ Executable owners:
 These tests use a mock callback receiver; they are not evidence of a live
 ChatGPT subscription (see
 [operations](operations.md#mcp-events-deployment-verification)).
+
+### Notification inbox
+
+When the operator sets `NOTIFICATIONS_ENABLED=true`, terminal automation runs
+and terminal top-level agents (not child agents, and not agents an automation
+started, which notify through their workflow) each write one notification to
+the owner's inbox in the same savepoint as the transition. The
+`workflow.waiting_for_human` and `approval.decided` kinds are defined for the
+approval flow and are written only once that flow emits them. A notification is deduplicated per principal, subject, and
+transition, so a replayed transition never notifies twice. The inbox copy is
+always recorded; the owner chooses per kind whether it is also delivered as the
+`cloudharness.notification.created` MCP event and whether the GitHub column
+mirrors the automation's own result comment. The harness adds no new egress:
+the MCP Events channel rides the existing webhook delivery, and the GitHub
+column reports the state of the comment the automation already posts.
+
+Each channel keeps its own delivery state (`PENDING`, `CLAIMED`, `DELIVERED`,
+`FAILED`, `REVOKED`) and last error class, visible on the Dashboard Inbox.
+Delivery is leased and compare-and-set, so a restarted runner or a second
+dispatcher delivers once; retries back off up to a bounded attempt count; and
+turning a channel off stops its pending deliveries. Notification work never
+relaunches an agent or repeats a transition. The inbox is read and marked only
+by its owner, through the Dashboard (`/dashboard/api/v1/inbox`,
+`/dashboard/api/v1/notification-preferences`); there is no MCP tool for it.
+
+Executable owners:
+[`packages/contracts/src/notifications-api.ts`](../packages/contracts/src/notifications-api.ts),
+[`apps/runner/src/notifications/`](../apps/runner/src/notifications/),
+[`apps/api/src/dashboard-inbox-router.ts`](../apps/api/src/dashboard-inbox-router.ts),
+and the failure-injection suite
+[`test/integration/notifications-failure-injection.test.ts`](../test/integration/notifications-failure-injection.test.ts).
 
 ## Semantics that are easy to misread
 

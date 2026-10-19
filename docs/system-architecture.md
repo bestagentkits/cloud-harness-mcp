@@ -427,6 +427,23 @@ and
 [`apps/api/src/events/event-delivery-worker.ts`](../apps/api/src/events/event-delivery-worker.ts);
 the protocol contract is in [MCP API](mcp-api.md#mcp-events-webhook-delivery).
 
+The notification inbox, when enabled, rides the same savepoints: the outbox's
+terminal emitters also write a deduplicated `notifications` row and one
+`notification_deliveries` row per channel (tables created additively, without
+a schema version bump). The inbox channel is settled at write time; the MCP
+Events channel records a `cloudharness.notification.created` outbox event and
+then mirrors that event's delivery state, and the GitHub channel mirrors the
+automation's own comment state, so the dispatcher opens no network connection
+itself. A failure to write a notification is caught inside a nested savepoint,
+logged, and counted, and never aborts the transition. The dispatcher leases due
+deliveries with a compare-and-set token, backs off retries to a bounded attempt
+count, and keeps purging old notifications while the feature is off. The owners
+are
+[`apps/runner/src/notifications/notification-emitter.ts`](../apps/runner/src/notifications/notification-emitter.ts),
+[`apps/runner/src/notifications/notification-store.ts`](../apps/runner/src/notifications/notification-store.ts),
+and
+[`apps/runner/src/notifications/notification-dispatcher.ts`](../apps/runner/src/notifications/notification-dispatcher.ts).
+
 Aggregate model spend is tracked in a durable ledger in the same database
 (`model_spend_ledger` and `model_spend_policies`, created additively without a
 schema version bump, so an older runner ignores them). A gateway lease is the

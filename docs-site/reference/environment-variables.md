@@ -35,6 +35,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `AGENT_TRACE_MAX_SPANS` | `2000` | Optional | Spans kept per trace; further spans are dropped behind one truncation marker (16-10000). |
 | `AGENT_TRACE_MAX_PER_PRINCIPAL` | `5000` | Optional | Traces kept per principal; the oldest finished traces are removed first (10-100000). |
 | `AGENT_TRACE_PREVIEW_BYTES` | `0` | Optional | Bytes of redacted tool-input preview stored per tool span; 0 stores digests only (0-512). |
+| `NOTIFICATIONS_ENABLED` | `false` | Optional | Optional notification inbox (runner): Dashboard Inbox, per-channel preferences and the cloudharness.notification.created MCP event. Off by default. Notifications carry ids, short titles and Dashboard links only. |
 | `ACCESS_LEGACY_OWNER_ID` | `owner` | Optional | Exact one-time legacy owner binding for the first Access rollout: |
 | `ACCESS_LEGACY_ISSUER` | `https://your-team.cloudflareaccess.com` | Optional | Optional configuration. |
 | `ACCESS_LEGACY_SUBJECT` | `—` | Optional | Optional configuration. |
