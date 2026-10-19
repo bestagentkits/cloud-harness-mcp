@@ -65,15 +65,26 @@ needs three things:
 3. **Let the advisor clear Advisor or approval actions** ticked in the global
    policy.
 
-Without all three, nothing is sent to TypeSafe and every **Advisor or
-approval** action waits for you.
+Without all three, nothing is sent to TypeSafe. Every **Advisor or approval**
+action then waits for you, or is denied if the policy enables the advisor and
+its fallback is **Deny**.
 
 Jev is asked only about an action that already passed every other check, and
 it receives a summary of counts and categories, not your paths, commands,
-branch or repository names. It answers with a risk score and how confident it
-is. The action runs without you only when the risk is below **Escalate at
-risk** and the confidence is at least **Minimum confidence**. Otherwise it
-waits for your approval.
+branch or repository names. When a command declared as another class runs
+`git push`, Jev is told it is a publish. It answers with a risk score and how
+confident it is. The action runs without you only when the risk is below
+**Escalate at risk** and the confidence is at least **Minimum confidence**.
+Otherwise it waits for you, or is denied if the fallback is **Deny** and Jev
+could not give a confident answer. A confident "this is risky" always waits
+for you; it is never a deny.
+
+::: info Asked at execution time, by the coding broker
+Jev is consulted when an agent action runs, and the coding broker is what runs
+agent actions. Until that broker ships, no action is executed under a policy,
+so Jev is never called; the settings already shape what **Simulate an action**
+shows.
+:::
 
 **When the advisor cannot answer** decides what happens on a timeout, rate
 limit, invalid or unsure answer, missing key, or a disabled purpose:
@@ -136,8 +147,9 @@ execution time. A simulation never sends anything to TypeSafe. At execution the
 action becomes **Allow** only if the advisor answers that nothing needs to
 change. When the policy enables the advisor but it is unavailable, the
 simulation already shows the fallback and its reason, such as **Jev not
-consulted (no TypeSafe key)**. An executed decision shows whether Jev was
-consulted, with its decision id, risk and confidence.
+consulted (no TypeSafe key)**. Once the coding broker executes actions, its
+decisions show whether Jev was consulted, with its decision id, risk and
+confidence.
 
 Commands have two platform outcomes. A command that runs a container runtime or
 a privilege tool such as `sudo` is denied, and no policy or approval can allow

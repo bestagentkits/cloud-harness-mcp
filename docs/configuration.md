@@ -602,7 +602,9 @@ adds an advisory `data.diagnosis` to GitHub actions that end in the generic
 is `advisor_or_approval`. It also needs the owner to enable the advisor in the
 global agent policy (see [Agent execution policies](security-model.md#agent-execution-policies));
 its threshold, confidence floor and fallback live in that policy, not here. Any
-failure falls back to approval, or to deny when the policy says so.
+failure falls back to approval, or to deny when the policy says so. The
+advisor is consulted when an agent action executes, which arrives with the
+coding broker; until then listing the purpose sends nothing.
 Before rolling back to a release that predates `execution-risk`, remove it from
 `DECISION_PLANE_PURPOSES`: older runners reject the value and fail startup.
 The purpose list is owned by

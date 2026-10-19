@@ -820,9 +820,10 @@ the owner has stored a TypeSafe integration key.
   `failure-classification`: the action name, exit code, network profile, and a
   tail of the stderr and stdout. For `execution-risk`: a typed summary of the
   action (its class, counts of touched, test, manifest, CI and hidden paths, a
-  command category with its argument count and a short digest, whether a
-  branch or network host is named, the package ecosystem, diff size and test
-  result). Paths, arguments, branch, repository and package names and the
+  command category with its argument count and a short digest, whether the
+  command runs `git push`, whether a branch or network host is named, the
+  package ecosystem from a fixed list (anything else is `other`), diff size
+  and test result). Paths, arguments, branch, repository and package names and the
   action's free-text reason are not sent. Repository contents are never sent.
 - **Redaction fails closed, and comes before any cut.** Output and
   descriptions are redacted whole and only then shortened, so a secret that
@@ -884,7 +885,13 @@ changes simulation results only.
   policy's fallback: approval by default, or deny. The decision records the
   Jev decision id, risk and confidence, or the fallback reason. No answer
   lowers a deny or a required approval, including
-  `PLATFORM_COMMAND_UNANALYZABLE`.
+  `PLATFORM_COMMAND_UNANALYZABLE`. The gate itself enforces the confidence
+  floor, so no advisor implementation can clear an action with a `no_change`
+  below it. Jev is told the class the gate judged (`publish_branch` for a
+  declared class whose command runs `git push`), never only the declared one.
+  The execution-time call (`AgentPolicyService.decide`) is consulted by the
+  coding broker, which ships later; until then nothing calls Jev for an agent
+  action.
 - **Platform invariants have two outcomes.** Credential and Docker access,
   network escalation, paths outside the workspace and privilege escalation
   deny before any policy is read. For commands, the gate reads every program a

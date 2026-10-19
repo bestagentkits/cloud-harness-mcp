@@ -107,7 +107,8 @@ every call; that path is checked offline.
 `DecisionAdvisor` of the agent policy gate
 ([ADR 0006](0006-policy-governed-coding-agents.md)) and follows every rule
 above: it advises only, and a failure is a deterministic fallback, never a
-pass. Two things differ from the first two purposes:
+pass. It is consulted only when an agent action executes, which the coding
+broker wires in a later change. Two things differ from the first two purposes:
 
 - **A third opt-in.** Besides the purpose list and the owner's key, the global
   agent policy must enable the advisor. The policy also holds the risk

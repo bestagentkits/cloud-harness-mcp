@@ -101,7 +101,12 @@ answer, low confidence, redaction failure) the fallback mode applies and the
 decision records the reason. A confident `escalate` is always
 `REQUIRE_APPROVAL`; only the owner's own fallback mode can turn an advisor
 outcome into `DENY`. The decision records the advisor's decision id, risk and
-confidence.
+confidence, and carries the policy's confidence floor so `combineAdvisor`
+enforces it whatever advisor answered. The advisor receives the evaluator's
+subject (the class whose rule produced the pending decision, and whether the
+command runs `git push`), not only the declared class. This release
+implements the advisor and the `decide` call that consults it; the coding
+broker is its first caller.
 
 ### The orchestrator owns publishing
 
