@@ -49,7 +49,8 @@ regression unless it appears below as unexplained.
 | `apps/api/test/local/multi-local-workspace-backend.test.ts`: two `pwd` tests | The local backend runs commands through `cmd.exe` |
 | `test/integration/mcp-local-multi-workspace.test.ts` (whole file) | The server refuses local mode on win32 unless `HARNESS_ALLOW_WIN32_STDIO=1` |
 | `test/integration/dynamic-model-profiles.test.ts`: four TLS tests | They need `openssl` on PATH or pre-generated fixtures |
-| `test/deploy-release-runtime.test.ts`, `test/upgrade-nginx-routes.test.ts`, `apps/runner/test/terminal-session-scripts.test.ts` | POSIX shell scripts |
+| `test/deploy-release-runtime.test.ts`, `test/upgrade-nginx-routes.test.ts`, `apps/runner/test/terminal-session-scripts.test.ts`, `test/git-transfer-helper-lease.test.ts`, `test/gh-helper-*.test.ts` | POSIX shell scripts |
+| `test/production-deploy-classify.test.ts`: the eight tests that run the release tip check and release CI request scripts | They run workflow scripts through `bash` with a POSIX `PATH` |
 
 The remaining symlink fixtures in the runner tests skip only when `symlink`
 fails, so they run on a Windows host with Developer Mode or elevation. The
