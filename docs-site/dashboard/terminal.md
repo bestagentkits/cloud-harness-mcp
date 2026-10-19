@@ -14,6 +14,25 @@ The shell runs in the same sandbox as agent commands, with the same user, limits
 network profile, and environment. It does not run on the host or in the harness's own
 services, and it gives you no more access than an agent working in that workspace has.
 
+
+## Dashboard-wide dock
+
+The header's **Terminals** button opens a persistent dock from any Dashboard page
+(or use **Ctrl+Shift+Backquote** outside an active terminal). Pick an **ACTIVE**
+workspace and select **Open tab**. Each workspace tab can open a new PTY or
+re-attach to a running one. The dock remains mounted when you navigate to another
+Dashboard page; **Hide** only hides the dock, and **Detach selected tab** detaches
+the browser without ending the shell. Use **Close** inside the terminal to
+terminate that shell. **Expand** makes the dock fill the viewport.
+
+The dock also appears as a **Terminals** navigation item, linking to the
+operator-wide terminal list. It does not create a host shell: like the existing
+Workspace Terminal page, every dock session runs inside the selected workspace
+executor with its existing ownership checks, resource limits, and redaction.
+There is not yet an instance-scoped interactive shell that works without a
+workspace. Such a shell and a separately authorized host-maintenance mode are
+tracked in issue #421 and require an explicit security-boundary review.
+
 ## Opening and re-attaching
 
 Visiting the tab never starts a shell by itself. Choose **New session** to open one in

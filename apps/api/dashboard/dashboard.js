@@ -965,6 +965,111 @@ export function initializeDashboard() {
   // The sidebar is registry output; index.html ships an empty container so a page
   // label cannot live in two places.
   insertRendered(document.querySelector('#sidebar-nav'), renderSidebarNavMarkup());
+
+  // This dock is a sibling of the route-owned content and keeps attached sessions alive
+  // while dashboard navigation replaces #content. Hiding or detaching never kills a PTY.
+  const dock = document.querySelector('#global-terminal-dock');
+  const dockToggle = document.querySelector('#global-terminal-toggle');
+  const dockSelect = document.querySelector('#global-terminal-workspace');
+  const dockTabs = document.querySelector('#global-terminal-tabs');
+  const dockPanels = document.querySelector('#global-terminal-panes');
+  const dockDetach = document.querySelector('#global-terminal-detach');
+  const dockSessions = new Map();
+  let activeDockWorkspace = '';
+  const persistentApi = (path, options = {}) => api(path, { ...options, signal: options.signal ?? new AbortController().signal });
+
+  function renderDockTabs() {
+    dockTabs.replaceChildren();
+    for (const [id] of dockSessions) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = id === activeDockWorkspace ? '● ' + id.slice(0, 12) : id.slice(0, 12);
+      button.setAttribute('aria-selected', String(id === activeDockWorkspace));
+      button.addEventListener('click', () => { void activateDockWorkspace(id); });
+      dockTabs.append(button);
+    }
+    dockDetach.disabled = !dockSessions.has(activeDockWorkspace);
+    for (const [id, entry] of dockSessions) entry.element.hidden = id !== activeDockWorkspace;
+  }
+
+  async function refreshDockWorkspaces() {
+    const previous = dockSelect.value;
+    try {
+      const result = await persistentApi('/workspaces');
+      const workspaces = (result.data?.workspaces ?? []).filter((w) => w.status === 'ACTIVE');
+      dockSelect.replaceChildren(new Option('Select active workspace', ''));
+      for (const workspace of workspaces) {
+        const option = new Option(repositoryName(workspace.repositoryUrl) + ' · ' + workspace.workspaceId.slice(0, 12), workspace.workspaceId);
+        dockSelect.add(option);
+      }
+      if (workspaces.some((w) => w.workspaceId === previous)) dockSelect.value = previous;
+      else if (workspaces.length) dockSelect.value = workspaces[0].workspaceId;
+    } catch (error) { showError(error); }
+  }
+
+  async function activateDockWorkspace(id) {
+    if (!/^ws_[A-Za-z0-9_-]{20,80}$/.test(id)) return;
+    activeDockWorkspace = id;
+    const existing = dockSessions.get(id);
+    if (existing) { renderDockTabs(); return; }
+    const holder = document.createElement('div');
+    holder.className = 'global-terminal-workspace';
+    holder.hidden = true;
+    dockPanels.append(holder);
+    try {
+      const result = await persistentApi('/workspaces/' + encodeURIComponent(id) + '/terminals');
+      const terminals = Array.isArray(result.data?.terminals) ? result.data.terminals : [];
+      insertRendered(holder, renderTerminalPanel({ workspaceId: id, terminals }));
+      const pane = mountTerminalPane({
+        root: holder.querySelector('#terminal-panel'), workspaceId: id,
+        api: persistentApi, announce, onError: showError, terminals
+      });
+      dockSessions.set(id, { element: holder, pane });
+      renderDockTabs();
+    } catch (error) { holder.remove(); showError(error); }
+  }
+
+  function hideDock() {
+    dock.hidden = true;
+    dockToggle.setAttribute('aria-expanded', 'false');
+  }
+  async function showDock() {
+    dock.hidden = false;
+    dockToggle.setAttribute('aria-expanded', 'true');
+    await refreshDockWorkspaces();
+  }
+  dockToggle.addEventListener('click', () => {
+    if (dock.hidden) void showDock();
+    else hideDock();
+  });
+  document.querySelector('#global-terminal-dismiss').addEventListener('click', hideDock);
+  document.querySelector('#global-terminal-refresh').addEventListener('click', () => { void refreshDockWorkspaces(); });
+  document.querySelector('#global-terminal-add').addEventListener('click', () => {
+    void activateDockWorkspace(dockSelect.value);
+  });
+  dockDetach.addEventListener('click', () => {
+    const entry = dockSessions.get(activeDockWorkspace);
+    if (!entry) return;
+    entry.pane.dispose();
+    entry.element.remove();
+    dockSessions.delete(activeDockWorkspace);
+    activeDockWorkspace = dockSessions.keys().next().value ?? '';
+    renderDockTabs();
+  });
+  const expandDock = document.querySelector('#global-terminal-fullscreen');
+  expandDock.addEventListener('click', () => {
+    const expanded = dock.classList.toggle('is-expanded');
+    expandDock.setAttribute('aria-pressed', String(expanded));
+    expandDock.textContent = expanded ? 'Restore' : 'Expand';
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.ctrlKey && event.shiftKey && event.code === 'Backquote' &&
+        !event.target?.closest?.('.terminal-surface')) {
+      event.preventDefault();
+      if (dock.hidden) void showDock();
+      else hideDock();
+    }
+  });
   const dialog = document.querySelector('#confirm-dialog'); const menuButton = document.querySelector('#menu-button');
   const revealDialog = document.querySelector('#api-key-reveal-dialog');
   const confirm = createAsyncDialogController({ dialog, cancelButton: dialog.querySelector('[data-cancel]'), actionButton: document.querySelector('#confirm-action'), status: document.querySelector('#confirm-status'), reportError: showError });
