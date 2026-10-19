@@ -28,4 +28,5 @@ export * from './automations-api.js';
 export * from './workspace-lifecycle.js';
 export * from './agent-policy-api.js';
 export * from './agent-traces-api.js';
+export * from './coding-actions.js';
 export * from './notifications-api.js';

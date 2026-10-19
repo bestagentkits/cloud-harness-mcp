@@ -30,7 +30,8 @@ function run(args: string[], stub = '') {
   return { ...result, calls, stdinOf: (name: string) => readFileSync(join(directory, name), 'utf8') };
 }
 
-describe('gh-helper pull request review lifecycle', () => {
+// gh-helper.sh and its stub binaries are POSIX shell scripts that run only inside the Linux executor container.
+describe.skipIf(process.platform === 'win32')('gh-helper pull request review lifecycle', () => {
   it.each(['COMMENT', 'APPROVE', 'REQUEST_CHANGES'])('submits a native %s review through the reviews endpoint', (event) => {
     const result = run(['pr_review', '12', event, event === 'APPROVE' ? '' : 'please fix']);
     expect(result.status).toBe(0);

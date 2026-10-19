@@ -58,6 +58,20 @@ const PROXY_PARAMETERS: Record<AgentProxyOperation, TSchema> = {
     path: Type.Optional(PATH),
     glob: Type.Optional(Type.String({ maxLength: 512 })),
     maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 }))
+  }, { additionalProperties: false }),
+  // The runner brokers these: every command is gated by policy before it reaches the executor.
+  exec_run: Type.Object({
+    command: Type.String({ minLength: 1, maxLength: 4_096, description: 'Space-separated build or test command' }),
+    cwd: Type.Optional(PATH),
+    timeoutMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 300_000 })),
+    maxOutputBytes: Type.Optional(Type.Integer({ minimum: 1_024, maximum: 1_048_576 }))
+  }, { additionalProperties: false }),
+  git_status: Type.Object({}, { additionalProperties: false }),
+  git_diff: Type.Object({
+    staged: Type.Optional(Type.Boolean()),
+    path: Type.Optional(PATH),
+    cursor: Type.Optional(Type.String({ maxLength: 256 })),
+    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500_000 }))
   }, { additionalProperties: false })
 };
 

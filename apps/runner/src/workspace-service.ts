@@ -20,6 +20,7 @@ import { chmod, chown, cp, mkdir, readFile, readdir, realpath, rm, stat, statfs,
 import { join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
+  BROKERED_ONLY_PROXY_OPERATIONS,
   DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
   DEFAULT_MAX_WORKSPACE_REPOSITORIES,
   DEFAULT_RECOVERABLE_GRACE_SECONDS,
@@ -54,7 +55,7 @@ import {
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
 import { EXECUTOR_HARDENING_ARGS, EXECUTOR_RESOURCE_CEILINGS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
-import { PackageBuilder } from './package-builder.js';
+import { DEFAULT_NPM_REGISTRY, PackageBuilder } from './package-builder.js';
 import { PACKAGE_OPERATIONS, PackageService, databaseWorkspaceDirectory, type PackageOperation } from './package-service.js';
 import { PackageStore } from './package-store.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
@@ -96,7 +97,10 @@ import {
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
 import { AgentTraceStore, executeAgentTraceOperation } from './agent-trace-store.js';
-import { AgentTraceRecorder } from './agent-trace-recorder.js';
+import { AgentTraceRecorder, type AgentActionTraceSink } from './agent-trace-recorder.js';
+import type { CodingActionBroker } from './agent-governance/action-broker.js';
+import { LockfileInstallExecutor, type InstallResult } from './agent-governance/install-executor.js';
+import { CODING_GIT_ARGS, CODING_GIT_ENV, CODING_GIT_SUBCOMMANDS, isCommitSha, parseTransferInspection, type PushVerifier } from './agent-governance/coding-git.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -142,6 +146,10 @@ const countedStatus = new Set<WorkspaceRecord['status']>(COUNTED_WORKSPACE_STATU
  * an operator or agent to act, and every check starts a short-lived helper container.
  */
 const AUTO_CLOSE_RETRY_MS = 3_600_000;
+/** Git in the executor image (Debian), named absolutely so nothing on the checkout's PATH can stand in for it. */
+const CODING_GIT_BINARY = '/usr/bin/git';
+/** Output cap of one coding Git inspection; a larger listing is reported truncated and refused. */
+const CODING_GIT_MAX_BYTES = 1_048_576;
 
 /** A retained workspace that startup reconciliation could not bring back; the runner logs each one. */
 export interface StartupReconcileFailure {
@@ -162,6 +170,30 @@ const auditedFileMutations = new Set<RunnerOperation>([
 export function builtinSkillsMountArgs(builtinSkillsRoot: string | undefined): string[] {
   if (!builtinSkillsRoot) return [];
   return ['--volume', `${builtinSkillsRoot}:/opt/cloud-harness/skills:ro`];
+}
+
+/**
+ * The bind mounts of one Git transfer helper: its own transfer directory and, when the mode reads or
+ * writes the checkout, the checkout tree. Never the whole workspace directory, so a repository-configured
+ * command that runs during one transfer (an import's fetch, a stage's clone) cannot reach the transfer
+ * repository of another; above all, nothing can write a staged push clone between its stage and its push.
+ * The checkout is read-only while it is staged and writable only for an import, which updates its refs.
+ * The checkout source is always the tree root the executor mounts, never a scoped subdirectory: the
+ * executor can replace `repos/<alias>` with a symlink, and Docker resolves a bind source on the host,
+ * whereas the helper resolves the scoped path inside its own mount namespace.
+ */
+export function gitTransferVolumes(mode: 'fetch' | 'import' | 'stage-push' | 'push', workspacePath: string, transferName: string): string[] {
+  const transfer = ['--volume', `${join(workspacePath, transferName)}:/job/${transferName}:${mode === 'import' ? 'ro' : 'rw'}`];
+  if (mode === 'fetch' || mode === 'push') return transfer;
+  return ['--volume', `${join(workspacePath, 'repo')}:/job/repo:${mode === 'import' ? 'rw' : 'ro'}`, ...transfer];
+}
+
+/**
+ * The transfer repository sits one level inside its mounted directory, so the helper creates it and owns
+ * it: Git refuses a repository owned by another UID, and the runner's UID need not be the helper's.
+ */
+export function gitTransferRepositoryPath(transferName: string): string {
+  return `/job/${transferName}/repository.git`;
 }
 
 export function computeWorkspaceOpenFingerprint(input: {
@@ -369,6 +401,10 @@ export class WorkspaceService {
   /** Present only when agent traces are enabled; the trace tools report FEATURE_DISABLED otherwise. */
   private readonly traceStore: AgentTraceStore | undefined;
   private readonly tracePurger: AgentTraceStore;
+  /** Where brokered coding actions write their spans; absent when agent traces are disabled. */
+  readonly actionTraces: AgentActionTraceSink | undefined;
+  /** The coding action broker, attached only when coding automations are enabled. */
+  private codingBroker: CodingActionBroker | undefined;
   private readonly metadata?: MetadataStore | undefined;
   private failureIntelligence?: FailureIntelligence | undefined;
   constructor(
@@ -402,11 +438,22 @@ export class WorkspaceService {
     const traceRecorder = managerDependencies.traceRecorder ?? (this.traceStore && traceConfig
       ? new AgentTraceRecorder(this.traceStore, { maxSpansPerTrace: traceConfig.maxSpansPerTrace, previewBytes: traceConfig.previewBytes })
       : undefined);
+    this.actionTraces = traceRecorder instanceof AgentTraceRecorder ? traceRecorder : undefined;
     this.agentManager = manager ?? (config.agents
       ? new AgentManager(config.agents, store, {
+          workflowFor: (ownerId, workspaceId) => this.codingBroker?.workflowFor(ownerId, workspaceId) ?? null,
+          permitsBrokeredOperations: (ownerId, workspaceId) => this.codingBroker?.permitsBrokeredSpawn(ownerId, workspaceId) === true,
           ...managerDependencies,
           traceRecorder,
-          toolExecutor: async (request) => await this.executeAgentProxy(request),
+          // Every agent tool call passes the coding broker when one is attached; without it the
+          // brokered-only operations are refused here as well as at spawn.
+          toolExecutor: async (request) => {
+            if (this.codingBroker) return await this.codingBroker.executeAgentTool(request, async (brokered) => await this.executeAgentProxy(brokered));
+            if ((BROKERED_ONLY_PROXY_OPERATIONS as readonly string[]).includes(request.operation)) {
+              throw new HarnessError('FORBIDDEN', `${request.operation} is available only to a coding workflow agent`, 403, false);
+            }
+            return await this.executeAgentProxy(request);
+          },
           repositoryGuidance: async (request) => {
             const record = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
             if (record.generation !== request.workspaceGeneration) {
@@ -488,6 +535,82 @@ export class WorkspaceService {
   /** Attaches the Decision Plane. Without it every failure keeps only its deterministic classification. */
   useDecisionPlane(plane: DecisionPlane): void {
     this.failureIntelligence = new FailureIntelligence(plane);
+  }
+
+  /** Attaches the coding action broker; from then on every agent tool call of a coding workspace is brokered. */
+  useCodingBroker(broker: CodingActionBroker): void {
+    this.codingBroker = broker;
+  }
+
+  /** Workspace facts the coding broker re-checks before each action: the live generation and the checkout count. */
+  codingWorkspaceFacts(): { generation(workspaceId: string): number | null; repositoryCount(workspaceId: string): number } {
+    return {
+      generation: (workspaceId) => {
+        const record = this.store.byId(workspaceId);
+        return record && record.status === 'ACTIVE' ? record.generation : null;
+      },
+      repositoryCount: (workspaceId) => Math.max(1, this.store.workspaceRepositories(workspaceId).length)
+    };
+  }
+
+  /**
+   * Installs a coding workspace's admitted npm lockfile in a one-shot `dependency-access` container (see
+   * `agent-governance/install-executor.ts`). Only the coding engine calls this, after the gate allowed
+   * every locked package; the workspace's own network profile is not touched.
+   */
+  async installCodingDependencies(ownerId: string, workspaceId: string, signal?: AbortSignal): Promise<InstallResult> {
+    if (!this.config.agentCodingPackageInstallEnabled) {
+      throw new HarnessError('FORBIDDEN', 'coding package installs are disabled on this instance', 403, false);
+    }
+    const record = this.store.byId(workspaceId);
+    if (!record || record.ownerId !== ownerId || record.status !== 'ACTIVE') throw new HarnessError('NOT_FOUND', 'workspace not found', 404, false);
+    if (record.repositoryScope || this.store.workspaceRepositories(workspaceId).length > 1) {
+      return { ok: false, code: 'CODING_INSTALL_FAILED', exitCode: null, output: 'installs need a single, unscoped checkout' };
+    }
+    const executor = new LockfileInstallExecutor({
+      image: this.config.executorImage,
+      instanceId: this.instanceId,
+      network: this.networkProfileManager,
+      registry: DEFAULT_NPM_REGISTRY
+    });
+    return await executor.install({ workspaceId: record.id, workspacePath: record.workspacePath }, signal);
+  }
+
+  /**
+   * Runs one read-only Git inspection in a coding checkout for the coding engine (see
+   * `agent-governance/coding-git.ts`): owner-scoped, ACTIVE only, and a fixed subcommand allow-list.
+   * Every read runs in a fresh, unprivileged helper container with the checkout mounted read-only, never
+   * through `docker exec` into the executor, so no process the agent left running there can observe or
+   * steer it. System and global configuration, replace refs (including a repository's own
+   * core.useReplaceRefs), grafts, hooks, fsmonitor, pagers, path quoting and relative diff listings are
+   * off, and the Git directory and work tree are named explicitly so a checkout's core.worktree cannot
+   * move them. This is a defence in depth: what is published is decided on the transfer clone (see
+   * `remotePush`). Output is capped and the cap is reported.
+   */
+  async runCodingGit(ownerId: string, workspaceId: string, args: readonly string[], signal?: AbortSignal): Promise<{ exitCode: number; stdout: string; truncated: boolean }> {
+    if (!CODING_GIT_SUBCOMMANDS.has(args[0] ?? '')) throw new HarnessError('FORBIDDEN', 'git subcommand is not inspectable', 403, false);
+    const record = this.store.byId(workspaceId);
+    if (!record || record.ownerId !== ownerId || record.status !== 'ACTIVE') throw new HarnessError('NOT_FOUND', 'workspace not found', 404, false);
+    const helperName = `chm-cg-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
+    try {
+      const result = await runDocker([
+        'run', '--rm', '--pull', 'never', '--name', helperName,
+        '--label', 'cloud-harness.role=coding-git-inspect', '--label', 'cloud-harness.ephemeral=true',
+        '--label', `cloud-harness.instance=${this.instanceId}`, '--label', `cloud-harness.workspace=${record.id}`,
+        '--network', 'none', '--user', '10001:10001', '--read-only',
+        '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=16m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+        '--pids-limit', '64', '--memory', '256m', '--memory-swap', '256m', '--cpus', '1',
+        ...CODING_GIT_ENV.flatMap((entry) => ['--env', entry]),
+        '--volume', `${record.workspacePath}/repo:/workspace:ro`,
+        '--workdir', checkoutContainerPath(record),
+        '--entrypoint', CODING_GIT_BINARY,
+        this.config.executorImage,
+        ...CODING_GIT_ARGS, ...args
+      ], { timeoutMs: 60_000, maxBytes: CODING_GIT_MAX_BYTES, ...(signal ? { signal } : {}) });
+      return { exitCode: result.exitCode, stdout: result.stdout, truncated: result.truncated };
+    } finally {
+      await removeContainer(helperName);
+    }
   }
 
   /**
@@ -2116,7 +2239,7 @@ export class WorkspaceService {
 
   private async runGitTransferHelper(
     record: WorkspaceRecord,
-    mode: 'fetch' | 'import' | 'stage-push' | 'push',
+    mode: 'fetch' | 'import' | 'stage-push' | 'inspect' | 'push',
     transferName: string,
     argument: string,
     token: string | undefined,
@@ -2126,6 +2249,7 @@ export class WorkspaceService {
   ) {
     const helperName = `chm-git-${mode.replaceAll('-', '').slice(0, 5)}-${randomBytes(6).toString('hex')}`;
     const network = mode === 'fetch' || mode === 'push' ? 'bridge' : 'none';
+    if (mode === 'fetch' || mode === 'stage-push') await this.createTransferDirectory(join(record.workspacePath, transferName));
     try {
       const result = await runDocker([
         'run', '-i', '--rm', '--pull', 'never', '--name', helperName,
@@ -2135,10 +2259,15 @@ export class WorkspaceService {
         '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
         '--pids-limit', '128', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
         '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_TERMINAL_PROMPT=0',
-        '--volume', `${record.workspacePath}:/job:rw`, '--entrypoint', '/opt/harness/git-transfer-helper.sh',
-        this.config.executorImage, mode, record.repositoryUrl, checkoutJobPath(record), `/job/${transferName}`, argument, expectedRemoteOid ?? '', historySpec
+        ...gitTransferVolumes(mode, record.workspacePath, transferName),
+        '--entrypoint', '/opt/harness/git-transfer-helper.sh',
+        this.config.executorImage, mode, record.repositoryUrl, checkoutJobPath(record), gitTransferRepositoryPath(transferName), argument, expectedRemoteOid ?? '', historySpec
       ], {
-        stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes,
+        // An inspection is decided on, not shown, so it is never capped by the operator's output cap: a commit
+        // that passed the checkout gate must not be refused at push for its size. Its answer holds the commit
+        // object in base64 (4/3 of its size) and the path listing, each read within CODING_GIT_MAX_BYTES on
+        // the checkout, so three times that cap holds both (4/3 + 1, with room for the framing lines).
+        stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: mode === 'inspect' ? 3 * CODING_GIT_MAX_BYTES : this.config.maxOutputBytes,
         ...(signal ? { signal } : {})
       });
       if (result.exitCode !== 0) {
@@ -2405,7 +2534,28 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return { entry, scoped };
   }
 
-  private async remotePush(record: WorkspaceRecord, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  /**
+   * The authoritative read of a verified push: the commit is read in the staged transfer clone (the
+   * exact repository the push sends from, outside the executor's mount) with a clean configuration, and
+   * the caller's verifier decides it. A refusal, or a read that cannot be made, throws before anything
+   * is sent; the caller's `finally` discards the clone.
+   */
+  private async verifyStagedPush(record: WorkspaceRecord, transferName: string, source: string, verifier: PushVerifier, signal?: AbortSignal): Promise<void> {
+    if (source !== verifier.sha || !isCommitSha(verifier.sha) || !isCommitSha(verifier.base)) {
+      throw new HarnessError('INVALID_INPUT', 'a verified push must name the verified commit id as its source', 400, false);
+    }
+    const inspected = await this.runGitTransferHelper(record, 'inspect', transferName, verifier.sha, undefined, verifier.base, signal)
+      .catch((error: unknown) => { verifier.stagingFailed?.(); throw error; });
+    let refusal: string | null;
+    try {
+      refusal = await verifier.verify(parseTransferInspection(inspected.stdout, inspected.truncated));
+    } catch {
+      refusal = 'COMMIT_UNVERIFIED';
+    }
+    if (refusal !== null) throw new HarnessError('FORBIDDEN', `push refused before anything was sent: ${refusal}`.slice(0, 200), 403, false);
+  }
+
+  private async remotePush(record: WorkspaceRecord, input: Record<string, unknown>, signal?: AbortSignal, verifier?: PushVerifier): Promise<RunnerResponse> {
     assertRepositoryWritable(record, 'push');
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
     const repoStr = this.extractRepositoryName(repositoryUrl);
@@ -2536,13 +2686,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
     const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
     try {
+      // A verified push stages an isolated copy (no object files shared with the checkout), so the commit
+      // inspected below is exactly what the push sends even after the executor resumes.
+      const stageArgument = verifier ? 'isolated' : '';
+      // Only the helper's own failure is reported to the verifier, not the executor pause around it.
+      const stage = async () => await this.runGitTransferHelper(record, 'stage-push', transferName, stageArgument, undefined, undefined, signal)
+        .catch((error: unknown) => { verifier?.stagingFailed?.(); throw error; });
       if (record.containerName) {
-        await this.withPausedExecutor(record, async () =>
-          await this.runGitTransferHelper(record, 'stage-push', transferName, '', undefined, undefined, signal)
-        );
+        await this.withPausedExecutor(record, stage);
       } else {
-        await this.runGitTransferHelper(record, 'stage-push', transferName, '', undefined, undefined, signal);
+        await stage();
       }
+      if (verifier) await this.verifyStagedPush(record, transferName, pushedSource, verifier, signal);
       let pushed: { exitCode: number; stdout: string; stderr: string; truncated: boolean };
       try {
         pushed = await this.runGitTransferHelper(record, 'push', transferName, refspec, token, lease, signal);
@@ -3059,7 +3214,17 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return await this.tracePurger.purgeExpired(now, signal ? { signal } : {});
   }
 
-  async execute(principal: PrincipalSelector | string, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  /**
+   * `internal` is never reachable from the public API: only in-process callers (the coding engine) pass
+   * it. `pushVerifier` makes a `git_push` decide the staged commit before anything is sent.
+   */
+  async execute(
+    principal: PrincipalSelector | string,
+    operation: RunnerOperation,
+    input: Record<string, unknown>,
+    signal?: AbortSignal,
+    internal: { pushVerifier?: PushVerifier } = {}
+  ): Promise<RunnerResponse> {
     const ownerId = this.store.resolvePrincipal(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal);
     RunnerOperationSchema.parse(operation);
     const validated = TOOL_SCHEMA_BY_NAME[operation].parse(input) as Record<string, unknown>;
@@ -4638,7 +4803,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       return result.ok ? { ...result, message: 'Git pull complete' } : result;
     }
     if (operation === 'git_push') {
-      const result = await this.remotePush(record, validated, signal);
+      const result = await this.remotePush(record, validated, signal, internal.pushVerifier);
       await this.enforceActiveLimits(record);
       return result;
     }
@@ -5126,6 +5291,25 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return { ok: true, message: 'Workspace closed', data: publicRecord(finalRecord), truncated: false };
   }
 
+  /**
+   * A transfer directory is bind-mounted on its own, so it must exist before its helper starts (Docker
+   * would otherwise create it as root) and be writable by the helper's UID.
+   */
+  private async createTransferDirectory(path: string): Promise<void> {
+    try {
+      await mkdir(path, { mode: 0o700 });
+      try {
+        await chown(path, 10001, 10001);
+      } catch {
+        // A runner that is neither root nor UID 10001 cannot hand the directory over, so it opens it the way
+        // it opens the workspace directory itself.
+        await chmod(path, 0o777);
+      }
+    } catch (error) {
+      throw new HarnessError('UNAVAILABLE', `Git transfer directory could not be created (${(error as Error).message})`.slice(0, 2_000), 503, true);
+    }
+  }
+
   private async safeRemovePath(path: string): Promise<void> {
     const root = resolve(this.config.jobsRoot);
     const target = resolve(path);
@@ -5585,6 +5769,13 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   private async executeAgentProxy(request: Parameters<AgentManagerDependencies['toolExecutor']>[0]): Promise<RunnerResponse> {
     const operation = AgentProxyOperationSchema.parse(request.operation) as AgentProxyOperation;
     const validated = TOOL_SCHEMA_BY_NAME[operation].parse(request.toolInput) as Record<string, unknown>;
+    if (operation === 'exec_run') {
+      // An agent command is always foreground and unprivileged; there is no approval path through the proxy.
+      if (validated.privileged === true || validated.async === true || validated.approvalGrantToken !== undefined) {
+        throw new HarnessError('FORBIDDEN', 'agent commands cannot be privileged, detached, or carry an approval grant', 403, false);
+      }
+      validated.maxOutputBytes = Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes);
+    }
     const before = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
     if (before.generation !== request.workspaceGeneration || before.networkProfile !== 'network-none') {
       throw new HarnessError('EXPIRED', 'agent tool execution lost its workspace fence', 410, false);

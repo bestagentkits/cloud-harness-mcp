@@ -51,6 +51,17 @@ export function normalizeOperations(operations) {
   return PROXY_OPERATIONS.filter((operation) => chosen.has(operation));
 }
 
+/**
+ * Operations a saved profile allows that this wizard does not offer: the policy-gated coding operations,
+ * which are granted only through the MCP profile tools. An edit keeps them rather than silently dropping
+ * them; the runner validates the saved set either way.
+ */
+export function retainedOperations(operations) {
+  const offered = new Set(PROXY_OPERATIONS);
+  return [...new Set(Array.isArray(operations) ? operations : [])]
+    .filter((operation) => typeof operation === 'string' && /^[a-z_]{1,40}$/.test(operation) && !offered.has(operation));
+}
+
 /** The preset an operation set matches exactly, or `custom`. */
 export function permissionPresetFor(operations) {
   const key = normalizeOperations(operations).join(',');
@@ -335,8 +346,9 @@ export function buildProfileRequest(state, provider) {
   if (maxInputTokens === null) errors.maxInputTokens = 'Enter a whole number of tokens above zero.';
   if (maxOutputTokens === null) errors.maxOutputTokens = 'Enter a whole number of tokens above zero.';
   if (maxCostMicros === null || maxCostMicros <= 0) errors.maxCost = 'Enter a cost limit above zero.';
-  const maxProxyOperations = normalizeOperations(state.operations);
-  if (!maxProxyOperations.length) errors.operations = 'Allow at least one operation.';
+  const offeredOperations = normalizeOperations(state.operations);
+  if (!offeredOperations.length) errors.operations = 'Allow at least one operation.';
+  const maxProxyOperations = [...offeredOperations, ...(state.mode === 'edit' ? state.retainedOperations ?? [] : [])];
   if (Object.keys(errors).length) return { errors };
   const body = {
     displayName,
@@ -418,7 +430,7 @@ export function initialWizardState({ mode = 'create', profile = null, profiles =
     displayName: '', profileId: '', apiMode: 'chat-completions', customUpstreamUrl: '',
     pricingInput: '', pricingOutput: '', pricingProvenance: null,
     ...DEFAULT_LIMITS,
-    operations: [...PERMISSION_PRESETS.read.operations], baseOperations: [],
+    operations: [...PERMISSION_PRESETS.read.operations], baseOperations: [], retainedOperations: [],
     touched: new Set(), verification: null, savedRoute: null, saveUnverifiedKey: null, mutatingAckKey: null, checkTools: false
   };
   if (!profile) return state;
@@ -443,7 +455,8 @@ export function initialWizardState({ mode = 'create', profile = null, profiles =
       maxOutputTokens: String(revision.limits.maxOutputTokens),
       maxCost: dollarsFromMicros(revision.limits.maxCostMicros),
       operations: normalizeOperations(revision.maxProxyOperations),
-      baseOperations: mode === 'edit' ? normalizeOperations(revision.maxProxyOperations) : []
+      baseOperations: mode === 'edit' ? normalizeOperations(revision.maxProxyOperations) : [],
+      retainedOperations: mode === 'edit' ? retainedOperations(revision.maxProxyOperations) : []
     });
     if (mode === 'edit') {
       const verification = profileVerification(profile);
@@ -731,7 +744,7 @@ function renderPermissions(state, context) {
     const mutating = MUTATING_PROXY_OPERATIONS.includes(operation);
     return `<label><input type="checkbox" name="proxyOps" value="${escape(operation)}"${state.operations.includes(operation) ? ' checked' : ''}> ${escape(operation)}${mutating ? ' <span class="permission-flag">changes files</span>' : ''}</label>`;
   }).join('');
-  return `<fieldset class="wizard-permissions"${invalid(context.errors, 'operations')}><legend>Allowed proxy operations</legend><div class="wizard-choices wizard-choices-compact">${presets}</div><div class="tools-checkbox-grid">${boxes}</div>${fieldError(context.errors, 'operations')}<div id="model-wizard-permission-diff">${renderPermissionDiff(state)}</div></fieldset>`;
+  return `<fieldset class="wizard-permissions"${invalid(context.errors, 'operations')}><legend>Allowed proxy operations</legend><div class="wizard-choices wizard-choices-compact">${presets}</div><div class="tools-checkbox-grid">${boxes}</div>${fieldError(context.errors, 'operations')}<div id="model-wizard-permission-diff">${renderPermissionDiff(state)}</div>${state.retainedOperations?.length ? `<p class="field-help">Also kept from the saved profile (granted through the MCP profile tools and decided by execution policy): <span class="mono">${escape(state.retainedOperations.join(', '))}</span>.</p>` : ''}</fieldset>`;
 }
 
 function renderAdvanced(state, context) {

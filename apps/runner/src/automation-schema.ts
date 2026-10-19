@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { initializeCodingActionSchema } from './agent-governance/action-schema.js';
 
 /**
  * Creates the webhook automation tables. Additive and idempotent, with no schema version bump and
@@ -114,4 +115,6 @@ export function initializeAutomationSchema(database: DatabaseSync): void {
       PRIMARY KEY(workflow_id, seq)
     );
   `);
+  // Coding receipts and the nullable coding columns, added in place on existing databases.
+  initializeCodingActionSchema(database);
 }

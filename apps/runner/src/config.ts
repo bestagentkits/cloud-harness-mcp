@@ -253,6 +253,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
       }
     } : undefined,
     agentPoliciesEnabled: process.env.AGENT_POLICIES_ENABLED,
+    agentCodingEnabled: process.env.AGENT_CODING_ENABLED,
+    agentCodingPackageInstallEnabled: process.env.AGENT_CODING_PACKAGE_INSTALL_ENABLED,
     notificationsEnabled: process.env.NOTIFICATIONS_ENABLED
   });
   if (packageApprovalUnavailable(config)) {

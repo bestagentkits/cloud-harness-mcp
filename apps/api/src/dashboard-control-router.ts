@@ -264,7 +264,7 @@ export function registerDashboardControlRoutes(
   router.delete('/api/v1/automations/rules/:id', automationsEndpoint('rule_delete', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
   router.post('/api/v1/automations/rules/:id/preview', automationsEndpoint('rule_preview', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
   router.get('/api/v1/automations/workflows', automationsEndpoint('workflows_list', (request) => withNumericLimit(queryFields(request.query, ['ruleId', 'state', 'limit']))));
-  router.get('/api/v1/automations/workflows/:id', automationsEndpoint('workflow_get', (request) => ({ id: request.params.id })));
+  router.get('/api/v1/automations/workflows/:id', automationsEndpoint('workflow_get', (request) => ({ ...queryFields(request.query, ['actionsCursor']), id: request.params.id })));
   router.post('/api/v1/automations/workflows/:id/cancel', automationsEndpoint('workflow_cancel', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
   router.get('/api/v1/automations/deliveries', automationsEndpoint('deliveries_list', (request) => withNumericLimit(queryFields(request.query, ['connectionId', 'limit']))));
   registerAgentPolicyRoutes(router, runner, principal);

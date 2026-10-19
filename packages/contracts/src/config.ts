@@ -383,10 +383,23 @@ export const RunnerConfigSchema = z.object({
   agentPoliciesEnabled: enabled,
   /** Durable agent run traces recorded by the runner. Off by default; the schema is created either way. */
   agentTraces: AgentTracesConfigSchema,
+  /**
+   * Lets an owner-authored automation rule opt into brokered coding (edit, test, commit, push, pull
+   * request). Off by default; turning it off is also the kill switch for running coding workflows.
+   */
+  agentCodingEnabled: enabled,
+  /** Admits the lockfile-only package install executor for coding runs. Off by default; policy still decides. */
+  agentCodingPackageInstallEnabled: enabled,
   /** Records the notification inbox and dispatches its channels. Off by default; the schema is created either way. */
   notificationsEnabled: enabled
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
+  if (config.agentCodingEnabled && !(config.agentPoliciesEnabled && config.automationsEnabled)) {
+    context.addIssue({ code: 'custom', path: ['agentCodingEnabled'], message: 'AGENT_CODING_ENABLED requires AGENT_POLICIES_ENABLED and AUTOMATIONS_ENABLED' });
+  }
+  if (config.agentCodingPackageInstallEnabled && !config.agentCodingEnabled) {
+    context.addIssue({ code: 'custom', path: ['agentCodingPackageInstallEnabled'], message: 'AGENT_CODING_PACKAGE_INSTALL_ENABLED requires AGENT_CODING_ENABLED' });
+  }
   if (config.packagesMaxReleaseBytes > config.packagesMaxOwnerBytes) {
     context.addIssue({ code: 'custom', path: ['packagesMaxReleaseBytes'], message: 'PACKAGES_MAX_RELEASE_BYTES must not exceed PACKAGES_MAX_OWNER_BYTES' });
   }
