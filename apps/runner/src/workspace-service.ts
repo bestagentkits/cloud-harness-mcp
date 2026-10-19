@@ -415,6 +415,8 @@ export class WorkspaceService {
    * outside this set was left behind by a failed resume and may be resumed.
    */
   private readonly pausedExecutors = new Set<string>();
+  /** Workspaces whose executor this runner is resuming, restarting, or rebuilding; no pause may start meanwhile. */
+  private readonly repairingExecutors = new Set<string>();
   private reaper?: NodeJS.Timeout | undefined;
   private reaperRunning = false;
   /** Toolbox containers this runner is running now; the semaphore count and the sweep's exclusion list. */
@@ -1155,6 +1157,20 @@ export class WorkspaceService {
     if (this.pausedExecutors.has(record.id) || this.frozenTrees.has(record.id)) {
       throw new HarnessError('CONFLICT', 'the executor is paused for a repository change or Git transfer; retry shortly', 409, true);
     }
+    // The repair spans several awaits, so it is claimed for its whole run: a pause or freeze that began after
+    // the check above would otherwise freeze a container this repair then replaces with a running one.
+    if (this.repairingExecutors.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'the executor is already being recovered; retry shortly', 409, true);
+    }
+    this.repairingExecutors.add(record.id);
+    try {
+      return await this.repairExecutor(record);
+    } finally {
+      this.repairingExecutors.delete(record.id);
+    }
+  }
+
+  private async repairExecutor(record: WorkspaceRecord): Promise<WorkspaceRecord> {
     // Dependency-access requires a fresh attestation before reuse; a quarantined
     // record must never resume its existing container. Force removal and rebuild
     // through createExecutor (which re-attests) instead of reusing a container
@@ -2238,6 +2254,9 @@ export class WorkspaceService {
     if (!containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
     if (this.pausedExecutors.has(record.id)) {
       throw new HarnessError('UNAVAILABLE', `executor could not be paused for ${purpose}: it is paused for another change; retry shortly`, 503, true);
+    }
+    if (this.repairingExecutors.has(record.id)) {
+      throw new HarnessError('UNAVAILABLE', `executor could not be paused for ${purpose}: it is being recovered; retry shortly`, 503, true);
     }
     this.pausedExecutors.add(record.id);
     try {

@@ -704,6 +704,25 @@ describe('executor pause and resume', () => {
     expect(docker.runDocker.mock.calls.slice(afterRemove).some((call) => call[0][0] === 'unpause')).toBe(false);
   });
 
+  it('refuses a pause or repository change while an executor recovery is in flight', async () => {
+    const { service, store } = fixture();
+    const { workspaceId } = await openMulti(service);
+    const record = { ...store.byId(workspaceId)!, networkProfile: 'dependency-access' };
+    let releaseRemoval!: () => void;
+    docker.removeContainer.mockImplementationOnce(() => new Promise<undefined>((resolveRemoval) => { releaseRemoval = () => resolveRemoval(undefined); }));
+    const recovery = internals(service).ensureActiveExecutor(record).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(releaseRemoval).toBeTypeOf('function'));
+    const before = docker.runDocker.mock.calls.length;
+    const pause = await internals(service).withPausedExecutor(store.byId(workspaceId), async () => undefined).catch((error: unknown) => error);
+    expect(pause).toMatchObject({ code: 'UNAVAILABLE', retryable: true, message: expect.stringContaining('being recovered') });
+    const removal = await service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'rm-during-recovery' }).catch((error: unknown) => error);
+    expect(removal).toMatchObject({ retryable: true });
+    expect(store.workspaceRepositories(workspaceId)).toHaveLength(2);
+    expect(docker.runDocker.mock.calls.slice(before).some((call) => call[0][0] === 'pause')).toBe(false);
+    releaseRemoval();
+    await recovery;
+  });
+
   it('never rebuilds a dependency-access executor while a pause is held', async () => {
     const { service, store } = fixture();
     const { workspaceId } = await openMulti(service);

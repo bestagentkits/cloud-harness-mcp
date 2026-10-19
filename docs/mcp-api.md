@@ -207,7 +207,8 @@ tree, and `UNAVAILABLE` when the executor cannot be paused.
   `executorResumed: false`, and says so in its message; replaying the key
   returns the committed result. Commands in the workspace fail until
   `workspace_recover` with `mode: "resume"` (or a runner restart) resumes the
-  executor.
+  executor; a `dependency-access` executor is rebuilt by recover instead, so its
+  running processes end.
 
 `grep_search`, `symbols_search`, and `symbols_references` accept
 `scope: "all"`, mutually exclusive with `repositoryId`, to search every
