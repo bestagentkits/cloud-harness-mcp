@@ -26,6 +26,7 @@ import {
 
 import { KnowledgeStore } from './knowledge-store.js';
 import { initializeAgentTraceSchema } from './agent-trace-schema.js';
+import { initializeNotificationSchema } from './notifications/notification-schema.js';
 export { KnowledgeStore } from './knowledge-store.js';
 export type {
   CreateKnowledgeItemParams,
@@ -577,6 +578,8 @@ export class StateStore {
       this.knowledge = new KnowledgeStore(this.database);
       // Inert unless agent traces are enabled; created unconditionally so enabling them needs no migration.
       initializeAgentTraceSchema(this.database);
+      // Inert unless notifications are enabled; created unconditionally so enabling them needs no migration.
+      initializeNotificationSchema(this.database);
     } catch (err) {
       try { this.database.close(); } catch { /* ignore */ }
       throw err;

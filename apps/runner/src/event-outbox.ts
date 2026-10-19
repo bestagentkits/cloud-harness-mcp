@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { McpEventName } from '@cloud-harness/contracts';
+import { emitAgentTerminalNotification, emitAutomationTerminalNotification } from './notifications/notification-emitter.js';
 
 /**
  * Transactional outbox for MCP Events. Emission runs on the same connection and inside the same
@@ -61,8 +62,9 @@ function matchesArguments(argumentsJson: string, payload: Record<string, unknown
  * Records one logical event and fans it out to the owner's active, unexpired subscriptions whose
  * filter arguments match. Nothing is written when no subscription matches: events are not replayed
  * to later subscribers, so an outbox row without a recipient would only be retained garbage.
+ * Returns true only when this call wrote the event and at least one delivery.
  */
-function recordEvent(
+export function recordEvent(
   database: DatabaseSync,
   ownerId: string,
   sourceKey: string,
@@ -70,21 +72,22 @@ function recordEvent(
   occurredAt: number,
   payload: Record<string, unknown>,
   now: number
-): void {
+): boolean {
   const subscriptions = database.prepare(`SELECT id, arguments_json FROM event_subscriptions
     WHERE owner_id = ? AND name = ? AND state = 'ACTIVE' AND expires_at > ?`)
     .all(ownerId, name, now) as { id: string; arguments_json: string }[];
   const recipients = subscriptions.filter((subscription) => matchesArguments(subscription.arguments_json, payload));
-  if (recipients.length === 0) return;
+  if (recipients.length === 0) return false;
   const eventId = eventIdForSource(sourceKey);
   const inserted = database.prepare(`INSERT OR IGNORE INTO event_outbox (id, owner_id, source_key, name, occurred_at, payload_json, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run(eventId, ownerId, sourceKey, name, occurredAt, JSON.stringify(payload), now);
-  if (Number(inserted.changes) !== 1) return;
+  if (Number(inserted.changes) !== 1) return false;
   const insertDelivery = database.prepare(`INSERT OR IGNORE INTO event_deliveries
     (id, event_id, subscription_id, status, attempts, next_attempt_at, created_at)
     VALUES (?, ?, ?, 'PENDING', 0, ?, ?)`);
   for (const recipient of recipients) insertDelivery.run(newDeliveryId(), eventId, recipient.id, now, now);
+  return true;
 }
 
 type TaskEventRow = {
@@ -131,6 +134,11 @@ export function emitAgentTerminalEvent(database: DatabaseSync, ownerId: string, 
     FROM agents WHERE owner_id = ? AND workspace_id = ? AND id = ?`).get(ownerId, workspaceId, agentId) as AgentEventRow | undefined;
   if (!row) return;
   const occurredAt = row.terminal_at ?? now;
+  // The inbox notification commits with the same savepoint; it is a no-op while notifications are off
+  // and can never abort the transition.
+  emitAgentTerminalNotification(database, {
+    ownerId: row.owner_id, agentId: row.id, parentAgentId: row.parent_agent_id, status: row.status, occurredAt
+  }, now);
   const base = { workspaceId: row.workspace_id, agentId: row.id, parentAgentId: row.parent_agent_id };
   if (row.status === 'SUCCEEDED') {
     recordEvent(database, row.owner_id, `agent:${row.id}:terminal`, 'cloudharness.agent.settled', occurredAt, {
@@ -155,6 +163,7 @@ export function emitAutomationTerminalEvent(database: DatabaseSync, workflowId: 
     FROM automation_workflows WHERE id = ?`).get(workflowId) as AutomationEventRow | undefined;
   if (!row) return;
   const occurredAt = row.terminal_at ?? now;
+  emitAutomationTerminalNotification(database, row.id, now);
   const base = { workflowId: row.id, ruleId: row.rule_id, workspaceId: row.workspace_id, agentId: row.agent_id };
   if (row.state === 'COMPLETED') {
     recordEvent(database, row.owner_id, `automation:${row.id}:terminal`, 'cloudharness.automation.completed', occurredAt, {

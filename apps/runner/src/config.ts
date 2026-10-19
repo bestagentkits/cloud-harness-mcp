@@ -252,7 +252,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
         lookupHorizonSeconds: process.env.AGENT_LOOKUP_HORIZON_SECONDS
       }
     } : undefined,
-    agentPoliciesEnabled: process.env.AGENT_POLICIES_ENABLED
+    agentPoliciesEnabled: process.env.AGENT_POLICIES_ENABLED,
+    notificationsEnabled: process.env.NOTIFICATIONS_ENABLED
   });
   if (packageApprovalUnavailable(config)) {
     console.warn('[runner-config] PACKAGES_APPROVAL_MODE=required has no Dashboard approver in owner-bearer mode: packages_apply is refused until PACKAGES_APPROVAL_MODE=none');

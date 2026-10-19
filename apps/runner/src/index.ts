@@ -23,6 +23,11 @@ import { DockerAgentGatewayControl } from './agent-gateway-control.js';
 import { ModelProfileStateRepository } from './model-profile-state-repository.js';
 import { CloudflareAccessOAuthProvider } from './cloudflare-access-oauth-provider.js';
 import { OAuthGrantSettingsService } from './oauth-grant-settings-service.js';
+import { GithubNotificationAdapter, McpEventNotificationAdapter } from './notifications/notification-adapters.js';
+import { NotificationDispatcher } from './notifications/notification-dispatcher.js';
+import { configureNotifications } from './notifications/notification-emitter.js';
+import { NotificationService } from './notifications/notification-service.js';
+import { NotificationStore } from './notifications/notification-store.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const loaded = loadRunnerConfigWithReadiness();
@@ -50,6 +55,24 @@ const events = new McpEventService({
   audit: (database, principalId, action, subscriptionId, generation, details) => {
     metadata.recordAuditInTransaction(database, principalId, action, 'mcp_event_subscription', subscriptionId, generation, details);
   }
+});
+// Notification inbox: configured before any startup reconciliation can record a terminal transition.
+// Off by default; while off nothing is emitted or sent and only the retention purge runs.
+const notificationStore = new NotificationStore(store.database);
+const notificationDispatcher = new NotificationDispatcher({
+  store: notificationStore,
+  adapters: [new McpEventNotificationAdapter(store.database), new GithubNotificationAdapter(store.database)],
+  log: (record) => logger.warn(record, 'notifications')
+});
+configureNotifications({
+  enabled: config.notificationsEnabled,
+  channels: notificationDispatcher.channels(),
+  onError: (error) => logger.warn({ error: error instanceof Error ? error.name : 'unknown' }, 'notification emission skipped')
+});
+const notifications = new NotificationService({
+  store: notificationStore,
+  enabled: config.notificationsEnabled,
+  resolvePrincipal: (principal) => store.resolvePrincipal(principal)
 });
 const githubInstallations = new SqliteGitHubInstallationStore(store.database);
 const githubBinding = config.githubApp
@@ -158,7 +181,10 @@ void oauthGrantSettings.reconcileDefault().then(
 const server = createServer(createRunnerApp(config, service, controls, apiKeys, {
   settings: oauthGrantSettings,
   resolvePrincipal: (principal) => store.resolvePrincipal(principal)
-}, events, automations, agentPolicies));
+}, events, automations, agentPolicies, notifications));
+// Turned off, the loop sends nothing but keeps applying retention to stored notifications.
+if (config.notificationsEnabled) notificationDispatcher.start();
+else notificationDispatcher.start(60_000, { purgeOnly: true });
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));
 
 async function shutdown(signal: string) {
@@ -168,6 +194,7 @@ async function shutdown(signal: string) {
   agentTracePurgeAbort.abort();
   await agentTracePurgeRunning;
   await automations.stop();
+  await notificationDispatcher.stop();
   await service.stop();
   metadata.close();
   keyring?.close();
