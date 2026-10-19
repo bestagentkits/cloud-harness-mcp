@@ -236,6 +236,17 @@ describe('Jira normalization', () => {
     expect(normalized(fixture({ webhookEvent: 'comment_created' }))).toEqual({ kind: 'ignored', reason: 'unsupported_event' });
   });
 
+  it('ignores comment activity, which Jira sends as an update without a changelog', () => {
+    for (const [eventType, changelog] of [['issue_commented', undefined], ['issue_comment_edited', null]] as const) {
+      const comment = JSON.parse(fixture().toString()) as Record<string, unknown>;
+      comment.issue_event_type_name = eventType;
+      comment.comment = { body: 'Final answer' };
+      if (changelog === undefined) delete comment.changelog;
+      else comment.changelog = changelog;
+      expect(normalized(Buffer.from(JSON.stringify(comment)))).toEqual({ kind: 'ignored', reason: 'no_relevant_change' });
+    }
+  });
+
   it('flags app actors as bots', () => {
     expect(eventOf(fixture({ accountType: 'app' })).actor).toMatchObject({ isBot: true, type: 'app' });
   });
@@ -245,9 +256,9 @@ describe('Jira normalization', () => {
     expect(jiraAdapter.eventName({}, Buffer.from('not json'))).toBe('jira:malformed');
     expect(normalized(fixture({ key: 'not a key' }))).toEqual({ kind: 'quarantined', reason: 'invalid_issue_key' });
     expect(normalized(fixture({ key: 'OPS-1', projectKey: 'WEB' }))).toEqual({ kind: 'quarantined', reason: 'invalid_project' });
-    const noChangelog = JSON.parse(fixture().toString()) as Record<string, unknown>;
-    delete noChangelog.changelog;
-    expect(normalized(Buffer.from(JSON.stringify(noChangelog)))).toEqual({ kind: 'quarantined', reason: 'invalid_changelog' });
+    const badChangelog = JSON.parse(fixture().toString()) as Record<string, unknown>;
+    badChangelog.changelog = { items: 'status' };
+    expect(normalized(Buffer.from(JSON.stringify(badChangelog)))).toEqual({ kind: 'quarantined', reason: 'invalid_changelog' });
     const noUser = JSON.parse(fixture().toString()) as Record<string, unknown>;
     delete noUser.user;
     expect(normalized(Buffer.from(JSON.stringify(noUser)))).toEqual({ kind: 'quarantined', reason: 'invalid_actor' });

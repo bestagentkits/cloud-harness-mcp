@@ -108,6 +108,9 @@ function readChangelog(payload: Record<string, unknown>): Changelog | undefined 
  * rule for any of them fires.
  */
 function normalizeUpdate(payload: Record<string, unknown>, baseUrl: string | undefined): AutomationNormalization {
+  // Jira sends an update without a changelog when a comment is added or edited (including this
+  // harness's own comments); that is not a field change, so it is ignored rather than quarantined.
+  if (payload.changelog === undefined || payload.changelog === null) return { kind: 'ignored', reason: 'no_relevant_change' };
   const issue = record(payload.issue);
   const fields = record(issue?.fields);
   const key = issue?.key;
