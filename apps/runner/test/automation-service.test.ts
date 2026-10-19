@@ -731,8 +731,8 @@ describe('provider adapters', () => {
 
   it('rejects connections and deliveries for a provider this runner has no adapter for', () => {
     const context = setup();
-    const created = context.service.execute({ version: 1, principal: context.owner, operation: 'connection_create', input: { provider: 'linear', name: 'acme' } });
-    expect(created).toMatchObject({ ok: false, error: { code: 'INVALID_INPUT', message: 'the linear provider is not available on this instance' } });
+    const created = context.service.execute({ version: 1, principal: context.owner, operation: 'connection_create', input: { provider: 'custom', name: 'acme' } });
+    expect(created).toMatchObject({ ok: false, error: { code: 'INVALID_INPUT', message: 'the custom provider is not available on this instance' } });
     const { connection, secret } = createConnection(context);
     const unknown = context.service.execute({
       version: 1,
