@@ -61,6 +61,37 @@ export const AgentOutputRecordSchema = z.discriminatedUnion('type', [
 ]);
 
 export type AgentOutputRecord = z.infer<typeof AgentOutputRecordSchema>;
+
+/**
+ * Durable-runtime session storage RPC. A worker running the durable engine asks the runner, which
+ * owns the session database, to run one Storage method. These records travel on the same stdio
+ * channel but are routed to the session store, never to the run's event log, so they are kept out
+ * of `AgentOutputRecordSchema`. The method list must stay aligned with the worker's protocol.
+ */
+export const AGENT_STORAGE_METHODS = [
+  'commit', 'mintId', 'conversation', 'scanConversations', 'entry', 'findLatestHeadMarker',
+  'scanEntries', 'task', 'scanTasks', 'submission', 'scanSubmissions', 'submissionByRequest',
+  'findDocument', 'document', 'scanDocuments', 'close'
+] as const;
+export type AgentStorageMethod = typeof AGENT_STORAGE_METHODS[number];
+export const AGENT_STORAGE_ERROR_CODES = ['request', 'closed', 'fenced', 'limit', 'rate_limited', 'unavailable', 'failed'] as const;
+export type AgentStorageErrorCode = typeof AGENT_STORAGE_ERROR_CODES[number];
+export const MAX_STORAGE_ARGS = 4;
+
+export const AgentStorageRequestRecordSchema = z.object({
+  type: z.literal('storage_request'),
+  id: requestId,
+  method: z.enum(AGENT_STORAGE_METHODS),
+  args: z.array(z.unknown()).max(MAX_STORAGE_ARGS)
+}).strict();
+export type AgentStorageRequestRecord = z.infer<typeof AgentStorageRequestRecordSchema>;
+export type AgentStorageResponseRecord = {
+  type: 'storage_response'; id: string; ok: true; result?: unknown;
+} | {
+  type: 'storage_response'; id: string; ok: false;
+  error: { code: AgentStorageErrorCode; message: string; retryable: boolean };
+};
+
 export type AgentStartRecord = {
   type: 'start';
   requestId: string;
@@ -80,13 +111,15 @@ export type AgentStartRecord = {
   limits: { deadlineMs: number; maxEvents: number; maxOutputBytes: number; maxEventBytes: number; maxToolResultBytes: number };
   /** Present only when the agent persists its session; the history to replay before the prompt. */
   session?: { messages: unknown[]; headSha256: string; toolOutcomes?: AgentToolOutcome[] };
+  /** The agent engine; absent selects the default coding runtime. */
+  runtime?: 'pi-coding' | 'pi-durable';
 };
 export type AgentInputRecord = AgentStartRecord | {
   type: 'message'; requestId: string; behavior: 'steer' | 'followUp'; text: string;
 } | { type: 'cancel'; requestId: string; reason?: string } | {
   type: 'tool_result'; requestId: string; final: true; isError: boolean;
   content: Array<{ type: 'text'; text: string }>; details?: unknown;
-} | { type: 'tool_cancel'; requestId: string; reason?: string };
+} | { type: 'tool_cancel'; requestId: string; reason?: string } | AgentStorageResponseRecord;
 
 export class AgentProtocolChannel {
   private pending = Buffer.alloc(0);
