@@ -62,7 +62,7 @@ describe('bounded LF JSONL protocol', () => {
   });
 
   it('rejects forbidden operations and caller-supplied gateway URLs', () => {
-    const unsafeOperation = { ...createStartRecord(), tools: ['exec_run'] };
+    const unsafeOperation = { ...createStartRecord(), tools: ['bash'] };
     expect(() => new InputRecordQueue().feed(Buffer.from(`${JSON.stringify(unsafeOperation)}\n`))).toThrow('schema');
 
     const start = createStartRecord();

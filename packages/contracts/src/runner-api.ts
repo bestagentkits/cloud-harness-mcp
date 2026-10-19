@@ -285,7 +285,10 @@ export const AgentProxyOperationSchema = z.enum([
   'files_mkdir',
   'grep_search',
   'symbols_search',
-  'symbols_references'
+  'symbols_references',
+  'exec_run',
+  'git_status',
+  'git_diff'
 ]);
 
 export const AgentStatusSchema = z.enum([

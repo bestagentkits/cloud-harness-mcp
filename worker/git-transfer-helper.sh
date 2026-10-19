@@ -33,9 +33,24 @@ EOF
   export GIT_ASKPASS=/tmp/cloud-harness-askpass
 }
 
+# Replace refs and grafts are off by environment and by configuration (a repository's own
+# core.useReplaceRefs would otherwise re-enable them), so every read sees the objects a push sends.
+# The checkout's configuration is the agent's to write, so every setting through which Git would run a
+# command it names is overridden: hooks, fsmonitor, and the command that lists an alternate's refs
+# when a fetch into a checkout with an alternates file negotiates (`true` lists none and prints nothing,
+# where an empty value makes Git report it cannot run the command). The graft file names a path that
+# can never exist (below /dev/null), so Git reads no grafts and prints no graft deprecation hint into an
+# answer; an existing empty file would print that hint from every process, upload-pack included, which
+# ignores the advice setting.
 git_clean() {
-  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
-    git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c credential.helper= -c http.followRedirects=false "$@"
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null/no-grafts \
+    git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.useReplaceRefs=false -c diff.relative=false \
+    -c core.alternateRefsCommand=true -c core.alternateRefsPrefixes= -c advice.graftFileDeprecated=false \
+    -c credential.helper= -c http.followRedirects=false "$@"
+}
+
+is_object_id() {
+  [[ $1 =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]
 }
 
 # The history spec comes from schema-validated input: '' (no depth change), full, depth:N, or since:DATE.
@@ -96,7 +111,37 @@ case $mode in
     fi
     ;;
   stage-push)
-    git_clean clone --bare -- "$repository_path" "$transfer_path"
+    # `isolated` copies every object through the pack protocol instead of hardlinking the checkout's object
+    # files (or inheriting its alternates), so nothing the executor can still write after it resumes is
+    # shared with the clone that is inspected and then pushed. The serving side runs in the checkout,
+    # where Git drops the caller's environment and configuration overrides, so it is given them again:
+    # a checkout's core.useReplaceRefs or grafts would otherwise reshape the history it sends.
+    if [[ $argument == isolated ]]; then
+      git_clean clone --bare --no-local \
+        --upload-pack='env GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null/no-grafts git -c core.useReplaceRefs=false -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.alternateRefsCommand=true -c core.alternateRefsPrefixes= -c advice.graftFileDeprecated=false upload-pack' \
+        -- "$repository_path" "$transfer_path"
+    else
+      git_clean clone --bare -- "$repository_path" "$transfer_path"
+    fi
+    ;;
+  inspect)
+    # The authoritative read of the commit a push will send, run on the staged clone itself. Output:
+    # the resolved commit id (empty when it is not a commit), the raw commit object in base64 (its parent
+    # headers are what the push sends), `paths` or `no-base`, then the NUL-separated paths the commit
+    # changes against the base.
+    base=$expected_remote_oid
+    if ! is_object_id "$argument" || ! is_object_id "$base"; then printf 'invalid inspection object ID\n' >&2; exit 2; fi
+    sha=$(git_clean --git-dir="$transfer_path" rev-parse --verify --quiet "${argument}^{commit}" || true)
+    printf '%s\n' "$sha"
+    if [[ -z $sha ]]; then exit 0; fi
+    git_clean --git-dir="$transfer_path" cat-file commit "$sha" | base64 -w0
+    printf '\n'
+    if ! git_clean --git-dir="$transfer_path" cat-file -e "${base}^{commit}" 2>/dev/null; then
+      printf 'no-base\n'
+      exit 0
+    fi
+    printf 'paths\n'
+    git_clean --git-dir="$transfer_path" diff-tree -r --no-renames --no-commit-id --name-only -z "$base" "$sha" --
     ;;
   push)
     configure_auth

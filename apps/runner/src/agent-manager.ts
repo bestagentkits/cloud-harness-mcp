@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   AgentProxyOperationSchema,
+  BROKERED_ONLY_PROXY_OPERATIONS,
   HarnessError,
   composeAgentBootstrapPrompt,
   resolveEffectivePricing,
@@ -55,6 +56,8 @@ type PricedAgentModelProfile = AgentModelProfile & {
   revisionId: string | null;
 };
 
+const BROKERED_ONLY: ReadonlySet<AgentProxyOperation> = new Set(BROKERED_ONLY_PROXY_OPERATIONS);
+
 /** How often, and after how long, open spend ledger rows are swept for settlement. */
 const SPEND_SWEEP_INTERVAL_MS = 60_000;
 const SPEND_SWEEP_MIN_AGE_MS = 60_000;
@@ -81,6 +84,8 @@ export type AgentToolExecutor = (input: {
   requestId: string;
   operation: AgentProxyOperation;
   toolInput: Record<string, unknown>;
+  /** The run's ledger usage when the request arrived, for budget re-checks at execution. */
+  usage: { inputTokens: number; outputTokens: number; costMicros: number };
   signal: AbortSignal;
 }) => Promise<RunnerResponse>;
 type RuntimeContext = {
@@ -121,6 +126,13 @@ export type AgentManagerDependencies = {
   now?: (() => number) | undefined;
   /** Durable trace recording; absent when agent traces are disabled. Its failures never fail an agent. */
   traceRecorder?: AgentTraceHooks | undefined;
+  /** Resolves the automation workflow that owns a workspace, so its runs' traces carry the workflow id. */
+  workflowFor?: ((ownerId: string, workspaceId: string) => string | null) | undefined;
+  /**
+   * Whether this workspace's agents may be granted the brokered-only proxy operations (commands and Git
+   * reads). Absent means never: only a coding workflow's broker can execute them.
+   */
+  permitsBrokeredOperations?: ((ownerId: string, workspaceId: string) => boolean) | undefined;
 };
 
 export class AgentManager {
@@ -308,6 +320,9 @@ export class AgentManager {
     if (tools.some((operation) => !profile.maxProxyOperations.includes(operation))) {
       throw new HarnessError('INVALID_INPUT', 'requested proxy operation exceeds the selected profile');
     }
+    if (tools.some((operation) => BROKERED_ONLY.has(operation)) && this.dependencies.permitsBrokeredOperations?.(ownerId, workspace.id) !== true) {
+      throw new HarnessError('FORBIDDEN', 'exec_run, git_status and git_diff are available only to a coding workflow agent', 403, false);
+    }
     const budget: AgentBudget = {
       ttlSeconds: input.ttlSeconds as number,
       maxOutputBytes: input.maxOutputBytes as number,
@@ -378,6 +393,7 @@ export class AgentManager {
         : null,
       profileId: profile.spendProfileKey.replace(/^(?:profile|static):/u, ''),
       profileRevisionId: profile.revisionId,
+      workflowId: this.dependencies.workflowFor?.(ownerId, workspace.id) ?? null,
       at: now
     }));
     this.traced(reservation.record, (traces) => traces.budget(traceKey(reservation.record), {
@@ -753,10 +769,13 @@ export class AgentManager {
       let isOk = false;
       try {
         const toolInput = TOOL_SCHEMA_BY_NAME[output.operation].parse({ ...raw, workspaceId: record.workspaceId }) as Record<string, unknown>;
+        const usage = this.repository.usage(record.ownerId, record.workspaceId, record.id, record.generation);
         const result = await this.dependencies.toolExecutor({
           ownerId: record.ownerId, workspaceId: record.workspaceId, workspaceGeneration: record.workspaceGeneration,
           agentId: record.id, agentGeneration: record.generation, requestId: output.requestId,
-          operation: output.operation, toolInput, signal: controller.signal
+          operation: output.operation, toolInput,
+          usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costMicros: usage.costMicros },
+          signal: controller.signal
         });
         this.requireRunnable(record);
         isOk = result.ok;

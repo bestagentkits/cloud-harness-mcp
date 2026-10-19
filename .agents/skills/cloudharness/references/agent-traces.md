@@ -36,6 +36,13 @@ model profiles, and to explain a failed, cancelled, or timed-out run. Use
   `prompt + cacheRead + cacheWrite`.
 - The `hook` span kind is reserved: no operation an agent can reach runs a
   workspace hook, so agent traces never contain one.
+- A trace of an agent a coding automation started carries that run's
+  `workflowId`, so `agent_traces_list` with `workflowId` finds it. Each brokered
+  action (an edit, a command, a commit, a push, the pull request) adds an
+  `action` span with its decision, reason code and outcome. The runner commits
+  and publishes after the agent ends, so `action` spans can be appended to a
+  trace that is already finished; read the spans again rather than treating a
+  finished trace as frozen.
 - `reconciliationStatus` compares model-call span sums with the agent usage
   ledger: tokens must match exactly; cost may differ by one micro-dollar per
   model call of rounding. `unreconciled` lists its reasons on the trace.
@@ -74,7 +81,8 @@ cost provenance, coverage, and the reconciliation detail.
 ### `agent_trace_spans`
 
 Page through one trace's spans in recording order (span sequence, not start
-time): `agent_run`, `model_call`, `tool_call`, `budget`, and `gateway`. Tool
+time): `agent_run`, `model_call`, `tool_call`, `budget`, `gateway`, and, for a
+coding automation, `action`. Tool
 calls carry the operation name, outcome, and an input digest, plus a redacted
 preview only when the operator enabled one. A failed model call's `errorClass`
 `budget` is a gateway budget refusal (raise the agent's budget, up to the model

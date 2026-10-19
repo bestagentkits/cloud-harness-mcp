@@ -2760,7 +2760,59 @@ export function renderAutomationRuns({ workflows = [], rules = [], filters = {} 
   });
 }
 
-export function renderAutomationRunDetail({ workflow, result = null, transitions = [], ruleName } = {}) {
+/** One line per receipt outcome: what the action produced, or why it stopped. */
+function automationActionOutcome(outcome) {
+  if (!outcome || typeof outcome !== 'object') return '';
+  const parts = [];
+  if (outcome.exitCode !== undefined && outcome.exitCode !== null) parts.push(`exit ${outcome.exitCode}`);
+  if (outcome.commitSha) parts.push(String(outcome.commitSha).slice(0, 12));
+  if (outcome.prNumber) parts.push(`PR #${outcome.prNumber}`);
+  if (outcome.artifactId) parts.push(String(outcome.artifactId));
+  if (outcome.errorCode) parts.push(String(outcome.errorCode));
+  return parts.join(' · ');
+}
+
+/**
+ * Coding runs: the publish phase, what was published, and the brokered actions' receipts, newest
+ * first. The runner pages receipts; `actionsCursor` names the next, older page.
+ */
+function automationCodingSection(coding, actions, actionsCursor) {
+  if (!coding) return '';
+  const prHref = automationResourceHref(coding.prUrl);
+  const pr = coding.prNumber ? (prHref ? `<a class="mono" href="${escape(prHref)}" target="_blank" rel="noopener noreferrer">#${escape(coding.prNumber)}</a>` : `<span class="mono">#${escape(coding.prNumber)}</span>`) : 'Not opened';
+  const receipts = automationList(actions);
+  const decision = (action) => `${escape(action.decision)}<small>${escape(action.reasonCode)}</small>`;
+  const rows = receipts.length ? receipts.map((action) => `<tr>
+        <td>${time(action.createdAt)}</td>
+        <td class="mono">${escape(action.origin)}</td>
+        <th scope="row" class="mono">${escape(action.step)}</th>
+        <td class="mono">${escape(action.actionClass)}</td>
+        <td class="mono wrap">${decision(action)}</td>
+        <td class="mono">${escape(action.state)}</td>
+        <td class="mono wrap">${escape(automationActionOutcome(action.outcome))}</td>
+      </tr>`).join('') : '<tr><td colspan="7">No actions recorded yet.</td></tr>';
+  const cards = receipts.length ? receipts.map((action) => `<li><h3 class="mono">${escape(action.step)}</h3><dl><dt>Time</dt><dd>${time(action.createdAt)}</dd><dt>Origin</dt><dd class="mono">${escape(action.origin)}</dd><dt>Class</dt><dd class="mono">${escape(action.actionClass)}</dd><dt>Decision</dt><dd class="mono wrap">${decision(action)}</dd><dt>State</dt><dd class="mono">${escape(action.state)}</dd><dt>Outcome</dt><dd class="mono wrap">${escape(automationActionOutcome(action.outcome))}</dd></dl></li>`).join('')
+    : '<li class="empty"><h3>No actions recorded yet.</h3></li>';
+  const older = typeof actionsCursor === 'string' && actionsCursor
+    ? `<div class="row-actions"><button type="button" data-automation-older-actions="${escape(actionsCursor)}">Show older actions</button></div>`
+    : '';
+  return `
+    <section class="panel" aria-labelledby="automation-coding-heading">
+      <h2 id="automation-coding-heading" tabindex="-1">Coding</h2>
+      <p>The runner commits, pushes and opens the pull request itself after the agent finishes and verification passes. It never merges.</p>
+      <dl class="facts">
+        <dt>Phase</dt><dd class="mono">${escape(coding.phase)}</dd>
+        <dt>Project</dt><dd class="mono wrap">${escape(coding.projectId)}</dd>
+        <dt>Branch</dt><dd class="mono wrap">${automationText(coding.branch, 'Not created')}</dd>
+        <dt>Commit</dt><dd class="mono wrap">${automationText(coding.commitSha, 'None')}</dd>
+        <dt>Pull request</dt><dd>${pr}</dd>
+      </dl>
+      <div class="desktop-table"><table><caption>${escape(receipts.length)} brokered actions</caption><thead><tr><th>Time</th><th>Origin</th><th>Step</th><th>Class</th><th>Decision</th><th>State</th><th>Outcome</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <ul class="mobile-list">${cards}</ul>${older}
+    </section>`;
+}
+
+export function renderAutomationRunDetail({ workflow, result = null, transitions = [], ruleName, actions = [], actionsCursor = null } = {}) {
   if (!workflow) return '<div class="empty"><h3>Automation run not found.</h3><p>It may have been purged after the retention window or belong to another identity.</p></div>';
   const cancel = automationWorkflowIsTerminal(workflow.state) ? '' : `<div class="row-actions"><button class="danger" type="button" data-automation-cancel="${escape(workflow.id)}">Cancel run</button></div>`;
   const resultBody = typeof result === 'string' && result
@@ -2792,7 +2844,7 @@ export function renderAutomationRunDetail({ workflow, result = null, transitions
         <dt>Updated</dt><dd>${time(workflow.updatedAt)}</dd>
         <dt>Finished</dt><dd>${workflow.terminalAt ? time(workflow.terminalAt) : 'Not finished'}</dd>
       </dl>
-    </section>
+    </section>${automationCodingSection(workflow.coding, actions, actionsCursor)}
     <section class="panel" aria-labelledby="automation-result-heading">
       <h2 id="automation-result-heading">Result</h2>
       <p>The agent's answer, shown as plain text exactly as recorded.</p>
@@ -2824,7 +2876,7 @@ export function renderAutomationRules({ rules = [], connections = [], profiles =
   const profileNames = new Map(automationList(profiles).map((profile) => [profile.id, profile.displayName]));
   const enabledPill = (rule) => `<span class="status${rule.enabled ? ' enabled' : ''}">${rule.enabled ? 'Enabled' : 'Disabled'}</span>`;
   const match = (rule) => `<span class="mono wrap">${escape(rule.match?.repository)}</span><small>${escape(automationEventsText(rule.match?.events))} · label <span class="mono">${escape(rule.match?.label)}</span>${rule.match?.ignoreBots === false ? ' · bots allowed' : ''}${automationList(rule.match?.actorAllowlist).length ? ` · ${escape(rule.match.actorAllowlist.length)} allowed actors` : ''}</small>`;
-  const agent = (rule) => `${escape(profileNames.get(rule.action?.profileId) ?? rule.action?.profileId)}<small>${rule.action?.publishComment ? 'Posts a comment' : 'No comment'} · ${escape(automationList(rule.action?.proxyOperations).length)} operations</small>`;
+  const agent = (rule) => `${escape(profileNames.get(rule.action?.profileId) ?? rule.action?.profileId)}<small>${rule.action?.publishComment ? 'Posts a comment' : 'No comment'} · ${rule.action?.coding ? 'Coding: opens a pull request' : `${escape(automationList(rule.action?.proxyOperations).length)} operations`}</small>`;
   const connection = (rule) => escape(connectionNames.get(rule.connectionId) ?? rule.connectionId);
   const rows = list.length ? list.map((rule) => `<tr>
         <th scope="row">${escape(rule.name)}<small class="mono wrap">${escape(rule.id)}</small></th>
@@ -2890,6 +2942,13 @@ export function renderAutomationRuleDialog({ rule, connections = [], profiles = 
       <p class="field-help">The agent also receives the issue or pull request title and body as untrusted context.</p>
       <div role="group" aria-label="Allowed operations">${operationBoxes}</div>
       <label class="checkbox-label"><input type="checkbox" name="publishComment"${automationChecked(action.publishComment === true)}><span>Post the agent's answer as one comment on the issue or pull request</span></label>
+    </fieldset>
+    <fieldset class="automation-fieldset"><legend>Coding (optional)</legend>
+      <p class="field-help">Fill all three to let the agent change code. The project's execution policy decides every action, the allowed operations above are replaced by the coding tool set, and the runner opens a pull request on an <code>agent/</code> branch after the verify command passes. It never merges. Needs <code>AGENT_CODING_ENABLED=true</code> on the runner.</p>
+      <label for="automation-rule-coding-project">Policy project<input id="automation-rule-coding-project" name="codingProjectId" maxlength="84" autocomplete="off" spellcheck="false" placeholder="prj_…" value="${escape(action.coding?.projectId ?? '')}"></label>
+      <label for="automation-rule-coding-verify">Verify command<input id="automation-rule-coding-verify" name="codingVerifyCommand" maxlength="512" autocomplete="off" spellcheck="false" placeholder="npm test" value="${escape(action.coding?.verifyCommand ?? '')}"></label>
+      <p class="field-help">Plain space-separated words without shell syntax. It must pass before anything is committed.</p>
+      <label for="automation-rule-coding-base">Pull request base branch<input id="automation-rule-coding-base" name="codingBaseBranch" maxlength="200" autocomplete="off" spellcheck="false" placeholder="main" value="${escape(action.coding?.baseBranch ?? '')}"></label>
     </fieldset>
     <fieldset class="automation-fieldset"><legend>Limits</legend>
       ${automationNumberField({ id: 'automation-rule-ttl', name: 'ttlSeconds', label: 'Time limit (seconds)', value: budget.ttlSeconds, min: 60, max: 7200 })}
