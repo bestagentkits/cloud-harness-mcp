@@ -12,9 +12,11 @@ import { SqliteGitHubInstallationStore } from './github-installation-sqlite-stor
 import { MetadataStore } from './metadata-store.js';
 import { McpEventService } from './mcp-event-service.js';
 import { AutomationService } from './automation-service.js';
+import { AgentPolicyService } from './agent-governance/policy-service.js';
 import { HarnessError } from '@cloud-harness/contracts';
 import { SecretKeyring } from './secret-keyring.js';
 import { createRunnerDecisionPlane } from './decision-plane/runner-decision-plane.js';
+import { ExecutionRiskAdvisor } from './decision-plane/execution-risk-advisor.js';
 import { StateStore } from './state-store.js';
 import { WorkspaceService } from './workspace-service.js';
 import { DockerAgentGatewayControl } from './agent-gateway-control.js';
@@ -108,6 +110,20 @@ const automations = new AutomationService({
   log: (record) => logger.warn(record, 'automation')
 });
 automations.start();
+const agentPolicies = new AgentPolicyService({
+  database: store.database,
+  enabled: config.agentPoliciesEnabled,
+  resolvePrincipal: (principal) => store.resolvePrincipal(principal),
+  // Project identity is the metadata projects table, never a name or id taken from an event payload.
+  projectState: (principalId, projectId) => (metadata.validateArtifactProvenance(principalId, { projectId }) ? 'active' : 'unknown'),
+  activeProjectIds: (principalId) => metadata.activeProjectIds(principalId),
+  audit: (database, principalId, action, subjectType, subjectId, generation, details) => {
+    metadata.recordAuditInTransaction(database, principalId, action, subjectType, subjectId, generation, details);
+  },
+  // Consulted only when DECISION_PLANE_PURPOSES includes execution-risk, TypeSafe egress is on, the owner has
+  // a TypeSafe credential and the policy enables the advisor; otherwise the policy fallback applies with no call.
+  advisor: new ExecutionRiskAdvisor(decisionPlane)
+});
 // Agent trace retention: traces past their retention period are removed hourly in bounded,
 // yielding batches, also while traces are disabled. A failure is logged and retried on the next
 // tick, and a tick never overlaps a purge still in progress. Shutdown aborts the purge between
@@ -142,7 +158,7 @@ void oauthGrantSettings.reconcileDefault().then(
 const server = createServer(createRunnerApp(config, service, controls, apiKeys, {
   settings: oauthGrantSettings,
   resolvePrincipal: (principal) => store.resolvePrincipal(principal)
-}, events, automations));
+}, events, automations, agentPolicies));
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));
 
 async function shutdown(signal: string) {

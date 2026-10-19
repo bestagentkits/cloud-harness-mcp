@@ -309,6 +309,14 @@ event-to-span mapping by
   `null`. Its `costMicros` is `null` when no trace in the window has a known
   cost.
 - **Spans** are returned in recording order (span sequence), not start time.
+- **Error classes.** A failed model call carries a bounded `errorClass`. A
+  Model Gateway budget refusal is `budget`, recognised by the gateway's
+  structured refusal code `budget_exceeded` (owned by
+  [`apps/model-gateway/src/budget.ts`](../apps/model-gateway/src/budget.ts)),
+  and, unless the run already recorded another limit, the run's
+  `budget.limit` span with `limit: "model_budget"`. Provider throttling, including a provider quota
+  429, stays `rate_limit`. Raise the agent's budget for the first; wait and
+  retry for the second.
 - **Reconciliation.** When the agent ends, model-call span sums are compared
   with the agent usage ledger. Tokens must match exactly; cost may differ by a
   tolerance of one micro-dollar per model-call span (per-call rounding). A

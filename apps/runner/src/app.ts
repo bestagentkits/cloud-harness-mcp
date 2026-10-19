@@ -11,6 +11,8 @@ import type { DashboardControlService } from './dashboard-control-service.js';
 import type { ApiKeyService } from './api-key-service.js';
 import type { McpEventService } from './mcp-event-service.js';
 import type { AutomationService } from './automation-service.js';
+import type { AgentPolicyService } from './agent-governance/policy-service.js';
+import { registerAgentPolicyRoutes } from './agent-governance/policy-router.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info', redact: ['req.headers.authorization', 'authorization', '*.token', '*.content', '*.command'] });
 
@@ -19,7 +21,7 @@ const DASHBOARD_OPERATION_BODY_LIMIT = '12mb';
 /** Holds the base64 form of a 1 MiB webhook body plus the operation envelope around it. */
 const AUTOMATIONS_BODY_LIMIT = '2mb';
 
-export function createRunnerApp(config: RunnerConfig, service: WorkspaceService, controls?: DashboardControlService, apiKeys?: ApiKeyService, oauth?: OAuthSettingsOperations, events?: McpEventService, automations?: AutomationService): Express {
+export function createRunnerApp(config: RunnerConfig, service: WorkspaceService, controls?: DashboardControlService, apiKeys?: ApiKeyService, oauth?: OAuthSettingsOperations, events?: McpEventService, automations?: AutomationService, agentPolicies?: AgentPolicyService): Express {
   const app = express();
   app.disable('x-powered-by');
   // A skills archive travels to the runner as base64 in this one route's envelope (up to ~10.7 MiB), so it
@@ -106,6 +108,8 @@ export function createRunnerApp(config: RunnerConfig, service: WorkspaceService,
       response.status(500).json({ ok: false, error: { code: 'INTERNAL', message: 'automation operation failed' } });
     }
   });
+  // Agent execution policies: owner-authored global and project policy, and the gate simulation.
+  registerAgentPolicyRoutes(app, serviceAuth(config.serviceToken), agentPolicies, logger);
   return app;
 }
 

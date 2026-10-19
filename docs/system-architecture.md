@@ -210,6 +210,21 @@ tables are additive and unversioned
 and the trust decisions are in the
 [security model](security-model.md#webhook-automation-ingress).
 
+Agent execution policies live in the runner under
+[`apps/runner/src/agent-governance/`](../apps/runner/src/agent-governance/)
+([ADR 0006](adr/0006-policy-governed-coding-agents.md)). The policy store keeps
+immutable revisions and compare-and-swap heads in the runner state database;
+the resolver turns the global and project heads into a frozen snapshot; the
+pure gate evaluator (`PURE_GATE_EVALUATOR`) decides. Today it serves the
+Dashboard simulation; action enforcement arrives with the coding broker, which
+reuses it. The API holds no policy state: the Dashboard BFF
+([`apps/api/src/dashboard-policies-router.ts`](../apps/api/src/dashboard-policies-router.ts))
+forwards validated owner requests over the internal agent-policies channel,
+whose schema is
+[`packages/contracts/src/agent-policy-api.ts`](../packages/contracts/src/agent-policy-api.ts).
+The versioned ports in
+[`ports.ts`](../apps/runner/src/agent-governance/ports.ts) are the seams that
+runtime adapters, the action broker and advisors plug into.
 Third-party agent toolkits are acquired and normalized via disposable clone helpers running on a dedicated internal Docker network (`cloud-harness-provisioning`). All helper egress routes through the dual-homed `provisioning-proxy` (port 3128) with DNS destination allowlists. Normalized bundles are published to runner Content-Addressed Storage (`TOOLKIT_CACHE_ROOT`) and mounted into executors read-only at `/opt/cloud-harness/owner-skills:ro` or staged into `.cloud-harness/skills` under explicit confirmation.
 
 ## Composition roots and transports

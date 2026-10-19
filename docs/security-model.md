@@ -869,11 +869,19 @@ the owner has stored a TypeSafe integration key.
   filtering already allowed, and it can attach `data.diagnosis` to a generic
   GitHub failure. It cannot add a tool, change an error code or `retryable`,
   retry anything, or grant access. The API rejects an ordering that is not an
-  exact permutation of the candidates it sent.
+  exact permutation of the candidates it sent. For `execution-risk` it can
+  only keep or escalate an agent action the policy already marked
+  discretionary; see [Agent execution policies](#agent-execution-policies).
 - **What leaves the runner.** For `mcp-routing`: the search query plus the
   names and shortened descriptions of the allowed candidate tools. For
   `failure-classification`: the action name, exit code, network profile, and a
-  tail of the stderr and stdout. Repository contents are never sent.
+  tail of the stderr and stdout. For `execution-risk`: a typed summary of the
+  action (its class, counts of touched, test, manifest, CI and hidden paths, a
+  command category with its argument count and a short digest, whether the
+  command runs `git push`, whether a branch or network host is named, the
+  package ecosystem from a fixed list (anything else is `other`), diff size
+  and test result). Paths, arguments, branch, repository and package names and the
+  action's free-text reason are not sent. Repository contents are never sent.
 - **Redaction fails closed, and comes before any cut.** Output and
   descriptions are redacted whole and only then shortened, so a secret that
   straddles the cut is replaced, never left as an unrecognised fragment. Every
@@ -892,6 +900,132 @@ the owner has stored a TypeSafe integration key.
   counted in full in the metrics. Prompt text and answers are not stored. The
   metrics at `GET /api/v1/decision-plane/status` are in-memory, instance-wide
   aggregates, not per owner, and reset when the runner restarts.
+
+## Agent execution policies
+
+Coding-agent execution policies are owner-authored
+([ADR 0006](adr/0006-policy-governed-coding-agents.md)) and sit behind
+`AGENT_POLICIES_ENABLED`. This release ships the policy store, the gate
+evaluator and the Dashboard simulation. It does not yet enforce anything on a
+running agent: action enforcement arrives with the coding broker, which calls
+the same evaluator through the `GateEvaluator` port. Until then a saved policy
+changes simulation results only.
+
+- **One authority.** Only the owner writes policy, through owner-authenticated
+  Dashboard routes with the usual Origin and CSRF checks. The principal comes
+  from the session and the project from the route path, after the body is
+  read. Webhook payloads, repository files, agent output and request bodies
+  cannot select the principal, the project or the policy.
+- **Projects only narrow.** A project policy may remove classes, add denies or
+  mandatory approvals, shorten scope lists and lower budgets. A save that
+  widens the global policy is refused, and evaluation ignores any widening
+  field. A project can choose a class's effect only where the owner marked the
+  class delegable. A policy for a project that no longer exists denies every
+  action bound to it, and its effective-policy preview is empty.
+- **One pure gate.** The simulation and the future broker use one frozen
+  evaluator instance and the same resolved snapshot and advisor availability,
+  so a simulation returns what execution will start from. The one difference
+  is the advisor: a discretionary action shows as pending (`ADVISOR_REQUIRED`,
+  which is REQUIRE_APPROVAL) because the advisor's answer exists only at
+  execution time. A simulation never calls the advisor. The descriptor's
+  free-text reason is never read.
+- **The advisor can only keep or escalate.** The Jev execution-risk advisor
+  runs only when three opt-ins hold: the owner stored a TypeSafe key, the
+  operator listed `execution-risk` in `DECISION_PLANE_PURPOSES`, and the
+  global policy's `advisor.enabled` is true. A project may turn it off or make
+  it stricter, never enable or loosen it, and enabling or loosening it is a
+  weakening the owner confirms. It is asked only about an
+  `advisor_or_approval` action that passed every deterministic check, and a
+  confident low-risk answer is the only thing that lets that action run
+  without a human. Every other outcome (advisor off or unconfigured, timeout,
+  rate limit, invalid answer, low confidence, redaction failure) applies the
+  policy's fallback: approval by default, or deny. The decision records the
+  Jev decision id, risk and confidence, or the fallback reason. No answer
+  lowers a deny or a required approval, including
+  `PLATFORM_COMMAND_UNANALYZABLE`. The gate itself enforces the confidence
+  floor, so no advisor implementation can clear an action with a `no_change`
+  below it. Jev is told the class the gate judged (`publish_branch` for a
+  declared class whose command runs `git push`), never only the declared one.
+  The execution-time call (`AgentPolicyService.decide`) is consulted by the
+  coding broker, which ships later; until then nothing calls Jev for an agent
+  action.
+- **Platform invariants have two outcomes.** Credential and Docker access,
+  network escalation, paths outside the workspace and privilege escalation
+  deny before any policy is read. A command is an argv run through execve,
+  with no shell, and the gate reads only argv: it unwraps the launchers whose
+  options it knows exactly (such as `env`, `nice`, `timeout`, `xargs`,
+  `setsid`, `npx`, `npm exec` and `busybox`) and reads each wrapped program.
+
+  Shell strings are never analysed; they always require approval. A shell
+  given `-c`, `env -S`, `npx -c`, `bun exec`, `eval`, `source` and an
+  interpreter's inline code are all unanalyzable, whatever the string
+  contains. Run commands as argv to keep them readable.
+
+  The gate is a policy layer, not a sandbox. A program it does not know is a
+  leaf command: when the owner's command scope admits it, the gate does not
+  model whether its arguments make it run something else (a test runner's
+  plugin option, a build tool's hook). Containment for that comes from the
+  executor restrictions owned by `apps/runner/src/workspace-service.ts`, and
+  in the coding flow the runner, not the executor, pushes branches and opens
+  pull requests. The analysis itself lives in
+  `apps/runner/src/agent-governance/command-analysis.ts`.
+
+  A container runtime or privilege tool in program position, or the Docker
+  socket handed to a program, is a definite match and denies. Inside a shell
+  string, such a program at the start of a command also denies, and a
+  `git push` there is treated as a push of unknown refs, so the publish policy
+  and branch scope deny it. A command the analysis cannot read exactly is not
+  denied: it needs owner approval with `PLATFORM_COMMAND_UNANALYZABLE`. That
+  approval is mandatory, so no advisor answer, project rule or delegation
+  lowers it, while a hard deny, a scope deny or the `publish_branch`
+  evaluation of a detected push still wins. Besides shell strings, the
+  following are unanalyzable:
+  - setting an environment variable (a leading `NAME=value` or
+    `env NAME=value`) outside a short safe list (`CI`, `NODE_ENV`,
+    `FORCE_COLOR`, `NO_COLOR`, `TZ`, `LANG`, `LC_ALL`, `DEBUG`, and the npm
+    settings `loglevel`, `color`, `progress`, `fund`, `audit`,
+    `update_notifier` and `yes`), since variables such as `PAGER`, `EDITOR`,
+    `LESSOPEN`, `GIT_*` or `npm_config_call` make a program run another one;
+  - an unknown launcher option;
+  - a program name containing shell syntax;
+  - a shell or interpreter reading standard input;
+  - a `git -c` setting outside a small safe list, or a git alias;
+  - an unknown program given a shell, launcher, git, interpreter, container
+    or privilege name as an argument (an option's value only counts when it
+    names a shell, launcher, git, container runtime or privilege tool);
+  - nesting beyond the analysis bounds.
+
+  `command -v` and `command -V` only look a name up and are not a match.
+  Data-only programs (`grep`, `rg`, `cat`, `echo`, `jq` and similar) are never
+  treated as running their arguments, unless an option tells them to run a
+  program (`rg --pre` or `-z`, `sort --compress-program`, `diff --paginate`).
+  A tool whose program execution argv cannot show, such as `less` with its
+  lesskey file, is not data-only.
+  The analysis does not read the content of files a command runs (a script, a
+  Makefile, a package script, git hooks). The executor's isolation stays the
+  boundary for those, and the gate is defence in depth.
+- **Branches are checked, not trusted.** Branch names must pass the basic
+  `git check-ref-format` rules. A command that runs `git push` is also judged
+  as `publish_branch`, and the stricter decision wins, so declaring it as
+  another class cannot avoid a publish hard deny, approval or rule. A push
+  must declare a branch and name an explicit refspec. Every pushed refspec
+  must target that branch inside the branch prefixes, and `--all`,
+  `--mirror`, `--tags` and deletions are refused.
+- **Advisors only escalate.** An advisor may answer `no_change` or `escalate`.
+  A discretionary action stays at REQUIRE_APPROVAL until a valid `no_change`
+  arrives; a missing or malformed answer escalates. No advisor, project or
+  prompt can override a hard deny or a mandatory approval.
+- **Weakening is explicit and recorded.** A save, rollback or removal that
+  loosens the effective policy requires a confirmation bound to a digest of
+  the weakening list the owner reviewed, the operation (save, rollback or
+  removal), the global revision, the target head version and the highest
+  version the policy ever had. A confirmation given before another save or
+  removal, or for another operation, is refused. The digest covers only a list
+  shown in full: a change with more weakenings than one review can show is
+  refused and must be made in smaller steps. A stale client gets a version
+  conflict before any policy check. Revisions are
+  immutable, the head moves by compare-and-swap, and every change is audited.
+  Simulations are read-only and not audited.
 
 ## Storage and state limits
 

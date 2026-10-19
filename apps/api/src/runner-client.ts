@@ -1,4 +1,6 @@
 import {
+  AgentPoliciesRunnerRequestSchema,
+  AgentPoliciesRunnerResponseSchema,
   AutomationsRunnerRequestSchema,
   AutomationsRunnerResponseSchema,
   InternalRunnerRequestSchema,
@@ -16,6 +18,8 @@ import {
   type ApiKeyAuthenticationResponse,
   type ApiKeyManagementOperation,
   type ApiKeyManagementResponse,
+  type AgentPoliciesRunnerRequest,
+  type AgentPoliciesRunnerResponse,
   type AutomationsRunnerRequest,
   type AutomationsRunnerResponse,
   type InternalRunnerOperation,
@@ -72,6 +76,13 @@ export class RunnerClient {
   /** Automation webhook ingest and owner-scoped management; principal scoping travels in the request. */
   async callAutomations(request: AutomationsRunnerRequest, signal?: AbortSignal): Promise<AutomationsRunnerResponse> {
     return await this.requestJson('/v1/internal/automations', AutomationsRunnerRequestSchema.parse(request), AutomationsRunnerResponseSchema, () => ({
+      ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' }
+    }), signal);
+  }
+
+  /** Owner-scoped agent execution policies and the gate simulation; principal scoping travels in the request. */
+  async callAgentPolicies(request: AgentPoliciesRunnerRequest, signal?: AbortSignal): Promise<AgentPoliciesRunnerResponse> {
+    return await this.requestJson('/v1/internal/agent-policies', AgentPoliciesRunnerRequestSchema.parse(request), AgentPoliciesRunnerResponseSchema, () => ({
       ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' }
     }), signal);
   }

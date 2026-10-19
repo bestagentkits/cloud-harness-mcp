@@ -10,7 +10,7 @@
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { DecisionAnswer, DecisionRequest, McpGatewayToolView } from '@cloud-harness/contracts';
+import { AgentActionDescriptorSchema, type AgentActionDescriptorInput, type DecisionAnswer, type DecisionRequest, type GateDecision, type McpGatewayToolView, type PolicyAdvisor } from '@cloud-harness/contracts';
 import { searchTools } from '../../apps/api/src/mcp-gateway/catalog.js';
 import { classifyGitHubFailure } from '../../apps/runner/src/github-error-classifier.js';
 import { DecisionPlane, type DecisionProvider } from '../../apps/runner/src/decision-plane/decision-plane.js';
@@ -18,16 +18,26 @@ import { percentile } from '../../apps/runner/src/decision-plane/decision-metric
 import { JevDecisionProvider } from '../../apps/runner/src/decision-plane/jev-provider.js';
 import { rerankTools } from '../../apps/runner/src/decision-plane/tool-router.js';
 import { FailureIntelligence } from '../../apps/runner/src/decision-plane/failure-intelligence.js';
+import { ExecutionRiskAdvisor } from '../../apps/runner/src/decision-plane/execution-risk-advisor.js';
+import type { AdvisorFacts } from '../../apps/runner/src/agent-governance/ports.js';
 
 type RoutingFixture = {
   tools: Array<{ server: string; name: string; description: string; permission: 'allow' | 'deny' }>;
   cases: Array<{ query: string; expected: string }>;
 };
 type FailureFixture = { cases: Array<{ action: string; stderr: string; stdout?: string; expected: string }> };
+type ExecutionRiskFixture = {
+  settings: Pick<PolicyAdvisor, 'riskThreshold' | 'minConfidence'>;
+  cases: Array<{ name: string; action: AgentActionDescriptorInput; facts: AdvisorFacts; operatorExpects: 'no_change' | 'escalate' }>;
+};
 
 const fixture = <T>(name: string): T => JSON.parse(readFileSync(new URL(`../fixtures/decision-plane/${name}`, import.meta.url), 'utf8')) as T;
 const routing = fixture<RoutingFixture>('mcp-routing.json');
 const failures = fixture<FailureFixture>('failure-classification.json');
+const executionRisk = fixture<ExecutionRiskFixture>('execution-risk.json');
+const adviseCase = (advisor: ExecutionRiskAdvisor, entry: ExecutionRiskFixture['cases'][number]) => advisor.advise({
+  principalId: 'owner', descriptor: AgentActionDescriptorSchema.parse(entry.action), subject: { actionClass: AgentActionDescriptorSchema.parse(entry.action).actionClass, gitPush: false }, decision: {} as GateDecision, settings: executionRisk.settings, facts: entry.facts
+});
 
 const catalog: McpGatewayToolView[] = routing.tools.map((entry, index) => ({
   id: `mcpt_${String(index).padStart(24, '0')}`, principalId: 'owner', serverId: `mcps_${entry.server.padEnd(24, '0')}`,
@@ -97,6 +107,18 @@ describe('decision plane benchmark fixtures', () => {
     }
     expect(plane.metrics.snapshot()['mcp-routing']?.fallbackRate).toBe(1);
   });
+
+  it('never clears an execution-risk case on an uncommitted answer, and sends no path or argument', async () => {
+    const sent: DecisionRequest[] = [];
+    const recording: DecisionProvider = { name: 'recording', evaluate: async (request, context) => { sent.push(request); return indifferent.evaluate(request, context); } };
+    const advisor = new ExecutionRiskAdvisor(new DecisionPlane({ purposes: ['execution-risk'], providerFor: () => recording }));
+    for (const entry of executionRisk.cases) {
+      // An indifferent provider is below the confidence floor, so every case falls back to a human.
+      expect(await adviseCase(advisor, entry), entry.name).toMatchObject({ effect: 'escalate', fallbackReason: 'low_confidence' });
+    }
+    const payload = JSON.stringify(sent);
+    for (const literal of ['src/cart.ts', 'package-lock.json', 'ci.yml', 'agent/fix-417', 'left-pad', 'acme/widgets', 'commit']) expect(payload).not.toContain(literal);
+  });
 });
 
 const live = process.env.RUN_DECISION_PLANE_BENCHMARK === 'true' && Boolean(process.env.TYPESAFE_API_KEY);
@@ -106,7 +128,7 @@ describe.skipIf(!live)('decision plane live benchmark (TypeSafe Jev)', () => {
     const apiKey = process.env.TYPESAFE_API_KEY!;
     const provider = new JevDecisionProvider({ apiKey: () => apiKey, secrets: () => ({ TYPESAFE_API_KEY: apiKey }) });
     // A benchmark run is a single owner issuing a burst; the live timeout matches production.
-    const plane = new DecisionPlane({ purposes: ['mcp-routing', 'failure-classification'], providerFor: () => provider });
+    const plane = new DecisionPlane({ purposes: ['mcp-routing', 'failure-classification', 'execution-risk'], providerFor: () => provider });
 
     const routingRows = [];
     for (const entry of routing.cases) {
@@ -132,6 +154,13 @@ describe.skipIf(!live)('decision plane live benchmark (TypeSafe Jev)', () => {
       failureRows.push({ expected: entry.expected, diagnosed: diagnosis?.failureType ?? null, confidence: diagnosis?.confidence ?? null });
     }
 
+    const advisor = new ExecutionRiskAdvisor(plane);
+    const riskRows = [];
+    for (const entry of executionRisk.cases) {
+      const answer = await adviseCase(advisor, entry);
+      riskRows.push({ name: entry.name, operatorExpects: entry.operatorExpects, effect: answer.effect, fallbackReason: answer.fallbackReason ?? null, risk: answer.risk ?? null, confidence: answer.confidence ?? null });
+    }
+
     const share = (rows: unknown[], predicate: (row: never) => boolean) => Math.round((rows.filter(predicate as (row: unknown) => boolean).length / rows.length) * 1_000) / 1_000;
     const metrics = plane.metrics.snapshot();
     const named = failureRows.filter((row) => row.expected !== 'unknown');
@@ -154,6 +183,14 @@ describe.skipIf(!live)('decision plane live benchmark (TypeSafe Jev)', () => {
         semanticAccuracyOnNamedCases: share(named, (row: { expected: string; diagnosed: string | null }) => row.diagnosed === row.expected),
         rows: failureRows
       },
+      executionRisk: {
+        cases: riskRows.length,
+        agreement: share(riskRows, (row: { operatorExpects: string; effect: string }) => row.operatorExpects === row.effect),
+        // The safety-relevant miss: the advisor would have cleared an action the owner wants to see.
+        missedEscalations: riskRows.filter((row) => row.operatorExpects === 'escalate' && row.effect === 'no_change').length,
+        fallbackRate: share(riskRows, (row: { fallbackReason: string | null }) => row.fallbackReason !== null),
+        rows: riskRows
+      },
       metrics,
       latencyMs: {
         p50: percentile(Object.values(metrics).flatMap((entry) => entry ? [entry.latencyP50Ms] : []), 0.5),
@@ -161,7 +198,7 @@ describe.skipIf(!live)('decision plane live benchmark (TypeSafe Jev)', () => {
       }
     };
     if (process.env.DECISION_PLANE_BENCHMARK_OUT) writeFileSync(process.env.DECISION_PLANE_BENCHMARK_OUT, `${JSON.stringify(report, null, 2)}\n`);
-    console.log(JSON.stringify({ routing: { ...report.routing, rows: undefined }, failureClassification: { ...report.failureClassification, rows: undefined }, latencyMs: report.latencyMs }, null, 2));
+    console.log(JSON.stringify({ routing: { ...report.routing, rows: undefined }, failureClassification: { ...report.failureClassification, rows: undefined }, executionRisk: { ...report.executionRisk, rows: undefined }, latencyMs: report.latencyMs }, null, 2));
     expect(report.routing.applied).toBeGreaterThan(0);
   }, 120_000);
 });

@@ -592,12 +592,21 @@ An example file is in the
 
 | Variable | Default | Decision |
 |---|---|---|
-| `DECISION_PLANE_PURPOSES` | empty (off) | Runner flag. A comma-separated subset of `mcp-routing` and `failure-classification`. A listed purpose is evaluated only for owners who stored a TypeSafe integration key. Any other value fails startup. |
+| `DECISION_PLANE_PURPOSES` | empty (off) | Runner flag. A comma-separated subset of `mcp-routing`, `failure-classification` and `execution-risk`. A listed purpose is evaluated only for owners who stored a TypeSafe integration key. Any other value fails startup. |
 | `TYPESAFE_EGRESS` | `on` | Runner flag. `off` stops every TypeSafe call, both skill suggestions and the Decision Plane, even for owners with a stored key. `typesafe_status` then reports `enabled: false`. |
 
 `mcp-routing` reranks MCP gateway `search` results. `failure-classification`
 adds an advisory `data.diagnosis` to GitHub actions that end in the generic
 `GITHUB_ACTION_FAILED`. Both fall back to the deterministic result on any error.
+`execution-risk` lets the agent policy gate ask Jev about an action whose effect
+is `advisor_or_approval`. It also needs the owner to enable the advisor in the
+global agent policy (see [Agent execution policies](security-model.md#agent-execution-policies));
+its threshold, confidence floor and fallback live in that policy, not here. Any
+failure falls back to approval, or to deny when the policy says so. The
+advisor is consulted when an agent action executes, which arrives with the
+coding broker; until then listing the purpose sends nothing.
+Before rolling back to a release that predates `execution-risk`, remove it from
+`DECISION_PLANE_PURPOSES`: older runners reject the value and fail startup.
 The purpose list is owned by
 [`packages/contracts/src/decision-plane.ts`](../packages/contracts/src/decision-plane.ts),
 the call bounds by
@@ -640,6 +649,23 @@ per-rule limits, budgets, and retention by
 The public route needs the managed nginx location and, in Access mode, an
 Access bypass for that path only; see
 [deployment](deployment.md#webhook-automations-rollout).
+
+## Agent policies
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AGENT_POLICIES_ENABLED` | off | Runner only. Turns on the owner's execution policies for coding agents: the Dashboard editor, simulation, history and rollback, and the policy store. While off, the runner answers `FEATURE_DISABLED` and the Dashboard shows how to enable it. |
+
+The policy document shape, its bounds and the read-only default that applies
+until the owner saves a global policy are owned by
+[`packages/contracts/src/agent-policy-api.ts`](../packages/contracts/src/agent-policy-api.ts).
+Precedence is owned by
+[`apps/runner/src/agent-governance/gate-evaluator.ts`](../apps/runner/src/agent-governance/gate-evaluator.ts),
+and the rationale by [ADR 0006](adr/0006-policy-governed-coding-agents.md).
+Policies are stored per owner in the runner state database, so they survive
+restarts and are covered by its backups. This release stores, checks and
+simulates policies; enforcement on running agents arrives with the coding
+broker.
 
 ## Compose and logging overrides
 

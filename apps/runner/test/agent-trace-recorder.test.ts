@@ -467,6 +467,20 @@ describe('agent trace budget and hook spans', () => {
     expect(trace).toMatchObject({ state: 'FAILED', finishReason: 'limit_exceeded', reconciliationStatus: 'reconciled' });
   });
 
+  it('records a gateway budget refusal as a budget error and the run limit, apart from throttling', () => {
+    const t = setup();
+    const key = t.begin();
+    t.turn(key, { outcome: 'error', errorClass: 'rate_limit', usage: [0, 0, 0] });
+    t.turn(key, { outcome: 'error', errorClass: 'budget', usage: [0, 0, 0] });
+    t.recorder.budget(key, { phase: 'limit', limit: 'output_bytes', at: t.tick() });
+    t.settle(key, { promptTokens: 0, outputTokens: 0, costMicros: 0, requests: 2 });
+    t.finish(key, 'LIMIT_EXCEEDED', { inputTokens: 0, outputTokens: 0, costMicros: 0 });
+    const { byKind } = t.read(key);
+    expect(byKind('model_call').map((span) => [span.state, span.errorClass])).toEqual([['ERROR', 'rate_limit'], ['ERROR', 'budget']]);
+    const limits = byKind('budget').filter((span) => span.name === 'budget.limit');
+    expect(limits.map((span) => [span.state, span.errorClass, span.attributes])).toEqual([['ERROR', 'budget', { limit: 'model_budget' }]]);
+  });
+
   it('marks a refused lease issue as a budget error and an ambiguous one unknown', () => {
     const t = setup();
     const refused = t.begin();
