@@ -6,6 +6,8 @@ import {
   AutomationRuleMatchSchema,
   AutomationsRunnerDataSchemas,
   AutomationsRunnerRequestSchema,
+  CODING_PROXY_OPERATIONS,
+  CodingPhaseSchema,
   type AutomationConnectionSummary,
   type AutomationDeliverySummary,
   type AutomationRuleAction,
@@ -24,6 +26,11 @@ import { initializeAutomationSchema } from './automation-schema.js';
 import { boundedText, normalizeGitHubEvent, verifyGitHubSignature, type NormalizedGitHubEvent } from './automation-github.js';
 import { emitAutomationTerminalEvent, withEventSavepoint } from './event-outbox.js';
 import type { EncryptedSecret, SecretKeyring } from './secret-keyring.js';
+import type { CodingActionBroker } from './agent-governance/action-broker.js';
+import { CodingActionStore } from './agent-governance/action-store.js';
+import { CodingWorkflowEngine, type CodingInstallPort } from './automation-coding.js';
+import { conformRuntime, PI_RUNTIME_MANIFEST } from './agent-governance/runtime-adapters.js';
+import { traceIdFor } from './agent-trace-store.js';
 
 /** Most deliveries one connection accepts per minute before the ingress answers RESOURCE_EXHAUSTED. */
 export const AUTOMATION_DELIVERIES_PER_MINUTE = 120;
@@ -51,6 +58,8 @@ export type AutomationOperationResult = {
   ok: boolean;
   data?: unknown;
   error?: { code: string; retryable?: boolean } | undefined;
+  /** The next page of a paginated operation. */
+  cursor?: string | undefined;
 };
 
 /** The existing owner-scoped workspace and agent operations, reached in-process. */
@@ -80,6 +89,13 @@ export type AutomationServiceOptions = {
   audit?: AutomationAudit;
   now?: () => number;
   log?: (record: Record<string, unknown>) => void;
+  /**
+   * The coding action broker. Without it a rule with a `coding` action fails as CODING_DISABLED; with
+   * it, the broker's kill switch is checked on every step.
+   */
+  coding?: CodingActionBroker | undefined;
+  /** The lockfile install executor; used only while its own flag is on (AGENT_CODING_PACKAGE_INSTALL_ENABLED). */
+  codingInstall?: CodingInstallPort | undefined;
 };
 
 type SealedSecret = { generation: number; keyVersion: number; nonce: string; ciphertext: string; authTag: string };
@@ -110,6 +126,9 @@ type WorkflowRow = {
   usage_json: string | null; publish_state: AutomationWorkflowSummary['publishState']; publish_attempts: number;
   next_attempt_at: number; start_attempts: number; workspace_closed: number; created_at: number; updated_at: number;
   terminal_at: number | null;
+  /** Coding columns; null for read-only workflows. */
+  project_id: string | null; coding_phase: string | null; base_oid: string | null; branch: string | null; commit_sha: string | null;
+  pr_number: number | null; pr_url: string | null; trace_id: string | null;
 };
 
 type RuleSnapshot = { name: string; match: AutomationRuleMatch; action: AutomationRuleAction };
@@ -155,7 +174,8 @@ export function evaluateRule(match: AutomationRuleMatch, candidate: MatchCandida
 /** Builds the agent task: owner instructions, trusted trigger context, then fenced untrusted event data. */
 export function buildAutomationPrompt(snapshot: RuleSnapshot, event: NormalizedGitHubEvent): string {
   const kind = event.eventType === 'github.issue.label_added' ? 'issue' : 'pull request';
-  const tools = snapshot.action.proxyOperations.join(', ');
+  const coding = snapshot.action.coding;
+  const tools = (coding ? CODING_PROXY_OPERATIONS : snapshot.action.proxyOperations).join(', ');
   return [
     snapshot.action.instructions.trim(),
     '',
@@ -164,6 +184,13 @@ export function buildAutomationPrompt(snapshot: RuleSnapshot, event: NormalizedG
     `- Source: ${event.resourceUrl}`,
     `- Checked-out ref: ${snapshot.action.ref ?? 'the repository default branch'}`,
     `- Workspace tools available to you: ${tools}.`,
+    ...(coding
+      ? [
+          '- This is a coding task: change the files to resolve it, and use exec_run to build and run tests until they pass.',
+          `- When you finish, Cloud Harness runs \`${coding.verifyCommand}\`; only if it passes does Cloud Harness commit your changes to a new branch, push it, and open a pull request against ${coding.baseBranch}. Do not commit, push or open pull requests yourself.`,
+          '- Every tool call is checked against the owner\'s policy; a refused call returns ACTION_DENIED with the reason. Commands are plain space-separated words without shell syntax. Dependency manifests and lockfiles are not editable.'
+        ]
+      : []),
     snapshot.action.publishComment
       ? '- Your final message will be posted as one comment on the source. Make it a complete, self-contained answer.'
       : '- Your final message is stored on the Dashboard only; it is not posted to GitHub.',
@@ -234,6 +261,9 @@ export class AutomationService {
   /** Network-bound steps by workflow id. A slow clone or API call holds only its own workflow. */
   private readonly steps = new Map<string, Promise<void>>();
   private lastPurgeAt = 0;
+  private readonly coding: CodingWorkflowEngine | undefined;
+  /** Receipts stay readable (and are purged) whether or not coding is enabled now. */
+  private readonly codingActions: CodingActionStore;
 
   constructor(options: AutomationServiceOptions) {
     this.database = options.database;
@@ -247,6 +277,30 @@ export class AutomationService {
     this.now = options.now ?? Date.now;
     this.log = options.log ?? (() => undefined);
     initializeAutomationSchema(this.database);
+    this.codingActions = new CodingActionStore(this.database, this.now);
+    this.coding = options.coding ? new CodingWorkflowEngine(options.coding, {
+      call: async (ownerId, operation, input) => await this.call(ownerId, operation, input),
+      update: (id, fields) => this.updateRunning(id, fields),
+      fail: (id, code, fields) => { this.finish(id, ['STARTING', 'RUNNING'], 'FAILED', code, 'system', { ...fields, ...this.publishFields(id) }); },
+      complete: (id, fields) => { this.finish(id, ['RUNNING'], 'COMPLETED', null, 'system', { ...fields, ...this.publishFields(id) }); },
+      now: () => this.now(),
+      ...(options.codingInstall ? { install: options.codingInstall } : {})
+    }) : undefined;
+  }
+
+  /** Coding workflows post their outcome when the rule asks for a comment, whichever way they end. */
+  private publishFields(id: string): Record<string, string> {
+    const row = this.database.prepare('SELECT rule_snapshot_json FROM automation_workflows WHERE id = ?').get(id) as { rule_snapshot_json: string } | undefined;
+    if (!row) return {};
+    return { publish_state: (JSON.parse(row.rule_snapshot_json) as RuleSnapshot).action.publishComment ? 'PENDING' : 'NONE' };
+  }
+
+  /** Updates columns of a workflow only while it is still running. */
+  private updateRunning(id: string, fields: Record<string, string | number | null>): boolean {
+    const assignments = Object.keys(fields).map((key) => `, ${key} = ?`).join('');
+    const result = this.database.prepare(`UPDATE automation_workflows SET updated_at = ?${assignments} WHERE id = ? AND state IN ('STARTING', 'RUNNING')`)
+      .run(this.now(), ...Object.values(fields), id);
+    return Number(result.changes) === 1;
   }
 
   start(): void {
@@ -564,7 +618,8 @@ export class AutomationService {
     return {
       workflow: this.workflowSummary(row),
       result: row.result_text,
-      transitions: transitions.map((entry) => ({ fromState: entry.from_state, toState: entry.to_state, actor: entry.actor, code: entry.code, at: iso(entry.at) }))
+      transitions: transitions.map((entry) => ({ fromState: entry.from_state, toState: entry.to_state, actor: entry.actor, code: entry.code, at: iso(entry.at) })),
+      actions: this.codingActions.receipts(ownerId, id)
     };
   }
 
@@ -615,6 +670,15 @@ export class AutomationService {
       errorCode: row.error_code,
       publishState: row.publish_state,
       usage,
+      coding: row.project_id === null ? null : {
+        projectId: row.project_id,
+        phase: CodingPhaseSchema.catch('AGENT').parse(row.coding_phase),
+        branch: row.branch,
+        commitSha: row.commit_sha,
+        prNumber: row.pr_number,
+        prUrl: row.pr_url,
+        traceId: row.trace_id
+      },
       createdAt: iso(row.created_at),
       updatedAt: iso(row.updated_at),
       terminalAt: row.terminal_at === null ? null : iso(row.terminal_at)
@@ -796,6 +860,23 @@ export class AutomationService {
       this.finish(row.id, ['STARTING'], 'EXPIRED', 'START_EXPIRED', 'system', {});
       return;
     }
+    const coding = snapshot.action.coding;
+    if (coding) {
+      // The kill switch is read on every step; a coding rule on an instance without coding never starts.
+      if (!this.coding?.enabled) {
+        this.finish(row.id, ['STARTING'], 'FAILED', 'CODING_DISABLED', 'system', {});
+        return;
+      }
+      if (row.project_id === null) {
+        // Repository and project come from the owner's rule, never from the webhook payload.
+        const admitted = this.coding.admit(row.owner_id, coding.projectId, snapshot.match.repository);
+        if (!admitted.ok) {
+          this.finish(row.id, ['STARTING'], 'FAILED', admitted.code, 'system', {});
+          return;
+        }
+        if (!this.updateRunning(row.id, admitted.fields)) return;
+      }
+    }
     let workspaceId = row.workspace_id;
     if (!workspaceId) {
       const opened = await this.openWorkspace(row, snapshot);
@@ -815,20 +896,51 @@ export class AutomationService {
       // Stored regardless of state so a workflow cancelled meanwhile still has its workspace closed.
       this.database.prepare('UPDATE automation_workflows SET workspace_id = ?, updated_at = ? WHERE id = ?').run(workspaceId, this.now(), row.id);
     }
-    const current = this.database.prepare('SELECT state FROM automation_workflows WHERE id = ?').get(row.id) as { state: string } | undefined;
+    const current = this.database.prepare('SELECT state, workspace_generation FROM automation_workflows WHERE id = ?')
+      .get(row.id) as { state: string; workspace_generation: number | null } | undefined;
     if (current?.state !== 'STARTING') return;
+    if (coding && this.coding && current.workspace_generation === null) {
+      const bound = await this.coding.bindWorkspace(row, workspaceId);
+      if (!bound.ok) {
+        if (bound.retry) {
+          this.database.prepare('UPDATE automation_workflows SET next_attempt_at = ?, start_attempts = start_attempts + 1, updated_at = ? WHERE id = ? AND state = ?')
+            .run(this.now() + this.backoff(row.start_attempts), this.now(), row.id, 'STARTING');
+        } else {
+          this.finish(row.id, ['STARTING'], 'FAILED', bound.code, 'system', {});
+        }
+        return;
+      }
+    }
+    if (coding && this.coding) {
+      const installed = await this.coding.installDependencies(row, workspaceId);
+      if (!installed.ok) {
+        if (installed.retry) {
+          this.database.prepare('UPDATE automation_workflows SET next_attempt_at = ?, start_attempts = start_attempts + 1, updated_at = ? WHERE id = ? AND state = ?')
+            .run(this.now() + this.backoff(row.start_attempts), this.now(), row.id, 'STARTING');
+        } else {
+          this.finish(row.id, ['STARTING'], 'FAILED', installed.code, 'system', {});
+        }
+        return;
+      }
+    }
+    // A coding agent may only be granted actions its runtime brokers; anything else fails closed.
+    const runtime = coding ? conformRuntime(PI_RUNTIME_MANIFEST, CODING_PROXY_OPERATIONS) : null;
+    if (runtime && !runtime.ok) {
+      this.finish(row.id, ['STARTING'], 'FAILED', 'RUNTIME_UNSUPPORTED', 'system', {});
+      return;
+    }
     const spawned = await this.call(row.owner_id, 'agent_spawn', {
       workspaceId,
       prompt: row.prompt,
       idempotencyKey: `automation:${row.id}:spawn`,
       profileId: snapshot.action.profileId,
-      proxyOperations: snapshot.action.proxyOperations,
+      proxyOperations: runtime ? runtime.operations : snapshot.action.proxyOperations,
       ttlSeconds: snapshot.action.budget.ttlSeconds,
       maxInputTokens: snapshot.action.budget.maxInputTokens,
       maxOutputTokens: snapshot.action.budget.maxOutputTokens,
       maxCostMicros: snapshot.action.budget.maxCostMicros
     });
-    const spawnedData = spawned.data as { agentId?: unknown; status?: unknown } | undefined;
+    const spawnedData = spawned.data as { agentId?: unknown; status?: unknown; generation?: unknown } | undefined;
     if (!spawned.ok || typeof spawnedData?.agentId !== 'string') {
       if (retryable(spawned)) {
         this.database.prepare('UPDATE automation_workflows SET next_attempt_at = ?, start_attempts = start_attempts + 1, updated_at = ? WHERE id = ? AND state = ?')
@@ -840,6 +952,11 @@ export class AutomationService {
     }
     this.database.prepare('UPDATE automation_workflows SET agent_id = ?, agent_status = ?, updated_at = ? WHERE id = ?')
       .run(spawnedData.agentId, typeof spawnedData.status === 'string' ? spawnedData.status : null, this.now(), row.id);
+    if (coding && typeof spawnedData.generation === 'number') {
+      // Lets receipts and runner-step spans join the agent's trace after the agent has finished.
+      this.database.prepare('UPDATE automation_workflows SET agent_generation = ?, trace_id = ? WHERE id = ?')
+        .run(spawnedData.generation, traceIdFor(spawnedData.agentId, spawnedData.generation), row.id);
+    }
     this.transition(row.id, ['STARTING'], 'RUNNING', null, { next_attempt_at: this.now() });
   }
 
@@ -869,6 +986,17 @@ export class AutomationService {
       this.finish(row.id, ['RUNNING'], 'FAILED', 'WORKSPACE_LOST', 'system', {});
       return;
     }
+    if (row.project_id !== null) {
+      if (!this.coding?.enabled) {
+        // The kill switch: a running coding workflow stops at its next tick, and the cleanup cancels its agent.
+        this.finish(row.id, ['RUNNING'], 'FAILED', 'CODING_DISABLED', 'system', this.publishFields(row.id));
+        return;
+      }
+      if (row.coding_phase !== 'AGENT') {
+        await this.coding.advance(row);
+        return;
+      }
+    }
     const status = await this.call(row.owner_id, 'agent_status', { workspaceId: row.workspace_id, agentId: row.agent_id });
     if (!status.ok) {
       if (retryable(status)) {
@@ -892,6 +1020,17 @@ export class AutomationService {
     const result = await this.collectResult(row.owner_id, row.workspace_id, row.agent_id);
     const snapshot = this.snapshot(row);
     const succeeded = agentStatus === 'SUCCEEDED';
+    if (row.project_id !== null && succeeded) {
+      // The agent is done editing; the runner-owned phases start with verification on the next tick.
+      this.updateRunning(row.id, {
+        agent_status: agentStatus,
+        result_text: result || null,
+        usage_json: usage ? JSON.stringify(usage) : null,
+        coding_phase: 'VERIFY',
+        next_attempt_at: this.now()
+      });
+      return;
+    }
     this.finish(row.id, ['RUNNING'], succeeded ? 'COMPLETED' : 'FAILED', succeeded ? null : bounded(`AGENT_${agentStatus}`, 100), 'system', {
       agent_status: agentStatus,
       result_text: result || null,
@@ -919,10 +1058,14 @@ export class AutomationService {
   private commentBody(row: WorkflowRow): string {
     const snapshot = this.snapshot(row);
     const result = row.result_text ?? '(the agent produced no final message)';
+    const coding = row.project_id === null ? [] : row.pr_url
+      ? [`Opened pull request ${row.pr_url} from \`${row.branch ?? ''}\`.`, '']
+      : [`No pull request was opened (${(row.error_code ?? 'unknown').replace(/`/gu, "'")}).`, ''];
     return [
       `**Cloud Harness automation: ${neutralizeMentions(snapshot.name)}** (${row.state.toLowerCase()})`,
       `Triggered by the \`${row.label.replace(/`/gu, "'")}\` label.`,
       '',
+      ...coding,
       neutralizeMentions(result),
       '',
       `<sub>Workflow \`${row.id}\`. This comment was written by an automated agent; verify it before acting on it.</sub>`
@@ -984,6 +1127,8 @@ export class AutomationService {
       this.database.prepare(`DELETE FROM automation_workflows WHERE terminal_at IS NOT NULL AND terminal_at < ?
         AND (workspace_id IS NULL OR workspace_closed = 1) AND publish_state != 'PENDING'`).run(horizon);
       this.database.prepare(`DELETE FROM automation_deliveries WHERE received_at < ? AND state != 'RECEIVED'`).run(horizon);
+      // Receipts carry no foreign key; they go with their workflow's retention.
+      this.codingActions.purgeOrphans(horizon);
     });
   }
 

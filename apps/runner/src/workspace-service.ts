@@ -20,6 +20,7 @@ import { chmod, chown, cp, mkdir, readFile, readdir, realpath, rm, stat, statfs,
 import { join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
+  BROKERED_ONLY_PROXY_OPERATIONS,
   DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
   DEFAULT_MAX_WORKSPACE_REPOSITORIES,
   DEFAULT_RECOVERABLE_GRACE_SECONDS,
@@ -54,7 +55,7 @@ import {
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
 import { EXECUTOR_HARDENING_ARGS, EXECUTOR_RESOURCE_CEILINGS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
-import { PackageBuilder } from './package-builder.js';
+import { DEFAULT_NPM_REGISTRY, PackageBuilder } from './package-builder.js';
 import { PACKAGE_OPERATIONS, PackageService, databaseWorkspaceDirectory, type PackageOperation } from './package-service.js';
 import { PackageStore } from './package-store.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
@@ -96,7 +97,9 @@ import {
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
 import { AgentTraceStore, executeAgentTraceOperation } from './agent-trace-store.js';
-import { AgentTraceRecorder } from './agent-trace-recorder.js';
+import { AgentTraceRecorder, type AgentActionTraceSink } from './agent-trace-recorder.js';
+import type { CodingActionBroker } from './agent-governance/action-broker.js';
+import { LockfileInstallExecutor, type InstallResult } from './agent-governance/install-executor.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -369,6 +372,10 @@ export class WorkspaceService {
   /** Present only when agent traces are enabled; the trace tools report FEATURE_DISABLED otherwise. */
   private readonly traceStore: AgentTraceStore | undefined;
   private readonly tracePurger: AgentTraceStore;
+  /** Where brokered coding actions write their spans; absent when agent traces are disabled. */
+  readonly actionTraces: AgentActionTraceSink | undefined;
+  /** The coding action broker, attached only when coding automations are enabled. */
+  private codingBroker: CodingActionBroker | undefined;
   private readonly metadata?: MetadataStore | undefined;
   private failureIntelligence?: FailureIntelligence | undefined;
   constructor(
@@ -402,11 +409,22 @@ export class WorkspaceService {
     const traceRecorder = managerDependencies.traceRecorder ?? (this.traceStore && traceConfig
       ? new AgentTraceRecorder(this.traceStore, { maxSpansPerTrace: traceConfig.maxSpansPerTrace, previewBytes: traceConfig.previewBytes })
       : undefined);
+    this.actionTraces = traceRecorder instanceof AgentTraceRecorder ? traceRecorder : undefined;
     this.agentManager = manager ?? (config.agents
       ? new AgentManager(config.agents, store, {
+          workflowFor: (ownerId, workspaceId) => this.codingBroker?.workflowFor(ownerId, workspaceId) ?? null,
+          permitsBrokeredOperations: (ownerId, workspaceId) => this.codingBroker?.permitsBrokeredSpawn(ownerId, workspaceId) === true,
           ...managerDependencies,
           traceRecorder,
-          toolExecutor: async (request) => await this.executeAgentProxy(request),
+          // Every agent tool call passes the coding broker when one is attached; without it the
+          // brokered-only operations are refused here as well as at spawn.
+          toolExecutor: async (request) => {
+            if (this.codingBroker) return await this.codingBroker.executeAgentTool(request, async (brokered) => await this.executeAgentProxy(brokered));
+            if ((BROKERED_ONLY_PROXY_OPERATIONS as readonly string[]).includes(request.operation)) {
+              throw new HarnessError('FORBIDDEN', `${request.operation} is available only to a coding workflow agent`, 403, false);
+            }
+            return await this.executeAgentProxy(request);
+          },
           repositoryGuidance: async (request) => {
             const record = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
             if (record.generation !== request.workspaceGeneration) {
@@ -488,6 +506,45 @@ export class WorkspaceService {
   /** Attaches the Decision Plane. Without it every failure keeps only its deterministic classification. */
   useDecisionPlane(plane: DecisionPlane): void {
     this.failureIntelligence = new FailureIntelligence(plane);
+  }
+
+  /** Attaches the coding action broker; from then on every agent tool call of a coding workspace is brokered. */
+  useCodingBroker(broker: CodingActionBroker): void {
+    this.codingBroker = broker;
+  }
+
+  /** Workspace facts the coding broker re-checks before each action: the live generation and the checkout count. */
+  codingWorkspaceFacts(): { generation(workspaceId: string): number | null; repositoryCount(workspaceId: string): number } {
+    return {
+      generation: (workspaceId) => {
+        const record = this.store.byId(workspaceId);
+        return record && record.status === 'ACTIVE' ? record.generation : null;
+      },
+      repositoryCount: (workspaceId) => Math.max(1, this.store.workspaceRepositories(workspaceId).length)
+    };
+  }
+
+  /**
+   * Installs a coding workspace's admitted npm lockfile in a one-shot `dependency-access` container (see
+   * `agent-governance/install-executor.ts`). Only the coding engine calls this, after the gate allowed
+   * every locked package; the workspace's own network profile is not touched.
+   */
+  async installCodingDependencies(ownerId: string, workspaceId: string, signal?: AbortSignal): Promise<InstallResult> {
+    if (!this.config.agentCodingPackageInstallEnabled) {
+      throw new HarnessError('FORBIDDEN', 'coding package installs are disabled on this instance', 403, false);
+    }
+    const record = this.store.byId(workspaceId);
+    if (!record || record.ownerId !== ownerId || record.status !== 'ACTIVE') throw new HarnessError('NOT_FOUND', 'workspace not found', 404, false);
+    if (record.repositoryScope || this.store.workspaceRepositories(workspaceId).length > 1) {
+      return { ok: false, code: 'CODING_INSTALL_FAILED', exitCode: null, output: 'installs need a single, unscoped checkout' };
+    }
+    const executor = new LockfileInstallExecutor({
+      image: this.config.executorImage,
+      instanceId: this.instanceId,
+      network: this.networkProfileManager,
+      registry: DEFAULT_NPM_REGISTRY
+    });
+    return await executor.install({ workspaceId: record.id, workspacePath: record.workspacePath }, signal);
   }
 
   /**
@@ -5575,6 +5632,13 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   private async executeAgentProxy(request: Parameters<AgentManagerDependencies['toolExecutor']>[0]): Promise<RunnerResponse> {
     const operation = AgentProxyOperationSchema.parse(request.operation) as AgentProxyOperation;
     const validated = TOOL_SCHEMA_BY_NAME[operation].parse(request.toolInput) as Record<string, unknown>;
+    if (operation === 'exec_run') {
+      // An agent command is always foreground and unprivileged; there is no approval path through the proxy.
+      if (validated.privileged === true || validated.async === true || validated.approvalGrantToken !== undefined) {
+        throw new HarnessError('FORBIDDEN', 'agent commands cannot be privileged, detached, or carry an approval grant', 403, false);
+      }
+      validated.maxOutputBytes = Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes);
+    }
     const before = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
     if (before.generation !== request.workspaceGeneration || before.networkProfile !== 'network-none') {
       throw new HarnessError('EXPIRED', 'agent tool execution lost its workspace fence', 410, false);

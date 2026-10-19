@@ -13,6 +13,8 @@ import { MetadataStore } from './metadata-store.js';
 import { McpEventService } from './mcp-event-service.js';
 import { AutomationService } from './automation-service.js';
 import { AgentPolicyService } from './agent-governance/policy-service.js';
+import { CodingActionBroker } from './agent-governance/action-broker.js';
+import { DEFAULT_NPM_REGISTRY } from './package-builder.js';
 import { HarnessError } from '@cloud-harness/contracts';
 import { SecretKeyring } from './secret-keyring.js';
 import { createRunnerDecisionPlane } from './decision-plane/runner-decision-plane.js';
@@ -85,30 +87,6 @@ const oauthGrantSettings = new OAuthGrantSettingsService(
 for (const failure of await service.start()) {
   logger.warn(failure, 'workspace executor reconciliation failed during startup');
 }
-const automations = new AutomationService({
-  database: store.database,
-  enabled: config.automationsEnabled,
-  maxConcurrentWorkflows: config.automationsMaxConcurrentWorkflows,
-  resolvePrincipal: (principal) => store.resolvePrincipal(principal),
-  keyring,
-  selfLogin: config.githubApp?.appSlug ? `${config.githubApp.appSlug}[bot]` : undefined,
-  operations: {
-    execute: async (ownerId, operation, input) => {
-      try {
-        const result = await service.execute(ownerId, operation, input);
-        return { ok: result.ok, data: result.data, error: result.error ? { code: result.error.code, retryable: result.error.retryable } : undefined };
-      } catch (error) {
-        if (error instanceof HarnessError) return { ok: false, error: { code: error.code, retryable: error.retryable } };
-        throw error;
-      }
-    }
-  },
-  audit: (database, principalId, action, subjectType, subjectId, generation, details) => {
-    metadata.recordAuditInTransaction(database, principalId, action, subjectType, subjectId, generation, details);
-  },
-  log: (record) => logger.warn(record, 'automation')
-});
-automations.start();
 const agentPolicies = new AgentPolicyService({
   database: store.database,
   enabled: config.agentPoliciesEnabled,
@@ -120,6 +98,46 @@ const agentPolicies = new AgentPolicyService({
     metadata.recordAuditInTransaction(database, principalId, action, subjectType, subjectId, generation, details);
   }
 });
+// The coding broker is always attached so the brokered-only agent tools stay refused outside a coding
+// workflow; AGENT_CODING_ENABLED is read on every brokered action and is also the kill switch.
+const codingBroker = new CodingActionBroker({
+  database: store.database,
+  enabled: () => config.agentCodingEnabled,
+  resolver: agentPolicies.resolver,
+  workspaces: service.codingWorkspaceFacts(),
+  traces: service.actionTraces
+});
+service.useCodingBroker(codingBroker);
+const automations = new AutomationService({
+  database: store.database,
+  enabled: config.automationsEnabled,
+  maxConcurrentWorkflows: config.automationsMaxConcurrentWorkflows,
+  resolvePrincipal: (principal) => store.resolvePrincipal(principal),
+  keyring,
+  selfLogin: config.githubApp?.appSlug ? `${config.githubApp.appSlug}[bot]` : undefined,
+  operations: {
+    execute: async (ownerId, operation, input) => {
+      try {
+        const result = await service.execute(ownerId, operation, input);
+        return { ok: result.ok, data: result.data, error: result.error ? { code: result.error.code, retryable: result.error.retryable } : undefined, cursor: result.cursor };
+      } catch (error) {
+        if (error instanceof HarnessError) return { ok: false, error: { code: error.code, retryable: error.retryable } };
+        throw error;
+      }
+    }
+  },
+  audit: (database, principalId, action, subjectType, subjectId, generation, details) => {
+    metadata.recordAuditInTransaction(database, principalId, action, subjectType, subjectId, generation, details);
+  },
+  log: (record) => logger.warn(record, 'automation'),
+  coding: codingBroker,
+  codingInstall: {
+    enabled: () => config.agentCodingPackageInstallEnabled,
+    registry: DEFAULT_NPM_REGISTRY,
+    run: async (ownerId, workspaceId) => await service.installCodingDependencies(ownerId, workspaceId)
+  }
+});
+automations.start();
 // Agent trace retention: traces past their retention period are removed hourly in bounded,
 // yielding batches, also while traces are disabled. A failure is logged and retried on the next
 // tick, and a tick never overlaps a purge still in progress. Shutdown aborts the purge between
