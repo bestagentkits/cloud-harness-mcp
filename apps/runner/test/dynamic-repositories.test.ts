@@ -613,6 +613,7 @@ describe('executor pause and resume', () => {
   type PauseInternals = {
     instanceId: string;
     withPausedExecutor<T>(record: unknown, action: () => Promise<T>): Promise<T>;
+    ensureActiveExecutor(record: unknown): Promise<unknown>;
     auditWorkspaceMutation(...args: unknown[]): void;
   };
   const internals = (service: WorkspaceService) => service as unknown as PauseInternals;
@@ -685,7 +686,6 @@ describe('executor pause and resume', () => {
     docker.onWorker = (operation) => {
       if (operation !== 'workspace_recover' || nested) return;
       nested = internals(service).withPausedExecutor(store.byId(workspaceId), async () => undefined).catch((error: unknown) => error);
-      docker.inspectContainer.mockResolvedValueOnce({ State: { Running: true, Paused: true }, Config: { Labels: managedLabels(service, workspaceId) } } as never);
       recoverDuringFreeze = service.execute(principal, 'workspace_recover', { workspaceId, mode: 'resume' }).catch((error: unknown) => error);
     };
     const before = docker.runDocker.mock.calls.length;
@@ -702,6 +702,20 @@ describe('executor pause and resume', () => {
     const afterRemove = docker.runDocker.mock.calls.length;
     await service.execute(principal, 'workspace_recover', { workspaceId, mode: 'resume' });
     expect(docker.runDocker.mock.calls.slice(afterRemove).some((call) => call[0][0] === 'unpause')).toBe(false);
+  });
+
+  it('never rebuilds a dependency-access executor while a pause is held', async () => {
+    const { service, store } = fixture();
+    const { workspaceId } = await openMulti(service);
+    const record = { ...store.byId(workspaceId)!, networkProfile: 'dependency-access' };
+    docker.removeContainer.mockClear();
+    const before = docker.runDocker.mock.calls.length;
+    const during = await internals(service).withPausedExecutor(store.byId(workspaceId), async () =>
+      internals(service).ensureActiveExecutor(record).catch((error: unknown) => error));
+    expect(during).toMatchObject({ code: 'CONFLICT', retryable: true });
+    expect(docker.removeContainer).not.toHaveBeenCalled();
+    const verbs = docker.runDocker.mock.calls.slice(before).map((call) => call[0][0]);
+    expect(verbs).toEqual(['pause', 'unpause']);
   });
 
   it('resumes a paused executor and sweeps leftover staging directories at startup', async () => {

@@ -513,8 +513,11 @@ unchanged and the checkouts share the workspace byte ceiling.
   the refusal, and the resume is retried; an executor still paused after a
   committed change is reported (`executorResumed: false`) rather than turning
   that change into a failure, and `workspace_recover` or a runner restart
-  resumes it. Only a paused container carrying this workspace's managed labels
-  is resumed, and never while the runner itself holds the pause. An add
+  resumes it (a `dependency-access` executor is rebuilt instead, so its running
+  processes end). Only a paused container carrying this workspace's managed
+  labels is resumed, and recovery refuses with a retryable `CONFLICT` while the
+  runner itself holds the pause, so no executor is resumed, restarted, or
+  rebuilt inside a freeze. An add
   clones into a staging directory outside the executor's and the privileged
   and skill helpers' mounts (only the trusted clone, Git-transfer, and size
   helpers mount the workspace root) and moves it into place only while the

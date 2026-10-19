@@ -1150,6 +1150,11 @@ export class WorkspaceService {
   }
 
   private async ensureActiveExecutor(record: WorkspaceRecord): Promise<WorkspaceRecord> {
+    // A pause or tree freeze this runner holds must outlive the change it protects; resuming, restarting, or
+    // rebuilding the executor in that window would let workspace processes write into a verified tree.
+    if (this.pausedExecutors.has(record.id) || this.frozenTrees.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'the executor is paused for a repository change or Git transfer; retry shortly', 409, true);
+    }
     // Dependency-access requires a fresh attestation before reuse; a quarantined
     // record must never resume its existing container. Force removal and rebuild
     // through createExecutor (which re-attests) instead of reusing a container
@@ -2266,9 +2271,9 @@ export class WorkspaceService {
   }
 
   /**
-   * Resumes this workspace's own managed executor when a failed resume left it paused. A pause this runner
-   * holds right now is not touched, and a container without this workspace's managed labels is left as it
-   * is. Returns false only when resuming this workspace's executor failed.
+   * Resumes this workspace's own managed executor when a failed resume left it paused. Callers have already
+   * refused while this runner holds the pause, and a container without this workspace's managed labels is left
+   * as it is. Returns false only when resuming this workspace's executor failed.
    */
   private async resumeLeftoverPause(record: WorkspaceRecord, inspected: Record<string, unknown>): Promise<boolean> {
     const state = inspected.State as { Paused?: boolean } | undefined;
@@ -2276,9 +2281,6 @@ export class WorkspaceService {
     const labels = (inspected.Config as { Labels?: Record<string, string> } | undefined)?.Labels ?? {};
     if (labels['cloud-harness.managed'] !== 'true' || labels['cloud-harness.instance'] !== this.instanceId || labels['cloud-harness.workspace'] !== record.id) {
       return true;
-    }
-    if (this.pausedExecutors.has(record.id)) {
-      throw new HarnessError('CONFLICT', 'the executor is paused for a repository change or Git transfer; retry shortly', 409, true);
     }
     return await this.resumeExecutor(record.containerName);
   }
