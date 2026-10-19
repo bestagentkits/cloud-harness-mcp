@@ -455,8 +455,9 @@ export function createAgentPolicyEditor({ root, insert, api, announce = () => {}
     render();
   }
 
-  async function check(document) {
-    const result = await api(`${base}/validate`, { method: 'POST', body: JSON.stringify({ document }) });
+  /** Validates `document` as a preview of `intent` (save, rollback or delete); the digest only confirms that operation. */
+  async function check(document, intent = 'save') {
+    const result = await api(`${base}/validate`, { method: 'POST', body: JSON.stringify({ document, intent }) });
     view.validation = result.data;
     return result.data;
   }
@@ -546,8 +547,11 @@ export function createAgentPolicyEditor({ root, insert, api, announce = () => {}
 
   async function revisionCheck(revisionId) {
     const { data } = await api(`/agent-policies/revisions/${encodeURIComponent(revisionId)}`);
-    return check(data.revision.document);
+    return check(data.revision.document, 'rollback');
   }
+
+  /** Weakenings without a digest cannot be confirmed (too many to show in full); explain instead of prompting. */
+  const unconfirmable = (result) => list(result.weakenings).length > 0 && !result.weakeningDigest;
 
   async function rollback(button) {
     const revisionId = button.dataset.revisionId;
@@ -557,6 +561,7 @@ export function createAgentPolicyEditor({ root, insert, api, announce = () => {}
     } catch (error) {
       return setMessage(errorText(error, 'The revision could not be checked.'), 'error');
     }
+    if (unconfirmable(result)) return setMessage(list(result.errors)[0] ?? 'This rollback weakens the policy too much to confirm at once.', 'error');
     const weakenings = list(result.weakenings);
     render();
     confirm({
@@ -586,10 +591,11 @@ export function createAgentPolicyEditor({ root, insert, api, announce = () => {}
     let result = { weakenings: [], weakeningDigest: null };
     try {
       // Validating an empty project document previews exactly what removing the policy does.
-      if (view.projectState === 'active') result = await check({ version: 1 });
+      if (view.projectState === 'active') result = await check({ version: 1 }, 'delete');
     } catch (error) {
       return setMessage(errorText(error, 'The removal could not be checked.'), 'error');
     }
+    if (unconfirmable(result)) return setMessage(list(result.errors)[0] ?? 'Removing this policy weakens it too much to confirm at once.', 'error');
     const weakenings = list(result.weakenings);
     render();
     confirm({

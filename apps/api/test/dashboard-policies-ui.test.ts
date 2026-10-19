@@ -189,8 +189,10 @@ describe('agent policy editor controller', () => {
   let digest: string;
   let putStatus: number[];
   let deferred: Array<() => void>;
+  let unreviewable: boolean;
 
   beforeEach(() => {
+    unreviewable = false;
     vi.stubGlobal('FormData', class { constructor(element: { values: Values }) { return element.values; } });
     root = new Root();
     weakenings = [];
@@ -205,7 +207,12 @@ describe('agent policy editor controller', () => {
       }
       if (path === '/agent-policies/global/history') return { data: { revisions: [stored, revision(0, OLDER, DEFAULT_GLOBAL_EXECUTION_POLICY)], headRevisionId: REVISION, nextBeforeVersion: null } };
       if (path === '/agent-policies') return { data: { global: null, projects: [], defaultGlobal: DEFAULT_GLOBAL_EXECUTION_POLICY } };
-      if (path === '/agent-policies/global/validate') return { data: { valid: true, errors: [], widenings: [], weakenings, changes: [], effective, weakeningDigest: weakenings.length ? digest : null } };
+      if (path === '/agent-policies/global/validate') {
+        if (unreviewable) return { data: { valid: false, errors: ['too many weakenings; save it in smaller steps'], widenings: [], weakenings, changes: [], effective, weakeningDigest: null } };
+        return { data: { valid: true, errors: [], widenings: [], weakenings, changes: [], effective, weakeningDigest: weakenings.length ? digest : null } };
+      }
+      if (path === `/agent-policies/revisions/${OLDER}` && !init) return { data: { revision: revision(0, OLDER, DEFAULT_GLOBAL_EXECUTION_POLICY) } };
+      if (path === `/agent-policies/revisions/${OLDER}/rollback`) return { data: { head: stored, weakenings } };
       if (path === '/agent-policies/global' && init?.method === 'PUT') {
         const status = putStatus.shift();
         if (status) throw Object.assign(new Error('The policy changed.'), { status, code: status === 409 ? 'conflict' : 'confirmation_required' });
@@ -280,6 +287,33 @@ describe('agent policy editor controller', () => {
     expect(puts()).toHaveLength(2);
     expect(JSON.parse(puts()[1][1].body)).toMatchObject({ confirmWeakening: true, weakeningDigest: 'b'.repeat(64) });
     expect(root.innerHTML).toContain('Saved.');
+  });
+
+  const rollbackButton = () => ({ dataset: { policyAction: 'rollback', revisionId: OLDER, version: '0' }, closest() { return this; } });
+  const validations = () => api.mock.calls.filter(([path]) => path === '/agent-policies/global/validate').map(([, init]) => JSON.parse(init.body));
+
+  it('previews a rollback with the rollback intent and confirms it with that digest', async () => {
+    weakenings = ['edit is now allowed'];
+    await mount();
+    const button = rollbackButton();
+    root.dispatch('click', { target: button });
+    await flush();
+    expect(validations().at(-1)).toMatchObject({ intent: 'rollback' });
+    expect(confirm.mock.calls[0][0].target).toContain('edit is now allowed');
+    await confirm.mock.calls[0][0].action();
+    await flush();
+    const call = api.mock.calls.find(([path]) => path === `/agent-policies/revisions/${OLDER}/rollback`);
+    expect(JSON.parse(call![1].body)).toMatchObject({ confirmWeakening: true, weakeningDigest: digest });
+  });
+
+  it('explains instead of asking when the weakenings are too many to show in full', async () => {
+    weakenings = ['edit is now allowed'];
+    unreviewable = true;
+    await mount();
+    root.dispatch('click', { target: rollbackButton() });
+    await flush();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(root.innerHTML).toContain('smaller steps');
   });
 
   it('keeps the draft and explains a concurrent save', async () => {

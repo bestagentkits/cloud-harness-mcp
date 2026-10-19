@@ -49,8 +49,8 @@ function setup(options: { enabled?: boolean; advisorAvailable?: boolean } = {}) 
     return response.data as T;
   };
   /** The confirmation the owner gives after reviewing the weakenings that validation listed. */
-  const confirmFor = (scope: 'global' | 'project', document: unknown, projectId?: string, principal?: RunnerPrincipalSelector) => {
-    const { weakeningDigest } = data<{ weakeningDigest: string | null }>('policy_validate', { scope, document, ...(projectId ? { projectId } : {}) }, principal);
+  const confirmFor = (scope: 'global' | 'project', document: unknown, projectId?: string, principal?: RunnerPrincipalSelector, intent?: 'save' | 'rollback' | 'delete') => {
+    const { weakeningDigest } = data<{ weakeningDigest: string | null }>('policy_validate', { scope, document, ...(projectId ? { projectId } : {}), ...(intent ? { intent } : {}) }, principal);
     if (weakeningDigest === null) throw new Error('expected the change to weaken the policy');
     return { confirmWeakening: true, weakeningDigest };
   };
@@ -201,7 +201,9 @@ describe('AgentPolicyService', () => {
     expect(diff.changes.map((change) => change.path)).toEqual(['allowedActionClasses']);
     // Rolling back to the wider revision weakens the policy, so it needs confirmation.
     expect(errorOf(call('policy_rollback', { revisionId: first.head.revisionId, expectedVersion: 2 })).code).toBe('CONFIRMATION_REQUIRED');
-    const confirmation = confirmFor('global', WIDE_GLOBAL);
+    // A confirmation given for saving the same document does not confirm a rollback.
+    expect(errorOf(call('policy_rollback', { revisionId: first.head.revisionId, expectedVersion: 2, ...confirmFor('global', WIDE_GLOBAL) })).code).toBe('CONFIRMATION_REQUIRED');
+    const confirmation = confirmFor('global', WIDE_GLOBAL, undefined, undefined, 'rollback');
     // A stale version with a confirmation is still a conflict.
     expect(errorOf(call('policy_rollback', { revisionId: first.head.revisionId, expectedVersion: 1, ...confirmation })).code).toBe('CONFLICT');
     const rolled = data<{ head: { version: number; rollbackOf: string } }>('policy_rollback', { revisionId: first.head.revisionId, expectedVersion: 2, ...confirmation, note: 'undo' });
@@ -237,12 +239,42 @@ describe('AgentPolicyService', () => {
     data('policy_put', { scope: 'project', projectId: PROJECT, document: { version: 1, hardDeny: ['edit'] }, expectedVersion: 0 });
     expect(errorOf(call('policy_delete', { projectId: PROJECT, expectedVersion: 1 })).code).toBe('CONFIRMATION_REQUIRED');
     expect(errorOf(call('policy_delete', { projectId: PROJECT, expectedVersion: 1, confirmWeakening: true })).code).toBe('CONFIRMATION_REQUIRED');
-    // Validating an empty project document previews exactly the removal: the same weakenings and digest.
-    const confirmation = confirmFor('project', { version: 1 }, PROJECT);
+    // Validating an empty project document for the delete intent previews exactly the removal.
+    expect(errorOf(call('policy_delete', { projectId: PROJECT, expectedVersion: 1, ...confirmFor('project', { version: 1 }, PROJECT) })).code).toBe('CONFIRMATION_REQUIRED');
+    const confirmation = confirmFor('project', { version: 1 }, PROJECT, undefined, 'delete');
+    // ...and that digest confirms nothing but the delete.
+    expect(errorOf(call('policy_put', { scope: 'project', projectId: PROJECT, document: { version: 1 }, expectedVersion: 1, ...confirmation })).code).toBe('CONFIRMATION_REQUIRED');
     expect(errorOf(call('policy_delete', { projectId: PROJECT, expectedVersion: 2, ...confirmation })).code).toBe('CONFLICT');
     expect(data('policy_delete', { projectId: PROJECT, expectedVersion: 1, ...confirmation })).toEqual({ deleted: true });
     expect(audits.at(-1)).toMatchObject({ action: 'agent_policy.deleted', subjectId: PROJECT });
     expect(errorOf(call('policy_delete', { projectId: PROJECT, expectedVersion: 1, ...confirmation })).code).toBe('NOT_FOUND');
+  });
+
+  it('does not accept a confirmation again after the policy was saved and deleted in between', () => {
+    const { call, data, confirmFor } = setup();
+    const delegating = { ...WIDE_GLOBAL, defaults: { ...WIDE_GLOBAL.defaults, test: { effect: 'require_approval' as const, delegable: true } } };
+    data('policy_put', { scope: 'global', document: delegating, expectedVersion: 0, ...confirmFor('global', delegating) });
+    const looser = { version: 1, rules: { test: 'allow' } };
+    // Reviewed while the project had no policy (head version 0).
+    const stale = confirmFor('project', looser, PROJECT);
+    data('policy_put', { scope: 'project', projectId: PROJECT, document: { version: 1, hardDeny: ['edit'] }, expectedVersion: 0 });
+    data('policy_delete', { projectId: PROJECT, expectedVersion: 1, ...confirmFor('project', { version: 1 }, PROJECT, undefined, 'delete') });
+    // The head is back at version 0, but the policy's history moved, so the old review no longer counts.
+    expect(errorOf(call('policy_put', { scope: 'project', projectId: PROJECT, document: looser, expectedVersion: 0, ...stale })).code).toBe('CONFIRMATION_REQUIRED');
+    expect(data('policy_put', { scope: 'project', projectId: PROJECT, document: looser, expectedVersion: 0, ...confirmFor('project', looser, PROJECT) })).toMatchObject({ head: { version: 2 } });
+  });
+
+  it('refuses to confirm more weakenings than one review can show in full', () => {
+    const { call, data, confirmFor } = setup();
+    data('policy_put', { scope: 'global', document: WIDE_GLOBAL, expectedVersion: 0, ...confirmFor('global', WIDE_GLOBAL) });
+    const entries = (prefix: string) => Array.from({ length: 100 }, (_, index) => `${prefix}${index}`);
+    const huge = { ...WIDE_GLOBAL, scope: { ...WIDE_GLOBAL.scope, repositories: entries('org/r'), pathScopes: entries('dir').map((value) => `${value}/`), commands: entries('make target') } };
+    const validation = data<{ valid: boolean; errors: string[]; weakenings: string[]; weakeningDigest: string | null }>('policy_validate', { scope: 'global', document: huge });
+    expect(validation).toMatchObject({ valid: false, weakeningDigest: null });
+    expect(validation.errors[0]).toMatch(/smaller steps/u);
+    expect(validation.weakenings).toHaveLength(200);
+    const refused = errorOf(call('policy_put', { scope: 'global', document: huge, expectedVersion: 1, confirmWeakening: true }));
+    expect(refused).toMatchObject({ code: 'INVALID_INPUT', message: expect.stringMatching(/smaller steps/u) });
   });
 
   it('simulates with the exact evaluator and snapshot execution uses, without auditing', () => {

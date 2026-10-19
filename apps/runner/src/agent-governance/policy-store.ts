@@ -131,6 +131,19 @@ export class PolicyStore {
     });
   }
 
+  /**
+   * The highest version this policy has ever had: the head, or a newer revision whose head was deleted.
+   * Versions are never reused (`put` continues from it), so it changes on every save and survives a delete.
+   */
+  latestVersion(principalId: string, scope: AgentPolicyScope, projectId: string | null): number {
+    const key = projectKey(projectId);
+    const row = this.database.prepare(`SELECT MAX(version) AS version FROM (
+        SELECT version FROM agent_policy_revisions WHERE principal_id = ? AND scope = ? AND project_id = ?
+        UNION ALL SELECT version FROM agent_policy_heads WHERE principal_id = ? AND scope = ? AND project_id = ?
+      )`).get(principalId, scope, key, principalId, scope, key) as { version: number | null };
+    return row.version ?? 0;
+  }
+
   /** Removes a project head (the project falls back to the global policy). Revisions stay for history. */
   deleteProjectHead(principalId: string, projectId: string, expectedVersion: number): void {
     withEventSavepoint(this.database, () => {

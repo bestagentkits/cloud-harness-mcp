@@ -146,9 +146,9 @@ describe('dashboard agent policy BFF', () => {
     const headers = await mutationHeaders();
     const cases: Array<[string, string, string, Record<string, unknown>, Record<string, unknown>]> = [
       ['PUT', '/api/v1/agent-policies/global', 'policy_put', { document: DEFAULT_GLOBAL_EXECUTION_POLICY, expectedVersion: 0 }, { scope: 'global', document: DEFAULT_GLOBAL_EXECUTION_POLICY, expectedVersion: 0, confirmWeakening: false }],
-      ['POST', '/api/v1/agent-policies/global/validate', 'policy_validate', { document: DEFAULT_GLOBAL_EXECUTION_POLICY }, { scope: 'global', document: DEFAULT_GLOBAL_EXECUTION_POLICY }],
+      ['POST', '/api/v1/agent-policies/global/validate', 'policy_validate', { document: DEFAULT_GLOBAL_EXECUTION_POLICY }, { scope: 'global', document: DEFAULT_GLOBAL_EXECUTION_POLICY, intent: 'save' }],
       ['PUT', `/api/v1/agent-policies/projects/${projectId}`, 'policy_put', { document: projectDocument, expectedVersion: 2, confirmWeakening: true, note: 'narrow' }, { scope: 'project', projectId, document: projectDocument, expectedVersion: 2, confirmWeakening: true, note: 'narrow' }],
-      ['POST', `/api/v1/agent-policies/projects/${projectId}/validate`, 'policy_validate', { document: projectDocument }, { scope: 'project', projectId, document: projectDocument }],
+      ['POST', `/api/v1/agent-policies/projects/${projectId}/validate`, 'policy_validate', { document: projectDocument, intent: 'delete' }, { scope: 'project', projectId, document: projectDocument, intent: 'delete' }],
       ['DELETE', `/api/v1/agent-policies/projects/${projectId}`, 'policy_delete', { expectedVersion: 3 }, { projectId, expectedVersion: 3, confirmWeakening: false }],
       ['POST', `/api/v1/agent-policies/revisions/${revisionId}/rollback`, 'policy_rollback', { expectedVersion: 4, confirmWeakening: true }, { revisionId, expectedVersion: 4, confirmWeakening: true }],
       ['POST', '/api/v1/agent-policies/simulate', 'policy_simulate', simulateBody, { ...simulateBody, action: { ...simulateBody.action, platformEffects: [] } }]

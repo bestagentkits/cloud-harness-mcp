@@ -123,4 +123,11 @@ describe('agent policy contract', () => {
     expect(put({ weakeningDigest: 'not-a-digest' })).toBe(false);
     expect(put({ weakeningDigest: 'A'.repeat(64) })).toBe(false);
   });
+
+  it('validates for one operation, saving by default', () => {
+    const validate = (input: Record<string, unknown>) => AgentPoliciesRunnerRequestSchema.safeParse({ version: 1, principal: owner, operation: 'policy_validate', input: { scope: 'global', document: {}, ...input } });
+    expect(validate({}).data?.input).toMatchObject({ intent: 'save' });
+    for (const intent of ['save', 'rollback', 'delete']) expect(validate({ intent }).success).toBe(true);
+    expect(validate({ intent: 'publish' }).success).toBe(false);
+  });
 });

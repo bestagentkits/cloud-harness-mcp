@@ -11,6 +11,7 @@ import {
   type AgentPoliciesRunnerErrorCode,
   type AgentPoliciesRunnerRequest,
   type AgentPoliciesRunnerResponse,
+  type AgentPolicyIntent,
   type AgentPolicyRevision,
   type AgentPolicyScope,
   type EffectivePolicy,
@@ -67,6 +68,10 @@ type Document = GlobalExecutionPolicy | ProjectExecutionPolicy;
 const MAX_DETAILS = AGENT_POLICY_LIMITS.maxDetails * 4;
 const bounded = (value: string, max: number) => (value.length <= max ? value : `${value.slice(0, max - 1)}…`);
 const details = (values: string[]) => values.slice(0, MAX_DETAILS).map((value) => bounded(value, 300));
+/** A weakening list is confirmable only when the owner can see all of it: nothing cut by `details`. */
+const reviewable = (weakenings: readonly string[]) => weakenings.length <= MAX_DETAILS && weakenings.every((value) => value.length <= 300);
+const unreviewable = (weakenings: readonly string[]) =>
+  `this change weakens the effective policy in ${weakenings.length} ways, more than one confirmation can show in full; save it in smaller steps`;
 const issues = (error: ZodError) => error.issues.slice(0, AGENT_POLICY_LIMITS.maxDetails)
   .map((issue) => bounded(`${issue.path.length > 0 ? issue.path.join('.') : 'document'}: ${issue.message}`, 500));
 const projectSubject = (scope: AgentPolicyScope, projectId: string | null) => (scope === 'global' ? 'global' : projectId ?? 'global');
@@ -244,24 +249,37 @@ export class AgentPolicyService {
     const parsed = input.scope === 'global' ? GlobalExecutionPolicySchema.safeParse(input.document) : ProjectExecutionPolicySchema.safeParse(input.document);
     if (!parsed.success) return { valid: false, errors: issues(parsed.error), widenings: [], weakenings: [], changes: [], effective: null, weakeningDigest: null };
     const assessment = this.assess(principalId, input.scope, projectId, parsed.data);
+    const fits = reviewable(assessment.weakenings);
     return {
-      valid: assessment.widenings.length === 0,
-      errors: [],
+      valid: assessment.widenings.length === 0 && fits,
+      errors: fits ? [] : [unreviewable(assessment.weakenings)],
       widenings: details(assessment.widenings),
       weakenings: details(assessment.weakenings),
       changes: assessment.changes,
       effective: assessment.effective,
-      weakeningDigest: assessment.weakenings.length > 0 ? this.weakeningDigest(principalId, input.scope, projectId, assessment.snapshot, assessment.weakenings) : null
+      weakeningDigest: assessment.weakenings.length > 0 && fits
+        ? this.weakeningDigest(principalId, input.scope, projectId, input.intent, assessment.snapshot, assessment.weakenings)
+        : null
     };
   }
 
   /**
-   * Identifies the confirmation the owner gave: the weakening list as shown, for this policy, against
-   * the current global head and the target head version. A different list or a moved head changes it.
+   * Identifies the confirmation the owner gave: the full weakening list (always shown in full, see
+   * `reviewable`), the operation, this policy, the current global head, the target head version and the
+   * highest version the policy ever had. A different list, operation or any save or delete changes it, so
+   * a confirmation cannot be replayed after the policy was deleted and recreated.
    */
-  private weakeningDigest(principalId: string, scope: AgentPolicyScope, projectId: string | null, snapshot: PolicySnapshot, weakenings: readonly string[]): string {
+  private weakeningDigest(
+    principalId: string,
+    scope: AgentPolicyScope,
+    projectId: string | null,
+    intent: AgentPolicyIntent,
+    snapshot: PolicySnapshot,
+    weakenings: readonly string[]
+  ): string {
     const headVersion = this.store.headSummary(principalId, scope, projectId)?.version ?? 0;
-    return sha256(canonicalJson({ scope, projectId, globalRevisionId: snapshot.global.revisionId, headVersion, weakenings: [...weakenings] }));
+    const latestVersion = this.store.latestVersion(principalId, scope, projectId);
+    return sha256(canonicalJson({ intent, scope, projectId, globalRevisionId: snapshot.global.revisionId, headVersion, latestVersion, weakenings: [...weakenings] }));
   }
 
   /** Stale clients get CONFLICT before any policy check, so they reload instead of answering a stale prompt. */
@@ -270,9 +288,10 @@ export class AgentPolicyService {
     if (current !== expectedVersion) throw new PolicyStoreError('CONFLICT', `the policy is at version ${current}, not ${expectedVersion}`);
   }
 
-  /** A weakening needs `confirmWeakening` and the digest of exactly this weakening list. */
+  /** A weakening needs `confirmWeakening` and the digest of exactly this weakening list, all of it reviewable. */
   private requireConfirmation(confirmed: { confirmWeakening: boolean; weakeningDigest?: string | undefined }, expected: string | null, weakenings: string[], message: string): void {
     if (expected === null) return;
+    if (!reviewable(weakenings)) throw new AgentPolicyError('INVALID_INPUT', unreviewable(weakenings));
     if (!confirmed.confirmWeakening || confirmed.weakeningDigest !== expected) throw new AgentPolicyError('CONFIRMATION_REQUIRED', message, weakenings);
   }
 
@@ -286,14 +305,14 @@ export class AgentPolicyService {
     document: Document,
     expectedVersion: number,
     confirmation: { confirmWeakening: boolean; weakeningDigest?: string | undefined },
-    audit: { action: string; note: string | null; rollbackOf: string | null }
+    audit: { action: string; note: string | null; rollbackOf: string | null; intent: AgentPolicyIntent }
   ): { head: AgentPolicyRevision; weakenings: string[] } {
     return withEventSavepoint(this.database, () => {
       if (projectId !== null) this.requireActiveProject(principalId, projectId);
       this.requireHeadVersion(principalId, scope, projectId, expectedVersion);
       const assessment = this.assess(principalId, scope, projectId, document);
       if (assessment.widenings.length > 0) throw new AgentPolicyError('POLICY_WIDENS', 'a project policy can only narrow the global policy', assessment.widenings);
-      const digest = assessment.weakenings.length > 0 ? this.weakeningDigest(principalId, scope, projectId, assessment.snapshot, assessment.weakenings) : null;
+      const digest = assessment.weakenings.length > 0 ? this.weakeningDigest(principalId, scope, projectId, audit.intent, assessment.snapshot, assessment.weakenings) : null;
       this.requireConfirmation(confirmation, digest, assessment.weakenings, 'this change weakens the effective policy; confirm the listed weakenings explicitly');
       const head = this.store.put(principalId, scope, projectId, document, expectedVersion, { rollbackOf: audit.rollbackOf, note: audit.note });
       this.audit(this.database, principalId, audit.action, 'agent_policy', projectSubject(scope, projectId), head.version, {
@@ -311,14 +330,14 @@ export class AgentPolicyService {
   private put(principalId: string, input: Request<'policy_put'>) {
     const document = this.parseDocument(input.scope, input.document);
     return this.write(principalId, input.scope, input.projectId ?? null, document, input.expectedVersion, input, {
-      action: 'agent_policy.updated', note: input.note ?? null, rollbackOf: null
+      action: 'agent_policy.updated', note: input.note ?? null, rollbackOf: null, intent: 'save'
     });
   }
 
   private rollback(principalId: string, input: Request<'policy_rollback'>) {
     const target = this.ownedRevision(principalId, input.revisionId);
     return this.write(principalId, target.scope, target.projectId, target.document, input.expectedVersion, input, {
-      action: 'agent_policy.rolled_back', note: input.note ?? null, rollbackOf: target.revisionId
+      action: 'agent_policy.rolled_back', note: input.note ?? null, rollbackOf: target.revisionId, intent: 'rollback'
     });
   }
 
@@ -333,7 +352,7 @@ export class AgentPolicyService {
       const weakenings = snapshot.project?.state === 'active'
         ? policyWeakenings(resolveEffectivePolicy(snapshot.global.document, current), resolveEffectivePolicy(snapshot.global.document, null))
         : [];
-      const digest = weakenings.length > 0 ? this.weakeningDigest(principalId, 'project', input.projectId, snapshot, weakenings) : null;
+      const digest = weakenings.length > 0 ? this.weakeningDigest(principalId, 'project', input.projectId, 'delete', snapshot, weakenings) : null;
       this.requireConfirmation(input, digest, weakenings, 'removing this policy weakens the effective policy; confirm the listed weakenings explicitly');
       this.store.deleteProjectHead(principalId, input.projectId, input.expectedVersion);
       this.audit(this.database, principalId, 'agent_policy.deleted', 'agent_policy', input.projectId, input.expectedVersion, {

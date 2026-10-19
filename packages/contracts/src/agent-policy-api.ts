@@ -355,18 +355,22 @@ const target = {
 const targetRefine = (value: { scope: 'global' | 'project'; projectId?: string | undefined }) => (value.scope === 'project') === (value.projectId !== undefined);
 const targetMessage = 'projectId is required for the project scope and not allowed for the global scope';
 /**
- * Binds a confirmation to the exact weakening list the owner was shown (policy_validate returns it). A
- * write that weakens the effective policy needs confirmWeakening and this digest; any change underneath
- * (another weakening, a new global head) changes the digest and the write is refused again.
+ * Binds a confirmation to the exact weakening list the owner was shown (policy_validate returns it), to
+ * the operation it was shown for, and to the policy's version history. A write that weakens the effective
+ * policy needs confirmWeakening and this digest; any change underneath (another weakening, a new global
+ * head, a save or delete of this policy) changes the digest and the write is refused again.
  */
 export const AgentPolicyWeakeningDigestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
+/** The write a validation previews; its digest only confirms that operation. */
+export const AgentPolicyIntentSchema = z.enum(['save', 'rollback', 'delete']);
+export type AgentPolicyIntent = z.infer<typeof AgentPolicyIntentSchema>;
 const weakeningDigest = AgentPolicyWeakeningDigestSchema.optional();
 const note = z.string().max(AGENT_POLICY_LIMITS.maxNoteChars).refine(noControl, 'note cannot contain control characters').optional();
 
 export const AgentPoliciesRunnerRequestSchema = z.discriminatedUnion('operation', [
   owner('policy_overview', z.object({}).strict()),
   owner('policy_get', z.object(target).strict().refine(targetRefine, targetMessage)),
-  owner('policy_validate', z.object({ ...target, document: z.unknown() }).strict().refine(targetRefine, targetMessage)),
+  owner('policy_validate', z.object({ ...target, document: z.unknown(), intent: AgentPolicyIntentSchema.default('save') }).strict().refine(targetRefine, targetMessage)),
   owner('policy_put', z.object({
     ...target, document: z.unknown(), expectedVersion, confirmWeakening: z.boolean().default(false), weakeningDigest, note
   }).strict().refine(targetRefine, targetMessage)),
