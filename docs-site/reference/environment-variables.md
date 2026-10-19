@@ -27,7 +27,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `API_KEY_GATEWAY_ACCESS_AUDIENCE` | `—` | Optional | Optional configuration. |
 | `API_KEY_GATEWAY_SERVICE_SUBJECT` | `cf-service:base64url-cloudflare-service-token-client-id` | Optional | Optional configuration. |
 | `API_KEY_GATEWAY_PUBLIC_URL` | `https://api.harness.zuey.me/mcp` | Optional | Optional configuration. |
-| `AUTOMATIONS_ENABLED` | `false` | Optional | Optional webhook-triggered automations. Set the same value for the API (public ingress at /integrations/webhooks/github/{connectionId}) and the runner (workflow admission). |
+| `AUTOMATIONS_ENABLED` | `false` | Optional | Optional webhook-triggered automations. Set the same value for the API (public ingress at /integrations/webhooks/{provider}/{connectionId}) and the runner (workflow admission). |
 | `AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS` | `2` | Optional | Instance-wide ceiling on automation workflows holding a workspace at once (runner). |
 | `ACCESS_LEGACY_OWNER_ID` | `owner` | Optional | Exact one-time legacy owner binding for the first Access rollout: |
 | `ACCESS_LEGACY_ISSUER` | `https://your-team.cloudflareaccess.com` | Optional | Optional configuration. |
