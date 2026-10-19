@@ -375,7 +375,7 @@ describe('agent trace operations', () => {
     const log = vi.fn();
     const { traces } = setup({ log });
     const traceId = addTrace(traces, { startedAt: Date.now() - 10_000 });
-    vi.spyOn(traces, 'get').mockReturnValue({ trace: { traceId, unexpected: 'field', profileId: 42 } } as unknown as ReturnType<AgentTraceStore['get']>);
+    vi.spyOn(traces, 'get').mockReturnValue({ trace: { traceId, unexpected: 'field', profileId: { leaked: 'sentinel-value-qz9' } } } as unknown as ReturnType<AgentTraceStore['get']>);
     let caught: unknown;
     try {
       executeAgentTraceOperation(traces, 'principal-a', 'agent_trace_get', { traceId }, { now: Date.now(), maxSpans: 10 });
@@ -391,7 +391,7 @@ describe('agent trace operations', () => {
     expect(entry.operation).toBe('agent_trace_get');
     expect(entry.issues.map((issue) => issue.path)).toContain('trace.profileId');
     expect(JSON.stringify(entry)).not.toContain('field');
-    expect(JSON.stringify(entry)).not.toContain('42');
+    expect(JSON.stringify(entry)).not.toContain('sentinel-value-qz9');
     // A valid result passes through unchanged.
     vi.restoreAllMocks();
     const ok = executeAgentTraceOperation(traces, 'principal-a', 'agent_trace_get', { traceId }, { now: Date.now(), maxSpans: 10 });
