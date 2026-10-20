@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useEffect, useId } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { Button } from '@/components/ui/button';
@@ -19,9 +19,9 @@ const schema = z.object({
 type Values = z.infer<typeof schema>;
 
 /**
- * Opens a named coding session. One idempotency key per intent: a retry after a failure
- * reuses it (the runner answers the first attempt's session), and it renews only after a
- * success, so the next session is a new intent.
+ * Opens a named coding session. One idempotency key per intent: a retry of the same name and
+ * directory after a failure reuses it (the runner answers the first attempt's session); a
+ * changed name or directory, a reopened dialog, or a success starts a new intent.
  */
 export function OpenSessionDialog({ open, onOpenChange, workspaceId, onOpened }: {
   open: boolean;
@@ -30,28 +30,41 @@ export function OpenSessionDialog({ open, onOpenChange, workspaceId, onOpened }:
   onOpened: () => void;
 }) {
   const formId = useId();
-  const idempotency = useIdempotencyKey();
+  const { current: idempotencyKey, renew: renewKey } = useIdempotencyKey();
+  const keyedFor = useRef<string | null>(null);
   const form = useForm<Values>({ resolver: zodResolver(schema), defaultValues: { name: '', cwd: '.' } });
-  const { isDirty, isSubmitting, errors } = form.formState;
+  const { isDirty, errors } = form.formState;
   const openSession = useBffMutation<Values, unknown>({
-    mutationFn: (values) => apiClient.request(bffPath('workspaces', workspaceId, 'sessions'), { method: 'POST', body: { ...values, idempotencyKey: idempotency.current() } }),
+    mutationFn: (values) => apiClient.request(bffPath('workspaces', workspaceId, 'sessions'), { method: 'POST', body: { ...values, idempotencyKey: idempotencyKey() } }),
     successTitle: 'Session opened.',
     errorTitle: 'The session was not opened',
-    onSuccess: () => { idempotency.renew(); onOpened(); }
+    onSuccess: () => { renewKey(); keyedFor.current = null; onOpened(); }
   });
 
-  useEffect(() => {
-    if (open) form.reset({ name: '', cwd: '.' });
-  }, [form, open]);
+  const isSubmitting = openSession.isPending;
 
-  const submit = form.handleSubmit(async (values) => {
+  useEffect(() => {
+    if (!open) return;
+    form.reset({ name: '', cwd: '.' });
+    // A reopened dialog is a new intent, even after a failed attempt.
+    if (keyedFor.current !== null) renewKey();
+    keyedFor.current = null;
+  }, [form, open, renewKey]);
+
+  /** Validates, then opens; a changed name or directory since the last attempt is a new intent. */
+  async function submit() {
+    if (!(await form.trigger())) { form.setFocus(form.getFieldState('name').invalid ? 'name' : 'cwd'); return; }
+    const values = form.getValues();
+    const intent = JSON.stringify([values.name, values.cwd]);
+    if (keyedFor.current !== null && keyedFor.current !== intent) renewKey();
+    keyedFor.current = intent;
     try {
       await openSession.mutateAsync(values);
       onOpenChange(false);
     } catch {
       // The mutation's toast explains; the typed values stay for a retry with the same key.
     }
-  });
+  }
 
   return (
     <ManagedDialog open={open} onOpenChange={onOpenChange} guard={{ dirty: isDirty && !isSubmitting, locked: isSubmitting }}>
@@ -59,7 +72,7 @@ export function OpenSessionDialog({ open, onOpenChange, workspaceId, onOpened }:
         <DialogTitle>Open coding session</DialogTitle>
         <DialogDescription>Sessions are named and bounded; close one when you are done with it.</DialogDescription>
       </DialogHeader>
-      <form id={formId} className="grid gap-4" noValidate onSubmit={(event) => { void submit(event); }}>
+      <form id={formId} className="grid gap-4" noValidate onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <Field label="Session name" error={errors.name?.message}>
           <Input autoFocus autoComplete="off" maxLength={80} {...form.register('name')} />
         </Field>

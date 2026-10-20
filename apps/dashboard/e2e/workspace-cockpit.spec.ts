@@ -177,6 +177,37 @@ test('runtime: open session sends name, cwd and one idempotency key across a ret
   expect(sent[1]!.idempotencyKey).toBe(sent[0]!.idempotencyKey);
 });
 
+test('runtime: a changed name or a reopened dialog after a failure is a new intent with a new key', async ({ page }) => {
+  const sent: Array<Record<string, unknown>> = [];
+  await stubReads(page, {
+    ...READS,
+    [`${base}/sessions`]: async (route) => {
+      sent.push(route.request().postDataJSON() as Record<string, unknown>);
+      return answer(503, { error: 'RUNNER_UNAVAILABLE', message: 'Try again.' })(route);
+    }
+  });
+  await page.goto(`/dashboard${base}/runtime`);
+  await page.getByRole('button', { name: 'Open session' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Open coding session' });
+  await dialog.getByLabel('Session name').fill('docs');
+  await dialog.getByRole('button', { name: 'Open session' }).click();
+  await expect.poll(() => sent.length).toBe(1);
+  await dialog.getByLabel('Session name').fill('tests');
+  await dialog.getByRole('button', { name: 'Open session' }).click();
+  await expect.poll(() => sent.length).toBe(2);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  // The typed values make the dialog dirty, so closing asks first.
+  const discard = page.getByRole('button', { name: /discard/i });
+  if (await discard.isVisible().catch(() => false)) await discard.click();
+  await expect(dialog).toBeHidden();
+  await page.getByRole('button', { name: 'Open session' }).click();
+  await dialog.getByLabel('Session name').fill('tests');
+  await dialog.getByRole('button', { name: 'Open session' }).click();
+  await expect.poll(() => sent.length).toBe(3);
+  expect(sent.map((body) => body.name)).toEqual(['docs', 'tests', 'tests']);
+  expect(new Set(sent.map((body) => body.idempotencyKey)).size).toBe(3);
+});
+
 test('agents and activity tabs render their projections', async ({ page }) => {
   await stubReads(page, READS);
   await page.goto(`/dashboard${base}/agents`);

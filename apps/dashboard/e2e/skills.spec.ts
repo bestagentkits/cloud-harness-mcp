@@ -210,9 +210,10 @@ test('an import polls the job until it is terminal and then stops', async ({ pag
   expect(problems).toEqual([]);
 });
 
-test('cancelling an import sends the job generation and leaving the tab stops the poll', async ({ page }) => {
+test('cancelling an import sends the schema minimum fence the BFF projection allows and leaving the tab stops the poll', async ({ page }) => {
   let polls = 0;
-  await stubReads(page, reads({ [`/skill-imports/${IMPORT_JOB}`]: (route) => { polls += 1; return answer(200, importJob('running', { generation: 5 }))(route); } }));
+  // The BFF job projection has no generation field, so the page falls back to 1.
+  await stubReads(page, reads({ [`/skill-imports/${IMPORT_JOB}`]: (route) => { polls += 1; return answer(200, importJob('running'))(route); } }));
   await captureMutation(page, '/skill-imports', importJob('queued'));
   const cancel = await captureMutation(page, `/skill-imports/${IMPORT_JOB}/cancel`, importJob('cancelled'));
   await page.goto('/dashboard/skills?tab=imports');
@@ -220,7 +221,7 @@ test('cancelling an import sends the job generation and leaving the tab stops th
   await page.getByRole('button', { name: 'Import' }).click();
   await page.getByRole('button', { name: 'Cancel import' }).click();
   await expect.poll(() => cancel.length).toBe(1);
-  expect(JSON.parse(cancel[0]?.body ?? '{}')).toEqual({ expectedGeneration: 5 });
+  expect(JSON.parse(cancel[0]?.body ?? '{}')).toEqual({ expectedGeneration: 1 });
   await page.getByRole('tab', { name: 'Library' }).click();
   await page.waitForTimeout(500);
   const left = polls;
