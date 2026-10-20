@@ -469,6 +469,22 @@ named owners. In React each poller has exactly one owner (a query
 | T11–T13 | toast removal, update cue, copy chip revert | one-shot timeouts | — | keep (Motion only for dialogs and toasts) | P2 |
 | T15 | `refreshApprovalsBadge` | no timer; only on Overview, Activity and Approvals loads | stale badge (R13) | invalidate after approve/reject and on window focus | P3 |
 
+Navigation read baseline. `apps/dashboard/e2e/navigation-budget.spec.ts` tours
+Overview → Workspaces → Agents → Agent detail (Follow on) → Activity → Skills
+(import running) → Overview in one document and fails when a navigation reads
+more than the classic loader did, or when the agent detail or import polls
+outlive their page. The baseline counts page reads only; the shell's
+`/session`, `/profile` and `/preferences` are read once per document.
+
+| Page | Classic loader reads | Count | React (measured) |
+| --- | --- | --- | --- |
+| Overview | `/server`, `/overview`, `/metrics`, `/reliability`, plus `refreshApprovalsBadge` (`/privilege-grants`, `/package-plans`) | 6 | 6 |
+| Workspaces | `/workspaces` | 1 | 1 |
+| Agents | `/agents` | 1 | 1 |
+| Agent detail | `/agents/:id`, `/agents/:id/logs` | 2 | 2 (Follow then polls both every 5 s, until the page is left) |
+| Activity | `/activity`, plus `refreshApprovalsBadge` | 3 | 3 |
+| Skills | `/skills` | 1 | 1 (an import then polls `/skill-imports/:id` every 1.5 s, until terminal or the page is left) |
+
 Budget: every Access subject has one per-principal request and concurrency
 budget on `/api/v1` (`principalRequestLimits` in
 `apps/api/src/request-security.ts`, finding F6). An open terminal holds one
