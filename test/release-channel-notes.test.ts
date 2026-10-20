@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import getTags from 'semantic-release/lib/branches/get-tags.js';
+import getLastRelease from 'semantic-release/lib/get-last-release.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { findTagsMissingChannelNotes, prereleaseLane, repairReleaseChannelNotes } from '../scripts/repair-release-channel-notes.mjs';
 
@@ -42,6 +44,13 @@ function createLane() {
   return { clone, remote };
 }
 
+// The prerelease lane's last release as semantic-release itself selects it.
+async function lastDevRelease(cwd: string) {
+  const options = { tagFormat: releaseConfig.tagFormat };
+  const [branch] = await getTags({ cwd, env: process.env, options }, [{ name: 'dev', type: 'prerelease', prerelease: 'beta', channel: 'beta' }]);
+  return getLastRelease({ branch, options }).version;
+}
+
 afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
@@ -53,8 +62,9 @@ describe('release channel note repair', () => {
     expect(prereleaseLane({ branches: [{ name: 'next', prerelease: true }] }, 'next')).toEqual({ identifier: 'next', channel: 'next' });
   });
 
-  it('restores and pushes the channel note of a published prerelease tag that lost it', () => {
+  it('restores and pushes the channel note of a published prerelease tag that lost it', async () => {
     const { clone, remote } = createLane();
+    expect(await lastDevRelease(clone)).toBe('1.1.0-beta.1');
 
     expect(findTagsMissingChannelNotes({ cwd: clone, branch: 'dev' }).tags).toEqual(['v1.1.0-beta.2']);
     expect(repairReleaseChannelNotes({ cwd: clone, branch: 'dev', log: () => {} })).toEqual(['v1.1.0-beta.2']);
@@ -62,6 +72,20 @@ describe('release channel note repair', () => {
     expect(run(clone, 'notes', '--ref', 'semantic-release-v1.1.0-beta.2', 'show', 'v1.1.0-beta.2')).toBe('{"channels":["beta"]}');
     expect(run(remote, 'notes', '--ref', 'semantic-release-v1.1.0-beta.2', 'show', 'v1.1.0-beta.2')).toBe('{"channels":["beta"]}');
     expect(repairReleaseChannelNotes({ cwd: clone, branch: 'dev', log: () => {} })).toEqual([]);
+    expect(await lastDevRelease(clone)).toBe('1.1.0-beta.2');
+  });
+
+  it('ignores unmerged tags, other prerelease identifiers and notes of another channel', () => {
+    const { clone } = createLane();
+    run(clone, 'notes', '--ref', 'semantic-release-v1.1.0-beta.2', 'add', '-m', '{"channels":["next"]}', 'v1.1.0-beta.2');
+    run(clone, 'tag', 'v1.2.0-alpha.1');
+    run(clone, 'switch', '--quiet', '--orphan', 'elsewhere');
+    run(clone, 'commit', '--quiet', '--allow-empty', '-m', 'chore(release): 1.2.0-beta.1');
+    run(clone, 'tag', 'v1.2.0-beta.1');
+    run(clone, 'switch', '--quiet', 'dev');
+
+    expect(findTagsMissingChannelNotes({ cwd: clone, branch: 'dev' }).tags).toEqual([]);
+    expect(run(clone, 'notes', '--ref', 'semantic-release-v1.1.0-beta.2', 'show', 'v1.1.0-beta.2')).toBe('{"channels":["next"]}');
   });
 
   it('fetches remote notes before deciding a tag is missing one', () => {

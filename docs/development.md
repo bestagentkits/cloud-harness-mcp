@@ -184,4 +184,6 @@ version and fail with `tag ... already exists` on every run. The Release
 workflow therefore runs
 [`scripts/repair-release-channel-notes.mjs`](../scripts/repair-release-channel-notes.mjs)
 first; it restores and pushes the missing note so the lane resumes at the next
-`-beta.N`.
+`-beta.N`. The interrupted run never reached its publish step, so the repaired
+tag has no GitHub release; its notes stay in `CHANGELOG.md` unless the owner
+creates that prerelease by hand.
