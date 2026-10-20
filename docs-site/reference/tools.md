@@ -1690,7 +1690,7 @@ Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `prompt` | `string` | **Yes** | min length: 1 |
 | `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
-| `profileId` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,80}$` |
+| `profileId` | `string` | No | Model profile to run on. Required unless continueFrom is set; a continuation inherits the profile of the agent it continues and refuses a different one. (pattern: `^[A-Za-z0-9._-]{1,80}$`) |
 | `parentAgentId` | `string` | No | pattern: `^agent_[A-Za-z0-9_-]{20,80}$` |
 | `proxyOperations` | string[] | **Yes** | — |
 | `ttlSeconds` | `integer` | No | range: 30–86400, default: `900` |
@@ -1699,6 +1699,7 @@ Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container
 | `maxOutputTokens` | `integer` | No | range: 1–2000000, default: `32000` |
 | `maxCostMicros` | `integer` | No | range: 0–1000000000, default: `10000000` |
 | `repositoryContext` | `"codex"` \| `"claude"` \| `"cursor"` \| `"aider"` \| `"all"` \| `"none"` | No | Repository guidance profile placed before the task; omitted uses codex, none sends the task alone. |
+| `continueFrom` | `string` | No | A terminal agent of this workspace whose persisted session the new agent continues; needs session persistence on the instance. The new agent gets a new id, container, lease, and budget. (pattern: `^agent_[A-Za-z0-9_-]{20,80}$`) |
 
 ### `agent_status`
 

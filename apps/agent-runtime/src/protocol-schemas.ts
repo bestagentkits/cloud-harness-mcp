@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isSessionMessage } from './session-replay.js';
 // Wire limits must remain aligned with apps/runner/src/agent-protocol.ts.
 export const MAX_PROTOCOL_RECORD_BYTES = 8 * 1024 * 1024;
 export const MAX_PROTOCOL_QUEUE_BYTES = 16 * 1024 * 1024;
@@ -51,6 +52,12 @@ function isBoundedJson(value: unknown): boolean {
 
 export const BoundedJsonSchema = z.unknown().refine(isBoundedJson, 'value exceeds JSON shape bounds');
 
+// Aligned with the largest session the runner may be configured to persist.
+export const MAX_SESSION_MESSAGES = 10_000;
+// A persisted message passes through unchanged, so its exact JSON (and digest) survives the round
+// trip; its size is bounded by the protocol record limit instead of the shape bounds above.
+const SessionMessageSchema = z.unknown().refine(isSessionMessage, 'session message must be a user, assistant, or toolResult message');
+
 const CostSchema = z.object({
   input: z.number().finite().nonnegative().max(1_000_000),
   output: z.number().finite().nonnegative().max(1_000_000),
@@ -84,7 +91,12 @@ export const StartRecordSchema = z.object({
     maxOutputBytes: z.number().int().min(1_024).max(10_485_760),
     maxEventBytes: z.number().int().min(256).max(64 * 1024),
     maxToolResultBytes: z.number().int().min(256).max(MAX_PROTOCOL_RECORD_BYTES)
-  }).strict()
+  }).strict(),
+  // Present only for an agent that persists its session: the verified history to replay first.
+  session: z.object({
+    messages: z.array(SessionMessageSchema).max(MAX_SESSION_MESSAGES),
+    headSha256: z.string().regex(/^[0-9a-f]{64}$/)
+  }).strict().optional()
 }).strict();
 
 export const ToolResultRecordSchema = z.object({
@@ -175,11 +187,18 @@ export const TerminalRecordSchema = z.object({
   error: z.string().max(4_096).optional()
 }).strict();
 
+export const SessionMessageRecordSchema = z.object({
+  type: z.literal('session_message'),
+  seq: SafeCountSchema,
+  message: SessionMessageSchema
+}).strict();
+
 export const OutputRecordSchema = z.discriminatedUnion('type', [
   EventRecordSchema,
   ToolRequestRecordSchema,
   ToolCancelRecordSchema,
   UsageRecordSchema,
+  SessionMessageRecordSchema,
   TerminalRecordSchema
 ]);
 
@@ -193,3 +212,4 @@ export type TerminalState = z.infer<typeof TerminalStateSchema>;
 export type OutputRecord = z.infer<typeof OutputRecordSchema>;
 
 export type MessageRecord = z.infer<typeof MessageRecordSchema>;
+export type SessionMessageRecord = z.infer<typeof SessionMessageRecordSchema>;

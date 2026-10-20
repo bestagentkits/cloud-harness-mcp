@@ -318,6 +318,22 @@ export const AgentUsageSchema = z.object({
 
 const instant = z.iso.datetime({ offset: true });
 
+/**
+ * A persisted Pi session. `continuable` means a new agent may continue the conversation through
+ * `agent_spawn.continueFrom`; it never means interrupted work was restored.
+ */
+export const AgentSessionStatusSchema = z.object({
+  persisted: z.boolean(),
+  continuable: z.boolean(),
+  messages: z.number().int().nonnegative(),
+  bytes: z.number().int().nonnegative()
+}).strict();
+
+/** Whether the run itself can resume in place. Always false for the pi-coding runtime. */
+export const AgentRunStatusSchema = z.object({
+  resumable: z.boolean()
+}).strict();
+
 export const AgentLiveStatusDataSchema = z.object({
   agentId: AgentIdSchema,
   workspaceId: WorkspaceIdSchema,
@@ -336,7 +352,11 @@ export const AgentLiveStatusDataSchema = z.object({
   budget: AgentBudgetSchema,
   usage: AgentUsageSchema,
   terminalReason: z.string().max(2_000).nullable(),
-  outcomeUnknown: z.boolean()
+  outcomeUnknown: z.boolean(),
+  // Present only for agents spawned with session persistence on.
+  session: AgentSessionStatusSchema.optional(),
+  run: AgentRunStatusSchema.optional(),
+  continuedFrom: AgentIdSchema.nullable().optional()
 }).strict();
 
 export const AgentCompactedStatusDataSchema = z.object({
@@ -404,6 +424,7 @@ export type AgentMessageDeliveryState = z.infer<typeof AgentMessageDeliveryState
 export type AgentBudget = z.infer<typeof AgentBudgetSchema>;
 export type AgentUsage = z.infer<typeof AgentUsageSchema>;
 export type AgentStatusData = z.infer<typeof AgentStatusDataSchema>;
+export type AgentSessionStatus = z.infer<typeof AgentSessionStatusSchema>;
 export type AgentSpawnData = z.infer<typeof AgentSpawnDataSchema>;
 export type AgentLogsData = z.infer<typeof AgentLogsDataSchema>;
 export type AgentMessageData = z.infer<typeof AgentMessageDataSchema>;

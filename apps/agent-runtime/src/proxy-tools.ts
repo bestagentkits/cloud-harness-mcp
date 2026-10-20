@@ -69,7 +69,7 @@ interface PendingToolCall {
   removeAbortListener(): void;
 }
 
-export type ToolRecordEmitter = (record: Exclude<OutputRecord, { type: 'terminal' }>) => void;
+export type ToolRecordEmitter = (record: Exclude<OutputRecord, { type: 'terminal' | 'session_message' }>) => void;
 function boundedToolCallId(value: string): string {
   if (/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value)) return value;
   return `call_${createHash('sha256').update(value).digest('hex').slice(0, 32)}`;

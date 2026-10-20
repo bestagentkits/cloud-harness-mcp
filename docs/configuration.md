@@ -596,6 +596,26 @@ the call bounds by
 and the rationale by [ADR 0004](adr/0004-decision-plane.md). Live counters are
 at `GET /api/v1/decision-plane/status`.
 
+## Managed agents
+
+The runner reads the managed-agent settings (`AGENT_*`) in
+[`apps/runner/src/config.ts`](../apps/runner/src/config.ts); their defaults and
+bounds are the `RunnerAgentsConfigSchema` in
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts).
+Session persistence is an opt-in:
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AGENT_SESSION_PERSISTENCE_ENABLED` | `false` | Runner flag. Agents spawned while it is on record their Pi session in the runner state store, and `agent_spawn.continueFrom` can continue a terminal agent's session in a new agent on the same model profile. Off, spawns behave exactly as before and `continueFrom` is refused with `NOT_SUPPORTED`. Turning it off later keeps existing sessions until their retention or workspace close. |
+| `AGENT_MAX_SESSION_MESSAGES` | `2000` | The most messages one persisted session may hold. Past it the run continues, but the session is no longer continuable. |
+| `AGENT_MAX_SESSION_BYTES` | `7340032` (7 MiB) | The most message bytes one persisted session may hold, with the same outcome. Its maximum keeps a full session, the prompt, and the rest of the start record inside the 8 MiB agent protocol record. |
+| `AGENT_SESSION_RETENTION_MS` | `604800000` (7 days) | How long a sealed session stays continuable after its agent ends. The runner then purges its messages. Closing or expiring the workspace deletes its sessions sooner. |
+
+The [security model](security-model.md#persisted-agent-sessions) describes
+what the session store holds and who can read it. The
+[agent tools](mcp-api.md#persisted-sessions-and-continuefrom) describe
+`continueFrom` and the status fields.
+
 ## Compose and logging overrides
 
 `CLOUD_HARNESS_ENV_FILE` selects the runtime environment file. `API_HOST_PORT`

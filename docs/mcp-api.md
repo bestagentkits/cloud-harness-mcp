@@ -188,6 +188,49 @@ writes. Any active agent from a prior runner epoch is reconciled: its model
 lease is revoked, its container is removed, and its status transitions to
 `INTERRUPTED` with `outcomeUnknown: true`.
 
+#### Persisted sessions and `continueFrom`
+
+When the operator enables agent session persistence (off by default; see
+[configuration](configuration.md#managed-agents)), the runner records each
+completed user, assistant, and tool-result message of a new agent's Pi session
+in its state store. A run is still never resumed in place: `continueFrom`
+starts a *new* agent, with its own ID, container, model lease, and budget,
+whose session is first loaded with the earlier agent's verified history and
+then given the new `prompt`.
+
+- A continuation runs on the earlier agent's model profile, because its history
+  was produced by that model and replaying it into another provider or model
+  is not supported. `profileId` may be omitted on a `continueFrom` spawn and
+  then inherits that profile; a `profileId` that resolves to a different
+  profile is refused with `INVALID_INPUT`. Every other spawn still requires
+  `profileId`.
+- `agent_status` and `agent_list` add `session` (`persisted`, `continuable`,
+  `messages`, `bytes`), `run.resumable` (always `false` for Pi agents), and
+  `continuedFrom` for an agent spawned with persistence. Agents spawned with
+  persistence off report none of these fields.
+- A session becomes continuable when its agent reaches any terminal status,
+  including `CANCELLED` and `INTERRUPTED`. It is not continuable when its log
+  is incomplete or exceeded the configured message or byte bounds; the run
+  itself is not affected. A tool call the earlier run never answered is closed
+  with an error result before the new prompt.
+- `continueFrom` is refused before any agent exists with `NOT_SUPPORTED` when
+  persistence is off; `NOT_FOUND` for an agent outside this owner and
+  workspace; `STALE_GENERATION` for an earlier workspace generation;
+  `CONFLICT` (retryable) while the earlier agent is still running; `CONFLICT`
+  when it has no persisted session, its log is not continuable, its model
+  profile is no longer enabled, or another agent already continued it (each
+  session has at most one successor; continue that one instead);
+  `LIMIT_EXCEEDED` when the replayed log and the new prompt together cannot
+  fit one agent start record (the earlier agent stays continuable with a
+  shorter prompt); and `EXPIRED` once retention purged the log. Normal spawn
+  admission and budget checks also apply. When the log leaves little room,
+  repository guidance is shortened to fit.
+- Repository guidance is composed into the new prompt as for any spawn. Pass
+  `repositoryContext: "none"` to avoid repeating guidance the history already
+  holds.
+- Closing or expiring the workspace deletes its persisted sessions; sealed
+  sessions are otherwise purged after the configured retention.
+
 ### Model setup and spend
 
 Eight tools let a client choose a model for `agent_spawn` and prepare its
