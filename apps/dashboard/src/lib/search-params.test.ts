@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compact, cursor, flag, matching, oneOf, text } from './search-params';
+import { compact, cursor, flag, matching, oauthOutcome, oneOf, text } from './search-params';
 
 describe('search param validators', () => {
   it('keeps bounded text and drops blanks, objects and oversize values', () => {
@@ -24,5 +24,12 @@ describe('search param validators', () => {
     expect(flag({ expiring: 'true' }, 'expiring')).toBe(true);
     expect(flag({ expiring: 'no' }, 'expiring')).toBeUndefined();
     expect(compact({ a: 1, b: undefined })).toEqual({ a: 1 });
+  });
+
+  it('names every OAuth outcome member, so an invalid raw value cannot survive the router merge', () => {
+    expect(oauthOutcome({ oauth: 'connected', reason: 'access_denied' })).toEqual({ oauth: 'connected', reason: 'access_denied' });
+    const invalid = oauthOutcome({ oauth: 'pwned', reason: '<script>' });
+    expect(Object.keys(invalid).sort()).toEqual(['oauth', 'reason']);
+    expect(invalid).toEqual({ oauth: undefined, reason: undefined });
   });
 });
