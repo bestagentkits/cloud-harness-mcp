@@ -87,17 +87,30 @@ SSR buys nothing here. The BFF keeps rendering the only HTML document.
 - `apps/api/src/dashboard-assets.ts` stays the only asset owner. At startup it
   reads the manifest and builds a fixed allowlist of the files the manifest
   names. A request path is looked up in that map and never reaches the
-  filesystem. A missing or invalid manifest fails startup in `react` mode,
-  the same way the xterm assets do today.
-- Hashed assets are served with `Cache-Control: public, max-age=31536000,
-  immutable`. The HTML shell stays `no-store`, so a rolling deploy never pairs
-  a new shell with old chunks. The previous release's hashed files ship with
-  the image until the next release (a rolling-upgrade window), so a tab still
-  open on the old shell can lazy-load its chunks.
-- The SPA fallback answers only HTML navigations to known Dashboard route
-  prefixes. It never answers `/dashboard/api/v1/*`,
-  `/dashboard/mcp-oauth/callback`, asset paths, `/mcp*` or terminal output
-  routes. Those keep their own handlers and their 404/JSON errors.
+  filesystem. The manifest is validated at startup whenever the React shell
+  is selectable: the flag is `react`, or the canary is allowed. If it is
+  absent or invalid, the canary is disabled and the reason is logged, and the
+  legacy shell keeps serving. The API never crashes because the React build is
+  missing.
+- Hashed assets keep the current versioned-asset header,
+  `Cache-Control: private, max-age=31536000, immutable`. They sit behind
+  Access like every Dashboard response, so they are never `public`. The HTML
+  shell stays `no-store`, so a fresh navigation never pairs a new shell with
+  old chunks.
+- Keeping the previous release's hashed files in the image is out of scope.
+  A tab still open on an old shell can fail to lazy-load a chunk after a
+  deploy. On a chunk-load failure the SPA performs one guarded full reload of
+  the shell (a per-tab marker prevents a reload loop) and shows an error
+  state if the reload fails too. This path has its own test.
+- The SPA fallback is an allowlist: it answers only HTML navigations to known
+  Dashboard route prefixes, and unknown `/dashboard/*` paths still 404. It
+  never answers `/dashboard/api/v1/*`, `/dashboard/mcp-oauth/callback`, asset
+  paths, `/mcp*` or terminal output routes. Those keep their own handlers and
+  their 404/JSON errors.
+- The API image contains the React build **in addition to**
+  `apps/api/dashboard/`. The legacy shell is read at module load, so removing
+  it would break the `legacy` rollback. It is removed only by the P6 follow-up
+  that deletes the legacy shell.
 - The browser keeps calling the BFF with the session cookie and the CSRF
   header. It imports no server module. Shared browser-safe DTO types may come
   from `packages/contracts` or a dedicated `packages/dashboard-types`; nothing
@@ -181,6 +194,19 @@ read queries are cancelled when their route changes.
   prepare a mutation). Reads return the same redacted projections the page
   already shows. A sensitive or destructive mutation needs an explicit user
   click in the Dashboard. The agent never receives secret values or API keys.
+- The registry builds every request body itself from a typed schema per
+  action. It never forwards a raw agent payload to the BFF. The confirmation
+  dialog renders exactly the body that will be sent, and nothing else is
+  sent after the click.
+- `getPageContext` returns only non-secret summary state (route, filters,
+  selection, counts, statuses). It does not return file contents, terminal
+  output, diffs or log bodies.
+- Prerequisite: before or within P5, fix the BFF routes where a body
+  `workspaceId` or other id overrides the path id (finding F1 in the parity
+  matrix, for example the workspace lease/recover/finalize handlers in
+  `apps/api/src/dashboard-router.ts` and the secret handlers in
+  `apps/api/src/dashboard-control-router.ts`). Agent-built actions must not be
+  able to name a different resource than the URL.
 
 ### The Dewee agent on Cloud Harness MCP (owner opt-in)
 
@@ -191,8 +217,16 @@ the MCP gateway (see the security model). Actions the agent takes over MCP do
 not pass through the Dashboard confirmation step. This is an accepted owner
 risk, not a default. The control is key revocation or rotation on the API Keys
 page. The key is created by the owner and stored only in the Dewee agent
-configuration, never in this repository, the browser or logs. The security
-model must record this opt-in when the integration ships.
+configuration, never in this repository, the browser or logs.
+
+The opt-in also accepts a data-flow risk. Whatever the agent can see on the
+page or read over MCP (file contents, terminal output, diffs, logs) can flow to
+the Dewee gateway and its LLM provider. That content is untrusted, so it can
+carry prompt injection that steers the agent's MCP calls. The page context
+limit above and the click confirmation for page actions reduce the risk on the
+Dashboard side. They do not cover the agent's MCP calls. The security model
+must record this opt-in, the data flow and the prompt-injection risk when the
+integration ships.
 
 ### Complexity budget
 
@@ -218,9 +252,11 @@ model must record this opt-in when the integration ships.
 The old→new inventory is the
 [Dashboard parity matrix](../dashboard-parity-matrix.md). Each phase PR of
 Issue #458 links its tests. The gates that make this decision safe are:
-the BFF, session, Access and mount suites (`dashboard-router`,
-`dashboard-session`, `dashboard-app-mount`, `access-auth`, `mcp-oauth` and the
-other class-(a) suites the matrix lists) stay green unchanged; CSP and asset-allowlist tests cover the manifest mode; Playwright
+the BFF, session and Access suites (`dashboard-router`, `dashboard-session`,
+`access-auth`, `mcp-oauth` and the other class-(a) suites the matrix lists)
+stay green unchanged; `dashboard-app-mount` stays and gains React-shell cases
+(manifest mode, canary, fallback allowlist) with nothing removed; CSP and
+asset-allowlist tests cover the manifest mode; Playwright
 covers A→B, A→B→C, Back/Forward and out-of-order responses with zero route
 mismatches; and a canary plus rollback rehearsal runs before cutover.
 
