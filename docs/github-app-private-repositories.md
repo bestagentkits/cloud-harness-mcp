@@ -99,7 +99,15 @@ their organization:
 2. Select **Developer settings** → **GitHub Apps** → **New GitHub App**.
 3. Enter a unique name and a homepage URL. The Cloud Harness repository URL is
    sufficient when the App has no separate website.
-4. Under **Setup URL (optional)**, enter `https://<your-dashboard-domain>/dashboard/github` (e.g. `https://harness.zuey.me/dashboard/github`) and ensure **Redirect on setup** is checked. This allows GitHub to automatically redirect back to your dashboard with the installation ID so Cloud Harness can complete the authorization. Leave Callback URL empty.
+4. Under **Setup URL (optional)**, enter
+   `https://<your-dashboard-domain>/dashboard/integrations/github` and check
+   **Redirect on setup**. GitHub then returns to the dashboard with the
+   installation ID and setup state so Cloud Harness can complete the
+   authorization. An App already registered with the legacy
+   `/dashboard/github` Setup URL keeps working: that path redirects to the
+   Integrations page and carries only the validated `state`,
+   `installation_id`, and `setup_action` callback parameters
+   (`apps/api/src/dashboard-assets.ts`). Leave **Callback URL** empty.
 5. Clear **Active** under **Webhook**. This integration does not consume
    webhooks.
 6. Under **Repository permissions**, grant the level selected above and leave

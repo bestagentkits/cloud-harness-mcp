@@ -69,6 +69,30 @@ describe('dashboard application mount', () => {
     }
   });
 
+  it('keeps the validated GitHub App setup callback query across the legacy redirect', async () => {
+    const app = express();
+    app.use('/dashboard', createDashboardAssetsRouter());
+    server = createServer(app);
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server failed');
+    const location = async (query: string) => {
+      const response = await fetch(`http://127.0.0.1:${address.port}/dashboard/github${query}`, { redirect: 'manual' });
+      expect(response.status, query).toBe(302);
+      return response.headers.get('location');
+    };
+    const state = 'Ab0_-'.repeat(8) + 'xyz';
+
+    expect(await location(`?state=${state}&installation_id=12345678&setup_action=install&next=https://evil.example`))
+      .toBe(`/dashboard/integrations/github?state=${state}&installation_id=12345678&setup_action=install`);
+    expect(await location(`?installation_id=42&setup_action=update`))
+      .toBe('/dashboard/integrations/github?installation_id=42&setup_action=update');
+    // Malformed, repeated or injected values are dropped rather than echoed.
+    expect(await location(`?state=short&installation_id=0x1&setup_action=%0D%0ALocation:%20x`)).toBe('/dashboard/integrations/github');
+    expect(await location(`?state=${state}&state=${state}&installation_id=7`)).toBe('/dashboard/integrations/github?installation_id=7');
+    expect(await location(`?state=${'a'.repeat(40)}%22%3E%3Cscript%3E&installation_id=-1`)).toBe('/dashboard/integrations/github');
+  });
+
   it('serves release-versioned immutable assets and keeps legacy paths revalidating', async () => {
     const app = express();
     // Simulate the security middleware's default no-store header: sendFile must
