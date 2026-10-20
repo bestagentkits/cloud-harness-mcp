@@ -39,6 +39,14 @@ Every dashboard page ends with the same footer crediting [AgentKit](https://agen
 
 A rebuilt dashboard is rolling out behind the `CLOUD_HARNESS_DASHBOARD_UI` setting, which defaults to `legacy`. To try it in one browser without changing the instance, add `?ui=react` to any dashboard address, such as `/dashboard?ui=react`; add `?ui=legacy` (or use **Use classic Dashboard** in its sidebar) to switch back, and you stay on the same page. The choice is stored in a browser cookie only. Your theme choice follows you between both versions.
 
+In the new dashboard:
+
+- **Pages keep their addresses.** Every page and deep link of the classic dashboard has the same `/dashboard/...` address, filters stay in the URL, and reload, Back and Forward return you to the same view. Pages whose controls have not moved yet link to the classic dashboard.
+- **Command palette:** press `Ctrl+K` or `Cmd+K`, or click **Search**, to jump to a page, a workspace or a theme. The shortcut is ignored while you type in a terminal.
+- **Shortcuts:** `[` collapses or expands the sidebar, and `/` moves focus to the workspace search box.
+- **Small screens:** the menu button in the top bar opens the navigation as a drawer.
+- **Display preferences:** text size, density, contrast and the sidebar state are saved in this browser only. The theme is saved to your account cookie. Animations are turned off when your system asks for reduced motion.
+
 ## Design System & Security Invariants
 
 - **Zero Secrets Rendered:** Container tokens, SSH private keys, and runner authentication credentials are never sent to or displayed in the dashboard. Dashboard search reads an allowlisted projection from seven resource endpoints and never indexes secret values, secret descriptions, or knowledge content.

@@ -7,10 +7,12 @@ import {
   applyPreferences,
   DEFAULT_PREFERENCES,
   parsePreferences,
+  type Preferences,
   PREFERENCES_STORAGE_KEY,
   readPreferences,
   resetPreferencesForTests,
-  usePreferences
+  usePreferences,
+  writePreferences
 } from './preferences';
 
 // jsdom replaces the global URL, so build the path with node:path instead of `new URL()`.
@@ -25,7 +27,7 @@ function stubColorScheme(dark: boolean) {
   }));
 }
 
-const ATTRIBUTES = ['data-theme', 'data-theme-preference', 'data-font-scale', 'data-density', 'data-contrast'];
+const ATTRIBUTES = ['data-theme', 'data-theme-preference', 'data-font-scale', 'data-density', 'data-contrast', 'data-sidebar'];
 
 function snapshotRoot(root: HTMLElement) {
   return { ...Object.fromEntries(ATTRIBUTES.map((name) => [name, root.getAttribute(name)])), colorScheme: root.style.colorScheme };
@@ -39,6 +41,7 @@ function clearRoot(root: HTMLElement, keepServerTheme = false) {
 
 beforeEach(() => {
   resetPreferencesForTests();
+  localStorage.clear();
   clearRoot(document.documentElement);
   vi.unstubAllGlobals();
 });
@@ -60,7 +63,7 @@ describe('preferences-boot.js', () => {
   const cases: Array<[string, string | null, boolean, string | undefined]> = [
     ['nothing stored, light OS', null, false, undefined],
     ['nothing stored, dark OS', null, true, undefined],
-    ['explicit dark', JSON.stringify({ theme: 'dark', fontScale: 'xl', density: 'compact', contrast: 'high' }), false, undefined],
+    ['explicit dark', JSON.stringify({ theme: 'dark', fontScale: 'xl', density: 'compact', contrast: 'high', sidebar: 'collapsed' }), false, undefined],
     ['explicit light on dark OS', JSON.stringify({ theme: 'light' }), true, undefined],
     ['invalid values', JSON.stringify({ theme: 'neon', fontScale: 3, contrast: 'max' }), true, undefined],
     ['corrupt JSON', '{', false, undefined],
@@ -88,6 +91,39 @@ describe('preferences-boot.js', () => {
     // Both paths mirror a valid server theme into storage the same way.
     expect(parsePreferences(mirroredByBoot).theme).toBe(parsePreferences(localStorage.getItem(PREFERENCES_STORAGE_KEY)).theme);
     if (server === 'dark' || server === 'system') expect(parsePreferences(localStorage.getItem(PREFERENCES_STORAGE_KEY)).theme).toBe(server);
+  });
+});
+
+describe('preference storage', () => {
+  const SECRET_LIKE = /token|secret|key|password|csrf|session|owner|email|ws_|sk-/i;
+
+  it('writes only the allowlisted display fields, never extra properties', () => {
+    stubColorScheme(false);
+    const { result } = renderHook(() => usePreferences());
+    // A caller spreading a wider object into the patch must not reach storage.
+    const polluted = { theme: 'dark', csrfToken: 'csrf-fixture', apiKey: 'sk-fixture', ownerId: 'owner-1', workspaceId: 'ws_aaaaaaaaaaaaaaaaaaaaaa' } as unknown as Partial<Preferences>;
+    act(() => result.current[1](polluted));
+    const stored = JSON.parse(localStorage.getItem(PREFERENCES_STORAGE_KEY) ?? '{}') as Record<string, unknown>;
+    expect(Object.keys(stored).sort()).toEqual(['contrast', 'density', 'fontScale', 'sidebar', 'theme']);
+    expect(JSON.stringify(stored)).not.toMatch(SECRET_LIKE);
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index) ?? '';
+      expect(key).not.toMatch(SECRET_LIKE);
+      expect(localStorage.getItem(key) ?? '').not.toMatch(SECRET_LIKE);
+    }
+  });
+
+  it('re-validates values on write', () => {
+    writePreferences({ ...DEFAULT_PREFERENCES, density: 'tiny' } as unknown as Preferences, localStorage);
+    expect(JSON.parse(localStorage.getItem(PREFERENCES_STORAGE_KEY) ?? '{}')).toEqual(DEFAULT_PREFERENCES);
+  });
+
+  it('drops unknown stored fields when the boot script mirrors the server theme', () => {
+    localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify({ theme: 'light', leaked: 'csrf-fixture' }));
+    document.documentElement.setAttribute('data-server-theme', 'dark');
+    stubColorScheme(false);
+    new Function(bootScript)();
+    expect(localStorage.getItem(PREFERENCES_STORAGE_KEY)).not.toContain('csrf-fixture');
   });
 });
 

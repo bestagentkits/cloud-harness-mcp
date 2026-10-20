@@ -44,14 +44,29 @@ npm run test -w @cloud-harness/dashboard
 ```
 
 The Vite dev server proxies `/dashboard/api` to `DASHBOARD_DEV_API_ORIGIN`. The
-Playwright smoke suite builds the API and dashboard, serves them through the
-real Express app with an offline Access verifier, and checks render, theme, CSP,
-and axe results; install its browser once:
+Playwright suites in [`apps/dashboard/e2e/`](../apps/dashboard/e2e/) build the
+API and dashboard, serve them through the real Express app with an offline
+Access verifier, and answer runner-backed reads with `page.route` stubs (the
+test server's runner is unreachable on purpose). They cover render, theme, CSP
+and axe, the navigation transaction (A→B, A→B→C, repeated clicks, slow and
+out-of-order answers, failed reads, reload, Back/Forward, a mutation that
+navigation must not cancel), the 401/403/409/429/5xx states, keyboard-only use,
+reduced motion and what may reach browser storage. Install the browser once:
 
 ```bash
 npx -w @cloud-harness/dashboard playwright install chromium
 npm run test:e2e:dashboard
 ```
+
+Every navigation test runs an identity monitor
+([`e2e/support.ts`](../apps/dashboard/e2e/support.ts)) that samples the document
+title, the page heading, the page frame and the current sidebar entry on each
+animation frame and DOM mutation, and fails on any sample where they disagree.
+The navigation p95 test clicks through fifteen sidebar pages twice after hover
+prefetch has warmed their route chunks. Each sample runs from the click event's
+`timeStamp` to the first animation frame where the page frame and sidebar show
+the target. The test prints the median and p95 and fails if p95 reaches 100 ms.
+It measures the shell commit, not the time for page data to arrive.
 
 The dashboard `build` script ends with
 [`apps/dashboard/scripts/verify-build-output.mjs`](../apps/dashboard/scripts/verify-build-output.mjs),

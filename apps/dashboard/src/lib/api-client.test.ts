@@ -56,17 +56,80 @@ describe('createApiClient', () => {
     expect(header(calls[2], 'x-csrf-token')).toBe('token-1');
   });
 
-  it('drops the CSRF token after a 401 so the next mutation re-bootstraps', async () => {
+  it('re-bootstraps once and resends a mutation the session verifier rejected', async () => {
+    const onSessionEnded = vi.fn();
     const { impl, calls } = fakeFetch(
       json(200, { csrfToken: 't1' }),
-      json(401, { error: 'session_ended', message: 'Session ended.' }),
+      json(401, { error: 'session_ended' }),
       json(200, { csrfToken: 't2' }),
       json(204, undefined)
     );
-    const client = createApiClient(impl);
-    await expect(client.request('/x', { method: 'POST' })).rejects.toBeInstanceOf(UnauthorizedError);
-    await expect(client.request('/x', { method: 'POST' })).resolves.toBeUndefined();
+    const client = createApiClient(impl, { onSessionEnded });
+    await expect(client.request('/x', { method: 'POST', body: { a: 1 } })).resolves.toBeUndefined();
+    expect(calls.map((call) => call.url)).toEqual(['/dashboard/api/v1/session', '/dashboard/api/v1/x', '/dashboard/api/v1/session', '/dashboard/api/v1/x']);
+    expect(header(calls[1], 'x-csrf-token')).toBe('t1');
     expect(header(calls[3], 'x-csrf-token')).toBe('t2');
+    expect(onSessionEnded).not.toHaveBeenCalled();
+  });
+
+  it('retries a session_ended mutation only once, then reports the ended session', async () => {
+    const onSessionEnded = vi.fn();
+    const { impl, calls } = fakeFetch(
+      json(200, { csrfToken: 't1' }),
+      json(401, { error: 'session_ended' }),
+      json(200, { csrfToken: 't2' }),
+      json(401, { error: 'session_ended' }),
+      json(200, { csrfToken: 't3' }),
+      json(204, undefined)
+    );
+    const client = createApiClient(impl, { onSessionEnded });
+    await expect(client.request('/x', { method: 'POST' })).rejects.toBeInstanceOf(UnauthorizedError);
+    expect(calls).toHaveLength(4);
+    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    // The token was dropped, so the next mutation bootstraps a fresh session.
+    await expect(client.request('/x', { method: 'POST' })).resolves.toBeUndefined();
+    expect(header(calls[5], 'x-csrf-token')).toBe('t3');
+  });
+
+  it('never resends a mutation whose 401 is not a session verifier rejection', async () => {
+    const onSessionEnded = vi.fn();
+    const { impl, calls } = fakeFetch(json(200, { csrfToken: 't1' }), json(401, { error: 'access_denied' }));
+    const client = createApiClient(impl, { onSessionEnded });
+    await expect(client.request('/x', { method: 'DELETE' })).rejects.toBeInstanceOf(UnauthorizedError);
+    expect(calls).toHaveLength(2);
+    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a read 401 without retrying it', async () => {
+    const onSessionEnded = vi.fn();
+    const { impl, calls } = fakeFetch(json(401, { error: 'session_ended' }));
+    const client = createApiClient(impl, { onSessionEnded });
+    await expect(client.get('/profile')).rejects.toBeInstanceOf(UnauthorizedError);
+    expect(calls).toHaveLength(1);
+    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an ended session when the bootstrap itself is refused', async () => {
+    const onSessionEnded = vi.fn();
+    const { impl } = fakeFetch(json(401, { error: 'session_ended' }));
+    const client = createApiClient(impl, { onSessionEnded });
+    await expect(client.request('/x', { method: 'PUT' })).rejects.toBeInstanceOf(UnauthorizedError);
+    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+  });
+
+  it('never logs tokens, bodies or errors to the console', async () => {
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) => vi.spyOn(console, method).mockImplementation(() => {}));
+    const { impl } = fakeFetch(
+      json(200, { csrfToken: 'csrf-secret-fixture' }),
+      json(403, { error: 'csrf_failed' }),
+      json(500, { error: 'boom' }),
+      new TypeError('offline')
+    );
+    const client = createApiClient(impl);
+    await expect(client.request('/x', { method: 'POST', body: { apiKey: 'sk-fixture' } })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(client.get('/y')).rejects.toBeInstanceOf(ServerError);
+    await expect(client.get('/z')).rejects.toBeInstanceOf(NetworkError);
+    for (const spy of spies) { expect(spy).not.toHaveBeenCalled(); spy.mockRestore(); }
   });
 
   it.each([

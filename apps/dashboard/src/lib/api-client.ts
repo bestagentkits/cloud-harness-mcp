@@ -7,12 +7,19 @@
  *   kept in memory only (never in storage) and sent as `x-csrf-token` on mutations;
  * - a mutation without a token bootstraps the session first;
  * - a 401 forgets the token so the next mutation bootstraps again;
- * - requests are same-origin with `credentials: 'same-origin'`.
+ * - a mutation answered `401 session_ended` bootstraps once and is sent once more: the
+ *   session verifier rejects it before any handler runs, so the retry cannot repeat a write;
+ * - a 401 that survives that (or any read 401) calls `onSessionEnded`, so the shell can ask
+ *   the operator to reload instead of each page failing on its own;
+ * - requests are same-origin with `credentials: 'same-origin'`;
+ * - nothing is logged: tokens, bodies and server messages never reach the console.
  *
  * Errors are typed by status so callers and the query client can branch without parsing
  * messages. Server messages are already sanitised by the BFF; anything unparseable gets a
  * generic message.
  */
+
+import { markSessionEnded } from './session-state';
 
 export const API_BASE_PATH = '/dashboard/api/v1';
 const GENERIC_MESSAGE = 'The request could not be completed.';
@@ -91,6 +98,10 @@ function isAbort(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { name?: unknown }).name === 'AbortError';
 }
 
+async function isSessionEndedAnswer(response: Response): Promise<boolean> {
+  try { return (await response.json() as { error?: unknown }).error === 'session_ended'; } catch { return false; }
+}
+
 function buildPath(path: string, query: ApiRequestOptions['query']): string {
   if (!path.startsWith('/')) throw new TypeError('API paths must start with "/".');
   const search = new URLSearchParams();
@@ -107,7 +118,12 @@ export type ApiClient = {
   clearSession: () => void;
 };
 
-export function createApiClient(fetchImpl: typeof fetch = (...args) => globalThis.fetch(...args)): ApiClient {
+export type ApiClientOptions = {
+  /** Called once per request whose 401 could not be recovered by a fresh session. */
+  onSessionEnded?: () => void;
+};
+
+export function createApiClient(fetchImpl: typeof fetch = (...args) => globalThis.fetch(...args), clientOptions: ApiClientOptions = {}): ApiClient {
   let csrfToken: string | undefined;
   let pendingSession: Promise<void> | undefined;
 
@@ -132,25 +148,41 @@ export function createApiClient(fetchImpl: typeof fetch = (...args) => globalThi
     return pendingSession;
   }
 
-  async function request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  async function sendWithSession(path: string, options: ApiRequestOptions, retried: boolean): Promise<Response> {
     const method = options.method ?? 'GET';
     const mutation = MUTATIONS.has(method);
-    const url = buildPath(path, options.query);
     if (mutation && !csrfToken) await bootstrapSession(options.signal);
     const headers: Record<string, string> = { accept: 'application/json', ...options.headers };
     if (mutation) {
       headers['content-type'] = 'application/json';
       headers['x-csrf-token'] = csrfToken ?? '';
     }
-    const response = await send(url, {
+    const response = await send(buildPath(path, options.query), {
       method,
       headers,
       ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
       ...(options.signal ? { signal: options.signal } : {})
     });
+    if (response.status !== 401) return response;
+    csrfToken = undefined;
+    if (mutation && !retried && await isSessionEndedAnswer(response.clone())) return sendWithSession(path, options, true);
+    return response;
+  }
+
+  async function request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+    const method = options.method ?? 'GET';
+    let response: Response;
+    try {
+      response = await sendWithSession(path, options, false);
+    } catch (error) {
+      // The bootstrap itself is refused once the Access assertion has ended.
+      if (error instanceof UnauthorizedError) clientOptions.onSessionEnded?.();
+      throw error;
+    }
     if (!response.ok) {
-      if (response.status === 401) csrfToken = undefined;
-      throw await toError(response);
+      const error = await toError(response);
+      if (error instanceof UnauthorizedError) clientOptions.onSessionEnded?.();
+      throw error;
     }
     if (response.status === 204 || method === 'HEAD') return undefined as T;
     return await response.json() as T;
@@ -164,4 +196,4 @@ export function createApiClient(fetchImpl: typeof fetch = (...args) => globalThi
   };
 }
 
-export const apiClient = createApiClient();
+export const apiClient = createApiClient(undefined, { onSessionEnded: markSessionEnded });

@@ -9,9 +9,10 @@
     theme: ['system', 'light', 'dark'],
     fontScale: ['sm', 'md', 'lg', 'xl'],
     density: ['comfortable', 'compact'],
-    contrast: ['standard', 'high']
+    contrast: ['standard', 'high'],
+    sidebar: ['expanded', 'collapsed']
   };
-  var defaults = { theme: 'system', fontScale: 'md', density: 'comfortable', contrast: 'standard' };
+  var defaults = { theme: 'system', fontScale: 'md', density: 'comfortable', contrast: 'standard', sidebar: 'expanded' };
   var stored = {};
   try {
     var parsed = JSON.parse(window.localStorage.getItem('ch-dashboard-preferences') || '{}');
@@ -26,8 +27,10 @@
   var fromServer = allowed.theme.indexOf(serverTheme) !== -1;
   var theme = fromServer ? serverTheme : pick('theme');
   if (fromServer && theme !== stored.theme) {
-    stored.theme = theme;
-    try { window.localStorage.setItem('ch-dashboard-preferences', JSON.stringify(stored)); } catch { /* storage unavailable */ }
+    // Rewrite only the known fields, as writePreferences does.
+    var mirrored = { theme: theme };
+    for (var name in defaults) if (name !== 'theme') mirrored[name] = pick(name);
+    try { window.localStorage.setItem('ch-dashboard-preferences', JSON.stringify(mirrored)); } catch { /* storage unavailable */ }
   }
   var dark = false;
   try { dark = window.matchMedia('(prefers-color-scheme: dark)').matches; } catch { dark = false; }
@@ -37,5 +40,6 @@
   root.setAttribute('data-font-scale', pick('fontScale'));
   root.setAttribute('data-density', pick('density'));
   root.setAttribute('data-contrast', pick('contrast'));
+  root.setAttribute('data-sidebar', pick('sidebar'));
   root.style.colorScheme = resolved;
 })();

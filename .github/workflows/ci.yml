@@ -27,8 +27,9 @@ jobs:
       - run: bash -n worker/clone-helper.sh worker/task-runner.sh worker/shell-runner.sh worker/worker-runner.sh worker/gh-helper.sh deploy/scripts/bootstrap-vps.sh deploy/scripts/deploy-release.sh deploy/scripts/release-runtime.sh deploy/scripts/rollback-release.sh deploy/scripts/deploy-ssh-wrapper.sh deploy/scripts/upgrade-nginx-dashboard.sh
       - run: npm run verify:compose
       - run: npm run verify
-      # `verify` already built the API and the React Dashboard; the smoke drives that build
-      # through the real Express app in Chromium (shell render, theme, axe, CSP).
+      # `verify` already built the API and the React Dashboard; the suites drive that build
+      # through the real Express app in Chromium (shell, navigation transaction, error
+      # states, axe, CSP, browser storage, navigation p95).
       - run: npx -w @cloud-harness/dashboard playwright install --with-deps chromium
       - run: npm run test:e2e -w @cloud-harness/dashboard
       - name: Verify documentation and reference integrity

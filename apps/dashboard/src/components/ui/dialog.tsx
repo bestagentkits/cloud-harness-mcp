@@ -1,6 +1,6 @@
 import { XIcon } from 'lucide-react';
 import { Dialog as DialogPrimitive } from 'radix-ui';
-import type { ComponentProps } from 'react';
+import { type ComponentProps, useRef } from 'react';
 import { cn } from '@/lib/utils';
 
 /**
@@ -30,12 +30,42 @@ function DialogOverlay({ className, ...props }: ComponentProps<typeof DialogPrim
   );
 }
 
-export function DialogContent({ className, children, showCloseButton = true, ...props }: ComponentProps<typeof DialogPrimitive.Content> & { showCloseButton?: boolean }) {
+type AutoFocusHandler = (event: Event) => void;
+
+/**
+ * Radix returns focus only to a `Dialog.Trigger`. Dialogs opened from a shortcut or a button
+ * outside the dialog tree remember the element that was focused as they opened (Radix calls
+ * `onOpenAutoFocus` before it moves focus) and return focus there on close instead.
+ */
+export function useInvokerFocus(onOpenAutoFocus?: AutoFocusHandler, onCloseAutoFocus?: AutoFocusHandler) {
+  const invoker = useRef<HTMLElement | null>(null);
+  return {
+    onOpenAutoFocus: (event: Event) => {
+      // A child with `autoFocus` has already taken focus by now; that is not the invoker.
+      const active = document.activeElement;
+      const content = event.currentTarget instanceof Node ? event.currentTarget : null;
+      invoker.current = active instanceof HTMLElement && !content?.contains(active) ? active : null;
+      onOpenAutoFocus?.(event);
+    },
+    onCloseAutoFocus: (event: Event) => {
+      onCloseAutoFocus?.(event);
+      const target = invoker.current;
+      invoker.current = null;
+      if (event.defaultPrevented || !target || target === document.body || !target.isConnected) return;
+      event.preventDefault();
+      target.focus();
+    }
+  };
+}
+
+export function DialogContent({ className, children, showCloseButton = true, onOpenAutoFocus, onCloseAutoFocus, ...props }: ComponentProps<typeof DialogPrimitive.Content> & { showCloseButton?: boolean }) {
+  const focus = useInvokerFocus(onOpenAutoFocus, onCloseAutoFocus);
   return (
     <DialogPrimitive.Portal>
       <DialogOverlay />
       <DialogPrimitive.Content
         data-slot="dialog-content"
+        {...focus}
         className={cn(
           'fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border bg-popover p-6 text-popover-foreground shadow-lg outline-none sm:max-w-lg',
           'duration-(--motion-base) data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95',

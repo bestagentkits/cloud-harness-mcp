@@ -11,7 +11,8 @@ function watchConsole(page: Page): string[] {
 
 async function expectNoSeriousA11yViolations(page: Page) {
   // Measure settled colours: mid-fade elements blend with the overlay and misreport contrast.
-  await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== 'running'));
+  // Endless loops (skeleton pulse, progress sweep) never settle and do not fade content.
+  await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== 'running' || animation.effect?.getComputedTiming().iterations === Infinity));
   const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
   const serious = results.violations.filter((violation) => violation.impact === 'serious' || violation.impact === 'critical');
   expect(serious.map((violation) => `${violation.id}: ${violation.nodes.map((node) => `${node.target.join(' ')} ${node.failureSummary ?? ''} ${node.html}`).join(', ')}`)).toEqual([]);
@@ -26,7 +27,7 @@ test('renders the shell under a strict per-response CSP', async ({ page }) => {
 
   await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible();
-  await expect(page.getByText('owner@example.test')).toBeVisible();
+  await expect(page.getByTestId('display-name-chip')).toContainText('owner@example.test');
   await expect(page).toHaveTitle('Overview | Cloud Harness');
   const fontFamily = await page.evaluate(() => getComputedStyle(document.body).fontFamily);
   expect(fontFamily).toContain('Geist');
@@ -74,7 +75,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
   test(`has no serious or critical axe violations (${colorScheme})`, async ({ page }) => {
     await page.emulateMedia({ colorScheme });
     await page.goto('/dashboard');
-    await expect(page.getByText('owner@example.test')).toBeVisible();
+    await expect(page.getByTestId('display-name-chip')).toContainText('owner@example.test');
     await expectNoSeriousA11yViolations(page);
     await page.getByRole('button', { name: 'Display preferences' }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
