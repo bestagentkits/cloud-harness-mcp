@@ -397,6 +397,18 @@ export type SkillSourceKind = 'built-in' | 'owner' | 'workspace' | 'repository' 
 export type SkillProvider = 'skills-sh' | 'skillx' | 'git' | 'custom';
 export type SkillRevisionOrigin = 'import' | 'refresh' | 'edit' | 'restore' | 'fork';
 export type SkillImportJobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+const SKILL_IMPORT_ACTIVE_STATES: readonly SkillImportJobState[] = ['queued', 'running'];
+
+/**
+ * A job only ever moves queued -> running -> terminal, so its generation is the step it has reached
+ * rather than a stored counter: every transition a cancel must be fenced against bumps it, and a
+ * progress update inside `running` (which a cancel does not need to see) leaves it alone.
+ */
+export function skillImportJobGeneration(state: SkillImportJobState): number {
+  const index = SKILL_IMPORT_ACTIVE_STATES.indexOf(state);
+  return index === -1 ? SKILL_IMPORT_ACTIVE_STATES.length + 1 : index + 1;
+}
 export type SkillImportSourceKind = 'skills-sh' | 'skillx' | 'git';
 export type SkillTier = 'built-in' | 'owner' | 'workspace' | 'repository';
 
@@ -3029,37 +3041,58 @@ export class StateStore {
     return id;
   }
 
+  /**
+   * Moves a job forward. A worker passes `whileActive` so a write that lost the race with a cancel is
+   * dropped and reported as `false`, instead of tripping the terminal-once trigger on a row it no longer owns.
+   */
   advanceSkillImportJob(input: {
     ownerId: string; id: string; state: SkillImportJobState;
     progressJson?: string; resultJson?: string | null; errorCode?: string | null; skillRevisionId?: string | null;
-  }): void {
+    whileActive?: boolean;
+  }): boolean {
     const now = Date.now();
-    this.database.prepare(`UPDATE skill_import_jobs SET
+    const result = this.database.prepare(`UPDATE skill_import_jobs SET
         state = ?,
         progress_json = COALESCE(?, progress_json),
         result_json = COALESCE(?, result_json),
         error_code = COALESCE(?, error_code),
         skill_revision_id = COALESCE(?, skill_revision_id),
         updated_at = ?
-      WHERE owner_id = ? AND id = ?`)
+      WHERE owner_id = ? AND id = ?${input.whileActive ? " AND state IN ('queued', 'running')" : ''}`)
       .run(input.state, input.progressJson ?? null, input.resultJson ?? null, input.errorCode ?? null,
         input.skillRevisionId ?? null, now, input.ownerId, input.id);
+    return Number(result.changes) > 0;
+  }
+
+  /**
+   * Cancels a job only while it is still at the generation the caller read, in one statement, so a cancel
+   * that raced the worker's own transition cannot land on a state the operator never saw.
+   */
+  cancelSkillImportJob(ownerId: string, id: string, expectedGeneration: number): boolean {
+    const state = SKILL_IMPORT_ACTIVE_STATES[expectedGeneration - 1];
+    if (!state) return false;
+    const result = this.database.prepare(`UPDATE skill_import_jobs SET state = 'cancelled', updated_at = ?
+      WHERE owner_id = ? AND id = ? AND state = ?`)
+      .run(Date.now(), ownerId, id, state);
+    return Number(result.changes) > 0;
   }
 
   getSkillImportJob(ownerId: string, id: string): {
-    id: string; sourceKind: SkillImportSourceKind; sourceRef: string; state: SkillImportJobState;
+    id: string; sourceKind: SkillImportSourceKind; sourceRef: string; state: SkillImportJobState; generation: number;
     progressJson: string; resultJson: string | null; errorCode: string | null;
-    skillRevisionId: string | null; updatedAt: number;
+    skillRevisionId: string | null; createdAt: number; updatedAt: number;
   } | undefined {
     const row = this.database.prepare(`SELECT id, source_kind, source_ref, state, progress_json, result_json,
-      error_code, skill_revision_id, updated_at FROM skill_import_jobs WHERE owner_id = ? AND id = ?`)
+      error_code, skill_revision_id, created_at, updated_at FROM skill_import_jobs WHERE owner_id = ? AND id = ?`)
       .get(ownerId, id) as Record<string, unknown> | undefined;
     if (!row) return undefined;
+    const state = row.state as SkillImportJobState;
     return {
       id: String(row.id), sourceKind: row.source_kind as SkillImportSourceKind, sourceRef: String(row.source_ref),
-      state: row.state as SkillImportJobState, progressJson: String(row.progress_json),
+      state, generation: skillImportJobGeneration(state), progressJson: String(row.progress_json),
       resultJson: (row.result_json as string | null) ?? null, errorCode: (row.error_code as string | null) ?? null,
-      skillRevisionId: (row.skill_revision_id as string | null) ?? null, updatedAt: Number(row.updated_at)
+      skillRevisionId: (row.skill_revision_id as string | null) ?? null,
+      createdAt: Number(row.created_at), updatedAt: Number(row.updated_at)
     };
   }
 

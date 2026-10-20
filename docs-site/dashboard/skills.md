@@ -92,7 +92,11 @@ because a branch name would be refused after the wizard claimed to accept it.
 Starting an import uses the `POST /skill-imports` route, and the job line reports what the job is
 doing rather than a bare state token: progress while it runs, and for a failure the specific remedy,
 including the `CACHE_MISS` case, which has an exact fix. **Retry** starts the same request again from
-whatever the wizard currently holds. **Cancel** stops a job that is still running.
+whatever the wizard currently holds. **Cancel** stops a job that is still queued or running. It is
+fenced on the job state shown on the job line: if the job moved on (it started, or finished) before
+the cancel arrived, the dashboard reports that the import changed instead of cancelling a state you
+did not see, and the next poll shows where it is now. A cancelled import publishes nothing: a fetch
+already in flight finishes in the background, and the import stops at its next step.
 
 ## Skill sets
 
