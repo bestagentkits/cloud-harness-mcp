@@ -1282,8 +1282,9 @@ and [`apps/runner/src/agent-runtime-adapter.ts`](../apps/runner/src/agent-runtim
   work is charged to the continuation's own lease and caps.
 - Continuation is never automatic, as for persisted sessions. A continuation
   of a cancelled agent cancels its unfinished work instead of resuming it.
-  Turning the flag off refuses new durable spawns and continuations; running
-  ones finish.
+  The flag is read at runner start: turning it off takes a runner restart,
+  which stops running agents as any restart does (none resumes on its own),
+  and afterwards new durable spawns and continuations are refused.
 - The store is bounded on disk by `AGENT_DURABLE_MAX_LINEAGE_BYTES`; a run that
   exceeds it ends as `LIMIT_EXCEEDED`. Closing or expiring the workspace deletes
   its lineage databases, and the reaper deletes a lineage's database once
@@ -1306,7 +1307,8 @@ behaviour the model sees):
 - A receipt is the exact tool result text the model received, bounded like any
   tool result. It can hold repository content, including secrets a read
   returned, so result text is stored only for an agent spawned with session
-  persistence, the only case a continuation can replay it, and only up to a
+  persistence or on the durable engine, the only cases a continuation can
+  replay it, and only up to a
   per-lineage byte cap. Every other effect keeps its payload and result hashes
   only. Stored text stays in the runner's state database, is never returned by
   an MCP tool, and has the agent's model lease redacted before it is stored.

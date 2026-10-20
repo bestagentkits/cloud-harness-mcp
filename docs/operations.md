@@ -449,9 +449,16 @@ image. To offer it:
 With the flag on but the default image, each durable run fails at start with an
 error that names the build argument. Lineage databases live in
 `agent-sessions/` beside the state database, are part of runner state, and
-follow its backup; closing a workspace deletes them. To turn the engine off,
-unset the flag and restart the runner: running durable agents finish, and new
-durable spawns and continuations are refused.
+follow its backup; closing a workspace deletes them.
+
+The runner reads the flag only at start, so turning the engine off means
+unsetting it and restarting the runner. That restart treats running agents like
+any other: a clean stop cancels every running agent, durable or not, and an
+agent left behind by an abrupt stop is marked interrupted when the runner comes
+back. Nothing resumes on its own. After the restart, new durable spawns and
+continuations of durable agents are refused with `NOT_SUPPORTED`. Their lineage
+databases stay until the workspace closes or retention purges them, so turning
+the flag back on makes those agents continuable again.
 
 State schema v17 records each agent's engine and whether its run left
 unfinished work. A rollback to a v16 runner needs
