@@ -142,7 +142,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     'AGENT_MAX_SESSION_BYTES',
     'AGENT_SESSION_RETENTION_MS',
     'AGENT_DURABLE_RUNTIME_ENABLED',
-    'AGENT_DURABLE_MAX_LINEAGE_BYTES'
+    'AGENT_DURABLE_MAX_LINEAGE_BYTES',
+    'AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE'
   ].some((name) => process.env[name] !== undefined);
   const config = RunnerConfigSchema.parse({
     authMode: process.env.AUTH_MODE,
@@ -251,7 +252,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
         maxSessionMessages: process.env.AGENT_MAX_SESSION_MESSAGES,
         maxSessionBytes: process.env.AGENT_MAX_SESSION_BYTES,
         sessionRetentionMs: process.env.AGENT_SESSION_RETENTION_MS,
-        maxDurableLineageBytes: process.env.AGENT_DURABLE_MAX_LINEAGE_BYTES
+        maxDurableLineageBytes: process.env.AGENT_DURABLE_MAX_LINEAGE_BYTES,
+        maxReceiptBytesPerLineage: process.env.AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE
       }
     } : undefined
   });

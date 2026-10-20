@@ -1051,11 +1051,14 @@ returns the original outcome instead of acting twice
 behaviour the model sees):
 
 - A receipt is the exact tool result text the model received, bounded like any
-  tool result. It can hold repository content, so it stays in the runner's
-  state database, is never returned by an MCP tool, and has the agent's model
-  lease redacted before it is stored. Receipt content is cleared after the
-  session retention, and the workspace's receipts are deleted when it closes,
-  expires, or is compacted.
+  tool result. It can hold repository content, including secrets a read
+  returned, so result text is stored only for an agent spawned with session
+  persistence, the only case a continuation can replay it, and only up to a
+  per-lineage byte cap. Every other effect keeps its payload and result hashes
+  only. Stored text stays in the runner's state database, is never returned by
+  an MCP tool, and has the agent's model lease redacted before it is stored.
+  Receipt content is cleared after the session retention, and the workspace's
+  receipts are deleted when it closes, expires, or is compacted.
 - The runner never re-issues a mutation on its own. A mutation whose outcome
   was lost is settled by reading workspace state through the same fenced
   executor path, never by repeating it, and an undecidable outcome is reported

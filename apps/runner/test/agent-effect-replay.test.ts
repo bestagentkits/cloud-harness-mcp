@@ -206,7 +206,7 @@ function workspaceRecord(ownerId: string): WorkspaceRecord {
 
 type Runner = { manager: AgentManager; launcher: FakeLauncher; repository: AgentStateRepository };
 
-function setup(now?: () => number) {
+function setup(now?: () => number, agentsConfig = config) {
   const directory = mkdtempSync(join(tmpdir(), 'agent-effect-replay-'));
   directories.push(directory);
   const store = new StateStore(join(directory, 'state.db'));
@@ -217,9 +217,9 @@ function setup(now?: () => number) {
   const runners: Runner[] = [];
   /** Starts a runner process on the shared state database, as a restart would. */
   const runner = (started: boolean): Runner => {
-    const repository = new AgentStateRepository(store.database, config.limits, store.instanceId());
+    const repository = new AgentStateRepository(store.database, agentsConfig.limits, store.instanceId());
     const launcher = new FakeLauncher();
-    const manager = new AgentManager(config, store, {
+    const manager = new AgentManager(agentsConfig, store, {
       repository, launcher, gateway: new FakeGateway(), toolExecutor: fs.executor,
       spendLedger: new ModelSpendLedger(store.database, { log: vi.fn() }), ...(now ? { now } : {})
     });
@@ -670,7 +670,7 @@ describe('outcomes of unanswered tool calls in a continued transcript', () => {
     expect(fs.applied).toEqual([]);
   });
 
-  it('leaves a never-dispatched call, a repeatable read, and a call that does not match its effect without a settled result', async () => {
+  it('leaves a never-dispatched call and a repeatable read unsettled, and refuses a call that does not match its effect', async () => {
     const context = setup();
     const { first, fs, record } = context;
     const agentId = await spawnRunning(context, first, 'outcome-none');
@@ -681,7 +681,7 @@ describe('outcomes of unanswered tool calls in a continued transcript', () => {
     ]);
     first.repository.reserveEffect({
       ownerId: record.ownerId, workspaceId: record.id, agentId, agentGeneration: 1, runnerEpoch: 1,
-      requestId: 'toolu_read', kind: 'files_read', payloadHash: sha256('read'), now: Date.now()
+      requestId: 'toolu_read', kind: 'files_read', payloadHash: sha256(JSON.stringify({ operation: 'files_read', input: { path: 'r.txt' } })), now: Date.now()
     });
     fs.interrupt('files_write', 'before');
     first.launcher.emit(0, { type: 'tool_request', requestId: 'toolu_other', toolCallId: 'toolu_other', operation: 'files_write', input: { path: 'm.txt', content: 'sent' } });
@@ -690,7 +690,8 @@ describe('outcomes of unanswered tool calls in a continued transcript', () => {
     const second = await crashAndRestart(context, agentId);
     await continueAgent(context, second, agentId, 'outcome-none-continue');
     const outcomes = await startOutcomes(second.launcher, 0);
-    expect(outcomes).toEqual([{ toolCallId: 'toolu_other', outcome: 'UNKNOWN', isError: true, text: expect.stringContaining('does not match the dispatched request') }]);
+    expect(outcomes).toEqual([{ toolCallId: 'toolu_other', outcome: 'UNKNOWN', isError: true, text: expect.any(String) }]);
+    expect(JSON.parse(outcomes![0]!.text)).toMatchObject({ ok: false, error: { code: 'CONFLICT', retryable: false } });
     // A transcript that does not match the dispatched payload is never used to observe or settle it.
     expect(fs.executions('files_read')).toBe(0);
     expect(second.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_other', kind: 'files_write' })).toMatchObject({ state: 'UNKNOWN' });
@@ -706,7 +707,7 @@ describe('outcomes of unanswered tool calls in a continued transcript', () => {
     for (const call of calls) {
       first.repository.reserveEffect({
         ownerId: record.ownerId, workspaceId: record.id, agentId, agentGeneration: 1, runnerEpoch: 1,
-        requestId: call.id, kind: 'files_mkdir', payloadHash: sha256(call.id), now: Date.now()
+        requestId: call.id, kind: 'files_mkdir', payloadHash: sha256(JSON.stringify({ operation: 'files_mkdir', input: call.arguments })), now: Date.now()
       });
     }
     const receipt = (text: string) => JSON.stringify({ ok: true, message: text, data: {}, truncated: false });
@@ -723,5 +724,108 @@ describe('outcomes of unanswered tool calls in a continued transcript', () => {
     expect(outcomes[0]!.text).toContain('Inspect the target with a read');
     expect(outcomes[1]!.text).toBe(receipt('leaked [REDACTED]'));
     expect(outcomes[2]!.text).toBe(receipt('made d2'));
+  });
+
+  it('never closes a call with the receipt of another call that reused its provider tool call ID', async () => {
+    const context = setup();
+    const { first, fs } = context;
+    const applied = { path: 'a.txt', content: 'first' };
+    const agentId = await spawnRunning(context, first, 'outcome-reused-id');
+    // The ledger holds an applied write under the request ID that the unanswered call maps to,
+    // but with the payload of a different call.
+    const original = await request(first.launcher, 0, 'toolu_dup', 'files_write', applied);
+    expect(original.body).toMatchObject({ ok: true });
+    await recordToolCall(context, first, 0, agentId, 'toolu_dup', [{ name: 'files_write', arguments: { path: 'a.txt', content: 'second' } }]);
+    const second = await crashAndRestart(context, agentId);
+    await continueAgent(context, second, agentId, 'outcome-reused-id-continue');
+    const outcomes = (await startOutcomes(second.launcher, 0))!;
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.text).not.toBe(original.text);
+    expect(JSON.parse(outcomes[0]!.text)).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(fs.files.get('a.txt')).toBe('first');
+    expect(fs.applied).toEqual(['files_write']);
+  });
+
+  it('reports a delete of a path that never existed and an mkdir of an existing directory as unknown, not applied', async () => {
+    const context = setup();
+    const { first, fs } = context;
+    fs.directories.add('existing');
+    const agentId = await spawnRunning(context, first, 'outcome-unchanged');
+    await recordToolCall(context, first, 0, agentId, 'toolu_del', [
+      { id: 'toolu_del', name: 'files_delete', arguments: { path: 'never.txt' } },
+      { id: 'toolu_mk', name: 'files_mkdir', arguments: { path: 'existing' } }
+    ]);
+    fs.interrupt('files_delete', 'before');
+    first.launcher.emit(0, { type: 'tool_request', requestId: 'toolu_del', toolCallId: 'toolu_del', operation: 'files_delete', input: { path: 'never.txt' } });
+    await vi.waitFor(() => expect(fs.executions('files_delete')).toBe(1));
+    expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_del', kind: 'files_delete' })).toMatchObject({ state: 'DISPATCHED', preEntry: 'absent' });
+    // Tool calls run one at a time, so the mkdir's lost dispatch is recorded directly, as the runner
+    // records it: the directory already existed when it was dispatched.
+    const fence = { ownerId: context.record.ownerId, workspaceId: context.record.id, agentId, agentGeneration: 1, runnerEpoch: 1 };
+    first.repository.reserveEffect({
+      ...fence, requestId: 'toolu_mk', kind: 'files_mkdir', now: Date.now(),
+      payloadHash: sha256(JSON.stringify({ operation: 'files_mkdir', input: { path: 'existing' } }))
+    });
+    expect(first.repository.dispatchEffect({
+      rootAgentId: agentId, requestId: 'toolu_mk', kind: 'files_mkdir', fence, expectedStates: ['INTENT'], preEntry: 'directory', now: Date.now()
+    })).toBe(true);
+    const second = await crashAndRestart(context, agentId);
+    await continueAgent(context, second, agentId, 'outcome-unchanged-continue');
+    const outcomes = (await startOutcomes(second.launcher, 0))!;
+    expect(outcomes.map((outcome) => [outcome.toolCallId, outcome.outcome])).toEqual([['toolu_del', 'UNKNOWN'], ['toolu_mk', 'UNKNOWN']]);
+    for (const outcome of outcomes) expect(JSON.parse(outcome.text)).toMatchObject({ error: { code: 'EFFECT_UNKNOWN' } });
+    expect(fs.applied).toEqual([]);
+  });
+});
+
+describe('stored receipt results', () => {
+  const storedResults = (context: Context) => (context.store.database
+    .prepare('SELECT COUNT(*) AS stored FROM agent_effects WHERE result_json IS NOT NULL')
+    .get() as { stored: number }).stored;
+
+  it('keeps only payload and result hashes for an agent spawned without session persistence', async () => {
+    const context = setup(undefined, RunnerAgentsConfigSchema.parse({ ...config, sessionPersistenceEnabled: false }));
+    const { first, fs, record } = context;
+    fs.files.set('.env', 'SECRET=value');
+    const agentId = await spawnRunning(context, first, 'flags-off-key');
+    const read = await request(first.launcher, 0, 'toolu_env', 'files_read', { path: '.env' });
+    expect(read.body).toMatchObject({ ok: true, data: { content: 'SECRET=value' } });
+    const written = await request(first.launcher, 0, 'toolu_w', 'files_write', { path: 'w.txt', content: 'w' });
+    expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_env', kind: 'files_read' })).toMatchObject({
+      state: 'APPLIED', resultJson: null, resultSha256: sha256(read.text), retainUntil: null
+    });
+    expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_w', kind: 'files_write' })).toMatchObject({
+      state: 'APPLIED', resultJson: null, resultSha256: sha256(written.text)
+    });
+    expect(storedResults(context)).toBe(0);
+    expect(JSON.stringify(context.store.database.prepare('SELECT * FROM agent_effects').all())).not.toContain('SECRET=value');
+    // A redelivered write is still never issued twice.
+    const again = await request(first.launcher, 0, 'toolu_w', 'files_write', { path: 'w.txt', content: 'w' });
+    expect(again.body).toMatchObject({ ok: false, error: { code: 'EFFECT_RECEIPT_UNAVAILABLE' } });
+    expect(fs.applied).toEqual(['files_write']);
+    expect(first.repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('RUNNING');
+  });
+
+  it('stops storing result text once a lineage reaches its receipt byte cap', async () => {
+    const capped = RunnerAgentsConfigSchema.parse({ ...config, limits: { ...config.limits, maxReceiptBytesPerLineage: 1_000 } });
+    const context = setup(undefined, capped);
+    const { first, fs } = context;
+    fs.files.set('a.txt', 'a'.repeat(400));
+    fs.files.set('b.txt', 'b'.repeat(400));
+    const agentId = await spawnRunning(context, first, 'capped-key');
+    const a = await request(first.launcher, 0, 'toolu_a', 'files_read', { path: 'a.txt' });
+    const b = await request(first.launcher, 0, 'toolu_b', 'files_read', { path: 'b.txt' });
+    expect(Buffer.byteLength(a.text) + Buffer.byteLength(b.text)).toBeGreaterThan(1_000);
+    expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_a', kind: 'files_read' })).toMatchObject({ resultJson: a.text });
+    expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_b', kind: 'files_read' })).toMatchObject({
+      resultJson: null, resultSha256: sha256(b.text)
+    });
+    const held = context.store.database.prepare(`SELECT SUM(length(CAST(result_json AS BLOB))) AS bytes FROM agent_effects
+      WHERE root_agent_id=?`).get(agentId) as { bytes: number };
+    expect(held.bytes).toBeLessThanOrEqual(1_000);
+    // Past the cap a repeat behaves as after retention: the read runs again, the stored one replays.
+    expect((await request(first.launcher, 0, 'toolu_b', 'files_read', { path: 'b.txt' })).body).toMatchObject({ replayed: 're-executed' });
+    expect((await request(first.launcher, 0, 'toolu_a', 'files_read', { path: 'a.txt' })).text).toBe(a.text);
+    expect(fs.executions('files_read')).toBe(3);
   });
 });

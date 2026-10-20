@@ -101,7 +101,9 @@ export const RunnerAgentLimitsSchema = z.object({
   sessionRetentionMs: positiveBoundedInteger(31_536_000_000, 604_800_000),
   // On-disk size cap of one durable-runtime lineage's session database. A commit that leaves the
   // database above it ends the run as LIMIT_EXCEEDED, and the lineage accepts no further commit.
-  maxDurableLineageBytes: z.coerce.number().int().min(1_048_576).max(4_294_967_296).default(268_435_456)
+  maxDurableLineageBytes: z.coerce.number().int().min(1_048_576).max(4_294_967_296).default(268_435_456),
+  // Stored tool-result bytes (receipts) one agent lineage may hold; past it only hashes are kept.
+  maxReceiptBytesPerLineage: positiveBoundedInteger(1_073_741_824, 33_554_432)
 }).strict().superRefine((limits, context) => {
   if (limits.minTtlSeconds > limits.maxTtlSeconds) {
     context.addIssue({ code: 'custom', path: ['minTtlSeconds'], message: 'minimum agent TTL cannot exceed maximum agent TTL' });

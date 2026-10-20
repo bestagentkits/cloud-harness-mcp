@@ -23,7 +23,7 @@ const limits = RunnerAgentsConfigSchema.parse({
   }]
 }).limits;
 const RECEIPT_COLUMNS = [
-  'root_agent_id', 'replay_class', 'pre_image_sha256', 'intended_sha256', 'result_sha256', 'result_json',
+  'root_agent_id', 'replay_class', 'pre_image_sha256', 'intended_sha256', 'pre_entry', 'result_sha256', 'result_json',
   'result_reconciled', 'executor_generation', 'workspace_generation', 'retain_until'
 ];
 
@@ -119,6 +119,24 @@ describe('state schema v16', () => {
       expect(schemaVersion(store.database)).toBe(15);
       expect(columns(store.database, 'agent_effects')).not.toContain('result_json');
       expect((store.database.prepare('SELECT count(*) AS count FROM agent_effects').get() as { count: number }).count).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('downgrades without data-loss consent when effects kept only their hashes', () => {
+    const { store } = open();
+    try {
+      const { ownerId, workspaceId, agentId } = persistAgent(store);
+      store.database.prepare(`INSERT INTO agent_effects
+        (owner_id, workspace_id, agent_id, agent_generation, runner_epoch, request_id, kind, payload_hash, state, created_at, updated_at,
+         root_agent_id, result_json, result_sha256, pre_entry)
+        VALUES (?, ?, ?, 1, 1, 'call-1', 'files_delete', ?, 'APPLIED', 1, 1, ?, NULL, ?, 'file')`)
+        .run(ownerId, workspaceId, agentId, 'h'.repeat(64), agentId, 'r'.repeat(64));
+      downgradeStateSchemaToV15(store.database);
+      expect(schemaVersion(store.database)).toBe(15);
+      expect(columns(store.database, 'agent_effects')).not.toContain('pre_entry');
+      expect(store.database.prepare('SELECT payload_hash, state FROM agent_effects').get()).toEqual({ payload_hash: 'h'.repeat(64), state: 'APPLIED' });
     } finally {
       store.close();
     }

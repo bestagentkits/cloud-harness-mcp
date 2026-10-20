@@ -1215,6 +1215,7 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
         ALTER TABLE agent_effects ADD COLUMN replay_class TEXT CHECK(replay_class IN ('read-safe', 'conditional-write', 'destructive'));
         ALTER TABLE agent_effects ADD COLUMN pre_image_sha256 TEXT;
         ALTER TABLE agent_effects ADD COLUMN intended_sha256 TEXT;
+        ALTER TABLE agent_effects ADD COLUMN pre_entry TEXT CHECK(pre_entry IN ('file', 'directory', 'absent'));
         ALTER TABLE agent_effects ADD COLUMN result_sha256 TEXT;
         ALTER TABLE agent_effects ADD COLUMN result_json TEXT;
         ALTER TABLE agent_effects ADD COLUMN result_reconciled INTEGER NOT NULL DEFAULT 0 CHECK(result_reconciled IN (0, 1));
@@ -1274,7 +1275,9 @@ export function downgradeStateSchemaToV16(database: DatabaseSync, allowDataLoss 
 
 /**
  * Effect receipts let a repeated agent tool call return its original result. Dropping them turns
- * every such repeat into an unknown outcome, so it needs explicit consent while any receipt exists.
+ * every such repeat into an unknown outcome, so it needs explicit consent while any stored result
+ * text exists. Effects that kept only hashes (every agent spawned without session persistence)
+ * carry no result to lose and do not block it.
  */
 export function downgradeStateSchemaToV15(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
@@ -1297,6 +1300,7 @@ export function downgradeStateSchemaToV15(database: DatabaseSync, allowDataLoss 
       ALTER TABLE agent_effects DROP COLUMN result_reconciled;
       ALTER TABLE agent_effects DROP COLUMN result_json;
       ALTER TABLE agent_effects DROP COLUMN result_sha256;
+      ALTER TABLE agent_effects DROP COLUMN pre_entry;
       ALTER TABLE agent_effects DROP COLUMN intended_sha256;
       ALTER TABLE agent_effects DROP COLUMN pre_image_sha256;
       ALTER TABLE agent_effects DROP COLUMN replay_class;
