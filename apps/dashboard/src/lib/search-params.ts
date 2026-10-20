@@ -38,6 +38,16 @@ export function cursor(raw: Raw): string | undefined {
 
 export type Compact<T> = { [K in keyof T]?: Exclude<T[K], undefined> };
 
+/**
+ * The return value of a `validateSearch`: every known key, with `undefined` for a value that
+ * failed validation. TanStack Router merges `{ ...rawSearch, ...validated }`, so a key the
+ * validator omits keeps its raw, unvalidated value; an explicit `undefined` overrides it.
+ * Never `compact` a validator's result (compact only what a page passes to `navigate`).
+ */
+export function exact<T extends Record<string, unknown>>(value: T): { [K in keyof T]?: T[K] | undefined } {
+  return value;
+}
+
 /** Drops undefined members so the URL carries only the params that are set (and every param is optional). */
 export function compact<T extends Record<string, unknown>>(value: T): Compact<T> {
   return Object.fromEntries(Object.entries(value).filter(([, member]) => member !== undefined)) as Compact<T>;

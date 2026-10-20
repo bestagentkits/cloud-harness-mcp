@@ -4,7 +4,7 @@ import type { CockpitSearch } from '@/features/workspace-cockpit/cockpit-tab-reg
 import { RUNTIME_ID_PATTERN } from '@/features/workspace-cockpit/runtime-model';
 import { WorkspaceCockpit } from '@/features/workspace-cockpit/workspace-cockpit';
 import { warmPageRead } from '@/lib/page-read';
-import { compact, flag, matching, text } from '@/lib/search-params';
+import { compact, exact, flag, matching, text } from '@/lib/search-params';
 
 /** `summary` is the bare workspace URL; every other cockpit tab is a path segment. */
 function isTab(value: string): value is Exclude<WorkspaceTab, 'summary'> {
@@ -18,7 +18,7 @@ export const Route = createFileRoute('/workspaces/$workspaceId/$tab')({
   },
   // Files: `path` (directory) and `file` (open file); Git: `staged` (show the staged diff);
   // Runtime: `task` (the task whose output is open).
-  validateSearch: (raw: Record<string, unknown>) => compact({
+  validateSearch: (raw: Record<string, unknown>) => exact({
     path: text(raw, 'path', 1_024),
     file: text(raw, 'file', 1_024),
     staged: flag(raw, 'staged'),
