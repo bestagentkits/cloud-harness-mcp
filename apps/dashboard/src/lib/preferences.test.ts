@@ -31,8 +31,9 @@ function snapshotRoot(root: HTMLElement) {
   return { ...Object.fromEntries(ATTRIBUTES.map((name) => [name, root.getAttribute(name)])), colorScheme: root.style.colorScheme };
 }
 
-function clearRoot(root: HTMLElement) {
+function clearRoot(root: HTMLElement, keepServerTheme = false) {
   for (const name of ATTRIBUTES) root.removeAttribute(name);
+  if (!keepServerTheme) root.removeAttribute('data-server-theme');
   root.style.colorScheme = '';
 }
 
@@ -56,27 +57,37 @@ describe('parsePreferences', () => {
 });
 
 describe('preferences-boot.js', () => {
-  const cases: Array<[string, string | null, boolean]> = [
-    ['nothing stored, light OS', null, false],
-    ['nothing stored, dark OS', null, true],
-    ['explicit dark', JSON.stringify({ theme: 'dark', fontScale: 'xl', density: 'compact', contrast: 'high' }), false],
-    ['explicit light on dark OS', JSON.stringify({ theme: 'light' }), true],
-    ['invalid values', JSON.stringify({ theme: 'neon', fontScale: 3, contrast: 'max' }), true],
-    ['corrupt JSON', '{', false]
+  const cases: Array<[string, string | null, boolean, string | undefined]> = [
+    ['nothing stored, light OS', null, false, undefined],
+    ['nothing stored, dark OS', null, true, undefined],
+    ['explicit dark', JSON.stringify({ theme: 'dark', fontScale: 'xl', density: 'compact', contrast: 'high' }), false, undefined],
+    ['explicit light on dark OS', JSON.stringify({ theme: 'light' }), true, undefined],
+    ['invalid values', JSON.stringify({ theme: 'neon', fontScale: 3, contrast: 'max' }), true, undefined],
+    ['corrupt JSON', '{', false, undefined],
+    ['server dark overrides stored light', JSON.stringify({ theme: 'light', density: 'compact' }), false, 'dark'],
+    ['server system overrides stored dark', JSON.stringify({ theme: 'dark' }), false, 'system'],
+    ['invalid server theme falls back to storage', JSON.stringify({ theme: 'dark' }), false, 'neon']
   ];
 
-  it.each(cases)('matches applyPreferences for %s', (_label, stored, dark) => {
+  it.each(cases)('matches applyPreferences for %s', (_label, stored, dark, server) => {
     stubColorScheme(dark);
     if (stored === null) localStorage.removeItem(PREFERENCES_STORAGE_KEY);
     else localStorage.setItem(PREFERENCES_STORAGE_KEY, stored);
     const root = document.documentElement;
+    if (server !== undefined) root.setAttribute('data-server-theme', server);
 
     new Function(bootScript)();
     const fromBoot = snapshotRoot(root);
-    clearRoot(root);
-    applyPreferences(readPreferences(), root, dark);
+    const mirroredByBoot = localStorage.getItem(PREFERENCES_STORAGE_KEY);
+    clearRoot(root, true);
+    if (stored === null) localStorage.removeItem(PREFERENCES_STORAGE_KEY);
+    else localStorage.setItem(PREFERENCES_STORAGE_KEY, stored);
+    applyPreferences(readPreferences(localStorage, root), root, dark);
 
     expect(fromBoot).toEqual(snapshotRoot(root));
+    // Both paths mirror a valid server theme into storage the same way.
+    expect(parsePreferences(mirroredByBoot).theme).toBe(parsePreferences(localStorage.getItem(PREFERENCES_STORAGE_KEY)).theme);
+    if (server === 'dark' || server === 'system') expect(parsePreferences(localStorage.getItem(PREFERENCES_STORAGE_KEY)).theme).toBe(server);
   });
 });
 

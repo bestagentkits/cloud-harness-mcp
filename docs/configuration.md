@@ -49,18 +49,31 @@ paths are [`apps/api/src/auth.ts`](../apps/api/src/auth.ts) and
 `CLOUD_HARNESS_DASHBOARD_UI` selects which dashboard `/dashboard` serves in
 `cloudflare-access` mode: `legacy` (the default when unset) or `react`, the
 rebuilt app in `apps/dashboard`. The flag exists so the React app can ship dark
-and be rolled back with a restart; with `legacy` and no canary cookie the API
-answers byte-for-byte as before. `GET /dashboard?ui=react|legacy` pins one
-browser to either UI through an `HttpOnly`, `Secure`, `SameSite=Strict` cookie
-and redirects to the clean URL, so an operator can canary the React app without
-changing the instance. The React shell keeps the same Host, Origin, Access, and
-CSRF boundary and adds only a per-response style nonce and `font-src 'self'` to
-its CSP. The API validates the build's Vite manifest at startup: a missing or
-invalid build fails startup under `react`, and under `legacy` it disables the
-canary with one warning while legacy keeps serving. Only the React routes the
-API allowlists answer 200; other Dashboard navigations get a 404 rendered by the
-React not-found page, and the BFF, OAuth callback, assets, and MCP routes are
-never answered by the shell. Owners:
+and be rolled back by recreating only the `api` container
+([deployment](deployment.md#rollback-or-disable-the-route)); with `legacy` and no canary cookie the API
+answers byte-for-byte as before. Appending `?ui=react` or `?ui=legacy` to any
+Dashboard page pins one browser to that UI through an `HttpOnly`, `Secure`,
+`SameSite=Strict` cookie and redirects back to the same page without the
+parameter, so an operator can canary the React app without changing the
+instance.
+
+Do not set `react` for the whole instance until the React app reaches parity
+(phase P6 of the rollout): deep links the BFF generates and the OAuth callback's
+redirect targets still point at legacy pages the React app does not route yet,
+so they would land on its 404 page. Use the per-browser canary until then.
+
+The React shell keeps the same Host, Origin, Access, and CSRF boundary and adds
+only a per-response style nonce and `font-src 'self'` to its CSP
+([security model](security-model.md#dashboard-20-react-shell)). Both shells
+render the `ch-dashboard-theme` cookie, set by the Dashboard preferences API,
+before first paint; browser storage only mirrors it. The API validates the
+build's Vite manifest at startup and logs one line naming the shell mode and
+the canary state (`enabled`, `disabled` when no build is shipped, or
+`disabled-invalid-manifest`): an invalid build fails startup under `react`,
+and under `legacy` it disables the canary while legacy keeps serving. Only the
+React routes the API allowlists answer 200; other Dashboard navigations get a
+404 rendered by the React not-found page, and the BFF, OAuth callback, assets,
+and MCP routes are never answered by the shell. Owners:
 [`apps/api/src/dashboard-react-assets.ts`](../apps/api/src/dashboard-react-assets.ts)
 and [`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts).
 

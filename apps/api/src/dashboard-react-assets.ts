@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { Router, type Request, type Response } from 'express';
 import type { ApiConfig } from '@cloud-harness/contracts';
 import { acceptsHtml } from './auth.js';
-import { DASHBOARD_COMPAT_REDIRECTS } from './dashboard-assets.js';
+import { DASHBOARD_COMPAT_REDIRECTS, forcedTheme } from './dashboard-assets.js';
 import { reactShellContentSecurityPolicy } from './dashboard-security.js';
 import { apiLogger } from './logging.js';
 
@@ -16,6 +16,8 @@ export const DEFAULT_DASHBOARD_REACT_DIRECTORY = fileURLToPath(new URL('../../da
 const NONCE_PLACEHOLDER = '__CH_CSP_NONCE__';
 export const DASHBOARD_UI_COOKIE = 'ch-dashboard-ui';
 const UI_MODES = new Set(['legacy', 'react']);
+/** The theme cookie is rendered onto this tag before first paint, as in the legacy shell. */
+const HTML_OPEN = '<html lang="en">';
 const HASHED_ASSET = /^[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8}\.(?:js|css|woff2)$/;
 const PUBLIC_FILE = /^[a-z0-9][a-z0-9-]*\.js$/;
 const COMPAT_REDIRECT_PATHS = new Set(Object.keys(DASHBOARD_COMPAT_REDIRECTS).map((path) => path.slice('/dashboard'.length)));
@@ -31,28 +33,28 @@ export const DASHBOARD_REACT_ROUTES: readonly string[] = ['/'];
 export type DashboardReactBundle = {
   /** `index.html` with the nonce placeholder still in place. */
   indexHtml: string;
-  /** Content-hashed file name -> absolute path, taken from the Vite manifest. Requests only ever look names up here. */
-  assets: ReadonlyMap<string, string>;
+  /** The build directory; public files are served relative to it. */
+  directory: string;
+  /** Content-hashed file names under `assets/`, taken from the Vite manifest. Requests only ever look names up here. */
+  assets: ReadonlySet<string>;
   /** Unhashed top-level files from `public/` (the pre-paint preferences script). */
-  publicFiles: ReadonlyMap<string, string>;
+  publicFiles: ReadonlySet<string>;
 };
 
-/** A usable build, or why the React shell cannot be offered. */
+/**
+ * A usable build, or why the React shell cannot be offered. `absent` means no build was
+ * shipped at all (a legacy-only deployment), as opposed to a broken one.
+ */
 export type DashboardReactBundleResult =
-  | { bundle: DashboardReactBundle; problem?: undefined }
-  | { bundle?: undefined; problem: string };
+  | { bundle: DashboardReactBundle; problem?: undefined; absent?: undefined }
+  | { bundle?: undefined; problem: string; absent: boolean };
 
 function isRegularFile(path: string): boolean {
   return existsSync(path) && statSync(path).isFile();
 }
 
-function publicFiles(directory: string): Map<string, string> {
-  const files = new Map<string, string>();
-  for (const name of readdirSync(directory)) {
-    const path = join(directory, name);
-    if (PUBLIC_FILE.test(name) && isRegularFile(path)) files.set(name, path);
-  }
-  return files;
+function publicFiles(directory: string): Set<string> {
+  return new Set(readdirSync(directory).filter((name) => PUBLIC_FILE.test(name) && isRegularFile(join(directory, name))));
 }
 
 type ManifestChunk = { file?: unknown; isEntry?: unknown; css?: unknown; assets?: unknown };
@@ -71,33 +73,38 @@ function chunkFiles(chunk: ManifestChunk): unknown[] {
 export function loadDashboardReactBundle(directory = DEFAULT_DASHBOARD_REACT_DIRECTORY): DashboardReactBundleResult {
   const indexPath = join(directory, 'index.html');
   const manifestPath = join(directory, '.vite', 'manifest.json');
-  if (!isRegularFile(indexPath)) return { problem: `${indexPath} is missing` };
-  if (!isRegularFile(manifestPath)) return { problem: `${manifestPath} is missing` };
+  const hasIndex = isRegularFile(indexPath);
+  const hasManifest = isRegularFile(manifestPath);
+  if (!hasIndex) return { problem: `${indexPath} is missing`, absent: !hasManifest };
+  const invalid = (problem: string) => ({ problem, absent: false });
+  if (!hasManifest) return invalid(`${manifestPath} is missing`);
   let manifest: unknown;
   try {
     manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   } catch {
-    return { problem: `${manifestPath} is not valid JSON` };
+    return invalid(`${manifestPath} is not valid JSON`);
   }
-  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return { problem: `${manifestPath} is not a manifest object` };
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return invalid(`${manifestPath} is not a manifest object`);
   const chunks = Object.values(manifest as Record<string, ManifestChunk>);
   const entry = (manifest as Record<string, ManifestChunk>)['index.html'];
-  if (!entry || entry.isEntry !== true || typeof entry.file !== 'string') return { problem: `${manifestPath} has no index.html entry` };
+  if (!entry || entry.isEntry !== true || typeof entry.file !== 'string') return invalid(`${manifestPath} has no index.html entry`);
 
-  const assets = new Map<string, string>();
+  const assets = new Set<string>();
   for (const chunk of chunks) {
-    if (!chunk || typeof chunk !== 'object') return { problem: `${manifestPath} has a malformed chunk` };
+    if (!chunk || typeof chunk !== 'object') return invalid(`${manifestPath} has a malformed chunk`);
     for (const file of chunkFiles(chunk)) {
       const name = typeof file === 'string' && file.startsWith('assets/') ? file.slice('assets/'.length) : '';
-      const path = join(directory, 'assets', name);
-      if (!HASHED_ASSET.test(name) || !isRegularFile(path)) return { problem: `${manifestPath} references an invalid or missing asset ${String(file)}` };
-      assets.set(name, path);
+      if (!HASHED_ASSET.test(name) || !isRegularFile(join(directory, 'assets', name))) {
+        return invalid(`${manifestPath} references an invalid or missing asset ${String(file)}`);
+      }
+      assets.add(name);
     }
   }
   const indexHtml = readFileSync(indexPath, 'utf8');
-  if (!indexHtml.includes(NONCE_PLACEHOLDER)) return { problem: `${indexPath} is missing the CSP nonce placeholder` };
-  if (!indexHtml.includes(`/dashboard/${entry.file}`)) return { problem: `${indexPath} does not load the manifest entry ${entry.file}` };
-  return { bundle: { indexHtml, assets, publicFiles: publicFiles(directory) } };
+  if (!indexHtml.includes(NONCE_PLACEHOLDER)) return invalid(`${indexPath} is missing the CSP nonce placeholder`);
+  if (!indexHtml.includes(HTML_OPEN)) return invalid(`${indexPath} does not open with ${HTML_OPEN}`);
+  if (!indexHtml.includes(`/dashboard/${entry.file}`)) return invalid(`${indexPath} does not load the manifest entry ${entry.file}`);
+  return { bundle: { indexHtml, directory, assets, publicFiles: publicFiles(directory) } };
 }
 
 function cookieValue(request: Request, name: string): string | undefined {
@@ -139,7 +146,14 @@ function isDocumentNavigation(request: Request): boolean {
 
 function sendShell(request: Request, response: Response, bundle: DashboardReactBundle, status: number): void {
   const nonce = randomBytes(16).toString('base64');
-  const body = bundle.indexHtml.replaceAll(NONCE_PLACEHOLDER, nonce);
+  // The HTTP-only theme cookie is the theme's authority in both shells: render it before
+  // first paint. `data-server-theme` tells the boot script the server's choice, including
+  // `system`, so localStorage only mirrors it. The value is one of three constants.
+  const theme = forcedTheme(request);
+  const html = theme
+    ? `<html lang="en" data-server-theme="${theme}" data-theme="${theme}">`
+    : '<html lang="en" data-server-theme="system">';
+  const body = bundle.indexHtml.replace(HTML_OPEN, html).replaceAll(NONCE_PLACEHOLDER, nonce);
   response.setHeader('Content-Security-Policy', reactShellContentSecurityPolicy(nonce));
   // Never stored, like the legacy shell, so a deploy is picked up at once; the nonce makes
   // each body unique, so no ETag is sent.
@@ -157,50 +171,54 @@ function sendShell(request: Request, response: Response, bundle: DashboardReactB
  * legacy Dashboard stays byte-identical. An unusable build fails startup when the flag is
  * `react`; otherwise it disables the canary with one log line and legacy keeps serving.
  */
-export function createDashboardReactRouter(
-  config: ApiConfig,
-  loaded: DashboardReactBundleResult,
-  warn: (message: string, problem: string) => void = (message, problem) => { apiLogger.warn({ problem }, message); }
-): Router {
+export function createDashboardReactRouter(config: ApiConfig, loaded: DashboardReactBundleResult): Router {
   const router = Router();
+  const shell = config.dashboardUi ?? 'legacy';
   const { bundle } = loaded;
   if (!bundle) {
-    if (config.dashboardUi === 'react') {
+    if (shell === 'react') {
       throw new Error(`CLOUD_HARNESS_DASHBOARD_UI=react requires a valid React Dashboard build (apps/dashboard/dist): ${loaded.problem}`);
     }
-    warn('React Dashboard unavailable; ?ui= canary disabled and the legacy Dashboard keeps serving', loaded.problem);
+    if (loaded.absent) apiLogger.info({ shell, canary: 'disabled' }, 'dashboard shell selected; no React build shipped');
+    else apiLogger.warn({ shell, canary: 'disabled-invalid-manifest', problem: loaded.problem }, 'dashboard shell selected; React build invalid, canary disabled');
     return router;
   }
-  const defaultMode = config.dashboardUi ?? 'legacy';
-  const immutable = { 'Cache-Control': 'private, max-age=31536000, immutable' };
-  const revalidate = { 'Cache-Control': 'private, no-cache' };
-
-  // Canary: `/dashboard?ui=react|legacy` pins this browser to one UI, then redirects to
-  // the clean URL so the choice is not bookmarked or shared. The destination is a constant
-  // path plus the request's other query parameters; no request value can change the target.
-  router.get('/', (request, response, next) => {
-    const requested = request.query.ui;
-    if (typeof requested !== 'string' || !UI_MODES.has(requested)) { next(); return; }
-    const query = new URLSearchParams(request.originalUrl.slice(request.originalUrl.indexOf('?') + 1));
-    query.delete('ui');
-    const rest = query.toString();
-    response.setHeader('Set-Cookie', `${DASHBOARD_UI_COOKIE}=${requested}; Path=/dashboard; HttpOnly; Secure; SameSite=Strict`);
-    response.redirect(302, `/dashboard${rest ? `?${rest}` : ''}`);
-  });
+  apiLogger.info({ shell, canary: 'enabled' }, 'dashboard shell selected');
+  const assetsDirectory = join(bundle.directory, 'assets');
+  // `root` keeps the served path relative, so a build that lives under a dot-directory
+  // (a worktree under `.claude/`, say) is not refused by send's dotfile rule.
+  const immutable = { root: assetsDirectory, headers: { 'Cache-Control': 'private, max-age=31536000, immutable' } };
+  const revalidate = { root: bundle.directory, headers: { 'Cache-Control': 'private, no-cache' } };
 
   router.use((request, response, next) => {
-    const pinned = cookieValue(request, DASHBOARD_UI_COOKIE);
-    const mode = pinned && UI_MODES.has(pinned) ? pinned : defaultMode;
-    if (mode !== 'react' || (request.method !== 'GET' && request.method !== 'HEAD')) { next(); return; }
-
+    if (request.method !== 'GET' && request.method !== 'HEAD') { next(); return; }
     const path = request.path;
+
+    // Canary: `?ui=react|legacy` on any Dashboard page pins this browser to one UI, then
+    // redirects to the same path without the parameter so the choice is not bookmarked or
+    // shared. The target is `/dashboard` plus the request's own path and remaining query;
+    // no request value can leave the Dashboard. BFF, OAuth and asset paths ignore it.
+    const requested = request.query.ui;
+    if (typeof requested === 'string' && UI_MODES.has(requested) && !isExcludedFromFallback(path)) {
+      const query = new URLSearchParams(request.originalUrl.slice(request.originalUrl.indexOf('?') + 1));
+      query.delete('ui');
+      const rest = query.toString();
+      response.append('Set-Cookie', `${DASHBOARD_UI_COOKIE}=${requested}; Path=/dashboard; HttpOnly; Secure; SameSite=Strict`);
+      response.redirect(302, `/dashboard${path === '/' ? '' : path}${rest ? `?${rest}` : ''}`);
+      return;
+    }
+
+    const pinned = cookieValue(request, DASHBOARD_UI_COOKIE);
+    const mode = pinned && UI_MODES.has(pinned) ? pinned : shell;
+    if (mode !== 'react') { next(); return; }
+
     if (path.startsWith('/assets/')) {
-      const asset = bundle.assets.get(path.slice('/assets/'.length));
-      if (asset) { response.sendFile(asset, { headers: immutable }); return; }
+      const name = path.slice('/assets/'.length);
+      if (bundle.assets.has(name)) { response.sendFile(name, immutable); return; }
       next(); return;
     }
-    const publicFile = path.lastIndexOf('/') === 0 ? bundle.publicFiles.get(path.slice(1)) : undefined;
-    if (publicFile) { response.sendFile(publicFile, { headers: revalidate }); return; }
+    const publicName = path.lastIndexOf('/') === 0 ? path.slice(1) : '';
+    if (bundle.publicFiles.has(publicName)) { response.sendFile(publicName, revalidate); return; }
     if (isExcludedFromFallback(path)) { next(); return; }
     // The React app owns every other GET under /dashboard: legacy page paths must not
     // render the legacy shell inside a React session.

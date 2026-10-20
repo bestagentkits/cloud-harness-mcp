@@ -2,7 +2,10 @@ import { useSyncExternalStore } from 'react';
 
 /**
  * Display preferences: theme, text size, density and contrast. They are non-secret UI
- * settings kept in `localStorage` only; nothing identifying or sensitive is stored here.
+ * settings; nothing identifying or sensitive is stored here. Text size, density and
+ * contrast live in `localStorage` only. The theme's authority is the HTTP-only
+ * `ch-dashboard-theme` cookie (set through the BFF preferences endpoint), which the API
+ * renders on `<html data-server-theme>` before first paint; `localStorage` mirrors it.
  *
  * `public/preferences-boot.js` applies the same attributes before first paint (a classic
  * blocking script, because the CSP forbids inline script). It duplicates the parsing below
@@ -62,8 +65,20 @@ function browserStorage(): Storage | undefined {
   try { return globalThis.localStorage; } catch { return undefined; }
 }
 
-export function readPreferences(storage: Storage | undefined = browserStorage()): Preferences {
-  try { return parsePreferences(storage?.getItem(PREFERENCES_STORAGE_KEY)); } catch { return { ...DEFAULT_PREFERENCES }; }
+/** The theme the API rendered from the cookie, if this document came from the API. */
+export function serverTheme(root: HTMLElement | undefined = globalThis.document?.documentElement): ThemePreference | undefined {
+  const value = root?.dataset.serverTheme;
+  return value !== undefined && (THEMES as readonly string[]).includes(value) ? (value as ThemePreference) : undefined;
+}
+
+export function readPreferences(storage: Storage | undefined = browserStorage(), root?: HTMLElement): Preferences {
+  let stored: Preferences;
+  try { stored = parsePreferences(storage?.getItem(PREFERENCES_STORAGE_KEY)); } catch { stored = { ...DEFAULT_PREFERENCES }; }
+  const theme = serverTheme(root);
+  if (theme === undefined || theme === stored.theme) return stored;
+  const mirrored = { ...stored, theme };
+  writePreferences(mirrored, storage);
+  return mirrored;
 }
 
 export function writePreferences(preferences: Preferences, storage: Storage | undefined = browserStorage()): void {

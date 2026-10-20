@@ -21,9 +21,13 @@ function renderAt(path: string) {
 beforeEach(() => {
   resetPreferencesForTests();
   vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query, addEventListener: () => {}, removeEventListener: () => {} }));
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
-    data: { identity: { issuer: 'https://team.example', subject: 's', email: 'owner@example.test' }, preferences: { displayName: 'Owner' }, sessionExpiresAt: null }
-  }), { status: 200, headers: { 'content-type': 'application/json' } })));
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.endsWith('/session')) return Response.json({ csrfToken: 'csrf-fixture' });
+    if (url.endsWith('/preferences')) return Response.json({ data: {} });
+    return Response.json({
+      data: { identity: { issuer: 'https://team.example', subject: 's', email: 'owner@example.test' }, preferences: { displayName: 'Owner' }, sessionExpiresAt: null }
+    });
+  }));
 });
 
 describe('AppShell', () => {
@@ -46,6 +50,12 @@ describe('AppShell', () => {
     await user.click(dark);
     expect(dark).toHaveAttribute('aria-pressed', 'true');
     expect(document.documentElement.dataset.theme).toBe('dark');
+    // Saved server-side (HTTP-only cookie) with the CSRF header, so the next load paints it first.
+    await vi.waitFor(() => expect(document.documentElement.dataset.serverTheme).toBe('dark'));
+    const put = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'PUT');
+    expect(put?.[0]).toBe('/dashboard/api/v1/preferences');
+    expect(put?.[1]?.body).toBe(JSON.stringify({ theme: 'dark' }));
+    expect((put?.[1]?.headers as Record<string, string>)['x-csrf-token']).toBe('csrf-fixture');
   });
 
   it('opens display preferences and applies density', async () => {
@@ -60,6 +70,8 @@ describe('AppShell', () => {
   it('renders the 404 page for unknown routes', async () => {
     renderAt('/dashboard/does-not-exist');
     expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open classic Dashboard' })).toHaveAttribute('href', '/dashboard?ui=legacy');
+    // The classic link keeps the current path; the server redirects back to it.
+    expect(screen.getByRole('link', { name: 'Open classic Dashboard' })).toHaveAttribute('href', '/dashboard/does-not-exist?ui=legacy');
+    expect(screen.getByRole('link', { name: 'Use classic Dashboard' })).toHaveAttribute('href', '/dashboard/does-not-exist?ui=legacy');
   });
 });

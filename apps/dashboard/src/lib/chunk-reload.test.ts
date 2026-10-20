@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { installChunkReload, isChunkLoadError, reloadOnceForChunkError } from './chunk-reload';
+import { isChunkLoadError, reloadOnceForChunkError } from './chunk-reload';
 
 function memoryStorage() {
   const values = new Map<string, string>();
-  return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
 }
+
+const MISSING = new Error('Failed to fetch dynamically imported module: https://h/dashboard/assets/index-AbCdEf12.js');
 
 describe('chunk reload guard', () => {
   it('recognises chunk load failures from each browser engine', () => {
@@ -21,31 +23,28 @@ describe('chunk reload guard', () => {
   it('reloads once per build and never loops', () => {
     const storage = memoryStorage();
     const reload = vi.fn();
-    expect(reloadOnceForChunkError({ build: 'build-a', storage, reload })).toBe(true);
-    expect(reloadOnceForChunkError({ build: 'build-a', storage, reload })).toBe(false);
+    expect(reloadOnceForChunkError(MISSING, { build: 'build-a', storage, reload })).toBe(true);
+    expect(reloadOnceForChunkError(new Error('Unable to preload CSS for x'), { build: 'build-a', storage, reload })).toBe(false);
     expect(reload).toHaveBeenCalledTimes(1);
-    // A newer deploy may legitimately need its own reload.
-    expect(reloadOnceForChunkError({ build: 'build-b', storage, reload })).toBe(true);
-    expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares the guard with TanStack lazy-route reloads in both directions', () => {
+    // TanStack already reloaded for this error: the error page must not reload again.
+    const afterRouter = memoryStorage();
+    afterRouter.setItem(`tanstack_router_reload:${MISSING.message}`, '1');
+    const reload = vi.fn();
+    expect(reloadOnceForChunkError(MISSING, { build: 'build-b', storage: afterRouter, reload })).toBe(false);
+    expect(reload).not.toHaveBeenCalled();
+    // The error page reloaded first: TanStack's key is set so it will not reload either.
+    const first = memoryStorage();
+    expect(reloadOnceForChunkError(MISSING, { build: 'build-b', storage: first, reload })).toBe(true);
+    expect(first.values.get(`tanstack_router_reload:${MISSING.message}`)).toBe('1');
   });
 
   it('does not reload when the guard cannot be stored', () => {
     const reload = vi.fn();
     const storage = { getItem: () => null, setItem: () => { throw new Error('quota'); } };
-    expect(reloadOnceForChunkError({ build: 'build-a', storage, reload })).toBe(false);
+    expect(reloadOnceForChunkError(MISSING, { build: 'build-a', storage, reload })).toBe(false);
     expect(reload).not.toHaveBeenCalled();
-  });
-
-  it('handles vite:preloadError once and lets a repeat failure surface', () => {
-    const storage = memoryStorage();
-    const reload = vi.fn();
-    installChunkReload(window, { build: 'build-c', storage, reload });
-    const first = new Event('vite:preloadError', { cancelable: true });
-    window.dispatchEvent(first);
-    expect(first.defaultPrevented).toBe(true);
-    const second = new Event('vite:preloadError', { cancelable: true });
-    window.dispatchEvent(second);
-    expect(second.defaultPrevented).toBe(false);
-    expect(reload).toHaveBeenCalledTimes(1);
   });
 });

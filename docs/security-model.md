@@ -692,7 +692,8 @@ the boundary it keeps.
 - **Browser posture.** The emulator is the vendored `@xterm/xterm` and
   `@xterm/addon-fit`, served same-origin from an explicit allow-list in
   [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts)
-  from the pinned dependency, never from a CDN. The dashboard CSP is unchanged.
+  from the pinned dependency, never from a CDN. The legacy dashboard CSP is
+  unchanged.
   xterm writes styles from script, which `style-src 'self'` blocks, so
   [`apps/api/dashboard/dashboard-terminal.js`](../apps/api/dashboard/dashboard-terminal.js)
   installs a CSSOM adapter that turns script-created `<style>` elements and
@@ -700,6 +701,36 @@ the boundary it keeps.
   Markup-delivered styles stay blocked and no nonce or `'unsafe-inline'` is
   introduced. The asset confinement is asserted by
   [`apps/api/test/dashboard-ui-contract.test.ts`](../apps/api/test/dashboard-ui-contract.test.ts).
+
+### Dashboard 2.0 React shell
+
+The React Dashboard ([ADR 0005](adr/0005-dashboard-react-rewrite.md)) is served
+by the API under `/dashboard`, behind the same Host, Origin, Access, and CSRF
+boundary as the legacy shell; it adds no route outside `/dashboard` and no host
+mount. Its CSP differs from the legacy one in exactly two directives:
+
+- **Per-response style nonce.** Every shell response carries a fresh random
+  nonce in `style-src 'self' 'nonce-…'`, because Radix and the router inject
+  runtime `<style>` elements that `style-src 'self'` alone would block. The
+  nonce applies only to styles: `script-src` stays `'self'` with no nonce, no
+  hash, and no `'unsafe-inline'`, and the shell is `no-store` so a nonce is
+  never replayed from a cache.
+- **`font-src 'self'`.** Geist is self-hosted from hashed same-origin assets;
+  no external font or CDN host is allowed.
+
+Both are built by `reactShellContentSecurityPolicy` in
+[`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts)
+and applied in
+[`apps/api/src/dashboard-react-assets.ts`](../apps/api/src/dashboard-react-assets.ts),
+which serves only files named by the startup-validated Vite manifest, renders
+the HTTP-only theme cookie from a fixed set of values, and answers unknown
+Dashboard navigations with a 404 shell. The `?ui=react|legacy` canary sets the
+`ch-dashboard-ui` cookie (`Path=/dashboard; HttpOnly; Secure; SameSite=Strict`)
+and redirects to the same Dashboard path, never off it. A cross-site GET can
+set that cookie, but it only selects which first-party UI an operator sees after
+Access; it grants no authority and carries no data, so the impact is low and
+`?ui=legacy` reverses it. The assertions live in
+[`apps/api/test/dashboard-react-shell.test.ts`](../apps/api/test/dashboard-react-shell.test.ts).
 
 ### Managed toolbox packages
 

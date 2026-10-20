@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router';
+import { ClassicDashboardLink } from '@/components/feedback/classic-dashboard-link';
 import { Button } from '@/components/ui/button';
 
 export function NotFoundPage() {
@@ -9,7 +10,7 @@ export function NotFoundPage() {
       <p className="text-sm text-muted-foreground">This page does not exist in the new Dashboard yet.</p>
       <div className="flex justify-center gap-2 pt-2">
         <Button asChild><Link to="/">Go to Overview</Link></Button>
-        <Button asChild variant="outline"><a href="/dashboard?ui=legacy">Open classic Dashboard</a></Button>
+        <Button asChild variant="outline"><ClassicDashboardLink>Open classic Dashboard</ClassicDashboardLink></Button>
       </div>
     </section>
   );

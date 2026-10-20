@@ -10,7 +10,7 @@ export default defineConfig({
   esbuild: { jsx: 'automatic' },
   test: {
     environment: 'jsdom',
-    include: ['src/**/*.test.{ts,tsx}'],
+    include: ['src/**/*.test.{ts,tsx}', 'scripts/**/*.test.mjs'],
     setupFiles: ['./src/test/setup.ts'],
     restoreMocks: true
   }

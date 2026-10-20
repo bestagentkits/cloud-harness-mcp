@@ -589,14 +589,23 @@ their exact ownership and retention requirements. See
 
 To roll back the React dashboard without a release rollback, set
 `CLOUD_HARNESS_DASHBOARD_UI=legacy` (or remove the key) in the API runtime
-environment file and restart the service:
+environment file, then recreate only the `api` container from the release
+checkout:
 
 ```bash
-sudo systemctl restart cloud-harness-mcp.service
+cd /opt/cloud-harness-mcp/repo
+sudo /usr/local/sbin/cloud-harness-service-compose up -d --no-deps --force-recreate api
 ```
 
-A browser pinned by the canary cookie returns to legacy by opening
-`/dashboard?ui=legacy`. See
+The wrapper runs `docker compose` with the same production compose files and
+environment file as `cloud-harness-mcp.service`; on a host without the
+installed wrapper use `sudo bash deploy/scripts/service-compose.sh` with the
+same arguments. Recreating the container is required because
+`docker compose restart` does not re-read `env_file`. Do not restart
+`cloud-harness-mcp.service` for this: it recreates the whole stack, and the
+runner restart ends live terminals and managed agents. The runner, ingress, and
+state are untouched by the `api`-only recreate. A browser pinned by the canary
+cookie returns to legacy by opening `/dashboard?ui=legacy`. See
 [configuration](configuration.md#dashboard-ui-rollout).
 
 For an API-key-gateway rollback, disable the Worker custom route first, set

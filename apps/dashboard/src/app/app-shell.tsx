@@ -1,6 +1,7 @@
 import { Link, useRouterState } from '@tanstack/react-router';
 import { LayoutDashboardIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { ClassicDashboardLink } from '@/components/feedback/classic-dashboard-link';
 import { DisplayPreferencesDialog } from '@/components/layouts/display-preferences-dialog';
 import { ThemeToggle } from '@/components/layouts/theme-toggle';
 
@@ -45,7 +46,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </ul>
         </nav>
         <div className="border-t p-3 text-xs text-muted-foreground">
-          <a className="underline-offset-4 hover:text-foreground hover:underline" href="/dashboard?ui=legacy">Use classic Dashboard</a>
+          <ClassicDashboardLink className="underline-offset-4 hover:text-foreground hover:underline">Use classic Dashboard</ClassicDashboardLink>
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">

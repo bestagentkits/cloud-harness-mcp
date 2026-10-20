@@ -37,10 +37,10 @@ Every dashboard page ends with the same footer crediting [AgentKit](https://agen
 
 ## New dashboard preview
 
-A rebuilt dashboard is rolling out behind the `CLOUD_HARNESS_DASHBOARD_UI` setting, which defaults to `legacy`. To try it in one browser without changing the instance, open `/dashboard?ui=react`; open `/dashboard?ui=legacy` (or use **Use classic Dashboard** in its sidebar) to switch back. The choice is stored in a browser cookie only.
+A rebuilt dashboard is rolling out behind the `CLOUD_HARNESS_DASHBOARD_UI` setting, which defaults to `legacy`. To try it in one browser without changing the instance, add `?ui=react` to any dashboard address, such as `/dashboard?ui=react`; add `?ui=legacy` (or use **Use classic Dashboard** in its sidebar) to switch back, and you stay on the same page. The choice is stored in a browser cookie only. Your theme choice follows you between both versions.
 
 ## Design System & Security Invariants
 
 - **Zero Secrets Rendered:** Container tokens, SSH private keys, and runner authentication credentials are never sent to or displayed in the dashboard. Dashboard search reads an allowlisted projection from seven resource endpoints and never indexes secret values, secret descriptions, or knowledge content.
-- **No Client Storage (legacy dashboard):** In the current dashboard, theme preferences and session states are managed strictly via HttpOnly cookies and server session headers, and search results are cached in memory for the current page view only. The React Dashboard may also store non-secret display settings and UI state in the browser. Secrets, keys, tokens and terminal output are never stored in the browser in either version.
+- **No Client Storage (legacy dashboard):** In the current dashboard, theme preferences and session states are managed strictly via HttpOnly cookies and server session headers, and search results are cached in memory for the current page view only. The React Dashboard keeps the theme in the same HttpOnly cookie and may also store non-secret display settings and UI state in the browser. Secrets, keys, tokens and terminal output are never stored in the browser in either version.
 - **Strict Content Security Policy (CSP):** Runs under `default-src 'none'` with no external CDN dependencies or tracking scripts. The terminal emulator is a pinned copy served by the harness itself, under the same policy.

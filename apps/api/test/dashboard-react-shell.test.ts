@@ -204,13 +204,29 @@ describe('React Dashboard rollout flag', () => {
     const broken = brokenBuild('canary-bad-json', '.vite/manifest.json', '{');
     const origin = await start({ dashboardUi: 'legacy' }, broken);
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith({ problem: expect.stringContaining('is not valid JSON') }, expect.stringContaining('canary disabled'));
+    expect(warn).toHaveBeenCalledWith(
+      { shell: 'legacy', canary: 'disabled-invalid-manifest', problem: expect.stringContaining('is not valid JSON') },
+      expect.stringContaining('canary disabled')
+    );
     const canary = await get(origin, '/dashboard?ui=react');
     expect(canary.status).toBe(200);
     expect(canary.headers.get('set-cookie')).toBeNull();
     const pinned = await get(origin, '/dashboard', { cookie: 'ch-dashboard-ui=react' });
     expect(pinned.status).toBe(200);
     expect(await pinned.text()).not.toContain('React shell fixture');
+  });
+
+  it('logs the shell mode and canary state once at startup', async () => {
+    const info = vi.spyOn(apiLogger, 'info').mockImplementation(() => undefined);
+    await start({ dashboardUi: 'legacy' });
+    expect(info).toHaveBeenCalledWith({ shell: 'legacy', canary: 'enabled' }, 'dashboard shell selected');
+    info.mockClear();
+    await start({ dashboardUi: 'react' });
+    expect(info).toHaveBeenCalledWith({ shell: 'react', canary: 'enabled' }, 'dashboard shell selected');
+    info.mockClear();
+    await start({}, missing);
+    expect(info).toHaveBeenCalledWith({ shell: 'legacy', canary: 'disabled' }, expect.stringContaining('no React build'));
+    expect(info.mock.calls.filter(([fields]) => typeof fields === 'object' && fields !== null && 'canary' in fields)).toHaveLength(1);
   });
 
   it('pins the browser with the ?ui= canary cookie and redirects to the clean URL', async () => {
@@ -226,6 +242,16 @@ describe('React Dashboard rollout flag', () => {
     const optOut = await get(origin, '/dashboard?ui=legacy');
     expect(optOut.headers.get('location')).toBe('/dashboard');
     expect(optOut.headers.get('set-cookie')).toBe('ch-dashboard-ui=legacy; Path=/dashboard; HttpOnly; Secure; SameSite=Strict');
+
+    // Any Dashboard path takes the canary and comes back to itself, minus `ui`.
+    const deep = await get(origin, '/dashboard/workspaces/ws-1?ui=react&view=logs');
+    expect(deep.status).toBe(302);
+    expect(deep.headers.get('location')).toBe('/dashboard/workspaces/ws-1?view=logs');
+    expect(deep.headers.get('set-cookie')).toBe('ch-dashboard-ui=react; Path=/dashboard; HttpOnly; Secure; SameSite=Strict');
+    // BFF and asset paths never take it.
+    const bff = await get(origin, '/dashboard/api/v1/session?ui=react', { accept: 'application/json', 'sec-fetch-dest': 'empty' });
+    expect(bff.status).not.toBe(302);
+    expect(bff.headers.get('set-cookie') ?? '').not.toContain('ch-dashboard-ui');
 
     const reactDefault = await start({ dashboardUi: 'react' });
     const legacyPinned = await get(reactDefault, '/dashboard', { cookie: 'ch-dashboard-ui=legacy' });
@@ -250,7 +276,39 @@ describe('React Dashboard rollout flag', () => {
   });
 });
 
+describe('React Dashboard theme', () => {
+  it('renders the HTTP-only theme cookie onto <html> before first paint', async () => {
+    const origin = await start({ dashboardUi: 'react' });
+    const dark = await (await get(origin, '/dashboard', { cookie: 'ch-dashboard-theme=dark' })).text();
+    expect(dark).toContain('<html lang="en" data-server-theme="dark" data-theme="dark">');
+    const light = await (await get(origin, '/dashboard', { cookie: 'ch-dashboard-theme=light' })).text();
+    expect(light).toContain('<html lang="en" data-server-theme="light" data-theme="light">');
+    const system = await (await get(origin, '/dashboard')).text();
+    expect(system).toContain('<html lang="en" data-server-theme="system">');
+    const bogus = await (await get(origin, '/dashboard', { cookie: 'ch-dashboard-theme=%22%3E%3Cscript%3E' })).text();
+    expect(bogus).toContain('<html lang="en" data-server-theme="system">');
+    expect(bogus).not.toContain('<script>');
+  });
+
+  it('fails startup when the index cannot carry the server theme', () => {
+    const broken = brokenBuild('no-html-lang', 'index.html', '<!doctype html><html><head><script type="module" src="/dashboard/assets/index-AbCdEf12.js" nonce="__CH_CSP_NONCE__"></script></head></html>');
+    expect(() => createApiApp(config({ dashboardUi: 'react' }), { runnerClient: runner, dashboardReactDirectory: broken })).toThrow(/<html lang="en">/);
+  });
+});
+
 describe('React Dashboard assets', () => {
+  it('serves a build that lives under a dot-directory', async () => {
+    // Worktrees under `.claude/` put the build below a dot-directory; send() refuses
+    // absolute paths through one unless the served path is relative to `root`.
+    const dotted = join(scratch, '.hidden', 'dist');
+    cpSync(fixture, dotted, { recursive: true });
+    const origin = await start({ dashboardUi: 'react' }, dotted);
+    const script = await get(origin, `/dashboard/assets/${ASSET_JS}`, { accept: '*/*', 'sec-fetch-dest': 'script' });
+    expect(script.status).toBe(200);
+    const boot = await get(origin, '/dashboard/preferences-boot.js', { accept: '*/*', 'sec-fetch-dest': 'script' });
+    expect(boot.status).toBe(200);
+  });
+
   it('serves hashed assets immutably and the public boot script revalidating', async () => {
     const origin = await start({ dashboardUi: 'react' });
     const script = await get(origin, `/dashboard/assets/${ASSET_JS}`, { accept: '*/*', 'sec-fetch-dest': 'script' });

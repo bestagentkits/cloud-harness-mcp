@@ -2,6 +2,8 @@
 // reload never flashes light. It must stay a tiny classic script: the CSP forbids inline
 // script, and module scripts run too late. Mirrors `src/lib/preferences.ts`; the unit test
 // there executes this file against the same inputs to keep the two in step.
+// The theme's authority is the HTTP-only `ch-dashboard-theme` cookie, which the API renders
+// as `data-server-theme` on <html>; localStorage only mirrors it.
 (function () {
   var allowed = {
     theme: ['system', 'light', 'dark'],
@@ -19,11 +21,17 @@
     var value = stored[name];
     return allowed[name].indexOf(value) === -1 ? defaults[name] : value;
   }
-  var theme = pick('theme');
+  var root = document.documentElement;
+  var serverTheme = root.getAttribute('data-server-theme');
+  var fromServer = allowed.theme.indexOf(serverTheme) !== -1;
+  var theme = fromServer ? serverTheme : pick('theme');
+  if (fromServer && theme !== stored.theme) {
+    stored.theme = theme;
+    try { window.localStorage.setItem('ch-dashboard-preferences', JSON.stringify(stored)); } catch { /* storage unavailable */ }
+  }
   var dark = false;
   try { dark = window.matchMedia('(prefers-color-scheme: dark)').matches; } catch { dark = false; }
   var resolved = theme === 'system' ? (dark ? 'dark' : 'light') : theme;
-  var root = document.documentElement;
   root.setAttribute('data-theme', resolved);
   root.setAttribute('data-theme-preference', theme);
   root.setAttribute('data-font-scale', pick('fontScale'));

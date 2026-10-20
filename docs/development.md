@@ -53,6 +53,20 @@ npx -w @cloud-harness/dashboard playwright install chromium
 npm run test:e2e:dashboard
 ```
 
+The dashboard `build` script ends with
+[`apps/dashboard/scripts/verify-build-output.mjs`](../apps/dashboard/scripts/verify-build-output.mjs),
+so CI fails a build that breaks the shell contract or the gzip budget (initial
+JS, largest lazy route chunk, and CSS) read from the Vite manifest, or that
+ships fonts without their `OFL.txt` licence. The limits live in
+[`build-output-check.mjs`](../apps/dashboard/scripts/build-output-check.mjs);
+the API serves the same manifest through
+[`apps/api/src/dashboard-react-assets.ts`](../apps/api/src/dashboard-react-assets.ts).
+
+The root `package.json` `overrides` pin a single React 19 copy across the
+workspace, because the docs site's VitePress dependencies would otherwise pull a
+second React and break hooks in the dashboard. `npm run docs:build` still runs
+in CI and tolerates the resulting peer warning.
+
 ### Running local stdio mode
 
 After building packages with `npm run build`, you can test local stdio mode directly:
