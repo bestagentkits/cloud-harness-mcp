@@ -26,7 +26,8 @@ type PrincipalResolver = (request: DashboardRequest, response: Response) => Runn
 const BASE = '/api/v1/dewee';
 const VERSION = '0.2.0';
 const MAX_MESSAGE_LENGTH = 4_000;
-const VISITOR_TOKEN_TTL_MS = 12 * 60 * 60 * 1_000;
+// Above the widget's 24h reuse threshold, so it keeps one token instead of minting one per load.
+const VISITOR_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const KEEPALIVE_MS = 15_000;
 const CONVERSATION_ID = /^[A-Za-z0-9_-]{6,64}$/;
 const USER_ID_PREFIX = 'webchat-';
@@ -71,7 +72,12 @@ function inputError(error: unknown): { status: number; code: string; message: st
 
 async function writeFrame(response: Response, frame: string): Promise<void> {
   if (response.writableEnded || response.destroyed) return;
-  if (!response.write(frame)) await new Promise<void>((resolve) => { response.once('drain', resolve); response.once('close', resolve); });
+  if (response.write(frame)) return;
+  await new Promise<void>((resolve) => {
+    const done = () => { response.off('drain', done); response.off('close', done); resolve(); };
+    response.once('drain', done);
+    response.once('close', done);
+  });
 }
 
 export function registerDashboardDeweeRoutes(router: Router, config: ApiConfig, principal: PrincipalResolver): void {
@@ -145,6 +151,11 @@ export function registerDashboardDeweeRoutes(router: Router, config: ApiConfig, 
   });
 
   router.post(`${BASE}/chat`, async (request: DashboardRequest, response, next) => {
+    // Registered before the first await: a client that leaves while the request is still being
+    // validated must still abort the run and give its stream slot back.
+    const abort = new AbortController();
+    let release: (() => void) | undefined;
+    response.on('close', () => { if (!response.writableFinished) abort.abort(); release?.(); });
     try {
       const visitorId = operator(request, response, 'chat');
       if (!visitorId) return;
@@ -153,7 +164,8 @@ export function registerDashboardDeweeRoutes(router: Router, config: ApiConfig, 
       const message = typeof body.message === 'string' ? body.message.trim() : '';
       if (!message) { fail(response, 400, 'bad_request', 'Message is required.'); return; }
       if (message.length > MAX_MESSAGE_LENGTH) { fail(response, 413, 'too_long', `Message exceeds ${MAX_MESSAGE_LENGTH} characters.`); return; }
-      if (body.agent !== undefined && body.agent !== settings.agent) { fail(response, 403, 'agent_not_allowed', 'Agent not allowed.'); return; }
+      // An empty or null agent means the configured default, as in the package.
+      if (body.agent !== undefined && body.agent !== null && body.agent !== '' && body.agent !== settings.agent) { fail(response, 403, 'agent_not_allowed', 'Agent not allowed.'); return; }
       const conversationId = typeof body.conversationId === 'string' && CONVERSATION_ID.test(body.conversationId) ? body.conversationId : randomBytes(9).toString('base64url');
 
       let pageBlock: string;
@@ -170,10 +182,9 @@ export function registerDashboardDeweeRoutes(router: Router, config: ApiConfig, 
         return;
       }
 
-      const release = limiter.openStream(visitorId);
+      release = limiter.openStream(visitorId);
       if (!release) { response.setHeader('Retry-After', '10'); fail(response, 429, 'rate_limited', 'Another webchat reply is still streaming.'); return; }
-      const abort = new AbortController();
-      response.on('close', () => { if (!response.writableFinished) abort.abort(); release(); });
+      if (abort.signal.aborted || response.destroyed) return;
       response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store, no-transform', 'x-accel-buffering': 'no' });
       response.flushHeaders();
       const keepalive = setInterval(() => { void writeFrame(response, ': ping\n\n'); }, KEEPALIVE_MS);
@@ -186,10 +197,10 @@ export function registerDashboardDeweeRoutes(router: Router, config: ApiConfig, 
           sessionKey: buildSessionKey(settings.agent, `${USER_ID_PREFIX}${visitorId}-${conversationId}`),
           message: pageBlock + message,
           signal: abort.signal,
-          timeoutMs: settings.timeoutMs
+          timeoutMs: settings.timeoutMs,
+          onGatewayFailure: (error) => logGatewayFailure('chat', error)
         })) {
           if (abort.signal.aborted) break;
-          if (event.type === 'error' && event.code === 'gateway_error') logGatewayFailure('chat', event);
           await writeFrame(response, `data: ${JSON.stringify(event)}\n\n`);
         }
       } finally {
@@ -199,6 +210,8 @@ export function registerDashboardDeweeRoutes(router: Router, config: ApiConfig, 
     } catch (error) {
       if (response.headersSent) { response.end(); return; }
       next(error);
+    } finally {
+      release?.();
     }
   });
 }

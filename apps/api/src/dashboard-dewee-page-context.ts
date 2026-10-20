@@ -17,7 +17,7 @@ export class DeweeInputError extends Error {
 
 const REDACTED = '[redacted]';
 const MAX_DEPTH = 32;
-const SECRET_KEY = /token|secret|passw(?:or)?d|passphrase|api[-_]?key|authori[sz]ation|cookie|credential|private[-_]?key|bearer|csrf|session[-_]?id/i;
+const SECRET_KEY = /token|secret|passw(?:or)?d|passphrase|pwd|api[-_]?key|(?:access|signing|encryption|master|client)[-_]?key|authori[sz]ation|cookie|credential|private[-_]?key|bearer|csrf|session[-_]?id|signature|^(?:key|value|pass|auth)$/i;
 const SECRET_VALUES: Array<[RegExp, string]> = [
   [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g, REDACTED],
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, REDACTED],
@@ -30,12 +30,31 @@ const SECRET_VALUES: Array<[RegExp, string]> = [
   [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, `$1${REDACTED}@`]
 ];
 
+// Long hex keeps a 40-character git commit id readable; longer runs are digests or keys.
+const LONG_HEX = /\b[0-9a-fA-F]{41,}\b/g;
+const LONG_BASE64 = /[A-Za-z0-9+/_-]{32,}={0,2}/g;
+
 const byteLength = (value: string) => Buffer.byteLength(value, 'utf8');
+
+/** Shannon entropy in bits per character. */
+function entropy(value: string): number {
+  const counts = new Map<string, number>();
+  for (const char of value) counts.set(char, (counts.get(char) ?? 0) + 1);
+  let bits = 0;
+  for (const count of counts.values()) bits -= (count / value.length) * Math.log2(count / value.length);
+  return bits;
+}
+
+/** A base64/base64url run that mixes cases and digits and looks random, unlike a path or slug. */
+function looksLikeKey(value: string): boolean {
+  return /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value) && entropy(value) >= 4;
+}
 
 function redactString(value: string): string {
   let output = value;
   for (const [pattern, replacement] of SECRET_VALUES) output = output.replace(pattern, replacement);
-  return output;
+  output = output.replace(LONG_HEX, REDACTED);
+  return output.replace(LONG_BASE64, (match) => looksLikeKey(match) ? REDACTED : match);
 }
 
 /** Returns a copy with secret-named fields and secret-shaped strings replaced by a marker. */

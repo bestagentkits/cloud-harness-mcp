@@ -80,6 +80,7 @@ const ROUTES: Array<[string, string, string, string]> = [
   ['POST', `/skills/${skill}/restore`, 'skillId', id('sk', 'b')],
   ['POST', `/skills/${skill}/revisions`, 'skillId', id('sk', 'b')],
   ['POST', `/skills/${skill}/revisions/${revision}/fork`, 'revisionId', id('skrev', 'b')],
+  ['POST', `/skills/${skill}/revisions/${revision}/fork`, 'skillId', id('sk', 'b')],
   ['PATCH', `/skill-sets/${skillSet}`, 'skillSetId', id('skset', 'b')],
   ['PATCH', '/agent-model-profiles/fast', 'profileId', 'slow'],
   ['POST', `/artifacts/${artifact}/restore`, 'artifactId', id('art', 'b')],

@@ -782,9 +782,14 @@ strips secret-shaped values before forwarding:
 - **Size limits:** 32 actions and 16 KiB per manifest, 4 KiB of page context.
   Violations get `400 invalid_actions`, `413 actions_too_large` or
   `413 context_too_large`.
-- **Stripping:** fields with credential-like names, plus bearer tokens, JWTs,
-  provider and GitHub tokens, managed API keys, private keys, and URL
-  credentials.
+- **Stripping:** fields with credential-like names (including bare `key` and
+  `value`), plus bearer tokens, JWTs, provider and GitHub tokens, managed API
+  keys, private keys, URL credentials, and long random-looking hex or base64
+  strings.
+
+Stripping is a backstop, not the control. Pattern matching cannot recognise
+every secret, so the Dashboard's page-context registry must never put a secret
+value into page context in the first place.
 
 Gateway history is per operator and per conversation, and is stored by the
 Dewee gateway, not by Cloud Harness.
@@ -821,7 +826,10 @@ webchat does not revoke it.
 **Kill switch.** Unset `DEWEE_GATEWAY_URL`, `DEWEE_GATEWAY_TOKEN` and
 `DEWEE_WEBCHAT_SECRET`, then recreate the `api` container. Every webchat route
 then answers `503 dewee_disabled`, and nothing reaches the gateway. Rotating
-`DEWEE_WEBCHAT_SECRET` invalidates every outstanding visitor token.
+`DEWEE_WEBCHAT_SECRET` invalidates every outstanding visitor token. It also
+changes every visitor id, because each id is an HMAC under that secret. So
+every operator loses access to their earlier webchat conversations: the
+gateway keeps them under the old ids, but nothing can open them.
 
 The assertions live in
 [`apps/api/test/dashboard-dewee-router.test.ts`](../apps/api/test/dashboard-dewee-router.test.ts).

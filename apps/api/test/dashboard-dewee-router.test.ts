@@ -5,8 +5,22 @@ import type { ApiConfig, RunnerPrincipalSelector, RunnerResponse } from '@cloud-
 import { createDashboardRouter } from '../src/dashboard-router.js';
 import { sanitizeDeweePageContext, serializeDeweePageContext } from '../src/dashboard-dewee-page-context.js';
 import type { DashboardRunnerClient } from '../src/dashboard-types.js';
+import type * as DeweeServer from 'dewee-webchat/server';
 import { apiLogger } from '../src/logging.js';
 import { startDeweeGatewayStub } from './dewee-gateway-stub.js';
+
+// Lets a test hold visitor-token verification open, i.e. keep a request mid-validation.
+const verifyGate = vi.hoisted(() => ({ hold: undefined as Promise<void> | undefined }));
+vi.mock('dewee-webchat/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof DeweeServer>();
+  return {
+    ...actual,
+    verifyVisitorToken: async (...args: Parameters<typeof actual.verifyVisitorToken>) => {
+      await verifyGate.hold;
+      return actual.verifyVisitorToken(...args);
+    }
+  };
+});
 
 // The Dashboard webchat BFF proxies the dewee-webchat HTTP contract to a Dewee gateway. These
 // tests drive it end to end against an in-process gateway stub and check that the gateway
@@ -54,6 +68,7 @@ async function listen(config: ApiConfig): Promise<void> {
 }
 
 beforeEach(async () => {
+  verifyGate.hold = undefined;
   current = operator;
   transcript = [];
   logged = [];
@@ -171,6 +186,15 @@ describe('Dashboard webchat BFF: access', () => {
   });
 });
 
+describe('Dashboard webchat BFF: visitor session', () => {
+  it('issues a token that outlives the widget\'s 24h reuse threshold', async () => {
+    const before = Date.now();
+    const { expiresAt } = await visitorSession(await csrfHeaders());
+    expect(expiresAt - before).toBeGreaterThanOrEqual(7 * 24 * 60 * 60 * 1_000 - 1_000);
+    expect(expiresAt - Date.now()).toBeGreaterThan(24 * 60 * 60 * 1_000);
+  });
+});
+
 describe('Dashboard webchat BFF: chat', () => {
   it('streams the gateway reply as SSE and prepends a sanitized page block', async () => {
     const headers = await chatHeaders();
@@ -200,6 +224,25 @@ describe('Dashboard webchat BFF: chat', () => {
     expect(message).toContain('"name":"navigate"');
     expect(message).toContain('Page context: {"route":"/workspaces","apiKey":"[redacted]","note":"[redacted]","count":3}');
     expect(message).not.toContain('chm_key_abcdefghijkl');
+    expect(reply.text).not.toContain('LEAK');
+    expect(reply.text).not.toContain('UNKEYED');
+  });
+
+  it.each([['an empty', ''], ['a null', null]])('treats %s agent as the configured default', async (_label, agent) => {
+    const headers = await chatHeaders();
+    const reply = await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'hi', agent }) });
+    expect(reply.status).toBe(200);
+    expect(stub.requests.find((entry) => entry.method === 'chat.send')!.params.agentId).toBe('cloud-harness-operator');
+  });
+
+  it('clips oversized tool call arguments', async () => {
+    const headers = await chatHeaders();
+    stub.setMode('big_arguments');
+    const events = frames((await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'hi' }) })).text);
+    const call = events.find((event) => event.type === 'tool_call');
+    expect(typeof call.arguments).toBe('string');
+    expect(call.arguments.length).toBe(4_001);
+    expect(call.arguments.endsWith('…')).toBe(true);
   });
 
   it('sends the manifest once and only a reference when the client already has its hash', async () => {
@@ -239,7 +282,7 @@ describe('Dashboard webchat BFF: chat', () => {
     stub.setMode('run_failed');
     const runFailed = frames((await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'hi' }) })).text);
     expect(runFailed.at(-1)).toEqual({ type: 'error', message: 'The agent run failed.', code: 'run_failed' });
-    expect(logged.some((line) => line.includes('dewee.chat'))).toBe(true);
+    expect(logged.some((line) => line.includes('dewee.chat') && line.includes('"code":"INTERNAL"'))).toBe(true);
     for (const line of logged) expect(line).not.toContain('"hi"');
   });
 
@@ -262,6 +305,29 @@ describe('Dashboard webchat BFF: chat', () => {
     await eventually(() => stub.requests.some((entry) => entry.method === 'chat.abort'));
     expect(stub.requests.find((entry) => entry.method === 'chat.abort')!.params).toEqual({ sessionKey: expect.stringContaining('-conv-abort') });
     await eventually(() => stub.openSockets() === 0);
+  });
+
+  it('releases the stream slot when the browser leaves before the stream opens', async () => {
+    const headers = await chatHeaders();
+    stub.setMode('hang');
+    for (let index = 0; index < 3; index += 1) {
+      let proceed!: () => void;
+      verifyGate.hold = new Promise<void>((resolve) => { proceed = resolve; });
+      const { request, reply } = open('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: `early ${index}` }) });
+      reply.catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      request.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      proceed();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    verifyGate.hold = undefined;
+    // No gateway run was started for the abandoned requests, and both slots are still free.
+    expect(stub.requests.filter((entry) => entry.method === 'chat.send')).toEqual([]);
+    stub.setMode('reply');
+    const reply = await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'after' }) });
+    expect(reply.status).toBe(200);
+    expect(frames(reply.text).at(-1)).toMatchObject({ type: 'done' });
   });
 });
 
@@ -346,6 +412,22 @@ describe('Dashboard webchat page context sanitizer', () => {
       openai: '[redacted]',
       pem: '[redacted]',
       count: 2
+    });
+  });
+
+  it('redacts generic secret keys and long random strings but keeps ordinary values', () => {
+    const hex64 = 'a3f1'.repeat(16);
+    const base64 = 'Zk9xR2b7Tq1LmN4pWv8Yc3Hs6Ju0Ke5Dg2Fa9Xo';
+    expect(sanitizeDeweePageContext({
+      key: 'k', value: 'v', pwd: 'p', accessKey: 'a', signature: 's',
+      digest: `sha256:${hex64}`, blob: `token=${base64}`,
+      commit: '0123456789abcdef0123456789abcdef01234567',
+      route: '/workspaces/ws_abc/terminal-sessions', slug: 'cloud-harness-operator-dashboard-webchat-session'
+    })).toEqual({
+      key: '[redacted]', value: '[redacted]', pwd: '[redacted]', accessKey: '[redacted]', signature: '[redacted]',
+      digest: 'sha256:[redacted]', blob: 'token=[redacted]',
+      commit: '0123456789abcdef0123456789abcdef01234567',
+      route: '/workspaces/ws_abc/terminal-sessions', slug: 'cloud-harness-operator-dashboard-webchat-session'
     });
   });
 

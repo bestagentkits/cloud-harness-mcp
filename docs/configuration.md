@@ -91,7 +91,9 @@ service only:
   `http` is accepted only for a loopback host.
 - `DEWEE_GATEWAY_TOKEN`: the server-side gateway token.
 - `DEWEE_WEBCHAT_SECRET`: at least 32 characters. It signs the per-operator
-  visitor tokens the widget holds.
+  visitor tokens the widget holds and derives each operator's visitor id.
+  Rotating it orphans existing webchat conversations (see the
+  [security model](security-model.md#dashboard-webchat-dewee)).
 - `DEWEE_AGENT_ID` (default `cloud-harness-operator`): the only agent the
   widget can reach. It cannot be switched from the browser.
 - `DEWEE_TENANT_ID` (optional): for a multi-tenant gateway.

@@ -11,7 +11,7 @@ import { GatewayConnection, type ChatStreamEvent, type GatewayCredentials } from
 
 const CONNECT_TIMEOUT_MS = 15_000;
 const ABORT_TIMEOUT_MS = 3_000;
-const MAX_TOOL_RESULT_CHARS = 4_000;
+const MAX_TOOL_PAYLOAD_CHARS = 4_000;
 
 export type DeweeChatOptions = {
   creds: GatewayCredentials;
@@ -21,6 +21,8 @@ export type DeweeChatOptions = {
   message: string;
   signal: AbortSignal;
   timeoutMs: number;
+  /** Receives the gateway's own error (connect or `chat.send`) for logging; the stream gets a fixed message. */
+  onGatewayFailure?: (error: unknown) => void;
 };
 
 const gatewayError = (): ChatStreamEvent => ({ type: 'error', message: 'The Dewee gateway request failed.', code: 'gateway_error' });
@@ -28,7 +30,7 @@ const gatewayError = (): ChatStreamEvent => ({ type: 'error', message: 'The Dewe
 function clip(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   const text = typeof value === 'string' ? value : JSON.stringify(value);
-  return text.length > MAX_TOOL_RESULT_CHARS ? `${text.slice(0, MAX_TOOL_RESULT_CHARS)}…` : text;
+  return text.length > MAX_TOOL_PAYLOAD_CHARS ? `${text.slice(0, MAX_TOOL_PAYLOAD_CHARS)}…` : text;
 }
 
 /** Maps one gateway `agent` event to a widget stream event; undefined skips it. */
@@ -36,7 +38,12 @@ function mapAgentEvent(type: unknown, payload: Record<string, unknown>): ChatStr
   switch (type) {
     case 'thinking': return typeof payload.content === 'string' && payload.content ? { type: 'thinking', text: payload.content } : undefined;
     case 'chunk': return typeof payload.content === 'string' && payload.content ? { type: 'delta', text: payload.content } : undefined;
-    case 'tool.call': return { type: 'tool_call', id: String(payload.id ?? ''), name: String(payload.name || 'tool'), arguments: payload.arguments };
+    case 'tool.call': {
+      // Small arguments keep their shape for the widget; oversized ones become a clipped string.
+      const clipped = clip(payload.arguments);
+      const args = clipped !== undefined && clipped.length > MAX_TOOL_PAYLOAD_CHARS ? clipped : payload.arguments;
+      return { type: 'tool_call', id: String(payload.id ?? ''), name: String(payload.name || 'tool'), ...(args === undefined || args === null ? {} : { arguments: args }) };
+    }
     case 'tool.result': {
       const result = clip(payload.result ?? payload.content);
       return { type: 'tool_result', id: String(payload.id ?? ''), name: String(payload.name || 'tool'), isError: Boolean(payload.is_error), ...(result === undefined ? {} : { result }) };
@@ -53,7 +60,8 @@ export async function* runDeweeChat(options: DeweeChatOptions): AsyncGenerator<C
   let connection: GatewayConnection;
   try {
     connection = await GatewayConnection.connect(options.creds, options.userId, CONNECT_TIMEOUT_MS);
-  } catch {
+  } catch (error) {
+    options.onGatewayFailure?.(error);
     yield gatewayError();
     return;
   }
@@ -70,8 +78,10 @@ export async function* runDeweeChat(options: DeweeChatOptions): AsyncGenerator<C
 
   const off = connection.onEvent((event, payload) => {
     if (event !== 'agent' || !payload || typeof payload !== 'object') return;
+    // The connection is per turn, but an event that names no session cannot be attributed to
+    // this one, so it is dropped rather than forwarded.
     const key = payload.visibleSessionKey || payload.sessionKey;
-    if (key && key !== options.sessionKey && payload.runSessionKey !== options.sessionKey) return;
+    if (!key || (key !== options.sessionKey && payload.runSessionKey !== options.sessionKey)) return;
     const mapped = mapAgentEvent(payload.type, payload.payload && typeof payload.payload === 'object' ? payload.payload : {});
     if (!mapped) return;
     push(mapped);
@@ -90,7 +100,8 @@ export async function* runDeweeChat(options: DeweeChatOptions): AsyncGenerator<C
   }, options.timeoutMs).then((result) => {
     push({ type: 'done', content: typeof result?.content === 'string' ? result.content : '', ...(result?.usage && typeof result.usage === 'object' ? { usage: result.usage as Record<string, number> } : {}) });
     end();
-  }).catch(() => {
+  }).catch((error: unknown) => {
+    options.onGatewayFailure?.(error);
     push(gatewayError());
     end();
   });
