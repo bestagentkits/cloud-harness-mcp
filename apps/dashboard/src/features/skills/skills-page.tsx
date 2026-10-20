@@ -1,20 +1,25 @@
 import { useQuery } from '@tanstack/react-query';
-import { useCallback, useState } from 'react';
+import { lazy, Suspense, useCallback, useState } from 'react';
 import { AsyncStatus } from '@/components/feedback/async-status';
 import { ErrorState } from '@/components/feedback/error-state';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { ConflictError } from '@/lib/api-client';
 import type { BffEnvelope } from '@/lib/bff-query';
+import { lazyDialog } from '@/lib/lazy-dialog';
 import { pageReadQuery } from '@/lib/page-read';
 import { usePagePrimaryAction } from '@/lib/page-primary-action';
 import { SkillDetailDrawer } from './skill-detail-drawer';
-import { SkillEditorDialog } from './skill-editor-dialog';
 import { type LibraryFilters, type Skill, SKILL_TAB_LABELS, SKILL_TABS, type SkillTab } from './skill-model';
-import { SkillSets } from './skill-sets';
-import { SkillUploadDialog } from './skill-upload-dialog';
-import { SkillsDiscover } from './skills-discover';
 import { SkillsLibrary } from './skills-library';
 import { SkillsRegistry } from './skills-registry';
+
+// The forms and the tabs that hold one load on first use, so the Library view ships without zod.
+const SkillEditorDialog = lazyDialog(async () => (await import('./skill-editor-dialog')).SkillEditorDialog);
+const SkillUploadDialog = lazyDialog(async () => (await import('./skill-upload-dialog')).SkillUploadDialog);
+const SkillsDiscover = lazy(async () => ({ default: (await import('./skills-discover')).SkillsDiscover }));
+const SkillSets = lazy(async () => ({ default: (await import('./skill-sets')).SkillSets }));
+const tabFallback = <Skeleton className="h-40 w-full" />;
 
 export type SkillsSearch = LibraryFilters & {
   tab?: SkillTab | undefined;
@@ -74,11 +79,11 @@ export function SkillsPage({ search, onSearch }: { search: SkillsSearch; onSearc
           </AsyncStatus>
         </TabsContent>
         <TabsContent value="imports" className="pt-4">
-          <SkillsDiscover find={search.find} onFind={(find) => onSearch({ ...search, find })} jobId={importJobId} onJob={setImportJobId} />
+          <Suspense fallback={tabFallback}><SkillsDiscover find={search.find} onFind={(find) => onSearch({ ...search, find })} jobId={importJobId} onJob={setImportJobId} /></Suspense>
         </TabsContent>
         <TabsContent value="sets" className="pt-4">
           <AsyncStatus query={read} label="skills">
-            {() => <SkillSets skills={skills} onConflict={onConflict} />}
+            {() => <Suspense fallback={tabFallback}><SkillSets skills={skills} onConflict={onConflict} /></Suspense>}
           </AsyncStatus>
         </TabsContent>
         <TabsContent value="registry" className="pt-4">

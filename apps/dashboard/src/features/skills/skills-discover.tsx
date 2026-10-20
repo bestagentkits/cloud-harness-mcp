@@ -13,7 +13,8 @@ import { apiClient } from '@/lib/api-client';
 import { type BffEnvelope, bffQuery } from '@/lib/bff-query';
 import { useBffMutation } from '@/lib/bff-mutation';
 import { SkillImportProgress } from './skill-import-progress';
-import { IMPORT_SOURCE_KINDS, importBody, type ImportValues, importSchema, PROVIDER_LABELS, type SkillImportJob, type SkillSearchResult } from './skill-model';
+import { IMPORT_SOURCE_KINDS, importBody, PROVIDER_LABELS, type SkillImportJob, type SkillSearchResult } from './skill-model';
+import { type ImportValues, importSchema } from './skill-form-schemas';
 
 /** Every provider the search schema allows, so a fan-out that reached only one is visible (classic page). */
 const SEARCH_PROVIDERS = 'local,skills-sh,skillx';

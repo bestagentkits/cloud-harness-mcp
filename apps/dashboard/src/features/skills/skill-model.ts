@@ -1,4 +1,7 @@
-import { z } from 'zod';
+import type { ImportValues } from './skill-form-schemas';
+import type { SKILL_PROVIDERS, SKILL_SORTS, SKILL_STATES, SkillTab } from './skill-search';
+
+export { SKILL_ID_PATTERN, SKILL_PROVIDERS, SKILL_SORTS, SKILL_STATES, SKILL_TABS, type SkillTab, TAG_MAX } from './skill-search';
 
 /**
  * The skill projections the BFF returns (`skillKeys`, `skillRevisionKeys`, `skillSetKeys`,
@@ -39,19 +42,12 @@ export type BulkResult = { skillId?: string; ok?: boolean; error?: string };
 export type ArchiveResult = { slug?: string; ok?: boolean; skillId?: string; error?: string; message?: string };
 
 /** Opaque runner identifiers (`opaqueId` in `packages/contracts/src/identifiers.ts`). */
-export const SKILL_ID_PATTERN = /^sk_[A-Za-z0-9_-]{20,80}$/;
 export const SKILL_JOB_ID_PATTERN = /^skjob_[A-Za-z0-9_-]{20,80}$/;
 
-export const SKILL_TABS = ['library', 'imports', 'sets', 'registry'] as const;
-export type SkillTab = (typeof SKILL_TABS)[number];
 export const SKILL_TAB_LABELS: Record<SkillTab, string> = { library: 'Library', imports: 'Discover', sets: 'Skill sets', registry: 'Registry' };
 
-export const SKILL_PROVIDERS = ['skills-sh', 'skillx', 'custom', 'git'] as const;
-export const SKILL_STATES = ['enabled', 'disabled', 'archived'] as const;
-export const SKILL_SORTS = ['provider', 'state'] as const;
 export const PROVIDER_LABELS: Record<string, string> = { 'skills-sh': 'skills.sh', skillx: 'SkillX', custom: 'Custom', git: 'Git' };
 export const STATE_LABELS: Record<string, string> = { enabled: 'Enabled', disabled: 'Disabled', archived: 'Archived' };
-export const TAG_MAX = 32;
 
 export type LibraryFilters = {
   q?: string | undefined;
@@ -129,37 +125,10 @@ export const SLUG_PATTERN = /^[A-Za-z0-9._-]{1,120}$/;
 export const DISPLAY_NAME_MAX = 100;
 export const DESCRIPTION_MAX = 2_000;
 
-function instructions(max: number) {
-  return z.string()
-    .max(max, `Instructions can be at most ${max.toLocaleString()} characters.`)
-    .superRefine((value, context) => {
-      const problem = instructionsProblem(value);
-      if (problem) context.addIssue({ code: 'custom', message: problem });
-    });
-}
-
-export const createSkillSchema = z.object({
-  slug: z.string().trim().regex(SLUG_PATTERN, 'A slug may contain letters, digits, dot, dash, and underscore (up to 120).'),
-  displayName: z.string().trim().min(1, 'Enter a display name.').max(DISPLAY_NAME_MAX, `A display name can be at most ${DISPLAY_NAME_MAX} characters.`),
-  instructions: instructions(CREATE_INSTRUCTIONS_MAX)
-});
-export type CreateSkillValues = z.infer<typeof createSkillSchema>;
-
-export const revisionSchema = z.object({ instructions: instructions(REVISION_INSTRUCTIONS_MAX) });
-export type RevisionValues = z.infer<typeof revisionSchema>;
-
 /** Tags are entered comma-separated; `skill_update` takes at most 16 of up to 32 characters. */
 export function parseTags(value: string): string[] {
   return [...new Set(value.split(',').map((tag) => tag.trim()).filter(Boolean))];
 }
-
-export const skillDetailsSchema = z.object({
-  displayName: z.string().trim().min(1, 'Enter a display name.').max(DISPLAY_NAME_MAX, `A display name can be at most ${DISPLAY_NAME_MAX} characters.`),
-  description: z.string().max(DESCRIPTION_MAX, `A description can be at most ${DESCRIPTION_MAX.toLocaleString()} characters.`),
-  tags: z.string().refine((value) => parseTags(value).length <= 16, 'At most 16 tags.')
-    .refine((value) => parseTags(value).every((tag) => tag.length <= TAG_MAX), `Each tag can be at most ${TAG_MAX} characters.`)
-});
-export type SkillDetailsValues = z.infer<typeof skillDetailsSchema>;
 
 /**
  * A fork starts a new source from a revision's bytes, so it needs a new slug and name; the
@@ -172,18 +141,6 @@ export function forkBody(skill: Skill | undefined): { slug: string; displayName:
 }
 
 export const IMPORT_SOURCE_KINDS = ['skills-sh', 'skillx', 'git'] as const;
-
-/** The classic `buildSkillImportRequest` rules, as a form schema. */
-export const importSchema = z.object({
-  sourceKind: z.enum(IMPORT_SOURCE_KINDS),
-  sourceRef: z.string().trim().min(1, 'Enter the skill source to import.').max(300, 'A source can be at most 300 characters.'),
-  ref: z.string().trim().refine((value) => value === '' || /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value), 'A ref has to be a full 40 or 64 character hexadecimal commit id.')
-}).superRefine((value, context) => {
-  if (value.sourceKind !== 'skillx' && !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(value.sourceRef)) {
-    context.addIssue({ code: 'custom', path: ['sourceRef'], message: 'Enter the source as owner/repository.' });
-  }
-});
-export type ImportValues = z.infer<typeof importSchema>;
 
 export function importBody(values: ImportValues): { sourceKind: ImportValues['sourceKind']; sourceRef: string; ref?: string; expectedGeneration: 0 } {
   return { sourceKind: values.sourceKind, sourceRef: values.sourceRef, ...(values.ref ? { ref: values.ref } : {}), expectedGeneration: 0 };
@@ -272,8 +229,3 @@ export function skillSetItems(skills: readonly Skill[], selectedIds: readonly st
   return { ok: true, items };
 }
 
-export const skillSetSchema = z.object({
-  name: z.string().trim().min(1, 'A skill set needs a name.').max(DISPLAY_NAME_MAX, `A name can be at most ${DISPLAY_NAME_MAX} characters.`),
-  description: z.string().max(DESCRIPTION_MAX, `A description can be at most ${DESCRIPTION_MAX.toLocaleString()} characters.`)
-});
-export type SkillSetValues = z.infer<typeof skillSetSchema>;

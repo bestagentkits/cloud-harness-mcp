@@ -11,6 +11,9 @@ export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
 /** The attention filter values the BFF understands (`agentNeedsAttention` in the router). */
 export const AGENT_ATTENTION = ['needs-attention', 'clear'] as const;
+
+/** Profile ids are short slugs; the route bounds the param to the same length. */
+export const PROFILE_FILTER_MAX = 120;
 export type AgentAttention = (typeof AGENT_ATTENTION)[number];
 
 export type AgentBudget = { ttlSeconds?: number; maxOutputBytes?: number; maxInputTokens?: number; maxOutputTokens?: number; maxCostMicros?: number };

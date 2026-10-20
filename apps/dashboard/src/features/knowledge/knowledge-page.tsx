@@ -13,15 +13,16 @@ import { apiClient } from '@/lib/api-client';
 import { type BffEnvelope, bffKey } from '@/lib/bff-query';
 import { useBffMutation } from '@/lib/bff-mutation';
 import { formatDateTime } from '@/lib/format';
+import { lazyDialog } from '@/lib/lazy-dialog';
 import { usePagePrimaryAction } from '@/lib/page-primary-action';
-import { CreateKnowledgeDialog } from './create-knowledge-dialog';
 import { renderInline } from './knowledge-markdown';
 import { KnowledgeGraphView } from './knowledge-graph-view';
-import {
-  createBody, type CreateKnowledgeValues, itemTitle, JOURNAL_TYPE_LABELS, type JournalType, KIND_LABELS, type KnowledgeKind,
-  type KnowledgeRow, knowledgeGraph, knowledgeItem, knowledgeRows, type KnowledgeSearch, KNOWLEDGE_SCOPES, SCOPE_LABELS, type KnowledgeScope
-} from './knowledge-model';
+import { createBody, itemTitle, JOURNAL_TYPE_LABELS, type JournalType, KIND_LABELS, type KnowledgeKind, type KnowledgeRow, knowledgeGraph, knowledgeItem, knowledgeRows, type KnowledgeSearch, KNOWLEDGE_SCOPES, SCOPE_LABELS, type KnowledgeScope } from './knowledge-model';
+import type { CreateKnowledgeValues } from './knowledge-form-schema';
 import { KNOWLEDGE_GRAPH_PATH, KNOWLEDGE_PATH, KNOWLEDGE_SEARCH_PATH, knowledgeGraphQuery, knowledgeListQuery, knowledgeSearchQuery } from './knowledge-queries';
+
+// The create form loads on first use, so the list ships without zod.
+const CreateKnowledgeDialog = lazyDialog(async () => (await import('./create-knowledge-dialog')).CreateKnowledgeDialog);
 
 type Tab = 'all' | KnowledgeKind | 'graph';
 const PREVIEW_CHARS = 160;

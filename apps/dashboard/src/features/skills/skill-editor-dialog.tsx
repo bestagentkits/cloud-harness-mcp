@@ -9,10 +9,8 @@ import { ManagedDialog } from '@/components/ui/managed-dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { ConflictError, apiClient } from '@/lib/api-client';
 import { type BffEnvelope, bffPath } from '@/lib/bff-query';
-import {
-  CREATE_INSTRUCTIONS_MAX, type CreateSkillValues, createSkillSchema, DISPLAY_NAME_MAX, positiveGeneration,
-  REVISION_INSTRUCTIONS_MAX, type RevisionValues, revisionSchema, type Skill
-} from './skill-model';
+import { CREATE_INSTRUCTIONS_MAX, DISPLAY_NAME_MAX, positiveGeneration, REVISION_INSTRUCTIONS_MAX, type Skill } from './skill-model';
+import { type CreateSkillValues, createSkillSchema, type RevisionValues, revisionSchema } from './skill-form-schemas';
 import { SKILLS_KEY, skillDetailKeys, useSkillMutation } from './use-skill-mutation';
 
 type SaveResult = BffEnvelope<{ warning?: unknown }>;

@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { RESOURCE_ID_PATTERNS } from '@/app/page-registry';
-import { AGENT_ATTENTION, AGENT_STATUSES, type AgentAttention, agentListQuery } from '@/features/agents/agent-model';
-import { AgentsPage, PROFILE_FILTER_MAX } from '@/features/agents/agents-page';
+import { AGENT_ATTENTION, AGENT_STATUSES, type AgentAttention, agentListQuery, PROFILE_FILTER_MAX } from '@/features/agents/agent-model';
+import { AgentsPage } from '@/features/agents/agents-page';
 import { bffQuery } from '@/lib/bff-query';
 import { compact, exact, flag, matching, oneOf, text } from '@/lib/search-params';
 

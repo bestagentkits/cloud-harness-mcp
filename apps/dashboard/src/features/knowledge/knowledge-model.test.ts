@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { pageReadQuery } from '@/lib/page-read';
 import { clearDraft, readDraft, writeDraft } from './knowledge-draft';
-import { CREATE_DEFAULTS, createBody, createKnowledgeSchema, knowledgeGraph, knowledgeRows, parseTags, searchBody } from './knowledge-model';
+import { CREATE_DEFAULTS, createBody, knowledgeGraph, knowledgeRows, parseTags, searchBody } from './knowledge-model';
+import { createKnowledgeSchema } from './knowledge-form-schema';
 import { knowledgeListQuery, knowledgeSearchQuery } from './knowledge-queries';
 import { graphViewBox, layoutGraph } from './knowledge-graph-view';
 

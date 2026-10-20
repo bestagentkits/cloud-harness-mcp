@@ -9,7 +9,8 @@ import { ManagedDialog } from '@/components/ui/managed-dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { type ConflictError, apiClient } from '@/lib/api-client';
 import { bffPath } from '@/lib/bff-query';
-import { DESCRIPTION_MAX, DISPLAY_NAME_MAX, parseTags, positiveGeneration, type Skill, type SkillDetailsValues, skillDetailsSchema, skillTags } from './skill-model';
+import { DESCRIPTION_MAX, DISPLAY_NAME_MAX, parseTags, positiveGeneration, type Skill, skillTags } from './skill-model';
+import { type SkillDetailsValues, skillDetailsSchema } from './skill-form-schemas';
 import { SKILLS_KEY, skillDetailKeys, useSkillMutation } from './use-skill-mutation';
 
 function initialValues(skill: Skill): SkillDetailsValues {

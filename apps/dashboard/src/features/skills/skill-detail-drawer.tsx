@@ -12,11 +12,13 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { type ConflictError, apiClient } from '@/lib/api-client';
 import { type BffEnvelope, bffPath, bffQuery } from '@/lib/bff-query';
 import { EMPTY, formatDateTime, formatRelative } from '@/lib/format';
+import { lazyDialog } from '@/lib/lazy-dialog';
 import { cn } from '@/lib/utils';
-import { SkillDetailsDialog } from './skill-details-dialog';
-import { SkillEditorDialog } from './skill-editor-dialog';
 import { forkBody, PROVIDER_LABELS, positiveGeneration, type Skill, skillLabel, type SkillRevision, skillTags, type SkillUsage } from './skill-model';
 import { SKILLS_KEY, skillDetailKeys, useSkillMutation } from './use-skill-mutation';
+
+const SkillEditorDialog = lazyDialog(async () => (await import('./skill-editor-dialog')).SkillEditorDialog);
+const SkillDetailsDialog = lazyDialog(async () => (await import('./skill-details-dialog')).SkillDetailsDialog);
 
 /**
  * The skill detail drawer, opened by the `skill` search param so a reload or a shared link

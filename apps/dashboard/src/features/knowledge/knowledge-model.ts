@@ -1,6 +1,8 @@
-import { z } from 'zod';
-import { RESOURCE_ID_PATTERNS } from '@/app/page-registry';
 import type { BffEnvelope } from '@/lib/bff-query';
+import type { CreateKnowledgeValues } from './knowledge-form-schema';
+import type { KnowledgeKind, KnowledgeScope } from './knowledge-search';
+
+export { KNOWLEDGE_KINDS, KNOWLEDGE_SCOPES, type KnowledgeKind, type KnowledgeScope, type KnowledgeSearch, listQuery, searchBody } from './knowledge-search';
 
 /**
  * Knowledge projections (`knowledgeItemKeys`, `knowledgeLinkKeys` and the graph mapping in
@@ -8,11 +10,7 @@ import type { BffEnvelope } from '@/lib/bff-query';
  * (`knowledge_dashboard_*` in `packages/contracts/src/internal-runner-api.ts`), mirrored so
  * the forms refuse what the server would.
  */
-export const KNOWLEDGE_KINDS = ['memory', 'journal'] as const;
-export const KNOWLEDGE_SCOPES = ['owner', 'project', 'workspace'] as const;
 export const JOURNAL_TYPES = ['engineering-log', 'decision-record', 'session-reflection'] as const;
-export type KnowledgeKind = (typeof KNOWLEDGE_KINDS)[number];
-export type KnowledgeScope = (typeof KNOWLEDGE_SCOPES)[number];
 export type JournalType = (typeof JOURNAL_TYPES)[number];
 
 export const KIND_LABELS: Record<KnowledgeKind, string> = { memory: 'Memory', journal: 'Journal' };
@@ -45,22 +43,10 @@ export type KnowledgeRow = { item: KnowledgeItem; match?: { relevancePercent?: n
 export type KnowledgeGraphNode = { id: string; kind?: string; scope?: string; title?: string; journalType?: string; tags?: string[]; updatedAt?: number };
 export type KnowledgeGraph = { nodes: KnowledgeGraphNode[]; edges: KnowledgeLink[]; truncated: boolean };
 
-/** The list page's URL state. `view=graph` selects the graph tab (not a filter of the list). */
-export type KnowledgeSearch = {
-  kind?: KnowledgeKind | undefined;
-  scope?: KnowledgeScope | undefined;
-  projectId?: string | undefined;
-  q?: string | undefined;
-  cursor?: string | undefined;
-  view?: 'graph' | undefined;
-};
-
 export const TITLE_MAX = 120;
 export const CONTENT_MAX = 262_144;
 export const TAGS_MAX = 16;
 export const SEARCH_MAX = 512;
-const TAG = /^[A-Za-z0-9._/-]{1,50}$/;
-
 function isItem(value: unknown): value is KnowledgeItem {
   return Boolean(value) && typeof (value as { id?: unknown }).id === 'string';
 }
@@ -94,41 +80,10 @@ export function itemTitle(item: { id: string; title?: string | undefined }): str
   return typeof item.title === 'string' && item.title.trim() ? item.title : item.id;
 }
 
-/** The `GET /knowledge` query for the list filters (the classic loader's parameters). */
-export function listQuery(search: KnowledgeSearch): Record<string, string | undefined> {
-  return { kind: search.kind, scope: search.scope, projectId: search.projectId, cursor: search.cursor };
-}
-
-/** The `POST /knowledge/search` body for a free-text query, as the classic loader sends it. */
-export function searchBody(search: KnowledgeSearch & { q: string }) {
-  return {
-    query: search.q,
-    ...(search.kind ? { kinds: [search.kind] } : {}),
-    ...(search.scope ? { scope: search.scope } : {}),
-    ...(search.projectId ? { projectId: search.projectId } : {}),
-    ...(search.cursor ? { cursor: search.cursor } : {})
-  };
-}
-
 /** Comma-separated tags: trimmed, empty entries dropped, duplicates removed. */
 export function parseTags(raw: string): string[] {
   return [...new Set(raw.split(',').map((tag) => tag.trim()).filter(Boolean))];
 }
-
-export const createKnowledgeSchema = z.object({
-  kind: z.enum(KNOWLEDGE_KINDS),
-  scope: z.enum(KNOWLEDGE_SCOPES),
-  projectId: z.string(),
-  workspaceId: z.string(),
-  journalType: z.enum(JOURNAL_TYPES),
-  title: z.string().trim().min(1, 'Enter a title.').max(TITLE_MAX, `Use at most ${TITLE_MAX} characters.`),
-  tags: z.string().max(2_000).refine((raw) => parseTags(raw).length <= TAGS_MAX, `Use at most ${TAGS_MAX} tags.`).refine((raw) => parseTags(raw).every((tag) => TAG.test(tag)), 'Tags use letters, digits and . _ / - (50 characters at most).'),
-  content: z.string().max(CONTENT_MAX, 'The content is too long.')
-}).superRefine((values, context) => {
-  if (values.scope === 'project' && !RESOURCE_ID_PATTERNS.projectId.test(values.projectId)) context.addIssue({ code: 'custom', path: ['projectId'], message: 'Choose a project.' });
-  if (values.scope === 'workspace' && !RESOURCE_ID_PATTERNS.workspaceId.test(values.workspaceId.trim())) context.addIssue({ code: 'custom', path: ['workspaceId'], message: 'Enter a workspace ID (ws_…).' });
-});
-export type CreateKnowledgeValues = z.infer<typeof createKnowledgeSchema>;
 
 export const CREATE_DEFAULTS: CreateKnowledgeValues = { kind: 'memory', scope: 'owner', projectId: '', workspaceId: '', journalType: 'engineering-log', title: '', tags: '', content: '' };
 

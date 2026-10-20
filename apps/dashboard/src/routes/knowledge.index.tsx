@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { RESOURCE_ID_PATTERNS } from '@/app/page-registry';
 import { KnowledgePage } from '@/features/knowledge/knowledge-page';
-import { KNOWLEDGE_KINDS, KNOWLEDGE_SCOPES } from '@/features/knowledge/knowledge-model';
+import { KNOWLEDGE_KINDS, KNOWLEDGE_SCOPES } from '@/features/knowledge/knowledge-search';
 import { knowledgePageQuery } from '@/features/knowledge/knowledge-queries';
 import { compact, cursor, exact, matching, oneOf, text } from '@/lib/search-params';
 

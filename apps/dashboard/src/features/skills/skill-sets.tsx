@@ -19,10 +19,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { type ConflictError, apiClient } from '@/lib/api-client';
 import { type BffEnvelope, bffKey, bffPath, bffQuery } from '@/lib/bff-query';
 import { EMPTY, formatRelative } from '@/lib/format';
-import {
-  DESCRIPTION_MAX, DISPLAY_NAME_MAX, positiveGeneration, type Skill, type SkillSet, type SkillSetItem, skillLabel, skillSetItems,
-  type SkillSetValues, skillSetSchema
-} from './skill-model';
+import { DESCRIPTION_MAX, DISPLAY_NAME_MAX, positiveGeneration, type Skill, type SkillSet, type SkillSetItem, skillLabel, skillSetItems } from './skill-model';
+import { type SkillSetValues, skillSetSchema } from './skill-form-schemas';
 import { SKILL_SETS_KEY, useSkillMutation } from './use-skill-mutation';
 
 /**

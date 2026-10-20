@@ -1,7 +1,7 @@
 import { queryOptions } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api-client';
 import { type BffEnvelope, bffKey, bffPath, bffQuery } from '@/lib/bff-query';
-import { type KnowledgeSearch, listQuery, searchBody } from './knowledge-model';
+import { type KnowledgeSearch, listQuery, searchBody } from './knowledge-search';
 
 export const KNOWLEDGE_PATH = '/knowledge';
 export const KNOWLEDGE_SEARCH_PATH = '/knowledge/search';

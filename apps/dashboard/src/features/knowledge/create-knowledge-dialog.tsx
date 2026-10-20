@@ -11,10 +11,8 @@ import { NativeSelect } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { bffQuery } from '@/lib/bff-query';
 import { displayName, PROJECTS_PATH, projectsFrom } from '@/features/projects/project-model';
-import {
-  CONTENT_MAX, CREATE_DEFAULTS, createKnowledgeSchema, type CreateKnowledgeValues, JOURNAL_TYPE_LABELS, JOURNAL_TYPES,
-  KIND_LABELS, KNOWLEDGE_KINDS, KNOWLEDGE_SCOPES, SCOPE_LABELS, TITLE_MAX
-} from './knowledge-model';
+import { CONTENT_MAX, CREATE_DEFAULTS, JOURNAL_TYPE_LABELS, JOURNAL_TYPES, KIND_LABELS, KNOWLEDGE_KINDS, KNOWLEDGE_SCOPES, SCOPE_LABELS, TITLE_MAX } from './knowledge-model';
+import { createKnowledgeSchema, type CreateKnowledgeValues } from './knowledge-form-schema';
 
 /**
  * "New entry" (parity D9): a memory note or a journal entry. The form resets each time it

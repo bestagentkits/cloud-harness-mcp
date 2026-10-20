@@ -9,14 +9,11 @@ import { EmptyState } from '@/components/feedback/empty-state';
 import { Button } from '@/components/ui/button';
 import { type BffEnvelope, bffQuery } from '@/lib/bff-query';
 import { AgentHierarchy } from './agent-hierarchy';
-import { AGENT_STATUSES, agentListQuery, agentsOf, agentStatusLabel, type AgentFilters } from './agent-model';
+import { AGENT_STATUSES, agentListQuery, PROFILE_FILTER_MAX, agentsOf, agentStatusLabel, type AgentFilters } from './agent-model';
 import { AgentsTable } from './agents-table';
 import { IdFilter } from './id-filter';
 
 export type AgentsSearch = AgentFilters;
-
-/** Profile ids are short slugs; the route bounds the param to the same length. */
-export const PROFILE_FILTER_MAX = 120;
 
 const ATTENTION_OPTIONS = [{ value: 'needs-attention', label: 'Needs attention' }, { value: 'clear', label: 'Clear' }] as const;
 

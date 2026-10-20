@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { importJobPolling } from './skill-import-progress';
-import {
-  archiveContentType, archiveProblem, archiveSummary, cancelGeneration, filterSkills, forkBody, groupBulkRequests, importBody, importGuidance,
-  importSchema, instructionsProblem, libraryCount, type Skill, skillSetItems, SKILL_ARCHIVE_MAX_BYTES
-} from './skill-model';
+import { archiveContentType, archiveProblem, archiveSummary, cancelGeneration, filterSkills, forkBody, groupBulkRequests, importBody, importGuidance, instructionsProblem, libraryCount, type Skill, skillSetItems, SKILL_ARCHIVE_MAX_BYTES } from './skill-model';
+import { importSchema } from './skill-form-schemas';
 
 const id = (n: number) => `sk_${String(n).padStart(20, '0')}`;
 const SKILLS: Skill[] = [

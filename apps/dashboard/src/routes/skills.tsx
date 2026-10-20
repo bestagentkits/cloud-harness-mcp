@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { SKILL_ID_PATTERN, SKILL_PROVIDERS, SKILL_SORTS, SKILL_STATES, SKILL_TABS, TAG_MAX } from '@/features/skills/skill-model';
+import { SKILL_ID_PATTERN, SKILL_PROVIDERS, SKILL_SORTS, SKILL_STATES, SKILL_TABS, TAG_MAX } from '@/features/skills/skill-search';
 import { SkillsPage } from '@/features/skills/skills-page';
 import { warmPageRead } from '@/lib/page-read';
 import { compact, exact, matching, oneOf, text } from '@/lib/search-params';
