@@ -1,18 +1,28 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { PagePlaceholder } from '@/components/layouts/page-placeholder';
-import { warmPageRead } from '@/lib/page-read';
 import { RESOURCE_ID_PATTERNS } from '@/app/page-registry';
-import { compact, cursor, matching, oneOf, text } from '@/lib/search-params';
+import { KnowledgePage } from '@/features/knowledge/knowledge-page';
+import { KNOWLEDGE_KINDS, KNOWLEDGE_SCOPES } from '@/features/knowledge/knowledge-model';
+import { warmPageRead } from '@/lib/page-read';
+import { compact, cursor, exact, matching, oneOf, text } from '@/lib/search-params';
 
 export const Route = createFileRoute('/knowledge/')({
   staticData: { pageId: 'knowledge' },
-  validateSearch: (raw: Record<string, unknown>) => compact({
-    kind: oneOf(raw, 'kind', ['memory', 'journal'] as const),
-    scope: matching(raw, 'scope', /^[a-z_-]{1,40}$/),
+  // `exact`: every known key is present (undefined when invalid), so a malformed raw value
+  // can never survive the router's merge of raw and validated search.
+  validateSearch: (raw: Record<string, unknown>) => exact({
+    kind: oneOf(raw, 'kind', KNOWLEDGE_KINDS),
+    scope: oneOf(raw, 'scope', KNOWLEDGE_SCOPES),
     projectId: matching(raw, 'projectId', RESOURCE_ID_PATTERNS.projectId),
     q: text(raw, 'q'),
-    cursor: cursor(raw)
+    cursor: cursor(raw),
+    view: oneOf(raw, 'view', ['graph'] as const)
   }),
   loader: (match) => warmPageRead('knowledge', match),
-  component: () => <PagePlaceholder pageId="knowledge" />
+  component: KnowledgeRoute
 });
+
+function KnowledgeRoute() {
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
+  return <KnowledgePage search={search} onSearch={(next) => { void navigate({ search: compact(next), replace: true }); }} />;
+}
