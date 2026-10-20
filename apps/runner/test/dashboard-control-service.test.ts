@@ -194,6 +194,21 @@ describe('skill revisions', () => {
       .rejects.toThrow(/cannot be cancelled/);
   });
 
+  it('exposes a result only for a succeeded import, never a failed job\'s raw error text', async () => {
+    const { controls, principals } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const failed = principals.createSkillImportJob({ ownerId, sourceKind: 'skillx', sourceRef: 'pdf' });
+    principals.advanceSkillImportJob({ ownerId, id: failed, state: 'failed', errorCode: 'INTERNAL_ERROR', resultJson: '{"message":"ENOENT /var/lib/runner/cache"}' });
+    const succeeded = principals.createSkillImportJob({ ownerId, sourceKind: 'skillx', sourceRef: 'pdf' });
+    principals.advanceSkillImportJob({ ownerId, id: succeeded, state: 'succeeded', resultJson: '{"slug":"pdf"}' });
+
+    const failedRead = await controls.execute(request('skill_import_status', { jobId: failed }));
+    expect(failedRead.data).toMatchObject({ state: 'failed', errorCode: 'INTERNAL_ERROR', result: null });
+    expect(JSON.stringify(failedRead.data)).not.toContain('ENOENT');
+    const succeededRead = await controls.execute(request('skill_import_status', { jobId: succeeded }));
+    expect(succeededRead.data).toMatchObject({ state: 'succeeded', result: { slug: 'pdf' } });
+  });
+
   it('refuses a cancel fenced on a generation the job has already moved past', async () => {
     const { controls, principals } = setup();
     const ownerId = principals.resolvePrincipal(principal);
@@ -202,7 +217,7 @@ describe('skill revisions', () => {
 
     // The operator read the queued job; it has since started, so the cancel is stale rather than applied.
     const stale = controls.execute(request('skill_import_cancel', { jobId, expectedGeneration: 1 }));
-    await expect(stale).rejects.toMatchObject({ code: 'CONFLICT', statusCode: 409 });
+    await expect(stale).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
     await expect(stale).rejects.toThrow(/generation 2, not 1/);
     expect(principals.getSkillImportJob(ownerId, jobId)?.state).toBe('running');
 

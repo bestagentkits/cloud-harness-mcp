@@ -255,8 +255,11 @@ describe('dashboard BFF', () => {
     expect(stale.json.message).toMatch(/changed or already finished/);
     expect(calls.at(-1)).toMatchObject({ operation: 'skill_import_cancel', input: { jobId, expectedGeneration: 1 } });
 
-    const current = await send(`/api/v1/skill-imports/${jobId}/cancel`, { method: 'POST', headers, body: JSON.stringify({ expectedGeneration: read.json.data.generation }) });
+    // The path names the job, so a body field of the same name cannot redirect the cancel.
+    const otherJob = `skjob_${'e'.repeat(24)}`;
+    const current = await send(`/api/v1/skill-imports/${jobId}/cancel`, { method: 'POST', headers, body: JSON.stringify({ expectedGeneration: read.json.data.generation, jobId: otherJob }) });
     expect(current.status).toBe(200);
+    expect(calls.at(-1)?.input).toEqual({ jobId, expectedGeneration: 2 });
     expect(current.json.data).toMatchObject({ state: 'cancelled', generation: 3 });
   });
 

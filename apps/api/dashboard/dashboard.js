@@ -1783,6 +1783,9 @@ export function initializeDashboard() {
         return;
       }
       if (review) review.textContent = 'Import queued.';
+      // The job line belongs to the new job from here on, so a Cancel before its first poll cannot reach
+      // the previous job.
+      if (jobBox) { jobBox.removeAttribute('data-job-id'); jobBox.removeAttribute('data-job-generation'); }
       void api('/skill-imports', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

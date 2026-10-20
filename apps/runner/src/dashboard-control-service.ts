@@ -34,11 +34,13 @@ function parseJobJson(value: string | null): unknown {
 
 /**
  * The row keeps progress and result as JSON text; callers read them as objects under the names the
- * dashboard projection allows, so a stored column name never decides what the operator can see.
+ * dashboard projection allows, so a stored column name never decides what the operator can see. Only a
+ * succeeded job exposes its result: a failed job's result holds the raw error text, and the operator gets
+ * the error code instead, as every other runner failure reaches the browser.
  */
 function skillImportJobView(job: SkillImportJobRecord): Record<string, unknown> {
   const { progressJson, resultJson, ...rest } = job;
-  return { ...rest, progress: parseJobJson(progressJson), result: parseJobJson(resultJson) };
+  return { ...rest, progress: parseJobJson(progressJson), result: job.state === 'succeeded' ? parseJobJson(resultJson) : null };
 }
 
 /**
