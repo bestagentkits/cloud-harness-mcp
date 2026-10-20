@@ -149,9 +149,10 @@ export const RunnerAgentsConfigSchema = z.object({
   // per agent at spawn: turning it off refuses new continuations and stops recording for agents
   // spawned afterwards; stored sessions age out through retention.
   sessionPersistenceEnabled: enabled,
-  // Instance switch for the opt-in pi-durable agent engine. Off refuses new and continued durable
-  // spawns; durable agents already running finish, and nothing resumes on its own. The runner loads
-  // the experimental durable storage code only while it is on.
+  // Instance switch for the opt-in pi-durable agent engine, read at runner start. Off refuses new and
+  // continued durable spawns, and nothing resumes on its own; flipping it takes a runner restart,
+  // which stops running agents as any restart does. The runner loads the experimental durable
+  // storage code only while it is on.
   durableRuntimeEnabled: enabled,
   limits: RunnerAgentLimitsSchema.default(DEFAULT_RUNNER_AGENT_LIMITS)
 }).strict();

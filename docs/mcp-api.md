@@ -284,8 +284,8 @@ the ledger and its fences are in
   the same IDs.
 - A first call's result is unchanged. The runner records the call before it
   reaches the executor and records its outcome, with the result's hash, before
-  sending the result. An agent spawned with session persistence also stores the
-  exact result text (its receipt) until its lineage holds
+  sending the result. An agent spawned with session persistence or on the
+  durable engine also stores the exact result text (its receipt) until its lineage holds
   `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` bytes; any other result is kept as a
   hash only and replays as if its receipt had been purged.
 - A repeated call whose result text is stored returns those bytes exactly,
