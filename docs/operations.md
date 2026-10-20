@@ -462,22 +462,30 @@ Compose stack. A production canary is an owner decision and follows the
 
 ### Kill switch and rollback
 
-Unsetting either flag and restarting the runner is the kill switch. Running
-agents finish; new `continueFrom` and durable spawns are refused with
-`NOT_SUPPORTED`; nothing resumes on its own. The default spawn path never reads
-the stored sessions, so turning the flags off needs no data change. Stored
-sessions, receipts, and durable lineage databases stay until the retention in
-`AGENT_SESSION_RETENTION_MS` purges them or their workspace closes.
+Unsetting either flag and restarting the runner is the kill switch. The runner
+reads both flags only at start, so the change takes effect only through that
+restart, and the restart treats running agents like any other: a clean stop
+cancels every running agent, and an agent left behind by an abrupt stop is
+marked `INTERRUPTED` when the runner comes back. Nothing resumes on its own.
+After the restart, `continueFrom` (with persistence off) and durable spawns and
+continuations (with the durable engine off) are refused with `NOT_SUPPORTED`.
+The default spawn path never reads the stored sessions, so turning the flags
+off needs no data change. Stored sessions, receipts, and durable lineage
+databases stay until the retention in `AGENT_SESSION_RETENTION_MS` purges them
+or their workspace closes, so turning a flag back on makes those agents
+continuable again.
 
 A rollback to a runner older than session persistence also needs the schema
 steps in
 [`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts):
 `downgradeStateSchemaToV14` steps v17 to v14 through `downgradeStateSchemaToV16`
 and `downgradeStateSchemaToV15`. Each step refuses while the data it drops
-exists (durable agents, effect receipts, persisted sessions) unless data loss is
-allowed. Turn the flags off and let retention purge, or close the affected
-workspaces, before stepping down without data loss. Delete `agent-sessions/`
-after a downgrade below v17.
+exists unless data loss is allowed: durable agents for v16, stored receipt text
+for v15, and persisted sessions for v14. Only agents spawned with persistence
+or on the durable engine store receipt text; every other effect keeps hashes
+only and never blocks the v15 step. Turn the flags off and let retention purge,
+or close the affected workspaces, before stepping down without data loss.
+Delete `agent-sessions/` after a downgrade below v17.
 
 ### Durable agent engine
 
@@ -499,16 +507,8 @@ image. To offer it:
 With the flag on but the default image, each durable run fails at start with an
 error that names the build argument. Lineage databases live in
 `agent-sessions/` beside the state database, are part of runner state, and
-follow its backup; closing a workspace deletes them.
-
-The runner reads the flag only at start, so turning the engine off means
-unsetting it and restarting the runner. That restart treats running agents like
-any other: a clean stop cancels every running agent, durable or not, and an
-agent left behind by an abrupt stop is marked interrupted when the runner comes
-back. Nothing resumes on its own. After the restart, new durable spawns and
-continuations of durable agents are refused with `NOT_SUPPORTED`. Their lineage
-databases stay until the workspace closes or retention purges them, so turning
-the flag back on makes those agents continuable again.
+follow its backup; closing a workspace deletes them. Turning the engine off
+follows the [kill switch](#kill-switch-and-rollback).
 
 State schema v17 records each agent's engine and whether its run left
 unfinished work. A rollback to a v16 runner needs
