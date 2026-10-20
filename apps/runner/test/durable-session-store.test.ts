@@ -41,6 +41,7 @@ function fakeBackend(commitBytes = 0) {
     live: new Set<string>(),
     queries: [] as Array<{ status: string; abortRequested: boolean }>,
     commits: 0,
+    documentReads: 0,
     closed: 0,
     loader: undefined as unknown as DurableStorageBackendLoader
   };
@@ -53,7 +54,11 @@ function fakeBackend(commitBytes = 0) {
         async commit() {
           state.commits += 1;
           await appendFile(path, Buffer.alloc(commitBytes));
-          return [];
+          return state.commits;
+        },
+        async document() {
+          state.documentReads += 1;
+          return { id: state.documentReads, body: 'd'.repeat(1_048_576) };
         },
         async scanTasks(query: { status: string; abortRequested: boolean }) {
           state.queries.push(query);
@@ -69,6 +74,13 @@ function fakeBackend(commitBytes = 0) {
 function request(id: string, method: string, args: unknown[] = []): unknown {
   return { type: 'storage_request', id, method, args };
 }
+
+/** What a claim keeps in memory for repeated request ids; the claim object is the store's own state. */
+function remembered(claim: object): { count: number; bytes: number; lastCommit: boolean } {
+  const state = claim as { responses: Map<string, unknown>; rememberedBytes: number; lastCommit: unknown };
+  return { count: state.responses.size, bytes: state.rememberedBytes, lastCommit: state.lastCommit !== undefined };
+}
+const NOTHING_REMEMBERED = { count: 0, bytes: 0, lastCommit: false };
 
 describe('DurableSessionStore', () => {
   it('runs an allowed storage method for the current claim', async () => {
@@ -120,6 +132,56 @@ describe('DurableSessionStore', () => {
     const next = await store.handle(claim, request('r-2', 'mintId'));
     expect(repeated).toEqual(first);
     expect(next).not.toEqual(first);
+  });
+
+  it('runs a repeated read again instead of retaining its result', async () => {
+    const backend = fakeBackend();
+    const store = await createStore({ loader: backend.loader });
+    const claim = await store.claim(LINEAGE, OWNER, 1, 0);
+    const first = await store.handle(claim, request('r-1', 'document', [1, 'current']));
+    const repeated = await store.handle(claim, request('r-1', 'document', [1, 'current']));
+    expect(first).toMatchObject({ ok: true, result: { id: 1 } });
+    expect(repeated).toMatchObject({ ok: true, result: { id: 2 } });
+    expect(backend.documentReads).toBe(2);
+    expect(remembered(claim)).toEqual(NOTHING_REMEMBERED);
+  });
+
+  it('bounds the remembered responses of a claim by their total size', async () => {
+    const backend = fakeBackend();
+    const store = await createStore({ loader: backend.loader, maxRememberedBytes: 300 });
+    const claim = await store.claim(LINEAGE, OWNER, 1, 0);
+    const responses = [];
+    for (let index = 1; index <= 8; index += 1) responses.push(await store.handle(claim, request(`r-${index}`, 'mintId')));
+    const held = remembered(claim);
+    expect(held.bytes).toBeLessThanOrEqual(300);
+    expect(held.count).toBeLessThan(8);
+    // The newest response is still answered from memory; the oldest was evicted and runs again.
+    expect(await store.handle(claim, request('r-8', 'mintId'))).toEqual(responses[7]);
+    expect(await store.handle(claim, request('r-1', 'mintId'))).not.toEqual(responses[0]);
+  });
+
+  it('answers a retried commit from its first result after newer requests evicted it', async () => {
+    const backend = fakeBackend();
+    const store = await createStore({ loader: backend.loader, maxRememberedBytes: 300 });
+    const claim = await store.claim(LINEAGE, OWNER, 1, 0);
+    const first = await store.handle(claim, request('c-1', 'commit', [[]]));
+    for (let index = 1; index <= 300; index += 1) await store.handle(claim, request(`m-${index}`, 'mintId'));
+    expect(await store.handle(claim, request('c-1', 'commit', [[]]))).toEqual(first);
+    expect(backend.commits).toBe(1);
+  });
+
+  it('drops the remembered responses when its claim is released or sealed', async () => {
+    const backend = fakeBackend();
+    const store = await createStore({ loader: backend.loader });
+    const released = await store.claim(LINEAGE, OWNER, 1, 0);
+    await store.handle(released, request('c-1', 'commit', [[]]));
+    expect(remembered(released)).toMatchObject({ count: 1, lastCommit: true });
+    await store.release(released);
+    expect(remembered(released)).toEqual(NOTHING_REMEMBERED);
+    const sealed = await store.claim(LINEAGE, OWNER, 1, 1);
+    await store.handle(sealed, request('c-1', 'commit', [[]]));
+    await store.seal(sealed);
+    expect(remembered(sealed)).toEqual(NOTHING_REMEMBERED);
   });
 
   it('fences a superseded claim and refuses a stale one', async () => {
@@ -267,5 +329,22 @@ describe('DurableSessionStore', () => {
     expect((await stat(dir)).mode & 0o777).toBe(0o700);
     expect((await stat(join(dir, `${LINEAGE}.sqlite`))).mode & 0o777).toBe(0o600);
     expect((await stat(join(dir, `${LINEAGE}.owner.json`))).mode & 0o777).toBe(0o600);
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps the write-ahead log and shared-memory files private after a write', async () => {
+    // POSIX permission bits; Windows ACLs do not map onto these modes.
+    const dir = await stateDir();
+    const store = new DurableSessionStore({ stateDir: dir, enabled: true });
+    stores.push(store);
+    const claim = await store.claim(LINEAGE, OWNER, 1, 0);
+    const previous = process.umask(0o022);
+    try {
+      expect(await store.handle(claim, request('c-1', 'commit', [[]]))).toMatchObject({ ok: true });
+    } finally {
+      process.umask(previous);
+    }
+    for (const suffix of ['-wal', '-shm']) {
+      expect((await stat(join(dir, `${LINEAGE}.sqlite${suffix}`))).mode & 0o777).toBe(0o600);
+    }
   });
 });
