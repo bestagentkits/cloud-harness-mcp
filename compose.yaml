@@ -76,6 +76,11 @@ services:
       RUNNER_HOST: 0.0.0.0
       RUNNER_PORT: 3001
       MCP_BEARER_TOKEN: ""
+      # The Dashboard webchat credentials are api-only; blank them so the shared env file cannot leak them.
+      DEWEE_GATEWAY_TOKEN: ""
+      DEWEE_GATEWAY_TOKEN_FILE: ""
+      DEWEE_WEBCHAT_SECRET: ""
+      DEWEE_WEBCHAT_SECRET_FILE: ""
       TOOLKIT_EGRESS_PROXY: http://provisioning-proxy:3128
       PROVISIONING_NETWORK: cloud-harness-mcp_provisioning
       AGENT_IMAGE: ${AGENT_IMAGE:-cloud-harness-agent:local}

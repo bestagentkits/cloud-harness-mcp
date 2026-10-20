@@ -42,6 +42,12 @@ export function loadApiConfig(): ApiConfig {
     ,apiKeyAuthEnabled: environment('API_KEY_AUTH_ENABLED'),
     apiKeyGatewayAccessAudience: environment('API_KEY_GATEWAY_ACCESS_AUDIENCE'),
     apiKeyGatewayServiceSubject: environment('API_KEY_GATEWAY_SERVICE_SUBJECT'),
-    apiKeyGatewayPublicUrl: environment('API_KEY_GATEWAY_PUBLIC_URL')
+    apiKeyGatewayPublicUrl: environment('API_KEY_GATEWAY_PUBLIC_URL'),
+    deweeGatewayUrl: environment('DEWEE_GATEWAY_URL') || undefined,
+    deweeGatewayToken: secret('DEWEE_GATEWAY_TOKEN') || undefined,
+    deweeWebchatSecret: secret('DEWEE_WEBCHAT_SECRET') || undefined,
+    deweeTenantId: environment('DEWEE_TENANT_ID') || undefined,
+    deweeAgentId: environment('DEWEE_AGENT_ID') || undefined,
+    deweeChatTimeoutMs: environment('DEWEE_CHAT_TIMEOUT_MS') || undefined
   });
 }

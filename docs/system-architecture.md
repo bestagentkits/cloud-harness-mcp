@@ -39,6 +39,12 @@ Dashboard Terminal (browser)
   -> runner internal terminal operation (service bearer, not an MCP tool)
   -> Docker Engine API exec with a PTY over the runner's unix socket
   -> interactive shell inside the workspace's existing executor
+
+Dashboard webchat (browser)
+  -> /dashboard/api/v1/dewee BFF on the API (session cookie, Origin, CSRF,
+     per-operator limit; page block built server-side)
+  -> Dewee gateway WebSocket over the API egress network (server-side token)
+  -> Dewee agent and its LLM provider, outside Cloud Harness
 ```
 
 Cloudflare Access is an optional public authentication edge in front of nginx;
@@ -143,6 +149,17 @@ without a local one. The browser pulls output with long-poll reads over
 ordinary dashboard requests. [ADR 0003](adr/0003-terminal-bash-and-managed-toolbox.md) records
 the decision; the [security model](security-model.md#dashboard-terminal) records
 its boundary.
+
+The Dashboard webchat is a proxy, not an agent runtime. The API BFF in
+[`apps/api/src/dashboard-dewee-router.ts`](../apps/api/src/dashboard-dewee-router.ts)
+implements the dewee-webchat HTTP contract (`config`, `session`, `chat` as
+Server-Sent Events, `history`). It derives the visitor from the dashboard
+principal, prepends the page block, and streams each turn from the Dewee gateway
+WebSocket ([`apps/api/src/dashboard-dewee-gateway.ts`](../apps/api/src/dashboard-dewee-gateway.ts)).
+It aborts the run when the browser disconnects. The runner is not involved. When
+the agent acts on Cloud Harness, it does so over MCP with its own API key, like
+any other client. The [security model](security-model.md#dashboard-webchat-dewee)
+records the data flow and the controls.
 
 Managed toolbox packages split orchestration from building. The `packages_*`
 MCP tools reach the runner like every other tool, but the runner dispatches

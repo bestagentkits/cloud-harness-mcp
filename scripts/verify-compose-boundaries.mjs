@@ -151,6 +151,16 @@ for (const [serviceName, service] of Object.entries(services)) {
   if (serviceName === 'runner' || serviceName === 'api') continue;
   requireBoundary(!Object.keys(service.environment ?? {}).some((name) => name.startsWith('CLOUDFLARE_ACCESS_API_TOKEN')), `${serviceName} must not receive the Cloudflare Access API token`);
 }
+// The Dashboard webchat gateway token and signing secret are api-only. The runner shares the
+// runtime env file, so it must blank them explicitly; no other service may name them at all.
+const deweeSecretNames = ['DEWEE_GATEWAY_TOKEN', 'DEWEE_GATEWAY_TOKEN_FILE', 'DEWEE_WEBCHAT_SECRET', 'DEWEE_WEBCHAT_SECRET_FILE'];
+for (const name of deweeSecretNames) {
+  requireBoundary(name in (services.runner.environment ?? {}) && services.runner.environment[name] === '', `runner must explicitly blank ${name}`);
+}
+for (const [serviceName, service] of Object.entries(services)) {
+  if (serviceName === 'runner' || serviceName === 'api') continue;
+  requireBoundary(!Object.keys(service.environment ?? {}).some((name) => name.startsWith('DEWEE_')), `${serviceName} must not receive Dewee webchat settings`);
+}
 for (const service of ['api', 'runner', 'ingress']) {
   for (const name of ['MCP_CANARY_URL', 'MCP_CANARY_ACCESS_CLIENT_ID', 'MCP_CANARY_ACCESS_CLIENT_SECRET']) {
     requireBoundary(!services[service].environment?.[name], `${service} must not receive ${name}`);
