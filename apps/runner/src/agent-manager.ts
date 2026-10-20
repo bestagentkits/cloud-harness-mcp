@@ -92,6 +92,8 @@ const AGENT_OPERATIONS: Readonly<Partial<Record<RunnerOperation, true>>> = {
   agent_list: true
 };
 const terminalStatuses = new Set<AgentStatus>(AGENT_TERMINAL_STATUSES);
+/** Mutations whose target is read before dispatch so a continuation can settle a lost outcome. */
+const OBSERVES_TARGET_BEFORE_DISPATCH: ReadonlySet<string> = new Set(['files_apply_patch', 'files_delete', 'files_mkdir', 'files_move']);
 /** Mirrors the agent runtime's `start` record prompt bound (`apps/agent-runtime/src/protocol-schemas.ts`). */
 const AGENT_START_PROMPT_MAX_BYTES = 256 * 1024;
 /** Room kept in a start record for every field other than the prompt and the replayed session. */
@@ -917,12 +919,11 @@ export class AgentManager {
     let images: EffectDispatchState = { preImageSha256: null, intendedSha256: null };
     const reader = this.stateReader(record, output.requestId, call.signal);
     if (output.operation === 'files_write') images = writeImages(toolInput);
-    if (output.operation === 'files_apply_patch') images = await capturePatchImages(reader, toolInput);
-    // The target's state before a delete, mkdir, or move only settles a lost outcome, which only a
-    // continuation reconciles, so an agent that records no session skips that extra executor read.
-    const observesEntry = output.operation === 'files_delete' || output.operation === 'files_mkdir' || output.operation === 'files_move';
-    if (observesEntry && this.repository.recordsSession(record.id)) {
-      images = { ...images, preEntry: await capturePreEntry(reader, output.operation, toolInput) };
+    // The target's state before a patch, delete, mkdir, or move only settles a lost outcome, which
+    // only a continuation reconciles, so an agent that records no session skips that executor read.
+    if (OBSERVES_TARGET_BEFORE_DISPATCH.has(output.operation) && this.repository.recordsSession(record.id)) {
+      if (output.operation === 'files_apply_patch') images = await capturePatchImages(reader, toolInput);
+      else images = { ...images, preEntry: await capturePreEntry(reader, output.operation, toolInput) };
     }
     if (!this.repository.dispatchEffect({ ...key, fence, expectedStates, ...images, now: this.now() })) {
       await this.sendFenceLost(context, output.requestId);
