@@ -8,20 +8,6 @@ export type FirewallAttestationResult = {
 
 export type FirewallOrderingRepair = { chain: string; rule: string };
 
-// Moves one managed jump to the head of its chain, then deletes its later exact
-// duplicates bottom-up so the chain never lacks the jump. Each deletion re-reads
-// the rule at that position first, so a concurrent writer can only make the
-// repair skip a deletion, never remove a foreign rule.
-const ORDERING_REPAIR_SCRIPT = [
-  'set -eu',
-  'chain="$1"; shift; rule="$*"',
-  'iptables -w 10 -I "$chain" 1 "$@"',
-  'for n in $(iptables -w 10 -S "$chain" | awk -v r="-A $chain $rule" \'/^-A /{i++; if (i > 1 && $0 == r) print i}\' | sort -rn); do',
-  '  current=$(iptables -w 10 -S "$chain" | awk -v n="$n" \'/^-A /{i++; if (i == n) print}\')',
-  '  if [ "$current" = "-A $chain $rule" ]; then iptables -w 10 -D "$chain" "$n"; fi',
-  'done'
-].join('\n');
-
 export type HostFirewallAttestorConfig = {
   networkName?: string;
   bridgeInterface?: string;
@@ -37,7 +23,7 @@ export class HostFirewallAttestor {
   public readonly bridgeSubnet: string;
   public readonly dnsResolvers: string[];
   public readonly networkGuardImage: string;
-  private repairInFlight: Promise<{ ok: boolean; reason?: string }> | undefined;
+  private attestationQueue: Promise<unknown> = Promise.resolve();
 
   constructor(config: HostFirewallAttestorConfig = {}) {
     this.networkName = config.networkName ?? 'cloud-harness-dependency-access';
@@ -348,29 +334,45 @@ export class HostFirewallAttestor {
     return { ok: true, rules: result.stdout };
   }
 
+  // Moves every displaced managed jump in one iptables-restore transaction:
+  // each `-D <spec>` removes the first (displaced) copy by rule spec, never by
+  // position, and the matching `-I 1` re-adds it at the head. The commit is
+  // atomic, so a concurrent writer can never make it delete a foreign rule, and
+  // a jump that vanished since the probe fails the whole commit unchanged.
   private async applyOrderingRepair(repairs: FirewallOrderingRepair[]): Promise<{ ok: boolean; reason?: string }> {
+    const lines = ['*filter'];
     for (const { chain, rule } of repairs) {
-      const tokens = rule.split(' ');
-      if (!tokens.every((t) => /^[A-Za-z0-9_-]+$/.test(t))) {
+      if (!rule.split(' ').every((t) => /^[A-Za-z0-9_-]+$/.test(t))) {
         return { ok: false, reason: `refusing to repair unexpected managed jump in ${chain}: ${rule}` };
       }
-      const result = await runDocker([
-        'run', '--rm', '--pull', 'never', '--network', 'host',
-        '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN',
-        '--security-opt', 'no-new-privileges',
-        '--user', '0:0',
-        '--entrypoint', '/bin/sh',
-        this.networkGuardImage,
-        '-c', ORDERING_REPAIR_SCRIPT, 'chm-repair', chain, ...tokens
-      ], { timeoutMs: 15_000 });
-      if (result.exitCode !== 0) {
-        return { ok: false, reason: `host firewall ordering repair failed for ${chain} (exit code ${result.exitCode}): ${result.stderr || result.stdout}` };
-      }
+      lines.push(`-D ${chain} ${rule}`, `-I ${chain} 1 ${rule}`);
+    }
+    lines.push('COMMIT', '');
+    const result = await runDocker([
+      'run', '--rm', '-i', '--pull', 'never', '--network', 'host',
+      '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN',
+      '--security-opt', 'no-new-privileges',
+      '--user', '0:0',
+      '--entrypoint', '/sbin/iptables-restore',
+      this.networkGuardImage,
+      '-w', '10', '--noflush'
+    ], { stdin: lines.join('\n'), timeoutMs: 15_000 });
+    if (result.exitCode !== 0) {
+      return { ok: false, reason: `host firewall ordering repair failed (exit code ${result.exitCode}): ${result.stderr || result.stdout}` };
     }
     return { ok: true };
   }
 
   public async attestHostKernel(): Promise<{ ok: boolean; reason?: string; repaired?: FirewallOrderingRepair[] }> {
+    // Concurrent opens, readiness checks, and the reaper attest at the same
+    // time; serializing the whole probe/plan/repair/re-probe sequence keeps each
+    // repair plan matched to the ruleset it was planned from.
+    const run = this.attestationQueue.then(() => this.probeAndRepair());
+    this.attestationQueue = run.catch(() => undefined);
+    return await run;
+  }
+
+  private async probeAndRepair(): Promise<{ ok: boolean; reason?: string; repaired?: FirewallOrderingRepair[] }> {
     try {
       const probe = await this.probeFirewall();
       if (!probe.ok) return probe;
@@ -379,9 +381,7 @@ export class HostFirewallAttestor {
 
       const repairs = this.planOrderingRepair(probe.rules);
       if (!repairs) return parsed;
-      // Serialize repairs: concurrent opens and the reaper attest at the same time.
-      this.repairInFlight ??= this.applyOrderingRepair(repairs).finally(() => { this.repairInFlight = undefined; });
-      const repaired = await this.repairInFlight;
+      const repaired = await this.applyOrderingRepair(repairs);
       if (!repaired.ok) return { ok: false, reason: `${parsed.reason}; ${repaired.reason}` };
 
       const reprobe = await this.probeFirewall();

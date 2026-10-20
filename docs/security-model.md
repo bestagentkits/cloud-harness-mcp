@@ -522,9 +522,15 @@ exact ordered host ruleset before every dependency executor start and during
 periodic reaper reconciliation. When the only defect is that another host
 service (Tailscale's `ts-input`/`ts-forward` jumps, for example) inserted a rule
 ahead of a managed jump, the runner moves that existing managed jump back to the
-head of its chain through the same network-guard image and attests the fresh
-ruleset again; it never adds, widens, or removes any other rule, and a ruleset
-that would not attest after that move is left untouched. On any other drift it
+head of its chain through the same network-guard image, in one atomic
+`iptables-restore --noflush` transaction that deletes and re-inserts the jump by
+rule spec, and attests the fresh ruleset again. It never adds, widens, or
+removes any other rule; a ruleset that would not attest after that move is left
+untouched, and a jump that vanished since the probe fails the transaction
+unchanged. Because the readiness check and reaper run the same attestation,
+they may perform this repair, and a service that keeps re-asserting its own
+head position (Tailscale's default netfilter mode) is moved behind again on
+each attestation. On any other drift it
 fences the workspace to
 `NETWORK_QUARANTINED`, stops the executor, and retains its data for recovery
 after policy reconciliation. If attestation is unavailable the profile fails
