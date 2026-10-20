@@ -1,3 +1,10 @@
+# [0.74.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.73.0...v0.74.0) (2026-10-20)
+
+
+### Features
+
+* **dashboard:** sensitive pages in React: secrets, API keys, MCP servers, models ([#458](https://github.com/bestagentkits/cloud-harness-mcp/issues/458) P4a) ([#496](https://github.com/bestagentkits/cloud-harness-mcp/issues/496)) ([15b9aeb](https://github.com/bestagentkits/cloud-harness-mcp/commit/15b9aeb51bb5161d325bbcdac4e49d3efed003b6)), closes [#484](https://github.com/bestagentkits/cloud-harness-mcp/issues/484) [#484](https://github.com/bestagentkits/cloud-harness-mcp/issues/484)
+
 # [0.73.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.72.0...v0.73.0) (2026-10-20)
 
 
