@@ -45,9 +45,20 @@ const runtime = createApiApp(config, { accessVerifier: { fetcher: async () => ne
 // Each Playwright test opens a fresh browser context, so without help every page load would
 // re-download every content-hashed chunk and the whole suite would exceed the API's
 // per-minute request limit. Like a browser cache for immutable files, the first request for
-// each hashed asset goes through the real API and later ones replay that exact response.
+// each hashed asset goes through the real API (its routing, allowlist and security headers)
+// and later ones replay that exact status, headers and body without entering Express. Only a
+// 200 that carries the API's immutable caching and security headers is replayed; anything
+// else keeps going through the API every time, and `e2e/smoke.spec.ts` asserts the headers
+// a replayed asset carries, so a header regression still fails the suite.
 const ASSET = /^\/dashboard\/assets\/[^/?]+$/;
 const assetCache = new Map();
+
+/** The headers every served asset must carry; a response without them is never cached. */
+function replayable(headers) {
+  return String(headers['cache-control'] ?? '').includes('immutable')
+    && headers['x-content-type-options'] === 'nosniff'
+    && Boolean(headers['content-security-policy']);
+}
 
 function replay(cached, response) {
   response.writeHead(cached.status, cached.headers);
@@ -61,7 +72,8 @@ function captureAsset(path, response) {
   response.write = (chunk, ...rest) => { if (chunk) chunks.push(Buffer.from(chunk)); return write(chunk, ...rest); };
   response.end = (chunk, ...rest) => {
     if (chunk && typeof chunk !== 'function') chunks.push(Buffer.from(chunk));
-    if (response.statusCode === 200) assetCache.set(path, { status: 200, headers: response.getHeaders(), body: Buffer.concat(chunks) });
+    const headers = response.getHeaders();
+    if (response.statusCode === 200 && replayable(headers)) assetCache.set(path, { status: 200, headers, body: Buffer.concat(chunks) });
     return end(chunk, ...rest);
   };
 }
