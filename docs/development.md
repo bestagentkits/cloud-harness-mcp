@@ -185,7 +185,11 @@ configuration therefore runs
 [`scripts/repair-release-channel-notes.mjs`](../scripts/repair-release-channel-notes.mjs)
 as its first verify step. semantic-release has already chosen the last release
 by then, so a run that restores a note stops before committing anything, and
-the next release run on that branch resumes at the next `-beta.N`. The run that
+the next release run on that branch resumes at the next `-beta.N`. That next
+run starts after the next push to the branch passes CI, or when the stopped
+Release run is re-run while the branch tip is unchanged. The stopped run also
+opens semantic-release's failing-release issue, which the next successful
+release closes. The run that
 lost the note never reached its publish step, so the repaired tag has no GitHub
 release; its notes stay in `CHANGELOG.md` unless the owner creates that
 prerelease by hand.

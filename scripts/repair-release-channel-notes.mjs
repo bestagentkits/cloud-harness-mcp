@@ -58,8 +58,10 @@ export function findTagsMissingChannelNotes({ cwd, branch, config = readReleaseC
 
 export function repairReleaseChannelNotes({ cwd = process.cwd(), branch, remote = 'origin', dryRun = false, log = console.log }) {
   const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+  const config = readReleaseConfig(cwd);
+  if (!prereleaseLane(config, branch)) return [];
   git('fetch', '--quiet', remote, `+refs/notes/${NOTE_REF_PREFIX}*:refs/notes/${NOTE_REF_PREFIX}*`);
-  const { lane, tags } = findTagsMissingChannelNotes({ cwd, branch });
+  const { lane, tags } = findTagsMissingChannelNotes({ cwd, branch, config });
   for (const tag of tags) {
     if (dryRun) {
       log(`${tag} has no ${lane.channel} channel note; a release run restores it.`);
@@ -67,7 +69,11 @@ export function repairReleaseChannelNotes({ cwd = process.cwd(), branch, remote 
     }
     const ref = `${NOTE_REF_PREFIX}-${tag}`;
     git('notes', '--ref', ref, 'add', '-f', '-m', JSON.stringify({ channels: [lane.channel] }), tag);
-    git('push', '--quiet', remote, `refs/notes/${ref}`);
+    try {
+      git('push', '--quiet', remote, `refs/notes/${ref}`);
+    } catch (error) {
+      throw new Error(`Could not push refs/notes/${ref}; the release token must be allowed to push refs/notes/*.`, { cause: error });
+    }
     log(`Restored the ${lane.channel} channel note for ${tag}.`);
   }
   return tags;

@@ -96,7 +96,9 @@ instead of copying behavior, defaults, command inventories, or configuration.
 - A `Release` failure with `tag 'vX-beta.N' already exists` usually means a
   prerelease tag merged into `dev` lacks its
   `refs/notes/semantic-release-<tag>` channel note. The release config's
-  verify step restores it and stops that run; the next run releases. If the
+  verify step restores it and stops that run (opening a failing-release issue);
+  the next run, after a new `dev` push or a re-run of that Release run,
+  releases and closes the issue. If the
   error persists, check whether the tag is merged into the branch at all.
   Never delete or move a published release tag to get past it.
 - `release.yml` always runs from `main` (it is a `workflow_run` workflow), so
