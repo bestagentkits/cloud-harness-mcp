@@ -107,7 +107,7 @@ export function displayEndpoint(endpoint: string): string {
 }
 
 /** The announcement for the OAuth callback outcome the server appends as `?oauth=&reason=`. */
-export function oauthOutcomeMessage(outcome: { oauth?: 'connected' | 'error'; reason?: string }): { text: string; ok: boolean } | undefined {
+export function oauthOutcomeMessage(outcome: { oauth?: 'connected' | 'error' | undefined; reason?: string | undefined }): { text: string; ok: boolean } | undefined {
   if (outcome.oauth === 'connected') return { text: 'OAuth connected.', ok: true };
   if (outcome.oauth !== 'error') return undefined;
   const reason = (outcome.reason ?? '').replace(/[^a-z_]/g, '').replace(/_/g, ' ');

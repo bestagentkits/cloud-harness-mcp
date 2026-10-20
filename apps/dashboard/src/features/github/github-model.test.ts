@@ -63,6 +63,12 @@ describe('githubCallbackSearch', () => {
     expect(githubCallbackSearch({ installation_id: Number('1'.repeat(21)) })).toEqual({});
   });
 
+  it('names every key, so the router cannot merge an invalid raw value back in', () => {
+    const result = githubCallbackSearch({ state: 'short', installation_id: '12ab' });
+    expect(Object.keys(result).sort()).toEqual(['installation_id', 'state']);
+    expect({ ...{ state: 'short', installation_id: '12ab' }, ...result }).toEqual({ state: undefined, installation_id: undefined });
+  });
+
   it('exports the same patterns the runner accepts', () => {
     expect(GITHUB_STATE_PATTERN.test(STATE_32)).toBe(true);
     expect(GITHUB_INSTALLATION_PATTERN.test('0')).toBe(true);

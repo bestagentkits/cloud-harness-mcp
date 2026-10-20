@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mcpDetailSearch, mcpListSearch } from './mcp-detail-search';
 import { apiClient } from '@/lib/api-client';
 import type * as ApiClientModule from '@/lib/api-client';
 import { ClientValidationError } from '@/lib/bff-mutation';
@@ -357,5 +358,17 @@ describe('probeMessage', () => {
   it('reports the failure reason, or a fixed sentence when there is none', () => {
     expect(probeMessage({ status: 'error', error: 'timeout' })).toEqual({ text: 'Connection failed: timeout', ok: false });
     expect(probeMessage({ status: 'error' })).toEqual({ text: 'Connection failed: the server did not connect.', ok: false });
+  });
+});
+
+describe('MCP search validators', () => {
+  it('name every key, so the router cannot merge an invalid raw value back in', () => {
+    const raw = { oauth: 'maybe', reason: 'Not<Valid>', tab: 'secrets' };
+    expect({ ...raw, ...mcpListSearch(raw) }).toEqual({ oauth: undefined, reason: undefined, tab: 'secrets' });
+    expect({ ...raw, ...mcpDetailSearch(raw) }).toEqual({ oauth: undefined, reason: undefined, tab: undefined });
+  });
+
+  it('keep a valid OAuth outcome and tab', () => {
+    expect(mcpDetailSearch({ oauth: 'error', reason: 'access_denied', tab: 'tools' })).toEqual({ oauth: 'error', reason: 'access_denied', tab: 'tools' });
   });
 });

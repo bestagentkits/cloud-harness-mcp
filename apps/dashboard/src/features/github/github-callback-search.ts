@@ -1,4 +1,4 @@
-import { compact, matching } from '@/lib/search-params';
+import { exact, matching } from '@/lib/search-params';
 
 // Kept apart from the page model: the route file imports this validator eagerly, and the
 // page itself must stay in its lazily loaded route chunk.
@@ -17,7 +17,7 @@ export function githubCallbackSearch(raw: Record<string, unknown>) {
   // A number past 2^53 has already lost digits, so only a safe integer is taken as an ID;
   // anything longer than the pattern is refused, never truncated.
   const installationId = typeof value === 'number' ? (Number.isSafeInteger(value) && value >= 0 ? String(value) : undefined) : typeof value === 'string' ? value.trim() : undefined;
-  return compact({
+  return exact({
     state: matching(raw, 'state', GITHUB_STATE_PATTERN),
     installation_id: installationId && GITHUB_INSTALLATION_PATTERN.test(installationId) ? installationId : undefined
   });

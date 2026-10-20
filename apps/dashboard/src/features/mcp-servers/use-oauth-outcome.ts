@@ -7,7 +7,7 @@ import { oauthOutcomeMessage } from './mcp-model';
  * the URL with a replace so a reload or Back does not announce it again. Runs on the list
  * page too: the server redirects there when the flow's server is unknown.
  */
-export function useOAuthOutcome(outcome: { oauth?: 'connected' | 'error'; reason?: string }, clear: () => void) {
+export function useOAuthOutcome(outcome: { oauth?: 'connected' | 'error' | undefined; reason?: string | undefined }, clear: () => void) {
   const announced = useRef<string | undefined>(undefined);
   const key = outcome.oauth ? `${outcome.oauth}:${outcome.reason ?? ''}` : undefined;
   useEffect(() => {
