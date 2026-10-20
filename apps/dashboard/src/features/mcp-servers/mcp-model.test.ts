@@ -13,6 +13,7 @@ import {
   MAX_HEADERS,
   type McpFormValues,
   mcpApi,
+  McpPartialSaveError,
   type McpServer,
   oauthCanDisconnect,
   oauthConnectLabel,
@@ -122,6 +123,9 @@ describe('safeAuthorizationUrl', () => {
   it.each([
     'http://auth.example.test/authorize',
     'javascript:alert(1)',
+    'javascript://localhost/%0Aalert(1)',
+    'ftp://localhost/authorize',
+    'file://localhost/etc/passwd',
     'data:text/html,hello',
     'not a url',
     undefined
@@ -282,6 +286,29 @@ describe('mcpApi', () => {
     const result = await mcpApi.update(server(), values({ enabled: false }));
     expect(request).toHaveBeenNthCalledWith(2, '/mcp-servers/srv-1/enabled', { method: 'POST', body: { enabled: false, expectedGeneration: 5 } });
     expect(result).toEqual(server({ generation: 6, enabled: false }));
+  });
+
+  it('reports a partial save carrying the saved server when the enable step fails', async () => {
+    const failure = new Error('enable failed');
+    request.mockResolvedValueOnce({ data: server({ generation: 5 }) }).mockRejectedValueOnce(failure);
+    const error = await mcpApi.update(server(), values({ enabled: false })).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(McpPartialSaveError);
+    expect((error as McpPartialSaveError).message).toBe('Saved; enabled state not changed.');
+    expect((error as McpPartialSaveError).saved).toEqual(server({ generation: 5 }));
+    expect((error as McpPartialSaveError).reason).toBe(failure);
+  });
+
+  it('lets a failed settings save fail as itself, not as a partial save', async () => {
+    const failure = new Error('patch failed');
+    request.mockRejectedValueOnce(failure);
+    await expect(mcpApi.update(server(), values({ enabled: false }))).rejects.toBe(failure);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads one server for a conflict refresh', async () => {
+    request.mockResolvedValueOnce({ data: { server: server({ generation: 9 }), tools: [] } });
+    await expect(mcpApi.get('srv/1')).resolves.toEqual(server({ generation: 9 }));
+    expect(request).toHaveBeenCalledWith('/mcp-servers/srv%2F1');
   });
 
   it('sets enabled with the server generation', async () => {

@@ -115,11 +115,11 @@ export function oauthOutcomeMessage(outcome: { oauth?: 'connected' | 'error' | u
 }
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
-/** The authorization server's URL is followed only over HTTPS (or to a loopback host in development). */
+/** The authorization server's URL is followed only over HTTPS, or plain HTTP to a loopback host in development. */
 export function safeAuthorizationUrl(value: unknown): string {
   try {
     const url = new URL(String(value));
-    if (url.protocol === 'https:' || LOCAL_HOSTS.has(url.hostname)) return url.toString();
+    if (url.protocol === 'https:' || (url.protocol === 'http:' && LOCAL_HOSTS.has(url.hostname))) return url.toString();
   } catch { /* fall through */ }
   throw new ClientValidationError('The authorization server returned an unsafe URL.');
 }
@@ -228,15 +228,31 @@ export function updatePayload(values: McpFormValues, expectedGeneration: number)
 }
 
 const id = (server: { id: string }) => encodeURIComponent(server.id);
+
+/**
+ * An edit whose settings were saved but whose enabled-state change then failed. `saved` is
+ * the server after the first step, so the caller fences a retry on its new generation.
+ */
+export class McpPartialSaveError extends Error {
+  override name = 'McpPartialSaveError';
+  constructor(readonly saved: McpServer, readonly reason: unknown) {
+    super('Saved; enabled state not changed.');
+  }
+}
 const unwrap = <T>(body: unknown) => (body as { data: T }).data;
 
 export const mcpApi = {
   create: async (values: McpFormValues) => unwrap<McpServer>(await apiClient.request('/mcp-servers', { method: 'POST', body: createPayload(values) })),
   update: async (server: McpServer, values: McpFormValues) => {
     const updated = unwrap<McpServer>(await apiClient.request(`/mcp-servers/${id(server)}`, { method: 'PATCH', body: updatePayload(values, server.generation) }));
-    if (values.enabled !== server.enabled) return mcpApi.setEnabled(updated, values.enabled);
-    return updated;
+    if (values.enabled === server.enabled) return updated;
+    try {
+      return await mcpApi.setEnabled(updated, values.enabled);
+    } catch (error) {
+      throw new McpPartialSaveError(updated, error);
+    }
   },
+  get: async (serverId: string) => unwrap<{ server: McpServer }>(await apiClient.request(`/mcp-servers/${encodeURIComponent(serverId)}`)).server,
   setEnabled: async (server: McpServer, enabled: boolean) =>
     unwrap<McpServer>(await apiClient.request(`/mcp-servers/${id(server)}/enabled`, { method: 'POST', body: { enabled, expectedGeneration: server.generation } })),
   remove: (server: McpServer) => apiClient.request(`/mcp-servers/${id(server)}`, { method: 'DELETE', body: { expectedGeneration: server.generation } }),

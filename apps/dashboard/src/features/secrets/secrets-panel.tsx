@@ -34,6 +34,9 @@ export function SecretsPanel({ scope, list, createOpen, onCreateOpenChange }: { 
   const [deleting, setDeleting] = useState<SecretReference | undefined>();
   const bulkMounted = useOpenedOnce(bulkOpen);
   const secrets = list.secrets;
+  // The dialog follows the row in the refreshed list, so a retry after a 409 carries the
+  // latest generation instead of the one the dialog opened with.
+  const editingSecret = editing ? secrets.find((secret) => secret.id === editing.secret.id) ?? editing.secret : undefined;
 
   async function exportExample() {
     try {
@@ -95,7 +98,7 @@ export function SecretsPanel({ scope, list, createOpen, onCreateOpenChange }: { 
         />
       </Section>
       <SecretCreateDialog scope={scope} open={createOpen} onOpenChange={onCreateOpenChange} />
-      <SecretEditDialog scope={scope} secret={editing?.secret} mode={editing?.mode ?? 'rotate'} onClose={() => setEditing(undefined)} />
+      <SecretEditDialog scope={scope} secret={editingSecret} mode={editing?.mode ?? 'rotate'} onClose={() => setEditing(undefined)} />
       {bulkMounted ? <BulkImportDialog scope={scope} existing={secrets} open={bulkOpen} onOpenChange={setBulkOpen} /> : null}
       <ConfirmDialog
         open={deleting !== undefined}

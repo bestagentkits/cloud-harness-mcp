@@ -9,7 +9,7 @@ import {
   installationsOf,
   safeSetupUrl
 } from './github-model';
-import { GITHUB_INSTALLATION_PATTERN, GITHUB_STATE_PATTERN, githubCallbackSearch } from './github-callback-search';
+import { GITHUB_INSTALLATION_PATTERN, GITHUB_STATE_PATTERN, githubCallbackSearch, hasGitHubCallbackParams } from './github-callback-search';
 
 vi.mock('@/lib/api-client', async (importOriginal) => {
   const actual = await importOriginal<typeof ApiClientModule>();
@@ -73,6 +73,16 @@ describe('githubCallbackSearch', () => {
     expect(GITHUB_STATE_PATTERN.test(STATE_32)).toBe(true);
     expect(GITHUB_INSTALLATION_PATTERN.test('0')).toBe(true);
     expect(GITHUB_INSTALLATION_PATTERN.test('')).toBe(false);
+  });
+});
+
+describe('hasGitHubCallbackParams', () => {
+  it('spots any callback param, valid or not', () => {
+    expect(hasGitHubCallbackParams('?state=short')).toBe(true);
+    expect(hasGitHubCallbackParams('?installation_id=12ab')).toBe(true);
+    expect(hasGitHubCallbackParams('?setup_action=install')).toBe(true);
+    expect(hasGitHubCallbackParams('?tab=other')).toBe(false);
+    expect(hasGitHubCallbackParams('')).toBe(false);
   });
 });
 

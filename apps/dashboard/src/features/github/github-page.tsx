@@ -27,9 +27,10 @@ export type GitHubCallback = { state: string; installationId: string };
 /**
  * Completes the GitHub App installation callback once: `POST /github/complete` with exactly
  * `{ state, installationId }`, then replaces the URL with the canonical page so the
- * one-time state leaves the address bar and history.
+ * one-time state leaves the address bar and history. Callback params that do not form a
+ * valid callback (`callbackParams` without `callback`) are never sent, only cleared.
  */
-function useGitHubCallback(callback: GitHubCallback | undefined) {
+function useGitHubCallback(callback: GitHubCallback | undefined, callbackParams: boolean) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [completing, setCompleting] = useState(() => Boolean(callback && !consumedStates.has(callback.state)));
@@ -51,6 +52,9 @@ function useGitHubCallback(callback: GitHubCallback | undefined) {
       }
     })();
   }, [callback, navigate, queryClient]);
+  useEffect(() => {
+    if (callbackParams && !callback) void navigate({ to: '/integrations/github', search: {}, replace: true });
+  }, [callback, callbackParams, navigate]);
   return completing;
 }
 
@@ -107,9 +111,9 @@ function SetupForm() {
   );
 }
 
-export function GitHubPage({ callback }: { callback?: GitHubCallback | undefined }) {
+export function GitHubPage({ callback, callbackParams = false }: { callback?: GitHubCallback | undefined; callbackParams?: boolean }) {
   const queryClient = useQueryClient();
-  const completing = useGitHubCallback(callback);
+  const completing = useGitHubCallback(callback, callbackParams);
   const read = usePageData<GitHubStatus>('github');
   const [reconciling, setReconciling] = useState<string | undefined>();
   const [disconnecting, setDisconnecting] = useState<GitHubInstallation | undefined>();

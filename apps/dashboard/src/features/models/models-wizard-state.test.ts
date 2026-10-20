@@ -22,6 +22,7 @@ import {
   resetUntouchedPricing,
   selectProvider,
   setField,
+  storableUpstreamUrl,
   storedWizard,
   WIZARD_STEPS,
   type WizardState,
@@ -568,8 +569,33 @@ describe('storedWizard', () => {
   });
 });
 
+describe('storableUpstreamUrl', () => {
+  it('keeps a plain endpoint URL', () => {
+    expect(storableUpstreamUrl('  https://llm.example.test/v1  ')).toBe('https://llm.example.test/v1');
+    expect(storableUpstreamUrl('')).toBe('');
+  });
+
+  it.each([
+    'https://user:pass@llm.example.test/v1',
+    'https://token@llm.example.test/v1',
+    'https://llm.example.test/v1?api_key=not-real',
+    'https://llm.example.test/v1?',
+    'https://llm.example.test/v1#token',
+    'not a url'
+  ])('drops %s', (value) => {
+    expect(storableUpstreamUrl(value)).toBe('');
+  });
+});
+
 describe('parseStoredWizard', () => {
   const stored = (state: Record<string, unknown>, patch: Record<string, unknown> = {}) => ({ open: true, mode: 'create', sourceProfileId: null, state, ...patch });
+
+  it('never stores or restores a custom upstream URL with user info, a query or a fragment', () => {
+    const state = draft({ customUpstreamUrl: 'https://user:pass@llm.example.test/v1?key=not-real' });
+    expect(JSON.stringify(storedWizard(state, null))).not.toContain('llm.example.test');
+    expect(parseStoredWizard(stored({ customUpstreamUrl: 'https://llm.example.test/v1#t' }))?.state.customUpstreamUrl).toBe('');
+    expect(parseStoredWizard(stored({ customUpstreamUrl: 'https://llm.example.test/v1' }))?.state.customUpstreamUrl).toBe('https://llm.example.test/v1');
+  });
 
   it('refuses anything that is not an open wizard entry of a known mode', () => {
     expect(parseStoredWizard(null)).toBeUndefined();

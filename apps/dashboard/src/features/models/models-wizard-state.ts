@@ -417,8 +417,24 @@ function withoutContext(state: WizardState): StoredWizard['state'] {
   return rest as StoredWizard['state'];
 }
 
+/**
+ * The custom upstream URL as it may be stored: an endpoint URL that parses and carries no
+ * user info, query or fragment (where a pasted credential or token would sit), else empty.
+ */
+export function storableUpstreamUrl(value: string): string {
+  const typed = value.trim();
+  if (!typed) return '';
+  try {
+    const url = new URL(typed);
+    return url.username || url.password || url.search || url.hash || typed.includes('?') || typed.includes('#') ? '' : typed;
+  } catch {
+    return '';
+  }
+}
+
 export function storedWizard(state: WizardState, sourceProfileId: string | null): StoredWizard {
-  return { open: true, mode: state.mode, sourceProfileId, state: withoutContext(state) };
+  const stored = withoutContext(state);
+  return { open: true, mode: state.mode, sourceProfileId, state: { ...stored, customUpstreamUrl: storableUpstreamUrl(stored.customUpstreamUrl) } };
 }
 
 const isString = (value: unknown): value is string => typeof value === 'string';
@@ -438,6 +454,7 @@ export function parseStoredWizard(raw: unknown): StoredWizard | undefined {
   if (entry.open !== true || (mode !== 'create' && mode !== 'edit' && mode !== 'duplicate') || !input || typeof input !== 'object') return undefined;
   const state = withoutContext(initialWizardState({ mode }));
   for (const field of STRING_FIELDS) if (isString(input[field])) state[field] = input[field] as string;
+  state.customUpstreamUrl = storableUpstreamUrl(state.customUpstreamUrl);
   const step = Number(input.step);
   state.step = Number.isInteger(step) && step >= 0 && step < WIZARD_STEPS.length ? step : 0;
   state.credentialChoice = input.credentialChoice === 'new' ? 'new' : 'saved';

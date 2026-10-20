@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { CpuIcon, KeyRoundIcon } from 'lucide-react';
-import { useCallback, useState } from 'react';
+import { lazy, Suspense, useCallback, useRef, useState } from 'react';
 import { AsyncStatus } from '@/components/feedback/async-status';
 import { EmptyState } from '@/components/feedback/empty-state';
 import { ActionButton, Button } from '@/components/ui/button';
@@ -23,7 +23,10 @@ import {
 } from './models-pricing';
 import { FALLBACK_PROVIDERS, providerName, useModelsData } from './models-queries';
 import type { GatewayStatus, ModelProfile, ModelProvider, PriceLevel, ProviderCredential } from './models-types';
-import { type ProfileWizardController, ProfileWizard, useProfileWizard } from './profile-wizard';
+import { type ProfileWizardController, useProfileWizard } from './profile-wizard-controller';
+
+// The wizard's steps load on first open (or on a reload that restores it), not with the page.
+const ProfileWizard = lazy(() => import('./profile-wizard'));
 import { SpendPanel } from './spend-panel';
 
 const PROFILE_STATUS: Record<string, { label: string; tone: BadgeTone }> = {
@@ -92,7 +95,19 @@ function ProfilesTable({ profiles, credentials, providers, wizard }: {
     wizard.open(mode, { profile, profiles, credentials, useCatalogPrice });
   const credentialOf = (profile: ModelProfile) => credentials.find((entry) => entry.id === (profile.activeRevision?.credentialId ?? profile.credentialId));
 
-  async function verify(profile: ModelProfile) {
+  // One action per profile at a time; a ref, so a second click before the re-render is refused too.
+  const running = useRef(new Set<string>());
+  async function exclusive(profile: ModelProfile, work: () => Promise<void>) {
+    if (running.current.has(profile.id)) return;
+    running.current.add(profile.id);
+    try {
+      await work();
+    } finally {
+      running.current.delete(profile.id);
+    }
+  }
+
+  const verify = (profile: ModelProfile) => exclusive(profile, async () => {
     try {
       const result = await modelsApi.verify({ profileId: profile.id });
       toast({ title: `${profile.displayName}: connection ${verificationLabel(result?.outcome).toLowerCase()}.`, variant: 'success' });
@@ -101,9 +116,9 @@ function ProfilesTable({ profiles, credentials, providers, wizard }: {
     } finally {
       await invalidateModels(queryClient);
     }
-  }
+  });
 
-  async function toggle(profile: ModelProfile) {
+  const toggle = (profile: ModelProfile) => exclusive(profile, async () => {
     const activate = profile.status === 'DISABLED';
     try {
       await modelsApi.setProfileActive(profile, activate);
@@ -113,7 +128,7 @@ function ProfilesTable({ profiles, credentials, providers, wizard }: {
     } finally {
       await invalidateModels(queryClient);
     }
-  }
+  });
 
   return (
     <>
@@ -318,7 +333,7 @@ export function ModelsPage() {
           providers={providerList}
         />
       ) : null}
-      <ProfileWizard controller={wizard} profiles={profileList} credentials={credentialList} providers={providerList} />
+      {wizard.stored ? <Suspense fallback={null}><ProfileWizard controller={wizard} profiles={profileList} credentials={credentialList} providers={providerList} /></Suspense> : null}
     </div>
   );
 }

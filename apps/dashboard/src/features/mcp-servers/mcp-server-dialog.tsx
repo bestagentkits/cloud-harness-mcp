@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { PlusIcon, Trash2Icon } from 'lucide-react';
 import { useState } from 'react';
 import { Controller, useFieldArray, useForm, useWatch } from 'react-hook-form';
@@ -10,11 +10,12 @@ import { Label } from '@/components/ui/label';
 import { SecretInput } from '@/components/ui/secret-input';
 import { NativeSelect } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { ClientValidationError, mutationErrorText, useBffMutation } from '@/lib/bff-mutation';
+import { ConflictError } from '@/lib/api-client';
+import { bffKey, ClientValidationError, mutationErrorText, useBffMutation } from '@/lib/bff-mutation';
 import { pageReadQuery } from '@/lib/page-read';
 import { FormDialog } from '../shared/form-dialog';
 import {
-  formValuesFor, headerNameError, MAX_HEADERS, MCP_READS, mcpApi, type McpFormValues, type McpServer, probeMessage, validateServerForm
+  formValuesFor, headerNameError, MAX_HEADERS, MCP_READS, mcpApi, type McpFormValues, McpPartialSaveError, type McpServer, probeMessage, validateServerForm
 } from './mcp-model';
 
 type Props = { open: boolean; onOpenChange: (open: boolean) => void; server?: McpServer | undefined; onSaved?: (server: McpServer) => void };
@@ -23,28 +24,38 @@ type Props = { open: boolean; onOpenChange: (open: boolean) => void; server?: Mc
  * Add or edit a downstream MCP server (parity matrix D10). `server` is the snapshot taken
  * when the dialog opened (callers remount it per open with a fresh `key`), so the update is
  * fenced on the generation the operator reviewed; a background refetch never moves it.
+ * After a 409 the latest server replaces the snapshot and re-seeds the form for review, and
+ * after a partial save the saved server does, so a retry is fenced on the current generation.
  * Header values are masked, secret headers reference a global secret by name only (the
  * value is never sent to the page), and closing the dialog resets every field.
  */
-export function McpServerDialog({ open, onOpenChange, server, onSaved }: Props) {
-  const editing = server !== undefined;
-  const form = useForm<McpFormValues>({ defaultValues: formValuesFor(server) });
+export function McpServerDialog({ open, onOpenChange, server: opened, onSaved }: Props) {
+  const editing = opened !== undefined;
+  const queryClient = useQueryClient();
+  // The snapshot the next submit is fenced on; it moves only after a 409 or a partial save.
+  const [server, setServer] = useState(opened);
+  const form = useForm<McpFormValues>({ defaultValues: formValuesFor(opened) });
   const headers = useFieldArray({ control: form.control, name: 'headers' });
   const [oauthEnabled, transport, headerRows] = useWatch({ control: form.control, name: ['oauthEnabled', 'transport', 'headers'] });
   const [testStatus, setTestStatus] = useState<string | undefined>();
   const secrets = useQuery({ ...pageReadQuery('secrets', {}), enabled: open, select: (body: unknown) => ((body as { data: { secrets?: Array<{ name: string }> } }).data.secrets ?? []).map((secret) => secret.name) });
   const secretNames = secrets.data ?? [];
   const withSaved = (names: string[], saved: string) => (saved && !names.includes(saved) ? [...names, saved] : names);
-  const mutation = useBffMutation<McpFormValues, McpServer>({
-    mutationFn: async (values) => {
+  const mutation = useBffMutation<{ values: McpFormValues; target: McpServer | undefined }, McpServer>({
+    mutationFn: async ({ values, target }) => {
       const problem = validateServerForm(values);
       if (problem) throw new ClientValidationError(problem);
-      return server ? mcpApi.update(server, values) : mcpApi.create(values);
+      return target ? mcpApi.update(target, values) : mcpApi.create(values);
     },
-    invalidate: [...MCP_READS, ...(server ? [`/mcp-servers/${server.id}`] : [])],
+    invalidate: [...MCP_READS, ...(opened ? [`/mcp-servers/${opened.id}`] : [])],
     successToast: editing ? 'MCP server saved.' : 'MCP server created.',
     ...(onSaved ? { onSuccess: onSaved } : {})
   });
+
+  function adopt(latest: McpServer, reseed: boolean) {
+    setServer(latest);
+    if (reseed) form.reset(formValuesFor(latest));
+  }
 
   function setOpen(next: boolean) {
     if (!next) { form.reset(); mutation.reset(); setTestStatus(undefined); }
@@ -53,9 +64,17 @@ export function McpServerDialog({ open, onOpenChange, server, onSaved }: Props) 
 
   const submit = form.handleSubmit(async (values) => {
     try {
-      await mutation.mutateAsync(values);
+      await mutation.mutateAsync({ values, target: server });
       setOpen(false);
-    } catch { /* shown in the dialog */ }
+    } catch (error) {
+      // Shown in the dialog; the snapshot moves to the server's current generation.
+      if (error instanceof McpPartialSaveError) {
+        adopt(error.saved, false);
+        await Promise.all([...MCP_READS, `/mcp-servers/${error.saved.id}`].map((path) => queryClient.invalidateQueries({ queryKey: bffKey(path) })));
+      } else if (error instanceof ConflictError && server) {
+        try { adopt(await mcpApi.get(server.id), true); } catch { /* the conflict message stands */ }
+      }
+    }
   });
 
   async function testConnection() {
@@ -79,7 +98,7 @@ export function McpServerDialog({ open, onOpenChange, server, onSaved }: Props) 
       submitLabel={editing ? 'Save server' : 'Create server'}
       pendingLabel="Saving…"
       pending={mutation.isPending}
-      error={mutation.isError ? mutationErrorText(mutation.error) : undefined}
+      error={mutation.isError ? (mutation.error instanceof McpPartialSaveError ? `${mutation.error.message} ${mutationErrorText(mutation.error.reason)}` : mutationErrorText(mutation.error)) : undefined}
       dirty={form.formState.isDirty}
       onSubmit={(event) => { void submit(event); }}
       extraActions={editing ? <Button variant="outline" className="sm:mr-auto" onClick={() => { void testConnection(); }}>Test connection</Button> : undefined}

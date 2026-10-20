@@ -22,3 +22,9 @@ export function githubCallbackSearch(raw: Record<string, unknown>) {
     installation_id: installationId && GITHUB_INSTALLATION_PATTERN.test(installationId) ? installationId : undefined
   });
 }
+
+/** Whether a raw query string carries any GitHub callback param, valid or not. */
+export function hasGitHubCallbackParams(search: string): boolean {
+  const params = new URLSearchParams(search);
+  return ['state', 'installation_id', 'setup_action'].some((key) => params.has(key));
+}

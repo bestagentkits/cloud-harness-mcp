@@ -14,15 +14,20 @@ type Values = { value: string; description: string };
 /**
  * Rotate a secret's value (with an optional new description) or edit only its
  * description. Both carry the row's generation, so a change made elsewhere since the page
- * loaded is refused with 409 and the list refetches.
+ * loaded is refused with 409 and the list refetches; `secret` is then the refreshed row, so
+ * the retry is fenced on its generation. The value field is never re-seeded.
  */
 export function SecretEditDialog({ scope, secret, mode, onClose }: { scope: SecretScope; secret: SecretReference | undefined; mode: SecretEditMode; onClose: () => void }) {
   const global = scope.kind === 'global';
   const form = useForm<Values>({ defaultValues: { value: '', description: '' } });
   const { errors, isDirty } = form.formState;
+  // Seeded per opened secret and mode. A refreshed generation alone never wipes what was
+  // typed; only a description changed elsewhere re-seeds the description editor.
+  const seeded = secret ? `${secret.id}:${mode}` : undefined;
+  const seedDescription = mode === 'describe' ? secret?.description ?? '' : '';
   useEffect(() => {
-    if (secret) form.reset({ value: '', description: mode === 'describe' ? secret.description ?? '' : '' });
-  }, [form, mode, secret]);
+    if (seeded) form.reset({ value: '', description: seedDescription });
+  }, [form, seeded, seedDescription]);
 
   const mutation = useBffMutation<{ target: SecretReference } & Values>({
     mutationFn: ({ target, value, description }) => (mode === 'rotate' ? secretsApi.rotate(scope, target, { value, description }) : secretsApi.describe(scope, target, description)),
