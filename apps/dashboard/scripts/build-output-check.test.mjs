@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -47,6 +47,24 @@ function build({ entry = 1024, overview = 1024, settings = 1024, css = 1024, fon
   return dist;
 }
 
+/**
+ * Adds chunks to a built fixture: each one is `{ bytes, imports?, dynamicImports?, entry? }`,
+ * with `imports` and `dynamicImports` naming other added chunks (or manifest keys).
+ */
+function withChunks(dist, chunks) {
+  const manifestPath = join(dist, '.vite', 'manifest.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  Object.entries(chunks).forEach(([key, { bytes, imports = [], dynamicImports = [], entry = false }], index) => {
+    const file = `assets/chunk${index}-GGGGGGG${index}.js`;
+    writeFileSync(join(dist, file), incompressible(bytes));
+    manifest[key] = { file, imports, dynamicImports, ...(entry ? { isDynamicEntry: true } : {}) };
+  });
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  return dist;
+}
+
+const measuredBytes = (measured, key) => measured.chunks.find((chunk) => chunk.chunk === key).bytes;
+
 describe('build output check', () => {
   it('passes a build inside the budget and reports what it measured', () => {
     const { failures, measured } = checkBuildOutput(build());
@@ -87,6 +105,51 @@ describe('build output check', () => {
   it('keeps every other lazy chunk at 60 KB', () => {
     const { failures } = checkBuildOutput(build({ lazy: { 'src/components/layouts/command-palette.tsx': { bytes: 100 * 1024 } } }));
     expect(failures.join('\n')).toMatch(/^lazy chunk src\/components\/layouts\/command-palette\.tsx .* over the 60\.0 KB budget/m);
+  });
+  it('charges a lazy chunk only for what it adds to the route that opens it', () => {
+    const route = 'src/routes/skills.tsx?tsr-split=component';
+    const dialog = 'src/features/skills/skill-editor-dialog.tsx';
+    const { failures, measured } = checkBuildOutput(withChunks(build(), {
+      // Shared by the route and its dialog, so the dialog imports it statically.
+      _shared: { bytes: 40 * 1024 },
+      [route]: { bytes: 10 * 1024, entry: true, imports: ['index.html', '_shared'], dynamicImports: [dialog] },
+      // The dialog's own dependency, which only it loads.
+      _forms: { bytes: 30 * 1024 },
+      [dialog]: { bytes: 5 * 1024, entry: true, imports: ['index.html', '_shared', '_forms'] }
+    }));
+    expect(failures).toEqual([]);
+    // The route still pays for everything beyond the initial JS, shared code included.
+    expect(measuredBytes(measured, route)).toBeGreaterThan(50 * 1024);
+    // The dialog pays for its own file and its own dependency, not for the route's shared chunk.
+    const bytes = measuredBytes(measured, dialog);
+    expect(bytes).toBeGreaterThan(35 * 1024);
+    expect(bytes).toBeLessThan(40 * 1024);
+  });
+
+  it('still fails a lazy chunk whose own dependencies are over 60 KB', () => {
+    const route = 'src/routes/skills.tsx?tsr-split=component';
+    const dialog = 'src/features/skills/skill-editor-dialog.tsx';
+    const { failures } = checkBuildOutput(withChunks(build(), {
+      [route]: { bytes: 10 * 1024, entry: true, imports: ['index.html'], dynamicImports: [dialog] },
+      _forms: { bytes: 70 * 1024 },
+      [dialog]: { bytes: 1024, entry: true, imports: ['index.html', '_forms'] }
+    }));
+    expect(failures.join('\n')).toMatch(/^lazy chunk src\/features\/skills\/skill-editor-dialog\.tsx .* over the 60\.0 KB budget/m);
+  });
+
+  it('charges a chunk opened from several places against what all of them loaded', () => {
+    const dialog = 'src/components/shared-dialog.tsx';
+    const { measured } = checkBuildOutput(withChunks(build(), {
+      _both: { bytes: 20 * 1024 },
+      _onlyA: { bytes: 20 * 1024 },
+      'src/routes/a.tsx?tsr-split=component': { bytes: 1024, entry: true, imports: ['index.html', '_both', '_onlyA'], dynamicImports: [dialog] },
+      'src/routes/b.tsx?tsr-split=component': { bytes: 1024, entry: true, imports: ['index.html', '_both'], dynamicImports: [dialog] },
+      [dialog]: { bytes: 1024, entry: true, imports: ['index.html', '_both', '_onlyA'] }
+    }));
+    // Route B may open it without `_onlyA`, so that chunk counts; `_both` is loaded either way.
+    const bytes = measuredBytes(measured, dialog);
+    expect(bytes).toBeGreaterThan(21 * 1024);
+    expect(bytes).toBeLessThan(25 * 1024);
   });
 
   it('requires the font licence next to the fonts', () => {
