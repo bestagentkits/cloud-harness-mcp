@@ -88,10 +88,15 @@ SSR buys nothing here. The BFF keeps rendering the only HTML document.
   reads the manifest and builds a fixed allowlist of the files the manifest
   names. A request path is looked up in that map and never reaches the
   filesystem. The manifest is validated at startup whenever the React shell
-  is selectable: the flag is `react`, or the canary is allowed. If it is
-  absent or invalid, the canary is disabled and the reason is logged, and the
-  legacy shell keeps serving. The API never crashes because the React build is
-  missing.
+  is selectable: the flag is `react`, or the canary is allowed.
+  - With `CLOUD_HARNESS_DASHBOARD_UI=react`, an absent or invalid manifest
+    **fails API startup**. The API never silently serves the legacy shell in
+    place of the selected one.
+  - In canary-only mode (flag `legacy`, canary allowed), an absent or invalid
+    manifest disables the canary and logs the reason; the legacy shell keeps
+    serving.
+  - The selected shell is observable: the API logs one startup line naming
+    the active shell and whether the canary is enabled.
 - Hashed assets keep the current versioned-asset header,
   `Cache-Control: private, max-age=31536000, immutable`. They sit behind
   Access like every Dashboard response, so they are never `public`. The HTML

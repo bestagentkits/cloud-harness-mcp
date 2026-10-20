@@ -331,7 +331,6 @@ descriptions with empty values and revokes its object URL immediately.
 | GET | `/skill-imports/:jobId` | control router | — | — | import poller (T1) | `skills` | P3 |
 | POST | `/skill-imports/:jobId/cancel` | control router | **gen** (legacy hard-codes 1: R9) | yes | import form | `skills` | P3 |
 | POST | `/skill-archives` | control router, `requireArchiveMediaType` in security | **gen0** fixed on the server; zip size limit in the control router | — | upload dialog | `skills` | P3 |
-| POST / PATCH / DELETE `/skill-sets` writes | see above | | | | | | |
 
 ### 4.8 Artifacts and knowledge
 
@@ -403,7 +402,7 @@ descriptions with empty values and revokes its object URL immediately.
 | Method | Path | Owner | Body | UI caller | Feature | Phase |
 | --- | --- | --- | --- | --- | --- | --- |
 | GET | `/terminals` | terminal router | — | terminals page | `terminals` | P4 |
-| GET / POST | `/workspaces/:id/terminals` | terminal router | strict `{cwd?, cols?, rows?}` | `createTerminalClient` list/open | `terminal` | P4 |
+| GET / POST | `/workspaces/:id/terminals` | terminal router | strict `{cwd?, cols?, rows?}` | GET: `terminalPanel` in `dashboard.js`; POST: `createTerminalClient.open` (`createTerminalClient.list` exists but is unused) | `terminal` | P4 |
 | POST | `/workspaces/:id/terminals/:tid/input` | terminal router | strict `{data}` (chunked by the client) | `createTerminalClient.input` | `terminal` | P4 |
 | POST | `/workspaces/:id/terminals/:tid/resize` | terminal router | strict `{cols, rows}` | `createTerminalClient.resize` | `terminal` | P4 |
 | POST | `/workspaces/:id/terminals/:tid/close` | terminal router | strict `{}` | terminal pane, terminals page | `terminal` | P4 |
@@ -651,8 +650,9 @@ Touch points:
   reject `..` and dotfiles. Keep reading the legacy `index.html` at module
   load: the legacy shell stays the default and the rollback target.
 - assets: validate the manifest at startup whenever the React shell is
-  selectable. Absent or invalid → canary disabled, reason logged, legacy keeps
-  serving. The API never fails startup because of the React build.
+  selectable. With flag `react`, absent or invalid fails API startup (never a
+  silent legacy fallback). Canary-only: canary disabled, reason logged, legacy
+  keeps serving. One startup log line names the active shell and canary state.
 - assets: add the allowlist SPA fallback after the API and asset routes, with
   `no-store`.
 - assets: hashed files keep `Cache-Control: private, max-age=31536000,
