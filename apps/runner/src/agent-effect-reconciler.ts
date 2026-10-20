@@ -187,6 +187,36 @@ export async function reconcileEffect(
   }
 }
 
+/**
+ * Tool arguments in the form both sides of a comparison agree on. The runtime coerces the model's
+ * arguments against the tool schema before it executes and proxies them (an optional null is
+ * dropped, "10" becomes 10, "true" becomes true), while a transcript keeps the model's raw
+ * arguments. Dropping nulls, writing every number and boolean as its string, and sorting object
+ * keys maps a raw call and its coerced form to the same value. It must stay identical to
+ * `canonicalToolArguments` in apps/agent-runtime/src/proxy-tools.ts.
+ */
+export function canonicalToolArguments(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => item === null || item === undefined ? null : canonicalToolArguments(item));
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== null && item !== undefined)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, item]) => [key, canonicalToolArguments(item)] as const);
+    return Object.fromEntries(entries);
+  }
+  return typeof value === 'number' || typeof value === 'boolean' ? String(value) : value;
+}
+
+/**
+ * The digest an effect records for its operation and arguments. A transcript's raw arguments and
+ * the coerced arguments the runtime proxied digest alike, so a continuation can tell whether a
+ * recorded effect belongs to a transcript's call; arguments the coercion changes in any other way
+ * digest differently, which the caller must treat as an undecidable match.
+ */
+export function effectPayloadHash(operation: string, input: unknown): string {
+  return sha256Hex(JSON.stringify({ operation, input: canonicalToolArguments(input) }));
+}
+
 /** A tool call a persisted transcript issued but never answered, with the request ID it was proxied under. */
 export type DanglingToolCall = { toolCallId: string; name: string; arguments: unknown; requestId: string };
 

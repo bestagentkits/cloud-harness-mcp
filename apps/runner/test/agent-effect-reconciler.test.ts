@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest';
 import {
   capturePatchImages,
   danglingToolCalls,
+  canonicalToolArguments,
   effectErrorText,
+  effectPayloadHash,
   effectRequestId,
   capturePreEntry,
   observeEntry,
@@ -83,6 +85,22 @@ describe('unanswered tool calls of a transcript', () => {
     expect(transcriptToolCalls(transcript).map((item) => item.requestId)).toEqual(expected);
     // The last message's calls are unanswered, and keep the IDs the runtime proxied them under.
     expect(danglingToolCalls(transcript).map((item) => item.requestId)).toEqual(expected.slice(3));
+  });
+
+  it('agrees with the agent runtime on the canonical form of raw and coerced arguments', () => {
+    // The same vector pins canonicalToolArguments in apps/agent-runtime/test/agent-worker.test.ts.
+    expect(canonicalToolArguments({ path: 'a', recursive: null, limit: '10', overwrite: true, nested: [1, null, { b: false, a: 'x' }] }))
+      .toEqual({ limit: '10', nested: ['1', null, { a: 'x', b: 'false' }], overwrite: 'true', path: 'a' });
+    expect(JSON.stringify(canonicalToolArguments({ path: 'a', limit: 10, recursive: true })))
+      .toBe(JSON.stringify(canonicalToolArguments({ recursive: 'true', path: 'a', limit: '10', expectedSha256: null })));
+  });
+
+  it('digests a transcript call and the coerced arguments the runtime dispatched for it alike', () => {
+    expect(effectPayloadHash('files_delete', { path: 'a.txt', recursive: null })).toBe(effectPayloadHash('files_delete', { path: 'a.txt' }));
+    expect(effectPayloadHash('files_mkdir', { path: 'd', recursive: 'true' })).toBe(effectPayloadHash('files_mkdir', { path: 'd', recursive: true }));
+    expect(effectPayloadHash('files_read', { path: 'r', limit: '10' })).toBe(effectPayloadHash('files_read', { path: 'r', limit: 10 }));
+    expect(effectPayloadHash('files_write', { path: 'a', content: 'x' })).not.toBe(effectPayloadHash('files_write', { path: 'a', content: 'y' }));
+    expect(effectPayloadHash('files_read', { path: 'r' })).not.toBe(effectPayloadHash('files_list', { path: 'r' }));
   });
 });
 

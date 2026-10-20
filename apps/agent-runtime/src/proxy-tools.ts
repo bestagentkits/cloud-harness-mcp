@@ -134,9 +134,27 @@ function sessionMessages(ctx: ToolSessionContext): unknown[] | undefined {
   }
 }
 
-function sameArguments(left: unknown, right: unknown): boolean {
+/**
+ * Tool arguments in a form a transcript's raw arguments and Pi's coerced arguments share: nulls
+ * dropped, numbers and booleans written as strings, object keys sorted. It must stay identical to
+ * `canonicalToolArguments` in apps/runner/src/agent-effect-reconciler.ts.
+ */
+export function canonicalToolArguments(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => item === null || item === undefined ? null : canonicalToolArguments(item));
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== null && item !== undefined)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, item]) => [key, canonicalToolArguments(item)] as const);
+    return Object.fromEntries(entries);
+  }
+  return typeof value === 'number' || typeof value === 'boolean' ? String(value) : value;
+}
+
+/** Whether a transcript block's raw arguments are the ones Pi executed after coercing them. */
+function sameArguments(raw: unknown, executed: unknown): boolean {
   try {
-    return JSON.stringify(left) === JSON.stringify(right);
+    return JSON.stringify(canonicalToolArguments(raw)) === JSON.stringify(canonicalToolArguments(executed));
   } catch {
     return false;
   }

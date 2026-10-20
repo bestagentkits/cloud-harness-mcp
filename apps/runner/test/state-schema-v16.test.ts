@@ -24,7 +24,7 @@ const limits = RunnerAgentsConfigSchema.parse({
 }).limits;
 const RECEIPT_COLUMNS = [
   'root_agent_id', 'replay_class', 'pre_image_sha256', 'intended_sha256', 'pre_entry', 'result_sha256', 'result_json',
-  'result_reconciled', 'executor_generation', 'workspace_generation', 'retain_until'
+  'result_bytes', 'result_reconciled', 'executor_generation', 'workspace_generation', 'retain_until'
 ];
 
 describe('state schema v16', () => {
@@ -67,7 +67,7 @@ describe('state schema v16', () => {
     try {
       expect(schemaVersion(store.database)).toBe(16);
       expect(columns(store.database, 'agent_effects')).toEqual(expect.arrayContaining(RECEIPT_COLUMNS));
-      for (const index of ['agent_effects_lineage', 'agent_effects_workspace', 'agent_effects_receipt_retention']) {
+      for (const index of ['agent_effects_lineage', 'agent_effects_workspace', 'agent_effects_receipt_retention', 'agent_effects_receipt_bytes']) {
         expect(hasIndex(store.database, index)).toBe(true);
       }
       migratePrincipalSchema(store.database);
@@ -118,6 +118,8 @@ describe('state schema v16', () => {
       downgradeStateSchemaToV15(store.database, true);
       expect(schemaVersion(store.database)).toBe(15);
       expect(columns(store.database, 'agent_effects')).not.toContain('result_json');
+      expect(columns(store.database, 'agent_effects')).not.toContain('result_bytes');
+      expect(hasIndex(store.database, 'agent_effects_receipt_bytes')).toBe(false);
       expect((store.database.prepare('SELECT count(*) AS count FROM agent_effects').get() as { count: number }).count).toBe(1);
     } finally {
       store.close();
