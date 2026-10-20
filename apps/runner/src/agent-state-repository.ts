@@ -1137,15 +1137,16 @@ export class AgentStateRepository {
     return immediate(this.database, () => {
       if (this.isEffectWriterFenced(input.fence, ['RUNNING', 'CANCELLING'])) return false;
       const placeholders = input.expectedStates.map(() => '?').join(',');
-      const stored = text !== undefined && this.retainsReceiptText(input.fence.agentId, input.rootAgentId, Buffer.byteLength(text, 'utf8'))
+      const textBytes = text === undefined ? 0 : Buffer.byteLength(text, 'utf8');
+      const stored = text !== undefined && this.retainsReceiptText(input.fence.agentId, input.rootAgentId, textBytes)
         ? text
         : null;
       const result = this.database.prepare(`UPDATE agent_effects SET state=?, updated_at=?,
-          result_json=?, result_sha256=?, result_reconciled=?, executor_generation=?, retain_until=?
+          result_json=?, result_bytes=?, result_sha256=?, result_reconciled=?, executor_generation=?, retain_until=?
         WHERE root_agent_id=? AND request_id=? AND kind=? AND owner_id=? AND workspace_id=? AND state IN (${placeholders})`)
         .run(
           input.state, input.now,
-          stored, text === undefined ? null : sha256Hex(text), input.receipt?.reconciled ? 1 : 0,
+          stored, stored === null ? null : textBytes, text === undefined ? null : sha256Hex(text), input.receipt?.reconciled ? 1 : 0,
           text === undefined ? null : input.fence.runnerEpoch,
           stored === null ? null : input.now + this.limits.sessionRetentionMs,
           input.rootAgentId, input.requestId, input.kind, input.fence.ownerId, input.fence.workspaceId, ...input.expectedStates
@@ -1155,14 +1156,24 @@ export class AgentStateRepository {
   }
 
   /**
+   * Whether the agent records a session, and so can be continued. Only a continuation consumes
+   * stored receipt text or a recorded pre-dispatch observation, so an agent without one pays for
+   * neither.
+   */
+  recordsSession(agentId: string): boolean {
+    return this.database.prepare('SELECT 1 FROM agent_sessions WHERE agent_id=?').get(agentId) !== undefined;
+  }
+
+  /**
    * Whether a receipt's result text is stored, or only its hash. Only a continuation can replay a
-   * stored result to the model, so only an agent spawned with session persistence stores text, and
-   * its lineage stops at the configured byte cap; past it a repeat behaves as after retention.
+   * stored result to the model, so only an agent that records a session stores text, and its
+   * lineage stops at the configured byte cap; past it a repeat behaves as after retention. The cap
+   * sums the recorded text sizes through an index, never the text itself.
    */
   private retainsReceiptText(agentId: string, rootAgentId: string, bytes: number): boolean {
-    if (!this.database.prepare('SELECT 1 FROM agent_sessions WHERE agent_id=?').get(agentId)) return false;
-    const held = this.database.prepare(`SELECT COALESCE(SUM(length(CAST(result_json AS BLOB))), 0) AS bytes FROM agent_effects
-      WHERE root_agent_id=? AND result_json IS NOT NULL`).get(rootAgentId) as { bytes: number };
+    if (!this.recordsSession(agentId)) return false;
+    const held = this.database.prepare(`SELECT COALESCE(SUM(result_bytes), 0) AS bytes FROM agent_effects
+      WHERE root_agent_id=? AND result_bytes IS NOT NULL`).get(rootAgentId) as { bytes: number };
     return Number(held.bytes) + bytes <= this.limits.maxReceiptBytesPerLineage;
   }
 
@@ -1176,7 +1187,7 @@ export class AgentStateRepository {
       WHERE result_json IS NOT NULL AND retain_until IS NOT NULL AND retain_until<=? LIMIT 1`).get(now);
     if (!due) return 0;
     return immediate(this.database, () => Number(this.database.prepare(`UPDATE agent_effects
-      SET result_json=NULL, result_sha256=NULL, retain_until=NULL
+      SET result_json=NULL, result_bytes=NULL, result_sha256=NULL, retain_until=NULL
       WHERE rowid IN (SELECT rowid FROM agent_effects
         WHERE result_json IS NOT NULL AND retain_until IS NOT NULL AND retain_until<=? ORDER BY retain_until ASC LIMIT ?)`)
       .run(now, limit).changes));

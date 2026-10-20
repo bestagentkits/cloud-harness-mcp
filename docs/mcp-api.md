@@ -268,7 +268,9 @@ the ledger and its fences are in
   lost (a crash or restart mid-call) is reconciled from workspace state: a
   conditional write is applied when its target holds the content recorded at
   dispatch. A delete, mkdir, or move is applied only when the workspace changed
-  from the state observed just before dispatch: a delete whose path existed is
+  from the state observed just before dispatch, which the runner reads only for
+  an agent that records a session (the only kind a continuation reconciles;
+  without the observation the outcome stays unknown): a delete whose path existed is
   gone, an mkdir whose path was absent is a directory, a move whose source
   existed left it for an existing destination. An end state that would also
   hold had the call failed (deleting a path that never existed, creating a
@@ -293,9 +295,14 @@ the ledger and its fences are in
   an applied or rejected call gets its stored result, a mutation that did not
   land gets `EFFECT_NOT_APPLIED`, and an undecidable one gets `EFFECT_UNKNOWN`,
   which tells the model the effect may have landed and to read the target
-  before any retry. A call whose transcript arguments do not match the payload
-  recorded for its request ID gets `CONFLICT` and never another call's result.
-  A call that never reached the executor, a read, or a tool call ID left
+  before any retry. The transcript keeps the model's raw arguments while the
+  runtime dispatched them after dropping optional nulls and coercing string
+  numbers and booleans, so the two are compared in a form those steps do not
+  change. A call whose arguments still differ from the payload recorded for
+  its request ID (a provider reused the ID, or a coercion the comparison does
+  not model) never gets that payload's result and is never reported as not
+  run: a mutation that reached the executor gets `EFFECT_UNKNOWN`, and one
+  that did not keeps the generic interruption. A call that never reached the executor, a read, or a tool call ID left
   unanswered more than once in the transcript keeps the generic interruption.
   At most 64 outcomes are carried, each bounded in size; a larger stored result
   is summarized.

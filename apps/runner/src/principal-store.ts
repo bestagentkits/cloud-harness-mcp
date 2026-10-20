@@ -1218,6 +1218,9 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
         ALTER TABLE agent_effects ADD COLUMN pre_entry TEXT CHECK(pre_entry IN ('file', 'directory', 'absent'));
         ALTER TABLE agent_effects ADD COLUMN result_sha256 TEXT;
         ALTER TABLE agent_effects ADD COLUMN result_json TEXT;
+        -- The stored text's size in bytes, set exactly when result_json is, so the per-lineage
+        -- receipt cap is summed from an index instead of from the text.
+        ALTER TABLE agent_effects ADD COLUMN result_bytes INTEGER CHECK(result_bytes IS NULL OR result_bytes > 0);
         ALTER TABLE agent_effects ADD COLUMN result_reconciled INTEGER NOT NULL DEFAULT 0 CHECK(result_reconciled IN (0, 1));
         ALTER TABLE agent_effects ADD COLUMN executor_generation INTEGER;
         ALTER TABLE agent_effects ADD COLUMN workspace_generation INTEGER;
@@ -1228,6 +1231,7 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
         CREATE UNIQUE INDEX IF NOT EXISTS agent_effects_lineage ON agent_effects(root_agent_id, request_id, kind);
         CREATE INDEX IF NOT EXISTS agent_effects_workspace ON agent_effects(owner_id, workspace_id);
         CREATE INDEX IF NOT EXISTS agent_effects_receipt_retention ON agent_effects(retain_until) WHERE result_json IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS agent_effects_receipt_bytes ON agent_effects(root_agent_id, result_bytes) WHERE result_bytes IS NOT NULL;
       `);
       database.exec('UPDATE schema_meta SET version = 16;');
     });
@@ -1253,6 +1257,7 @@ export function downgradeStateSchemaToV15(database: DatabaseSync, allowDataLoss 
   }
   transaction(database, () => {
     database.exec(`
+      DROP INDEX IF EXISTS agent_effects_receipt_bytes;
       DROP INDEX IF EXISTS agent_effects_receipt_retention;
       DROP INDEX IF EXISTS agent_effects_workspace;
       DROP INDEX IF EXISTS agent_effects_lineage;
@@ -1260,6 +1265,7 @@ export function downgradeStateSchemaToV15(database: DatabaseSync, allowDataLoss 
       ALTER TABLE agent_effects DROP COLUMN workspace_generation;
       ALTER TABLE agent_effects DROP COLUMN executor_generation;
       ALTER TABLE agent_effects DROP COLUMN result_reconciled;
+      ALTER TABLE agent_effects DROP COLUMN result_bytes;
       ALTER TABLE agent_effects DROP COLUMN result_json;
       ALTER TABLE agent_effects DROP COLUMN result_sha256;
       ALTER TABLE agent_effects DROP COLUMN pre_entry;
