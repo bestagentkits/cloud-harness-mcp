@@ -248,9 +248,22 @@ Findings:
 - Duplicate effects cannot be counted exactly from outside the runner, because
   the restart repeats the whole task prompt and the model may legitimately write
   the same file again. The effect ledger answers a repeated request ID with its
-  receipt, as the offline runs prove. - One durable restart kept writing until its model budget ran out. Its cause,
-  the free model or the resumed turn, was not established before the stack was
-  torn down; the gateway cap stopped it as designed. It is the only recovery in
+  receipt, as the offline runs prove.
+- One durable restart wrote 65 times in 64 seconds until the gateway's model
+  budget stopped it, as designed. The cause is the model, not the engine or the
+  runner. A follow-up diagnosis drove the real worker and runner offline,
+  including a container killed mid-stream after an applied write. Each tool call
+  the model issued became exactly one proxied request under a fresh
+  `durable-task-<id>` request ID and one executor call, with a new ledger row.
+  Nothing was re-dispatched or answered from a stored receipt. The resumed
+  transcript held only completed results, with no interrupted call or aborted
+  partial fed back. The engine never reruns an unsafe tool after a restart; it
+  settles it as an error, which the benchmark does not count as a write. So 65
+  counted writes are 65 distinct model calls that reached the workspace. The
+  same free model had already spent 19k output tokens and 191 seconds on this
+  three-edit task before the kill, and the other two durable restarts finished
+  with three and four writes on the same code path. The gateway budget is the
+  control that bounds such a loop. The restart is still the only recovery in
   the matrix that did not complete, and one more reason the durable engine stays
   a narrow opt-in.
 
