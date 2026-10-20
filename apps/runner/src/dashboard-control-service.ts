@@ -25,6 +25,22 @@ import { IntegrationCredentialError, IntegrationCredentialRepository } from './i
 import type { SecretKeyring } from './secret-keyring.js';
 import { FITS_THRESHOLD, GATE_THRESHOLD, TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
 
+type SkillImportJobRecord = NonNullable<ReturnType<StateStore['getSkillImportJob']>>;
+
+function parseJobJson(value: string | null): unknown {
+  if (value === null) return null;
+  try { return JSON.parse(value) as unknown; } catch { return null; }
+}
+
+/**
+ * The row keeps progress and result as JSON text; callers read them as objects under the names the
+ * dashboard projection allows, so a stored column name never decides what the operator can see.
+ */
+function skillImportJobView(job: SkillImportJobRecord): Record<string, unknown> {
+  const { progressJson, resultJson, ...rest } = job;
+  return { ...rest, progress: parseJobJson(progressJson), result: parseJobJson(resultJson) };
+}
+
 /**
  * The version a revision should carry. An explicit contract value wins because the operator chose it
  * deliberately; otherwise the document's own declaration is used. A malformed declaration is refused
@@ -131,9 +147,11 @@ export class DashboardControlService {
     input: { sourceKind: 'skills-sh' | 'skillx' | 'git'; sourceRef: string; ref?: string | undefined; subdirectory?: string | undefined }
   ): Promise<void> {
     try {
-      this.principals.advanceSkillImportJob({
-        ownerId, id: jobId, state: 'running', progressJson: JSON.stringify({ phase: 'acquiring' })
-      });
+      // Each step is written only while the job is still active, so a cancel stops the work at the next
+      // step instead of leaving the worker to publish a skill and then trip over the terminal row.
+      if (!this.principals.advanceSkillImportJob({
+        ownerId, id: jobId, state: 'running', progressJson: JSON.stringify({ phase: 'acquiring' }), whileActive: true
+      })) return;
       if (input.sourceKind === 'git') {
         throw new HarnessError('INVALID_INPUT', 'this path acquires from a registry, so a git source is not supported here', 400, false);
       }
@@ -147,10 +165,10 @@ export class DashboardControlService {
       if (!first) {
         throw new HarnessError('NOT_FOUND', `${input.sourceRef} resolved to no skills`, 404, false);
       }
-      this.principals.advanceSkillImportJob({
-        ownerId, id: jobId, state: 'running',
+      if (!this.principals.advanceSkillImportJob({
+        ownerId, id: jobId, state: 'running', whileActive: true,
         progressJson: JSON.stringify({ phase: 'publishing', skills: acquired.skills.length, resolvedRevision: acquired.resolvedRevision })
-      });
+      })) return;
       const slug = first.name.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 120) || 'imported-skill';
       const existing = this.principals.listSkillSources(ownerId, { limit: 200 })
         .find((skill) => skill !== undefined && skill.slug === slug);
@@ -178,7 +196,7 @@ export class DashboardControlService {
           }
         }).revisionId;
       this.principals.advanceSkillImportJob({
-        ownerId, id: jobId, state: 'succeeded', skillRevisionId: revisionId,
+        ownerId, id: jobId, state: 'succeeded', skillRevisionId: revisionId, whileActive: true,
         resultJson: JSON.stringify({
           slug,
           resolvedRevision: acquired.resolvedRevision,
@@ -187,7 +205,7 @@ export class DashboardControlService {
       });
     } catch (error) {
       this.principals.advanceSkillImportJob({
-        ownerId, id: jobId, state: 'failed',
+        ownerId, id: jobId, state: 'failed', whileActive: true,
         errorCode: error instanceof HarnessError ? error.code : 'INTERNAL_ERROR',
         resultJson: JSON.stringify({ message: error instanceof Error ? error.message : 'import failed' })
       });
@@ -866,7 +884,7 @@ export class DashboardControlService {
         }
         case 'skill_set_list': return ok('Skill sets listed', { sets: this.principals.listSkillSets(principalId) });
         case 'skill_set_get': return ok('Skill set read', required(this.principals.getSkillSet(principalId, parsed.input.skillSetId), `Skill set ${parsed.input.skillSetId} was not found`));
-        case 'skill_import_status': return ok('Import job read', required(this.principals.getSkillImportJob(principalId, parsed.input.jobId), `Import job ${parsed.input.jobId} was not found`));
+        case 'skill_import_status': return ok('Import job read', skillImportJobView(required(this.principals.getSkillImportJob(principalId, parsed.input.jobId), `Import job ${parsed.input.jobId} was not found`)));
         case 'skill_import_start': {
           const jobId = this.principals.createSkillImportJob({
             ownerId: principalId,
@@ -877,26 +895,24 @@ export class DashboardControlService {
           // reports the job instead of losing it. The acquisition therefore runs detached: there is no
           // request left to fail, and every outcome is recorded as a state on that row.
           void this.runSkillImport(principalId, jobId, parsed.input);
-          return mutation('Skill import started', required(
+          return mutation('Skill import started', skillImportJobView(required(
             this.principals.getSkillImportJob(principalId, jobId),
             `Import job ${jobId} was not found`
-          ));
+          )));
         }
         case 'skill_import_cancel': {
-          const job = required(
-            this.principals.getSkillImportJob(principalId, parsed.input.jobId),
-            `Import job ${parsed.input.jobId} was not found`
-          );
-          // Only a job that has not reached a terminal state can be cancelled, so a finished import is
-          // reported as a conflict rather than silently rewritten into a state it never had.
-          if (job.state !== 'queued' && job.state !== 'running') {
-            throw new HarnessError('CONFLICT', `Import job ${job.id} is ${job.state} and cannot be cancelled`, 409, false);
+          const { jobId, expectedGeneration } = parsed.input;
+          const cancelled = this.principals.cancelSkillImportJob(principalId, jobId, expectedGeneration);
+          const job = required(this.principals.getSkillImportJob(principalId, jobId), `Import job ${jobId} was not found`);
+          if (!cancelled) {
+            // A finished job is reported as finished rather than rewritten into a state it never had; a job
+            // that moved past the generation the operator read is stale, so they reload before deciding again.
+            if (job.state !== 'queued' && job.state !== 'running') {
+              throw new HarnessError('CONFLICT', `Import job ${job.id} is ${job.state} and cannot be cancelled`, 409, false);
+            }
+            throw new HarnessError('CONFLICT', `Import job ${job.id} is at generation ${job.generation}, not ${expectedGeneration}`, 409, false);
           }
-          this.principals.advanceSkillImportJob({ ownerId: principalId, id: job.id, state: 'cancelled' });
-          return mutation('Import job cancelled', required(
-            this.principals.getSkillImportJob(principalId, job.id),
-            `Import job ${job.id} was not found`
-          ));
+          return mutation('Import job cancelled', skillImportJobView(job));
         }
         case 'skill_update': return mutation('Skill updated', this.principals.updateSkillMetadata({
           ownerId: principalId,

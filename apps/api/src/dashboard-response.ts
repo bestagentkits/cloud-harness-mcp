@@ -286,7 +286,7 @@ const skillSetKeys = ['id', 'name', 'description', 'generation', 'createdAt', 'u
 const skillSetItemKeys = ['skillSetId', 'ordinal', 'skillSourceId', 'revisionId', 'name'] as const;
 const skillUsageSetKeys = ['skillSetId', 'name'] as const;
 const skillUsageWorkspaceKeys = ['workspaceId', 'status', 'name', 'revisionId'] as const;
-const skillImportJobKeys = ['id', 'sourceKind', 'sourceRef', 'state', 'progress', 'result', 'errorCode', 'skillRevisionId', 'createdAt', 'updatedAt'] as const;
+const skillImportJobKeys = ['id', 'sourceKind', 'sourceRef', 'state', 'generation', 'progress', 'result', 'errorCode', 'skillRevisionId', 'createdAt', 'updatedAt'] as const;
 const skillResolvedKeys = ['name', 'tier', 'skillSourceId', 'revisionId', 'contentSha256', 'pinned'] as const;
 const skillExcludedKeys = ['name', 'tier', 'reason'] as const;
 const skillCatalogKeys = ['id', 'provider', 'slug', 'displayName', 'description', 'fetchedAt', 'cacheState', 'pinnedCommit', 'skillCount', 'lockState'] as const;
@@ -741,7 +741,7 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
   skill_search: { UNAVAILABLE: 'Skill search is temporarily unavailable.' },
   skill_import_start: { CONFLICT: 'This import already started.', UNAVAILABLE: 'The provider is temporarily unavailable.' },
   skill_import_status: { NOT_FOUND: 'Import job not found.' },
-  skill_import_cancel: { NOT_FOUND: 'Import job not found.', CONFLICT: 'This import already finished.' },
+  skill_import_cancel: { NOT_FOUND: 'Import job not found.', CONFLICT: 'This import changed or already finished. Reload it and try again.' },
   skill_revision_list: { NOT_FOUND: 'Skill not found.' },
   skill_revision_get: { NOT_FOUND: 'Revision not found.' },
   skill_revision_diff: { NOT_FOUND: 'Revision not found.' },

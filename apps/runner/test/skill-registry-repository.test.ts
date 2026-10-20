@@ -289,6 +289,27 @@ describe('skill registry repository', () => {
     }
   });
 
+  it('fences a cancel on the generation the job is at and drops a worker write that lost the race', () => {
+    const store = openStore();
+    try {
+      const jobId = store.createSkillImportJob({ ownerId: OWNER, sourceKind: 'skillx', sourceRef: 'pdf' });
+      expect(store.getSkillImportJob(OWNER, jobId)).toMatchObject({ generation: 1, createdAt: expect.any(Number) });
+      expect(store.advanceSkillImportJob({ ownerId: OWNER, id: jobId, state: 'running', whileActive: true })).toBe(true);
+      expect(store.getSkillImportJob(OWNER, jobId)!.generation).toBe(2);
+
+      expect(store.cancelSkillImportJob(OWNER, jobId, 1)).toBe(false);
+      expect(store.cancelSkillImportJob(OWNER, jobId, 3)).toBe(false);
+      expect(store.getSkillImportJob(OWNER, jobId)!.state).toBe('running');
+      expect(store.cancelSkillImportJob(OWNER, jobId, 2)).toBe(true);
+      expect(store.getSkillImportJob(OWNER, jobId)).toMatchObject({ state: 'cancelled', generation: 3 });
+
+      expect(store.advanceSkillImportJob({ ownerId: OWNER, id: jobId, state: 'succeeded', whileActive: true })).toBe(false);
+      expect(store.getSkillImportJob(OWNER, jobId)!.state).toBe('cancelled');
+    } finally {
+      store.close();
+    }
+  });
+
   it('upserts catalog entries idempotently per provider slug and isolates owners', () => {
     const store = openStore();
     try {

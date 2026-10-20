@@ -348,6 +348,11 @@ describe('dashboard static UI contract', () => {
     expect(script).toContain("api('/skill-imports'");
     // The bare state token is what the job line used to print, and it is not guidance.
     expect(script).not.toContain("String(job.state ?? 'queued')");
+    // The cancel is fenced on the generation of the job line the operator is watching, never a constant,
+    // so a cancel that raced the job's own transition is refused instead of landing unseen.
+    expect(script).toContain("jobBox.setAttribute('data-job-generation', String(job.generation))");
+    expect(script).toContain('body: JSON.stringify({ expectedGeneration: generation })');
+    expect(script).not.toContain('JSON.stringify({ expectedGeneration: 1 })');
   });
 
   it('reduces the open workspace dialog to skill-set selection and drops the dead toolkit grid', () => {

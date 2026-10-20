@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HarnessError, ModelProfileValidateResultSchema,
   type AgentModelProfileMetadata, type MetadataRunnerRequest, type ModelConnectionVerifyResult, type ModelProfileValidateResult, type RunnerConfig
@@ -180,14 +180,73 @@ describe('skill revisions', () => {
     const ownerId = principals.resolvePrincipal(principal);
     const jobId = principals.createSkillImportJob({ ownerId, sourceKind: 'skillx', sourceRef: 'davila7-pdf-processing' });
 
+    const read = await controls.execute(request('skill_import_status', { jobId }));
+    expect(read.data).toMatchObject({ id: jobId, state: 'queued', generation: 1, progress: {}, result: null });
+    expect(read.data).not.toHaveProperty('progressJson');
+
     const cancelled = await controls.execute(request('skill_import_cancel', { jobId, expectedGeneration: 1 }));
-    expect((cancelled.data as { state: string }).state).toBe('cancelled');
+    expect(cancelled.data).toMatchObject({ state: 'cancelled', generation: 3 });
     // The state is on the row rather than only in the response, because the row is what survives a restart.
     expect(principals.getSkillImportJob(ownerId, jobId)?.state).toBe('cancelled');
 
     // A job that already reached a terminal state is a conflict, not a silent rewrite of its history.
-    await expect(controls.execute(request('skill_import_cancel', { jobId, expectedGeneration: 1 })))
+    await expect(controls.execute(request('skill_import_cancel', { jobId, expectedGeneration: 3 })))
       .rejects.toThrow(/cannot be cancelled/);
+  });
+
+  it('refuses a cancel fenced on a generation the job has already moved past', async () => {
+    const { controls, principals } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const jobId = principals.createSkillImportJob({ ownerId, sourceKind: 'skillx', sourceRef: 'davila7-pdf-processing' });
+    principals.advanceSkillImportJob({ ownerId, id: jobId, state: 'running', progressJson: '{"phase":"acquiring"}' });
+
+    // The operator read the queued job; it has since started, so the cancel is stale rather than applied.
+    const stale = controls.execute(request('skill_import_cancel', { jobId, expectedGeneration: 1 }));
+    await expect(stale).rejects.toMatchObject({ code: 'CONFLICT', statusCode: 409 });
+    await expect(stale).rejects.toThrow(/generation 2, not 1/);
+    expect(principals.getSkillImportJob(ownerId, jobId)?.state).toBe('running');
+
+    const current = await controls.execute(request('skill_import_cancel', { jobId, expectedGeneration: 2 }));
+    expect(current.data).toMatchObject({ state: 'cancelled', progress: { phase: 'acquiring' } });
+  });
+
+  it('stops a running import that was cancelled without publishing or failing the cancelled row', async () => {
+    const { controls, principals, workspaces } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    let release!: () => void;
+    const acquired = new Promise<void>((resolve) => { release = resolve; });
+    let importCalls = 0;
+    (workspaces as unknown as { toolkitService: unknown }).toolkitService = {
+      importSkillPackage: async () => {
+        importCalls += 1;
+        await acquired;
+        return {
+          bundleSha256: 'a'.repeat(64), resolvedRevision: 'r1', hasExecutableAssets: false,
+          skills: [{ name: 'pdf-processing', contentSha256: 'b'.repeat(64) }]
+        };
+      }
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const started = await controls.execute(request('skill_import_start', { sourceKind: 'skillx', sourceRef: 'davila7-pdf-processing', expectedGeneration: 0 }));
+      const jobId = (started.data as { id: string }).id;
+      await vi.waitFor(() => expect(importCalls).toBe(1));
+      expect(principals.getSkillImportJob(ownerId, jobId)?.generation).toBe(2);
+
+      await controls.execute(request('skill_import_cancel', { jobId, expectedGeneration: 2 }));
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      // The worker noticed the cancel at its next step: nothing was published and the row kept its state.
+      const job = principals.getSkillImportJob(ownerId, jobId);
+      expect(job).toMatchObject({ state: 'cancelled', errorCode: null, skillRevisionId: null });
+      expect(principals.listSkillSources(ownerId, { limit: 10 })).toHaveLength(0);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   it('reports an unknown import job instead of an empty success', async () => {
