@@ -51,7 +51,7 @@ const shells = {
   dark: versionedShell.replace('<html lang="en">', '<html lang="en" data-theme="dark">')
 } as const;
 
-function forcedTheme(request: Request): 'light' | 'dark' | undefined {
+export function forcedTheme(request: Request): 'light' | 'dark' | undefined {
   const header = request.headers.cookie;
   if (!header) return undefined;
   for (const part of header.split(';')) {

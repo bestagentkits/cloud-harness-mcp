@@ -151,6 +151,12 @@ export const ApiConfigSchema = z.object({
   runnerToken: token,
   publicHosts: z.array(z.string().min(1)).min(1),
   allowedOrigins: z.array(z.url()).default([]),
+  /**
+   * Which Dashboard UI `/dashboard` serves: the shipped `legacy` shell or the `react`
+   * app from `apps/dashboard`. Unset means `legacy`; a per-browser `?ui=` canary cookie
+   * can still opt into either (see `apps/api/src/dashboard-react-assets.ts`).
+   */
+  dashboardUi: z.enum(['legacy', 'react']).optional(),
   requestTimeoutMs: z.coerce.number().int().min(1_000).max(300_000).default(60_000),
   maxBodyBytes: z.coerce.number().int().min(1_024).max(4_194_304).default(1_048_576),
   mcpGatewayTimeoutMs: z.coerce.number().int().min(1_000).max(120_000).default(30_000),

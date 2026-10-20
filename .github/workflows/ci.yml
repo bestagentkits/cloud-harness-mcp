@@ -16,7 +16,7 @@ concurrency:
 jobs:
   quality:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -27,6 +27,10 @@ jobs:
       - run: bash -n worker/clone-helper.sh worker/task-runner.sh worker/shell-runner.sh worker/worker-runner.sh worker/gh-helper.sh deploy/scripts/bootstrap-vps.sh deploy/scripts/deploy-release.sh deploy/scripts/release-runtime.sh deploy/scripts/rollback-release.sh deploy/scripts/deploy-ssh-wrapper.sh deploy/scripts/upgrade-nginx-dashboard.sh
       - run: npm run verify:compose
       - run: npm run verify
+      # `verify` already built the API and the React Dashboard; the smoke drives that build
+      # through the real Express app in Chromium (shell render, theme, axe, CSP).
+      - run: npx -w @cloud-harness/dashboard playwright install --with-deps chromium
+      - run: npm run test:e2e -w @cloud-harness/dashboard
       - name: Verify documentation and reference integrity
         run: |
           npm run docs:reference
@@ -47,7 +51,7 @@ jobs:
       - run: node scripts/generate-model-gateway-test-fixtures.mjs
       - run: docker compose --profile images build executor-image agent-image api runner model-gateway network-guard-image
       - name: Verify non-root API runtime dependencies
-        run: docker run --rm --entrypoint node cloud-harness-api:local -e "const fs=require('node:fs'); for (const file of ['/app/package.json','/app/apps/api/package.json','/app/apps/api/dashboard/index.html','/app/packages/contracts/package.json','/app/scripts/deploy-canary.mjs','/app/deploy/ingress-proxy.mjs']) fs.accessSync(file, fs.constants.R_OK); import('@cloud-harness/contracts')"
+        run: docker run --rm --entrypoint node cloud-harness-api:local -e "const fs=require('node:fs'); for (const file of ['/app/package.json','/app/apps/api/package.json','/app/apps/api/dashboard/index.html','/app/apps/dashboard/dist/index.html','/app/packages/contracts/package.json','/app/scripts/deploy-canary.mjs','/app/deploy/ingress-proxy.mjs']) fs.accessSync(file, fs.constants.R_OK); import('@cloud-harness/contracts')"
       - run: CLOUD_HARNESS_REQUIRE_DOCKER_TESTS=1 npm run test:docker
       - run: CLOUD_HARNESS_REQUIRE_DOCKER_TESTS=1 npm run test:e2e
       - name: Assert managed-container cleanup
