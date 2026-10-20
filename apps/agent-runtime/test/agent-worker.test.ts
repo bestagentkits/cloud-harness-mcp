@@ -4,7 +4,7 @@ import { AgentWorker } from '../src/agent-worker.js';
 import { JsonlWriter } from '../src/jsonl.js';
 import { BoundedOutput } from '../src/output.js';
 import type { AgentSessionLike } from '../src/pi-session.js';
-import { ProxyToolBroker, transcriptToolCalls } from '../src/proxy-tools.js';
+import { canonicalToolArguments, ProxyToolBroker, transcriptToolCalls } from '../src/proxy-tools.js';
 import type { OutputRecord } from '../src/protocol-schemas.js';
 import { createRedactor } from '../src/redaction.js';
 import { captureOutput, createStartRecord } from './helpers.js';
@@ -280,6 +280,26 @@ describe('AgentSession worker lifecycle', () => {
     it('picks the block a repeated ID was executed for when Pi skipped an earlier block with that ID', () => {
       // Only the second `call_0` block of the message passed validation and reached the broker.
       expect(execute(entries(transcript.slice(0, 2)), [['call_0', 'files_read', { path: 'b.txt' }]])).toEqual([expected[1]]);
+    });
+
+    it('picks the executed block by its coerced arguments when Pi skipped an earlier block with that ID', () => {
+      const coerced = [
+        { role: 'user', content: [{ type: 'text', text: 'task' }] },
+        { role: 'assistant', content: [
+          call('call_0', 'files_read', { path: 'x.txt', offset: 'nope' }),
+          call('call_0', 'files_read', { path: 'b.txt', limit: '10', offset: null })
+        ] }
+      ];
+      // Pi dropped the null and coerced the string limit before it executed the second block.
+      expect(execute(entries(coerced), [['call_0', 'files_read', { path: 'b.txt', limit: 10 }]])).toEqual([expected[1]]);
+    });
+
+    it('agrees with the runner on the canonical form of raw and coerced arguments', () => {
+      // The same vector pins canonicalToolArguments in apps/runner/test/agent-effect-reconciler.test.ts.
+      expect(canonicalToolArguments({ path: 'a', recursive: null, limit: '10', overwrite: true, nested: [1, null, { b: false, a: 'x' }] }))
+        .toEqual({ limit: '10', nested: ['1', null, { a: 'x', b: 'false' }], overwrite: 'true', path: 'a' });
+      expect(JSON.stringify(canonicalToolArguments({ path: 'a', limit: 10, recursive: true })))
+        .toBe(JSON.stringify(canonicalToolArguments({ recursive: 'true', path: 'a', limit: '10', expectedSha256: null })));
     });
 
     it('falls back to issue order when the session transcript cannot be read', () => {
