@@ -587,6 +587,18 @@ certificate available for investigation. Remove them only after resolving
 their exact ownership and retention requirements. See
 [operations](operations.md) for backup and cleanup.
 
+To roll back the React dashboard without a release rollback, set
+`CLOUD_HARNESS_DASHBOARD_UI=legacy` (or remove the key) in the API runtime
+environment file and restart the service:
+
+```bash
+sudo systemctl restart cloud-harness-mcp.service
+```
+
+A browser pinned by the canary cookie returns to legacy by opening
+`/dashboard?ui=legacy`. See
+[configuration](configuration.md#dashboard-ui-rollout).
+
 For an API-key-gateway rollback, disable the Worker custom route first, set
 `API_KEY_AUTH_ENABLED=false`, confirm the hidden origin route returns 404, and
 revoke the Worker service token. A prior binary that understands only metadata

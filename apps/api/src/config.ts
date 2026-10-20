@@ -25,6 +25,7 @@ export function loadApiConfig(): ApiConfig {
     runnerToken: secret('RUNNER_TOKEN'),
     publicHosts: csv(process.env.API_PUBLIC_HOSTS, 'localhost,127.0.0.1'),
     allowedOrigins: csv(process.env.API_ALLOWED_ORIGINS),
+    dashboardUi: environment('CLOUD_HARNESS_DASHBOARD_UI') || undefined,
     requestTimeoutMs: process.env.REQUEST_TIMEOUT_MS,
     maxBodyBytes: process.env.MAX_BODY_BYTES,
     mcpGatewayTimeoutMs: environment('MCP_GATEWAY_TIMEOUT_MS'),

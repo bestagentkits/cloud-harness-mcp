@@ -44,6 +44,26 @@ allowed same-origin request and a short-lived CSRF session. The owning request
 paths are [`apps/api/src/auth.ts`](../apps/api/src/auth.ts) and
 [`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts).
 
+### Dashboard UI rollout
+
+`CLOUD_HARNESS_DASHBOARD_UI` selects which dashboard `/dashboard` serves in
+`cloudflare-access` mode: `legacy` (the default when unset) or `react`, the
+rebuilt app in `apps/dashboard`. The flag exists so the React app can ship dark
+and be rolled back with a restart; with `legacy` and no canary cookie the API
+answers byte-for-byte as before. `GET /dashboard?ui=react|legacy` pins one
+browser to either UI through an `HttpOnly`, `Secure`, `SameSite=Strict` cookie
+and redirects to the clean URL, so an operator can canary the React app without
+changing the instance. The React shell keeps the same Host, Origin, Access, and
+CSRF boundary and adds only a per-response style nonce and `font-src 'self'` to
+its CSP. The API validates the build's Vite manifest at startup: a missing or
+invalid build fails startup under `react`, and under `legacy` it disables the
+canary with one warning while legacy keeps serving. Only the React routes the
+API allowlists answer 200; other Dashboard navigations get a 404 rendered by the
+React not-found page, and the BFF, OAuth callback, assets, and MCP routes are
+never answered by the shell. Owners:
+[`apps/api/src/dashboard-react-assets.ts`](../apps/api/src/dashboard-react-assets.ts)
+and [`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts).
+
 `RUNNER_TOKEN` is independent of either public authentication mode and is used
 only from API to runner. Secret-valued settings accept their documented
 `_FILE` form and must meet schema length/placeholder checks.

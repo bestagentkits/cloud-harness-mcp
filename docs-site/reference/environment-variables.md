@@ -33,6 +33,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `ACCESS_PRINCIPAL_RELINKS` | `[]` | Optional | Optional audited subject-rotation mappings, supplied as strict JSON: |
 | `API_PUBLIC_HOSTS` | `localhost,127.0.0.1,cloud-harness-mcp.46-250-239-227.sslip.io` | **Required** | Required configuration. |
 | `API_ALLOWED_ORIGINS` | `https://cloud-harness-mcp.46-250-239-227.sslip.io` | **Required** | Required configuration. |
+| `CLOUD_HARNESS_DASHBOARD_UI` | `legacy` | Optional | Dashboard UI served at /dashboard: legacy (default) or react. Rollback: set legacy and restart the api service. A browser can opt in or out with /dashboard?ui=react\|legacy. |
 | `API_PORT` | `3000` | **Required** | Required configuration. |
 | `RUNNER_PORT` | `3001` | **Required** | Required configuration. |
 | `RUNNER_URL` | `http://runner:3001` | **Required** | Required configuration. |

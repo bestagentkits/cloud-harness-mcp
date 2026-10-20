@@ -35,6 +35,10 @@ The **Mission Control** operator dashboard is available at `https://harness.zuey
 
 Every dashboard page ends with the same footer crediting [AgentKit](https://agentkit.best).
 
+## New dashboard preview
+
+A rebuilt dashboard is rolling out behind the `CLOUD_HARNESS_DASHBOARD_UI` setting, which defaults to `legacy`. To try it in one browser without changing the instance, open `/dashboard?ui=react`; open `/dashboard?ui=legacy` (or use **Use classic Dashboard** in its sidebar) to switch back. The choice is stored in a browser cookie only.
+
 ## Design System & Security Invariants
 
 - **Zero Secrets Rendered:** Container tokens, SSH private keys, and runner authentication credentials are never sent to or displayed in the dashboard. Dashboard search reads an allowlisted projection from seven resource endpoints and never indexes secret values, secret descriptions, or knowledge content.

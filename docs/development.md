@@ -31,6 +31,28 @@ npm test
 npm run build
 ```
 
+### Dashboard app
+
+The React dashboard lives in the `@cloud-harness/dashboard` workspace
+([`apps/dashboard/package.json`](../apps/dashboard/package.json) owns its
+scripts). Root `build`, `typecheck`, `lint`, and `test` already include it. While
+iterating:
+
+```bash
+npm run dev -w @cloud-harness/dashboard
+npm run test -w @cloud-harness/dashboard
+```
+
+The Vite dev server proxies `/dashboard/api` to `DASHBOARD_DEV_API_ORIGIN`. The
+Playwright smoke suite builds the API and dashboard, serves them through the
+real Express app with an offline Access verifier, and checks render, theme, CSP,
+and axe results; install its browser once:
+
+```bash
+npx -w @cloud-harness/dashboard playwright install chromium
+npm run test:e2e:dashboard
+```
+
 ### Running local stdio mode
 
 After building packages with `npm run build`, you can test local stdio mode directly:

@@ -4,17 +4,24 @@ COPY package.json package-lock.json tsconfig.base.json ./
 COPY apps/api/package.json apps/api/tsconfig.json ./apps/api/
 COPY apps/runner/package.json apps/runner/tsconfig.json ./apps/runner/
 COPY packages/contracts/package.json packages/contracts/tsconfig.json ./packages/contracts/
+COPY apps/dashboard/package.json apps/dashboard/tsconfig.json ./apps/dashboard/
 RUN npm ci
 COPY apps/api/src ./apps/api/src
 COPY apps/api/dashboard ./apps/api/dashboard
 COPY packages/contracts/src ./packages/contracts/src
-RUN npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api && npm prune --omit=dev
+# The React Dashboard is a static build: its toolchain is devDependencies only, so the
+# prune below leaves none of it in the runtime image; only apps/dashboard/dist ships.
+COPY apps/dashboard/index.html apps/dashboard/vite.config.ts ./apps/dashboard/
+COPY apps/dashboard/public ./apps/dashboard/public
+COPY apps/dashboard/scripts ./apps/dashboard/scripts
+COPY apps/dashboard/src ./apps/dashboard/src
+RUN npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api && npm run build -w @cloud-harness/dashboard && npm prune --omit=dev
 
 FROM node:24.11.0-bookworm-slim
 ENV NODE_ENV=production
 WORKDIR /app
-RUN mkdir -p /app/apps/api /app/packages/contracts \
-  && chmod 0755 /app/apps /app/apps/api /app/packages /app/packages/contracts
+RUN mkdir -p /app/apps/api /app/apps/dashboard /app/packages/contracts \
+  && chmod 0755 /app/apps /app/apps/api /app/apps/dashboard /app/packages /app/packages/contracts
 COPY --from=build --chmod=0444 /app/package.json /app/package-lock.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build --chmod=0444 /app/apps/api/package.json ./apps/api/package.json
@@ -22,6 +29,9 @@ COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/api/dashboard ./apps/api/dashboard
 RUN find /app/apps/api/dashboard -type d -exec chmod 0555 {} + \
   && find /app/apps/api/dashboard -type f -exec chmod 0444 {} +
+COPY --from=build /app/apps/dashboard/dist ./apps/dashboard/dist
+RUN find /app/apps/dashboard/dist -type d -exec chmod 0555 {} + \
+  && find /app/apps/dashboard/dist -type f -exec chmod 0444 {} +
 COPY --from=build --chmod=0444 /app/packages/contracts/package.json ./packages/contracts/package.json
 COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY --chown=node:node --chmod=0555 scripts/deploy-canary.mjs ./scripts/deploy-canary.mjs
