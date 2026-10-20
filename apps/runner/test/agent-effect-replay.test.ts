@@ -852,17 +852,22 @@ describe('stored receipt results', () => {
     expect(first.repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('RUNNING');
   });
 
-  it('dispatches a delete, mkdir, or move of an agent that records no session without observing its target first', async () => {
+  it('dispatches a patch, delete, mkdir, or move of an agent that records no session without observing its target first', async () => {
     const context = setup(undefined, RunnerAgentsConfigSchema.parse({ ...config, sessionPersistenceEnabled: false }));
     const { first, fs } = context;
+    fs.files.set('patched.txt', 'alpha');
     fs.files.set('old.txt', 'old');
     fs.files.set('from.txt', 'moving');
     const agentId = await spawnRunning(context, first, 'flags-off-observe');
+    await request(first.launcher, 0, 'toolu_patch', 'files_apply_patch', { path: 'patched.txt', oldText: 'alpha', newText: 'ALPHA' });
     await request(first.launcher, 0, 'toolu_del', 'files_delete', { path: 'old.txt' });
     await request(first.launcher, 0, 'toolu_mk', 'files_mkdir', { path: 'dir' });
     await request(first.launcher, 0, 'toolu_mv', 'files_move', { source: 'from.txt', destination: 'to.txt' });
     // One executor call per tool call, as before the ledger recorded pre-dispatch state.
-    expect(fs.calls.map((call) => call.operation)).toEqual(['files_delete', 'files_mkdir', 'files_move']);
+    expect(fs.calls.map((call) => call.operation)).toEqual(['files_apply_patch', 'files_delete', 'files_mkdir', 'files_move']);
+    expect(fs.files.get('patched.txt')).toBe('ALPHA');
+    expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_patch', kind: 'files_apply_patch' }))
+      .toMatchObject({ state: 'APPLIED', preImageSha256: null, intendedSha256: null });
     for (const [requestId, kind] of [['toolu_del', 'files_delete'], ['toolu_mk', 'files_mkdir'], ['toolu_mv', 'files_move']] as const) {
       expect(first.repository.findEffect({ rootAgentId: agentId, requestId, kind })).toMatchObject({ state: 'APPLIED', preEntry: null });
     }
