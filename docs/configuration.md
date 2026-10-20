@@ -81,6 +81,39 @@ and [`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts
 only from API to runner. Secret-valued settings accept their documented
 `_FILE` form and must meet schema length/placeholder checks.
 
+### Dashboard webchat (Dewee)
+
+The Dashboard webchat BFF under `/dashboard/api/v1/dewee/` proxies the
+dewee-webchat HTTP contract to a Dewee gateway. It is configured on the `api`
+service only:
+
+- `DEWEE_GATEWAY_URL`: the gateway origin. It must be `https`; cleartext
+  `http` is accepted only for a loopback host.
+- `DEWEE_GATEWAY_TOKEN`: the server-side gateway token.
+- `DEWEE_WEBCHAT_SECRET`: at least 32 characters. It signs the per-operator
+  visitor tokens the widget holds.
+- `DEWEE_AGENT_ID` (default `cloud-harness-operator`): the only agent the
+  widget can reach. It cannot be switched from the browser.
+- `DEWEE_TENANT_ID` (optional): for a multi-tenant gateway.
+- `DEWEE_CHAT_TIMEOUT_MS` (default 180000): bounds one agent run.
+
+Set the URL, token and secret together. A partial set fails API startup, and
+leaving all three unset disables every webchat route with
+`503 dewee_disabled`. Unsetting them and recreating the `api` container is the
+kill switch.
+
+The `api` service has no host mounts, so put the two secrets in the runtime env
+file. The `_FILE` forms work only where a file is actually mounted. Compose
+blanks both secrets on the runner, which shares that env file, and
+`scripts/verify-compose-boundaries.mjs` asserts that no other service names a
+`DEWEE_` setting.
+
+The data flow and its risks are in the
+[security model](security-model.md#dashboard-webchat-dewee). The executable
+owners are
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts) and
+[`apps/api/src/dashboard-dewee-router.ts`](../apps/api/src/dashboard-dewee-router.ts).
+
 ### Dashboard-managed API-key gateway
 
 The static-client lane is an opt-in extension of `cloudflare-access`, not a

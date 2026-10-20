@@ -7,6 +7,7 @@ import { dashboardSecurity, requireJson, SKILL_ARCHIVE_PATH } from './dashboard-
 import { createDashboardSessions } from './dashboard-session.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
 import { registerDashboardControlRoutes } from './dashboard-control-router.js';
+import { registerDashboardDeweeRoutes } from './dashboard-dewee-router.js';
 import { PathIdMismatchError, withPathIds } from './dashboard-path-ids.js';
 import { registerDashboardGatewayRoutes } from './dashboard-gateway-router.js';
 import { registerDashboardTerminalRoutes } from './dashboard-terminal-router.js';
@@ -123,6 +124,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   registerDashboardControlRoutes(router, runner, principal, config, gateway);
   if (gateway) registerDashboardGatewayRoutes(router, gateway, principal, config);
   registerDashboardTerminalRoutes(router, runner, principal, config.requestTimeoutMs);
+  registerDashboardDeweeRoutes(router, config, principal);
 
   router.get('/api/v1/profile', (request: DashboardRequest, response) => {
     const selected = principal(request, response);

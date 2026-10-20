@@ -1,0 +1,359 @@
+import { createServer, request as httpRequest, type ClientRequest, type Server } from 'node:http';
+import express from 'express';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ApiConfig, RunnerPrincipalSelector, RunnerResponse } from '@cloud-harness/contracts';
+import { createDashboardRouter } from '../src/dashboard-router.js';
+import { sanitizeDeweePageContext, serializeDeweePageContext } from '../src/dashboard-dewee-page-context.js';
+import type { DashboardRunnerClient } from '../src/dashboard-types.js';
+import { apiLogger } from '../src/logging.js';
+import { startDeweeGatewayStub } from './dewee-gateway-stub.js';
+
+// The Dashboard webchat BFF proxies the dewee-webchat HTTP contract to a Dewee gateway. These
+// tests drive it end to end against an in-process gateway stub and check that the gateway
+// token and webchat secret never reach a response or a log line.
+
+const GATEWAY_TOKEN = 'dewee-gateway-token-0123456789abcdef';
+const WEBCHAT_SECRET = 'dewee-webchat-secret-0123456789abcdef-xyz';
+const operator: RunnerPrincipalSelector = { kind: 'external', issuer: 'https://team.cloudflareaccess.com', subject: 'operator' };
+const otherOperator: RunnerPrincipalSelector = { kind: 'external', issuer: 'https://team.cloudflareaccess.com', subject: 'someone-else' };
+const baseConfig: ApiConfig = {
+  host: '127.0.0.1', port: 3000, authMode: 'cloudflare-access', ownerId: 'owner',
+  accessIssuer: 'https://team.cloudflareaccess.com', accessAudience: 'audience',
+  accessJwksUrl: 'https://team.cloudflareaccess.com/cdn-cgi/access/certs', runnerUrl: 'http://runner:3001',
+  apiKeyAuthEnabled: false, runnerToken: 'runner-token-that-is-longer-than-32-characters', publicHosts: ['dashboard.example'],
+  allowedOrigins: ['https://dashboard.example'], requestTimeoutMs: 2_000, maxBodyBytes: 65_536,
+  mcpGatewayTimeoutMs: 30_000, mcpGatewayMaxResponseBytes: 262_144, mcpGatewayMaxToolsPerServer: 500,
+  mcpGatewayMaxSchemaBytes: 65_536, mcpGatewayMaxCatalogBytes: 2_097_152, mcpGatewayMaxTraceRows: 20_000,
+  mcpGatewayMaxConnections: 32, mcpGatewayAllowInsecureHttp: false, mcpGatewayAllowPrivateEndpoints: false,
+  deweeAgentId: 'cloud-harness-operator', deweeChatTimeoutMs: 180_000
+};
+
+type Reply = { status: number; headers: Record<string, unknown>; text: string; json: any };
+
+let stub: Awaited<ReturnType<typeof startDeweeGatewayStub>>;
+let httpServer: Server;
+let port: number;
+let current: RunnerPrincipalSelector | undefined;
+let transcript: string[];
+let logged: string[];
+
+async function listen(config: ApiConfig): Promise<void> {
+  const ok = async (): Promise<RunnerResponse> => ({ ok: true, message: 'ok', truncated: false, data: {} });
+  const runner: DashboardRunnerClient = { call: vi.fn(ok), callInternal: vi.fn(ok) };
+  const app = express();
+  app.use((request: any, _response, next) => {
+    if (current) request.auth = { token: 'cloudflare-access', clientId: current.kind === 'external' ? current.subject : 'owner', scopes: [], extra: { principal: current } };
+    next();
+  });
+  app.use('/dashboard', createDashboardRouter(config, runner));
+  httpServer = createServer(app);
+  await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+  const address = httpServer.address();
+  if (!address || typeof address === 'string') throw new Error('server unavailable');
+  port = address.port;
+}
+
+beforeEach(async () => {
+  current = operator;
+  transcript = [];
+  logged = [];
+  for (const level of ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const) {
+    vi.spyOn(apiLogger, level).mockImplementation(((...args: unknown[]) => { logged.push(JSON.stringify(args)); }) as never);
+  }
+  stub = await startDeweeGatewayStub(GATEWAY_TOKEN);
+  await listen({ ...baseConfig, deweeGatewayUrl: stub.url, deweeGatewayToken: GATEWAY_TOKEN, deweeWebchatSecret: WEBCHAT_SECRET });
+});
+
+afterEach(async () => {
+  // Nothing the BFF answered or logged may carry the gateway token or the webchat secret.
+  for (const text of [...transcript, ...logged]) {
+    expect(text).not.toContain(GATEWAY_TOKEN);
+    expect(text).not.toContain(WEBCHAT_SECRET);
+  }
+  vi.restoreAllMocks();
+  httpServer.closeAllConnections();
+  await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  await stub.close();
+});
+
+function open(path: string, options: { method?: string; headers?: Record<string, string>; body?: string } = {}): { request: ClientRequest; reply: Promise<Reply> } {
+  let request!: ClientRequest;
+  const reply = new Promise<Reply>((resolve, reject) => {
+    request = httpRequest({ hostname: '127.0.0.1', port, path: `/dashboard${path}`, method: options.method ?? 'GET', headers: { host: 'dashboard.example', ...options.headers, ...(options.body ? { 'content-length': String(Buffer.byteLength(options.body)) } : {}) } }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        transcript.push(JSON.stringify(response.headers), text);
+        let json: unknown;
+        try { json = text ? JSON.parse(text) : undefined; } catch { json = undefined; }
+        resolve({ status: response.statusCode ?? 0, headers: response.headers, text, json });
+      });
+      response.on('error', reject);
+    });
+    request.on('error', reject);
+    request.end(options.body);
+  });
+  return { request, reply };
+}
+
+const send = (path: string, options: Parameters<typeof open>[1] = {}) => open(path, options).reply;
+
+async function csrfHeaders(): Promise<Record<string, string>> {
+  const session = await send('/api/v1/session');
+  const cookie = String((session.headers['set-cookie'] as string[])[0]).split(';', 1)[0]!;
+  return { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+}
+
+async function visitorSession(headers: Record<string, string>): Promise<{ visitorId: string; token: string; expiresAt: number }> {
+  const reply = await send('/api/v1/dewee/session', { method: 'POST', headers, body: '{}' });
+  expect(reply.status).toBe(200);
+  return reply.json;
+}
+
+async function chatHeaders(): Promise<Record<string, string>> {
+  const headers = await csrfHeaders();
+  const { token } = await visitorSession(headers);
+  return { ...headers, authorization: `Bearer ${token}` };
+}
+
+const frames = (text: string) => text.split('\n\n').filter((block) => block.startsWith('data: ')).map((block) => JSON.parse(block.slice(6)));
+
+async function eventually(check: () => boolean, timeoutMs = 3_000): Promise<void> {
+  const started = Date.now();
+  while (!check()) {
+    if (Date.now() - started > timeoutMs) throw new Error('condition not reached');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+describe('Dashboard webchat BFF: access', () => {
+  it('requires a dashboard principal', async () => {
+    current = undefined;
+    expect((await send('/api/v1/dewee/config')).status).toBe(401);
+  });
+
+  it('requires the CSRF header on POST', async () => {
+    const { 'x-csrf-token': _csrf, ...headers } = await csrfHeaders();
+    void _csrf;
+    const reply = await send('/api/v1/dewee/session', { method: 'POST', headers, body: '{}' });
+    expect(reply.status).toBe(403);
+    expect(reply.json).toEqual({ error: 'csrf_failed' });
+  });
+
+  it('serves the fixed agent and no credentials from config', async () => {
+    const reply = await send('/api/v1/dewee/config');
+    expect(reply.status).toBe(200);
+    expect(reply.json).toEqual({
+      agents: [{ id: 'cloud-harness-operator' }], defaultAgent: 'cloud-harness-operator', allowAgentSwitch: false,
+      allowClientCredentials: false, maxMessageLength: 4_000, version: '0.2.0'
+    });
+  });
+
+  it('derives a stable per-operator visitor and refuses another operator\'s token', async () => {
+    const headers = await csrfHeaders();
+    const first = await visitorSession(headers);
+    const second = await visitorSession(headers);
+    expect(first.visitorId).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(second.visitorId).toBe(first.visitorId);
+    expect(first.expiresAt).toBeGreaterThan(Date.now());
+
+    current = otherOperator;
+    const otherHeaders = await csrfHeaders();
+    const other = await visitorSession(otherHeaders);
+    expect(other.visitorId).not.toBe(first.visitorId);
+    const borrowed = await send('/api/v1/dewee/chat', { method: 'POST', headers: { ...otherHeaders, authorization: `Bearer ${first.token}` }, body: JSON.stringify({ message: 'hi' }) });
+    expect(borrowed.status).toBe(401);
+    expect(borrowed.json).toEqual({ error: { message: 'Missing or expired visitor session.', code: 'unauthorized' } });
+    const missing = await send('/api/v1/dewee/history?conversationId=conv-123', { headers: otherHeaders });
+    expect(missing.status).toBe(401);
+    expect(stub.requests).toEqual([]);
+  });
+});
+
+describe('Dashboard webchat BFF: chat', () => {
+  it('streams the gateway reply as SSE and prepends a sanitized page block', async () => {
+    const headers = await chatHeaders();
+    const actions = [{ name: 'navigate', description: 'Open a page', sensitivity: 'navigate', parameters: { type: 'object', properties: { route: { type: 'string' } } } }];
+    const pageContext = { route: '/workspaces', apiKey: 'chm_key_abcdefghijkl', note: 'Bearer abcdefghijklmnop', count: 3 };
+    const reply = await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: '  hello  ', conversationId: 'conv-123', actions, pageContext }) });
+    expect(reply.status).toBe(200);
+    expect(reply.headers['content-type']).toBe('text/event-stream; charset=utf-8');
+    const events = frames(reply.text);
+    expect(events[0]).toMatchObject({ type: 'start', conversationId: 'conv-123', agent: 'cloud-harness-operator', actionsHash: expect.stringMatching(/^[0-9a-f]{16}$/) });
+    expect(events.slice(1)).toEqual([
+      { type: 'delta', text: 'Hel' },
+      { type: 'delta', text: 'lo' },
+      { type: 'tool_call', id: 't1', name: 'workspace_list', arguments: {} },
+      { type: 'tool_result', id: 't1', name: 'workspace_list', isError: false, result: '{"workspaces":[]}' },
+      { type: 'done', content: 'Hello', usage: { input_tokens: 3 } }
+    ]);
+
+    const [connect, chat] = stub.requests;
+    const visitorId = (await visitorSession(await csrfHeaders())).visitorId;
+    expect(connect).toEqual({ method: 'connect', params: { token: GATEWAY_TOKEN, user_id: `webchat-${visitorId}` } });
+    expect(chat!.method).toBe('chat.send');
+    expect(chat!.params).toMatchObject({ agentId: 'cloud-harness-operator', sessionKey: `agent:cloud-harness-operator:ws:direct:webchat-${visitorId}-conv-123`, stream: true });
+    const message = String(chat!.params.message);
+    expect(message.startsWith('[[dewee-page v1]]\n')).toBe(true);
+    expect(message.endsWith('[[/dewee-page]]\n\nhello')).toBe(true);
+    expect(message).toContain('"name":"navigate"');
+    expect(message).toContain('Page context: {"route":"/workspaces","apiKey":"[redacted]","note":"[redacted]","count":3}');
+    expect(message).not.toContain('chm_key_abcdefghijkl');
+  });
+
+  it('sends the manifest once and only a reference when the client already has its hash', async () => {
+    const headers = await chatHeaders();
+    const actions = [{ name: 'navigate', description: 'Open a page', sensitivity: 'navigate' }];
+    const first = frames((await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'a', actions }) })).text);
+    const actionsHash = first[0].actionsHash as string;
+    await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'b', actions, actionsHash }) });
+    const messages = stub.requests.filter((entry) => entry.method === 'chat.send').map((entry) => String(entry.params.message));
+    expect(messages[0]).toContain('Actions: ');
+    expect(messages[1]).not.toContain('Actions: ');
+    expect(messages[1]).toContain(`Page actions unchanged (manifest ${actionsHash})`);
+  });
+
+  it.each([
+    ['a non-array manifest', { actions: { name: 'x' } }, 400, 'invalid_actions'],
+    ['an invalid action name', { actions: [{ name: 'Bad Name', sensitivity: 'read' }] }, 400, 'invalid_actions'],
+    ['too many actions', { actions: Array.from({ length: 33 }, (_, index) => ({ name: `a${index}`, sensitivity: 'read' })) }, 413, 'actions_too_large'],
+    ['oversized parameters', { actions: [{ name: 'big', sensitivity: 'read', parameters: { type: 'object', description: 'x'.repeat(5_000) } }] }, 413, 'actions_too_large'],
+    ['an oversized page context', { pageContext: { blob: 'x'.repeat(5_000) } }, 413, 'context_too_large'],
+    ['an empty message', { message: '   ' }, 400, 'bad_request'],
+    ['a too long message', { message: 'x'.repeat(4_001) }, 413, 'too_long'],
+    ['another agent', { agent: 'someone-else' }, 403, 'agent_not_allowed']
+  ])('refuses %s before streaming', async (_label, extra, status, code) => {
+    const headers = await chatHeaders();
+    const reply = await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'hi', ...extra }) });
+    expect(reply.status).toBe(status);
+    expect(reply.json.error.code).toBe(code);
+    expect(stub.requests).toEqual([]);
+  });
+
+  it('replaces gateway and run error text with fixed messages', async () => {
+    const headers = await chatHeaders();
+    stub.setMode('fail');
+    const failed = frames((await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'hi' }) })).text);
+    expect(failed.at(-1)).toEqual({ type: 'error', message: 'The Dewee gateway request failed.', code: 'gateway_error' });
+    stub.setMode('run_failed');
+    const runFailed = frames((await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'hi' }) })).text);
+    expect(runFailed.at(-1)).toEqual({ type: 'error', message: 'The agent run failed.', code: 'run_failed' });
+    expect(logged.some((line) => line.includes('dewee.chat'))).toBe(true);
+    for (const line of logged) expect(line).not.toContain('"hi"');
+  });
+
+  it('reports an unreachable gateway as a typed stream error', async () => {
+    const headers = await chatHeaders();
+    await stub.close();
+    const events = frames((await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'hi' }) })).text);
+    expect(events.map((event) => event.type)).toEqual(['start', 'error']);
+    expect(events[1]).toEqual({ type: 'error', message: 'The Dewee gateway request failed.', code: 'gateway_error' });
+  });
+
+  it('aborts the gateway run when the browser disconnects', async () => {
+    const headers = await chatHeaders();
+    stub.setMode('hang');
+    const { request, reply } = open('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'hi', conversationId: 'conv-abort' }) });
+    reply.catch(() => undefined);
+    await eventually(() => stub.requests.some((entry) => entry.method === 'chat.send'));
+    expect(stub.openSockets()).toBe(1);
+    request.destroy();
+    await eventually(() => stub.requests.some((entry) => entry.method === 'chat.abort'));
+    expect(stub.requests.find((entry) => entry.method === 'chat.abort')!.params).toEqual({ sessionKey: expect.stringContaining('-conv-abort') });
+    await eventually(() => stub.openSockets() === 0);
+  });
+});
+
+describe('Dashboard webchat BFF: rate limit', () => {
+  it('limits visitor sessions per operator', async () => {
+    const headers = await csrfHeaders();
+    for (let index = 0; index < 10; index += 1) await visitorSession(headers);
+    const limited = await send('/api/v1/dewee/session', { method: 'POST', headers, body: '{}' });
+    expect(limited.status).toBe(429);
+    expect(limited.json).toEqual({ error: { message: 'Too many webchat requests, please wait a moment.', code: 'rate_limited' } });
+    current = otherOperator;
+    await visitorSession(await csrfHeaders());
+  });
+
+  it('allows at most two concurrent streams per operator', async () => {
+    const headers = await chatHeaders();
+    stub.setMode('hang');
+    const streams = [open('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'one' }) }), open('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'two' }) })];
+    for (const stream of streams) stream.reply.catch(() => undefined);
+    await eventually(() => stub.requests.filter((entry) => entry.method === 'chat.send').length === 2);
+    const third = await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'three' }) });
+    expect(third.status).toBe(429);
+    streams[0]!.request.destroy();
+    await eventually(() => stub.requests.filter((entry) => entry.method === 'chat.abort').length === 1);
+    stub.setMode('reply');
+    const fourth = await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'four' }) });
+    expect(fourth.status).toBe(200);
+    streams[1]!.request.destroy();
+  });
+});
+
+describe('Dashboard webchat BFF: history', () => {
+  it('returns the operator\'s own transcript with the page block stripped', async () => {
+    const headers = await chatHeaders();
+    stub.setHistory([
+      { role: 'user', content: '[[dewee-page v1]]\nPage context: {"route":"/"}\n[[/dewee-page]]\n\nhello' },
+      { role: 'assistant', content: 'Hi there' }
+    ]);
+    const reply = await send('/api/v1/dewee/history?agent=cloud-harness-operator&conversationId=conv-123', { headers });
+    expect(reply.status).toBe(200);
+    expect(reply.json).toEqual({ messages: [{ role: 'user', content: 'hello' }, { role: 'assistant', content: 'Hi there' }] });
+    const visitorId = (await visitorSession(headers)).visitorId;
+    expect(stub.requests.find((entry) => entry.method === 'chat.history')!.params).toEqual({ agentId: 'cloud-harness-operator', sessionKey: `agent:cloud-harness-operator:ws:direct:webchat-${visitorId}-conv-123` });
+  });
+
+  it('validates the conversation and agent', async () => {
+    const headers = await chatHeaders();
+    expect((await send('/api/v1/dewee/history?conversationId=../x', { headers })).status).toBe(400);
+    expect((await send('/api/v1/dewee/history?conversationId=conv-123&agent=other', { headers })).status).toBe(403);
+    expect(stub.requests).toEqual([]);
+  });
+});
+
+describe('Dashboard webchat BFF: disabled', () => {
+  it('answers every webchat route with a typed 503 when unconfigured', async () => {
+    httpServer.closeAllConnections();
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    await listen(baseConfig);
+    const config = await send('/api/v1/dewee/config');
+    expect(config.status).toBe(503);
+    expect(config.json).toEqual({ error: { message: 'The Dashboard webchat is not configured.', code: 'dewee_disabled' } });
+    const headers = await csrfHeaders();
+    const chat = await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'hi' }) });
+    expect(chat.status).toBe(503);
+    expect(stub.requests).toEqual([]);
+  });
+});
+
+describe('Dashboard webchat page context sanitizer', () => {
+  it('redacts secret-named fields and secret-shaped values at any depth', () => {
+    expect(sanitizeDeweePageContext({
+      route: '/settings',
+      nested: { password: 'p', items: [{ github: 'ghp_abcdefghijklmnopqrstuvwxyz0123' }, 'https://user:pass@example.com/repo'] },
+      jwt: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2lnbmF0dXJlLXZhbHVl',
+      openai: 'sk-abcdefghijklmnopqrstuv',
+      pem: '-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----',
+      count: 2
+    })).toEqual({
+      route: '/settings',
+      nested: { password: '[redacted]', items: [{ github: '[redacted]' }, 'https://[redacted]@example.com/repo'] },
+      jwt: '[redacted]',
+      openai: '[redacted]',
+      pem: '[redacted]',
+      count: 2
+    });
+  });
+
+  it('measures the context before and after sanitizing', () => {
+    expect(serializeDeweePageContext(undefined)).toBeUndefined();
+    expect(serializeDeweePageContext({ a: 1 })).toBe('{"a":1}');
+    expect(() => serializeDeweePageContext({ blob: 'x'.repeat(4_097) })).toThrow(expect.objectContaining({ code: 'context_too_large', status: 413 }));
+    const manyShortSecrets = Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`csrf${index}`, 1]));
+    expect(() => serializeDeweePageContext(manyShortSecrets)).toThrow(expect.objectContaining({ code: 'context_too_large' }));
+  });
+});
