@@ -46,4 +46,4 @@ dark. `System` still follows your OS when it does express one.
 
 ### Server-Side Persistence
 
-To comply with strict CSP rules forbidding browser storage (`localStorage`), your theme preference is persisted server-side via `PUT /api/v1/preferences` into a secure `ch-dashboard-theme` HttpOnly cookie. The dashboard shell injects `data-theme` directly on initial HTML delivery, preventing screen flicker on page load.
+Your theme preference is persisted server-side via `PUT /api/v1/preferences` into a secure `ch-dashboard-theme` HttpOnly cookie. The dashboard shell injects `data-theme` directly on initial HTML delivery, so a forced theme never flickers on page load. The new React Dashboard (rolling out under Issue #458) keeps this cookie and may also remember non-secret display settings such as text size and density in your browser; it never stores secrets, API keys or tokens there.

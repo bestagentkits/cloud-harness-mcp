@@ -38,5 +38,5 @@ Every dashboard page ends with the same footer crediting [AgentKit](https://agen
 ## Design System & Security Invariants
 
 - **Zero Secrets Rendered:** Container tokens, SSH private keys, and runner authentication credentials are never sent to or displayed in the dashboard. Dashboard search reads an allowlisted projection from seven resource endpoints and never indexes secret values, secret descriptions, or knowledge content.
-- **No Client Storage:** Theme preferences and session states are managed strictly via HttpOnly cookies and server session headers. Search results are cached in memory for the current page view only.
+- **No Client Storage (legacy dashboard):** In the current dashboard, theme preferences and session states are managed strictly via HttpOnly cookies and server session headers, and search results are cached in memory for the current page view only. The React Dashboard may also store non-secret display settings and UI state in the browser. Secrets, keys, tokens and terminal output are never stored in the browser in either version.
 - **Strict Content Security Policy (CSP):** Runs under `default-src 'none'` with no external CDN dependencies or tracking scripts. The terminal emulator is a pinned copy served by the harness itself, under the same policy.
