@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -94,13 +94,35 @@ describe('release channel note repair', () => {
     run(clone, 'push', '--quiet', 'origin', 'refs/notes/semantic-release-v1.1.0-beta.2');
     run(clone, 'update-ref', '-d', 'refs/notes/semantic-release-v1.1.0-beta.2');
 
-    expect(repairReleaseChannelNotes({ cwd: clone, branch: 'dev', push: false, log: () => {} })).toEqual([]);
+    expect(repairReleaseChannelNotes({ cwd: clone, branch: 'dev', dryRun: true, log: () => {} })).toEqual([]);
+  });
+
+  it('reports without writing in dry-run mode', () => {
+    const { clone } = createLane();
+    const messages: string[] = [];
+
+    expect(repairReleaseChannelNotes({ cwd: clone, branch: 'dev', dryRun: true, log: (message: string) => messages.push(message) })).toEqual(['v1.1.0-beta.2']);
+    expect(messages).toEqual(['v1.1.0-beta.2 has no beta channel note; a release run restores it.']);
+    expect(findTagsMissingChannelNotes({ cwd: clone, branch: 'dev' }).tags).toEqual(['v1.1.0-beta.2']);
+  });
+
+  it('stops the release run that restored a note and lets the next one through', () => {
+    const { clone } = createLane();
+    const script = join(process.cwd(), 'scripts/repair-release-channel-notes.mjs');
+    const verify = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { cwd: clone, encoding: 'utf8' });
+
+    expect(verify('dev', 'true').status).toBe(0);
+    const repairing = verify('dev', 'false');
+    expect(repairing.status).toBe(1);
+    expect(repairing.stderr).toContain('stops before committing');
+    expect(verify('dev', 'undefined').status).toBe(0);
+    expect(verify('main', 'false').status).toBe(0);
   });
 
   it('leaves stable release branches untouched', () => {
     const { clone } = createLane();
 
-    expect(repairReleaseChannelNotes({ cwd: clone, branch: 'main', push: false, log: () => {} })).toEqual([]);
+    expect(repairReleaseChannelNotes({ cwd: clone, branch: 'main', dryRun: true, log: () => {} })).toEqual([]);
     expect(findTagsMissingChannelNotes({ cwd: clone, branch: 'dev' }).tags).toEqual(['v1.1.0-beta.2']);
   });
 });
