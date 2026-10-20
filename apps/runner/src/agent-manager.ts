@@ -92,6 +92,17 @@ const AGENT_OPERATIONS: Readonly<Partial<Record<RunnerOperation, true>>> = {
 const terminalStatuses = new Set<AgentStatus>(AGENT_TERMINAL_STATUSES);
 /** Mirrors the agent runtime's `start` record prompt bound (`apps/agent-runtime/src/protocol-schemas.ts`). */
 const AGENT_START_PROMPT_MAX_BYTES = 256 * 1024;
+/** Room kept in a start record for every field other than the prompt and the replayed session. */
+const START_RECORD_FIXED_RESERVE_BYTES = 16 * 1024;
+
+/**
+ * Bytes left in a start record after the replayed session (each stored message's JSON plus its
+ * array separator) and the JSON-encoded prompt. Negative means the record cannot be sent.
+ */
+function startRecordHeadroom(log: { bytes: number; messageCount: number }, prompt: string): number {
+  return MAX_PROTOCOL_RECORD_BYTES - START_RECORD_FIXED_RESERVE_BYTES
+    - log.bytes - log.messageCount - Buffer.byteLength(JSON.stringify(prompt), 'utf8');
+}
 type TerminalAgentStatus = 'CANCELLED' | 'TIMED_OUT' | 'LIMIT_EXCEEDED' | 'INTERRUPTED' | 'FAILED' | 'SUCCEEDED';
 
 export type AgentToolExecutor = (input: {
@@ -397,11 +408,21 @@ export class AgentManager {
       ...(this.config.sessionPersistenceEnabled ? {
         session: continueFrom === undefined ? {} : {
           continuedFrom: continueFrom,
-          admitContinuation: (predecessor: AgentRecord) => {
+          admitContinuation: (predecessor: AgentRecord, log: { bytes: number; messageCount: number }) => {
             try {
               this.profile(predecessor.profileId, ownerId);
             } catch {
               throw new HarnessError('CONFLICT', 'the model profile of the agent to continue is no longer enabled', 409, false);
+            }
+            // The replayed log and the prompt travel in one start record, so a continuation that
+            // cannot fit is refused here instead of failing at launch.
+            if (startRecordHeadroom(log, prompt) < 0) {
+              throw new HarnessError(
+                'LIMIT_EXCEEDED',
+                'the continued session and prompt exceed the agent start record limit; shorten the prompt or start a fresh agent',
+                413,
+                false
+              );
             }
           }
         }
@@ -439,7 +460,12 @@ export class AgentManager {
    * composer's absolute bound. What was injected, skipped, or truncated is recorded as a bounded
    * `repository_context` log event that carries paths and digests but never document content.
    */
-  private async bootstrapPrompt(record: AgentRecord, prompt: string, repositoryContext: AgentRepositoryContext): Promise<string> {
+  private async bootstrapPrompt(
+    record: AgentRecord,
+    prompt: string,
+    repositoryContext: AgentRepositoryContext,
+    session?: { bytes: number; messages: unknown[] }
+  ): Promise<string> {
     if (repositoryContext === 'none' || !this.dependencies.repositoryGuidance) return prompt;
     let resolved: Awaited<ReturnType<AgentRepositoryGuidance>>;
     try {
@@ -460,9 +486,12 @@ export class AgentManager {
       // The gateway reserves one input token per request-body byte and every model turn re-sends the
       // first message, so guidance and task together take at most a quarter of the input budget,
       // and never pass the runtime's start-record prompt bound once the block framing is added.
+      // A replayed session shares the start record, so guidance also gets only the room it leaves,
+      // divided by the worst-case JSON escaping expansion.
       budgetBytes: Math.max(0, Math.min(
         Math.floor(record.budget.maxInputTokens / 4) - promptBytes,
-        AGENT_START_PROMPT_MAX_BYTES - promptBytes - 1_024
+        AGENT_START_PROMPT_MAX_BYTES - promptBytes - 1_024,
+        session ? Math.floor(startRecordHeadroom({ bytes: session.bytes, messageCount: session.messages.length }, prompt) / 6) : Infinity
       ))
     });
     const event = { ...composed.report, snapshotReused: resolved.reused };
@@ -505,15 +534,15 @@ export class AgentManager {
       // A cancel that landed while this launch waited owns the cleanup; it waits for this launch,
       // so stop before any lease or container exists.
       if (!this.stillSpawning(record)) return;
-      // Guidance is composed before any lease or container exists, so an agent never starts its
-      // first turn without the repository's applicable guidance, and a failed scan costs nothing.
-      const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext);
-      if (!this.stillSpawning(record)) return;
       // A persisting agent always receives its log, empty for a fresh one, and it is verified
       // before any lease exists so a corrupted log costs nothing.
       const sessionLog = this.repository.findSession(record.id)
         ? this.repository.loadSessionLog(record.id, record.generation)
         : undefined;
+      // Guidance is composed before any lease or container exists, so an agent never starts its
+      // first turn without the repository's applicable guidance, and a failed scan costs nothing.
+      const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext, sessionLog);
+      if (!this.stillSpawning(record)) return;
       // From here the lease may exist in the gateway, so an unsettled row is charged its whole cap.
       leaseMayExist = true;
       this.spendLedger.markIssuing(record.gatewayLeaseId);

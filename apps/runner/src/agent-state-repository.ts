@@ -186,8 +186,11 @@ export type AgentSpawnReservation = {
    */
   session?: {
     continuedFrom?: string;
-    /** Runs inside the spawn transaction with the verified predecessor, before any spend admission. */
-    admitContinuation?: (predecessor: AgentRecord) => void;
+    /**
+     * Runs inside the spawn transaction with the verified predecessor and the size of its log,
+     * before any spend admission.
+     */
+    admitContinuation?: (predecessor: AgentRecord, log: { bytes: number; messageCount: number }) => void;
   };
   /**
    * Runs inside the spawn transaction after the replay, capacity, and TTL checks
@@ -772,8 +775,8 @@ export class AgentStateRepository {
         : this.requireContinuable(input.ownerId, input.workspaceId, input.workspaceGeneration, input.session.continuedFrom);
       if (predecessor) {
         // A corrupted log is refused here rather than copied into the new agent's session.
-        this.loadSessionLog(predecessor.predecessor.id, predecessor.predecessor.generation);
-        input.session?.admitContinuation?.(predecessor.predecessor);
+        const log = this.loadSessionLog(predecessor.predecessor.id, predecessor.predecessor.generation);
+        input.session?.admitContinuation?.(predecessor.predecessor, { bytes: log.bytes, messageCount: log.messages.length });
       }
       input.admit?.();
 
