@@ -22,7 +22,8 @@ export function oneOf<T extends string>(raw: Raw, key: string, allowed: readonly
 }
 
 export function matching(raw: Raw, key: string, pattern: RegExp): string | undefined {
-  const value = raw[key];
+  // The router JSON-parses search values, so `?id=4242` arrives as the number 4242.
+  const value = typeof raw[key] === 'number' && Number.isFinite(raw[key]) ? String(raw[key]) : raw[key];
   return typeof value === 'string' && pattern.test(value) ? value : undefined;
 }
 

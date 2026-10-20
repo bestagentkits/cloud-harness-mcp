@@ -14,6 +14,8 @@ describe('search param validators', () => {
     expect(oneOf({ tab: 'sets' }, 'tab', ['library', 'sets'] as const)).toBe('sets');
     expect(oneOf({ tab: 'admin' }, 'tab', ['library', 'sets'] as const)).toBeUndefined();
     expect(matching({ id: 'ws_<script>' }, 'id', /^ws_[a-z]+$/)).toBeUndefined();
+    expect(matching({ installation_id: 4242 }, 'installation_id', /^[0-9]{1,20}$/)).toBe('4242');
+    expect(matching({ id: Number.NaN }, 'id', /^.*$/)).toBeUndefined();
     expect(cursor({ cursor: 'abc:123=' })).toBe('abc:123=');
     expect(cursor({ cursor: 'a b' })).toBeUndefined();
   });
