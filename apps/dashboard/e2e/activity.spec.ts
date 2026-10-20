@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test';
 import { ACTIVITY, AGENT_ID, EMPTY_ACTIVITY, GRANTS, PLANS } from './fixtures/activity';
+import { workspacesList } from './fixtures/workspaces';
 import { answer, expectNoSeriousA11yViolations, expectPage, stubReads, watchConsole } from './support';
 
 // Activity Center: the server-composed timeline, its URL-bound category filter, the live vs
@@ -149,6 +150,48 @@ test('a failed approvals read says so without hiding the timeline', async ({ pag
   await expect(page.getByTestId('activity-event')).toHaveCount(5);
   await expect(page.getByTestId('approvals-summary')).toContainText('Approvals could not be checked.');
   expect(problems).toEqual([]);
+});
+
+test('one failed approvals read never reads as "nothing is waiting", in the summary or the sidebar badge', async ({ page }) => {
+  const problems = watchConsole(page, { allow: [/Failed to load resource/] });
+  await stubActivity(page, { '/privilege-grants': answer(503, { error: 'runner_unavailable' }), '/package-plans': answer(200, { data: { plans: [] } }) });
+  await page.goto('/dashboard/activity');
+  await expectPage(page, 'activity');
+  const summary = page.getByTestId('approvals-summary');
+  await expect(summary).toContainText('Some approvals could not be checked.', { timeout: 15_000 });
+  await expect(summary).not.toContainText('No approvals are waiting.');
+  await expect(summary).toContainText('Privilege requests could not be checked.');
+  await expect(page.getByTestId('approvals-badge')).toHaveText('!');
+  await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Approvals (some approvals could not be checked)' })).toBeVisible();
+  expect(problems).toEqual([]);
+});
+
+test('the sidebar badge counts pending approvals, refetches on focus, and reads nothing on other pages', async ({ page }) => {
+  const reads = recordReads(page);
+  let pending = 2;
+  await page.clock.install();
+  await stubActivity(page, {
+    '/workspaces': answer(200, workspacesList),
+    '/privilege-grants': (route) => answer(200, { data: { grants: Array.from({ length: pending }, (_, index) => ({ id: `pg_${index}`, status: 'PENDING' })) } })(route),
+    '/package-plans': answer(200, { data: { plans: [] } })
+  });
+  await page.goto('/dashboard/activity');
+  const badge = page.getByTestId('approvals-badge');
+  await expect(badge).toHaveText('2');
+  pending = 3;
+  // Past the cache's stale time, so a focus refetches like the classic page load did.
+  await page.clock.fastForward(20_000);
+  await page.evaluate(() => { window.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')); });
+  await expect(badge).toHaveText('3');
+  const before = reads.filter((read) => read.startsWith('/privilege-grants')).length;
+  // Another page keeps the cached count without asking again.
+  await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Workspaces' }).click();
+  await expectPage(page, 'workspaces');
+  await expect(badge).toHaveText('3');
+  await page.clock.fastForward(20_000);
+  await page.evaluate(() => { window.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')); });
+  await page.clock.runFor(500);
+  expect(reads.filter((read) => read.startsWith('/privilege-grants')).length).toBe(before);
 });
 
 test('works at 375px without page-level horizontal scroll', async ({ page }) => {

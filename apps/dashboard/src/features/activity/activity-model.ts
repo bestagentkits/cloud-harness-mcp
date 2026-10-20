@@ -86,40 +86,7 @@ export function activityLink(href: unknown): ActivityLink | undefined {
   return undefined;
 }
 
-/**
- * Pending approvals, as the legacy badge counts them (`pendingApprovals` in
- * `apps/api/dashboard/dashboard.js`): only an unexpired PENDING grant or PENDING_APPROVAL
- * package plan can still be decided.
- */
-export type PrivilegeGrant = { id?: string; status?: string; expiresAt?: string };
-export type PackagePlan = { planId?: string; status?: string; expiresAt?: string };
-
-function unexpired(expiresAt: unknown, now: number): boolean {
-  const at = Date.parse(String(expiresAt ?? ''));
-  return Number.isNaN(at) || at > now;
-}
-
-export function grantIsActionable(grant: PrivilegeGrant | undefined, now = Date.now()): boolean {
-  return String(grant?.status ?? '').toUpperCase() === 'PENDING' && unexpired(grant?.expiresAt, now);
-}
-
-export function planIsActionable(plan: PackagePlan | undefined, now = Date.now()): boolean {
-  return String(plan?.status ?? '') === 'PENDING_APPROVAL' && unexpired(plan?.expiresAt, now);
-}
-
-function listOf<T>(body: unknown, key: string): T[] {
-  const data = body && typeof body === 'object' ? (body as { data?: unknown }).data : undefined;
-  const list = data && typeof data === 'object' ? (data as Record<string, unknown>)[key] : undefined;
-  return Array.isArray(list) ? list.filter((item): item is T => Boolean(item) && typeof item === 'object') : [];
-}
-
-export function pendingGrantCount(body: unknown, now = Date.now()): number {
-  return listOf<PrivilegeGrant>(body, 'grants').filter((grant) => grantIsActionable(grant, now)).length;
-}
-
-export function pendingPlanCount(body: unknown, now = Date.now()): number {
-  return listOf<PackagePlan>(body, 'plans').filter((plan) => planIsActionable(plan, now)).length;
-}
+export { grantIsActionable, type PackagePlan, pendingGrantCount, pendingPlanCount, planIsActionable, type PrivilegeGrant } from '@/lib/approvals-summary';
 
 /** A projection field as display text: a non-empty string or a number, else `fallback`. */
 export function fieldText(value: unknown, fallback: string): string {

@@ -1,6 +1,7 @@
 import { navGroups, type PageId } from '@/app/page-registry';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { ApprovalsBadge } from './approvals-badge';
 import { NavLink } from './nav-link';
 
 /**
@@ -32,6 +33,7 @@ export function SidebarNav({ currentId, collapsed = false, onNavigate }: { curre
                 >
                   <page.icon className="size-4 shrink-0" aria-hidden="true" />
                   <span className={cn(collapsed && 'sr-only')}>{page.label}</span>
+                  {page.id === 'approvals' && <ApprovalsBadge currentId={currentId} collapsed={collapsed} />}
                 </NavLink>
               );
               return (
