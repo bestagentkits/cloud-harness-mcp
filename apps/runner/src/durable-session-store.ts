@@ -58,6 +58,8 @@ export interface DurableSessionStoreOptions {
   readonly rate?: { readonly burst: number; readonly perSecond: number };
   /** On-disk size cap of one lineage's database, checked around every commit. */
   readonly maxLineageBytes?: number;
+  /** Total encoded size of the responses one claim remembers for repeated request ids. */
+  readonly maxRememberedBytes?: number;
   readonly loader?: DurableStorageBackendLoader;
   readonly now?: () => number;
 }
@@ -76,11 +78,31 @@ interface OwnerMark {
   generation: number;
 }
 
+interface RememberedResponse {
+  readonly response: Promise<AgentStorageResponseRecord>;
+  /** Encoded size once the response settled; 0 while it is still running. */
+  bytes: number;
+}
+
 interface ClaimState extends DurableSessionClaim {
   readonly storage: StorageBackend;
-  readonly responses: Map<string, Promise<AgentStorageResponseRecord>>;
+  /**
+   * Responses of the non-idempotent methods, so a request the worker sends again under the same id
+   * (after a timeout or a lost response) gets its first result instead of running twice. Reads are
+   * never kept: running one again is harmless, and its result can be megabytes.
+   */
+  readonly responses: Map<string, RememberedResponse>;
+  rememberedBytes: number;
+  /**
+   * The latest commit, kept apart from the bounded memo above, so a retried commit is answered
+   * from its first result even after a burst of newer requests evicted it there. A retry never
+   * outlives its claim: a new run or a runner restart takes a new claim and fences the old worker.
+   */
+  lastCommit: { readonly id: string; readonly response: Promise<AgentStorageResponseRecord> } | undefined;
   /** Set once a commit left the database above its size cap; every later commit is refused. */
   limitExceeded: boolean;
+  /** Set once the database's write-ahead log and shared-memory files were made private after a write. */
+  sidecarsPrivate: boolean;
 }
 
 interface LineageState {
@@ -93,6 +115,9 @@ interface LineageState {
 const LINEAGE_ID = /^agent_[A-Za-z0-9_-]{20,80}$/;
 const MAX_ERROR_MESSAGE_BYTES = 4_096;
 const MAX_REMEMBERED_RESPONSES = 256;
+const DEFAULT_MAX_REMEMBERED_BYTES = 4 * 1024 * 1024;
+/** Methods whose repetition would change the store: their responses are remembered per request id. */
+const NON_IDEMPOTENT_METHODS: ReadonlySet<AgentStorageMethod> = new Set(['commit', 'mintId']);
 // Room for the response envelope around the result.
 const RESPONSE_ENVELOPE_BYTES = 1_024;
 const DEFAULT_RATE = { burst: 1_000, perSecond: 200 } as const;
@@ -156,6 +181,33 @@ const ARGUMENTS: Record<AgentStorageMethod, ReadonlyArray<ReadonlyArray<(value: 
 
 function argumentsMatch(method: AgentStorageMethod, args: readonly unknown[]): boolean {
   return ARGUMENTS[method].some((shape) => shape.length === args.length && shape.every((check, index) => check(args[index])));
+}
+
+/**
+ * Makes a database's write-ahead log and shared-memory files owner-only. SQLite creates them with
+ * the main file's mode, but only on first use, so this runs after the open and after the first write.
+ */
+async function restrictSidecarFiles(database: string): Promise<void> {
+  await Promise.all(['-wal', '-shm'].map(async (suffix) => {
+    try {
+      await chmod(`${database}${suffix}`, 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }));
+}
+
+/** Drops a claim's remembered responses; a claim that is no longer current never answers again. */
+function forgetResponses(claim: ClaimState): void {
+  claim.responses.clear();
+  claim.rememberedBytes = 0;
+  claim.lastCommit = undefined;
+}
+
+/** Ends the lineage's current claim, releasing the responses it remembered. */
+function deactivate(lineage: LineageState): void {
+  if (lineage.active) forgetResponses(lineage.active);
+  lineage.active = undefined;
 }
 
 /** Writes `content` to `path` through a private temporary file, so readers see the old or the new file only. */
@@ -244,6 +296,7 @@ export class DurableSessionStore {
   readonly #maxLineageBytes: number;
   readonly #maxRequestBytes: number;
   readonly #maxResponseBytes: number;
+  readonly #maxRememberedBytes: number;
   readonly #rate: { readonly burst: number; readonly perSecond: number };
   readonly #loader: DurableStorageBackendLoader;
   readonly #now: () => number;
@@ -258,6 +311,8 @@ export class DurableSessionStore {
     if (!Number.isSafeInteger(this.#maxLineageBytes) || this.#maxLineageBytes < 1) throw new Error('durable session size cap must be a positive integer');
     this.#maxRequestBytes = options.maxRequestBytes ?? MAX_PROTOCOL_RECORD_BYTES;
     this.#maxResponseBytes = options.maxResponseBytes ?? MAX_PROTOCOL_RECORD_BYTES;
+    this.#maxRememberedBytes = options.maxRememberedBytes ?? DEFAULT_MAX_REMEMBERED_BYTES;
+    if (!Number.isSafeInteger(this.#maxRememberedBytes) || this.#maxRememberedBytes < 1) throw new Error('durable session response memo bound must be a positive integer');
     this.#rate = options.rate ?? DEFAULT_RATE;
     this.#loader = options.loader ?? nodeSqliteLoader;
     this.#now = options.now ?? Date.now;
@@ -299,8 +354,10 @@ export class DurableSessionStore {
         await writePrivateFile(paths.owner, JSON.stringify(requested));
       }
       const claim: ClaimState = {
-        lineageRootId, agentId, epoch, generation, storage: lineage.storage, responses: new Map(), limitExceeded: false
+        lineageRootId, agentId, epoch, generation, storage: lineage.storage,
+        responses: new Map(), rememberedBytes: 0, lastCommit: undefined, limitExceeded: false, sidecarsPrivate: false
       };
+      if (lineage.active) forgetResponses(lineage.active);
       lineage.active = claim;
       return claim;
     });
@@ -311,7 +368,7 @@ export class DurableSessionStore {
     await this.#withLock(claim.lineageRootId, async () => {
       const lineage = this.#lineages.get(claim.lineageRootId);
       if (!lineage || lineage.active !== claim) return;
-      lineage.active = undefined;
+      deactivate(lineage);
       await this.#closeLineage(claim.lineageRootId, lineage);
     });
   }
@@ -330,7 +387,7 @@ export class DurableSessionStore {
       } catch {
         // An unreadable store is reported as holding nothing to resume.
       }
-      lineage.active = undefined;
+      deactivate(lineage);
       await this.#closeLineage(claim.lineageRootId, lineage);
       return { pendingTasks };
     });
@@ -376,7 +433,7 @@ export class DurableSessionStore {
     await this.#withLock(lineageRootId, async () => {
       const lineage = this.#lineages.get(lineageRootId);
       if (lineage) {
-        lineage.active = undefined;
+        deactivate(lineage);
         await this.#closeLineage(lineageRootId, lineage);
       }
       if (this.#stateDir !== undefined) await deleteDurableSessionFiles(this.#stateDir, lineageRootId);
@@ -406,37 +463,71 @@ export class DurableSessionStore {
     const lineage = this.#lineages.get(claim.lineageRootId);
     const state = lineage?.active;
     if (!lineage || !state || state !== claim) return failure(id, 'fenced', 'durable session claim is no longer current');
-    const remembered = state.responses.get(id);
-    if (remembered) return await remembered;
+    const storageMethod = parsed.data.method;
+    const remembers = NON_IDEMPOTENT_METHODS.has(storageMethod);
+    if (remembers) {
+      const remembered = state.responses.get(id)?.response
+        ?? (storageMethod === 'commit' && state.lastCommit?.id === id ? state.lastCommit.response : undefined);
+      if (remembered) return await remembered;
+    }
     if (!this.#takeToken(lineage)) return failure(id, 'rate_limited', 'storage request rate exceeded', true);
     // JSON has no undefined: the worker sends an omitted argument as null.
     const args = parsed.data.args.map((value) => value === null ? undefined : value);
-    if (!argumentsMatch(parsed.data.method, args)) return failure(id, 'request', `invalid arguments for storage ${parsed.data.method}`);
-    if (parsed.data.method === 'commit') {
+    if (!argumentsMatch(storageMethod, args)) return failure(id, 'request', `invalid arguments for storage ${storageMethod}`);
+    if (storageMethod === 'commit') {
       if (state.limitExceeded || await this.#databaseBytes(claim.lineageRootId) > this.#maxLineageBytes) {
         state.limitExceeded = true;
         return failure(id, 'limit', 'durable session exceeds its size limit');
       }
     }
-    const response = this.#run(id, state, parsed.data.method, args, lineage).then(async (result) => {
-      if (parsed.data.method === 'commit' && result.ok && await this.#databaseBytes(claim.lineageRootId) > this.#maxLineageBytes) {
-        state.limitExceeded = true;
+    const response = this.#run(id, state, storageMethod, args, lineage).then(async (result) => {
+      if (storageMethod !== 'commit' || !result.ok) return result;
+      if (!state.sidecarsPrivate) {
+        // SQLite may create the write-ahead log and shared-memory files only at the first write.
+        await this.#restrictSidecars(claim.lineageRootId);
+        state.sidecarsPrivate = true;
       }
+      if (await this.#databaseBytes(claim.lineageRootId) > this.#maxLineageBytes) state.limitExceeded = true;
       return result;
     });
-    state.responses.set(id, response);
-    if (state.responses.size > MAX_REMEMBERED_RESPONSES) {
-      const oldest = state.responses.keys().next().value as string | undefined;
-      if (oldest !== undefined) state.responses.delete(oldest);
-    }
+    if (remembers) this.#remember(state, id, storageMethod, response);
     return await response;
+  }
+
+  /**
+   * Keeps a non-idempotent response for repeated request ids, within a count and a byte bound per
+   * claim; the oldest responses go first. The latest commit is also kept apart, outside both bounds.
+   */
+  #remember(state: ClaimState, id: string, method: AgentStorageMethod, response: Promise<AgentStorageResponseRecord>): void {
+    const entry: RememberedResponse = { response, bytes: 0 };
+    state.responses.set(id, entry);
+    if (method === 'commit') state.lastCommit = { id, response };
+    this.#evictRemembered(state);
+    void response.then((record) => {
+      // A claim that was released, or an entry already evicted, keeps nothing.
+      if (state.responses.get(id) !== entry) return;
+      entry.bytes = Buffer.byteLength(JSON.stringify(record), 'utf8');
+      state.rememberedBytes += entry.bytes;
+      this.#evictRemembered(state);
+    }, () => {
+      if (state.responses.get(id) === entry) state.responses.delete(id);
+    });
+  }
+
+  #evictRemembered(state: ClaimState): void {
+    while (state.responses.size > MAX_REMEMBERED_RESPONSES || state.rememberedBytes > this.#maxRememberedBytes) {
+      const oldest = state.responses.entries().next().value as [string, RememberedResponse] | undefined;
+      if (!oldest) break;
+      state.responses.delete(oldest[0]);
+      state.rememberedBytes -= oldest[1].bytes;
+    }
   }
 
   /** Closes every open database. Used on runner shutdown. */
   async close(): Promise<void> {
     for (const [lineageRootId, lineage] of [...this.#lineages]) {
       await this.#withLock(lineageRootId, async () => {
-        lineage.active = undefined;
+        deactivate(lineage);
         await this.#closeLineage(lineageRootId, lineage);
       });
     }
@@ -498,14 +589,12 @@ export class DurableSessionStore {
     await handle.close();
     await chmod(path, 0o600);
     const storage = await this.#loader.open(path);
-    await Promise.all(['-wal', '-shm'].map(async (suffix) => {
-      try {
-        await chmod(`${path}${suffix}`, 0o600);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      }
-    }));
+    await restrictSidecarFiles(path);
     return storage;
+  }
+
+  async #restrictSidecars(lineageRootId: string): Promise<void> {
+    if (this.#stateDir !== undefined) await restrictSidecarFiles(sessionPaths(this.#stateDir, lineageRootId).database);
   }
 
   /** The lineage database's size on disk, write-ahead log included. */
