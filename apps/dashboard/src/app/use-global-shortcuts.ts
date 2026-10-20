@@ -15,8 +15,8 @@ export type ShortcutHandlers = {
   togglePalette: () => void;
   /** `[` outside text fields and terminals. */
   toggleSidebar: () => void;
-  /** `/` outside text fields and terminals. */
-  focusSearch: () => void;
+  /** `/` outside text fields and terminals; returns false (the key is left alone) when no search box is visible. */
+  focusSearch: () => boolean;
 };
 
 /**
@@ -36,7 +36,7 @@ export function useGlobalShortcuts(handlers: ShortcutHandlers): void {
       }
       if (event.ctrlKey || event.metaKey || event.altKey || isEditable(event.target)) return;
       if (event.key === '[') { event.preventDefault(); handlers.toggleSidebar(); }
-      else if (event.key === '/') { event.preventDefault(); handlers.focusSearch(); }
+      else if (event.key === '/' && handlers.focusSearch()) event.preventDefault();
     }
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);

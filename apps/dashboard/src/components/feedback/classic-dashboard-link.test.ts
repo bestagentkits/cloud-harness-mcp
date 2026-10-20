@@ -10,4 +10,9 @@ describe('classicDashboardHref', () => {
     expect(classicDashboardHref('/')).toBe('/dashboard?ui=legacy');
     expect(classicDashboardHref('/workspaces')).toBe('/dashboard/workspaces?ui=legacy');
   });
+
+  it('keeps the page query and replaces any ui parameter', () => {
+    expect(classicDashboardHref('/dashboard/agents', '?status=RUNNING')).toBe('/dashboard/agents?status=RUNNING&ui=legacy');
+    expect(classicDashboardHref('/dashboard/integrations/github', '?installation_id=42&state=abc&ui=react')).toBe('/dashboard/integrations/github?installation_id=42&state=abc&ui=legacy');
+  });
 });

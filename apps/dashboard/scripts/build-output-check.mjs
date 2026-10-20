@@ -6,14 +6,25 @@
 //   URLs, the nonce placeholder present, and every asset named with a content hash.
 // - Complexity budget from docs/adr/0005-dashboard-react-rewrite.md, measured from the Vite
 //   manifest in gzip bytes: entry plus the Overview route at most 180 KB, every other route
-//   chunk at most 60 KB, CSS at most 40 KB, at most four WOFF2 fonts. A breach fails the
-//   build instead of raising a number silently.
+//   chunk (`src/routes/*`) and every other lazy chunk at most 60 KB, the allowlisted heavy
+//   lazy chunks (the xterm terminal and the Dewee widget) at most 150 KB each, CSS at most
+//   40 KB, at most four WOFF2 fonts. A breach fails the build instead of raising a number
+//   silently.
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
 export const PLACEHOLDER = '__CH_CSP_NONCE__';
-export const BUDGET = Object.freeze({ initialJs: 180 * 1024, routeChunk: 60 * 1024, css: 40 * 1024, fonts: 4 });
+export const BUDGET = Object.freeze({ initialJs: 180 * 1024, routeChunk: 60 * 1024, lazyChunk: 60 * 1024, lazyHeavy: 150 * 1024, css: 40 * 1024, fonts: 4 });
+/**
+ * The only lazy chunks allowed the heavy budget, by manifest key or chunk name. Anything not
+ * listed here, including a new large dependency, stays at the 60 KB lazy budget.
+ */
+export const LAZY_HEAVY = Object.freeze([
+  { id: 'xterm', key: /(?:^|\/)node_modules\/@xterm\/xterm\//, name: 'xterm' },
+  { id: 'dewee-webchat', key: /(?:^|\/)dewee-webchat(?:[./]|$)/, name: 'dewee-webchat' }
+]);
+const ROUTE_CHUNK = /^src\/routes\//;
 /** The Overview route's split component chunk, as the TanStack Router plugin names it in the manifest. */
 const OVERVIEW_ROUTE = /^src\/routes\/index\.tsx(?:\?|$)/;
 const HASHED = /^[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8}\.(?:js|css|woff2)$/;
@@ -53,7 +64,16 @@ function checkAssets(dist, failures) {
 
 const kb = (bytes) => `${(bytes / 1024).toFixed(1)} KB`;
 
-/** Gzip sizes of the initial JS, each other route chunk and the CSS, from the Vite manifest. */
+/** `routeChunk` for `src/routes/*`, `lazyHeavy` for an allowlisted chunk, `lazyChunk` otherwise. */
+export function classifyLazyChunk(key, chunk = {}) {
+  if (ROUTE_CHUNK.test(key)) return 'routeChunk';
+  if (LAZY_HEAVY.some((heavy) => heavy.key.test(key) || chunk.name === heavy.name)) return 'lazyHeavy';
+  return 'lazyChunk';
+}
+
+const LABEL = { routeChunk: 'route chunk', lazyChunk: 'lazy chunk', lazyHeavy: 'heavy lazy chunk' };
+
+/** Gzip sizes of the initial JS, each other lazy chunk and the CSS, from the Vite manifest. */
 export function measureBudget(dist) {
   const manifest = JSON.parse(readFileSync(join(dist, '.vite', 'manifest.json'), 'utf8'));
   const gzipped = new Map();
@@ -74,11 +94,12 @@ export function measureBudget(dist) {
   if (!entryKey) throw new Error('the Vite manifest has no entry chunk');
   if (!overviewKey) throw new Error('the Vite manifest has no Overview route chunk');
   const initial = closure(overviewKey, closure(entryKey));
-  const routes = Object.keys(manifest)
+  const chunks = Object.keys(manifest)
     .filter((key) => manifest[key].isDynamicEntry && key !== overviewKey)
     .map((key) => {
       const files = [...closure(key)].filter((file) => !initial.has(file));
-      return { route: key, bytes: files.reduce((total, file) => total + size(file), 0) };
+      const kind = classifyLazyChunk(key, manifest[key]);
+      return { chunk: key, kind, limit: BUDGET[kind], bytes: files.reduce((total, file) => total + size(file), 0) };
     });
   const cssFiles = new Set(Object.values(manifest).flatMap((chunk) => [
     ...(chunk.css ?? []),
@@ -86,7 +107,7 @@ export function measureBudget(dist) {
   ]));
   return {
     initialJs: [...initial].filter((file) => file.endsWith('.js')).reduce((total, file) => total + size(file), 0),
-    routes,
+    chunks,
     css: [...cssFiles].reduce((total, file) => total + size(file), 0)
   };
 }
@@ -95,8 +116,8 @@ function checkBudget(dist, failures) {
   let measured;
   try { measured = measureBudget(dist); } catch (error) { failures.push(`budget: ${error.message}`); return undefined; }
   if (measured.initialJs > BUDGET.initialJs) failures.push(`initial route JS is ${kb(measured.initialJs)} gzip, over the ${kb(BUDGET.initialJs)} budget`);
-  for (const { route, bytes } of measured.routes) {
-    if (bytes > BUDGET.routeChunk) failures.push(`route chunk ${route} is ${kb(bytes)} gzip, over the ${kb(BUDGET.routeChunk)} budget`);
+  for (const { chunk, kind, limit, bytes } of measured.chunks) {
+    if (bytes > limit) failures.push(`${LABEL[kind]} ${chunk} is ${kb(bytes)} gzip, over the ${kb(limit)} budget`);
   }
   if (measured.css > BUDGET.css) failures.push(`CSS is ${kb(measured.css)} gzip, over the ${kb(BUDGET.css)} budget`);
   return measured;
@@ -116,7 +137,7 @@ export function checkBuildOutput(dist) {
 export function formatBudget(measured) {
   return [
     `initial JS ${kb(measured.initialJs)} / ${kb(BUDGET.initialJs)}`,
-    ...measured.routes.map(({ route, bytes }) => `${route} ${kb(bytes)} / ${kb(BUDGET.routeChunk)}`),
+    ...measured.chunks.map(({ chunk, limit, bytes }) => `${chunk} ${kb(bytes)} / ${kb(limit)}`),
     `CSS ${kb(measured.css)} / ${kb(BUDGET.css)}`
   ].join(', ');
 }

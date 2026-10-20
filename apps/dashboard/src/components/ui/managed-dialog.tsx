@@ -1,4 +1,4 @@
-import { type ComponentProps, type ReactNode, useState } from 'react';
+import { type ComponentProps, type ReactNode, useId, useState } from 'react';
 import { Button } from './button';
 import { Dialog, DialogContent } from './dialog';
 
@@ -28,6 +28,7 @@ export function ManagedDialog({
   contentProps?: Omit<ComponentProps<typeof DialogContent>, 'children'>;
 }) {
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const discardTitleId = useId();
   const blocksAll = Boolean(guard.locked || guard.reveal);
 
   function requestClose() {
@@ -53,8 +54,8 @@ export function ManagedDialog({
       >
         {children}
         {confirmingDiscard ? (
-          <div role="alertdialog" aria-labelledby="discard-title" className="grid gap-2 rounded-md border border-warning/50 bg-surface p-3">
-            <p id="discard-title" className="text-sm font-medium">Discard unsaved changes?</p>
+          <div role="alertdialog" aria-labelledby={discardTitleId} className="grid gap-2 rounded-md border border-warning/50 bg-surface p-3">
+            <p id={discardTitleId} className="text-sm font-medium">Discard unsaved changes?</p>
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="outline" autoFocus onClick={() => setConfirmingDiscard(false)}>Keep editing</Button>
               <Button size="sm" variant="destructive" onClick={() => { setConfirmingDiscard(false); onOpenChange(false); }}>Discard</Button>

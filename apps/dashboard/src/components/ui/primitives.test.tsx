@@ -1,6 +1,6 @@
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { useState } from 'react';
+import { StrictMode, useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { ActionButton } from './button';
 import { Combobox } from './combobox';
@@ -31,6 +31,18 @@ describe('ActionButton', () => {
     await act(async () => { pending.resolve(); await pending.promise; });
     expect(button).toHaveAttribute('data-state', 'success');
     expect(button).toHaveTextContent('Saved');
+  });
+
+  it('settles out of pending under StrictMode', async () => {
+    const user = userEvent.setup();
+    const pending = deferred();
+    render(<StrictMode><ActionButton onAction={() => pending.promise} pendingLabel="Saving…" successLabel="Saved">Save</ActionButton></StrictMode>);
+    const button = screen.getByRole('button', { name: 'Save' });
+    await user.click(button);
+    expect(button).toHaveTextContent('Saving…');
+    await act(async () => { pending.resolve(); await pending.promise; });
+    expect(button).toHaveAttribute('data-state', 'success');
+    expect(button).not.toHaveAttribute('aria-busy');
   });
 
   it('shows the error state and accepts a new attempt afterwards', async () => {
@@ -103,7 +115,34 @@ function Confirming({ onConfirm, onError }: { onConfirm: () => Promise<unknown>;
   return <ConfirmDialog open={open} onOpenChange={setOpen} title="Delete key?" description="It stops working at once." target="chk_1" confirmLabel="Delete" pendingLabel="Deleting…" onConfirm={onConfirm} {...(onError ? { onError } : {})} />;
 }
 
+function ConfirmOpener({ onConfirm }: { onConfirm: () => Promise<unknown> }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>Delete key</button>
+      <ConfirmDialog open={open} onOpenChange={setOpen} title="Delete key?" description="It stops working at once." confirmLabel="Delete" onConfirm={onConfirm} />
+    </>
+  );
+}
+
 describe('ConfirmDialog', () => {
+  it('returns focus to the button that opened it after Escape and after confirming', async () => {
+    const user = userEvent.setup();
+    render(<ConfirmOpener onConfirm={async () => {}} />);
+    const opener = screen.getByRole('button', { name: 'Delete key' });
+
+    await user.click(opener);
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+
+    await user.click(opener);
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+  });
+
   it('focuses Cancel first and cancels on Escape', async () => {
     const user = userEvent.setup();
     const onConfirm = vi.fn(async () => {});

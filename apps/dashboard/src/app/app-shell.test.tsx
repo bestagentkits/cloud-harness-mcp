@@ -3,6 +3,7 @@ import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { githubCallbackHandoff } from '@/lib/github-callback';
 import { resetPreferencesForTests } from '@/lib/preferences';
 import { markSessionEnded, resetSessionStateForTests } from '@/lib/session-state';
 import { AppProviders } from './providers';
@@ -117,11 +118,36 @@ describe('AppShell', () => {
     expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
   });
 
-  it('never renders the GitHub callback state or installation id', async () => {
-    renderAt('/dashboard/integrations/github?state=abcdefgh1234&installation_id=987654');
-    await screen.findByRole('heading', { level: 1, name: 'GitHub' });
-    expect(document.body.textContent).not.toContain('abcdefgh1234');
-    expect(document.body.textContent).not.toContain('987654');
+  it('hands a GitHub App callback to the classic Dashboard with its params', () => {
+    expect(githubCallbackHandoff('')).toBeUndefined();
+    expect(githubCallbackHandoff('?tab=x')).toBeUndefined();
+    expect(githubCallbackHandoff('?installation_id=987654&setup_action=install&state=abcdefgh1234'))
+      .toBe('/dashboard/integrations/github?installation_id=987654&setup_action=install&state=abcdefgh1234&ui=legacy');
+    expect(githubCallbackHandoff('?setup_action=update')).toBe('/dashboard/integrations/github?setup_action=update&ui=legacy');
+  });
+
+  it('renders only the search params a page declares', async () => {
+    renderAt('/dashboard/agents?status=RUNNING&notice=Call%20support%20now');
+    await screen.findByRole('heading', { level: 1, name: 'Agents' });
+    expect(screen.getByRole('list', { name: 'Active filters' })).toHaveTextContent('status: RUNNING');
+    expect(document.body.textContent).not.toContain('Call support now');
+    expect(document.body.textContent).not.toContain('notice');
+  });
+
+  it('renders no search params on a page that declares none', async () => {
+    renderAt('/dashboard/secrets?notice=Call%20support%20now');
+    await screen.findByRole('heading', { level: 1, name: 'Secrets' });
+    expect(screen.queryByRole('list', { name: 'Active filters' })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('Call support now');
+  });
+
+  it('shows the MCP OAuth outcome on the server detail page', async () => {
+    renderAt('/dashboard/mcp-servers/mcps_aaaaaaaaaaaaaaaaaaaaaa?oauth=error&reason=state_mismatch&extra=Injected');
+    await screen.findByRole('heading', { level: 1, name: 'MCP Server' });
+    const filters = screen.getByRole('list', { name: 'Active filters' });
+    expect(filters).toHaveTextContent('oauth: error');
+    expect(filters).toHaveTextContent('reason: state_mismatch');
+    expect(document.body.textContent).not.toContain('Injected');
   });
 
   it('keeps the Skills tab in the URL', async () => {

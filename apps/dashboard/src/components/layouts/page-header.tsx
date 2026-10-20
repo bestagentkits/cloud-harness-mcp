@@ -1,11 +1,13 @@
 import { ChevronRightIcon } from 'lucide-react';
-import { type RefObject, useState } from 'react';
+import { lazy, type RefObject, Suspense, useState } from 'react';
 import { groupLabel, pageById } from '@/app/page-registry';
 import type { CurrentPage } from '@/app/route-identity';
-import { ClassicDashboardLink } from '@/components/feedback/classic-dashboard-link';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { useOpenedOnce } from '@/lib/use-opened-once';
 import { NavLink } from './nav-link';
+
+const loadActionDialog = () => import('./primary-action-dialog');
+const PrimaryActionDialog = lazy(loadActionDialog);
 
 /**
  * Breadcrumb (group › parent › page), `<h1>`, help text and the primary page action, all
@@ -16,6 +18,7 @@ export function PageHeader({ current, headingRef }: { current: CurrentPage & { p
   const { page, detail } = current;
   const parent = page.navParent ? pageById(page.navParent) : undefined;
   const [actionOpen, setActionOpen] = useState(false);
+  const actionMounted = useOpenedOnce(actionOpen);
   return (
     <header className="grid gap-2" data-testid="page-header">
       <nav aria-label="Breadcrumb">
@@ -42,19 +45,10 @@ export function PageHeader({ current, headingRef }: { current: CurrentPage & { p
         </div>
         {page.primaryAction ? (
           <>
-            <Button data-testid="primary-action" onClick={() => setActionOpen(true)}>{page.primaryAction}</Button>
-            <Dialog open={actionOpen} onOpenChange={setActionOpen}>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>{page.primaryAction}</DialogTitle>
-                  <DialogDescription>This action still lives in the classic Dashboard while {page.title} moves here.</DialogDescription>
-                </DialogHeader>
-                <DialogFooter>
-                  <Button variant="outline" onClick={() => setActionOpen(false)}>Close</Button>
-                  <Button asChild><ClassicDashboardLink>Open classic Dashboard</ClassicDashboardLink></Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
+            <Button data-testid="primary-action" aria-haspopup="dialog" onPointerEnter={() => { void loadActionDialog(); }} onClick={() => setActionOpen(true)}>{page.primaryAction}</Button>
+            {actionMounted ? (
+              <Suspense fallback={null}><PrimaryActionDialog open={actionOpen} onOpenChange={setActionOpen} action={page.primaryAction} pageTitle={page.title} /></Suspense>
+            ) : null}
           </>
         ) : null}
       </div>

@@ -42,3 +42,13 @@ export type Compact<T> = { [K in keyof T]?: Exclude<T[K], undefined> };
 export function compact<T extends Record<string, unknown>>(value: T): Compact<T> {
   return Object.fromEntries(Object.entries(value).filter(([, member]) => member !== undefined)) as Compact<T>;
 }
+
+/** For pages without deep-link params: every search key is dropped. */
+export function noSearch(): Record<string, never> {
+  return {};
+}
+
+/** The MCP OAuth callback outcome (`apps/api/src/dashboard-gateway-router.ts` redirects with it). */
+export function oauthOutcome(raw: Raw) {
+  return compact({ oauth: oneOf(raw, 'oauth', ['connected', 'error'] as const), reason: matching(raw, 'reason', /^[a-z_]{1,80}$/) });
+}

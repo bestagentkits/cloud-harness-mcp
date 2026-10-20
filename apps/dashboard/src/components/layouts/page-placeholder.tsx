@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useParams, useSearch } from '@tanstack/react-router';
+import { useMatch, useParams, useRouter, useSearch } from '@tanstack/react-router';
 import { ConstructionIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { type PageId, pageById } from '@/app/page-registry';
@@ -14,6 +14,20 @@ import { pageReadQuery, summarizeRead } from '@/lib/page-read';
  * and `installation_id`. Everything else a deep link carries is a plain filter.
  */
 export const HIDDEN_SEARCH_KEYS: ReadonlySet<string> = new Set(['state', 'installation_id']);
+
+/**
+ * The search params this page's own route declares. A match's `search` also carries every
+ * raw key a parent passed through, so the route's validator is re-applied: it builds a new
+ * object from its known keys only, and an undeclared param (`?notice=…`) is never rendered.
+ */
+function useDeclaredSearch(): Record<string, unknown> {
+  const router = useRouter();
+  const routeId = useMatch({ strict: false, select: (match) => match.routeId });
+  const search = useSearch({ strict: false }) as Record<string, unknown>;
+  const routes = router.routesById as unknown as Record<string, { options: { validateSearch?: unknown } } | undefined>;
+  const validate = routeId ? routes[routeId]?.options.validateSearch : undefined;
+  return typeof validate === 'function' ? (validate as (raw: Record<string, unknown>) => Record<string, unknown>)(search) : {};
+}
 
 function visibleFilters(search: Record<string, unknown>): Array<[string, string]> {
   return Object.entries(search)
@@ -30,7 +44,7 @@ function visibleFilters(search: Record<string, unknown>): Array<[string, string]
 export function PagePlaceholder({ pageId, children }: { pageId: PageId; children?: ReactNode }) {
   const page = pageById(pageId);
   const params = useParams({ strict: false }) as Record<string, string>;
-  const search = useSearch({ strict: false }) as Record<string, unknown>;
+  const search = useDeclaredSearch();
   const read = useQuery(pageReadQuery(pageId, params));
   const filters = visibleFilters(search);
   return (

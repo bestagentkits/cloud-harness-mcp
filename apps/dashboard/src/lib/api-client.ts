@@ -136,10 +136,12 @@ export function createApiClient(fetchImpl: typeof fetch = (...args) => globalThi
     }
   }
 
-  function bootstrapSession(signal?: AbortSignal): Promise<void> {
-    // Concurrent mutations share one bootstrap instead of minting several sessions.
+  function sharedBootstrap(): Promise<void> {
+    // Concurrent mutations share one bootstrap instead of minting several sessions. The
+    // shared request takes no caller's signal: one caller aborting must not fail the
+    // bootstrap every other waiter depends on.
     pendingSession ??= (async () => {
-      const response = await send(`${API_BASE_PATH}/session`, { method: 'GET', ...(signal ? { signal } : {}) });
+      const response = await send(`${API_BASE_PATH}/session`, { method: 'GET' });
       if (!response.ok) throw await toError(response);
       const body = await response.json() as { csrfToken?: unknown };
       if (typeof body.csrfToken !== 'string' || !body.csrfToken) throw new ApiError(response.status, GENERIC_MESSAGE, 'invalid_session');
@@ -148,14 +150,27 @@ export function createApiClient(fetchImpl: typeof fetch = (...args) => globalThi
     return pendingSession;
   }
 
+  /** Waits for the shared bootstrap; an aborted `signal` rejects only this caller's wait. */
+  function bootstrapSession(signal?: AbortSignal): Promise<void> {
+    const shared = sharedBootstrap();
+    if (!signal) return shared;
+    if (signal.aborted) return Promise.reject(signal.reason);
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      shared.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    });
+  }
+
   async function sendWithSession(path: string, options: ApiRequestOptions, retried: boolean): Promise<Response> {
     const method = options.method ?? 'GET';
     const mutation = MUTATIONS.has(method);
     if (mutation && !csrfToken) await bootstrapSession(options.signal);
     const headers: Record<string, string> = { accept: 'application/json', ...options.headers };
+    const sentToken = csrfToken;
     if (mutation) {
       headers['content-type'] = 'application/json';
-      headers['x-csrf-token'] = csrfToken ?? '';
+      headers['x-csrf-token'] = sentToken ?? '';
     }
     const response = await send(buildPath(path, options.query), {
       method,
@@ -164,7 +179,9 @@ export function createApiClient(fetchImpl: typeof fetch = (...args) => globalThi
       ...(options.signal ? { signal: options.signal } : {})
     });
     if (response.status !== 401) return response;
-    csrfToken = undefined;
+    // Drop the token only if it is still the one this request saw: a concurrent request may
+    // already have bootstrapped a fresh session, and a stale 401 must not discard that.
+    if (csrfToken === sentToken) csrfToken = undefined;
     if (mutation && !retried && await isSessionEndedAnswer(response.clone())) return sendWithSession(path, options, true);
     return response;
   }

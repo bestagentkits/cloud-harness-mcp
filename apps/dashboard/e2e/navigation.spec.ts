@@ -1,5 +1,5 @@
-import { expect, test } from '@playwright/test';
-import { answer, expectNoMismatches, expectPage, installIdentityMonitor, records, sidebarLink, stubReads, watchConsole, type VisitedPage } from './support';
+import { expect, test, type Page } from '@playwright/test';
+import { answer, expectNoMismatches, expectPage, installIdentityMonitor, PAGES, records, sidebarLink, stubReads, watchConsole, type VisitedPage } from './support';
 
 // The navigation transaction: page B's shell commits at once, obsolete reads are aborted,
 // late answers never land on another page, and the title, heading, page frame and current
@@ -80,6 +80,42 @@ test('an out-of-order answer for the previous resource never renders on the next
   await expect(page.getByTestId('read-summary')).toHaveText('2 records loaded.');
   await page.waitForTimeout(1_400);
   await expect(page.getByTestId('read-summary')).toHaveText('2 records loaded.');
+  await expectNoMismatches(page);
+});
+
+test('a late answer that is fulfilled lands under its own key, never on the page shown', async ({ page }) => {
+  await stubReads(page, {
+    '/workspaces': answer(200, records(7), { delayMs: 1_200 }),
+    '/agents': answer(200, records(2))
+  });
+  const failed: string[] = [];
+  page.on('requestfailed', (request) => failed.push(new URL(request.url()).pathname));
+  await page.goto('/dashboard');
+  await expectPage(page, 'overview');
+  // Hover prefetches the Workspaces read; a prefetch has no observer, so leaving the link
+  // does not abort it and its answer arrives after the operator is on another page.
+  const late = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/api/v1/workspaces'));
+  const requested = page.waitForRequest((request) => new URL(request.url()).pathname.endsWith('/api/v1/workspaces'));
+  await sidebarLink(page, 'workspaces').hover();
+  await requested;
+  await sidebarLink(page, 'agents').click();
+  await expectPage(page, 'agents');
+  await expect(page.getByTestId('read-summary')).toHaveText('2 records loaded.');
+
+  expect((await late).status()).toBe(200);
+  await page.waitForTimeout(200);
+  expect(failed).toEqual([]);
+  await expectPage(page, 'agents');
+  await expect(page.getByTestId('read-summary')).toHaveText('2 records loaded.');
+
+  // The late body is cached under the Workspaces key: that page renders it at once, from
+  // the cache, without asking again.
+  let refetched = false;
+  page.on('request', (request) => { if (new URL(request.url()).pathname.endsWith('/api/v1/workspaces')) refetched = true; });
+  await sidebarLink(page, 'workspaces').click();
+  await expectPage(page, 'workspaces');
+  await expect(page.getByTestId('read-summary')).toHaveText('7 records loaded.');
+  expect(refetched).toBe(false);
   await expectNoMismatches(page);
 });
 
@@ -220,47 +256,84 @@ test('the palette shortcut is ignored inside a terminal', async ({ page }) => {
   await expect(page.locator('html')).toHaveAttribute('data-sidebar', 'expanded');
 });
 
-test('navigation p95 stays under 100 ms', async ({ page }, testInfo) => {
+/**
+ * Installs a one-shot timer for the next click: t0 is the click event's timestamp, t1 the
+ * first animation frame where the page frame, sidebar entry, h1 and document title all show
+ * `target`. Resolves with t1 - t0 in milliseconds.
+ */
+async function armNavigationTimer(page: Page, target: VisitedPage): Promise<void> {
+  await page.evaluate(({ target, title, nav }) => {
+    const w = window as unknown as { __nav?: Promise<number> };
+    w.__nav = new Promise<number>((resolve) => {
+      document.addEventListener('click', (event) => {
+        const t0 = event.timeStamp;
+        const frame = () => {
+          const pageId = document.querySelector<HTMLElement>('[data-testid=page-frame]')?.dataset.pageId;
+          const current = document.querySelector<HTMLElement>('nav[aria-label=Primary] [aria-current=page]')?.dataset.navId;
+          const heading = document.querySelector('[data-testid=page-title]')?.textContent?.trim();
+          if (pageId === target && current === nav && heading === title && document.title === `${title} | Cloud Harness`) resolve(performance.now() - t0);
+          else requestAnimationFrame(frame);
+        };
+        requestAnimationFrame(frame);
+      }, { capture: true, once: true });
+    });
+  }, { target, ...PAGES[target] });
+}
+
+const readNavigationTimer = (page: Page) => page.evaluate(() => (window as unknown as { __nav: Promise<number> }).__nav);
+
+function summarize(samples: number[]) {
+  const sorted = [...samples].sort((a, b) => a - b);
+  const pick = (q: number) => sorted[Math.max(0, Math.ceil(sorted.length * q) - 1)]!;
+  return { n: sorted.length, median: pick(0.5), p95: pick(0.95), max: sorted.at(-1)! };
+}
+
+const formatSummary = (label: string, { n, median, p95, max }: ReturnType<typeof summarize>) =>
+  `${label}: n=${n} median=${median.toFixed(1)}ms p95=${p95.toFixed(1)}ms max=${max.toFixed(1)}ms`;
+
+const TOUR: VisitedPage[] = ['workspaces', 'agents', 'activity', 'approvals', 'packages', 'projects', 'secrets', 'models', 'skills', 'integrations', 'mcp-servers', 'knowledge', 'artifacts', 'api-keys', 'settings'];
+
+test('navigation p95 stays under 100 ms (warm route chunks)', async ({ page }, testInfo) => {
   await stubReads(page);
   await page.goto('/dashboard');
   await expectPage(page, 'overview');
-  const tour: VisitedPage[] = ['workspaces', 'agents', 'activity', 'approvals', 'packages', 'projects', 'secrets', 'models', 'skills', 'integrations', 'mcp-servers', 'knowledge', 'artifacts', 'api-keys', 'settings'];
   // Warm every lazy route chunk once, as hover/focus prefetch would, so the sample measures
   // the navigation transaction itself rather than first-time chunk downloads.
-  for (const id of tour) await sidebarLink(page, id).hover();
+  for (const id of TOUR) await sidebarLink(page, id).hover();
   await page.waitForLoadState('networkidle');
 
   const samples: number[] = [];
   for (let round = 0; round < 2; round += 1) {
-    for (const id of tour) {
-      // t0 is the click event's timestamp; t1 is the first animation frame where the frame,
-      // heading, title and sidebar all show the target page.
-      await page.evaluate((target) => {
-        const w = window as unknown as { __nav?: Promise<number> };
-        w.__nav = new Promise<number>((resolve) => {
-          document.addEventListener('click', (event) => {
-            const t0 = event.timeStamp;
-            const frame = () => {
-              const pageId = document.querySelector<HTMLElement>('[data-testid=page-frame]')?.dataset.pageId;
-              const nav = document.querySelector<HTMLElement>('nav[aria-label=Primary] [aria-current=page]')?.dataset.navId;
-              if (pageId === target && nav === target) resolve(performance.now() - t0);
-              else requestAnimationFrame(frame);
-            };
-            requestAnimationFrame(frame);
-          }, { capture: true, once: true });
-        });
-      }, id);
+    for (const id of TOUR) {
+      await armNavigationTimer(page, id);
       await sidebarLink(page, id).click();
-      samples.push(await page.evaluate(() => (window as unknown as { __nav: Promise<number> }).__nav));
+      samples.push(await readNavigationTimer(page));
       await expectPage(page, id);
     }
   }
-  samples.sort((a, b) => a - b);
-  const p95 = samples[Math.ceil(samples.length * 0.95) - 1]!;
-  const median = samples[Math.floor(samples.length / 2)]!;
-  const summary = `navigation: n=${samples.length} median=${median.toFixed(1)}ms p95=${p95.toFixed(1)}ms max=${samples.at(-1)!.toFixed(1)}ms`;
-  console.log(summary);
-  testInfo.annotations.push({ type: 'nav-p95', description: summary });
-  expect(p95).toBeLessThan(100);
+  const summary = summarize(samples);
+  const line = formatSummary('navigation (warm)', summary);
+  console.log(line);
+  testInfo.annotations.push({ type: 'nav-p95', description: line });
+  expect(summary.p95).toBeLessThan(100);
+  await expectNoMismatches(page);
+});
+
+test('reports cold route-chunk navigation timing (no gate)', async ({ page }, testInfo) => {
+  await stubReads(page);
+  await page.goto('/dashboard');
+  await expectPage(page, 'overview');
+  // A programmatic click skips the pointer hover, so nothing is prefetched: each sample
+  // includes downloading and evaluating the target's route chunk for the first time.
+  const samples: number[] = [];
+  for (const id of TOUR) {
+    await armNavigationTimer(page, id);
+    await sidebarLink(page, id).evaluate((link: HTMLElement) => link.click());
+    samples.push(await readNavigationTimer(page));
+    await expectPage(page, id);
+  }
+  const line = formatSummary('navigation (cold chunks)', summarize(samples));
+  console.log(line);
+  testInfo.annotations.push({ type: 'nav-cold', description: line });
   await expectNoMismatches(page);
 });

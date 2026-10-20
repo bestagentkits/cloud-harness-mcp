@@ -1,7 +1,7 @@
 import { CheckIcon, CopyIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
-import { toast } from './toast';
+import { toast } from './toast-store';
 
 /**
  * Copies a value to the clipboard and confirms with a visible "Copied" state (and an

@@ -1,6 +1,6 @@
 import { XIcon } from 'lucide-react';
 import { Toast as ToastPrimitive } from 'radix-ui';
-import { useSyncExternalStore } from 'react';
+import { dismissToast, removeToast, type ToastVariant, useToasts } from './toast-store';
 import { cn } from '@/lib/utils';
 
 /**
@@ -8,39 +8,8 @@ import { cn } from '@/lib/utils';
  * F8 viewport). Sonner is deliberately not used: it injects an inline `<style>` element at
  * import time without a CSP nonce, which the Dashboard's strict `style-src` blocks.
  *
- * Toast text must never contain secrets, tokens or raw terminal output.
+ * The queue lives in `toast-store.ts`; this module is the lazily loaded view.
  */
-export type ToastVariant = 'default' | 'success' | 'destructive';
-export type ToastInput = { title: string; description?: string; variant?: ToastVariant; durationMs?: number };
-type ToastRecord = ToastInput & { id: number; open: boolean };
-
-const MAX_TOASTS = 3;
-let records: ToastRecord[] = [];
-let nextId = 1;
-const listeners = new Set<() => void>();
-const emit = () => { for (const listener of listeners) listener(); };
-
-export function toast(input: ToastInput): number {
-  const id = nextId++;
-  records = [...records, { ...input, id, open: true }].slice(-MAX_TOASTS);
-  emit();
-  return id;
-}
-
-export function dismissToast(id: number): void {
-  records = records.map((record) => (record.id === id ? { ...record, open: false } : record));
-  emit();
-}
-
-function remove(id: number): void {
-  records = records.filter((record) => record.id !== id);
-  emit();
-}
-
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-}
 
 const variantClass: Record<ToastVariant, string> = {
   default: 'border bg-popover text-popover-foreground',
@@ -48,8 +17,8 @@ const variantClass: Record<ToastVariant, string> = {
   destructive: 'border border-destructive/50 bg-popover text-popover-foreground'
 };
 
-export function Toaster() {
-  const items = useSyncExternalStore(subscribe, () => records, () => records);
+export default function Toaster() {
+  const items = useToasts();
   return (
     <ToastPrimitive.Provider swipeDirection="right" label="Notifications">
       {items.map((item) => (
@@ -59,7 +28,7 @@ export function Toaster() {
           duration={item.durationMs ?? 5_000}
           type={item.variant === 'destructive' ? 'foreground' : 'background'}
           onOpenChange={(open) => { if (!open) dismissToast(item.id); }}
-          onAnimationEnd={() => { if (!item.open) remove(item.id); }}
+          onAnimationEnd={() => { if (!item.open) removeToast(item.id); }}
           className={cn(
             'group pointer-events-auto relative flex w-full items-start gap-3 rounded-lg p-4 pr-10 shadow-lg',
             'data-[state=open]:animate-in data-[state=open]:slide-in-from-right-full data-[state=closed]:animate-out data-[state=closed]:fade-out-80',

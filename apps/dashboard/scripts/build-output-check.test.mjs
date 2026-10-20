@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { BUDGET, checkBuildOutput } from './build-output-check.mjs';
+import { BUDGET, checkBuildOutput, classifyLazyChunk } from './build-output-check.mjs';
 
 const roots = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -11,7 +11,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 /** Random bytes do not compress, so the gzip size tracks the requested size. */
 const incompressible = (bytes) => randomBytes(bytes);
 
-function build({ entry = 1024, overview = 1024, settings = 1024, css = 1024, fonts = 2, license = true, html } = {}) {
+function build({ entry = 1024, overview = 1024, settings = 1024, css = 1024, fonts = 2, license = true, html, lazy = {} } = {}) {
   const dist = mkdtempSync(join(tmpdir(), 'ch-dashboard-build-'));
   roots.push(dist);
   mkdirSync(join(dist, 'assets'));
@@ -22,6 +22,11 @@ function build({ entry = 1024, overview = 1024, settings = 1024, css = 1024, fon
     'assets/settings-CCCCCCCC.js': settings,
     'assets/style-DDDDDDDD.css': css
   };
+  const lazyEntries = Object.entries(lazy).map(([key, { bytes, name }], index) => {
+    const file = `assets/lazy${index}-FFFFFFF${index}.js`;
+    files[file] = bytes;
+    return [key, { file, isDynamicEntry: true, imports: ['index.html'], ...(name ? { name } : {}) }];
+  });
   for (const [file, bytes] of Object.entries(files)) writeFileSync(join(dist, file), incompressible(bytes));
   const fontFiles = Array.from({ length: fonts }, (_, index) => `assets/font${index}-EEEEEEE${index}.woff2`);
   for (const file of fontFiles) writeFileSync(join(dist, file), 'font');
@@ -30,7 +35,8 @@ function build({ entry = 1024, overview = 1024, settings = 1024, css = 1024, fon
     'index.html': { file: 'assets/index-AAAAAAAA.js', isEntry: true, assets: fontFiles },
     'src/routes/index.tsx?tsr-split=component': { file: 'assets/index-BBBBBBBB.js', isDynamicEntry: true, imports: ['index.html'] },
     'src/routes/settings.tsx?tsr-split=component': { file: 'assets/settings-CCCCCCCC.js', isDynamicEntry: true, imports: ['index.html'] },
-    'style.css': { file: 'assets/style-DDDDDDDD.css' }
+    'style.css': { file: 'assets/style-DDDDDDDD.css' },
+    ...Object.fromEntries(lazyEntries)
   }));
   writeFileSync(join(dist, 'index.html'), html ?? [
     '<!doctype html>', '<html lang="en">',
@@ -46,7 +52,7 @@ describe('build output check', () => {
     const { failures, measured } = checkBuildOutput(build());
     expect(failures).toEqual([]);
     expect(measured.initialJs).toBeGreaterThan(1024);
-    expect(measured.routes).toHaveLength(1);
+    expect(measured.chunks).toEqual([expect.objectContaining({ chunk: 'src/routes/settings.tsx?tsr-split=component', kind: 'routeChunk' })]);
   });
 
   it('counts the entry and the Overview route together against the initial budget', () => {
@@ -61,6 +67,26 @@ describe('build output check', () => {
     expect(report).toMatch(/route chunk src\/routes\/settings\.tsx\?tsr-split=component .* over the 60\.0 KB budget/);
     expect(report).toMatch(/CSS .* over the 40\.0 KB budget/);
     expect(report).toMatch(/5 WOFF2 fonts exceed the budget of 4/);
+  });
+
+  it('classifies route, heavy allowlisted and other lazy chunks', () => {
+    expect(classifyLazyChunk('src/routes/agents.index.tsx?tsr-split=component')).toBe('routeChunk');
+    expect(classifyLazyChunk('../../node_modules/@xterm/xterm/lib/xterm.mjs')).toBe('lazyHeavy');
+    expect(classifyLazyChunk('src/features/chat/load.ts', { name: 'dewee-webchat' })).toBe('lazyHeavy');
+    expect(classifyLazyChunk('src/components/layouts/command-palette.tsx')).toBe('lazyChunk');
+    expect(classifyLazyChunk('src/vendor/xterm-lookalike.ts', { name: 'xterm-addon' })).toBe('lazyChunk');
+  });
+
+  it('allows an allowlisted heavy chunk up to 150 KB and fails it above', () => {
+    const inside = checkBuildOutput(build({ lazy: { '../../node_modules/@xterm/xterm/lib/xterm.mjs': { bytes: 120 * 1024 } } }));
+    expect(inside.failures).toEqual([]);
+    const over = checkBuildOutput(build({ lazy: { 'src/features/chat/load.ts': { bytes: BUDGET.lazyHeavy + 4096, name: 'dewee-webchat' } } }));
+    expect(over.failures.join('\n')).toMatch(/heavy lazy chunk src\/features\/chat\/load\.ts .* over the 150\.0 KB budget/);
+  });
+
+  it('keeps every other lazy chunk at 60 KB', () => {
+    const { failures } = checkBuildOutput(build({ lazy: { 'src/components/layouts/command-palette.tsx': { bytes: 100 * 1024 } } }));
+    expect(failures.join('\n')).toMatch(/^lazy chunk src\/components\/layouts\/command-palette\.tsx .* over the 60\.0 KB budget/m);
   });
 
   it('requires the font licence next to the fonts', () => {

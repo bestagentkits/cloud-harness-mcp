@@ -4,10 +4,12 @@ import { PagePlaceholder } from '@/components/layouts/page-placeholder';
 import { Skeleton } from '@/components/ui/skeleton';
 import { UnauthorizedError } from '@/lib/api-client';
 import { warmPageRead } from '@/lib/page-read';
+import { noSearch } from '@/lib/search-params';
 import { displayName, profileQuery } from '@/lib/profile';
 
 export const Route = createFileRoute('/')({
   staticData: { pageId: 'overview' },
+  validateSearch: noSearch,
   loader: (match) => warmPageRead('overview', match),
   component: OverviewPage
 });

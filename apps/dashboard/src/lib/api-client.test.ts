@@ -163,6 +163,63 @@ describe('createApiClient', () => {
     await expect(client.get('/x')).rejects.toBe(abort);
   });
 
+  it('keeps a fresh token when a stale request answers 401 after a rotation', async () => {
+    const calls: Call[] = [];
+    let releaseFirst!: (response: Response) => void;
+    const queue: Array<() => Promise<Response>> = [
+      async () => json(200, { csrfToken: 'token-one' }),
+      () => new Promise<Response>((resolve) => { releaseFirst = resolve; }),
+      async () => json(401, { error: 'session_ended' }),
+      async () => json(200, { csrfToken: 'token-two' }),
+      async () => json(200, { ok: 2 }),
+      async () => json(200, { ok: 3 })
+    ];
+    const impl = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      calls.push({ url: String(input), init });
+      const next = queue.shift();
+      if (!next) throw new Error('unexpected request');
+      return next();
+    }) as unknown as typeof fetch;
+    const client = createApiClient(impl);
+    await client.bootstrapSession();
+    const stale = client.request('/a', { method: 'POST', body: {} });
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await expect(client.request('/b', { method: 'POST', body: {} })).resolves.toEqual({ ok: 2 });
+    expect(header(calls[4], 'x-csrf-token')).toBe('token-two');
+    // The first request, sent with the old token, now fails with a non-verifier 401.
+    releaseFirst(json(401, { error: 'unauthorized' }));
+    await expect(stale).rejects.toBeInstanceOf(UnauthorizedError);
+    await expect(client.request('/c', { method: 'POST', body: {} })).resolves.toEqual({ ok: 3 });
+    // No third bootstrap: the stale 401 did not discard token-two.
+    expect(calls.filter((call) => call.url.endsWith('/session'))).toHaveLength(2);
+    expect(header(calls[5], 'x-csrf-token')).toBe('token-two');
+  });
+
+  it('does not let one caller abort the bootstrap the others share', async () => {
+    const calls: Call[] = [];
+    let releaseSession!: () => void;
+    const impl = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      calls.push({ url: String(input), init });
+      if (String(input).endsWith('/session')) {
+        expect(init.signal).toBeUndefined();
+        await new Promise<void>((resolve) => { releaseSession = resolve; });
+        return json(200, { csrfToken: 'shared-token' });
+      }
+      return json(200, { ok: true });
+    }) as unknown as typeof fetch;
+    const client = createApiClient(impl);
+    const controller = new AbortController();
+    const abandoned = client.request('/a', { method: 'POST', body: {}, signal: controller.signal });
+    const kept = client.request('/b', { method: 'POST', body: {} });
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    controller.abort();
+    await expect(abandoned).rejects.toMatchObject({ name: 'AbortError' });
+    releaseSession();
+    await expect(kept).resolves.toEqual({ ok: true });
+    expect(calls.map((call) => call.url)).toEqual(['/dashboard/api/v1/session', '/dashboard/api/v1/b']);
+    expect(header(calls[1], 'x-csrf-token')).toBe('shared-token');
+  });
+
   it('passes the AbortSignal through', async () => {
     const { impl, calls } = fakeFetch(json(200, {}));
     const controller = new AbortController();

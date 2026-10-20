@@ -5,8 +5,8 @@ import { DASHBOARD_PAGES, groupLabel } from '@/app/page-registry';
 import { Combobox, type ComboboxItem } from '@/components/ui/combobox';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { pageReadQuery } from '@/lib/page-read';
-import { type ThemePreference, updatePreferences } from '@/lib/preferences';
-import { saveThemePreference } from '@/lib/theme-preference';
+import type { ThemePreference } from '@/lib/preferences';
+import { chooseTheme } from '@/lib/theme-preference';
 
 type PaletteItem = ComboboxItem & { run: () => void; section: 'Pages' | 'Workspaces' | 'Actions' };
 
@@ -39,8 +39,7 @@ export default function CommandPalette({ open, onOpenChange, onToggleSidebar }: 
     const go = (to: string) => { setNavigated(true); onOpenChange(false); void router.navigate({ to }); };
     const setTheme = (theme: ThemePreference) => {
       onOpenChange(false);
-      updatePreferences({ theme });
-      void saveThemePreference(theme).catch(() => undefined);
+      void chooseTheme(theme);
     };
     const pages = DASHBOARD_PAGES.filter((page) => page.palette).map<PaletteItem>((page) => ({
       value: `page:${page.id}`, label: page.title, hint: groupLabel(page.group), keywords: page.paletteHint, section: 'Pages', run: () => go(page.path)

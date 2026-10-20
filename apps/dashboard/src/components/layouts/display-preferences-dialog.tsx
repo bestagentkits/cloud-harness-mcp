@@ -1,8 +1,6 @@
-import { SlidersHorizontalIcon } from 'lucide-react';
-import { useId } from 'react';
+import { type RefObject, useId } from 'react';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
   CONTRASTS,
   DEFAULT_PREFERENCES,
@@ -46,22 +44,12 @@ function Choice<K extends keyof Preferences>({ field, legend, options }: { field
   );
 }
 
-/** Text size, density and contrast. Changes apply immediately and persist per browser. */
-export function DisplayPreferencesDialog() {
+/** Text size, density and contrast, loaded the first time the dialog opens. Changes apply immediately and persist per browser. */
+export default function DisplayPreferencesDialog({ open, onOpenChange, returnFocus }: { open: boolean; onOpenChange: (open: boolean) => void; returnFocus: RefObject<HTMLButtonElement | null> }) {
   const [, update] = usePreferences();
   return (
-    <Dialog>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <DialogTrigger asChild>
-            <Button variant="ghost" size="icon" aria-label="Display preferences">
-              <SlidersHorizontalIcon className="size-4" aria-hidden="true" />
-            </Button>
-          </DialogTrigger>
-        </TooltipTrigger>
-        <TooltipContent>Display preferences</TooltipContent>
-      </Tooltip>
-      <DialogContent>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus.current?.focus(); }}>
         <DialogHeader>
           <DialogTitle>Display preferences</DialogTitle>
           <DialogDescription>Saved in this browser only.</DialogDescription>

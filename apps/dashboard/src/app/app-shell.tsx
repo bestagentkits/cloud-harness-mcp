@@ -4,22 +4,24 @@ import { lazy, type ReactNode, Suspense, useCallback, useEffect, useLayoutEffect
 import { ClassicDashboardLink } from '@/components/feedback/classic-dashboard-link';
 import { NavProgress } from '@/components/feedback/nav-progress';
 import { DisplayNameChip } from '@/components/layouts/display-name-chip';
-import { DisplayPreferencesDialog } from '@/components/layouts/display-preferences-dialog';
+import { DisplayPreferencesButton } from '@/components/layouts/display-preferences-button';
 import { PageHeader } from '@/components/layouts/page-header';
 import { SessionEndedBanner } from '@/components/layouts/session-ended-banner';
 import { SidebarNav } from '@/components/layouts/sidebar-nav';
 import { ThemeToggle } from '@/components/layouts/theme-toggle';
 import { WorkspaceFilter } from '@/components/layouts/workspace-filter';
 import { Button } from '@/components/ui/button';
-import { Drawer, DrawerContent, DrawerDescription, DrawerTitle } from '@/components/ui/drawer';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { usePreferences } from '@/lib/preferences';
+import { useOpenedOnce } from '@/lib/use-opened-once';
 import { cn } from '@/lib/utils';
 import { documentTitle, PRODUCT_NAME } from './page-registry';
 import { useCurrentPage } from './route-identity';
 import { useGlobalShortcuts } from './use-global-shortcuts';
 
 const CommandPalette = lazy(() => import('@/components/layouts/command-palette'));
+const loadDrawer = () => import('@/components/layouts/mobile-nav-drawer');
+const MobileNavDrawer = lazy(loadDrawer);
 
 /**
  * Persistent frame: skip link, collapsible sidebar (a drawer on small screens), top bar,
@@ -33,6 +35,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [preferences, updatePreferences] = usePreferences();
   const collapsed = preferences.sidebar === 'collapsed';
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerMounted = useOpenedOnce(drawerOpen);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteLoaded, setPaletteLoaded] = useState(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -57,7 +60,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const shortcuts = useMemo(() => ({
     togglePalette: () => { setPaletteLoaded(true); setPaletteOpen((open) => !open); },
     toggleSidebar,
-    focusSearch: () => searchRef.current?.focus()
+    // The search box is hidden on small screens; then `/` stays an ordinary key.
+    focusSearch: () => {
+      const input = searchRef.current;
+      if (!input || input.getClientRects().length === 0) return false;
+      input.focus();
+      return true;
+    }
   }), [toggleSidebar]);
   useGlobalShortcuts(shortcuts);
 
@@ -90,19 +99,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           </Tooltip>
         </div>
       </aside>
-      <Drawer open={drawerOpen} onOpenChange={setDrawerOpen}>
-        <DrawerContent aria-describedby="mobile-nav-description" className="md:hidden">
-          <div className="flex h-14 items-center gap-2 border-b px-4">
-            <DrawerTitle className="text-sm font-semibold">{PRODUCT_NAME}</DrawerTitle>
-            <DrawerDescription id="mobile-nav-description" className="sr-only">Dashboard navigation</DrawerDescription>
-          </div>
-          <SidebarNav currentId={navId} onNavigate={() => setDrawerOpen(false)} />
-        </DrawerContent>
-      </Drawer>
+      {drawerMounted ? (
+        <Suspense fallback={null}><MobileNavDrawer open={drawerOpen} onOpenChange={setDrawerOpen} currentId={navId} /></Suspense>
+      ) : null}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-40 flex h-14 items-center justify-between gap-2 border-b bg-background/95 px-gutter backdrop-blur">
           <div className="flex min-w-0 items-center gap-2">
-            <Button variant="ghost" size="icon" className="size-8 md:hidden" aria-label="Open navigation" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}>
+            <Button variant="ghost" size="icon" className="size-8 md:hidden" aria-label="Open navigation" aria-haspopup="dialog" aria-expanded={drawerOpen} onPointerEnter={() => { void loadDrawer(); }} onClick={() => setDrawerOpen(true)}>
               <MenuIcon aria-hidden="true" />
             </Button>
             <span className="truncate text-sm font-semibold md:hidden">{PRODUCT_NAME}</span>
@@ -115,7 +118,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <kbd aria-hidden="true" className="hidden rounded border px-1 font-mono text-[0.625rem] lg:inline">Ctrl K</kbd>
             </Button>
             <ThemeToggle />
-            <DisplayPreferencesDialog />
+            <DisplayPreferencesButton />
             <DisplayNameChip current={page?.id === 'profile'} />
           </div>
           <NavProgress />

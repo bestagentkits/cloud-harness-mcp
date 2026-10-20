@@ -62,16 +62,22 @@ Every navigation test runs an identity monitor
 ([`e2e/support.ts`](../apps/dashboard/e2e/support.ts)) that samples the document
 title, the page heading, the page frame and the current sidebar entry on each
 animation frame and DOM mutation, and fails on any sample where they disagree.
-The navigation p95 test clicks through fifteen sidebar pages twice after hover
-prefetch has warmed their route chunks. Each sample runs from the click event's
-`timeStamp` to the first animation frame where the page frame and sidebar show
-the target. The test prints the median and p95 and fails if p95 reaches 100 ms.
-It measures the shell commit, not the time for page data to arrive.
+The navigation p95 test is a warm-chunk measurement: it clicks through fifteen
+sidebar pages twice after hover prefetch has loaded their route chunks. Each
+sample runs from the click event's `timeStamp` to the first animation frame
+where the page frame, the sidebar entry, the `<h1>` and `document.title` all
+show the target. The test prints the median and p95 and fails if p95 reaches
+100 ms. A second test repeats the tour in a fresh page without hover, so every
+route chunk loads on the click; it prints the same cold-chunk figures but has no
+gate, and serves as the baseline for later performance work. Both measure the
+shell commit, not the time for page data to arrive.
 
 The dashboard `build` script ends with
 [`apps/dashboard/scripts/verify-build-output.mjs`](../apps/dashboard/scripts/verify-build-output.mjs),
-so CI fails a build that breaks the shell contract or the gzip budget (initial
-JS, largest lazy route chunk, and CSS) read from the Vite manifest, or that
+so CI fails a build that breaks the shell contract or the gzip budget read from
+the Vite manifest (initial JS, each route chunk under `src/routes/`, each other
+lazy chunk, a larger allowance for an explicit allowlist of heavy lazy
+libraries such as the terminal, and CSS), or that
 ships fonts without their `OFL.txt` licence. The limits live in
 [`build-output-check.mjs`](../apps/dashboard/scripts/build-output-check.mjs);
 the API serves the same manifest through

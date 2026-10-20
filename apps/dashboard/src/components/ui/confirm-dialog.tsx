@@ -2,6 +2,7 @@ import { AlertDialog as AlertDialogPrimitive } from 'radix-ui';
 import { type ReactNode, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Button, buttonVariants } from './button';
+import { useInvokerFocus } from './dialog';
 
 export type ConfirmDialogProps = {
   open: boolean;
@@ -30,6 +31,9 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const [pending, setPending] = useState(false);
   const inFlight = useRef(false);
+  // Controlled from a page button, not an AlertDialog.Trigger, so Radix has nothing to
+  // return focus to; restore it to whatever opened the dialog.
+  const focus = useInvokerFocus();
 
   async function confirm() {
     if (inFlight.current) return;
@@ -52,6 +56,7 @@ export function ConfirmDialog({
       <AlertDialogPrimitive.Portal>
         <AlertDialogPrimitive.Overlay className="fixed inset-0 z-50 bg-overlay data-[state=open]:animate-in data-[state=open]:fade-in-0" />
         <AlertDialogPrimitive.Content
+          {...focus}
           aria-busy={pending || undefined}
           onEscapeKeyDown={(event) => { if (pending) event.preventDefault(); }}
           className="fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border bg-popover p-6 text-popover-foreground shadow-lg outline-none duration-(--motion-base) data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-md"

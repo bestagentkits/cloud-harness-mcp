@@ -95,10 +95,8 @@ test('browser storage holds only display preferences and scroll positions', asyn
     if (response.url().endsWith('/api/v1/session') && response.ok()) csrfToken = String((await response.json() as { csrfToken?: string }).csrfToken ?? '');
   });
   await page.emulateMedia({ colorScheme: 'light' });
-  await page.goto('/dashboard/integrations/github?installation_id=4242&state=one-time-state-value');
+  await page.goto('/dashboard/integrations/github');
   await expectPage(page, 'github');
-  await expect(page.locator('main')).not.toContainText('one-time-state-value');
-  await expect(page.locator('main')).not.toContainText('4242');
 
   // Exercise every writer: a mutation (CSRF bootstrap), sidebar, display preferences, navigation.
   await page.getByRole('button', { name: 'Dark theme' }).click();
@@ -121,8 +119,38 @@ test('browser storage holds only display preferences and scroll positions', asyn
   expect(Object.keys(storage.local).sort()).toEqual(['ch-dashboard-preferences']);
   expect(Object.keys(JSON.parse(storage.local['ch-dashboard-preferences']!)).sort()).toEqual(['contrast', 'density', 'fontScale', 'sidebar', 'theme']);
   expect(Object.keys(storage.session).every((key) => key.startsWith('tsr-scroll-restoration'))).toBe(true);
+  // No other browser store is used at all.
+  const stores = await page.evaluate(async () => ({
+    databases: (await indexedDB.databases()).map((database) => database.name ?? ''),
+    caches: await caches.keys()
+  }));
+  expect(stores).toEqual({ databases: [], caches: [] });
   const everything = JSON.stringify(storage);
-  for (const forbidden of [csrfToken, 'one-time-state-value', 'installation_id', '4242', 'owner@example.test', 'e2e-owner']) {
+  for (const forbidden of [csrfToken, 'owner@example.test', 'e2e-owner']) {
     expect(everything.includes(forbidden), `storage must not contain ${forbidden === csrfToken ? 'the CSRF token' : forbidden}`).toBe(false);
   }
+});
+
+test('a GitHub App callback is handed to the classic Dashboard with its params', async ({ page, context }) => {
+  await stubReads(page);
+  await page.goto('/dashboard/integrations/github?installation_id=4242&setup_action=install&state=one-time-state-value');
+  await page.waitForURL((url) => url.pathname === '/dashboard/integrations/github' && !url.searchParams.has('ui') && url.searchParams.get('installation_id') === '4242');
+  const url = new URL(page.url());
+  expect(url.searchParams.get('state')).toBe('one-time-state-value');
+  expect(url.searchParams.get('setup_action')).toBe('install');
+  // The classic shell answered, not the React app, and this browser is now pinned to it.
+  await expect(page.locator('[data-testid=page-frame]')).toHaveCount(0);
+  const cookies = await context.cookies();
+  expect(cookies.find((cookie) => cookie.name === 'ch-dashboard-ui')?.value).toBe('legacy');
+  // The hand-off never wrote the callback's one-time values to browser storage.
+  const stored = await page.evaluate(() => JSON.stringify([{ ...localStorage }, { ...sessionStorage }]));
+  expect(stored.includes('one-time-state-value')).toBe(false);
+  expect(stored.includes('4242')).toBe(false);
+});
+
+test('the classic Dashboard link keeps the page query', async ({ page }) => {
+  await stubReads(page);
+  await page.goto('/dashboard/agents?status=RUNNING');
+  await expectPage(page, 'agents');
+  await expect(page.getByRole('link', { name: 'Open in classic Dashboard' })).toHaveAttribute('href', '/dashboard/agents?status=RUNNING&ui=legacy');
 });

@@ -1,5 +1,6 @@
 import { queryOptions } from '@tanstack/react-query';
 import { apiClient } from './api-client';
+import { pageReadQuery } from './page-read';
 
 /** Shape of `GET /dashboard/api/v1/profile` (apps/api/src/dashboard-router.ts). */
 export type ProfileResponse = {
@@ -10,9 +11,14 @@ export type ProfileResponse = {
   };
 };
 
+/**
+ * The profile read shares the Profile page's key, so the top-bar chip, the Overview and the
+ * Profile page fetch `/profile` once. The cache holds the raw body; `select` unwraps it.
+ */
 export const profileQuery = queryOptions({
-  queryKey: ['profile'],
-  queryFn: ({ signal }) => apiClient.get<ProfileResponse>('/profile', { signal }).then((body) => body.data),
+  queryKey: pageReadQuery('profile', {}).queryKey,
+  queryFn: ({ signal }) => apiClient.get<ProfileResponse>('/profile', { signal }) as Promise<unknown>,
+  select: (body: unknown) => (body as ProfileResponse).data,
   staleTime: 5 * 60_000
 });
 

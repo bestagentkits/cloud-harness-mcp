@@ -66,8 +66,13 @@ export type ActionButtonProps = Omit<ButtonProps, 'onClick' | 'asChild'> & {
 export function ActionButton({ onAction, pendingLabel, successLabel, errorLabel, settleMs = 1_500, children, disabled, ...props }: ActionButtonProps) {
   const [state, setState] = useState<ActionButtonState>('idle');
   const inFlight = useRef(false);
-  const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  const mounted = useRef(false);
+  // Set inside the effect, not at init: StrictMode runs effect, cleanup, effect on mount,
+  // and a ref initialised to true would stay false after that first cleanup.
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   useEffect(() => {
     if (state !== 'success' && state !== 'error') return undefined;
     const timer = setTimeout(() => { if (mounted.current) setState('idle'); }, settleMs);
