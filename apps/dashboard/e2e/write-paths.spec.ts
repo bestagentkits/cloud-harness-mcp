@@ -69,6 +69,32 @@ test('a rotate that loses the generation race shows the conflict, and the retry 
   await leaks.assertClean(SECRET_VALUE);
 });
 
+test('a background refetch while the description editor is open never moves its fence', async ({ page }) => {
+  await page.clock.install();
+  const writes = await stubBff(page, {
+    reads: { '/secrets': [SECRETS(3), SECRETS(4)] },
+    writes: { 'PATCH /secrets/STRIPE_API_KEY': [answer(409, { error: 'conflict', message: 'generation mismatch' }), answer(200, { data: secret(5) })] }
+  });
+  await page.goto('/dashboard/secrets');
+  await expectPage(page, 'secrets');
+  await page.getByRole('button', { name: 'Edit description of STRIPE_API_KEY' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Description').fill('Billing');
+  // The list goes stale and refetches on focus: generation 4 lands behind the open dialog.
+  await page.clock.fastForward(20_000);
+  await page.evaluate(() => window.dispatchEvent(new Event('visibilitychange')));
+  await expect(page.getByText('gen 4')).toBeVisible();
+  await expect(dialog.getByLabel('Description')).toHaveValue('Billing');
+  await dialog.getByRole('button', { name: 'Save description' }).click();
+  await expect(page.getByText(CONFLICT).first()).toBeVisible();
+  // The save was fenced on the generation the operator opened, so the server's 409 is seen.
+  expect(writesTo(writes, 'PATCH', '/secrets/STRIPE_API_KEY')[0]?.body).toEqual({ description: 'Billing', expectedGeneration: 3 });
+  await dialog.getByLabel('Description').fill('Billing');
+  await dialog.getByRole('button', { name: 'Save description' }).click();
+  await expect(dialog).toBeHidden();
+  expect(writesTo(writes, 'PATCH', '/secrets/STRIPE_API_KEY')[1]?.body).toEqual({ description: 'Billing', expectedGeneration: 4 });
+});
+
 test('saving a provider key sends the legacy credential body', async ({ page }) => {
   const leaks = watchForLeaks(page);
   const writes = await stubBff(page, {
@@ -116,6 +142,53 @@ test('the profile wizard restores its step after a reload but never the key', as
   const after = await page.evaluate(() => Object.keys(sessionStorage).filter((key) => key.includes('models-profile-wizard')));
   expect(after).toEqual([]);
   await watchForLeaks(page).assertClean(API_KEY);
+});
+
+test('the custom upstream URL keeps every keystroke while only a safe URL is stored', async ({ page }) => {
+  // A draft restored at the Review step of a provider that needs a custom upstream.
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem('upstream-seeded')) return;
+    sessionStorage.setItem('upstream-seeded', '1');
+    sessionStorage.setItem('ch-dashboard-restore:models-profile-wizard', JSON.stringify({
+      open: true, mode: 'create', sourceProfileId: null,
+      state: { step: 3, provider: 'custom', credentialId: 'cred_1', credentialChoice: 'saved', model: 'my-model', displayName: 'Mine', profileId: 'mine' }
+    }));
+  });
+  await stubBff(page, {
+    reads: {
+      ...EMPTY_MODELS,
+      '/model-providers': answer(200, { data: { providers: [{ id: 'custom', displayName: 'Custom', authModes: ['bearer'], defaultAuthMode: 'bearer', catalogStrategy: 'none', requiresCustomUpstream: true }] } }),
+      '/provider-credentials': answer(200, { data: { credentials: [{ id: 'cred_1', label: 'Mine', provider: 'custom', authMode: 'bearer', status: 'ACTIVE', activeVersion: 1 }] } })
+    }
+  });
+  const stored = () => page.evaluate(() => sessionStorage.getItem('ch-dashboard-restore:models-profile-wizard') ?? '');
+  await page.goto('/dashboard/models');
+  await expectPage(page, 'models');
+  const wizard = page.getByTestId('profile-wizard');
+  await expect(wizard.getByRole('heading', { name: /Step 4 of 5/ })).toBeVisible();
+  await wizard.getByTestId('wizard-advanced').getByText('Advanced settings').click();
+  const field = wizard.getByLabel('Custom upstream URL');
+
+  // Typed one key at a time, every partial value stays in the field.
+  await field.click();
+  await expect(field).toBeFocused();
+  await field.pressSequentially('https://llm.example.test/v1');
+  await expect(field).toHaveValue('https://llm.example.test/v1');
+  await expect.poll(stored).toContain('https://llm.example.test/v1');
+
+  // A pasted URL with credentials and a query stays editable and is validated, never stored.
+  const unsafe = 'http://user:pass@llm.example.test/v1?key=not-real';
+  await field.fill(unsafe);
+  await expect(field).toHaveValue(unsafe);
+  await wizard.locator('[data-wizard-action=continue]').click();
+  await expect(wizard.getByTestId('wizard-advanced').getByRole('alert').filter({ hasText: 'Use an https:// URL.' })).toBeVisible();
+  await expect(field).toHaveValue(unsafe);
+  const query = 'https://llm.example.test/v1?key=not-real';
+  await field.fill(query);
+  await expect(field).toHaveValue(query);
+  await expect.poll(stored).toContain('"customUpstreamUrl":""');
+  const all = await page.evaluate(() => JSON.stringify({ ...sessionStorage }));
+  for (const forbidden of ['user:pass', 'key=not-real']) expect(all.includes(forbidden), `sessionStorage must not hold ${forbidden}`).toBe(false);
 });
 
 const mcpServer = (generation: number, enabled: boolean) => ({ id: 'mcp_1', name: 'Docs', transport: 'streamable-http', endpoint: 'https://mcp.example.test/mcp', headers: [], enabled, status: 'READY', toolCount: 2, permissionDefault: 'allow', generation });

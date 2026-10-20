@@ -3,7 +3,7 @@ import { mutationErrorText } from '@/lib/bff-mutation';
 import { useRestorableState } from '@/lib/restorable-state';
 import { modelsApi } from './models-api';
 import type { CatalogEntry, ModelProfile, ProviderCredential } from './models-types';
-import { applyCatalogEntry, initialWizardState, parseStoredWizard, type StoredWizard, storedWizard, type WizardMode, type WizardState } from './models-wizard-state';
+import { applyCatalogEntry, initialWizardState, parseStoredWizard, type StoredWizard, storedWizard, type WizardMode, type WizardState, wizardForStorage } from './models-wizard-state';
 
 // The wizard's open state and restore, kept apart from the wizard UI so the page loads the
 // steps (`profile-wizard.tsx`) only when the wizard opens.
@@ -22,7 +22,7 @@ export type Status = { text: string; tone: 'info' | 'error' } | null;
  * reviewed, never one a background refetch slipped in.
  */
 export function useProfileWizard() {
-  const [stored, setStored, clear] = useRestorableState<StoredWizard | null>(RESTORE_KEY, parseWizard, emptyWizard);
+  const [stored, setStored, clear] = useRestorableState<StoredWizard | null>(RESTORE_KEY, parseWizard, emptyWizard, wizardForStorage);
   const [snapshot, setSnapshot] = useState<ModelProfile | null>(null);
   const [notice, setNotice] = useState<Status>(null);
   const open = useCallback((mode: WizardMode, context: {

@@ -3,6 +3,7 @@ import { useForm } from 'react-hook-form';
 import { Field } from '@/components/ui/field';
 import { SecretInput } from '@/components/ui/secret-input';
 import { Textarea } from '@/components/ui/textarea';
+import { ConflictError } from '@/lib/api-client';
 import { mutationErrorText, useBffMutation } from '@/lib/bff-mutation';
 import { FormDialog } from '../shared/form-dialog';
 import { SECRET_DESCRIPTION_MAX, type SecretReference, secretValueError } from './secret-model';
@@ -13,11 +14,14 @@ type Values = { value: string; description: string };
 
 /**
  * Rotate a secret's value (with an optional new description) or edit only its
- * description. Both carry the row's generation, so a change made elsewhere since the page
- * loaded is refused with 409 and the list refetches; `secret` is then the refreshed row, so
- * the retry is fenced on its generation. The value field is never re-seeded.
+ * description. Both carry the generation of the row the dialog opened with (`secret` is a
+ * snapshot a background refetch never moves), so a change made elsewhere is refused with
+ * 409. `onConflict` then replaces the snapshot with the latest row, so the retry is fenced
+ * on its generation. The value field is never re-seeded.
  */
-export function SecretEditDialog({ scope, secret, mode, onClose }: { scope: SecretScope; secret: SecretReference | undefined; mode: SecretEditMode; onClose: () => void }) {
+export function SecretEditDialog({ scope, secret, mode, onConflict, onClose }: {
+  scope: SecretScope; secret: SecretReference | undefined; mode: SecretEditMode; onConflict: (secretId: string) => Promise<void>; onClose: () => void;
+}) {
   const global = scope.kind === 'global';
   const form = useForm<Values>({ defaultValues: { value: '', description: '' } });
   const { errors, isDirty } = form.formState;
@@ -50,7 +54,10 @@ export function SecretEditDialog({ scope, secret, mode, onClose }: { scope: Secr
     try {
       await mutation.mutateAsync({ target: secret, ...values });
       setOpen(false);
-    } catch { /* shown in the dialog */ }
+    } catch (error) {
+      // Shown in the dialog; after a 409 the fence moves to the latest row.
+      if (error instanceof ConflictError) await onConflict(secret.id).catch(() => undefined);
+    }
   });
 
   const rotate = mode === 'rotate';

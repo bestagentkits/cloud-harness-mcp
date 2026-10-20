@@ -56,6 +56,14 @@ describe('useRestorableState', () => {
     expect(JSON.parse(window.sessionStorage.getItem(STORAGE_KEY) ?? 'null')).toEqual({ step: 1, provider: 'anthropic' });
   });
 
+  it('writes the serialized form but keeps the live state as set', () => {
+    const serialize = (value: Draft) => ({ ...value, provider: value.provider.startsWith('h') ? '' : value.provider });
+    const { result } = renderHook(() => useRestorableState(KEY, parseDraft, initialDraft, serialize));
+    act(() => result.current[1]({ step: 1, provider: 'ht' }));
+    expect(result.current[0]).toEqual({ step: 1, provider: 'ht' });
+    expect(JSON.parse(window.sessionStorage.getItem(STORAGE_KEY) ?? 'null')).toEqual({ step: 1, provider: '' });
+  });
+
   it('removes the entry on clear and resets to the initial state without writing it back', () => {
     window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ step: 3, provider: 'openai' }));
     const setItem = vi.spyOn(Storage.prototype, 'setItem');

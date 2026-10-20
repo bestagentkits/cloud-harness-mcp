@@ -433,8 +433,16 @@ export function storableUpstreamUrl(value: string): string {
 }
 
 export function storedWizard(state: WizardState, sourceProfileId: string | null): StoredWizard {
-  const stored = withoutContext(state);
-  return { open: true, mode: state.mode, sourceProfileId, state: { ...stored, customUpstreamUrl: storableUpstreamUrl(stored.customUpstreamUrl) } };
+  return { open: true, mode: state.mode, sourceProfileId, state: withoutContext(state) };
+}
+
+/**
+ * The form written to `sessionStorage`. The live wizard keeps whatever the operator types,
+ * so a partial or invalid upstream URL stays editable and its validation message shows;
+ * only the stored copy drops one that does not pass `storableUpstreamUrl`.
+ */
+export function wizardForStorage(stored: StoredWizard | null): StoredWizard | null {
+  return stored ? { ...stored, state: { ...stored.state, customUpstreamUrl: storableUpstreamUrl(stored.state.customUpstreamUrl) } } : null;
 }
 
 const isString = (value: unknown): value is string => typeof value === 'string';

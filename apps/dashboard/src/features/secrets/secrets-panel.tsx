@@ -34,14 +34,20 @@ export function SecretsPanel({ scope, list, createOpen, onCreateOpenChange }: { 
   const [deleting, setDeleting] = useState<SecretReference | undefined>();
   const bulkMounted = useOpenedOnce(bulkOpen);
   const secrets = list.secrets;
-  // The dialog follows the row in the refreshed list, so a retry after a 409 carries the
-  // latest generation instead of the one the dialog opened with.
-  const editingSecret = editing ? secrets.find((secret) => secret.id === editing.secret.id) ?? editing.secret : undefined;
+  // The current list, not the possibly stale page copy.
+  const readFresh = () => queryClient.fetchQuery({ queryKey: [...bffKey(secretsPath(scope)), {}], queryFn: ({ signal }) => apiClient.get<{ data: SecretList }>(secretsPath(scope), { signal }), staleTime: 0 });
+
+  // The dialog stays fenced on the row it opened with, so a background refetch never moves
+  // the fence past a change the operator has not seen. Only a 409 replaces the snapshot,
+  // with the row from a fresh read, so the retry carries the generation now on the server.
+  async function adoptLatest(secretId: string) {
+    const latest = (await readFresh()).data.secrets.find((secret) => secret.id === secretId);
+    if (latest) setEditing((current) => (current?.secret.id === secretId ? { ...current, secret: latest } : current));
+  }
 
   async function exportExample() {
     try {
-      // The export reads the current list, not the possibly stale page copy.
-      const fresh = await queryClient.fetchQuery({ queryKey: [...bffKey(secretsPath(scope)), {}], queryFn: ({ signal }) => apiClient.get<{ data: SecretList }>(secretsPath(scope), { signal }), staleTime: 0 });
+      const fresh = await readFresh();
       const filename = envExampleFilename(scope.kind === 'environment' ? scope.name : undefined);
       downloadText(filename, buildEnvExample(fresh.data.secrets));
       toast({ title: `${filename} exported.`, variant: 'success' });
@@ -98,7 +104,7 @@ export function SecretsPanel({ scope, list, createOpen, onCreateOpenChange }: { 
         />
       </Section>
       <SecretCreateDialog scope={scope} open={createOpen} onOpenChange={onCreateOpenChange} />
-      <SecretEditDialog scope={scope} secret={editingSecret} mode={editing?.mode ?? 'rotate'} onClose={() => setEditing(undefined)} />
+      <SecretEditDialog scope={scope} secret={editing?.secret} mode={editing?.mode ?? 'rotate'} onConflict={adoptLatest} onClose={() => setEditing(undefined)} />
       {bulkMounted ? <BulkImportDialog scope={scope} existing={secrets} open={bulkOpen} onOpenChange={setBulkOpen} /> : null}
       <ConfirmDialog
         open={deleting !== undefined}

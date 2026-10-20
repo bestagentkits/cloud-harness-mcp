@@ -19,14 +19,18 @@ function write(key: string, value: unknown): void {
   } catch { /* storage unavailable or full: restore is a convenience, not a requirement */ }
 }
 
+const asStored = (value: unknown): unknown => value;
+
 /**
  * Wizard step state that survives a reload of the tab (ADR 0005 "non-secret UI state
  * restore"). `parse` is the allowlist: it must accept only non-secret fields (step,
  * choices, names) and return `undefined` for anything else, so a key, token or secret
  * value can never be written or read back. Forms that take secret values keep them out of
- * this state entirely. `clear` removes the entry (on finish or cancel).
+ * this state entirely. `serialize` shapes what is written (the live state is untouched), so
+ * a field can stay editable while only its safe form is stored. `clear` removes the entry
+ * (on finish or cancel).
  */
-export function useRestorableState<T>(key: string, parse: (raw: unknown) => T | undefined, initial: () => T) {
+export function useRestorableState<T>(key: string, parse: (raw: unknown) => T | undefined, initial: () => T, serialize: (value: T) => unknown = asStored) {
   const [state, setState] = useState<T>(() => parse(read(key)) ?? initial());
   // After `clear`, the reset value itself is not written back: nothing is stored until the
   // operator makes a new choice. Comparing against the reset value (instead of a one-shot
@@ -35,8 +39,8 @@ export function useRestorableState<T>(key: string, parse: (raw: unknown) => T | 
   useEffect(() => {
     if (cleared.current && Object.is(cleared.current.value, state)) return;
     cleared.current = null;
-    write(key, state);
-  }, [key, state]);
+    write(key, serialize(state));
+  }, [key, serialize, state]);
   const clear = useCallback(() => {
     write(key, undefined);
     const reset = initial();

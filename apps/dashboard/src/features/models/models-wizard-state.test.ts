@@ -23,6 +23,7 @@ import {
   selectProvider,
   setField,
   storableUpstreamUrl,
+  wizardForStorage,
   storedWizard,
   WIZARD_STEPS,
   type WizardState,
@@ -592,7 +593,11 @@ describe('parseStoredWizard', () => {
 
   it('never stores or restores a custom upstream URL with user info, a query or a fragment', () => {
     const state = draft({ customUpstreamUrl: 'https://user:pass@llm.example.test/v1?key=not-real' });
-    expect(JSON.stringify(storedWizard(state, null))).not.toContain('llm.example.test');
+    // The live state keeps the typed value; only the stored form drops it.
+    expect(storedWizard(state, null).state.customUpstreamUrl).toBe('https://user:pass@llm.example.test/v1?key=not-real');
+    expect(JSON.stringify(wizardForStorage(storedWizard(state, null)))).not.toContain('llm.example.test');
+    expect(wizardForStorage(storedWizard(draft({ customUpstreamUrl: 'https://llm.example.test/v1' }), null))?.state.customUpstreamUrl).toBe('https://llm.example.test/v1');
+    expect(wizardForStorage(null)).toBeNull();
     expect(parseStoredWizard(stored({ customUpstreamUrl: 'https://llm.example.test/v1#t' }))?.state.customUpstreamUrl).toBe('');
     expect(parseStoredWizard(stored({ customUpstreamUrl: 'https://llm.example.test/v1' }))?.state.customUpstreamUrl).toBe('https://llm.example.test/v1');
   });
