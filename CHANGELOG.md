@@ -1,3 +1,10 @@
+# [0.72.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.71.0...v0.72.0) (2026-10-20)
+
+
+### Features
+
+* **dashboard:** React app scaffold behind rollout flag ([#458](https://github.com/bestagentkits/cloud-harness-mcp/issues/458) P1) ([#488](https://github.com/bestagentkits/cloud-harness-mcp/issues/488)) ([0921ce0](https://github.com/bestagentkits/cloud-harness-mcp/commit/0921ce06ca778edc59b024063fdaf5cdb6473bab))
+
 # [0.71.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.70.0...v0.71.0) (2026-10-18)
 
 
