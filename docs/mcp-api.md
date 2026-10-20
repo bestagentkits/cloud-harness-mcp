@@ -297,12 +297,14 @@ the ledger and its fences are in
   receipt was purged returns `EFFECT_RECEIPT_UNAVAILABLE`. One whose outcome was
   lost (a crash or restart mid-call) is reconciled from workspace state: a
   conditional write is applied when its target holds the content recorded at
-  dispatch. A delete, mkdir, or move is applied only when the workspace changed
-  from the state observed just before dispatch, which the runner reads only for
-  an agent that records a session (the only kind a continuation reconciles;
-  without the observation the outcome stays unknown): a delete whose path existed is
-  gone, an mkdir whose path was absent is a directory, a move whose source
-  existed left it for an existing destination. An end state that would also
+  dispatch, and a patch when its target holds the content the patch produces
+  from the file read just before dispatch. A delete, mkdir, or move is applied
+  only when the workspace changed from the state observed just before dispatch.
+  The runner reads a patch, delete, mkdir, or move target before dispatch only
+  for an agent that records a session (the only kind a continuation
+  reconciles); without that observation the outcome stays unknown. A delete
+  whose path existed is gone, an mkdir whose path was absent is a directory, a
+  move whose source existed left it for an existing destination. An end state that would also
   hold had the call failed (deleting a path that never existed, creating a
   directory that already existed) is not taken as applied. An applied outcome
   returns a result with `reconciled: true`; a write whose target still holds
