@@ -144,7 +144,10 @@ current:
      require a POSIX host and are verified in Linux CI. The nginx upgrade
      script refuses its test root when run as root, so in a root-only
      container run that suite as an unprivileged user instead of treating the
-     failure as a regression.
+     failure as a regression. Those suites must also pass on macOS: keep
+     fixture stubs to portable POSIX commands (no GNU-only `sed -i` or
+     `stat -c`) and give every `spawnSync` a timeout, because a blocked
+     worker ignores the vitest test timeout and hangs `npm run verify`.
    - Compose or network-boundary changes: `npm run verify:compose` and
      `npm run verify`.
    - Shell changes: run the syntax check owned by `.github/workflows/ci.yml`.

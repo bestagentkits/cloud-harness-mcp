@@ -7,6 +7,9 @@ import { describe, expect, it } from 'vitest';
 const runtime = join(process.cwd(), 'deploy/scripts/release-runtime.sh');
 const deployScript = join(process.cwd(), 'deploy/scripts/deploy-release.sh');
 const previousSha = 'a'.repeat(40);
+// spawnSync blocks the worker, so the vitest test timeout cannot stop a fixture
+// that never exits; bound every script run so a hang fails instead of stalling verify.
+const bounded = { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' } as const;
 
 function runRollback(failureStep = 'none') {
   const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-rollback-'));
@@ -35,7 +38,7 @@ record_release_config() { echo config >> "$trace_path"; ! fails config; }
 ( false; rollback )
 exit $?
 `;
-  const result = spawnSync('bash', ['-c', script, 'bash', runtime, directory, previousSha, trace, failureStep], { encoding: 'utf8' });
+  const result = spawnSync('bash', ['-c', script, 'bash', runtime, directory, previousSha, trace, failureStep], bounded);
   return { ...result, trace: readFileSync(trace, 'utf8').trim().split('\n') };
 }
 
@@ -69,7 +72,7 @@ kill -${signal} $$
 sleep 1
 echo reached-after-signal >> "$trace_path"
 `;
-  const result = spawnSync('bash', ['-c', script, 'bash', runtime, directory, previousSha, trace], { encoding: 'utf8' });
+  const result = spawnSync('bash', ['-c', script, 'bash', runtime, directory, previousSha, trace], bounded);
   return {
     ...result,
     trace: readFileSync(trace, 'utf8').trim().split('\n'),
@@ -93,7 +96,7 @@ compose() {
 }
 ${functionName}
 `;
-  return spawnSync('bash', ['-c', script, 'bash', runtime], { encoding: 'utf8' }).status;
+  return spawnSync('bash', ['-c', script, 'bash', runtime], bounded).status;
 }
 
 function runConfigRestore() {
@@ -112,7 +115,7 @@ printf '%s|' "$(cat "$config_root/mode")"
 record_release_config
 cat "$state/release-config-current/mode"
 `;
-  return spawnSync('bash', ['-c', script, 'bash', runtime, directory], { encoding: 'utf8' });
+  return spawnSync('bash', ['-c', script, 'bash', runtime, directory], bounded);
 }
 
 function runLauncher(releaseSha: string, unitStates: string[], unitExit = 0) {
@@ -121,7 +124,7 @@ function runLauncher(releaseSha: string, unitStates: string[], unitExit = 0) {
   writeFileSync(join(directory, 'states'), unitStates.join('\n') + '\n');
   const stubs: Record<string, string> = {
     systemctl: `if [[ $1 == is-active ]]; then
-  state=$(head -n 1 "$STUB_DIR/states"); sed -i 1d "$STUB_DIR/states"; echo "\${state:-inactive}"
+  state=$(head -n 1 "$STUB_DIR/states"); tail -n +2 "$STUB_DIR/states" > "$STUB_DIR/states.next"; mv "$STUB_DIR/states.next" "$STUB_DIR/states"; echo "\${state:-inactive}"
   [[ \${state:-inactive} == active ]]; exit
 fi
 echo "systemctl:$*" >> "$STUB_DIR/trace"`,
@@ -136,7 +139,7 @@ echo "systemctl:$*" >> "$STUB_DIR/trace"`,
   }
   const env = { ...process.env, PATH: `${directory}:${process.env.PATH}`, STUB_DIR: directory };
   delete env.CLOUD_HARNESS_DEPLOY_DETACHED;
-  const result = spawnSync('bash', [deployScript, releaseSha], { encoding: 'utf8', env });
+  const result = spawnSync('bash', [deployScript, releaseSha], { ...bounded, env });
   return { ...result, trace: existsSync(trace) ? readFileSync(trace, 'utf8').trim().split('\n') : [] };
 }
 
@@ -199,7 +202,7 @@ ${extractFunction('recover_interrupted_deploy')}
 recover_interrupted_deploy
 echo finished >> "$trace_path"
 `;
-  const result = spawnSync('bash', ['-c', script, 'bash', inProgress, directory, trace], { encoding: 'utf8' });
+  const result = spawnSync('bash', ['-c', script, 'bash', inProgress, directory, trace], bounded);
   return {
     ...result,
     trace: existsSync(trace) ? readFileSync(trace, 'utf8').trim().split('\n') : [],
@@ -223,7 +226,7 @@ ${extractFunction('install_deploy_tooling')}
 install_deploy_tooling
 `;
   const releaseSha = 'c'.repeat(40);
-  const result = spawnSync('bash', ['-c', script, 'bash', directory, record, trace, releaseSha], { encoding: 'utf8' });
+  const result = spawnSync('bash', ['-c', script, 'bash', directory, record, trace, releaseSha], bounded);
   return {
     ...result,
     trace: existsSync(trace) ? readFileSync(trace, 'utf8').trim().split('\n') : [],
@@ -285,7 +288,7 @@ trap 'rm -f "$in_progress"' EXIT
 ${extractFunction('rollback_on_signal')}
 rollback_on_signal TERM 143
 `;
-    const result = spawnSync('bash', ['-c', script, 'bash', directory, marker, trace], { encoding: 'utf8' });
+    const result = spawnSync('bash', ['-c', script, 'bash', directory, marker, trace], bounded);
     expect(result.status).toBe(143);
     expect(existsSync(trace)).toBe(false);
     expect(existsSync(marker)).toBe(true);
@@ -367,7 +370,7 @@ ${handler}
 ${traps}
 false
 `;
-    const result = spawnSync('bash', ['-c', script, 'bash', directory, trace], { encoding: 'utf8' });
+    const result = spawnSync('bash', ['-c', script, 'bash', directory, trace], bounded);
     expect(result.status).toBe(1);
     expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual(['rollback', 'after-kill']);
   });
@@ -404,7 +407,7 @@ docker() { echo "docker:$*" >> "$trace_path"; }
 ${handler}
 abandon_prebuild ${code}
 `;
-    const result = spawnSync('bash', ['-c', script, 'bash', directory, previousSha, trace], { encoding: 'utf8' });
+    const result = spawnSync('bash', ['-c', script, 'bash', directory, previousSha, trace], bounded);
     expect(result.status).toBe(code);
     const lines = readFileSync(trace, 'utf8').trim().split('\n');
     expect(lines).not.toContain('stop');

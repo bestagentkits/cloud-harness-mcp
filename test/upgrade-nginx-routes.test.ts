@@ -122,6 +122,8 @@ if [[ -f $CLOUD_HARNESS_NGINX_TEST_ROOT/fail-systemctl-once && $count -eq 0 ]]; 
 function runUpgrade(root: string) {
   return spawnSync('bash', [upgradeScript], {
     encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
     env: { ...process.env, CLOUD_HARNESS_NGINX_TEST_ROOT: root }
   });
 }
