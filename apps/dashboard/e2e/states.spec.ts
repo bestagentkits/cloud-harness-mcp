@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { answer, expectNoSeriousA11yViolations, expectPage, records, sidebarLink, stubReads, watchConsole } from './support';
+import { stubBff, writesTo } from './write-support';
 
 // Error classes, accessibility, reduced motion and what the Dashboard leaves in browser storage.
 
@@ -38,7 +39,8 @@ for (const failure of ERROR_CASES) {
 
 for (const colorScheme of ['light', 'dark'] as const) {
   test(`shell, palette and mobile drawer are axe clean (${colorScheme})`, async ({ page }) => {
-    await page.emulateMedia({ colorScheme });
+    // Reduced motion: an overlay caught before its fade starts misreports contrast under load.
+    await page.emulateMedia({ colorScheme, reducedMotion: 'reduce' });
     await stubReads(page, { '/workspaces': answer(200, records(3)) });
     await page.goto('/dashboard/workspaces?q=demo');
     await expectPage(page, 'workspaces');
@@ -131,22 +133,34 @@ test('browser storage holds only display preferences and scroll positions', asyn
   }
 });
 
-test('a GitHub App callback is handed to the classic Dashboard with its params', async ({ page, context }) => {
-  await stubReads(page);
-  await page.goto('/dashboard/integrations/github?installation_id=4242&setup_action=install&state=one-time-state-value');
-  await page.waitForURL((url) => url.pathname === '/dashboard/integrations/github' && !url.searchParams.has('ui') && url.searchParams.get('installation_id') === '4242');
-  const url = new URL(page.url());
-  expect(url.searchParams.get('state')).toBe('one-time-state-value');
-  expect(url.searchParams.get('setup_action')).toBe('install');
-  // The classic shell answered, not the React app, and this browser is now pinned to it.
-  await expect(page.locator('[data-testid=page-frame]')).toHaveCount(0);
+test('a GitHub App callback completes once in the new Dashboard and cleans the URL', async ({ page, context }) => {
+  const state = 'one-time-state-value-0123456789abcdef';
+  const writes = await stubBff(page, { reads: { '/github': answer(200, { data: { configured: true, installation: null, repositories: [] } }) }, writes: { 'POST /github/complete': answer(200, { data: { ok: true } }) } });
+  await page.goto(`/dashboard/integrations/github?installation_id=4242&setup_action=install&state=${state}`);
+  // The React page answers the callback itself and replaces the URL with the canonical page.
+  await page.waitForURL((url) => url.pathname === '/dashboard/integrations/github' && url.search === '');
+  await expectPage(page, 'github');
+  await expect.poll(() => writesTo(writes, 'POST', '/github/complete').length).toBe(1);
+  expect(writesTo(writes, 'POST', '/github/complete')[0]?.body).toEqual({ state, installationId: '4242' });
+  // No hand-off: the browser is not pinned to the classic shell.
   const cookies = await context.cookies();
-  expect(cookies.find((cookie) => cookie.name === 'ch-dashboard-ui')?.value).toBe('legacy');
-  // The hand-off never wrote the callback's one-time values to browser storage.
+  expect(cookies.find((cookie) => cookie.name === 'ch-dashboard-ui')).toBeUndefined();
+  // The callback's one-time values never reach browser storage, and it is sent only once.
   const stored = await page.evaluate(() => JSON.stringify([{ ...localStorage }, { ...sessionStorage }]));
-  expect(stored.includes('one-time-state-value')).toBe(false);
+  expect(stored.includes(state)).toBe(false);
   expect(stored.includes('4242')).toBe(false);
+  expect(writesTo(writes, 'POST', '/github/complete')).toHaveLength(1);
 });
+
+for (const query of ['installation_id=4242&setup_action=install', 'state=short&installation_id=4242', 'setup_action=update']) {
+  test(`an invalid or incomplete GitHub callback (${query}) is cleared from the URL and never sent`, async ({ page }) => {
+    const writes = await stubBff(page, { reads: { '/github': answer(200, { data: { configured: true, installation: null, repositories: [] } }) } });
+    await page.goto(`/dashboard/integrations/github?${query}`);
+    await page.waitForURL((url) => url.pathname === '/dashboard/integrations/github' && url.search === '');
+    await expectPage(page, 'github');
+    expect(writesTo(writes, 'POST', '/github/complete')).toHaveLength(0);
+  });
+}
 
 test('the classic Dashboard link keeps the page query', async ({ page }) => {
   await stubReads(page);

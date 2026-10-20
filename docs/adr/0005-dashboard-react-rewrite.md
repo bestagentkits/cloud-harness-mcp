@@ -176,7 +176,12 @@ assertions never enter browser storage, TanStack Query persistence, logs,
 telemetry or error messages. The query cache is in memory only. A one-time
 reveal (a new API key, a GitHub App manifest result) lives in component state
 and is cleared on navigation, dismiss and session end, with an E2E test for
-each path. Drafts of forms that take secret values are never stored.
+each path. Drafts of forms that take secret values are never stored, read as
+follows: a multi-step wizard that has a secret field (the model profile
+wizard's provider key) may store its draft, but only through an allowlist that
+excludes every secret field and drops any other field that could carry one,
+such as a URL with user info, a query or a fragment. Single-dialog forms that
+take secret values keep no draft.
 
 ### Dialog rules
 
