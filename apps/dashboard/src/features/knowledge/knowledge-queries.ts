@@ -36,3 +36,9 @@ export function knowledgeSearchQuery(search: KnowledgeSearch & { q: string }) {
 export function knowledgeGraphQuery(projectId: string | undefined) {
   return bffQuery<unknown>(KNOWLEDGE_GRAPH_PATH, { projectId, depth: 2, maxNodes: 50 });
 }
+
+/** The one read the Knowledge page renders for these search params: the graph, a search, or the filtered list. */
+export function knowledgePageQuery(search: KnowledgeSearch & { view?: 'graph' | undefined }) {
+  if (search.view === 'graph') return knowledgeGraphQuery(search.projectId);
+  return search.q ? knowledgeSearchQuery({ ...search, q: search.q }) : knowledgeListQuery(search);
+}

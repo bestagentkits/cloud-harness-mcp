@@ -1,8 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { RESOURCE_ID_PATTERNS } from '@/app/page-registry';
-import { AGENT_ATTENTION, AGENT_STATUSES, type AgentAttention } from '@/features/agents/agent-model';
+import { AGENT_ATTENTION, AGENT_STATUSES, type AgentAttention, agentListQuery } from '@/features/agents/agent-model';
 import { AgentsPage, PROFILE_FILTER_MAX } from '@/features/agents/agents-page';
-import { warmPageRead } from '@/lib/page-read';
+import { bffQuery } from '@/lib/bff-query';
 import { compact, exact, flag, matching, oneOf, text } from '@/lib/search-params';
 
 /** `needs-attention` / `clear` as the BFF filters them; an older boolean link means "needs attention". */
@@ -19,7 +19,11 @@ export const Route = createFileRoute('/agents/')({
     parentAgentId: matching(raw, 'parentAgentId', RESOURCE_ID_PATTERNS.agentId),
     attention: attention(raw)
   }),
-  loader: (match) => warmPageRead('agents', match),
+  loaderDeps: ({ search }) => search,
+  // Preload warms the filtered list the page reads (`agentListQuery`), not the unfiltered fan-out.
+  loader: ({ context, deps, preload }) => {
+    if (preload) void context.queryClient.prefetchQuery(bffQuery<{ agents?: unknown }>('/agents', agentListQuery(deps)));
+  },
   component: AgentsRoute
 });
 

@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import { RESOURCE_ID_PATTERNS } from '@/app/page-registry';
 import { KnowledgePage } from '@/features/knowledge/knowledge-page';
 import { KNOWLEDGE_KINDS, KNOWLEDGE_SCOPES } from '@/features/knowledge/knowledge-model';
-import { warmPageRead } from '@/lib/page-read';
+import { knowledgePageQuery } from '@/features/knowledge/knowledge-queries';
 import { compact, cursor, exact, matching, oneOf, text } from '@/lib/search-params';
 
 export const Route = createFileRoute('/knowledge/')({
@@ -17,7 +17,11 @@ export const Route = createFileRoute('/knowledge/')({
     cursor: cursor(raw),
     view: oneOf(raw, 'view', ['graph'] as const)
   }),
-  loader: (match) => warmPageRead('knowledge', match),
+  loaderDeps: ({ search }) => search,
+  // Preload warms exactly the read the page renders for these filters, never the unfiltered list.
+  loader: ({ context, deps, preload }) => {
+    if (preload) void context.queryClient.prefetchQuery(knowledgePageQuery(deps));
+  },
   component: KnowledgeRoute
 });
 
