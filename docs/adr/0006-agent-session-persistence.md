@@ -309,10 +309,12 @@ Findings:
 ## Rollback
 
 - **Kill switch.** Unset `AGENT_SESSION_PERSISTENCE_ENABLED` and
-  `AGENT_DURABLE_RUNTIME_ENABLED` and restart the runner. Running agents finish,
-  `continueFrom` and durable spawns are refused with `NOT_SUPPORTED`, and
-  nothing resumes on its own. The default spawn path never reads the stored
-  data.
+  `AGENT_DURABLE_RUNTIME_ENABLED` and restart the runner. The flags are read
+  only at start, so the restart is what applies them, and it stops running
+  agents as any restart does: cancelled on a clean stop, `INTERRUPTED` after an
+  abrupt one. Afterwards `continueFrom` and durable spawns are refused with
+  `NOT_SUPPORTED`, and nothing resumes on its own. The default spawn path never
+  reads the stored data.
 - **Retention purge.** Stored sessions, receipts and durable lineage databases
   are removed by the retention in `AGENT_SESSION_RETENTION_MS` or when their
   workspace closes; no manual cleanup is needed.
@@ -320,8 +322,10 @@ Findings:
   schema from v17 to v14 with `downgradeStateSchemaToV14` in
   `apps/runner/src/principal-store.ts`, which passes through
   `downgradeStateSchemaToV16` and `downgradeStateSchemaToV15`. Each step refuses
-  while durable agents, receipts or persisted sessions exist unless data loss is
-  allowed, so the flags go off and retention runs first. `agent-sessions/` is
+  while durable agents, stored receipt text or persisted sessions exist unless
+  data loss is allowed, so the flags go off and retention runs first. Effects
+  that kept only hashes, as every effect of an agent spawned without persistence
+  or the durable engine does, do not block it. `agent-sessions/` is
   deleted after a downgrade below v17. The steps are in
   [operations](../operations.md#kill-switch-and-rollback).
 
