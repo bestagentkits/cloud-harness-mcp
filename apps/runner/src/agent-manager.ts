@@ -29,6 +29,7 @@ import {
 } from './agent-state-repository.js';
 import {
   capturePatchImages,
+  capturePreEntry,
   danglingToolCalls,
   effectErrorText,
   reconcileEffect,
@@ -36,7 +37,7 @@ import {
   writeImages,
   unknownEffectText,
   type DanglingToolCall,
-  type EffectImages,
+  type EffectDispatchState,
   type EffectStateReader
 } from './agent-effect-reconciler.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
@@ -912,9 +913,13 @@ export class AgentManager {
       await this.sendToolText(context, output.requestId, text, true);
       return;
     }
-    let images: EffectImages = { preImageSha256: null, intendedSha256: null };
+    let images: EffectDispatchState = { preImageSha256: null, intendedSha256: null };
+    const reader = this.stateReader(record, output.requestId, call.signal);
     if (output.operation === 'files_write') images = writeImages(toolInput);
-    if (output.operation === 'files_apply_patch') images = await capturePatchImages(this.stateReader(record, output.requestId, call.signal), toolInput);
+    if (output.operation === 'files_apply_patch') images = await capturePatchImages(reader, toolInput);
+    if (output.operation === 'files_delete' || output.operation === 'files_mkdir' || output.operation === 'files_move') {
+      images = { ...images, preEntry: await capturePreEntry(reader, output.operation, toolInput) };
+    }
     if (!this.repository.dispatchEffect({ ...key, fence, expectedStates, ...images, now: this.now() })) {
       await this.sendFenceLost(context, output.requestId);
       return;
@@ -987,7 +992,7 @@ export class AgentManager {
   ): Promise<{ outcome: 'APPLIED' | 'NOT_APPLIED' | 'UNKNOWN'; text: string; isError: boolean } | undefined> {
     const operation = key.kind as AgentProxyOperation;
     const reconciliation = await reconcileEffect(this.stateReader(record, key.requestId, signal), operation, toolInput, {
-      preImageSha256: effect.preImageSha256, intendedSha256: effect.intendedSha256
+      preImageSha256: effect.preImageSha256, intendedSha256: effect.intendedSha256, preEntry: effect.preEntry
     });
     if (!this.stillRunnable(record)) return undefined;
     const expectedStates = [effect.state];
@@ -1030,12 +1035,16 @@ export class AgentManager {
     const registration = `reconcile:${randomUUID()}`;
     context.proxy.set(registration, { controller, completion });
     const outcomes: AgentToolOutcome[] = [];
+    // The runtime matches outcomes by tool call ID, so an ID left unanswered more than once cannot
+    // name one call's outcome; those calls keep the generic interruption.
+    const unanswered = new Map<string, number>();
+    for (const call of calls) unanswered.set(call.toolCallId, (unanswered.get(call.toolCallId) ?? 0) + 1);
     try {
       for (const call of calls) {
         if (outcomes.length >= MAX_AGENT_TOOL_OUTCOMES || controller.signal.aborted) break;
         // A cancel that waits for this launch must not wait for further workspace reads.
         if (this.repository.findAgent(record.ownerId, record.workspaceId, record.id)?.status !== 'RUNNING') break;
-        if (call.toolCallId.length > MAX_AGENT_TOOL_OUTCOME_ID_LENGTH) continue;
+        if (call.toolCallId.length > MAX_AGENT_TOOL_OUTCOME_ID_LENGTH || unanswered.get(call.toolCallId) !== 1) continue;
         const parsed = AgentProxyOperationSchema.safeParse(call.name);
         if (!parsed.success) continue;
         const operation = parsed.data;
@@ -1062,6 +1071,18 @@ export class AgentManager {
   ): Promise<Omit<AgentToolOutcome, 'toolCallId'> | undefined> {
     const operation = key.kind as AgentProxyOperation;
     const readSafe = AGENT_PROXY_REPLAY_CLASS[operation] === 'read-safe';
+    const raw = typeof call.arguments === 'object' && call.arguments !== null && !Array.isArray(call.arguments)
+      ? call.arguments as Record<string, unknown>
+      : {};
+    const payloadHash = createHash('sha256').update(JSON.stringify({ operation, input: raw })).digest('hex');
+    // A request ID whose recorded payload differs belongs to another call (a provider reused the
+    // tool call ID), so nothing recorded for it describes this call, in any state.
+    if (payloadHash !== effect.payloadHash) {
+      return {
+        outcome: 'UNKNOWN', isError: true,
+        text: toolErrorText(`${operation} was not run: its request ID was already used by a call with a different payload`, 'CONFLICT')
+      };
+    }
     if (effect.state === 'APPLIED' || effect.state === 'REJECTED') {
       if (effect.resultJson !== null) {
         return { outcome: effect.state, isError: effect.state === 'REJECTED', text: boundedOutcomeText(operation, effect.state, effect.resultJson) };
@@ -1075,19 +1096,12 @@ export class AgentManager {
     }
     // An intent never reached the executor, and a read is safe to issue again.
     if (effect.state === 'INTENT' || readSafe) return undefined;
-    const raw = typeof call.arguments === 'object' && call.arguments !== null && !Array.isArray(call.arguments)
-      ? call.arguments as Record<string, unknown>
-      : {};
-    const payloadHash = createHash('sha256').update(JSON.stringify({ operation, input: raw })).digest('hex');
-    let toolInput: Record<string, unknown> | undefined;
-    if (payloadHash === effect.payloadHash) {
-      const parsed = TOOL_SCHEMA_BY_NAME[operation].safeParse({ ...raw, workspaceId: record.workspaceId });
-      if (parsed.success) toolInput = parsed.data as Record<string, unknown>;
+    const parsed = TOOL_SCHEMA_BY_NAME[operation].safeParse({ ...raw, workspaceId: record.workspaceId });
+    // Arguments the executor would not accept cannot be used to observe the dispatched target.
+    if (!parsed.success) {
+      return { outcome: 'UNKNOWN', isError: true, text: unknownEffectText(operation, 'the recorded arguments cannot be used to observe its target') };
     }
-    // Arguments that do not match the dispatched payload cannot be used to observe its target.
-    if (!toolInput) {
-      return { outcome: 'UNKNOWN', isError: true, text: unknownEffectText(operation, 'the transcript does not match the dispatched request') };
-    }
+    const toolInput = parsed.data as Record<string, unknown>;
     try {
       return await this.settleLostEffect(record, key, fence, toolInput, effect, signal);
     } catch {

@@ -140,7 +140,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     'AGENT_SESSION_PERSISTENCE_ENABLED',
     'AGENT_MAX_SESSION_MESSAGES',
     'AGENT_MAX_SESSION_BYTES',
-    'AGENT_SESSION_RETENTION_MS'
+    'AGENT_SESSION_RETENTION_MS',
+    'AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE'
   ].some((name) => process.env[name] !== undefined);
   const config = RunnerConfigSchema.parse({
     authMode: process.env.AUTH_MODE,
@@ -247,7 +248,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
         lookupHorizonSeconds: process.env.AGENT_LOOKUP_HORIZON_SECONDS,
         maxSessionMessages: process.env.AGENT_MAX_SESSION_MESSAGES,
         maxSessionBytes: process.env.AGENT_MAX_SESSION_BYTES,
-        sessionRetentionMs: process.env.AGENT_SESSION_RETENTION_MS
+        sessionRetentionMs: process.env.AGENT_SESSION_RETENTION_MS,
+        maxReceiptBytesPerLineage: process.env.AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE
       }
     } : undefined
   });

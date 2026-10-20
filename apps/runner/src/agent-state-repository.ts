@@ -14,6 +14,9 @@ import {
   type RunnerAgentLimits
 } from '@cloud-harness/contracts';
 import { emitAgentTerminalEvent, withEventSavepoint } from './event-outbox.js';
+import type { EffectPreEntry } from './agent-effect-reconciler.js';
+
+const EFFECT_PRE_ENTRIES: ReadonlySet<string> = new Set<EffectPreEntry>(['file', 'directory', 'absent']);
 
 const ACTIVE_STATUSES: AgentStatus[] = ['SPAWNING', 'RUNNING', 'CANCELLING'];
 const TERMINAL_STATUSES: AgentStatus[] = ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED'];
@@ -104,6 +107,8 @@ export type AgentEffectRecord = {
   replayClass: AgentProxyReplayClass | null;
   preImageSha256: string | null;
   intendedSha256: string | null;
+  /** What a delete's or mkdir's path, or a move's source, was just before dispatch, when observed. */
+  preEntry: EffectPreEntry | null;
   /** The exact tool-result text the model received, while the receipt is retained. */
   resultJson: string | null;
   resultSha256: string | null;
@@ -505,6 +510,7 @@ type EffectRow = {
   replay_class: AgentProxyReplayClass | null;
   pre_image_sha256: string | null;
   intended_sha256: string | null;
+  pre_entry: EffectPreEntry | null;
   result_json: string | null;
   result_sha256: string | null;
   result_reconciled: number;
@@ -530,6 +536,7 @@ function effectFromRow(row: EffectRow): AgentEffectRecord {
     replayClass: row.replay_class,
     preImageSha256: row.pre_image_sha256,
     intendedSha256: row.intended_sha256,
+    preEntry: row.pre_entry ?? null,
     resultJson: row.result_json,
     resultSha256: row.result_sha256,
     reconciled: row.result_reconciled === 1,
@@ -1087,18 +1094,22 @@ export class AgentStateRepository {
     expectedStates: AgentEffectState[];
     preImageSha256?: string | null;
     intendedSha256?: string | null;
+    preEntry?: EffectPreEntry | null;
     now: number;
   }): boolean {
     const preImageSha256 = optionalSha256(input.preImageSha256, 'pre-image digest');
     const intendedSha256 = optionalSha256(input.intendedSha256, 'intended post-image digest');
+    const preEntry = input.preEntry ?? null;
+    if (preEntry !== null && !EFFECT_PRE_ENTRIES.has(preEntry)) throw new HarnessError('INVALID_INPUT', 'invalid effect pre-entry');
     if (input.expectedStates.length === 0) throw new HarnessError('INVALID_INPUT', 'expected effect state set cannot be empty');
     return immediate(this.database, () => {
       if (this.isEffectWriterFenced(input.fence, ['RUNNING'])) return false;
       const placeholders = input.expectedStates.map(() => '?').join(',');
+      // The pre-entry is that of this dispatch: an earlier dispatch's observation is not carried over.
       const result = this.database.prepare(`UPDATE agent_effects SET state='DISPATCHED', runner_epoch=?, updated_at=?,
-          pre_image_sha256=COALESCE(?, pre_image_sha256), intended_sha256=COALESCE(?, intended_sha256)
+          pre_image_sha256=COALESCE(?, pre_image_sha256), intended_sha256=COALESCE(?, intended_sha256), pre_entry=?
         WHERE root_agent_id=? AND request_id=? AND kind=? AND owner_id=? AND workspace_id=? AND state IN (${placeholders})`)
-        .run(input.fence.runnerEpoch, input.now, preImageSha256, intendedSha256,
+        .run(input.fence.runnerEpoch, input.now, preImageSha256, intendedSha256, preEntry,
           input.rootAgentId, input.requestId, input.kind, input.fence.ownerId, input.fence.workspaceId, ...input.expectedStates);
       return Number(result.changes) === 1;
     });
@@ -1126,18 +1137,33 @@ export class AgentStateRepository {
     return immediate(this.database, () => {
       if (this.isEffectWriterFenced(input.fence, ['RUNNING', 'CANCELLING'])) return false;
       const placeholders = input.expectedStates.map(() => '?').join(',');
+      const stored = text !== undefined && this.retainsReceiptText(input.fence.agentId, input.rootAgentId, Buffer.byteLength(text, 'utf8'))
+        ? text
+        : null;
       const result = this.database.prepare(`UPDATE agent_effects SET state=?, updated_at=?,
           result_json=?, result_sha256=?, result_reconciled=?, executor_generation=?, retain_until=?
         WHERE root_agent_id=? AND request_id=? AND kind=? AND owner_id=? AND workspace_id=? AND state IN (${placeholders})`)
         .run(
           input.state, input.now,
-          text ?? null, text === undefined ? null : sha256Hex(text), input.receipt?.reconciled ? 1 : 0,
+          stored, text === undefined ? null : sha256Hex(text), input.receipt?.reconciled ? 1 : 0,
           text === undefined ? null : input.fence.runnerEpoch,
-          text === undefined ? null : input.now + this.limits.sessionRetentionMs,
+          stored === null ? null : input.now + this.limits.sessionRetentionMs,
           input.rootAgentId, input.requestId, input.kind, input.fence.ownerId, input.fence.workspaceId, ...input.expectedStates
         );
       return Number(result.changes) === 1;
     });
+  }
+
+  /**
+   * Whether a receipt's result text is stored, or only its hash. Only a continuation can replay a
+   * stored result to the model, so only an agent spawned with session persistence stores text, and
+   * its lineage stops at the configured byte cap; past it a repeat behaves as after retention.
+   */
+  private retainsReceiptText(agentId: string, rootAgentId: string, bytes: number): boolean {
+    if (!this.database.prepare('SELECT 1 FROM agent_sessions WHERE agent_id=?').get(agentId)) return false;
+    const held = this.database.prepare(`SELECT COALESCE(SUM(length(CAST(result_json AS BLOB))), 0) AS bytes FROM agent_effects
+      WHERE root_agent_id=? AND result_json IS NOT NULL`).get(rootAgentId) as { bytes: number };
+    return Number(held.bytes) + bytes <= this.limits.maxReceiptBytesPerLineage;
   }
 
   /** Clears receipt content past its retention; the effect state stays, so a repeat is never re-issued. */

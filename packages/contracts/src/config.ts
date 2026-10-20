@@ -98,7 +98,9 @@ export const RunnerAgentLimitsSchema = z.object({
   // record (8 MiB, which also carries a prompt of up to 256 KiB), so the byte bound stays below it.
   maxSessionMessages: positiveBoundedInteger(MAX_AGENT_SESSION_MESSAGES, 2_000),
   maxSessionBytes: positiveBoundedInteger(MAX_AGENT_SESSION_BYTES, 7_340_032),
-  sessionRetentionMs: positiveBoundedInteger(31_536_000_000, 604_800_000)
+  sessionRetentionMs: positiveBoundedInteger(31_536_000_000, 604_800_000),
+  // Stored tool-result bytes (receipts) one agent lineage may hold; past it only hashes are kept.
+  maxReceiptBytesPerLineage: positiveBoundedInteger(1_073_741_824, 33_554_432)
 }).strict().superRefine((limits, context) => {
   if (limits.minTtlSeconds > limits.maxTtlSeconds) {
     context.addIssue({ code: 'custom', path: ['minTtlSeconds'], message: 'minimum agent TTL cannot exceed maximum agent TTL' });
