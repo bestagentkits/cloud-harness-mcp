@@ -1,9 +1,10 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import getTags from 'semantic-release/lib/branches/get-tags.js';
 import getLastRelease from 'semantic-release/lib/get-last-release.js';
+import { template } from 'lodash-es';
 import { afterEach, describe, expect, it } from 'vitest';
 import { findTagsMissingChannelNotes, prereleaseLane, repairReleaseChannelNotes } from '../scripts/repair-release-channel-notes.mjs';
 
@@ -94,13 +95,46 @@ describe('release channel note repair', () => {
     run(clone, 'push', '--quiet', 'origin', 'refs/notes/semantic-release-v1.1.0-beta.2');
     run(clone, 'update-ref', '-d', 'refs/notes/semantic-release-v1.1.0-beta.2');
 
-    expect(repairReleaseChannelNotes({ cwd: clone, branch: 'dev', push: false, log: () => {} })).toEqual([]);
+    expect(repairReleaseChannelNotes({ cwd: clone, branch: 'dev', dryRun: true, log: () => {} })).toEqual([]);
+  });
+
+  it('reports without writing in dry-run mode', () => {
+    const { clone } = createLane();
+    const messages: string[] = [];
+
+    expect(repairReleaseChannelNotes({ cwd: clone, branch: 'dev', dryRun: true, log: (message: string) => messages.push(message) })).toEqual(['v1.1.0-beta.2']);
+    expect(messages).toEqual(['v1.1.0-beta.2 has no beta channel note; a release run restores it.']);
+    expect(findTagsMissingChannelNotes({ cwd: clone, branch: 'dev' }).tags).toEqual(['v1.1.0-beta.2']);
+  });
+
+  it('stops the release run that restored a note and lets the next one through', () => {
+    const { clone } = createLane();
+    const script = join(process.cwd(), 'scripts/repair-release-channel-notes.mjs');
+    const verify = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { cwd: clone, encoding: 'utf8' });
+
+    expect(verify('dev', 'true').status).toBe(0);
+    // lodash renders an unset dryRun as an empty string, so a real run passes no flag.
+    const repairing = verify('dev');
+    expect(repairing.status).toBe(1);
+    expect(repairing.stderr).toContain('stops before committing');
+    expect(verify('dev', 'false').status).toBe(0);
+    expect(verify('main', 'false').status).toBe(0);
+  });
+
+  it('wires the repair into the release config as the exec plugin renders it', () => {
+    const config = JSON.parse(readFileSync(join(process.cwd(), '.releaserc.json'), 'utf8'));
+    const exec = config.plugins.find((plugin: unknown) => Array.isArray(plugin) && plugin[0] === '@semantic-release/exec');
+    const render = (dryRun?: boolean) => template(exec[1].verifyConditionsCmd)({ branch: { name: 'dev' }, options: { dryRun } });
+
+    expect(render()).toBe('node scripts/repair-release-channel-notes.mjs dev ');
+    expect(render(false)).toBe('node scripts/repair-release-channel-notes.mjs dev false');
+    expect(render(true)).toBe('node scripts/repair-release-channel-notes.mjs dev true');
   });
 
   it('leaves stable release branches untouched', () => {
     const { clone } = createLane();
 
-    expect(repairReleaseChannelNotes({ cwd: clone, branch: 'main', push: false, log: () => {} })).toEqual([]);
+    expect(repairReleaseChannelNotes({ cwd: clone, branch: 'main', dryRun: true, log: () => {} })).toEqual([]);
     expect(findTagsMissingChannelNotes({ cwd: clone, branch: 'dev' }).tags).toEqual(['v1.1.0-beta.2']);
   });
 });

@@ -180,10 +180,23 @@ release commits.
 semantic-release records each prerelease tag's channel in a per-tag git note
 and pushes the tag before the note. A prerelease tag whose note never reached
 the remote is invisible to the `dev` lane, which would recompute the same
-version and fail with `tag ... already exists` on every run. The Release
-workflow therefore runs
+version and fail with `tag ... already exists` on every run. The release
+configuration therefore runs
 [`scripts/repair-release-channel-notes.mjs`](../scripts/repair-release-channel-notes.mjs)
-first; it restores and pushes the missing note so the lane resumes at the next
-`-beta.N`. The interrupted run never reached its publish step, so the repaired
-tag has no GitHub release; its notes stay in `CHANGELOG.md` unless the owner
-creates that prerelease by hand.
+as its first verify step. semantic-release has already chosen the last release
+by then, so a run that restores a note stops before committing anything, and
+the next release run on that branch resumes at the next `-beta.N`. That next
+run starts after the next push to the branch passes CI, or when the stopped
+Release run is re-run while the branch tip is unchanged. The stopped run also
+opens semantic-release's failing-release issue, which the next successful
+release closes. The run that
+lost the note never reached its publish step, so the repaired tag has no GitHub
+release; its notes stay in `CHANGELOG.md` unless the owner creates that
+prerelease by hand.
+
+Release is a `workflow_run` workflow, so GitHub always runs the copy of
+[`release.yml`](../.github/workflows/release.yml) on the default branch, `main`.
+A change to that file reaches `dev` releases only after it lands on `main`;
+release behaviour that `dev` must pick up at once belongs in
+[`.releaserc.json`](../.releaserc.json) or the scripts it calls, which come
+from the released commit's own checkout.
