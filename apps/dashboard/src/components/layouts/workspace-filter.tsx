@@ -25,7 +25,7 @@ export function WorkspaceFilter({ inputRef }: { inputRef: RefObject<HTMLInputEle
     void navigate({ to: '/workspaces', search: q ? { q } : {} });
   }
   return (
-    <form role="search" aria-label="Filter workspaces" onSubmit={submit} className="relative hidden sm:block">
+    <form role="search" aria-label="Filter workspaces" onSubmit={submit} className="relative hidden w-56 min-w-0 shrink sm:block">
       <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
       <label htmlFor="workspace-filter-input" className="sr-only">Filter workspaces</label>
       <input
@@ -38,7 +38,7 @@ export function WorkspaceFilter({ inputRef }: { inputRef: RefObject<HTMLInputEle
         onChange={(event) => setValue(event.target.value)}
         placeholder="Filter workspaces"
         aria-keyshortcuts="/"
-        className="h-8 w-56 rounded-md border bg-background pr-2 pl-8 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        className="h-8 w-full rounded-md border bg-background pr-2 pl-8 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
       />
     </form>
   );
