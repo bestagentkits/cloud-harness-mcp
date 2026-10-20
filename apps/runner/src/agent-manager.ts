@@ -31,6 +31,7 @@ import {
 import {
   capturePatchImages,
   capturePreEntry,
+  effectPayloadHash,
   danglingToolCalls,
   effectErrorText,
   reconcileEffect,
@@ -934,7 +935,7 @@ export class AgentManager {
     const raw = typeof output.input === 'object' && output.input !== null && !Array.isArray(output.input)
       ? output.input as Record<string, unknown>
       : {};
-    const payloadHash = createHash('sha256').update(JSON.stringify({ operation: output.operation, input: raw })).digest('hex');
+    const payloadHash = effectPayloadHash(output.operation, raw);
     const replayClass = AGENT_PROXY_REPLAY_CLASS[output.operation];
     const fence: AgentEffectFence = {
       ownerId: record.ownerId, workspaceId: record.workspaceId, agentId: record.id,
@@ -1003,7 +1004,10 @@ export class AgentManager {
     const reader = this.stateReader(record, output.requestId, call.signal);
     if (output.operation === 'files_write') images = writeImages(toolInput);
     if (output.operation === 'files_apply_patch') images = await capturePatchImages(reader, toolInput);
-    if (output.operation === 'files_delete' || output.operation === 'files_mkdir' || output.operation === 'files_move') {
+    // The target's state before a delete, mkdir, or move only settles a lost outcome, which only a
+    // continuation reconciles, so an agent that records no session skips that extra executor read.
+    const observesEntry = output.operation === 'files_delete' || output.operation === 'files_mkdir' || output.operation === 'files_move';
+    if (observesEntry && this.repository.recordsSession(record.id)) {
       images = { ...images, preEntry: await capturePreEntry(reader, output.operation, toolInput) };
     }
     if (!this.repository.dispatchEffect({ ...key, fence, expectedStates, ...images, now: this.now() })) {
@@ -1160,14 +1164,14 @@ export class AgentManager {
     const raw = typeof call.arguments === 'object' && call.arguments !== null && !Array.isArray(call.arguments)
       ? call.arguments as Record<string, unknown>
       : {};
-    const payloadHash = createHash('sha256').update(JSON.stringify({ operation, input: raw })).digest('hex');
-    // A request ID whose recorded payload differs belongs to another call (a provider reused the
-    // tool call ID), so nothing recorded for it describes this call, in any state.
-    if (payloadHash !== effect.payloadHash) {
-      return {
-        outcome: 'UNKNOWN', isError: true,
-        text: toolErrorText(`${operation} was not run: its request ID was already used by a call with a different payload`, 'CONFLICT')
-      };
+    // A recorded payload that differs from this call's arguments may belong to another call (a
+    // provider reused the tool call ID) or to this call after a coercion the digest does not model,
+    // so nothing recorded is returned for it, in any state, and it is never reported as not run:
+    // an intent never reached the executor and a read is safe to repeat, so both keep the generic
+    // interruption, and any other outcome is unknown.
+    if (effectPayloadHash(operation, raw) !== effect.payloadHash) {
+      if (effect.state === 'INTENT' || readSafe) return undefined;
+      return { outcome: 'UNKNOWN', isError: true, text: unknownEffectText(operation, 'the recorded arguments do not match the dispatched request') };
     }
     if (effect.state === 'APPLIED' || effect.state === 'REJECTED') {
       if (effect.resultJson !== null) {
@@ -1182,12 +1186,11 @@ export class AgentManager {
     }
     // An intent never reached the executor, and a read is safe to issue again.
     if (effect.state === 'INTENT' || readSafe) return undefined;
-    const parsed = TOOL_SCHEMA_BY_NAME[operation].safeParse({ ...raw, workspaceId: record.workspaceId });
+    const toolInput = observableToolInput(operation, raw, record.workspaceId);
     // Arguments the executor would not accept cannot be used to observe the dispatched target.
-    if (!parsed.success) {
+    if (!toolInput) {
       return { outcome: 'UNKNOWN', isError: true, text: unknownEffectText(operation, 'the recorded arguments cannot be used to observe its target') };
     }
-    const toolInput = parsed.data as Record<string, unknown>;
     try {
       return await this.settleLostEffect(record, key, fence, toolInput, effect, signal);
     } catch {
@@ -1715,6 +1718,31 @@ function spawnData(record: AgentRecord, replayed: boolean) {
 
 function messageData(message: { agentId: string; idempotencyKey: string; state: string }, replayed: boolean) {
   return { agentId: message.agentId, idempotencyKey: message.idempotencyKey, state: message.state, replayed };
+}
+
+/**
+ * A transcript call's raw arguments as the executor input the runtime dispatched for it. The
+ * runtime drops optional nulls and coerces a string the schema types as a boolean or number; the
+ * caller has already matched the recorded payload digest, so redoing those steps recovers the
+ * dispatched input. Arguments still not accepted give undefined.
+ */
+function observableToolInput(operation: AgentProxyOperation, raw: Record<string, unknown>, workspaceId: string): Record<string, unknown> | undefined {
+  const schema = TOOL_SCHEMA_BY_NAME[operation];
+  const input: Record<string, unknown> = Object.fromEntries(Object.entries(raw).filter(([, value]) => value !== null));
+  const first = schema.safeParse({ ...input, workspaceId });
+  if (first.success) return first.data as Record<string, unknown>;
+  for (const issue of first.error.issues) {
+    const key = issue.path[0];
+    const value = typeof key === 'string' && issue.path.length === 1 && issue.code === 'invalid_type' ? input[key] : undefined;
+    if (typeof key !== 'string' || typeof value !== 'string') continue;
+    const expected = (issue as { expected?: unknown }).expected;
+    if (expected === 'boolean' && (value === 'true' || value === 'false')) input[key] = value === 'true';
+    else if ((expected === 'number' || expected === 'int' || expected === 'integer') && value.trim() !== '' && Number.isFinite(Number(value))) {
+      input[key] = Number(value);
+    }
+  }
+  const second = schema.safeParse({ ...input, workspaceId });
+  return second.success ? second.data as Record<string, unknown> : undefined;
 }
 
 function toolErrorText(message: string, code = 'TOOL_ERROR'): string {
