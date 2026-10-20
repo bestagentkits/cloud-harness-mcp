@@ -17,6 +17,12 @@ export type EntryObservation =
   | { kind: 'absent' }
   | { kind: 'unknown' };
 
+/** What a destructive operation's target (a move's source) was before dispatch, when it could be observed. */
+export type EffectPreEntry = 'file' | 'directory' | 'absent';
+
+/** The state recorded at dispatch that a later reconciliation compares the workspace against. */
+export type EffectDispatchState = EffectImages & { preEntry?: EffectPreEntry | null };
+
 export type EffectReconciliation =
   | { outcome: 'APPLIED'; observed: Record<string, unknown> }
   | { outcome: 'NOT_APPLIED'; reason: string }
@@ -99,17 +105,38 @@ export async function observeEntry(read: EffectStateReader, path: string): Promi
 }
 
 /**
+ * Observes, before dispatch, the entry a delete, mkdir, or move acts on (a move's source), so a
+ * lost outcome is judged by a change from that state rather than by the end state alone. Other
+ * operations, and an entry that cannot be observed, record nothing.
+ */
+export async function capturePreEntry(
+  read: EffectStateReader,
+  operation: AgentProxyOperation,
+  toolInput: Record<string, unknown>
+): Promise<EffectPreEntry | null> {
+  const target = operation === 'files_move'
+    ? stringField(toolInput, 'source')
+    : operation === 'files_delete' || operation === 'files_mkdir' ? stringField(toolInput, 'path') : undefined;
+  if (target === undefined) return null;
+  const observed = await observeEntry(read, target);
+  return observed.kind === 'unknown' ? null : observed.kind;
+}
+
+/**
  * Decides a mutation's outcome from observed workspace state instead of issuing it again. A
  * conditional write is applied when its target holds the intended post-image and not applied when
- * it still holds the pre-image; a destructive operation is applied only when its source is gone
- * (and, for a move, its destination exists). Anything else is unknown.
+ * it still holds the pre-image. A destructive operation is applied only when the workspace changed
+ * from the state recorded at dispatch: a delete whose path existed and is gone, an mkdir whose
+ * path was absent and is now a directory, a move whose source existed and left for its
+ * destination. An end state that would also hold had the operation failed is unknown.
  */
 export async function reconcileEffect(
   read: EffectStateReader,
   operation: AgentProxyOperation,
   toolInput: Record<string, unknown>,
-  images: EffectImages
+  images: EffectDispatchState
 ): Promise<EffectReconciliation> {
+  const preEntry = images.preEntry ?? null;
   const path = stringField(toolInput, 'path');
   switch (operation) {
     case 'files_write':
@@ -128,14 +155,20 @@ export async function reconcileEffect(
     case 'files_mkdir': {
       if (path === undefined) return { outcome: 'UNKNOWN', reason: 'the effect has no target path' };
       const observed = await observeEntry(read, path);
-      if (observed.kind === 'directory') return { outcome: 'APPLIED', observed: { path } };
       if (observed.kind === 'absent') return { outcome: 'NOT_APPLIED', reason: 'the directory does not exist' };
+      if (observed.kind === 'directory') {
+        if (preEntry === 'absent') return { outcome: 'APPLIED', observed: { path } };
+        return { outcome: 'UNKNOWN', reason: 'the directory exists, but it was not recorded as absent before the call' };
+      }
       return { outcome: 'UNKNOWN', reason: 'the target is not a directory' };
     }
     case 'files_delete': {
       if (path === undefined) return { outcome: 'UNKNOWN', reason: 'the effect has no target path' };
       const observed = await observeEntry(read, path);
-      if (observed.kind === 'absent') return { outcome: 'APPLIED', observed: { path } };
+      if (observed.kind === 'absent') {
+        if (preEntry === 'file' || preEntry === 'directory') return { outcome: 'APPLIED', observed: { path } };
+        return { outcome: 'UNKNOWN', reason: 'the target is gone, but it was not recorded as present before the call' };
+      }
       return { outcome: 'UNKNOWN', reason: 'the target still exists or cannot be observed' };
     }
     case 'files_move': {
@@ -144,7 +177,8 @@ export async function reconcileEffect(
       if (source === undefined || destination === undefined) return { outcome: 'UNKNOWN', reason: 'the effect has no source or destination' };
       const [from, to] = [await observeEntry(read, source), await observeEntry(read, destination)];
       if (from.kind === 'absent' && (to.kind === 'file' || to.kind === 'directory')) {
-        return { outcome: 'APPLIED', observed: { source, destination } };
+        if (preEntry === 'file' || preEntry === 'directory') return { outcome: 'APPLIED', observed: { source, destination } };
+        return { outcome: 'UNKNOWN', reason: 'the source is gone, but it was not recorded as present before the call' };
       }
       return { outcome: 'UNKNOWN', reason: 'the source still exists or the destination is missing' };
     }
@@ -170,49 +204,59 @@ export function effectRequestId(toolCallId: string, index: number): string {
   return index === 0 ? base : `call_${sha256Hex(`${base}#${index}`).slice(0, 32)}`;
 }
 
+/** One tool call block of a transcript with the proxy request ID derived for it. */
+export type TranscriptToolCall = { toolCallId: string; name: string; arguments: unknown; requestId: string };
+
 /**
- * Finds the tool calls a transcript left without a result, in transcript order. The runtime closes
- * each of them when it replays the transcript, so the result count of a call ID includes those
- * closures, which keeps the derived request IDs equal to the ones the runtime used.
+ * Every tool call block of a transcript, in order, with its request ID. A block's use index is the
+ * number of earlier tool call blocks in the transcript with the same ID, whether or not Pi executed
+ * them, so the derivation depends on the recorded transcript alone. It must stay identical to the
+ * derivation in apps/agent-runtime/src/proxy-tools.ts; both sides pin it with the same test vector.
  */
-export function danglingToolCalls(messages: readonly unknown[]): DanglingToolCall[] {
-  const results = new Map<string, number>();
-  const counted = (id: string) => results.get(id) ?? 0;
-  const dangling: DanglingToolCall[] = [];
-  let pending = new Map<string, DanglingToolCall>();
-  const closePending = () => {
-    for (const call of pending.values()) {
-      dangling.push(call);
-      results.set(call.toolCallId, counted(call.toolCallId) + 1);
-    }
-    pending = new Map();
-  };
-  for (const message of messages) {
+export function transcriptToolCalls(messages: readonly unknown[]): Array<TranscriptToolCall & { message: number }> {
+  const seen = new Map<string, number>();
+  const calls: Array<TranscriptToolCall & { message: number }> = [];
+  for (const [index, message] of messages.entries()) {
     if (typeof message !== 'object' || message === null) continue;
-    const { role, toolCallId, content } = message as { role?: unknown; toolCallId?: unknown; content?: unknown };
-    if (role === 'toolResult') {
-      if (typeof toolCallId === 'string') {
-        pending.delete(toolCallId);
-        results.set(toolCallId, counted(toolCallId) + 1);
-      }
-      continue;
-    }
-    closePending();
+    const { role, content } = message as { role?: unknown; content?: unknown };
     if (role !== 'assistant' || !Array.isArray(content)) continue;
-    const uses = new Map<string, number>();
     for (const block of content as unknown[]) {
       if (typeof block !== 'object' || block === null) continue;
       const { type, id, name, arguments: args } = block as { type?: unknown; id?: unknown; name?: unknown; arguments?: unknown };
       if (type !== 'toolCall' || typeof id !== 'string') continue;
-      const use = uses.get(id) ?? 0;
-      uses.set(id, use + 1);
-      pending.set(id, {
-        toolCallId: id, name: typeof name === 'string' ? name : 'unknown', arguments: args,
-        requestId: effectRequestId(id, counted(id) + use)
-      });
+      const use = seen.get(id) ?? 0;
+      seen.set(id, use + 1);
+      calls.push({ toolCallId: id, name: typeof name === 'string' ? name : 'unknown', arguments: args, requestId: effectRequestId(id, use), message: index });
     }
   }
-  closePending();
+  return calls;
+}
+
+/**
+ * Finds the tool calls a transcript left without a result, in transcript order: a call is
+ * answered by a tool result for its ID that follows its assistant message before the next
+ * non-result message, which is how the runtime pairs them when it replays the transcript.
+ */
+export function danglingToolCalls(messages: readonly unknown[]): DanglingToolCall[] {
+  const byMessage = new Map<number, TranscriptToolCall[]>();
+  for (const { message, ...call } of transcriptToolCalls(messages)) {
+    byMessage.set(message, [...(byMessage.get(message) ?? []), call]);
+  }
+  const dangling: DanglingToolCall[] = [];
+  let pending: TranscriptToolCall[] = [];
+  for (const [index, message] of messages.entries()) {
+    const { role, toolCallId } = typeof message === 'object' && message !== null
+      ? message as { role?: unknown; toolCallId?: unknown }
+      : {};
+    if (role === 'toolResult') {
+      const answered = pending.findIndex((call) => call.toolCallId === toolCallId);
+      if (answered >= 0) pending.splice(answered, 1);
+      continue;
+    }
+    dangling.push(...pending);
+    pending = [...(byMessage.get(index) ?? [])];
+  }
+  dangling.push(...pending);
   return dangling;
 }
 

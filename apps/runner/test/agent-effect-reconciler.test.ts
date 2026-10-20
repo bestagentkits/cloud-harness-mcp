@@ -6,8 +6,10 @@ import {
   danglingToolCalls,
   effectErrorText,
   effectRequestId,
+  capturePreEntry,
   observeEntry,
   reconcileEffect,
+  transcriptToolCalls,
   writeImages,
   type EffectStateReader
 } from '../src/agent-effect-reconciler.js';
@@ -50,10 +52,37 @@ describe('unanswered tool calls of a transcript', () => {
     expect(danglingToolCalls([null, 'text', { role: 'assistant', content: 'plain' }])).toEqual([]);
   });
 
-  it('counts earlier results and replay closures of a repeated call ID, as the runtime does', () => {
-    // The first use was answered, the second was closed by replay, so the third is use index 2.
+  it('indexes a repeated call ID by the earlier tool call blocks that carry it', () => {
     const calls = danglingToolCalls([user, assistant(['x', 'files_write']), result('x'), user, assistant(['x', 'files_write']), user, assistant(['x', 'files_mkdir'])]);
     expect(calls.map((call) => call.requestId)).toEqual([effectRequestId('x', 1), effectRequestId('x', 2)]);
+  });
+
+  it('derives the same request IDs as the agent runtime for repeated, empty, and unexecuted call IDs', () => {
+    const call = (id: string, name: string, args: Record<string, unknown>) => ({ type: 'toolCall', id, name, arguments: args });
+    const answered = (id: string, isError = false) => ({ role: 'toolResult', toolCallId: id, toolName: 'files_read', content: [], isError });
+    // The same vector pins the runtime's derivation in apps/agent-runtime/test/agent-worker.test.ts.
+    const transcript = [
+      { role: 'user', content: [{ type: 'text', text: 'task' }] },
+      { role: 'assistant', content: [
+        call('call_0', 'files_write', { path: 'a.txt', content: '1' }),
+        call('call_0', 'files_read', { path: 'b.txt' }),
+        call('', 'files_read', { path: 'c.txt' })
+      ] },
+      // Pi rejected the first call's arguments without executing it; it is still a recorded call.
+      answered('call_0', true), answered('call_0'), answered(''),
+      { role: 'assistant', content: [
+        call('call_0', 'files_write', { path: 'a.txt', content: '2' }),
+        call('', 'files_read', { path: 'd.txt' }),
+        call('bad id', 'files_read', { path: 'e.txt' })
+      ] }
+    ];
+    const expected = [
+      'call_0', 'call_801178adf4f55d2756ae10d7449b803c', 'call_e3b0c44298fc1c149afbf4c8996fb924',
+      'call_d8d9e880ebc0b0b5b0665a12b803d76f', 'call_b8e3852dae73d75c43557bb87f0afba9', 'call_4b2d2ff66c98b2a1e6f08bdcdf4a04a7'
+    ];
+    expect(transcriptToolCalls(transcript).map((item) => item.requestId)).toEqual(expected);
+    // The last message's calls are unanswered, and keep the IDs the runtime proxied them under.
+    expect(danglingToolCalls(transcript).map((item) => item.requestId)).toEqual(expected.slice(3));
   });
 });
 
@@ -92,14 +121,42 @@ describe('agent effect reconciler', () => {
     expect(await reconcileEffect(read, 'files_apply_patch', { path: 'p.txt' }, images)).toMatchObject({ outcome: 'NOT_APPLIED' });
     expect(await reconcileEffect(read, 'files_write', { path: 'dest.txt' }, images)).toMatchObject({ outcome: 'UNKNOWN' });
     expect(await reconcileEffect(read, 'files_write', { path: 'missing.txt' }, images)).toMatchObject({ outcome: 'UNKNOWN' });
-    expect(await reconcileEffect(read, 'files_mkdir', { path: 'made' }, images)).toMatchObject({ outcome: 'APPLIED' });
+    const absent = { ...images, preEntry: 'absent' as const };
+    const present = { ...images, preEntry: 'file' as const };
+    expect(await reconcileEffect(read, 'files_mkdir', { path: 'made' }, absent)).toMatchObject({ outcome: 'APPLIED' });
     expect(await reconcileEffect(read, 'files_mkdir', { path: 'missing' }, images)).toMatchObject({ outcome: 'NOT_APPLIED' });
-    expect(await reconcileEffect(read, 'files_mkdir', { path: 'w.txt' }, images)).toMatchObject({ outcome: 'UNKNOWN' });
-    expect(await reconcileEffect(read, 'files_delete', { path: 'gone.txt' }, images)).toMatchObject({ outcome: 'APPLIED' });
-    expect(await reconcileEffect(read, 'files_delete', { path: 'w.txt' }, images)).toMatchObject({ outcome: 'UNKNOWN' });
-    expect(await reconcileEffect(read, 'files_move', { source: 'src.txt', destination: 'dest.txt' }, images)).toMatchObject({ outcome: 'APPLIED' });
-    expect(await reconcileEffect(read, 'files_move', { source: 'w.txt', destination: 'dest.txt' }, images)).toMatchObject({ outcome: 'UNKNOWN' });
-    expect(await reconcileEffect(read, 'files_move', { source: 'src.txt', destination: 'nowhere.txt' }, images)).toMatchObject({ outcome: 'UNKNOWN' });
+    expect(await reconcileEffect(read, 'files_mkdir', { path: 'w.txt' }, absent)).toMatchObject({ outcome: 'UNKNOWN' });
+    expect(await reconcileEffect(read, 'files_delete', { path: 'gone.txt' }, present)).toMatchObject({ outcome: 'APPLIED' });
+    expect(await reconcileEffect(read, 'files_delete', { path: 'w.txt' }, present)).toMatchObject({ outcome: 'UNKNOWN' });
+    expect(await reconcileEffect(read, 'files_move', { source: 'src.txt', destination: 'dest.txt' }, present)).toMatchObject({ outcome: 'APPLIED' });
+    expect(await reconcileEffect(read, 'files_move', { source: 'w.txt', destination: 'dest.txt' }, present)).toMatchObject({ outcome: 'UNKNOWN' });
+    expect(await reconcileEffect(read, 'files_move', { source: 'src.txt', destination: 'nowhere.txt' }, present)).toMatchObject({ outcome: 'UNKNOWN' });
+  });
+
+  it('reports a destructive end state that would also hold had the call failed as unknown, not applied', async () => {
+    const read = reader({ 'dest.txt': 'there already' }, ['made']);
+    const images = { preImageSha256: null, intendedSha256: null };
+    // An mkdir of a directory that already existed would have failed; so would a delete or a move
+    // whose path or source was already gone. Without a recorded pre-entry nothing is assumed.
+    for (const preEntry of ['directory', 'file', null] as const) {
+      expect(await reconcileEffect(read, 'files_mkdir', { path: 'made' }, { ...images, preEntry })).toMatchObject({ outcome: 'UNKNOWN' });
+    }
+    for (const preEntry of ['absent', null] as const) {
+      expect(await reconcileEffect(read, 'files_delete', { path: 'gone.txt' }, { ...images, preEntry })).toMatchObject({ outcome: 'UNKNOWN' });
+      expect(await reconcileEffect(read, 'files_move', { source: 'src.txt', destination: 'dest.txt' }, { ...images, preEntry }))
+        .toMatchObject({ outcome: 'UNKNOWN' });
+    }
+    expect(await reconcileEffect(read, 'files_delete', { path: 'made' }, images)).toMatchObject({ outcome: 'UNKNOWN' });
+  });
+
+  it('records the pre-entry of a delete, mkdir, or move source before dispatch', async () => {
+    const read = reader({ 'a.txt': 'a' }, ['dir']);
+    expect(await capturePreEntry(read, 'files_delete', { path: 'a.txt' })).toBe('file');
+    expect(await capturePreEntry(read, 'files_delete', { path: 'dir' })).toBe('directory');
+    expect(await capturePreEntry(read, 'files_mkdir', { path: 'new' })).toBe('absent');
+    expect(await capturePreEntry(read, 'files_move', { source: 'a.txt', destination: 'b.txt' })).toBe('file');
+    expect(await capturePreEntry(read, 'files_write', { path: 'a.txt', content: 'x' })).toBeNull();
+    expect(await capturePreEntry(async () => { throw new Error('gone'); }, 'files_delete', { path: 'a.txt' })).toBeNull();
   });
 
   it('formats effect errors as the tool result envelope', () => {

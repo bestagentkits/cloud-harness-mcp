@@ -30,6 +30,7 @@ import {
 } from './agent-state-repository.js';
 import {
   capturePatchImages,
+  capturePreEntry,
   danglingToolCalls,
   effectErrorText,
   reconcileEffect,
@@ -37,7 +38,7 @@ import {
   writeImages,
   unknownEffectText,
   type DanglingToolCall,
-  type EffectImages,
+  type EffectDispatchState,
   type EffectStateReader
 } from './agent-effect-reconciler.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
@@ -96,6 +97,17 @@ const AGENT_OPERATIONS: Readonly<Partial<Record<RunnerOperation, true>>> = {
 const terminalStatuses = new Set<AgentStatus>(AGENT_TERMINAL_STATUSES);
 /** Mirrors the agent runtime's `start` record prompt bound (`apps/agent-runtime/src/protocol-schemas.ts`). */
 const AGENT_START_PROMPT_MAX_BYTES = 256 * 1024;
+/** Room kept in a start record for every field other than the prompt and the replayed session. */
+const START_RECORD_FIXED_RESERVE_BYTES = 16 * 1024;
+
+/**
+ * Bytes left in a start record after the replayed session (each stored message's JSON plus its
+ * array separator) and the JSON-encoded prompt. Negative means the record cannot be sent.
+ */
+function startRecordHeadroom(log: { bytes: number; messageCount: number }, prompt: string): number {
+  return MAX_PROTOCOL_RECORD_BYTES - START_RECORD_FIXED_RESERVE_BYTES
+    - log.bytes - log.messageCount - Buffer.byteLength(JSON.stringify(prompt), 'utf8');
+}
 type TerminalAgentStatus = 'CANCELLED' | 'TIMED_OUT' | 'LIMIT_EXCEEDED' | 'INTERRUPTED' | 'FAILED' | 'SUCCEEDED';
 
 export type AgentToolExecutor = (input: {
@@ -422,11 +434,21 @@ export class AgentManager {
       ...(this.config.sessionPersistenceEnabled || runtime === 'pi-durable' ? {
         session: continueFrom === undefined ? {} : {
           continuedFrom: continueFrom,
-          admitContinuation: (predecessor: AgentRecord) => {
+          admitContinuation: (predecessor: AgentRecord, log: { bytes: number; messageCount: number }) => {
             try {
               this.profile(predecessor.profileId, ownerId);
             } catch {
               throw new HarnessError('CONFLICT', 'the model profile of the agent to continue is no longer enabled', 409, false);
+            }
+            // The replayed log and the prompt travel in one start record, so a continuation that
+            // cannot fit is refused here instead of failing at launch.
+            if (startRecordHeadroom(log, prompt) < 0) {
+              throw new HarnessError(
+                'LIMIT_EXCEEDED',
+                'the continued session and prompt exceed the agent start record limit; shorten the prompt or start a fresh agent',
+                413,
+                false
+              );
             }
           }
         }
@@ -464,7 +486,12 @@ export class AgentManager {
    * composer's absolute bound. What was injected, skipped, or truncated is recorded as a bounded
    * `repository_context` log event that carries paths and digests but never document content.
    */
-  private async bootstrapPrompt(record: AgentRecord, prompt: string, repositoryContext: AgentRepositoryContext): Promise<string> {
+  private async bootstrapPrompt(
+    record: AgentRecord,
+    prompt: string,
+    repositoryContext: AgentRepositoryContext,
+    session?: { bytes: number; messages: unknown[] }
+  ): Promise<string> {
     if (repositoryContext === 'none' || !this.dependencies.repositoryGuidance) return prompt;
     let resolved: Awaited<ReturnType<AgentRepositoryGuidance>>;
     try {
@@ -485,9 +512,12 @@ export class AgentManager {
       // The gateway reserves one input token per request-body byte and every model turn re-sends the
       // first message, so guidance and task together take at most a quarter of the input budget,
       // and never pass the runtime's start-record prompt bound once the block framing is added.
+      // A replayed session shares the start record, so guidance also gets only the room it leaves,
+      // divided by the worst-case JSON escaping expansion.
       budgetBytes: Math.max(0, Math.min(
         Math.floor(record.budget.maxInputTokens / 4) - promptBytes,
-        AGENT_START_PROMPT_MAX_BYTES - promptBytes - 1_024
+        AGENT_START_PROMPT_MAX_BYTES - promptBytes - 1_024,
+        session ? Math.floor(startRecordHeadroom({ bytes: session.bytes, messageCount: session.messages.length }, prompt) / 6) : Infinity
       ))
     });
     const event = { ...composed.report, snapshotReused: resolved.reused };
@@ -531,15 +561,15 @@ export class AgentManager {
       // A cancel that landed while this launch waited owns the cleanup; it waits for this launch,
       // so stop before any lease or container exists.
       if (!this.stillSpawning(record)) return;
-      // Guidance is composed before any lease or container exists, so an agent never starts its
-      // first turn without the repository's applicable guidance, and a failed scan costs nothing.
-      const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext);
-      if (!this.stillSpawning(record)) return;
       // A persisting agent always receives its log, empty for a fresh one, and it is verified
       // before any lease exists so a corrupted log costs nothing.
       const sessionLog = record.runtime === 'pi-coding' && this.repository.findSession(record.id)
         ? this.repository.loadSessionLog(record.id, record.generation)
         : undefined;
+      // Guidance is composed before any lease or container exists, so an agent never starts its
+      // first turn without the repository's applicable guidance, and a failed scan costs nothing.
+      const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext, sessionLog);
+      if (!this.stillSpawning(record)) return;
       // The engine session is opened before any lease exists: for the durable engine this claims
       // the lineage's session store, so a run that cannot own it costs nothing.
       runSession = await this.adapters[record.runtime].open({
@@ -969,9 +999,13 @@ export class AgentManager {
       await this.sendToolText(context, output.requestId, text, true);
       return;
     }
-    let images: EffectImages = { preImageSha256: null, intendedSha256: null };
+    let images: EffectDispatchState = { preImageSha256: null, intendedSha256: null };
+    const reader = this.stateReader(record, output.requestId, call.signal);
     if (output.operation === 'files_write') images = writeImages(toolInput);
-    if (output.operation === 'files_apply_patch') images = await capturePatchImages(this.stateReader(record, output.requestId, call.signal), toolInput);
+    if (output.operation === 'files_apply_patch') images = await capturePatchImages(reader, toolInput);
+    if (output.operation === 'files_delete' || output.operation === 'files_mkdir' || output.operation === 'files_move') {
+      images = { ...images, preEntry: await capturePreEntry(reader, output.operation, toolInput) };
+    }
     if (!this.repository.dispatchEffect({ ...key, fence, expectedStates, ...images, now: this.now() })) {
       await this.sendFenceLost(context, output.requestId);
       return;
@@ -1044,7 +1078,7 @@ export class AgentManager {
   ): Promise<{ outcome: 'APPLIED' | 'NOT_APPLIED' | 'UNKNOWN'; text: string; isError: boolean } | undefined> {
     const operation = key.kind as AgentProxyOperation;
     const reconciliation = await reconcileEffect(this.stateReader(record, key.requestId, signal), operation, toolInput, {
-      preImageSha256: effect.preImageSha256, intendedSha256: effect.intendedSha256
+      preImageSha256: effect.preImageSha256, intendedSha256: effect.intendedSha256, preEntry: effect.preEntry
     });
     if (!this.stillRunnable(record)) return undefined;
     const expectedStates = [effect.state];
@@ -1087,12 +1121,16 @@ export class AgentManager {
     const registration = `reconcile:${randomUUID()}`;
     context.proxy.set(registration, { controller, completion });
     const outcomes: AgentToolOutcome[] = [];
+    // The runtime matches outcomes by tool call ID, so an ID left unanswered more than once cannot
+    // name one call's outcome; those calls keep the generic interruption.
+    const unanswered = new Map<string, number>();
+    for (const call of calls) unanswered.set(call.toolCallId, (unanswered.get(call.toolCallId) ?? 0) + 1);
     try {
       for (const call of calls) {
         if (outcomes.length >= MAX_AGENT_TOOL_OUTCOMES || controller.signal.aborted) break;
         // A cancel that waits for this launch must not wait for further workspace reads.
         if (this.repository.findAgent(record.ownerId, record.workspaceId, record.id)?.status !== 'RUNNING') break;
-        if (call.toolCallId.length > MAX_AGENT_TOOL_OUTCOME_ID_LENGTH) continue;
+        if (call.toolCallId.length > MAX_AGENT_TOOL_OUTCOME_ID_LENGTH || unanswered.get(call.toolCallId) !== 1) continue;
         const parsed = AgentProxyOperationSchema.safeParse(call.name);
         if (!parsed.success) continue;
         const operation = parsed.data;
@@ -1119,6 +1157,18 @@ export class AgentManager {
   ): Promise<Omit<AgentToolOutcome, 'toolCallId'> | undefined> {
     const operation = key.kind as AgentProxyOperation;
     const readSafe = AGENT_PROXY_REPLAY_CLASS[operation] === 'read-safe';
+    const raw = typeof call.arguments === 'object' && call.arguments !== null && !Array.isArray(call.arguments)
+      ? call.arguments as Record<string, unknown>
+      : {};
+    const payloadHash = createHash('sha256').update(JSON.stringify({ operation, input: raw })).digest('hex');
+    // A request ID whose recorded payload differs belongs to another call (a provider reused the
+    // tool call ID), so nothing recorded for it describes this call, in any state.
+    if (payloadHash !== effect.payloadHash) {
+      return {
+        outcome: 'UNKNOWN', isError: true,
+        text: toolErrorText(`${operation} was not run: its request ID was already used by a call with a different payload`, 'CONFLICT')
+      };
+    }
     if (effect.state === 'APPLIED' || effect.state === 'REJECTED') {
       if (effect.resultJson !== null) {
         return { outcome: effect.state, isError: effect.state === 'REJECTED', text: boundedOutcomeText(operation, effect.state, effect.resultJson) };
@@ -1132,19 +1182,12 @@ export class AgentManager {
     }
     // An intent never reached the executor, and a read is safe to issue again.
     if (effect.state === 'INTENT' || readSafe) return undefined;
-    const raw = typeof call.arguments === 'object' && call.arguments !== null && !Array.isArray(call.arguments)
-      ? call.arguments as Record<string, unknown>
-      : {};
-    const payloadHash = createHash('sha256').update(JSON.stringify({ operation, input: raw })).digest('hex');
-    let toolInput: Record<string, unknown> | undefined;
-    if (payloadHash === effect.payloadHash) {
-      const parsed = TOOL_SCHEMA_BY_NAME[operation].safeParse({ ...raw, workspaceId: record.workspaceId });
-      if (parsed.success) toolInput = parsed.data as Record<string, unknown>;
+    const parsed = TOOL_SCHEMA_BY_NAME[operation].safeParse({ ...raw, workspaceId: record.workspaceId });
+    // Arguments the executor would not accept cannot be used to observe the dispatched target.
+    if (!parsed.success) {
+      return { outcome: 'UNKNOWN', isError: true, text: unknownEffectText(operation, 'the recorded arguments cannot be used to observe its target') };
     }
-    // Arguments that do not match the dispatched payload cannot be used to observe its target.
-    if (!toolInput) {
-      return { outcome: 'UNKNOWN', isError: true, text: unknownEffectText(operation, 'the transcript does not match the dispatched request') };
-    }
+    const toolInput = parsed.data as Record<string, unknown>;
     try {
       return await this.settleLostEffect(record, key, fence, toolInput, effect, signal);
     } catch {
