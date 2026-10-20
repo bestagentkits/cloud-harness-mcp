@@ -678,3 +678,47 @@ Touch points:
 | P4 | P4 rows in sections 2, 3, 4, 6, 7, 8, 9; section 4.13 decisions for P4 routes | owner plus security review |
 | P5 | Dewee (see ADR 0005); F1 fixed before or within P5 | owner plus security review |
 | P6 | delete the legacy shell, the fake-DOM harnesses, replaced (b)/(c) suites and this matrix | owner |
+
+### 12.1 P3 status
+
+P3 ([#483](https://github.com/bestagentkits/cloud-harness-mcp/issues/483))
+moved these pages to `apps/dashboard/src/features/<page>/` on the same BFF
+endpoints. Each page's Playwright spec in `apps/dashboard/e2e/` owns its
+request count, states, axe and console checks;
+`apps/dashboard/e2e/polling-budget.spec.ts` checks that no migrated page reads
+an endpoint twice on load or polls at rest, and
+`apps/dashboard/e2e/visual.spec.ts` holds the light and dark screenshots at
+1280, 768 and 375 px.
+
+| Page | Status | Notes |
+| --- | --- | --- |
+| Overview | done | One read per tile source, as legacy. The Cost tile keeps the legacy currency format; the static endpoint row is dropped. |
+| Workspaces list | done | R1 fixed: filters are search params of `/dashboard/workspaces`. The header's launch action stays the classic hand-off until D5 lands in P4. |
+| Workspace cockpit | partial | Typed tab registry in `features/workspace-cockpit/cockpit-tab-registry.ts`. Summary, Agents, Runtime and Activity are live; Terminal, Files, Git, Automation, Deploy and Artifacts are registry placeholders that hand off to the classic cockpit until P4b. Automation, Deploy and Artifacts move from P3 to P4b. |
+| Agents (list, detail) | done | Follow is off by default (legacy makes two reads). The detail polls only while Follow is on and the agent is live: one owner for the detail and one for the log tail. Follow-up keeps one idempotency key per intent (R5). |
+| Activity, approvals summary | done | The summary says "could not be checked" when either approvals read fails. Approve and reject stay P4a. |
+| Audit | done | `cursor` paging as a search param. |
+| Projects, environments | done | Every write sends its generation; a 409 shows "This changed elsewhere" and refetches. Environment secrets stay a link to `/secrets` (P4a), so the detail drops the legacy per-environment secret reads. |
+| Knowledge | done | R10 fixed, D8 conflict review re-hosted with base, server and draft panes. Non-secret drafts survive a reload in `sessionStorage` (ADR 0005). Workspace-scope create gains the `workspaceId` field the runner requires. |
+| Skills | done | R7, R9, R15 and R16 fixed; tabs and filters are search params. Adding a revision now sends the skill's real generation instead of 0. Bulk Enable added (same endpoint, reversible). The registry's primary action is "Upload skill"; "New skill" is a section button. |
+| Profile | done | Shares the shell's profile read; no extra request. |
+| Settings | done | Lifecycle, network profile, readiness check and OAuth sessions are live. TypeSafe shows status only; the key write stays on the classic page (P4). |
+
+Section 4.13 decisions for P3 routes:
+
+| Route | Decision | Reason |
+| --- | --- | --- |
+| `GET /workspaces/:id/tasks/:taskId` | re-host | Runtime task output, deep-linked by `?task=`, with "Next slice" paging |
+| `GET /skills/:skillId` | re-host | Opens a `?skill=` deep link that is outside the list window |
+| `GET /skills/:skillId/revisions/:revisionId` | drop | Returns the same fields as a revision-list row and no content |
+| `PATCH /skills/:skillId` | re-host | "Edit details" (name, description, tags); nothing else can set the tags the filter uses |
+| `POST /skills/:skillId/archive` | re-host | Archive in the skill drawer, confirmed with the skill's name |
+| `GET`, `PATCH`, `DELETE /skill-sets/:skillSetId` | re-host | The Sets tab lists, renames and deletes sets; delete is confirmed |
+| `GET /toolkits`, `POST /toolkits/preview` | defer to P4 | Belong to the launch dialog (D5) |
+| `POST`, `DELETE /knowledge/links` | drop | Links come from `[[kn_…]]` wikilinks in the content; the entry page shows outgoing links and backlinks read-only, and legacy had only dead helpers (R15) |
+
+The workspace task graph (`GET /workspaces/:id/tasks/graph`) is deferred to
+P4b with the Automation tab; Runtime shows each task's dependencies as a
+column. T1 (skill import) is a query-owned poller that stops on a terminal
+state, an error, the legacy read limit or unmount. T15 (approvals summary)
+refreshes with the Activity page's reads.

@@ -46,6 +46,8 @@ In the new dashboard:
 - **Shortcuts:** `[` collapses or expands the sidebar, and `/` moves focus to the workspace search box.
 - **Small screens:** the menu button in the top bar opens the navigation as a drawer.
 - **Display preferences:** text size, density, contrast and the sidebar state are saved in this browser only. The theme is saved to your account cookie. Animations are turned off when your system asks for reduced motion.
+- **Migrated pages:** Overview, Workspaces, Agents (list and detail), Activity, Audit, Projects and environments, Knowledge, Skills, Profile and Settings run in the new dashboard with the same data and actions as the classic pages. Their filters, tabs and selected item are part of the address, so a copied link opens the same view. Activity shows the pending approvals summary, while approving and rejecting stay on the classic Approvals page for now; the TypeSafe key is also still entered on the classic Settings page.
+- **Workspace cockpit:** the Summary, Agents, Runtime and Activity tabs work in the new dashboard; Runtime shows each task's output (`?task=` in the address) and lets you open, read and close shell sessions. The Terminal, Files, Git, Automation, Deploy and Artifacts tabs still open the classic cockpit.
 
 ## Design System & Security Invariants
 

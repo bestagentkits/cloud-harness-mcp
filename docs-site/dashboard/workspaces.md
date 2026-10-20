@@ -68,3 +68,10 @@ renders state as text inside each node (never colour alone) and is keyboard-focu
 and session output is fetched through a read-only, bounded call: the dashboard never
 sends input to an agent's session. For an interactive shell, use the
 [Terminal](/dashboard/terminal) section instead.
+
+In the new dashboard, the Runtime tab lists tasks and sessions with a **Refresh** button
+instead of a live graph: each task shows the tasks it depends on as a column. **Output**
+opens a task's bounded output and puts the task in the address (`?task=`), so the view
+survives a reload; **Next slice** reads the next part of a long output. You can open a
+named shell session, read its output, and close it after a confirmation. The dependency
+graph view stays in the classic cockpit for now.

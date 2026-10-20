@@ -72,6 +72,21 @@ route chunk loads on the click; it prints the same cold-chunk figures but has no
 gate, and serves as the baseline for later performance work. Both measure the
 shell commit, not the time for page data to arrive.
 
+The `visual` Playwright project
+([`e2e/visual.spec.ts`](../apps/dashboard/e2e/visual.spec.ts)) compares
+full-page screenshots of the migrated pages in light and dark at three widths.
+Font rendering differs by OS, so it runs only on Linux, like CI. After an
+intended visual change, regenerate the baselines in the Playwright image whose
+version matches `@playwright/test`. Run it from a separate clone, because
+`npm ci` there installs Linux builds of native packages into `node_modules`:
+
+```bash
+docker run --rm --ipc=host -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.64.1-noble bash -lc 'npm ci && npm run pretest:e2e:dashboard && cd apps/dashboard && npx playwright test --project=visual --update-snapshots=all'
+```
+
+Review the changed images under `apps/dashboard/e2e/visual.spec.ts-snapshots/`
+before committing them.
+
 The dashboard `build` script ends with
 [`apps/dashboard/scripts/verify-build-output.mjs`](../apps/dashboard/scripts/verify-build-output.mjs),
 so CI fails a build that breaks the shell contract or the gzip budget read from
