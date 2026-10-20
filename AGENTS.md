@@ -93,6 +93,10 @@ instead of copying behavior, defaults, command inventories, or configuration.
   killed after stopping the release; `cloud-harness-deploy-recover.service`
   (boot) or the deploy unit's `ExecStopPost` rolls it back. Do not delete the
   marker by hand before reading its journal.
+- A `Release` failure with `tag 'vX-beta.N' already exists` means that
+  prerelease tag lacks its `refs/notes/semantic-release-<tag>` channel note.
+  The workflow's repair step restores it; never delete or move a published
+  release tag to get past it.
 
 ## Issue and PR coordination
 
