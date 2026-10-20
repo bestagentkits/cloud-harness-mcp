@@ -3,6 +3,7 @@ import { lazy, type RefObject, Suspense, useState } from 'react';
 import { groupLabel, pageById } from '@/app/page-registry';
 import type { CurrentPage } from '@/app/route-identity';
 import { Button } from '@/components/ui/button';
+import { useRegisteredPrimaryAction } from '@/lib/page-primary-action';
 import { useOpenedOnce } from '@/lib/use-opened-once';
 import { NavLink } from './nav-link';
 
@@ -19,6 +20,9 @@ export function PageHeader({ current, headingRef }: { current: CurrentPage & { p
   const parent = page.navParent ? pageById(page.navParent) : undefined;
   const [actionOpen, setActionOpen] = useState(false);
   const actionMounted = useOpenedOnce(actionOpen);
+  // A page that implements its primary action registers it; otherwise the button hands off
+  // to the classic Dashboard.
+  const registered = useRegisteredPrimaryAction(page.id);
   return (
     <header className="grid gap-2" data-testid="page-header">
       <nav aria-label="Breadcrumb">
@@ -45,7 +49,15 @@ export function PageHeader({ current, headingRef }: { current: CurrentPage & { p
         </div>
         {page.primaryAction ? (
           <>
-            <Button data-testid="primary-action" aria-haspopup="dialog" onPointerEnter={() => { void loadActionDialog(); }} onClick={() => setActionOpen(true)}>{page.primaryAction}</Button>
+            <Button
+              data-testid="primary-action"
+              aria-haspopup="dialog"
+              disabled={registered.disabled}
+              onPointerEnter={registered.registered ? undefined : () => { void loadActionDialog(); }}
+              onClick={() => { if (registered.registered) registered.run(); else setActionOpen(true); }}
+            >
+              {page.primaryAction}
+            </Button>
             {actionMounted ? (
               <Suspense fallback={null}><PrimaryActionDialog open={actionOpen} onOpenChange={setActionOpen} action={page.primaryAction} pageTitle={page.title} /></Suspense>
             ) : null}
