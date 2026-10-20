@@ -1299,6 +1299,32 @@ describe('AgentManager persisted sessions', () => {
     await manager.stop();
   });
 
+  it('refuses at admission a continuation whose replayed session and prompt cannot fit one start record', async () => {
+    const config = RunnerAgentsConfigSchema.parse({ ...persistingConfig, limits: { ...persistingConfig.limits, maxSessionBytes: 7_864_320 } });
+    const context = setup('network-none', config);
+    const { manager, record, launcher, repository } = context;
+    const predecessorId = await spawnRunning(context, 'large-key');
+    expect(repository.appendSessionMessage({
+      ownerId: record.ownerId, workspaceId: record.id, agentId: predecessorId, generation: 1, runnerEpoch: 1, seq: 0,
+      message: userMessage('x'.repeat(7_800_000)), now: Date.now()
+    })).toBe('APPENDED');
+    await finish(context, 0, predecessorId);
+    expect(repository.findSession(predecessorId)).toMatchObject({ state: 'SEALED', continuable: true });
+    // Control characters are escaped to six bytes each, so this prompt fits the prompt limit but not the record.
+    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, {
+      idempotencyKey: 'too-large-key', prompt: '\u0001'.repeat(100_000), continueFrom: predecessorId
+    }))).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED' });
+    expect(launcher.launches).toHaveLength(1);
+    // The predecessor stays continuable, and a prompt that fits is admitted and launched.
+    expect(repository.findSession(predecessorId)).toMatchObject({ continuable: true });
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, {
+      idempotencyKey: 'fits-key', prompt: 'continue', continueFrom: predecessorId
+    }));
+    const start = await startOf(launcher, 1);
+    expect(Buffer.byteLength(JSON.stringify(start), 'utf8')).toBeLessThanOrEqual(8 * 1024 * 1024);
+    await manager.stop();
+  });
+
   it('lets exactly one of two concurrent continuations win', async () => {
     const context = setup('network-none', persistingConfig);
     const { manager, record } = context;

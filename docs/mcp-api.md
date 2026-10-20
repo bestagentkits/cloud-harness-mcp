@@ -219,9 +219,12 @@ then given the new `prompt`.
   `CONFLICT` (retryable) while the earlier agent is still running; `CONFLICT`
   when it has no persisted session, its log is not continuable, its model
   profile is no longer enabled, or another agent already continued it (each
-  session has at most one successor; continue that one instead); and
-  `EXPIRED` once retention purged the log. Normal spawn admission and budget
-  checks also apply.
+  session has at most one successor; continue that one instead);
+  `LIMIT_EXCEEDED` when the replayed log and the new prompt together cannot
+  fit one agent start record (the earlier agent stays continuable with a
+  shorter prompt); and `EXPIRED` once retention purged the log. Normal spawn
+  admission and budget checks also apply. When the log leaves little room,
+  repository guidance is shortened to fit.
 - Repository guidance is composed into the new prompt as for any spawn. Pass
   `repositoryContext: "none"` to avoid repeating guidance the history already
   holds.
