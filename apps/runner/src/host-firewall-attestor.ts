@@ -6,6 +6,8 @@ export type FirewallAttestationResult = {
   details?: Record<string, unknown>;
 };
 
+export type FirewallOrderingRepair = { chain: string; rule: string };
+
 export type HostFirewallAttestorConfig = {
   networkName?: string;
   bridgeInterface?: string;
@@ -21,6 +23,7 @@ export class HostFirewallAttestor {
   public readonly bridgeSubnet: string;
   public readonly dnsResolvers: string[];
   public readonly networkGuardImage: string;
+  private attestationQueue: Promise<unknown> = Promise.resolve();
 
   constructor(config: HostFirewallAttestorConfig = {}) {
     this.networkName = config.networkName ?? 'cloud-harness-dependency-access';
@@ -279,21 +282,112 @@ export class HostFirewallAttestor {
     return { ok: true };
   }
 
-  public async attestHostKernel(): Promise<{ ok: boolean; reason?: string }> {
-    try {
-      const result = await runDocker([
-        'run', '--rm', '--pull', 'never', '--network', 'host',
-        '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN',
-        '--security-opt', 'no-new-privileges',
-        '--user', '0:0',
-        this.networkGuardImage
-      ], { timeoutMs: 15_000 });
+  /**
+   * Plans a repair for a ruleset whose only defect is that a foreign rule (for
+   * example Tailscale's `-A INPUT -j ts-input`) was inserted ahead of a managed
+   * jump. Returns the jumps to move to the head of their chain when the ruleset
+   * attests with exactly those moves, otherwise undefined. Moving a managed
+   * jump earlier only puts the managed deny/egress policy in front of the
+   * foreign rule; it never widens what the bridge can reach.
+   */
+  public planOrderingRepair(iptablesText: string): FirewallOrderingRepair[] | undefined {
+    const lines = iptablesText.split('\n').map((l) => l.trim().replace(/\s+/g, ' ')).filter((l) => l.length > 0 && !l.startsWith('#'));
+    const filterStart = lines.indexOf('*filter');
+    if (filterStart === -1) return undefined;
+    const commitOffset = lines.slice(filterStart).indexOf('COMMIT');
+    const filterEnd = commitOffset === -1 ? lines.length : filterStart + commitOffset;
+    const managedJump = (chain: string): string | undefined => {
+      const prefix = `-A ${chain} -i ${this.bridgeInterface} -j `;
+      return lines.slice(filterStart, filterEnd).find((l) => l.startsWith(prefix) && /^[A-Za-z0-9_-]+$/.test(l.slice(prefix.length)));
+    };
+    const candidates: Array<[string, string | undefined]> = [
+      ['FORWARD', lines.slice(filterStart, filterEnd).find((l) => l === '-A FORWARD -j DOCKER-USER')],
+      ['INPUT', managedJump('INPUT')],
+      ['DOCKER-USER', managedJump('DOCKER-USER')]
+    ];
+    const repairs: FirewallOrderingRepair[] = [];
+    for (const [chain, rule] of candidates) {
+      if (!rule) continue;
+      const section = lines.slice(filterStart, filterEnd);
+      const first = section.findIndex((l) => l.startsWith(`-A ${chain} `));
+      const managed = section.indexOf(rule);
+      if (first === -1 || managed <= first) continue;
+      lines.splice(filterStart + managed, 1);
+      lines.splice(filterStart + first, 0, rule);
+      repairs.push({ chain, rule: rule.slice(`-A ${chain} `.length) });
+    }
+    if (repairs.length === 0) return undefined;
+    return this.parseFirewallRules(lines.join('\n')).ok ? repairs : undefined;
+  }
 
-      if (result.exitCode !== 0) {
-        return { ok: false, reason: `host firewall probe failed (exit code ${result.exitCode}): ${result.stderr || result.stdout}` };
+  private async probeFirewall(): Promise<{ ok: true; rules: string } | { ok: false; reason: string }> {
+    const result = await runDocker([
+      'run', '--rm', '--pull', 'never', '--network', 'host',
+      '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN',
+      '--security-opt', 'no-new-privileges',
+      '--user', '0:0',
+      this.networkGuardImage
+    ], { timeoutMs: 15_000 });
+    if (result.exitCode !== 0) {
+      return { ok: false, reason: `host firewall probe failed (exit code ${result.exitCode}): ${result.stderr || result.stdout}` };
+    }
+    return { ok: true, rules: result.stdout };
+  }
+
+  // Moves every displaced managed jump in one iptables-restore transaction:
+  // each `-D <spec>` removes the first (displaced) copy by rule spec, never by
+  // position, and the matching `-I 1` re-adds it at the head. The commit is
+  // atomic, so a concurrent writer can never make it delete a foreign rule, and
+  // a jump that vanished since the probe fails the whole commit unchanged.
+  private async applyOrderingRepair(repairs: FirewallOrderingRepair[]): Promise<{ ok: boolean; reason?: string }> {
+    const lines = ['*filter'];
+    for (const { chain, rule } of repairs) {
+      if (!rule.split(' ').every((t) => /^[A-Za-z0-9_-]+$/.test(t))) {
+        return { ok: false, reason: `refusing to repair unexpected managed jump in ${chain}: ${rule}` };
       }
+      lines.push(`-D ${chain} ${rule}`, `-I ${chain} 1 ${rule}`);
+    }
+    lines.push('COMMIT', '');
+    const result = await runDocker([
+      'run', '--rm', '-i', '--pull', 'never', '--network', 'host',
+      '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN',
+      '--security-opt', 'no-new-privileges',
+      '--user', '0:0',
+      '--entrypoint', '/sbin/iptables-restore',
+      this.networkGuardImage,
+      '-w', '10', '--noflush'
+    ], { stdin: lines.join('\n'), timeoutMs: 15_000 });
+    if (result.exitCode !== 0) {
+      return { ok: false, reason: `host firewall ordering repair failed (exit code ${result.exitCode}): ${result.stderr || result.stdout}` };
+    }
+    return { ok: true };
+  }
 
-      return this.parseFirewallRules(result.stdout);
+  public async attestHostKernel(): Promise<{ ok: boolean; reason?: string; repaired?: FirewallOrderingRepair[] }> {
+    // Concurrent opens, readiness checks, and the reaper attest at the same
+    // time; serializing the whole probe/plan/repair/re-probe sequence keeps each
+    // repair plan matched to the ruleset it was planned from.
+    const run = this.attestationQueue.then(() => this.probeAndRepair());
+    this.attestationQueue = run.catch(() => undefined);
+    return await run;
+  }
+
+  private async probeAndRepair(): Promise<{ ok: boolean; reason?: string; repaired?: FirewallOrderingRepair[] }> {
+    try {
+      const probe = await this.probeFirewall();
+      if (!probe.ok) return probe;
+      const parsed = this.parseFirewallRules(probe.rules);
+      if (parsed.ok) return parsed;
+
+      const repairs = this.planOrderingRepair(probe.rules);
+      if (!repairs) return parsed;
+      const repaired = await this.applyOrderingRepair(repairs);
+      if (!repaired.ok) return { ok: false, reason: `${parsed.reason}; ${repaired.reason}` };
+
+      const reprobe = await this.probeFirewall();
+      if (!reprobe.ok) return reprobe;
+      const reparsed = this.parseFirewallRules(reprobe.rules);
+      return reparsed.ok ? { ok: true, repaired: repairs } : { ok: false, reason: `${reparsed.reason} (after ordering repair)` };
     } catch (err) {
       return { ok: false, reason: `host firewall attestation error: ${err instanceof Error ? err.message : String(err)}` };
     }
@@ -312,6 +406,10 @@ export class HostFirewallAttestor {
         return { ok: false, ...(fwResult.reason ? { reason: fwResult.reason } : {}) };
       }
 
+      if (fwResult.repaired) {
+        process.stderr.write(`${JSON.stringify({ level: 'warn', time: Date.now(), msg: 'host firewall managed jumps were moved back to the head of their chains', repaired: fwResult.repaired })}\n`);
+        return { ok: true, details: { repaired: fwResult.repaired } };
+      }
       return { ok: true };
     } catch (err) {
       return { ok: false, reason: `firewall attestation error: ${err instanceof Error ? err.message : String(err)}` };

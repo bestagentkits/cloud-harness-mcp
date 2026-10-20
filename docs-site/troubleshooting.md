@@ -106,13 +106,13 @@ Non-browser clients keep receiving the compact `{"error":"authentication_failed"
 ---
 
 ### 10. `DEPENDENCY_EGRESS_UNAVAILABLE` on `workspace_open` (HTTP 503)
-**Cause:** The effective network profile is `dependency-access` — the shipped default — but the Linux host firewall is not provisioned, or its rules have drifted, so the runner fails the open closed instead of silently downgrading to `network-none`.
+**Cause:** The effective network profile is `dependency-access` — the shipped default — but the Linux host firewall is not provisioned, or its rules have drifted, so the runner fails the open closed instead of silently downgrading to `network-none`. When another host service such as Tailscale only inserts its own jump ahead of a managed one (for example `-A INPUT -j ts-input`), the runner moves the managed jump back to the top and continues, logging a warning. Every attestation does this, including the Settings readiness check, so a Tailscale host in its default netfilter mode is corrected again each time tailscaled re-asserts its rules; this error therefore means the managed rules are missing or changed.
 **Fix:**
 1. Provision the host firewall on the Docker host:
 ```bash
 bash deploy/scripts/setup-dependency-firewall.sh
 ```
-2. Confirm **Egress readiness** reports `Ready` on the dashboard [Settings](/dashboard/settings) page.
+2. Confirm **Egress readiness** reports `Ready` on the dashboard [Settings](/dashboard/settings) page. If it still reports a rule-order reason that names a foreign chain, inspect `sudo iptables -S INPUT`, `sudo iptables -S FORWARD`, and `sudo iptables -S DOCKER-USER`; on a Tailscale host, `sudo tailscale set --netfilter-mode=nodivert` stops tailscaled from inserting its jumps at the head of those chains, but then you must add the `ts-input` and `ts-forward` jumps yourself, after the managed jumps, or Tailscale's own filtering stops applying.
 3. Open the workspace again with a fresh idempotency key. The failed attempt kept its key with a `FAILED` status, and replaying that key returns the failed record without retrying the attestation.
 To work without egress meanwhile, reset the default to `network-none` on the Settings page or open the workspace with `networkProfile: "network-none"` under a new idempotency key. An omitted profile and an explicit `network-none` are different requests, so reusing the failed open's key with the explicit profile returns `CONFLICT`.
 
