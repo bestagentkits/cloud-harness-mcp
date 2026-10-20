@@ -78,10 +78,10 @@ export async function* runDeweeChat(options: DeweeChatOptions): AsyncGenerator<C
 
   const off = connection.onEvent((event, payload) => {
     if (event !== 'agent' || !payload || typeof payload !== 'object') return;
-    // The connection is per turn, but an event that names no session cannot be attributed to
-    // this one, so it is dropped rather than forwarded.
+    // Forwarded only when one of its session keys names this turn; an event that names no
+    // session cannot be attributed to it, so it is dropped.
     const key = payload.visibleSessionKey || payload.sessionKey;
-    if (!key || (key !== options.sessionKey && payload.runSessionKey !== options.sessionKey)) return;
+    if (key !== options.sessionKey && payload.runSessionKey !== options.sessionKey) return;
     const mapped = mapAgentEvent(payload.type, payload.payload && typeof payload.payload === 'object' ? payload.payload : {});
     if (!mapped) return;
     push(mapped);

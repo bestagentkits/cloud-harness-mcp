@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { createServer, request as httpRequest, type ClientRequest, type Server } from 'node:http';
 import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -235,6 +236,13 @@ describe('Dashboard webchat BFF: chat', () => {
     expect(stub.requests.find((entry) => entry.method === 'chat.send')!.params.agentId).toBe('cloud-harness-operator');
   });
 
+  it('forwards an event that names this turn only by its run session key', async () => {
+    const headers = await chatHeaders();
+    stub.setMode('run_key_only');
+    const events = frames((await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'hi' }) })).text);
+    expect(events.slice(1)).toEqual([{ type: 'delta', text: 'via run key' }, { type: 'done', content: 'via run key' }]);
+  });
+
   it('clips oversized tool call arguments', async () => {
     const headers = await chatHeaders();
     stub.setMode('big_arguments');
@@ -428,6 +436,24 @@ describe('Dashboard webchat page context sanitizer', () => {
       digest: 'sha256:[redacted]', blob: 'token=[redacted]',
       commit: '0123456789abcdef0123456789abcdef01234567',
       route: '/workspaces/ws_abc/terminal-sessions', slug: 'cloud-harness-operator-dashboard-webchat-session'
+    });
+  });
+
+  it('keeps public resource ids in ids and routes', () => {
+    for (let index = 0; index < 200; index += 1) {
+      const workspaceId = `ws_${randomBytes(24).toString('base64url')}`;
+      const agentId = `agent_${randomBytes(24).toString('base64url')}`;
+      const context = { route: `/dashboard/workspaces/${workspaceId}/files`, workspaceId, note: `agent ${agentId} on ${workspaceId}` };
+      expect(sanitizeDeweePageContext(context)).toEqual(context);
+    }
+  });
+
+  it('still redacts random tokens beside ids and credential-bearing prefixes', () => {
+    const workspaceId = `ws_${randomBytes(24).toString('base64url')}`;
+    const token = 'Zk9xR2b7Tq1LmN4pWv8Yc3Hs6Ju0Ke5Dg2Fa9Xo';
+    const lease = 'lease_Qm3xT8vLk2Rz7Wn4Yp9Hc6Js1Fd5Gb0A';
+    expect(sanitizeDeweePageContext({ route: `/dashboard/workspaces/${workspaceId}/${token}`, bare: token, lease, accessKey: 'a', value: 'v' })).toEqual({
+      route: `/dashboard/workspaces/${workspaceId}/[redacted]`, bare: '[redacted]', lease: '[redacted]', accessKey: '[redacted]', value: '[redacted]'
     });
   });
 

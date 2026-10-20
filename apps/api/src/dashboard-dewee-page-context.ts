@@ -17,6 +17,8 @@ export class DeweeInputError extends Error {
 
 const REDACTED = '[redacted]';
 const MAX_DEPTH = 32;
+// Bare `key` and `value` fields are redacted fail-safe, so page-context fields must use more
+// specific names (for example `filterValue`) to reach the agent.
 const SECRET_KEY = /token|secret|passw(?:or)?d|passphrase|pwd|api[-_]?key|(?:access|signing|encryption|master|client)[-_]?key|authori[sz]ation|cookie|credential|private[-_]?key|bearer|csrf|session[-_]?id|signature|^(?:key|value|pass|auth)$/i;
 const SECRET_VALUES: Array<[RegExp, string]> = [
   [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g, REDACTED],
@@ -32,7 +34,15 @@ const SECRET_VALUES: Array<[RegExp, string]> = [
 
 // Long hex keeps a 40-character git commit id readable; longer runs are digests or keys.
 const LONG_HEX = /\b[0-9a-fA-F]{41,}\b/g;
-const LONG_BASE64 = /[A-Za-z0-9+/_-]{32,}={0,2}/g;
+// `/` is left out so a route is judged segment by segment, never as one long run.
+const LONG_BASE64 = /[A-Za-z0-9+_-]{32,}={0,2}/g;
+/**
+ * Public resource ids are a prefix plus random base64url, which the entropy check would
+ * otherwise redact, yet they are exactly what page context carries. The prefixes come from
+ * the runner's id generators and the id schemas in `packages/contracts/src/`. Credential-bearing
+ * prefixes (gateway `lease_`, API key `apk_`/`chm_key_`) are deliberately not listed.
+ */
+const PUBLIC_ID = /(?<![A-Za-z0-9_-])(?:ws|agent|task|sess|term|art|env|prj|kn|knl|mem|cred|icr|sk|skrev|skset|skjob|mcps|mcpt|mcpg|msp|prn|rc|evt|dlv)_[A-Za-z0-9_-]{20,80}(?![A-Za-z0-9_-])/g;
 
 const byteLength = (value: string) => Buffer.byteLength(value, 'utf8');
 
@@ -53,8 +63,12 @@ function looksLikeKey(value: string): boolean {
 function redactString(value: string): string {
   let output = value;
   for (const [pattern, replacement] of SECRET_VALUES) output = output.replace(pattern, replacement);
+  // Public ids are set aside behind placeholders the heuristics cannot match, then restored.
+  const ids: string[] = [];
+  output = output.replace(PUBLIC_ID, (id) => `\uE000${ids.push(id) - 1}\uE001`);
   output = output.replace(LONG_HEX, REDACTED);
-  return output.replace(LONG_BASE64, (match) => looksLikeKey(match) ? REDACTED : match);
+  output = output.replace(LONG_BASE64, (match) => looksLikeKey(match) ? REDACTED : match);
+  return output.replace(/\uE000(\d+)\uE001/g, (_match, index: string) => ids[Number(index)]!);
 }
 
 /** Returns a copy with secret-named fields and secret-shaped strings replaced by a marker. */

@@ -787,6 +787,12 @@ strips secret-shaped values before forwarding:
   keys, private keys, URL credentials, and long random-looking hex or base64
   strings.
 
+Public resource ids (`ws_…`, `agent_…`, `art_…` and the other id prefixes the
+sanitizer lists) are kept, in fields and inside routes, because page context
+exists to carry them. Credential-bearing prefixes such as gateway leases are
+not on that list. A field named `key` or `value` is always redacted, so
+page-context fields need a more specific name, such as `filterValue`.
+
 Stripping is a backstop, not the control. Pattern matching cannot recognise
 every secret, so the Dashboard's page-context registry must never put a secret
 value into page context in the first place.

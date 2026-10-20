@@ -8,7 +8,7 @@ import type { Duplex } from 'node:stream';
  * `chat.abort`. It records every request so tests can check what left the BFF.
  */
 
-export type StubMode = 'reply' | 'hang' | 'fail' | 'run_failed' | 'big_arguments';
+export type StubMode = 'reply' | 'hang' | 'fail' | 'run_failed' | 'big_arguments' | 'run_key_only';
 export type StubRequest = { method: string; params: Record<string, unknown> };
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -79,6 +79,7 @@ export async function startDeweeGatewayStub(expectedToken: string) {
           if (mode === 'hang') { agent('run.started'); agent('chunk', { content: 'thinking about it' }); continue; }
           if (mode === 'fail') { error(`upstream rejected token ${expectedToken}`, 'INTERNAL'); continue; }
           if (mode === 'run_failed') { agent('run.started'); agent('run.failed', { error: `provider said ${expectedToken}` }); continue; }
+          if (mode === 'run_key_only') { send({ type: 'event', event: 'agent', payload: { type: 'chunk', runSessionKey: sessionKey, payload: { content: 'via run key' } } }); ok({ content: 'via run key' }); continue; }
           if (mode === 'big_arguments') { agent('tool.call', { id: 't2', name: 'workspace_exec', arguments: { script: 'x'.repeat(10_000) } }); ok({ content: '' }); continue; }
           agent('run.started');
           agent('chunk', { content: 'Hel' });
