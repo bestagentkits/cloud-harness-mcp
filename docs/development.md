@@ -176,3 +176,14 @@ automated release, create and protect `dev`, and either seed the intended
 `v0.2.0` baseline tag or accept `1.0.0` as the first generated version. Branch
 rules must allow the repository's `GITHUB_TOKEN` to write these generated
 release commits.
+
+semantic-release records each prerelease tag's channel in a per-tag git note
+and pushes the tag before the note. A prerelease tag whose note never reached
+the remote is invisible to the `dev` lane, which would recompute the same
+version and fail with `tag ... already exists` on every run. The Release
+workflow therefore runs
+[`scripts/repair-release-channel-notes.mjs`](../scripts/repair-release-channel-notes.mjs)
+first; it restores and pushes the missing note so the lane resumes at the next
+`-beta.N`. The interrupted run never reached its publish step, so the repaired
+tag has no GitHub release; its notes stay in `CHANGELOG.md` unless the owner
+creates that prerelease by hand.

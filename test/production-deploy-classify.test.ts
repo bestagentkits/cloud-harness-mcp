@@ -488,7 +488,7 @@ describe('release tip check', () => {
   it('gates every later release step on the tip check', () => {
     const later = releaseJob.slice(releaseJob.indexOf('id: tip'));
     const steps = later.split('\n      - ').slice(1);
-    expect(steps.length).toBe(4);
+    expect(steps.length).toBe(5);
     for (const step of steps) expect(step).toContain("if: steps.tip.outputs.current == 'true'");
     expect(jobSection(releaseWorkflow, 'request-release-ci')).toContain("needs.release.outputs.release_commit != '' &&");
   });

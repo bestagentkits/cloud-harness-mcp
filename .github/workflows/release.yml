@@ -70,6 +70,14 @@ jobs:
           cache: npm
       - if: steps.tip.outputs.current == 'true'
         run: npm ci
+      # semantic-release pushes a tag before its channel note. If the note push
+      # is rejected, the prerelease lane ignores that tag and recomputes the same
+      # version on every run, failing at `git tag`. Restore the note first.
+      - name: Restore missing prerelease channel notes
+        if: steps.tip.outputs.current == 'true'
+        env:
+          RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: node scripts/repair-release-channel-notes.mjs "$RELEASE_BRANCH"
       - name: Create GitHub release
         if: steps.tip.outputs.current == 'true'
         env:
