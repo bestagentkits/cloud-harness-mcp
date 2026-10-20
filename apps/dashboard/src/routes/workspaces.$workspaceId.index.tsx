@@ -1,7 +1,6 @@
 import { createFileRoute, notFound } from '@tanstack/react-router';
 import { RESOURCE_ID_PATTERNS } from '@/app/page-registry';
-import { PagePlaceholder } from '@/components/layouts/page-placeholder';
-import { WorkspaceTabs } from '@/components/layouts/workspace-tabs';
+import { WorkspaceCockpit } from '@/features/workspace-cockpit/workspace-cockpit';
 import { warmPageRead } from '@/lib/page-read';
 import { noSearch } from '@/lib/search-params';
 
@@ -15,9 +14,5 @@ export const Route = createFileRoute('/workspaces/$workspaceId/')({
 
 function WorkspaceSummary() {
   const { workspaceId } = Route.useParams();
-  return (
-    <PagePlaceholder pageId="workspace">
-      <WorkspaceTabs workspaceId={workspaceId} tab="summary" />
-    </PagePlaceholder>
-  );
+  return <WorkspaceCockpit workspaceId={workspaceId} tab="summary" search={{}} onSearch={() => undefined} />;
 }

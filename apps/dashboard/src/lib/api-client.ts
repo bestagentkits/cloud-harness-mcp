@@ -30,6 +30,12 @@ export type ApiRequestOptions = {
   method?: HttpMethod;
   /** JSON-serialised as the request body. */
   body?: unknown;
+  /**
+   * Sent as-is instead of `body`, with its own content type. Only for the skill ZIP upload,
+   * whose route accepts the archive media types; it still carries the CSRF header and gets
+   * the same single `session_ended` retry (a Blob or ArrayBuffer can be sent twice).
+   */
+  rawBody?: { data: Blob | ArrayBuffer; contentType: string };
   query?: Record<string, string | number | boolean | undefined>;
   signal?: AbortSignal;
   headers?: Record<string, string>;
@@ -169,13 +175,13 @@ export function createApiClient(fetchImpl: typeof fetch = (...args) => globalThi
     const headers: Record<string, string> = { accept: 'application/json', ...options.headers };
     const sentToken = csrfToken;
     if (mutation) {
-      headers['content-type'] = 'application/json';
+      headers['content-type'] = options.rawBody?.contentType ?? 'application/json';
       headers['x-csrf-token'] = sentToken ?? '';
     }
     const response = await send(buildPath(path, options.query), {
       method,
       headers,
-      ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
+      ...(options.rawBody ? { body: options.rawBody.data } : options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
       ...(options.signal ? { signal: options.signal } : {})
     });
     if (response.status !== 401) return response;

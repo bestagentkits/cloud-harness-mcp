@@ -14,7 +14,7 @@ const BY_STATUS: Record<string, StatusTone> = {
   READY: 'success', RUNNING: 'info', ACTIVE: 'success', SUCCEEDED: 'success', COMPLETED: 'success', CONNECTED: 'success', OK: 'success', ENABLED: 'success', SUCCESS: 'success', RECORDED: 'neutral',
   CREATING: 'info', SPAWNING: 'info', PENDING: 'info', QUEUED: 'info', STARTING: 'info', CANCELLING: 'warning', CLOSING: 'warning', IMPORTING: 'info',
   EXPIRING: 'warning', WAITING: 'warning', ATTENTION: 'warning', DEGRADED: 'warning', STALE: 'warning', ARCHIVED: 'neutral', DISABLED: 'neutral',
-  FAILED: 'danger', ERROR: 'danger', EXPIRED: 'danger', CANCELLED: 'neutral', CLOSED: 'neutral', TIMED_OUT: 'danger', LIMIT_EXCEEDED: 'danger', REJECTED: 'danger'
+  FAILED: 'danger', ERROR: 'danger', EXPIRED: 'danger', CANCELLED: 'neutral', CLOSED: 'neutral', TIMED_OUT: 'danger', TIMEDOUT: 'danger', LIMIT_EXCEEDED: 'danger', REJECTED: 'danger'
 };
 
 /** The tone a status string maps to; unknown statuses are neutral. */
@@ -26,8 +26,8 @@ export function statusTone(status: unknown): StatusTone {
  * A status pill. Tone is a colour plus a dot, and the text is always the status itself, so
  * the state never depends on colour alone.
  */
-export function StatusBadge({ status, tone, className }: { status: unknown; tone?: StatusTone; className?: string }) {
-  const label = typeof status === 'string' && status ? status.replaceAll('_', ' ').toLowerCase() : 'unknown';
+export function StatusBadge({ status, tone, label: text, className }: { status: unknown; tone?: StatusTone; label?: string; className?: string }) {
+  const label = text ?? (typeof status === 'string' && status ? status.replaceAll('_', ' ').toLowerCase() : 'unknown');
   const resolved = tone ?? statusTone(status);
   return (
     <span data-status={typeof status === 'string' ? status : undefined} className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium capitalize', TONES[resolved], className)}>
