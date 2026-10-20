@@ -732,6 +732,53 @@ Access; it grants no authority and carries no data, so the impact is low and
 `?ui=legacy` reverses it. The assertions live in
 [`apps/api/test/dashboard-react-shell.test.ts`](../apps/api/test/dashboard-react-shell.test.ts).
 
+Secret handling in the React pages follows the same write-only rule as the
+legacy shell, with these client-side guarantees:
+
+- **Write-only fields live only in the open form.** Secret values and provider
+  keys are typed into masked inputs and held only in that dialog's in-memory
+  form state (the model profile wizard keeps its key in an uncontrolled input
+  outside wizard state). Secret value and key fields are emptied when the
+  request is sent, and every field resets when the dialog closes; values never
+  reach drafts, the query cache, browser storage or logs, and a failed save
+  asks for the value again. MCP server headers differ by mode: a literal header
+  value is not a secret, so the BFF returns it and the edit dialog prefills it
+  (masked); a secret-reference header names a global secret, whose value is
+  write-only and never sent to the page.
+- **The one-time API key reveal is component state only.** The `POST /api-keys`
+  response is not cached, and the plaintext is dropped on dismiss, on any
+  navigation (router or link click), on `pagehide`, when the session ends, and
+  on unmount; a reveal is refused once the session has ended
+  ([`apps/dashboard/src/lib/one-time-reveal.ts`](../apps/dashboard/src/lib/one-time-reveal.ts)).
+- **Wizard restore is allowlisted and session-scoped.** A multi-step wizard may
+  keep its step and non-secret choices in `sessionStorage` (prefix
+  `ch-dashboard-restore:`) so a reload does not lose progress. Each wizard
+  rebuilds that entry from an allowlist on both write and read, so an injected
+  key is neither restored nor written back, and the entry is removed on cancel
+  and save ([`apps/dashboard/src/lib/restorable-state.ts`](../apps/dashboard/src/lib/restorable-state.ts),
+  `parseStoredWizard` in
+  [`apps/dashboard/src/features/models/models-wizard-state.ts`](../apps/dashboard/src/features/models/models-wizard-state.ts)).
+  The secret fields themselves are never part of a draft (ADR 0005), and a
+  custom upstream URL is dropped from it when it does not parse or carries user
+  info, a query or a fragment, where a pasted credential would sit. Dialogs
+  that take secret values have no draft at all.
+- **Writes use the unchanged BFF boundary.** Every mutation sends the session
+  cookie and the in-memory CSRF token; a `session_ended` 401 bootstraps a new
+  session and retries once, anything else surfaces the sign-in path. Fences
+  (`expectedGeneration`, plan digests) are sent exactly as the legacy shell
+  sends them, and a 409 reloads the latest version instead of retrying.
+
+[`apps/dashboard/e2e/bff-write-security.spec.ts`](../apps/dashboard/e2e/bff-write-security.spec.ts)
+proves the CSRF, Origin and expired-session paths against the real in-process
+BFF, and
+[`one-time-reveal.spec.ts`](../apps/dashboard/e2e/one-time-reveal.spec.ts) and
+[`write-paths.spec.ts`](../apps/dashboard/e2e/write-paths.spec.ts) check that
+no secret reaches the DOM, form values, Web Storage, IndexedDB, Cache Storage,
+cookies, the console or any read response. That the TanStack Query cache never
+holds a one-time reveal is asserted at unit level
+([`one-time-reveal.test.tsx`](../apps/dashboard/src/lib/one-time-reveal.test.tsx)),
+because the in-memory cache is not reachable from the page.
+
 ### Dashboard path ids are authoritative
 
 A Dashboard BFF mutation acts on the resource its URL names. When a JSON body

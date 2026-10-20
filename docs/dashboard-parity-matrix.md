@@ -297,17 +297,17 @@ descriptions with empty values and revokes its object URL immediately.
 | PUT | `/provider-credentials/:id/rotate` | control router | **gen** | path wins | `rotateModelCredential` | `models` | P4 | |
 | DELETE | `/provider-credentials/:id` | control router | **gen**, confirm | — | `deleteModelCredential` | `models` | P4 | |
 | GET / POST | `/agent-model-profiles` | control router | — | — | `listModelProfiles`, `createModelProfile` | `models` | P4 | Unmapped passthrough (F7) |
-| POST | `/agent-model-profiles/validate` | control router | dry run | — | **none** | `models` | P4 (decide) | |
+| POST | `/agent-model-profiles/validate` | control router | dry run | — | **none** | `models` | P4: drop | Profile rules run in the wizard and again on save |
 | PATCH | `/agent-model-profiles/:id` | control router | — | yes | `updateModelProfile` | `models` | P4 | |
 | POST | `/agent-model-profiles/:id/{activate,disable}` | control router | **gen**, no confirm | — | `activateModelProfile`, `disableModelProfile` | `models` | P4 | |
 | DELETE | `/agent-model-profiles/:id` | control router | **gen**, confirm | — | `deleteModelProfile` | `models` | P4 | |
 | GET | `/agent-model-config-status`, `/model-providers`, `/model-catalog` | control router | — | — | `getModelConfigStatus`, `listModelProviders`, `searchModelCatalog` | `models` | P4 | Combobox search is debounced (`dashboard-models.js`) |
 | POST | `/model-catalog/refresh`, `/model-connection/verify` | control router | — | — | `refreshModelCatalog`, `verifyModelConnection` | `models` | P4 | |
 | GET | `/model-spend` | control router | — | — | `getModelSpend` | `models` | P4 | |
-| GET | `/model-spend/policies` | control router | — | — | **none** | `models` | P4 (decide) | |
+| GET | `/model-spend/policies` | control router | — | — | **none** | `models` | P4: drop | `/model-spend` windows carry each policy |
 | PUT | `/model-spend/policies` | control router | upsert by scope and period | — | `setModelSpendPolicy` | `models` | P4 | |
 | DELETE | `/model-spend/policies/:id` | control router | **gen**, confirm | — | `deleteModelSpendPolicy` | `models` | P4 | |
-| GET | `/decision-plane/status` | control router | — | — | **none** | `models` | P4 (decide) | |
+| GET | `/decision-plane/status` | control router | — | — | **none** | `models` | P4: defer (#494) | |
 
 ### 4.7 Skills and toolkits
 
@@ -359,7 +359,7 @@ descriptions with empty values and revokes its object URL immediately.
 | POST | `/github/complete` | control router | strict `state`, `installationId` | callback handling | `integrations` | P4 | Clear the query after completion |
 | POST | `/github/reconcile` | control router | — | integrations page | `integrations` | P4 | |
 | POST | `/github/disconnect` | control router | body `{installationId}`, confirm | integrations page | `integrations` | P4 | |
-| DELETE | `/github/installations/:id` | control router | — | **none** (duplicate of disconnect) | — | P4 (decide) | Pick one shape |
+| DELETE | `/github/installations/:id` | control router | — | **none** (duplicate of disconnect) | — | P4: drop | `POST /github/disconnect` is the one shape |
 | GET / POST | `/integration-credentials` | control router | **gen0**, value inbound | settings (TypeSafe) | `settings` | P4 | Write-only |
 | PUT / DELETE | `/integration-credentials/:id[/rotate]` | control router | **gen** | settings (TypeSafe) | `settings` | P4 | |
 | GET | `/typesafe/status` | control router | — | settings | `settings` | P4 | |
@@ -378,8 +378,8 @@ descriptions with empty values and revokes its object URL immediately.
 | GET | `/api-keys` | control router | — | API keys page, palette | `api-keys` | P4 | |
 | POST | `/api-keys` | control router | strict name and expiry; 503 when disabled | create dialog | `api-keys` | P4 | **One-time plaintext `data.apiKey`** → D3 |
 | DELETE | `/api-keys/:keyId` | control router | **gen**, confirm | API keys page | `api-keys` | P4 | |
-| GET | `/event-subscriptions` | control router | — | **none** | `api-keys` | P4 (decide) | 503 when events are off |
-| POST | `/event-subscriptions/:id/revoke` | control router | — | **none** | `api-keys` | P4 (decide) | |
+| GET | `/event-subscriptions` | control router | — | **none** | `api-keys` | P4: defer (#494) | 503 when events are off |
+| POST | `/event-subscriptions/:id/revoke` | control router | — | **none** | `api-keys` | P4: defer (#494) | |
 | GET / POST | `/settings` | router | schema parse | settings | `settings` | P3 | Unmapped passthrough (F7) |
 | GET / POST | `/settings/oauth` | router | schema parse | settings | `settings` | P3 | |
 | POST | `/settings/network-check` | router | — | settings | `settings` | P3 | |
@@ -436,6 +436,16 @@ Grep found no legacy caller for:
 Each phase that owns one of these routes records one decision in its PR:
 **re-host** (add UI with tests), **defer** (name the follow-up issue) or
 **drop** (no UI, with the reason). No BFF route is deleted in this epic.
+
+P4 decisions (#484):
+
+| Route | Decision | Reason |
+| --- | --- | --- |
+| `POST /agent-model-profiles/validate` | drop | The wizard runs the profile rules before save and the create and update routes validate again; a dry run adds a round trip and no new answer |
+| `GET /model-spend/policies` | drop | Each `/model-spend` window already carries its policy with the generation the editor fences on |
+| `GET /decision-plane/status` | defer (#494) | No P4 page owns decision-plane health |
+| `DELETE /github/installations/:installationId` | drop | Duplicate of `POST /github/disconnect`, which the page uses |
+| `GET /event-subscriptions`, `POST /event-subscriptions/:id/revoke` | defer (#494) | Needs a design for MCP Events on the API access page |
 
 ## 5. Keyboard shortcuts
 
@@ -508,9 +518,16 @@ Owner: `createTerminalSession` and `mountTerminalPane` in
 | `?oauth=`, `?state=&installation_id=` | URL | `replaceState` after handling | remove the search params after handling |
 | Clipboard | API key copy, knowledge draft copy, file conflict copy, `data-copy` chips | — | keep, with a screen-reader announcement |
 
-`localStorage` (allowed by the ADR) holds only non-secret preferences and UI
-restore state. It never holds tokens, keys, secret values, file contents or
-drafts of secret forms.
+`localStorage` (allowed by the ADR) holds only non-secret preferences. Wizard
+restore state lives in `sessionStorage` under the `ch-dashboard-restore:`
+prefix (`apps/dashboard/src/lib/restorable-state.ts`), written and read back
+through a per-wizard allowlist (`parseStoredWizard` and
+`models-restore-shapes.ts` for the model profile wizard), and cleared on
+cancel and save. Neither store ever holds tokens, keys, secret values, file
+contents or drafts of secret forms. The P4 E2E suites
+(`apps/dashboard/e2e/one-time-reveal.spec.ts`, `write-paths.spec.ts`,
+`bff-write-security.spec.ts`) check the DOM, form values, both stores,
+IndexedDB, cookies, the console and every read response for the secret.
 
 ## 9. Markup-coupled tests to replace with behavioural tests
 
@@ -681,3 +698,18 @@ Touch points:
 | P4 | P4 rows in sections 2, 3, 4, 6, 7, 8, 9; section 4.13 decisions for P4 routes | owner plus security review |
 | P5 | Dewee (see ADR 0005); F1 fixed before or within P5 | owner plus security review |
 | P6 | delete the legacy shell, the fake-DOM harnesses, replaced (b)/(c) suites and this matrix | owner |
+
+### 12.1 Status
+
+| Area | Rows | Status | React owner and evidence |
+| --- | --- | --- | --- |
+| Secrets | route `/dashboard/secrets`, D4, create-global-secret dialog, section 4.5 global rows | done (P4, #484) | `apps/dashboard/src/features/secrets/`; `e2e/write-paths.spec.ts` (body, `expectedGeneration`, 409) |
+| API access | route `/dashboard/api-keys`, D3, section 8 API key row | done (P4, #484) | `features/api-keys/`; `e2e/one-time-reveal.spec.ts` (dismiss, navigation, reload, session end) |
+| MCP servers | route `/dashboard/mcp-servers[/:id]`, D10, R6, R16 (detail tab in `?tab=`), section 4.11 | done (P4, #484) | `features/mcp-servers/`; `e2e/write-paths.spec.ts` (enabled fence, 409); classic edit bug filed as #492 |
+| Integrations and GitHub App | route `/dashboard/integrations[/github]`, section 4.9 GitHub rows, section 8 callback rows | done (P4, #484) | `features/github/`; the callback is handled natively, no `?ui=legacy` hand-off |
+| Approvals | route `/dashboard/approvals` (approve and reject), R13 | done (P4, #484) | `features/approvals/`; decisions invalidate the reads, no nav badge |
+| Models & Budgets | route `/dashboard/models`, D6, D7, section 4.6 | done (P4, #484) | `features/models/`; `e2e/write-paths.spec.ts` (credential body, wizard restore without the key); fence fallback filed as #493 |
+| Write security | section 1 CSRF, Origin and session rows for P4 writes | done (P4, #484) | `e2e/bff-write-security.spec.ts` against the real in-process BFF |
+| Layout and a11y | P4 pages at 1280, 768 and 375 px, light and dark | done (P4, #484) | `e2e/security-pages.spec.ts` (axe, no page-level horizontal scroll, screenshots attached) |
+
+The classic suites named in section 9 for these pages stay until P6.

@@ -26,8 +26,11 @@ export function DataTable<T>({
   className?: string;
 }) {
   const showSkeleton = loading && !rows?.length;
+  // `relative` contains absolutely positioned cell content (`sr-only` labels) in the scroller,
+  // so a wide table scrolls inside its frame instead of widening the page. The frame is a
+  // named, focusable region so keyboard users can scroll it on a narrow screen.
   return (
-    <div className={cn('overflow-x-auto rounded-lg border bg-surface', className)}>
+    <div role="region" aria-label={caption} tabIndex={0} className={cn('relative overflow-x-auto rounded-lg border bg-surface outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50', className)}>
       <table className="w-full border-collapse text-sm" aria-busy={loading || undefined}>
         <caption className="sr-only">{caption}</caption>
         <thead>

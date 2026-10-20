@@ -24,26 +24,26 @@ test('A→B and A→B→C keep title, heading and navigation in step', async ({ 
   await expectPage(page, 'agents');
   await expect(page.getByTestId('read-summary')).toHaveText('1 record loaded.');
 
-  await sidebarLink(page, 'secrets').click();
-  await expectPage(page, 'secrets');
+  await sidebarLink(page, 'artifacts').click();
+  await expectPage(page, 'artifacts');
   await expectNoMismatches(page);
   expect(problems).toEqual([]);
 });
 
 test('rapid repeated clicks settle on the last page without mismatches', async ({ page }) => {
-  await stubReads(page, { '/agents': answer(200, records(1), { delayMs: 200 }), '/secrets': answer(200, records(4), { delayMs: 50 }) });
+  await stubReads(page, { '/agents': answer(200, records(1), { delayMs: 200 }), '/artifacts': answer(200, records(4), { delayMs: 50 }) });
   await page.goto('/dashboard');
   await expectPage(page, 'overview');
 
   const agents = sidebarLink(page, 'agents');
   for (let index = 0; index < 5; index += 1) await agents.click({ delay: 0 });
   await sidebarLink(page, 'workspaces').click();
-  await sidebarLink(page, 'secrets').click();
-  await expectPage(page, 'secrets');
+  await sidebarLink(page, 'artifacts').click();
+  await expectPage(page, 'artifacts');
   await expect(page.getByTestId('read-summary')).toHaveText('4 records loaded.');
   // Stays put once the earlier, slower answers have had time to arrive.
   await page.waitForTimeout(400);
-  await expectPage(page, 'secrets');
+  await expectPage(page, 'artifacts');
   await expect(page.getByTestId('read-summary')).toHaveText('4 records loaded.');
   await expectNoMismatches(page);
 });

@@ -1,3 +1,10 @@
+# [0.73.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.72.0...v0.73.0) (2026-10-20)
+
+
+### Features
+
+* **dashboard:** router shell, navigation transaction and shared primitives ([#489](https://github.com/bestagentkits/cloud-harness-mcp/issues/489)) ([7a6b03f](https://github.com/bestagentkits/cloud-harness-mcp/commit/7a6b03f83f01604a9d02c11f6fe971ad2bceb462)), closes [#482](https://github.com/bestagentkits/cloud-harness-mcp/issues/482) [#458](https://github.com/bestagentkits/cloud-harness-mcp/issues/458)
+
 # [0.72.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.71.0...v0.72.0) (2026-10-20)
 
 
