@@ -191,10 +191,13 @@ Fence legend: **gen** = strict `expectedGeneration` > 0; **gen0** = create with
 `planDigest`. The executable schemas are in the routers, in
 `packages/contracts/src/` and in the runner's internal request schemas.
 
-"Override" marks handlers that spread `request.body` **after** the path-derived
-keys, so a body key with the same name wins (finding F1). React must send only
-schema fields and never repeat a path id in the body. Fixing the spread order
-on the server is a separate issue and a P5 prerequisite (ADR 0005).
+"Override" marks handlers that used to spread `request.body` **after** the
+path-derived keys, so a body key with the same name won (finding F1, fixed in
+#490). These handlers now merge through `withPathIds` in
+[`apps/api/src/dashboard-path-ids.ts`](../apps/api/src/dashboard-path-ids.ts):
+the path id always wins, and a body that repeats a path id with a different
+value is refused with `400 path_id_mismatch` before the runner is called.
+React should still send only schema fields and not repeat path ids.
 
 "UI caller" is the legacy caller found by grep; **none** means no legacy code
 calls the route (collected in [4.13](#413-routes-without-a-legacy-ui-caller)).
@@ -629,7 +632,7 @@ BFF findings (outside UI scope; file separately when needed):
 
 | ID | Severity | Finding | Owner |
 | --- | --- | --- | --- |
-| F1 | medium | About 40 handlers spread the body after path params, so a body id wins over the path id (still within the principal). Prerequisite for P5 page actions. | router, control router ("Override" column in section 4) |
+| F1 | medium | Fixed in #490: about 40 handlers spread the body after path params, so a body id won over the path id (still within the principal). Path ids are now authoritative and a conflicting body id is `400 path_id_mismatch`; regression table in `apps/api/test/dashboard-path-id-authority.test.ts`. | router, control router ("Override" column in section 4) |
 | F2 | low-medium | Malformed JSON returns 500 instead of 400 and is not logged | router error handler |
 | F3 | low | Workspace artifact and activity projections truncate silently | router workspace artifacts and activity handlers |
 | F4 | low | Artifact download buffers the whole file in memory | control router download handler |
