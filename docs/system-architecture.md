@@ -105,6 +105,20 @@ Agent tools communicate with the runner via a bounded stdio JSONL protocol for
 the trusted Model Gateway service via per-agent internal Docker networks using
 opaque, short-lived capability leases with pre-reserved token and cost budgets.
 
+The agent container runs one of two engines behind the same protocol, chosen
+per spawn by an engine adapter in
+[`apps/runner/src/agent-runtime-adapter.ts`](../apps/runner/src/agent-runtime-adapter.ts).
+The default coding runtime replays a persisted message log from its start
+record. The opt-in durable engine (pi-durable) keeps its session store in the
+runner instead: each storage call travels to the runner as a bounded request on
+the agent's stdio channel, and
+[`apps/runner/src/durable-session-store.ts`](../apps/runner/src/durable-session-store.ts)
+serves it from one SQLite database per continuation lineage, owned by a single
+run at a time. The container therefore stays stateless, and a continuation of
+an interrupted durable run resumes its unfinished work. The engine is loaded,
+in the runner and in the agent image, only when the operator opts in
+([operations](operations.md#durable-agent-engine)).
+
 The gateway budget is conservative by design, so it never charges less than
 the provider bills. Each request reserves its worst case before it goes
 upstream. Input is estimated at one token per request byte, plus a fixed

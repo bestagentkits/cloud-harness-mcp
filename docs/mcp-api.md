@@ -205,7 +205,7 @@ then given the new `prompt`.
   profile is refused with `INVALID_INPUT`. Every other spawn still requires
   `profileId`.
 - `agent_status` and `agent_list` add `session` (`persisted`, `continuable`,
-  `messages`, `bytes`), `run.resumable` (always `false` for Pi agents), and
+  `messages`, `bytes`), `run.resumable` (`false` except for the durable engine below), and
   `continuedFrom` for an agent spawned with persistence. Agents spawned with
   persistence off report none of these fields.
 - A session becomes continuable when its agent reaches any terminal status,
@@ -233,6 +233,36 @@ then given the new `prompt`.
 - Closing or expiring the workspace deletes its persisted sessions; sealed
   sessions are otherwise purged after the configured retention.
 
+#### Durable engine (`runtime`)
+
+When the operator enables the durable engine (off by default; see
+[configuration](configuration.md#managed-agents)), `agent_spawn` accepts
+`runtime: "pi-durable"`. The default, `"pi-coding"`, is what every spawn without
+`runtime` runs, and its start, status, and results are unchanged. A durable
+agent keeps its session in a runner-side store shared by its whole
+`continueFrom` lineage, independent of session persistence:
+
+- `runtime` is refused with `NOT_SUPPORTED` while the engine is off, also for a
+  `continueFrom` of a durable agent. A continuation runs on its predecessor's
+  engine: omit `runtime` to inherit it; a different `runtime` is
+  `INVALID_INPUT`.
+- `agent_status` and `agent_list` add `runtime: "pi-durable"` for a durable
+  agent, alongside the session fields above. `run.resumable` is `true` only
+  when the ended run left unfinished work in the store, for example a run
+  interrupted by a runner restart; it is never `true` for a cancelled run.
+- A continuation resumes that unfinished work before the new `prompt`. A tool
+  call that may have changed the workspace when the run stopped is not run
+  again: the model sees it as interrupted rather than with the settled outcome
+  a coding continuation receives, and the effect ledger below still holds its
+  outcome. A continuation of a cancelled agent cancels the
+  unfinished work instead and runs only the new prompt. Nothing resumes
+  without an explicit `continueFrom`.
+- Each run gets its own model lease and budget; work resumed from the
+  predecessor counts against the continuation's caps. A run whose store
+  outgrows the configured size cap ends as `LIMIT_EXCEEDED`.
+- Closing or expiring the workspace deletes the lineage's store; it is also
+  deleted once retention purged every session of its lineage.
+
 #### Agent tool receipts and replay
 
 An agent's proxied workspace tool calls are not MCP tools, but the runner keeps
@@ -254,8 +284,8 @@ the ledger and its fences are in
   the same IDs.
 - A first call's result is unchanged. The runner records the call before it
   reaches the executor and records its outcome, with the result's hash, before
-  sending the result. An agent spawned with session persistence also stores the
-  exact result text (its receipt) until its lineage holds
+  sending the result. An agent spawned with session persistence or on the
+  durable engine also stores the exact result text (its receipt) until its lineage holds
   `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` bytes; any other result is kept as a
   hash only and replays as if its receipt had been purged.
 - A repeated call whose result text is stored returns those bytes exactly,

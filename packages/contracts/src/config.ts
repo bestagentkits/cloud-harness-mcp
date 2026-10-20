@@ -99,6 +99,9 @@ export const RunnerAgentLimitsSchema = z.object({
   maxSessionMessages: positiveBoundedInteger(MAX_AGENT_SESSION_MESSAGES, 2_000),
   maxSessionBytes: positiveBoundedInteger(MAX_AGENT_SESSION_BYTES, 7_340_032),
   sessionRetentionMs: positiveBoundedInteger(31_536_000_000, 604_800_000),
+  // On-disk size cap of one durable-runtime lineage's session database. A commit that leaves the
+  // database above it ends the run as LIMIT_EXCEEDED, and the lineage accepts no further commit.
+  maxDurableLineageBytes: z.coerce.number().int().min(1_048_576).max(4_294_967_296).default(268_435_456),
   // Stored tool-result bytes (receipts) one agent lineage may hold; past it only hashes are kept.
   maxReceiptBytesPerLineage: positiveBoundedInteger(1_073_741_824, 33_554_432)
 }).strict().superRefine((limits, context) => {
@@ -146,6 +149,11 @@ export const RunnerAgentsConfigSchema = z.object({
   // per agent at spawn: turning it off refuses new continuations and stops recording for agents
   // spawned afterwards; stored sessions age out through retention.
   sessionPersistenceEnabled: enabled,
+  // Instance switch for the opt-in pi-durable agent engine, read at runner start. Off refuses new and
+  // continued durable spawns, and nothing resumes on its own; flipping it takes a runner restart,
+  // which stops running agents as any restart does. The runner loads the experimental durable
+  // storage code only while it is on.
+  durableRuntimeEnabled: enabled,
   limits: RunnerAgentLimitsSchema.default(DEFAULT_RUNNER_AGENT_LIMITS)
 }).strict();
 
