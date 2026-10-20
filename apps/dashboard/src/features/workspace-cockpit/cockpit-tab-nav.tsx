@@ -16,6 +16,7 @@ export function CockpitTabNav({ workspaceId, tab }: { workspaceId: string; tab: 
                 current={value === tab}
                 data-tab={value}
                 onPointerEnter={() => { void entry.load(); }}
+                onFocus={() => { void entry.load(); }}
                 className="inline-flex h-9 items-center whitespace-nowrap border-b-2 border-transparent px-3 text-sm text-muted-foreground transition-colors duration-(--motion-fast) hover:text-foreground aria-[current=page]:border-primary aria-[current=page]:text-foreground"
               >
                 {entry.label}
