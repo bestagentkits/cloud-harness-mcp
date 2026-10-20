@@ -44,19 +44,40 @@ npm run test -w @cloud-harness/dashboard
 ```
 
 The Vite dev server proxies `/dashboard/api` to `DASHBOARD_DEV_API_ORIGIN`. The
-Playwright smoke suite builds the API and dashboard, serves them through the
-real Express app with an offline Access verifier, and checks render, theme, CSP,
-and axe results; install its browser once:
+Playwright suites in [`apps/dashboard/e2e/`](../apps/dashboard/e2e/) build the
+API and dashboard, serve them through the real Express app with an offline
+Access verifier, and answer runner-backed reads with `page.route` stubs (the
+test server's runner is unreachable on purpose). They cover render, theme, CSP
+and axe, the navigation transaction (A→B, A→B→C, repeated clicks, slow and
+out-of-order answers, failed reads, reload, Back/Forward, a mutation that
+navigation must not cancel), the 401/403/409/429/5xx states, keyboard-only use,
+reduced motion and what may reach browser storage. Install the browser once:
 
 ```bash
 npx -w @cloud-harness/dashboard playwright install chromium
 npm run test:e2e:dashboard
 ```
 
+Every navigation test runs an identity monitor
+([`e2e/support.ts`](../apps/dashboard/e2e/support.ts)) that samples the document
+title, the page heading, the page frame and the current sidebar entry on each
+animation frame and DOM mutation, and fails on any sample where they disagree.
+The navigation p95 test is a warm-chunk measurement: it clicks through fifteen
+sidebar pages twice after hover prefetch has loaded their route chunks. Each
+sample runs from the click event's `timeStamp` to the first animation frame
+where the page frame, the sidebar entry, the `<h1>` and `document.title` all
+show the target. The test prints the median and p95 and fails if p95 reaches
+100 ms. A second test repeats the tour in a fresh page without hover, so every
+route chunk loads on the click; it prints the same cold-chunk figures but has no
+gate, and serves as the baseline for later performance work. Both measure the
+shell commit, not the time for page data to arrive.
+
 The dashboard `build` script ends with
 [`apps/dashboard/scripts/verify-build-output.mjs`](../apps/dashboard/scripts/verify-build-output.mjs),
-so CI fails a build that breaks the shell contract or the gzip budget (initial
-JS, largest lazy route chunk, and CSS) read from the Vite manifest, or that
+so CI fails a build that breaks the shell contract or the gzip budget read from
+the Vite manifest (initial JS, each route chunk under `src/routes/`, each other
+lazy chunk, a larger allowance for an explicit allowlist of heavy lazy
+libraries such as the terminal, and CSS), or that
 ships fonts without their `OFL.txt` licence. The limits live in
 [`build-output-check.mjs`](../apps/dashboard/scripts/build-output-check.mjs);
 the API serves the same manifest through

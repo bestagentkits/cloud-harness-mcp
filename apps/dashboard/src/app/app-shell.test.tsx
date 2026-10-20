@@ -1,9 +1,11 @@
 import { QueryClient } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { githubCallbackHandoff } from '@/lib/github-callback';
 import { resetPreferencesForTests } from '@/lib/preferences';
+import { markSessionEnded, resetSessionStateForTests } from '@/lib/session-state';
 import { AppProviders } from './providers';
 import { createAppRouter } from './router';
 
@@ -18,8 +20,18 @@ function renderAt(path: string) {
   return router;
 }
 
+function expectIdentity(title: string, navLabel: string | undefined) {
+  expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(title);
+  expect(document.title).toBe(`${title} | Cloud Harness`);
+  const nav = screen.getByRole('navigation', { name: 'Primary' });
+  const current = within(nav).queryAllByRole('link').filter((link) => link.getAttribute('aria-current') === 'page');
+  expect(current.map((link) => link.textContent)).toEqual(navLabel ? [navLabel] : []);
+}
+
 beforeEach(() => {
   resetPreferencesForTests();
+  resetSessionStateForTests();
+  localStorage.clear();
   vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query, addEventListener: () => {}, removeEventListener: () => {} }));
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (url.endsWith('/session')) return Response.json({ csrfToken: 'csrf-fixture' });
@@ -39,7 +51,9 @@ describe('AppShell', () => {
     expect(screen.getByRole('link', { name: 'Skip to content' })).toHaveAttribute('href', '#main-content');
     expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute('aria-current', 'page');
     expect(await screen.findByText('owner@example.test')).toBeInTheDocument();
-    expect(screen.getByText('Owner')).toBeInTheDocument();
+    // The display-name chip in the top bar and the Overview profile both show it.
+    expect(screen.getAllByText('Owner')).toHaveLength(2);
+    expect(screen.getByTestId('display-name-chip')).toHaveAttribute('href', '/dashboard/profile');
   });
 
   it('switches theme through pressed toggle buttons', async () => {
@@ -73,5 +87,111 @@ describe('AppShell', () => {
     // The classic link keeps the current path; the server redirects back to it.
     expect(screen.getByRole('link', { name: 'Open classic Dashboard' })).toHaveAttribute('href', '/dashboard/does-not-exist?ui=legacy');
     expect(screen.getByRole('link', { name: 'Use classic Dashboard' })).toHaveAttribute('href', '/dashboard/does-not-exist?ui=legacy');
+  });
+
+  it('keeps URL, title, heading and navigation on one page through navigation', async () => {
+    const user = userEvent.setup();
+    const router = renderAt('/dashboard/');
+    await screen.findByRole('heading', { level: 1, name: 'Overview' });
+    expectIdentity('Overview', 'Overview');
+    await user.click(within(screen.getByRole('navigation', { name: 'Primary' })).getByRole('link', { name: 'Agents' }));
+    await vi.waitFor(() => expectIdentity('Agents', 'Agents'));
+    expect(router.state.location.pathname).toBe('/agents');
+    expect(screen.getByTestId('page-frame')).toHaveAttribute('data-page-id', 'agents');
+    // Focus moves to the new page heading so screen readers announce it.
+    expect(screen.getByRole('heading', { level: 1 })).toHaveFocus();
+    await act(async () => { await router.navigate({ to: '/terminals' }); });
+    // A page without its own sidebar entry keeps its parent current.
+    expectIdentity('Terminals', 'Workspaces');
+  });
+
+  it('names the resource on detail pages and 404s malformed ids', async () => {
+    const router = renderAt('/dashboard/workspaces/ws_aaaaaaaaaaaaaaaaaaaaaa/files?path=src');
+    await screen.findByRole('heading', { level: 1, name: 'Workspace' });
+    expect(document.title).toBe('ws_aaaaaaaaaaaaaaaaaaaaaa · Workspace | Cloud Harness');
+    expect(screen.getByRole('link', { name: 'Files' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('list', { name: 'Active filters' })).toHaveTextContent('path: src');
+    await act(async () => { await router.navigate({ to: '/workspaces/$workspaceId/$tab', params: { workspaceId: 'ws_aaaaaaaaaaaaaaaaaaaaaa', tab: 'nope' }, search: {} }); });
+    expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
+    expect(document.title).toBe('Page not found | Cloud Harness');
+    await act(async () => { await router.navigate({ to: '/agents/$agentId', params: { agentId: 'not-an-agent' } }); });
+    expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
+  });
+
+  it('hands a GitHub App callback to the classic Dashboard with its params', () => {
+    expect(githubCallbackHandoff('')).toBeUndefined();
+    expect(githubCallbackHandoff('?tab=x')).toBeUndefined();
+    expect(githubCallbackHandoff('?installation_id=987654&setup_action=install&state=abcdefgh1234'))
+      .toBe('/dashboard/integrations/github?installation_id=987654&setup_action=install&state=abcdefgh1234&ui=legacy');
+    expect(githubCallbackHandoff('?setup_action=update')).toBe('/dashboard/integrations/github?setup_action=update&ui=legacy');
+  });
+
+  it('renders only the search params a page declares', async () => {
+    renderAt('/dashboard/agents?status=RUNNING&notice=Call%20support%20now');
+    await screen.findByRole('heading', { level: 1, name: 'Agents' });
+    expect(screen.getByRole('list', { name: 'Active filters' })).toHaveTextContent('status: RUNNING');
+    expect(document.body.textContent).not.toContain('Call support now');
+    expect(document.body.textContent).not.toContain('notice');
+  });
+
+  it('renders no search params on a page that declares none', async () => {
+    renderAt('/dashboard/secrets?notice=Call%20support%20now');
+    await screen.findByRole('heading', { level: 1, name: 'Secrets' });
+    expect(screen.queryByRole('list', { name: 'Active filters' })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('Call support now');
+  });
+
+  it('shows the MCP OAuth outcome on the server detail page', async () => {
+    renderAt('/dashboard/mcp-servers/mcps_aaaaaaaaaaaaaaaaaaaaaa?oauth=error&reason=state_mismatch&extra=Injected');
+    await screen.findByRole('heading', { level: 1, name: 'MCP Server' });
+    const filters = screen.getByRole('list', { name: 'Active filters' });
+    expect(filters).toHaveTextContent('oauth: error');
+    expect(filters).toHaveTextContent('reason: state_mismatch');
+    expect(document.body.textContent).not.toContain('Injected');
+  });
+
+  it('keeps the Skills tab in the URL', async () => {
+    const user = userEvent.setup();
+    const router = renderAt('/dashboard/skills?tab=sets');
+    expect(await screen.findByRole('tab', { name: 'Skill sets' })).toHaveAttribute('aria-selected', 'true');
+    await user.click(screen.getByRole('tab', { name: 'Imports' }));
+    await vi.waitFor(() => expect(router.state.location.search).toEqual({ tab: 'imports' }));
+  });
+
+  it('opens the command palette with Ctrl+K, but not from a terminal', async () => {
+    const user = userEvent.setup();
+    const router = renderAt('/dashboard/');
+    await screen.findByRole('heading', { level: 1, name: 'Overview' });
+    const terminal = document.createElement('div');
+    terminal.setAttribute('data-terminal', '');
+    terminal.tabIndex = 0;
+    document.body.append(terminal);
+    terminal.focus();
+    fireEvent.keyDown(terminal, { key: 'k', ctrlKey: true });
+    expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument();
+    terminal.remove();
+    await user.keyboard('{Control>}k{/Control}');
+    const palette = await screen.findByRole('dialog', { name: 'Command palette' });
+    await user.type(within(palette).getByRole('combobox'), 'secrets');
+    await user.keyboard('{Enter}');
+    await vi.waitFor(() => expect(router.state.location.pathname).toBe('/secrets'));
+    expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument();
+  });
+
+  it('collapses the sidebar into an icon rail and remembers it', async () => {
+    const user = userEvent.setup();
+    renderAt('/dashboard/');
+    await user.click(await screen.findByRole('button', { name: 'Collapse sidebar' }));
+    expect(document.documentElement.dataset.sidebar).toBe('collapsed');
+    expect(JSON.parse(localStorage.getItem('ch-dashboard-preferences') ?? '{}')).toMatchObject({ sidebar: 'collapsed' });
+    // Labels stay as accessible names.
+    expect(within(screen.getByRole('navigation', { name: 'Primary' })).getByRole('link', { name: 'Agents' })).toBeInTheDocument();
+  });
+
+  it('shows one reload banner when the session ends', async () => {
+    renderAt('/dashboard/');
+    await screen.findByRole('heading', { level: 1, name: 'Overview' });
+    act(() => markSessionEnded());
+    expect(screen.getByTestId('session-ended')).toHaveTextContent('Your Dashboard session ended');
   });
 });

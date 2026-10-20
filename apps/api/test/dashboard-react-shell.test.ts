@@ -171,13 +171,17 @@ describe('React Dashboard rollout flag', () => {
       expectReactShell(response, await response.text());
       expect(response.headers.get('vary')).toBe('Cookie');
     }
-    // Legacy page paths and unknown paths are not React routes yet: 404, rendered by the
-    // SPA's not-found page rather than by the legacy shell.
-    for (const path of ['/dashboard/workspaces', '/dashboard/settings', '/dashboard/not/a/real/page']) {
+    // Every Dashboard page, including deep links, is a React route.
+    for (const path of ['/dashboard/workspaces', '/dashboard/workspaces/ws_aaaaaaaaaaaaaaaaaaaaaa/files', '/dashboard/settings', '/dashboard/integrations/github']) {
+      const response = await get(origin, path);
+      expectReactShell(response, await response.text());
+    }
+    // Unknown paths are 404, rendered by the SPA's not-found page rather than by the legacy shell.
+    for (const path of ['/dashboard/not/a/real/page', '/dashboard/workspacesx']) {
       const response = await get(origin, path);
       expectReactShell(response, await response.text(), 404);
     }
-    const head = await fetch(`${origin}/dashboard/workspaces`, { method: 'HEAD', headers: { 'cf-access-jwt-assertion': assertion(), ...NAVIGATION } });
+    const head = await fetch(`${origin}/dashboard/not/a/real/page`, { method: 'HEAD', headers: { 'cf-access-jwt-assertion': assertion(), ...NAVIGATION } });
     expect(head.status).toBe(404);
   });
 

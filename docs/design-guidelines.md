@@ -116,7 +116,11 @@ For the **React app** (`apps/dashboard/`), the frontend rules are:
 - **Stack and budget.** Use the stack and the dependency allowlist in
   [ADR 0005](adr/0005-dashboard-react-rewrite.md#complexity-budget). Adding a
   runtime dependency outside that list needs a stated use case in the PR, and
-  the bundle budget is enforced in CI.
+  the bundle budget is enforced in CI. The shell's entry chunk carries only
+  what the first paint needs: dialogs, the mobile drawer, toasts and the
+  Radix tooltip surface load on first use, and a tooltip trigger never
+  re-mounts when its layer arrives
+  ([`tooltip.tsx`](../apps/dashboard/src/components/ui/tooltip.tsx)).
 - **Tokens, not one-off styles.** Colours, spacing, radii, motion and type come
   from semantic CSS variables shared with Tailwind. Keep the OKLCH, opaque
   `-line` and AA contrast rules from this document; port the contrast checks,

@@ -28,7 +28,10 @@ const COMPAT_REDIRECT_PATHS = new Set(Object.keys(DASHBOARD_COMPAT_REDIRECTS).ma
  * (`apps/dashboard/src/app/server-route-allowlist.test.ts` fails when a route is missing).
  * Every other navigation gets the shell with status 404, so it renders the not-found page.
  */
-export const DASHBOARD_REACT_ROUTES: readonly string[] = ['/'];
+export const DASHBOARD_REACT_ROUTES: readonly string[] = [
+  '/', '/workspaces', '/agents', '/activity', '/approvals', '/packages', '/terminals', '/audit', '/projects', '/secrets', '/models',
+  '/skills', '/integrations', '/mcp-servers', '/knowledge', '/artifacts', '/api-keys', '/settings', '/profile'
+];
 
 export type DashboardReactBundle = {
   /** `index.html` with the nonce placeholder still in place. */

@@ -1,9 +1,9 @@
 import { useSyncExternalStore } from 'react';
 
 /**
- * Display preferences: theme, text size, density and contrast. They are non-secret UI
- * settings; nothing identifying or sensitive is stored here. Text size, density and
- * contrast live in `localStorage` only. The theme's authority is the HTTP-only
+ * Display preferences: theme, text size, density, contrast and the sidebar state. They are non-secret UI
+ * settings; nothing identifying or sensitive is stored here. Text size, density,
+ * contrast and the sidebar state live in `localStorage` only. The theme's authority is the HTTP-only
  * `ch-dashboard-theme` cookie (set through the BFF preferences endpoint), which the API
  * renders on `<html data-server-theme>` before first paint; `localStorage` mirrors it.
  *
@@ -18,25 +18,29 @@ export const THEMES = ['system', 'light', 'dark'] as const;
 export const FONT_SCALES = ['sm', 'md', 'lg', 'xl'] as const;
 export const DENSITIES = ['comfortable', 'compact'] as const;
 export const CONTRASTS = ['standard', 'high'] as const;
+export const SIDEBARS = ['expanded', 'collapsed'] as const;
 
 export type ThemePreference = (typeof THEMES)[number];
 export type ResolvedTheme = Exclude<ThemePreference, 'system'>;
 export type FontScale = (typeof FONT_SCALES)[number];
 export type Density = (typeof DENSITIES)[number];
 export type Contrast = (typeof CONTRASTS)[number];
+export type SidebarState = (typeof SIDEBARS)[number];
 
 export type Preferences = {
   theme: ThemePreference;
   fontScale: FontScale;
   density: Density;
   contrast: Contrast;
+  sidebar: SidebarState;
 };
 
 export const DEFAULT_PREFERENCES: Readonly<Preferences> = Object.freeze({
   theme: 'system',
   fontScale: 'md',
   density: 'comfortable',
-  contrast: 'standard'
+  contrast: 'standard',
+  sidebar: 'expanded'
 });
 
 const DARK_QUERY = '(prefers-color-scheme: dark)';
@@ -56,7 +60,8 @@ export function parsePreferences(raw: string | null | undefined): Preferences {
     theme: pick(THEMES, record.theme, DEFAULT_PREFERENCES.theme),
     fontScale: pick(FONT_SCALES, record.fontScale, DEFAULT_PREFERENCES.fontScale),
     density: pick(DENSITIES, record.density, DEFAULT_PREFERENCES.density),
-    contrast: pick(CONTRASTS, record.contrast, DEFAULT_PREFERENCES.contrast)
+    contrast: pick(CONTRASTS, record.contrast, DEFAULT_PREFERENCES.contrast),
+    sidebar: pick(SIDEBARS, record.sidebar, DEFAULT_PREFERENCES.sidebar)
   };
 }
 
@@ -81,8 +86,15 @@ export function readPreferences(storage: Storage | undefined = browserStorage(),
   return mirrored;
 }
 
+/**
+ * Writes only the known preference fields, each re-validated, so a caller can never put
+ * anything else (an id, a token, a server response) into browser storage by spreading a
+ * wider object into a preferences patch.
+ */
 export function writePreferences(preferences: Preferences, storage: Storage | undefined = browserStorage()): void {
-  try { storage?.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(preferences)); } catch { /* quota or disabled storage */ }
+  const safe = parsePreferences(JSON.stringify(preferences));
+  const value: Preferences = { theme: safe.theme, fontScale: safe.fontScale, density: safe.density, contrast: safe.contrast, sidebar: safe.sidebar };
+  try { storage?.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(value)); } catch { /* quota or disabled storage */ }
 }
 
 export function resolveTheme(theme: ThemePreference, prefersDark: boolean): ResolvedTheme {
@@ -102,6 +114,7 @@ export function applyPreferences(preferences: Preferences, root: HTMLElement = d
   root.dataset.fontScale = preferences.fontScale;
   root.dataset.density = preferences.density;
   root.dataset.contrast = preferences.contrast;
+  root.dataset.sidebar = preferences.sidebar;
   root.style.colorScheme = resolved;
 }
 
@@ -121,7 +134,7 @@ function emit(next: Preferences): void {
 }
 
 export function updatePreferences(patch: Partial<Preferences>): Preferences {
-  const next = { ...snapshot(), ...patch };
+  const next = parsePreferences(JSON.stringify({ ...snapshot(), ...patch }));
   writePreferences(next);
   emit(next);
   return next;

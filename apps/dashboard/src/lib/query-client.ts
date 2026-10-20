@@ -20,9 +20,26 @@ export function retryDelay(attempt: number, error: unknown): number {
   return Math.min(500 * 2 ** attempt, 8_000);
 }
 
+/** Poll cadences, in milliseconds, for pages that watch live state. */
+export const POLL_INTERVALS = { live: 5_000, standard: 15_000, slow: 60_000 } as const;
+
 /**
- * TanStack Query owns server state. Query keys must never carry secrets, and responses
+ * Options for the one query that owns a poll. Only the component that owns a live view
+ * passes these; every other reader of the same key observes the cached result without its
+ * own timer, so a key never polls twice. Polling stops while the tab is hidden and resumes
+ * (with a refetch) when it becomes visible again.
+ */
+export function pollingOptions(interval: number) {
+  return { refetchInterval: interval, refetchIntervalInBackground: false } as const;
+}
+
+/**
+ * TanStack Query owns server state, in memory only: there is no persister, so nothing a
+ * query reads reaches browser storage. Query keys must never carry secrets, and responses
  * holding one-time secrets must opt out of caching (`gcTime: 0`) where a page fetches them.
+ * Query functions forward the Query `signal` to `fetch`, so a read whose last observer
+ * unmounts (the operator navigated away) is aborted, and results land only under their own
+ * key, so a late answer can never render on another page.
  */
 export function createQueryClient(): QueryClient {
   return new QueryClient({
@@ -32,7 +49,8 @@ export function createQueryClient(): QueryClient {
         gcTime: 5 * 60_000,
         retry: shouldRetryRead,
         retryDelay,
-        refetchOnWindowFocus: true
+        refetchOnWindowFocus: true,
+        refetchIntervalInBackground: false
       },
       // A mutation is never retried automatically: the BFF fences writes with
       // generations, and a blind retry could repeat a destructive action.

@@ -72,3 +72,36 @@
     }
   }
 }
+
+/* Indeterminate progress: only for work whose duration is unknown. */
+@keyframes ch-progress-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+
+@layer components {
+  .progress-indeterminate {
+    animation: ch-progress-sweep 1.2s ease-in-out infinite;
+  }
+
+  /* The navigation progress bar fades in only when a navigation is slow enough to notice. */
+  .nav-progress {
+    opacity: 0;
+    transition: opacity var(--motion-base) ease-out;
+  }
+  .nav-progress[data-active='true'] {
+    opacity: 1;
+    transition-delay: 150ms;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .progress-indeterminate {
+      animation: none;
+      width: 100%;
+      opacity: 0.6;
+    }
+    .nav-progress[data-active='true'] {
+      transition-delay: 0ms;
+    }
+  }
+}

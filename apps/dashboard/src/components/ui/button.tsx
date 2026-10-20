@@ -1,6 +1,7 @@
 import { cva, type VariantProps } from 'class-variance-authority';
 import { Slot } from 'radix-ui';
-import type { ComponentProps } from 'react';
+import { CheckIcon, LoaderCircleIcon, TriangleAlertIcon } from 'lucide-react';
+import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
 
 export const buttonVariants = cva(
@@ -41,5 +42,74 @@ export function Button({ className, variant, size, asChild = false, type, ...pro
       {...(asChild ? {} : { type: type ?? 'button' })}
       {...props}
     />
+  );
+}
+
+export type ActionButtonState = 'idle' | 'pending' | 'success' | 'error';
+
+export type ActionButtonProps = Omit<ButtonProps, 'onClick' | 'asChild'> & {
+  /** The action; the button stays pending (and ignores further clicks) until it settles. */
+  onAction: (event: MouseEvent<HTMLButtonElement>) => Promise<unknown>;
+  pendingLabel?: ReactNode;
+  successLabel?: ReactNode;
+  errorLabel?: ReactNode;
+  /** How long the success or error state shows before the button returns to idle. */
+  settleMs?: number;
+};
+
+/**
+ * A button that runs an async action with visible pending, success and error states. A ref
+ * lock (not just `disabled`, which re-renders a frame late) rejects every click while the
+ * action is in flight, so a double click can never submit twice. Errors are re-thrown to
+ * nobody: callers report them (page alert, toast) inside `onAction`.
+ */
+export function ActionButton({ onAction, pendingLabel, successLabel, errorLabel, settleMs = 1_500, children, disabled, ...props }: ActionButtonProps) {
+  const [state, setState] = useState<ActionButtonState>('idle');
+  const inFlight = useRef(false);
+  const mounted = useRef(false);
+  // Set inside the effect, not at init: StrictMode runs effect, cleanup, effect on mount,
+  // and a ref initialised to true would stay false after that first cleanup.
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  useEffect(() => {
+    if (state !== 'success' && state !== 'error') return undefined;
+    const timer = setTimeout(() => { if (mounted.current) setState('idle'); }, settleMs);
+    return () => clearTimeout(timer);
+  }, [settleMs, state]);
+
+  async function run(event: MouseEvent<HTMLButtonElement>) {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setState('pending');
+    try {
+      await onAction(event);
+      if (mounted.current) setState('success');
+    } catch {
+      if (mounted.current) setState('error');
+    } finally {
+      inFlight.current = false;
+    }
+  }
+
+  const label = state === 'pending' ? pendingLabel ?? children
+    : state === 'success' ? successLabel ?? children
+      : state === 'error' ? errorLabel ?? children
+        : children;
+  return (
+    <Button
+      {...props}
+      data-state={state}
+      aria-busy={state === 'pending' || undefined}
+      aria-disabled={state === 'pending' || undefined}
+      disabled={disabled}
+      onClick={(event) => { void run(event); }}
+    >
+      {state === 'pending' ? <LoaderCircleIcon aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : null}
+      {state === 'success' ? <CheckIcon aria-hidden="true" /> : null}
+      {state === 'error' ? <TriangleAlertIcon aria-hidden="true" /> : null}
+      {label}
+    </Button>
   );
 }
