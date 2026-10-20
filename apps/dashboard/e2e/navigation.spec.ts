@@ -1,6 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 import { answer, expectNoMismatches, expectPage, installIdentityMonitor, PAGES, records, sidebarLink, stubReads, watchConsole, type VisitedPage } from './support';
 
+/** List projections the migrated pages read; each page states its row count in its table caption. */
+const workspaceList = (count: number) => ({ data: { workspaces: Array.from({ length: count }, (_, index) => ({ workspaceId: `ws_navigation${String(index).padStart(10, '0')}`, repositoryUrl: `https://github.com/acme/repo-${index}.git`, status: 'ACTIVE' })) } });
+const agentList = (count: number) => ({ data: { agents: Array.from({ length: count }, (_, index) => ({ agentId: `agent_navigation${String(index).padStart(10, '0')}`, status: 'RUNNING' })) } });
+const workspaceRecord = (workspaceId: string, repository: string) => ({ data: { workspaceId, repositoryUrl: `https://github.com/acme/${repository}.git`, status: 'CLOSED' } });
+const caption = (page: Page) => page.locator('main table caption').first();
+
 // The navigation transaction: page B's shell commits at once, obsolete reads are aborted,
 // late answers never land on another page, and the title, heading, page frame and current
 // sidebar entry agree on every sampled frame.
@@ -11,18 +17,18 @@ test.beforeEach(async ({ page }) => {
 
 test('A→B and A→B→C keep title, heading and navigation in step', async ({ page }) => {
   const problems = watchConsole(page);
-  await stubReads(page, { '/workspaces': answer(200, records(2)), '/agents': answer(200, records(1)) });
+  await stubReads(page, { '/workspaces': answer(200, workspaceList(2)), '/agents': answer(200, agentList(1)) });
   await page.goto('/dashboard');
   await expectPage(page, 'overview');
 
   await sidebarLink(page, 'workspaces').click();
   await expectPage(page, 'workspaces');
-  await expect(page.getByTestId('read-summary')).toHaveText('2 records loaded.');
+  await expect(caption(page)).toHaveText('2 workspaces');
   await expect(page.getByTestId('page-title')).toBeFocused();
 
   await sidebarLink(page, 'agents').click();
   await expectPage(page, 'agents');
-  await expect(page.getByTestId('read-summary')).toHaveText('1 record loaded.');
+  await expect(caption(page)).toHaveText('1 agents');
 
   await sidebarLink(page, 'secrets').click();
   await expectPage(page, 'secrets');
@@ -31,7 +37,7 @@ test('A→B and A→B→C keep title, heading and navigation in step', async ({ 
 });
 
 test('rapid repeated clicks settle on the last page without mismatches', async ({ page }) => {
-  await stubReads(page, { '/agents': answer(200, records(1), { delayMs: 200 }), '/secrets': answer(200, records(4), { delayMs: 50 }) });
+  await stubReads(page, { '/agents': answer(200, agentList(1), { delayMs: 200 }), '/secrets': answer(200, records(4), { delayMs: 50 }) });
   await page.goto('/dashboard');
   await expectPage(page, 'overview');
 
@@ -49,7 +55,7 @@ test('rapid repeated clicks settle on the last page without mismatches', async (
 });
 
 test('leaving a page aborts its slow read and shows B at once', async ({ page }) => {
-  await stubReads(page, { '/workspaces': answer(200, records(3), { delayMs: 3_000 }), '/agents': answer(200, records(1)) });
+  await stubReads(page, { '/workspaces': answer(200, workspaceList(3), { delayMs: 3_000 }), '/agents': answer(200, agentList(1)) });
   const aborted = page.waitForEvent('requestfailed', (request) => new URL(request.url()).pathname.endsWith('/api/v1/workspaces'));
   await page.goto('/dashboard');
   await sidebarLink(page, 'workspaces').click();
@@ -59,14 +65,14 @@ test('leaving a page aborts its slow read and shows B at once', async ({ page })
   await sidebarLink(page, 'agents').click();
   await expectPage(page, 'agents');
   expect((await aborted).failure()?.errorText).toMatch(/abort/i);
-  await expect(page.getByTestId('read-summary')).toHaveText('1 record loaded.');
+  await expect(caption(page)).toHaveText('1 agents');
   await expectNoMismatches(page);
 });
 
 test('an out-of-order answer for the previous resource never renders on the next one', async ({ page }) => {
   await stubReads(page, {
-    '/workspaces/ws_slowslowslowslowslow01': answer(200, records(7), { delayMs: 1_200 }),
-    '/workspaces/ws_fastfastfastfastfast01': answer(200, records(2), { delayMs: 50 })
+    '/workspaces/ws_slowslowslowslowslow01': answer(200, workspaceRecord('ws_slowslowslowslowslow01', 'slow'), { delayMs: 1_200 }),
+    '/workspaces/ws_fastfastfastfastfast01': answer(200, workspaceRecord('ws_fastfastfastfastfast01', 'fast'), { delayMs: 50 })
   });
   await page.goto('/dashboard/workspaces/ws_slowslowslowslowslow01');
   await expectPage(page, 'workspace');
@@ -77,16 +83,17 @@ test('an out-of-order answer for the previous resource never renders on the next
     dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
   });
   await expect(page).toHaveTitle('ws_fastfastfastfastfast01 · Workspace | Cloud Harness');
-  await expect(page.getByTestId('read-summary')).toHaveText('2 records loaded.');
+  await expect(page.getByRole('heading', { name: 'acme/fast' })).toBeVisible();
   await page.waitForTimeout(1_400);
-  await expect(page.getByTestId('read-summary')).toHaveText('2 records loaded.');
+  await expect(page.getByRole('heading', { name: 'acme/fast' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'acme/slow' })).toHaveCount(0);
   await expectNoMismatches(page);
 });
 
 test('a late answer that is fulfilled lands under its own key, never on the page shown', async ({ page }) => {
   await stubReads(page, {
-    '/workspaces': answer(200, records(7), { delayMs: 1_200 }),
-    '/agents': answer(200, records(2))
+    '/workspaces': answer(200, workspaceList(7), { delayMs: 1_200 }),
+    '/agents': answer(200, agentList(2))
   });
   const failed: string[] = [];
   page.on('requestfailed', (request) => failed.push(new URL(request.url()).pathname));
@@ -100,13 +107,13 @@ test('a late answer that is fulfilled lands under its own key, never on the page
   await requested;
   await sidebarLink(page, 'agents').click();
   await expectPage(page, 'agents');
-  await expect(page.getByTestId('read-summary')).toHaveText('2 records loaded.');
+  await expect(caption(page)).toHaveText('2 agents');
 
   expect((await late).status()).toBe(200);
   await page.waitForTimeout(200);
   expect(failed).toEqual([]);
   await expectPage(page, 'agents');
-  await expect(page.getByTestId('read-summary')).toHaveText('2 records loaded.');
+  await expect(caption(page)).toHaveText('2 agents');
 
   // The late body is cached under the Workspaces key: that page renders it at once, from
   // the cache, without asking again.
@@ -114,7 +121,7 @@ test('a late answer that is fulfilled lands under its own key, never on the page
   page.on('request', (request) => { if (new URL(request.url()).pathname.endsWith('/api/v1/workspaces')) refetched = true; });
   await sidebarLink(page, 'workspaces').click();
   await expectPage(page, 'workspaces');
-  await expect(page.getByTestId('read-summary')).toHaveText('7 records loaded.');
+  await expect(caption(page)).toHaveText('7 workspaces');
   expect(refetched).toBe(false);
   await expectNoMismatches(page);
 });
@@ -124,7 +131,7 @@ test('a failed read shows an error with a Retry that recovers', async ({ page })
   await stubReads(page, {
     '/agents': (route) => {
       calls += 1;
-      return calls <= 3 ? route.abort('failed') : answer(200, records(5))(route);
+      return calls <= 3 ? route.abort('failed') : answer(200, agentList(5))(route);
     }
   });
   await page.goto('/dashboard/agents');
@@ -133,27 +140,38 @@ test('a failed read shows an error with a Retry that recovers', async ({ page })
   await expect(alert).toBeVisible({ timeout: 10_000 });
   await expect(alert).toHaveAttribute('data-error-kind', 'network');
   await alert.getByRole('button', { name: 'Retry' }).click();
-  await expect(page.getByTestId('read-summary')).toHaveText('5 records loaded.');
+  await expect(caption(page)).toHaveText('5 agents');
   await expectNoMismatches(page);
 });
 
-test('reload keeps the deep-link filters and the scroll position', async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 420 });
+test('reload keeps the deep-link filters', async ({ page }) => {
   await stubReads(page);
-  await page.goto('/dashboard/agents?status=RUNNING&attention=1');
+  await page.goto('/dashboard/agents?status=RUNNING&attention=needs-attention');
   await expectPage(page, 'agents');
-  const filters = page.getByRole('list', { name: 'Active filters' });
-  await expect(filters).toContainText('status: RUNNING');
-
-  await page.evaluate(() => window.scrollTo(0, 200));
-  await page.waitForFunction(() => window.scrollY >= 100);
-  const before = await page.evaluate(() => window.scrollY);
-  // Scroll restoration snapshots on unload.
+  await expect(page.getByLabel('Status')).toHaveValue('RUNNING');
+  await expect(page.getByLabel('Attention')).toHaveValue('needs-attention');
   await page.reload();
   await expectPage(page, 'agents');
   await expect(page).toHaveURL(/\/dashboard\/agents\?/);
-  await expect(page.getByRole('list', { name: 'Active filters' })).toContainText('status: RUNNING');
-  await page.waitForFunction((expected) => Math.abs(window.scrollY - expected) < 2, before);
+  await expect(page.getByLabel('Status')).toHaveValue('RUNNING');
+  await expect(page.getByLabel('Attention')).toHaveValue('needs-attention');
+});
+
+// A data page renders a skeleton first after a reload, so the restored offset needs a
+// page whose height does not wait for a read.
+test('reload keeps the scroll position', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 240 });
+  await stubReads(page);
+  await page.goto('/dashboard/secrets');
+  await expectPage(page, 'secrets');
+  await page.evaluate(() => window.scrollTo(0, 120));
+  await page.waitForFunction(() => window.scrollY >= 60);
+  const before = await page.evaluate(() => window.scrollY);
+  // Scroll restoration snapshots on unload.
+  await page.reload();
+  await expectPage(page, 'secrets');
+  // The router snapshots the offset from a throttled scroll event, so allow a few pixels.
+  await page.waitForFunction((expected) => Math.abs(window.scrollY - expected) <= 4, before);
 });
 
 test('Back and Forward restore each page identity', async ({ page }) => {

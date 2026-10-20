@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { answer, expectNoSeriousA11yViolations, expectPage, records, sidebarLink, stubReads, watchConsole } from './support';
+import { answer, expectNoSeriousA11yViolations, expectPage, sidebarLink, stubReads, watchConsole } from './support';
 
 // Error classes, accessibility, reduced motion and what the Dashboard leaves in browser storage.
 
@@ -39,10 +39,10 @@ for (const failure of ERROR_CASES) {
 for (const colorScheme of ['light', 'dark'] as const) {
   test(`shell, palette and mobile drawer are axe clean (${colorScheme})`, async ({ page }) => {
     await page.emulateMedia({ colorScheme });
-    await stubReads(page, { '/workspaces': answer(200, records(3)) });
+    await stubReads(page, { '/workspaces': answer(200, { data: { workspaces: [{ workspaceId: 'ws_statesstatesstate01', repositoryUrl: 'https://github.com/acme/demo.git', status: 'ACTIVE' }] } }) });
     await page.goto('/dashboard/workspaces?q=demo');
     await expectPage(page, 'workspaces');
-    await expect(page.getByTestId('read-summary')).toBeVisible();
+    await expect(page.locator('main table caption')).toHaveText('1 workspaces');
     await expectNoSeriousA11yViolations(page);
 
     await page.getByRole('button', { name: 'Search pages and commands' }).click();
@@ -150,7 +150,7 @@ test('a GitHub App callback is handed to the classic Dashboard with its params',
 
 test('the classic Dashboard link keeps the page query', async ({ page }) => {
   await stubReads(page);
-  await page.goto('/dashboard/agents?status=RUNNING');
-  await expectPage(page, 'agents');
-  await expect(page.getByRole('link', { name: 'Open in classic Dashboard' })).toHaveAttribute('href', '/dashboard/agents?status=RUNNING&ui=legacy');
+  await page.goto('/dashboard/artifacts?cursor=c_42');
+  await expectPage(page, 'artifacts');
+  await expect(page.getByRole('link', { name: 'Open in classic Dashboard' })).toHaveAttribute('href', '/dashboard/artifacts?cursor=c_42&ui=legacy');
 });
