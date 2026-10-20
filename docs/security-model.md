@@ -407,7 +407,8 @@ default masquerade off, and a transactional host firewall (installed via a
 single `iptables-restore` commit and verified through an ephemeral
 `NET_ADMIN`-only network-guard container) permits only public DNS and public
 TCP 80/443. The managed jump is the first rule of both `INPUT` and
-`DOCKER-USER`, and forbidden destination classes — loopback-to-host,
+`DOCKER-USER` in the `filter` table (rules in `mangle` and `raw` do not count
+toward that order, since `filter` makes the accept or reject decision), and forbidden destination classes — loopback-to-host,
 Docker/control-plane, RFC 1918, carrier-grade NAT, link-local, and
 cloud-metadata (`169.254.169.254`) — are rejected before the allowed ports.
 IPv6 is disabled on the bridge. The runner attests the Docker network and the

@@ -74,9 +74,12 @@ export class HostFirewallAttestor {
     }
 
     const lines = iptablesText.split('\n').map((l) => l.trim()).filter((l) => l.length > 0 && !l.startsWith('#'));
+    // mangle and raw also have INPUT/FORWARD chains, but only the filter table
+    // decides whether bridge traffic is accepted, so its chains are read alone.
+    const filterLines = filterSection(lines) ?? lines;
 
     // 1. FORWARD must have an exact, unconditional jump to DOCKER-USER as its first rule
-    const forwardRules = lines.filter((l) => l.startsWith('-A FORWARD'));
+    const forwardRules = filterLines.filter((l) => l.startsWith('-A FORWARD'));
     if (forwardRules.length === 0) {
       return { ok: false, reason: 'missing FORWARD jump rule to DOCKER-USER' };
     }
@@ -85,7 +88,7 @@ export class HostFirewallAttestor {
       return { ok: false, reason: `first FORWARD rule must be exactly '-A FORWARD -j DOCKER-USER', found '${firstForward}'` };
     }
     // 2. Check INPUT jump
-    const inputRules = lines.filter((l) => l.startsWith('-A INPUT'));
+    const inputRules = filterLines.filter((l) => l.startsWith('-A INPUT'));
     if (inputRules.length === 0) {
       return { ok: false, reason: `missing INPUT jump rule for interface '${this.bridgeInterface}'` };
     }
@@ -101,7 +104,7 @@ export class HostFirewallAttestor {
     // The owned INPUT target chain must strictly deny all host-destined traffic
     // and must not contain any RETURN, ACCEPT, or indirect jump rules.
     if (inputTarget !== 'REJECT' && inputTarget !== 'DROP') {
-      const inputChainRules = lines.filter((l) => l.startsWith(`-A ${inputTarget}`));
+      const inputChainRules = filterLines.filter((l) => l.startsWith(`-A ${inputTarget}`));
       if (inputChainRules.length === 0) {
         return { ok: false, reason: `INPUT target chain '${inputTarget}' has no rules` };
       }
@@ -121,7 +124,7 @@ export class HostFirewallAttestor {
     }
 
     // 3. Check DOCKER-USER jump
-    const dockerUserRules = lines.filter((l) => l.startsWith('-A DOCKER-USER'));
+    const dockerUserRules = filterLines.filter((l) => l.startsWith('-A DOCKER-USER'));
     if (dockerUserRules.length === 0) {
       return { ok: false, reason: `missing DOCKER-USER jump rule for interface '${this.bridgeInterface}'` };
     }
@@ -136,7 +139,7 @@ export class HostFirewallAttestor {
     }
 
     // 4. Check EGRESS chain rules in strict order
-    const egressRules = lines.filter((l) => l.startsWith(`-A ${egressTarget}`));
+    const egressRules = filterLines.filter((l) => l.startsWith(`-A ${egressTarget}`));
     if (egressRules.length === 0) {
       return { ok: false, reason: `egress target chain '${egressTarget}' has no rules` };
     }
@@ -415,4 +418,11 @@ export class HostFirewallAttestor {
       return { ok: false, reason: `firewall attestation error: ${err instanceof Error ? err.message : String(err)}` };
     }
   }
+}
+
+function filterSection(lines: string[]): string[] | undefined {
+  const start = lines.indexOf('*filter');
+  if (start === -1) return undefined;
+  const end = lines.indexOf('COMMIT', start);
+  return lines.slice(start + 1, end === -1 ? undefined : end);
 }
