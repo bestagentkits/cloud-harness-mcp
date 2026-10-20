@@ -41,7 +41,38 @@ const config = ApiConfigSchema.parse({
 });
 
 const runtime = createApiApp(config, { accessVerifier: { fetcher: async () => new Response(jwks, { status: 200 }) } });
+
+// Each Playwright test opens a fresh browser context, so without help every page load would
+// re-download every content-hashed chunk and the whole suite would exceed the API's
+// per-minute request limit. Like a browser cache for immutable files, the first request for
+// each hashed asset goes through the real API and later ones replay that exact response.
+const ASSET = /^\/dashboard\/assets\/[^/?]+$/;
+const assetCache = new Map();
+
+function replay(cached, response) {
+  response.writeHead(cached.status, cached.headers);
+  response.end(cached.body);
+}
+
+function captureAsset(path, response) {
+  const chunks = [];
+  const write = response.write.bind(response);
+  const end = response.end.bind(response);
+  response.write = (chunk, ...rest) => { if (chunk) chunks.push(Buffer.from(chunk)); return write(chunk, ...rest); };
+  response.end = (chunk, ...rest) => {
+    if (chunk && typeof chunk !== 'function') chunks.push(Buffer.from(chunk));
+    if (response.statusCode === 200) assetCache.set(path, { status: 200, headers: response.getHeaders(), body: Buffer.concat(chunks) });
+    return end(chunk, ...rest);
+  };
+}
+
 const server = createServer((request, response) => {
+  const path = request.url ?? '';
+  if (request.method === 'GET' && ASSET.test(path)) {
+    const cached = assetCache.get(path);
+    if (cached) { replay(cached, response); return; }
+    captureAsset(path, response);
+  }
   request.headers['cf-access-jwt-assertion'] = assertion();
   runtime.app(request, response);
 });
