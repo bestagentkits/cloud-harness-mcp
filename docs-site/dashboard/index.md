@@ -16,6 +16,7 @@ The **Mission Control** operator dashboard is available at `https://harness.zuey
 - **[Activity](/dashboard/activity):** One operational timeline with All, Agents, Tasks, MCP, Deployments, and Audit filters. Runtime rows are live; audit rows are retained and redacted, and every row says which it is.
 - **[Approvals](/dashboard/approvals):** Privilege grants with their real status, the requested command, workspace, working directory, and command digest. Approve and Reject appear only on unexpired pending grants, and the rail counts only those.
 - **[Projects](/dashboard/projects):** Track repositories and manage project-scoped environment configurations.
+- **[Knowledge](/dashboard/knowledge):** Memories and journals with search, a link graph, and an editor that keeps unsaved drafts across a reload and asks before you leave one.
 - **[Secrets & Credentials](/dashboard/secrets):** Manage global and project-scoped credentials encrypted at rest with AES-256-GCM and automatic ingest-time output stream redaction. Creating a secret is a dialog; the value is write-only.
 - **[Models & Budgets](/dashboard/models):** Configure LLM provider credentials, model profiles, token pricing, and capability limits for coding agents.
 - **[Skills & Skill Sets](/dashboard/skills):** Manage the skill library, provider imports, skill sets, and the toolkit registry.
