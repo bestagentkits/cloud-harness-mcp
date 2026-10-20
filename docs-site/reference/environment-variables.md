@@ -96,6 +96,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `AGENT_MAX_SESSION_MESSAGES` | `2000` | Optional | Most messages one persisted session may hold; past it the run continues but is no longer continuable. |
 | `AGENT_MAX_SESSION_BYTES` | `7340032` | Optional | Most message bytes one persisted session may hold (at most 7864320, to fit the 8 MiB agent start record). |
 | `AGENT_SESSION_RETENTION_MS` | `604800000` | Optional | How long a sealed session stays continuable after its agent ends (7 days); workspace close deletes it sooner. |
+| `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` | `33554432` | Optional | Most stored tool-result bytes (receipts) one agent lineage may keep for replay (32 MiB); past it only hashes are kept. |
 | `GITHUB_APP_ID` | `—` | Optional | Optional GitHub App repository access; required fields depend on AUTH_MODE: |
 | `GITHUB_APP_INSTALLATION_ID` | `—` | Optional | Required in owner-bearer mode; omit in Access mode, where each principal binds an installation: |
 | `GITHUB_APP_SLUG` | `—` | Optional | Required in Access mode for the installation redirect: |

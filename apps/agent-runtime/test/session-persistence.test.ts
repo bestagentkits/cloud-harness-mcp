@@ -69,6 +69,37 @@ describe('persisted session replay planning', () => {
     expect(plan.replay[2]).toMatchObject({ toolCallId: 'call-1', isError: true });
   });
 
+  it('closes an unanswered call with the outcome the runner settled for it, and the rest with the interruption', () => {
+    const applied = JSON.stringify({ ok: true, message: 'File written', data: { path: 'out.txt' }, truncated: false });
+    const messages = [user('task'), assistantCall('call-1'), user('next'), {
+      ...assistantText(''),
+      content: [{ type: 'toolCall', id: 'call-2', name: 'files_write', arguments: {} }, { type: 'toolCall', id: 'call-3', name: 'files_read', arguments: {} }]
+    }];
+    const outcomes = new Map([
+      ['call-1', { text: 'unknown outcome', isError: true }],
+      ['call-2', { text: applied, isError: false }]
+    ]);
+    const plan = planSessionReplay(messages, 9, outcomes);
+    expect(plan.replay[2]).toMatchObject({ toolCallId: 'call-1', isError: true, content: [{ type: 'text', text: 'unknown outcome' }] });
+    expect(plan.trailingRepairs).toEqual([
+      { role: 'toolResult', toolCallId: 'call-2', toolName: 'files_write', content: [{ type: 'text', text: applied }], isError: false, timestamp: 9 },
+      { role: 'toolResult', toolCallId: 'call-3', toolName: 'files_read', content: [{ type: 'text', text: INTERRUPTED_TOOL_RESULT_TEXT }], isError: true, timestamp: 9 }
+    ]);
+  });
+
+  it('accepts bounded tool outcomes on a session and refuses duplicates, unknown outcomes, and oversized ones', () => {
+    const plain = createStartRecord();
+    const messages = [user('task')];
+    const session = { messages, headSha256: sessionHead(messages) };
+    const outcome = { toolCallId: 'call-1', outcome: 'APPLIED', isError: false, text: '{"ok":true}' };
+    expect(StartRecordSchema.parse({ ...plain, session: { ...session, toolOutcomes: [outcome] } }).session?.toolOutcomes).toEqual([outcome]);
+    expect(() => StartRecordSchema.parse({ ...plain, session: { ...session, toolOutcomes: [outcome, outcome] } })).toThrow();
+    expect(() => StartRecordSchema.parse({ ...plain, session: { ...session, toolOutcomes: [{ ...outcome, outcome: 'NONE' }] } })).toThrow();
+    expect(() => StartRecordSchema.parse({ ...plain, session: { ...session, toolOutcomes: [{ ...outcome, text: 'x'.repeat(64 * 1024 + 1) }] } })).toThrow();
+    const many = Array.from({ length: 65 }, (_, index) => ({ ...outcome, toolCallId: `call-${index}` }));
+    expect(() => StartRecordSchema.parse({ ...plain, session: { ...session, toolOutcomes: many } })).toThrow();
+  });
+
   it('redacts only the lease and keeps every other byte of the message', () => {
     const message = { role: 'assistant', z: 1, a: [`key ${LEASE} here`, { [LEASE]: 'value', token: 'kept' }] };
     const redacted = redactSecretDeep(message, LEASE);
@@ -227,6 +258,25 @@ describe('AgentWorker persisted session', () => {
       .toEqual([[4, 'toolResult'], [5, 'user'], [6, 'assistant']]);
     // Two replayed assistant messages are excluded from this run's usage.
     expect(output).toContainEqual({ type: 'terminal', state: 'SUCCEEDED', usage: { input: 5, output: 3, cacheRead: 0, cacheWrite: 0, total: 8, cost: expect.closeTo(0.1, 10) } });
+  });
+
+  it('closes and persists a dangling call with the applied result the runner settled, so the model sees it landed', async () => {
+    const history = [user('task'), assistantCall('call-1')];
+    const receipt = JSON.stringify({ ok: true, message: 'Read 2 bytes', data: { content: 'ok' }, truncated: false });
+    const session = new ScriptedSession();
+    const { worker, writer, factory, records } = createWorker(session);
+    worker.receive(createStartRecord({
+      session: { messages: history, headSha256: runnerHead(history), toolOutcomes: [{ toolCallId: 'call-1', outcome: 'APPLIED', isError: false, text: receipt }] }
+    }));
+    await vi.waitFor(() => expect(session.prompts).toHaveLength(1));
+    const repair = { role: 'toolResult', toolCallId: 'call-1', toolName: 'files_read', content: [{ type: 'text', text: receipt }], isError: false };
+    expect(factory.mock.calls[0]![2]![2]).toMatchObject(repair);
+    session.add(assistantText('done'));
+    session.promptGate.resolve();
+    await worker.completion;
+    await writer.close();
+    const persisted = (records() as Array<Record<string, unknown>>).filter((record) => record.type === 'session_message');
+    expect(persisted[0]).toMatchObject({ seq: 2, message: repair });
   });
 
   it('fails a continued run without an assistant reply of its own even if the history ends with one', async () => {

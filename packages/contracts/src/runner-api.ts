@@ -283,6 +283,37 @@ export const AgentProxyOperationSchema = z.enum([
   'symbols_references'
 ]);
 
+/**
+ * How the runner treats a repeated agent proxy request (same lineage, request ID, and operation).
+ * `read-safe` operations have no workspace effect and may run again; `conditional-write`
+ * operations have a provable post-image; `destructive` operations can only be proven by absence.
+ * The runner never re-issues a mutation on its own.
+ */
+export const AgentProxyReplayClassSchema = z.enum(['read-safe', 'conditional-write', 'destructive']);
+export type AgentProxyReplayClass = z.infer<typeof AgentProxyReplayClassSchema>;
+export const AGENT_PROXY_REPLAY_CLASS = {
+  files_list: 'read-safe',
+  files_read: 'read-safe',
+  grep_search: 'read-safe',
+  symbols_search: 'read-safe',
+  symbols_references: 'read-safe',
+  files_write: 'conditional-write',
+  files_apply_patch: 'conditional-write',
+  files_mkdir: 'conditional-write',
+  files_delete: 'destructive',
+  files_move: 'destructive'
+} as const satisfies Record<z.infer<typeof AgentProxyOperationSchema>, AgentProxyReplayClass>;
+
+/**
+ * Error codes an agent's model can receive for a repeated proxy request whose original outcome
+ * cannot be returned. They appear only in agent tool results, never in MCP tool results.
+ * - `EFFECT_UNKNOWN`: the earlier mutation may or may not have been applied; the owner must inspect.
+ * - `EFFECT_NOT_APPLIED`: the earlier mutation provably did not happen; a new tool call may retry it.
+ * - `EFFECT_RECEIPT_UNAVAILABLE`: the mutation completed but its original result is no longer retained.
+ */
+export const AgentEffectErrorCodeSchema = z.enum(['EFFECT_UNKNOWN', 'EFFECT_NOT_APPLIED', 'EFFECT_RECEIPT_UNAVAILABLE']);
+export type AgentEffectErrorCode = z.infer<typeof AgentEffectErrorCodeSchema>;
+
 export const AgentStatusSchema = z.enum([
   'SPAWNING',
   'RUNNING',

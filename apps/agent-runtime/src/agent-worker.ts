@@ -176,7 +176,8 @@ export class AgentWorker {
     if (messages.length !== session.messages.length || sessionHead(messages) !== session.headSha256) {
       throw new Error('agent session history failed integrity verification');
     }
-    return planSessionReplay(messages);
+    const outcomes = new Map((session.toolOutcomes ?? []).map((item) => [item.toolCallId, { text: item.text, isError: item.isError }]));
+    return planSessionReplay(messages, Date.now(), outcomes);
   }
 
   #emitSessionMessage(message: unknown): void {

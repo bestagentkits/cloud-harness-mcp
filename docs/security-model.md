@@ -1004,6 +1004,32 @@ it. The store and its checks are owned by
 - Closing or expiring the workspace deletes its sessions, and sealed sessions
   are purged after their retention.
 
+### Agent tool effect receipts
+
+The runner records every proxied agent tool call in an owner- and
+workspace-scoped effect ledger in its state database, so a repeated delivery
+returns the original outcome instead of acting twice
+([`docs/mcp-api.md`](mcp-api.md#agent-tool-receipts-and-replay) describes the
+behaviour the model sees):
+
+- A receipt is the exact tool result text the model received, bounded like any
+  tool result. It can hold repository content, including secrets a read
+  returned, so result text is stored only for an agent spawned with session
+  persistence, the only case a continuation can replay it, and only up to a
+  per-lineage byte cap. Every other effect keeps its payload and result hashes
+  only. Stored text stays in the runner's state database, is never returned by
+  an MCP tool, and has the agent's model lease redacted before it is stored.
+  Receipt content is cleared after the session retention, and the workspace's
+  receipts are deleted when it closes, expires, or is compacted.
+- The runner never re-issues a mutation on its own. A mutation whose outcome
+  was lost is settled by reading workspace state through the same fenced
+  executor path, never by repeating it, and an undecidable outcome is reported
+  as unknown.
+- A stale writer cannot change an outcome, usage, or session: each write
+  requires the current runner epoch and the agent's generation, and no
+  successor continuing the agent; recording an outcome also requires a running
+  or cancelling agent in the active workspace generation.
+
 ### Scoped SQLite memories with optimistic concurrency
 
 - Memories are stored in SQLite `StateStore` (schema v5), isolated by `principal_id`:

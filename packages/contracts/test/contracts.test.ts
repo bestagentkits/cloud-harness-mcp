@@ -4,7 +4,10 @@ import {
   AgentIdSchema,
   GITHUB_READ_ACTIONS,
   GITHUB_WRITE_ACTIONS,
+  AGENT_PROXY_REPLAY_CLASS,
+  AgentEffectErrorCodeSchema,
   AgentProxyOperationSchema,
+  AgentProxyReplayClassSchema,
   AgentStatusDataSchema,
   ApiConfigSchema,
   ContextManifestItemSchema,
@@ -830,6 +833,16 @@ describe('contracts', () => {
       'files_list', 'files_read', 'files_write', 'files_apply_patch', 'files_delete',
       'files_move', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references'
     ]);
+    // Every proxy operation has exactly one replay class, and nothing outside the enum is classified.
+    expect(Object.keys(AGENT_PROXY_REPLAY_CLASS).sort()).toEqual([...AgentProxyOperationSchema.options].sort());
+    for (const operation of AgentProxyOperationSchema.options) {
+      expect(AgentProxyReplayClassSchema.options).toContain(AGENT_PROXY_REPLAY_CLASS[operation]);
+    }
+    expect(Object.entries(AGENT_PROXY_REPLAY_CLASS).filter(([, replayClass]) => replayClass === 'read-safe').map(([operation]) => operation).sort())
+      .toEqual(['files_list', 'files_read', 'grep_search', 'symbols_references', 'symbols_search']);
+    expect(Object.entries(AGENT_PROXY_REPLAY_CLASS).filter(([, replayClass]) => replayClass === 'destructive').map(([operation]) => operation).sort())
+      .toEqual(['files_delete', 'files_move']);
+    expect(AgentEffectErrorCodeSchema.options).toEqual(['EFFECT_UNKNOWN', 'EFFECT_NOT_APPLIED', 'EFFECT_RECEIPT_UNAVAILABLE']);
     expect(() => TOOL_SCHEMA_BY_NAME.agent_spawn.parse({
       workspaceId,
       prompt: 'p',

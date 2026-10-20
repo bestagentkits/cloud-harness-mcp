@@ -7,6 +7,21 @@ export const MAX_PROTOCOL_RECORD_BYTES = 8 * 1024 * 1024;
 export const MAX_PROTOCOL_QUEUE_BYTES = 16 * 1024 * 1024;
 export const MAX_TOOL_RESULT_TEXT_BYTES = 2 * 1024 * 1024;
 export const MAX_TOOL_RESULT_RECORD_BYTES = 4 * 1024 * 1024;
+/** Bounds of the outcomes a continuation's start record carries for its transcript's unanswered tool calls. */
+export const MAX_AGENT_TOOL_OUTCOMES = 64;
+export const MAX_AGENT_TOOL_OUTCOME_ID_LENGTH = 1_024;
+export const MAX_AGENT_TOOL_OUTCOME_TEXT_BYTES = 64 * 1024;
+
+/**
+ * The settled outcome of a tool call the replayed transcript left without a result; the runtime
+ * closes that call with this text instead of a generic interruption.
+ */
+export type AgentToolOutcome = {
+  toolCallId: string;
+  outcome: 'APPLIED' | 'REJECTED' | 'NOT_APPLIED' | 'UNKNOWN';
+  isError: boolean;
+  text: string;
+};
 
 const requestId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const boundedJson = z.unknown().refine((value) => {
@@ -64,7 +79,7 @@ export type AgentStartRecord = {
   };
   limits: { deadlineMs: number; maxEvents: number; maxOutputBytes: number; maxEventBytes: number; maxToolResultBytes: number };
   /** Present only when the agent persists its session; the history to replay before the prompt. */
-  session?: { messages: unknown[]; headSha256: string };
+  session?: { messages: unknown[]; headSha256: string; toolOutcomes?: AgentToolOutcome[] };
 };
 export type AgentInputRecord = AgentStartRecord | {
   type: 'message'; requestId: string; behavior: 'steer' | 'followUp'; text: string;

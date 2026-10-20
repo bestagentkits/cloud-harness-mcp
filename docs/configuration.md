@@ -610,6 +610,7 @@ Session persistence is an opt-in:
 | `AGENT_MAX_SESSION_MESSAGES` | `2000` | The most messages one persisted session may hold. Past it the run continues, but the session is no longer continuable. |
 | `AGENT_MAX_SESSION_BYTES` | `7340032` (7 MiB) | The most message bytes one persisted session may hold, with the same outcome. Its maximum keeps a full session, the prompt, and the rest of the start record inside the 8 MiB agent protocol record. |
 | `AGENT_SESSION_RETENTION_MS` | `604800000` (7 days) | How long a sealed session stays continuable after its agent ends. The runner then purges its messages. Closing or expiring the workspace deletes its sessions sooner. |
+| `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` | `33554432` (32 MiB) | The most tool-result bytes (receipts) one agent lineage keeps for replay. Only an agent spawned with session persistence stores result text at all; past the cap, and for every other agent, the effect ledger keeps the payload and result hashes only, and a repeated call behaves as if its receipt had expired. |
 
 The [security model](security-model.md#persisted-agent-sessions) describes
 what the session store holds and who can read it. The

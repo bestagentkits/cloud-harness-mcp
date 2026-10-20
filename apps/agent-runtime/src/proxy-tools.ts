@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { Type, type TSchema } from '@earendil-works/pi-ai';
 import { defineTool, type AgentToolResult, type AgentToolUpdateCallback, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { BoundedJsonSchema, type AgentProxyOperation, type OutputRecord, type ToolResultRecord } from './protocol-schemas.js';
@@ -75,6 +75,91 @@ function boundedToolCallId(value: string): string {
   return `call_${createHash('sha256').update(value).digest('hex').slice(0, 32)}`;
 }
 
+/** The part of Pi's tool context the broker reads: the session's recorded entries. */
+type ToolSessionContext = { sessionManager?: { getEntries?: () => readonly unknown[] } } | undefined;
+
+/**
+ * The proxy request ID of a tool call ID at a use index. It must stay identical to
+ * `effectRequestId` in apps/runner/src/agent-effect-reconciler.ts, which finds a call's effect
+ * from the transcript alone.
+ */
+export function proxyRequestId(toolCallId: string, index: number): string {
+  const base = boundedToolCallId(toolCallId);
+  return index === 0 ? base : `call_${createHash('sha256').update(`${base}#${index}`).digest('hex').slice(0, 32)}`;
+}
+
+/** One tool call block of a transcript, with the index of its message and its request ID. */
+export type TranscriptToolCall = { toolCallId: string; arguments: unknown; requestId: string; message: number };
+
+/**
+ * Every tool call block of a transcript, in order, with its request ID. A block's use index is the
+ * number of earlier tool call blocks in the transcript with the same ID, whether or not Pi executed
+ * them, so a provider that repeats or reuses IDs still gets one request ID per call, and a replay
+ * of the same history derives the same IDs. It must stay identical to `transcriptToolCalls` in
+ * apps/runner/src/agent-effect-reconciler.ts; both sides pin it with the same test vector.
+ */
+export function transcriptToolCalls(messages: readonly unknown[]): TranscriptToolCall[] {
+  const seen = new Map<string, number>();
+  const calls: TranscriptToolCall[] = [];
+  for (const [index, message] of messages.entries()) {
+    if (typeof message !== 'object' || message === null) continue;
+    const { role, content } = message as { role?: unknown; content?: unknown };
+    if (role !== 'assistant' || !Array.isArray(content)) continue;
+    for (const block of content as unknown[]) {
+      if (typeof block !== 'object' || block === null) continue;
+      const { type, id, arguments: args } = block as { type?: unknown; id?: unknown; arguments?: unknown };
+      if (type !== 'toolCall' || typeof id !== 'string') continue;
+      const use = seen.get(id) ?? 0;
+      seen.set(id, use + 1);
+      calls.push({ toolCallId: id, arguments: args, requestId: proxyRequestId(id, use), message: index });
+    }
+  }
+  return calls;
+}
+
+/** The session's recorded messages, including replayed history, or undefined when Pi exposes none. */
+function sessionMessages(ctx: ToolSessionContext): unknown[] | undefined {
+  try {
+    const entries = ctx?.sessionManager?.getEntries?.();
+    if (!entries) return undefined;
+    const messages: unknown[] = [];
+    for (const entry of entries) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const { type, message } = entry as { type?: unknown; message?: unknown };
+      if (type === 'message' && typeof message === 'object' && message !== null) messages.push(message);
+    }
+    return messages;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Tool arguments in a form a transcript's raw arguments and Pi's coerced arguments share: nulls
+ * dropped, numbers and booleans written as strings, object keys sorted. It must stay identical to
+ * `canonicalToolArguments` in apps/runner/src/agent-effect-reconciler.ts.
+ */
+export function canonicalToolArguments(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => item === null || item === undefined ? null : canonicalToolArguments(item));
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== null && item !== undefined)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, item]) => [key, canonicalToolArguments(item)] as const);
+    return Object.fromEntries(entries);
+  }
+  return typeof value === 'number' || typeof value === 'boolean' ? String(value) : value;
+}
+
+/** Whether a transcript block's raw arguments are the ones Pi executed after coercing them. */
+function sameArguments(raw: unknown, executed: unknown): boolean {
+  try {
+    return JSON.stringify(canonicalToolArguments(raw)) === JSON.stringify(canonicalToolArguments(executed));
+  } catch {
+    return false;
+  }
+}
+
 export class ToolResultLimitError extends Error {}
 
 
@@ -84,6 +169,10 @@ export class ProxyToolBroker {
   readonly #maxResultBytes: number;
   readonly #pending = new Map<string, PendingToolCall>();
   readonly #cancelled = new Set<string>();
+  /** Request IDs this run has already proxied, so a repeated tool call ID picks its next block. */
+  readonly #issued = new Set<string>();
+  /** Use counts for calls the session transcript does not show, which fall back to issue order. */
+  readonly #fallbackUses = new Map<string, number>();
 
   constructor(emit: ToolRecordEmitter, redactor: Redactor, maxResultBytes: number) {
     this.#emit = emit;
@@ -97,8 +186,8 @@ export class ProxyToolBroker {
       label: operation,
       description: `Execute the bounded ${operation} operation in the validated workspace.`,
       parameters: PROXY_PARAMETERS[operation],
-      execute: (toolCallId, params, signal, onUpdate) =>
-        this.#execute(operation, toolCallId, params, signal, onUpdate)
+      execute: (toolCallId, params, signal, onUpdate, ctx) =>
+        this.#execute(operation, toolCallId, params, signal, onUpdate, ctx as ToolSessionContext)
     }));
   }
 
@@ -147,15 +236,21 @@ export class ProxyToolBroker {
     toolCallId: string,
     params: unknown,
     signal: AbortSignal | undefined,
-    onUpdate: AgentToolUpdateCallback<unknown> | undefined
+    onUpdate: AgentToolUpdateCallback<unknown> | undefined,
+    ctx?: ToolSessionContext
   ): Promise<AgentToolResult<unknown>> {
     const input = BoundedJsonSchema.parse(params);
-    const requestId = randomUUID();
     const { promise, resolve, reject } = Promise.withResolvers<AgentToolResult<unknown>>();
     if (signal?.aborted) {
       reject(new Error('tool call aborted'));
       return promise;
     }
+    const requestId = this.#requestIdFor(toolCallId, params, ctx);
+    if (this.#pending.has(requestId)) {
+      reject(new Error('tool call is already in flight'));
+      return promise;
+    }
+    this.#cancelled.delete(requestId);
     const abort = () => {
       const pending = this.#pending.get(requestId);
       if (!pending) return;
@@ -177,6 +272,34 @@ export class ProxyToolBroker {
       input
     });
     return promise;
+  }
+
+  /**
+   * Derives the proxy request ID from the model's tool call ID, so the runner can recognize the
+   * same call when it is delivered again, including by a continuation replaying this session. Pi
+   * records the assistant message before it executes its tool calls, so the call is located in the
+   * recorded transcript and gets the request ID `transcriptToolCalls` derives for its block. When
+   * the latest assistant message repeats the ID, the block with the same arguments that this run has
+   * not yet proxied is chosen, else the first one not yet proxied.
+   */
+  #requestIdFor(toolCallId: string, params: unknown, ctx: ToolSessionContext): string {
+    const messages = sessionMessages(ctx);
+    const calls = messages ? transcriptToolCalls(messages).filter((call) => call.toolCallId === toolCallId) : [];
+    const latest = calls.at(-1)?.message;
+    const candidates = calls.filter((call) => call.message === latest && !this.#issued.has(call.requestId));
+    const chosen = candidates.find((call) => sameArguments(call.arguments, params)) ?? candidates[0];
+    let requestId: string;
+    if (chosen) {
+      requestId = chosen.requestId;
+    } else {
+      // Without the call in the transcript, issue order is the only deterministic index left.
+      const base = boundedToolCallId(toolCallId);
+      const index = this.#fallbackUses.get(base) ?? 0;
+      this.#fallbackUses.set(base, index + 1);
+      requestId = proxyRequestId(toolCallId, index);
+    }
+    this.#issued.add(requestId);
+    return requestId;
   }
 
   #settleError(requestId: string, error: Error): void {
