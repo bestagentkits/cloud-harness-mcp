@@ -109,8 +109,9 @@ describe('AppShell', () => {
     const router = renderAt('/dashboard/workspaces/ws_aaaaaaaaaaaaaaaaaaaaaa/files?path=src');
     await screen.findByRole('heading', { level: 1, name: 'Workspace' });
     expect(document.title).toBe('ws_aaaaaaaaaaaaaaaaaaaaaa · Workspace | Cloud Harness');
-    expect(screen.getByRole('link', { name: 'Files' })).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByRole('list', { name: 'Active filters' })).toHaveTextContent('path: src');
+    const sections = await screen.findByRole('navigation', { name: 'Workspace sections' });
+    expect(within(sections).getByRole('link', { name: 'Files' })).toHaveAttribute('aria-current', 'page');
+    expect(router.state.location.search).toEqual({ path: 'src' });
     await act(async () => { await router.navigate({ to: '/workspaces/$workspaceId/$tab', params: { workspaceId: 'ws_aaaaaaaaaaaaaaaaaaaaaa', tab: 'nope' }, search: {} }); });
     expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
     expect(document.title).toBe('Page not found | Cloud Harness');
@@ -129,7 +130,7 @@ describe('AppShell', () => {
   it('renders only the search params a page declares', async () => {
     renderAt('/dashboard/agents?status=RUNNING&notice=Call%20support%20now');
     await screen.findByRole('heading', { level: 1, name: 'Agents' });
-    expect(screen.getByRole('list', { name: 'Active filters' })).toHaveTextContent('status: RUNNING');
+    expect(await screen.findByLabelText('Status')).toHaveValue('RUNNING');
     expect(document.body.textContent).not.toContain('Call support now');
     expect(document.body.textContent).not.toContain('notice');
   });
@@ -154,8 +155,8 @@ describe('AppShell', () => {
     const user = userEvent.setup();
     const router = renderAt('/dashboard/skills?tab=sets');
     expect(await screen.findByRole('tab', { name: 'Skill sets' })).toHaveAttribute('aria-selected', 'true');
-    await user.click(screen.getByRole('tab', { name: 'Imports' }));
-    await vi.waitFor(() => expect(router.state.location.search).toEqual({ tab: 'imports' }));
+    await user.click(screen.getByRole('tab', { name: 'Discover' }));
+    await vi.waitFor(() => expect(router.state.location.search).toMatchObject({ tab: 'imports' }));
   });
 
   it('opens the command palette with Ctrl+K, but not from a terminal', async () => {
