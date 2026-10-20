@@ -1,16 +1,21 @@
-import { createFileRoute, redirect } from '@tanstack/react-router';
-import { PagePlaceholder } from '@/components/layouts/page-placeholder';
-import { githubCallbackHandoff } from '@/lib/github-callback';
+import { createFileRoute } from '@tanstack/react-router';
+import { githubCallbackSearch } from '@/features/github/github-callback-search';
+import { GitHubPage } from '@/features/github/github-page';
 import { warmPageRead } from '@/lib/page-read';
-import { compact, matching } from '@/lib/search-params';
 
+/**
+ * The GitHub App installation callback lands here with `state` and `installation_id`
+ * (`setup_action` is ignored, as in the classic Dashboard). The page completes it natively
+ * and then replaces the URL, so the one-time state does not stay in history.
+ */
 export const Route = createFileRoute('/integrations/github')({
   staticData: { pageId: 'github' },
-  validateSearch: (raw: Record<string, unknown>) => compact({ state: matching(raw, 'state', /^[A-Za-z0-9_-]{8,256}$/), installation_id: matching(raw, 'installation_id', /^[0-9]{1,20}$/) }),
-  beforeLoad: ({ location }) => {
-    const handoff = githubCallbackHandoff(location.searchStr);
-    if (handoff) throw redirect({ href: handoff, reloadDocument: true, replace: true });
-  },
+  validateSearch: githubCallbackSearch,
   loader: (match) => warmPageRead('github', match),
-  component: () => <PagePlaceholder pageId="github" />
+  component: GitHubRoute
 });
+
+function GitHubRoute() {
+  const { state, installation_id: installationId } = githubCallbackSearch(Route.useSearch());
+  return <GitHubPage callback={state && installationId ? { state, installationId } : undefined} />;
+}

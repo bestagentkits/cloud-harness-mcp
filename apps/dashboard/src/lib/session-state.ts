@@ -19,13 +19,14 @@ export function isSessionEnded(): boolean {
   return ended;
 }
 
-function subscribe(listener: Listener): () => void {
+/** Calls `listener` when the session ends (one-time reveals clear themselves on it). */
+export function subscribeSessionEnded(listener: Listener): () => void {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
 }
 
 export function useSessionEnded(): boolean {
-  return useSyncExternalStore(subscribe, isSessionEnded, () => false);
+  return useSyncExternalStore(subscribeSessionEnded, isSessionEnded, () => false);
 }
 
 /** Test seam. */
