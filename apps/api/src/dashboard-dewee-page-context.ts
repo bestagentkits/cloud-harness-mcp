@@ -38,11 +38,18 @@ const LONG_HEX = /\b[0-9a-fA-F]{41,}\b/g;
 const LONG_BASE64 = /[A-Za-z0-9+_-]{32,}={0,2}/g;
 /**
  * Public resource ids are a prefix plus random base64url, which the entropy check would
- * otherwise redact, yet they are exactly what page context carries. The prefixes come from
- * the runner's id generators and the id schemas in `packages/contracts/src/`. Credential-bearing
+ * otherwise redact, yet they are exactly what page context carries. Each prefix is pinned to
+ * the exact length its generator produces:
+ * - 32 chars, `randomBytes(24)`: `opaqueId` (runner `metadata-records.ts`), `id` (runner
+ *   `operation-manager.ts`), agents, artifacts, principals and model spend;
+ * - 22 chars, `randomBytes(16)`: repository caches, memories and event deliveries;
+ * - 24 chars: MCP gateway tool ids (`apps/api/src/mcp-gateway/catalog.ts`).
+ * Ids built from lowercase hex (skills, knowledge, credentials, events) never trip the
+ * heuristics and are not listed, so `sk_live_…`-style keys get no pass. Credential-bearing
  * prefixes (gateway `lease_`, API key `apk_`/`chm_key_`) are deliberately not listed.
+ * The single capture group makes `split` return the ids at odd indexes.
  */
-const PUBLIC_ID = /(?<![A-Za-z0-9_-])(?:ws|agent|task|sess|term|art|env|prj|kn|knl|mem|cred|icr|sk|skrev|skset|skjob|mcps|mcpt|mcpg|msp|prn|rc|evt|dlv)_[A-Za-z0-9_-]{20,80}(?![A-Za-z0-9_-])/g;
+const PUBLIC_ID = /(?<![A-Za-z0-9_-])((?:ws|agent|task|sess|term|art|env|prj|mcps|mcpg|msp|prn)_[A-Za-z0-9_-]{32}|(?:rc|mem|dlv)_[A-Za-z0-9_-]{22}|mcpt_[A-Za-z0-9_-]{24})(?![A-Za-z0-9_-])/;
 
 const byteLength = (value: string) => Buffer.byteLength(value, 'utf8');
 
@@ -60,15 +67,16 @@ function looksLikeKey(value: string): boolean {
   return /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value) && entropy(value) >= 4;
 }
 
+/** Applies the long-hex and random-base64 heuristics to text that holds no public id. */
+function redactRandom(text: string): string {
+  return text.replace(LONG_HEX, REDACTED).replace(LONG_BASE64, (match) => looksLikeKey(match) ? REDACTED : match);
+}
+
 function redactString(value: string): string {
   let output = value;
   for (const [pattern, replacement] of SECRET_VALUES) output = output.replace(pattern, replacement);
-  // Public ids are set aside behind placeholders the heuristics cannot match, then restored.
-  const ids: string[] = [];
-  output = output.replace(PUBLIC_ID, (id) => `\uE000${ids.push(id) - 1}\uE001`);
-  output = output.replace(LONG_HEX, REDACTED);
-  output = output.replace(LONG_BASE64, (match) => looksLikeKey(match) ? REDACTED : match);
-  return output.replace(/\uE000(\d+)\uE001/g, (_match, index: string) => ids[Number(index)]!);
+  // Public ids sit at odd indexes and pass through; only the text between them is checked.
+  return output.split(PUBLIC_ID).map((part, index) => index % 2 ? part : redactRandom(part)).join('');
 }
 
 /** Returns a copy with secret-named fields and secret-shaped strings replaced by a marker. */

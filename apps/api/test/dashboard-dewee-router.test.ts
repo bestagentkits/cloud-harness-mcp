@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest, type ClientRequest, type Server } from 'node:http';
 import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -455,6 +455,35 @@ describe('Dashboard webchat page context sanitizer', () => {
     expect(sanitizeDeweePageContext({ route: `/dashboard/workspaces/${workspaceId}/${token}`, bare: token, lease, accessKey: 'a', value: 'v' })).toEqual({
       route: `/dashboard/workspaces/${workspaceId}/[redacted]`, bare: '[redacted]', lease: '[redacted]', accessKey: '[redacted]', value: '[redacted]'
     });
+  });
+
+  it('keeps a real id of every generator shape, including hex ids it does not list', () => {
+    const base64url = (bytes: number) => randomBytes(bytes).toString('base64url');
+    const hex = (bytes: number) => randomBytes(bytes).toString('hex');
+    for (let index = 0; index < 50; index += 1) {
+      const ids = [
+        ...['ws', 'agent', 'task', 'sess', 'term', 'art', 'env', 'prj', 'mcps', 'mcpg', 'msp', 'prn'].map((prefix) => `${prefix}_${base64url(24)}`),
+        ...['rc', 'mem', 'dlv'].map((prefix) => `${prefix}_${base64url(16)}`),
+        `mcpt_${base64url(32).slice(0, 24)}`,
+        ...['sk', 'skrev', 'skset', 'skjob', 'cred'].map((prefix) => `${prefix}_${hex(16)}`),
+        `kn_${hex(12)}`, `knl_${hex(12)}`, `icr_${randomUUID().replaceAll('-', '')}`, `evt_${hex(16)}`
+      ];
+      const context = { ids, route: `/dashboard/${ids.join('/')}` };
+      expect(sanitizeDeweePageContext(context)).toEqual(context);
+    }
+  });
+
+  it('gives no id pass to look-alike keys or over-long ids', () => {
+    const random = 'Zk9xR2b7Tq1LmN4pWv8Yc3Hs6Ju0Ke5Dg2Fa9Xo';
+    expect(sanitizeDeweePageContext({
+      live: `sk_live_${random}`, test: `sk_test_${random}`, long: `ws_${random}${random.slice(0, 24)}`
+    })).toEqual({ live: '[redacted]', test: '[redacted]', long: '[redacted]' });
+  });
+
+  it('is not confused by private-use characters in the input', () => {
+    const workspaceId = `ws_${randomBytes(24).toString('base64url')}`;
+    const note = `\uE0000\uE001 ${workspaceId} \uE0001\uE001 \uE0009\uE001`;
+    expect(sanitizeDeweePageContext({ note })).toEqual({ note });
   });
 
   it('measures the context before and after sanitizing', () => {
