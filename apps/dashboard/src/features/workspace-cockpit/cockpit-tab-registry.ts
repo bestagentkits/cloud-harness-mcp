@@ -68,7 +68,7 @@ export const COCKPIT_TABS: Record<WorkspaceTab, CockpitTabEntry> = {
   summary: tab('summary', 'Summary', false, () => import('./tabs/summary-tab')),
   agents: tab('agents', 'Agents', false, () => import('./tabs/agents-tab')),
   runtime: tab('runtime', 'Runtime', true, () => import('./tabs/runtime-tab'), TAB_SEARCH.runtime),
-  terminal: tab('terminal', 'Terminal', true, pending),
+  terminal: tab('terminal', 'Terminal', true, () => import('./tabs/terminal-tab')),
   files: tab('files', 'Files', true, pending, TAB_SEARCH.files),
   git: tab('git', 'Git', true, pending, TAB_SEARCH.git),
   automation: tab('automation', 'Automation', true, pending),
