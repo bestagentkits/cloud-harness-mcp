@@ -1,3 +1,22 @@
+# [0.66.0-beta.32](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.31...v0.66.0-beta.32) (2026-10-21)
+
+
+### Bug Fixes
+
+* **dashboard:** ask which repository a multi-repository workspace finalizes ([1ea1ed1](https://github.com/bestagentkits/cloud-harness-mcp/commit/1ea1ed116923ce818e0c5a24e3bdf0e7429b5265))
+* **docs:** quote the checkout path in the repository add description ([099f8e0](https://github.com/bestagentkits/cloud-harness-mcp/commit/099f8e0bccb869a5dee3376182b859c83c9de44e))
+* **workspaces:** freeze the workspace tree around repository add and remove ([dbc6309](https://github.com/bestagentkits/cloud-harness-mcp/commit/dbc63093b1030b3854a03715769a923104f280e9))
+* **workspaces:** never follow a swapped repos link when rolling back an added checkout ([0d92c50](https://github.com/bestagentkits/cloud-harness-mcp/commit/0d92c5063afb4ac4fcf164d8d58e03d9c8e32479))
+* **workspaces:** recover an executor left paused by a repository change ([068045c](https://github.com/bestagentkits/cloud-harness-mcp/commit/068045c74382a6435fc32b366e111533a870007a))
+* **workspaces:** refuse a pause while an executor recovery is in flight ([70a2e57](https://github.com/bestagentkits/cloud-harness-mcp/commit/70a2e57ba89b50fad4e6d395a7ec4402862d6593))
+* **workspaces:** refuse executor recovery while a repository change holds the pause ([63c3837](https://github.com/bestagentkits/cloud-harness-mcp/commit/63c3837f508eebac172ee60108e4f20a3f8bc302))
+
+
+### Features
+
+* **dashboard:** scope files, git and terminal to a selected repository ([42c4185](https://github.com/bestagentkits/cloud-harness-mcp/commit/42c4185ab6611092e7fecdf21b534c581a8396d2))
+* **workspaces:** add and remove repositories after open, search all checkouts ([db9455a](https://github.com/bestagentkits/cloud-harness-mcp/commit/db9455a641d296663089f53b550015f5b9378f0c))
+
 # [0.66.0-beta.31](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.30...v0.66.0-beta.31) (2026-10-21)
 
 
