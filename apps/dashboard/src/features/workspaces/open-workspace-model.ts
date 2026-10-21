@@ -87,7 +87,8 @@ export function parseOpenWorkspaceDraft(raw: unknown): OpenWorkspaceDraft | unde
     if (SKILL_NAME.test(name) && typeof revision === 'string' && ID.test(revision)) overrides[name] = revision;
   }
   const launchRecord = rec(record.launch);
-  const launch = typeof launchRecord.key === 'string' && /^[A-Za-z0-9._:-]{8,128}$/.test(launchRecord.key) && typeof launchRecord.intent === 'string'
+  const launch = typeof launchRecord.key === 'string' && /^[A-Za-z0-9._:-]{8,128}$/.test(launchRecord.key)
+    && typeof launchRecord.intent === 'string' && /^[a-f0-9]{64}$/.test(launchRecord.intent)
     ? { key: launchRecord.key, intent: launchRecord.intent } : undefined;
   return {
     open: record.open === true,
@@ -103,6 +104,15 @@ export function parseOpenWorkspaceDraft(raw: unknown): OpenWorkspaceDraft | unde
   };
 }
 
+/**
+ * The stored identity of a launch request: a SHA-256 of the request, never the request
+ * itself, so nothing typed into the wizard reaches storage through the pending launch.
+ */
+export async function launchIntentOf(request: unknown): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(request)));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 /** The repository step's own check, before the runner's host and policy validation. */
 export function repositoryError(repositoryUrl: string): string | undefined {
   const trimmed = repositoryUrl.trim();
@@ -111,6 +121,8 @@ export function repositoryError(repositoryUrl: string): string | undefined {
     const url = new URL(trimmed);
     if (url.protocol !== 'https:') return 'Use an HTTPS repository URL.';
     if (url.username || url.password) return 'Remove credentials from the URL: private clones authenticate through the harness, never the URL.';
+    // A query or fragment is where a pasted access token sits; the runner clones a plain URL.
+    if (url.search || url.hash) return 'Remove the query and fragment from the URL: private clones authenticate through the harness, never the URL.';
     return undefined;
   } catch {
     return 'Enter a valid URL, for example https://github.com/org/repo.';

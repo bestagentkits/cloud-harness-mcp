@@ -63,7 +63,7 @@ function SkillList({ workspaceId, skills, invalidate }: { workspaceId: string; s
     <>
       <ul className="grid gap-2" aria-label="Workspace skills">
         {skills.map((skill) => (
-          <li key={skill.name} className="flex flex-wrap items-start justify-between gap-3 rounded-md border p-3">
+          <li key={`${skill.name}:${skill.tier ?? ''}:${skill.sha256 ?? ''}`} className="flex flex-wrap items-start justify-between gap-3 rounded-md border p-3">
             <div className="grid min-w-0 gap-1">
               <span className="flex flex-wrap items-center gap-2 font-medium">{skill.name}{skill.tier ? <StatusBadge status="neutral" label={skill.tier} /> : null}</span>
               {skill.description ? <p className="text-sm text-muted-foreground">{skill.description}</p> : null}
@@ -166,6 +166,7 @@ function HookPipeline({ workspaceId, hooks, manifestSha256, invalidate }: {
     },
     invalidate,
     successToast: 'Hooks finished.',
+    errorTitle: 'The hooks did not run',
     onSuccess: (data, vars) => setResult({ title: `${vars.hook.name} · ${vars.eventLabel}`, result: runResultOf((data as BffEnvelope<unknown> | undefined)?.data) })
   });
 

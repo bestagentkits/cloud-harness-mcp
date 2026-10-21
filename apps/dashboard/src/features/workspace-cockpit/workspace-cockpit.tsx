@@ -111,6 +111,7 @@ function CockpitHeader({ workspace }: { workspace: Workspace }) {
     mutationFn: (expectedGeneration) => apiClient.request(`${base}/close`, { method: 'POST', body: { expectedGeneration } }),
     invalidate,
     successToast: 'Workspace closed.',
+    errorTitle: 'The workspace was not closed',
     onSuccess: () => { void navigate({ to: '/' }); }
   });
   const canOpen = workspaceHasAction(workspace, 'workspace_open');

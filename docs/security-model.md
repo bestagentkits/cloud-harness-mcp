@@ -764,8 +764,10 @@ legacy shell, with these client-side guarantees:
   that take secret values have no draft at all.
   The open-workspace wizard applies the same URL filter to the repository URL
   and also keeps its pending launch's `idempotencyKey`, a non-secret dedupe
-  token, so a reload after a lost answer replays the same intent instead of
-  opening a second workspace
+  token, beside a SHA-256 digest of the request (never the request itself), so a
+  reload after a lost answer replays the same intent instead of opening a second
+  workspace. The wizard refuses a repository URL with user info, a query or a
+  fragment before anything is sent
   ([`open-workspace-model.ts`](../apps/dashboard/src/features/workspaces/open-workspace-model.ts)).
   The cockpit deploy wizard keeps only the chosen target name; deployment,
   skill and hook output stays in component state.

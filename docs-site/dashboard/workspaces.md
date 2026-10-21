@@ -57,7 +57,8 @@ dashboard can read: a lease inside its threshold, a failed workspace, a quaranti
   branch, ahead/behind, staged/modified/untracked counts, the changed-file list, a
   bounded staged or unstaged diff, recent commits, worktrees, and advanced operations
   (fetch, fast-forward-only pull, checkout, branch, merge, rebase) that report conflicts
-  in place instead of resolving them.
+  in place instead of resolving them. Checkout, merge, rebase and worktree removal ask
+  for confirmation first; fetch, pull and branch run directly.
 - **Automation** groups hooks by the lifecycle event that runs them
   (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`) beside an
   ordered pipeline, lists the resolved skills, and offers a guarded skill-script runner.
@@ -77,12 +78,12 @@ and session output is fetched through a read-only, bounded call: the dashboard n
 sends input to an agent's session. For an interactive shell, use the
 [Terminal](/dashboard/terminal) section instead.
 
-In the new dashboard, the Runtime tab lists tasks and sessions with a **Refresh** button
-instead of a live graph: each task shows the tasks it depends on as a column. **Output**
-opens a task's bounded output and puts the task in the address (`?task=`), so the view
-survives a reload; **Next slice** reads the next part of a long output. You can open a
-named shell session, read its output, and close it after a confirmation. The dependency
-graph is listed under the tasks, each task with the tasks it waits on.
+In the new dashboard, the Runtime tab shows the dependency graph above the task list,
+and nothing polls: **Refresh** re-reads the tasks, sessions and graph together. Each task
+also lists the tasks it depends on as a column. **Output** opens a task's bounded output
+and puts the task in the address (`?task=`), so the view survives a reload; **Next
+slice** reads the next part of a long output. You can open a named shell session, read
+its output, and close it after a confirmation.
 
 ## Files, deploy and finalize in the new dashboard
 

@@ -42,7 +42,8 @@ export function ArtifactsPage({ search, onCursor }: { search: ArtifactsSearch; o
   const remove = useBffMutation<Artifact & { generation: number }, unknown>({
     mutationFn: (artifact) => apiClient.request(bffPath('artifacts', artifact.artifactId), { method: 'DELETE', body: { expectedGeneration: artifact.generation } }),
     invalidate: ['/artifacts'],
-    successToast: 'Artifact deleted.'
+    successToast: 'Artifact deleted.',
+    errorTitle: 'The artifact was not deleted'
   });
 
   const columns: DataTableColumn<Artifact>[] = [

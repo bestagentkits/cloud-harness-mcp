@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  activeOverrides, initialOpenWorkspaceDraft, launchBlocked, openWorkspaceRequest, parseOpenWorkspaceDraft, repositoryError,
+  activeOverrides, initialOpenWorkspaceDraft, launchBlocked, launchIntentOf, openWorkspaceRequest, parseOpenWorkspaceDraft, repositoryError,
   restorableRepositoryUrl, serializeOpenWorkspaceDraft, skillPreviewOf, skillSetsOf, toolkitsOf
 } from './open-workspace-model';
 
@@ -28,7 +28,10 @@ describe('open workspace draft restore', () => {
       open: true, step: 'review', repositoryUrl: 'https://github.com/org/repo', ref: '', networkProfile: 'dependency-access',
       skillSetIds: [SET], skillOverrides: { lint: REV_A }, presets: ['obra/superpowers'], agentkits: ['engineer']
     });
-    expect(parseOpenWorkspaceDraft({ launch: { key: 'c3f2b1a0-0000-4000-8000-000000000000', intent: '{}' } })?.launch).toEqual({ key: 'c3f2b1a0-0000-4000-8000-000000000000', intent: '{}' });
+    const key = 'c3f2b1a0-0000-4000-8000-000000000000';
+    expect(parseOpenWorkspaceDraft({ launch: { key, intent: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } })?.launch).toEqual({ key, intent: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+    // A stored intent is only ever a digest; a raw request (which could hold a URL) is dropped.
+    expect(parseOpenWorkspaceDraft({ launch: { key, intent: '{"repositoryUrl":"https://h/r?token=x"}' } })?.launch).toBeUndefined();
     expect(parseOpenWorkspaceDraft([])).toBeUndefined();
   });
 
@@ -37,7 +40,20 @@ describe('open workspace draft restore', () => {
     expect(repositoryError('git@github.com:org/repo')).toMatch(/valid URL|HTTPS/);
     expect(repositoryError('http://github.com/org/repo')).toMatch(/HTTPS/);
     expect(repositoryError('https://u:p@github.com/org/repo')).toMatch(/credentials/);
+    expect(repositoryError('https://github.com/org/repo.git?private_token=x')).toMatch(/query and fragment/);
+    expect(repositoryError('https://github.com/org/repo#x')).toMatch(/query and fragment/);
     expect(repositoryError('https://github.com/org/repo')).toBeUndefined();
+  });
+});
+
+describe('open workspace launch intent', () => {
+  it('is a stable SHA-256 digest that never contains the request', async () => {
+    const request = { repositoryUrl: 'https://github.com/org/repo', ref: 'main' };
+    const intent = await launchIntentOf(request);
+    expect(intent).toMatch(/^[a-f0-9]{64}$/);
+    expect(await launchIntentOf({ ...request })).toBe(intent);
+    expect(await launchIntentOf({ ...request, ref: 'dev' })).not.toBe(intent);
+    expect(intent).not.toContain('github');
   });
 });
 

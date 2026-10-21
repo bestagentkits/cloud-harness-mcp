@@ -11,7 +11,7 @@ import { mutationErrorText, useBffMutation } from '@/lib/bff-mutation';
 import { usePagePrimaryAction } from '@/lib/page-primary-action';
 import { useRestorableState } from '@/lib/restorable-state';
 import {
-  initialOpenWorkspaceDraft, launchBlocked, OPEN_WORKSPACE_STEP_LABELS, OPEN_WORKSPACE_STEPS, openedWorkspaceId,
+  initialOpenWorkspaceDraft, launchBlocked, launchIntentOf, OPEN_WORKSPACE_STEP_LABELS, OPEN_WORKSPACE_STEPS, openedWorkspaceId,
   type OpenWorkspaceDraft, openWorkspaceRequest, parseOpenWorkspaceDraft, repositoryError, serializeOpenWorkspaceDraft,
   skillPreviewOf, skillSetSelections, skillSetsOf, toolkitSelections, toolkitsOf
 } from './open-workspace-model';
@@ -58,7 +58,9 @@ export function OpenWorkspaceWizard() {
 
   const launch = useBffMutation<{ body: Record<string, unknown> }, BffEnvelope<unknown>>({
     mutationFn: ({ body }) => apiClient.request<BffEnvelope<unknown>>('/workspaces', { method: 'POST', body }),
-    invalidate: ['/workspaces'],
+    // A conflict (a set's generation moved) refreshes the sets and the preview, so the next
+    // launch carries the new generation and therefore a new intent and key.
+    invalidate: ['/workspaces', '/skill-sets', ['open-workspace', 'skill-set-preview']],
     successToast: 'Workspace opened.'
   });
 
@@ -84,7 +86,7 @@ export function OpenWorkspaceWizard() {
 
   async function submit() {
     const request = openWorkspaceRequest(draft, setList, conflicts, catalog.licensed);
-    const intent = JSON.stringify(request);
+    const intent = await launchIntentOf(request);
     const key = draft.launch?.intent === intent ? draft.launch.key : globalThis.crypto.randomUUID();
     // Persisted before the request leaves, so a reload after a lost answer replays this key.
     patch({ launch: { key, intent } });

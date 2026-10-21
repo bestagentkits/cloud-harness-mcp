@@ -186,7 +186,8 @@ export function PackagesPage() {
       return apiClient.request(path, { method: 'POST', body });
     },
     invalidate: ['/packages'],
-    successToast: (_result, next) => packageChangeCopy(next).success
+    successToast: (_result, next) => packageChangeCopy(next).success,
+    errorTitle: 'The package change was not applied'
   });
   const copy = change ? packageChangeCopy(change) : undefined;
 

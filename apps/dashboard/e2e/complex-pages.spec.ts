@@ -56,6 +56,11 @@ test('open workspace: repository, skills with a settled conflict, review, and on
   await dialog.getByRole('button', { name: 'Next' }).click();
   await expect(dialog.getByRole('alert')).toContainText('Remove credentials');
   expect(await stored(page)).not.toContain('hunter2-token');
+  // A query or fragment is where a pasted access token sits: refused, and never stored.
+  await dialog.getByLabel('Repository HTTPS URL').fill(`${REPO}.git?private_token=hunter3-token`);
+  await dialog.getByRole('button', { name: 'Next' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Remove the query and fragment');
+  expect(await stored(page)).not.toContain('hunter3-token');
   await dialog.getByLabel('Repository HTTPS URL').fill(REPO);
   await dialog.getByLabel('Branch or commit ref').fill('main');
   await dialog.getByLabel('Network profile').selectOption('network-none');
@@ -84,6 +89,10 @@ test('open workspace: repository, skills with a settled conflict, review, and on
   await expect(dialog).toContainText('1 toolkit selection(s) checked by the runner.');
   await dialog.getByRole('button', { name: 'Launch workspace' }).click();
   await expect(dialog.getByRole('alert')).toBeVisible();
+  // The pending launch is stored as a key and a digest of the request, never the request.
+  const pending = JSON.parse(await stored(page)) as { launch?: { intent?: string } };
+  expect(pending.launch?.intent).toMatch(/^[a-f0-9]{64}$/);
+  expect(JSON.stringify(pending.launch)).not.toContain('github.com');
   await dialog.getByRole('button', { name: 'Launch workspace' }).click();
   await expect(page).toHaveURL(new RegExp(`/workspaces/${WORKSPACE_ID}$`));
   await expect(toastTitled(page, 'Workspace opened.')).toBeVisible();
@@ -135,6 +144,35 @@ test('open workspace: a changed request is a new intent with a new key; cancel d
   await expect(page.getByRole('dialog', { name: 'Open new workspace' })).toHaveCount(0);
 });
 
+
+test('open workspace: a stale skill-set generation re-reads the sets and launches with the new one under a new key', async ({ page }) => {
+  let setReads = 0;
+  const setsAt = (generation: number) => ({ data: { sets: [{ id: SET, name: 'Core engineering', description: 'Lint and test skills.', generation }] } });
+  const writes = await stubBff(page, {
+    reads: { ...WIZARD_READS, '/skill-sets': (route) => answer(200, setsAt(++setReads > 1 ? 4 : 3))(route) },
+    writes: {
+      'POST /skill-sets/preview': answer(200, { data: { resolved: [{ name: 'lint' }], excluded: [], conflicts: [] } }),
+      'POST /workspaces': [answer(409, { error: 'STALE_GENERATION', message: 'The skill set changed.' }), answer(200, { data: { workspaceId: WORKSPACE_ID } })]
+    }
+  });
+  await page.goto('/dashboard/workspaces');
+  await openWizard(page);
+  const dialog = page.getByRole('dialog', { name: 'Open new workspace' });
+  await dialog.getByLabel('Repository HTTPS URL').fill(REPO);
+  await dialog.getByRole('button', { name: 'Next' }).click();
+  await dialog.getByLabel('Core engineering').check();
+  await dialog.getByRole('button', { name: 'Next' }).click();
+  await dialog.getByRole('button', { name: 'Launch workspace' }).click();
+  await expect(dialog.getByRole('alert')).toBeVisible();
+  await expect.poll(() => setReads).toBeGreaterThan(1);
+  await expect.poll(() => writesTo(writes, 'POST', '/skill-sets/preview').at(-1)?.body).toEqual({ skillSets: [{ skillSetId: SET, expectedGeneration: 4 }], skillOverrides: {} });
+  await expect(dialog.getByRole('button', { name: 'Launch workspace' })).toBeEnabled();
+  await dialog.getByRole('button', { name: 'Launch workspace' }).click();
+  await expect(page).toHaveURL(new RegExp(`/workspaces/${WORKSPACE_ID}$`));
+  const launches = writesTo(writes, 'POST', '/workspaces').map((entry) => entry.body as { skillSets: unknown; idempotencyKey: string });
+  expect(launches.map((launch) => launch.skillSets)).toEqual([[{ skillSetId: SET, expectedGeneration: 3 }], [{ skillSetId: SET, expectedGeneration: 4 }]]);
+  expect(launches[1]!.idempotencyKey).not.toBe(launches[0]!.idempotencyKey);
+});
 
 test('artifacts: create a retained snapshot and delete one, each fenced by its generation', async ({ page }) => {
   const writes = await stubBff(page, {
@@ -191,6 +229,31 @@ test('packages: roll back and uninstall confirm with the classic copy and are fe
   await expect(toastTitled(page, 'tsx uninstalled.')).toBeVisible();
   expect(writesTo(writes, 'POST', '/packages/remove').map((entry) => entry.body)).toEqual([{ bindingId: 'pkb_tsx_01', expectedGeneration: 5 }]);
   expect(writes.every((entry) => entry.csrf)).toBe(true);
+});
+
+test('artifacts and packages: a refused delete, rollback or uninstall says so in a toast', async ({ page }) => {
+  await stubBff(page, {
+    reads: { '/artifacts': answer(200, { data: { artifacts: [ARTIFACT] } }), '/packages': answer(200, PACKAGES) },
+    writes: {
+      'DELETE /artifacts/art_page_01': answer(409, { error: 'STALE_GENERATION', message: 'The artifact changed.' }),
+      'POST /packages/rollback': answer(503, { error: 'RUNNER_UNAVAILABLE', message: 'Try again.' }),
+      'POST /packages/remove': answer(409, { error: 'STALE_GENERATION', message: 'The package changed.' })
+    }
+  });
+  await page.goto('/dashboard/artifacts');
+  await page.getByRole('button', { name: 'Delete report.json' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Delete artifact' }).click();
+  await expect(toastTitled(page, 'The artifact was not deleted')).toBeVisible();
+  await expect(toastTitled(page, 'Artifact deleted.')).toHaveCount(0);
+
+  await page.goto('/dashboard/packages');
+  await page.getByRole('button', { name: 'Roll back to 4.0.0' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Roll back' }).click();
+  await expect(toastTitled(page, 'The package change was not applied')).toBeVisible();
+  await page.getByRole('button', { name: 'Uninstall tsx' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Uninstall' }).click();
+  await expect(toastTitled(page, 'The package change was not applied')).toHaveCount(2);
+  await expect(toastTitled(page, 'tsx uninstalled.')).toHaveCount(0);
 });
 
 test('packages: a disabled instance says so and offers no change', async ({ page }) => {

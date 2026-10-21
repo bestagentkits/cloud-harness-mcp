@@ -31,6 +31,7 @@ export default function DeployTab({ workspaceId }: CockpitTabProps) {
     mutationFn: (name) => apiClient.request(`${path}/run`, { method: 'POST', body: { name } }),
     invalidate: [path],
     successToast: 'Deployment finished.',
+    errorTitle: 'The deployment did not run',
     onSuccess: (data, name) => { setResult({ name, result: runResultOf((data as BffEnvelope<unknown> | undefined)?.data) }); clearDraft(); }
   });
   return (

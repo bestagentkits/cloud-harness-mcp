@@ -204,3 +204,30 @@ test('header: finalize keeps one idempotency key across a retry; recover and clo
   expect(writesTo(writes, 'POST', `${base}/close`).map((entry) => entry.body)).toEqual([{ expectedGeneration: 7 }]);
   expect(writes.every((entry) => entry.csrf)).toBe(true);
 });
+
+test('a refused close, deployment or hook run says so in a toast', async ({ page }) => {
+  await stubBff(page, {
+    reads: READS,
+    writes: {
+      [`POST ${base}/close`]: answer(409, { error: 'STALE_GENERATION', message: 'The workspace changed.' }),
+      [`POST ${base}/deployments/run`]: answer(503, { error: 'RUNNER_UNAVAILABLE', message: 'Try again.' }),
+      [`POST ${base}/hooks/run`]: answer(409, { error: 'STALE_MANIFEST', message: 'The hooks changed.' })
+    }
+  });
+  await page.goto(`/dashboard${base}`);
+  await page.getByRole('button', { name: 'Close workspace' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Close workspace' }).click();
+  await expect(toastTitled(page, 'The workspace was not closed')).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`${base}$`));
+
+  await page.goto(`/dashboard${base}/deploy`);
+  await page.getByRole('button', { name: 'Review deployment production' }).click();
+  await page.getByRole('button', { name: 'Run deployment' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Run deployment' }).click();
+  await expect(toastTitled(page, 'The deployment did not run')).toBeVisible();
+
+  await page.goto(`/dashboard${base}/automation`);
+  await page.getByRole('button', { name: 'Run hook format at Before commit' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Run hook' }).click();
+  await expect(toastTitled(page, 'The hooks did not run')).toBeVisible();
+});
