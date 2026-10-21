@@ -1,3 +1,12 @@
+# [0.76.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.75.0...v0.76.0) (2026-10-21)
+
+
+### Features
+
+* **dashboard:** cockpit tabs, wizards, artifacts and packages in React ([#520](https://github.com/bestagentkits/cloud-harness-mcp/issues/520)) ([e850ba7](https://github.com/bestagentkits/cloud-harness-mcp/commit/e850ba7ea2b43122ed6e6db965f4938755bdd80f)), closes [#458](https://github.com/bestagentkits/cloud-harness-mcp/issues/458) [#484](https://github.com/bestagentkits/cloud-harness-mcp/issues/484)
+* **dashboard:** core pages in React: overview, workspaces, cockpit, agents, activity, skills, knowledge, projects, audit ([#458](https://github.com/bestagentkits/cloud-harness-mcp/issues/458) P3) ([#495](https://github.com/bestagentkits/cloud-harness-mcp/issues/495)) ([d7b8a9f](https://github.com/bestagentkits/cloud-harness-mcp/commit/d7b8a9fc4efe0e63a33443736dc42e7b79f43ec6))
+* **dashboard:** embedded assistant with typed page actions and confirm-gated mutations ([#509](https://github.com/bestagentkits/cloud-harness-mcp/issues/509)) ([470a34f](https://github.com/bestagentkits/cloud-harness-mcp/commit/470a34faf49f1da2c278864bfbcf34cb236de9ac)), closes [#485](https://github.com/bestagentkits/cloud-harness-mcp/issues/485) [#528](https://github.com/bestagentkits/cloud-harness-mcp/issues/528) [#523](https://github.com/bestagentkits/cloud-harness-mcp/issues/523) [#530](https://github.com/bestagentkits/cloud-harness-mcp/issues/530)
+
 # [0.75.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.74.0...v0.75.0) (2026-10-20)
 
 
