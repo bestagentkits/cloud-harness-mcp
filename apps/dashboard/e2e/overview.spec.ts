@@ -13,7 +13,10 @@ const READS: Record<string, ReadHandler> = {
   '/overview': answer(200, overviewProjection),
   '/metrics': answer(200, metricsProjection),
   '/reliability': answer(200, reliabilityProjection),
-  '/server': answer(200, serverInfo)
+  '/server': answer(200, serverInfo),
+  // The sidebar approvals badge's reads: an empty inbox.
+  '/privilege-grants': answer(200, { data: { grants: [] } }),
+  '/package-plans': answer(200, { data: { plans: [] } })
 };
 
 /** Every GET under the BFF, as `path?query`, in order. The session handshake is the shell's, not the page's. */
@@ -76,9 +79,11 @@ test('leads with decision tiles that link to the filtered lists, reading each en
   await expect(page.getByTestId('primary-action')).toHaveCount(0);
   await expect(page.locator('main [style]')).toHaveCount(0);
 
-  // The classic reads, each once: /overview, /metrics?window=24h, /reliability, /server and the shared /profile.
+  // The classic reads, each once: /overview, /metrics?window=24h, /reliability, /server, the shared
+  // /profile, and the approvals badge's two reads (`refreshApprovalsBadge` ran on every Overview load).
   await expect(page.getByRole('table', { name: 'MCP reliability by server' })).toBeVisible();
-  expect([...reads].sort()).toEqual(['/metrics?window=24h', '/overview', '/profile', '/reliability', '/server']);
+  await expect.poll(() => reads.length).toBe(7);
+  expect([...reads].sort()).toEqual(['/metrics?window=24h', '/overview', '/package-plans', '/privilege-grants', '/profile', '/reliability', '/server']);
   await expectNoSeriousA11yViolations(page);
   expect(problems).toEqual([]);
 });

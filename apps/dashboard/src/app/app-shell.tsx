@@ -87,7 +87,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <span aria-hidden="true" className="grid size-6 shrink-0 place-items-center rounded-md bg-primary text-xs font-bold text-primary-foreground">CH</span>
           <span className={cn('text-sm font-semibold tracking-tight', collapsed && 'sr-only')}>{PRODUCT_NAME}</span>
         </div>
-        <SidebarNav currentId={navId} collapsed={collapsed} />
+        <SidebarNav currentId={navId} pageId={page?.id} collapsed={collapsed} />
         <div className={cn('flex items-center border-t p-2', collapsed ? 'justify-center' : 'justify-end')}>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -100,7 +100,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </aside>
       {drawerMounted ? (
-        <Suspense fallback={null}><MobileNavDrawer open={drawerOpen} onOpenChange={setDrawerOpen} currentId={navId} /></Suspense>
+        <Suspense fallback={null}><MobileNavDrawer open={drawerOpen} onOpenChange={setDrawerOpen} currentId={navId} pageId={page?.id} /></Suspense>
       ) : null}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-40 flex h-14 items-center justify-between gap-2 border-b bg-background/95 px-gutter backdrop-blur">

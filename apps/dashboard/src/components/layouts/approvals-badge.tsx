@@ -11,8 +11,8 @@ const REFRESHING_PAGES: ReadonlySet<PageId> = new Set<PageId>(['overview', 'acti
  * (`invalidateApprovals`), and reads only on the pages the classic badge refreshed on. A
  * failed read shows "!" rather than hiding the badge, so it never implies nothing is waiting.
  */
-export function ApprovalsBadge({ currentId, collapsed }: { currentId: PageId | undefined; collapsed: boolean }) {
-  const { total, partial, settled } = useApprovalsSummary({ enabled: currentId !== undefined && REFRESHING_PAGES.has(currentId) });
+export function ApprovalsBadge({ pageId, collapsed }: { pageId: PageId | undefined; collapsed: boolean }) {
+  const { total, partial, settled } = useApprovalsSummary({ enabled: pageId !== undefined && REFRESHING_PAGES.has(pageId) });
   if (!settled || (!partial && total === 0)) return null;
   const text = partial ? (total > 0 ? `${total}+` : '!') : String(total);
   const label = partial
