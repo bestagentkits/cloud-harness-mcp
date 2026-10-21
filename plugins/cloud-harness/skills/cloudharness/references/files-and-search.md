@@ -25,11 +25,16 @@ List one directory without recursively walking it.
 Read a byte range from one file.
 
 - Input: `workspaceId`, `path`; `offset` defaults to 0; `limit` defaults to
-  65,536 bytes and permits 1–262,144.
-- Returns text `content`, total `bytes`, and the file's lowercase `sha256`.
-- When truncated, use the returned byte-offset cursor with the next call's
-  `offset`. Text characters can occupy multiple bytes, so do not derive the
-  next offset from the displayed character count.
+  65,536 bytes and permits 1–1,048,576. `readAll: true` returns up to
+  1,048,576 bytes in one call.
+- Returns text `content`, `bytesReturned`, the file's `totalBytes`, `eof`, and
+  the lowercase `sha256` of the whole file, not of the returned window.
+- When truncated (`eof` is false), use the returned byte-offset cursor with the
+  next call's `offset`. Text characters can occupy multiple bytes, so do not
+  derive the next offset from the displayed character count.
+- Never pass a partial window to `files_write`: the hash still matches, so the
+  write is accepted and the file is cut short. Use `files_apply_patch`, or read
+  every page first.
 
 <!-- cloudharness-example:files_read
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","path":"src/config.ts","offset":0,"limit":65536}

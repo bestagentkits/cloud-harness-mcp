@@ -46,6 +46,10 @@ dashboard can read: a lease inside its threshold, a failed workspace, a quaranti
   sessions whose output is read-only and bounded. See [Runtime](#runtime).
 - **Terminal** opens an interactive shell inside the workspace; see
   [Terminal](/dashboard/terminal).
+- **Files** browses, edits, patches and deletes files. The editor loads the first
+  64 KB of a file. For a larger file it shows how much was loaded, makes the editor
+  read-only and hides **Save file**, so a save can never cut the file short; use
+  **Apply text patch**, which edits the whole file on the server.
 - **Git** keeps **Finalize** as the happy path and stays collapsed for everything else:
   branch, ahead/behind, staged/modified/untracked counts, the changed-file list, a
   bounded staged or unstaged diff, recent commits, worktrees, and advanced operations

@@ -93,6 +93,9 @@ beforeEach(async () => {
         agentId: `agent_${'g'.repeat(24)}`, cursor: '0', nextCursor: '1', retainedBaseCursor: '0', truncated: false, hasMore: false,
         events: [{ cursor: '0', nextCursor: '1', timestamp: '2026-08-17T00:00:30.000Z', type: 'tool.call', content: `hello ${'x'.repeat(5_000)}` }]
       } };
+      if (operation === 'files_read') return { ok: true, message: 'read', truncated: true, data: {
+        path: input.path, content: 'x'.repeat(65_536), sha256: 'c'.repeat(64), bytesReturned: 65_536, totalBytes: 100_000, eof: false
+      } };
       if (operation === 'files_write') return { ok: true, message: 'written', truncated: false, data: { path: input.path, sha256: 'b'.repeat(64) } };
       return { ok: true, message: 'ok', truncated: false, data: {} };
     }),
@@ -439,6 +442,13 @@ describe('dashboard BFF', () => {
     });
     expect(accepted.status).toBe(200);
     expect(calls.at(-1)).toEqual({ operation: 'files_write', input: { workspaceId, path: 'README.md', content: 'hello' }, principal });
+  });
+
+  it('projects the read window so a partial file is never taken for the whole file', async () => {
+    const response = await send(`/api/v1/workspaces/${workspaceId}/files/content?path=big.txt`);
+    expect(response.status).toBe(200);
+    expect(calls.at(-1)).toMatchObject({ operation: 'files_read', input: { workspaceId, path: 'big.txt', offset: 0, limit: 65_536 } });
+    expect(response.json.data).toMatchObject({ path: 'big.txt', sha256: 'c'.repeat(64), bytesReturned: 65_536, totalBytes: 100_000, eof: false });
   });
 
   it('rejects foreign origin, missing mutation origin, and non-JSON mutations', async () => {
