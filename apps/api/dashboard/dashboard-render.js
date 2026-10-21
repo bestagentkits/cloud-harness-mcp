@@ -710,8 +710,12 @@ export function renderHookPipeline(groups = []) {
   return `<ol class="hook-pipeline" aria-label="Hook lifecycle in run order">${stages}</ol>`;
 }
 
-/** Hooks, grouped by lifecycle, with the retained text list beside the pipeline. */
-export function renderHooks(hooks = []) {
+/**
+ * Hooks, grouped by lifecycle, with the retained text list beside the pipeline. A manual run names
+ * one hook from the manifest and the manifest digest this page was rendered from, so a manifest
+ * that changed since is refused rather than run.
+ */
+export function renderHooks(hooks = [], manifestSha256 = '') {
   const groups = groupHooksByLifecycle(hooks);
   const lists = groups.map((group) => {
     const rows = group.hooks.length
@@ -719,8 +723,12 @@ export function renderHooks(hooks = []) {
       : '<p class="empty-note">No hooks run at this stage.</p>';
     return `<section aria-labelledby="hooks-${escape(group.id)}"><h3 id="hooks-${escape(group.id)}">${escape(group.label)}</h3>${rows}</section>`;
   }).join('');
-  const options = HOOK_LIFECYCLE.map((event) => `<option value="${escape(event.id)}">${escape(event.label)}</option>`).join('');
-  return `<section class="panel" aria-labelledby="hooks-heading"><h2 id="hooks-heading">Hooks</h2>${renderHookPipeline(groups)}${lists}<form id="hook-run-form" class="stack-form"><label for="hook-event">Run the hooks for this event</label><select id="hook-event" name="event">${options}</select><button type="submit">Run hooks</button><p class="form-status" aria-live="polite"></p></form><p class="page-note">Activation and deactivation stay with the runner's manifest contract; this page runs only what is already active.</p></section>`;
+  const runnable = /^[a-f0-9]{64}$/.test(String(manifestSha256)) ? hooks.filter((hook) => hook.name) : [];
+  const options = runnable.map((hook) => `<option value="${escape(String(hook.name))}">${escape(String(hook.name))}</option>`).join('');
+  const form = runnable.length
+    ? `<form id="hook-run-form" class="stack-form" data-manifest-sha256="${escape(String(manifestSha256))}"><label for="hook-name">Run a hook from the repository manifest</label><select id="hook-name" name="name" required>${options}</select><button type="submit">Run hook</button><p class="form-status" aria-live="polite"></p></form>`
+    : '<p class="empty-note">No hook can run from this page.</p>';
+  return `<section class="panel" aria-labelledby="hooks-heading"><h2 id="hooks-heading">Hooks</h2>${renderHookPipeline(groups)}${lists}${form}<p class="page-note">Activation and deactivation stay with the runner's manifest contract. Running a hook here is a one-off manual run you confirm first; it does not activate the hook.</p></section>`;
 }
 
 /** The workspace skill set, with a guarded run form for an explicitly named script. */
@@ -768,10 +776,10 @@ export function renderDeployPanel(deployments = []) {
 }
 
 /** The cockpit Automation tab: the workspace skill set and its hooks. */
-export function renderAutomationPanel({ skills = [], hooks = [] } = {}) {
+export function renderAutomationPanel({ skills = [], hooks = [], manifestSha256 = '' } = {}) {
   return `${renderResourcePage({
     note: '<div class="page-note"><strong>Workspace automation.</strong> Skills resolve from your library and pinned sets; hooks run at lifecycle events inside the executor.</div>',
-    body: `${renderWorkspaceSkills(skills)}${renderHooks(hooks)}`
+    body: `${renderWorkspaceSkills(skills)}${renderHooks(hooks, manifestSha256)}`
   })}`;
 }
 
