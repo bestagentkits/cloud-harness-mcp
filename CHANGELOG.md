@@ -1,3 +1,21 @@
+# [0.66.0-beta.31](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.30...v0.66.0-beta.31) (2026-10-21)
+
+
+### Bug Fixes
+
+* **dashboard:** render mark-all state and re-read the inbox after it ([ea41e94](https://github.com/bestagentkits/cloud-harness-mcp/commit/ea41e9403ad1cef2272e33dbb3060633aabfe2c7))
+* **dashboard:** scope mark-all to the loaded inbox and relabel GitHub status ([0f6f472](https://github.com/bestagentkits/cloud-harness-mcp/commit/0f6f47220e8d4cb394cc32703c7ae66ca084dae5))
+* **notifications:** cap lost leases and bound mark-all by insertion order ([64f9929](https://github.com/bestagentkits/cloud-harness-mcp/commit/64f992979d6b3c8c3382ee891fab222d544f5e7b))
+* **notifications:** stop the webhook when MCP Events is turned off ([155ba53](https://github.com/bestagentkits/cloud-harness-mcp/commit/155ba537ae54476a3a1256b36c74f62f05abe161))
+* **runner:** mount the push inspection on its staged clone alone ([ff85f17](https://github.com/bestagentkits/cloud-harness-mcp/commit/ff85f177e24ea990d05bb7cb22bf092ad6917098))
+
+
+### Features
+
+* **contracts:** add notification inbox contracts and the notification.created event ([08a8dbf](https://github.com/bestagentkits/cloud-harness-mcp/commit/08a8dbf93295753a42c7f0b7cdae9385106a0d24)), closes [#417](https://github.com/bestagentkits/cloud-harness-mcp/issues/417)
+* **dashboard:** add the notification inbox page and its BFF routes ([b540697](https://github.com/bestagentkits/cloud-harness-mcp/commit/b54069741bf32887e591d6f1bca5c8e1f31907ff)), closes [#417](https://github.com/bestagentkits/cloud-harness-mcp/issues/417)
+* **runner:** record inbox notifications on terminal transitions and dispatch them ([20ddfcb](https://github.com/bestagentkits/cloud-harness-mcp/commit/20ddfcbf70d13c3b6e78e1974e30853007f2432a)), closes [#417](https://github.com/bestagentkits/cloud-harness-mcp/issues/417)
+
 # [0.66.0-beta.30](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.29...v0.66.0-beta.30) (2026-10-20)
 
 
