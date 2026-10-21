@@ -1,3 +1,10 @@
+# [0.66.0-beta.36](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.35...v0.66.0-beta.36) (2026-10-21)
+
+
+### Bug Fixes
+
+* **dashboard:** never save a partial files_read window as the whole file ([64f8f04](https://github.com/bestagentkits/cloud-harness-mcp/commit/64f8f04612a802c6f01de1d6861d0838b4b8656a)), closes [#525](https://github.com/bestagentkits/cloud-harness-mcp/issues/525)
+
 # [0.66.0-beta.35](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.34...v0.66.0-beta.35) (2026-10-21)
 
 
