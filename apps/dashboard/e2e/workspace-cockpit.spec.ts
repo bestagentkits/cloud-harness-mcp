@@ -177,6 +177,26 @@ test('runtime: open session sends name, cwd and one idempotency key across a ret
   expect(sent[1]!.idempotencyKey).toBe(sent[0]!.idempotencyKey);
 });
 
+test('runtime: open session sends the name and directory trimmed, as the server pattern expects', async ({ page }) => {
+  const sent: Array<Record<string, unknown>> = [];
+  await stubReads(page, {
+    ...READS,
+    [`${base}/sessions`]: async (route) => {
+      sent.push(route.request().postDataJSON() as Record<string, unknown>);
+      return answer(200, { data: { id: 'sess_trim_01' } })(route);
+    }
+  });
+  await page.goto(`/dashboard${base}/runtime`);
+  await page.getByRole('button', { name: 'Open session' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Open coding session' });
+  await dialog.getByLabel('Session name').fill('  review ');
+  await dialog.getByLabel('Working directory').fill(' packages/api  ');
+  await dialog.getByRole('button', { name: 'Open session' }).click();
+  await expect(dialog).toBeHidden();
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toMatchObject({ name: 'review', cwd: 'packages/api' });
+});
+
 test('runtime: a changed name or a reopened dialog after a failure is a new intent with a new key', async ({ page }) => {
   const sent: Array<Record<string, unknown>> = [];
   await stubReads(page, {

@@ -54,7 +54,11 @@ export function OpenSessionDialog({ open, onOpenChange, workspaceId, onOpened }:
   /** Validates, then opens; a changed name or directory since the last attempt is a new intent. */
   async function submit() {
     if (!(await form.trigger())) { form.setFocus(form.getFieldState('name').invalid ? 'name' : 'cwd'); return; }
-    const values = form.getValues();
+    // `trigger` validates but leaves the raw input in the form; send what the schema parsed
+    // (trimmed), which is what the server's session-name pattern accepts.
+    const parsed = schema.safeParse(form.getValues());
+    if (!parsed.success) return;
+    const values = parsed.data;
     const intent = JSON.stringify([values.name, values.cwd]);
     if (keyedFor.current !== null && keyedFor.current !== intent) renewKey();
     keyedFor.current = intent;
