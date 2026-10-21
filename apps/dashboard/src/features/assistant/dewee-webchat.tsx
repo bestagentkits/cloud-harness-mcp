@@ -90,6 +90,8 @@ export default function DeweeAssistant({ openSignal }: { openSignal: number }) {
       <div ref={hostRef} data-testid="dewee-assistant-host" />
       {pending ? (
         <ConfirmDialog
+          // A new request gets a fresh dialog, never the busy state of one still sending.
+          key={pending.ticket}
           open
           onOpenChange={(open) => { if (!open) controller.deny(pending); }}
           title={pending.mutation.title}

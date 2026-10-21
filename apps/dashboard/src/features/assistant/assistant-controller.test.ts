@@ -86,6 +86,42 @@ describe('assistant controller', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it('settles only its own request when a call id is reused while a send is in flight', async () => {
+    const { controller, shown, send, action, context } = setup('projects');
+    let finishFirst!: (value: unknown) => void;
+    send.mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }));
+    const first = controller.confirm('prepare_project_create', 'call-1', { name: 'One' });
+    await vi.waitFor(() => expect(shown.at(-1)).toBeDefined());
+    const firstRequest = shown.at(-1)!;
+    const sendingFirst = controller.approve(firstRequest);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    const second = controller.confirm('prepare_project_create', 'call-1', { name: 'Two' });
+    await vi.waitFor(() => expect(shown.at(-1)?.mutation.body).toMatchObject({ name: 'Two' }));
+    const secondRequest = shown.at(-1)!;
+    expect(secondRequest.ticket).not.toBe(firstRequest.ticket);
+    let secondSettled = false;
+    void second.then(() => { secondSettled = true; });
+
+    finishFirst({ data: { id: 'prj_one', name: 'One' } });
+    await sendingFirst;
+    await expect(first).resolves.toBe(true);
+    // The second dialog stays open, its promise waits for the owner, and the first send's
+    // outcome is never reported for the newer call.
+    await Promise.resolve();
+    expect(secondSettled).toBe(false);
+    expect(shown.at(-1)).toBe(secondRequest);
+    expect(shown.filter((request) => request === undefined)).toEqual([]);
+    await expect(action('prepare_project_create').handler({ name: 'Two' }, context('call-1'))).rejects.toThrow('not confirmed');
+
+    controller.deny(secondRequest);
+    await expect(second).resolves.toBe(false);
+    expect(send).toHaveBeenCalledTimes(1);
+    // A stale dialog cannot send a request that was already settled.
+    await controller.approve(secondRequest);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses names with control or format characters shown in the dialog', async () => {
     const { controller, shown, action, context } = setup('projects');
     for (const name of ['Alpha\nDELETE', 'safe\u202Eexe.txt', 'zero\u200Bwidth']) {
