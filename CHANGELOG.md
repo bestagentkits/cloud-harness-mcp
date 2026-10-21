@@ -1,3 +1,13 @@
+# [0.66.0-beta.34](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.33...v0.66.0-beta.34) (2026-10-21)
+
+
+### Bug Fixes
+
+* **dashboard:** run one named hook against the rendered manifest digest ([0eb9ac1](https://github.com/bestagentkits/cloud-harness-mcp/commit/0eb9ac18e16390aa2b0a6504e29ba4c2aba61bc5)), closes [#513](https://github.com/bestagentkits/cloud-harness-mcp/issues/513)
+* **runner,dashboard:** tell agents a skill-run grant binds the whole request ([157df60](https://github.com/bestagentkits/cloud-harness-mcp/commit/157df608c6ec67b1b19b8e7e5dc49c3fcdc0b202)), closes [#517](https://github.com/bestagentkits/cloud-harness-mcp/issues/517) [#518](https://github.com/bestagentkits/cloud-harness-mcp/issues/518)
+* **runner:** bind skill-run arguments, source and timeout to the privilege grant ([c200c1a](https://github.com/bestagentkits/cloud-harness-mcp/commit/c200c1a06caba749e82f7861f351dd839764a944)), closes [#517](https://github.com/bestagentkits/cloud-harness-mcp/issues/517)
+* **runner:** report each hook's activation state in hooks_list ([dc86ec8](https://github.com/bestagentkits/cloud-harness-mcp/commit/dc86ec8991a204c99d5ceeb9aafb00705205b537)), closes [#518](https://github.com/bestagentkits/cloud-harness-mcp/issues/518)
+
 # [0.66.0-beta.33](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.32...v0.66.0-beta.33) (2026-10-21)
 
 
