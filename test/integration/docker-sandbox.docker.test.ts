@@ -15,7 +15,7 @@ let workspaceId: string | undefined;
 let runnerConfig: RunnerConfig;
 let orphanContainer: string | undefined;
 let foreignOrphanContainer: string | undefined;
-const workspaceCeilingBytes = 64 * 1_024 * 1_024;
+const workspaceCeilingBytes = 256 * 1_024 * 1_024;
 const workspaceResultSchema = z.object({ workspaceId: z.string() });
 const executionResultSchema = z.object({ exitCode: z.number().int(), output: z.string() });
 const planCreateResultSchema = z.object({
