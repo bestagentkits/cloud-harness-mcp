@@ -19,13 +19,13 @@ The assistant sees a small summary of the page you are on (the route, filters, s
 
 ## Every change waits for you
 
-A prepared change is never sent by the assistant. The Dashboard builds the exact request itself and shows it to you in a confirmation dialog: the method, the address and the JSON body. Nothing is sent until you click the confirm button. **Cancel** (or `Escape`) declines it, and the assistant is told you declined. Changes that cannot be undone say so in the dialog.
+A prepared change is never sent by the assistant. The Dashboard builds the exact request itself and shows it to you in a confirmation dialog: the method, the address and the JSON body. Nothing is sent until you click the confirm button. **Cancel** (or `Escape`) declines it, and the assistant is told you declined. Changes that cannot be undone say so in the dialog. Navigating, reading the page, setting filters and opening a create flow change only what you see, so they run without a dialog.
 
 Some actions are never available to the assistant on the page: creating secrets or API keys, and approving or rejecting privilege grants. Use their pages for those.
 
 ## What it never sees on the page
 
-Secret values, one-time API keys, file contents, terminal output, diffs and logs are never part of the page summary or of the results the assistant receives. The assistant's own visitor session lives in memory only; nothing is saved in your browser storage.
+Secret values, one-time API keys, file contents, terminal output, diffs and logs are never part of the page summary or of the results the assistant receives. The assistant's own visitor session lives in memory only. Your browser keeps a few non-credential entries: the widget's conversation id and which action list it already sent (`dewee-webchat:conv:*`, `dewee-webchat:actions:*`), and the ids of workspaces you opened recently for the command palette (`ch-dashboard-recent-workspaces`). When a change fails, the assistant is told only the kind of failure and its HTTP status; the full server message appears in your notification.
 
 ## Its access to Cloud Harness
 

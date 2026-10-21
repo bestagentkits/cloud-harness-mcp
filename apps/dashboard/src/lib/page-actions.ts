@@ -29,7 +29,7 @@ export type PageActionSensitivity = 'read' | 'navigate' | 'mutate' | 'destructiv
 export type PreparedMutation = {
   /** Dialog title, phrased as a question ("Revoke this API key?"). */
   title: string;
-  /** What happens, including whether it can be undone. */
+  /** What happens. Irreversibility is stated by `irreversible`, not in this text. */
   description: string;
   method: 'POST' | 'PATCH' | 'DELETE';
   /** BFF path below `/dashboard/api/v1`, already percent-encoded. */
@@ -38,6 +38,8 @@ export type PreparedMutation = {
   body: Record<string, unknown> | undefined;
   confirmLabel: string;
   destructive: boolean;
+  /** The change cannot be undone; the dialog says so in fixed wording. */
+  irreversible?: boolean;
   /** The resource the request targets (an id or name), shown in monospace. */
   target?: string;
   /** Non-secret fields of the response worth returning to the agent (ids, state). */

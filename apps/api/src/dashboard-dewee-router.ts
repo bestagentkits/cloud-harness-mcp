@@ -3,7 +3,7 @@ import type { Response, Router } from 'express';
 import type { ApiConfig, RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { buildPageBlock, buildSessionKey, fetchHistory, hashManifest, normalizeManifest, signVisitorToken, verifyVisitorToken, type ActionManifestEntry, type GatewayCredentials } from 'dewee-webchat/server';
 import { runDeweeChat } from './dashboard-dewee-gateway.js';
-import { DeweeInputError, serializeDeweePageContext } from './dashboard-dewee-page-context.js';
+import { DeweeInputError, redactDeweeActionResults, serializeDeweePageContext } from './dashboard-dewee-page-context.js';
 import { createDeweeRateLimiter } from './dashboard-dewee-rate-limit.js';
 import type { DashboardRequest } from './dashboard-types.js';
 import { apiLogger } from './logging.js';
@@ -195,7 +195,7 @@ export function registerDashboardDeweeRoutes(router: Router, config: ApiConfig, 
           userId: USER_ID_PREFIX + visitorId,
           agent: settings.agent,
           sessionKey: buildSessionKey(settings.agent, `${USER_ID_PREFIX}${visitorId}-${conversationId}`),
-          message: pageBlock + message,
+          message: pageBlock + redactDeweeActionResults(message),
           signal: abort.signal,
           timeoutMs: settings.timeoutMs,
           onGatewayFailure: (error) => logGatewayFailure('chat', error)

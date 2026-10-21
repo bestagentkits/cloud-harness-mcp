@@ -105,3 +105,29 @@ export function serializeDeweePageContext(input: unknown): string | undefined {
   if (byteLength(serialized) > limit) throw tooLarge();
   return serialized;
 }
+
+const RESULT_OPEN = /^\s{0,3}```dewee-action-result\s*$/;
+const FENCE_CLOSE = /^\s{0,3}```\s*$/;
+
+/**
+ * Applies the page-context redaction to every ```dewee-action-result``` block in a visitor
+ * message. The widget writes those blocks in hidden follow-up turns and the agent reads them as
+ * data, so they get the same server-side backstop as page context: the page already reports only
+ * non-secret outcomes, but a page bug or a server error message must not carry a credential to
+ * the gateway. A block whose body is not JSON is redacted as text; the visitor's own words
+ * outside the blocks are left as typed.
+ */
+export function redactDeweeActionResults(message: string): string {
+  const lines = message.split('\n');
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!RESULT_OPEN.test(lines[index]!)) continue;
+    let end = index + 1;
+    while (end < lines.length && !FENCE_CLOSE.test(lines[end]!)) end += 1;
+    const body = lines.slice(index + 1, end).join('\n');
+    let redacted: string;
+    try { redacted = JSON.stringify(sanitizeDeweePageContext(JSON.parse(body) as unknown)); } catch { redacted = redactString(body); }
+    lines.splice(index + 1, end - index - 1, redacted);
+    index += 2;
+  }
+  return lines.join('\n');
+}

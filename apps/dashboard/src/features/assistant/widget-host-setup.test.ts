@@ -22,6 +22,15 @@ describe('widget host setup', () => {
     expect(() => parseArgs(schema, { name: 'x', token: 'sk-live-abc' })).not.toThrow(/sk-live-abc/);
   });
 
+  it('refuses prototype-polluting keys at any depth, whatever the schema allows', () => {
+    const loose = z.object({ name: z.string(), nested: z.object({}).passthrough().optional() }).passthrough();
+    for (const key of ['__proto__', 'constructor', 'prototype']) {
+      expect(() => parseArgs(loose, JSON.parse(`{"name":"x","${key}":{"polluted":true}}`))).toThrow('reserved key');
+      expect(() => parseArgs(loose, JSON.parse(`{"name":"x","nested":{"${key}":{}}}`))).toThrow('reserved key');
+    }
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
   it('scrubs the widget session token from storage after a session response', async () => {
     vi.useFakeTimers();
     const base = vi.fn(async () => new Response('{"token":"visitor"}'));

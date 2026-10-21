@@ -106,8 +106,20 @@ export function parametersFor(schema: ZodType): JsonSchema {
   return { type: 'object', properties: {}, additionalProperties: false, ...json };
 }
 
+const UNSAFE_KEYS = ['__proto__', 'constructor', 'prototype'];
+
+/** True when `value` or any nested object has an own prototype-polluting key. */
+function hasUnsafeKey(value: unknown, depth = 0): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (depth > 16) return true;
+  if (!Array.isArray(value) && UNSAFE_KEYS.some((key) => Object.hasOwn(value, key))) return true;
+  return Object.values(value).some((entry) => hasUnsafeKey(entry, depth + 1));
+}
+
 /** Parses agent arguments strictly; the message names the field, never echoes the input. */
 export function parseArgs<T>(schema: ZodType<T>, args: unknown): T {
+  // Refused here as well as by the widget: an own `__proto__` key survives JSON.parse.
+  if (hasUnsafeKey(args)) throw new Error('Invalid arguments: args has a reserved key');
   const parsed = schema.safeParse(args ?? {});
   if (parsed.success) return parsed.data;
   const issue = parsed.error.issues[0];

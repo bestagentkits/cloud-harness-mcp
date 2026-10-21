@@ -93,7 +93,7 @@ export default function DeweeAssistant({ openSignal }: { openSignal: number }) {
           open
           onOpenChange={(open) => { if (!open) controller.deny(pending); }}
           title={pending.mutation.title}
-          description={`${pending.mutation.description} The assistant prepared this request; nothing is sent until you confirm.${pending.mutation.destructive && !/undone/.test(pending.mutation.description) ? ' This cannot be undone.' : ''}`}
+          description={`${pending.mutation.description} The assistant prepared this request; nothing is sent until you confirm.${pending.mutation.irreversible ? ' This cannot be undone.' : ''}`}
           {...(pending.mutation.target ? { target: pending.mutation.target } : {})}
           details={(
             <div className="grid gap-1" data-testid="prepared-request">

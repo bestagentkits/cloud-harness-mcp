@@ -216,7 +216,9 @@ function idOnly(response: unknown): Record<string, unknown> {
   return data && typeof data === 'object' ? pickItem(data as Record<string, unknown>) : {};
 }
 
-const nameSchema = (z: Parameters<PageActionSpec['schema']>[0]) => z.object({ name: z.string().trim().min(1).max(100) }).strict();
+/** Control and format characters (newlines, bidi overrides, zero-width) are refused: the name is shown in the confirm dialog as the owner will see it saved. */
+const DISPLAY_SAFE = /^[^\p{Cc}\p{Cf}]*$/u;
+const nameSchema = (z: Parameters<PageActionSpec['schema']>[0]) => z.object({ name: z.string().trim().min(1).max(100).regex(DISPLAY_SAFE, 'must not contain control or format characters') }).strict();
 
 function prepareActions(deps: CatalogDeps): PageActionSpec[] {
   const { page, params } = deps.current;
@@ -272,9 +274,9 @@ function prepareActions(deps: CatalogDeps): PageActionSpec[] {
         sensitivity: 'destructive',
         schema: (z) => z.object({ reason: z.string().trim().max(2000).optional() }).strict(),
         prepare: ({ reason }: { reason?: string }): PreparedMutation => ({
-          title: 'Cancel this agent and its children?', description: 'Cancellation cascades to every agent this one spawned and cannot be undone.',
+          title: 'Cancel this agent and its children?', description: 'Cancellation cascades to every agent this one spawned.',
           method: 'POST', path: bffPath('agents', agentId, 'cancel'), body: { ...(workspaceId ? { workspaceId } : {}), ...(reason ? { reason } : {}) },
-          confirmLabel: 'Cancel agent', destructive: true, target: agentId, summarize: () => ({ agentId, cancelled: true })
+          confirmLabel: 'Cancel agent', destructive: true, irreversible: true, target: agentId, summarize: () => ({ agentId, cancelled: true })
         })
       }];
     }
@@ -289,8 +291,8 @@ function prepareActions(deps: CatalogDeps): PageActionSpec[] {
           if (!key) throw new Error(`No API key ${keyId} is listed on this page.`);
           if (key.state !== 'ACTIVE') throw new Error(`API key ${keyId} is already ${String(key.state).toLowerCase()}.`);
           return {
-            title: 'Revoke this API key?', description: 'Every client using this key loses access immediately. A revoked key cannot be restored; create a new one instead.',
-            method: 'DELETE', path: bffPath('api-keys', keyId), body: { expectedGeneration: generationOf(key) }, confirmLabel: 'Revoke key', destructive: true, target: `${String(key.name)} (${keyId})`,
+            title: 'Revoke this API key?', description: 'Every client using this key loses access immediately. Create a new key if one is still needed.',
+            method: 'DELETE', path: bffPath('api-keys', keyId), body: { expectedGeneration: generationOf(key) }, confirmLabel: 'Revoke key', destructive: true, irreversible: true, target: `${String(key.name)} (${keyId})`,
             summarize: () => ({ keyId, revoked: true })
           };
         }
@@ -305,8 +307,8 @@ function prepareActions(deps: CatalogDeps): PageActionSpec[] {
           const secret = (await rows()).find((row) => row.name === name);
           if (!secret) throw new Error(`No global secret named ${name} is listed on this page.`);
           return {
-            title: 'Delete this secret?', description: 'The value is erased and cannot be recovered. Workspaces that inject it stop receiving it.',
-            method: 'DELETE', path: `${secretsPath({ kind: 'global' })}/${encodeURIComponent(name)}`, body: { expectedGeneration: generationOf(secret) }, confirmLabel: 'Delete secret', destructive: true, target: name,
+            title: 'Delete this secret?', description: 'The value is erased. Workspaces that inject it stop receiving it.',
+            method: 'DELETE', path: `${secretsPath({ kind: 'global' })}/${encodeURIComponent(name)}`, body: { expectedGeneration: generationOf(secret) }, confirmLabel: 'Delete secret', destructive: true, irreversible: true, target: name,
             summarize: () => ({ name, deleted: true })
           };
         }

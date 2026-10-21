@@ -110,6 +110,28 @@ test('a prepared mutation stays blocked until the owner confirms the exact reque
   expect(problems).toEqual([]);
 });
 
+test('a failed send tells the agent a fixed reason, never the server message', async ({ page }) => {
+  const problems = watchConsole(page, { allow: [/status of 500/] });
+  const SERVER_SECRET = 'sk-e2eSENTINELabcdefghijklmnop';
+  const recorded = await stubBff(page, {
+    reads: { '/projects': answer(200, projects) },
+    writes: { 'POST /projects': answer(500, { error: 'internal_error', message: `upstream said: ${SERVER_SECRET}` }) }
+  });
+  await page.goto('/dashboard/projects');
+  await expectPage(page, 'projects');
+  await openAssistant(page);
+  await ask(page, 'create project please');
+
+  const dialog = page.getByRole('alertdialog', { name: 'Create this project?' });
+  await dialog.getByRole('button', { name: 'Create project' }).click();
+  await expect.poll(() => writesTo(recorded, 'POST', '/projects').length).toBe(1);
+  // The owner sees the server's message; the agent gets fixed text with the status and code.
+  await expect(page.getByRole('region', { name: /Notifications/ }).getByText(`upstream said: ${SERVER_SECRET}`)).toBeVisible();
+  await expect.poll(async () => (await gatewayMessages(page)).some((message) => message.includes('dewee-action-result') && message.includes('HTTP 500, internal_error'))).toBe(true);
+  expect((await gatewayMessages(page)).filter((message) => message.includes('SENTINEL'))).toEqual([]);
+  expect(problems).toEqual([]);
+});
+
 test('dismissing the confirmation denies the request and sends nothing', async ({ page }) => {
   const problems = watchConsole(page);
   const recorded = await stubBff(page, { reads: { '/projects': answer(200, projects) } });

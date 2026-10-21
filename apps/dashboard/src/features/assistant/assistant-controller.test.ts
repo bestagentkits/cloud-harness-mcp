@@ -3,8 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CurrentPage } from '@/app/route-identity';
 import { pageById } from '@/app/page-registry';
 import { pageReadQuery } from '@/lib/page-read';
+import { ConflictError, ServerError } from '@/lib/api-client';
 import { type PreparedMutation, registerPageActions } from '@/lib/page-actions';
-import { createAssistantController, type PendingRequest } from './assistant-controller';
+import { agentErrorText, createAssistantController, type PendingRequest } from './assistant-controller';
 
 const KEY_ID = `apk_${'a'.repeat(24)}`;
 
@@ -59,6 +60,41 @@ describe('assistant controller', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it('tells the agent a fixed reason for a failed send, never the server message', async () => {
+    const { controller, shown, send, action, context } = setup('projects');
+    send.mockRejectedValueOnce(new ServerError(500, 'upstream said: sk-SENTINELabcdefghijklmnop', 'internal_error'));
+    void controller.confirm('prepare_project_create', 'call-e', { name: 'Gamma' });
+    await vi.waitFor(() => expect(shown.at(-1)).toBeDefined());
+    await controller.approve(shown.at(-1)!);
+    const failure = action('prepare_project_create').handler({ name: 'Gamma' }, context('call-e'));
+    await expect(failure).rejects.toThrow('The server failed to complete the request (HTTP 500, internal_error).');
+    await expect(failure).rejects.not.toThrow(/SENTINEL/);
+    expect(agentErrorText(new ConflictError(409, 'name "x" taken', 'Not A Code!'))).toBe('The resource changed since the page loaded; read the page again before preparing it (HTTP 409).');
+  });
+
+  it('keeps Cancel working when the agent reuses a call id', async () => {
+    const { controller, shown, send } = setup('projects');
+    const first = controller.confirm('prepare_project_create', 'call-1', { name: 'One' });
+    await vi.waitFor(() => expect(shown.at(-1)).toBeDefined());
+    await controller.approve(shown.at(-1)!);
+    await expect(first).resolves.toBe(true);
+    // The first outcome is never collected by a handler; the same id comes back.
+    const second = controller.confirm('prepare_project_create', 'call-1', { name: 'Two' });
+    await vi.waitFor(() => expect(shown.at(-1)?.mutation.body).toMatchObject({ name: 'Two' }));
+    controller.deny(shown.at(-1)!);
+    await expect(second).resolves.toBe(false);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses names with control or format characters shown in the dialog', async () => {
+    const { controller, shown, action, context } = setup('projects');
+    for (const name of ['Alpha\nDELETE', 'safe\u202Eexe.txt', 'zero\u200Bwidth']) {
+      await expect(controller.confirm('prepare_project_create', 'call-n', { name })).resolves.toBe(true);
+      await expect(action('prepare_project_create').handler({ name }, context('call-n'))).rejects.toThrow('Invalid arguments: name');
+    }
+    expect(shown).toEqual([]);
+  });
+
   it('rejects invalid agent arguments before anything is shown', async () => {
     const { controller, shown, action, context } = setup('api-keys', [{ id: KEY_ID, name: 'ci', state: 'ACTIVE', generation: 3 }]);
     await expect(controller.confirm('prepare_api_key_revoke', 'call-3', { keyId: '../../secrets' })).resolves.toBe(true);
@@ -73,7 +109,7 @@ describe('assistant controller', () => {
     expect(action('prepare_api_key_revoke').sensitivity).toBe('destructive');
     void controller.confirm('prepare_api_key_revoke', 'call-5', { keyId: KEY_ID });
     await vi.waitFor(() => expect(shown.at(-1)).toBeDefined());
-    expect(shown.at(-1)!.mutation).toMatchObject({ method: 'DELETE', path: `/api-keys/${KEY_ID}`, body: { expectedGeneration: 3 }, destructive: true });
+    expect(shown.at(-1)!.mutation).toMatchObject({ method: 'DELETE', path: `/api-keys/${KEY_ID}`, body: { expectedGeneration: 3 }, destructive: true, irreversible: true });
   });
 
   it('never advertises secret creation or API key creation', () => {

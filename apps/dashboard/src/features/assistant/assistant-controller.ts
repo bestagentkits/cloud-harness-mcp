@@ -2,7 +2,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import type { PageAction } from 'dewee-webchat';
 import { array, boolean, enum as zodEnum, literal, number, object, string, union } from 'zod';
 import { toast } from '@/components/ui/toast-store';
-import { apiClient } from '@/lib/api-client';
+import { ApiError, apiClient, ConflictError, ForbiddenError, NetworkError, RateLimitedError, ServerError, UnauthorizedError } from '@/lib/api-client';
 import { mutationErrorText } from '@/lib/bff-mutation';
 import { type PageActionSpec, type SchemaKit, type PreparedMutation, registeredPageActions, registeredPageContext } from '@/lib/page-actions';
 import { catalogActions, type CatalogDeps, pageContextSnapshot } from './page-action-catalog';
@@ -18,6 +18,25 @@ export const MAX_ACTIONS = 32;
 export type PendingRequest = { callId: string; mutation: PreparedMutation };
 
 type Outcome = { ok: true; result: Record<string, unknown> } | { ok: false; error: string };
+
+const ERROR_CODE = /^[a-z][a-z0-9_]{0,39}$/;
+
+/**
+ * What the agent is told about a failed send: fixed text chosen by error class, plus the HTTP
+ * status and a short machine code. Never the server's message, which can quote caller input or
+ * upstream text; the owner's toast shows that message instead.
+ */
+export function agentErrorText(error: unknown): string {
+  const status = error instanceof ApiError ? ` (HTTP ${error.status}${error.code && ERROR_CODE.test(error.code) ? `, ${error.code}` : ''})` : '';
+  if (error instanceof UnauthorizedError) return `The dashboard session ended; the owner must reload the page${status}.`;
+  if (error instanceof ForbiddenError) return `The server refused the request${status}.`;
+  if (error instanceof ConflictError) return `The resource changed since the page loaded; read the page again before preparing it${status}.`;
+  if (error instanceof RateLimitedError) return `The server is rate limiting requests; wait before trying again${status}.`;
+  if (error instanceof ServerError) return `The server failed to complete the request${status}.`;
+  if (error instanceof ApiError) return `The server rejected the request${status}.`;
+  if (error instanceof NetworkError) return 'The dashboard could not reach the server.';
+  return 'The request could not be completed.';
+}
 
 export type AssistantControllerOptions = {
   queryClient: QueryClient;
@@ -39,6 +58,7 @@ export function createAssistantController(options: AssistantControllerOptions) {
   let specs = new Map<string, PageActionSpec>();
   const outcomes = new Map<string, Outcome>();
   const waiting = new Map<string, (approved: boolean) => void>();
+  const sending = new Set<string>();
   let pending: PendingRequest | undefined;
 
   function show(next: PendingRequest | undefined) {
@@ -83,7 +103,9 @@ export function createAssistantController(options: AssistantControllerOptions) {
     /** The actions to advertise for the current route and page registrations. */
     actions(): PageAction[] {
       if (!deps) return [];
-      const all = [...catalogActions(deps, pageContext), ...registeredPageActions()].slice(0, MAX_ACTIONS);
+      const offered = [...catalogActions(deps, pageContext), ...registeredPageActions()];
+      if (offered.length > MAX_ACTIONS && import.meta.env.DEV) console.warn(`Page actions over the widget's limit of ${MAX_ACTIONS} were not offered: ${offered.slice(MAX_ACTIONS).map((spec) => spec.name).join(', ')}`);
+      const all = offered.slice(0, MAX_ACTIONS);
       specs = new Map(all.map((spec) => [spec.name, spec]));
       return all.map(toWidgetAction);
     },
@@ -94,6 +116,8 @@ export function createAssistantController(options: AssistantControllerOptions) {
      * and nothing was sent); resolves `false` when the owner dismisses the dialog.
      */
     async confirm(name: string, callId: string, args: Record<string, unknown>): Promise<boolean> {
+      // A call id is chosen by the agent and may be reused: drop any outcome a previous call left.
+      outcomes.delete(callId);
       const spec = specs.get(name);
       if (!spec || !('prepare' in spec)) return false;
       let mutation: PreparedMutation;
@@ -113,6 +137,8 @@ export function createAssistantController(options: AssistantControllerOptions) {
     /** The owner confirmed: send exactly the stored request. A failure is toasted and reported to the agent. */
     async approve(request: PendingRequest): Promise<void> {
       const { mutation } = request;
+      if (sending.has(request.callId)) return;
+      sending.add(request.callId);
       try {
         const response = await send(mutation);
         outcomes.set(request.callId, { ok: true, result: { sent: true, method: mutation.method, path: mutation.path, ...mutation.summarize?.(response) } });
@@ -120,15 +146,17 @@ export function createAssistantController(options: AssistantControllerOptions) {
         toast({ title: `${mutation.confirmLabel}: done`, description: 'The page is refreshing. Ask the assistant what to do next.', variant: 'success' });
       } catch (error) {
         const message = mutationErrorText(error);
-        outcomes.set(request.callId, { ok: false, error: message });
+        outcomes.set(request.callId, { ok: false, error: agentErrorText(error) });
         toast({ title: `${mutation.confirmLabel} failed`, description: `${message} Check the page for its current state, then ask the assistant to prepare it again.`, variant: 'destructive' });
       }
+      sending.delete(request.callId);
       settle(request.callId, true);
     },
 
     /** The owner dismissed the dialog: a denial, nothing sent. */
     deny(request: PendingRequest) {
-      if (waiting.has(request.callId) && !outcomes.has(request.callId)) settle(request.callId, false);
+      // Once the owner's click is sending, closing the dialog no longer denies it.
+      if (waiting.has(request.callId) && !sending.has(request.callId)) settle(request.callId, false);
     },
 
     /** Denies whatever is still waiting (the assistant unmounts). */

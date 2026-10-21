@@ -875,7 +875,9 @@ registry to the widget
 [`apps/dashboard/src/features/assistant/`](../apps/dashboard/src/features/assistant/)).
 Three rules hold for every action:
 
-- **Confirm before any write.** A `mutate` or `destructive` action only
+- **Confirm before any write.** Only `mutate` and `destructive` actions need
+  confirmation; `navigate`, `read`, filter and open-wizard actions change only
+  what the page shows and run directly. A `mutate` or `destructive` action only
   prepares a request. The Dashboard validates the agent's arguments strictly,
   builds the exact typed body itself, and shows the method, path and body in a
   confirmation dialog. It sends that stored request only after the operator
@@ -886,8 +888,13 @@ Three rules hold for every action:
 - **No secrets in page context or results.** Page context carries route,
   filters, selection ids, counts and statuses picked from an allowlist of
   fields. Action results carry ids and states. Secret values, one-time keys,
-  file contents, terminal output, diffs and logs are never included; the BFF
-  stripping above is the backstop.
+  file contents, terminal output, diffs and logs are never included. A failed
+  send reports fixed text chosen by error class with the HTTP status and a
+  short code, never the server's message, which can quote input or upstream
+  text; the operator's toast shows that message. The BFF backstop applies the
+  same redaction as page context to every `dewee-action-result` block in a
+  chat message, so results of reads and writes are stripped too; the
+  operator's own typed words are forwarded as written.
 - **The widget holds no stored credential.** Every widget request sends the
   in-memory CSRF header and the session cookie. The widget's own visitor token
   is removed from `localStorage` as soon as the widget writes it, so it lives
