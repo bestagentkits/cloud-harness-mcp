@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter, useRouterState } from '@tanstack/react-router';
-import { defineDeweeChat, type DeweeChatElement } from 'dewee-webchat';
+import { type ActionEventDetail, defineDeweeChat, type DeweeChatElement } from 'dewee-webchat';
 import { useEffect, useRef, useState } from 'react';
 import { useCurrentPage } from '@/app/route-identity';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
@@ -53,10 +53,16 @@ export default function DeweeAssistant({ openSignal }: { openSignal: number }) {
       getPageContext: () => controller.pageContext(),
       confirm: (action, args) => controller.confirm(action.name, action.callId, args)
     });
+    const onAction = (event: Event) => {
+      const detail = (event as CustomEvent<ActionEventDetail>).detail;
+      if (detail.phase === 'result') controller.callEnded(detail.id, detail.status);
+    };
+    element.addEventListener('dewee:action', onAction);
     scrubWidgetSession();
     hostRef.current?.append(element);
     window.addEventListener('pagehide', scrubWidgetSession);
     return () => {
+      element.removeEventListener('dewee:action', onAction);
       window.removeEventListener('pagehide', scrubWidgetSession);
       controller.dispose();
       element.remove();
