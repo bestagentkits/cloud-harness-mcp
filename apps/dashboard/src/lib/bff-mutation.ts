@@ -4,7 +4,7 @@ import { toast } from '@/components/ui/toast-store';
 import { ApiError, ConflictError, ForbiddenError, NetworkError, RateLimitedError, UnauthorizedError } from './api-client';
 
 /** The query-key prefix of a BFF read, for invalidation: `['bff', path]` matches every query of that path. */
-export function bffKey(path: string): QueryKey {
+export function bffPrefix(path: string): QueryKey {
   return ['bff', path];
 }
 
@@ -75,7 +75,7 @@ export function useBffMutation<TVariables = void, TResult = unknown>(options: Bf
     setState({ pending: true, error: undefined });
     const current = latest.current;
     const targets = typeof current.invalidate === 'function' ? current.invalidate(variables) : current.invalidate ?? [];
-    const refresh = () => Promise.all(targets.map((target) => queryClient.invalidateQueries({ queryKey: typeof target === 'string' ? bffKey(target) : target })));
+    const refresh = () => Promise.all(targets.map((target) => queryClient.invalidateQueries({ queryKey: typeof target === 'string' ? bffPrefix(target) : target })));
     try {
       const result = await current.mutationFn(variables);
       const message = typeof current.successToast === 'function' ? current.successToast(result, variables) : current.successToast;

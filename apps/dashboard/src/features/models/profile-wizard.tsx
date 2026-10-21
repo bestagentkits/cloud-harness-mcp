@@ -5,7 +5,7 @@ import { DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/co
 import { ManagedDialog } from '@/components/ui/managed-dialog';
 import { toast } from '@/components/ui/toast-store';
 import { ConflictError } from '@/lib/api-client';
-import { bffKey, mutationErrorText } from '@/lib/bff-mutation';
+import { bffPrefix, mutationErrorText } from '@/lib/bff-mutation';
 import { cn } from '@/lib/utils';
 import { MODELS_READS, modelsApi } from './models-api';
 import { providerAuthModes } from './models-queries';
@@ -90,7 +90,7 @@ export default function ProfileWizard({ controller, profiles, credentials, provi
     if (input) input.value = '';
     try {
       const created = await modelsApi.createCredential({ label: state.newCredentialLabel, provider: state.provider, authMode, apiKey });
-      await Promise.all(MODELS_READS.map((path) => queryClient.invalidateQueries({ queryKey: bffKey(path) })));
+      await Promise.all(MODELS_READS.map((path) => queryClient.invalidateQueries({ queryKey: bffPrefix(path) })));
       if (!created?.id) {
         setStatus({ text: 'The key was saved but no ID came back. Reload the page and choose it as a saved key.', tone: 'error' });
         return;
@@ -157,12 +157,12 @@ export default function ProfileWizard({ controller, profiles, credentials, provi
     try {
       const saved = request.kind === 'update' ? await modelsApi.updateProfile(request.profileId, body) : await modelsApi.createProfile(body);
       toast({ title: request.kind === 'update' ? 'Model profile updated.' : `Model profile ${saved?.id ?? state.profileId.trim()} created.`, variant: 'success' });
-      await Promise.all(MODELS_READS.map((path) => queryClient.invalidateQueries({ queryKey: bffKey(path) })));
+      await Promise.all(MODELS_READS.map((path) => queryClient.invalidateQueries({ queryKey: bffPrefix(path) })));
       setStatus(null); setAdvancedOpen(false);
       close();
     } catch (error) {
       if (error instanceof ConflictError) {
-        await queryClient.invalidateQueries({ queryKey: bffKey('/agent-model-profiles') });
+        await queryClient.invalidateQueries({ queryKey: bffPrefix('/agent-model-profiles') });
         const latest = queryClient.getQueryData<ModelProfile[]>(['bff', '/agent-model-profiles', {}])?.find((entry) => entry.id === stored?.sourceProfileId);
         if (latest) setSnapshot(latest);
       }

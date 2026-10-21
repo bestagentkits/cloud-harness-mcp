@@ -8,7 +8,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { CopyButton } from '@/components/ui/copy-button';
 import { DataTable } from '@/components/ui/data-table';
 import { toast } from '@/components/ui/toast-store';
-import { bffKey } from '@/lib/bff-mutation';
+import { bffPrefix } from '@/lib/bff-mutation';
 import { useOneTimeReveal } from '@/lib/one-time-reveal';
 import { usePagePrimaryAction } from '@/lib/page-primary-action';
 import { Callout } from '../shared/callout';
@@ -76,11 +76,11 @@ function ApiKeysBody({ list, onCreate }: { list: ApiKeyList; onCreate: () => voi
           if (!revoking) return;
           await apiKeysApi.revoke(revoking);
           toast({ title: 'API key revoked.', variant: 'success' });
-          await queryClient.invalidateQueries({ queryKey: bffKey('/api-keys') });
+          await queryClient.invalidateQueries({ queryKey: bffPrefix('/api-keys') });
         }}
         onError={(error) => {
           reportActionError('The API key could not be revoked', error);
-          void queryClient.invalidateQueries({ queryKey: bffKey('/api-keys') });
+          void queryClient.invalidateQueries({ queryKey: bffPrefix('/api-keys') });
         }}
       />
     </>

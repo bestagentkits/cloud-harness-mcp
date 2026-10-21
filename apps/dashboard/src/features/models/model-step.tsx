@@ -4,7 +4,7 @@ import { ActionButton } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { toast } from '@/components/ui/toast-store';
-import { bffKey, mutationErrorText } from '@/lib/bff-mutation';
+import { bffPrefix, mutationErrorText } from '@/lib/bff-mutation';
 import { cn } from '@/lib/utils';
 import { modelsApi } from './models-api';
 import { availabilityLabel, catalogFreshnessNotice, formatPrice, priceProvenanceText } from './models-pricing';
@@ -128,7 +128,7 @@ export function ModelStep({ state, update, provider, errors }: WizardStepProps) 
     try {
       await modelsApi.refreshCatalog(state.provider, state.credentialId);
       toast({ title: 'Catalog refreshed.', variant: 'success' });
-      await queryClient.invalidateQueries({ queryKey: bffKey('/model-catalog') });
+      await queryClient.invalidateQueries({ queryKey: bffPrefix('/model-catalog') });
     } catch (error) {
       toast({ title: 'The catalog could not be refreshed', description: mutationErrorText(error), variant: 'destructive' });
     }

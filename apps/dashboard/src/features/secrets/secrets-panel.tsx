@@ -7,7 +7,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { DataTable } from '@/components/ui/data-table';
 import { toast } from '@/components/ui/toast-store';
 import { apiClient } from '@/lib/api-client';
-import { bffKey } from '@/lib/bff-mutation';
+import { bffPrefix } from '@/lib/bff-mutation';
 import { useOpenedOnce } from '@/lib/use-opened-once';
 import { Callout } from '../shared/callout';
 import { downloadText } from '../shared/download-text';
@@ -35,7 +35,7 @@ export function SecretsPanel({ scope, list, createOpen, onCreateOpenChange }: { 
   const bulkMounted = useOpenedOnce(bulkOpen);
   const secrets = list.secrets;
   // The current list, not the possibly stale page copy.
-  const readFresh = () => queryClient.fetchQuery({ queryKey: [...bffKey(secretsPath(scope)), {}], queryFn: ({ signal }) => apiClient.get<{ data: SecretList }>(secretsPath(scope), { signal }), staleTime: 0 });
+  const readFresh = () => queryClient.fetchQuery({ queryKey: [...bffPrefix(secretsPath(scope)), {}], queryFn: ({ signal }) => apiClient.get<{ data: SecretList }>(secretsPath(scope), { signal }), staleTime: 0 });
 
   // The dialog stays fenced on the row it opened with, so a background refetch never moves
   // the fence past a change the operator has not seen. Only a 409 replaces the snapshot,
@@ -118,11 +118,11 @@ export function SecretsPanel({ scope, list, createOpen, onCreateOpenChange }: { 
           if (!deleting) return;
           await secretsApi.remove(scope, deleting);
           toast({ title: global ? 'Global secret deleted.' : 'Secret reference deleted.', variant: 'success' });
-          await queryClient.invalidateQueries({ queryKey: bffKey(secretsPath(scope)) });
+          await queryClient.invalidateQueries({ queryKey: bffPrefix(secretsPath(scope)) });
         }}
         onError={(error) => {
           reportActionError('The secret could not be deleted', error);
-          void queryClient.invalidateQueries({ queryKey: bffKey(secretsPath(scope)) });
+          void queryClient.invalidateQueries({ queryKey: bffPrefix(secretsPath(scope)) });
         }}
       />
     </div>

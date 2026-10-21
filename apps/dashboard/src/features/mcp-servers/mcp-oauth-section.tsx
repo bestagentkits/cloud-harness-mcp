@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast-store';
-import { bffKey } from '@/lib/bff-mutation';
+import { bffPrefix } from '@/lib/bff-mutation';
 import { Callout } from '../shared/callout';
 import { formatTime } from '../shared/format';
 import { reportActionError } from '../shared/report-error';
@@ -56,8 +56,8 @@ export function McpOAuthSection({ server }: { server: McpServer }) {
       reportActionError('OAuth could not be disconnected', error);
     } finally {
       setBusy(undefined);
-      void queryClient.invalidateQueries({ queryKey: bffKey(oauthStatusPath(server.id)) });
-      void queryClient.invalidateQueries({ queryKey: bffKey(`/mcp-servers/${server.id}`) });
+      void queryClient.invalidateQueries({ queryKey: bffPrefix(oauthStatusPath(server.id)) });
+      void queryClient.invalidateQueries({ queryKey: bffPrefix(`/mcp-servers/${server.id}`) });
     }
   }
 

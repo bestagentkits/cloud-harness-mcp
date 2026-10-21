@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { toast } from '@/components/ui/toast-store';
 import { apiClient } from '@/lib/api-client';
-import { bffKey } from '@/lib/bff-mutation';
+import { bffPrefix } from '@/lib/bff-mutation';
 import { Callout } from '../shared/callout';
 import { usePageData } from '../shared/feature-read';
 import { formatTime } from '../shared/format';
@@ -173,7 +173,7 @@ export function ApprovalsPage() {
   });
   const [pending, setPending] = useState<Decision | undefined>();
   const copy = pending ? confirmCopy(pending) : undefined;
-  const refresh = () => Promise.all(APPROVAL_READS.map((path) => queryClient.invalidateQueries({ queryKey: bffKey(path) })));
+  const refresh = () => Promise.all(APPROVAL_READS.map((path) => queryClient.invalidateQueries({ queryKey: bffPrefix(path) })));
   return (
     <div className="grid gap-(--stack-gap)" data-testid="approvals-page">
       <Callout title="Privilege grants.">Approving lets one command run in a workspace under your identity. Both decisions are audited.</Callout>

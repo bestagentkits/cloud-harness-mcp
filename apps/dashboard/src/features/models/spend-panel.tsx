@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { NativeSelect } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast-store';
 import { ApiError, ConflictError } from '@/lib/api-client';
-import { bffKey, mutationErrorText } from '@/lib/bff-mutation';
+import { bffPrefix, mutationErrorText } from '@/lib/bff-mutation';
 import { Section } from '../shared/section';
 import { StatusBadge } from '../shared/status-badge';
 import { SPEND_READ, modelsApi } from './models-api';
@@ -67,7 +67,7 @@ export function SpendPanel({ profiles }: { profiles: readonly ModelProfile[] }) 
   const warnRef = useRef<HTMLInputElement>(null);
 
   const reload = async (): Promise<SpendSummary | undefined> => {
-    await queryClient.invalidateQueries({ queryKey: bffKey(SPEND_READ) });
+    await queryClient.invalidateQueries({ queryKey: bffPrefix(SPEND_READ) });
     return queryClient.getQueryData<SpendSummary>(['bff', SPEND_READ, {}]);
   };
   const policiesOf = (summary: SpendSummary | undefined) => (summary?.windows ?? []).flatMap((window) => (window.policy ? [window.policy] : []));
