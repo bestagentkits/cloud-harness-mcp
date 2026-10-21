@@ -1,3 +1,10 @@
+# [0.66.0-beta.35](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.34...v0.66.0-beta.35) (2026-10-21)
+
+
+### Bug Fixes
+
+* **hooks:** let a hook's manifest timeoutMs apply when hooks_run names none ([961d34f](https://github.com/bestagentkits/cloud-harness-mcp/commit/961d34febf1a737cd8b0150319f8c1e5231ea534)), closes [#521](https://github.com/bestagentkits/cloud-harness-mcp/issues/521)
+
 # [0.66.0-beta.34](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.33...v0.66.0-beta.34) (2026-10-21)
 
 
