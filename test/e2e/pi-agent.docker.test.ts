@@ -348,7 +348,13 @@ describe.skipIf(Boolean(prerequisiteIssue))('actual Pi agent through MCP and the
     });
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toMatchObject({ error: { code: 'CONFLICT' } });
-    expect(await agentResourceInventory()).toEqual(before);
+    // An earlier test's agent resources may still be tearing down, so only resources absent from the
+    // before snapshot prove this rejected spawn created something.
+    const after = await agentResourceInventory();
+    expect({
+      containers: after.containers.filter((name) => !before.containers.includes(name)),
+      networks: after.networks.filter((name) => !before.networks.includes(name))
+    }).toEqual({ containers: [], networks: [] });
     await call('workspace_close', { workspaceId });
     activeWorkspaceIds.delete(workspaceId);
   }, 60_000);

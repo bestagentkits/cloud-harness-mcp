@@ -95,6 +95,7 @@ import { mountTerminalPane } from './dashboard-terminal.js';
 import { createModelWizard, createSpendPanel, renderModelsPage, verificationLabel } from './dashboard-models.js';
 import { createAgentPolicyEditor } from './dashboard-policies.js';
 import { createTracesView, tracesAvailable } from './dashboard-traces.js';
+import { createInboxView, inboxStatus } from './dashboard-inbox.js';
 import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -752,7 +753,7 @@ function navigateTo(target) {
 export function renderSidebarNavMarkup(groups = navGroups()) {
   return groups.map((group) => [
     `<p class="nav-group">${escapeHtml(group.label)}</p>`,
-    ...group.pages.map((page) => `<a href="${escapeHtml(page.route)}" data-section="${escapeHtml(page.id)}"${page.feature ? ` data-feature="${escapeHtml(page.feature)}" hidden` : ''}><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${page.icon}</svg>${escapeHtml(page.label)}${page.id === 'approvals' ? '<span class="nav-badge" id="nav-badge-approvals" hidden></span>' : ''}</a>`)
+    ...group.pages.map((page) => `<a href="${escapeHtml(page.route)}" data-section="${escapeHtml(page.id)}"${page.feature ? ` data-feature="${escapeHtml(page.feature)}" hidden` : ''}><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${page.icon}</svg>${escapeHtml(page.label)}${page.id === 'approvals' || page.id === 'inbox' ? `<span class="nav-badge" id="nav-badge-${page.id}" hidden></span>` : ''}</a>`)
   ].join('')).join('');
 }
 
@@ -1151,6 +1152,11 @@ export function initializeDashboard() {
   void tracesAvailable().then((available) => {
     for (const link of sidebar.querySelectorAll('a[data-feature="agentTraces"]')) link.hidden = !available;
   });
+  // The Inbox entry follows the same rule, and its badge shows the unread count only while one exists.
+  void inboxStatus().then(({ available, unread }) => {
+    for (const link of sidebar.querySelectorAll('a[data-feature="notifications"]')) link.hidden = !available;
+    updateInboxBadge(available ? unread : 0);
+  });
   const dialog = document.querySelector('#confirm-dialog'); const menuButton = document.querySelector('#menu-button');
   const revealDialog = document.querySelector('#api-key-reveal-dialog');
   const confirm = createAsyncDialogController({ dialog, cancelButton: dialog.querySelector('[data-cancel]'), actionButton: document.querySelector('#confirm-action'), status: document.querySelector('#confirm-status'), reportError: showError });
@@ -1377,10 +1383,12 @@ export function initializeDashboard() {
   }
   /** The Traces page, one trace's detail, and the agent Traces panel share the Dashboard's one polling controller. */
   const traceViews = createTracesView({ insert: insertRendered, navigate: navigateTo, createPoller: createImportPollingController, announce });
+  const inboxView = createInboxView({ insert: insertRendered, announce, onUnread: updateInboxBadge });
   // Static pages resolve through the registry; detail routes keep their own matchers
   // because they need the captured id.
   const PAGE_LOADERS = {
     overview: loadOverview,
+    inbox: loadInbox,
     workspaces: loadIndex,
     audit: loadAudit,
     projects: loadProjects,
@@ -1795,6 +1803,9 @@ export function initializeDashboard() {
         return;
       }
       if (review) review.textContent = 'Import queued.';
+      // The job line belongs to the new job from here on, so a Cancel before its first poll cannot reach
+      // the previous job.
+      if (jobBox) { jobBox.removeAttribute('data-job-id'); jobBox.removeAttribute('data-job-generation'); }
       void api('/skill-imports', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -1810,6 +1821,10 @@ export function initializeDashboard() {
               // The cancel control reads the id from the line the operator is already watching, so the two
               // cannot drift apart.
               jobBox.setAttribute('data-job-id', String(job.id ?? jobId));
+              // The cancel is fenced on the generation the operator is looking at, so it cannot land on a
+              // job that moved on since this line was drawn.
+              if (typeof job.generation === 'number') jobBox.setAttribute('data-job-generation', String(job.generation));
+              else jobBox.removeAttribute('data-job-generation');
             },
             isTerminal: isTerminalImportState
           });
@@ -1826,11 +1841,12 @@ export function initializeDashboard() {
     document.querySelector('#skill-import-cancel')?.addEventListener('click', () => {
       const jobBox = document.querySelector('#skill-import-job');
       const jobId = jobBox ? jobBox.getAttribute('data-job-id') : null;
-      if (!jobId) return;
+      const generation = Number(jobBox ? jobBox.getAttribute('data-job-generation') : NaN);
+      if (!jobId || !Number.isInteger(generation) || generation < 1) return;
       void api(`/skill-imports/${encodeURIComponent(jobId)}/cancel`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ expectedGeneration: 1 })
+        body: JSON.stringify({ expectedGeneration: generation })
       }).catch(showError);
     });
 
@@ -2477,7 +2493,7 @@ export function initializeDashboard() {
       } catch (error) {
         showError(error);
       } finally {
-        history.replaceState({}, '', '/dashboard/github');
+        history.replaceState({}, '', '/dashboard/integrations/github');
       }
     }
     const result = await api('/github'); insertRendered(content, renderGitHub(result.data));
@@ -4283,6 +4299,18 @@ export function initializeDashboard() {
     if (!badge) return;
     badge.textContent = count > 0 ? String(count) : '';
     badge.hidden = count === 0;
+  }
+  /** The inbox badge, like the approvals badge, appears only while something is unread. */
+  function updateInboxBadge(count) {
+    const badge = document.querySelector('#nav-badge-inbox');
+    if (!badge) return;
+    badge.textContent = count > 0 ? String(count) : '';
+    badge.hidden = !(count > 0);
+  }
+  async function loadInbox() {
+    selectNavigation('inbox');
+    document.querySelector('#command-surface').hidden = true;
+    await inboxView.load(content, location.search);
   }
   async function refreshApprovalsBadge() {
     const [result, { plans }] = await Promise.all([api('/privilege-grants').catch(() => undefined), readPackagePlans()]);

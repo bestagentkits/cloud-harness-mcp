@@ -209,7 +209,10 @@ a lost response; do not create a second key until the first result is resolved.
   API over a unix socket and are unavailable with any other Docker host.
 - `workspace_open` fails with `DEPENDENCY_EGRESS_UNAVAILABLE` (HTTP 503): the
   effective profile is `dependency-access` — the shipped default — but the Linux
-  host firewall is missing or drifted. Provision it with
+  host firewall is missing or drifted. A foreign rule inserted ahead of a managed
+  jump (such as Tailscale's `-A INPUT -j ts-input`) is repaired automatically on
+  the next attestation and logged as a runner warning, so this error means the
+  managed rules themselves are missing or changed. Provision it with
   `deploy/scripts/setup-dependency-firewall.sh`, confirm egress readiness from
   the dashboard Settings page, then open with a fresh idempotency key: the failed
   open recorded its key with a `FAILED` status, and replaying that key returns the

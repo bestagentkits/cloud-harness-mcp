@@ -109,6 +109,17 @@ beforeEach(async () => {
           source: chosen === undefined || chosen === null ? 'environment' : 'setting'
         }, workspaceLifecycle: lifecycleView(lifecycle) } };
       }
+      if (operation === 'skill_import_status' || operation === 'skill_import_cancel') {
+        // The runner's job view: the job sits at generation 2 (running), so only a cancel fenced on 2 lands.
+        if (operation === 'skill_import_cancel' && input.expectedGeneration !== 2) {
+          return { ok: false, message: 'conflict', truncated: false, error: { code: 'CONFLICT', message: 'Import job is at generation 2, not 1', retryable: false } };
+        }
+        return { ok: true, message: 'job', truncated: false, data: {
+          id: input.jobId, sourceKind: 'skillx', sourceRef: 'pdf', state: operation === 'skill_import_cancel' ? 'cancelled' : 'running',
+          generation: operation === 'skill_import_cancel' ? 3 : 2, progress: { phase: 'acquiring' }, result: null, errorCode: null,
+          skillRevisionId: null, createdAt: 1, updatedAt: 2, ownerId: 'internal-owner', progressJson: '{"phase":"acquiring"}'
+        } };
+      }
       if (operation === 'settings_network_check') return { ok: true, message: 'Dependency egress readiness', truncated: false, data: { ready: true, reason: null } };
       if (operation === 'oauth_settings_get' || operation === 'oauth_settings_update') {
         if ((input.grant as { seconds?: number } | undefined)?.seconds === 86_400) {
@@ -225,6 +236,31 @@ describe('dashboard BFF', () => {
     // The route forwards the identifier it owns together with the validated generation, so a stale
     // edit reaches the store as a generation conflict rather than an unguarded write.
     expect(calls.findLast((call) => call.operation === 'skill_set_delete')?.input).toEqual({ skillSetId, expectedGeneration: 2 });
+  });
+
+  it('projects the skill import generation and refuses a cancel fenced on a stale one', async () => {
+    const jobId = `skjob_${'d'.repeat(24)}`;
+    const read = await send(`/api/v1/skill-imports/${jobId}`);
+    expect(read.status).toBe(200);
+    expect(read.json.data).toEqual({
+      id: jobId, sourceKind: 'skillx', sourceRef: 'pdf', state: 'running', generation: 2, progress: { phase: 'acquiring' },
+      result: null, errorCode: null, skillRevisionId: null, createdAt: 1, updatedAt: 2
+    });
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const stale = await send(`/api/v1/skill-imports/${jobId}/cancel`, { method: 'POST', headers, body: JSON.stringify({ expectedGeneration: 1 }) });
+    expect(stale.status).toBe(409);
+    expect(stale.json.message).toMatch(/changed or already finished/);
+    expect(calls.at(-1)).toMatchObject({ operation: 'skill_import_cancel', input: { jobId, expectedGeneration: 1 } });
+
+    // The path names the job, so a body field of the same name cannot redirect the cancel.
+    const otherJob = `skjob_${'e'.repeat(24)}`;
+    const current = await send(`/api/v1/skill-imports/${jobId}/cancel`, { method: 'POST', headers, body: JSON.stringify({ expectedGeneration: read.json.data.generation, jobId: otherJob }) });
+    expect(current.status).toBe(200);
+    expect(calls.at(-1)?.input).toEqual({ jobId, expectedGeneration: 2 });
+    expect(current.json.data).toMatchObject({ state: 'cancelled', generation: 3 });
   });
 
   it('accepts a zip upload on the skill archive route without the JSON media-type rule', async () => {

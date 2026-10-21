@@ -632,6 +632,19 @@ retention period holds with the flag off.
 What a trace may contain is described in
 [security model](security-model.md#agent-traces).
 
+## Notifications
+
+| Variable | Default | Decision |
+|---|---|---|
+| `NOTIFICATIONS_ENABLED` | off | Runner only. Writes a notification to the owner's inbox on terminal automation runs and top-level agents, delivers it to the channels the owner's preferences allow (the `cloudharness.notification.created` MCP event and the GitHub comment mirror), and shows the Dashboard Inbox. Off, nothing is written or sent, the inbox list and preference routes answer `FEATURE_DISABLED`, and the Inbox entry stays hidden. |
+
+Notifications live in the runner's state database. Turning the flag off is the
+rollback: emission and delivery stop at once, while the retention purge keeps
+removing old notifications. Retention, the per-principal cap, and the retry
+schedule are owned by
+[`apps/runner/src/notifications/`](../apps/runner/src/notifications/); the
+behaviour is described in [MCP API](mcp-api.md#notification-inbox).
+
 ## Webhook automations
 
 | Variable | Default | Decision |

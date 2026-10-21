@@ -16,6 +16,19 @@ describe('MCP Events contract', () => {
     }
   });
 
+  it('defines the notification event with a kind filter and an ids-only payload', () => {
+    const definition = MCP_EVENT_DEFINITIONS.find((entry) => entry.name === 'cloudharness.notification.created');
+    expect(MCP_EVENT_NAMES.at(-1)).toBe('cloudharness.notification.created');
+    expect(definition?.arguments.safeParse({ kind: 'automation.failed' }).success).toBe(true);
+    expect(definition?.arguments.safeParse({ kind: 'not-a-kind' }).success).toBe(false);
+    const payload = {
+      notificationId: `ntf_${'a'.repeat(32)}`, kind: 'agent.failed', subjectType: 'agent', subjectId: `agent_${'b'.repeat(24)}`,
+      title: 'Agent run failed', link: '/dashboard/agents/x', createdAt: '2026-10-20T00:00:00.000Z'
+    };
+    expect(definition?.payload.safeParse(payload).success).toBe(true);
+    expect(definition?.payload.safeParse({ ...payload, prompt: 'leak' }).success).toBe(false);
+  });
+
   it('accepts only whsec_ secrets carrying 24 to 64 bytes', () => {
     expect(WebhookSecretSchema.safeParse(`whsec_${Buffer.alloc(24).toString('base64')}`).success).toBe(true);
     expect(WebhookSecretSchema.safeParse(`whsec_${Buffer.alloc(64).toString('base64')}`).success).toBe(true);

@@ -108,13 +108,13 @@ Non-browser clients keep receiving the compact `{"error":"authentication_failed"
 ---
 
 ### 10. `DEPENDENCY_EGRESS_UNAVAILABLE` on `workspace_open` (HTTP 503)
-**Cause:** The effective network profile is `dependency-access` — the shipped default — but the Linux host firewall is not provisioned, or its rules have drifted, so the runner fails the open closed instead of silently downgrading to `network-none`.
+**Cause:** The effective network profile is `dependency-access` — the shipped default — but the Linux host firewall is not provisioned, or its rules have drifted, so the runner fails the open closed instead of silently downgrading to `network-none`. When another host service such as Tailscale only inserts its own jump ahead of a managed one (for example `-A INPUT -j ts-input`), the runner moves the managed jump back to the top and continues, logging a warning. Every attestation does this, including the Settings readiness check, so a Tailscale host in its default netfilter mode is corrected again each time tailscaled re-asserts its rules; this error therefore means the managed rules are missing or changed.
 **Fix:**
 1. Provision the host firewall on the Docker host:
 ```bash
 bash deploy/scripts/setup-dependency-firewall.sh
 ```
-2. Confirm **Egress readiness** reports `Ready` on the dashboard [Settings](/dashboard/settings) page.
+2. Confirm **Egress readiness** reports `Ready` on the dashboard [Settings](/dashboard/settings) page. If it still reports a rule-order reason that names a foreign chain, inspect `sudo iptables -S INPUT`, `sudo iptables -S FORWARD`, and `sudo iptables -S DOCKER-USER`; on a Tailscale host, `sudo tailscale set --netfilter-mode=nodivert` stops tailscaled from inserting its jumps at the head of those chains, but then you must add the `ts-input` and `ts-forward` jumps yourself, after the managed jumps, or Tailscale's own filtering stops applying.
 3. Open the workspace again with a fresh idempotency key. The failed attempt kept its key with a `FAILED` status, and replaying that key returns the failed record without retrying the attestation.
 To work without egress meanwhile, reset the default to `network-none` on the Settings page or open the workspace with `networkProfile: "network-none"` under a new idempotency key. An omitted profile and an explicit `network-none` are different requests, so reusing the failed open's key with the explicit profile returns `CONFLICT`.
 
@@ -421,9 +421,22 @@ File and command tools without `repositoryId` work on the workspace root, so pat
 3. Copy `traceId` exactly from a list result under the same identity that ran the agent.
 4. Treat an `unreconciled` trace's totals as approximate; `agent_status` usage and the gateway settlement on the trace are the reference figures.
 
+### 35. Notifications: no Inbox entry, a channel stays pending, or failed
+**Cause:**
+- No **Inbox** entry in the Dashboard sidebar, or `FEATURE_DISABLED` from the inbox API, means the operator has not set `NOTIFICATIONS_ENABLED=true` on the runner.
+- An **MCP Events** delivery stays `pending` while its event waits in the webhook queue: the API's delivery worker is down or retrying the callback. It turns `stopped` when the subscription is revoked or lapses, and has no row at all when no `cloudharness.notification.created` subscription existed when the notification was written.
+- A **GitHub comment** delivery mirrors the automation's own comment: `pending` while the comment is retried, `failed` with `publish_failed` when it gave up. A rule that does not publish a comment has no GitHub row.
+- `stopped` with `preference_disabled` means you turned that channel off for that kind before it was delivered.
+
+**Fix:**
+1. Ask the operator to enable notifications (see [Environment Variables](/reference/environment-variables)). Runs from before the flag was on have no notification.
+2. For a stuck MCP Events delivery, check the subscription on `/dashboard/api/v1/event-subscriptions` and the API delivery worker; the notification follows the event once it is delivered.
+3. For a GitHub comment failure, open the automation run page and follow [troubleshooting 32](/troubleshooting#_32-github-automation-deliveries-fail-or-no-run-starts).
+4. Turn the channel back on under **Delivery preferences**; a stopped delivery is not resent, but later notifications are.
+
 ---
 
-### 35. `workspace_repo_add` or `workspace_repo_remove` is refused
+### 36. `workspace_repo_add` or `workspace_repo_remove` is refused
 **Cause:** Adding and removing checkouts is guarded so it never overwrites or discards your work.
 - `INVALID_INPUT: ... applies only to a multi-repository workspace` means the workspace was opened with one `repositoryUrl`. Its checkout stays at the root, so it cannot gain siblings.
 - `INVALID_INPUT: duplicate repository alias` or `duplicate repository URL`, or `LIMIT_EXCEEDED: a workspace holds at most N repositories`, are the same rules `workspace_open` applies.

@@ -3,6 +3,7 @@ import express, { type NextFunction, type Response, type Router } from 'express'
 import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, AutomationsRunnerDataSchemas, AutomationsRunnerRequestSchema, McpEventSubscriptionIdSchema, McpEventsRunnerDataSchemas, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, PackagePlanApproveInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema, type ApiConfig, type ApiKeyManagementOperation, type AutomationsRunnerErrorCode, type AutomationsRunnerOperation, type McpEventsRunnerRequest, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
+import { registerInboxRoutes } from './dashboard-inbox-router.js';
 import { registerAgentPolicyRoutes } from './dashboard-policies-router.js';
 import { requireArchiveMediaType, SKILL_ARCHIVE_MEDIA_TYPES, SKILL_ARCHIVE_PATH } from './dashboard-security.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
@@ -105,9 +106,10 @@ export function registerDashboardControlRoutes(
   // Without these two the import wizard had nothing to call: the job reader existed while nothing could
   // create a job or stop one, which is why the dialog's submit had no route to reach.
   router.post('/api/v1/skill-imports', endpoint('skill_import_start', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  // The path names the job; a body field of the same name must not redirect the cancel to another one.
   router.post('/api/v1/skill-imports/:jobId/cancel', endpoint('skill_import_cancel', (request) => ({
-    jobId: internalId('skjob').parse(request.params.jobId),
-    ...(request.body && typeof request.body === 'object' ? request.body : {})
+    ...(request.body && typeof request.body === 'object' ? request.body : {}),
+    jobId: internalId('skjob').parse(request.params.jobId)
   })));
   // A skills archive is a binary upload, so it cannot go through the JSON parser the rest of this
   // router uses: this route takes its own raw body under an explicit limit rather than inheriting a
@@ -267,6 +269,7 @@ export function registerDashboardControlRoutes(
   router.post('/api/v1/automations/workflows/:id/cancel', automationsEndpoint('workflow_cancel', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
   router.get('/api/v1/automations/deliveries', automationsEndpoint('deliveries_list', (request) => withNumericLimit(queryFields(request.query, ['connectionId', 'limit']))));
   registerAgentPolicyRoutes(router, runner, principal);
+  registerInboxRoutes(router, runner, principal);
   router.get('/api/v1/knowledge', endpoint('knowledge_dashboard_list', (request) => ({
     ...(request.query.kind ? { kind: String(request.query.kind) } : {}),
     ...(request.query.scope ? { scope: String(request.query.scope) } : {}),
