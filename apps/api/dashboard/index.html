@@ -234,7 +234,7 @@
       <input type="hidden" name="serverId">
       <input type="hidden" name="expectedGeneration" value="0">
       <label for="mcp-server-name">Name</label>
-      <input id="mcp-server-name" name="name" required maxlength="63" pattern="^[a-z0-9][a-z0-9-]{0,62}$" autocomplete="off" spellcheck="false" placeholder="e.g. linear" aria-describedby="mcp-server-name-hint">
+      <input id="mcp-server-name" name="name" required maxlength="63" pattern="[a-z0-9][a-z0-9\-]{0,62}" autocomplete="off" spellcheck="false" placeholder="e.g. linear" aria-describedby="mcp-server-name-hint">
       <p id="mcp-server-name-hint">Lowercase letters, numbers, and hyphens, up to 63 characters.</p>
       <label for="mcp-server-description-input">Description <span class="optional">Optional</span></label>
       <input id="mcp-server-description-input" name="description" maxlength="500" autocomplete="off">

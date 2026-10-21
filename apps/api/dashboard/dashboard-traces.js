@@ -170,8 +170,8 @@ export function renderTraceFilters(filters = {}) {
     + `<label for="trace-state-filter">State</label><select id="trace-state-filter" name="state">${stateOptions}</select>`
     + `<label for="trace-window-filter">Window</label><select id="trace-window-filter" name="window">${windowOptions}</select>`
     + `<label for="trace-profile-filter">Profile</label><input id="trace-profile-filter" name="profileId" maxlength="128" value="${escape(filters.profileId ?? '')}" placeholder="coding-fast">`
-    + `<label for="trace-agent-filter">Agent</label><input id="trace-agent-filter" name="agentId" value="${escape(filters.agentId ?? '')}" placeholder="agent_…" pattern="agent_[A-Za-z0-9_-]{20,80}">`
-    + `<label for="trace-workspace-filter">Workspace</label><input id="trace-workspace-filter" name="workspaceId" value="${escape(filters.workspaceId ?? '')}" placeholder="ws_…" pattern="ws_[A-Za-z0-9_-]{20,80}">`
+    + `<label for="trace-agent-filter">Agent</label><input id="trace-agent-filter" name="agentId" value="${escape(filters.agentId ?? '')}" placeholder="agent_…" pattern="agent_[A-Za-z0-9_\\-]{20,80}">`
+    + `<label for="trace-workspace-filter">Workspace</label><input id="trace-workspace-filter" name="workspaceId" value="${escape(filters.workspaceId ?? '')}" placeholder="ws_…" pattern="ws_[A-Za-z0-9_\\-]{20,80}">`
     + '<button type="submit">Apply filters</button></form>';
 }
 

@@ -760,7 +760,7 @@ function renderAdvanced(state, context) {
   return `<details id="model-wizard-advanced" class="row-edit wizard-advanced"${open ? ' open' : ''}><summary>Advanced settings</summary>
     <div class="wizard-advanced-body">
       <label for="model-wizard-profile-id">Profile ID</label>
-      <input id="model-wizard-profile-id" name="profileId" maxlength="80" pattern="[A-Za-z0-9._-]+" autocomplete="off" spellcheck="false" value="${escape(state.profileId)}"${state.mode === 'edit' ? ' disabled aria-describedby="model-wizard-profile-id-help"' : invalid(context.errors, 'profileId')}>${fieldError(context.errors, 'profileId')}
+      <input id="model-wizard-profile-id" name="profileId" maxlength="80" pattern="[A-Za-z0-9._\\-]+" autocomplete="off" spellcheck="false" value="${escape(state.profileId)}"${state.mode === 'edit' ? ' disabled aria-describedby="model-wizard-profile-id-help"' : invalid(context.errors, 'profileId')}>${fieldError(context.errors, 'profileId')}
       ${state.mode === 'edit' ? '<p id="model-wizard-profile-id-help" class="field-help">A saved profile keeps its ID.</p>' : '<p class="field-help">Derived from the model and unique among your profiles. Agents select the profile by this ID.</p>'}
       <label for="model-wizard-api-mode">API mode</label>
       <select id="model-wizard-api-mode" name="apiMode"${invalid(context.errors, 'apiMode')}>${modes.map((mode) => `<option value="${escape(mode)}"${state.apiMode === mode ? ' selected' : ''}>${escape(modeLabel[mode])}</option>`).join('')}</select>${fieldError(context.errors, 'apiMode')}

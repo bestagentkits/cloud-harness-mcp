@@ -54,6 +54,16 @@ dashboard can read: a lease inside its threshold, a failed workspace, a quaranti
 - **Automation** groups hooks by the lifecycle event that runs them
   (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`) beside an
   ordered pipeline, lists the resolved skills, and offers a guarded skill-script runner.
+  Pick a skill and name one of its scripts (for example `run.sh`); the run is pinned to
+  the skill digest shown in the list. Each run then asks you to approve it: the dialog
+  names the skill, script and digest, and **Approve and run** grants that one run and
+  executes it in a disposable helper container. The approval expires after about a
+  minute and is used up by the run, even one that fails, so a later run asks again.
+  **Cancel** rejects the approval so it does not wait on the Approvals page. If the skill changed
+  since the list loaded, the run is refused; reload the tab and try again. When the run
+  ends, its exit code, where it ran, the signal that stopped it on a timeout, and its
+  bounded, redacted output appear below the
+  form, including for a script that exits with an error.
 - **Deploy** lists repository-defined deployment targets with their last reported result,
   duration and failure detail; running one asks for confirmation because deployments act
   outside the sandbox.

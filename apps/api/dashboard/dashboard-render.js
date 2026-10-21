@@ -405,7 +405,7 @@ export function renderAgentsIndex({ agents = [], filters = {}, now = Date.now() 
   const attentionOptions = [['', 'Any attention state'], ['needs-attention', 'Needs attention'], ['clear', 'Clear']].map(([value, label]) => `<option value="${value}"${(filters.attention ?? '') === value ? ' selected' : ''}>${label}</option>`).join('');
   const filterRow = '<form id="agent-filters" class="resource-filters" role="search" aria-label="Filter agents">'
     + `<label for="agent-status-filter">Status</label><select id="agent-status-filter" name="status">${statusOptions}</select>`
-    + (filters.workspaceId ? `<input type="hidden" name="workspaceId" value="${escape(filters.workspaceId)}">` : `<label for="agent-workspace-filter">Workspace</label><input id="agent-workspace-filter" name="workspaceId" value="${escape(filters.workspaceId ?? '')}" placeholder="ws_…" pattern="ws_[A-Za-z0-9_-]{20,80}">`)
+    + (filters.workspaceId ? `<input type="hidden" name="workspaceId" value="${escape(filters.workspaceId)}">` : `<label for="agent-workspace-filter">Workspace</label><input id="agent-workspace-filter" name="workspaceId" value="${escape(filters.workspaceId ?? '')}" placeholder="ws_…" pattern="ws_[A-Za-z0-9_\\-]{20,80}">`)
     + `<label for="agent-profile-filter">Profile</label><input id="agent-profile-filter" name="profileId" value="${escape(filters.profileId ?? '')}" placeholder="coding-fast">`
     + `<label for="agent-parent-filter">Parent agent</label><input id="agent-parent-filter" name="parentAgentId" value="${escape(filters.parentAgentId ?? '')}" placeholder="agent_…">`
     + `<label for="agent-attention-filter">Attention</label><select id="agent-attention-filter" name="attention">${attentionOptions}</select>`
@@ -664,7 +664,7 @@ export function renderWorktrees(worktrees = []) {
   const rows = worktrees.length
     ? worktrees.map((tree) => `<li class="worktree-row"><span class="mono wrap">${escape(String(tree.path ?? ''))}</span><span class="mono">${escape(String(tree.head ?? '').slice(0, 12))}</span><span>${escape(String(tree.branch ?? 'detached'))}</span><button class="danger remove-worktree" type="button" data-worktree-name="${escape(String(tree.path ?? '').split('/').pop() ?? '')}">Remove</button></li>`).join('')
     : '<li class="empty">No managed worktrees.</li>';
-  return `<details class="row-edit"><summary>Worktrees</summary><ul class="record-list worktree-list">${rows}</ul><form id="create-worktree-form" class="stack-form"><label for="worktree-name">Name</label><input id="worktree-name" name="name" required pattern="[A-Za-z0-9._-]{1,80}"><label for="worktree-ref">Ref</label><input id="worktree-ref" name="ref" required maxlength="255"><button type="submit">Create worktree</button><p class="form-status" aria-live="polite"></p></form></details>`;
+  return `<details class="row-edit"><summary>Worktrees</summary><ul class="record-list worktree-list">${rows}</ul><form id="create-worktree-form" class="stack-form"><label for="worktree-name">Name</label><input id="worktree-name" name="name" required pattern="[A-Za-z0-9._\\-]{1,80}"><label for="worktree-ref">Ref</label><input id="worktree-ref" name="ref" required maxlength="255"><button type="submit">Create worktree</button><p class="form-status" aria-live="polite"></p></form></details>`;
 }
 
 /**
@@ -725,10 +725,35 @@ export function renderHooks(hooks = []) {
 
 /** The workspace skill set, with a guarded run form for an explicitly named script. */
 export function renderWorkspaceSkills(skills = []) {
+  const digest = (skill) => String(skill.contentSha256 ?? '');
   const rows = skills.length
-    ? `<ul class="record-list">${skills.map((skill) => `<li><strong>${escape(String(skill.name ?? 'skill'))}</strong>${skill.tier ? ` <span class="status">${escape(String(skill.tier))}</span>` : ''}${skill.description ? `<p>${escape(String(skill.description))}</p>` : ''}${skill.sha256 ? `<small class="mono wrap">${escape(String(skill.sha256).slice(0, 16))}</small>` : ''}</li>`).join('')}</ul>`
+    ? `<ul class="record-list">${skills.map((skill) => `<li><strong>${escape(String(skill.name ?? 'skill'))}</strong>${skill.tier ? ` <span class="status">${escape(String(skill.tier))}</span>` : ''}${skill.description ? `<p>${escape(String(skill.description))}</p>` : ''}${digest(skill) ? `<small class="mono wrap">${escape(digest(skill).slice(0, 16))}</small>` : ''}</li>`).join('')}</ul>`
     : '<p class="empty-note">No skills are resolved for this workspace.</p>';
-  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs inside the workspace executor under the runner's verified-bytes contract. Nothing runs unless you name it here.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><input id="skill-run-name" name="name" required maxlength="120"><label for="skill-run-script">Script path</label><input id="skill-run-script" name="script" required maxlength="255"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form></details></section>`;
+  // A run names the skill revision listed here: the runner refuses it if the bundle changed since.
+  const runnable = skills.filter((skill) => skill.name && /^[0-9a-f]{64}$/.test(digest(skill)));
+  const options = runnable.map((skill) => `<option value="${escape(String(skill.name))}" data-content-sha256="${escape(digest(skill))}">${escape(String(skill.name))}</option>`).join('');
+  const form = runnable.length
+    ? `<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs once in a disposable helper container from the verified skill revision listed here. Nothing runs unless you name it here, and each run asks for your approval first.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><select id="skill-run-name" name="name" required>${options}</select><label for="skill-run-script">Script name</label><input id="skill-run-script" name="script" required maxlength="120" placeholder="run.sh"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form><div id="skill-run-result"></div></details>`
+    : '';
+  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}${form}</section>`;
+}
+
+/** A finished skill run: exit code, where it ran, the signal that stopped it (a timeout) and its bounded, redacted output. */
+export function renderSkillRunResult(result = {}, { failed = false } = {}) {
+  const fact = (value, suffix = '') => value === undefined || value === null || value === '' ? 'Not reported' : `${escape(String(value))}${suffix}`;
+  const output = typeof result.output === 'string' && result.output ? escape(result.output) : 'No output.';
+  return `<section class="skill-run-result" aria-labelledby="skill-run-result-heading"><h3 id="skill-run-result-heading">${failed ? 'Script exited with an error' : 'Script finished'}</h3><dl class="facts"><dt>Exit code</dt><dd>${fact(result.exitCode)}</dd><dt>Ran in</dt><dd>${result.executionMode === 'helper-container' ? 'Disposable helper container' : fact(result.executionMode)}</dd>${result.signal ? `<dt>Stopped by</dt><dd>${escape(String(result.signal))}</dd>` : ''}</dl><pre class="mono">${output}</pre>${result.truncated === true ? '<p class="status-message" role="status">Output is truncated.</p>' : ''}</section>`;
+}
+
+/** The confirm-dialog copy for a skill run the runner holds for an owner privilege grant. */
+export function skillRunApprovalPrompt({ name, script, contentSha256, expiresAt }) {
+  // The confirm dialog sets this copy as text, so the expiry is a plain local time, not markup.
+  const expiry = expiresAt ? ` The approval expires at ${new Date(expiresAt).toLocaleTimeString()} and is used by this one run.` : ' The approval is used by this one run.';
+  return {
+    title: 'Approve and run this skill script?',
+    description: `The script runs once in a disposable helper container from the verified skill revision.${expiry}`,
+    target: `${name} / ${script} @ ${String(contentSha256).slice(0, 16)}`
+  };
 }
 
 /** Deploy targets: external-effect risk, so every run confirms and every failure shows. */
@@ -1185,7 +1210,7 @@ export function renderArtifactIndex(artifacts, cursor) {
     id: 'snapshot-dialog', title: 'Create snapshot',
     description: 'Copy one workspace file into retained, bounded storage. The snapshot expires at the retention you set, or at the server default.',
     formId: 'snapshot-form', submitId: 'snapshot-submit', submitLabel: 'Create retained snapshot',
-    body: '<label for="snapshot-workspace">Workspace ID</label><input id="snapshot-workspace" name="workspaceId" required pattern="ws_[A-Za-z0-9_-]{20,80}"><label for="snapshot-path">Workspace path</label><input id="snapshot-path" name="path" required maxlength="1024"><label for="snapshot-name">Logical name</label><input id="snapshot-name" name="logicalName" required maxlength="128"><label for="snapshot-retention">Retention in seconds</label><input id="snapshot-retention" name="retentionSeconds" type="number" min="60" max="2592000" placeholder="Use server default">'
+    body: '<label for="snapshot-workspace">Workspace ID</label><input id="snapshot-workspace" name="workspaceId" required pattern="ws_[A-Za-z0-9_\\-]{20,80}"><label for="snapshot-path">Workspace path</label><input id="snapshot-path" name="path" required maxlength="1024"><label for="snapshot-name">Logical name</label><input id="snapshot-name" name="logicalName" required maxlength="128"><label for="snapshot-retention">Retention in seconds</label><input id="snapshot-retention" name="retentionSeconds" type="number" min="60" max="2592000" placeholder="Use server default">'
   })}`;
 }
 

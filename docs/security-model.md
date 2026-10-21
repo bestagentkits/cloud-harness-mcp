@@ -757,6 +757,18 @@ When `exec_run` is invoked with `privileged: true`:
 3. The operator must explicitly approve the grant via the authenticated Dashboard BFF API (`POST /api/v1/privilege-grants/:grantId/approve`). MCP clients cannot self-approve.
 4. The caller provides the `approvalGrantToken`. The runner validates the grant and command/cwd hash, atomically consumes it (single-use), and executes the command in an isolated ephemeral container with `try/finally` cleanup. The standard executor container remains permanently hardened and unmodified.
 
+`skills_run` uses the same grant store, bound to the skill name, script and
+expected bundle digest. The workspace cockpit's Automation tab completes it in
+one owner action: the BFF answers an ungranted run with HTTP 428 carrying only
+the grant id and expiry (`sendRunnerResponse` in
+[`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts)),
+the owner confirms the named skill, script and digest, and the page approves the
+grant and retries with it. The grant id lives only in that confirm action's
+closure: never in browser storage, the URL, or a query cache. A script that exits
+non-zero is answered with HTTP 422 carrying the same bounded, redacted projection
+as a successful run, never the runner's error text; other execution failures stay
+generic server errors.
+
 The Dashboard Approvals page lists grants in every state the runner returns,
 labelled with their real status, and offers Approve and Reject only for an
 unexpired pending grant; only those count toward the rail badge. A decided,
