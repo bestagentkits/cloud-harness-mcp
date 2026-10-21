@@ -19,7 +19,7 @@ The assistant sees a small summary of the page you are on (the route, filters, s
 
 ## Every change waits for you
 
-A prepared change is never sent by the assistant. The Dashboard builds the exact request itself and shows it to you in a confirmation dialog: the method, the address and the JSON body. Nothing is sent until you click the confirm button. **Cancel** (or `Escape`) declines it, and the assistant is told you declined. Changes that cannot be undone say so in the dialog. Navigating, reading the page, setting filters and opening a create flow change only what you see, so they run without a dialog.
+A prepared change is never sent by the assistant. The Dashboard builds the exact request itself and shows it to you in a confirmation dialog: the method, the address and the JSON body. Nothing is sent until you click the confirm button. **Cancel** (or `Escape`) declines it, and the assistant is told you declined. If the assistant stops the request before you decide, for example when its conversation ends, the dialog closes and nothing is sent. A request you already confirmed finishes sending even if the assistant stops meanwhile; check the page for its result. Changes that cannot be undone say so in the dialog. Navigating, reading the page, setting filters and opening a create flow change only what you see, so they run without a dialog.
 
 Some actions are never available to the assistant on the page: creating secrets or API keys, and approving or rejecting privilege grants. Use their pages for those.
 
