@@ -766,8 +766,13 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
   // approved (expired, rejected or already used), so the wording names both and the way forward.
   skills_run: {
     FORBIDDEN: 'Workspace not found, or the approval expired or was already used. Run the script again to request a new approval.',
+    NOT_FOUND: 'Workspace, skill or script not found. Check the script name and run it again.',
+    NO_EXECUTABLE_ASSETS: 'This skill revision has no scripts to run.',
     EXECUTION_FAILED: 'The skill script exited with an error.'
   },
+  // The runner refuses an approval for a grant that is missing, expired or already decided.
+  privilege_grant_approve: { NOT_FOUND: 'The approval expired or was already decided. Run the action again to request a new one.' },
+  privilege_grant_reject: { NOT_FOUND: 'The approval expired or was already decided.' },
   package_plan_approve: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
   package_plan_reject: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
   package_rollback: { FORBIDDEN: packagesDisabled },

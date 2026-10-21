@@ -58,7 +58,8 @@ dashboard can read: a lease inside its threshold, a failed workspace, a quaranti
   the skill digest shown in the list. Each run then asks you to approve it: the dialog
   names the skill, script and digest, and **Approve and run** grants that one run and
   executes it in a disposable helper container. The approval expires after about a
-  minute and is used up by the run, so a later run asks again. If the skill changed
+  minute and is used up by the run, even one that fails, so a later run asks again.
+  **Cancel** rejects the approval so it does not wait on the Approvals page. If the skill changed
   since the list loaded, the run is refused; reload the tab and try again.
 - **Deploy** lists repository-defined deployment targets with their last reported result,
   duration and failure detail; running one asks for confirmation because deployments act

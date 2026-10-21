@@ -43,6 +43,14 @@ describe('skill-run approval projection', () => {
     expect(body).not.toHaveProperty('grantRequest');
   });
 
+  it('names a missing script or an approval that can no longer be decided', () => {
+    expect(capture('skills_run', failure({ code: 'NOT_FOUND', message: 'skill script nope.sh not found in snapshot' })).body.message).toContain('skill or script not found');
+    expect(capture('skills_run', failure({ code: 'NO_EXECUTABLE_ASSETS', message: 'x' })).body.message).toBe('This skill revision has no scripts to run.');
+    const approve = capture('privilege_grant_approve', failure({ code: 'NOT_FOUND', message: 'privilege grant not found, expired, or already approved/consumed' }));
+    expect(approve.status).toBe(404);
+    expect(approve.body.message).toContain('expired or was already decided');
+  });
+
   it('reports a failed script without the runner text', () => {
     const { status, body } = capture('skills_run', failure({ code: 'EXECUTION_FAILED', message: 'Skill script exited with 3' }));
     expect(status).toBe(500);

@@ -162,7 +162,8 @@ export function createAsyncDialogController({ dialog, cancelButton, actionButton
     options = next; invoker = source; actionButton.textContent = options.label; status.textContent = '';
     dialog.showModal(); cancelButton.focus();
   }
-  function cancel() { if (!submitting && dialog.open) { dialog.close(); restore(); } }
+  // `onCancel` lets an action release what it reserved when the owner declines it.
+  function cancel() { if (!submitting && dialog.open) { dialog.close(); restore(); options?.onCancel?.(); } }
   async function submit() {
     if (submitting || !dialog.open) return;
     submitting = true; dialog.setAttribute('aria-busy', 'true'); cancelButton.disabled = true; actionButton.disabled = true;
@@ -4087,7 +4088,9 @@ export function initializeDashboard() {
             await api(`/privilege-grants/${encodeURIComponent(grantId)}/approve`, { method: 'POST', body: requestBody({}) });
             await runSkill(grantId);
             finished();
-          }
+          },
+          // A declined run rejects its grant, so it does not linger on the Approvals page.
+          onCancel: () => { void api(`/privilege-grants/${encodeURIComponent(grantId)}/reject`, { method: 'POST', body: requestBody({}) }).catch(() => undefined); }
         }, skillForm.querySelector('button[type="submit"]'));
       });
     });

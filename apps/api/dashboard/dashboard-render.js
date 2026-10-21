@@ -725,7 +725,7 @@ export function renderHooks(hooks = []) {
 
 /** The workspace skill set, with a guarded run form for an explicitly named script. */
 export function renderWorkspaceSkills(skills = []) {
-  const digest = (skill) => String(skill.contentSha256 ?? skill.sha256 ?? '');
+  const digest = (skill) => String(skill.contentSha256 ?? '');
   const rows = skills.length
     ? `<ul class="record-list">${skills.map((skill) => `<li><strong>${escape(String(skill.name ?? 'skill'))}</strong>${skill.tier ? ` <span class="status">${escape(String(skill.tier))}</span>` : ''}${skill.description ? `<p>${escape(String(skill.description))}</p>` : ''}${digest(skill) ? `<small class="mono wrap">${escape(digest(skill).slice(0, 16))}</small>` : ''}</li>`).join('')}</ul>`
     : '<p class="empty-note">No skills are resolved for this workspace.</p>';
@@ -733,7 +733,7 @@ export function renderWorkspaceSkills(skills = []) {
   const runnable = skills.filter((skill) => skill.name && /^[0-9a-f]{64}$/.test(digest(skill)));
   const options = runnable.map((skill) => `<option value="${escape(String(skill.name))}" data-content-sha256="${escape(digest(skill))}">${escape(String(skill.name))}</option>`).join('');
   const form = runnable.length
-    ? `<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs once in a disposable helper container from the verified skill revision listed here. Nothing runs unless you name it here, and each run asks for your approval first.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><select id="skill-run-name" name="name" required>${options}</select><label for="skill-run-script">Script name</label><input id="skill-run-script" name="script" required pattern="[A-Za-z0-9._-]{1,120}" placeholder="run.sh"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form></details>`
+    ? `<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs once in a disposable helper container from the verified skill revision listed here. Nothing runs unless you name it here, and each run asks for your approval first.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><select id="skill-run-name" name="name" required>${options}</select><label for="skill-run-script">Script name</label><input id="skill-run-script" name="script" required maxlength="120" placeholder="run.sh"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form></details>`
     : '';
   return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}${form}</section>`;
 }
