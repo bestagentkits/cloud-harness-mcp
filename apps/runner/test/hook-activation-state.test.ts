@@ -59,6 +59,11 @@ describe('hook activation state', () => {
     expect(activeByName(result)).toEqual({ lint: false, notify: false, setup: false });
   });
 
+  it('never reports a hook active for a manual activation, which no lifecycle event runs', () => {
+    const response: RunnerResponse = { ok: true, message: 'Found 1 hook', truncated: false, data: { manifestSha256: CURRENT, hooks: [{ name: 'legacy', events: ['manual'] }] } };
+    expect(activeByName(withHookActivationState(response, [activation({ event: 'manual' })], NOW))).toEqual({ legacy: false });
+  });
+
   it('reports every hook inactive when the listing has no manifest digest', () => {
     const result = withHookActivationState(listing(null), [activation()], NOW);
     expect(activeByName(result)).toEqual({ lint: false, notify: false, setup: false });

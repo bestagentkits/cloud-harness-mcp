@@ -56,8 +56,8 @@ responsible for supplying their own binary.
   letters, digits, `.`, `_`, or `-`.
 - Optional: `args` defaults to `[]`, permits at most 50 values of at most 2,048
   characters each; `timeoutMs` defaults to 60,000 and permits 100–300,000.
-- Executes a packaged skill script. Arguments are data, not authorization.
-  Review code, effects, working directory assumptions, and network needs first.
+- Executes a packaged skill script; arguments are data, not authorization. Review code,
+  effects, cwd and network needs first. A grant binds the whole request ([retry](../SKILL.md#effective-workflow)).
 
 <!-- cloudharness-tool:skill_suggest -->
 ### `skill_suggest`

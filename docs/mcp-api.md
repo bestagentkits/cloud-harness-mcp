@@ -754,6 +754,11 @@ and the failure-injection suite
   `oldText`. Supply `expectedSha256` when a concurrent edit must be detected.
 - `files_write` replaces a file atomically inside the workspace. Its
   `expectedSha256` option requires the target to exist and match.
+- `skills_run` behind a privilege grant answers `PRIVILEGE_APPROVAL_REQUIRED` with a
+  `grantRequest`. The grant binds the skill, script and bundle digest, plus the source, a
+  non-default timeout and any arguments, so the approved retry must resend the identical
+  request with `approvalGrantToken`; a changed retry is `FORBIDDEN` and leaves the grant
+  unused.
 - `exec_run` accepts raw Bash and is intentionally remote code execution
   inside the executor. It is request-owned and bounded by timeout/output
   settings. Standard execution runs as user `10001:10001` with `--read-only` rootfs

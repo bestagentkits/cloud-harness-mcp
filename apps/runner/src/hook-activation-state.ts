@@ -10,6 +10,9 @@ type HookListData = { manifestSha256?: unknown; hooks?: unknown };
  * digest the listing reports. An activation for an older digest never runs (lifecycle execution
  * re-checks the digest), so reporting it as active would mislead the owner.
  *
+ * `manual` is not a lifecycle event: nothing runs a hook automatically for it, so an activation
+ * of `manual` never makes a hook active.
+ *
  * The caller passes activations already scoped to the workspace and its owner. Failed or
  * malformed responses pass through unchanged.
  */
@@ -27,7 +30,7 @@ export function withHookActivationState(
     manifestSha256 === undefined
       ? []
       : activations
-          .filter((activation) => activation.expiresAt > now && activation.manifestSha256 === manifestSha256)
+          .filter((activation) => activation.event !== 'manual' && activation.expiresAt > now && activation.manifestSha256 === manifestSha256)
           .map((activation) => activation.event)
   );
 

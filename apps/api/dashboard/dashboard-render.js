@@ -723,7 +723,7 @@ export function renderHooks(hooks = [], manifestSha256 = '') {
       : '<p class="empty-note">No hooks run at this stage.</p>';
     return `<section aria-labelledby="hooks-${escape(group.id)}"><h3 id="hooks-${escape(group.id)}">${escape(group.label)}</h3>${rows}</section>`;
   }).join('');
-  const runnable = /^[a-f0-9]{64}$/.test(String(manifestSha256)) ? hooks.filter((hook) => hook.name) : [];
+  const runnable = /^[a-f0-9]{64}$/.test(String(manifestSha256)) ? hooks.filter((hook) => /^[A-Za-z0-9._-]{1,120}$/.test(String(hook.name ?? ''))) : [];
   const options = runnable.map((hook) => `<option value="${escape(String(hook.name))}">${escape(String(hook.name))}</option>`).join('');
   const form = runnable.length
     ? `<form id="hook-run-form" class="stack-form" data-manifest-sha256="${escape(String(manifestSha256))}"><label for="hook-name">Run a hook from the repository manifest</label><select id="hook-name" name="name" required>${options}</select><button type="submit">Run hook</button><p class="form-status" aria-live="polite"></p></form>`

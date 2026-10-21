@@ -55,6 +55,8 @@ describe('automation and deploy renderers', () => {
     expect(markup).toContain('<option value="format">format</option>');
     expect(markup).toContain('<option value="lint">lint</option>');
     expect(markup.match(/<option /g)).toHaveLength(2);
+    // A name hooks_run would refuse is not offered.
+    expect(renderHooks([hook({ name: 'run tests' })], manifest)).not.toContain('id="hook-run-form"');
     // Without a manifest digest there is nothing a run could name, so no form renders.
     expect(renderHooks([hook({ name: 'format' })])).not.toContain('id="hook-run-form"');
     expect(renderHooks([hook({ name: 'format' })], 'nope')).not.toContain('id="hook-run-form"');

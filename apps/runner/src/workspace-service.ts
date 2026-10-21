@@ -2202,7 +2202,7 @@ export class WorkspaceService {
       cwd: '.'
     });
     if (!grantValid) {
-      throw new HarnessError('FORBIDDEN', 'Invalid, expired, or already-consumed approval grant token', 403, false);
+      throw new HarnessError('FORBIDDEN', 'Invalid, expired, or already-consumed approval grant token, or the request does not match the approved run', 403, false);
     }
 
     // The helper container reuses the worker's one-shot entry point, so the snapshot, the digest check,

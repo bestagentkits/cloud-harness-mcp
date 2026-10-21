@@ -132,7 +132,7 @@ describe('skills_run grant consumption', () => {
     ];
     for (const retry of mismatches) {
       await expect(service.execute(ownerId, 'skills_run', { ...retry, approvalGrantToken: grantId }))
-        .rejects.toMatchObject({ code: 'FORBIDDEN' });
+        .rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining('does not match the approved run') });
       expect(store.getPrivilegeGrant(grantId)?.status).toBe('APPROVED');
     }
     expect(helperRuns).toHaveLength(0);
