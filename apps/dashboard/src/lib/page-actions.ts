@@ -22,6 +22,7 @@
 
 import type { ZodType, z as zod } from 'zod';
 import { useEffect, useSyncExternalStore } from 'react';
+import type { InvalidateTarget } from './bff-mutation';
 
 export type PageActionSensitivity = 'read' | 'navigate' | 'mutate' | 'destructive';
 
@@ -44,6 +45,11 @@ export type PreparedMutation = {
   target?: string;
   /** Non-secret fields of the response worth returning to the agent (ids, state). */
   summarize?: (response: unknown) => Record<string, unknown>;
+  /**
+   * The reads this change affects, refetched after it lands (and after a 409, so the page
+   * shows the latest generation), as the page's own mutation for the same change does.
+   */
+  invalidate: readonly InvalidateTarget[];
 };
 
 /**

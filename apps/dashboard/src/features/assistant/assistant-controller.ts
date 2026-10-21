@@ -3,7 +3,7 @@ import type { PageAction } from 'dewee-webchat';
 import { array, boolean, enum as zodEnum, literal, number, object, string, union } from 'zod';
 import { toast } from '@/components/ui/toast-store';
 import { ApiError, apiClient, ConflictError, ForbiddenError, NetworkError, RateLimitedError, ServerError, UnauthorizedError } from '@/lib/api-client';
-import { mutationErrorText } from '@/lib/bff-mutation';
+import { bffPrefix, mutationErrorText } from '@/lib/bff-mutation';
 import { type PageActionSpec, type SchemaKit, type PreparedMutation, registeredPageActions, registeredPageContext } from '@/lib/page-actions';
 import { catalogActions, type CatalogDeps, pageContextSnapshot } from './page-action-catalog';
 import { fitPageContext, parametersFor, parseArgs } from './widget-host-setup';
@@ -71,6 +71,11 @@ export function createAssistantController(options: AssistantControllerOptions) {
     waiting.delete(callId);
     if (pending?.callId === callId) show(undefined);
     resolve?.(approved);
+  }
+
+  /** Refetches only the reads the change affects, not the whole BFF cache. */
+  function refresh(mutation: PreparedMutation) {
+    for (const target of mutation.invalidate) void options.queryClient.invalidateQueries({ queryKey: typeof target === 'string' ? bffPrefix(target) : target });
   }
 
   function pageContext(): Record<string, unknown> {
@@ -142,9 +147,10 @@ export function createAssistantController(options: AssistantControllerOptions) {
       try {
         const response = await send(mutation);
         outcomes.set(request.callId, { ok: true, result: { sent: true, method: mutation.method, path: mutation.path, ...mutation.summarize?.(response) } });
-        void options.queryClient.invalidateQueries({ queryKey: ['bff'] });
+        refresh(mutation);
         toast({ title: `${mutation.confirmLabel}: done`, description: 'The page is refreshing. Ask the assistant what to do next.', variant: 'success' });
       } catch (error) {
+        if (error instanceof ConflictError) refresh(mutation);
         const message = mutationErrorText(error);
         outcomes.set(request.callId, { ok: false, error: agentErrorText(error) });
         toast({ title: `${mutation.confirmLabel} failed`, description: `${message} Check the page for its current state, then ask the assistant to prepare it again.`, variant: 'destructive' });

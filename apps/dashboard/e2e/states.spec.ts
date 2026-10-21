@@ -37,6 +37,34 @@ for (const failure of ERROR_CASES) {
   });
 }
 
+test('the real per-principal limit answers 429 once the owner exhausts the minute, and only for that owner', async ({ page, browser }) => {
+  // Nothing is stubbed for /profile: every request below goes through the API's own limiter.
+  await stubReads(page);
+  await page.goto('/dashboard/projects');
+  await expectPage(page, 'projects');
+  let limited: Awaited<ReturnType<typeof page.request.get>> | undefined;
+  let sent = 0;
+  while (!limited && sent < 200) {
+    const response = await page.request.get('/dashboard/api/v1/profile');
+    sent += 1;
+    if (response.status() === 429) limited = response;
+    else expect(response.status()).toBe(200);
+  }
+  // The page already spent part of this owner's 120-request minute; the limit then holds.
+  expect(sent).toBeLessThanOrEqual(120);
+  expect(limited?.headers()['retry-after']).toBe('1');
+  expect(await limited?.json()).toEqual({ error: 'rate_limited' });
+  expect((await page.request.get('/dashboard/api/v1/profile')).status()).toBe(429);
+
+  // Another signed-in owner (its own context, so its own Access subject) is not affected.
+  const other = await browser.newContext();
+  try {
+    expect((await other.request.get('/dashboard/api/v1/profile')).status()).toBe(200);
+  } finally {
+    await other.close();
+  }
+});
+
 for (const colorScheme of ['light', 'dark'] as const) {
   test(`shell, palette and mobile drawer are axe clean (${colorScheme})`, async ({ page }) => {
     // Reduced motion: an overlay caught before its fade starts misreports contrast under load.

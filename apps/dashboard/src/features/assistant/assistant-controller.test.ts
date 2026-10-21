@@ -26,7 +26,7 @@ function setup(pageId: 'api-keys' | 'projects' | 'secrets', rows: unknown[] = []
     return found;
   };
   const context = (callId: string) => ({ callId, conversationId: 'c', agent: 'a', signal: new AbortController().signal });
-  return { controller, shown, send, navigate, action, context };
+  return { controller, shown, send, navigate, action, context, queryClient };
 }
 
 describe('assistant controller', () => {
@@ -48,6 +48,18 @@ describe('assistant controller', () => {
     const result = await action('prepare_project_create').handler({ name: 'Alpha' }, context('call-1'));
     expect(result).toEqual({ sent: true, method: 'POST', path: '/projects', id: 'prj_new', name: 'Alpha' });
     expect(JSON.stringify(result)).not.toContain('never-returned');
+  });
+
+  it('refetches only the reads the change affects after it lands', async () => {
+    const { controller, shown, queryClient } = setup('projects');
+    const projects = pageReadQuery('projects', {}).queryKey;
+    const profile = pageReadQuery('profile', {}).queryKey;
+    queryClient.setQueryData(profile, { data: {} });
+    void controller.confirm('prepare_project_create', 'call-1', { name: 'Alpha' });
+    await vi.waitFor(() => expect(shown.at(-1)).toBeDefined());
+    await controller.approve(shown.at(-1)!);
+    expect(queryClient.getQueryState(projects)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(profile)?.isInvalidated).toBe(false);
   });
 
   it('treats a dismissed dialog as a denial', async () => {

@@ -2,9 +2,11 @@ import type { QueryClient } from '@tanstack/react-query';
 import { type DashboardPage, DASHBOARD_PAGES, type PageId, pageById, RESOURCE_ID_PATTERNS, WORKSPACE_TABS } from '@/app/page-registry';
 import type { CurrentPage } from '@/app/route-identity';
 import { ACTIVITY_FILTER_IDS } from '@/features/activity/activity-model';
+import { agentLogKey } from '@/features/agents/agent-log-tail';
 import { AGENT_ATTENTION, AGENT_STATUSES } from '@/features/agents/agent-model';
 import { KNOWLEDGE_KINDS, KNOWLEDGE_SCOPES } from '@/features/knowledge/knowledge-search';
 import { SKILL_TABS } from '@/features/skills/skill-search';
+import { MCP_READS } from '@/features/mcp-servers/mcp-model';
 import { createBody, fencedGeneration, projectEnvironmentsPath, projectPath, PROJECTS_PATH } from '@/features/projects/project-model';
 import { secretsPath } from '@/features/secrets/secrets-api';
 import { WORKSPACE_STATUSES } from '@/features/workspaces/workspace-model';
@@ -232,7 +234,7 @@ function prepareActions(deps: CatalogDeps): PageActionSpec[] {
         schema: nameSchema,
         prepare: ({ name }: { name: string }): PreparedMutation => ({
           title: 'Create this project?', description: 'Creates an empty project. You can rename or delete it later.',
-          method: 'POST', path: PROJECTS_PATH, body: createBody(name), confirmLabel: 'Create project', destructive: false, target: name, summarize: idOnly
+          method: 'POST', path: PROJECTS_PATH, body: createBody(name), confirmLabel: 'Create project', destructive: false, target: name, summarize: idOnly, invalidate: [PROJECTS_PATH]
         })
       }];
     case 'project': {
@@ -249,7 +251,7 @@ function prepareActions(deps: CatalogDeps): PageActionSpec[] {
             if (!project) throw new Error('The project is not in the current project list. Reload the page and try again.');
             return {
               title: 'Rename this project?', description: 'Changes the display name only. Environments and secrets are unaffected.',
-              method: 'PATCH', path: projectPath(projectId), body: { name: name.trim(), expectedGeneration: generationOf(project) }, confirmLabel: 'Rename project', destructive: false, target: projectId, summarize: idOnly
+              method: 'PATCH', path: projectPath(projectId), body: { name: name.trim(), expectedGeneration: generationOf(project) }, confirmLabel: 'Rename project', destructive: false, target: projectId, summarize: idOnly, invalidate: [PROJECTS_PATH]
             };
           }
         },
@@ -260,7 +262,7 @@ function prepareActions(deps: CatalogDeps): PageActionSpec[] {
           schema: nameSchema,
           prepare: ({ name }: { name: string }): PreparedMutation => ({
             title: 'Create this environment?', description: `Adds an environment to ${projectId}. It holds no secrets until you add them.`,
-            method: 'POST', path: projectEnvironmentsPath(projectId), body: createBody(name), confirmLabel: 'Create environment', destructive: false, target: name, summarize: idOnly
+            method: 'POST', path: projectEnvironmentsPath(projectId), body: createBody(name), confirmLabel: 'Create environment', destructive: false, target: name, summarize: idOnly, invalidate: [projectEnvironmentsPath(projectId)]
           })
         }
       ];
@@ -276,7 +278,8 @@ function prepareActions(deps: CatalogDeps): PageActionSpec[] {
         prepare: ({ reason }: { reason?: string }): PreparedMutation => ({
           title: 'Cancel this agent and its children?', description: 'Cancellation cascades to every agent this one spawned.',
           method: 'POST', path: bffPath('agents', agentId, 'cancel'), body: { ...(workspaceId ? { workspaceId } : {}), ...(reason ? { reason } : {}) },
-          confirmLabel: 'Cancel agent', destructive: true, irreversible: true, target: agentId, summarize: () => ({ agentId, cancelled: true })
+          confirmLabel: 'Cancel agent', destructive: true, irreversible: true, target: agentId, summarize: () => ({ agentId, cancelled: true }),
+          invalidate: ['/agents', bffPath('agents', agentId), agentLogKey(agentId, workspaceId)]
         })
       }];
     }
@@ -293,7 +296,7 @@ function prepareActions(deps: CatalogDeps): PageActionSpec[] {
           return {
             title: 'Revoke this API key?', description: 'Every client using this key loses access immediately. Create a new key if one is still needed.',
             method: 'DELETE', path: bffPath('api-keys', keyId), body: { expectedGeneration: generationOf(key) }, confirmLabel: 'Revoke key', destructive: true, irreversible: true, target: `${String(key.name)} (${keyId})`,
-            summarize: () => ({ keyId, revoked: true })
+            summarize: () => ({ keyId, revoked: true }), invalidate: ['/api-keys']
           };
         }
       }];
@@ -309,7 +312,7 @@ function prepareActions(deps: CatalogDeps): PageActionSpec[] {
           return {
             title: 'Delete this secret?', description: 'The value is erased. Workspaces that inject it stop receiving it.',
             method: 'DELETE', path: `${secretsPath({ kind: 'global' })}/${encodeURIComponent(name)}`, body: { expectedGeneration: generationOf(secret) }, confirmLabel: 'Delete secret', destructive: true, irreversible: true, target: name,
-            summarize: () => ({ name, deleted: true })
+            summarize: () => ({ name, deleted: true }), invalidate: [secretsPath({ kind: 'global' })]
           };
         }
       }];
@@ -329,7 +332,8 @@ function prepareActions(deps: CatalogDeps): PageActionSpec[] {
             title: enabled ? 'Enable this MCP server?' : 'Disable this MCP server?',
             description: enabled ? 'Agents with access can call its tools again.' : 'Agents stop calling its tools until you enable it again.',
             method: 'POST', path: `${bffPath('mcp-servers', serverId)}/enabled`, body: { enabled, expectedGeneration: generationOf(server) },
-            confirmLabel: enabled ? 'Enable server' : 'Disable server', destructive: !enabled, target: String(server.name ?? serverId), summarize: () => ({ serverId, enabled })
+            confirmLabel: enabled ? 'Enable server' : 'Disable server', destructive: !enabled, target: String(server.name ?? serverId), summarize: () => ({ serverId, enabled }),
+            invalidate: [...MCP_READS, `/mcp-servers/${serverId}`]
           };
         }
       }];
@@ -343,7 +347,8 @@ function prepareActions(deps: CatalogDeps): PageActionSpec[] {
         prepare: (): PreparedMutation => ({
           title: 'Renew this workspace lease?', description: 'Extends the lease by the configured duration. Nothing else changes.',
           method: 'POST', path: `${bffPath('workspaces', workspaceId)}/lease-renew`, body: {}, confirmLabel: 'Renew lease', destructive: false, target: workspaceId,
-          summarize: () => ({ workspaceId, renewed: true })
+          summarize: () => ({ workspaceId, renewed: true }),
+          invalidate: [pageReadQuery('workspace', { workspaceId }).queryKey, '/workspaces']
         })
       }];
     }
