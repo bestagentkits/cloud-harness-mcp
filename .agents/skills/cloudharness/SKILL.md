@@ -80,7 +80,10 @@ terminal-state notifications: `cloudharness.task.completed`,
 `cloudharness.agent.failed`, and, for owner-configured webhook automations,
 `cloudharness.automation.completed` and `cloudharness.automation.failed`
 (filter by `ruleId` or `workflowId`; no MCP tool manages automations, so read
-their results on the Dashboard). These are client-side protocol subscriptions, not
+their results on the Dashboard), plus `cloudharness.notification.created` when
+the operator enabled the notification inbox (filter by `kind`; the payload is a
+notification id, kind, subject id, short title, and Dashboard link; no MCP tool
+reads the inbox). These are client-side protocol subscriptions, not
 tools: only the host client subscribes, with its own HTTPS callback and secret,
 so never try to create one through a tool call or a workspace command. An event
 carries ids, status, codes, and timestamps only, so after one arrives call

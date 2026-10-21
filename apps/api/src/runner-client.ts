@@ -8,6 +8,8 @@ import {
   McpEventsRunnerRequestSchema,
   McpEventsRunnerResponseSchema,
   MetadataRunnerRequestSchema,
+  NotificationsRunnerRequestSchema,
+  NotificationsRunnerResponseSchema,
   ApiKeyAuthenticationRequestSchema,
   ApiKeyAuthenticationResponseSchema,
   ApiKeyManagementRequestSchema,
@@ -26,6 +28,8 @@ import {
   type McpEventsRunnerRequest,
   type McpEventsRunnerResponse,
   type MetadataRunnerOperation,
+  type NotificationsRunnerRequest,
+  type NotificationsRunnerResponse,
   type RunnerOperation,
   type RunnerPrincipalSelector,
   type RunnerResponse
@@ -83,6 +87,12 @@ export class RunnerClient {
   /** Owner-scoped agent execution policies and the gate simulation; principal scoping travels in the request. */
   async callAgentPolicies(request: AgentPoliciesRunnerRequest, signal?: AbortSignal): Promise<AgentPoliciesRunnerResponse> {
     return await this.requestJson('/v1/internal/agent-policies', AgentPoliciesRunnerRequestSchema.parse(request), AgentPoliciesRunnerResponseSchema, () => ({
+      ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' }
+    }), signal);
+  }
+
+  async callNotifications(request: NotificationsRunnerRequest, signal?: AbortSignal): Promise<NotificationsRunnerResponse> {
+    return await this.requestJson('/v1/internal/notifications', NotificationsRunnerRequestSchema.parse(request), NotificationsRunnerResponseSchema, () => ({
       ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' }
     }), signal);
   }

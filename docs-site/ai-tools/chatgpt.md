@@ -72,8 +72,9 @@ The remote endpoint `https://harness.zuey.me/mcp` advertises the MCP Events capa
 | `cloudharness.agent.failed` | A managed agent ends in any other final state. |
 | `cloudharness.automation.completed` | A [webhook automation](/dashboard/automations) run's agent succeeds. |
 | `cloudharness.automation.failed` | An automation run fails, is cancelled, or expires before it starts. |
+| `cloudharness.notification.created` | A notification enters your [inbox](/dashboard/inbox). Only when the operator enabled notifications and your MCP Events preference for that kind is on. |
 
-Each event can be narrowed to one workspace, task, or agent you own, or, for automation events, to one rule or run. Events fire once per task, agent, or run, and carry only ids, status, codes, and timestamps, never command output or messages: ChatGPT reads the result with `tasks_status` or `agent_status`; an automation's answer is on its Dashboard run page.
+Each event can be narrowed to one workspace, task, or agent you own, for automation events to one rule or run, and for notification events to one notification kind. Events fire once per task, agent, or run, and carry only ids, status, codes, and timestamps, never command output or messages: ChatGPT reads the result with `tasks_status` or `agent_status`; an automation's answer is on its Dashboard run page.
 
 Good to know:
 

@@ -1179,6 +1179,26 @@ instead of reaching a client. Traces have bounded retention, a per-trace span
 cap, and a per-principal quota. Exports are pull-only documents returned to
 the owner; the harness opens no egress to a trace collector.
 
+### Notifications
+
+Notifications are off unless the operator sets `NOTIFICATIONS_ENABLED`. A
+notification stores identifiers, its kind, a title bounded to 160 characters
+and passed through the trace redaction (token- and key-shaped strings are
+replaced, control and format characters removed), and a relative `/dashboard`
+link; never prompts, agent output, issue bodies, or credentials. The contract
+refuses any other link, and the Dashboard follows a link only when it is such a
+path, so a notification cannot become an off-site redirect. Inbox reads and
+writes are scoped to the session principal, and marking another principal's
+notification is reported as not found and changes nothing. Delivery adds no
+egress: the MCP Events channel uses the existing webhook sender and its callback
+rules, and the GitHub channel only reports the automation's own comment.
+Turning the MCP Events channel off also abandons the pending webhook deliveries
+of the affected notifications, so a disabled preference stops the external send.
+Owners:
+[`apps/runner/src/notifications/notification-emitter.ts`](../apps/runner/src/notifications/notification-emitter.ts)
+and
+[`packages/contracts/src/notifications-api.ts`](../packages/contracts/src/notifications-api.ts).
+
 ## Local stdio security model
 
 Local stdio mode intentionally alters the trust boundary compared to the remote Docker executor:

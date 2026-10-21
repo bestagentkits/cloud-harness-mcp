@@ -3,6 +3,7 @@ import express, { type NextFunction, type Response, type Router } from 'express'
 import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, AutomationsRunnerDataSchemas, AutomationsRunnerRequestSchema, McpEventSubscriptionIdSchema, McpEventsRunnerDataSchemas, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, PackagePlanApproveInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema, type ApiConfig, type ApiKeyManagementOperation, type AutomationsRunnerErrorCode, type AutomationsRunnerOperation, type McpEventsRunnerRequest, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
+import { registerInboxRoutes } from './dashboard-inbox-router.js';
 import { registerAgentPolicyRoutes } from './dashboard-policies-router.js';
 import { requireArchiveMediaType, SKILL_ARCHIVE_MEDIA_TYPES, SKILL_ARCHIVE_PATH } from './dashboard-security.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
@@ -268,6 +269,7 @@ export function registerDashboardControlRoutes(
   router.post('/api/v1/automations/workflows/:id/cancel', automationsEndpoint('workflow_cancel', (request) => ({ ...jsonObject(request.body), id: request.params.id })));
   router.get('/api/v1/automations/deliveries', automationsEndpoint('deliveries_list', (request) => withNumericLimit(queryFields(request.query, ['connectionId', 'limit']))));
   registerAgentPolicyRoutes(router, runner, principal);
+  registerInboxRoutes(router, runner, principal);
   router.get('/api/v1/knowledge', endpoint('knowledge_dashboard_list', (request) => ({
     ...(request.query.kind ? { kind: String(request.query.kind) } : {}),
     ...(request.query.scope ? { scope: String(request.query.scope) } : {}),
