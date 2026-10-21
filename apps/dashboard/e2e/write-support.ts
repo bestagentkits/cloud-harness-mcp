@@ -1,5 +1,5 @@
 import { expect, type Page, type Request } from '@playwright/test';
-import { answer, type ReadHandler, replayBuiltAssets } from './support';
+import { answer, type ReadHandler } from './support';
 
 /**
  * Helpers for the write-path suites. `stubBff` answers runner-backed reads and writes like
@@ -34,7 +34,6 @@ export async function stubBff(page: Page, { reads = {}, writes = {} }: {
     if (!/^(POST|PUT|PATCH|DELETE) \//.test(key)) throw new Error(`Write stub "${key}" must be keyed "METHOD /path".`);
   }
   const recorded: RecordedWrite[] = [];
-  await replayBuiltAssets(page);
   const calls = new Map<string, number>();
   const pick = (handler: ReadHandler | ReadHandler[] | undefined, key: string) => {
     const count = calls.get(key) ?? 0;
