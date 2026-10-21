@@ -542,7 +542,12 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'skills_list') {
     // `contentSha256` is the bundle digest `skills_run` verifies, so the cockpit can name exactly the
     // revision the owner saw when it asks to run one of its scripts.
-    const skills = Array.isArray(data.skills) ? data.skills.map((skill) => pick(skill, ['name', 'tier', 'source', 'kind', 'state', 'sha256', 'contentSha256', 'description', 'shadowed'])) : [];
+    // A shadowed entry keeps only where it came from and its digest: the runner's entry also names
+    // its root path on the runner host, which the browser has no use for.
+    const skills = Array.isArray(data.skills) ? data.skills.map((skill) => {
+      const shadowed = Array.isArray(skill?.shadowed) ? skill.shadowed.map((entry: unknown) => pick(entry, ['source', 'contentSha256'])) : undefined;
+      return { ...pick(skill, ['name', 'tier', 'source', 'kind', 'state', 'sha256', 'contentSha256', 'description']), ...(shadowed ? { shadowed } : {}) };
+    }) : [];
     return { skills, ...(data.cursor !== undefined ? { cursor: data.cursor } : {}) };
   }
   if (operation === 'skills_read') return pick(data, ['name', 'source', 'content', 'sha256', 'bytes', 'offset', 'truncated']);

@@ -39,9 +39,43 @@ describe('automation and deploy renderers', () => {
     expect(markup).toContain('Inactive');
     expect(markup).toContain('Runs the formatter');
     expect(markup).toContain('No hooks run at this stage.');
-    expect(markup).toContain('id="hook-run-form"');
-    expect(markup).toContain('this page runs only what is already active');
+    // Without the manifest digest a run could name, no form renders.
+    expect(markup).not.toContain('id="hook-run-form"');
+    expect(markup).toContain('No hook can run from this page.');
+    expect(markup).toContain('it does not activate the hook');
     expect(renderHooks([])).toContain('No hooks run at this stage.');
+  });
+
+  it('runs one named hook from the manifest against the digest the page rendered', () => {
+    const manifest = 'b'.repeat(64);
+    // A manual run is independent of activation, so every named hook is a choice, active or not.
+    const markup = renderHooks([hook({ name: 'format', active: true }), hook({ name: 'lint', active: false }), { events: ['manual'] }], manifest);
+    expect(markup).toContain(`<form id="hook-run-form" class="stack-form" data-manifest-sha256="${manifest}">`);
+    expect(markup).toContain('Run a hook from the repository manifest');
+    expect(markup).toContain('<option value="format">format</option>');
+    expect(markup).toContain('<option value="lint">lint</option>');
+    expect(markup.match(/<option /g)).toHaveLength(2);
+    // A name hooks_run would refuse is not offered.
+    expect(renderHooks([hook({ name: 'run tests' })], manifest)).not.toContain('id="hook-run-form"');
+    // Without a manifest digest there is nothing a run could name, so no form renders.
+    expect(renderHooks([hook({ name: 'format' })])).not.toContain('id="hook-run-form"');
+    expect(renderHooks([hook({ name: 'format' })], 'nope')).not.toContain('id="hook-run-form"');
+  });
+
+  it('badges a hook only with the activation state the runner reported', () => {
+    const active = renderHooks([hook({ name: 'lint', active: true })]);
+    expect(active).toContain('<span class="status active">Active</span>');
+    expect(active).not.toContain('Inactive');
+
+    const inactive = renderHooks([hook({ name: 'lint', active: false })]);
+    expect(inactive).toContain('<span class="status">Inactive</span>');
+    expect(inactive).not.toContain('>Active<');
+
+    // A hook without an `active` field is not claimed to be active or inactive.
+    const unreported = renderHooks([{ name: 'lint', events: ['pre_commit'] }]);
+    expect(unreported).toContain('<strong>lint</strong>');
+    expect(unreported).not.toContain('>Active<');
+    expect(unreported).not.toContain('Inactive');
   });
 
   it('lists workspace skills with a guarded run form rather than a bare run button', () => {
@@ -123,9 +157,10 @@ describe('automation and deploy renderers', () => {
   });
 
   it('composes the workspace automation panel', () => {
-    const panel = renderAutomationPanel({ skills: [{ name: 'typescript' }], hooks: [hook()] });
+    const panel = renderAutomationPanel({ skills: [{ name: 'typescript' }], hooks: [hook()], manifestSha256: 'b'.repeat(64) });
     expect(panel).toContain('id="skills-heading"');
     expect(panel).toContain('id="hooks-heading"');
+    expect(panel).toContain(`data-manifest-sha256="${'b'.repeat(64)}"`);
     expect(panel).toContain('Workspace automation');
   });
 });

@@ -485,8 +485,9 @@ wired, so the visible one is never the only working one. Owners:
   beside an ordered pipeline that states each stage and its hook count as text (no
   colour-only or connector-only meaning), and a stage with no hooks says so rather
   than disappearing. Activation and deactivation stay with the runner's manifest
-  contract; the page runs only what is already active, and a skill script runs only
-  when the operator names it, through the verified-bytes contract. The Deploy tab
+  contract; a manual hook run names one hook from the manifest, confirms first, and is
+  pinned to the manifest digest the page rendered, and a skill script runs only when the
+  operator names it, through the verified-bytes contract. The Deploy tab
   lists repository-defined targets with their working directory, last reported result,
   duration and failure detail, and states "Not reported" for a target the runner never
   reported on instead of showing a zero; running a target confirms first because

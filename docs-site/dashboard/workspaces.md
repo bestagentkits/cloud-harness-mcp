@@ -63,7 +63,10 @@ dashboard can read: a lease inside its threshold, a failed workspace, a quaranti
   since the list loaded, the run is refused; reload the tab and try again. When the run
   ends, its exit code, where it ran, the signal that stopped it on a timeout, and its
   bounded, redacted output appear below the
-  form, including for a script that exits with an error.
+  form, including for a script that exits with an error. **Run hook** runs one hook from
+  the repository manifest by name, after a confirmation, against the hook manifest digest
+  the page rendered; a manifest that changed since is refused. A manual run does not
+  activate the hook for its lifecycle event.
 - **Deploy** lists repository-defined deployment targets with their last reported result,
   duration and failure detail; running one asks for confirmation because deployments act
   outside the sandbox.

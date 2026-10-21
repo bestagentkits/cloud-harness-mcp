@@ -754,6 +754,11 @@ and the failure-injection suite
   `oldText`. Supply `expectedSha256` when a concurrent edit must be detected.
 - `files_write` replaces a file atomically inside the workspace. Its
   `expectedSha256` option requires the target to exist and match.
+- `skills_run` behind a privilege grant answers `PRIVILEGE_APPROVAL_REQUIRED` with a
+  `grantRequest`. The grant binds the skill, script and bundle digest, plus the source, a
+  non-default timeout and any arguments, so the approved retry must resend the identical
+  request with `approvalGrantToken`; a changed retry is `FORBIDDEN` and leaves the grant
+  unused.
 - `exec_run` accepts raw Bash and is intentionally remote code execution
   inside the executor. It is request-owned and bounded by timeout/output
   settings. Standard execution runs as user `10001:10001` with `--read-only` rootfs
@@ -1192,6 +1197,9 @@ and the failure-injection suite
 - Hooks support declarative JSON format in `.cloud-harness/hooks.json` with named lifecycle events
   (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`). Automatic lifecycle
   execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest.
+  `hooks_list` always returns every hook and marks each with `active`, which is true only when an
+  unexpired activation for one of its events pins the listed `manifestSha256`; `includeInactive` is
+  accepted for compatibility and ignored.
   Execution runs exclusively inside the container executor with `networkMode: none` by default.
 - Knowledge (Memories & Journals) is stored in principal-isolated SQLite `StateStore` (schema v10) supporting `owner`, `project`, and `workspace` scopes for memories, and chronological journals (`engineering-log`, `decision-record`, `session-reflection`). Operations (`knowledge_create`, `knowledge_read`, `knowledge_update`, `knowledge_delete`, `knowledge_list`, `knowledge_search`, `knowledge_link`, `knowledge_unlink`, `knowledge_graph`) provide CAS concurrency (`expectedGeneration`), RRF hybrid search (FTS5 + vector similarity), and bidirectional graph relations with wikilink extraction.
 - Named deployments come from the repository's `.cloud-harness/deployments.json` and execute inside the

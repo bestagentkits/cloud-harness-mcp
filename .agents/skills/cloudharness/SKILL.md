@@ -189,7 +189,11 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    - Use interactive `shell_*` or `sessions_*` only when terminal state is required.
    - For `privileged: true` commands in Cloudflare Access mode, expect
      `PRIVILEGE_APPROVAL_REQUIRED` and wait for the operator to approve the
-     grant in the dashboard, then pass `approvalGrantToken`.
+     grant in the dashboard, then pass `approvalGrantToken`. `skills_run` is
+     gated the same way, and its grant binds the whole request (`name`,
+     `script`, `expectedContentSha256`, `source`, `timeoutMs`, `args`): resend
+     it unchanged with `approvalGrantToken`. A changed retry is `FORBIDDEN` and
+     leaves the grant unused, so do not ask for a new approval.
    - Injected secrets are available to container processes automatically; never
      attempt to print, echo, or exfiltrate secret values.
 7. **Git workflow and finalization.**

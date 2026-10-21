@@ -4045,7 +4045,7 @@ export function initializeDashboard() {
       api(`/workspaces/${scoped}/skills`).catch(() => undefined),
       api(`/workspaces/${scoped}/hooks`).catch(() => undefined)
     ]);
-    return renderAutomationPanel({ skills: skillsResult?.data?.skills ?? [], hooks: hooksResult?.data?.hooks ?? [] });
+    return renderAutomationPanel({ skills: skillsResult?.data?.skills ?? [], hooks: hooksResult?.data?.hooks ?? [], manifestSha256: hooksResult?.data?.manifestSha256 ?? '' });
   }
   /** Deployment targets defined by the repository. */
   async function deployPanel(workspaceId) {
@@ -4058,10 +4058,20 @@ export function initializeDashboard() {
     const hookForm = document.querySelector('#hook-run-form');
     hookForm?.addEventListener('submit', (event) => {
       event.preventDefault();
-      const values = new FormData(hookForm);
-      void submitForm(hookForm, 'Running…', async () => {
-        await api(`/workspaces/${scoped}/hooks/run`, { method: 'POST', body: requestBody({ event: values.get('event') }) });
-      }, async () => { announce('Hooks finished.'); navigateTo(`/dashboard/workspaces/${scoped}/automation`); });
+      const name = String(new FormData(hookForm).get('name') ?? '');
+      const expectedManifestSha256 = hookForm.dataset.manifestSha256 ?? '';
+      // A hook is repository-controlled code, so a manual run confirms first, like a deployment.
+      confirmAction({
+        title: 'Run this hook?',
+        description: 'The hook runs once in this workspace, only if the hook manifest still matches the digest shown.',
+        target: `${name} @ ${expectedManifestSha256.slice(0, 16)}`,
+        label: 'Run hook', pendingLabel: 'Running…',
+        action: async () => {
+          await api(`/workspaces/${scoped}/hooks/run`, { method: 'POST', body: requestBody({ name, expectedManifestSha256 }) });
+          announce('Hook finished.');
+          navigateTo(`/dashboard/workspaces/${scoped}/automation`);
+        }
+      }, hookForm.querySelector('button[type="submit"]'));
     });
     // A skill run executes in a disposable helper container behind an owner privilege grant. The
     // first request returns the grant the runner minted for this exact skill, script and digest;

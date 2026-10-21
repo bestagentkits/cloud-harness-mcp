@@ -82,6 +82,7 @@ import {
   type WorkspaceRepositoryRecord,
   type WorkspaceRepositoryScope
 } from './state-store.js';
+import { withHookActivationState } from './hook-activation-state.js';
 import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { ToolkitCacheManager } from './toolkit-cache-manager.js';
@@ -154,6 +155,31 @@ const AUTO_CLOSE_RETRY_MS = 3_600_000;
 const CODING_GIT_BINARY = '/usr/bin/git';
 /** Output cap of one coding Git inspection; a larger listing is reported truncated and refused. */
 const CODING_GIT_MAX_BYTES = 1_048_576;
+
+const SKILL_RUN_DEFAULT_TIMEOUT_MS = 60_000;
+
+/**
+ * The privilege-grant descriptor for `skills_run`. The grant is bound to a descriptor the owner can
+ * actually read, rather than to the shell command that carries it, and it names every input that
+ * reaches the helper container: the skill, script and digest, plus the provenance source, a
+ * non-default timeout and the script arguments when the caller supplies them. Approving therefore
+ * means "run this skill script at this digest with exactly these inputs", and a retry that changes
+ * any of them hashes to a different descriptor and cannot consume the grant. A plain call keeps the
+ * original descriptor byte for byte. The arguments come last and are JSON-encoded, so no argument
+ * value can imitate another field.
+ */
+export function skillRunGrantDescriptor(input: Record<string, unknown>): string {
+  const name = input.name as string;
+  const script = input.script as string;
+  const expectedSha = (input.expectedContentSha256 ?? input.expectedSha256) as string;
+  const timeoutMs = (input.timeoutMs as number) || SKILL_RUN_DEFAULT_TIMEOUT_MS;
+  const args = Array.isArray(input.args) ? input.args as unknown[] : [];
+  let descriptor = `skills_run ${name} script=${script} expected=${expectedSha}`;
+  if (typeof input.source === 'string') descriptor += ` source=${input.source}`;
+  if (timeoutMs !== SKILL_RUN_DEFAULT_TIMEOUT_MS) descriptor += ` timeoutMs=${timeoutMs}`;
+  if (args.length > 0) descriptor += ` args=${JSON.stringify(args)}`;
+  return descriptor;
+}
 
 /** A retained workspace that startup reconciliation could not bring back; the runner logs each one. */
 export interface StartupReconcileFailure {
@@ -2135,12 +2161,9 @@ export class WorkspaceService {
   ): Promise<RunnerResponse> {
     const name = input.name as string;
     const script = input.script as string;
-    const expectedSha = (input.expectedContentSha256 ?? input.expectedSha256) as string;
-    const timeoutMs = (input.timeoutMs as number) || 60_000;
+    const timeoutMs = (input.timeoutMs as number) || SKILL_RUN_DEFAULT_TIMEOUT_MS;
     const maxOutputBytes = this.config.maxOutputBytes;
-    // The grant is bound to a descriptor the owner can actually read, rather than to the shell command
-    // that happens to carry it, so approving means "run this skill script at this digest".
-    const grantCommand = `skills_run ${name} script=${script} expected=${expectedSha}`;
+    const grantCommand = skillRunGrantDescriptor(input);
     const commandSha256 = createHash('sha256').update(grantCommand).digest('hex');
     const approvalGrantToken = input.approvalGrantToken as string | undefined;
 
@@ -2179,7 +2202,7 @@ export class WorkspaceService {
       cwd: '.'
     });
     if (!grantValid) {
-      throw new HarnessError('FORBIDDEN', 'Invalid, expired, or already-consumed approval grant token', 403, false);
+      throw new HarnessError('FORBIDDEN', 'Invalid, expired, or already-consumed approval grant token, or the request does not match the approved run', 403, false);
     }
 
     // The helper container reuses the worker's one-shot entry point, so the snapshot, the digest check,
@@ -4779,6 +4802,16 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       this.auditWorkspaceMutation(ownerId, 'hook.activated', record, { events: Array.isArray(validated.events) ? (validated.events as string[]).join(',') : '', manifestSha256: String(validated.manifestSha256) });
       return { ok: true, message: 'Hooks activated', data: { activations: results }, truncated: false };
+    }
+    if (operation === 'hooks_list') {
+      // Every hook is listed so callers can discover what to activate; `active` reports which ones
+      // lifecycle events would run now. The internal lifecycle listing calls the worker directly.
+      const result = withHookActivationState(
+        await this.runWorker(record, 'hooks_list', validated, signal),
+        this.store.getActiveHookActivations(ownerId, record.id)
+      );
+      await this.enforceActiveLimits(record);
+      return result;
     }
     if (operation === 'hooks_deactivate') {
       const events = validated.events as string[] | undefined;

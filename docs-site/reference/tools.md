@@ -1193,7 +1193,7 @@ List repository-defined Cloud Harness automation hooks without running them.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `event` | `"on_workspace_open"` \| `"post_checkout"` \| `"pre_commit"` \| `"post_commit"` \| `"manual"` | No | — |
-| `includeInactive` | `boolean` | No | default: `false` |
+| `includeInactive` | `boolean` | No | Accepted for compatibility and currently ignored: every hook is always listed, each with an `active` flag that reports whether lifecycle events would run it. (default: `false`) |
 | `limit` | `integer` | No | range: 1–100, default: `50` |
 | `cursor` | `string` | No | max length: 256 |
 
