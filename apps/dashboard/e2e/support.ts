@@ -20,10 +20,6 @@ export function answer(status: number, body: unknown = { data: { items: [] } }, 
   };
 }
 
-export function records(count: number): { data: { items: Array<{ id: string }> } } {
-  return { data: { items: Array.from({ length: count }, (_, index) => ({ id: `item-${index}` })) } };
-}
-
 /**
  * Stubs every BFF read the runner would answer. `handlers` maps an API path (without the
  * `/dashboard/api/v1` prefix or query) to its answer; anything else is an empty list.

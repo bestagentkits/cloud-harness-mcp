@@ -1,9 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
-import { answer, expectNoMismatches, expectPage, installIdentityMonitor, PAGES, records, sidebarLink, stubReads, watchConsole, type VisitedPage } from './support';
+import { answer, expectNoMismatches, expectPage, installIdentityMonitor, PAGES, sidebarLink, stubReads, watchConsole, type VisitedPage } from './support';
 
 /** List projections the migrated pages read; each page states its row count in its table caption. */
 const workspaceList = (count: number) => ({ data: { workspaces: Array.from({ length: count }, (_, index) => ({ workspaceId: `ws_navigation${String(index).padStart(10, '0')}`, repositoryUrl: `https://github.com/acme/repo-${index}.git`, status: 'ACTIVE' })) } });
 const agentList = (count: number) => ({ data: { agents: Array.from({ length: count }, (_, index) => ({ agentId: `agent_navigation${String(index).padStart(10, '0')}`, status: 'RUNNING' })) } });
+const artifactList = (count: number) => ({ data: { artifacts: Array.from({ length: count }, (_, index) => ({ artifactId: `art_navigation${String(index).padStart(10, '0')}`, logicalName: `snapshot-${index}`, sha256: 'a'.repeat(64), sizeBytes: 10, generation: 1 })) } });
 const workspaceRecord = (workspaceId: string, repository: string) => ({ data: { workspaceId, repositoryUrl: `https://github.com/acme/${repository}.git`, status: 'CLOSED' } });
 const caption = (page: Page) => page.locator('main table caption').first();
 
@@ -37,7 +38,7 @@ test('A→B and A→B→C keep title, heading and navigation in step', async ({ 
 });
 
 test('rapid repeated clicks settle on the last page without mismatches', async ({ page }) => {
-  await stubReads(page, { '/agents': answer(200, agentList(1), { delayMs: 200 }), '/artifacts': answer(200, records(4), { delayMs: 50 }) });
+  await stubReads(page, { '/agents': answer(200, agentList(1), { delayMs: 200 }), '/artifacts': answer(200, artifactList(4), { delayMs: 50 }) });
   await page.goto('/dashboard');
   await expectPage(page, 'overview');
 
@@ -46,11 +47,11 @@ test('rapid repeated clicks settle on the last page without mismatches', async (
   await sidebarLink(page, 'workspaces').click();
   await sidebarLink(page, 'artifacts').click();
   await expectPage(page, 'artifacts');
-  await expect(page.getByTestId('read-summary')).toHaveText('4 records loaded.');
+  await expect(caption(page)).toHaveText('4 snapshots');
   // Stays put once the earlier, slower answers have had time to arrive.
   await page.waitForTimeout(400);
   await expectPage(page, 'artifacts');
-  await expect(page.getByTestId('read-summary')).toHaveText('4 records loaded.');
+  await expect(caption(page)).toHaveText('4 snapshots');
   await expectNoMismatches(page);
 });
 

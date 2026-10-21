@@ -238,9 +238,9 @@ test('agents and activity tabs render their projections', async ({ page }) => {
   await expectNoSeriousA11yViolations(page);
 });
 
-test('tabs still in the classic Dashboard keep their URL and hand off', async ({ page }) => {
+test('a tab deep link keeps its URL, and the classic hand-off carries it', async ({ page }) => {
   await stubReads(page, READS);
   await page.goto(`/dashboard${base}/files?path=src`);
   await expect(tabs(page).getByRole('link', { name: 'Files' })).toHaveAttribute('aria-current', 'page');
-  await expect(page.getByRole('link', { name: 'Open in classic Dashboard' })).toHaveAttribute('href', `/dashboard${base}/files?path=src&ui=legacy`);
+  await expect(page.getByRole('link', { name: 'Use classic Dashboard' })).toHaveAttribute('href', `/dashboard${base}/files?path=src&ui=legacy`);
 });
