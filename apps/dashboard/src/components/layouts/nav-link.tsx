@@ -8,7 +8,7 @@ import type { ComponentProps, MouseEvent } from 'react';
  * same behaviour otherwise: a real `href` (new tab, copy link), client navigation on a plain
  * click, and route-chunk plus data preload on hover and keyboard focus.
  */
-export function NavLink({ to, current, onClick, ...props }: Omit<ComponentProps<'a'>, 'href'> & { to: string; current: boolean }) {
+export function NavLink({ to, current, onClick, onFocus, onMouseEnter, ...props }: Omit<ComponentProps<'a'>, 'href'> & { to: string; current: boolean }) {
   const router = useRouter();
   const href = router.buildLocation({ to }).href;
   const preload = () => { void router.preloadRoute({ to }).catch(() => undefined); };
@@ -17,8 +17,8 @@ export function NavLink({ to, current, onClick, ...props }: Omit<ComponentProps<
       {...props}
       href={href}
       aria-current={current ? 'page' : undefined}
-      onMouseEnter={preload}
-      onFocus={preload}
+      onMouseEnter={(event) => { onMouseEnter?.(event); preload(); }}
+      onFocus={(event) => { onFocus?.(event); preload(); }}
       onClick={(event: MouseEvent<HTMLAnchorElement>) => {
         onClick?.(event);
         if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;

@@ -4,7 +4,7 @@ import { toast } from '@/components/ui/toast-store';
 import { ApiError, ConflictError, ForbiddenError, NetworkError, RateLimitedError, UnauthorizedError } from './api-client';
 
 /** The query-key prefix of a BFF read, for invalidation: `['bff', path]` matches every query of that path. */
-export function bffKey(path: string): QueryKey {
+export function bffPrefix(path: string): QueryKey {
   return ['bff', path];
 }
 
@@ -34,12 +34,20 @@ export function mutationErrorText(error: unknown): string {
   return 'The request could not be completed.';
 }
 
+/** A read to refetch: a BFF path (every query of that path) or an exact query key or prefix. */
+export type InvalidateTarget = string | QueryKey;
+
 export type BffMutationOptions<TVariables, TResult> = {
   mutationFn: (variables: TVariables) => Promise<TResult>;
-  /** Read paths to refetch after success, and after a 409 so the page shows the latest generation. */
-  invalidate: readonly string[];
+  /** Reads to refetch after success, and after a 409 so the page shows the latest generation. */
+  invalidate?: readonly InvalidateTarget[] | ((variables: TVariables) => readonly InvalidateTarget[]);
   /** A fixed confirmation; never include a submitted value. */
   successToast?: string | ((result: TResult, variables: TVariables) => string | undefined);
+  /**
+   * Raise a failure toast with this title and `mutationErrorText` as its description, for a
+   * control that has no dialog or alert of its own. The error is still thrown to the caller.
+   */
+  errorTitle?: string;
   onSuccess?: (result: TResult, variables: TVariables) => void;
 };
 
@@ -47,7 +55,8 @@ export type BffMutationOptions<TVariables, TResult> = {
  * A BFF write with the page conventions: it runs once (no retry, and a second call while
  * one is in flight is refused), refetches the affected reads on success and on conflict,
  * and raises an optional success toast. Errors are left to the caller, which renders
- * `mutationErrorText` where the operator is looking (the open dialog or the page alert).
+ * `mutationErrorText` where the operator is looking (the open dialog or the page alert);
+ * a control with no such place sets `errorTitle` for a failure toast instead.
  *
  * This is deliberately not TanStack `useMutation`: its mutation cache keeps the variables
  * and the result after the call, and here they can hold a write-only secret value or a
@@ -65,7 +74,8 @@ export function useBffMutation<TVariables = void, TResult = unknown>(options: Bf
     inFlight.current = true;
     setState({ pending: true, error: undefined });
     const current = latest.current;
-    const refresh = () => Promise.all(current.invalidate.map((path) => queryClient.invalidateQueries({ queryKey: bffKey(path) })));
+    const targets = typeof current.invalidate === 'function' ? current.invalidate(variables) : current.invalidate ?? [];
+    const refresh = () => Promise.all(targets.map((target) => queryClient.invalidateQueries({ queryKey: typeof target === 'string' ? bffPrefix(target) : target })));
     try {
       const result = await current.mutationFn(variables);
       const message = typeof current.successToast === 'function' ? current.successToast(result, variables) : current.successToast;
@@ -77,6 +87,7 @@ export function useBffMutation<TVariables = void, TResult = unknown>(options: Bf
     } catch (error) {
       setState({ pending: false, error });
       if (error instanceof ConflictError) void refresh();
+      if (current.errorTitle) toast({ title: current.errorTitle, description: mutationErrorText(error), variant: 'destructive' });
       throw error;
     } finally {
       inFlight.current = false;

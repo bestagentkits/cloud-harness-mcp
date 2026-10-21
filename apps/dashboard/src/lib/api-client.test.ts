@@ -56,6 +56,16 @@ describe('createApiClient', () => {
     expect(header(calls[2], 'x-csrf-token')).toBe('token-1');
   });
 
+  it('sends a raw body with its own content type and the CSRF token', async () => {
+    const { impl, calls } = fakeFetch(json(200, { csrfToken: 'token-1' }), json(200, { data: { id: 'job' } }));
+    const client = createApiClient(impl);
+    const archive = new Blob([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], { type: 'application/zip' });
+    await client.request('/skill-archives', { method: 'POST', rawBody: { data: archive, contentType: 'application/zip' } });
+    expect(header(calls[1], 'content-type')).toBe('application/zip');
+    expect(header(calls[1], 'x-csrf-token')).toBe('token-1');
+    expect(calls[1]?.init.body).toBe(archive);
+  });
+
   it('re-bootstraps once and resends a mutation the session verifier rejected', async () => {
     const onSessionEnded = vi.fn();
     const { impl, calls } = fakeFetch(

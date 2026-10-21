@@ -243,7 +243,9 @@ integration ships.
 - Initial route JS (entry plus the Overview route, gzip): at most **180 KB**.
   Each other route chunk: at most **60 KB** gzip. The terminal (xterm) and the
   Dewee widget load lazily and are budgeted on their own: at most **150 KB**
-  gzip each.
+  gzip each. Any other lazy chunk (a dialog, a tab) gets the same 60 KB and is
+  charged for what opening it downloads: its own files minus the initial JS and
+  what every chunk that imports it has already loaded.
 - The CSS file: at most **40 KB** gzip. Fonts: at most four WOFF2 files
   (Geist Sans and Mono, regular and medium/semibold variable where possible).
 - Runtime dependencies allowed without a new decision: `react`, `react-dom`,

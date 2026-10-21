@@ -14,7 +14,7 @@ import {
 } from './api-client';
 import {
   type BffMutationOptions,
-  bffKey,
+  bffPrefix,
   CONFLICT_MESSAGE,
   ClientValidationError,
   mutationErrorText,
@@ -83,37 +83,57 @@ describe('useBffMutation', () => {
 
   it('refetches the affected BFF read prefixes after success and leaves unrelated queries alone', async () => {
     const { result, queryClient } = renderMutation({ mutationFn: async () => ({ ok: true }), invalidate: ['/secrets'] });
-    queryClient.setQueryData(bffKey('/secrets'), { list: 1 });
-    queryClient.setQueryData([...bffKey('/secrets'), 'detail', 'x'], { detail: 1 });
-    queryClient.setQueryData(bffKey('/secrets-archive'), { other: 1 });
-    queryClient.setQueryData(bffKey('/profile'), { profile: 1 });
+    queryClient.setQueryData(bffPrefix('/secrets'), { list: 1 });
+    queryClient.setQueryData([...bffPrefix('/secrets'), 'detail', 'x'], { detail: 1 });
+    queryClient.setQueryData(bffPrefix('/secrets-archive'), { other: 1 });
+    queryClient.setQueryData(bffPrefix('/profile'), { profile: 1 });
     queryClient.setQueryData(['other', '/secrets'], { notBff: 1 });
     await settle(() => result.current.mutateAsync({ id: 'a' }));
-    expect(queryClient.getQueryState(bffKey('/secrets'))?.isInvalidated).toBe(true);
-    expect(queryClient.getQueryState([...bffKey('/secrets'), 'detail', 'x'])?.isInvalidated).toBe(true);
-    expect(queryClient.getQueryState(bffKey('/secrets-archive'))?.isInvalidated).toBe(false);
-    expect(queryClient.getQueryState(bffKey('/profile'))?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(bffPrefix('/secrets'))?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState([...bffPrefix('/secrets'), 'detail', 'x'])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(bffPrefix('/secrets-archive'))?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(bffPrefix('/profile'))?.isInvalidated).toBe(false);
     expect(queryClient.getQueryState(['other', '/secrets'])?.isInvalidated).toBe(false);
   });
 
   it('refetches after a 409 and still surfaces the conflict to the caller', async () => {
     const conflict = new ConflictError(409, 'stale', 'generation_conflict');
     const { result, queryClient } = renderMutation({ mutationFn: async () => { throw conflict; }, invalidate: ['/secrets'] });
-    queryClient.setQueryData(bffKey('/secrets'), { list: 1 });
+    queryClient.setQueryData(bffPrefix('/secrets'), { list: 1 });
     const outcome = await settle(() => result.current.mutateAsync({ id: 'a' }));
     expect(outcome.error).toBe(conflict);
-    expect(queryClient.getQueryState(bffKey('/secrets'))?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(bffPrefix('/secrets'))?.isInvalidated).toBe(true);
     expect(result.current.isError).toBe(true);
     expect(result.current.error).toBe(conflict);
     expect(toastMock).not.toHaveBeenCalled();
   });
 
+  it('refetches exact query keys too, and derives the targets from the variables when given a function', async () => {
+    const { result, queryClient } = renderMutation({ mutationFn: async () => ({ ok: true }), invalidate: (vars) => [['bff', `/tasks/${vars.id}`, {}], '/tasks'] });
+    queryClient.setQueryData(['bff', '/tasks/a', {}], { task: 'a' });
+    queryClient.setQueryData(['bff', '/tasks/b', {}], { task: 'b' });
+    queryClient.setQueryData(bffPrefix('/tasks'), { list: 1 });
+    await settle(() => result.current.mutateAsync({ id: 'a' }));
+    expect(queryClient.getQueryState(['bff', '/tasks/a', {}])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(['bff', '/tasks/b', {}])?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(bffPrefix('/tasks'))?.isInvalidated).toBe(true);
+  });
+
+  it('raises a failure toast with the sanitised text when given an error title, and still throws', async () => {
+    const failure = new ForbiddenError(403, 'owner mismatch for sk-secret');
+    const { result } = renderMutation({ mutationFn: async () => { throw failure; }, errorTitle: 'Not saved' });
+    const outcome = await settle(() => result.current.mutateAsync({ id: 'a' }));
+    expect(outcome.error).toBe(failure);
+    expect(toastMock).toHaveBeenCalledWith({ title: 'Not saved', description: mutationErrorText(failure), variant: 'destructive' });
+    expect(JSON.stringify(toastMock.mock.calls)).not.toContain('sk-secret');
+  });
+
   it('does not refetch after a non-conflict failure', async () => {
     const { result, queryClient } = renderMutation({ mutationFn: async () => { throw new ServerError(500, 'boom'); }, invalidate: ['/secrets'] });
-    queryClient.setQueryData(bffKey('/secrets'), { list: 1 });
+    queryClient.setQueryData(bffPrefix('/secrets'), { list: 1 });
     const outcome = await settle(() => result.current.mutateAsync({ id: 'a' }));
     expect(outcome.error).toBeInstanceOf(ServerError);
-    expect(queryClient.getQueryState(bffKey('/secrets'))?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(bffPrefix('/secrets'))?.isInvalidated).toBe(false);
     expect(result.current.isError).toBe(true);
   });
 
@@ -215,8 +235,8 @@ describe('mutationErrorText', () => {
   });
 });
 
-describe('bffKey', () => {
+describe('bffPrefix', () => {
   it('builds the ["bff", path] prefix used for invalidation', () => {
-    expect(bffKey('/secrets')).toEqual(['bff', '/secrets']);
+    expect(bffPrefix('/secrets')).toEqual(['bff', '/secrets']);
   });
 });

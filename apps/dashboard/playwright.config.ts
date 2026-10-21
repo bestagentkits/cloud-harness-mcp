@@ -15,7 +15,13 @@ export default defineConfig({
     baseURL: `http://127.0.0.1:${PORT}`,
     trace: 'retain-on-failure'
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  // Screenshots run as their own project, so their worker evaluates the fixtures under the
+  // fixed clock (e2e/visual/freeze-time.ts) without leaking it into the behavioural specs.
+  projects: [
+    { name: 'chromium', testIgnore: /visual\.spec\.ts$/, use: { ...devices['Desktop Chrome'] } },
+    { name: 'visual', testMatch: /visual\.spec\.ts$/, use: { ...devices['Desktop Chrome'] } }
+  ],
+  expect: { toHaveScreenshot: { maxDiffPixelRatio: 0.002 } },
   webServer: {
     command: 'node e2e/test-server.mjs',
     url: `http://127.0.0.1:${PORT}/healthz`,

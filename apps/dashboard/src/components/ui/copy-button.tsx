@@ -22,7 +22,10 @@ export function CopyButton({ value, label = 'Copy', className }: { value: string
       toast({ title: 'Copy failed', description: 'The browser blocked clipboard access. Select the text and copy it manually.', variant: 'destructive' });
     }
   }
+  // The live region sits beside the button, not inside it: Radix's modal `hideOthers` keeps
+  // live regions exposed and would otherwise hide the button's own label, leaving it nameless.
   return (
+    <>
     <button
       type="button"
       onClick={() => { void copy(); }}
@@ -31,7 +34,8 @@ export function CopyButton({ value, label = 'Copy', className }: { value: string
     >
       {copied ? <CheckIcon className="size-3.5" aria-hidden="true" /> : <CopyIcon className="size-3.5" aria-hidden="true" />}
       <span>{copied ? 'Copied' : label}</span>
-      <span className="sr-only" aria-live="polite">{copied ? 'Copied to clipboard' : ''}</span>
     </button>
+    <span className="sr-only" aria-live="polite">{copied ? 'Copied to clipboard' : ''}</span>
+    </>
   );
 }

@@ -1,15 +1,17 @@
 import { navGroups, type PageId } from '@/app/page-registry';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { ApprovalsBadge } from './approvals-badge';
 import { NavLink } from './nav-link';
 
 /**
  * The primary navigation, built from the page registry. `aria-current` comes from the
  * shell's route identity (`currentId`), not from the location, so the
  * highlighted entry always agrees with the title and content. Collapsed, it is an icon rail
- * whose labels move to tooltips (and stay the accessible names).
+ * whose labels move to tooltips (and stay the accessible names). `pageId` is the page itself
+ * (Audit, under Activity in the nav), which decides whether the approvals badge reads.
  */
-export function SidebarNav({ currentId, collapsed = false, onNavigate }: { currentId: PageId | undefined; collapsed?: boolean; onNavigate?: () => void }) {
+export function SidebarNav({ currentId, pageId, collapsed = false, onNavigate }: { currentId: PageId | undefined; pageId: PageId | undefined; collapsed?: boolean; onNavigate?: () => void }) {
   return (
     <nav aria-label="Primary" className="flex-1 overflow-y-auto p-2">
       {navGroups().map((group) => (
@@ -32,6 +34,7 @@ export function SidebarNav({ currentId, collapsed = false, onNavigate }: { curre
                 >
                   <page.icon className="size-4 shrink-0" aria-hidden="true" />
                   <span className={cn(collapsed && 'sr-only')}>{page.label}</span>
+                  {page.id === 'approvals' && <ApprovalsBadge pageId={pageId} collapsed={collapsed} />}
                 </NavLink>
               );
               return (

@@ -3,7 +3,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { lazy, Suspense, useCallback, useRef, useState } from 'react';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { toast } from '@/components/ui/toast-store';
-import { bffKey } from '@/lib/bff-mutation';
+import { bffPrefix } from '@/lib/bff-mutation';
 import { reportActionError } from '../shared/report-error';
 import { MCP_READS, mcpApi, type McpServer, probeMessage } from './mcp-model';
 import { useOpenedOnce } from '@/lib/use-opened-once';
@@ -28,8 +28,8 @@ export function useMcpServerActions({ afterDelete }: { afterDelete?: 'list' } = 
   const running = useRef(new Set<string>());
 
   const refresh = useCallback((server?: { id: string }) => Promise.all([
-    ...MCP_READS.map((path) => queryClient.invalidateQueries({ queryKey: bffKey(path) })),
-    ...(server ? [queryClient.invalidateQueries({ queryKey: bffKey(`/mcp-servers/${server.id}`) })] : [])
+    ...MCP_READS.map((path) => queryClient.invalidateQueries({ queryKey: bffPrefix(path) })),
+    ...(server ? [queryClient.invalidateQueries({ queryKey: bffPrefix(`/mcp-servers/${server.id}`) })] : [])
   ]), [queryClient]);
 
   const run = useCallback(async (server: McpServer, action: string, work: () => Promise<void>, failure: string) => {

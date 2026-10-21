@@ -18,6 +18,14 @@ async function expectNoSeriousA11yViolations(page: Page) {
   expect(serious.map((violation) => `${violation.id}: ${violation.nodes.map((node) => `${node.target.join(' ')} ${node.failureSummary ?? ''} ${node.html}`).join(', ')}`)).toEqual([]);
 }
 
+// The sidebar approvals badge reads two runner-backed endpoints on Overview; the e2e server
+// has no runner, so answer them with an empty inbox rather than a 503 in the console.
+test.beforeEach(async ({ page }) => {
+  for (const path of ['/privilege-grants', '/package-plans']) {
+    await page.route(`**/dashboard/api/v1${path}`, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { grants: [], plans: [] } }) }));
+  }
+});
+
 test('renders the shell under a strict per-response CSP', async ({ page }) => {
   const problems = watchConsole(page);
   const response = await page.goto('/dashboard');
@@ -32,6 +40,23 @@ test('renders the shell under a strict per-response CSP', async ({ page }) => {
   const fontFamily = await page.evaluate(() => getComputedStyle(document.body).fontFamily);
   expect(fontFamily).toContain('Geist');
   expect(problems).toEqual([]);
+});
+
+test('serves content-hashed assets immutable, nosniff and under the CSP, first load and replay alike', async ({ page }) => {
+  const assets: { url: string; headers: Record<string, string> }[] = [];
+  page.on('response', (response) => {
+    if (new URL(response.url()).pathname.startsWith('/dashboard/assets/')) assets.push({ url: response.url(), headers: response.headers() });
+  });
+  for (let load = 0; load < 2; load += 1) {
+    await page.goto('/dashboard');
+    await expect(page.getByTestId('page-frame')).toBeVisible();
+  }
+  expect(assets.length).toBeGreaterThan(0);
+  for (const { url, headers } of assets) {
+    expect(headers['cache-control'], url).toBe('private, max-age=31536000, immutable');
+    expect(headers['x-content-type-options'], url).toBe('nosniff');
+    expect(headers['content-security-policy'], url).toContain("default-src 'none'");
+  }
 });
 
 test('switches theme and keeps it across a reload before first paint', async ({ page }) => {

@@ -61,5 +61,5 @@ export function noSearch(): Record<string, never> {
 
 /** The MCP OAuth callback outcome (`apps/api/src/dashboard-gateway-router.ts` redirects with it). */
 export function oauthOutcome(raw: Raw) {
-  return compact({ oauth: oneOf(raw, 'oauth', ['connected', 'error'] as const), reason: matching(raw, 'reason', /^[a-z_]{1,80}$/) });
+  return exact({ oauth: oneOf(raw, 'oauth', ['connected', 'error'] as const), reason: matching(raw, 'reason', /^[a-z_]{1,80}$/) });
 }

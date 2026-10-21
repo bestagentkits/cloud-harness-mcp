@@ -8,8 +8,10 @@
 //   manifest in gzip bytes: entry plus the Overview route at most 180 KB, every other route
 //   chunk (`src/routes/*`) and every other lazy chunk at most 60 KB, the allowlisted heavy
 //   lazy chunks (the xterm terminal and the Dewee widget) at most 150 KB each, CSS at most
-//   40 KB, at most four WOFF2 fonts. A breach fails the build instead of raising a number
-//   silently.
+//   40 KB, at most four WOFF2 fonts. A route chunk is charged for everything it loads beyond
+//   the initial JS; any other lazy chunk only for what it adds to what every chunk that
+//   imports it has already loaded, which is what opening it downloads. A breach fails the
+//   build instead of raising a number silently.
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -94,10 +96,24 @@ export function measureBudget(dist) {
   if (!entryKey) throw new Error('the Vite manifest has no entry chunk');
   if (!overviewKey) throw new Error('the Vite manifest has no Overview route chunk');
   const initial = closure(overviewKey, closure(entryKey));
+  const importers = (key) => Object.keys(manifest).filter((other) => (manifest[other].dynamicImports ?? []).includes(key));
+  /**
+   * The files already in memory whenever `key` can load: the initial JS plus what every one
+   * of its dynamic importers loaded (their intersection, since any one of them may be the
+   * one that opened it). A route chunk is loaded from the shell, so it gets the initial JS only.
+   */
+  const loadedBefore = (key, seen = new Set()) => {
+    const from = importers(key).filter((other) => !seen.has(other));
+    if (ROUTE_CHUNK.test(key) || from.length === 0) return initial;
+    const next = new Set([...seen, key]);
+    const sets = from.map((other) => new Set([...loadedBefore(other, next), ...closure(other)]));
+    return new Set([...initial, ...[...sets[0]].filter((file) => sets.every((set) => set.has(file)))]);
+  };
   const chunks = Object.keys(manifest)
     .filter((key) => manifest[key].isDynamicEntry && key !== overviewKey)
     .map((key) => {
-      const files = [...closure(key)].filter((file) => !initial.has(file));
+      const loaded = loadedBefore(key);
+      const files = [...closure(key)].filter((file) => !loaded.has(file));
       const kind = classifyLazyChunk(key, manifest[key]);
       return { chunk: key, kind, limit: BUDGET[kind], bytes: files.reduce((total, file) => total + size(file), 0) };
     });

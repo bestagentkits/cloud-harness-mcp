@@ -8,7 +8,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { CopyButton } from '@/components/ui/copy-button';
 import { DataTable } from '@/components/ui/data-table';
 import { toast } from '@/components/ui/toast-store';
-import { bffKey } from '@/lib/bff-mutation';
+import { bffPrefix } from '@/lib/bff-mutation';
 import { usePagePrimaryAction } from '@/lib/page-primary-action';
 import { Callout } from '../shared/callout';
 import { formatTime } from '../shared/format';
@@ -40,7 +40,7 @@ const priceLevel = (level: PriceLevel) => `${formatSavedPrice(level.inputMicrosP
 const cachePrices = (level: PriceLevel) => `cache read ${formatSavedPrice(level.cacheReadMicrosPerMillionTokens)} · cache write ${formatSavedPrice(level.cacheWriteMicrosPerMillionTokens)}`;
 
 const invalidateModels = (queryClient: ReturnType<typeof useQueryClient>) =>
-  Promise.all(MODELS_READS.map((path) => queryClient.invalidateQueries({ queryKey: bffKey(path) })));
+  Promise.all(MODELS_READS.map((path) => queryClient.invalidateQueries({ queryKey: bffPrefix(path) })));
 
 function GatewaySync({ status, failed }: { status: GatewayStatus | null | undefined; failed: boolean }) {
   if (failed || !status) return <StatusBadge>Gateway status unavailable</StatusBadge>;

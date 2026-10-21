@@ -16,6 +16,7 @@ The **Mission Control** operator dashboard is available at `https://harness.zuey
 - **[Activity](/dashboard/activity):** One operational timeline with All, Agents, Tasks, MCP, Deployments, and Audit filters. Runtime rows are live; audit rows are retained and redacted, and every row says which it is.
 - **[Approvals](/dashboard/approvals):** Privilege grants with their real status, the requested command, workspace, working directory, and command digest. Approve and Reject appear only on unexpired pending grants, and the rail counts only those.
 - **[Projects](/dashboard/projects):** Track repositories and manage project-scoped environment configurations.
+- **[Knowledge](/dashboard/knowledge):** Memories and journals with search, a link graph, and an editor that keeps unsaved drafts across a reload and asks before you leave one.
 - **[Secrets & Credentials](/dashboard/secrets):** Manage global and project-scoped credentials encrypted at rest with AES-256-GCM and automatic ingest-time output stream redaction. Creating a secret is a dialog; the value is write-only.
 - **[Models & Budgets](/dashboard/models):** Configure LLM provider credentials, model profiles, token pricing, and capability limits for coding agents.
 - **[Skills & Skill Sets](/dashboard/skills):** Manage the skill library, provider imports, skill sets, and the toolkit registry.
@@ -46,6 +47,8 @@ In the new dashboard:
 - **Shortcuts:** `[` collapses or expands the sidebar, and `/` moves focus to the workspace search box.
 - **Small screens:** the menu button in the top bar opens the navigation as a drawer.
 - **Display preferences:** text size, density, contrast and the sidebar state are saved in this browser only. The theme is saved to your account cookie. Animations are turned off when your system asks for reduced motion.
+- **Migrated pages:** Overview, Workspaces, Agents (list and detail), Activity, Audit, Projects and environments, Knowledge, Skills, Profile and Settings run in the new dashboard with the same data and actions as the classic pages. Their filters, tabs and selected item are part of the address, so a copied link opens the same view. Activity shows the pending approvals summary, while approving and rejecting stay on the classic Approvals page for now; the TypeSafe key is also still entered on the classic Settings page.
+- **Workspace cockpit:** the Summary, Agents, Runtime and Activity tabs work in the new dashboard; Runtime shows each task's output (`?task=` in the address) and lets you open, read and close shell sessions. The Terminal, Files, Git, Automation, Deploy and Artifacts tabs still open the classic cockpit.
 
 ## Design System & Security Invariants
 

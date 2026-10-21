@@ -11,7 +11,7 @@ import { SecretInput } from '@/components/ui/secret-input';
 import { NativeSelect } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { ConflictError } from '@/lib/api-client';
-import { bffKey, ClientValidationError, mutationErrorText, useBffMutation } from '@/lib/bff-mutation';
+import { bffPrefix, ClientValidationError, mutationErrorText, useBffMutation } from '@/lib/bff-mutation';
 import { pageReadQuery } from '@/lib/page-read';
 import { FormDialog } from '../shared/form-dialog';
 import {
@@ -70,7 +70,7 @@ export function McpServerDialog({ open, onOpenChange, server: opened, onSaved }:
       // Shown in the dialog; the snapshot moves to the server's current generation.
       if (error instanceof McpPartialSaveError) {
         adopt(error.saved, false);
-        await Promise.all([...MCP_READS, `/mcp-servers/${error.saved.id}`].map((path) => queryClient.invalidateQueries({ queryKey: bffKey(path) })));
+        await Promise.all([...MCP_READS, `/mcp-servers/${error.saved.id}`].map((path) => queryClient.invalidateQueries({ queryKey: bffPrefix(path) })));
       } else if (error instanceof ConflictError && server) {
         try { adopt(await mcpApi.get(server.id), true); } catch { /* the conflict message stands */ }
       }

@@ -10,7 +10,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { toast } from '@/components/ui/toast-store';
-import { bffKey, mutationErrorText } from '@/lib/bff-mutation';
+import { bffPrefix, mutationErrorText } from '@/lib/bff-mutation';
 import { Callout } from '../shared/callout';
 import { usePageData } from '../shared/feature-read';
 import { formatTime } from '../shared/format';
@@ -47,7 +47,7 @@ function useGitHubCallback(callback: GitHubCallback | undefined, callbackParams:
         reportActionError('The GitHub App connection could not be completed', error);
       } finally {
         await navigate({ to: '/integrations/github', search: {}, replace: true });
-        await queryClient.invalidateQueries({ queryKey: bffKey('/github') });
+        await queryClient.invalidateQueries({ queryKey: bffPrefix('/github') });
         setCompleting(false);
       }
     })();
@@ -117,7 +117,7 @@ export function GitHubPage({ callback, callbackParams = false }: { callback?: Gi
   const read = usePageData<GitHubStatus>('github');
   const [reconciling, setReconciling] = useState<string | undefined>();
   const [disconnecting, setDisconnecting] = useState<GitHubInstallation | undefined>();
-  const refresh = useCallback(() => Promise.all(GITHUB_READS.map((path) => queryClient.invalidateQueries({ queryKey: bffKey(path) }))), [queryClient]);
+  const refresh = useCallback(() => Promise.all(GITHUB_READS.map((path) => queryClient.invalidateQueries({ queryKey: bffPrefix(path) }))), [queryClient]);
 
   const reconcile = useCallback(async (installationId?: string) => {
     const key = installationId ?? '*';
