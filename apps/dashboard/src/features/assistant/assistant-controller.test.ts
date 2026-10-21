@@ -157,7 +157,7 @@ describe('assistant controller', () => {
       name: 'prepare_slow', description: 'test', sensitivity: 'destructive', schema: (z) => z.object({}).strict(),
       prepare: async () => {
         await new Promise<void>((resolve) => { finishPrepare = resolve; });
-        return { method: 'DELETE', path: '/projects/prj_x', body: undefined, title: 't', description: 'd', confirmLabel: 'Delete', destructive: true };
+        return { method: 'DELETE', path: '/projects/prj_x', body: undefined, title: 't', description: 'd', confirmLabel: 'Delete', destructive: true, invalidate: ['/projects'] };
       }
     }] });
     controller.actions();
