@@ -62,7 +62,9 @@ export function useKnowledgeEditor(item: KnowledgeItem, itemKey: QueryKey, fetch
 
   const mutation = useBffMutation<{ content: string; generation: number }, BffEnvelope<unknown>>({
     mutationFn: ({ content, generation }) => apiClient.request(knowledgeItemPath(item.id), { method: 'PUT', body: { content, expectedGeneration: generation } }),
-    invalidate: [itemKey, ...KNOWLEDGE_LIST_KEYS],
+    // The PUT answer is the saved item, written to `itemKey` below; refetching the item as
+    // well could land after that write and put the old generation back.
+    invalidate: KNOWLEDGE_LIST_KEYS,
     successToast: 'Knowledge entry saved',
     errorTitle: 'The entry was not saved'
   });
