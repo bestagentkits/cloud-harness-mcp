@@ -166,5 +166,5 @@ test('the classic Dashboard link keeps the page query', async ({ page }) => {
   await stubReads(page);
   await page.goto('/dashboard/artifacts?cursor=c_42');
   await expectPage(page, 'artifacts');
-  await expect(page.getByRole('link', { name: 'Open in classic Dashboard' })).toHaveAttribute('href', '/dashboard/artifacts?cursor=c_42&ui=legacy');
+  await expect(page.getByRole('link', { name: 'Use classic Dashboard' })).toHaveAttribute('href', '/dashboard/artifacts?cursor=c_42&ui=legacy');
 });

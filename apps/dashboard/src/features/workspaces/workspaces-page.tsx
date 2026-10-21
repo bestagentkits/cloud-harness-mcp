@@ -11,6 +11,7 @@ import { TruncationNotice } from '@/components/data/truncation-notice';
 import { type BffEnvelope } from '@/lib/bff-query';
 import { formatRelative } from '@/lib/format';
 import { pageReadQuery } from '@/lib/page-read';
+import { OpenWorkspaceWizard } from './open-workspace-wizard';
 import { filterWorkspaces, networkLabel, repositoryName, type Workspace, WORKSPACE_STATUSES, workspaceStatusLabel } from './workspace-model';
 
 export type WorkspacesSearch = { q?: string | undefined; status?: (typeof WORKSPACE_STATUSES)[number] | undefined; expiring?: number | undefined };
@@ -35,7 +36,8 @@ const COLUMNS: DataTableColumn<Workspace>[] = [
 /**
  * The workspace list. Filters are URL search params (`q`, `status`, `expiring`), applied to
  * the one `/workspaces` read the page registry warms, so typing never refetches. The page
- * has no poller: the list refreshes on focus and on return, like the classic page.
+ * has no poller: the list refreshes on focus and on return, like the classic page. Its primary
+ * action is the open-workspace wizard.
  */
 export function WorkspacesPage({ search, onSearch }: { search: WorkspacesSearch; onSearch: (next: WorkspacesSearch) => void }) {
   const read = useQuery(pageReadQuery('workspaces', {}));
@@ -61,13 +63,14 @@ export function WorkspacesPage({ search, onSearch }: { search: WorkspacesSearch;
                 rows={rows}
                 rowKey={(workspace) => workspace.workspaceId}
                 empty={all.length === 0
-                  ? <EmptyState icon={BoxIcon} title="No workspaces yet" description="Open one from an MCP client and it will appear here." />
+                  ? <EmptyState icon={BoxIcon} title="No workspaces yet" description="Open one with New workspace, or from an MCP client, and it will appear here." />
                   : <EmptyState icon={SearchXIcon} title="No workspaces match these filters" action={<Button variant="outline" size="sm" onClick={() => onSearch({})}>Clear filters</Button>} />}
               />
             </div>
           );
         }}
       </AsyncStatus>
+      <OpenWorkspaceWizard />
     </div>
   );
 }

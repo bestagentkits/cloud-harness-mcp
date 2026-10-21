@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ListTodoIcon, TerminalSquareIcon } from 'lucide-react';
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { AsyncStatus } from '@/components/feedback/async-status';
 import { EmptyState } from '@/components/feedback/empty-state';
 import { Section } from '@/components/data/section';
@@ -19,6 +19,9 @@ import { type RuntimeSession, type RuntimeTask, runtimeOf, taskDuration, taskIsC
 import { OpenSessionDialog } from './open-session-dialog';
 import { SessionOutput, TaskOutput } from './runtime-output';
 
+// The graph is its own chunk: the table carries the same facts and paints first.
+const TaskGraph = lazy(() => import('../task-graph'));
+
 type Pending = { kind: 'cancel-task'; id: string } | { kind: 'close-session'; id: string } | undefined;
 
 /**
@@ -26,12 +29,18 @@ type Pending = { kind: 'cancel-task'; id: string } | { kind: 'close-session'; id
  * a confirmation, a named session opener, and two read-only output views. The selected task
  * is the `task` search param, so a task's output is a shareable link; a session's output is
  * session-scoped state only (never in the URL). Nothing here polls: Refresh re-reads, as the
- * classic tab does. The dependency graph stays on the classic tab until the automation view
- * moves; the table carries the same dependency facts.
+ * classic tab does. The dependency graph sits above the task table, as on the classic tab,
+ * and loads lazily; the table carries the same dependency facts.
  */
 export default function RuntimeTab({ workspaceId, search, onSearch }: CockpitTabProps) {
   const runtimePath = `${bffPath('workspaces', workspaceId)}/runtime`;
   const read = useQuery(bffQuery<unknown>(runtimePath, {}));
+  const queryClient = useQueryClient();
+  // Refresh re-reads the graph with the tasks, so the two never disagree.
+  const refresh = () => {
+    void read.refetch();
+    void queryClient.invalidateQueries({ queryKey: bffKey(`${bffPath('workspaces', workspaceId)}/tasks/graph`) });
+  };
   const [pending, setPending] = useState<Pending>();
   const [opening, setOpening] = useState(false);
   const [sessionId, setSessionId] = useState<string>();
@@ -107,7 +116,8 @@ export default function RuntimeTab({ workspaceId, search, onSearch }: CockpitTab
           <div className="grid gap-(--stack-gap)">
             <p className="text-sm text-muted-foreground"><strong className="font-medium text-foreground">Live workspace runtime.</strong> Tasks and sessions are volatile: they disappear when the workspace is reaped, unlike retained artifacts.</p>
             <TruncationNotice truncated={body.truncated} what="tasks and sessions" />
-            <Section title="Tasks" actions={<Button size="sm" variant="outline" disabled={read.isFetching} onClick={() => void read.refetch()}>{read.isFetching ? 'Refreshing…' : 'Refresh'}</Button>}>
+            {tasks.length ? <Suspense fallback={<p className="text-sm text-muted-foreground">Loading the task graph…</p>}><TaskGraph workspaceId={workspaceId} /></Suspense> : null}
+            <Section title="Tasks" actions={<Button size="sm" variant="outline" disabled={read.isFetching} onClick={refresh}>{read.isFetching ? 'Refreshing…' : 'Refresh'}</Button>}>
               <DataTable
                 caption={`${tasks.length} task(s)`}
                 columns={taskColumns}

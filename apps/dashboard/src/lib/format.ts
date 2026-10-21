@@ -72,6 +72,11 @@ export function str(value: unknown): string {
   return typeof value === 'string' && value ? value : typeof value === 'number' ? String(value) : EMPTY;
 }
 
+/** `value` as plain text, or `''` when absent: for parsers that pick their own fallback. */
+export function text(value: unknown): string {
+  return typeof value === 'string' ? value : typeof value === 'number' ? String(value) : '';
+}
+
 /** The array at `value` or an empty one; projections may omit a list entirely. */
 export function arr<T = Record<string, unknown>>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
