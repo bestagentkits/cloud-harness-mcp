@@ -21,6 +21,7 @@ import { join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
   BROKERED_ONLY_PROXY_OPERATIONS,
+  COMMAND_MAX_TIMEOUT_MS,
   DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
   DEFAULT_MAX_WORKSPACE_REPOSITORIES,
   DEFAULT_RECOVERABLE_GRACE_SECONDS,
@@ -2280,7 +2281,11 @@ export class WorkspaceService {
     }
     if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
     const containerName = record.containerName;
-    const timeout = typeof input.timeoutMs === 'number' ? input.timeoutMs + 5_000 : 65_000;
+    // A hook run that names no timeout uses its manifest value, which only the worker reads, so the
+    // executor call allows the largest bound the worker enforces on that value.
+    const timeout = typeof input.timeoutMs === 'number'
+      ? input.timeoutMs + 5_000
+      : (operation === 'hooks_run' ? COMMAND_MAX_TIMEOUT_MS : 60_000) + 5_000;
     const operationId = (typeof input.operationId === 'string' && input.operationId) || opaqueId('op');
     const pidFile = `/tmp/cloud-harness-operations/${operationId}.pid`;
     const jsonMaxBytes = Math.min(67_108_864, Math.max(this.config.maxOutputBytes, 262_144) * 6 + 8_192);

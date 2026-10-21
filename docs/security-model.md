@@ -767,7 +767,9 @@ grant and retries with it. The grant id lives only in that confirm action's
 closure: never in browser storage, the URL, or a query cache. A script that exits
 non-zero is answered with HTTP 422 carrying the same bounded, redacted projection
 as a successful run, never the runner's error text; other execution failures stay
-generic server errors.
+generic server errors. A skill-run grant record persists its request descriptor
+in runner state and shows it to the owner on the Approvals page, so `skills_run`
+arguments, which that descriptor names, must never carry secrets.
 
 The Dashboard Approvals page lists grants in every state the runner returns,
 labelled with their real status, and offers Approve and Reject only for an

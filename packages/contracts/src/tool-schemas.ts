@@ -1076,7 +1076,8 @@ const schemas = {
     event: HookEventSchema.optional(),
     expectedSha256: z.string().length(64).optional(),
     expectedManifestSha256: z.string().length(64).optional(),
-    timeoutMs: z.number().int().min(100).max(300_000).default(60_000)
+    // No default: an omitted value lets the worker apply the manifest hook's own timeoutMs.
+    timeoutMs: z.number().int().min(100).max(COMMAND_MAX_TIMEOUT_MS).optional()
   }).superRefine((input, context) => {
     if (!input.expectedSha256 && !input.expectedManifestSha256) {
       context.addIssue({ code: 'custom', path: ['expectedManifestSha256'], message: 'expectedManifestSha256 or expectedSha256 is required to prevent TOCTOU execution of modified hooks' });

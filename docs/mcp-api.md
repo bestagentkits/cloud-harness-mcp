@@ -1200,6 +1200,9 @@ and the failure-injection suite
   `hooks_list` always returns every hook and marks each with `active`, which is true only when an
   unexpired activation for one of its events pins the listed `manifestSha256`; `includeInactive` is
   accepted for compatibility and ignored.
+  A hook run's timeout is the caller's `hooks_run` `timeoutMs` when given, otherwise the hook's own
+  manifest `timeoutMs`, otherwise 60,000 ms; lifecycle runs always use the manifest value. Both are
+  held to 100–300,000 ms, and a manifest value outside that range fails the run with `INVALID_INPUT`.
   Execution runs exclusively inside the container executor with `networkMode: none` by default.
 - Knowledge (Memories & Journals) is stored in principal-isolated SQLite `StateStore` (schema v10) supporting `owner`, `project`, and `workspace` scopes for memories, and chronological journals (`engineering-log`, `decision-record`, `session-reflection`). Operations (`knowledge_create`, `knowledge_read`, `knowledge_update`, `knowledge_delete`, `knowledge_list`, `knowledge_search`, `knowledge_link`, `knowledge_unlink`, `knowledge_graph`) provide CAS concurrency (`expectedGeneration`), RRF hybrid search (FTS5 + vector similarity), and bidirectional graph relations with wikilink extraction.
 - Named deployments come from the repository's `.cloud-harness/deployments.json` and execute inside the

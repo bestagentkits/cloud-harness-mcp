@@ -83,7 +83,7 @@ describe('dashboard automation BFF', () => {
     const manifest = 'b'.repeat(64);
     const reply = await send(`/api/v1/workspaces/${ws}/hooks/run`, { method: 'POST', headers, body: JSON.stringify({ name: 'format', expectedManifestSha256: manifest }) });
     expect(reply.status).toBe(200);
-    expect(calls).toEqual([{ operation: 'hooks_run', input: { workspaceId: ws, name: 'format', expectedManifestSha256: manifest, timeoutMs: 60_000 } }]);
+    expect(calls).toEqual([{ operation: 'hooks_run', input: { workspaceId: ws, name: 'format', expectedManifestSha256: manifest } }]);
     // The old form's `{ event }` body never named a hook or a digest, so the contract refused it.
     const legacy = await send(`/api/v1/workspaces/${ws}/hooks/run`, { method: 'POST', headers, body: JSON.stringify({ event: 'manual' }) });
     expect(legacy.status).toBe(400);
