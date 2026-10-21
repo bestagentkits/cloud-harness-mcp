@@ -795,6 +795,13 @@ td details.row-edit pre { max-height: 12rem; max-width: 36rem; font-size: var(--
 .approval-row { display: grid; gap: var(--space-4); border-inline-start: .1875rem solid var(--warning-line); }
 .approval-row h3 { font-family: var(--font-mono); font-size: var(--text-13); font-weight: 600; overflow-wrap: anywhere; }
 .approval-row .row-actions { justify-content: flex-start; padding-block-start: var(--space-3); border-block-start: 1px solid var(--line); }
+/* Inbox: unread rows carry a text marker and a weight change, never colour alone. */
+.inbox-toolbar { justify-content: flex-start; margin-block-end: var(--space-4); }
+.inbox-row th small { display: block; margin-block-start: var(--space-1); color: var(--ink-muted); font-weight: 400; }
+.inbox-row.unread th { font-weight: 600; }
+.inbox-unread { font-size: var(--text-11); text-transform: uppercase; letter-spacing: .04em; color: var(--ink-muted); }
+.inbox-deliveries { display: flex; flex-wrap: wrap; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.inbox-preferences td { text-align: center; }
 .package-binding > .row-actions { justify-content: flex-start; margin-block: var(--space-3); }
 .deploy-target { display: grid; gap: var(--space-4); }
 .session-row { display: grid; gap: var(--space-3); }

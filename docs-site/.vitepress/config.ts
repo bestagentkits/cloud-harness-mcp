@@ -127,6 +127,7 @@ export default defineConfig({
         collapsed: false,
         items: [
           { text: 'Overview', link: '/dashboard/' },
+          { text: 'Inbox', link: '/dashboard/inbox' },
           { text: 'Workspaces', link: '/dashboard/workspaces' },
           { text: 'Terminal', link: '/dashboard/terminal' },
           { text: 'Agents', link: '/dashboard/agents' },

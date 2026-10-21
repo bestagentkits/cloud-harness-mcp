@@ -389,7 +389,9 @@ export const RunnerConfigSchema = z.object({
    */
   agentCodingEnabled: enabled,
   /** Admits the lockfile-only package install executor for coding runs. Off by default; policy still decides. */
-  agentCodingPackageInstallEnabled: enabled
+  agentCodingPackageInstallEnabled: enabled,
+  /** Records the notification inbox and dispatches its channels. Off by default; the schema is created either way. */
+  notificationsEnabled: enabled
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
   if (config.agentCodingEnabled && !(config.agentPoliciesEnabled && config.automationsEnabled)) {
