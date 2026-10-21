@@ -556,7 +556,9 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   }
   if (operation === 'skills_run' || operation === 'hooks_run' || operation === 'hooks_activate' || operation === 'hooks_deactivate' || operation === 'deployments_run') {
     const output = boundedOutput(data.output);
-    return { ...pick(data, ['name', 'event', 'events', 'status', 'exitCode', 'durationMs', 'error', 'manifestSha256', 'executionMode']), ...(output !== undefined ? { output } : {}) };
+    // A skill script stopped by its timeout reports the signal, so exit code 1 is not read as its own failure.
+    const signal = operation === 'skills_run' && typeof data.signal === 'string' && /^SIG[A-Z0-9]+$/.test(data.signal) ? { signal: data.signal } : {};
+    return { ...pick(data, ['name', 'event', 'events', 'status', 'exitCode', 'durationMs', 'error', 'manifestSha256', 'executionMode']), ...signal, ...(output !== undefined ? { output } : {}) };
   }
   if (operation === 'toolkits_list' || operation === 'toolkits_preview') return data;
   if (operation === 'files_list') {

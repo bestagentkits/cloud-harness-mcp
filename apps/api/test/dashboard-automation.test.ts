@@ -95,6 +95,9 @@ describe('automation and deploy renderers', () => {
     expect(failed).toContain('<dd>3</dd>');
     expect(failed).toContain('No output.');
     expect(failed).not.toContain('truncated');
+    expect(failed).not.toContain('Duration');
+    expect(failed).not.toContain('Stopped by');
+    expect(renderSkillRunResult({ exitCode: 1, signal: 'SIGTERM' }, { failed: true })).toContain('<dt>Stopped by</dt><dd>SIGTERM</dd>');
   });
 
   it('recognises only a script failure that carries its result', () => {

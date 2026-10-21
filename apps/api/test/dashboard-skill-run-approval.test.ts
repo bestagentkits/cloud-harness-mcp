@@ -85,6 +85,9 @@ describe('skill-run approval projection', () => {
     const listed = mapDashboardData('skills_list', { skills: [{ name: 'demo', source: 'workspace', root: '/workspace/.agents/skills', contentSha256: 'c'.repeat(64) }] }) as { skills: Record<string, unknown>[] };
     expect(listed.skills[0]).toEqual({ name: 'demo', source: 'workspace', contentSha256: 'c'.repeat(64) });
     expect(mapDashboardData('skills_run', { output: 'ok', exitCode: 0, executionMode: 'helper-container', signal: null })).toEqual({ output: 'ok', exitCode: 0, executionMode: 'helper-container' });
+    expect(mapDashboardData('skills_run', { exitCode: 1, signal: 'SIGTERM' })).toEqual({ exitCode: 1, signal: 'SIGTERM' });
+    expect(mapDashboardData('skills_run', { exitCode: 1, signal: 'raw <text>' })).toEqual({ exitCode: 1 });
+    expect(mapDashboardData('hooks_run', { exitCode: 1, signal: 'SIGTERM' })).toEqual({ exitCode: 1 });
   });
 });
 

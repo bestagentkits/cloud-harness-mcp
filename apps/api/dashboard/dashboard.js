@@ -4080,7 +4080,7 @@ export function initializeDashboard() {
       // The run's output stays on the page, so the tab is not reloaded over it.
       const showResult = (run, failed) => {
         const region = document.querySelector('#skill-run-result');
-        if (region) region.innerHTML = renderSkillRunResult(run, { failed });
+        insertRendered(region, renderSkillRunResult(run, { failed }));
         announce(failed ? 'Skill script exited with an error.' : 'Skill script finished.');
       };
       const runAndShow = async (approvalGrantToken) => {
@@ -4096,6 +4096,8 @@ export function initializeDashboard() {
       let grant;
       void submitForm(skillForm, 'Requesting approval…', async () => {
         grant = undefined;
+        // A new attempt clears the last result, so it is never read as this run's outcome.
+        document.querySelector('#skill-run-result')?.replaceChildren();
         try { await runAndShow(); }
         catch (error) { grant = skillApprovalRequest(error); if (!grant) throw error; }
       }, async () => {

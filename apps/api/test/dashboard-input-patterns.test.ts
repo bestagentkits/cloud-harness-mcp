@@ -9,7 +9,9 @@ const dashboardDir = new URL('../dashboard/', import.meta.url);
 function patternAttributes(): Array<{ file: string; pattern: string }> {
   return readdirSync(dashboardDir)
     .filter((file) => /\.(?:js|html)$/u.test(file))
-    .flatMap((file) => [...readFileSync(new URL(file, dashboardDir), 'utf8').matchAll(/pattern="([^"$]*)"/gu)]
+    .flatMap((file) => [...readFileSync(new URL(file, dashboardDir), 'utf8').matchAll(/pattern="([^"]*)"/gu)]
+      // An interpolated pattern is checked where its value is built, not as source text.
+      .filter((match) => !match[1]!.includes('${'))
       .map((match) => ({ file, pattern: file.endsWith('.js') ? match[1]!.replaceAll('\\\\', '\\') : match[1]! })));
 }
 

@@ -738,11 +738,11 @@ export function renderWorkspaceSkills(skills = []) {
   return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}${form}</section>`;
 }
 
-/** A finished skill run: exit code, where it ran and its bounded, redacted output, failed or not. */
+/** A finished skill run: exit code, where it ran, the signal that stopped it (a timeout) and its bounded, redacted output. */
 export function renderSkillRunResult(result = {}, { failed = false } = {}) {
   const fact = (value, suffix = '') => value === undefined || value === null || value === '' ? 'Not reported' : `${escape(String(value))}${suffix}`;
   const output = typeof result.output === 'string' && result.output ? escape(result.output) : 'No output.';
-  return `<section class="skill-run-result" aria-labelledby="skill-run-result-heading"><h3 id="skill-run-result-heading">${failed ? 'Script exited with an error' : 'Script finished'}</h3><dl class="facts"><dt>Exit code</dt><dd>${fact(result.exitCode)}</dd><dt>Ran in</dt><dd>${result.executionMode === 'helper-container' ? 'Disposable helper container' : fact(result.executionMode)}</dd><dt>Duration</dt><dd>${fact(result.durationMs, ' ms')}</dd></dl><pre class="mono">${output}</pre>${result.truncated === true ? '<p class="status-message" role="status">Output is truncated.</p>' : ''}</section>`;
+  return `<section class="skill-run-result" aria-labelledby="skill-run-result-heading"><h3 id="skill-run-result-heading">${failed ? 'Script exited with an error' : 'Script finished'}</h3><dl class="facts"><dt>Exit code</dt><dd>${fact(result.exitCode)}</dd><dt>Ran in</dt><dd>${result.executionMode === 'helper-container' ? 'Disposable helper container' : fact(result.executionMode)}</dd>${result.signal ? `<dt>Stopped by</dt><dd>${escape(String(result.signal))}</dd>` : ''}</dl><pre class="mono">${output}</pre>${result.truncated === true ? '<p class="status-message" role="status">Output is truncated.</p>' : ''}</section>`;
 }
 
 /** The confirm-dialog copy for a skill run the runner holds for an owner privilege grant. */
