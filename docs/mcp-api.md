@@ -1192,6 +1192,9 @@ and the failure-injection suite
 - Hooks support declarative JSON format in `.cloud-harness/hooks.json` with named lifecycle events
   (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`). Automatic lifecycle
   execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest.
+  `hooks_list` always returns every hook and marks each with `active`, which is true only when an
+  unexpired activation for one of its events pins the listed `manifestSha256`; `includeInactive` is
+  accepted for compatibility and ignored.
   Execution runs exclusively inside the container executor with `networkMode: none` by default.
 - Knowledge (Memories & Journals) is stored in principal-isolated SQLite `StateStore` (schema v10) supporting `owner`, `project`, and `workspace` scopes for memories, and chronological journals (`engineering-log`, `decision-record`, `session-reflection`). Operations (`knowledge_create`, `knowledge_read`, `knowledge_update`, `knowledge_delete`, `knowledge_list`, `knowledge_search`, `knowledge_link`, `knowledge_unlink`, `knowledge_graph`) provide CAS concurrency (`expectedGeneration`), RRF hybrid search (FTS5 + vector similarity), and bidirectional graph relations with wikilink extraction.
 - Named deployments come from the repository's `.cloud-harness/deployments.json` and execute inside the

@@ -1069,7 +1069,7 @@ const schemas = {
   }),
   // The prompt bound is measured in bytes, because the bound exists to limit what leaves the process.
   skill_suggest: SkillSuggestInputSchema,
-  hooks_list: z.object({ ...workspace, event: HookEventSchema.optional(), includeInactive: z.boolean().default(false), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
+  hooks_list: z.object({ ...workspace, event: HookEventSchema.optional(), includeInactive: z.boolean().default(false).describe('Accepted for compatibility and currently ignored: every hook is always listed, each with an `active` flag that reports whether lifecycle events would run it.'), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
   hooks_run: z.object({
     ...workspace,
     name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),

@@ -719,7 +719,7 @@ export function renderHooks(hooks = [], manifestSha256 = '') {
   const groups = groupHooksByLifecycle(hooks);
   const lists = groups.map((group) => {
     const rows = group.hooks.length
-      ? `<ul class="record-list">${group.hooks.map((hook) => `<li><strong>${escape(String(hook.name ?? hook.path ?? 'hook'))}</strong> <span class="status${hook.active === false ? '' : ' active'}">${hook.active === false ? 'Inactive' : 'Active'}</span>${hook.description ? `<p>${escape(String(hook.description))}</p>` : ''}</li>`).join('')}</ul>`
+      ? `<ul class="record-list">${group.hooks.map((hook) => `<li><strong>${escape(String(hook.name ?? hook.path ?? 'hook'))}</strong>${hook.active === true ? ' <span class="status active">Active</span>' : hook.active === false ? ' <span class="status">Inactive</span>' : ''}${hook.description ? `<p>${escape(String(hook.description))}</p>` : ''}</li>`).join('')}</ul>`
       : '<p class="empty-note">No hooks run at this stage.</p>';
     return `<section aria-labelledby="hooks-${escape(group.id)}"><h3 id="hooks-${escape(group.id)}">${escape(group.label)}</h3>${rows}</section>`;
   }).join('');

@@ -82,8 +82,8 @@ may change with the checked-out ref.
 ### `hooks_list`
 
 - Required: `workspaceId`.
-- Returns configured hook names without executing them. Re-list after changing
-  refs or pulling repository updates.
+- Returns every configured hook (none runs) with the current `manifestSha256`; re-list after changing refs or pulling updates. `includeInactive` is ignored.
+- `active: true` only when an unexpired activation for one of the hook's events pins that exact digest; after a manifest change, re-activate.
 
 <!-- cloudharness-tool:hooks_run -->
 ### `hooks_run`

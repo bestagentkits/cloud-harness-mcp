@@ -60,6 +60,22 @@ describe('automation and deploy renderers', () => {
     expect(renderHooks([hook({ name: 'format' })], 'nope')).not.toContain('id="hook-run-form"');
   });
 
+  it('badges a hook only with the activation state the runner reported', () => {
+    const active = renderHooks([hook({ name: 'lint', active: true })]);
+    expect(active).toContain('<span class="status active">Active</span>');
+    expect(active).not.toContain('Inactive');
+
+    const inactive = renderHooks([hook({ name: 'lint', active: false })]);
+    expect(inactive).toContain('<span class="status">Inactive</span>');
+    expect(inactive).not.toContain('>Active<');
+
+    // A hook without an `active` field is not claimed to be active or inactive.
+    const unreported = renderHooks([{ name: 'lint', events: ['pre_commit'] }]);
+    expect(unreported).toContain('<strong>lint</strong>');
+    expect(unreported).not.toContain('>Active<');
+    expect(unreported).not.toContain('Inactive');
+  });
+
   it('lists workspace skills with a guarded run form rather than a bare run button', () => {
     const markup = renderWorkspaceSkills([{ name: 'typescript', tier: 'owner', description: 'TS guidance', contentSha256: 'a'.repeat(64) }]);
     expect(markup).toContain('typescript');

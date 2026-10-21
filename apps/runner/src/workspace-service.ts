@@ -82,6 +82,7 @@ import {
   type WorkspaceRepositoryRecord,
   type WorkspaceRepositoryScope
 } from './state-store.js';
+import { withHookActivationState } from './hook-activation-state.js';
 import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { ToolkitCacheManager } from './toolkit-cache-manager.js';
@@ -4801,6 +4802,16 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       this.auditWorkspaceMutation(ownerId, 'hook.activated', record, { events: Array.isArray(validated.events) ? (validated.events as string[]).join(',') : '', manifestSha256: String(validated.manifestSha256) });
       return { ok: true, message: 'Hooks activated', data: { activations: results }, truncated: false };
+    }
+    if (operation === 'hooks_list') {
+      // Every hook is listed so callers can discover what to activate; `active` reports which ones
+      // lifecycle events would run now. The internal lifecycle listing calls the worker directly.
+      const result = withHookActivationState(
+        await this.runWorker(record, 'hooks_list', validated, signal),
+        this.store.getActiveHookActivations(ownerId, record.id)
+      );
+      await this.enforceActiveLimits(record);
+      return result;
     }
     if (operation === 'hooks_deactivate') {
       const events = validated.events as string[] | undefined;
