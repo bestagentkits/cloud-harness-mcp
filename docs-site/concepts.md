@@ -58,7 +58,7 @@ Persistent notes stored in SQLite `StateStore` v5 isolated by `principal_id` acr
 Enforces Optimistic Concurrency Control via `expectedGeneration` (CAS: 0 for create, positive integer for update/delete) and automatic TTL cleanup.
 
 ### Declarative Lifecycle Hooks
-Pre-configured automation commands declared in `.cloud-harness/hooks.json` for named lifecycle events (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`). Automatic lifecycle execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest and runs exclusively inside an unprivileged executor container.
+Pre-configured automation commands declared in `.cloud-harness/hooks.json` for named lifecycle events (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`). Automatic lifecycle execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest and runs exclusively inside an unprivileged executor container. Each hook runs for its own manifest `timeoutMs` (100–300,000 ms, default 60,000) unless a `hooks_run` call names a `timeoutMs` of its own.
 ### Agent Toolkits
 Pre-packaged collections of agent skills (e.g. `mattpocock/skills`, `obra/superpowers`, or custom Git repositories) that can be dynamically mounted or staged into a workspace upon creation. Toolkits are resolved across 4 deterministic precedence tiers (`built-in > owner > workspace > repository`). The default `owner` scope mounts toolkits read-only at `/opt/cloud-harness/owner-skills:ro`, keeping `git status` clean.
 

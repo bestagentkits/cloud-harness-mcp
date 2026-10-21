@@ -649,6 +649,11 @@ describe('contracts', () => {
       name: 'verify',
       expectedManifestSha256: 'd'.repeat(64)
     });
+    // An omitted timeoutMs stays unset so the worker applies the manifest hook's own timeout.
+    expect(TOOL_SCHEMA_BY_NAME.hooks_run.parse({ name: 'verify', expectedManifestSha256: 'd'.repeat(64) })).not.toHaveProperty('timeoutMs');
+    expect(TOOL_SCHEMA_BY_NAME.hooks_run.parse({ name: 'verify', expectedManifestSha256: 'd'.repeat(64), timeoutMs: 300_000 }).timeoutMs).toBe(300_000);
+    expect(() => TOOL_SCHEMA_BY_NAME.hooks_run.parse({ name: 'verify', expectedManifestSha256: 'd'.repeat(64), timeoutMs: 99 })).toThrow();
+    expect(() => TOOL_SCHEMA_BY_NAME.hooks_run.parse({ name: 'verify', expectedManifestSha256: 'd'.repeat(64), timeoutMs: 300_001 })).toThrow();
   });
   it('enforces capability consistency between advertised GitHub operations and exposed github_action tool', () => {
     const githubOps = [

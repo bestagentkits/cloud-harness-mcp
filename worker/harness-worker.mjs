@@ -21,6 +21,9 @@ const gitEnvironment = {
   PAGER: 'cat'
 };
 
+/** The hooks_run bound; the runner allows a hook run that names no timeout this much executor time. */
+const HOOK_MAX_TIMEOUT_MS = 300_000;
+
 function fail(code, message, retryable = false) {
   return { ok: false, message, error: { code, message, retryable }, truncated: false };
 }
@@ -1515,7 +1518,12 @@ const handlers = {
     if (hook.argv.length === 0) return fail('INVALID_INPUT', 'hook has empty argv');
     const program = hook.argv[0];
     const args = hook.argv.slice(1);
-    const timeoutMs = input.timeoutMs || hook.timeoutMs || 60000;
+    // An explicit caller timeout wins, then the manifest's own; the manifest value is repository
+    // controlled, so it is held to the same bounds as the tool input instead of trusted.
+    const timeoutMs = typeof input.timeoutMs === 'number' ? input.timeoutMs : hook.timeoutMs;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > HOOK_MAX_TIMEOUT_MS) {
+      return fail('INVALID_INPUT', `hook timeoutMs must be an integer between 100 and ${HOOK_MAX_TIMEOUT_MS}`);
+    }
     const cwd = await safePath(hook.cwd || '.');
 
     const result = await command(program, args, { cwd, timeoutMs, maxBytes: hook.maxOutputBytes || 65536 });

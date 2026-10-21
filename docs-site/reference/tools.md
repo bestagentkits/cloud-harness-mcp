@@ -1212,7 +1212,7 @@ Execute one named repository-defined hook as a bounded shell command.
 | `event` | `"on_workspace_open"` \| `"post_checkout"` \| `"pre_commit"` \| `"post_commit"` \| `"manual"` | No | — |
 | `expectedSha256` | `string` | No | length: 64–64 |
 | `expectedManifestSha256` | `string` | No | length: 64–64 |
-| `timeoutMs` | `integer` | No | range: 100–300000, default: `60000` |
+| `timeoutMs` | `integer` | No | range: 100–300000 |
 
 ### `memories_list`
 

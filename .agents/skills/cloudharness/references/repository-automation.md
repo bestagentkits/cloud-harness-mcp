@@ -90,7 +90,7 @@ may change with the checked-out ref.
 
 - Required: `workspaceId`, `name` matching 1–120 ASCII letters, digits, `.`,
   `_`, or `-`.
-- `timeoutMs` defaults to 60,000 and permits 100–300,000.
+- `timeoutMs` permits 100–300,000; omit it to use the hook's own, else 60,000.
 - Executes the hook's shell command. It can modify files, Git state, processes,
   or external systems when network access is available.
 <!-- cloudharness-tool:hooks_activate -->
