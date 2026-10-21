@@ -754,6 +754,12 @@ and the failure-injection suite
   `oldText`. Supply `expectedSha256` when a concurrent edit must be detected.
 - `files_write` replaces a file atomically inside the workspace. Its
   `expectedSha256` option requires the target to exist and match.
+- `files_read` returns the `sha256` of the whole file even when `content` is one
+  window of it (`eof: false`). A client that writes back a partial window with
+  that hash passes the `files_write` fence and truncates the file, so it must
+  read to `eof` first or edit with `files_apply_patch`. The dashboard projects
+  `eof`, `bytesReturned` and `totalBytes` and turns whole-file save off for a
+  partial read.
 - `skills_run` behind a privilege grant answers `PRIVILEGE_APPROVAL_REQUIRED` with a
   `grantRequest`. The grant binds the skill, script and bundle digest, plus the source, a
   non-default timeout and any arguments, so the approved retry must resend the identical

@@ -1495,8 +1495,19 @@ export function renderFileList(workspaceId, data, { repository = '' } = {}) {
   return `<nav aria-label="Breadcrumb"><a href="${filesHref(workspaceId, '.', { repository })}">${escape(filesRootLabel(repository))}</a><span class="mono wrap">${escape(path)}</span></nav><h2>Files</h2><ul class="file-list">${items}</ul><form id="folder-form"><label for="folder-path">New folder path</label><input id="folder-path" name="path" required><button type="submit">Create folder</button></form><form id="move-form"><label for="move-source">Source</label><input id="move-source" name="source" required><label for="move-destination">Destination</label><input id="move-destination" name="destination" required><button type="submit">Move</button></form>`;
 }
 
+/**
+ * Whether a `files_read` result holds the whole file. Its `sha256` always covers the whole file, so a
+ * whole-file save of a partial window would pass the conflict fence and cut the file short.
+ */
+export const isWholeFileRead = (data) => data?.eof === true;
+
 export function renderFile(workspaceId, data, { repository = '' } = {}) {
-  return `<nav aria-label="Breadcrumb"><a href="${filesHref(workspaceId, '.', { repository })}">${escape(filesRootLabel(repository))}</a></nav><h2 class="mono wrap">${escape(data.path)}</h2><p>Version <span class="mono wrap">${escape(data.sha256)}</span></p><pre><code>${escape(data.content)}</code></pre><form id="file-editor"><label for="file-content">File content</label><textarea id="file-content" name="content" spellcheck="false">${escape(data.content)}</textarea><input type="hidden" name="sha" value="${escape(data.sha256)}"><button type="submit">Save file</button><button id="delete-file" class="danger" type="button">Delete file</button></form><form id="patch-form"><label for="old-text">Text to replace</label><textarea id="old-text" name="oldText" spellcheck="false"></textarea><label for="new-text">Replacement text</label><textarea id="new-text" name="newText" spellcheck="false"></textarea><button type="submit">Apply text patch</button></form>`;
+  const whole = isWholeFileRead(data);
+  const loaded = Number.isFinite(data.bytesReturned) && Number.isFinite(data.totalBytes)
+    ? `Showing the first ${formatBytes(data.bytesReturned)} of ${formatBytes(data.totalBytes)}.`
+    : 'The runner did not confirm this is the whole file.';
+  const partialNotice = whole ? '' : `<p class="warning" id="file-partial-notice">${escape(loaded)} Saving the whole file is turned off so the rest of it is not lost. Use the text patch below, which edits the full file on the server.</p>`;
+  return `<nav aria-label="Breadcrumb"><a href="${filesHref(workspaceId, '.', { repository })}">${escape(filesRootLabel(repository))}</a></nav><h2 class="mono wrap">${escape(data.path)}</h2><p>Version <span class="mono wrap">${escape(data.sha256)}</span></p>${partialNotice}<pre><code>${escape(data.content)}</code></pre><form id="file-editor"><label for="file-content">File content${whole ? '' : ' (read-only, partial)'}</label><textarea id="file-content" name="content" spellcheck="false"${whole ? '' : ' readonly aria-describedby="file-partial-notice"'}>${escape(data.content)}</textarea><input type="hidden" name="sha" value="${escape(data.sha256)}">${whole ? '<button type="submit">Save file</button>' : ''}<button id="delete-file" class="danger" type="button">Delete file</button></form><form id="patch-form"><label for="old-text">Text to replace</label><textarea id="old-text" name="oldText" spellcheck="false"></textarea><label for="new-text">Replacement text</label><textarea id="new-text" name="newText" spellcheck="false"></textarea><button type="submit">Apply text patch</button></form>`;
 }
 
 const workspaceRepositories = (workspace) => Array.isArray(workspace.repositories) ? workspace.repositories : [];

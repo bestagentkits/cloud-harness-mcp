@@ -395,6 +395,28 @@ describe('repository explorer and scope controls', () => {
     expect(renderFile(workspaceId, { path: 'README.md', content: '', sha256: 'a' }, { repository: 'web' })).toContain('Repository root (web)');
   });
 
+  it('turns whole-file save off when the read holds only part of the file', () => {
+    const whole = renderFile(workspaceId, { path: 'README.md', content: 'hi', sha256: 'a', bytesReturned: 2, totalBytes: 2, eof: true });
+    expect(whole).toContain('<button type="submit">Save file</button>');
+    expect(whole).not.toContain('readonly');
+    expect(whole).not.toContain('file-partial-notice');
+    for (const data of [
+      { path: 'big.txt', content: 'x', sha256: 'a', bytesReturned: 65_536, totalBytes: 100_000, eof: false },
+      // A projection without `eof` (an older runner) is treated as partial: refusing a save is safe, truncating is not.
+      { path: 'big.txt', content: 'x', sha256: 'a' }
+    ]) {
+      const partial = renderFile(workspaceId, data);
+      expect(partial).not.toContain('Save file');
+      expect(partial).toContain('readonly aria-describedby="file-partial-notice"');
+      expect(partial).toContain('id="file-partial-notice"');
+      expect(partial).toContain('id="patch-form"');
+      expect(partial).toContain('id="delete-file"');
+    }
+    expect(renderFile(workspaceId, { path: 'big.txt', content: 'x', sha256: 'a', bytesReturned: 65_536, totalBytes: 100_000, eof: false }))
+      .toContain(`Showing the first ${(65_536).toLocaleString()} bytes of ${(100_000).toLocaleString()} bytes.`);
+    expect(renderFile(workspaceId, { path: 'big.txt', content: 'x', sha256: 'a' })).toContain('The runner did not confirm this is the whole file.');
+  });
+
   it('keeps single-repository tab, file and terminal markup byte-identical', () => {
     const tabs = renderWorkspaceTabs(workspaceId, 'git');
     expect(tabs).not.toContain('repository=');

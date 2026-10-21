@@ -573,7 +573,9 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
     }) : [];
     return { path: data.path, entries };
   }
-  if (operation === 'files_read') return pick(data, ['path', 'content', 'sha256', 'bytes']);
+  // `sha256` covers the whole file while `content` is one window of it, so `eof` and `totalBytes`
+  // must reach the editor: without them a partial read looks like the full file and a save truncates it.
+  if (operation === 'files_read') return pick(data, ['path', 'content', 'sha256', 'bytesReturned', 'totalBytes', 'eof']);
   if (operation === 'files_write') return pick(data, ['path', 'bytes', 'sha256']);
   if (operation === 'files_apply_patch') return pick(data, ['path', 'sha256']);
   if (operation === 'files_delete') return pick(data, ['path', 'type']);
