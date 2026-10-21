@@ -1,3 +1,18 @@
+# [0.66.0-beta.33](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.32...v0.66.0-beta.33) (2026-10-21)
+
+
+### Bug Fixes
+
+* **dashboard:** check every input pattern and keep a skill run result honest ([6566ad0](https://github.com/bestagentkits/cloud-harness-mcp/commit/6566ad044211dcbf07c56ecf9e15a909481d803a)), closes [#514](https://github.com/bestagentkits/cloud-harness-mcp/issues/514) [#515](https://github.com/bestagentkits/cloud-harness-mcp/issues/515)
+* **dashboard:** escape the hyphen in input patterns so browsers enforce them ([a59f4f3](https://github.com/bestagentkits/cloud-harness-mcp/commit/a59f4f3ca5867341b4036f8bb3a5fa35b3377893)), closes [#514](https://github.com/bestagentkits/cloud-harness-mcp/issues/514)
+* **dashboard:** name a missing script or stale approval and reject a declined skill-run grant ([ad5c45f](https://github.com/bestagentkits/cloud-harness-mcp/commit/ad5c45fcab5e903ed82bfd4cbd51be78414f87bd)), closes [#511](https://github.com/bestagentkits/cloud-harness-mcp/issues/511)
+
+
+### Features
+
+* **dashboard:** approve and run a workspace skill script from the cockpit ([95e7850](https://github.com/bestagentkits/cloud-harness-mcp/commit/95e785067dcdce091b8bd588bfd570cfb5389359)), closes [#511](https://github.com/bestagentkits/cloud-harness-mcp/issues/511)
+* **dashboard:** show a skill run's exit code and bounded output, failed or not ([34ed597](https://github.com/bestagentkits/cloud-harness-mcp/commit/34ed597ba448e50be060b66cb37502e9dc830d56)), closes [#515](https://github.com/bestagentkits/cloud-harness-mcp/issues/515)
+
 # [0.66.0-beta.32](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.31...v0.66.0-beta.32) (2026-10-21)
 
 
