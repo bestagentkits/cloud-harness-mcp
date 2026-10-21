@@ -388,16 +388,16 @@ function loadEmulator(documentRef) {
  * `dispose` stops loops and observers without closing the PTY, so leaving the tab keeps the shell running
  * for a later re-attach (until its idle expiry).
  */
-export function mountTerminalPane({ root, workspaceId, api, announce = () => {}, onError = () => {}, terminals = [] }) {
+export function mountTerminalPane({ root, workspaceId, api, announce = () => {}, onError = () => {}, terminals = [], idPrefix = '' }) {
   const documentRef = root.ownerDocument;
   const view = documentRef.defaultView;
   const client = createTerminalClient(api, workspaceId);
-  const surface = root.querySelector('#terminal-surface');
-  const statePill = root.querySelector('#terminal-state');
-  const detail = root.querySelector('#terminal-detail');
-  const closeButton = root.querySelector('#terminal-close');
-  const newButton = root.querySelector('#terminal-new');
-  const offers = root.querySelector('#terminal-reattach');
+  const surface = root.querySelector('#' + idPrefix + 'terminal-surface');
+  const statePill = root.querySelector('#' + idPrefix + 'terminal-state');
+  const detail = root.querySelector('#' + idPrefix + 'terminal-detail');
+  const closeButton = root.querySelector('#' + idPrefix + 'terminal-close');
+  const newButton = root.querySelector('#' + idPrefix + 'terminal-new');
+  const offers = root.querySelector('#' + idPrefix + 'terminal-reattach');
   const reducedMotion = view.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
   const colorScheme = view.matchMedia?.('(prefers-color-scheme: light)');
   const cleanups = [];
@@ -450,7 +450,7 @@ export function mountTerminalPane({ root, workspaceId, api, announce = () => {},
     const observer = new view.ResizeObserver(() => {
       view.clearTimeout(resizeTimer);
       resizeTimer = view.setTimeout(() => {
-        if (!term || disposed || surface.hidden) return;
+        if (!term || disposed || surface.hidden || surface.getClientRects?.().length === 0) return;
         fit.fit();
         void session?.resize(term.cols, term.rows);
       }, RESIZE_DEBOUNCE_MS);

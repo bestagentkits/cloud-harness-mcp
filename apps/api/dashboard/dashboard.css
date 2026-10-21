@@ -1352,3 +1352,34 @@ dialog .stack-form { margin-block: 0; max-width: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Terminal dock lives outside the page content replaced by the router. */
+.global-terminal-dock {
+  position: fixed; z-index: 90; inset: auto var(--space-3) var(--space-3);
+  display: flex; flex-direction: column; height: min(32rem, 60dvh);
+  min-height: 15rem; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay); overflow: hidden;
+}
+.global-terminal-dock[hidden] { display: none; }
+.global-terminal-dock.is-expanded { inset: var(--space-3); height: auto; }
+.global-terminal-header, .global-terminal-footer, .global-terminal-tabs {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-block-end: 1px solid var(--line); flex-wrap: wrap;
+}
+.global-terminal-header > label { color: var(--ink-muted); font-size: var(--text-12); }
+.global-terminal-header > select { min-width: 10rem; max-width: 21rem; flex: 1 1 12rem; }
+.global-terminal-header > strong { margin-inline-end: auto; }
+.global-terminal-tabs { overflow-x: auto; flex-wrap: nowrap; }
+.global-terminal-tabs button[aria-selected="true"] { border-color: var(--accent-line); color: var(--accent-strong); }
+.global-terminal-panes { flex: 1; min-height: 0; overflow: auto; padding: var(--space-2); }
+.global-terminal-panes > .global-terminal-workspace[hidden] { display: none; }
+.global-terminal-panes .terminal-panel { padding: var(--space-2); }
+.global-terminal-panes .terminal-surface { height: clamp(10rem, 30dvh, 24rem); }
+.global-terminal-footer { border-block-start: 1px solid var(--line); border-block-end: 0; justify-content: space-between; }
+@media (max-width: 47.9375rem) {
+  .global-terminal-dock { inset-inline: var(--space-1); bottom: var(--space-1); height: 75dvh; }
+  .global-terminal-header > strong { width: 100%; }
+  .global-terminal-header > select { min-width: 0; }
+}
