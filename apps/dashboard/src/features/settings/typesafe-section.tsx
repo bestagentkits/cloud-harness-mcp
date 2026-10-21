@@ -4,7 +4,7 @@ import { DetailList } from '@/components/data/detail-list';
 import { Section } from '@/components/data/section';
 import { ClassicDashboardLink } from '@/components/feedback/classic-dashboard-link';
 import { PageSkeleton } from '@/components/feedback/page-skeleton';
-import { mutationErrorMessage } from '@/lib/bff-mutation';
+import { mutationErrorText } from '@/lib/bff-mutation';
 import type { BffEnvelope } from '@/lib/bff-query';
 import { Callout } from './settings-feedback';
 import { integrationCredentialsRead, typesafeStatusRead } from './settings-queries';
@@ -27,7 +27,7 @@ export function TypesafeSection() {
   if (status.isPending || credentials.isPending) {
     content = <PageSkeleton label="Loading TypeSafe status" />;
   } else if (status.isError && status.data === undefined) {
-    content = <Callout><p role="alert">TypeSafe status is unavailable: {mutationErrorMessage(status.error)}</p></Callout>;
+    content = <Callout><p role="alert">TypeSafe status is unavailable: {mutationErrorText(status.error)}</p></Callout>;
   } else {
     const facts = readTypesafeStatus(body(status.data));
     const credential = credentials.data === undefined ? undefined : readTypesafeCredential(body(credentials.data));
@@ -35,7 +35,7 @@ export function TypesafeSection() {
     content = (
       <>
         {credentials.isError && credentials.data === undefined
-          ? <Callout><p role="alert">TypeSafe key storage is unavailable: {mutationErrorMessage(credentials.error)}</p></Callout>
+          ? <Callout><p role="alert">TypeSafe key storage is unavailable: {mutationErrorText(credentials.error)}</p></Callout>
           : null}
         <DetailList items={[
           { label: 'API key', value: configured ? 'Configured' : 'Not configured' },

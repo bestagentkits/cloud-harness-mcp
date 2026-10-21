@@ -58,7 +58,7 @@ export function SkillsLibrary({ body, filters, onFilters, onOpenSkill, onCreate,
     invalidate: [SKILLS_KEY],
     refresh: [SKILLS_KEY],
     onConflict,
-    successTitle: (results, action) => {
+    successToast: (results, action) => {
       const done = results.filter((result) => result.ok === true).length;
       return done === results.length ? `${done} skill${done === 1 ? '' : 's'} ${BULK_PAST[action]}` : `${done} of ${results.length} skills ${BULK_PAST[action]}; the rest stay selected`;
     },

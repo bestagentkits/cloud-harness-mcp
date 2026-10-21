@@ -36,7 +36,7 @@ export function OpenSessionDialog({ open, onOpenChange, workspaceId, onOpened }:
   const { isDirty, errors } = form.formState;
   const openSession = useBffMutation<Values, unknown>({
     mutationFn: (values) => apiClient.request(bffPath('workspaces', workspaceId, 'sessions'), { method: 'POST', body: { ...values, idempotencyKey: idempotencyKey() } }),
-    successTitle: 'Session opened.',
+    successToast: 'Session opened.',
     errorTitle: 'The session was not opened',
     onSuccess: () => { renewKey(); keyedFor.current = null; onOpened(); }
   });

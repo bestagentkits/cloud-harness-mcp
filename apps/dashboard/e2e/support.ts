@@ -24,6 +24,34 @@ export function records(count: number): { data: { items: Array<{ id: string }> }
   return { data: { items: Array.from({ length: count }, (_, index) => ({ id: `item-${index}` })) } };
 }
 
+type BuiltAsset = { status: number; headers: Record<string, string>; body: Buffer };
+const builtAssets = new Map<string, BuiltAsset>();
+
+/**
+ * Replays content-hashed `/dashboard/assets/*` files after their first fetch from the real
+ * API, as a warm browser cache would (the API serves them `immutable`, but every test opens
+ * a fresh context). The API caps all pre-auth traffic at 1,000 requests a minute, so without
+ * this the stubbed suites alone exhaust the window and a later real-API test gets a 429
+ * page. Documents, `preferences-boot.js` and every API call still reach the server.
+ */
+export async function replayBuiltAssets(page: Page): Promise<void> {
+  await page.route('**/dashboard/assets/**', async (route) => {
+    const url = route.request().url();
+    let asset = builtAssets.get(url);
+    if (!asset) {
+      const response = await route.fetch();
+      if (!response.ok()) return route.fulfill({ response });
+      // The body comes back decoded, so its transfer headers no longer apply.
+      const headers = response.headers();
+      delete headers['content-encoding'];
+      delete headers['content-length'];
+      asset = { status: response.status(), headers, body: await response.body() };
+      builtAssets.set(url, asset);
+    }
+    return route.fulfill(asset);
+  });
+}
+
 /**
  * Stubs every BFF read the runner would answer. `handlers` maps an API path (without the
  * `/dashboard/api/v1` prefix or query) to its answer; anything else is an empty list.
@@ -31,6 +59,7 @@ export function records(count: number): { data: { items: Array<{ id: string }> }
  */
 export async function stubReads(page: Page, handlers: Record<string, ReadHandler> = {}): Promise<string[]> {
   const seen: string[] = [];
+  await replayBuiltAssets(page);
   await page.route(`**${API}/**`, async (route) => {
     const path = new URL(route.request().url()).pathname.slice(API.length);
     if (SERVED_BY_API.has(path)) return route.fallback();

@@ -50,7 +50,7 @@ function CreateForm({ open, onOpenChange }: { open: boolean; onOpenChange: (open
     }),
     invalidate: [SKILLS_KEY],
     refresh: [],
-    successTitle: (result) => savedTitle('Skill created.', result),
+    successToast: (result) => savedTitle('Skill created.', result),
     errorTitle: 'The skill was not created'
   });
 
@@ -110,7 +110,7 @@ function RevisionForm({ open, onOpenChange, skill, onConflict }: { open: boolean
     invalidate: keys,
     refresh: keys,
     onConflict,
-    successTitle: (result) => savedTitle('Revision added.', result),
+    successToast: (result) => savedTitle('Revision added.', result),
     errorTitle: 'The revision was not saved'
   });
 

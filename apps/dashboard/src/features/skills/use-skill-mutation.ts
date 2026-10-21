@@ -18,7 +18,7 @@ export function skillDetailKeys(skillId: string): QueryKey[] {
  * again, and `onConflict` raises the page's "This changed elsewhere" notice. The request is
  * never retried; `useBffMutation`'s toast still reports the failure.
  */
-export function useSkillMutation<TVariables, TResult>(options: BffMutationOptions<TVariables, TResult> & {
+export function useSkillMutation<TVariables = void, TResult = unknown>(options: BffMutationOptions<TVariables, TResult> & {
   refresh: QueryKey[];
   onConflict?: ((error: ConflictError) => void) | undefined;
 }) {

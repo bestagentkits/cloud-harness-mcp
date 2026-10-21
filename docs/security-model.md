@@ -732,6 +732,161 @@ Access; it grants no authority and carries no data, so the impact is low and
 `?ui=legacy` reverses it. The assertions live in
 [`apps/api/test/dashboard-react-shell.test.ts`](../apps/api/test/dashboard-react-shell.test.ts).
 
+Secret handling in the React pages follows the same write-only rule as the
+legacy shell, with these client-side guarantees:
+
+- **Write-only fields live only in the open form.** Secret values and provider
+  keys are typed into masked inputs and held only in that dialog's in-memory
+  form state (the model profile wizard keeps its key in an uncontrolled input
+  outside wizard state). Secret value and key fields are emptied when the
+  request is sent, and every field resets when the dialog closes; values never
+  reach drafts, the query cache, browser storage or logs, and a failed save
+  asks for the value again. MCP server headers differ by mode: a literal header
+  value is not a secret, so the BFF returns it and the edit dialog prefills it
+  (masked); a secret-reference header names a global secret, whose value is
+  write-only and never sent to the page.
+- **The one-time API key reveal is component state only.** The `POST /api-keys`
+  response is not cached, and the plaintext is dropped on dismiss, on any
+  navigation (router or link click), on `pagehide`, when the session ends, and
+  on unmount; a reveal is refused once the session has ended
+  ([`apps/dashboard/src/lib/one-time-reveal.ts`](../apps/dashboard/src/lib/one-time-reveal.ts)).
+- **Wizard restore is allowlisted and session-scoped.** A multi-step wizard may
+  keep its step and non-secret choices in `sessionStorage` (prefix
+  `ch-dashboard-restore:`) so a reload does not lose progress. Each wizard
+  rebuilds that entry from an allowlist on both write and read, so an injected
+  key is neither restored nor written back, and the entry is removed on cancel
+  and save ([`apps/dashboard/src/lib/restorable-state.ts`](../apps/dashboard/src/lib/restorable-state.ts),
+  `parseStoredWizard` in
+  [`apps/dashboard/src/features/models/models-wizard-state.ts`](../apps/dashboard/src/features/models/models-wizard-state.ts)).
+  The secret fields themselves are never part of a draft (ADR 0005), and a
+  custom upstream URL is dropped from it when it does not parse or carries user
+  info, a query or a fragment, where a pasted credential would sit. Dialogs
+  that take secret values have no draft at all.
+- **Writes use the unchanged BFF boundary.** Every mutation sends the session
+  cookie and the in-memory CSRF token; a `session_ended` 401 bootstraps a new
+  session and retries once, anything else surfaces the sign-in path. Fences
+  (`expectedGeneration`, plan digests) are sent exactly as the legacy shell
+  sends them, and a 409 reloads the latest version instead of retrying.
+
+[`apps/dashboard/e2e/bff-write-security.spec.ts`](../apps/dashboard/e2e/bff-write-security.spec.ts)
+proves the CSRF, Origin and expired-session paths against the real in-process
+BFF, and
+[`one-time-reveal.spec.ts`](../apps/dashboard/e2e/one-time-reveal.spec.ts) and
+[`write-paths.spec.ts`](../apps/dashboard/e2e/write-paths.spec.ts) check that
+no secret reaches the DOM, form values, Web Storage, IndexedDB, Cache Storage,
+cookies, the console or any read response. That the TanStack Query cache never
+holds a one-time reveal is asserted at unit level
+([`one-time-reveal.test.tsx`](../apps/dashboard/src/lib/one-time-reveal.test.tsx)),
+because the in-memory cache is not reachable from the page.
+
+### Dashboard path ids are authoritative
+
+A Dashboard BFF mutation acts on the resource its URL names. When a JSON body
+repeats a path id (`workspaceId`, `environmentId`, `name`, `skillId`, and so
+on) with a different value, the request is refused with
+`400 path_id_mismatch` before the runner is called. A body that repeats the
+same value is accepted, and the path value is always the one forwarded. This
+keeps page actions built by the Dewee agent, and any other client, from aiming
+a route at a different resource than the one it called. The owner is
+[`apps/api/src/dashboard-path-ids.ts`](../apps/api/src/dashboard-path-ids.ts).
+The per-route regression table is
+[`apps/api/test/dashboard-path-id-authority.test.ts`](../apps/api/test/dashboard-path-id-authority.test.ts).
+
+### Dashboard webchat (Dewee)
+
+The Dashboard webchat ([ADR 0005](adr/0005-dashboard-react-rewrite.md)) talks
+to a Dewee agent through a BFF under `/dashboard/api/v1/dewee/`
+([`apps/api/src/dashboard-dewee-router.ts`](../apps/api/src/dashboard-dewee-router.ts)).
+
+**Request boundary.** The BFF runs behind the same boundary as every
+Dashboard BFF route:
+
+- the Access assertion, the dashboard principal, Host and Origin checks, the
+  CSRF header on POST, and the shared per-principal limit;
+- its own tighter per-operator budget: sessions, chat turns and history reads
+  per minute, plus at most two concurrent streams.
+
+The widget's "visitor" is the signed-in operator. The visitor id is an HMAC of
+the Access issuer and subject under `DEWEE_WEBCHAT_SECRET`, so a visitor token
+opens only that operator's own conversations. A token minted for one operator
+is refused for another.
+
+The agent is fixed by `DEWEE_AGENT_ID`. The browser can neither switch agents
+nor bring its own gateway credentials.
+
+**What leaves for the gateway and its LLM provider.** Each chat turn sends:
+
+- the operator's message;
+- the page-action manifest the Dashboard registered (names, descriptions,
+  JSON Schemas, sensitivity);
+- the page context, as a `[[dewee-page v1]]` block that the server prepends to
+  the message.
+
+Page context is meant to carry only non-secret summary state (route, filters,
+selection, counts, statuses). The server still enforces the size limits and
+strips secret-shaped values before forwarding:
+
+- **Size limits:** 32 actions and 16 KiB per manifest, 4 KiB of page context.
+  Violations get `400 invalid_actions`, `413 actions_too_large` or
+  `413 context_too_large`.
+- **Stripping:** fields with credential-like names (including bare `key` and
+  `value`), plus bearer tokens, JWTs, provider and GitHub tokens, managed API
+  keys, private keys, URL credentials, and long random-looking hex or base64
+  strings.
+
+Public resource ids (`ws_…`, `agent_…`, `art_…` and the other id prefixes the
+sanitizer lists) are kept, in fields and inside routes, because page context
+exists to carry them. Credential-bearing prefixes such as gateway leases are
+not on that list. A field named `key` or `value` is always redacted, so
+page-context fields need a more specific name, such as `filterValue`.
+
+Stripping is a backstop, not the control. Pattern matching cannot recognise
+every secret, so the Dashboard's page-context registry must never put a secret
+value into page context in the first place.
+
+Gateway history is per operator and per conversation, and is stored by the
+Dewee gateway, not by Cloud Harness.
+
+**Token custody.**
+
+- `DEWEE_GATEWAY_TOKEN` and `DEWEE_WEBCHAT_SECRET` live only in the `api`
+  service. Compose blanks them on the runner, and the compose boundary check
+  asserts that no other service names a `DEWEE_` setting.
+- The token is sent only in the gateway WebSocket `connect` frame. It never
+  reaches the browser, the bundle, a response, or a log line.
+- Gateway and run errors reach the browser as fixed messages, so a token or
+  stack trace echoed by the gateway is not forwarded.
+- The BFF logs only a route name and a short error code. Message bodies, page
+  context, tool payloads and tokens are never logged.
+
+**Prompt injection.** Anything the agent reads is untrusted and can carry
+instructions: page context, tool results, and whatever it reads over MCP (file
+contents, terminal output, diffs, logs).
+
+- Page actions the agent proposes run in the browser through the typed action
+  registry, and mutating or destructive actions need the operator's click.
+- Path ids are authoritative (see above), so an action cannot aim a route at
+  another resource.
+- These controls do not cover the agent's own MCP calls.
+
+**Owner opt-in: the agent's MCP key.** The Dewee agent reaches Cloud Harness
+MCP through a managed API key with full static-client authority (see
+[ADR 0005](adr/0005-dashboard-react-rewrite.md)). Its MCP actions do not pass
+through the Dashboard confirmation step. Revoking or rotating that key on the
+API Keys page is the control for the agent's MCP authority. Disabling the
+webchat does not revoke it.
+
+**Kill switch.** Unset `DEWEE_GATEWAY_URL`, `DEWEE_GATEWAY_TOKEN` and
+`DEWEE_WEBCHAT_SECRET`, then recreate the `api` container. Every webchat route
+then answers `503 dewee_disabled`, and nothing reaches the gateway. Rotating
+`DEWEE_WEBCHAT_SECRET` invalidates every outstanding visitor token. It also
+changes every visitor id, because each id is an HMAC under that secret. So
+every operator loses access to their earlier webchat conversations: the
+gateway keeps them under the old ids, but nothing can open them.
+
+The assertions live in
+[`apps/api/test/dashboard-dewee-router.test.ts`](../apps/api/test/dashboard-dewee-router.test.ts).
+
 ### Managed toolbox packages
 
 Managed packages let an agent keep a CLI tool across workspaces and redeploys

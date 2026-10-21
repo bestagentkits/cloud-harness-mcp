@@ -9,7 +9,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { NativeSelect } from '@/components/ui/select';
-import { mutationErrorMessage } from '@/lib/bff-mutation';
+import { mutationErrorText } from '@/lib/bff-mutation';
 import type { BffEnvelope } from '@/lib/bff-query';
 import { formatDateTime } from '@/lib/format';
 import {
@@ -67,7 +67,7 @@ function OAuthForm({ view, onStatus, reload }: { view: OAuthView; onStatus: (mes
       await write.mutateAsync(body);
       onStatus(savedMessage);
     } catch (error) {
-      onStatus(await reloadOnConflict(error) ? CONFLICT_MESSAGE : mutationErrorMessage(error));
+      onStatus(await reloadOnConflict(error) ? CONFLICT_MESSAGE : mutationErrorText(error));
       throw error;
     }
   }
@@ -141,7 +141,7 @@ export function OAuthSection() {
     setStatus('Reloading…');
     const result = await query.refetch();
     if (result.isError) {
-      const message = mutationErrorMessage(result.error);
+      const message = mutationErrorText(result.error);
       setStatus(message);
       throw new Error(message);
     }

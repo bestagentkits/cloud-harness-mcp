@@ -44,7 +44,7 @@ export function SkillsPage({ search, onSearch }: { search: SkillsSearch; onSearc
   const [importJobId, setImportJobId] = useState<string | undefined>(undefined);
   const [conflict, setConflict] = useState<ConflictError | undefined>(undefined);
   const onConflict = useCallback((error: ConflictError) => setConflict(error), []);
-  usePagePrimaryAction('skills', { run: () => setUploading(true) });
+  usePagePrimaryAction('skills', { onSelect: useCallback(() => setUploading(true), []) });
 
   const tab = search.tab ?? 'library';
   const body = read.data as SkillsBody | undefined;

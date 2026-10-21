@@ -19,7 +19,7 @@ export function useConflictNotice() {
  * retrying) and `onConflict` lets the page raise its alert. The request itself is never
  * retried, and the toast from `useBffMutation` still reports the failure.
  */
-export function useFencedMutation<TVariables, TResult>(options: BffMutationOptions<TVariables, TResult> & {
+export function useFencedMutation<TVariables = void, TResult = unknown>(options: BffMutationOptions<TVariables, TResult> & {
   /** Reads to refetch after a conflict; usually the same keys a success invalidates. */
   refresh: QueryKey[];
   onConflict?: (error: ConflictError) => void;

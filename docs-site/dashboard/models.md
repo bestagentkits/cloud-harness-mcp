@@ -317,6 +317,14 @@ different provider clears the chosen model and any price that came with it. A fa
 keeps every field so you can retry, and the dialog stays open while a
 key, connection check, or save is in flight.
 
+In the [new dashboard](index.md#new-dashboard-preview), reloading the tab reopens the wizard
+at the same step with your non-secret choices (provider, saved key, model, names, prices,
+limits). An API key you typed but had not sent is never kept: paste it again. A custom
+upstream URL is kept only as a plain endpoint; one with a user name, password, query or
+fragment is dropped from the draft. Cancelling or
+saving forgets the draft. If someone else changed the profile while you edited it, the save
+is refused, the latest version is loaded, and you review it before saving again.
+
 1. **Provider:** pick the provider. The list and each provider's API modes come from
    `GET /api/v1/model-providers`.
 2. **Connect:** choose a saved key for that provider or add a new one. A new key is sent

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
 import { requireArchiveMediaType, SKILL_ARCHIVE_MEDIA_TYPES, SKILL_ARCHIVE_PATH } from './dashboard-security.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
+import { withPathIds } from './dashboard-path-ids.js';
 import { validateGatewayEndpoint } from './mcp-gateway/url-policy.js';
 import type { McpGatewayService } from './mcp-gateway/service.js';
 
@@ -32,26 +33,26 @@ export function registerDashboardControlRoutes(
   router.patch('/api/v1/environments/:environmentId', endpoint('environment_update', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), ...createName.omit({ expectedGeneration: true }).extend({ expectedGeneration: z.number().int().positive() }).parse(request.body) })));
   router.delete('/api/v1/environments/:environmentId', endpoint('environment_delete', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), ...generation.parse(request.body) })));
   router.get('/api/v1/environments/:environmentId/secrets', endpoint('secret_list', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId) })));
-  router.post('/api/v1/environments/:environmentId/secrets', endpoint('secret_create', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
-  router.post('/api/v1/environments/:environmentId/secrets/bulk', endpoint('secret_bulk_apply', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
-  router.put('/api/v1/environments/:environmentId/secrets/:name', endpoint('secret_rotate', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), name: request.params.name, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
-  router.patch('/api/v1/environments/:environmentId/secrets/:name', endpoint('secret_update', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), name: request.params.name, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
-  router.delete('/api/v1/environments/:environmentId/secrets/:name', endpoint('secret_delete', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), name: request.params.name, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.post('/api/v1/environments/:environmentId/secrets', endpoint('secret_create', (request) => withPathIds(request.body, { environmentId: internalId('env').parse(request.params.environmentId) })));
+  router.post('/api/v1/environments/:environmentId/secrets/bulk', endpoint('secret_bulk_apply', (request) => withPathIds(request.body, { environmentId: internalId('env').parse(request.params.environmentId) })));
+  router.put('/api/v1/environments/:environmentId/secrets/:name', endpoint('secret_rotate', (request) => withPathIds(request.body, { environmentId: internalId('env').parse(request.params.environmentId), name: request.params.name })));
+  router.patch('/api/v1/environments/:environmentId/secrets/:name', endpoint('secret_update', (request) => withPathIds(request.body, { environmentId: internalId('env').parse(request.params.environmentId), name: request.params.name })));
+  router.delete('/api/v1/environments/:environmentId/secrets/:name', endpoint('secret_delete', (request) => withPathIds(request.body, { environmentId: internalId('env').parse(request.params.environmentId), name: request.params.name })));
   router.get('/api/v1/secrets', endpoint('global_secret_list', () => ({})));
   router.post('/api/v1/secrets', endpoint('global_secret_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   router.post('/api/v1/secrets/bulk', endpoint('global_secret_bulk_apply', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
-  router.put('/api/v1/secrets/:name', endpoint('global_secret_rotate', (request) => ({ name: request.params.name, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
-  router.patch('/api/v1/secrets/:name', endpoint('global_secret_update', (request) => ({ name: request.params.name, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
-  router.delete('/api/v1/secrets/:name', endpoint('global_secret_delete', (request) => ({ name: request.params.name, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.put('/api/v1/secrets/:name', endpoint('global_secret_rotate', (request) => withPathIds(request.body, { name: request.params.name })));
+  router.patch('/api/v1/secrets/:name', endpoint('global_secret_update', (request) => withPathIds(request.body, { name: request.params.name })));
+  router.delete('/api/v1/secrets/:name', endpoint('global_secret_delete', (request) => withPathIds(request.body, { name: request.params.name })));
   router.get('/api/v1/provider-credentials', endpoint('model_credential_list', () => ({})));
   router.post('/api/v1/provider-credentials', endpoint('model_credential_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
-  router.put('/api/v1/provider-credentials/:id/rotate', endpoint('model_credential_rotate', (request) => ({ ...(request.body && typeof request.body === 'object' ? request.body : {}), credentialId: internalId('cred').parse(request.params.id) })));
+  router.put('/api/v1/provider-credentials/:id/rotate', endpoint('model_credential_rotate', (request) => withPathIds(request.body, { credentialId: internalId('cred').parse(request.params.id) })));
   router.delete('/api/v1/provider-credentials/:id', endpoint('model_credential_delete', (request) => ({ credentialId: internalId('cred').parse(request.params.id), ...generation.parse(request.body) })));
   // Integration keys are write-only: the value travels inbound to the runner's keyring and every
   // response is metadata mapped through the strict credential key allowlist.
   router.get('/api/v1/integration-credentials', endpoint('integration_credential_list', () => ({})));
   router.post('/api/v1/integration-credentials', endpoint('integration_credential_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
-  router.put('/api/v1/integration-credentials/:id/rotate', endpoint('integration_credential_rotate', (request) => ({ ...(request.body && typeof request.body === 'object' ? request.body : {}), credentialId: internalId('icr').parse(request.params.id) })));
+  router.put('/api/v1/integration-credentials/:id/rotate', endpoint('integration_credential_rotate', (request) => withPathIds(request.body, { credentialId: internalId('icr').parse(request.params.id) })));
   router.delete('/api/v1/integration-credentials/:id', endpoint('integration_credential_delete', (request) => ({ credentialId: internalId('icr').parse(request.params.id), ...generation.parse(request.body) })));
   router.get('/api/v1/typesafe/status', endpoint('typesafe_status', () => ({})));
   router.get('/api/v1/agent-model-profiles', endpoint('model_profile_list', () => ({})));
@@ -83,9 +84,8 @@ export function registerDashboardControlRoutes(
   // Without these two the import wizard had nothing to call: the job reader existed while nothing could
   // create a job or stop one, which is why the dialog's submit had no route to reach.
   router.post('/api/v1/skill-imports', endpoint('skill_import_start', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
-  router.post('/api/v1/skill-imports/:jobId/cancel', endpoint('skill_import_cancel', (request) => ({
-    jobId: internalId('skjob').parse(request.params.jobId),
-    ...(request.body && typeof request.body === 'object' ? request.body : {})
+  router.post('/api/v1/skill-imports/:jobId/cancel', endpoint('skill_import_cancel', (request) => withPathIds(request.body, {
+    jobId: internalId('skjob').parse(request.params.jobId)
   })));
   // A skills archive is a binary upload, so it cannot go through the JSON parser the rest of this
   // router uses: this route takes its own raw body under an explicit limit rather than inheriting a
@@ -96,31 +96,29 @@ export function registerDashboardControlRoutes(
     archiveBase64: Buffer.isBuffer(request.body) ? request.body.toString('base64') : '',
     expectedGeneration: 0
   })));
-  router.patch('/api/v1/skills/:skillId', endpoint('skill_update', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
-  router.post('/api/v1/skills/:skillId/archive', endpoint('skill_archive', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
-  router.post('/api/v1/skills/:skillId/restore', endpoint('skill_restore', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.patch('/api/v1/skills/:skillId', endpoint('skill_update', (request) => withPathIds(request.body, { skillId: internalId('sk').parse(request.params.skillId) })));
+  router.post('/api/v1/skills/:skillId/archive', endpoint('skill_archive', (request) => withPathIds(request.body, { skillId: internalId('sk').parse(request.params.skillId) })));
+  router.post('/api/v1/skills/:skillId/restore', endpoint('skill_restore', (request) => withPathIds(request.body, { skillId: internalId('sk').parse(request.params.skillId) })));
   router.post('/api/v1/skill-sets', endpoint('skill_set_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   router.post('/api/v1/skills/bulk', endpoint('skill_bulk', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   router.post('/api/v1/skills', endpoint('skill_create_custom', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   // Editing instructions adds a revision instead of rewriting the last one, so a launch that pinned the
   // previous revision keeps resolving to the bytes it was verified against.
-  router.post('/api/v1/skills/:skillId/revisions', endpoint('skill_revision_create', (request) => ({
-    skillId: internalId('sk').parse(request.params.skillId),
-    ...(request.body && typeof request.body === 'object' ? request.body : {})
+  router.post('/api/v1/skills/:skillId/revisions', endpoint('skill_revision_create', (request) => withPathIds(request.body, {
+    skillId: internalId('sk').parse(request.params.skillId)
   })));
   // A fork starts a new source from the bytes a revision pinned, so it names both the source and the
   // revision rather than the source alone.
-  router.post('/api/v1/skills/:skillId/revisions/:revisionId/fork', endpoint('skill_revision_fork', (request) => ({
+  router.post('/api/v1/skills/:skillId/revisions/:revisionId/fork', endpoint('skill_revision_fork', (request) => withPathIds(request.body, {
     skillId: internalId('sk').parse(request.params.skillId),
-    revisionId: internalId('skrev').parse(request.params.revisionId),
-    ...(request.body && typeof request.body === 'object' ? request.body : {})
+    revisionId: internalId('skrev').parse(request.params.revisionId)
   })));
-  router.patch('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_update', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.patch('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_update', (request) => withPathIds(request.body, { skillSetId: internalId('skset').parse(request.params.skillSetId) })));
   router.delete('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_delete', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId), ...generation.parse(request.body) })));
   router.post('/api/v1/agent-model-profiles', endpoint('model_profile_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   // A dry run of a create or update body; registered before any POST /:id route so "validate" is never read as an id.
   router.post('/api/v1/agent-model-profiles/validate', endpoint('model_profile_validate', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
-  router.patch('/api/v1/agent-model-profiles/:id', endpoint('model_profile_update', (request) => ({ profileId: request.params.id, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.patch('/api/v1/agent-model-profiles/:id', endpoint('model_profile_update', (request) => withPathIds(request.body, { profileId: request.params.id })));
   router.post('/api/v1/agent-model-profiles/:id/activate', endpoint('model_profile_activate', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));
   router.post('/api/v1/agent-model-profiles/:id/disable', endpoint('model_profile_disable', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));
   router.delete('/api/v1/agent-model-profiles/:id', endpoint('model_profile_delete', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));
@@ -150,8 +148,7 @@ export function registerDashboardControlRoutes(
     offset: request.query.offset !== undefined ? Number(request.query.offset) : undefined,
     limit: request.query.limit !== undefined ? Number(request.query.limit) : undefined
   })));
-  router.post('/api/v1/artifacts/:artifactId/restore', endpoint('artifact_restore', (request) => ({
-    ...(request.body && typeof request.body === 'object' ? request.body : {}),
+  router.post('/api/v1/artifacts/:artifactId/restore', endpoint('artifact_restore', (request) => withPathIds(request.body, {
     artifactId: internalId('art').parse(request.params.artifactId)
   })));
   router.get('/api/v1/artifacts/:artifactId/download', async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
@@ -240,7 +237,7 @@ export function registerDashboardControlRoutes(
   })));
   router.get('/api/v1/knowledge/:id', endpoint('knowledge_dashboard_get', (request) => ({ id: request.params.id })));
   router.post('/api/v1/knowledge', endpoint('knowledge_dashboard_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
-  router.put('/api/v1/knowledge/:id', endpoint('knowledge_dashboard_update', (request) => ({ id: request.params.id, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.put('/api/v1/knowledge/:id', endpoint('knowledge_dashboard_update', (request) => withPathIds(request.body, { id: request.params.id })));
   router.delete('/api/v1/knowledge/:id', endpoint('knowledge_dashboard_delete', (request) => ({ id: request.params.id, ...generation.parse(request.body) })));
   router.post('/api/v1/knowledge/search', endpoint('knowledge_dashboard_search', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   router.get('/api/v1/knowledge-graph', endpoint('knowledge_dashboard_graph', (request) => ({
@@ -255,9 +252,9 @@ export function registerDashboardControlRoutes(
   router.get('/api/v1/mcp-servers', endpoint('mcp_server_list', () => ({})));
   router.post('/api/v1/mcp-servers', endpoint('mcp_server_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {}), { evict: true, validateEndpoint: true }));
   router.get('/api/v1/mcp-servers/:serverId', endpoint('mcp_server_get', (request) => ({ serverId: internalId('mcps').parse(request.params.serverId) })));
-  router.patch('/api/v1/mcp-servers/:serverId', endpoint('mcp_server_update', (request) => ({ serverId: internalId('mcps').parse(request.params.serverId), ...(request.body && typeof request.body === 'object' ? request.body : {}) }), { evict: true, validateEndpoint: true }));
+  router.patch('/api/v1/mcp-servers/:serverId', endpoint('mcp_server_update', (request) => withPathIds(request.body, { serverId: internalId('mcps').parse(request.params.serverId) }), { evict: true, validateEndpoint: true }));
   router.delete('/api/v1/mcp-servers/:serverId', endpoint('mcp_server_delete', (request) => ({ serverId: internalId('mcps').parse(request.params.serverId), ...generation.parse(request.body) }), { evict: true }));
-  router.post('/api/v1/mcp-servers/:serverId/enabled', endpoint('mcp_server_set_enabled', (request) => ({ serverId: internalId('mcps').parse(request.params.serverId), ...(request.body && typeof request.body === 'object' ? request.body : {}) }), { evict: true }));
+  router.post('/api/v1/mcp-servers/:serverId/enabled', endpoint('mcp_server_set_enabled', (request) => withPathIds(request.body, { serverId: internalId('mcps').parse(request.params.serverId) }), { evict: true }));
   // The frozen permission payload uses `permissionDefault`; `default` is never forwarded.
   router.put('/api/v1/mcp-servers/:serverId/permissions', endpoint('mcp_server_set_permissions', (request) => {
     const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};

@@ -81,7 +81,7 @@ function SkillSetBuilder({ skills }: { skills: Skill[] }) {
     }),
     invalidate: [SKILL_SETS_KEY],
     refresh: [],
-    successTitle: 'Skill set created',
+    successToast: 'Skill set created',
     errorTitle: 'The skill set was not created'
   });
   const candidates = skills.filter((skill) => skill.state !== 'archived');
@@ -155,7 +155,7 @@ function SkillSetDialog({ set, onClose, onConflict }: { set: SkillSet; onClose: 
     invalidate: keys,
     refresh: keys,
     onConflict,
-    successTitle: 'Skill set saved',
+    successToast: 'Skill set saved',
     errorTitle: 'The skill set was not saved'
   });
   const remove = useSkillMutation({
@@ -163,7 +163,7 @@ function SkillSetDialog({ set, onClose, onConflict }: { set: SkillSet; onClose: 
     invalidate: [SKILL_SETS_KEY],
     refresh: keys,
     onConflict,
-    successTitle: `${set.name || 'Skill set'} deleted`,
+    successToast: `${set.name || 'Skill set'} deleted`,
     errorTitle: 'The skill set was not deleted'
   });
   useEffect(() => { form.reset({ name: set.name ?? '', description: set.description ?? '' }); }, [form, set]);

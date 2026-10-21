@@ -38,7 +38,7 @@ export function AgentMessageForm({ agentId, workspaceId, invalidate }: { agentId
       // Only schema fields: the path already names the agent (no body override of a path id).
       body: { ...(workspaceId ? { workspaceId } : {}), message: values.message, mode: values.mode, idempotencyKey }
     }),
-    successTitle: 'Message sent to the agent',
+    successToast: 'Message sent to the agent',
     errorTitle: 'The message was not sent',
     onSuccess: () => {
       idempotency.renew();

@@ -7,7 +7,7 @@ import { ActionButton } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { mutationErrorMessage } from '@/lib/bff-mutation';
+import { mutationErrorText } from '@/lib/bff-mutation';
 import { formatDateTime, rec } from '@/lib/format';
 import {
   bytesLabel, durationLabel, fieldBounds, graceIsZero, LIFECYCLE_FIELDS, type LifecycleField, type LifecycleUpdate, type LifecycleValues,
@@ -89,7 +89,7 @@ export function LifecycleSection({ view }: { view: LifecycleView }) {
       const result = await write.mutateAsync({ workspaceLifecycle: body });
       setStatus(`${savedMessage} ${lifecycleSummary(readLifecycleView(rec(result.data).workspaceLifecycle))}`.trim());
     } catch (error) {
-      setStatus(await reloadOnConflict(error) ? CONFLICT_MESSAGE : mutationErrorMessage(error));
+      setStatus(await reloadOnConflict(error) ? CONFLICT_MESSAGE : mutationErrorText(error));
       throw error;
     }
   }

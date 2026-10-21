@@ -3,7 +3,6 @@ import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { githubCallbackHandoff } from '@/lib/github-callback';
 import { resetPreferencesForTests } from '@/lib/preferences';
 import { markSessionEnded, resetSessionStateForTests } from '@/lib/session-state';
 import { AppProviders } from './providers';
@@ -119,12 +118,25 @@ describe('AppShell', () => {
     expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
   });
 
-  it('hands a GitHub App callback to the classic Dashboard with its params', () => {
-    expect(githubCallbackHandoff('')).toBeUndefined();
-    expect(githubCallbackHandoff('?tab=x')).toBeUndefined();
-    expect(githubCallbackHandoff('?installation_id=987654&setup_action=install&state=abcdefgh1234'))
-      .toBe('/dashboard/integrations/github?installation_id=987654&setup_action=install&state=abcdefgh1234&ui=legacy');
-    expect(githubCallbackHandoff('?setup_action=update')).toBe('/dashboard/integrations/github?setup_action=update&ui=legacy');
+  it('completes a GitHub App callback natively, once, and clears the one-time state from the URL', async () => {
+    const state = 'S'.repeat(43);
+    const fetchMock = vi.mocked(fetch);
+    const router = renderAt(`/dashboard/integrations/github?installation_id=987654&setup_action=install&state=${state}`);
+    await vi.waitFor(() => expect(router.state.location.searchStr).toBe(''));
+    expect(router.state.location.pathname).toBe('/integrations/github');
+    const completes = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/github/complete'));
+    expect(completes).toHaveLength(1);
+    const [, init] = completes[0] as [string, RequestInit];
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ state, installationId: '987654' });
+    expect(new Headers(init.headers).get('x-csrf-token')).toBe('csrf-fixture');
+  });
+
+  it('ignores a GitHub callback with a malformed or partial state', async () => {
+    const fetchMock = vi.mocked(fetch);
+    renderAt('/dashboard/integrations/github?installation_id=987654&state=short');
+    expect(await screen.findByRole('heading', { level: 1, name: 'GitHub' })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/github/complete'))).toEqual([]);
   });
 
   it('renders only the search params a page declares', async () => {
@@ -142,13 +154,18 @@ describe('AppShell', () => {
     expect(document.body.textContent).not.toContain('Call support now');
   });
 
-  it('shows the MCP OAuth outcome on the server detail page', async () => {
-    renderAt('/dashboard/mcp-servers/mcps_aaaaaaaaaaaaaaaaaaaaaa?oauth=error&reason=state_mismatch&extra=Injected');
+  it('announces the MCP OAuth outcome once on the server detail page, then clears it from the URL', async () => {
+    const router = renderAt('/dashboard/mcp-servers/mcps_aaaaaaaaaaaaaaaaaaaaaa?oauth=error&reason=state_mismatch&extra=Injected');
     await screen.findByRole('heading', { level: 1, name: 'MCP Server' });
-    const filters = screen.getByRole('list', { name: 'Active filters' });
-    expect(filters).toHaveTextContent('oauth: error');
-    expect(filters).toHaveTextContent('reason: state_mismatch');
+    expect(await screen.findByText('OAuth connection failed: state mismatch.')).toBeInTheDocument();
+    await vi.waitFor(() => expect(router.state.location.searchStr).toBe(''));
     expect(document.body.textContent).not.toContain('Injected');
+  });
+
+  it('announces an MCP OAuth outcome that lands on the server list', async () => {
+    const router = renderAt('/dashboard/mcp-servers?oauth=error&reason=invalid_state');
+    expect(await screen.findByText('OAuth connection failed: invalid state.')).toBeInTheDocument();
+    await vi.waitFor(() => expect(router.state.location.searchStr).toBe(''));
   });
 
   it('keeps the Skills tab in the URL', async () => {

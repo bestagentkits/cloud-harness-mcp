@@ -40,7 +40,7 @@ export function SkillDetailsDialog({ open, onOpenChange, skill, onConflict }: {
     invalidate: keys,
     refresh: keys,
     onConflict,
-    successTitle: 'Skill details saved',
+    successToast: 'Skill details saved',
     errorTitle: 'The skill details were not saved'
   });
 

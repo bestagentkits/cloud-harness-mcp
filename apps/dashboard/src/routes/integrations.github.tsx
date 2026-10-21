@@ -1,20 +1,24 @@
-import { createFileRoute, redirect } from '@tanstack/react-router';
-import { PagePlaceholder } from '@/components/layouts/page-placeholder';
-import { githubCallbackHandoff } from '@/lib/github-callback';
+import { createFileRoute, useRouterState } from '@tanstack/react-router';
+import { githubCallbackSearch, hasGitHubCallbackParams } from '@/features/github/github-callback-search';
+import { GitHubPage } from '@/features/github/github-page';
 import { warmPageRead } from '@/lib/page-read';
-import { exact, matching } from '@/lib/search-params';
 
+/**
+ * The GitHub App installation callback lands here with `state` and `installation_id`
+ * (`setup_action` is ignored, as in the classic Dashboard). The page completes it natively
+ * and then replaces the URL, so the one-time state does not stay in history. An invalid or
+ * incomplete callback is not sent, but its params are cleared from the URL all the same.
+ */
 export const Route = createFileRoute('/integrations/github')({
   staticData: { pageId: 'github' },
-  validateSearch: (raw: Record<string, unknown>) => exact({ state: matching(raw, 'state', /^[A-Za-z0-9_-]{8,256}$/), installation_id: matching(raw, 'installation_id', /^[0-9]{1,20}$/) }),
-  beforeLoad: ({ location }) => {
-    // Rebuild the query from the parsed values: the router re-serialises a numeric-looking
-    // string such as `installation_id` as JSON (`"4242"`), which the classic page would refuse.
-    const query = new URLSearchParams();
-    for (const [key, value] of Object.entries(location.search)) if (value !== undefined && value !== null) query.set(key, String(value));
-    const handoff = githubCallbackHandoff(query.toString());
-    if (handoff) throw redirect({ href: handoff, reloadDocument: true, replace: true });
-  },
+  validateSearch: githubCallbackSearch,
   loader: (match) => warmPageRead('github', match),
-  component: () => <PagePlaceholder pageId="github" />
+  component: GitHubRoute
 });
+
+function GitHubRoute() {
+  const { state, installation_id: installationId } = githubCallbackSearch(Route.useSearch());
+  // The raw query, before validation: invalid values are `undefined` in the validated search.
+  const callbackParams = useRouterState({ select: (router) => hasGitHubCallbackParams(router.location.searchStr) });
+  return <GitHubPage callback={state && installationId ? { state, installationId } : undefined} callbackParams={callbackParams} />;
+}

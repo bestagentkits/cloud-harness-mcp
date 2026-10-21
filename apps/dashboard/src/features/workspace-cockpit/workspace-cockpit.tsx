@@ -81,7 +81,7 @@ function CockpitHeader({ workspace }: { workspace: Workspace }) {
   const renew = useBffMutation<void, BffEnvelope<Workspace>>({
     mutationFn: () => apiClient.request(`${bffPath('workspaces', workspace.workspaceId)}/lease-renew`, { method: 'POST', body: {} }),
     invalidate: [pageReadQuery('workspace', { workspaceId: workspace.workspaceId }).queryKey, ['bff', '/workspaces']],
-    successTitle: (result) => result.data?.leaseCapped === true
+    successToast: (result) => result.data?.leaseCapped === true
       ? 'Lease renewed only until the maximum workspace lifetime; the workspace still expires then.'
       : 'Workspace lease renewed.',
     errorTitle: 'The lease was not renewed'

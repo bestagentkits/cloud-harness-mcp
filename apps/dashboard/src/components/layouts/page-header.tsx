@@ -20,8 +20,7 @@ export function PageHeader({ current, headingRef }: { current: CurrentPage & { p
   const parent = page.navParent ? pageById(page.navParent) : undefined;
   const [actionOpen, setActionOpen] = useState(false);
   const actionMounted = useOpenedOnce(actionOpen);
-  // A page that implements its primary action registers it; otherwise the button hands off
-  // to the classic Dashboard.
+  // A page that implements its action registers it; otherwise the classic-Dashboard dialog.
   const registered = useRegisteredPrimaryAction(page.id);
   return (
     <header className="grid gap-2" data-testid="page-header">
@@ -52,9 +51,10 @@ export function PageHeader({ current, headingRef }: { current: CurrentPage & { p
             <Button
               data-testid="primary-action"
               aria-haspopup="dialog"
-              disabled={registered.disabled}
-              onPointerEnter={registered.registered ? undefined : () => { void loadActionDialog(); }}
-              onClick={() => { if (registered.registered) registered.run(); else setActionOpen(true); }}
+              disabled={Boolean(registered?.disabledReason)}
+              title={registered?.disabledReason}
+              onPointerEnter={() => { if (!registered) void loadActionDialog(); }}
+              onClick={() => { if (registered) registered.onSelect(); else setActionOpen(true); }}
             >
               {page.primaryAction}
             </Button>

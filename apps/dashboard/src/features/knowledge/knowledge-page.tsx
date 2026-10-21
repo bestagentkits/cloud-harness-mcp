@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { BookOpenIcon, SearchXIcon } from 'lucide-react';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { CursorPager } from '@/components/data/cursor-pager';
 import { FilterBar, SearchFilter, SelectFilter } from '@/components/data/filter-bar';
 import { TruncationNotice } from '@/components/data/truncation-notice';
@@ -75,7 +75,7 @@ function KnowledgeCard({ row }: { row: KnowledgeRow }) {
 export function KnowledgePage({ search, onSearch }: { search: KnowledgeSearch; onSearch: (next: KnowledgeSearch) => void }) {
   const navigate = useNavigate();
   const [creating, setCreating] = useState(false);
-  usePagePrimaryAction('knowledge', { run: () => setCreating(true) });
+  usePagePrimaryAction('knowledge', { onSelect: useCallback(() => setCreating(true), []) });
 
   const graphView = search.view === 'graph';
   const q = search.q;
@@ -87,7 +87,7 @@ export function KnowledgePage({ search, onSearch }: { search: KnowledgeSearch; o
   const create = useBffMutation<CreateKnowledgeValues, BffEnvelope<unknown>>({
     mutationFn: (values) => apiClient.request(KNOWLEDGE_PATH, { method: 'POST', body: createBody(values) }),
     invalidate: [bffKey(KNOWLEDGE_PATH).slice(0, 2), bffKey(KNOWLEDGE_SEARCH_PATH).slice(0, 2), bffKey(KNOWLEDGE_GRAPH_PATH).slice(0, 2)],
-    successTitle: 'Knowledge entry created',
+    successToast: 'Knowledge entry created',
     errorTitle: 'The entry was not created',
     onSuccess: (result) => {
       const created = knowledgeItem(result);

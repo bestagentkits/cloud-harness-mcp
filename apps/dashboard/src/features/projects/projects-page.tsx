@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { FolderKanbanIcon } from 'lucide-react';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { AsyncStatus } from '@/components/feedback/async-status';
 import { EmptyState } from '@/components/feedback/empty-state';
 import { TruncationNotice } from '@/components/data/truncation-notice';
@@ -48,12 +48,12 @@ const COLUMNS: DataTableColumn<Project>[] = [
 export function ProjectsPage() {
   const read = useQuery(pageReadQuery('projects', {}));
   const [creating, setCreating] = useState(false);
-  usePagePrimaryAction('projects', { run: () => setCreating(true) });
+  usePagePrimaryAction('projects', { onSelect: useCallback(() => setCreating(true), []) });
 
   const create = useBffMutation<string, BffEnvelope<Project>>({
     mutationFn: (name) => apiClient.request(PROJECTS_PATH, { method: 'POST', body: createBody(name) }),
     invalidate: [bffKey(PROJECTS_PATH)],
-    successTitle: 'Project created',
+    successToast: 'Project created',
     errorTitle: 'The project was not created'
   });
 

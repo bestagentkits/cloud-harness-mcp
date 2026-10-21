@@ -63,7 +63,7 @@ function SkillDetail({ skill, onConflict, onArchived }: { skill: Skill; onConfli
     invalidate: keys,
     refresh: keys,
     onConflict,
-    successTitle: `${skillLabel(skill)} archived`,
+    successToast: `${skillLabel(skill)} archived`,
     errorTitle: 'The skill was not archived'
   });
   const archived = skill.state === 'archived';
@@ -122,14 +122,14 @@ function Revisions({ skill, onConflict }: { skill: Skill; onConflict: (error: Co
     invalidate: keys,
     refresh: keys,
     onConflict,
-    successTitle: 'Revision restored as current',
+    successToast: 'Revision restored as current',
     errorTitle: 'The revision was not restored'
   });
   const fork = useSkillMutation({
     mutationFn: (revisionId: string) => apiClient.request(bffPath('skills', skill.id, 'revisions', revisionId, 'fork'), { method: 'POST', body: forkBody(skill) }),
     invalidate: [SKILLS_KEY],
     refresh: [SKILLS_KEY],
-    successTitle: `Forked as ${forkBody(skill).slug}`,
+    successToast: `Forked as ${forkBody(skill).slug}`,
     errorTitle: 'The revision was not forked'
   });
   const current = skill.currentRevisionId;

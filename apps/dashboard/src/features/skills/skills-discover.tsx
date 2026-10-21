@@ -115,7 +115,7 @@ function ImportPanel({ jobId, onJob }: { jobId: string | undefined; onJob: (jobI
   const { errors, isSubmitting } = form.formState;
   const start = useBffMutation({
     mutationFn: (values: ImportValues) => apiClient.request<BffEnvelope<SkillImportJob>>('/skill-imports', { method: 'POST', body: importBody(values) }),
-    successTitle: 'Import started',
+    successToast: 'Import started',
     errorTitle: 'The import did not start',
     onSuccess: (result) => { if (typeof result?.data?.id === 'string') onJob(result.data.id); }
   });

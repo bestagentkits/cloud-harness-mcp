@@ -22,7 +22,7 @@ export function AgentCancelControl({ agentId, workspaceId, invalidate }: { agent
       method: 'POST',
       body: { ...(workspaceId ? { workspaceId } : {}), ...(note ? { reason: note } : {}) }
     }),
-    successTitle: 'Agent cancelled',
+    successToast: 'Agent cancelled',
     errorTitle: 'The agent was not cancelled',
     onSuccess: () => { setReason(''); void invalidate(); }
   });

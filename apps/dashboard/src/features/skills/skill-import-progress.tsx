@@ -57,7 +57,7 @@ export function SkillImportProgress({ jobId, onRetry }: { jobId: string; onRetry
     }),
     invalidate: [key],
     refresh: [key],
-    successTitle: 'Import cancelled',
+    successToast: 'Import cancelled',
     errorTitle: 'The import was not cancelled'
   });
 

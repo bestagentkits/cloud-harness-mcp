@@ -38,14 +38,14 @@ export default function RuntimeTab({ workspaceId, search, onSearch }: CockpitTab
   const invalidate = [bffKey(runtimePath, {})];
   const cancelTask = useBffMutation<string, unknown>({
     mutationFn: (taskId) => apiClient.request(`${bffPath('workspaces', workspaceId, 'tasks', taskId)}/cancel`, { method: 'POST', body: {} }),
-    invalidate: (_result, taskId) => [...invalidate, bffKey(bffPath('workspaces', workspaceId, 'tasks', taskId), {})],
-    successTitle: 'Task cancelled.',
+    invalidate: (taskId) => [...invalidate, bffKey(bffPath('workspaces', workspaceId, 'tasks', taskId), {})],
+    successToast: 'Task cancelled.',
     errorTitle: 'The task was not cancelled'
   });
   const closeSession = useBffMutation<string, unknown>({
     mutationFn: (id) => apiClient.request(`${bffPath('workspaces', workspaceId, 'sessions', id)}/close`, { method: 'POST', body: {} }),
     invalidate,
-    successTitle: 'Session closed.',
+    successToast: 'Session closed.',
     errorTitle: 'The session was not closed'
   });
 

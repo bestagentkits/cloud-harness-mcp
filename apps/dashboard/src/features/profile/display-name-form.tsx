@@ -7,7 +7,7 @@ import { ActionButton } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { apiClient } from '@/lib/api-client';
-import { mutationErrorMessage, useBffMutation } from '@/lib/bff-mutation';
+import { mutationErrorText, useBffMutation } from '@/lib/bff-mutation';
 import { profileQuery } from '@/lib/profile';
 import { DISPLAY_NAME_MAX, displayNameSchema, type DisplayNameValues } from './profile-model';
 
@@ -36,7 +36,7 @@ export function DisplayNameForm({ displayName, signOnName }: { displayName: stri
     mutationFn: (value) => apiClient.request<PreferencesAnswer>('/preferences', { method: 'PUT', body: { displayName: value } }),
     onSuccess: (result) => { queryClient.setQueryData(profileQuery.queryKey, (body: unknown) => withDisplayName(body, result.data?.displayName ?? null)); },
     invalidate: [profileQuery.queryKey],
-    successTitle: (_result, value) => (value ? 'Display name updated' : 'Display name reset to your sign-on name'),
+    successToast: (_result, value) => (value ? 'Display name updated' : 'Display name reset to your sign-on name'),
     errorTitle: 'The display name was not saved'
   });
 
@@ -46,7 +46,7 @@ export function DisplayNameForm({ displayName, signOnName }: { displayName: stri
       await save.mutateAsync(value);
       setStatus(value ? 'Display name updated.' : 'Display name reset to your sign-on name.');
     } catch (error) {
-      setStatus(mutationErrorMessage(error));
+      setStatus(mutationErrorText(error));
       throw error;
     }
   }

@@ -71,7 +71,7 @@ function KnowledgeEditor({ item, knowledgeId }: { item: KnowledgeItem; knowledge
   const remove = useFencedMutation<number, unknown>({
     mutationFn: (generation) => apiClient.request(knowledgeItemPath(item.id), { method: 'DELETE', body: { expectedGeneration: generation } }),
     invalidate: KNOWLEDGE_LIST_KEYS, refresh: [itemQuery.queryKey], onConflict: notice.report,
-    successTitle: 'Knowledge entry deleted', errorTitle: 'The entry was not deleted',
+    successToast: 'Knowledge entry deleted', errorTitle: 'The entry was not deleted',
     onSuccess: () => {
       leaving.current = true;
       clearDraft(item.id);

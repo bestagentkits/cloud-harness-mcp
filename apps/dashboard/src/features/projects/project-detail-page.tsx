@@ -67,28 +67,28 @@ export function ProjectDetailPage({ projectId }: { projectId: string }) {
   const renameProject = useFencedMutation<{ project: Project; name: string }, unknown>({
     mutationFn: ({ project: target, name }) => apiClient.request(projectPath(target.id), { method: 'PATCH', body: { name: name.trim(), expectedGeneration: fencedGeneration(target) } }),
     invalidate: [projectsKey], refresh, onConflict: notice.report,
-    successTitle: 'Project renamed', errorTitle: 'The project was not renamed'
+    successToast: 'Project renamed', errorTitle: 'The project was not renamed'
   });
   const deleteProject = useFencedMutation<Project, unknown>({
     mutationFn: (target) => apiClient.request(projectPath(target.id), { method: 'DELETE', body: { expectedGeneration: fencedGeneration(target) } }),
     invalidate: [projectsKey], refresh, onConflict: notice.report,
-    successTitle: 'Project deleted', errorTitle: 'The project was not deleted',
+    successToast: 'Project deleted', errorTitle: 'The project was not deleted',
     onSuccess: () => { void navigate({ to: '/projects' }); }
   });
   const createEnvironment = useFencedMutation<string, unknown>({
     mutationFn: (name) => apiClient.request(projectEnvironmentsPath(projectId), { method: 'POST', body: createBody(name) }),
     invalidate: [environmentsKey], refresh, onConflict: notice.report,
-    successTitle: 'Environment created', errorTitle: 'The environment was not created'
+    successToast: 'Environment created', errorTitle: 'The environment was not created'
   });
   const renameEnvironment = useFencedMutation<{ environment: Environment; name: string }, unknown>({
     mutationFn: ({ environment, name }) => apiClient.request(environmentPath(environment.id), { method: 'PATCH', body: { name: name.trim(), expectedGeneration: fencedGeneration(environment) } }),
     invalidate: [environmentsKey], refresh, onConflict: notice.report,
-    successTitle: 'Environment renamed', errorTitle: 'The environment was not renamed'
+    successToast: 'Environment renamed', errorTitle: 'The environment was not renamed'
   });
   const deleteEnvironment = useFencedMutation<Environment, unknown>({
     mutationFn: (environment) => apiClient.request(environmentPath(environment.id), { method: 'DELETE', body: { expectedGeneration: fencedGeneration(environment) } }),
     invalidate: [environmentsKey], refresh, onConflict: notice.report,
-    successTitle: 'Environment deleted', errorTitle: 'The environment was not deleted'
+    successToast: 'Environment deleted', errorTitle: 'The environment was not deleted'
   });
 
   function openName(state: NameDialogState) { notice.clear(); setNameDialog(state); setNameDialogOpen(true); }

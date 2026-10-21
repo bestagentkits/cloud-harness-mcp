@@ -1,53 +1,41 @@
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
+import type { PageId } from '@/app/page-registry';
 
 /**
- * The page header's primary action. The header owns the button (label from the page
- * registry, same place on every page); a page that implements the action registers a
- * handler while it is mounted. With no handler the header falls back to the classic
- * Dashboard hand-off dialog, so a page that has not moved yet still has a working button.
+ * Lets a page own its registry-declared primary action. The shell renders the header
+ * button in the same frame as the click (it never waits for page code), and a page that
+ * has a real handler registers it here; until then the header keeps its classic-Dashboard
+ * link dialog. The registration carries no data, only the handler and its enabled state.
  */
-export type PrimaryActionHandler = { run: () => void; disabled?: boolean };
+export type PagePrimaryAction = {
+  onSelect: () => void;
+  /** A short reason shown as the button's description when the action is unavailable. */
+  disabledReason?: string | undefined;
+};
 
-let current: { pageId: string; handler: { current: PrimaryActionHandler } } | null = null;
+const actions = new Map<PageId, PagePrimaryAction>();
 const listeners = new Set<() => void>();
 const emit = () => { for (const listener of listeners) listener(); };
 
-function subscribe(listener: () => void) {
+function subscribe(listener: () => void): () => void {
   listeners.add(listener);
-  return () => listeners.delete(listener);
+  return () => { listeners.delete(listener); };
 }
 
-/** Register `handler` as `pageId`'s primary action for as long as the caller is mounted. */
-export function usePagePrimaryAction(pageId: string, handler: PrimaryActionHandler): void {
-  const ref = useRef(handler);
-  useEffect(() => { ref.current = handler; });
-  const disabled = handler.disabled ?? false;
+/** Registers the page's primary action while the page is mounted. */
+export function usePagePrimaryAction(pageId: PageId, action: PagePrimaryAction): void {
+  const { onSelect, disabledReason } = action;
   useEffect(() => {
-    const entry = { pageId, handler: ref };
-    current = entry;
+    actions.set(pageId, { onSelect, disabledReason });
     emit();
     return () => {
-      if (current === entry) { current = null; emit(); }
+      if (actions.get(pageId)?.onSelect === onSelect) actions.delete(pageId);
+      emit();
     };
-  }, [pageId]);
-  // Re-render the header when only `disabled` changes.
-  useEffect(() => { emit(); }, [disabled]);
+  }, [pageId, onSelect, disabledReason]);
 }
 
-let snapshot: { pageId: string; disabled: boolean } | null = null;
-function getSnapshot() {
-  const next = current ? { pageId: current.pageId, disabled: current.handler.current.disabled ?? false } : null;
-  if (next?.pageId !== snapshot?.pageId || next?.disabled !== snapshot?.disabled) snapshot = next;
-  return snapshot;
-}
-
-/** The header's view: whether `pageId` registered a handler, and a runner for it. */
-export function useRegisteredPrimaryAction(pageId: string): { registered: boolean; disabled: boolean; run: () => void } {
-  const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  const registered = state?.pageId === pageId;
-  return {
-    registered,
-    disabled: registered ? state.disabled : false,
-    run: () => { if (current?.pageId === pageId) current.handler.current.run(); }
-  };
+/** The header's view: the page's registered action, or undefined for the fallback dialog. */
+export function useRegisteredPrimaryAction(pageId: PageId): PagePrimaryAction | undefined {
+  return useSyncExternalStore(subscribe, () => actions.get(pageId), () => undefined);
 }

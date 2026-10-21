@@ -35,7 +35,7 @@ export function SkillUploadDialog({ open, onOpenChange }: { open: boolean; onOpe
   const upload = useBffMutation({
     mutationFn: (file: File) => uploadSkillArchive(file),
     invalidate: [SKILLS_KEY],
-    successTitle: (rows) => archiveSummary(rows),
+    successToast: (rows) => archiveSummary(rows),
     errorTitle: 'The archive was not imported'
   });
 
