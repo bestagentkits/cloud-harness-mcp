@@ -46,9 +46,12 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
     sender: events.sender,
     onError: (stage, reason) => apiLogger.warn({ stage, reason }, 'MCP event delivery pass failed')
   });
-  const handler = createMcpHandler(createCloudHarnessServerFactory(runnerClient, events), { legacy: 'stateless', responseMode: 'auto' });
+  // Owner automation management stays on the authenticated MCP endpoints; the public webhook
+  // ingress below only ever forwards `webhook_ingest`.
+  const automations = { enabled: config.automationsEnabled === true };
+  const handler = createMcpHandler(createCloudHarnessServerFactory(runnerClient, events, automations), { legacy: 'stateless', responseMode: 'auto' });
   const nodeHandler = toNodeHandler(handler);
-  const boundHandler = createMcpHandler(createWorkspaceBoundServerFactory(runnerClient, events), { legacy: 'stateless', responseMode: 'auto' });
+  const boundHandler = createMcpHandler(createWorkspaceBoundServerFactory(runnerClient, events, automations), { legacy: 'stateless', responseMode: 'auto' });
   const boundNodeHandler = toNodeHandler(boundHandler);
   const gateway = createMcpGateway(config, runnerClient, {
     ...(overrides.gatewayFetchImpl ? { fetchImpl: overrides.gatewayFetchImpl } : {})

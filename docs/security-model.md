@@ -267,56 +267,115 @@ and [`apps/runner/src/mcp-event-service.ts`](../apps/runner/src/mcp-event-servic
 
 ## Webhook automation ingress
 
-Webhook automations (off unless `AUTOMATIONS_ENABLED`) let a GitHub label on an
-issue or pull request start a budgeted agent run. They add the only public
-route that carries no bearer, Access assertion, or API key, because GitHub
+Webhook automations (off unless `AUTOMATIONS_ENABLED`) let a GitHub, Linear,
+Jira, or owner-signed custom webhook start a budgeted agent run. They add the
+only public route that carries no bearer, Access assertion, or API key,
+`/integrations/webhooks/<provider>/<connectionId>`, because those senders
 cannot authenticate to Cloudflare Access. The decisions that keep that safe:
 
 - **The signature is the authentication.** Each connection has its own secret,
   generated server-side, sealed with the runner keyring (and re-sealed by
-  `secrets:rekey`), and shown once on create or rotate. The runner checks
-  GitHub's HMAC-SHA256 signature in constant time over the exact bytes the API
-  forwarded uninflated and unparsed; nothing is parsed before it verifies.
-  Rotation takes effect immediately with no grace window. An unknown, disabled,
-  or deleted connection and a bad signature return the same `401`, so the route
-  is not an oracle for connection ids.
+  `secrets:rekey`), and shown once on create or rotate. The owner pastes it into
+  the provider, never the reverse, so no provider-chosen secret is ever stored.
+  The runner checks the provider's HMAC-SHA256 signature in constant time over
+  the exact bytes the API forwarded uninflated and unparsed; nothing is parsed
+  before it verifies. Rotation takes effect immediately with no grace window. An
+  unknown, disabled, or deleted connection, a provider segment that does not
+  match the connection, a bad signature, and a stale timestamp all return the
+  same `401`, so the route is not an oracle for connection ids.
+- **Replay is bounded per provider.** GitHub signs only the body, so a captured
+  delivery is caught by delivery-id and body-digest dedupe. Linear, Jira, and
+  custom deliveries must also carry a signed timestamp inside a short window
+  (Linear's documented window on `webhookTimestamp`, Jira's body `timestamp`,
+  and the custom `X-CloudHarness-Timestamp`, which is part of the signed text),
+  so a captured body cannot be replayed once dedupe retention lapses. The
+  windows are owned by each adapter. The cost is that a provider retry sent
+  after the window is refused. Jira's window is wide enough to cover its
+  documented retry schedule, and its retries are deduped on the webhook
+  identifier, which stays the same across them.
+- **Only allowlisted headers cross the boundary.** The ingress forwards the
+  body and the provider's headers named in `AUTOMATION_WEBHOOK_HEADERS`, and the
+  runner schema refuses any other header, so no request metadata reaches
+  matching or prompts.
+- **Ingress and management are separate surfaces.** The public route only
+  ever calls the runner's `webhook_ingest` operation. Rule, run, and connection
+  management is reachable only through the authenticated Dashboard BFF and the
+  `automation_*` MCP tools ([MCP API](mcp-api.md#automation-management-tools)),
+  which take the principal and scopes from the authenticated session. Connections,
+  their secrets, and outbound credentials are not exposed to MCP at all, and a
+  rule created over MCP is always saved disabled so the owner reviews it before
+  any delivery can start a run.
 - **The API only bounds the request.** The ingress is mounted only when
   enabled, checks the host, answers a malformed connection id with the same
   `401`, and keeps a process-local rate window per connection id, so traffic
   aimed at other ids cannot exhaust a real connection's window and a webhook
   burst cannot consume the MCP pre-auth budget. The runner adds
-  per-connection delivery dedupe, by delivery id and by body digest so a
-  captured body replayed under a new delivery id is a duplicate, and a
+  per-connection delivery dedupe, by delivery id and by a digest of the signed
+  content (the body, plus the signed timestamp for custom webhooks) so a
+  captured request replayed under a new delivery id is a duplicate, and a
   per-connection delivery rate.
-- **Event data is untrusted input.** Only label additions on `issues` and
-  `pull_request` are admitted; other events and actions are recorded as ignored
-  and malformed bodies as quarantined. The raw payload is never stored, only
-  its digest and bounded normalized fields, and the title and body are cleared
-  after matching. Rule matching is deterministic and never consults a model.
-  The prompt places event text after the owner's instructions in a fenced
-  untrusted block whose delimiter is stripped from the event text.
-- **Triggers are narrow and opt-in.** A rule matches an exact repository,
-  label, and event set, starts disabled, ignores bot senders by default, and,
-  when `GITHUB_APP_SLUG` is configured, always ignores this harness's own
-  GitHub App. Posted comments do not raise label events, so the harness cannot
-  re-trigger itself either way. An optional actor allowlist narrows it further.
-- **The agent is read-only unless the rule opts into coding.** Each run opens
-  a fresh `network-none` workspace on the rule's ref (the default branch unless
-  set) and spawns an agent whose proxy operations are limited by the rule
-  contract to the read-only set, with the rule's budget. A pull request's head
-  is not checked out. Its only GitHub write is an optional single comment
-  through the brokered `issue_comment` action, with `@` mentions neutralized. A
-  rule with a `coding` action follows [Coding automations](#coding-automations)
-  instead.
+- **Event data is untrusted input.** Each adapter admits only label and state
+  transitions (GitHub label additions; Linear transitions derived from
+  `updatedFrom`; Jira transitions from the changelog); other events are
+  recorded as ignored and unreadable bodies as quarantined. The raw payload is
+  never stored, only its digest and bounded normalized fields, and the title
+  and body are cleared after matching, so a replay re-matches stored fields and
+  its prompt carries no event text. Rule matching is deterministic and never
+  consults a model. The prompt places event text after the owner's instructions
+  in a fenced untrusted block whose delimiter is stripped from the event text.
+- **Events never choose what runs.** A GitHub run checks out the event's
+  repository only when it equals the rule's `match.repository`; every other
+  provider's rule must pin `action.repository` (`automationRuleProblem`). The
+  custom envelope (`AutomationCustomEnvelopeSchema`) is fixed and strict, with no
+  field for a repository, workspace, profile, tool, command, or instruction. The
+  profile, tools, instructions, ref, and budget always come from the rule.
+- **Triggers are narrow and opt-in.** A rule matches an exact scope (repository,
+  Linear team, Jira project, or custom event name) and label or target state,
+  starts disabled, ignores bot senders by default, and, when `GITHUB_APP_SLUG`
+  is configured, always ignores this harness's own GitHub App. Posted comments
+  do not raise label events, so the harness cannot re-trigger itself either
+  way. An optional actor allowlist narrows it further; it is compared only with
+  stable identifiers (GitHub login, Linear user id or email, Jira account id),
+  never with a display name the actor can edit.
+- **The agent is read-only unless a GitHub rule opts into coding.** Each run
+  opens a fresh `network-none` workspace
+  on the rule's ref (the default branch unless set) and spawns an agent whose
+  proxy operations are limited by the rule contract to the read-only set, with
+  the rule's budget. A pull request's head is not checked out. Its only writes
+  are an optional single comment per run, edited from progress to result, with
+  `@` mentions neutralized, and, for GitHub pull requests, one check run through
+  the brokered `check_run_create`/`check_run_update` actions. An installation
+  without the `checks` permission degrades to the comment alone. A GitHub rule
+  with a `coding` action follows [Coding automations](#coding-automations)
+  instead; Linear, Jira, and custom rules cannot carry one
+  (`automationCodingProblem`).
+- **Outbound credentials stay in the runner.** A Linear API key or Jira email
+  and API token is sealed per connection under its own keyring context, is never
+  returned (summaries expose only `outboundConfigured`), and is unsealed only
+  inside the runner's publisher, which sends it to Linear's fixed GraphQL
+  endpoint or to the connection's Jira site. It never reaches a workspace,
+  agent, log, or audit payload.
+- **Jira posting is pinned to a checked public address.** The Jira site is an
+  owner-supplied `https` origin that refuses IP literals, ports, paths, and
+  internal names. At publish time the provider HTTP client resolves it once,
+  refuses private and reserved addresses, connects to the address it checked,
+  and never follows redirects, so DNS rebinding cannot steer the credential to
+  an internal host. Issue links are built from that site, never from a URL in
+  the payload.
 
-Residual risk: anyone who can add a label in a watched repository can spend
-that rule's budget, bounded by cooldown, per-rule and instance concurrency, and
-the per-connection delivery rate; prompt injection through issue text can still
-shape the answer that may be posted. Approval grants, non-GitHub providers, and
-MCP tools for automation management are not supported. The executable owners are
+Residual risk: anyone who can add a label or move an issue in a watched
+repository, team, or project, or who holds a custom connection's secret, can
+spend that rule's budget, bounded by cooldown, per-rule and instance
+concurrency, and the per-connection delivery rate; prompt injection through
+event text can still shape the read-only answer that may be posted. Approvals,
+coding runs outside GitHub, and Linear or Jira OAuth apps are not supported. The
+executable owners are
 [`apps/api/src/automations/webhook-ingress.ts`](../apps/api/src/automations/webhook-ingress.ts),
-[`apps/runner/src/automation-github.ts`](../apps/runner/src/automation-github.ts),
+[`apps/api/src/automations/automation-tools.ts`](../apps/api/src/automations/automation-tools.ts),
+the `apps/runner/src/automation-<provider>.ts` adapters registered in
+[`apps/runner/src/automation-providers.ts`](../apps/runner/src/automation-providers.ts),
 [`apps/runner/src/automation-service.ts`](../apps/runner/src/automation-service.ts),
+[`apps/runner/src/model-provider-http.ts`](../apps/runner/src/model-provider-http.ts),
 and [`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
 
 ## Coding automations

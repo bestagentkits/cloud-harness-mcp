@@ -34,11 +34,47 @@ export const AutomationRuleIdSchema = z.string().regex(/^arl_[a-f0-9]{32}$/u);
 export const AutomationWorkflowIdSchema = z.string().regex(/^wfl_[a-f0-9]{32}$/u);
 export const AutomationDeliveryIdSchema = z.string().regex(/^dlv_[a-f0-9]{32}$/u);
 
-export const AutomationProviderSchema = z.enum(['github']);
-/** Normalized, versioned event types. Only label additions are admitted today. */
-export const AutomationEventTypeSchema = z.enum(['github.issue.label_added', 'github.pull_request.label_added']);
+export const AutomationProviderSchema = z.enum(['github', 'linear', 'jira', 'custom']);
+/**
+ * Normalized, versioned event types: `<provider>.<resource>.<transition>`. A new transition is a new
+ * value, never a reinterpretation of an existing one. Linear and Jira transitions are derived from
+ * the delivery's previous values (`updatedFrom`, the changelog), not from an action name.
+ */
+export const AutomationEventTypeSchema = z.enum([
+  'github.issue.label_added', 'github.pull_request.label_added',
+  'linear.issue.label_added', 'linear.issue.state_changed',
+  'jira.issue.label_added', 'jira.issue.status_changed',
+  'custom.event'
+]);
 /** GitHub `X-GitHub-Event` values a rule may listen to. */
 export const AutomationGitHubEventSchema = z.enum(['issues', 'pull_request']);
+
+/**
+ * The only request headers the public ingress forwards, per provider, lower-cased. `signature`
+ * headers that are missing or overlong answer the shared 401, `required` ones a 400; nothing else
+ * from the request reaches the runner.
+ */
+export const AUTOMATION_WEBHOOK_HEADERS = {
+  github: [
+    { name: 'x-github-event', role: 'required', maxChars: 64 },
+    { name: 'x-github-delivery', role: 'required', maxChars: 100 },
+    { name: 'x-hub-signature-256', role: 'signature', maxChars: 200 }
+  ],
+  linear: [
+    { name: 'linear-event', role: 'required', maxChars: 64 },
+    { name: 'linear-delivery', role: 'required', maxChars: 100 },
+    { name: 'linear-signature', role: 'signature', maxChars: 200 }
+  ],
+  jira: [
+    { name: 'x-atlassian-webhook-identifier', role: 'optional', maxChars: 100 },
+    { name: 'x-hub-signature', role: 'signature', maxChars: 200 }
+  ],
+  custom: [
+    { name: 'x-cloudharness-delivery', role: 'required', maxChars: 100 },
+    { name: 'x-cloudharness-timestamp', role: 'required', maxChars: 20 },
+    { name: 'x-cloudharness-signature', role: 'signature', maxChars: 200 }
+  ]
+} as const satisfies Record<z.infer<typeof AutomationProviderSchema>, readonly { name: string; role: 'required' | 'optional' | 'signature'; maxChars: number }[]>;
 
 export const AutomationWorkflowStateSchema = z.enum(['QUEUED', 'STARTING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED']);
 export const AUTOMATION_TERMINAL_WORKFLOW_STATES = ['COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED'] as const;
@@ -57,12 +93,28 @@ const name = z.string().trim().min(1).max(100);
 const githubRepository = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/u, 'repository must be owner/name')
   .refine((value) => !value.endsWith('.git') && !(value.split('/')[1] ?? '').startsWith('.'), 'repository must be owner/name');
 const githubLogin = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/u);
-const label = z.string().min(1).max(100).refine((value) => !/[\0\r\n]/u.test(value), 'label cannot contain control characters');
+const label = z.string().min(1).max(100).refine((value) => !/[\0\t\r\n]/u.test(value), 'label cannot contain control characters');
 const gitRef = z.string().min(1).max(200).regex(/^[A-Za-z0-9._/-]+$/u).refine((value) => !value.startsWith('-') && !value.includes('..'), 'invalid ref');
 const profileId = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/u);
 const expectedGeneration = z.number().int().positive();
+/** A Linear workflow state or Jira status name. */
+const stateName = z.string().min(1).max(100).refine((value) => !/[\0\r\n]/u.test(value), 'state cannot contain control characters');
+/** A Linear user id or email, or a Jira account id. */
+const providerActor = z.string().min(1).max(254).regex(/^[^\s\0]+$/u, 'actor cannot contain whitespace');
+const actorFilters = {
+  /** Bot and integration actors are ignored unless the owner opts in. */
+  ignoreBots: z.boolean().default(true),
+  /**
+   * When set, only these actors may trigger the rule. Entries are compared only with stable
+   * identifiers: a Jira account id, or a Linear user id or (when the webhook carries it) email.
+   * Display names are editable by their users and never match.
+   */
+  actorAllowlist: z.array(providerActor).max(50).optional()
+};
 
-export const AutomationRuleMatchSchema = z.object({
+/** GitHub rules predate the provider tag, so stored rows have none; `provider` is optional here only. */
+export const AutomationGitHubRuleMatchSchema = z.object({
+  provider: z.literal('github').optional(),
   repository: githubRepository,
   events: z.array(AutomationGitHubEventSchema).min(1).max(2)
     .refine((events) => new Set(events).size === events.length, 'events must be unique'),
@@ -73,6 +125,83 @@ export const AutomationRuleMatchSchema = z.object({
   actorAllowlist: z.array(githubLogin).max(50).optional()
 }).strict();
 
+const LABEL_TRIGGER_MESSAGE = 'a label_added rule takes exactly a label; a state or status rule takes no label';
+
+/** A Linear issue gained a label, or moved to a workflow state (any state when `toState` is omitted). */
+export const AutomationLinearRuleMatchSchema = z.object({
+  provider: z.literal('linear'),
+  /** Team key (the `ENG` of `ENG-123`); omitted matches every team the webhook covers. */
+  teamKey: z.string().regex(/^[A-Za-z0-9_]{1,16}$/u).optional(),
+  trigger: z.enum(['label_added', 'state_changed']),
+  label: label.optional(),
+  toState: stateName.optional(),
+  ...actorFilters
+}).strict().refine((match) => (match.trigger === 'label_added'
+  ? match.label !== undefined && match.toState === undefined
+  : match.label === undefined), { message: LABEL_TRIGGER_MESSAGE, path: ['trigger'] });
+
+/** A Jira issue gained a label, or moved to a status (any status when `toStatus` is omitted). */
+export const AutomationJiraRuleMatchSchema = z.object({
+  provider: z.literal('jira'),
+  projectKey: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,19}$/u),
+  trigger: z.enum(['label_added', 'status_changed']),
+  label: label.optional(),
+  toStatus: stateName.optional(),
+  ...actorFilters
+}).strict().refine((match) => (match.trigger === 'label_added'
+  ? match.label !== undefined && match.toStatus === undefined
+  : match.label === undefined), { message: LABEL_TRIGGER_MESSAGE, path: ['trigger'] });
+
+const customEventName = z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/u);
+
+/** A signed custom event with this name, optionally carrying this label. */
+export const AutomationCustomRuleMatchSchema = z.object({
+  provider: z.literal('custom'),
+  event: customEventName,
+  label: label.optional()
+}).strict();
+
+const singleLine = (max: number) => z.string().min(1).max(max).refine((value) => !/[\0\r\n]/u.test(value), 'value cannot contain control characters');
+
+/**
+ * The one body shape a custom webhook sends. It is fixed on purpose: there is no field that names a
+ * repository, workspace, profile, tool, command or instruction, and unknown keys are rejected, so a
+ * sender can only say what happened to which resource. The rule pins everything else.
+ */
+export const AutomationCustomEnvelopeSchema = z.object({
+  version: z.literal(1),
+  event: customEventName,
+  resource: z.object({
+    id: singleLine(100),
+    title: z.string().max(AUTOMATION_LIMITS.maxUntrustedTitleChars).optional(),
+    body: z.string().max(AUTOMATION_LIMITS.maxUntrustedBodyChars).optional(),
+    url: z.string().max(300).url().startsWith('https://').optional()
+  }).strict(),
+  /** One label added. Mutually exclusive with `labelsAdded`. */
+  label: label.optional(),
+  /** Labels added; the first one is the event's label, and a label rule matches any of them. */
+  labelsAdded: z.array(label).min(1).max(20).optional(),
+  actor: z.object({
+    login: singleLine(254),
+    id: singleLine(200).optional(),
+    isBot: z.boolean().optional()
+  }).strict().optional()
+}).strict().refine((envelope) => envelope.label === undefined || envelope.labelsAdded === undefined, {
+  message: 'send label or labelsAdded, not both',
+  path: ['labelsAdded']
+});
+
+/**
+ * Provider-specific trigger. The rule's connection fixes the provider; the runner refuses a match
+ * whose provider differs from its connection's.
+ */
+export const AutomationRuleMatchSchema = z.union([
+  AutomationGitHubRuleMatchSchema,
+  AutomationLinearRuleMatchSchema,
+  AutomationJiraRuleMatchSchema,
+  AutomationCustomRuleMatchSchema
+]);
+
 export const AutomationRuleBudgetSchema = z.object({
   ttlSeconds: z.number().int().min(60).max(7_200).default(900),
   maxInputTokens: z.number().int().min(1).max(2_000_000).default(200_000),
@@ -81,6 +210,12 @@ export const AutomationRuleBudgetSchema = z.object({
 }).strict();
 
 export const AutomationRuleActionSchema = z.object({
+  /**
+   * Repository (owner/name on github.com) the workspace checks out. Non-GitHub rules must pin it,
+   * since nothing in their events may choose a repository; GitHub rules take it from
+   * `match.repository` and leave this unset.
+   */
+  repository: githubRepository.optional(),
   /** Branch or tag the workspace checks out; omitted uses the repository default branch. */
   ref: gitRef.optional(),
   profileId,
@@ -90,7 +225,7 @@ export const AutomationRuleActionSchema = z.object({
     .refine((operations) => new Set(operations).size === operations.length, 'proxy operations must be unique')
     .default([...AUTOMATION_DEFAULT_PROXY_OPERATIONS]),
   budget: AutomationRuleBudgetSchema.default(AutomationRuleBudgetSchema.parse({})),
-  /** Post the agent's answer as one comment on the source issue or pull request. */
+  /** Post the agent's answer as one comment on the source issue, pull request or ticket. */
   publishComment: z.boolean().default(false),
   /** After a workflow for a resource ends, a repeat trigger on it is ignored for this long. */
   cooldownSeconds: z.number().int().min(0).max(86_400).default(300),
@@ -104,21 +239,118 @@ export const AutomationRuleActionSchema = z.object({
   coding: CodingRuleActionSchema.optional()
 }).strict();
 
+/** The provider a rule match targets. GitHub matches stored before the provider tag carry none. */
+export function automationMatchProvider(match: z.infer<typeof AutomationRuleMatchSchema>): z.infer<typeof AutomationProviderSchema> {
+  return match.provider ?? 'github';
+}
+
+/**
+ * The repository a workflow checks out is always owner-authored: GitHub rules name it in
+ * `match.repository` (the event must come from that repository), every other provider pins
+ * `action.repository`. Returns why a match and action disagree, or undefined.
+ */
+export function automationRuleProblem(match: z.infer<typeof AutomationRuleMatchSchema>, action: Pick<z.infer<typeof AutomationRuleActionSchema>, 'repository'>): string | undefined {
+  if (automationMatchProvider(match) === 'github') {
+    return action.repository === undefined ? undefined : 'GitHub rules take the repository from match.repository';
+  }
+  return action.repository === undefined ? 'rules for this provider must pin action.repository' : undefined;
+}
+
+/** Coding runs answer a GitHub issue or pull request; other providers stay read-only. */
+export function automationCodingProblem(match: z.infer<typeof AutomationRuleMatchSchema>, action: Pick<z.infer<typeof AutomationRuleActionSchema>, 'coding'>): string | undefined {
+  return action.coding !== undefined && automationMatchProvider(match) !== 'github' ? 'coding runs are available only for GitHub rules' : undefined;
+}
+
 export const AutomationRuleInputSchema = z.object({
   connectionId: AutomationConnectionIdSchema,
   name,
   enabled: z.boolean().default(false),
   match: AutomationRuleMatchSchema,
   action: AutomationRuleActionSchema
-}).strict();
+}).strict().superRefine((input, context) => {
+  const problem = automationRuleProblem(input.match, input.action);
+  if (problem) context.addIssue({ code: 'custom', path: ['action', 'repository'], message: problem });
+  const coding = automationCodingProblem(input.match, input.action);
+  if (coding) context.addIssue({ code: 'custom', path: ['action', 'coding'], message: coding });
+});
 
-export const AutomationSampleEventSchema = z.object({
+/** The original GitHub-shaped preview sample. */
+export const AutomationGitHubSampleEventSchema = z.object({
   event: AutomationGitHubEventSchema,
   repository: githubRepository,
   label,
   senderLogin: githubLogin,
   senderType: z.enum(['User', 'Bot', 'Organization']).default('User')
 }).strict();
+
+/** A preview sample in normalized form, for any provider. */
+export const AutomationNormalizedSampleEventSchema = z.object({
+  provider: AutomationProviderSchema,
+  eventType: AutomationEventTypeSchema,
+  /** Repository, Linear team key, Jira project key, or custom event name. */
+  scope: z.string().min(1).max(200),
+  label: label.optional(),
+  fromState: stateName.optional(),
+  toState: stateName.optional(),
+  actor: z.object({ login: providerActor, isBot: z.boolean().default(false) }).strict()
+}).strict().refine((sample) => sample.eventType.startsWith(`${sample.provider}.`), { message: 'eventType must belong to the provider', path: ['eventType'] });
+
+export const AutomationSampleEventSchema = z.union([AutomationGitHubSampleEventSchema, AutomationNormalizedSampleEventSchema]);
+
+/** An outbound API credential: a Linear API key or a Jira API token. Stored sealed, never returned. */
+const outboundCredential = z.string().min(8).max(1_024).regex(/^[\x21-\x7E]+$/u, 'credential must be printable ASCII without spaces');
+const jiraEmail = z.email().max(254);
+const RESERVED_HOST_SUFFIX = /(?:^|\.)(?:localhost|local|internal|lan|home|corp|intranet)$/u;
+const DNS_NAME = /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/u;
+
+/**
+ * A Jira site origin: `https://<site>.atlassian.net`, or the HTTPS origin of a public DNS name for
+ * a self-hosted site. Credentials, ports, paths, IP literals and internal names are refused here;
+ * outbound calls must still resolve the name and refuse private addresses.
+ */
+export const AutomationJiraBaseUrlSchema = z.string().max(300).refine((value) => {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash || url.pathname !== '/') return false;
+  const host = url.hostname.toLowerCase();
+  return DNS_NAME.test(host) && !RESERVED_HOST_SUFFIX.test(host);
+}, 'baseUrl must be an https origin such as https://example.atlassian.net').transform((value) => new URL(value).origin);
+
+const sameOutboundPair = (input: { email?: string | undefined; apiToken?: string | undefined }) => (input.email === undefined) === (input.apiToken === undefined);
+const OUTBOUND_PAIR_MESSAGE = 'email and apiToken are set together';
+
+/** Connection settings per provider. Outbound credentials are optional and only used to post back. */
+export const AutomationConnectionCreateInputSchema = z.discriminatedUnion('provider', [
+  z.object({ provider: z.literal('github'), name }).strict(),
+  z.object({ provider: z.literal('linear'), name, apiKey: outboundCredential.optional() }).strict(),
+  z.object({ provider: z.literal('jira'), name, baseUrl: AutomationJiraBaseUrlSchema, email: jiraEmail.optional(), apiToken: outboundCredential.optional() })
+    .strict().refine(sameOutboundPair, { message: OUTBOUND_PAIR_MESSAGE, path: ['apiToken'] }),
+  z.object({ provider: z.literal('custom'), name }).strict()
+]);
+
+export const AutomationConnectionUpdateInputSchema = z.object({
+  id: AutomationConnectionIdSchema,
+  expectedGeneration,
+  name: name.optional(),
+  enabled: z.boolean().optional(),
+  /** Replaces a Linear connection's outbound API key. */
+  apiKey: outboundCredential.optional(),
+  /** Replace a Jira connection's outbound credential; set together. */
+  email: jiraEmail.optional(),
+  apiToken: outboundCredential.optional(),
+  /** Removes the stored outbound credential. */
+  clearOutbound: z.literal(true).optional()
+}).strict()
+  .refine(sameOutboundPair, { message: OUTBOUND_PAIR_MESSAGE, path: ['apiToken'] })
+  .refine((input) => !input.clearOutbound || (input.apiKey === undefined && input.apiToken === undefined),
+    { message: 'clearOutbound cannot be combined with a new credential', path: ['clearOutbound'] });
+
+/** Most allowlisted headers any provider forwards; keeps the record bounded before it is checked. */
+const MAX_WEBHOOK_HEADERS = 8;
 
 const principalScoped = { version: z.literal(1), principal: RunnerPrincipalSelectorSchema };
 const owner = <O extends string, I extends z.ZodType>(operation: O, input: I) =>
@@ -132,17 +364,39 @@ export const AutomationsRunnerRequestSchema = z.discriminatedUnion('operation', 
     input: z.object({
       provider: AutomationProviderSchema,
       connectionId: z.string().min(1).max(100),
-      event: z.string().min(1).max(64),
-      deliveryId: z.string().min(1).max(100),
-      signature: z.string().max(200),
+      /** The provider's allowlisted request headers (`AUTOMATION_WEBHOOK_HEADERS`), lower-cased. */
+      headers: z.record(z.string().max(64), z.string().max(200)).optional(),
+      /** The earlier GitHub-only form of the three GitHub headers, accepted when `headers` is absent. */
+      event: z.string().min(1).max(64).optional(),
+      deliveryId: z.string().min(1).max(100).optional(),
+      signature: z.string().max(200).optional(),
       bodyBase64: z.string().max(Math.ceil(AUTOMATION_LIMITS.maxRawBodyBytes / 3) * 4)
-    }).strict()
+    }).strict().superRefine((input, context) => {
+      const legacy = [input.event, input.deliveryId, input.signature];
+      if (!input.headers) {
+        if (input.provider !== 'github' || legacy.some((value) => value === undefined)) {
+          context.addIssue({ code: 'custom', path: ['headers'], message: 'webhook headers are required' });
+        }
+        return;
+      }
+      if (legacy.some((value) => value !== undefined)) {
+        context.addIssue({ code: 'custom', path: ['headers'], message: 'send webhook headers in one form only' });
+      }
+      const allowed = new Map<string, number>(AUTOMATION_WEBHOOK_HEADERS[input.provider].map((header) => [header.name, header.maxChars]));
+      const entries = Object.entries(input.headers);
+      if (entries.length > MAX_WEBHOOK_HEADERS) context.addIssue({ code: 'custom', path: ['headers'], message: 'too many webhook headers' });
+      for (const [header, value] of entries) {
+        const maxChars = allowed.get(header);
+        if (maxChars === undefined || value.length > maxChars) {
+          context.addIssue({ code: 'custom', path: ['headers'], message: 'webhook header is not allowed for this provider' });
+          return;
+        }
+      }
+    })
   }).strict(),
   owner('connections_list', z.object({}).strict()),
-  owner('connection_create', z.object({ provider: AutomationProviderSchema, name }).strict()),
-  owner('connection_update', z.object({
-    id: AutomationConnectionIdSchema, expectedGeneration, name: name.optional(), enabled: z.boolean().optional()
-  }).strict()),
+  owner('connection_create', AutomationConnectionCreateInputSchema),
+  owner('connection_update', AutomationConnectionUpdateInputSchema),
   owner('connection_rotate_secret', z.object({ id: AutomationConnectionIdSchema, expectedGeneration }).strict()),
   owner('connection_delete', z.object({ id: AutomationConnectionIdSchema, expectedGeneration }).strict()),
   owner('rules_list', z.object({ connectionId: AutomationConnectionIdSchema.optional() }).strict()),
@@ -154,12 +408,18 @@ export const AutomationsRunnerRequestSchema = z.discriminatedUnion('operation', 
     enabled: z.boolean().optional(),
     match: AutomationRuleMatchSchema.optional(),
     action: AutomationRuleActionSchema.optional()
-  }).strict()),
+  }).strict().superRefine((input, context) => {
+    // A partial update is checked again by the runner against the stored half.
+    const problem = input.match && input.action ? automationRuleProblem(input.match, input.action) : undefined;
+    if (problem) context.addIssue({ code: 'custom', path: ['action', 'repository'], message: problem });
+  })),
   owner('rule_delete', z.object({ id: AutomationRuleIdSchema, expectedGeneration }).strict()),
   owner('rule_preview', z.object({ id: AutomationRuleIdSchema, sample: AutomationSampleEventSchema }).strict()),
   owner('workflows_list', z.object({
     ruleId: AutomationRuleIdSchema.optional(),
     state: AutomationWorkflowStateSchema.optional(),
+    /** `FAILED` lists workflows whose result could not be posted back to the source. */
+    publishState: AutomationPublishStateSchema.optional(),
     limit: z.number().int().min(1).max(AUTOMATION_LIMITS.maxListLimit).default(50)
   }).strict()),
   owner('workflow_get', z.object({
@@ -170,7 +430,23 @@ export const AutomationsRunnerRequestSchema = z.discriminatedUnion('operation', 
   owner('workflow_cancel', z.object({ id: AutomationWorkflowIdSchema, reason: z.string().max(500).optional() }).strict()),
   owner('deliveries_list', z.object({
     connectionId: AutomationConnectionIdSchema.optional(),
+    /** `QUARANTINED` is the dead-letter view: deliveries that verified but could not be normalized. */
+    state: AutomationDeliveryStateSchema.optional(),
     limit: z.number().int().min(1).max(AUTOMATION_LIMITS.maxListLimit).default(50)
+  }).strict()),
+  /**
+   * Re-runs rule matching for a stored delivery from its normalized event, never from the raw
+   * payload (which is not stored). Matching uses the rules as they are now and creates workflows
+   * exactly as ingest would: disabled rules, the cooldown and one active workflow per rule and
+   * resource all apply, and a rule that already has a workflow from this delivery is skipped.
+   * `expectedState` refuses the replay with CONFLICT when the delivery has moved on.
+   */
+  owner('delivery_replay', z.object({ id: AutomationDeliveryIdSchema, expectedState: AutomationDeliveryStateSchema.optional() }).strict()),
+  /** Delivery health per connection (one connection when `connectionId` is set). */
+  owner('connection_health', z.object({ connectionId: AutomationConnectionIdSchema.optional() }).strict()),
+  /** Workflow outcomes, cost and latency per provider and per rule, for workflows created in the window. */
+  owner('automation_metrics', z.object({
+    windowDays: z.number().int().min(1).max(AUTOMATION_LIMITS.retentionMs / 86_400_000).default(7)
   }).strict())
 ]);
 
@@ -186,6 +462,10 @@ export const AutomationConnectionSummarySchema = z.object({
   webhookPath: z.string(),
   secretRotatedAt: instant,
   lastDeliveryAt: instant.nullable(),
+  /** Whether an outbound credential is stored. The credential itself is never returned. */
+  outboundConfigured: z.boolean().optional(),
+  /** Non-secret provider settings, such as a Jira site's origin. */
+  config: z.object({ baseUrl: z.string().optional() }).strict().optional(),
   createdAt: instant,
   updatedAt: instant
 }).strict();
@@ -209,9 +489,15 @@ export const AutomationWorkflowSummarySchema = z.object({
   connectionId: AutomationConnectionIdSchema,
   deliveryId: AutomationDeliveryIdSchema,
   eventType: AutomationEventTypeSchema,
+  provider: AutomationProviderSchema.optional(),
+  /** The repository the workspace checked out. */
   repository: z.string(),
-  resourceNumber: z.number().int().positive(),
+  /** GitHub issue or pull request number; null for other providers. */
+  resourceNumber: z.number().int().positive().nullable(),
+  /** Provider reference of the source, such as `#12` or `ENG-123`. */
+  resourceRef: z.string().optional(),
   resourceUrl: z.string(),
+  /** The label added, or the state or status moved to. */
   label: z.string(),
   state: AutomationWorkflowStateSchema,
   workspaceId: WorkspaceIdSchema.nullable(),
@@ -241,13 +527,72 @@ export const AutomationDeliverySummarySchema = z.object({
   providerDeliveryId: z.string(),
   providerEvent: z.string(),
   eventType: AutomationEventTypeSchema.nullable(),
+  provider: AutomationProviderSchema.optional(),
   repository: z.string().nullable(),
   resourceNumber: z.number().int().nullable(),
+  resourceRef: z.string().nullable().optional(),
   label: z.string().nullable(),
   state: AutomationDeliveryStateSchema,
+  /** A runner-chosen reason code (`no_matching_rule`, `malformed_json`, ...); never provider text. */
   outcome: z.string().nullable(),
   workflowsCreated: z.number().int().nonnegative(),
+  /** Whether `delivery_replay` accepts it: matching has finished and a normalized event is stored. */
+  replayable: z.boolean().optional(),
   receivedAt: instant
+}).strict();
+
+const deliveryStateCounts = z.object({
+  RECEIVED: z.number().int().nonnegative(),
+  PROCESSED: z.number().int().nonnegative(),
+  IGNORED: z.number().int().nonnegative(),
+  QUARANTINED: z.number().int().nonnegative()
+}).strict();
+
+/**
+ * Delivery health of one connection. Only signed, accepted deliveries are counted: requests that
+ * fail verification are refused without a write, so rejected signatures are not tracked.
+ */
+export const AutomationConnectionHealthSchema = z.object({
+  connectionId: AutomationConnectionIdSchema,
+  provider: AutomationProviderSchema,
+  enabled: z.boolean(),
+  outboundConfigured: z.boolean(),
+  lastDeliveryAt: instant.nullable(),
+  /** The most recent quarantined delivery still retained, with its reason code. */
+  lastQuarantine: z.object({ at: instant, reason: z.string().nullable() }).strict().nullable(),
+  /** Deliveries received in the last 24 hours and the last 7 days, by state. */
+  last24h: deliveryStateCounts,
+  last7d: deliveryStateCounts
+}).strict();
+
+/**
+ * Outcomes of the workflows created in the window. `successRate` is completed over terminal
+ * workflows (null before any finishes); latency is created-to-terminal of completed workflows,
+ * as nearest-rank percentiles in milliseconds (null when none completed).
+ */
+const automationMetrics = {
+  workflows: z.number().int().nonnegative(),
+  active: z.number().int().nonnegative(),
+  completed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  cancelled: z.number().int().nonnegative(),
+  expired: z.number().int().nonnegative(),
+  successRate: z.number().min(0).max(1).nullable(),
+  costMicros: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  latencyP50Ms: z.number().int().nonnegative().nullable(),
+  latencyP95Ms: z.number().int().nonnegative().nullable()
+};
+
+export const AutomationProviderMetricsSchema = z.object({ provider: AutomationProviderSchema, ...automationMetrics }).strict();
+export const AutomationRuleMetricsSchema = z.object({
+  ruleId: AutomationRuleIdSchema,
+  /** The rule's current name, or the name it ran under when it has since been deleted. */
+  name: z.string(),
+  provider: AutomationProviderSchema,
+  deleted: z.boolean(),
+  ...automationMetrics
 }).strict();
 
 export const AutomationsRunnerDataSchemas = {
@@ -273,7 +618,22 @@ export const AutomationsRunnerDataSchemas = {
     actionsCursor: z.string().nullable().default(null)
   }).strict(),
   workflow_cancel: z.object({ workflow: AutomationWorkflowSummarySchema }).strict(),
-  deliveries_list: z.object({ deliveries: z.array(AutomationDeliverySummarySchema) }).strict()
+  deliveries_list: z.object({ deliveries: z.array(AutomationDeliverySummarySchema) }).strict(),
+  delivery_replay: z.object({
+    delivery: AutomationDeliverySummarySchema,
+    /** The matching outcome of this replay: `workflows_created`, `no_matching_rule`, or the skip reasons. */
+    outcome: z.string(),
+    /** Workflows this replay created; empty when every rule was skipped. */
+    workflowIds: z.array(AutomationWorkflowIdSchema)
+  }).strict(),
+  connection_health: z.object({ health: z.array(AutomationConnectionHealthSchema) }).strict(),
+  automation_metrics: z.object({
+    windowDays: z.number().int().positive(),
+    since: instant,
+    providers: z.array(AutomationProviderMetricsSchema),
+    /** Busiest rules first, at most `maxListLimit`. */
+    rules: z.array(AutomationRuleMetricsSchema)
+  }).strict()
 } as const;
 
 /**
@@ -300,9 +660,22 @@ export type AutomationRuleInput = z.infer<typeof AutomationRuleInputSchema>;
 export type AutomationRuleMatch = z.infer<typeof AutomationRuleMatchSchema>;
 export type AutomationRuleAction = z.infer<typeof AutomationRuleActionSchema>;
 export type AutomationSampleEvent = z.infer<typeof AutomationSampleEventSchema>;
+export type AutomationNormalizedSampleEvent = z.infer<typeof AutomationNormalizedSampleEventSchema>;
+export type AutomationProvider = z.infer<typeof AutomationProviderSchema>;
+export type AutomationGitHubRuleMatch = z.infer<typeof AutomationGitHubRuleMatchSchema>;
+export type AutomationLinearRuleMatch = z.infer<typeof AutomationLinearRuleMatchSchema>;
+export type AutomationJiraRuleMatch = z.infer<typeof AutomationJiraRuleMatchSchema>;
+export type AutomationCustomRuleMatch = z.infer<typeof AutomationCustomRuleMatchSchema>;
+export type AutomationCustomEnvelope = z.infer<typeof AutomationCustomEnvelopeSchema>;
+export type AutomationConnectionCreateInput = z.infer<typeof AutomationConnectionCreateInputSchema>;
+export type AutomationConnectionUpdateInput = z.infer<typeof AutomationConnectionUpdateInputSchema>;
+export type AutomationWebhookHeader = (typeof AUTOMATION_WEBHOOK_HEADERS)[AutomationProvider][number];
 export type AutomationWorkflowState = z.infer<typeof AutomationWorkflowStateSchema>;
 export type AutomationEventType = z.infer<typeof AutomationEventTypeSchema>;
 export type AutomationConnectionSummary = z.infer<typeof AutomationConnectionSummarySchema>;
 export type AutomationRuleSummary = z.infer<typeof AutomationRuleSummarySchema>;
 export type AutomationWorkflowSummary = z.infer<typeof AutomationWorkflowSummarySchema>;
 export type AutomationDeliverySummary = z.infer<typeof AutomationDeliverySummarySchema>;
+export type AutomationConnectionHealth = z.infer<typeof AutomationConnectionHealthSchema>;
+export type AutomationProviderMetrics = z.infer<typeof AutomationProviderMetricsSchema>;
+export type AutomationRuleMetrics = z.infer<typeof AutomationRuleMetricsSchema>;

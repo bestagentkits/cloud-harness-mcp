@@ -68,11 +68,11 @@ describe('automation webhook ingress', () => {
     expect(harness.requests).toHaveLength(0);
   });
 
-  it('forwards the exact raw bytes and the GitHub headers to the runner', async () => {
+  it('forwards the exact raw bytes and only the allowlisted GitHub headers to the runner', async () => {
     const harness = await start();
     // Whitespace, key order and non-ASCII text must survive untouched: the signature covers these bytes.
     const raw = Buffer.from('{ "action":"labeled",  "label":{"name":"triage ✓"}, "z":1 }\n', 'utf8');
-    const response = await deliver(harness, raw);
+    const response = await deliver(harness, raw, githubHeaders({ cookie: 'session=secret', 'linear-signature': 'x', 'x-forwarded-for': '10.0.0.1' }));
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ status: 'accepted' });
     expect(response.headers.get('cache-control')).toBe('no-store');
@@ -80,10 +80,70 @@ describe('automation webhook ingress', () => {
       version: 1,
       operation: 'webhook_ingest',
       input: {
-        provider: 'github', connectionId, event: 'issues', deliveryId: '72d3162e-cc78-11e3-81ab-4c9367dc0958',
-        signature, bodyBase64: raw.toString('base64')
+        provider: 'github', connectionId,
+        headers: { 'x-github-event': 'issues', 'x-github-delivery': '72d3162e-cc78-11e3-81ab-4c9367dc0958', 'x-hub-signature-256': signature },
+        bodyBase64: raw.toString('base64')
       }
     }]);
+  });
+
+  it.each([
+    ['linear', { 'linear-event': 'Issue', 'linear-delivery': 'd-1', 'linear-signature': 'a'.repeat(64) }],
+    ['jira', { 'x-atlassian-webhook-identifier': '42', 'x-hub-signature': `sha256=${'b'.repeat(64)}` }],
+    ['jira', { 'x-hub-signature': `sha256=${'b'.repeat(64)}` }],
+    ['custom', { 'x-cloudharness-delivery': 'd-2', 'x-cloudharness-timestamp': '1792400000', 'x-cloudharness-signature': `v1=${'c'.repeat(64)}` }]
+  ] as const)('forwards the %s allowlist and nothing else', async (provider, providerHeaders) => {
+    const harness = await start();
+    const response = await fetch(`${harness.origin}/integrations/webhooks/${provider}/${connectionId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...providerHeaders, 'x-github-event': 'issues', authorization: 'Bearer leaked' },
+      body: '{}'
+    });
+    expect(response.status).toBe(202);
+    expect(harness.requests).toEqual([{
+      version: 1, operation: 'webhook_ingest', input: { provider, connectionId, headers: providerHeaders, bodyBase64: Buffer.from('{}').toString('base64') }
+    }]);
+  });
+
+  it('forwards only webhook_ingest, even when the request names a management operation', async () => {
+    const harness = await start();
+    const management = JSON.stringify({ version: 1, principal: { kind: 'owner', ownerId: 'owner' }, operation: 'rules_list', input: {} });
+    const response = await fetch(`${harness.origin}/integrations/webhooks/github/${connectionId}?operation=rule_create`, {
+      method: 'POST', headers: githubHeaders({ 'x-cloudharness-operation': 'rule_update', authorization: 'Bearer test-bearer-token-that-is-longer-than-32-characters' }), body: management
+    });
+    expect(response.status).toBe(202);
+    for (const path of ['rules_list', `rule_create/${connectionId}`, `github/${connectionId}/rules_list`]) {
+      expect((await fetch(`${harness.origin}/integrations/webhooks/${path}`, { method: 'POST', headers: githubHeaders(), body: management })).status, path).toBe(404);
+    }
+    expect(harness.requests).toHaveLength(1);
+    expect(harness.requests[0]).toEqual({
+      version: 1, operation: 'webhook_ingest',
+      input: { provider: 'github', connectionId, headers: expect.any(Object), bodyBase64: Buffer.from(management).toString('base64') }
+    });
+    expect(harness.requests[0]).not.toHaveProperty('principal');
+  });
+
+  it.each([
+    ['linear', { 'linear-event': 'Issue', 'linear-delivery': 'd-1' }, 401],
+    ['linear', { 'linear-delivery': 'd-1', 'linear-signature': 's' }, 400],
+    ['jira', { 'x-atlassian-webhook-identifier': '42' }, 401],
+    ['jira', { 'x-atlassian-webhook-identifier': 'i'.repeat(101), 'x-hub-signature': 's' }, 400],
+    ['custom', { 'x-cloudharness-delivery': 'd', 'x-cloudharness-signature': 's' }, 400],
+    ['custom', { 'x-cloudharness-delivery': 'd', 'x-cloudharness-timestamp': '1', 'x-cloudharness-signature': 's'.repeat(201) }, 401]
+  ] as const)('rejects incomplete %s headers before the runner', async (provider, providerHeaders, status) => {
+    const harness = await start();
+    const response = await fetch(`${harness.origin}/integrations/webhooks/${provider}/${connectionId}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...providerHeaders }, body: '{}'
+    });
+    expect(response.status).toBe(status);
+    expect(harness.requests).toHaveLength(0);
+  });
+
+  it('does not route an unknown provider', async () => {
+    const harness = await start();
+    const response = await fetch(`${harness.origin}/integrations/webhooks/gitlab/${connectionId}`, { method: 'POST', headers: githubHeaders(), body: '{}' });
+    expect(response.status).toBe(404);
+    expect(harness.requests).toHaveLength(0);
   });
 
   it.each(['duplicate', 'ignored'] as const)('acknowledges a %s delivery with 202', async (outcome) => {

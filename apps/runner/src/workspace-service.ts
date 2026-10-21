@@ -4611,6 +4611,22 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           (validated.description as string) ?? '',
           (validated.targetUrl as string) ?? ''
         ]; break;
+        case 'check_run_create': args = [
+          validated.sha as string,
+          validated.name as string,
+          validated.status as string,
+          (validated.conclusion as string) ?? '',
+          (validated.externalId as string) ?? '',
+          (validated.title as string) ?? '',
+          (validated.summary as string) ?? ''
+        ]; break;
+        case 'check_run_update': args = [
+          String(validated.checkRunId),
+          (validated.status as string) ?? '',
+          (validated.conclusion as string) ?? '',
+          (validated.title as string) ?? '',
+          (validated.summary as string) ?? ''
+        ]; break;
         case 'workflow_dispatch': args = [
           String(validated.workflow),
           validated.ref as string,
@@ -4660,7 +4676,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         if (typeof validated.state === 'string') details.state = validated.state;
         if (typeof validated.idempotencyKey === 'string') details.idempotencyKey = validated.idempotencyKey;
         if (typeof validated.name === 'string' && action === 'label_create') details.labelName = validated.name;
-        if (typeof validated.sha === 'string' && action === 'commit_status_create') details.sha = validated.sha;
+        if (typeof validated.sha === 'string' && (action === 'commit_status_create' || action === 'check_run_create')) details.sha = validated.sha;
+        if (typeof validated.checkRunId === 'number') details.checkRunId = validated.checkRunId;
+        if (typeof validated.conclusion === 'string') details.conclusion = validated.conclusion;
         if (typeof validated.context === 'string') details.statusContext = validated.context;
         if (typeof validated.runId === 'number') details.runId = validated.runId;
         if (validated.workflow !== undefined) details.workflow = String(validated.workflow);
@@ -5813,7 +5831,7 @@ const GITHUB_CHECKOUT_FREE_ACTIONS: ReadonlySet<string> = new Set(['pr_merge', '
 const GITHUB_IDEMPOTENT_ACTIONS: ReadonlySet<string> = new Set([
   'pr_comment', 'issue_comment', 'issue_labels_add', 'issue_publish',
   'pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_reviewers_request', 'pr_merge', 'pr_auto_merge_enable',
-  'commit_status_create', 'workflow_dispatch', 'workflow_run_rerun_failed'
+  'commit_status_create', 'check_run_create', 'workflow_dispatch', 'workflow_run_rerun_failed'
 ]);
 
 /** The capability noun each non-contents scope reports in `requiredCapability`, such as `repository.statusesWrite`. */

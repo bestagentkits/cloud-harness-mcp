@@ -24,7 +24,8 @@ const GITHUB_ACTION_PERMISSIONS: Record<string, GitHubActionPermissions> = {
   issue_view: { scope: 'issues', write: false, optionalScope: 'pull_requests' },
   issue_create: { scope: 'issues', write: true },
   issue_comment: { scope: 'issues', write: true, optionalScope: 'pull_requests' },
-  issue_comment_update: { scope: 'issues', write: true },
+  // A comment on a pull request is an issue comment, so editing it also needs `pull_requests`.
+  issue_comment_update: { scope: 'issues', write: true, optionalScope: 'pull_requests' },
   issue_update: { scope: 'issues', write: true, optionalScope: 'pull_requests' },
   issue_publish: { scope: 'issues', write: true, optionalScope: 'pull_requests' },
   label_create: { scope: 'issues', write: true },
@@ -57,6 +58,8 @@ const GITHUB_ACTION_PERMISSIONS: Record<string, GitHubActionPermissions> = {
   commit_status_get: { scope: 'statuses', write: false },
   commit_status_create: { scope: 'statuses', write: true },
   check_runs_list: { scope: 'checks', write: false },
+  check_run_create: { scope: 'checks', write: true },
+  check_run_update: { scope: 'checks', write: true },
   workflow_runs_list: { scope: 'actions', write: false },
   workflow_run_view: { scope: 'actions', write: false },
   workflow_dispatch: { scope: 'actions', write: true },

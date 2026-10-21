@@ -2,7 +2,10 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import { TOOL_SPECS } from '../packages/contracts/dist/index.js';
+import { AUTOMATION_TOOL_SPECS, TOOL_SPECS as WORKSPACE_TOOL_SPECS } from '../packages/contracts/dist/index.js';
+
+// The remote endpoints list the automation tools next to the workspace tools.
+const TOOL_SPECS = [...WORKSPACE_TOOL_SPECS, ...AUTOMATION_TOOL_SPECS];
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -66,6 +69,11 @@ const CATEGORIES = [
     title: 'Retained Artifacts',
     description: 'Tools for snapshotting workspace files, listing, reading bounded ranges, restoring into workspaces, and deleting retained artifacts.',
     names: ['artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete']
+  },
+  {
+    title: 'Automations',
+    description: 'List and create webhook automation rules (created disabled; the owner enables them on the Dashboard), disable rules, and list, read, and cancel automation runs. Remote endpoints only, off unless the operator enables automations. Connections and their secrets stay on the Dashboard.',
+    names: AUTOMATION_TOOL_SPECS.map((spec) => spec.name)
   }
 ];
 

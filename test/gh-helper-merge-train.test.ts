@@ -46,6 +46,13 @@ case "$method $path" in
       | { sha: $sha, total_count: ($s | length), statuses: $s,
           state: (if any($s[]; .state == "failure" or .state == "error") then "failure"
                   elif ($s | length) == 0 or any($s[]; .state == "pending") then "pending" else "success" end) }' | respond ;;
+  "POST repos/{owner}/{repo}/check-runs"|"PATCH repos/{owner}/{repo}/check-runs/"*)
+    printf '%s' "$body" > "$dir/check-run.json"
+    if [ -n "$STUB_CHECKS_FORBIDDEN" ]; then echo 'gh: Resource not accessible by integration (HTTP 403)' >&2; exit 1; fi
+    jq -c --arg id "$(basename "$path")" --arg sha "$STUB_HEAD_SHA" '{ id: (if $id == "check-runs" then 777 else ($id | tonumber) end),
+      name: (.name // "Cloud Harness: Triage"), status: (if .conclusion then "completed" else (.status // "in_progress") end),
+      conclusion: (.conclusion // null), head_sha: (.head_sha // $sha), external_id: (.external_id // null),
+      started_at: "2026-10-19T00:00:00Z", completed_at: null, html_url: "https://github.com/acme/widgets/runs/777" }' <<<"$body" | respond ;;
   "GET repos/{owner}/{repo}/commits/heads/main")
     printf '{"sha":"%s"}' "$STUB_HEAD_SHA" | respond ;;
   "GET repos/{owner}/{repo}/commits/"*)
@@ -131,6 +138,40 @@ describe.skipIf(process.platform === 'win32')('gh-helper merge-train actions', (
     expect(run(['commit_status_create', HEAD_SHA, 'success', '']).stderr).toContain('context required');
     expect(run(['commit_status_get', '../../orgs']).stderr).toContain('Revision must be');
     expect(calls()).toEqual([]);
+  });
+
+  it('creates a check run from a JSON body and completes it by id', () => {
+    const { directory, run, calls } = workspace();
+    const summary = 'Line one with "quotes", $HOME and `ticks`\nline two';
+    const created = run(['check_run_create', HEAD_SHA, 'Cloud Harness: Triage', 'in_progress', '', 'wfl_1', 'Agent running', summary]);
+    expect(created.status).toBe(0);
+    expect(created.json()).toMatchObject({ id: 777, name: 'Cloud Harness: Triage', status: 'in_progress', headSha: HEAD_SHA, externalId: 'wfl_1' });
+    expect(JSON.parse(readFileSync(join(directory, 'check-run.json'), 'utf8'))).toEqual({
+      head_sha: HEAD_SHA, name: 'Cloud Harness: Triage', status: 'in_progress', external_id: 'wfl_1', output: { title: 'Agent running', summary }
+    });
+    expect(calls()[0]).toEqual(expect.arrayContaining(['-X', 'POST', 'repos/{owner}/{repo}/check-runs', '--input', '-']));
+
+    const completed = run(['check_run_update', '777', 'completed', 'timed_out', 'Agent timed out', 'Ran out of time.']);
+    expect(completed.status).toBe(0);
+    expect(completed.json()).toMatchObject({ id: 777, status: 'completed', conclusion: 'timed_out' });
+    expect(JSON.parse(readFileSync(join(directory, 'check-run.json'), 'utf8'))).toEqual({
+      status: 'completed', conclusion: 'timed_out', output: { title: 'Agent timed out', summary: 'Ran out of time.' }
+    });
+    expect(calls()[1]).toEqual(expect.arrayContaining(['-X', 'PATCH', 'repos/{owner}/{repo}/check-runs/777']));
+  });
+
+  it('refuses a malformed check run write before calling GitHub and reports a refused permission', () => {
+    const { run, calls } = workspace();
+    expect(run(['check_run_create', 'main', 'n', 'in_progress']).stderr).toContain('full lowercase commit ID');
+    expect(run(['check_run_create', HEAD_SHA, '', 'in_progress']).stderr).toContain('name required');
+    expect(run(['check_run_create', HEAD_SHA, 'n', 'done']).stderr).toContain('queued, in_progress, or completed');
+    expect(run(['check_run_update', '1', 'completed', 'stale']).stderr).toContain('success, failure, neutral');
+    expect(run(['check_run_update', '1', '', '', 'title only', '']).stderr).toContain('set together');
+    expect(run(['check_run_update', '../1', 'completed', 'success']).stderr).toContain('positive integer');
+    expect(calls()).toEqual([]);
+    const refused = run(['check_run_create', HEAD_SHA, 'n', 'in_progress'], { STUB_CHECKS_FORBIDDEN: '1' });
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toContain('Resource not accessible by integration');
   });
 
   it('dispatches a workflow and finds its run by the returned head SHA', () => {

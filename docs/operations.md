@@ -102,7 +102,7 @@ the `secrets:rekey` package script or its compiled runner command.
 
 That command re-encrypts secret versions, workspace secret snapshots,
 downstream MCP OAuth grants and pending flows, MCP Events webhook secrets, and
-webhook automation connection secrets. A grant is rewritten only while
+webhook automation connection secrets and outbound credentials. A grant is rewritten only while
 its generation is unchanged, so a concurrent token refresh is never overwritten.
 
 The command is interruptible and safe to resume; verify that it completes,
@@ -368,10 +368,22 @@ later upgrade, and nothing replays the lost events.
 Automation connections, rules, deliveries, workflows, and transitions live in
 additive, unversioned tables in the runner state database
 ([`apps/runner/src/automation-schema.ts`](../apps/runner/src/automation-schema.ts)).
-An older runner ignores them, so a code-only rollback needs no data change, and
-the normal state backup covers them. Raw webhook payloads are never stored.
-Terminal workflows and deliveries are purged after the retention window in
-[`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
+The normal state backup covers them. Raw webhook payloads are never stored;
+a delivery keeps only bounded normalized fields, which is what replay re-matches.
+
+Adding the Linear, Jira, and custom providers rebuilt `automation_connections`
+in place to widen its provider check and added nullable columns. A code-only
+rollback to a GitHub-only release still reads and writes GitHub rows unchanged,
+but that release's response schemas accept only GitHub connections, rule
+matches, deliveries, and workflows, so any other provider's row makes its
+connection, rule, delivery, or run lists fail. Before such a rollback, delete
+every non-GitHub connection on the Dashboard (and remove the matching provider
+webhooks). Deleting a connection removes its rules, deliveries, runs, and their
+transitions with it, and is refused with `CONFLICT` while any of its runs is
+queued, running, still publishing, or still closing its workspace: cancel those
+runs from their run pages and wait for cleanup first. A GitHub rule whose match
+was saved with an explicit `"provider": "github"` also fails the older strict
+match schema; save it again without that field before rolling back.
 
 To stop new runs, disable the connection (its deliveries then return `401`) or
 the rule (its queued workflows are cancelled) on the Dashboard. A workflow that
@@ -380,9 +392,12 @@ run page, which also cancels the agent and closes the workspace. Cancel running
 workflows before unsetting `AUTOMATIONS_ENABLED`: with the flag off the runner's
 engine does not tick, so an in-flight workflow is left until the flag returns
 and its workspace is reclaimed only by normal expiry. After a suspected secret leak, use **Rotate secret** on
-the connection and update the GitHub webhook at once: rotation has no grace
-window, so deliveries signed with the old secret return `401` until GitHub has
-the new one.
+the connection and update the provider's webhook at once (for Linear, through
+its API's `webhookUpdate`): rotation has no grace window, so deliveries signed
+with the old secret return `401` until the provider has the new one. A leaked
+Linear API key or Jira API token is revoked at the provider; replace it with
+**Outbound credentials** on the connection card, or remove it with **Clear
+credentials**.
 
 Coding workflows add the `coding_actions` receipt table and coding columns on
 the workflow row, also additive. To stop coding at once, set

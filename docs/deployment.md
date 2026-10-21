@@ -333,8 +333,9 @@ release's nginx upgrade installs the `/integrations/webhooks/` location whether
 or not the feature is enabled; with the feature off the API does not mount the
 route.
 
-In Access mode the hostname-wide application would send GitHub's deliveries to
-a login page, and GitHub cannot present an Access credential. Add a separate
+In Access mode the hostname-wide application would send provider deliveries to
+a login page, and GitHub, Linear, Jira, and custom senders cannot present an
+Access credential. Add a separate
 Self-hosted Access application scoped to the path
 `<public-host>/integrations/webhooks/` whose only policy is **Bypass**, so
 Access's more specific path match exempts only that prefix. Do not widen the
@@ -346,7 +347,9 @@ After deploying with the feature enabled, create a connection on the Dashboard
 Automations page, copy its webhook URL and one-time secret into a GitHub
 repository webhook (content type `application/json`, the **Issues** and/or
 **Pull requests** events), and confirm GitHub's `ping` delivery is answered
-`202` and listed as ignored. Disable the feature by cancelling running
+`202` and listed as ignored. Linear, Jira, and custom connections are set up
+the same way from the Dashboard; the per-provider steps are in the
+[Automations guide](../docs-site/dashboard/automations.md). Disable the feature by cancelling running
 workflows ([operations](operations.md#webhook-automation-state)), then unsetting
 the variable on both services and redeploying; the stored connections, rules, and history stay
 in the state database. Remove the Access bypass application when the feature is
