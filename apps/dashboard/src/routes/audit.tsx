@@ -6,10 +6,10 @@ import { compact, cursor, exact } from '@/lib/search-params';
 export const Route = createFileRoute('/audit')({
   staticData: { pageId: 'audit' },
   validateSearch: (raw: Record<string, unknown>) => exact({ cursor: cursor(raw) }),
-  loaderDeps: ({ search }) => ({ cursor: search.cursor }),
-  // Preload warms the page of the linked cursor, the same key the page reads.
-  loader: ({ context, deps, preload }) => {
-    if (preload) void context.queryClient.prefetchQuery(auditPageQuery(deps.cursor));
+  // Preload warms the page of the linked cursor, the same key the page reads. The cursor comes
+  // from the target location, not `loaderDeps`, so paging keeps one route match (no skeleton).
+  loader: ({ context, location, preload }) => {
+    if (preload) void context.queryClient.prefetchQuery(auditPageQuery(cursor(location.search)));
   },
   component: AuditRoute
 });
