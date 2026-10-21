@@ -405,7 +405,7 @@ export function renderAgentsIndex({ agents = [], filters = {}, now = Date.now() 
   const attentionOptions = [['', 'Any attention state'], ['needs-attention', 'Needs attention'], ['clear', 'Clear']].map(([value, label]) => `<option value="${value}"${(filters.attention ?? '') === value ? ' selected' : ''}>${label}</option>`).join('');
   const filterRow = '<form id="agent-filters" class="resource-filters" role="search" aria-label="Filter agents">'
     + `<label for="agent-status-filter">Status</label><select id="agent-status-filter" name="status">${statusOptions}</select>`
-    + (filters.workspaceId ? `<input type="hidden" name="workspaceId" value="${escape(filters.workspaceId)}">` : `<label for="agent-workspace-filter">Workspace</label><input id="agent-workspace-filter" name="workspaceId" value="${escape(filters.workspaceId ?? '')}" placeholder="ws_…" pattern="ws_[A-Za-z0-9_-]{20,80}">`)
+    + (filters.workspaceId ? `<input type="hidden" name="workspaceId" value="${escape(filters.workspaceId)}">` : `<label for="agent-workspace-filter">Workspace</label><input id="agent-workspace-filter" name="workspaceId" value="${escape(filters.workspaceId ?? '')}" placeholder="ws_…" pattern="ws_[A-Za-z0-9_\\-]{20,80}">`)
     + `<label for="agent-profile-filter">Profile</label><input id="agent-profile-filter" name="profileId" value="${escape(filters.profileId ?? '')}" placeholder="coding-fast">`
     + `<label for="agent-parent-filter">Parent agent</label><input id="agent-parent-filter" name="parentAgentId" value="${escape(filters.parentAgentId ?? '')}" placeholder="agent_…">`
     + `<label for="agent-attention-filter">Attention</label><select id="agent-attention-filter" name="attention">${attentionOptions}</select>`
@@ -664,7 +664,7 @@ export function renderWorktrees(worktrees = []) {
   const rows = worktrees.length
     ? worktrees.map((tree) => `<li class="worktree-row"><span class="mono wrap">${escape(String(tree.path ?? ''))}</span><span class="mono">${escape(String(tree.head ?? '').slice(0, 12))}</span><span>${escape(String(tree.branch ?? 'detached'))}</span><button class="danger remove-worktree" type="button" data-worktree-name="${escape(String(tree.path ?? '').split('/').pop() ?? '')}">Remove</button></li>`).join('')
     : '<li class="empty">No managed worktrees.</li>';
-  return `<details class="row-edit"><summary>Worktrees</summary><ul class="record-list worktree-list">${rows}</ul><form id="create-worktree-form" class="stack-form"><label for="worktree-name">Name</label><input id="worktree-name" name="name" required pattern="[A-Za-z0-9._-]{1,80}"><label for="worktree-ref">Ref</label><input id="worktree-ref" name="ref" required maxlength="255"><button type="submit">Create worktree</button><p class="form-status" aria-live="polite"></p></form></details>`;
+  return `<details class="row-edit"><summary>Worktrees</summary><ul class="record-list worktree-list">${rows}</ul><form id="create-worktree-form" class="stack-form"><label for="worktree-name">Name</label><input id="worktree-name" name="name" required pattern="[A-Za-z0-9._\\-]{1,80}"><label for="worktree-ref">Ref</label><input id="worktree-ref" name="ref" required maxlength="255"><button type="submit">Create worktree</button><p class="form-status" aria-live="polite"></p></form></details>`;
 }
 
 /**
@@ -1203,7 +1203,7 @@ export function renderArtifactIndex(artifacts, cursor) {
     id: 'snapshot-dialog', title: 'Create snapshot',
     description: 'Copy one workspace file into retained, bounded storage. The snapshot expires at the retention you set, or at the server default.',
     formId: 'snapshot-form', submitId: 'snapshot-submit', submitLabel: 'Create retained snapshot',
-    body: '<label for="snapshot-workspace">Workspace ID</label><input id="snapshot-workspace" name="workspaceId" required pattern="ws_[A-Za-z0-9_-]{20,80}"><label for="snapshot-path">Workspace path</label><input id="snapshot-path" name="path" required maxlength="1024"><label for="snapshot-name">Logical name</label><input id="snapshot-name" name="logicalName" required maxlength="128"><label for="snapshot-retention">Retention in seconds</label><input id="snapshot-retention" name="retentionSeconds" type="number" min="60" max="2592000" placeholder="Use server default">'
+    body: '<label for="snapshot-workspace">Workspace ID</label><input id="snapshot-workspace" name="workspaceId" required pattern="ws_[A-Za-z0-9_\\-]{20,80}"><label for="snapshot-path">Workspace path</label><input id="snapshot-path" name="path" required maxlength="1024"><label for="snapshot-name">Logical name</label><input id="snapshot-name" name="logicalName" required maxlength="128"><label for="snapshot-retention">Retention in seconds</label><input id="snapshot-retention" name="retentionSeconds" type="number" min="60" max="2592000" placeholder="Use server default">'
   })}`;
 }
 
