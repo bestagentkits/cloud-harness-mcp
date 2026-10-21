@@ -16,10 +16,18 @@ The Workspaces panel lists all currently active and recently closed workspace en
 
 ## Opening Workspaces
 
-Click **Open Workspace** in the Dashboard to launch a new workspace:
+Click **New workspace** on the Workspaces page to launch a new workspace. The wizard has
+three steps (Repository, Skills and toolkits, Review):
 - **Repository & Ref:** Enter an approved HTTPS Git repository and optional branch/tag.
 - **Network Profile (optional):** Override the instance default from [Settings](/dashboard/settings) for this workspace. Choose **No network (air-gapped isolation)** when the workspace must have no egress; otherwise dependency access permits only public DNS and TCP 80/443.
 - **Skill Sets (optional):** Select the sets the workspace should resolve. Because the same skill name can exist at several tiers, a launch can produce a conflict; resolve each one with a radio choice, since launch stays disabled until every conflict has an override. See [Skills & Skill Sets](/dashboard/skills).
+- **Toolkits (optional):** Add preset toolkits and ready licensed kits for your owner scope. A licensed kit without a licence token is shown as not ready. The review step asks the runner to check the selection before launch.
+
+The wizard survives a reload of the tab: it reopens on the same step with the same
+choices. A repository URL that contains credentials, a query or a fragment is refused and
+never kept. If the launch answer is lost, pressing **Launch workspace** again sends the
+same request key, so the harness opens at most one workspace for it; changing any field
+starts a new request. **Cancel** discards the draft.
 ::: danger Data Purge on Close
 Closing a workspace unmounts the Docker filesystem and recursively deletes the job directory. Ensure any necessary changes have been committed and pushed to origin before closing.
 :::
@@ -74,4 +82,20 @@ instead of a live graph: each task shows the tasks it depends on as a column. **
 opens a task's bounded output and puts the task in the address (`?task=`), so the view
 survives a reload; **Next slice** reads the next part of a long output. You can open a
 named shell session, read its output, and close it after a confirmation. The dependency
-graph view stays in the classic cockpit for now.
+graph is listed under the tasks, each task with the tasks it waits on.
+
+## Files, deploy and finalize in the new dashboard
+
+- **Files** keeps the folder in `?path=` and the open file in `?file=`, so a link opens
+  the same file. A save sends the file's last-read digest; if the file changed elsewhere
+  you get a conflict dialog that keeps your edit and lets you review the latest version
+  or copy your changes. Deleting a file asks for confirmation.
+- **Git** keeps the staged/unstaged diff choice in `?staged=`; checkout and removing a
+  worktree ask for confirmation.
+- **Automation** runs a hook at a chosen stage or a skill script, each pinned to the
+  digest you saw, so a changed hook or script is refused instead of run. Running a skill
+  script still needs an owner privilege grant that the dashboard cannot provide yet.
+- **Deploy** is a two-step wizard: choose a target, review it, then confirm the run.
+  The chosen target survives a reload; the run output does not.
+- **Finalize** keeps one request key across retries of the same commit, so a retry after
+  a lost answer does not push twice. **Close** sends the workspace generation you saw.

@@ -729,8 +729,8 @@ an endpoint twice on load or polls at rest, and
 | Page | Status | Notes |
 | --- | --- | --- |
 | Overview | done | One read per tile source, as legacy. The Cost tile keeps the legacy currency format; the static endpoint row is dropped. |
-| Workspaces list | done | R1 fixed: filters are search params of `/dashboard/workspaces`. The header's launch action stays the classic hand-off until D5 lands in P4. |
-| Workspace cockpit | partial | Typed tab registry in `features/workspace-cockpit/cockpit-tab-registry.ts`. Summary, Agents, Runtime and Activity are live; Terminal, Files, Git, Automation, Deploy and Artifacts are registry placeholders that hand off to the classic cockpit until P4b. Automation, Deploy and Artifacts move from P3 to P4b. |
+| Workspaces list | done | R1 fixed: filters are search params of `/dashboard/workspaces`. The header's launch action is the D5 wizard since P4b (section 12.3). |
+| Workspace cockpit | partial | Typed tab registry in `features/workspace-cockpit/cockpit-tab-registry.ts`. Summary, Agents, Runtime and Activity are live; Terminal, Files, Git, Automation, Deploy and Artifacts were registry placeholders until P4b; all are live since (section 12.3). |
 | Agents (list, detail) | done | Follow is off by default (legacy makes two reads). The detail polls only while Follow is on and the agent is live: one owner for the detail and one for the log tail. Follow-up keeps one idempotency key per intent (R5). |
 | Activity, approvals summary | done | When both approvals reads fail the summary says "Approvals could not be checked"; when one fails the headline is "Some approvals could not be checked", never "No approvals are waiting". The sidebar Approvals badge is kept: it shares the summary's queries (`src/lib/approvals-summary.ts`), reads on Overview, Activity and Approvals like `refreshApprovalsBadge`, refetches on window focus and after `invalidateApprovals`, and shows "!" (or "N+") on a partial failure. Approve and reject stay P4a, which calls `invalidateApprovals` after a decision. |
 | Audit | done | `cursor` paging as a search param. |
@@ -773,3 +773,37 @@ refreshes with the Activity page's reads.
 | Layout and a11y | P4 pages at 1280, 768 and 375 px, light and dark | done (P4, #484) | `e2e/security-pages.spec.ts` (axe, no page-level horizontal scroll, screenshots attached) |
 
 The classic suites named in section 9 for these pages stay until P6.
+
+### 12.3 P4b status
+
+P4b ([#484](https://github.com/bestagentkits/cloud-harness-mcp/issues/484),
+Complex and Wizards) finishes the cockpit tabs and the launch flows. Every tab
+declares its own `validateSearch` in
+`apps/dashboard/src/features/workspace-cockpit/cockpit-tab-registry.ts`; the
+registry placeholders and the classic hand-off dialog for these tabs are gone.
+
+| Area | Rows | Status | React owner and evidence |
+| --- | --- | --- | --- |
+| Files | cockpit route `?path=`, `?file=`; D2; section 4.2 file rows | done (P4b, #484) | `features/workspace-cockpit/tabs/files-tab.tsx`, `files-model.ts`; `e2e/workspace-tabs.spec.ts` (deep link, `expectedSha256` fence, 409 keeps the edit, delete confirm). R11 fixed: one conflict dialog owned by React state |
+| Git | cockpit route `?staged=`; section 4.2 git and worktree rows | done (P4b, #484) | `tabs/git-tab.tsx`, `git-model.ts`; fetch, checkout and worktree remove confirm |
+| Automation | section 4.2 skills and hooks rows | done (P4b, #484) | `tabs/automation-tab.tsx`, `automation-model.ts`. Skill run sends `{script, expectedContentSha256}`; hook run sends `{name, event, expectedManifestSha256}` (or the hook's `expectedSha256`), which `hooks_run` requires; legacy sent only `{event}`, which the schema refuses. The Dashboard cannot complete the skill privilege grant yet (#511) |
+| Deploy | section 4.2 deployments rows; deploy wizard | done (P4b, #484) | `tabs/deploy-tab.tsx`: choose a target, review, confirm. The target and step survive a reload (`ch-dashboard-restore:deploy:<id>`); run output is component state only |
+| Workspace artifacts | cockpit Artifacts tab | done (P4b, #484) | `tabs/artifacts-tab.tsx`, read-only with native download links under `/dashboard/api/v1/artifacts/` |
+| Task graph | `GET /workspaces/:id/tasks/graph` | done (P4b, #484) | `task-graph.tsx`, lazy in the Runtime tab; one read, no poller |
+| Cockpit header | section 4.2 renew, finalize, recover, close rows; finalize dialog | done (P4b, #484) | `workspace-cockpit.tsx`, `finalize-dialog.tsx`. Finalize now sends an `idempotencyKey` kept across retries of one intent; recover sends `{mode: 'resume'}`; close sends `{expectedGeneration}` and confirms |
+| Open workspace (D5) | D5, R4, section 4.7 skill-set preview and toolkit rows | done (P4b, #484) | `features/workspaces/open-workspace-*.ts(x)`; `e2e/complex-pages.spec.ts`. `POST /workspaces` with one `idempotencyKey` per intent, kept across retries and a reload; skill sets with `expectedGeneration`, conflict overrides, owner-scope toolkits (licensed kits only when ready). Draft restore drops a URL with user info, a query or a fragment |
+| Artifacts page | route `/dashboard/artifacts`, section 4.8 | done (P4b, #484) | `features/artifacts/`; `?cursor=` paging, snapshot create (`expectedGeneration: 0`), delete with `{expectedGeneration}` confirm |
+| Packages page | route `/dashboard/packages`, section 4.9 package rows | done (P4b, #484) | `features/packages/`; roll back and uninstall confirm with the binding generation. Plan approval (`planDigest`) stays on the Approvals page (P4a) |
+| Agent spawn | dashboard agent spawn | defer (#393) | No BFF route spawns an agent; the Agents page keeps follow-up only |
+| Write security | section 1 CSRF and Origin rows for P4b writes | done (P4b, #484) | `e2e/complex-write-security.spec.ts` against the real in-process BFF, one pair per area |
+| Layout and a11y | P4b tabs and pages at 1280, 768 and 375 px, light and dark | done (P4b, #484) | axe in `e2e/workspace-tabs.spec.ts` and `e2e/complex-pages.spec.ts`; `e2e/visual.spec.ts` adds Files, Git, Automation, Deploy, Artifacts and Packages baselines |
+
+Section 4.13 decisions for P4b routes:
+
+| Route | Decision | Reason |
+| --- | --- | --- |
+| `POST /workspaces` | re-host | The open-workspace wizard (D5, R4 fixed) |
+| `GET /toolkits`, `POST /toolkits/preview` | re-host | Toolkit step and the review check of the wizard |
+| `POST /workspaces/:id/hooks/{activate,deactivate}` | drop | Hook state comes from the repository manifest; the tab shows it read-only, as legacy did |
+| `GET /artifacts/:artifactId` | drop | The list row carries every field the page shows; download is the native link |
+| `POST /artifacts/:artifactId/restore` | defer (#512) | Restoring writes into a workspace and needs a target-path design |

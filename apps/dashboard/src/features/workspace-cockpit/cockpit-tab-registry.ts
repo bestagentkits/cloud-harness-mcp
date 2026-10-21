@@ -56,9 +56,6 @@ function tab(id: WorkspaceTab, label: string, live: boolean, load: () => Promise
   return { id, label, live, load, component: lazy(load), validateSearch };
 }
 
-/** A tab whose content has not moved from the classic Dashboard yet. */
-const pending = () => import('./tabs/pending-tab');
-
 /**
  * The cockpit's tabs, in display order. Each tab is its own lazy chunk under its feature
  * folder; moving a tab to React is one `load` line here. The record is keyed by
@@ -69,10 +66,10 @@ export const COCKPIT_TABS: Record<WorkspaceTab, CockpitTabEntry> = {
   agents: tab('agents', 'Agents', false, () => import('./tabs/agents-tab')),
   runtime: tab('runtime', 'Runtime', true, () => import('./tabs/runtime-tab'), TAB_SEARCH.runtime),
   terminal: tab('terminal', 'Terminal', true, () => import('./tabs/terminal-tab')),
-  files: tab('files', 'Files', true, pending, TAB_SEARCH.files),
-  git: tab('git', 'Git', true, pending, TAB_SEARCH.git),
-  automation: tab('automation', 'Automation', true, pending),
-  deploy: tab('deploy', 'Deploy', true, pending),
-  artifacts: tab('artifacts', 'Artifacts', false, pending),
+  files: tab('files', 'Files', true, () => import('./tabs/files-tab'), TAB_SEARCH.files),
+  git: tab('git', 'Git', true, () => import('./tabs/git-tab'), TAB_SEARCH.git),
+  automation: tab('automation', 'Automation', true, () => import('./tabs/automation-tab')),
+  deploy: tab('deploy', 'Deploy', true, () => import('./tabs/deploy-tab')),
+  artifacts: tab('artifacts', 'Artifacts', false, () => import('./tabs/artifacts-tab')),
   activity: tab('activity', 'Activity', false, () => import('./tabs/activity-tab'))
 };

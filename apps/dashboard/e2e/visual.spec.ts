@@ -10,6 +10,8 @@ import { PROFILE_BODY } from './fixtures/profile';
 import { projectsList } from './fixtures/projects';
 import { oauthBody, settingsBody, TYPESAFE_CREDENTIALS, TYPESAFE_STATUS } from './fixtures/settings';
 import { skillsBody } from './fixtures/skills';
+import { ARTIFACT, PACKAGES } from './fixtures/artifacts-packages';
+import { cockpitTabReads } from './fixtures/cockpit-tabs';
 import { activeWorkspace, contextProjection, runtimeProjection, WORKSPACE_ID, workspaceActivity, workspaceAgents, workspacesList } from './fixtures/workspaces';
 import { answer, type ReadHandler, stubReads } from './support';
 import './visual/thaw-time';
@@ -38,6 +40,9 @@ const READS: Record<string, ReadHandler> = {
   [`${workspace}/runtime`]: answer(200, runtimeProjection),
   [`${workspace}/agents`]: answer(200, workspaceAgents),
   [`${workspace}/activity`]: answer(200, workspaceActivity),
+  ...Object.fromEntries(Object.entries(cockpitTabReads(workspace)).filter(([path]) => /\/(files|git|worktrees|skills|hooks|deployments|artifacts|tasks)/.test(path.slice(workspace.length)))),
+  '/artifacts': answer(200, { data: { artifacts: [ARTIFACT] } }),
+  '/packages': answer(200, PACKAGES),
   '/agents': answer(200, AGENTS),
   [`/agents/${PARENT_ID}`]: answer(200, { data: PARENT }),
   [`/agents/${PARENT_ID}/logs`]: answer(200, LOGS_FIRST),
@@ -60,6 +65,10 @@ const PAGES: { name: string; path: string }[] = [
   { name: 'workspaces', path: '/dashboard/workspaces' },
   { name: 'workspace-summary', path: `/dashboard${workspace}` },
   { name: 'workspace-runtime', path: `/dashboard${workspace}/runtime` },
+  { name: 'workspace-files', path: `/dashboard${workspace}/files?path=src&file=src%2Fmain.ts` },
+  { name: 'workspace-git', path: `/dashboard${workspace}/git` },
+  { name: 'workspace-automation', path: `/dashboard${workspace}/automation` },
+  { name: 'workspace-deploy', path: `/dashboard${workspace}/deploy` },
   { name: 'agents', path: '/dashboard/agents' },
   { name: 'agent', path: `/dashboard/agents/${PARENT_ID}` },
   { name: 'activity', path: '/dashboard/activity' },
@@ -68,7 +77,9 @@ const PAGES: { name: string; path: string }[] = [
   { name: 'knowledge', path: '/dashboard/knowledge' },
   { name: 'skills', path: '/dashboard/skills' },
   { name: 'profile', path: '/dashboard/profile' },
-  { name: 'settings', path: '/dashboard/settings' }
+  { name: 'settings', path: '/dashboard/settings' },
+  { name: 'artifacts', path: '/dashboard/artifacts' },
+  { name: 'packages', path: '/dashboard/packages' }
 ];
 
 const WIDTHS = [1280, 768, 375] as const;
