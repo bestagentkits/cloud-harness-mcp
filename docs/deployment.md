@@ -580,8 +580,13 @@ including the full-scope MCP key, is in the
    for example `https://api.harness.zuey.me/mcp`; the Access-protected
    Dashboard host refuses API keys) and
    authenticates with a managed API key created for the agent on the API
-   Access page. Pass the key through the gateway's non-echoing input, never on
-   a command line.
+   Access page, sent as an `Authorization: Bearer <key>` header. Set it in the
+   server's headers (for example `mcp update <server> --headers-file -` with
+   the header JSON on stdin), not only in the gateway's `api_key` field: the
+   gateway's tool discovery ignores that field, so the server lists 0 tools
+   ([nextlevelbuilder/dewee#1678](https://github.com/nextlevelbuilder/dewee/issues/1678)).
+   Pass the key through that non-echoing input, never on a command line, and
+   confirm the server lists its tools after a reload.
 2. As root, add to `/etc/cloud-harness-mcp/runtime.env` without printing the
    file: `DEWEE_GATEWAY_URL` (the gateway's `https` origin),
    `DEWEE_GATEWAY_TOKEN` (the gateway's server-side token) and
