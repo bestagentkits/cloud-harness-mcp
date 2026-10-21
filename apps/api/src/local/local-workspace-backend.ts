@@ -148,8 +148,12 @@ export class LocalWorkspaceBackend implements OperationBackend {
       };
     }
 
-    if (operation === 'workspace_repos_list' || operation === 'workspace_repo_status' || input.repositoryId !== undefined) {
-      const message = `${input.repositoryId !== undefined ? 'repositoryId' : operation} is unsupported in local mode because a local workspace is one directory chosen at startup; multi-repository workspaces need the remote runner`;
+    const multiRepositoryOperations: readonly string[] = ['workspace_repos_list', 'workspace_repo_status', 'workspace_repo_add', 'workspace_repo_remove'];
+    // Only the search tools take `scope: "all"`; memories and knowledge have their own unrelated scope.
+    const allRepositories = input.scope === 'all';
+    if (multiRepositoryOperations.includes(operation) || input.repositoryId !== undefined || allRepositories) {
+      const selector = input.repositoryId !== undefined ? 'repositoryId' : allRepositories ? 'scope "all"' : operation;
+      const message = `${selector} is unsupported in local mode because a local workspace is one directory chosen at startup; multi-repository workspaces need the remote runner`;
       return { ok: false, message, error: { code: 'INVALID_INPUT', message, retryable: false }, truncated: false };
     }
 

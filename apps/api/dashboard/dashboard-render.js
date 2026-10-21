@@ -188,8 +188,74 @@ export function renderWorkspaceCockpitHeader(workspace, options = {}) {
   return `<div class="cockpit-header"><div class="record-heading"><div><h2 id="workspace-detail-title">${escape(repositoryName(workspace.repositoryUrl))}</h2><p>${renderCopyChip({ value: workspace.workspaceId, label: 'Workspace ID' })}</p></div><span class="status ${escape(String(workspace.status ?? '').toLowerCase())}">${escape(statusLabel(workspace.status))}</span></div><dl class="facts"><dt>Ref</dt><dd>${escape(workspace.ref ?? 'Default branch')}</dd>${renderRepositoryFacts(workspace)}<dt>Network</dt><dd>${escape(networkLabel(workspace.networkProfile))}</dd><dt>Lease</dt><dd class="lease-${escape(lease.state)}">${escape(lease.label)}</dd><dt>Attention</dt><dd>${attention.length ? `${escape(attention.length)} item(s) need action` : 'Nothing needs attention'}</dd></dl>${actions}</div>`;
 }
 
-export function renderWorkspaceTabs(workspaceId, current) {
-  return `<nav class="cockpit-tabs" aria-label="Workspace sections">${WORKSPACE_TABS.map((tab) => `<a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/${tab.id}" ${tab.id === current ? 'aria-current="page"' : ''}>${escape(tab.label)}</a>`).join('')}</nav>`;
+/** The cockpit tabs a multi-repository workspace scopes to one checkout. */
+export const REPOSITORY_SCOPED_TABS = new Set(['terminal', 'files', 'git']);
+
+/** A cockpit tab link; a selected repository rides along to the other repository-scoped tabs. */
+export function workspaceTabHref(workspaceId, tab, repository = '') {
+  const scoped = repository && REPOSITORY_SCOPED_TABS.has(tab) ? `?repository=${encodeURIComponent(repository)}` : '';
+  return `/dashboard/workspaces/${encodeURIComponent(workspaceId)}/${tab}${scoped}`;
+}
+
+export function renderWorkspaceTabs(workspaceId, current, repository = '') {
+  return `<nav class="cockpit-tabs" aria-label="Workspace sections">${WORKSPACE_TABS.map((tab) => `<a href="${escape(workspaceTabHref(workspaceId, tab.id, repository))}" ${tab.id === current ? 'aria-current="page"' : ''}>${escape(tab.label)}</a>`).join('')}</nav>`;
+}
+
+/** The checkout a selector value names, by alias or stable `repo_` id; anything else names none. */
+export function selectedRepository(repositories = [], value = '') {
+  if (!value) return undefined;
+  return repositories.find((entry) => entry.alias === value || entry.repositoryId === value);
+}
+
+/**
+ * The repository scope control of a multi-repository workspace. Files and Terminal may stay at the
+ * workspace root; Git has no root state, so it offers only the checkouts and starts unselected rather
+ * than defaulting to the primary repository. Applying the choice is an explicit submit, never a change
+ * event, so moving through the options with the keyboard does not navigate.
+ */
+export function renderRepositorySelector({ repositories = [], selected = '', allowRoot = true } = {}) {
+  const current = selectedRepository(repositories, selected)?.alias ?? '';
+  const first = allowRoot
+    ? `<option value=""${current ? '' : ' selected'}>Workspace root</option>`
+    : `<option value="" disabled${current ? '' : ' selected'}>Choose a repository</option>`;
+  const options = repositories.map((entry) => `<option value="${escape(entry.alias)}"${entry.alias === current ? ' selected' : ''}>${escape(entry.alias)} · ${escape(repositoryName(entry.repositoryUrl))}${entry.access === 'read-only' ? ' (read-only)' : ''}</option>`).join('');
+  return `<form id="repository-scope-form" class="repository-scope" aria-label="Repository scope"><label for="repository-scope-select">Repository</label><select id="repository-scope-select" name="repository"${allowRoot ? '' : ' required'}>${first}${options}</select><button type="submit">Show repository</button></form>`;
+}
+
+/** The Git tab of a multi-repository workspace before a repository is chosen. */
+export function renderRepositoryRequired(repositories = []) {
+  return `<section class="panel" aria-labelledby="repository-required-heading"><h2 id="repository-required-heading">Choose a repository</h2><p class="page-note">This workspace holds ${escape(repositories.length)} repositories, each with its own branch, history and worktrees. Choose one above to read its Git state or to run a Git operation on it.</p></section>`;
+}
+
+const repositoryChanges = (entry, statusAvailable) => {
+  if (!statusAvailable) return 'Not reported';
+  if (entry.statusError === true) return 'Status unavailable';
+  if (entry.dirty === true) return `Uncommitted changes (${Number(entry.changedFiles) || 0} file(s))`;
+  return 'Clean';
+};
+const repositoryUnpushed = (entry, statusAvailable) => {
+  if (!statusAvailable || entry.statusError === true) return 'Not reported';
+  if (!entry.upstream) return 'No upstream branch';
+  const ahead = Number(entry.ahead) || 0;
+  const behind = Number(entry.behind) || 0;
+  const pushed = ahead > 0 ? `${ahead} unpushed commit(s)` : 'Nothing unpushed';
+  return behind > 0 ? `${pushed} · ${behind} behind` : pushed;
+};
+const repositoryBranch = (entry, statusAvailable) => (!statusAvailable || entry.statusError === true ? 'Not reported' : String(entry.branch ?? 'Not reported'));
+
+/**
+ * The repository explorer on the Summary tab of a multi-repository workspace: each checkout's branch,
+ * uncommitted state and unpushed commits as text, with links that open Files, Git or Terminal scoped
+ * to it. Without a status read every posture cell says "Not reported" instead of looking clean.
+ */
+export function renderRepositoryExplorer({ workspaceId = '', repositories = [], statusAvailable = false } = {}) {
+  const links = (entry) => `<div class="row-actions">${['files', 'git', 'terminal'].map((tab) => `<a class="secondary button" href="${escape(workspaceTabHref(workspaceId, tab, entry.alias))}">${escape(WORKSPACE_TABS.find((item) => item.id === tab)?.label ?? tab)}<span class="sr-only"> for ${escape(entry.alias)}</span></a>`).join('')}</div>`;
+  const badges = (entry) => `${entry.access === 'read-only' ? ' <span class="tag-badge">Read-only</span>' : ''}${entry.primary ? ' <span class="tag-badge">Primary</span>' : ''}`;
+  const upstream = (entry) => (statusAvailable && entry.upstream ? `<small class="mono">${escape(entry.upstream)}</small>` : '');
+  const rows = repositories.map((entry) => `<tr><th scope="row">${escape(entry.alias)}${badges(entry)}<small class="mono wrap">${escape(entry.path)} · ${escape(repositoryName(entry.repositoryUrl))}</small></th><td>${escape(repositoryBranch(entry, statusAvailable))}${upstream(entry)}</td><td>${escape(repositoryChanges(entry, statusAvailable))}</td><td>${escape(repositoryUnpushed(entry, statusAvailable))}</td><td>${links(entry)}</td></tr>`).join('');
+  const cards = repositories.map((entry) => `<li><h3>${escape(entry.alias)}${badges(entry)}</h3><p class="mono wrap">${escape(entry.path)} · ${escape(repositoryName(entry.repositoryUrl))}</p><dl><dt>Branch</dt><dd>${escape(repositoryBranch(entry, statusAvailable))}</dd><dt>Changes</dt><dd>${escape(repositoryChanges(entry, statusAvailable))}</dd><dt>Unpushed</dt><dd>${escape(repositoryUnpushed(entry, statusAvailable))}</dd></dl>${links(entry)}</li>`).join('');
+  const note = statusAvailable ? '' : '<p class="page-note">Repository status is read only while the workspace is active; it could not be read now.</p>';
+  return `<section class="panel repository-explorer" aria-labelledby="repository-explorer-heading"><h2 id="repository-explorer-heading">Repositories</h2>${note}<div class="desktop-table"><table><caption>${escape(repositories.length)} repositories</caption><thead><tr><th scope="col">Repository</th><th scope="col">Branch</th><th scope="col">Changes</th><th scope="col">Unpushed</th><th scope="col">Open</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`;
 }
 
 export function renderWorkspaceAttentionPanel(workspace, options = {}) {
@@ -229,13 +295,18 @@ export function renderWorkspaceActivity({ events = [], workspaceId = '' } = {}) 
   return `<section class="panel" aria-labelledby="workspace-activity-heading"><h2 id="workspace-activity-heading">Activity</h2><p class="page-note">Live runtime rows and retained audit rows recorded against <span class="mono">${escape(workspaceId)}</span>. The cross-workspace view is the Activity Center.</p><ul class="activity-list">${rows}</ul></section>`;
 }
 
-/** The finalize dialog: a commit message, plus the push decision. */
-export function renderFinalizeDialog() {
+/**
+ * The finalize dialog: a commit message, plus the push decision. A multi-repository
+ * workspace finalizes one checkout, so the dialog asks which one instead of guessing.
+ */
+export function renderFinalizeDialog(workspace = {}, selected = '') {
+  const entries = workspaceRepositories(workspace);
+  const repository = entries.length < 2 ? '' : `<label for="finalize-repository">Repository</label><select id="finalize-repository" name="repositoryId" required>${selected ? '' : '<option value="" selected disabled>Choose a repository</option>'}${entries.map((entry) => `<option value="${escape(entry.alias)}"${entry.alias === selected ? ' selected' : ''}>${escape(entry.alias)}</option>`).join('')}</select>`;
   return renderFormDialog({
     id: 'finalize-workspace-dialog', title: 'Finalize workspace',
     description: 'Stages the changes, runs the preflights, commits with the workspace identity, and pushes when you ask it to.',
     formId: 'finalize-workspace-form', submitId: 'finalize-workspace-submit', submitLabel: 'Finalize workspace',
-    body: '<label for="finalize-commit-message">Commit message</label><input id="finalize-commit-message" name="commitMessage" required maxlength="10000"><label class="checkbox-label"><input name="push" type="checkbox" checked><span>Push to the remote after committing</span></label>'
+    body: repository + '<label for="finalize-commit-message">Commit message</label><input id="finalize-commit-message" name="commitMessage" required maxlength="10000"><label class="checkbox-label"><input name="push" type="checkbox" checked><span>Push to the remote after committing</span></label>'
   });
 }
 
@@ -538,7 +609,7 @@ const terminalSize = (terminal) => (Number.isInteger(terminal?.cols) && Number.i
 export function renderTerminalPanel({ workspaceId = '', terminals = [], now = Date.now() } = {}) {
   const running = terminals.filter((terminal) => terminal?.status === 'running');
   const offers = running.length
-    ? `<div id="terminal-reattach" class="terminal-reattach"><h3 id="terminal-reattach-heading">Running terminals</h3><p class="page-note">These shells are still running in this workspace. Re-attach to continue one; recent output is replayed.</p><ul class="record-list" aria-labelledby="terminal-reattach-heading">${running.map((terminal) => `<li><span><span class="mono">${escape(terminal.terminalId)}</span> <small>${escape(terminalSize(terminal))} · started ${escape(terminalAge(terminal.createdAt, now))} ago · idle expiry ${terminalTime(terminal.idleExpiresAt)}</small></span><button class="reattach-terminal" type="button" data-terminal-id="${escape(terminal.terminalId)}">Re-attach</button></li>`).join('')}</ul></div>`
+    ? `<div id="terminal-reattach" class="terminal-reattach"><h3 id="terminal-reattach-heading">Running terminals</h3><p class="page-note">These shells are still running in this workspace. Re-attach to continue one; recent output is replayed.</p><ul class="record-list" aria-labelledby="terminal-reattach-heading">${running.map((terminal) => `<li><span><span class="mono">${escape(terminal.terminalId)}</span> <small>${escape(terminalSize(terminal))} · started ${escape(terminalAge(terminal.createdAt, now))} ago · idle expiry ${terminalTime(terminal.idleExpiresAt)}${terminal.cwd && terminal.cwd !== '.' ? ` · in <span class="mono">${escape(terminal.cwd)}</span>` : ''}</small></span><button class="reattach-terminal" type="button" data-terminal-id="${escape(terminal.terminalId)}">Re-attach</button></li>`).join('')}</ul></div>`
     : '';
   return `<section id="terminal-panel" class="panel terminal-panel" aria-labelledby="terminal-heading" data-workspace-id="${escape(workspaceId)}">`
     + '<h2 id="terminal-heading">Terminal</h2>'
@@ -1375,14 +1446,24 @@ export function renderRuntime(data) {
   return `<p class="eyebrow">CURRENT RUNTIME STATE</p><p>Not retained across runner restart.</p><section><h2>Tasks</h2>${records(data.tasks, 'task')}</section><section><h2>Named sessions</h2>${records(data.sessions, 'session')}</section>`;
 }
 
-export function renderFileList(workspaceId, data) {
+/**
+ * A Files tab link. In a repository-scoped view paths are relative to that checkout, so the selected
+ * repository rides along on every link; without one the link keeps the workspace-root form unchanged.
+ * Every component is URI-encoded, so the result is safe inside an attribute as written.
+ */
+export function filesHref(workspaceId, path, { file = false, repository = '' } = {}) {
+  return `/dashboard/workspaces/${encodeURIComponent(workspaceId)}/files?path=${encodeURIComponent(path)}${file ? '&file=1' : ''}${repository ? `&repository=${encodeURIComponent(repository)}` : ''}`;
+}
+const filesRootLabel = (repository) => (repository ? `Repository root (${repository})` : 'Workspace root');
+
+export function renderFileList(workspaceId, data, { repository = '' } = {}) {
   const path = data.path ?? '.';
-  const items = data.entries.length ? data.entries.map((entry) => `<li><a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/files?path=${encodeURIComponent(join(path, entry.name))}${entry.type === 'file' ? '&file=1' : ''}">${escape(entry.name)}</a><span>${escape(entry.type)}</span></li>`).join('') : '<li>No files in this folder.</li>';
-  return `<nav aria-label="Breadcrumb"><a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/files?path=.">Workspace root</a><span class="mono wrap">${escape(path)}</span></nav><h2>Files</h2><ul class="file-list">${items}</ul><form id="folder-form"><label for="folder-path">New folder path</label><input id="folder-path" name="path" required><button type="submit">Create folder</button></form><form id="move-form"><label for="move-source">Source</label><input id="move-source" name="source" required><label for="move-destination">Destination</label><input id="move-destination" name="destination" required><button type="submit">Move</button></form>`;
+  const items = data.entries.length ? data.entries.map((entry) => `<li><a href="${filesHref(workspaceId, join(path, entry.name), { file: entry.type === 'file', repository })}">${escape(entry.name)}</a><span>${escape(entry.type)}</span></li>`).join('') : '<li>No files in this folder.</li>';
+  return `<nav aria-label="Breadcrumb"><a href="${filesHref(workspaceId, '.', { repository })}">${escape(filesRootLabel(repository))}</a><span class="mono wrap">${escape(path)}</span></nav><h2>Files</h2><ul class="file-list">${items}</ul><form id="folder-form"><label for="folder-path">New folder path</label><input id="folder-path" name="path" required><button type="submit">Create folder</button></form><form id="move-form"><label for="move-source">Source</label><input id="move-source" name="source" required><label for="move-destination">Destination</label><input id="move-destination" name="destination" required><button type="submit">Move</button></form>`;
 }
 
-export function renderFile(workspaceId, data) {
-  return `<nav aria-label="Breadcrumb"><a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/files?path=.">Workspace root</a></nav><h2 class="mono wrap">${escape(data.path)}</h2><p>Version <span class="mono wrap">${escape(data.sha256)}</span></p><pre><code>${escape(data.content)}</code></pre><form id="file-editor"><label for="file-content">File content</label><textarea id="file-content" name="content" spellcheck="false">${escape(data.content)}</textarea><input type="hidden" name="sha" value="${escape(data.sha256)}"><button type="submit">Save file</button><button id="delete-file" class="danger" type="button">Delete file</button></form><form id="patch-form"><label for="old-text">Text to replace</label><textarea id="old-text" name="oldText" spellcheck="false"></textarea><label for="new-text">Replacement text</label><textarea id="new-text" name="newText" spellcheck="false"></textarea><button type="submit">Apply text patch</button></form>`;
+export function renderFile(workspaceId, data, { repository = '' } = {}) {
+  return `<nav aria-label="Breadcrumb"><a href="${filesHref(workspaceId, '.', { repository })}">${escape(filesRootLabel(repository))}</a></nav><h2 class="mono wrap">${escape(data.path)}</h2><p>Version <span class="mono wrap">${escape(data.sha256)}</span></p><pre><code>${escape(data.content)}</code></pre><form id="file-editor"><label for="file-content">File content</label><textarea id="file-content" name="content" spellcheck="false">${escape(data.content)}</textarea><input type="hidden" name="sha" value="${escape(data.sha256)}"><button type="submit">Save file</button><button id="delete-file" class="danger" type="button">Delete file</button></form><form id="patch-form"><label for="old-text">Text to replace</label><textarea id="old-text" name="oldText" spellcheck="false"></textarea><label for="new-text">Replacement text</label><textarea id="new-text" name="newText" spellcheck="false"></textarea><button type="submit">Apply text patch</button></form>`;
 }
 
 const workspaceRepositories = (workspace) => Array.isArray(workspace.repositories) ? workspace.repositories : [];

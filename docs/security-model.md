@@ -624,6 +624,37 @@ unchanged and the checkouts share the workspace byte ceiling.
 - **No silent fallback.** Git-bound tools refuse an unselected call in a
   multi-repository workspace instead of defaulting to one checkout, so a commit
   or push cannot land in the wrong repository by omission.
+- **Adding and removing checkouts.** `workspace_repo_add` applies the open-time
+  policy and clone path, so an added repository gets the same brokered,
+  credential-free checkout. Both changes touch the host filesystem only at the
+  canonical `repos/<alias>` path, verified host-side to be a real directory
+  that resolves exactly there (never a symlink the executor swapped in) before
+  any removal, and the removal stays confined to the jobs root. Because a
+  recursive delete re-resolves each path it descends, the runner never
+  changes `repos/` while anything in the workspace can write to it: the
+  executor is paused from the last check through the change, and the change is
+  refused (retryable `CONFLICT`) while a privileged command, transfer helper,
+  or other container that mounts the tree runs, or with `UNAVAILABLE` when the
+  executor cannot be paused. A pause that fails or times out is undone before
+  the refusal, and the resume is retried; an executor still paused after a
+  committed change is reported (`executorResumed: false`) rather than turning
+  that change into a failure, and `workspace_recover` or a runner restart
+  resumes it (`workspace_recover` rebuilds a `dependency-access` executor
+  instead, so its running processes end). Only a paused container carrying this
+  workspace's managed labels is resumed. Recovery refuses with a retryable
+  `CONFLICT` while the runner itself holds the pause, and a pause or freeze is
+  refused while a recovery is in flight, so no executor is resumed, restarted,
+  or rebuilt inside a freeze. An add
+  clones into a staging directory outside the executor's and the privileged
+  and skill helpers' mounts (only the trusted clone, Git-transfer, and size
+  helpers mount the workspace root) and moves it into place only while the
+  path is still free, so a failed add removes only the directory it created;
+  an existing path is refused rather than overwritten. At startup, after every
+  helper container is gone, the runner removes the add and Git-transfer
+  staging directories a crash left directly in a retained workspace,
+  matching only real directories with the exact staging name. Remove refuses while the checkout
+  holds work no remote has or anything runs inside it, and runs that check
+  inside the paused window, so it cannot discard work the owner did not save.
 
 Scoping and the write refusal are owned by
 [`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts)

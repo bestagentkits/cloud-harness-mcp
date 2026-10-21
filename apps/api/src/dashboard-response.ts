@@ -35,8 +35,53 @@ function cleanWorkspace(value: unknown): Record<string, unknown> {
     clean.availableActions = item.availableActions.filter((action): action is string => typeof action === 'string').slice(0, 16);
   }
   if (item.status === 'FAILED' && typeof item.error === 'string') clean.error = 'Workspace setup failed. Review runner logs.';
-  if (Array.isArray(item.repositories)) clean.repositories = item.repositories.slice(0, 20).map((entry) => pick(entry, ['repositoryId', 'alias', 'repositoryUrl', 'ref', 'access', 'primary', 'path']));
+  if (Array.isArray(item.repositories)) clean.repositories = item.repositories.slice(0, 20).map((entry) => pick(entry, repositoryKeys));
   return clean;
+}
+
+const repositoryKeys = ['repositoryId', 'alias', 'repositoryUrl', 'ref', 'access', 'primary', 'path'] as const;
+/** The runner bounds a workspace to its configured repository limit; the projection never forwards more. */
+const MAX_PROJECTED_REPOSITORIES = 20;
+
+/**
+ * One checkout's Git posture from `workspace_repo_status`. The tracking line and short status are
+ * parsed with the same `parseGitStatus` the Git tab uses, so "ahead" means the same thing in both
+ * places; unpushed is that ahead count. A checkout whose status could not be read reports only that
+ * fact, because the runner's error text can carry raw worker or Git output.
+ */
+function repositoryStatusProjection(value: unknown): Record<string, unknown> {
+  const entry = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const base = pick(entry, repositoryKeys);
+  if (typeof entry.error === 'string') return { ...base, statusError: true };
+  const text = typeof entry.status === 'string' && entry.status
+    ? entry.status
+    : typeof entry.branch === 'string' ? `## ${entry.branch}` : '';
+  const parsed = parseGitStatus(text) as { branch: string; upstream?: string; ahead: number; behind: number; entries: unknown[] };
+  return {
+    ...base,
+    branch: parsed.branch,
+    ...(parsed.upstream ? { upstream: parsed.upstream } : {}),
+    ahead: parsed.ahead,
+    behind: parsed.behind,
+    dirty: entry.hasUncommitted === true,
+    changedFiles: parsed.entries.length
+  };
+}
+
+/**
+ * The repository explorer: the registry from `workspace_repos_list`, joined by `repositoryId` with
+ * the per-checkout posture from `workspace_repo_status` when that was read. `statusAvailable` says
+ * whether the posture fields can be trusted, so a missing read never renders as a clean checkout.
+ */
+export function buildRepositoryExplorerProjection(listed: DashboardProjection, statuses?: DashboardProjection): DashboardProjection {
+  const repositories = Array.isArray(listed.repositories) ? listed.repositories as Record<string, unknown>[] : [];
+  const reported = Array.isArray(statuses?.repositories) ? statuses.repositories as Record<string, unknown>[] : [];
+  const byId = new Map(reported.map((entry) => [entry.repositoryId, entry]));
+  return {
+    multiRepository: listed.multiRepository === true,
+    statusAvailable: statuses !== undefined,
+    repositories: repositories.map((entry) => ({ ...entry, ...(byId.get(entry.repositoryId) ?? {}) }))
+  };
 }
 
 /**
@@ -174,6 +219,8 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'workspace_lease_renew',
   'workspace_recover',
   'workspace_finalize',
+  'workspace_repos_list',
+  'workspace_repo_status',
   'agent_list',
   'agent_status',
   'agent_logs',
@@ -422,6 +469,13 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'workspace_open' || operation === 'workspace_status' || operation === 'workspace_detail' || operation === 'workspace_close' || operation === 'workspace_lease_renew' || operation === 'workspace_recover') return cleanWorkspace(data);
   if (operation === 'workspace_context') return workspaceContextProjection(data);
   if (operation === 'workspace_finalize') return workspaceFinalizeProjection(data);
+  if (operation === 'workspace_repos_list' || operation === 'workspace_repo_status') {
+    const entries = Array.isArray(data.repositories) ? data.repositories.slice(0, MAX_PROJECTED_REPOSITORIES) : [];
+    return {
+      multiRepository: data.multiRepository === true,
+      repositories: operation === 'workspace_repo_status' ? entries.map(repositoryStatusProjection) : entries.map((entry) => pick(entry, repositoryKeys))
+    };
+  }
   if (operation === 'agent_list') {
     const agents = Array.isArray(data.agents) ? data.agents.map(agentProjection) : [];
     return { agents };

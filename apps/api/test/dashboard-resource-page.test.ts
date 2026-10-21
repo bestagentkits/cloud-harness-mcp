@@ -93,7 +93,7 @@ describe('shared resource-page layout', () => {
     const script = readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8');
     expect(script).toContain("workspaceHasAction(item, 'workspace_context')");
     expect(script).toContain("if (!workspaceTabAvailable(workspace, tab)) return renderWorkspaceUnavailableTab(workspace, tab);");
-    expect(script).toContain("workspaceHasAction(item, 'workspace_finalize') ? renderFinalizeDialog() : ''");
+    expect(script).toContain("workspaceHasAction(item, 'workspace_finalize') ? renderFinalizeDialog(item, scope.repository) : ''");
   });
 
   it('binds dialog opening by delegation so the shell action slot is covered', () => {
