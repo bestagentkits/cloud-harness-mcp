@@ -133,5 +133,9 @@ export const listAutomationDeliveries = ({ connectionId, limit } = {}) => api(`/
 async function problem(response) {
   let body = {};
   try { body = await response.json(); } catch { /* sanitized fallback */ }
-  return Object.assign(new Error(body.message ?? 'The request could not be completed.'), { status: response.status, code: body.error });
+  // `grantRequest` is the single-use grant an action waits on; only its id and expiry are kept.
+  const grantRequest = body.grantRequest && typeof body.grantRequest.grantId === 'string'
+    ? { grantId: body.grantRequest.grantId, expiresAt: body.grantRequest.expiresAt }
+    : undefined;
+  return Object.assign(new Error(body.message ?? 'The request could not be completed.'), { status: response.status, code: body.error, ...(grantRequest ? { grantRequest } : {}) });
 }

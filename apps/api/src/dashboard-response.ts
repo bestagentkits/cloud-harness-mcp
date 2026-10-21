@@ -4,7 +4,8 @@ import type { RunnerResponse } from '@cloud-harness/contracts';
 const statuses: Record<string, number> = {
   AUTHENTICATION_FAILED: 401, FORBIDDEN: 404, INVALID_INPUT: 400, NOT_FOUND: 404,
   CONFLICT: 409, STALE_GENERATION: 409, EXPIRED: 410, LIMIT_EXCEEDED: 429, TIMEOUT: 504,
-  CANCELLED: 409, UNAVAILABLE: 503, DEPENDENCY_EGRESS_UNAVAILABLE: 503, INTERNAL_ERROR: 500
+  CANCELLED: 409, UNAVAILABLE: 503, DEPENDENCY_EGRESS_UNAVAILABLE: 503, INTERNAL_ERROR: 500,
+  PRIVILEGE_APPROVAL_REQUIRED: 428
 };
 
 const messages: Record<string, string> = {
@@ -20,6 +21,7 @@ const messages: Record<string, string> = {
   CANCELLED: 'The operation was cancelled.',
   UNAVAILABLE: 'The workspace service is temporarily unavailable.',
   DEPENDENCY_EGRESS_UNAVAILABLE: 'Dependency-access network egress is unavailable.',
+  PRIVILEGE_APPROVAL_REQUIRED: 'This action needs your approval before it runs.',
   INTERNAL_ERROR: 'The workspace service could not complete the request.'
 };
 
@@ -529,7 +531,9 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
     return { ...pick(data, ['name', 'path', 'head', 'branch', 'ref', 'action']), ...(output !== undefined ? { output } : {}) };
   }
   if (operation === 'skills_list') {
-    const skills = Array.isArray(data.skills) ? data.skills.map((skill) => pick(skill, ['name', 'tier', 'source', 'kind', 'state', 'sha256', 'description', 'shadowed'])) : [];
+    // `contentSha256` is the bundle digest `skills_run` verifies, so the cockpit can name exactly the
+    // revision the owner saw when it asks to run one of its scripts.
+    const skills = Array.isArray(data.skills) ? data.skills.map((skill) => pick(skill, ['name', 'tier', 'source', 'kind', 'state', 'sha256', 'contentSha256', 'description', 'shadowed'])) : [];
     return { skills, ...(data.cursor !== undefined ? { cursor: data.cursor } : {}) };
   }
   if (operation === 'skills_read') return pick(data, ['name', 'source', 'content', 'sha256', 'bytes', 'offset', 'truncated']);
@@ -543,7 +547,7 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   }
   if (operation === 'skills_run' || operation === 'hooks_run' || operation === 'hooks_activate' || operation === 'hooks_deactivate' || operation === 'deployments_run') {
     const output = boundedOutput(data.output);
-    return { ...pick(data, ['name', 'event', 'events', 'status', 'exitCode', 'durationMs', 'error', 'manifestSha256']), ...(output !== undefined ? { output } : {}) };
+    return { ...pick(data, ['name', 'event', 'events', 'status', 'exitCode', 'durationMs', 'error', 'manifestSha256', 'executionMode']), ...(output !== undefined ? { output } : {}) };
   }
   if (operation === 'toolkits_list' || operation === 'toolkits_preview') return data;
   if (operation === 'files_list') {
@@ -758,6 +762,12 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
     NOT_FOUND: 'GitHub installation not found.'
   },
   github_disconnect: { NOT_FOUND: 'GitHub installation not found.' },
+  // The runner answers FORBIDDEN both for a missing workspace and for a grant that is no longer
+  // approved (expired, rejected or already used), so the wording names both and the way forward.
+  skills_run: {
+    FORBIDDEN: 'Workspace not found, or the approval expired or was already used. Run the script again to request a new approval.',
+    EXECUTION_FAILED: 'The skill script exited with an error.'
+  },
   package_plan_approve: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
   package_plan_reject: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
   package_rollback: { FORBIDDEN: packagesDisabled },
@@ -1058,7 +1068,11 @@ export function sendRunnerResponse(response: Response, operation: DashboardRespo
     const message = perOperation ?? (result.error?.message && (descriptiveOperations.has(operation) || code === 'LIMIT_EXCEEDED')
       ? result.error.message
       : (messages[code] ?? messages.INTERNAL_ERROR));
-    response.status(statuses[code] ?? 500).json({ error: code.toLowerCase(), message });
+    // An approval request names the grant the runner minted for exactly this action, so the owner
+    // can approve it and retry with it. Only the grant id and its expiry leave the BFF: the id is a
+    // single-use reference that is useless until the owner approves it, and it is never persisted.
+    const grantRequest = code === 'PRIVILEGE_APPROVAL_REQUIRED' ? pick(result.error?.grantRequest, ['grantId', 'expiresAt']) : undefined;
+    response.status(statuses[code] ?? 500).json({ error: code.toLowerCase(), message, ...(grantRequest?.grantId ? { grantRequest } : {}) });
     return;
   }
   response.json({ data: mapDashboardData(operation, result.data), truncated: result.truncated, ...(result.cursor ? { cursor: result.cursor } : {}) });

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   HOOK_LIFECYCLE, groupHooksByLifecycle, renderAutomationPanel, renderDeployPanel, renderHookPipeline,
-  renderHooks, renderWorkspaceSkills
+  renderHooks, renderWorkspaceSkills, skillRunApprovalPrompt
 } from '../dashboard/dashboard-render.js';
+import { skillApprovalRequest } from '../dashboard/dashboard.js';
 
 const hook = (overrides: Record<string, unknown> = {}) => ({ name: 'format', events: ['pre_commit'], active: true, ...overrides });
 
@@ -44,13 +45,40 @@ describe('automation and deploy renderers', () => {
   });
 
   it('lists workspace skills with a guarded run form rather than a bare run button', () => {
-    const markup = renderWorkspaceSkills([{ name: 'typescript', tier: 'owner', description: 'TS guidance', sha256: 'a'.repeat(64) }]);
+    const markup = renderWorkspaceSkills([{ name: 'typescript', tier: 'owner', description: 'TS guidance', contentSha256: 'a'.repeat(64) }]);
     expect(markup).toContain('typescript');
     expect(markup).toContain('TS guidance');
     expect(markup).toContain('id="skill-run-form"');
     expect(markup).toContain('id="skill-run-script"');
     expect(markup).toContain('Nothing runs unless you name it here');
+    expect(markup).toContain('each run asks for your approval first');
+    // The run names the listed revision, so the option carries the digest the runner verifies.
+    expect(markup).toContain(`<option value="typescript" data-content-sha256="${'a'.repeat(64)}">typescript</option>`);
     expect(renderWorkspaceSkills([])).toContain('No skills are resolved for this workspace.');
+  });
+
+  it('offers no run form for a skill without a verifiable digest', () => {
+    const markup = renderWorkspaceSkills([{ name: 'unverified' }, { name: 'short', contentSha256: 'abc' }]);
+    expect(markup).toContain('unverified');
+    expect(markup).not.toContain('id="skill-run-form"');
+  });
+
+  it('states what the owner approves before a skill run', () => {
+    const prompt = skillRunApprovalPrompt({ name: 'demo', script: 'run.sh', contentSha256: 'b'.repeat(64), expiresAt: '2026-10-21T09:00:00.000Z' });
+    expect(prompt.title).toBe('Approve and run this skill script?');
+    expect(prompt.description).toContain('disposable helper container');
+    expect(prompt.description).toContain('used by this one run');
+    expect(prompt.description).toContain(new Date('2026-10-21T09:00:00.000Z').toLocaleTimeString());
+    expect(prompt.description).not.toContain('<');
+    expect(prompt.target).toBe(`demo / run.sh @ ${'b'.repeat(16)}`);
+  });
+
+  it('recognises only an approval request that names a grant', () => {
+    const grant = { grantId: 'pvg_1', expiresAt: '2026-10-21T09:00:00.000Z' };
+    expect(skillApprovalRequest({ code: 'privilege_approval_required', grantRequest: grant })).toEqual(grant);
+    expect(skillApprovalRequest({ code: 'privilege_approval_required' })).toBeUndefined();
+    expect(skillApprovalRequest({ code: 'conflict', grantRequest: grant })).toBeUndefined();
+    expect(skillApprovalRequest(undefined)).toBeUndefined();
   });
 
   it('labels deployment risk, last result and failure detail', () => {

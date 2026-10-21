@@ -263,6 +263,41 @@ describe('dashboard BFF', () => {
     expect(current.json.data).toMatchObject({ state: 'cancelled', generation: 3 });
   });
 
+  it('returns the skill-run grant request and forwards the approved grant on retry', async () => {
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const post = (payload: Record<string, unknown>) => {
+      const body = JSON.stringify(payload);
+      return send(`/api/v1/workspaces/${workspaceId}/skills/demo/run`, { method: 'POST', headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) }, body });
+    };
+    const digest = 'c'.repeat(64);
+    vi.mocked(runner.call).mockImplementationOnce(async (operation, input, selected) => {
+      calls.push({ operation, input, principal: selected });
+      return { ok: false, message: 'approval', truncated: false, error: {
+        code: 'PRIVILEGE_APPROVAL_REQUIRED', message: 'Approval grant required to run skill script demo/run.sh in a disposable helper container', retryable: true,
+        grantRequest: { grantId: 'pvg_0123', workspaceId, commandSha256: 'd'.repeat(64), cwd: '.', expiresAt: '2026-10-21T09:00:00.000Z' }
+      } } as RunnerResponse;
+    });
+    const held = await post({ script: 'run.sh', expectedContentSha256: digest });
+    expect(held.status).toBe(428);
+    expect(held.json).toEqual({
+      error: 'privilege_approval_required',
+      message: 'This action needs your approval before it runs.',
+      grantRequest: { grantId: 'pvg_0123', expiresAt: '2026-10-21T09:00:00.000Z' }
+    });
+    expect(calls.at(-1)).toMatchObject({ operation: 'skills_run', input: { workspaceId, name: 'demo', script: 'run.sh', expectedContentSha256: digest } });
+
+    vi.mocked(runner.call).mockImplementationOnce(async (operation, input, selected) => {
+      calls.push({ operation, input, principal: selected });
+      return { ok: true, message: 'ran', truncated: false, data: { output: 'skill-ok\n', exitCode: 0, executionMode: 'helper-container', signal: null } };
+    });
+    const ran = await post({ script: 'run.sh', expectedContentSha256: digest, approvalGrantToken: 'pvg_0123' });
+    expect(ran.status).toBe(200);
+    expect(ran.json.data).toEqual({ output: 'skill-ok\n', exitCode: 0, executionMode: 'helper-container' });
+    expect(calls.at(-1)?.input).toMatchObject({ workspaceId, name: 'demo', script: 'run.sh', expectedContentSha256: digest, approvalGrantToken: 'pvg_0123' });
+  });
+
   it('accepts a zip upload on the skill archive route without the JSON media-type rule', async () => {
     const session = await send('/api/v1/session');
     const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];

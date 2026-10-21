@@ -725,10 +725,28 @@ export function renderHooks(hooks = []) {
 
 /** The workspace skill set, with a guarded run form for an explicitly named script. */
 export function renderWorkspaceSkills(skills = []) {
+  const digest = (skill) => String(skill.contentSha256 ?? skill.sha256 ?? '');
   const rows = skills.length
-    ? `<ul class="record-list">${skills.map((skill) => `<li><strong>${escape(String(skill.name ?? 'skill'))}</strong>${skill.tier ? ` <span class="status">${escape(String(skill.tier))}</span>` : ''}${skill.description ? `<p>${escape(String(skill.description))}</p>` : ''}${skill.sha256 ? `<small class="mono wrap">${escape(String(skill.sha256).slice(0, 16))}</small>` : ''}</li>`).join('')}</ul>`
+    ? `<ul class="record-list">${skills.map((skill) => `<li><strong>${escape(String(skill.name ?? 'skill'))}</strong>${skill.tier ? ` <span class="status">${escape(String(skill.tier))}</span>` : ''}${skill.description ? `<p>${escape(String(skill.description))}</p>` : ''}${digest(skill) ? `<small class="mono wrap">${escape(digest(skill).slice(0, 16))}</small>` : ''}</li>`).join('')}</ul>`
     : '<p class="empty-note">No skills are resolved for this workspace.</p>';
-  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs inside the workspace executor under the runner's verified-bytes contract. Nothing runs unless you name it here.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><input id="skill-run-name" name="name" required maxlength="120"><label for="skill-run-script">Script path</label><input id="skill-run-script" name="script" required maxlength="255"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form></details></section>`;
+  // A run names the skill revision listed here: the runner refuses it if the bundle changed since.
+  const runnable = skills.filter((skill) => skill.name && /^[0-9a-f]{64}$/.test(digest(skill)));
+  const options = runnable.map((skill) => `<option value="${escape(String(skill.name))}" data-content-sha256="${escape(digest(skill))}">${escape(String(skill.name))}</option>`).join('');
+  const form = runnable.length
+    ? `<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs once in a disposable helper container from the verified skill revision listed here. Nothing runs unless you name it here, and each run asks for your approval first.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><select id="skill-run-name" name="name" required>${options}</select><label for="skill-run-script">Script name</label><input id="skill-run-script" name="script" required pattern="[A-Za-z0-9._-]{1,120}" placeholder="run.sh"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form></details>`
+    : '';
+  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}${form}</section>`;
+}
+
+/** The confirm-dialog copy for a skill run the runner holds for an owner privilege grant. */
+export function skillRunApprovalPrompt({ name, script, contentSha256, expiresAt }) {
+  // The confirm dialog sets this copy as text, so the expiry is a plain local time, not markup.
+  const expiry = expiresAt ? ` The approval expires at ${new Date(expiresAt).toLocaleTimeString()} and is used by this one run.` : ' The approval is used by this one run.';
+  return {
+    title: 'Approve and run this skill script?',
+    description: `The script runs once in a disposable helper container from the verified skill revision.${expiry}`,
+    target: `${name} / ${script} @ ${String(contentSha256).slice(0, 16)}`
+  };
 }
 
 /** Deploy targets: external-effect risk, so every run confirms and every failure shows. */

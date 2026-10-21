@@ -81,7 +81,7 @@ import {
   renderWorkspaceUnavailableTab, workspaceHasAction, workspaceTabAvailable,
   renderAgentsIndex, renderAgentDetail,
   renderRuntimePanel, renderGitPanel,
-  renderAutomationPanel, renderDeployPanel,
+  renderAutomationPanel, renderDeployPanel, skillRunApprovalPrompt,
   renderActivityCenter, renderApprovals, grantIsActionable, planIsActionable, renderPackages,
   renderTerminalPanel, renderTerminalsIndex,
   REPOSITORY_SCOPED_TABS, filesHref, renderRepositoryExplorer, renderRepositoryRequired, renderRepositorySelector, selectedRepository, workspaceTabHref,
@@ -177,6 +177,16 @@ export function createAsyncDialogController({ dialog, cancelButton, actionButton
   dialog.addEventListener('cancel', (event) => { event.preventDefault(); cancel(); });
   cancelButton.addEventListener('click', cancel); actionButton.addEventListener('click', () => void submit());
   return { open, cancel, submit, get submitting() { return submitting; } };
+}
+
+/**
+ * The grant a skill run is waiting on, or undefined for any other failure. The runner mints a
+ * single-use grant bound to the skill, script and digest; the page keeps its id only in the
+ * closure that approves and retries it, never in storage or the URL.
+ */
+export function skillApprovalRequest(error) {
+  const grant = error?.code === 'privilege_approval_required' ? error.grantRequest : undefined;
+  return typeof grant?.grantId === 'string' && grant.grantId ? grant : undefined;
 }
 
 export function conflictRecovery(localContent, actions) {
@@ -4047,14 +4057,39 @@ export function initializeDashboard() {
         await api(`/workspaces/${scoped}/hooks/run`, { method: 'POST', body: requestBody({ event: values.get('event') }) });
       }, async () => { announce('Hooks finished.'); navigateTo(`/dashboard/workspaces/${scoped}/automation`); });
     });
+    // A skill run executes in a disposable helper container behind an owner privilege grant. The
+    // first request returns the grant the runner minted for this exact skill, script and digest;
+    // the owner confirms it, the page approves it and runs once more with it.
     const skillForm = document.querySelector('#skill-run-form');
     skillForm?.addEventListener('submit', (event) => {
       event.preventDefault();
       const values = new FormData(skillForm);
       const name = String(values.get('name') ?? '');
-      void submitForm(skillForm, 'Running…', async () => {
-        await api(`/workspaces/${scoped}/skills/${encodeURIComponent(name)}/run`, { method: 'POST', body: requestBody({ script: values.get('script') }) });
-      }, async () => { announce('Skill script finished.'); navigateTo(`/dashboard/workspaces/${scoped}/automation`); });
+      const script = String(values.get('script') ?? '');
+      const contentSha256 = skillForm.querySelector('#skill-run-name')?.selectedOptions?.[0]?.dataset.contentSha256 ?? '';
+      const runSkill = (approvalGrantToken) => api(`/workspaces/${scoped}/skills/${encodeURIComponent(name)}/run`, {
+        method: 'POST',
+        body: requestBody({ script, expectedContentSha256: contentSha256, ...(approvalGrantToken ? { approvalGrantToken } : {}) })
+      });
+      const finished = () => { announce('Skill script finished.'); navigateTo(`/dashboard/workspaces/${scoped}/automation`); };
+      let grant;
+      void submitForm(skillForm, 'Requesting approval…', async () => {
+        grant = undefined;
+        try { await runSkill(); }
+        catch (error) { grant = skillApprovalRequest(error); if (!grant) throw error; }
+      }, async () => {
+        if (!grant) { finished(); return; }
+        const { grantId, expiresAt } = grant;
+        confirmAction({
+          ...skillRunApprovalPrompt({ name, script, contentSha256, expiresAt }),
+          label: 'Approve and run', pendingLabel: 'Running…',
+          action: async () => {
+            await api(`/privilege-grants/${encodeURIComponent(grantId)}/approve`, { method: 'POST', body: requestBody({}) });
+            await runSkill(grantId);
+            finished();
+          }
+        }, skillForm.querySelector('button[type="submit"]'));
+      });
     });
   }
   /** Deployments are external-effect operations, so each run confirms first. */
