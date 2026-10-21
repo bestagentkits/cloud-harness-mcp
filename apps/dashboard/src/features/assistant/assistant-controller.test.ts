@@ -122,6 +122,56 @@ describe('assistant controller', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it('closes the dialog as a denial when the widget stops the call', async () => {
+    const { controller, shown, send } = setup('projects');
+    const approval = controller.confirm('prepare_project_create', 'call-s', { name: 'Stopped' });
+    await vi.waitFor(() => expect(shown.at(-1)).toBeDefined());
+    const request = shown.at(-1)!;
+    // A finished call that is not this one's, or one that succeeded, leaves the dialog alone.
+    controller.callEnded('other', 'denied');
+    controller.callEnded('call-s', 'ok');
+    expect(shown.at(-1)).toBe(request);
+    controller.callEnded('call-s', 'denied');
+    await expect(approval).resolves.toBe(false);
+    expect(shown.at(-1)).toBeUndefined();
+    await controller.approve(request);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('never opens a dialog for a call the widget stopped while it was being prepared', async () => {
+    const { controller, shown, send } = setup('projects');
+    let finishPrepare!: () => void;
+    const unregister = registerPageActions({ owner: 'workspace.files', actions: [{
+      name: 'prepare_slow', description: 'test', sensitivity: 'destructive', schema: (z) => z.object({}).strict(),
+      prepare: async () => {
+        await new Promise<void>((resolve) => { finishPrepare = resolve; });
+        return { method: 'DELETE', path: '/projects/prj_x', body: undefined, title: 't', description: 'd', confirmLabel: 'Delete', destructive: true };
+      }
+    }] });
+    controller.actions();
+    const approval = controller.confirm('prepare_slow', 'call-p', {});
+    await vi.waitFor(() => expect(finishPrepare).toBeDefined());
+    controller.callEnded('call-p', 'denied');
+    finishPrepare();
+    await expect(approval).resolves.toBe(false);
+    expect(shown).toEqual([]);
+    expect(send).not.toHaveBeenCalled();
+    unregister();
+  });
+
+  it('keeps a send in flight when the widget reports its call ended', async () => {
+    const { controller, shown, send } = setup('projects');
+    let finish!: (value: unknown) => void;
+    send.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const approval = controller.confirm('prepare_project_create', 'call-f', { name: 'Flight' });
+    await vi.waitFor(() => expect(shown.at(-1)).toBeDefined());
+    const sending = controller.approve(shown.at(-1)!);
+    controller.callEnded('call-f', 'denied');
+    finish({ data: { id: 'prj_f', name: 'Flight' } });
+    await sending;
+    await expect(approval).resolves.toBe(true);
+  });
+
   it('refuses names with control or format characters shown in the dialog', async () => {
     const { controller, shown, action, context } = setup('projects');
     for (const name of ['Alpha\nDELETE', 'safe\u202Eexe.txt', 'zero\u200Bwidth']) {

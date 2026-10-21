@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query';
-import type { PageAction } from 'dewee-webchat';
+import type { ActionResultStatus, PageAction } from 'dewee-webchat';
 import { array, boolean, enum as zodEnum, literal, number, object, string, union } from 'zod';
 import { toast } from '@/components/ui/toast-store';
 import { ApiError, apiClient, ConflictError, ForbiddenError, NetworkError, RateLimitedError, ServerError, UnauthorizedError } from '@/lib/api-client';
@@ -141,18 +141,22 @@ export function createAssistantController(options: AssistantControllerOptions) {
       latest.delete(callId);
       const spec = specs.get(name);
       if (!spec || !('prepare' in spec)) return false;
+      // Minted before preparing, so a call the widget stops while `prepare` runs is never shown.
+      const ticket = ++nextTicket;
+      latest.set(callId, ticket);
       let mutation: PreparedMutation;
       try {
         mutation = await spec.prepare(parseArgs(spec.schema(z), args));
       } catch (error) {
+        if (latest.get(callId) !== ticket) return false;
+        latest.delete(callId);
         reports.set(callId, { ok: false, error: error instanceof Error ? error.message : 'The request could not be prepared.' });
         return true;
       }
+      if (latest.get(callId) !== ticket) return false;
       // A newer request replaces the dialog. One still waiting is denied; one whose send is in
       // flight keeps its promise and settles with its own outcome when the send completes.
       if (pending && !sending.has(pending.ticket)) settle(pending.ticket, false);
-      const ticket = ++nextTicket;
-      latest.set(callId, ticket);
       return new Promise<boolean>((resolve) => {
         waiting.set(ticket, { callId, resolve });
         show({ ticket, callId, mutation });
@@ -182,6 +186,20 @@ export function createAssistantController(options: AssistantControllerOptions) {
     deny(request: PendingRequest) {
       // Once the owner's click is sending, closing the dialog no longer denies it.
       if (waiting.has(request.ticket) && !sending.has(request.ticket)) settle(request.ticket, false);
+    },
+
+    /**
+     * The widget ended a call. It gives the confirm hook no abort signal, so a call it stopped
+     * (Stop, a new conversation) ends `denied` while its dialog is still open: close that dialog
+     * as a denial, so the owner cannot send what the agent was told was declined.
+     */
+    callEnded(callId: string, status: ActionResultStatus | undefined) {
+      if (status === 'ok') return;
+      const ticket = latest.get(callId);
+      if (ticket === undefined || sending.has(ticket)) return;
+      // Still preparing: dropping the ticket keeps its dialog from ever opening.
+      if (waiting.has(ticket)) settle(ticket, false);
+      else latest.delete(callId);
     },
 
     /** Denies whatever is still waiting (the assistant unmounts). */
