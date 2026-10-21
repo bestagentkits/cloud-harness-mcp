@@ -110,6 +110,12 @@ blanks both secrets on the runner, which shares that env file, and
 `scripts/verify-compose-boundaries.mjs` asserts that no other service names a
 `DEWEE_` setting.
 
+In production the three required settings go in
+`/etc/cloud-harness-mcp/runtime.env`, next to the other `api` settings; the
+[deployment guide](deployment.md#enable-the-dashboard-assistant-dewee) has the
+order. The React Dashboard shows its Assistant button either way; while the
+settings are unset, every request the widget makes answers `503 dewee_disabled`.
+
 The data flow and its risks are in the
 [security model](security-model.md#dashboard-webchat-dewee). The executable
 owners are

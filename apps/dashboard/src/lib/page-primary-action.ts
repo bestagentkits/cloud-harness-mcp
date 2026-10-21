@@ -39,3 +39,8 @@ export function usePagePrimaryAction(pageId: PageId, action: PagePrimaryAction):
 export function useRegisteredPrimaryAction(pageId: PageId): PagePrimaryAction | undefined {
   return useSyncExternalStore(subscribe, () => actions.get(pageId), () => undefined);
 }
+
+/** The registered action outside React (the assistant's `open_wizard`). */
+export function registeredPrimaryAction(pageId: PageId): PagePrimaryAction | undefined {
+  return actions.get(pageId);
+}

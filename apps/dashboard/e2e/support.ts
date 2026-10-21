@@ -4,7 +4,8 @@ import { expect, type Page, type Route } from '@playwright/test';
 /**
  * Shared Playwright helpers for the navigation and state suites. The test server's runner is
  * unreachable on purpose, so every page read is answered here with `page.route`; the session,
- * profile and preferences endpoints the API serves itself stay real.
+ * profile and preferences endpoints the API serves itself stay real, and so does the
+ * assistant's `/dewee/*` BFF (its gateway is the scripted stub in `e2e/dewee-gateway-stub.mjs`).
  */
 
 const API = '/dashboard/api/v1';
@@ -33,7 +34,7 @@ export async function stubReads(page: Page, handlers: Record<string, ReadHandler
   const seen: string[] = [];
   await page.route(`**${API}/**`, async (route) => {
     const path = new URL(route.request().url()).pathname.slice(API.length);
-    if (SERVED_BY_API.has(path)) return route.fallback();
+    if (SERVED_BY_API.has(path) || path.startsWith('/dewee/')) return route.fallback();
     seen.push(path);
     return (handlers[path] ?? answer(200))(route);
   });

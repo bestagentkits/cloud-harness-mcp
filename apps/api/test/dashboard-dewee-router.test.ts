@@ -162,7 +162,7 @@ describe('Dashboard webchat BFF: access', () => {
     expect(reply.status).toBe(200);
     expect(reply.json).toEqual({
       agents: [{ id: 'cloud-harness-operator' }], defaultAgent: 'cloud-harness-operator', allowAgentSwitch: false,
-      allowClientCredentials: false, maxMessageLength: 4_000, version: '0.2.0'
+      allowClientCredentials: false, maxMessageLength: 4_000, version: '0.3.0'
     });
   });
 

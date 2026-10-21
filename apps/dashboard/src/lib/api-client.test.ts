@@ -32,6 +32,16 @@ function fakeFetch(...responses: Array<Response | Error>) {
 const header = (call: Call | undefined, name: string) => (call?.init.headers as Record<string, string> | undefined)?.[name];
 
 describe('createApiClient', () => {
+  it('hands out the in-memory CSRF header, bootstrapping once', async () => {
+    const { impl, calls } = fakeFetch(json(200, { csrfToken: 'token-1' }));
+    const client = createApiClient(impl);
+    await expect(client.csrfHeaders()).resolves.toEqual({ 'x-csrf-token': 'token-1' });
+    await expect(client.csrfHeaders()).resolves.toEqual({ 'x-csrf-token': 'token-1' });
+    expect(calls.map((call) => call.url)).toEqual(['/dashboard/api/v1/session']);
+    expect(globalThis.localStorage?.length ?? 0).toBe(0);
+    expect(globalThis.sessionStorage?.length ?? 0).toBe(0);
+  });
+
   it('reads with same-origin credentials and no CSRF header', async () => {
     const { impl, calls } = fakeFetch(json(200, { data: { ok: true } }));
     const client = createApiClient(impl);

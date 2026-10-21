@@ -869,12 +869,42 @@ contents, terminal output, diffs, logs).
   another resource.
 - These controls do not cover the agent's own MCP calls.
 
+**Dashboard page actions.** The React Dashboard advertises a typed action
+registry to the widget
+([`apps/dashboard/src/lib/page-actions.ts`](../apps/dashboard/src/lib/page-actions.ts),
+[`apps/dashboard/src/features/assistant/`](../apps/dashboard/src/features/assistant/)).
+Three rules hold for every action:
+
+- **Confirm before any write.** A `mutate` or `destructive` action only
+  prepares a request. The Dashboard validates the agent's arguments strictly,
+  builds the exact typed body itself, and shows the method, path and body in a
+  confirmation dialog. It sends that stored request only after the operator
+  clicks confirm; dismissing the dialog is a denial reported to the agent.
+  Agent arguments never reach the API as a raw payload, and no action is ever
+  executed automatically. Creating secrets or API keys and deciding approvals
+  have no action at all: those stay on their pages.
+- **No secrets in page context or results.** Page context carries route,
+  filters, selection ids, counts and statuses picked from an allowlist of
+  fields. Action results carry ids and states. Secret values, one-time keys,
+  file contents, terminal output, diffs and logs are never included; the BFF
+  stripping above is the backstop.
+- **The widget holds no stored credential.** Every widget request sends the
+  in-memory CSRF header and the session cookie. The widget's own visitor token
+  is removed from `localStorage` as soon as the widget writes it, so it lives
+  only in memory, and its styles are adopted as constructed stylesheets so the
+  CSP needs no `unsafe-inline`.
+
+`apps/dashboard/e2e/dewee-assistant.spec.ts` drives the real widget and BFF
+against a scripted gateway and asserts all three.
+
 **Owner opt-in: the agent's MCP key.** The Dewee agent reaches Cloud Harness
 MCP through a managed API key with full static-client authority (see
-[ADR 0005](adr/0005-dashboard-react-rewrite.md)). Its MCP actions do not pass
-through the Dashboard confirmation step. Revoking or rotating that key on the
-API Keys page is the control for the agent's MCP authority. Disabling the
-webchat does not revoke it.
+[ADR 0005](adr/0005-dashboard-react-rewrite.md)). Managed keys carry no scope,
+so the agent can read, write and execute in every workspace the owner can. Its
+MCP calls do not pass through the Dashboard confirmation step, and the
+confirmation rule above does not limit them. Revoking or rotating that key on
+the API Keys page is the only control for the agent's MCP authority. Disabling
+the webchat does not revoke it.
 
 **Kill switch.** Unset `DEWEE_GATEWAY_URL`, `DEWEE_GATEWAY_TOKEN` and
 `DEWEE_WEBCHAT_SECRET`, then recreate the `api` container. Every webchat route

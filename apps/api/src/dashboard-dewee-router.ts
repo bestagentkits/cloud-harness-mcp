@@ -9,7 +9,7 @@ import type { DashboardRequest } from './dashboard-types.js';
 import { apiLogger } from './logging.js';
 
 /**
- * The Dashboard webchat BFF: the four endpoints of the dewee-webchat 0.2.0 HTTP contract
+ * The Dashboard webchat BFF: the four endpoints of the dewee-webchat 0.3.0 HTTP contract
  * (`config`, `session`, `chat`, `history`) under `/dashboard/api/v1/dewee/`. The dashboard
  * router has already enforced Access, the principal, the CSRF header on POST and the shared
  * per-principal limit; this module adds its own rate limit and keeps the gateway token and the
@@ -24,7 +24,7 @@ type ExternalPrincipal = Extract<RunnerPrincipalSelector, { kind: 'external' }>;
 type PrincipalResolver = (request: DashboardRequest, response: Response) => RunnerPrincipalSelector | undefined;
 
 const BASE = '/api/v1/dewee';
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 const MAX_MESSAGE_LENGTH = 4_000;
 // Above the widget's 24h reuse threshold, so it keeps one token instead of minting one per load.
 const VISITOR_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1_000;

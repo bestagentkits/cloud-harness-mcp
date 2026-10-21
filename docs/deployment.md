@@ -565,6 +565,43 @@ evidence until that run and its deploy succeed. If the request job fails, run
 the same command by hand while the version commit is still the head of `main`;
 the command tests whatever `main` points at.
 
+## Enable the Dashboard assistant (Dewee)
+
+The React Dashboard's assistant needs a Dewee gateway, an operator agent on
+it, and three `api` settings. The settings and their rules are in
+[configuration](configuration.md#dashboard-webchat-dewee); the trust model,
+including the full-scope MCP key, is in the
+[security model](security-model.md#dashboard-webchat-dewee).
+
+1. On the gateway, create the agent named by `DEWEE_AGENT_ID` (default
+   `cloud-harness-operator`) with the operator system prompt. Give it a Cloud
+   Harness MCP server that points at the static-client lane (`/mcp` on the
+   API-key Worker host from [API-key gateway rollout](#api-key-gateway-rollout),
+   for example `https://api.harness.zuey.me/mcp`; the Access-protected
+   Dashboard host refuses API keys) and
+   authenticates with a managed API key created for the agent on the API
+   Access page. Pass the key through the gateway's non-echoing input, never on
+   a command line.
+2. As root, add to `/etc/cloud-harness-mcp/runtime.env` without printing the
+   file: `DEWEE_GATEWAY_URL` (the gateway's `https` origin),
+   `DEWEE_GATEWAY_TOKEN` (the gateway's server-side token) and
+   `DEWEE_WEBCHAT_SECRET` (a new random value of at least 32 characters).
+   Add `DEWEE_AGENT_ID`, `DEWEE_TENANT_ID` or `DEWEE_CHAT_TIMEOUT_MS` only to
+   override a default.
+3. Recreate only the `api` container from the release checkout:
+
+   ```bash
+   cd /opt/cloud-harness-mcp/repo
+   sudo /usr/local/sbin/cloud-harness-service-compose up -d --no-deps --force-recreate api
+   ```
+
+4. Open the Dashboard, open the Assistant, and ask it to open a page. A
+   `503 dewee_disabled` means one of the three settings is missing.
+
+To disable the assistant, remove the three settings and recreate the `api`
+container the same way. To remove the agent's MCP authority, revoke its key on
+the API Access page; disabling the assistant does not revoke it.
+
 ## Rollback or disable the route
 
 For a compatible previous commit:

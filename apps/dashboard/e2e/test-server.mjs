@@ -7,6 +7,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { createServer } from 'node:http';
 import { ApiConfigSchema } from '@cloud-harness/contracts';
 import { createApiApp } from '../../api/dist/app.js';
+import { startDeweeGatewayStub } from './dewee-gateway-stub.mjs';
 
 const PORT = Number(process.env.DASHBOARD_E2E_PORT ?? 4319);
 const ORIGIN = `http://127.0.0.1:${PORT}`;
@@ -25,6 +26,11 @@ function assertion() {
   return `${header}.${payload}.${sign('RSA-SHA256', Buffer.from(`${header}.${payload}`), privateKey).toString('base64url')}`;
 }
 
+// The assistant suite talks to a scripted loopback gateway; these test-only values never
+// leave the process and stand in for the production Dewee settings.
+const DEWEE_GATEWAY_TOKEN = 'e2e-dewee-gateway-token';
+const dewee = await startDeweeGatewayStub(DEWEE_GATEWAY_TOKEN);
+
 const config = ApiConfigSchema.parse({
   host: '127.0.0.1',
   port: PORT,
@@ -37,7 +43,10 @@ const config = ApiConfigSchema.parse({
   runnerToken: 'e2e-runner-token-that-is-longer-than-32-characters',
   publicHosts: ['127.0.0.1'],
   allowedOrigins: [ORIGIN],
-  dashboardUi: 'react'
+  dashboardUi: 'react',
+  deweeGatewayUrl: dewee.url,
+  deweeGatewayToken: DEWEE_GATEWAY_TOKEN,
+  deweeWebchatSecret: 'e2e-dewee-webchat-secret-longer-than-32-characters'
 });
 
 const runtime = createApiApp(config, { accessVerifier: { fetcher: async () => new Response(jwks, { status: 200 }) } });
@@ -78,8 +87,18 @@ function captureAsset(path, response) {
   };
 }
 
+// Test-only route (never forwarded to the API): what the gateway received, so a spec can
+// assert the page context and action results that left the BFF.
+const DEWEE_MESSAGES = '/__e2e/dewee-messages';
+
 const server = createServer((request, response) => {
   const path = request.url ?? '';
+  if (path === DEWEE_MESSAGES) {
+    if (request.method === 'DELETE') dewee.messages.length = 0;
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ messages: dewee.messages }));
+    return;
+  }
   if (request.method === 'GET' && ASSET.test(path)) {
     const cached = assetCache.get(path);
     if (cached) { replay(cached, response); return; }
@@ -93,6 +112,7 @@ server.listen(PORT, '127.0.0.1', () => console.log(`Dashboard e2e server on ${OR
 async function shutdown() {
   server.close();
   await runtime.close();
+  await dewee.close();
   process.exit(0);
 }
 process.on('SIGINT', shutdown);

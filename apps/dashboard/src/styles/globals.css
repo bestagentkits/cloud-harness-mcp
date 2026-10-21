@@ -105,3 +105,15 @@
     }
   }
 }
+
+/*
+ * The embedded Dewee assistant opens from the top-bar trigger, so the widget's own floating
+ * launcher is hidden. Its panel keeps the widget's styles (adopted, see
+ * features/assistant/widget-host-setup.ts) and sits above page content but below dialogs.
+ */
+dewee-chat::part(launcher) {
+  display: none;
+}
+dewee-chat {
+  --dw-z: 45;
+}
