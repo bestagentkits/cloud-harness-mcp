@@ -49,25 +49,29 @@ test.beforeEach(async ({ page }) => {
   expect(await page.evaluate(async (url) => (await fetch(url)).status, `${API}/session`)).toBe(200);
 });
 
-for (const area of AREAS) {
-  test(`${area.area}: a write without the CSRF token, or with a wrong one, is refused with 403`, async ({ page }) => {
+// Every test signs in as the same owner, and the API allows that principal 120 requests a
+// minute; one page load per check keeps this spec from starving the specs that follow it.
+test('a write without the CSRF token, or with a wrong one, is refused with 403 in every area', async ({ page }) => {
+  for (const area of AREAS) {
     for (const headers of [{}, { 'x-csrf-token': 'not-the-session-token' }]) {
       const result = await pageWrite(page, area, headers);
-      expect(result.status).toBe(403);
-      expect(result.json).toEqual({ error: 'csrf_failed' });
+      expect(result.status, area.area).toBe(403);
+      expect(result.json, area.area).toEqual({ error: 'csrf_failed' });
     }
-  });
+  }
+});
 
-  test(`${area.area}: a write from another Origin is refused with 403`, async ({ page }) => {
+test('a write from another Origin is refused with 403 in every area', async ({ page }) => {
+  for (const area of AREAS) {
     const response = await page.request.fetch(`${API}${area.path}`, {
       method: area.method,
       headers: { origin: 'https://attacker.example.test', 'content-type': 'application/json' },
       data: area.body
     });
-    expect(response.status()).toBe(403);
-    expect(await response.json()).toEqual({ error: 'forbidden_origin' });
-  });
-}
+    expect(response.status(), area.area).toBe(403);
+    expect(await response.json(), area.area).toEqual({ error: 'forbidden_origin' });
+  }
+});
 
 test('a write with the session token passes the checks and fails only at the runner', async ({ page }) => {
   const token = await page.evaluate(async (url) => ((await (await fetch(url)).json()) as { csrfToken: string }).csrfToken, `${API}/session`);
