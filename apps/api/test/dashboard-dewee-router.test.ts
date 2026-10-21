@@ -162,7 +162,7 @@ describe('Dashboard webchat BFF: access', () => {
     expect(reply.status).toBe(200);
     expect(reply.json).toEqual({
       agents: [{ id: 'cloud-harness-operator' }], defaultAgent: 'cloud-harness-operator', allowAgentSwitch: false,
-      allowClientCredentials: false, maxMessageLength: 4_000, version: '0.2.0'
+      allowClientCredentials: false, maxMessageLength: 4_000, version: '0.3.0'
     });
   });
 
@@ -227,6 +227,21 @@ describe('Dashboard webchat BFF: chat', () => {
     expect(message).not.toContain('chm_key_abcdefghijkl');
     expect(reply.text).not.toContain('LEAK');
     expect(reply.text).not.toContain('UNKEYED');
+  });
+
+  it('redacts secret-shaped content in action-result blocks but leaves the visitor\'s words as typed', async () => {
+    const headers = await chatHeaders();
+    const result = { id: 'call-1', name: 'prepare_project_create', status: 'error', error: 'upstream said: sk-SENTINELabcdefghijklmnop', result: { token: 'plain', id: `prj_${'a'.repeat(32)}` } };
+    const message = `\`\`\`dewee-action-result\n${JSON.stringify(result)}\n\`\`\`\n\n\`\`\`dewee-action-result\nnot json Bearer abcdefghijklmnop\n\`\`\`\nmy words`;
+    const reply = await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message }) });
+    expect(reply.status).toBe(200);
+    const forwarded = String(stub.requests.find((entry) => entry.method === 'chat.send')!.params.message);
+    expect(forwarded).not.toContain('sk-SENTINEL');
+    expect(forwarded).not.toContain('"token":"plain"');
+    expect(forwarded).not.toContain('Bearer abcdefghijklmnop');
+    expect(forwarded).toContain('"error":"upstream said: [redacted]"');
+    expect(forwarded).toContain(`"id":"prj_${'a'.repeat(32)}"`);
+    expect(forwarded.endsWith('```\nmy words')).toBe(true);
   });
 
   it.each([['an empty', ''], ['a null', null]])('treats %s agent as the configured default', async (_label, agent) => {

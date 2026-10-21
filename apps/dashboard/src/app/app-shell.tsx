@@ -1,5 +1,5 @@
 import { useRouterState } from '@tanstack/react-router';
-import { CommandIcon, LogOutIcon, MenuIcon, PanelLeftCloseIcon, PanelLeftOpenIcon } from 'lucide-react';
+import { BotMessageSquareIcon, CommandIcon, LogOutIcon, MenuIcon, PanelLeftCloseIcon, PanelLeftOpenIcon } from 'lucide-react';
 import { lazy, type ReactNode, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ClassicDashboardLink } from '@/components/feedback/classic-dashboard-link';
 import { NavProgress } from '@/components/feedback/nav-progress';
@@ -13,6 +13,7 @@ import { WorkspaceFilter } from '@/components/layouts/workspace-filter';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { usePreferences } from '@/lib/preferences';
+import { rememberWorkspace } from '@/lib/recent-workspaces';
 import { useOpenedOnce } from '@/lib/use-opened-once';
 import { cn } from '@/lib/utils';
 import { documentTitle, PRODUCT_NAME } from './page-registry';
@@ -22,6 +23,8 @@ import { useGlobalShortcuts } from './use-global-shortcuts';
 const CommandPalette = lazy(() => import('@/components/layouts/command-palette'));
 const loadDrawer = () => import('@/components/layouts/mobile-nav-drawer');
 const MobileNavDrawer = lazy(loadDrawer);
+const loadAssistant = () => import('@/features/assistant/dewee-webchat');
+const DeweeAssistant = lazy(loadAssistant);
 
 /**
  * Persistent frame: skip link, collapsible sidebar (a drawer on small screens), top bar,
@@ -38,11 +41,15 @@ export function AppShell({ children }: { children: ReactNode }) {
   const drawerMounted = useOpenedOnce(drawerOpen);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteLoaded, setPaletteLoaded] = useState(false);
+  // Each click toggles the assistant; the widget and its chunk load on the first one only.
+  const [assistantSignal, setAssistantSignal] = useState(0);
+  const toggleAssistant = useCallback(() => setAssistantSignal((count) => count + 1), []);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const pathname = useRouterState({ select: (state) => state.matches[state.matches.length - 1]?.pathname ?? '' });
 
   useLayoutEffect(() => { document.title = documentTitle(page, detail); }, [page, detail]);
+  useEffect(() => { if (page?.id === 'workspace' && detail) rememberWorkspace(detail); }, [page?.id, detail]);
 
   // Move focus to the new page's heading after an in-app navigation (not on first load and
   // not for search-param-only changes such as typing in a filter).
@@ -117,6 +124,14 @@ export function AppShell({ children }: { children: ReactNode }) {
               <span className="sr-only lg:not-sr-only">Search</span><span className="sr-only"> pages and commands</span>
               <kbd aria-hidden="true" className="hidden rounded border px-1 font-mono text-[0.625rem] lg:inline">Ctrl K</kbd>
             </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="size-8" aria-label="Assistant" aria-haspopup="dialog" data-testid="assistant-trigger" onPointerEnter={() => { void loadAssistant(); }} onClick={toggleAssistant}>
+                  <BotMessageSquareIcon aria-hidden="true" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Assistant: ask, navigate, prepare changes you confirm</TooltipContent>
+            </Tooltip>
             <ThemeToggle />
             <DisplayPreferencesButton />
             <DisplayNameChip current={page?.id === 'profile'} />
@@ -139,8 +154,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       </div>
       {paletteLoaded ? (
         <Suspense fallback={null}>
-          <CommandPalette open={paletteOpen} onOpenChange={openPalette} onToggleSidebar={toggleSidebar} />
+          <CommandPalette open={paletteOpen} onOpenChange={openPalette} onToggleSidebar={toggleSidebar} onOpenAssistant={toggleAssistant} />
         </Suspense>
+      ) : null}
+      {assistantSignal > 0 ? (
+        <Suspense fallback={null}><DeweeAssistant openSignal={assistantSignal} /></Suspense>
       ) : null}
     </div>
   );

@@ -11,6 +11,8 @@ export type ConfirmDialogProps = {
   description: ReactNode;
   /** What the action targets (a workspace id, a key name), shown in monospace. */
   target?: string;
+  /** Block content after the target, such as the exact request a prepared action sends. */
+  details?: ReactNode;
   confirmLabel: string;
   pendingLabel?: string;
   destructive?: boolean;
@@ -27,7 +29,7 @@ export type ConfirmDialogProps = {
  * destructive mutation is never abandoned half-way. Focus returns to the invoker on close.
  */
 export function ConfirmDialog({
-  open, onOpenChange, title, description, target, confirmLabel, pendingLabel = 'Working…', destructive = true, onConfirm, onError
+  open, onOpenChange, title, description, target, details, confirmLabel, pendingLabel = 'Working…', destructive = true, onConfirm, onError
 }: ConfirmDialogProps) {
   const [pending, setPending] = useState(false);
   const inFlight = useRef(false);
@@ -64,6 +66,7 @@ export function ConfirmDialog({
           <AlertDialogPrimitive.Title className="text-lg font-semibold">{title}</AlertDialogPrimitive.Title>
           <AlertDialogPrimitive.Description className="text-sm text-muted-foreground">{description}</AlertDialogPrimitive.Description>
           {target ? <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs break-all">{target}</p> : null}
+          {details}
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <AlertDialogPrimitive.Cancel className={cn(buttonVariants({ variant: 'outline' }))} disabled={pending}>Cancel</AlertDialogPrimitive.Cancel>
             {/* Not AlertDialog.Action: that closes immediately, before the action settles. */}

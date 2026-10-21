@@ -122,6 +122,12 @@ export type ApiClient = {
   bootstrapSession: (signal?: AbortSignal) => Promise<void>;
   /** Drops the in-memory CSRF token, e.g. after sign-out. */
   clearSession: () => void;
+  /**
+   * The `x-csrf-token` header for a same-origin BFF request sent by another client (the
+   * embedded Dewee webchat). Bootstraps the session when no token is held; the token stays
+   * in this closure and is never written to storage.
+   */
+  csrfHeaders: (signal?: AbortSignal) => Promise<Record<string, string>>;
 };
 
 export type ApiClientOptions = {
@@ -215,7 +221,11 @@ export function createApiClient(fetchImpl: typeof fetch = (...args) => globalThi
     request,
     get: (path, options = {}) => request(path, { ...options, method: 'GET' }),
     bootstrapSession,
-    clearSession: () => { csrfToken = undefined; }
+    clearSession: () => { csrfToken = undefined; },
+    csrfHeaders: async (signal) => {
+      if (!csrfToken) await bootstrapSession(signal);
+      return csrfToken ? { 'x-csrf-token': csrfToken } : {};
+    }
   };
 }
 

@@ -808,3 +808,19 @@ Section 4.13 decisions for P4b routes:
 | `POST /workspaces/:id/hooks/{activate,deactivate}` | drop | Hook state comes from the repository manifest; the tab shows it read-only, as legacy did |
 | `GET /artifacts/:artifactId` | drop | The list row carries every field the page shows; download is the native link |
 | `POST /artifacts/:artifactId/restore` | defer (#512) | Restoring writes into a workspace and needs a target-path design |
+
+### 12.4 P5b status
+
+P5b ([#485](https://github.com/bestagentkits/cloud-harness-mcp/issues/485))
+embeds the Dewee assistant on the P5a BFF.
+
+| Area | Status | React owner and evidence |
+| --- | --- | --- |
+| Widget mount | done | `features/assistant/dewee-webchat.tsx`, lazy (`lazyHeavy` budget) and mounted from the top-bar Assistant button; `widget-host-setup.ts` adopts its styles under the CSP, sends the in-memory CSRF header and keeps its visitor token out of storage |
+| Page actions | done | `lib/page-actions.ts` (zod-free registry, `usePageActions` hook) and `features/assistant/page-action-catalog.ts`: navigate, read page state, set filters, open the page's create flow, and prepared mutations for P3 and P4a pages (projects, environments, agent cancel, API key revoke, secret delete, MCP server enable, lease renew) |
+| Confirmation | done | `features/assistant/assistant-controller.ts`; the dialog shows the exact method, path and body and sends only on the owner's click; `e2e/dewee-assistant.spec.ts` (blocked until confirm, denial sends nothing, CSRF, no secret in page context or results, axe) |
+| Command palette | done | pages, recent workspaces (`lib/recent-workspaces.ts`, ids only), the page's primary action, cockpit tabs and registered actions; keyboard-only and axe checked in `e2e/dewee-assistant.spec.ts` |
+| Cockpit tab actions | hook only | P4b tabs register their own actions with `usePageActions('workspace.<tab>', …)` while mounted |
+
+No page context exposes runner `mcpt_` ids, so the BFF's public-id list is
+unchanged.

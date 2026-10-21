@@ -43,7 +43,8 @@ A rebuilt dashboard is rolling out behind the `CLOUD_HARNESS_DASHBOARD_UI` setti
 In the new dashboard:
 
 - **Pages keep their addresses.** Every page and deep link of the classic dashboard has the same `/dashboard/...` address, filters stay in the URL, and reload, Back and Forward return you to the same view. Pages whose controls have not moved yet link to the classic dashboard.
-- **Command palette:** press `Ctrl+K` or `Cmd+K`, or click **Search**, to jump to a page, a workspace or a theme. The shortcut is ignored while you type in a terminal.
+- **Command palette:** press `Ctrl+K` or `Cmd+K`, or click **Search**, to jump to a page, a recently opened workspace, the current page's main action, a theme, or the assistant. The shortcut is ignored while you type in a terminal.
+- **[Assistant](/dashboard/assistant):** the **Assistant** button opens an embedded operator agent that can open pages, read what you see and prepare changes. Every change it prepares waits for your confirmation in a dialog that shows the exact request.
 - **Shortcuts:** `[` collapses or expands the sidebar, and `/` moves focus to the workspace search box.
 - **Small screens:** the menu button in the top bar opens the navigation as a drawer.
 - **Display preferences:** text size, density, contrast and the sidebar state are saved in this browser only. The theme is saved to your account cookie. Animations are turned off when your system asks for reduced motion.

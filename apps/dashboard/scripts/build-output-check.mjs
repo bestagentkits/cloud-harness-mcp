@@ -24,6 +24,7 @@ export const BUDGET = Object.freeze({ initialJs: 180 * 1024, routeChunk: 60 * 10
  */
 export const LAZY_HEAVY = Object.freeze([
   { id: 'xterm', key: /(?:^|\/)node_modules\/@xterm\/xterm\//, name: 'xterm' },
+  // Matches the package path and the lazy wrapper `src/features/assistant/dewee-webchat.tsx`, whose chunk carries the widget.
   { id: 'dewee-webchat', key: /(?:^|\/)dewee-webchat(?:[./]|$)/, name: 'dewee-webchat' }
 ]);
 const ROUTE_CHUNK = /^src\/routes\//;

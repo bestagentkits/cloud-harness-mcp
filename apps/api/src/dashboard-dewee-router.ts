@@ -3,13 +3,13 @@ import type { Response, Router } from 'express';
 import type { ApiConfig, RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { buildPageBlock, buildSessionKey, fetchHistory, hashManifest, normalizeManifest, signVisitorToken, verifyVisitorToken, type ActionManifestEntry, type GatewayCredentials } from 'dewee-webchat/server';
 import { runDeweeChat } from './dashboard-dewee-gateway.js';
-import { DeweeInputError, serializeDeweePageContext } from './dashboard-dewee-page-context.js';
+import { DeweeInputError, redactDeweeActionResults, serializeDeweePageContext } from './dashboard-dewee-page-context.js';
 import { createDeweeRateLimiter } from './dashboard-dewee-rate-limit.js';
 import type { DashboardRequest } from './dashboard-types.js';
 import { apiLogger } from './logging.js';
 
 /**
- * The Dashboard webchat BFF: the four endpoints of the dewee-webchat 0.2.0 HTTP contract
+ * The Dashboard webchat BFF: the four endpoints of the dewee-webchat 0.3.0 HTTP contract
  * (`config`, `session`, `chat`, `history`) under `/dashboard/api/v1/dewee/`. The dashboard
  * router has already enforced Access, the principal, the CSRF header on POST and the shared
  * per-principal limit; this module adds its own rate limit and keeps the gateway token and the
@@ -24,7 +24,7 @@ type ExternalPrincipal = Extract<RunnerPrincipalSelector, { kind: 'external' }>;
 type PrincipalResolver = (request: DashboardRequest, response: Response) => RunnerPrincipalSelector | undefined;
 
 const BASE = '/api/v1/dewee';
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 const MAX_MESSAGE_LENGTH = 4_000;
 // Above the widget's 24h reuse threshold, so it keeps one token instead of minting one per load.
 const VISITOR_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -195,7 +195,7 @@ export function registerDashboardDeweeRoutes(router: Router, config: ApiConfig, 
           userId: USER_ID_PREFIX + visitorId,
           agent: settings.agent,
           sessionKey: buildSessionKey(settings.agent, `${USER_ID_PREFIX}${visitorId}-${conversationId}`),
-          message: pageBlock + message,
+          message: pageBlock + redactDeweeActionResults(message),
           signal: abort.signal,
           timeoutMs: settings.timeoutMs,
           onGatewayFailure: (error) => logGatewayFailure('chat', error)

@@ -43,7 +43,7 @@ export async function stubBff(page: Page, { reads = {}, writes = {} }: {
   await page.route(`**${API}/**`, async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname.slice(API.length);
-    if (SERVED_BY_API.has(path)) return route.fallback();
+    if (SERVED_BY_API.has(path) || path.startsWith('/dewee/')) return route.fallback();
     const method = request.method();
     if (method === 'GET') {
       return (pick(reads[path], path) ?? answer(200))(route);
