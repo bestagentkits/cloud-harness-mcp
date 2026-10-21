@@ -14,8 +14,12 @@ const z: SchemaKit = { array, boolean, enum: zodEnum, literal, number, object, s
 /** The widget's own cap (dewee-webchat `ACTION_LIMITS.maxActions`). */
 export const MAX_ACTIONS = 32;
 
-/** A prepared request waiting for the owner's decision in the confirmation dialog. */
-export type PendingRequest = { callId: string; mutation: PreparedMutation };
+/**
+ * A prepared request waiting for the owner's decision in the confirmation dialog. `ticket` is
+ * a host-side nonce minted per `confirm`: the agent chooses `callId` and may reuse it, so all
+ * per-request state is keyed by the ticket.
+ */
+export type PendingRequest = { ticket: number; callId: string; mutation: PreparedMutation };
 
 type Outcome = { ok: true; result: Record<string, unknown> } | { ok: false; error: string };
 
@@ -56,9 +60,14 @@ export function createAssistantController(options: AssistantControllerOptions) {
   const send = options.send ?? ((mutation) => apiClient.request<unknown>(mutation.path, { method: mutation.method, ...(mutation.body ? { body: mutation.body } : {}) }));
   let deps: CatalogDeps | undefined;
   let specs = new Map<string, PageActionSpec>();
-  const outcomes = new Map<string, Outcome>();
-  const waiting = new Map<string, (approved: boolean) => void>();
-  const sending = new Set<string>();
+  let nextTicket = 0;
+  const outcomes = new Map<number, Outcome>();
+  const waiting = new Map<number, { callId: string; resolve: (approved: boolean) => void }>();
+  const sending = new Set<number>();
+  /** The newest ticket minted for each call id. */
+  const latest = new Map<string, number>();
+  /** Per call id, the outcome of its newest approved request, for the widget's handler to report. */
+  const reports = new Map<string, Outcome>();
   let pending: PendingRequest | undefined;
 
   function show(next: PendingRequest | undefined) {
@@ -66,11 +75,20 @@ export function createAssistantController(options: AssistantControllerOptions) {
     options.onPending(next);
   }
 
-  function settle(callId: string, approved: boolean) {
-    const resolve = waiting.get(callId);
-    waiting.delete(callId);
-    if (pending?.callId === callId) show(undefined);
-    resolve?.(approved);
+  function settle(ticket: number, approved: boolean) {
+    const entry = waiting.get(ticket);
+    waiting.delete(ticket);
+    const outcome = outcomes.get(ticket);
+    outcomes.delete(ticket);
+    if (pending?.ticket === ticket) show(undefined);
+    if (!entry) return;
+    // The widget runs the handler right after an approval resolves, so it reads this outcome.
+    // A superseded ticket's chain was stopped, so its outcome must not reach the newer call.
+    if (latest.get(entry.callId) === ticket) {
+      latest.delete(entry.callId);
+      if (approved && outcome) reports.set(entry.callId, outcome);
+    }
+    entry.resolve(approved);
   }
 
   /** Refetches only the reads the change affects, not the whole BFF cache. */
@@ -92,8 +110,8 @@ export function createAssistantController(options: AssistantControllerOptions) {
       handler: async (args, context) => {
         if ('run' in spec) return await spec.run(parseArgs(schema, args)) ?? { done: true };
         // A prepared action only reports what the confirmation recorded: it never sends.
-        const outcome = outcomes.get(context.callId);
-        outcomes.delete(context.callId);
+        const outcome = reports.get(context.callId);
+        reports.delete(context.callId);
         if (!outcome) throw new Error('The owner has not confirmed this request.');
         if (!outcome.ok) throw new Error(outcome.error);
         return outcome.result;
@@ -118,56 +136,63 @@ export function createAssistantController(options: AssistantControllerOptions) {
     /**
      * The widget's approval hook. Resolves `true` only after the owner's click sent the
      * request, or when the request could not be built (the handler then reports that error
-     * and nothing was sent); resolves `false` when the owner dismisses the dialog.
+     * and nothing was sent); resolves `false` when the owner dismisses the dialog. A newer
+     * request replaces the dialog: one still waiting is denied, while one whose send is in
+     * flight keeps its promise.
      */
     async confirm(name: string, callId: string, args: Record<string, unknown>): Promise<boolean> {
       // A call id is chosen by the agent and may be reused: drop any outcome a previous call left.
-      outcomes.delete(callId);
+      reports.delete(callId);
+      latest.delete(callId);
       const spec = specs.get(name);
       if (!spec || !('prepare' in spec)) return false;
       let mutation: PreparedMutation;
       try {
         mutation = await spec.prepare(parseArgs(spec.schema(z), args));
       } catch (error) {
-        outcomes.set(callId, { ok: false, error: error instanceof Error ? error.message : 'The request could not be prepared.' });
+        reports.set(callId, { ok: false, error: error instanceof Error ? error.message : 'The request could not be prepared.' });
         return true;
       }
-      if (pending) settle(pending.callId, false);
+      // A newer request replaces the dialog. One still waiting is denied; one whose send is in
+      // flight keeps its promise and settles with its own outcome when the send completes.
+      if (pending && !sending.has(pending.ticket)) settle(pending.ticket, false);
+      const ticket = ++nextTicket;
+      latest.set(callId, ticket);
       return new Promise<boolean>((resolve) => {
-        waiting.set(callId, resolve);
-        show({ callId, mutation });
+        waiting.set(ticket, { callId, resolve });
+        show({ ticket, callId, mutation });
       });
     },
 
     /** The owner confirmed: send exactly the stored request. A failure is toasted and reported to the agent. */
     async approve(request: PendingRequest): Promise<void> {
-      const { mutation } = request;
-      if (sending.has(request.callId)) return;
-      sending.add(request.callId);
+      const { mutation, ticket } = request;
+      if (!waiting.has(ticket) || sending.has(ticket)) return;
+      sending.add(ticket);
       try {
         const response = await send(mutation);
-        outcomes.set(request.callId, { ok: true, result: { sent: true, method: mutation.method, path: mutation.path, ...mutation.summarize?.(response) } });
+        outcomes.set(ticket, { ok: true, result: { sent: true, method: mutation.method, path: mutation.path, ...mutation.summarize?.(response) } });
         refresh(mutation);
         toast({ title: `${mutation.confirmLabel}: done`, description: 'The page is refreshing. Ask the assistant what to do next.', variant: 'success' });
       } catch (error) {
         if (error instanceof ConflictError) refresh(mutation);
         const message = mutationErrorText(error);
-        outcomes.set(request.callId, { ok: false, error: agentErrorText(error) });
+        outcomes.set(ticket, { ok: false, error: agentErrorText(error) });
         toast({ title: `${mutation.confirmLabel} failed`, description: `${message} Check the page for its current state, then ask the assistant to prepare it again.`, variant: 'destructive' });
       }
-      sending.delete(request.callId);
-      settle(request.callId, true);
+      sending.delete(ticket);
+      settle(ticket, true);
     },
 
     /** The owner dismissed the dialog: a denial, nothing sent. */
     deny(request: PendingRequest) {
       // Once the owner's click is sending, closing the dialog no longer denies it.
-      if (waiting.has(request.callId) && !sending.has(request.callId)) settle(request.callId, false);
+      if (waiting.has(request.ticket) && !sending.has(request.ticket)) settle(request.ticket, false);
     },
 
     /** Denies whatever is still waiting (the assistant unmounts). */
     dispose() {
-      for (const callId of [...waiting.keys()]) settle(callId, false);
+      for (const ticket of [...waiting.keys()]) settle(ticket, false);
     }
   };
 }
