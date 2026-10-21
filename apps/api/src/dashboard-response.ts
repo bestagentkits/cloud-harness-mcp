@@ -8,6 +8,15 @@ const statuses: Record<string, number> = {
   PRIVILEGE_APPROVAL_REQUIRED: 428
 };
 
+/**
+ * Operations whose failure is a reported result rather than a service fault: a skill script that
+ * exits non-zero ran as asked, so the owner gets 422 with the same bounded, redacted projection a
+ * successful run returns instead of a 500 that hides why it failed.
+ */
+const reportedFailures: Partial<Record<DashboardResponseOperation, ReadonlySet<string>>> = {
+  skills_run: new Set(['EXECUTION_FAILED'])
+};
+
 const messages: Record<string, string> = {
   AUTHENTICATION_FAILED: 'Your dashboard session ended.',
   FORBIDDEN: 'Workspace not found or no longer available.',
@@ -1077,6 +1086,11 @@ export function sendRunnerResponse(response: Response, operation: DashboardRespo
     // can approve it and retry with it. Only the grant id and its expiry leave the BFF: the id is a
     // single-use reference that is useless until the owner approves it, and it is never persisted.
     const grantRequest = code === 'PRIVILEGE_APPROVAL_REQUIRED' ? pick(result.error?.grantRequest, ['grantId', 'expiresAt']) : undefined;
+    if (reportedFailures[operation]?.has(code)) {
+      const data = result.data && typeof result.data === 'object' ? { data: mapDashboardData(operation, result.data) } : {};
+      response.status(422).json({ error: code.toLowerCase(), message, ...data, truncated: result.truncated });
+      return;
+    }
     response.status(statuses[code] ?? 500).json({ error: code.toLowerCase(), message, ...(grantRequest?.grantId ? { grantRequest } : {}) });
     return;
   }

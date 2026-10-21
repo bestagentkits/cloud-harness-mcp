@@ -733,9 +733,16 @@ export function renderWorkspaceSkills(skills = []) {
   const runnable = skills.filter((skill) => skill.name && /^[0-9a-f]{64}$/.test(digest(skill)));
   const options = runnable.map((skill) => `<option value="${escape(String(skill.name))}" data-content-sha256="${escape(digest(skill))}">${escape(String(skill.name))}</option>`).join('');
   const form = runnable.length
-    ? `<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs once in a disposable helper container from the verified skill revision listed here. Nothing runs unless you name it here, and each run asks for your approval first.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><select id="skill-run-name" name="name" required>${options}</select><label for="skill-run-script">Script name</label><input id="skill-run-script" name="script" required maxlength="120" placeholder="run.sh"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form></details>`
+    ? `<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs once in a disposable helper container from the verified skill revision listed here. Nothing runs unless you name it here, and each run asks for your approval first.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><select id="skill-run-name" name="name" required>${options}</select><label for="skill-run-script">Script name</label><input id="skill-run-script" name="script" required maxlength="120" placeholder="run.sh"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form><div id="skill-run-result"></div></details>`
     : '';
   return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}${form}</section>`;
+}
+
+/** A finished skill run: exit code, where it ran and its bounded, redacted output, failed or not. */
+export function renderSkillRunResult(result = {}, { failed = false } = {}) {
+  const fact = (value, suffix = '') => value === undefined || value === null || value === '' ? 'Not reported' : `${escape(String(value))}${suffix}`;
+  const output = typeof result.output === 'string' && result.output ? escape(result.output) : 'No output.';
+  return `<section class="skill-run-result" aria-labelledby="skill-run-result-heading"><h3 id="skill-run-result-heading">${failed ? 'Script exited with an error' : 'Script finished'}</h3><dl class="facts"><dt>Exit code</dt><dd>${fact(result.exitCode)}</dd><dt>Ran in</dt><dd>${result.executionMode === 'helper-container' ? 'Disposable helper container' : fact(result.executionMode)}</dd><dt>Duration</dt><dd>${fact(result.durationMs, ' ms')}</dd></dl><pre class="mono">${output}</pre>${result.truncated === true ? '<p class="status-message" role="status">Output is truncated.</p>' : ''}</section>`;
 }
 
 /** The confirm-dialog copy for a skill run the runner holds for an owner privilege grant. */

@@ -764,7 +764,10 @@ the grant id and expiry (`sendRunnerResponse` in
 [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts)),
 the owner confirms the named skill, script and digest, and the page approves the
 grant and retries with it. The grant id lives only in that confirm action's
-closure: never in browser storage, the URL, or a query cache.
+closure: never in browser storage, the URL, or a query cache. A script that exits
+non-zero is answered with HTTP 422 carrying the same bounded, redacted projection
+as a successful run, never the runner's error text; other execution failures stay
+generic server errors.
 
 The Dashboard Approvals page lists grants in every state the runner returns,
 labelled with their real status, and offers Approve and Reject only for an

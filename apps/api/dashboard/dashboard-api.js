@@ -137,5 +137,7 @@ async function problem(response) {
   const grantRequest = body.grantRequest && typeof body.grantRequest.grantId === 'string'
     ? { grantId: body.grantRequest.grantId, expiresAt: body.grantRequest.expiresAt }
     : undefined;
-  return Object.assign(new Error(body.message ?? 'The request could not be completed.'), { status: response.status, code: body.error, ...(grantRequest ? { grantRequest } : {}) });
+  // A reported failure (a skill script that exited non-zero) carries the run's bounded projection.
+  const data = response.status === 422 && body.data && typeof body.data === 'object' ? body.data : undefined;
+  return Object.assign(new Error(body.message ?? 'The request could not be completed.'), { status: response.status, code: body.error, ...(grantRequest ? { grantRequest } : {}), ...(data ? { data } : {}) });
 }

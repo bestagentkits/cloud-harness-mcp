@@ -60,7 +60,9 @@ dashboard can read: a lease inside its threshold, a failed workspace, a quaranti
   executes it in a disposable helper container. The approval expires after about a
   minute and is used up by the run, even one that fails, so a later run asks again.
   **Cancel** rejects the approval so it does not wait on the Approvals page. If the skill changed
-  since the list loaded, the run is refused; reload the tab and try again.
+  since the list loaded, the run is refused; reload the tab and try again. When the run
+  ends, its exit code, where it ran and its bounded, redacted output appear below the
+  form, including for a script that exits with an error.
 - **Deploy** lists repository-defined deployment targets with their last reported result,
   duration and failure detail; running one asks for confirmation because deployments act
   outside the sandbox.

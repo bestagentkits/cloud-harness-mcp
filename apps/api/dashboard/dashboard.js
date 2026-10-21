@@ -81,7 +81,7 @@ import {
   renderWorkspaceUnavailableTab, workspaceHasAction, workspaceTabAvailable,
   renderAgentsIndex, renderAgentDetail,
   renderRuntimePanel, renderGitPanel,
-  renderAutomationPanel, renderDeployPanel, skillRunApprovalPrompt,
+  renderAutomationPanel, renderDeployPanel, renderSkillRunResult, skillRunApprovalPrompt,
   renderActivityCenter, renderApprovals, grantIsActionable, planIsActionable, renderPackages,
   renderTerminalPanel, renderTerminalsIndex,
   REPOSITORY_SCOPED_TABS, filesHref, renderRepositoryExplorer, renderRepositoryRequired, renderRepositorySelector, selectedRepository, workspaceTabHref,
@@ -188,6 +188,11 @@ export function createAsyncDialogController({ dialog, cancelButton, actionButton
 export function skillApprovalRequest(error) {
   const grant = error?.code === 'privilege_approval_required' ? error.grantRequest : undefined;
   return typeof grant?.grantId === 'string' && grant.grantId ? grant : undefined;
+}
+
+/** A skill script that ran and exited non-zero: its bounded result, or undefined for any other error. */
+export function skillRunFailure(error) {
+  return error?.code === 'execution_failed' && error.data && typeof error.data === 'object' ? error.data : undefined;
 }
 
 export function conflictRecovery(localContent, actions) {
@@ -4072,22 +4077,36 @@ export function initializeDashboard() {
         method: 'POST',
         body: requestBody({ script, expectedContentSha256: contentSha256, ...(approvalGrantToken ? { approvalGrantToken } : {}) })
       });
-      const finished = () => { announce('Skill script finished.'); navigateTo(`/dashboard/workspaces/${scoped}/automation`); };
+      // The run's output stays on the page, so the tab is not reloaded over it.
+      const showResult = (run, failed) => {
+        const region = document.querySelector('#skill-run-result');
+        if (region) region.innerHTML = renderSkillRunResult(run, { failed });
+        announce(failed ? 'Skill script exited with an error.' : 'Skill script finished.');
+      };
+      const runAndShow = async (approvalGrantToken) => {
+        try {
+          const result = await runSkill(approvalGrantToken);
+          showResult({ ...result?.data, truncated: result?.truncated }, false);
+        } catch (error) {
+          const failure = skillRunFailure(error);
+          if (!failure) throw error;
+          showResult(failure, true);
+        }
+      };
       let grant;
       void submitForm(skillForm, 'Requesting approval…', async () => {
         grant = undefined;
-        try { await runSkill(); }
+        try { await runAndShow(); }
         catch (error) { grant = skillApprovalRequest(error); if (!grant) throw error; }
       }, async () => {
-        if (!grant) { finished(); return; }
+        if (!grant) return;
         const { grantId, expiresAt } = grant;
         confirmAction({
           ...skillRunApprovalPrompt({ name, script, contentSha256, expiresAt }),
           label: 'Approve and run', pendingLabel: 'Running…',
           action: async () => {
             await api(`/privilege-grants/${encodeURIComponent(grantId)}/approve`, { method: 'POST', body: requestBody({}) });
-            await runSkill(grantId);
-            finished();
+            await runAndShow(grantId);
           },
           // A declined run rejects its grant, so it does not linger on the Approvals page.
           onCancel: () => { void api(`/privilege-grants/${encodeURIComponent(grantId)}/reject`, { method: 'POST', body: requestBody({}) }).catch(() => undefined); }

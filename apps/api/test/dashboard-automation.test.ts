@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   HOOK_LIFECYCLE, groupHooksByLifecycle, renderAutomationPanel, renderDeployPanel, renderHookPipeline,
-  renderHooks, renderWorkspaceSkills, skillRunApprovalPrompt
+  renderHooks, renderSkillRunResult, renderWorkspaceSkills, skillRunApprovalPrompt
 } from '../dashboard/dashboard-render.js';
-import { skillApprovalRequest } from '../dashboard/dashboard.js';
+import { skillApprovalRequest, skillRunFailure } from '../dashboard/dashboard.js';
 
 const hook = (overrides: Record<string, unknown> = {}) => ({ name: 'format', events: ['pre_commit'], active: true, ...overrides });
 
@@ -50,6 +50,7 @@ describe('automation and deploy renderers', () => {
     expect(markup).toContain('TS guidance');
     expect(markup).toContain('id="skill-run-form"');
     expect(markup).toContain('id="skill-run-script"');
+    expect(markup).toContain('<div id="skill-run-result"></div>');
     expect(markup).toContain('Nothing runs unless you name it here');
     expect(markup).toContain('each run asks for your approval first');
     // The run names the listed revision, so the option carries the digest the runner verifies.
@@ -79,6 +80,29 @@ describe('automation and deploy renderers', () => {
     expect(skillApprovalRequest({ code: 'privilege_approval_required' })).toBeUndefined();
     expect(skillApprovalRequest({ code: 'conflict', grantRequest: grant })).toBeUndefined();
     expect(skillApprovalRequest(undefined)).toBeUndefined();
+  });
+
+  it('shows a skill run result with its exit code, isolation and escaped output', () => {
+    const done = renderSkillRunResult({ output: '<b>ok</b>', exitCode: 0, executionMode: 'helper-container', truncated: true });
+    expect(done).toContain('Script finished');
+    expect(done).toContain('<dt>Exit code</dt><dd>0</dd>');
+    expect(done).toContain('Disposable helper container');
+    expect(done).toContain('&lt;b&gt;ok&lt;/b&gt;');
+    expect(done).not.toContain('<b>ok</b>');
+    expect(done).toContain('Output is truncated.');
+    const failed = renderSkillRunResult({ exitCode: 3 }, { failed: true });
+    expect(failed).toContain('Script exited with an error');
+    expect(failed).toContain('<dd>3</dd>');
+    expect(failed).toContain('No output.');
+    expect(failed).not.toContain('truncated');
+  });
+
+  it('recognises only a script failure that carries its result', () => {
+    const data = { output: 'boom', exitCode: 3 };
+    expect(skillRunFailure({ code: 'execution_failed', data })).toEqual(data);
+    expect(skillRunFailure({ code: 'execution_failed' })).toBeUndefined();
+    expect(skillRunFailure({ code: 'internal_error', data })).toBeUndefined();
+    expect(skillRunFailure(undefined)).toBeUndefined();
   });
 
   it('labels deployment risk, last result and failure detail', () => {

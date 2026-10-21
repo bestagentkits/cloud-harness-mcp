@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Response } from 'express';
 import type { RunnerResponse } from '@cloud-harness/contracts';
 import { mapDashboardData, sendRunnerResponse } from '../src/dashboard-response.js';
@@ -51,15 +51,56 @@ describe('skill-run approval projection', () => {
     expect(approve.body.message).toContain('expired or was already decided');
   });
 
-  it('reports a failed script without the runner text', () => {
+  it('reports a failed script as 422 with its bounded result and without the runner text', () => {
+    const { status, body } = capture('skills_run', {
+      ok: false, message: 'Skill script exited with 3', truncated: true,
+      data: { output: 'boom', exitCode: 3, executionMode: 'helper-container', signal: null },
+      error: { code: 'EXECUTION_FAILED', message: 'Skill script exited with 3', retryable: false }
+    } as unknown as RunnerResponse);
+    expect(status).toBe(422);
+    expect(body).toEqual({
+      error: 'execution_failed',
+      message: 'The skill script exited with an error.',
+      data: { output: 'boom', exitCode: 3, executionMode: 'helper-container' },
+      truncated: true
+    });
+  });
+
+  it('answers 422 without data when a failed script reports no result', () => {
     const { status, body } = capture('skills_run', failure({ code: 'EXECUTION_FAILED', message: 'Skill script exited with 3' }));
+    expect(status).toBe(422);
+    expect(body).not.toHaveProperty('data');
+  });
+
+  it('keeps any other execution failure a server error', () => {
+    const { status, body } = capture('hooks_run', {
+      ok: false, message: 'Hook exited with 1', truncated: false, data: { output: 'x', exitCode: 1 },
+      error: { code: 'EXECUTION_FAILED', message: 'Hook exited with 1', retryable: false }
+    } as unknown as RunnerResponse);
     expect(status).toBe(500);
-    expect(body.message).toBe('The skill script exited with an error.');
+    expect(body).not.toHaveProperty('data');
   });
 
   it('keeps the bundle digest a run must name and the execution mode it reports', () => {
     const listed = mapDashboardData('skills_list', { skills: [{ name: 'demo', source: 'workspace', root: '/workspace/.agents/skills', contentSha256: 'c'.repeat(64) }] }) as { skills: Record<string, unknown>[] };
     expect(listed.skills[0]).toEqual({ name: 'demo', source: 'workspace', contentSha256: 'c'.repeat(64) });
     expect(mapDashboardData('skills_run', { output: 'ok', exitCode: 0, executionMode: 'helper-container', signal: null })).toEqual({ output: 'ok', exitCode: 0, executionMode: 'helper-container' });
+  });
+});
+
+describe('classic dashboard client errors', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+  it('keeps the grant request and a failed run result, and nothing else', async () => {
+    const { api } = await import('../dashboard/dashboard-api.js');
+    vi.stubGlobal('fetch', vi.fn(async () => reply(428, { error: 'privilege_approval_required', message: 'm', grantRequest: { grantId: 'pvg_1', expiresAt: 'e', cwd: '.' } })));
+    await expect(api('/x')).rejects.toMatchObject({ status: 428, code: 'privilege_approval_required', grantRequest: { grantId: 'pvg_1', expiresAt: 'e' } });
+    vi.stubGlobal('fetch', vi.fn(async () => reply(422, { error: 'execution_failed', message: 'm', data: { output: 'boom', exitCode: 3 } })));
+    await expect(api('/x')).rejects.toMatchObject({ status: 422, code: 'execution_failed', data: { output: 'boom', exitCode: 3 } });
+    vi.stubGlobal('fetch', vi.fn(async () => reply(500, { error: 'internal_error', message: 'm', data: { output: 'raw' } })));
+    const error = await api('/x').catch((caught: unknown) => caught);
+    expect(error).not.toHaveProperty('data');
   });
 });
