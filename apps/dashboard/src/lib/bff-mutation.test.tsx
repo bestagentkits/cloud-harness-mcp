@@ -108,6 +108,26 @@ describe('useBffMutation', () => {
     expect(toastMock).not.toHaveBeenCalled();
   });
 
+  it('refetches exact query keys too, and derives the targets from the variables when given a function', async () => {
+    const { result, queryClient } = renderMutation({ mutationFn: async () => ({ ok: true }), invalidate: (vars) => [['bff', `/tasks/${vars.id}`, {}], '/tasks'] });
+    queryClient.setQueryData(['bff', '/tasks/a', {}], { task: 'a' });
+    queryClient.setQueryData(['bff', '/tasks/b', {}], { task: 'b' });
+    queryClient.setQueryData(bffKey('/tasks'), { list: 1 });
+    await settle(() => result.current.mutateAsync({ id: 'a' }));
+    expect(queryClient.getQueryState(['bff', '/tasks/a', {}])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(['bff', '/tasks/b', {}])?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(bffKey('/tasks'))?.isInvalidated).toBe(true);
+  });
+
+  it('raises a failure toast with the sanitised text when given an error title, and still throws', async () => {
+    const failure = new ForbiddenError(403, 'owner mismatch for sk-secret');
+    const { result } = renderMutation({ mutationFn: async () => { throw failure; }, errorTitle: 'Not saved' });
+    const outcome = await settle(() => result.current.mutateAsync({ id: 'a' }));
+    expect(outcome.error).toBe(failure);
+    expect(toastMock).toHaveBeenCalledWith({ title: 'Not saved', description: mutationErrorText(failure), variant: 'destructive' });
+    expect(JSON.stringify(toastMock.mock.calls)).not.toContain('sk-secret');
+  });
+
   it('does not refetch after a non-conflict failure', async () => {
     const { result, queryClient } = renderMutation({ mutationFn: async () => { throw new ServerError(500, 'boom'); }, invalidate: ['/secrets'] });
     queryClient.setQueryData(bffKey('/secrets'), { list: 1 });
