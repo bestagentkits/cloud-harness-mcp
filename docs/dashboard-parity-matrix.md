@@ -784,6 +784,7 @@ registry placeholders and the classic hand-off dialog for these tabs are gone.
 
 | Area | Rows | Status | React owner and evidence |
 | --- | --- | --- | --- |
+| Terminal | cockpit Terminal tab, route `/dashboard/terminals`, sections 4.12 and 7 | done (P4b, #484) | `features/terminal/` (lazy xterm chunk); `e2e/terminal.spec.ts`, `terminal-protocol.test.ts`. The PTY session survives route changes inside the shell |
 | Files | cockpit route `?path=`, `?file=`; D2; section 4.2 file rows | done (P4b, #484) | `features/workspace-cockpit/tabs/files-tab.tsx`, `files-model.ts`; `e2e/workspace-tabs.spec.ts` (deep link, `expectedSha256` fence, 409 keeps the edit, delete confirm). R11 fixed: one conflict dialog owned by React state |
 | Git | cockpit route `?staged=`; section 4.2 git and worktree rows | done (P4b, #484) | `tabs/git-tab.tsx`, `git-model.ts`; fetch, checkout and worktree remove confirm |
 | Automation | section 4.2 skills and hooks rows | done (P4b, #484) | `tabs/automation-tab.tsx`, `automation-model.ts`. Skill run sends `{script, expectedContentSha256}`; hook run sends `{name, event, expectedManifestSha256}` (or the hook's `expectedSha256`), which `hooks_run` requires; legacy sent only `{event}`, which the schema refuses. The Dashboard cannot complete the skill privilege grant yet (#511) |
