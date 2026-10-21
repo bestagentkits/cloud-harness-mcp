@@ -106,9 +106,10 @@ export function registerDashboardControlRoutes(
   // Without these two the import wizard had nothing to call: the job reader existed while nothing could
   // create a job or stop one, which is why the dialog's submit had no route to reach.
   router.post('/api/v1/skill-imports', endpoint('skill_import_start', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  // The path names the job; a body field of the same name must not redirect the cancel to another one.
   router.post('/api/v1/skill-imports/:jobId/cancel', endpoint('skill_import_cancel', (request) => ({
-    jobId: internalId('skjob').parse(request.params.jobId),
-    ...(request.body && typeof request.body === 'object' ? request.body : {})
+    ...(request.body && typeof request.body === 'object' ? request.body : {}),
+    jobId: internalId('skjob').parse(request.params.jobId)
   })));
   // A skills archive is a binary upload, so it cannot go through the JSON parser the rest of this
   // router uses: this route takes its own raw body under an explicit limit rather than inheriting a

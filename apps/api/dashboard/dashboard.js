@@ -1915,6 +1915,9 @@ export function initializeDashboard() {
         return;
       }
       if (review) review.textContent = 'Import queued.';
+      // The job line belongs to the new job from here on, so a Cancel before its first poll cannot reach
+      // the previous job.
+      if (jobBox) { jobBox.removeAttribute('data-job-id'); jobBox.removeAttribute('data-job-generation'); }
       void api('/skill-imports', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -1930,6 +1933,10 @@ export function initializeDashboard() {
               // The cancel control reads the id from the line the operator is already watching, so the two
               // cannot drift apart.
               jobBox.setAttribute('data-job-id', String(job.id ?? jobId));
+              // The cancel is fenced on the generation the operator is looking at, so it cannot land on a
+              // job that moved on since this line was drawn.
+              if (typeof job.generation === 'number') jobBox.setAttribute('data-job-generation', String(job.generation));
+              else jobBox.removeAttribute('data-job-generation');
             },
             isTerminal: isTerminalImportState
           });
@@ -1946,11 +1953,12 @@ export function initializeDashboard() {
     document.querySelector('#skill-import-cancel')?.addEventListener('click', () => {
       const jobBox = document.querySelector('#skill-import-job');
       const jobId = jobBox ? jobBox.getAttribute('data-job-id') : null;
-      if (!jobId) return;
+      const generation = Number(jobBox ? jobBox.getAttribute('data-job-generation') : NaN);
+      if (!jobId || !Number.isInteger(generation) || generation < 1) return;
       void api(`/skill-imports/${encodeURIComponent(jobId)}/cancel`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ expectedGeneration: 1 })
+        body: JSON.stringify({ expectedGeneration: generation })
       }).catch(showError);
     });
 
@@ -2597,7 +2605,7 @@ export function initializeDashboard() {
       } catch (error) {
         showError(error);
       } finally {
-        history.replaceState({}, '', '/dashboard/github');
+        history.replaceState({}, '', '/dashboard/integrations/github');
       }
     }
     const result = await api('/github'); insertRendered(content, renderGitHub(result.data));

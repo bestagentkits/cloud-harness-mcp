@@ -178,13 +178,14 @@ export function builtinSkillsMountArgs(builtinSkillsRoot: string | undefined): s
  * command that runs during one transfer (an import's fetch, a stage's clone) cannot reach the transfer
  * repository of another; above all, nothing can write a staged push clone between its stage and its push.
  * The checkout is read-only while it is staged and writable only for an import, which updates its refs.
+ * An inspection only reads the staged clone, so it mounts that alone, read-only.
  * The checkout source is always the tree root the executor mounts, never a scoped subdirectory: the
  * executor can replace `repos/<alias>` with a symlink, and Docker resolves a bind source on the host,
  * whereas the helper resolves the scoped path inside its own mount namespace.
  */
-export function gitTransferVolumes(mode: 'fetch' | 'import' | 'stage-push' | 'push', workspacePath: string, transferName: string): string[] {
-  const transfer = ['--volume', `${join(workspacePath, transferName)}:/job/${transferName}:${mode === 'import' ? 'ro' : 'rw'}`];
-  if (mode === 'fetch' || mode === 'push') return transfer;
+export function gitTransferVolumes(mode: 'fetch' | 'import' | 'stage-push' | 'inspect' | 'push', workspacePath: string, transferName: string): string[] {
+  const transfer = ['--volume', `${join(workspacePath, transferName)}:/job/${transferName}:${mode === 'import' || mode === 'inspect' ? 'ro' : 'rw'}`];
+  if (mode === 'fetch' || mode === 'inspect' || mode === 'push') return transfer;
   return ['--volume', `${join(workspacePath, 'repo')}:/job/repo:${mode === 'import' ? 'rw' : 'ro'}`, ...transfer];
 }
 

@@ -441,10 +441,10 @@ runner publishes":
   overwritten, and the run stops as `BRANCH_EXISTS`. The
   helper also overrides the settings through which a checkout's configuration
   would make Git run a command (hooks, fsmonitor, the alternate refs command).
-  It does not serialise transfers: the clone is staged in the workspace's job
-  directory, where another transfer helper for the same workspace, such as an
-  owner's concurrent `git_fetch`, mounts it too, and nothing stops that one
-  from changing the clone between the check and the push. The runner commits
+  It does not serialise transfers, but the staged clone is mounted only into
+  the helpers for this push, and read-only while it is inspected, so another
+  transfer for the same workspace, such as an owner's concurrent `git_fetch`,
+  cannot change it between the check and the push. The runner commits
   first and reads HEAD afterwards, so a process the agent left running could
   still substitute a commit in between. That commit would have to match all
   of the above, including the runner's message and identity, and only paths
@@ -573,12 +573,25 @@ default masquerade off, and a transactional host firewall (installed via a
 single `iptables-restore` commit and verified through an ephemeral
 `NET_ADMIN`-only network-guard container) permits only public DNS and public
 TCP 80/443. The managed jump is the first rule of both `INPUT` and
-`DOCKER-USER`, and forbidden destination classes — loopback-to-host,
+`DOCKER-USER` in the `filter` table (rules in `mangle` and `raw` do not count
+toward that order, since `filter` makes the accept or reject decision), and forbidden destination classes — loopback-to-host,
 Docker/control-plane, RFC 1918, carrier-grade NAT, link-local, and
 cloud-metadata (`169.254.169.254`) — are rejected before the allowed ports.
 IPv6 is disabled on the bridge. The runner attests the Docker network and the
 exact ordered host ruleset before every dependency executor start and during
-periodic reaper reconciliation; on drift it fences the workspace to
+periodic reaper reconciliation. When the only defect is that another host
+service (Tailscale's `ts-input`/`ts-forward` jumps, for example) inserted a rule
+ahead of a managed jump, the runner moves that existing managed jump back to the
+head of its chain through the same network-guard image, in one atomic
+`iptables-restore --noflush` transaction that deletes and re-inserts the jump by
+rule spec, and attests the fresh ruleset again. It never adds, widens, or
+removes any other rule; a ruleset that would not attest after that move is left
+untouched, and a jump that vanished since the probe fails the transaction
+unchanged. Because the readiness check and reaper run the same attestation,
+they may perform this repair, and a service that keeps re-asserting its own
+head position (Tailscale's default netfilter mode) is moved behind again on
+each attestation. On any other drift it
+fences the workspace to
 `NETWORK_QUARANTINED`, stops the executor, and retains its data for recovery
 after policy reconciliation. If attestation is unavailable the profile fails
 closed (`DEPENDENCY_EGRESS_UNAVAILABLE`) and never falls back to broad bridge
@@ -810,8 +823,9 @@ transfer repository and, when its mode needs it, the checkout: never the whole
 workspace directory. A command the repository configures that Git runs during an
 import or a stage therefore cannot reach another transfer's repository, so
 nothing can rewrite a staged push clone between its stage and its push. The
-checkout is read-only while it is staged and the fetched transfer repository is
-read-only while it is imported. The checkout is always bound from its tree root,
+checkout is read-only while it is staged, the staged clone is read-only while it
+is inspected, and the fetched transfer repository is read-only while it is
+imported. The checkout is always bound from its tree root,
 never a scoped `repos/<alias>` path: the executor can replace that path with a
 symlink, and Docker would follow it on the host, while the helper resolves it
 inside its own mounts. Because the checkout and the staged clone are separate

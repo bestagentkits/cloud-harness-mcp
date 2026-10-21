@@ -134,6 +134,29 @@ export const DASHBOARD_COMPAT_REDIRECTS = {
   '/dashboard/integrations/mcp-servers': '/dashboard/mcp-servers',
 } satisfies Record<string, string>;
 
+/**
+ * A GitHub App whose Setup URL still points at the legacy `/dashboard/github` path
+ * returns from installation with `state`, `installation_id` and `setup_action`. The
+ * redirect carries only those keys, and only in the shapes GitHub and the runner's
+ * setup flow produce, so the dashboard can complete the installation without the
+ * redirect ever echoing arbitrary request input.
+ */
+const GITHUB_SETUP_CALLBACK_PARAMETERS: Record<string, RegExp> = {
+  state: /^[A-Za-z0-9_-]{32,128}$/,
+  installation_id: /^[1-9][0-9]{0,19}$/,
+  setup_action: /^(?:install|update|request)$/,
+};
+
+export function githubSetupCallbackQuery(query: Record<string, unknown>): string {
+  const kept = new URLSearchParams();
+  for (const [name, pattern] of Object.entries(GITHUB_SETUP_CALLBACK_PARAMETERS)) {
+    const value = query[name];
+    if (typeof value === 'string' && pattern.test(value)) kept.set(name, value);
+  }
+  const encoded = kept.toString();
+  return encoded ? `?${encoded}` : '';
+}
+
 export function createDashboardAssetsRouter(): Router {
   const router = Router();
   const legacyOptions = { root: directory, headers: { 'Cache-Control': 'private, no-cache' } };
@@ -165,11 +188,12 @@ export function createDashboardAssetsRouter(): Router {
     router.get(`/assets/${name}`, (_request, response) => response.sendFile(path, { headers: legacyOptions.headers }));
   }
   // Each redirect is registered with a literal destination rather than by looping
-  // over the exported table: no request value can reach the destination, and
+  // over the exported table: no request value can reach the destination path (the
+  // GitHub redirect appends only the validated callback query above), and
   // `dashboard-app-mount.test.ts` asserts the behaviour of every table entry, so a
   // table edit without a matching route fails a test.
   router.get('/overview', (_request, response) => response.redirect(302, '/dashboard'));
-  router.get('/github', (_request, response) => response.redirect(302, '/dashboard/integrations/github'));
+  router.get('/github', (request, response) => response.redirect(302, `/dashboard/integrations/github${githubSetupCallbackQuery(request.query)}`));
   router.get('/integrations/mcp-servers', (_request, response) => response.redirect(302, '/dashboard/mcp-servers'));
   router.get(DASHBOARD_SHELL_PATHS, (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
