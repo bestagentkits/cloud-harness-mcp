@@ -77,7 +77,20 @@ test('the classic /summary deep link lands on the bare workspace URL', async ({ 
   await expect(page).toHaveURL(new RegExp(`/dashboard${base}$`));
   await expectPage(page, 'workspace');
   await expect(page.getByText('Page not found')).toHaveCount(0);
+  // The redirect replaces the history entry, so Back does not bounce through `/summary`.
+  await page.goto('/dashboard');
+  await page.goto(`/dashboard${base}/summary`);
+  await expect(page).toHaveURL(new RegExp(`/dashboard${base}$`));
+  await page.goBack();
+  await expect(page).toHaveURL(/\/dashboard$/);
   expect(problems).toEqual([]);
+});
+
+test('a /summary link with a malformed workspace id still shows not-found', async ({ page }) => {
+  await stubReads(page, READS);
+  await page.goto('/dashboard/workspaces/not-a-workspace/summary');
+  await expect(page.getByText('Page not found')).toBeVisible();
+  await expect(page).toHaveURL(/\/dashboard\/workspaces\/not-a-workspace\/summary$/);
 });
 
 test('renew lease posts once with the CSRF header and reports a capped renewal', async ({ page }) => {
