@@ -86,7 +86,21 @@ const ROUTES: Array<[string, string, string, string]> = [
   ['POST', `/artifacts/${artifact}/restore`, 'artifactId', id('art', 'b')],
   ['PUT', '/knowledge/note-1', 'id', 'note-2'],
   ['PATCH', `/mcp-servers/${server}`, 'serverId', id('mcps', 'b')],
-  ['POST', `/mcp-servers/${server}/enabled`, 'serverId', id('mcps', 'b')]
+  ['POST', `/mcp-servers/${server}/enabled`, 'serverId', id('mcps', 'b')],
+  ['PATCH', '/automations/connections/conn-1', 'id', 'conn-2'],
+  ['POST', '/automations/connections/conn-1/rotate-secret', 'id', 'conn-2'],
+  ['DELETE', '/automations/connections/conn-1', 'id', 'conn-2'],
+  ['PATCH', '/automations/rules/rule-1', 'id', 'rule-2'],
+  ['DELETE', '/automations/rules/rule-1', 'id', 'rule-2'],
+  ['POST', '/automations/rules/rule-1/preview', 'id', 'rule-2'],
+  ['POST', '/automations/workflows/run-1/cancel', 'id', 'run-2'],
+  ['PUT', '/agent-policies/global', 'scope', 'project'],
+  ['POST', '/agent-policies/global/validate', 'scope', 'project'],
+  ['PUT', '/agent-policies/projects/prj-1', 'projectId', 'prj-2'],
+  ['PUT', '/agent-policies/projects/prj-1', 'scope', 'global'],
+  ['DELETE', '/agent-policies/projects/prj-1', 'projectId', 'prj-2'],
+  ['POST', '/agent-policies/projects/prj-1/validate', 'projectId', 'prj-2'],
+  ['POST', '/agent-policies/revisions/rev-1/rollback', 'revisionId', 'rev-2']
 ];
 
 let httpServer: Server;
@@ -99,7 +113,11 @@ beforeEach(async () => {
     operations.push({ operation, input });
     return { ok: true, message: 'ok', truncated: false, data: {} };
   };
-  const runner: DashboardRunnerClient = { call: vi.fn(ok), callInternal: vi.fn(ok) };
+  const record = async (request: { operation: string; input: Record<string, unknown> }) => {
+    operations.push({ operation: request.operation, input: request.input });
+    return { ok: true as const, data: {} };
+  };
+  const runner: DashboardRunnerClient = { call: vi.fn(ok), callInternal: vi.fn(ok), callAutomations: vi.fn(record) as never, callAgentPolicies: vi.fn(record) as never };
   const app = express();
   app.use((request: any, _response, next) => { request.auth = { token: 'cloudflare-access', clientId: 'operator', scopes: [], extra: { principal } }; next(); });
   app.use('/dashboard', createDashboardRouter(config, runner));
