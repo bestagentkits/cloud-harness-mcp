@@ -720,6 +720,8 @@ export class AgentTraceRecorder implements AgentTraceHooks, AgentActionTraceSink
     const traceId = traceIdFor(key.agentId, key.generation);
     let placed: { traceId: string; spanId: string } | null = null;
     this.guard(traceId, () => {
+      // Retention counts from the trace's latest activity, also when a full trace drops this span.
+      this.store.extendRetention(traceId, this.store.retentionDeadline(Math.max(0, event.startedAt, event.endedAt)));
       const slot = this.slot(traceId, event.startedAt, event.requestId);
       if (!slot) return;
       const { seq, parentSpanId } = slot;
@@ -742,7 +744,6 @@ export class AgentTraceRecorder implements AgentTraceHooks, AgentActionTraceSink
       });
       placed = { traceId, spanId };
       if (event.advisor) this.advisorConsult(traceId, spanId, start, Math.max(start, event.endedAt), event.advisor);
-      this.store.extendRetention(traceId, this.store.retentionDeadline(Math.max(start, event.endedAt)));
     });
     return placed;
   }
@@ -773,11 +774,14 @@ export class AgentTraceRecorder implements AgentTraceHooks, AgentActionTraceSink
     const traceId = traceIdFor(key.agentId, key.generation);
     let placed: { traceId: string; spanId: string } | null = null;
     this.guard(traceId, () => {
+      const start = Math.max(0, event.startedAt);
+      // A workflow can wait for its decision longer than the retention: keep the trace until the
+      // decision can land, and a full retention after it, even when this span does not fit.
+      this.store.extendRetention(traceId, this.store.retentionDeadline(Math.max(start, event.endedAt, event.decideBy ?? 0)));
       const slot = this.slot(traceId, event.startedAt, undefined);
       if (!slot) return;
       const spanId = spanIdFor(traceId, slot.seq);
       const refused = event.outcome === 'denied' || event.outcome === 'expired';
-      const start = Math.max(0, event.startedAt);
       this.store.writeSpan({
         traceId, spanSeq: slot.seq, spanId, parentSpanId: slot.parentSpanId, kind: 'approval', name: `approval.${event.phase}`,
         state: refused ? 'ERROR' : 'OK', startedAt: start, endedAt: Math.max(start, event.endedAt), ttftMs: null,
@@ -789,9 +793,6 @@ export class AgentTraceRecorder implements AgentTraceHooks, AgentActionTraceSink
         inputDigest: null, errorClass: refused ? 'other' : null
       });
       placed = { traceId, spanId };
-      // A workflow can wait for its decision longer than the retention: keep the trace until the
-      // decision span can land, and a full retention after it.
-      this.store.extendRetention(traceId, this.store.retentionDeadline(Math.max(start, event.endedAt, event.decideBy ?? 0)));
     });
     return placed;
   }

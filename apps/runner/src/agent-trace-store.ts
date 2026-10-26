@@ -295,6 +295,8 @@ export function spanOf(row: SpanDbRow): TraceSpan {
  */
 export class AgentTraceStore {
   private readonly retentionMs: number;
+  /** Set once the automation service has created its workflow table; it never goes away. */
+  private workflowsPresent = false;
   constructor(
     private readonly database: DatabaseSync,
     private readonly options: AgentTraceStoreOptions
@@ -433,7 +435,7 @@ export class AgentTraceStore {
     const batchSize = Math.max(1, Math.min(PURGE_BATCH_MAX, options.batchSize ?? PURGE_BATCH_DEFAULT));
     const yieldBetween = options.yieldBetween ?? (() => new Promise<void>((resolve) => { setImmediate(resolve); }));
     const select = this.database.prepare(`SELECT trace_id FROM agent_traces
-      WHERE expires_at <= ? AND (expires_at <= ? OR (state <> 'RUNNING'${this.unlessWorkflowActive()}))
+      WHERE expires_at <= ? AND (expires_at <= ? OR (state <> 'RUNNING'${this.unlessHeld()}))
       ORDER BY expires_at LIMIT ?`);
     let removed = 0;
     for (;;) {
@@ -458,7 +460,7 @@ export class AgentTraceStore {
     const row = this.database.prepare('SELECT COUNT(*) AS total FROM agent_traces WHERE principal_id = ?').get(principalId) as { total: number };
     let excess = row.total + incoming - this.options.maxTracesPerPrincipal;
     const select = this.database.prepare(`SELECT trace_id FROM agent_traces WHERE principal_id = ? AND state <> 'RUNNING'
-      ${this.unlessWorkflowActive()} ORDER BY started_at, trace_id LIMIT ?`);
+      ${this.unlessHeld()} ORDER BY started_at, trace_id LIMIT ?`);
     let removed = 0;
     while (excess > 0) {
       const victims = (select.all(principalId, Math.min(excess, PURGE_BATCH_MAX)) as { trace_id: string }[]).map((victim) => victim.trace_id);
@@ -480,13 +482,30 @@ export class AgentTraceStore {
   }
 
   /**
-   * The eviction filter that spares traces of unfinished automation workflows. The workflow table belongs
-   * to the automation service, which creates it after this store, so the filter applies once it exists.
+   * The SQL condition that a trace's automation workflow has not ended, so the workflow can still record
+   * spans into it; null until the automation service creates the workflow table, after this store.
    */
-  private unlessWorkflowActive(): string {
-    const present = this.database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'automation_workflows'").get();
-    if (!present) return '';
-    return ` AND NOT EXISTS (SELECT 1 FROM automation_workflows w WHERE w.id = agent_traces.workflow_id AND w.state IN ${ACTIVE_WORKFLOW_STATES})`;
+  private workflowActive(): string | null {
+    if (!this.workflowsPresent) {
+      this.workflowsPresent = this.database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'automation_workflows'").get() !== undefined;
+    }
+    return this.workflowsPresent
+      ? `EXISTS (SELECT 1 FROM automation_workflows w WHERE w.id = agent_traces.workflow_id AND w.state IN ${ACTIVE_WORKFLOW_STATES})`
+      : null;
+  }
+
+  /** The eviction filter that spares traces of unfinished automation workflows. */
+  private unlessHeld(): string {
+    const active = this.workflowActive();
+    return active ? ` AND NOT ${active}` : '';
+  }
+
+  /** Past retention and not held by an unfinished workflow: reads report it as expired. */
+  private expired(row: TraceRow, now: number): boolean {
+    if (row.expiresAt > now) return false;
+    const active = this.workflowActive();
+    if (!active || row.workflowId === null) return true;
+    return this.database.prepare(`SELECT 1 AS held FROM agent_traces WHERE trace_id = ? AND ${active}`).get(row.traceId) === undefined;
   }
 
   /** Deletes a bounded set of traces and their spans in one transaction. */
@@ -519,7 +538,8 @@ export class AgentTraceStore {
     };
     const filterPrint = fingerprint(filters);
     const principalPrint = fingerprint(principalId);
-    const where: string[] = ['principal_id = ?', 'expires_at > ?'];
+    const active = this.workflowActive();
+    const where: string[] = ['principal_id = ?', active ? `(expires_at > ? OR ${active})` : 'expires_at > ?'];
     const values: SQLInputValue[] = [principalId, now];
     if (filters.workspaceId !== null) { where.push('workspace_id = ?'); values.push(filters.workspaceId); }
     if (filters.agentId !== null) { where.push('agent_id = ?'); values.push(filters.agentId); }
@@ -539,7 +559,7 @@ export class AgentTraceStore {
       if (cursor.p !== principalPrint) throw new HarnessError('INVALID_INPUT', 'trace cursor belongs to another caller', 400, false);
       if (cursor.f !== filterPrint) throw new HarnessError('INVALID_INPUT', 'trace cursor was issued for different filters', 400, false);
       const anchor = this.owned(principalId, cursor.t);
-      if (!anchor || anchor.expiresAt <= now) {
+      if (!anchor || this.expired(anchor, now)) {
         throw new HarnessError('TRACE_EXPIRED', 'the trace page this cursor continues from was removed by retention; restart the listing without a cursor', 410, false, { resumeAction: 'restart_without_cursor' });
       }
       where.push('(started_at, trace_id) < (?, ?)');
@@ -680,7 +700,7 @@ export class AgentTraceStore {
         throw new HarnessError('INVALID_INPUT', 'trace cursor was issued for a different trace or filter', 400, false);
       }
       const anchor = this.owned(principalId, input.traceId);
-      if (!anchor || anchor.expiresAt <= now) {
+      if (!anchor || this.expired(anchor, now)) {
         throw new HarnessError('TRACE_EXPIRED', 'the trace this cursor pages through was removed by retention', 410, false, { resumeAction: 'restart_without_cursor' });
       }
       after = cursor.q;
@@ -709,7 +729,7 @@ export class AgentTraceStore {
   private requireOwned(principalId: string, traceId: string, now: number): TraceRow {
     const row = this.owned(principalId, traceId);
     if (!row) throw new HarnessError('NOT_FOUND', 'trace was not found', 404, false);
-    if (row.expiresAt <= now) {
+    if (this.expired(row, now)) {
       throw new HarnessError('TRACE_EXPIRED', 'trace passed its retention period', 410, false);
     }
     return row;

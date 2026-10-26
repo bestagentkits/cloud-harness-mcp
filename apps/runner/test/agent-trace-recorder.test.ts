@@ -292,6 +292,22 @@ describe('agent trace recorder failure matrix', () => {
     expect(await t.store.purgeExpired(decideBy + 60_000 + 86_400_000)).toBe(1);
   });
 
+  it('holds a full trace through the approval window even though the approval span is dropped', () => {
+    const t = setup({ retentionDays: 1, maxSpansPerTrace: 16 });
+    const key = t.begin();
+    for (let index = 0; index < 20; index += 1) t.turn(key);
+    t.settle(key);
+    t.finish(key, 'SUCCEEDED', null);
+    const traceId = traceIdFor(key.agentId, key.generation);
+    const requestedAt = t.tick();
+    const decideBy = requestedAt + 7 * 86_400_000;
+    expect(t.recorder.approval(key, {
+      approvalId: 'appr-1', actionId: 'act-1', step: 'publish', reasonCode: 'policy', phase: 'requested', outcome: 'pending',
+      startedAt: requestedAt, endedAt: requestedAt, decideBy
+    })).toBeNull();
+    expect(t.store.findTrace(traceId)?.expiresAt).toBe(decideBy + 86_400_000);
+  });
+
   it('stores tool inputs only as digests by default and redacts previews when enabled', () => {
     const secret = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
     const input = { path: 'notes.md', content: `token=${secret}`, headers: { authorization: `Bearer ${secret}` } };

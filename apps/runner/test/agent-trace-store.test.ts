@@ -321,6 +321,10 @@ describe('agent trace retention of unfinished workflows', () => {
     expect(await traces.purgeExpired(now)).toBe(1);
     expect(traces.findTrace(done)).toBeUndefined();
     expect(traces.findTrace(waiting)).toBeDefined();
+    // Held past its retention date, it stays readable to its owner.
+    expect(traces.get('principal-a', waiting, now).trace.traceId).toBe(waiting);
+    expect(list(traces, 'principal-a', { limit: 10 }, now).traces.map((trace) => trace.traceId)).toEqual([waiting]);
+    expect(traces.spans('principal-a', { traceId: waiting, limit: 1 }, now).traceId).toBe(waiting);
 
     // The waiting trace is the principal's oldest, yet the quota evicts the next oldest finished one.
     const ids = Array.from({ length: 10 }, (_, index) => addTrace(traces, { startedAt: now - 1_000 + index }));
@@ -330,6 +334,7 @@ describe('agent trace retention of unfinished workflows', () => {
 
     // Once the workflow ends, ordinary retention applies.
     state.database.prepare("UPDATE automation_workflows SET state = 'COMPLETED' WHERE id = 'wf_waiting'").run();
+    expect(harnessCode(() => traces.get('principal-a', waiting, now))).toBe('TRACE_EXPIRED');
     expect(await traces.purgeExpired(now)).toBe(1);
     expect(traces.findTrace(waiting)).toBeUndefined();
   });
