@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { updateReleaseVersion } from '../scripts/update-release-version.mjs';
+import { MANIFESTS, PLUGIN_MANIFESTS, updateReleaseVersion } from '../scripts/update-release-version.mjs';
 
 const directories: string[] = [];
 
@@ -82,6 +82,17 @@ describe('release version update', () => {
     expect(readJson(root, 'plugins/cloud-harness/.codex-plugin/plugin.json').version).toBe('0.3.0-beta.2');
     expect(readJson(root, '.claude-plugin/marketplace.json').plugins[0].version).toBe('0.3.0-beta.2');
     expect(readFileSync(join(root, 'apps/api/src/mcp-server.ts'), 'utf8')).toContain("version: '0.3.0-beta.2'");
+  });
+
+  it('commits every file the version update rewrites with the release', () => {
+    // A rewritten file left out of the release commit keeps its old version, and a stale internal
+    // pin makes npm resolve the unpublished @cloud-harness scope from the public registry.
+    const releaseConfig = JSON.parse(readFileSync(join(import.meta.dirname, '..', '.releaserc.json'), 'utf8')) as { plugins: unknown[] };
+    const gitPlugin = releaseConfig.plugins.find((plugin): plugin is [string, { assets: string[] }] =>
+      Array.isArray(plugin) && plugin[0] === '@semantic-release/git');
+    const assets = new Set(gitPlugin?.[1].assets ?? []);
+    const rewritten = [...MANIFESTS, ...PLUGIN_MANIFESTS, 'package-lock.json', '.claude-plugin/marketplace.json', 'apps/api/src/mcp-server.ts'];
+    for (const path of rewritten) expect(assets.has(path), path).toBe(true);
   });
 
   it('rejects a non-SemVer release version', () => {
