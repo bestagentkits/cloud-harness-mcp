@@ -350,10 +350,12 @@ the ledger and its fences are in
 - The durable engine needs no such transcript step. Its request ID is the
   durable task ID, which a resume keeps, and it reruns every interrupted tool
   call, mutations included, under that ID. The ledger then answers the rerun
-  as a repeated call (stored result, reconciled outcome, `EFFECT_NOT_APPLIED`
-  or `EFFECT_UNKNOWN`), so a call in flight when the run was killed is settled
-  rather than handed to the model as a bare interruption that it would issue
-  again under a new ID.
+  as a repeated call (stored result, reconciled outcome, `EFFECT_NOT_APPLIED`,
+  `EFFECT_UNKNOWN`, or `EFFECT_RECEIPT_UNAVAILABLE` for a purged receipt), and
+  runs a call that never reached the executor for the first time. A call in
+  flight when the run was killed is therefore settled rather than handed to the
+  model as a bare interruption that it would issue again under a new ID. A
+  cancelled predecessor's unfinished calls are aborted, never rerun.
 - Only the agent of the current runner epoch and agent generation can record an
   outcome, add usage, or append session messages; recording an outcome also
   needs the active workspace generation, and an agent that a successor

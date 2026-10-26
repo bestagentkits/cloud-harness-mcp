@@ -447,6 +447,29 @@ describe('durable agent runtime through the runner', () => {
     expect(fs.executions('files_read')).toBe(1);
   }, 60_000);
 
+  it('never reruns a write that a cancelled predecessor left in flight', async () => {
+    const context = setup();
+    const { fs, record } = context;
+    const runner = context.runner({
+      responses: [
+        [fauxAssistantMessage(fauxToolCall('files_write', { path: 'out.txt', content: 'new content' }, { id: 'call-write' }), { stopReason: 'toolUse' })],
+        [fauxAssistantMessage('starting over')]
+      ]
+    });
+    const stalled = fs.stallAfter('files_write');
+    const agentId = await spawn(context, runner, 'cancel-write-root', { runtime: 'pi-durable' });
+    await vi.waitFor(() => expect(fs.executions('files_write')).toBe(1), { timeout: 20_000, interval: 25 });
+    await runner.manager.dispatch(record.ownerId, record, 'agent_cancel', { workspaceId: record.id, agentId });
+    stalled.resolve();
+    expect(agent(context, runner, agentId)?.status).toBe('CANCELLED');
+
+    const successorId = await spawn(context, runner, 'cancel-write-continue', { continueFrom: agentId, prompt: 'start over' });
+    expect(await settled(context, runner, successorId)).toBe('SUCCEEDED');
+    expect(runner.launcher.launches[1]!.received.find((item) => item.type === 'start')).toMatchObject({ durableResume: 'abort' });
+    expect(toolRequests(runner.launcher.launches[1], 'files_write')).toEqual([]);
+    expect(fs.executions('files_write')).toBe(1);
+  }, 60_000);
+
   it('ends a run whose session store outgrows its cap as limit exceeded', async () => {
     const context = setup();
     const runner = context.runner({ maxLineageBytes: 1, responses: [[fauxAssistantMessage('never committed')]] });
