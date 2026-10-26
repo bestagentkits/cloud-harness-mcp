@@ -96,7 +96,8 @@ describe('agent approval service', () => {
     expect(context.state()).toMatchObject({ state: 'WAITING_FOR_HUMAN', approval_id: approval!.approvalId, approval_generation: 1, waiting_since: T0 });
     expect(context.notifications('workflow.waiting_for_human')).toBe(1);
     expect(context.audits).toEqual(['agent.approval.requested']);
-    expect(context.spans).toEqual([expect.objectContaining({ phase: 'requested', outcome: 'pending', approvalId: approval!.approvalId })]);
+    // The request carries its decision deadline, so the trace is kept until the decision span can land.
+    expect(context.spans).toEqual([expect.objectContaining({ phase: 'requested', outcome: 'pending', approvalId: approval!.approvalId, decideBy: approval!.expiresAt })]);
     const listed = context.service.execute({ version: 1, principal: owner, operation: 'approvals_list', input: {} });
     expect(listed.ok && AgentApprovalSummarySchema.array().parse((listed.data as { approvals: unknown[] }).approvals)).toHaveLength(1);
     expect(context.service.execute({ version: 1, principal: stranger, operation: 'approvals_list', input: {} })).toMatchObject({ ok: true, data: { approvals: [] } });
@@ -142,6 +143,7 @@ describe('agent approval service', () => {
     expect(context.notifications('approval.decided')).toBe(1);
     expect(context.audits).toEqual(['agent.approval.requested', 'agent.approval.denied']);
     expect(context.spans.at(-1)).toMatchObject({ phase: 'decided', outcome: 'denied' });
+    expect(context.spans.at(-1)).not.toHaveProperty('decideBy');
     expect(context.service.approvedFor(OWNER, WORKFLOW, STEP_KEY, context.decision.inputFingerprint)).toBeNull();
   });
 

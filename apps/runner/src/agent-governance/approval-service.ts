@@ -395,7 +395,8 @@ export class AgentApprovalService {
     if (!this.options.traces || !key) return;
     const placed = this.options.traces.approval(key, {
       approvalId: record.approvalId, actionId: record.actionId, step: record.step, phase, outcome, reasonCode: record.gate.reasonCode,
-      startedAt: phase === 'requested' ? now : record.createdAt, endedAt: now
+      startedAt: phase === 'requested' ? now : record.createdAt, endedAt: now,
+      ...(phase === 'requested' ? { decideBy: record.expiresAt } : {})
     });
     if (!placed) this.log({ event: 'agent_approval_span_skipped', approvalId: record.approvalId, phase });
   }

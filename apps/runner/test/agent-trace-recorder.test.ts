@@ -263,6 +263,51 @@ describe('agent trace recorder failure matrix', () => {
     expect(t.state.database.prepare('SELECT COUNT(*) AS count FROM agent_trace_spans WHERE trace_id = ?').get(traceId)).toEqual({ count: 0 });
   });
 
+  it('keeps a finished trace past retention while its workflow waits for an approval, then a full retention after the decision', async () => {
+    const t = setup({ retentionDays: 1 });
+    const key = t.begin();
+    t.turn(key);
+    t.settle(key);
+    t.finish(key, 'SUCCEEDED', { inputTokens: 100, outputTokens: 20, costMicros: 50 });
+    const traceId = traceIdFor(key.agentId, key.generation);
+    const requestedAt = t.tick();
+    const decideBy = requestedAt + 7 * 86_400_000;
+    const approval = { approvalId: 'appr-1', actionId: 'act-1', step: 'publish', reasonCode: 'policy' };
+    expect(t.recorder.approval(key, { ...approval, phase: 'requested', outcome: 'pending', startedAt: requestedAt, endedAt: requestedAt, decideBy })).not.toBeNull();
+    // Three days into a seven-day wait, past the one-day retention: still readable and not purged.
+    const waiting = requestedAt + 3 * 86_400_000;
+    expect(t.store.get(PRINCIPAL, traceId, waiting).trace.state).toBe('COMPLETED');
+    expect(await t.store.purgeExpired(waiting)).toBe(0);
+    // The decision lands on the last day of the wait and keeps the trace a full retention after it.
+    const decidedAt = decideBy - 1_000;
+    expect(t.recorder.approval(key, { ...approval, phase: 'decided', outcome: 'approved', startedAt: requestedAt, endedAt: decidedAt })).not.toBeNull();
+    expect(t.recorder.action(key, {
+      actionId: 'act-1', actionClass: 'git_push', decision: 'allow', reasonCode: 'policy', state: 'APPLIED', step: 'publish',
+      startedAt: decidedAt, endedAt: decideBy + 60_000
+    })).not.toBeNull();
+    // The publish ends after the decision deadline, so retention now counts from its span.
+    expect(t.store.findTrace(traceId)?.expiresAt).toBe(decideBy + 60_000 + 86_400_000);
+    expect(t.store.spans(PRINCIPAL, { traceId, limit: 500 }, decidedAt + 1_000).spans.filter((span) => span.kind === 'approval' || span.kind === 'action')).toHaveLength(3);
+    expect(await t.store.purgeExpired(decideBy + 60_000 + 86_400_000 - 1)).toBe(0);
+    expect(await t.store.purgeExpired(decideBy + 60_000 + 86_400_000)).toBe(1);
+  });
+
+  it('holds a full trace through the approval window even though the approval span is dropped', () => {
+    const t = setup({ retentionDays: 1, maxSpansPerTrace: 16 });
+    const key = t.begin();
+    for (let index = 0; index < 20; index += 1) t.turn(key);
+    t.settle(key);
+    t.finish(key, 'SUCCEEDED', null);
+    const traceId = traceIdFor(key.agentId, key.generation);
+    const requestedAt = t.tick();
+    const decideBy = requestedAt + 7 * 86_400_000;
+    expect(t.recorder.approval(key, {
+      approvalId: 'appr-1', actionId: 'act-1', step: 'publish', reasonCode: 'policy', phase: 'requested', outcome: 'pending',
+      startedAt: requestedAt, endedAt: requestedAt, decideBy
+    })).toBeNull();
+    expect(t.store.findTrace(traceId)?.expiresAt).toBe(decideBy + 86_400_000);
+  });
+
   it('stores tool inputs only as digests by default and redacts previews when enabled', () => {
     const secret = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
     const input = { path: 'notes.md', content: `token=${secret}`, headers: { authorization: `Bearer ${secret}` } };

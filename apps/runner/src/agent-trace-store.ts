@@ -34,6 +34,8 @@ import { renderTraceExport } from './agent-trace-export.js';
 const DAY_MS = 86_400_000;
 /** A trace still RUNNING this long after its retention deadline is an orphan and is purged anyway. */
 const RUNNING_ORPHAN_GRACE_MS = 7 * DAY_MS;
+/** Automation workflow states that still record spans (actions, approvals) into the trace of their agent run. */
+const ACTIVE_WORKFLOW_STATES = "('QUEUED', 'STARTING', 'RUNNING', 'WAITING_FOR_HUMAN')";
 /** List aggregates cover at most this many of the newest traces in the filter window. */
 const SUMMARY_TRACE_SAMPLE = 1_000;
 /** And at most this many model_call spans of those traces. */
@@ -293,6 +295,8 @@ export function spanOf(row: SpanDbRow): TraceSpan {
  */
 export class AgentTraceStore {
   private readonly retentionMs: number;
+  /** Set once the automation service has created its workflow table; it never goes away. */
+  private workflowsPresent = false;
   constructor(
     private readonly database: DatabaseSync,
     private readonly options: AgentTraceStoreOptions
@@ -344,6 +348,14 @@ export class AgentTraceStore {
     }
     if (assignments.length === 0) return;
     this.database.prepare(`UPDATE agent_traces SET ${assignments.join(', ')} WHERE trace_id = ?`).run(...values, traceId);
+  }
+
+  /**
+   * Keeps the trace until at least `deadline`, never shortening it. The recorder calls this when it
+   * records a span, so retention counts from the trace's latest activity rather than from its finish.
+   */
+  extendRetention(traceId: string, deadline: number): void {
+    this.database.prepare('UPDATE agent_traces SET expires_at = MAX(expires_at, ?) WHERE trace_id = ?').run(deadline, traceId);
   }
 
   /** Marks the trace partial without touching anything else; used when recording degraded. */
@@ -403,7 +415,7 @@ export class AgentTraceStore {
       this.database.prepare("UPDATE agent_trace_spans SET state = 'UNKNOWN', ended_at = COALESCE(ended_at, ?) WHERE trace_id = ? AND state = 'OPEN'")
         .run(at, traceId);
       this.database.prepare(`UPDATE agent_traces SET state = 'INCOMPLETE', coverage = 'partial', finish_reason = ?,
-          ended_at = COALESCE(ended_at, ?), expires_at = ?
+          ended_at = COALESCE(ended_at, ?), expires_at = MAX(expires_at, ?)
         WHERE trace_id = ? AND state = 'RUNNING'`).run(finishReason, at, this.retentionDeadline(at), traceId);
       this.database.exec('RELEASE agent_trace_incomplete');
     } catch (error) {
@@ -415,14 +427,16 @@ export class AgentTraceStore {
 
   /**
    * Removes expired traces and their spans in bounded batches: one transaction per batch, yielding to
-   * the event loop between batches so a large backlog never blocks the runner. Returns the number of
-   * traces removed.
+   * the event loop between batches so a large backlog never blocks the runner. A trace still in progress
+   * (RUNNING, or labelled with an automation workflow that has not ended and may still record action and
+   * approval spans into it) is kept until the orphan grace. Returns the number of traces removed.
    */
   async purgeExpired(now: number, options: { batchSize?: number; yieldBetween?: () => Promise<void>; signal?: AbortSignal } = {}): Promise<number> {
     const batchSize = Math.max(1, Math.min(PURGE_BATCH_MAX, options.batchSize ?? PURGE_BATCH_DEFAULT));
     const yieldBetween = options.yieldBetween ?? (() => new Promise<void>((resolve) => { setImmediate(resolve); }));
     const select = this.database.prepare(`SELECT trace_id FROM agent_traces
-      WHERE expires_at <= ? AND (state <> 'RUNNING' OR expires_at <= ?) ORDER BY expires_at LIMIT ?`);
+      WHERE expires_at <= ? AND (expires_at <= ? OR (state <> 'RUNNING'${this.unlessHeld()}))
+      ORDER BY expires_at LIMIT ?`);
     let removed = 0;
     for (;;) {
       // An abort (runner shutdown) stops between batches, never inside one.
@@ -437,7 +451,8 @@ export class AgentTraceStore {
   }
 
   /**
-   * Keeps a principal below its trace quota by removing its oldest finished traces. The excess can be
+   * Keeps a principal below its trace quota by removing its oldest finished traces, never one whose
+   * automation workflow has not ended (it may still be waiting for an approval). The excess can be
    * large after an operator lowers the cap, so it is removed in bounded batches (one transaction and
    * one bounded IN list each), never in one statement past SQLite's variable limit.
    */
@@ -445,7 +460,7 @@ export class AgentTraceStore {
     const row = this.database.prepare('SELECT COUNT(*) AS total FROM agent_traces WHERE principal_id = ?').get(principalId) as { total: number };
     let excess = row.total + incoming - this.options.maxTracesPerPrincipal;
     const select = this.database.prepare(`SELECT trace_id FROM agent_traces WHERE principal_id = ? AND state <> 'RUNNING'
-      ORDER BY started_at, trace_id LIMIT ?`);
+      ${this.unlessHeld()} ORDER BY started_at, trace_id LIMIT ?`);
     let removed = 0;
     while (excess > 0) {
       const victims = (select.all(principalId, Math.min(excess, PURGE_BATCH_MAX)) as { trace_id: string }[]).map((victim) => victim.trace_id);
@@ -464,6 +479,33 @@ export class AgentTraceStore {
       level: 'error', time: Date.now(), msg: 'agent trace result outside its contract', operation,
       issues: issues.slice(0, 20).map((issue) => ({ path: issue.path.map((part) => (typeof part === 'symbol' ? '?' : String(part).slice(0, 64))).join('.'), code: issue.code }))
     });
+  }
+
+  /**
+   * The SQL condition that a trace's automation workflow has not ended, so the workflow can still record
+   * spans into it; null until the automation service creates the workflow table, after this store.
+   */
+  private workflowActive(): string | null {
+    if (!this.workflowsPresent) {
+      this.workflowsPresent = this.database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'automation_workflows'").get() !== undefined;
+    }
+    return this.workflowsPresent
+      ? `EXISTS (SELECT 1 FROM automation_workflows w WHERE w.id = agent_traces.workflow_id AND w.state IN ${ACTIVE_WORKFLOW_STATES})`
+      : null;
+  }
+
+  /** The eviction filter that spares traces of unfinished automation workflows. */
+  private unlessHeld(): string {
+    const active = this.workflowActive();
+    return active ? ` AND NOT ${active}` : '';
+  }
+
+  /** Past retention and not held by an unfinished workflow: reads report it as expired. */
+  private expired(row: TraceRow, now: number): boolean {
+    if (row.expiresAt > now) return false;
+    const active = this.workflowActive();
+    if (!active || row.workflowId === null) return true;
+    return this.database.prepare(`SELECT 1 AS held FROM agent_traces WHERE trace_id = ? AND ${active}`).get(row.traceId) === undefined;
   }
 
   /** Deletes a bounded set of traces and their spans in one transaction. */
@@ -496,7 +538,8 @@ export class AgentTraceStore {
     };
     const filterPrint = fingerprint(filters);
     const principalPrint = fingerprint(principalId);
-    const where: string[] = ['principal_id = ?', 'expires_at > ?'];
+    const active = this.workflowActive();
+    const where: string[] = ['principal_id = ?', active ? `(expires_at > ? OR ${active})` : 'expires_at > ?'];
     const values: SQLInputValue[] = [principalId, now];
     if (filters.workspaceId !== null) { where.push('workspace_id = ?'); values.push(filters.workspaceId); }
     if (filters.agentId !== null) { where.push('agent_id = ?'); values.push(filters.agentId); }
@@ -516,7 +559,7 @@ export class AgentTraceStore {
       if (cursor.p !== principalPrint) throw new HarnessError('INVALID_INPUT', 'trace cursor belongs to another caller', 400, false);
       if (cursor.f !== filterPrint) throw new HarnessError('INVALID_INPUT', 'trace cursor was issued for different filters', 400, false);
       const anchor = this.owned(principalId, cursor.t);
-      if (!anchor || anchor.expiresAt <= now) {
+      if (!anchor || this.expired(anchor, now)) {
         throw new HarnessError('TRACE_EXPIRED', 'the trace page this cursor continues from was removed by retention; restart the listing without a cursor', 410, false, { resumeAction: 'restart_without_cursor' });
       }
       where.push('(started_at, trace_id) < (?, ?)');
@@ -657,7 +700,7 @@ export class AgentTraceStore {
         throw new HarnessError('INVALID_INPUT', 'trace cursor was issued for a different trace or filter', 400, false);
       }
       const anchor = this.owned(principalId, input.traceId);
-      if (!anchor || anchor.expiresAt <= now) {
+      if (!anchor || this.expired(anchor, now)) {
         throw new HarnessError('TRACE_EXPIRED', 'the trace this cursor pages through was removed by retention', 410, false, { resumeAction: 'restart_without_cursor' });
       }
       after = cursor.q;
@@ -686,7 +729,7 @@ export class AgentTraceStore {
   private requireOwned(principalId: string, traceId: string, now: number): TraceRow {
     const row = this.owned(principalId, traceId);
     if (!row) throw new HarnessError('NOT_FOUND', 'trace was not found', 404, false);
-    if (row.expiresAt <= now) {
+    if (this.expired(row, now)) {
       throw new HarnessError('TRACE_EXPIRED', 'trace passed its retention period', 410, false);
     }
     return row;
