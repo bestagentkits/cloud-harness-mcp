@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AgentApprovalSummarySchema, type AgentApprovalSummary, type GlobalExecutionPolicy } from '@cloud-harness/contracts';
@@ -295,6 +295,76 @@ describe('coding automation: owner approval of a held step', { timeout: 30_000 }
     expect(approval(harness, held.approvalId)).toMatchObject({ state: 'EXPIRED', decidedBy: 'system' });
     expect(harness.store.database.prepare("SELECT COUNT(*) AS count FROM automation_workflows WHERE state = 'WAITING_FOR_HUMAN'").get()).toEqual({ count: 0 });
     zeroPublishEffects(harness);
+  });
+
+  it('refuses to commit when the checkout changed after the owner approved the commit', async () => {
+    const harness = await setup({ policy: COMMIT_NEEDS_APPROVAL });
+    const { workflowId, approval: held } = await waiting(harness);
+    expect(decide(harness, held, 'approve').ok).toBe(true);
+    // Something in the workspace edits the change the owner reviewed before the resumed commit runs.
+    const checkout = harness.workspaces.checkout(String(harness.row(workflowId).workspace_id));
+    writeFileSync(join(checkout, 'src/math.mjs'), `${FIXED_SOURCES['src/math.mjs']}\nexport const injected = true;\n`);
+    await harness.tick(5);
+
+    expect(harness.workflow(workflowId).workflow).toMatchObject({ state: 'FAILED', errorCode: 'APPROVAL_STALE' });
+    expect(harness.count('git_commit')).toBe(0);
+    expect(approval(harness, held.approvalId)).toMatchObject({ state: 'EXPIRED', decidedBy: 'owner' });
+    expect(harness.audits.filter((entry) => entry.action === 'agent.approval.stale')).toEqual([
+      expect.objectContaining({ subjectId: held.approvalId, details: expect.objectContaining({ reason: 'CONTENT_CHANGED' }) })
+    ]);
+    expect(receiptKeys(harness, workflowId, 'commit').filter((entry) => entry.idempotency_key.includes(':resume:'))).toEqual([]);
+    zeroPublishEffects(harness);
+  });
+
+  it('fails the waiting workflow as soon as its workspace is gone instead of at the deadline', async () => {
+    const harness = await setup();
+    const { workflowId, approval: held } = await waiting(harness);
+    const workspaceId = String(harness.row(workflowId).workspace_id);
+    harness.store.update(workspaceId, { status: 'CLOSED' });
+    await harness.tick();
+
+    expect(harness.clock.now).toBeLessThan(Date.parse(held.expiresAt));
+    expect(harness.workflow(workflowId).workflow).toMatchObject({ state: 'FAILED', errorCode: 'APPROVAL_STALE' });
+    expect(approval(harness, held.approvalId)).toMatchObject({ state: 'EXPIRED', decidedBy: 'system' });
+    expect(notifications(harness, 'approval.decided')).toEqual([expect.objectContaining({ subject_id: held.approvalId })]);
+    expect(harness.audits.filter((entry) => entry.action === 'agent.approval.expired')).toEqual([
+      expect.objectContaining({ subjectId: held.approvalId, details: expect.objectContaining({ reason: 'APPROVAL_STALE' }) })
+    ]);
+    expect(decide(harness, held, 'approve')).toMatchObject({ ok: false, error: { code: 'APPROVAL_EXPIRED' } });
+    zeroPublishEffects(harness);
+  });
+
+  it('does not wait while the workspace lease cannot be read, and waits within it once it can', async () => {
+    const harness = await setup();
+    const run = harness.workspaces.run.bind(harness.workspaces);
+    let leaseReadable = false;
+    harness.workspaces.run = async (workspaceId, operation, input) => {
+      if (!leaseReadable && (operation === 'workspace_lease_renew' || operation === 'workspace_status')) {
+        return { ok: false, error: { code: 'UNAVAILABLE', retryable: true } } as Awaited<ReturnType<typeof run>>;
+      }
+      return await run(workspaceId, operation, input);
+    };
+    harness.deliver();
+    await harness.tick();
+    const workflowId = harness.workflows()[0]!.id;
+    await harness.runAgent(workflowId, FIX_BOTH);
+    for (let pass = 0; pass < 8; pass += 1) {
+      await harness.tick();
+      harness.clock.now += 10_000;
+    }
+    expect(harness.row(workflowId)).toMatchObject({ state: 'RUNNING', approval_id: null });
+    expect(harness.store.database.prepare('SELECT COUNT(*) AS count FROM agent_action_approvals').get()).toEqual({ count: 0 });
+    expect(harness.count('workspace_status')).toBeGreaterThan(0);
+    zeroPublishEffects(harness);
+
+    leaseReadable = true;
+    for (let pass = 0; pass < 4 && harness.row(workflowId).state !== 'WAITING_FOR_HUMAN'; pass += 1) {
+      harness.clock.now += 10_000;
+      await harness.tick();
+    }
+    const held = pending(harness);
+    const lease = harness.store.byId(String(harness.row(workflowId).workspace_id))!;
+    expect(Date.parse(held.expiresAt)).toBeLessThanOrEqual(Math.min(lease.expiresAt, lease.hardExpiresAt));
   });
 
   it('expires the pending approval of a workflow the owner cancels while it waits', async () => {

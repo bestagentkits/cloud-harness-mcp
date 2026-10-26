@@ -15,7 +15,7 @@ import { initializeAgentApprovalSchema } from './approval-schema.js';
 type ApprovalRow = {
   approval_id: string; principal_id: string; workflow_id: string; action_id: string; step: CodingActionStep; step_key: string;
   descriptor_digest: string; descriptor_json: string; decision_json: string; policy_revision_json: string;
-  advisor_decision_id: string | null; generation: number; diff_json: string; state: AgentApprovalState;
+  advisor_decision_id: string | null; generation: number; diff_json: string; content_digest: string | null; state: AgentApprovalState;
   expires_at: number; decided_at: number | null; decided_by: 'owner' | 'system' | null; consumed_at: number | null; created_at: number;
 };
 
@@ -32,6 +32,8 @@ export type AgentApprovalRecord = {
   gate: GateDecision;
   generation: number;
   diff: AgentApprovalDiff;
+  /** SHA-256 of the change the owner was shown; null for approvals recorded before it was bound. */
+  contentDigest: string | null;
   state: AgentApprovalState;
   expiresAt: number;
   decidedAt: number | null;
@@ -50,6 +52,7 @@ export type NewAgentApproval = {
   gate: GateDecision;
   generation: number;
   diff: AgentApprovalDiff;
+  contentDigest: string;
   expiresAt: number;
 };
 
@@ -63,7 +66,7 @@ function recordOf(row: ApprovalRow): AgentApprovalRecord {
     gate: JSON.parse(row.decision_json) as GateDecision,
     generation: row.generation,
     diff: AgentApprovalDiffSchema.catch({ artifactId: null, files: null, additions: null, deletions: null }).parse(JSON.parse(row.diff_json)),
-    state: row.state, expiresAt: row.expires_at, decidedAt: row.decided_at, decidedBy: row.decided_by,
+    contentDigest: row.content_digest, state: row.state, expiresAt: row.expires_at, decidedAt: row.decided_at, decidedBy: row.decided_by,
     consumedAt: row.consumed_at, createdAt: row.created_at
   };
 }
@@ -102,12 +105,12 @@ export class AgentApprovalStore {
   create(input: NewAgentApproval, now: number): AgentApprovalRecord {
     const approvalId = `apv_${randomBytes(16).toString('hex')}`;
     this.database.prepare(`INSERT INTO agent_action_approvals (approval_id, principal_id, workflow_id, action_id, step, step_key,
-      descriptor_digest, descriptor_json, decision_json, policy_revision_json, advisor_decision_id, generation, diff_json, state,
-      expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`).run(
+      descriptor_digest, descriptor_json, decision_json, policy_revision_json, advisor_decision_id, generation, diff_json, content_digest,
+      state, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`).run(
       approvalId, input.principalId, input.workflowId, input.actionId, input.step, input.stepKey,
       input.gate.inputFingerprint, JSON.stringify(input.descriptor), JSON.stringify(input.gate),
       JSON.stringify({ globalRevisionId: input.gate.policy.globalRevisionId, projectRevisionId: input.gate.policy.projectRevisionId }),
-      input.gate.advisor.decisionId, input.generation, JSON.stringify(AgentApprovalDiffSchema.parse(input.diff)), input.expiresAt, now
+      input.gate.advisor.decisionId, input.generation, JSON.stringify(AgentApprovalDiffSchema.parse(input.diff)), input.contentDigest, input.expiresAt, now
     );
     return this.require(approvalId);
   }
@@ -156,11 +159,26 @@ export class AgentApprovalStore {
     return row ? recordOf(row) : undefined;
   }
 
-  /** The newest approved (or already used) approval of this workflow for the descriptor digest, if any. */
-  approvedForDigest(principalId: string, workflowId: string, digest: string): AgentApprovalRecord | undefined {
-    const row = this.database.prepare(`SELECT * FROM agent_action_approvals WHERE principal_id = ? AND workflow_id = ? AND descriptor_digest = ?
-      AND state IN ('APPROVED', 'CONSUMED') ORDER BY created_at DESC, approval_id LIMIT 1`).get(principalId, workflowId, digest) as ApprovalRow | undefined;
+  /** The newest approved (or already used) approval of this workflow for exactly this step key and descriptor digest, if any. */
+  approvedForDigest(principalId: string, workflowId: string, stepKey: string, digest: string): AgentApprovalRecord | undefined {
+    const row = this.database.prepare(`SELECT * FROM agent_action_approvals WHERE principal_id = ? AND workflow_id = ? AND step_key = ?
+      AND descriptor_digest = ? AND state IN ('APPROVED', 'CONSUMED') ORDER BY created_at DESC, approval_id LIMIT 1`)
+      .get(principalId, workflowId, stepKey, digest) as ApprovalRow | undefined;
     return row ? recordOf(row) : undefined;
+  }
+
+  /** The newest approved (or already used) approval of this workflow, if any. */
+  latestApproved(principalId: string, workflowId: string): AgentApprovalRecord | undefined {
+    const row = this.database.prepare(`SELECT * FROM agent_action_approvals WHERE principal_id = ? AND workflow_id = ?
+      AND state IN ('APPROVED', 'CONSUMED') ORDER BY created_at DESC, approval_id LIMIT 1`).get(principalId, workflowId) as ApprovalRow | undefined;
+    return row ? recordOf(row) : undefined;
+  }
+
+  /** APPROVED to EXPIRED before it was used: what the owner approved no longer matches what would run. */
+  revoke(approvalId: string): boolean {
+    const result = this.database.prepare(`UPDATE agent_action_approvals SET state = 'EXPIRED'
+      WHERE approval_id = ? AND state = 'APPROVED'`).run(approvalId);
+    return Number(result.changes) === 1;
   }
 
   /**

@@ -119,6 +119,48 @@ describe('workflow state migration to WAITING_FOR_HUMAN', () => {
     expect(tableSql(database)).not.toContain('WAITING_FOR_HUMAN');
   });
 
+  it.each([
+    ['copying the rows', 'INSERT INTO automation_workflows_v2'],
+    ['dropping the old table', 'DROP TABLE automation_workflows'],
+    ['renaming the new table', 'ALTER TABLE automation_workflows_v2 RENAME'],
+    ['recreating an index', 'CREATE INDEX automation_workflows_resource'],
+    ['recreating the one-active index', 'CREATE UNIQUE INDEX automation_workflows_one_active']
+  ])('restores the original table, rows and indexes when %s fails', (_step, marker) => {
+    const database = narrowDatabase();
+    const sql = tableSql(database);
+    const indexes = (database.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'automation_workflows' ORDER BY name").all());
+    const rows = database.prepare('SELECT * FROM automation_workflows ORDER BY id').all();
+    // Every statement runs on the real database; only the one the marker names fails, inside the savepoint.
+    let injected = false;
+    const failing = new Proxy(database, {
+      get(target, property) {
+        if (property === 'exec') {
+          return (statement: string) => {
+            if (statement.trimStart().startsWith(marker)) {
+              injected = true;
+              throw new Error('injected failure');
+            }
+            target.exec(statement);
+          };
+        }
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      }
+    });
+
+    expect(() => ensureWorkflowStateWaiting(failing)).toThrow('injected failure');
+    expect(injected).toBe(true);
+    expect(tableSql(database)).toBe(sql);
+    expect(database.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'automation_workflows' ORDER BY name").all()).toEqual(indexes);
+    expect(database.prepare('SELECT * FROM automation_workflows ORDER BY id').all()).toEqual(rows);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name = 'automation_workflows_v2'").get()).toEqual({ count: 0 });
+    expect(database.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
+    // The savepoint was released, so a later start migrates normally.
+    ensureWorkflowStateWaiting(database);
+    expect(tableSql(database)).toContain("'WAITING_FOR_HUMAN'");
+    expect(database.prepare('SELECT COUNT(*) AS count FROM automation_workflows').get()).toEqual({ count: STATES.length });
+  });
+
   it('creates a fresh database with the waiting state directly', () => {
     const database = new DatabaseSync(':memory:');
     databases.push(database);

@@ -74,6 +74,8 @@ export type ApprovalRequest = {
   /** The workflow's pause counter for this wait. */
   generation: number;
   diff: AgentApprovalDiff;
+  /** SHA-256 of the change the diff shows; the resumed step must still find exactly this change. */
+  contentDigest: string;
   expiresAt: number;
   repository: string;
   /** The agent run whose trace the approval spans join. */
@@ -90,13 +92,18 @@ const STEP_LABELS: Record<string, string> = {
   push: 'push the branch', open_pr: 'open the pull request'
 };
 
+const EXPIRY_TITLES = {
+  APPROVAL_EXPIRED: 'Approval expired', APPROVALS_DISABLED: 'Approvals turned off', APPROVAL_STALE: 'Workspace gone, approval no longer valid'
+} as const;
+
 /**
  * Owner approvals of coding workflow steps. A runner step the gate holds for approval pauses its
  * workflow as WAITING_FOR_HUMAN with one PENDING approval (`request`); the owner approves or denies it
  * once (`execute`), and the sweeper expires what can no longer be decided. An approval only ever lifts
- * REQUIRE_APPROVAL for the exact descriptor digest of a runner step of the same workflow, and only while
- * approvals are enabled (`approvedFor`); the gate still decides the step when it runs, so a DENY added
- * since (a hard deny, a changed policy revision) wins.
+ * REQUIRE_APPROVAL for the held runner step itself (its step key) with the exact descriptor digest, and
+ * only while approvals are enabled (`approvedFor`); the gate still decides the step when it runs, so a
+ * DENY added since (a hard deny, a changed policy revision) wins. The engine also checks that the change
+ * it is about to act on still has the content digest the owner was shown (`latestApproved`, `revoke`).
  */
 export class AgentApprovalService {
   readonly store: AgentApprovalStore;
@@ -173,8 +180,9 @@ export class AgentApprovalService {
     if (!workflow || workflow.state !== 'WAITING_FOR_HUMAN' || workflow.approval_id !== record.approvalId || workflow.approval_generation !== record.generation) {
       throw new AgentApprovalError('APPROVAL_STALE', 'the workflow is no longer waiting for this approval');
     }
-    if (workflow.workspace_id !== null && this.options.workspaceGeneration
-      && this.options.workspaceGeneration(workflow.workspace_id) !== workflow.workspace_generation) {
+    if (this.workspaceStale(workflow)) {
+      // Nothing can resume in a workspace that is gone or was recreated: the wait ends here, not at the deadline.
+      this.expire(record, 'APPROVAL_STALE');
       throw new AgentApprovalError('APPROVAL_STALE', 'the workspace changed since the approval was requested');
     }
     const approved = decision === 'approve';
@@ -218,7 +226,7 @@ export class AgentApprovalService {
         const approval = this.store.create({
           principalId: input.principalId, workflowId: input.workflowId, actionId: input.record.actionId, step: input.record.step,
           stepKey: input.record.idempotencyKey, descriptor: input.record.descriptor, gate: input.decision,
-          generation: input.generation, diff: input.diff, expiresAt: input.expiresAt
+          generation: input.generation, diff: input.diff, contentDigest: input.contentDigest, expiresAt: input.expiresAt
         }, now);
         if (!this.options.workflows.wait(input.workflowId, approval.approvalId, input.generation, now)) throw new TransitionLost();
         emitWaitingForHumanNotification(this.database, {
@@ -240,16 +248,44 @@ export class AgentApprovalService {
   }
 
   /**
-   * The id of an approval that lets a runner step of this workflow with this descriptor digest run
-   * although the gate required approval; null when there is none or approvals are off. The first use
-   * marks an approved approval CONSUMED; a replay of the same step after a restart still finds it.
+   * The id of an approval that lets exactly the held runner step (its original step key) with this
+   * descriptor digest run although the gate required approval; null when there is none or approvals
+   * are off. No other step of the workflow can use it. The first use marks an approved approval
+   * CONSUMED; a replay of the same step after a restart still finds it.
    */
-  approvedFor(principalId: string, workflowId: string, digest: string): string | null {
+  approvedFor(principalId: string, workflowId: string, stepKey: string, digest: string): string | null {
     if (!this.enabled) return null;
-    const record = this.store.approvedForDigest(principalId, workflowId, digest);
+    const record = this.store.approvedForDigest(principalId, workflowId, stepKey, digest);
     if (!record) return null;
     if (record.state === 'APPROVED') this.store.consume(record.approvalId, this.now());
     return record.approvalId;
+  }
+
+  /**
+   * Marks the approval of a held step CONSUMED once the step was admitted under its resume key without
+   * needing it (the gate no longer required approval, for example after the advisor cleared it), so an
+   * approval never stays APPROVED after its step ran.
+   */
+  consume(principalId: string, workflowId: string, stepKey: string): void {
+    const record = this.store.approvedForStep(principalId, workflowId, stepKey);
+    if (record?.state === 'APPROVED') this.store.consume(record.approvalId, this.now());
+  }
+
+  /** The newest approval of the workflow the owner granted (used or not), with the change it was granted for. */
+  latestApproved(principalId: string, workflowId: string): AgentApprovalRecord | undefined {
+    return this.store.latestApproved(principalId, workflowId);
+  }
+
+  /**
+   * The change an approval was granted for is no longer the change that would run: an unused approval
+   * becomes EXPIRED and the refusal is audited. The caller fails the workflow as APPROVAL_STALE.
+   */
+  revoke(record: AgentApprovalRecord): void {
+    withEventSavepoint(this.database, () => {
+      const revoked = this.store.revoke(record.approvalId);
+      this.audit(this.database, record.principalId, 'agent.approval.stale', 'agent_approval', record.approvalId, record.generation,
+        { workflowId: record.workflowId, step: record.step, reason: 'CONTENT_CHANGED', revoked });
+    });
   }
 
   /**
@@ -265,8 +301,9 @@ export class AgentApprovalService {
 
   /**
    * Settles what can no longer be decided. With approvals off, every waiting workflow fails as
-   * APPROVALS_DISABLED (the rollback drain). A pending approval past its deadline expires and fails its
-   * workflow as APPROVAL_EXPIRED; one whose workflow stopped waiting for it (cancelled) just expires.
+   * APPROVALS_DISABLED (the rollback drain). A waiting workflow whose workspace is gone or was recreated
+   * fails as APPROVAL_STALE with its approval expired. A pending approval past its deadline expires and
+   * fails its workflow as APPROVAL_EXPIRED; one whose workflow stopped waiting for it (cancelled) just expires.
    */
   sweep(): void {
     if (!this.enabled) {
@@ -277,12 +314,28 @@ export class AgentApprovalService {
         if (record) this.expire(record, 'APPROVALS_DISABLED');
         else withEventSavepoint(this.database, () => { this.options.workflows.fail(row.id, 'APPROVALS_DISABLED', 'system'); });
       }
+    } else if (this.options.workspaceGeneration) {
+      // Every waiting workflow holds a workspace and counts against the concurrency limit, so this stays small.
+      const waiting = this.database.prepare(`SELECT id, owner_id, state, approval_id, approval_generation, workspace_id, workspace_generation,
+        agent_id, agent_generation FROM automation_workflows WHERE state = 'WAITING_FOR_HUMAN' AND approval_id IS NOT NULL ORDER BY updated_at, id`).all() as WaitingRow[];
+      for (const row of waiting) {
+        if (!this.workspaceStale(row)) continue;
+        const record = this.store.get(row.approval_id!);
+        if (record?.state === 'PENDING') this.expire(record, 'APPROVAL_STALE');
+      }
     }
     for (const record of this.store.undecidable(this.now(), SWEEP_BATCH)) this.expire(record, 'APPROVAL_EXPIRED');
   }
 
+  /** Whether the workspace the workflow waits in is gone or no longer the generation it paused in. */
+  private workspaceStale(row: WaitingRow): boolean {
+    const generation = this.options.workspaceGeneration;
+    if (!generation) return false;
+    return row.workspace_id === null || generation(row.workspace_id) !== row.workspace_generation;
+  }
+
   /** Expires a pending approval and, when its workflow still waits for it, fails the workflow with the code. */
-  private expire(record: AgentApprovalRecord, code: 'APPROVAL_EXPIRED' | 'APPROVALS_DISABLED'): void {
+  private expire(record: AgentApprovalRecord, code: 'APPROVAL_EXPIRED' | 'APPROVALS_DISABLED' | 'APPROVAL_STALE'): void {
     const now = this.now();
     const workflow = this.waiting(record.workflowId);
     let failed = false;
@@ -298,7 +351,7 @@ export class AgentApprovalService {
         if (failed) {
           emitApprovalDecidedNotification(this.database, {
             principalId: record.principalId, approvalId: record.approvalId, decision: 'expired', workflowId: record.workflowId,
-            title: `${code === 'APPROVALS_DISABLED' ? 'Approvals turned off' : 'Approval expired'}: ${this.stepLabel(record)}`,
+            title: `${EXPIRY_TITLES[code]}: ${this.stepLabel(record)}`,
             link: automationNotificationLink(record.workflowId)
           }, now);
         }

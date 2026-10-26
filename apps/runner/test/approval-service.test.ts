@@ -23,6 +23,7 @@ const WORKFLOW = `wfl_${'e'.repeat(32)}`;
 const WORKSPACE = `ws_${'w'.repeat(24)}`;
 const STEP_KEY = `automation:${WORKFLOW}:push`;
 const T0 = Date.parse('2026-10-20T00:00:00Z');
+const CONTENT = 'c'.repeat(64);
 
 const PUSH_NEEDS_APPROVAL: GlobalExecutionPolicy = {
   ...CODING_GLOBAL_POLICY,
@@ -46,6 +47,7 @@ function setup(options: { enabled?: boolean; workspaceGeneration?: number | null
   insertCodingWorkflow(database, { id: WORKFLOW, ownerId: OWNER, workspaceId: WORKSPACE, codingPhase: 'PUSH', agentId: 'agent_1', agentGeneration: 1 });
   const clock = { now: T0 };
   let enabled = options.enabled ?? true;
+  let workspaceGeneration = options.workspaceGeneration === undefined ? 1 : options.workspaceGeneration;
   const state = () => (database.prepare('SELECT state, approval_id, approval_generation, waiting_since, paused_ms, error_code FROM automation_workflows WHERE id = ?')
     .get(WORKFLOW) as { state: string; approval_id: string | null; approval_generation: number; waiting_since: number | null; paused_ms: number; error_code: string | null });
   const workflows: ApprovalWorkflowPort = {
@@ -64,7 +66,7 @@ function setup(options: { enabled?: boolean; workspaceGeneration?: number | null
     ttlSeconds: () => 3_600,
     resolvePrincipal: (selector) => (selector.kind === 'owner' ? selector.ownerId : 'external'),
     workflows,
-    workspaceGeneration: () => (options.workspaceGeneration === undefined ? 1 : options.workspaceGeneration),
+    workspaceGeneration: () => workspaceGeneration,
     traces: { approval: (_key, event) => { spans.push(event); return { traceId: 't', spanId: 's' }; } },
     audit: (_database, _principal, action) => { audits.push(action); },
     now: () => clock.now
@@ -77,19 +79,20 @@ function setup(options: { enabled?: boolean; workspaceGeneration?: number | null
   }).record;
   const request = (generation = 1) => service.request({
     principalId: OWNER, workflowId: WORKFLOW, record, decision, generation, repository: CODING_REPOSITORY,
-    diff: { artifactId: 'art_1', files: 2, additions: 3, deletions: 1 }, expiresAt: clock.now + 3_600_000, trace: { agentId: 'agent_1', generation: 1 }
+    diff: { artifactId: 'art_1', files: 2, additions: 3, deletions: 1 }, contentDigest: CONTENT, expiresAt: clock.now + 3_600_000, trace: { agentId: 'agent_1', generation: 1 }
   });
   const decide = (approvalId: string, choice: 'approve' | 'deny', options: { digest?: string; principal?: RunnerPrincipalSelector } = {}) =>
     service.execute({ version: 1, principal: options.principal ?? owner, operation: 'approval_decide', input: { approvalId, decision: choice, expectedDigest: options.digest ?? decision.inputFingerprint } });
   const notifications = (kind: string) => (database.prepare('SELECT COUNT(*) AS count FROM notifications WHERE kind = ?').get(kind) as { count: number }).count;
-  return { database, service, clock, state, request, decide, decision, spans, audits, notifications, setEnabled: (value: boolean) => { enabled = value; } };
+  return { database, service, clock, state, request, decide, decision, spans, audits, notifications, setEnabled: (value: boolean) => { enabled = value; },
+    setWorkspaceGeneration: (value: number | null) => { workspaceGeneration = value; } };
 }
 
 describe('agent approval service', () => {
   it('pauses the workflow with one pending approval, its notification, audit entry and span', () => {
     const context = setup();
     const approval = context.request();
-    expect(approval).toMatchObject({ state: 'PENDING', stepKey: STEP_KEY, descriptorDigest: context.decision.inputFingerprint, generation: 1 });
+    expect(approval).toMatchObject({ state: 'PENDING', stepKey: STEP_KEY, descriptorDigest: context.decision.inputFingerprint, contentDigest: CONTENT, generation: 1 });
     expect(context.state()).toMatchObject({ state: 'WAITING_FOR_HUMAN', approval_id: approval!.approvalId, approval_generation: 1, waiting_since: T0 });
     expect(context.notifications('workflow.waiting_for_human')).toBe(1);
     expect(context.audits).toEqual(['agent.approval.requested']);
@@ -110,7 +113,7 @@ describe('agent approval service', () => {
   it('approves once, resumes the workflow with the wait counted as paused, and lifts only the exact digest', () => {
     const context = setup();
     const approval = context.request()!;
-    expect(context.service.approvedFor(OWNER, WORKFLOW, context.decision.inputFingerprint)).toBeNull();
+    expect(context.service.approvedFor(OWNER, WORKFLOW, STEP_KEY, context.decision.inputFingerprint)).toBeNull();
     expect(context.service.stepKey(OWNER, WORKFLOW, STEP_KEY)).toBe(STEP_KEY);
     context.clock.now += 60_000;
     expect(context.decide(approval.approvalId, 'approve')).toMatchObject({ ok: true, data: { workflowState: 'RUNNING', approval: { state: 'APPROVED' } } });
@@ -119,15 +122,15 @@ describe('agent approval service', () => {
 
     expect(context.service.stepKey(OWNER, WORKFLOW, STEP_KEY)).toBe(resumeKey(WORKFLOW, approval.approvalId));
     expect(context.service.stepKey(OWNER, WORKFLOW, `automation:${WORKFLOW}:pr`)).toBe(`automation:${WORKFLOW}:pr`);
-    expect(context.service.approvedFor(OWNER, WORKFLOW, 'f'.repeat(64))).toBeNull();
-    expect(context.service.approvedFor('stranger', WORKFLOW, context.decision.inputFingerprint)).toBeNull();
-    expect(context.service.approvedFor(OWNER, WORKFLOW, context.decision.inputFingerprint)).toBe(approval.approvalId);
+    expect(context.service.approvedFor(OWNER, WORKFLOW, STEP_KEY, 'f'.repeat(64))).toBeNull();
+    expect(context.service.approvedFor('stranger', WORKFLOW, STEP_KEY, context.decision.inputFingerprint)).toBeNull();
+    expect(context.service.approvedFor(OWNER, WORKFLOW, STEP_KEY, context.decision.inputFingerprint)).toBe(approval.approvalId);
     expect(context.service.store.get(approval.approvalId)).toMatchObject({ state: 'CONSUMED', consumedAt: context.clock.now });
     // A replay of the resumed step after a restart still finds it.
-    expect(context.service.approvedFor(OWNER, WORKFLOW, context.decision.inputFingerprint)).toBe(approval.approvalId);
+    expect(context.service.approvedFor(OWNER, WORKFLOW, STEP_KEY, context.decision.inputFingerprint)).toBe(approval.approvalId);
     // Turned off, nothing is lifted any more.
     context.setEnabled(false);
-    expect(context.service.approvedFor(OWNER, WORKFLOW, context.decision.inputFingerprint)).toBeNull();
+    expect(context.service.approvedFor(OWNER, WORKFLOW, STEP_KEY, context.decision.inputFingerprint)).toBeNull();
     expect(context.service.stepKey(OWNER, WORKFLOW, STEP_KEY)).toBe(STEP_KEY);
   });
 
@@ -139,7 +142,7 @@ describe('agent approval service', () => {
     expect(context.notifications('approval.decided')).toBe(1);
     expect(context.audits).toEqual(['agent.approval.requested', 'agent.approval.denied']);
     expect(context.spans.at(-1)).toMatchObject({ phase: 'decided', outcome: 'denied' });
-    expect(context.service.approvedFor(OWNER, WORKFLOW, context.decision.inputFingerprint)).toBeNull();
+    expect(context.service.approvedFor(OWNER, WORKFLOW, STEP_KEY, context.decision.inputFingerprint)).toBeNull();
   });
 
   it('refuses typed: not found, another principal, a changed digest, a stale pause or workspace, disabled, expired', () => {
@@ -163,10 +166,60 @@ describe('agent approval service', () => {
     expect(context.service.store.get(approval.approvalId)).toMatchObject({ state: 'EXPIRED', decidedBy: 'system' });
   });
 
-  it('refuses a decision once the workspace was recreated', () => {
+  it('refuses a decision once the workspace was recreated and ends the wait there', () => {
     const context = setup({ workspaceGeneration: 2 });
     const approval = context.request()!;
     expect(context.decide(approval.approvalId, 'approve')).toMatchObject({ ok: false, error: { code: 'APPROVAL_STALE' } });
+    expect(context.state()).toMatchObject({ state: 'FAILED', error_code: 'APPROVAL_STALE' });
+    expect(context.service.store.get(approval.approvalId)).toMatchObject({ state: 'EXPIRED', decidedBy: 'system' });
+    expect(context.notifications('approval.decided')).toBe(1);
+    expect(context.audits).toEqual(['agent.approval.requested', 'agent.approval.expired']);
+    expect(context.spans.at(-1)).toMatchObject({ phase: 'decided', outcome: 'expired' });
+    expect(context.decide(approval.approvalId, 'approve')).toMatchObject({ ok: false, error: { code: 'APPROVAL_EXPIRED' } });
+  });
+
+  it('fails a waiting workflow on the sweeper as soon as its workspace is gone, long before the deadline', () => {
+    const context = setup();
+    const approval = context.request()!;
+    context.service.sweep();
+    expect(context.state().state).toBe('WAITING_FOR_HUMAN');
+
+    context.setWorkspaceGeneration(null);
+    context.clock.now += 60_000;
+    context.service.sweep();
+    expect(context.state()).toMatchObject({ state: 'FAILED', error_code: 'APPROVAL_STALE' });
+    expect(context.service.store.get(approval.approvalId)).toMatchObject({ state: 'EXPIRED', decidedBy: 'system' });
+    expect(context.notifications('approval.decided')).toBe(1);
+    expect(context.audits.at(-1)).toBe('agent.approval.expired');
+    // Settled once: another pass changes nothing.
+    context.service.sweep();
+    expect(context.notifications('approval.decided')).toBe(1);
+  });
+
+  it('lets only the held step use an approval and consumes one the re-gate no longer needed', () => {
+    const context = setup();
+    const approval = context.request()!;
+    expect(context.decide(approval.approvalId, 'approve').ok).toBe(true);
+    // Same descriptor digest, another step of the workflow: not covered.
+    expect(context.service.approvedFor(OWNER, WORKFLOW, `automation:${WORKFLOW}:pr`, context.decision.inputFingerprint)).toBeNull();
+    expect(context.service.store.get(approval.approvalId)?.state).toBe('APPROVED');
+    // Another step's admission leaves it alone; the held step's admission without the approval consumes it.
+    context.service.consume(OWNER, WORKFLOW, `automation:${WORKFLOW}:pr`);
+    expect(context.service.store.get(approval.approvalId)?.state).toBe('APPROVED');
+    context.service.consume(OWNER, WORKFLOW, STEP_KEY);
+    expect(context.service.store.get(approval.approvalId)).toMatchObject({ state: 'CONSUMED', consumedAt: context.clock.now });
+    expect(context.service.latestApproved(OWNER, WORKFLOW)).toMatchObject({ approvalId: approval.approvalId, contentDigest: CONTENT });
+  });
+
+  it('retires an unused approval whose change no longer matches, audited', () => {
+    const context = setup();
+    const approval = context.request()!;
+    expect(context.decide(approval.approvalId, 'approve').ok).toBe(true);
+    context.service.revoke(context.service.store.get(approval.approvalId)!);
+    expect(context.service.store.get(approval.approvalId)?.state).toBe('EXPIRED');
+    expect(context.audits.at(-1)).toBe('agent.approval.stale');
+    expect(context.service.approvedFor(OWNER, WORKFLOW, STEP_KEY, context.decision.inputFingerprint)).toBeNull();
+    expect(context.service.stepKey(OWNER, WORKFLOW, STEP_KEY)).toBe(STEP_KEY);
   });
 
   it('sweeps expired approvals into failed workflows and drains every wait when approvals are off', () => {
@@ -220,6 +273,15 @@ describe('agent approval store', () => {
     expect(store.decide(approval.approvalId, OWNER, 'f'.repeat(64), 'APPROVED', T0)).toBe(false);
     expect(store.decide(approval.approvalId, OWNER, digest, 'APPROVED', approval.expiresAt)).toBe(false);
     expect(store.get(approval.approvalId)?.state).toBe('PENDING');
+  });
+
+  it('indexes pending approvals by deadline for the sweeper', () => {
+    const context = setup();
+    const indexes = (context.database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'agent_action_approvals'").all() as { name: string }[])
+      .map((entry) => entry.name);
+    expect(indexes).toContain('agent_action_approvals_deadline');
+    const plan = context.database.prepare("EXPLAIN QUERY PLAN SELECT approval_id FROM agent_action_approvals WHERE state = 'PENDING' AND expires_at <= ?").all(T0) as { detail: string }[];
+    expect(plan.map((step) => step.detail).join(' ')).toContain('agent_action_approvals_deadline');
   });
 
   it('purges the approvals of deleted workflows past the horizon only', () => {

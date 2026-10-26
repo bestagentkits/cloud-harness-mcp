@@ -19,7 +19,8 @@ import {
   type CodingBinding
 } from './agent-governance/action-broker.js';
 import type { CodingActionRecord } from './agent-governance/action-store.js';
-import type { ApprovalRequest } from './agent-governance/approval-service.js';
+import { resumeKey, type ApprovalRequest } from './agent-governance/approval-service.js';
+import type { AgentApprovalRecord } from './agent-governance/approval-store.js';
 import type { CodingGitCommit, CodingGitPort, PushVerifier } from './agent-governance/coding-git.js';
 import { ExecutionBackendError, WorkspaceExecutionBackend } from './agent-governance/workspace-execution-backend.js';
 import { admitNpmLockfile, INSTALL_TIMEOUT_MS, MAX_LOCKFILE_BYTES, NPM_LOCKFILE, type InstallResult } from './agent-governance/install-executor.js';
@@ -102,8 +103,14 @@ export type CodingApprovalPort = {
   ttlSeconds(): number;
   /** The key a runner step runs under: its own, or the resume key of an approval of it. */
   stepKey(ownerId: string, workflowId: string, key: string): string;
-  /** An approval of this workflow covering exactly this input fingerprint, or null. */
-  approvedFor(ownerId: string, workflowId: string, digest: string): string | null;
+  /** An approval of exactly this held step (its own key) covering exactly this input fingerprint, or null. */
+  approvedFor(ownerId: string, workflowId: string, stepKey: string, digest: string): string | null;
+  /** Marks the approval of a step admitted under its resume key CONSUMED, whether or not the gate still needed it. */
+  consume(ownerId: string, workflowId: string, stepKey: string): void;
+  /** The newest approval of the workflow the owner granted, used or not. */
+  latestApproved(ownerId: string, workflowId: string): AgentApprovalRecord | undefined;
+  /** Retires an approval whose change no longer matches what would run, audited. */
+  revoke(record: AgentApprovalRecord): void;
   /** Records the pending approval and pauses the workflow; null when it already left RUNNING. */
   request(input: ApprovalRequest): { approvalId: string } | null;
 };
@@ -155,6 +162,11 @@ export function diffStats(text: string): { files: number; additions: number; del
     else if (line.startsWith('-') && !line.startsWith('---')) deletions += 1;
   }
   return { files, additions, deletions };
+}
+
+/** SHA-256 of the change an approval is bound to. */
+export function contentDigest(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
 function leaseField(result: AutomationOperationResult, field: 'expiresAt' | 'hardExpiresAt'): unknown {
@@ -384,6 +396,7 @@ export class CodingWorkflowEngine {
       this.host.fail(row.id, 'CODING_RULE_INVALID');
       return;
     }
+    if (!(await this.approvedChangeHolds(row, binding))) return;
     switch (row.coding_phase) {
       case 'VERIFY': return await this.verify(row, binding);
       case 'COMMIT': return await this.commit(row, binding);
@@ -696,6 +709,39 @@ export class CodingWorkflowEngine {
 
   // ---------------------------------------------------------------- helpers
 
+  /**
+   * An approval covers the change the owner was shown, not just the action. Until the approved step is
+   * dispatched under its resume key, every pass recomputes the change exactly as the pause did and
+   * compares its digest: anything that changed the checkout or the commit since then fails the workflow
+   * as APPROVAL_STALE before the step can act, with an unused approval retired. False when the step
+   * must not run on this pass.
+   */
+  private async approvedChangeHolds(row: CodingWorkflowRow, binding: CodingBinding): Promise<boolean> {
+    const approvals = this.host.approvals;
+    if (!approvals?.enabled()) return true;
+    const approval = approvals.latestApproved(binding.principalId, binding.workflowId);
+    if (!approval?.contentDigest) return true;
+    // Once the approved step was dispatched it acted on the change checked before that dispatch; a replay
+    // (its own commit may already be HEAD) is decided by the step's receipt, not by the change again.
+    const resumed = this.broker.actions.byKey(row.owner_id, row.id, resumeKey(row.id, approval.approvalId));
+    if (resumed && resumed.state !== 'INTENT') return true;
+    const workspaceId = binding.workspaceId;
+    if (!workspaceId) {
+      this.host.fail(row.id, 'WORKSPACE_LOST');
+      return false;
+    }
+    const change = await this.changeText(row, workspaceId);
+    if (!change.ok) {
+      if (change.retryable) this.retryLater(row);
+      else this.host.fail(row.id, bounded(`CODING_DIFF_FAILED:${change.code}`));
+      return false;
+    }
+    if (contentDigest(change.text) === approval.contentDigest) return true;
+    approvals.revoke(approval);
+    this.host.fail(row.id, 'APPROVAL_STALE');
+    return false;
+  }
+
   /** The key a runner step runs under: its own, or the resume key of an owner approval of it. */
   private runKey(binding: CodingBinding, key: string): string {
     return this.host.approvals?.stepKey(binding.principalId, binding.workflowId, key) ?? key;
@@ -706,7 +752,7 @@ export class CodingWorkflowEngine {
     const approvals = this.host.approvals;
     return {
       binding, origin: 'runner', step, idempotencyKey: this.runKey(binding, key), descriptor, signal: gateSignal(),
-      ...(approvals ? { approvedFor: (digest: string) => approvals.approvedFor(binding.principalId, binding.workflowId, digest) } : {})
+      ...(approvals ? { approvedFor: (digest: string) => approvals.approvedFor(binding.principalId, binding.workflowId, key, digest) } : {})
     };
   }
 
@@ -716,7 +762,10 @@ export class CodingWorkflowEngine {
    */
   private async gate(row: CodingWorkflowRow, binding: CodingBinding, step: CodingActionStep, idempotencyKey: string, descriptor: AgentActionDescriptorInput): Promise<BrokeredAdmission | null> {
     const admission = await this.broker.begin(this.runnerStep(binding, step, idempotencyKey, descriptor));
-    if (admission.allowed) return admission;
+    if (admission.allowed) {
+      this.host.approvals?.consume(binding.principalId, binding.workflowId, idempotencyKey);
+      return admission;
+    }
     if (heldForApproval(admission)) {
       await this.hold(row, binding, admission);
       return null;
@@ -743,13 +792,15 @@ export class CodingWorkflowEngine {
     const size = AGENT_POLICY_LIMITS.maxPathsPerAction;
     for (let index = 0; index * size < paths.length; index += 1) {
       const chunk = paths.slice(index * size, (index + 1) * size);
-      const check = await this.broker.begin(this.runnerStep(binding, 'path_check', `${keyPrefix}:paths:${index}`,
+      const key = `${keyPrefix}:paths:${index}`;
+      const check = await this.broker.begin(this.runnerStep(binding, 'path_check', key,
         { version: 1, actionClass: editActionClass(chunk), repository: binding.repository, branch, paths: chunk }));
       if (!check.allowed) {
         if (heldForApproval(check)) return check;
         this.broker.traceRefusal(binding, check.record);
         return refusalCode(check);
       }
+      this.host.approvals?.consume(binding.principalId, binding.workflowId, key);
       if (check.record.state === 'INTENT') this.broker.settle(binding, check.record, 'APPLIED', { branch }, this.host.now());
     }
     return null;
@@ -775,12 +826,20 @@ export class CodingWorkflowEngine {
       return;
     }
     const generation = (row.approval_generation ?? 0) + 1;
-    const diff = await this.approvalDiff(row, binding, workspaceId, generation);
+    const expiresAt = await this.approvalDeadline(row, workspaceId, Math.min(approvals.ttlSeconds(), decision.approval.ttlSeconds));
+    if (expiresAt === null) return;
+    // The approval is bound to this exact change: without it there is nothing to bind, so nothing waits.
+    const change = await this.changeText(row, workspaceId);
+    if (!change.ok) {
+      if (change.retryable) this.retryLater(row);
+      else this.host.fail(row.id, bounded(`CODING_DIFF_FAILED:${change.code}`));
+      return;
+    }
+    const diff = await this.approvalDiff(row, binding, workspaceId, generation, change.text);
     if (diff === null) return;
-    const expiresAt = await this.approvalDeadline(row.owner_id, workspaceId, Math.min(approvals.ttlSeconds(), decision.approval.ttlSeconds));
     approvals.request({
       principalId: row.owner_id, workflowId: row.id, record: admission.record, decision, generation, diff, expiresAt,
-      repository: binding.repository,
+      contentDigest: contentDigest(change.text), repository: binding.repository,
       trace: binding.agentId !== null && binding.agentGeneration !== null ? { agentId: binding.agentId, generation: binding.agentGeneration } : null
     });
   }
@@ -791,28 +850,28 @@ export class CodingWorkflowEngine {
    * snapshotted from is removed again before the workflow waits, so it can never be committed; when that
    * fails the workflow does not wait (null): it retries a transient failure and fails otherwise.
    */
-  private async approvalDiff(row: CodingWorkflowRow, binding: CodingBinding, workspaceId: string, generation: number): Promise<AgentApprovalDiff | null> {
+  private async approvalDiff(row: CodingWorkflowRow, binding: CodingBinding, workspaceId: string, generation: number, text: string): Promise<AgentApprovalDiff | null> {
     const none: AgentApprovalDiff = { artifactId: null, files: null, additions: null, deletions: null };
+    const stats = text.length > 0 ? diffStats(text) : {};
     const admission = await this.broker.begin({
       binding, origin: 'runner', step: 'diff_artifact', idempotencyKey: `automation:${row.id}:approval-diff:${generation}`,
       descriptor: { version: 1, actionClass: 'read', repository: binding.repository }, signal: gateSignal()
     });
     if (!admission.allowed) {
-      // The diff only informs the owner; without it the approval still names the exact action.
+      // The artifact only shows the owner the change; the approval is still bound to its digest.
       this.broker.traceRefusal(binding, admission.record);
-      return none;
+      return { ...none, ...stats };
     }
     const { record } = admission;
-    if (record.state === 'APPLIED') return { ...none, artifactId: record.outcome.artifactId ?? null };
-    if (record.state !== 'INTENT' && record.state !== 'DISPATCHED' && record.state !== 'UNKNOWN') return none;
+    if (record.state === 'APPLIED') return { ...none, ...stats, artifactId: record.outcome.artifactId ?? null };
+    if (record.state !== 'INTENT' && record.state !== 'DISPATCHED' && record.state !== 'UNKNOWN') return { ...none, ...stats };
     const startedAt = this.host.now();
-    if (!this.broker.dispatched(record)) return none;
-    const text = await this.changeText(row, workspaceId);
-    if (!text.ok || text.text.length === 0) {
-      this.broker.settle(binding, record, 'REJECTED', { errorCode: text.ok ? 'CODING_NO_CHANGES' : text.code }, startedAt);
+    if (!this.broker.dispatched(record)) return { ...none, ...stats };
+    if (text.length === 0) {
+      this.broker.settle(binding, record, 'REJECTED', { errorCode: 'CODING_NO_CHANGES' }, startedAt);
       return none;
     }
-    const written = await this.host.call(row.owner_id, 'files_write', { workspaceId, path: DIFF_FILE, content: text.text });
+    const written = await this.host.call(row.owner_id, 'files_write', { workspaceId, path: DIFF_FILE, content: text });
     let artifactId: string | null = null;
     if (written.ok) {
       const snapshot = await this.host.call(row.owner_id, 'artifacts_snapshot', { workspaceId, path: DIFF_FILE, logicalName: `coding-${row.id}-approval-${generation}.diff` });
@@ -834,35 +893,55 @@ export class CodingWorkflowEngine {
     }
     this.broker.settle(binding, record, artifactId ? 'APPLIED' : 'REJECTED',
       artifactId ? { artifactId } : { errorCode: bounded(written.ok ? 'ARTIFACT_FAILED' : written.error?.code ?? 'FILES_WRITE_FAILED') }, startedAt);
-    return { artifactId, ...diffStats(text.text) };
+    return { artifactId, ...diffStats(text) };
   }
 
-  /** The unified diff of the change: the staged working tree before the commit, the commit against the base after it. */
-  private async changeText(row: CodingWorkflowRow, workspaceId: string): Promise<{ ok: true; text: string } | { ok: false; code: string }> {
+  /**
+   * The unified diff of the change: the staged working tree before the commit, the commit against the
+   * base after it. The approval binds its digest, and the resumed step recomputes it the same way.
+   */
+  private async changeText(row: CodingWorkflowRow, workspaceId: string): Promise<{ ok: true; text: string } | { ok: false; code: string; retryable: boolean }> {
     const committed = (row.coding_phase === 'PUSH' || row.coding_phase === 'PR') && row.commit_sha && row.base_oid;
     if (committed) {
-      if (!this.host.git) return { ok: false, code: 'COMMIT_UNVERIFIED' };
+      if (!this.host.git) return { ok: false, code: 'COMMIT_UNVERIFIED', retryable: false };
       const diff = await this.host.git.diff(row.owner_id, workspaceId, row.base_oid!, row.commit_sha!, inspectSignal());
-      return diff.ok ? { ok: true, text: diff.data.text } : { ok: false, code: bounded(diff.code) };
+      return diff.ok ? { ok: true, text: diff.data.text } : { ok: false, code: bounded(diff.code), retryable: diff.retryable || RETRYABLE_CODES.has(diff.code) };
     }
     const staged = await this.host.call(row.owner_id, 'git_add', { workspaceId, all: true });
-    if (!staged.ok) return { ok: false, code: bounded(staged.error?.code ?? 'GIT_ADD_FAILED') };
+    if (!staged.ok) return { ok: false, code: bounded(staged.error?.code ?? 'GIT_ADD_FAILED'), retryable: retryable(staged) };
     const diff = await this.host.call(row.owner_id, 'git_diff', { workspaceId, staged: true, readAll: true });
-    return diff.ok ? { ok: true, text: outputOf(diff) } : { ok: false, code: bounded(diff.error?.code ?? 'GIT_DIFF_FAILED') };
+    return diff.ok ? { ok: true, text: outputOf(diff) } : { ok: false, code: bounded(diff.error?.code ?? 'GIT_DIFF_FAILED'), retryable: retryable(diff) };
   }
 
   /**
    * When the approval stops being decidable: the shorter of the instance and policy approval TTLs, and
-   * never past the workspace lease, which is renewed for the wait first (best effort) and can never pass
-   * the workspace's hard deadline.
+   * never past the workspace lease, which is renewed for the wait first and can never pass the
+   * workspace's hard deadline. A workflow only waits with both lease bounds known: when neither the
+   * renewal nor the workspace status reports them, the step is retried later (a transient failure) or
+   * the workflow fails, and null is returned.
    */
-  private async approvalDeadline(ownerId: string, workspaceId: string, ttlSeconds: number): Promise<number> {
+  private async approvalDeadline(row: CodingWorkflowRow, workspaceId: string, ttlSeconds: number): Promise<number | null> {
     const now = this.host.now();
     const extensionSeconds = Math.min(86_400, Math.max(60, ttlSeconds + 300));
-    let lease = await this.host.call(ownerId, 'workspace_lease_renew', { workspaceId, extensionSeconds });
-    if (!lease.ok || instant(leaseField(lease, 'expiresAt')) === null) lease = await this.host.call(ownerId, 'workspace_status', { workspaceId });
-    const bounds = lease.ok ? [instant(leaseField(lease, 'expiresAt')), instant(leaseField(lease, 'hardExpiresAt'))] : [];
-    return Math.min(now + ttlSeconds * 1_000, ...bounds.filter((value): value is number => value !== null));
+    const bounds = (result: AutomationOperationResult) => {
+      const expiresAt = result.ok ? instant(leaseField(result, 'expiresAt')) : null;
+      const hardExpiresAt = result.ok ? instant(leaseField(result, 'hardExpiresAt')) : null;
+      return expiresAt !== null && hardExpiresAt !== null ? Math.min(expiresAt, hardExpiresAt) : null;
+    };
+    const renewed = await this.host.call(row.owner_id, 'workspace_lease_renew', { workspaceId, extensionSeconds });
+    let lease = bounds(renewed);
+    let status: AutomationOperationResult | undefined;
+    if (lease === null) {
+      status = await this.host.call(row.owner_id, 'workspace_status', { workspaceId });
+      lease = bounds(status);
+    }
+    if (lease === null) {
+      if (status?.error?.code === 'NOT_FOUND') this.host.fail(row.id, 'WORKSPACE_LOST');
+      else if (status?.ok === false && !retryable(status) && !retryable(renewed)) this.host.fail(row.id, 'APPROVAL_LEASE_UNKNOWN');
+      else this.retryLater(row);
+      return null;
+    }
+    return Math.min(now + ttlSeconds * 1_000, lease);
   }
 
   private commitMessage(row: CodingWorkflowRow): string {

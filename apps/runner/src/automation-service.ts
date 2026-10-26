@@ -519,7 +519,10 @@ export class AutomationService {
         enabled: () => approvals.enabled,
         ttlSeconds: () => approvals.ttlSeconds(),
         stepKey: (ownerId, workflowId, key) => approvals.stepKey(ownerId, workflowId, key),
-        approvedFor: (ownerId, workflowId, digest) => approvals.approvedFor(ownerId, workflowId, digest),
+        approvedFor: (ownerId, workflowId, stepKey, digest) => approvals.approvedFor(ownerId, workflowId, stepKey, digest),
+        consume: (ownerId, workflowId, stepKey) => approvals.consume(ownerId, workflowId, stepKey),
+        latestApproved: (ownerId, workflowId) => approvals.latestApproved(ownerId, workflowId),
+        revoke: (record) => approvals.revoke(record),
         request: (input) => approvals.request(input)
       }
     }) : undefined;
