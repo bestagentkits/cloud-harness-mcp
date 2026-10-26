@@ -86,7 +86,10 @@ session cookie and CSRF header on every mutation, Host/Origin checks, and
 redacted principal-scoped projections. A UI affordance never grants a
 capability. Replace a markup-coupled test with a behavioural test when its
 page moves; never delete coverage. Track page ownership in the
-[parity matrix](docs/dashboard-parity-matrix.md).
+[parity matrix](docs/dashboard-parity-matrix.md). Until the legacy shell is
+removed, a page or BFF route added to it also gets a matrix row and a React
+port issue in the same PR; `apps/api/test/dashboard-pages.test.ts` fails when a
+legacy page has no row.
 
 ## Deploy failure lessons
 
