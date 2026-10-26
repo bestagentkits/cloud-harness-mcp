@@ -650,8 +650,7 @@ export class DurableSessionStore {
         // A database that fails to close is already unusable; its files are still removable.
       }
     }
-    // Closing, here or by the worker's own close request, checkpoints the write-ahead log, which
-    // changes the size the budgets count.
+    // Closing checkpoints the write-ahead log, which changes the size the budgets count.
     await this.#measureLineage(lineageRootId).catch(() => undefined);
   }
 
