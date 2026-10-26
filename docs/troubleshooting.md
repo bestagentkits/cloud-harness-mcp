@@ -213,6 +213,12 @@ a lost response; do not create a second key until the first result is resolved.
   meantime, select `network-none` and Save on the Settings page, or open with
   `networkProfile: "network-none"`; the Reset action only clears the instance
   setting, so it returns a host with the egress default to `dependency-access`.
+  The provisioning script is safe to re-run on every redeploy: it keeps one
+  copy of each managed jump at rule 1 and leaves foreign chains such as
+  `ts-input` in place below it. To roll the egress profile back, make
+  `network-none` the instance default first; then removing the managed jumps
+  and `CHM-*-v1` chains only quarantines the remaining `dependency-access`
+  workspaces instead of exposing the host, because attestation fails closed.
 - A dependency download, arbitrary network command, or networked deployment
   fails with a network error: the workspace is on `network-none`. Open a new
   workspace on `dependency-access` — or select `dependency-access` and Save as the
