@@ -614,6 +614,42 @@ the call bounds by
 and the rationale by [ADR 0004](adr/0004-decision-plane.md). Live counters are
 at `GET /api/v1/decision-plane/status`.
 
+## Agent runtime limits and retention
+
+Subagents (`agent_spawn` and the other `agent_*` tools) are configured on the
+runner. Compose sets `AGENT_IMAGE`, `AGENT_GATEWAY_URL` and `AGENT_PROFILES_FILE`
+for it, with the profile file mounted from `AGENT_PROFILES_HOST_FILE`. Outside
+Compose, setting any variable in this section turns the agent configuration on,
+so the image, the gateway URL and exactly one of `AGENT_PROFILES_JSON` or
+`AGENT_PROFILES_FILE` must be set too, or the runner refuses to start.
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AGENT_GLOBAL_ACTIVE`, `AGENT_PRINCIPAL_ACTIVE`, `AGENT_WORKSPACE_ACTIVE`, `AGENT_PARENT_ACTIVE` | see schema | Active agents at once per scope. Must satisfy parent ≤ workspace ≤ principal ≤ global. |
+| `AGENT_WORKSPACE_LIFETIME_RECORDS` | see schema | Spawn and message records one workspace may create over its life. Idempotency records are never evicted to admit new work, so a full workspace refuses further spawns and messages with `LIMIT_EXCEEDED`. |
+| `AGENT_MIN_TTL_SECONDS`, `AGENT_MAX_TTL_SECONDS` | see schema | Range of TTLs a spawn may request; the minimum cannot exceed the maximum. |
+| `AGENT_MAX_PROMPT_BYTES`, `AGENT_MAX_MESSAGE_BYTES`, `AGENT_MAX_OUTPUT_BYTES` | see schema | Largest prompt, message body and per-agent output budget a request may carry. |
+| `AGENT_MAX_LOG_BYTES`, `AGENT_MAX_LOG_EVENTS`, `AGENT_MAX_LOG_EVENT_BYTES` | see schema | Log kept per agent; the oldest events are dropped first, and an `agent_logs` cursor older than the retained base reports `truncated`. |
+| `AGENT_GLOBAL_RETAINED_ROWS`, `AGENT_PRINCIPAL_RETAINED_ROWS`, `AGENT_WORKSPACE_RETAINED_ROWS` | see schema | Rows kept per scope. Agent records plus compacted tombstones count toward spawn admission, and log events toward the log cap. Must satisfy workspace ≤ principal ≤ global. |
+| `AGENT_GLOBAL_RETAINED_BYTES`, `AGENT_PRINCIPAL_RETAINED_BYTES`, `AGENT_WORKSPACE_RETAINED_BYTES` | see schema | Log bytes kept per scope; a full scope trims the oldest log of the agent being written. Must satisfy workspace ≤ principal ≤ global. |
+| `AGENT_CANCELLATION_GRACE_MS` | see schema | Grace between TERM and KILL when an agent container is stopped. |
+| `AGENT_CLEANUP_RETRY_LIMIT`, `AGENT_CLEANUP_RETRY_MAX_DELAY_MS` | see schema | Attempts with exponential backoff, and the longest backoff, for a failed agent container cleanup. An agent stays `CANCELLING` until its cleanup succeeds. |
+| `AGENT_RETENTION_SECONDS` | 7 days | How long a closed workspace keeps full agent records (logs, messages, usage) after its last agent ended. Then the runner compacts them to tombstones. Cannot exceed `AGENT_LOOKUP_HORIZON_SECONDS`. |
+| `AGENT_LOOKUP_HORIZON_SECONDS` | 30 days | How long after an agent ended its tombstone still answers `agent_status` with `compacted: true`. Then the tombstone is purged. The expiry is stored when the tombstone is written, so a new value applies only to workspaces compacted afterwards. |
+
+Code defaults and ranges are owned by `RunnerAgentLimitsSchema` in
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts); admission,
+compaction and purge are owned by
+[`apps/runner/src/agent-state-repository.ts`](../apps/runner/src/agent-state-repository.ts).
+The runner compacts and purges at startup and on every reaper pass. Compaction
+needs a closed workspace with no nonterminal agent, so open workspaces and agents
+still `CANCELLING` are never compacted; the purge needs only a closed workspace.
+Compaction and the tombstone purge are the only paths that delete agent rows. A
+rollback or schema downgrade that needs agent state gone has to wait for these
+horizons. A shorter `AGENT_RETENTION_SECONDS` and a runner restart compact older
+closed workspaces sooner, because retention is evaluated on each pass, but
+tombstones already written keep the expiry they were written with.
+
 ## Agent traces
 
 | Variable | Default | Decision |
