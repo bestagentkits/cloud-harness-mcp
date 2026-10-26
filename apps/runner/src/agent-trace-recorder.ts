@@ -187,7 +187,7 @@ export function redactTraceText(text: string): string {
   return output;
 }
 
-function truncateUtf8(value: string, maxBytes: number): string {
+export function truncateUtf8(value: string, maxBytes: number): string {
   const encoded = Buffer.from(value, 'utf8');
   if (encoded.length <= maxBytes) return value;
   return new TextDecoder().decode(encoded.subarray(0, maxBytes)).replace(/�+$/u, '');

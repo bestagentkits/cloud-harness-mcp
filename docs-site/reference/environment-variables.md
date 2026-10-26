@@ -57,7 +57,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `AGENT_PRINCIPAL_RETAINED_BYTES` | `536870912` | Optional | Retained agent log bytes per principal (1-8589934592). |
 | `AGENT_WORKSPACE_RETAINED_BYTES` | `134217728` | Optional | Retained agent log bytes per workspace (1-1073741824). |
 | `AGENT_CANCELLATION_GRACE_MS` | `10000` | Optional | Grace between TERM and KILL when an agent container is stopped, in milliseconds (1-120000). |
-| `AGENT_CLEANUP_RETRY_LIMIT` | `20` | Optional | Attempts with exponential backoff at a failed agent container cleanup (1-1000). |
+| `AGENT_CLEANUP_RETRY_LIMIT` | `20` | Optional | Attempts with exponential backoff at a failed agent container cleanup (1-1000). After that, cleanup keeps retrying every AGENT_CLEANUP_RETRY_MAX_DELAY_MS. |
 | `AGENT_CLEANUP_RETRY_MAX_DELAY_MS` | `3600000` | Optional | Longest backoff between agent cleanup retries, in milliseconds (1-86400000). |
 | `AGENT_RETENTION_SECONDS` | `604800` | Optional | Seconds a closed workspace keeps full agent records after its last agent ended; then they are compacted to tombstones (1-31536000, default 7 days). Cannot exceed AGENT_LOOKUP_HORIZON_SECONDS. Applied on every maintenance pass, so a shorter value also compacts older closed workspaces. |
 | `AGENT_LOOKUP_HORIZON_SECONDS` | `2592000` | Optional | Seconds after an agent ended that its compacted tombstone still answers agent_status; then it is purged (1-31536000, default 30 days). The expiry is fixed when a tombstone is written, so changing this affects only workspaces compacted afterwards. |
