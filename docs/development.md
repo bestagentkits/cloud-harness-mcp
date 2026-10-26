@@ -241,6 +241,35 @@ Never add runtime `.env` files, tokens, private keys, deployment identities,
 database contents, private repository URLs, or user data to commits or test
 fixtures.
 
+## Branches and promotion
+
+`dev` is the integration branch: feature and fix pull requests target it, and
+each successful push CI run there publishes a beta release. `main` is the
+production branch: every successful push CI run there publishes a stable release
+and deploys production (see [`docs/deployment.md`](deployment.md)). Two rules
+keep a fix from being stranded on one side, as happened before
+[#541](https://github.com/bestagentkits/cloud-harness-mcp/issues/541):
+
+- **`dev` stays a superset of `main`.** A change merged straight into `main`
+  (a hotfix, a release commit) is merged back into `dev` the same day with a
+  merge commit, never a rebase. Keep `main`'s version files and `CHANGELOG.md`
+  when they conflict; the next `dev` beta then counts from the latest stable tag.
+- **Promote `dev` to `main` with a pull request.** Open a `dev` → `main` pull
+  request once `dev` is green. Merging it is a production deployment, so only
+  the owner merges it. Use a merge commit so both branches keep one history.
+
+Check both directions before a promotion and before labelling an issue
+`shipped`:
+
+```bash
+git fetch origin dev main
+git rev-list --count origin/dev..origin/main   # must be 0: main has nothing dev lacks
+git log --oneline --no-merges origin/main..origin/dev | grep -v 'chore(release)'   # what the promotion ships
+git merge-base --is-ancestor <fix-sha> origin/main && echo shipped
+```
+
+A fix merged only into `dev` is `done` and `released on @beta`, not `shipped`.
+
 ## Automated releases
 
 Conventional Commit messages determine release versions: `fix` and `perf`

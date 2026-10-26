@@ -135,9 +135,15 @@ current:
   one status label at a time: `in progress` while implementing, `blocked` when
   waiting on an external decision or prerequisite (comment what blocks it),
   `in review` during isolated code review, `done` once the PR is open and green,
-  and `shipped` after it merges to `main`.
-- `main` is the integration branch; merging to it triggers `Deploy production`,
-  so a merge is a live operation that needs owner authorization.
+  and `shipped` only once its commit is on `main`
+  (`git merge-base --is-ancestor <sha> origin/main`); a fix merged into `dev`
+  stays `done` until a promotion carries it to `main`.
+- `dev` is the integration branch (beta releases); `main` is the production
+  branch and merging to it triggers `Deploy production`, so a merge to `main`
+  is a live operation that needs owner authorization. Follow the branch and
+  promotion rules in [`docs/development.md`](docs/development.md#branches-and-promotion):
+  a change merged straight into `main` is merged back into `dev` the same day,
+  so `dev` stays a superset of `main` and a fix can never be stranded on one side.
 - When you find a related or duplicate issue, comment on it with a reference to
   the issue you are working on instead of duplicating work. File an unrelated
   defect you discover as its own issue rather than widening the current PR.
@@ -204,9 +210,10 @@ current on the issue you are working on and assign its owner:
 
 - `in progress` while implementing, `blocked` while waiting on a dependency or
   decision (say what in a comment), `in review` while an isolated reviewer
-  checks the change, `done` once the PR is open, and `shipped` once it is
-  merged. Replace the previous state label rather than stacking them. The
-  `released` label is applied by the release automation, not by hand.
+  checks the change, `done` once the PR is open, and `shipped` once its
+  commit is on `main` (a merge into `dev` alone is not `shipped`). Replace
+  the previous state label rather than stacking them. The `released` label
+  is applied by the release automation, not by hand.
 - Before starting, check for an existing `in progress` owner or a duplicate
   issue. Comment on related or duplicate issues with a reference instead of
   doing the work twice.

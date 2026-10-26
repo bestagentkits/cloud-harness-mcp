@@ -7,6 +7,11 @@ description: Version history and releases for Cloud Harness MCP server.
 
 Cloud Harness MCP follows [Semantic Versioning](https://semver.org/) and automated releases via [semantic-release](https://github.com/semantic-release/semantic-release).
 
+## Release channels
+
+- **Beta (`vX.Y.Z-beta.N`):** built from the `dev` branch after each change passes CI. A fix that is only in a beta release has not reached a production deployment yet.
+- **Stable (`vX.Y.Z`):** built from the `main` branch. A self-hosted production deployment runs a stable release, and a beta fix arrives there when `dev` is promoted to `main`.
+
 ## Recent Release Highlights
 
 - **v0.13.0:** Third-party open-source agent toolkits support (`mattpocock/skills`, `obra/superpowers`, custom Git repositories) with Content-Addressed Storage, provisioning firewall, and secret purpose classification.
