@@ -1232,7 +1232,10 @@ it. The store and its checks are owned by
   Each log carries a chained SHA-256 digest that the runner and the runtime
   both verify before replay, so a gap, a stale writer, or a corrupted row
   stops continuation instead of feeding a model altered history. Message count
-  and bytes are bounded.
+  and bytes are bounded per session, and the stored bytes of all sessions are
+  bounded per workspace, owner, and instance. A continuation copies its
+  predecessor's whole log, so the copy counts against those budgets at
+  admission.
 - Continuation is never automatic. It needs an explicit spawn by the same
   owner in the same workspace generation, passes normal spawn admission and
   budgets, and gets a fresh container and lease. Each session has at most one

@@ -688,6 +688,16 @@ export class AgentStateRepository {
       if (predecessor) {
         // A corrupted log is refused here rather than copied into the new agent's session.
         const log = this.loadSessionLog(predecessor.predecessor.id, predecessor.predecessor.generation);
+        // The successor starts with a full copy of the log, so the copy counts against the aggregate budgets.
+        const exceeded = this.exceededSessionBudget(input.ownerId, input.workspaceId, log.bytes);
+        if (exceeded) {
+          throw new HarnessError(
+            'LIMIT_EXCEEDED',
+            `persisted agent sessions would exceed the ${exceeded} session byte budget; start a fresh agent or close workspaces to free it`,
+            429,
+            false
+          );
+        }
         input.session?.admitContinuation?.(predecessor.predecessor, { bytes: log.bytes, messageCount: log.messages.length });
       }
       input.admit?.();
@@ -1347,7 +1357,8 @@ export class AgentStateRepository {
       if (!session || session.state !== 'ACTIVE' || session.continuable !== 1) return 'IGNORED';
       if (!valid || input.seq !== session.message_count
         || session.message_count + 1 > this.limits.maxSessionMessages
-        || session.bytes + bytes > this.limits.maxSessionBytes) {
+        || session.bytes + bytes > this.limits.maxSessionBytes
+        || this.exceededSessionBudget(input.ownerId, input.workspaceId, bytes)) {
         this.database.prepare('UPDATE agent_sessions SET continuable=0, updated_at=? WHERE agent_id=?').run(input.now, input.agentId);
         return 'DISCONTINUED';
       }
@@ -1360,6 +1371,23 @@ export class AgentStateRepository {
         .run(bytes, chainAgentSessionHead(session.head_sha256, digest), input.now, input.agentId);
       return 'APPENDED';
     });
+  }
+
+  /**
+   * Names the aggregate session byte budget that `addedBytes` more stored messages would exceed, if
+   * any. Every stored log counts, including a discontinued one, until retention or workspace close
+   * deletes it; a purged session holds no bytes.
+   */
+  private exceededSessionBudget(ownerId: string, workspaceId: string, addedBytes: number): 'workspace' | 'principal' | 'instance' | undefined {
+    const usage = this.database.prepare(`SELECT
+      (SELECT COALESCE(SUM(bytes), 0) FROM agent_sessions WHERE owner_id=? AND workspace_id=?) AS workspace_bytes,
+      (SELECT COALESCE(SUM(bytes), 0) FROM agent_sessions WHERE owner_id=?) AS principal_bytes,
+      (SELECT COALESCE(SUM(bytes), 0) FROM agent_sessions) AS global_bytes`)
+      .get(ownerId, workspaceId, ownerId) as { workspace_bytes: number; principal_bytes: number; global_bytes: number };
+    if (usage.workspace_bytes + addedBytes > this.limits.workspaceSessionBytes) return 'workspace';
+    if (usage.principal_bytes + addedBytes > this.limits.principalSessionBytes) return 'principal';
+    if (usage.global_bytes + addedBytes > this.limits.globalSessionBytes) return 'instance';
+    return undefined;
   }
 
   /** Stops an active log after a failure to record it, so a partial history is never continued. */

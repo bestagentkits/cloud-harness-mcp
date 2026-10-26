@@ -1325,6 +1325,65 @@ describe('AgentManager persisted sessions', () => {
     await manager.stop();
   });
 
+  const sessionBudgetConfig = (limits: Record<string, number>) =>
+    RunnerAgentsConfigSchema.parse({ ...persistingConfig, limits: { ...persistingConfig.limits, ...limits } });
+  const messageBytes = (...messages: unknown[]) => messages.reduce<number>((total, message) => total + Buffer.byteLength(JSON.stringify(message), 'utf8'), 0);
+
+  it('keeps the run going but stops recording when the workspace session byte budget would be exceeded', async () => {
+    const context = setup('network-none', sessionBudgetConfig({ workspaceSessionBytes: messageBytes(userMessage('task'), assistantCall) - 1 }));
+    const { record, launcher, repository } = context;
+    const agentId = await spawnRunning(context, 'budget-key');
+    emit(launcher, 0, { type: 'session_message', seq: 0, message: userMessage('task') });
+    emit(launcher, 0, { type: 'session_message', seq: 1, message: assistantCall });
+    await vi.waitFor(() => expect(repository.findSession(agentId)?.continuable).toBe(false));
+    expect(repository.findSession(agentId)).toMatchObject({ messageCount: 1, bytes: messageBytes(userMessage('task')) });
+    expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('RUNNING');
+    await finish(context, 0, agentId);
+    expect(await status(context, agentId)).toMatchObject({ session: { persisted: true, continuable: false, messages: 1 } });
+    await context.manager.stop();
+  });
+
+  it('refuses a continuation whose copied log would exceed the workspace session byte budget', async () => {
+    const logBytes = messageBytes(userMessage('inspect the repository'), assistantCall);
+    const context = setup('network-none', sessionBudgetConfig({ workspaceSessionBytes: logBytes * 2 - 1 }));
+    const { manager, record, launcher, repository } = context;
+    const predecessorId = await sealedPredecessor(context);
+    expect(repository.findSession(predecessorId)).toMatchObject({ bytes: logBytes, continuable: true });
+    const refused = manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { idempotencyKey: 'over-budget-key', continueFrom: predecessorId }));
+    await expect(refused).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED', retryable: false });
+    await expect(refused).rejects.toThrow(/workspace session byte budget/);
+    expect(launcher.launches).toHaveLength(1);
+    expect(repository.findAgent(record.ownerId, record.id, predecessorId)?.status).toBe('SUCCEEDED');
+    expect(repository.findSuccessor(predecessorId)).toBeUndefined();
+    // Nothing was reserved, so the predecessor stays continuable once the budget allows the copy.
+    expect(repository.findSession(predecessorId)).toMatchObject({ state: 'SEALED', continuable: true });
+    expect((context.store.database.prepare('SELECT COALESCE(SUM(bytes), 0) AS bytes FROM agent_sessions').get() as { bytes: number }).bytes).toBe(logBytes);
+    await manager.stop();
+  });
+
+  it('counts every workspace of a principal against its session byte budget', async () => {
+    const firstBytes = messageBytes(userMessage('task'));
+    const context = setup('network-none', sessionBudgetConfig({ principalSessionBytes: firstBytes * 2 - 1, workspaceSessionBytes: firstBytes * 2 - 1 }));
+    const { manager, record, repository, store } = context;
+    const firstId = await spawnRunning(context, 'principal-key-1');
+    expect(repository.appendSessionMessage({
+      ownerId: record.ownerId, workspaceId: record.id, agentId: firstId, generation: 1, runnerEpoch: 1, seq: 0,
+      message: userMessage('task'), now: Date.now()
+    })).toBe('APPENDED');
+    const other = { ...workspace('network-none', record.ownerId), id: `ws_${'v'.repeat(24)}`, idempotencyKey: 'workspace-key-2' };
+    store.create(other);
+    const response = await manager.dispatch(other.ownerId, other, 'agent_spawn', spawnInput(other, { idempotencyKey: 'principal-key-2' }));
+    const secondId = (response.data as { agentId: string }).agentId;
+    await vi.waitFor(() => expect(repository.findAgent(other.ownerId, other.id, secondId)?.status).toBe('RUNNING'));
+    // The other workspace holds nothing yet, but the principal's total would pass its budget.
+    expect(repository.appendSessionMessage({
+      ownerId: other.ownerId, workspaceId: other.id, agentId: secondId, generation: 1, runnerEpoch: 1, seq: 0,
+      message: userMessage('task'), now: Date.now()
+    })).toBe('DISCONTINUED');
+    expect(repository.findSession(secondId)).toMatchObject({ messageCount: 0, bytes: 0, continuable: false });
+    await manager.stop();
+  });
+
   it('lets exactly one of two concurrent continuations win', async () => {
     const context = setup('network-none', persistingConfig);
     const { manager, record } = context;
