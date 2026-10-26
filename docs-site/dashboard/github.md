@@ -245,3 +245,11 @@ GitHub authorization lives on the **Integrations** page. The rail links to
 `/dashboard/integrations/github`; `/dashboard/github` still works and redirects there, so
 existing bookmarks and documentation links keep resolving. MCP server connections have
 their own rail entry, [MCP Servers](/dashboard/mcp-servers).
+
+## Callback in the new dashboard
+
+The [new dashboard](index.md#new-dashboard-preview) completes the GitHub App installation
+itself: when GitHub sends you back to `/dashboard/integrations/github` with `state` and
+`installation_id`, the page links the installation once, removes both values from the
+address, and shows the result. A malformed value is ignored, and a reused or expired one is
+refused by the server.

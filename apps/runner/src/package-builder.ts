@@ -1028,4 +1028,3 @@ function safeJson(text: string): unknown {
     return undefined;
   }
 }
-

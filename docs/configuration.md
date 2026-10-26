@@ -44,9 +44,83 @@ allowed same-origin request and a short-lived CSRF session. The owning request
 paths are [`apps/api/src/auth.ts`](../apps/api/src/auth.ts) and
 [`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts).
 
+### Dashboard UI rollout
+
+`CLOUD_HARNESS_DASHBOARD_UI` selects which dashboard `/dashboard` serves in
+`cloudflare-access` mode: `legacy` (the default when unset) or `react`, the
+rebuilt app in `apps/dashboard`. The flag exists so the React app can ship dark
+and be rolled back by recreating only the `api` container
+([deployment](deployment.md#rollback-or-disable-the-route)); with `legacy` and no canary cookie the API
+answers byte-for-byte as before. Appending `?ui=react` or `?ui=legacy` to any
+Dashboard page pins one browser to that UI through an `HttpOnly`, `Secure`,
+`SameSite=Lax` cookie and redirects back to the same page without the
+parameter, so an operator can canary the React app without changing the
+instance.
+
+Do not set `react` for the whole instance until the React app reaches parity
+(phase P6 of the rollout): deep links the BFF generates and the OAuth callback's
+redirect targets still point at legacy pages the React app does not route yet,
+so they would land on its 404 page. Use the per-browser canary until then.
+
+The React shell keeps the same Host, Origin, Access, and CSRF boundary and adds
+only a per-response style nonce and `font-src 'self'` to its CSP
+([security model](security-model.md#dashboard-20-react-shell)). Both shells
+render the `ch-dashboard-theme` cookie, set by the Dashboard preferences API,
+before first paint; browser storage only mirrors it. The API validates the
+build's Vite manifest at startup and logs one line naming the shell mode and
+the canary state (`enabled`, `disabled` when no build is shipped, or
+`disabled-invalid-manifest`): an invalid build fails startup under `react`,
+and under `legacy` it disables the canary while legacy keeps serving. Only the
+React routes the API allowlists answer 200; other Dashboard navigations get a
+404 rendered by the React not-found page, and the BFF, OAuth callback, assets,
+and MCP routes are never answered by the shell. Owners:
+[`apps/api/src/dashboard-react-assets.ts`](../apps/api/src/dashboard-react-assets.ts)
+and [`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts).
+
 `RUNNER_TOKEN` is independent of either public authentication mode and is used
 only from API to runner. Secret-valued settings accept their documented
 `_FILE` form and must meet schema length/placeholder checks.
+
+### Dashboard webchat (Dewee)
+
+The Dashboard webchat BFF under `/dashboard/api/v1/dewee/` proxies the
+dewee-webchat HTTP contract to a Dewee gateway. It is configured on the `api`
+service only:
+
+- `DEWEE_GATEWAY_URL`: the gateway origin. It must be `https`; cleartext
+  `http` is accepted only for a loopback host.
+- `DEWEE_GATEWAY_TOKEN`: the server-side gateway token.
+- `DEWEE_WEBCHAT_SECRET`: at least 32 characters. It signs the per-operator
+  visitor tokens the widget holds and derives each operator's visitor id.
+  Rotating it orphans existing webchat conversations (see the
+  [security model](security-model.md#dashboard-webchat-dewee)).
+- `DEWEE_AGENT_ID` (default `cloud-harness-operator`): the only agent the
+  widget can reach. It cannot be switched from the browser.
+- `DEWEE_TENANT_ID` (optional): for a multi-tenant gateway.
+- `DEWEE_CHAT_TIMEOUT_MS` (default 180000): bounds one agent run.
+
+Set the URL, token and secret together. A partial set fails API startup, and
+leaving all three unset disables every webchat route with
+`503 dewee_disabled`. Unsetting them and recreating the `api` container is the
+kill switch.
+
+The `api` service has no host mounts, so put the two secrets in the runtime env
+file. The `_FILE` forms work only where a file is actually mounted. Compose
+blanks both secrets on the runner, which shares that env file, and
+`scripts/verify-compose-boundaries.mjs` asserts that no other service names a
+`DEWEE_` setting.
+
+In production the three required settings go in
+`/etc/cloud-harness-mcp/runtime.env`, next to the other `api` settings; the
+[deployment guide](deployment.md#enable-the-dashboard-assistant-dewee) has the
+order. The React Dashboard shows its Assistant button either way; while the
+settings are unset, every request the widget makes answers `503 dewee_disabled`.
+
+The data flow and its risks are in the
+[security model](security-model.md#dashboard-webchat-dewee). The executable
+owners are
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts) and
+[`apps/api/src/dashboard-dewee-router.ts`](../apps/api/src/dashboard-dewee-router.ts).
 
 ### Dashboard-managed API-key gateway
 

@@ -127,6 +127,7 @@ export default defineConfig({
         collapsed: false,
         items: [
           { text: 'Overview', link: '/dashboard/' },
+          { text: 'Assistant', link: '/dashboard/assistant' },
           { text: 'Inbox', link: '/dashboard/inbox' },
           { text: 'Workspaces', link: '/dashboard/workspaces' },
           { text: 'Terminal', link: '/dashboard/terminal' },
@@ -137,6 +138,7 @@ export default defineConfig({
           { text: 'Approvals', link: '/dashboard/approvals' },
           { text: 'Packages', link: '/dashboard/packages' },
           { text: 'Projects', link: '/dashboard/projects' },
+          { text: 'Knowledge', link: '/dashboard/knowledge' },
           { text: 'Secrets & Credentials', link: '/dashboard/secrets' },
           { text: 'Models & Budgets', link: '/dashboard/models' },
           { text: 'TypeSafe', link: '/dashboard/typesafe' },

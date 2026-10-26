@@ -51,6 +51,27 @@ describe('contracts', () => {
     expect(() => ApiConfigSchema.parse({ ...commonApiConfig, authMode: 'cloudflare-access', accessIssuer: 'https://team.cloudflareaccess.com' })).toThrow();
   });
 
+  it('requires the Dashboard webchat settings together and keeps its gateway URL safe', () => {
+    const owner = { ...commonApiConfig, bearerToken: 'owner-token-that-is-long-enough-123456' };
+    const dewee = { deweeGatewayUrl: 'https://dewee.example.com', deweeGatewayToken: 'gateway-token-0123456789', deweeWebchatSecret: 'webchat-secret-that-is-long-enough-1234' };
+    const disabled = ApiConfigSchema.parse(owner);
+    expect(disabled.deweeGatewayUrl).toBeUndefined();
+    expect(disabled.deweeAgentId).toBe('cloud-harness-operator');
+    expect(ApiConfigSchema.parse({ ...owner, ...dewee }).deweeChatTimeoutMs).toBe(180_000);
+    expect(ApiConfigSchema.parse({ ...owner, ...dewee, deweeGatewayUrl: 'http://127.0.0.1:8080' }).deweeGatewayUrl).toBe('http://127.0.0.1:8080');
+    for (const missing of ['deweeGatewayUrl', 'deweeGatewayToken', 'deweeWebchatSecret'] as const) {
+      const partial: Record<string, unknown> = { ...owner, ...dewee };
+      delete partial[missing];
+      expect(() => ApiConfigSchema.parse(partial)).toThrow(/all be set or all be unset/);
+    }
+    for (const url of ['http://dewee.example.com', 'https://user:pass@dewee.example.com', 'https://dewee.example.com/?token=x', 'wss://dewee.example.com']) {
+      expect(() => ApiConfigSchema.parse({ ...owner, ...dewee, deweeGatewayUrl: url })).toThrow();
+    }
+    expect(() => ApiConfigSchema.parse({ ...owner, ...dewee, deweeWebchatSecret: 'short' })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...owner, ...dewee, deweeGatewayToken: 'change-me-gateway-token' })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...owner, ...dewee, deweeAgentId: 'bad agent' })).toThrow();
+  });
+
   it('accepts a complete Access configuration and requires HTTPS provider URLs', () => {
     const access = {
       ...commonApiConfig,

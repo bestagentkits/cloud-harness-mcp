@@ -560,4 +560,3 @@ describe('settlement freezing', () => {
     expect(frozen?.costMicros).toBe(10);
   });
 });
-

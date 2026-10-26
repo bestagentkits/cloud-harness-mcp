@@ -1,6 +1,6 @@
 {
   "name": "@cloud-harness/runner",
-  "version": "0.66.0-beta.36",
+  "version": "0.76.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -15,7 +15,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@cloud-harness/contracts": "0.66.0-beta.36",
+    "@cloud-harness/contracts": "0.76.2",
     "@octokit/auth-app": "8.3.0",
     "@octokit/request": "10.0.13",
     "express": "5.2.1",

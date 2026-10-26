@@ -44,6 +44,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `ACCESS_PRINCIPAL_RELINKS` | `[]` | Optional | Optional audited subject-rotation mappings, supplied as strict JSON: |
 | `API_PUBLIC_HOSTS` | `localhost,127.0.0.1,cloud-harness-mcp.46-250-239-227.sslip.io` | **Required** | Required configuration. |
 | `API_ALLOWED_ORIGINS` | `https://cloud-harness-mcp.46-250-239-227.sslip.io` | **Required** | Required configuration. |
+| `CLOUD_HARNESS_DASHBOARD_UI` | `legacy` | Optional | Dashboard UI served at /dashboard: legacy (default) or react. Rollback: set legacy and restart the api service. A browser can opt in or out with /dashboard?ui=react\|legacy. |
 | `API_PORT` | `3000` | **Required** | Required configuration. |
 | `RUNNER_PORT` | `3001` | **Required** | Required configuration. |
 | `RUNNER_URL` | `http://runner:3001` | **Required** | Required configuration. |
@@ -58,6 +59,12 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `MCP_GATEWAY_ALLOW_INSECURE_HTTP` | `false` | Optional | Optional configuration. |
 | `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` | `https://dashboard.example.com/dashboard/mcp-oauth/callback` | Optional | Downstream MCP OAuth (Cloud Harness authenticating TO a third-party MCP server; unrelated to the Cloudflare Access login that authenticates clients TO Cloud Harness). The redirect URL must be the dashboard origin plus /dashboard/mcp-oauth/callback; OAuth Connect is unavailable until it is set. The client metadata URL is optional: a public https URL serving this client's metadata document, used as client_id when the authorization server supports Client ID Metadata Documents. Without it, dynamic registration or a manually registered client is used. |
 | `MCP_DOWNSTREAM_OAUTH_CLIENT_METADATA_URL` | `https://public.example.com/oauth/client/cloud-harness` | Optional | Optional configuration. |
+| `DEWEE_GATEWAY_URL` | `https://dewee-gateway.example.com` | Optional | Dashboard webchat (Dewee). The api proxies /dashboard/api/v1/dewee/* to this gateway with the server-side token; the browser never sees the token or the signing secret. Set the URL, token and secret together, or leave all three unset to disable the webchat (typed 503). Kill switch: unset them and restart the api service. The api has no host mounts, so set the two secrets inline in the runtime env file (the _FILE variants work only where a file is mounted). The runner blanks them in Compose; ingress and executors never receive them. |
+| `DEWEE_GATEWAY_TOKEN` | `—` | Optional | Server-side Dewee gateway token, sent only in the gateway connect frame. |
+| `DEWEE_WEBCHAT_SECRET` | `—` | Optional | At least 32 random characters; signs the per-operator webchat visitor tokens. |
+| `DEWEE_AGENT_ID` | `cloud-harness-operator` | Optional | The only Dewee agent the Dashboard webchat can reach. |
+| `DEWEE_TENANT_ID` | `—` | Optional | Optional tenant id or slug for a multi-tenant Dewee gateway. |
+| `DEWEE_CHAT_TIMEOUT_MS` | `180000` | Optional | Upper bound for one webchat agent run, in milliseconds (10000-600000). |
 | `MODEL_GATEWAY_SESSION_HEADER` | `x-opencode-session` | Optional | Model gateway provider override. When set, the gateway sends this one upstream header, filled with the calling agent id, to OpenAI-compatible providers that require a conversation identifier (for example x-opencode-session for a Custom route to OpenCode). A registry provider's own session header, such as OpenCode Go's, takes precedence. Unset sends no such header. The value must be a lowercase header name the gateway does not set itself. |
 | `JOBS_ROOT` | `/var/lib/cloud-harness/jobs` | **Required** | Required configuration. |
 | `STATE_DB` | `/var/lib/cloud-harness/state/cloud-harness.db` | **Required** | Required configuration. |

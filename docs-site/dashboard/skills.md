@@ -114,6 +114,15 @@ The Registry tab shows, for each toolkit and registry entry, its cache state, pi
 count, and lock state. It reads the runner's catalogue. Enabling, disabling, and pinning entry state
 needs a runner operation that does not exist yet, so those controls are not offered.
 
+## In the new dashboard
+
+The tab, the library filters, and the open skill are part of the address, so a copied link
+opens the same view. The skill drawer adds **Edit details** (name, description, and tags,
+which the tag filter uses) and **Archive**, which asks first and names the skill. The Sets tab
+lists existing sets and lets you rename or delete one; delete asks first. Bulk actions include
+**Enable**, so a disabled skill can be turned back on. An import in progress is checked every
+1.5 seconds until it finishes and stops when you leave the page.
+
 ## How skills execute
 
 Skill scripts run from a snapshot under `/tmp/cloud-harness-exec/<runId>`, after the full-tree bundle

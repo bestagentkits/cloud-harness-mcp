@@ -126,3 +126,12 @@ To rotate the underlying AES-256-GCM encryption key without losing access to exi
    ```
 
 5. Verify completion, take a post-rotation backup, and retain old decrypt keys throughout the rollback window.
+
+## Editing in the new dashboard
+
+In the [new dashboard](index.md#new-dashboard-preview), value fields are masked and emptied as
+soon as a value is sent; a failed save asks for the value again. If a secret changed after you
+opened it (another tab, an agent, a teammate session), the rotate, edit or delete is refused
+with *This item changed after you opened it*, the latest version is loaded, and nothing is
+retried for you. An open rotate or edit dialog stays open and follows the latest version, so
+entering the value again and saving applies it on top of that version.
