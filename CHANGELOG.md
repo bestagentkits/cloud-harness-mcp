@@ -1,3 +1,10 @@
+# [0.66.0-beta.37](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.36...v0.66.0-beta.37) (2026-10-26)
+
+
+### Bug Fixes
+
+* **agent-runtime:** end provider-throttled runs as FAILED, not LIMIT_EXCEEDED ([#446](https://github.com/bestagentkits/cloud-harness-mcp/issues/446)) ([c6736ba](https://github.com/bestagentkits/cloud-harness-mcp/commit/c6736ba6a383eb11734905b62d73494eda5eabf2)), closes [#439](https://github.com/bestagentkits/cloud-harness-mcp/issues/439)
+
 # [0.66.0-beta.36](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.35...v0.66.0-beta.36) (2026-10-21)
 
 
