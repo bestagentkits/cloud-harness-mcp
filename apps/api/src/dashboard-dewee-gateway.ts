@@ -72,7 +72,13 @@ export async function* runDeweeChat(options: DeweeChatOptions): AsyncGenerator<C
   let finished = false;
   const push = (event: ChatStreamEvent) => { if (!finished) { queue.push(event); wake?.(); } };
   const end = () => { finished = true; wake?.(); };
+  // Once a run is being aborted, abortRun owns the socket: closing it before `chat.abort`
+  // settles would reject the call locally and could reach the gateway before it cancels the
+  // run, which then keeps spending tokens and calling tools.
+  let aborting = false;
   const abortRun = () => {
+    if (aborting) return;
+    aborting = true;
     connection.call('chat.abort', { sessionKey: options.sessionKey }, ABORT_TIMEOUT_MS).catch(() => undefined).finally(() => connection.close());
   };
 
@@ -118,6 +124,6 @@ export async function* runDeweeChat(options: DeweeChatOptions): AsyncGenerator<C
     clearTimeout(deadline);
     off();
     options.signal.removeEventListener('abort', onAbort);
-    connection.close();
+    if (!aborting) connection.close();
   }
 }
