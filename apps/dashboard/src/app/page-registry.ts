@@ -53,6 +53,13 @@ export const PAGE_IDS = [
 
 export type PageId = (typeof PAGE_IDS)[number];
 
+/**
+ * Classic Dashboard pages that have no React page yet. They stay on the legacy shell until
+ * they are ported; `docs/dashboard-parity-matrix.md` tracks them. Porting one means adding
+ * it to `PAGE_IDS` and removing it here, which `page-registry.test.ts` enforces.
+ */
+export const LEGACY_ONLY_PAGE_IDS: readonly string[] = ['inbox', 'traces', 'automations', 'agent-policies'];
+
 /** A BFF read under `/dashboard/api/v1`; `:name` segments are filled from route params. */
 export type PageRead = { path: string; query?: Record<string, string | number> };
 
