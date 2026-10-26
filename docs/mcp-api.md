@@ -322,7 +322,8 @@ workspace lifetime-record cap is full, new spawn/message reservations are
 rejected. After closure and full-state retention, `agent_status` returns a
 bounded `compacted: true` outcome record containing the terminal status,
 generation, compaction time, and expiry. These tombstones preserve status
-and key-collision evidence through the configured lookup horizon; the SQLite
+and key-collision evidence through the configured lookup horizon (see
+[agent runtime limits and retention](configuration.md#agent-runtime-limits-and-retention)); the SQLite
 schema and retention policy are owned by
 [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts) and
 [`apps/runner/src/agent-state-repository.ts`](../apps/runner/src/agent-state-repository.ts).
