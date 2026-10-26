@@ -171,7 +171,7 @@ export const MCP_EVENT_DEFINITIONS: readonly McpEventDefinition[] = [
   },
   {
     name: 'cloudharness.notification.created',
-    description: 'A notification entered your inbox: an automation or agent run finished, a workflow is waiting for a human, or an approval was decided. Carries ids, a short title and a Dashboard link only. Fires only while the operator has notifications enabled and your mcp_event preference for that kind is on.',
+    description: 'A notification entered your inbox: an automation or agent run finished, a workflow is waiting for a human, or an approval was decided. Carries ids, a short title, a Dashboard link and, for a finished automation, optional links to its source issue, trace and pull request; never prompts, output or credentials. Fires only while the operator has notifications enabled and your mcp_event preference for that kind is on.',
     arguments: NotificationEventArgumentsSchema,
     payload: NotificationCreatedPayloadSchema
   }

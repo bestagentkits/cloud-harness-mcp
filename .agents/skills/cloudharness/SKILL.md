@@ -87,7 +87,9 @@ approves or denies it on the Dashboard, and no tool approves on the owner's
 behalf), plus
 `cloudharness.notification.created` when the operator enabled the notification
 inbox (filter by `kind`; the payload is a notification id, kind, subject id,
-short title, and Dashboard link; no MCP tool reads the inbox). These are
+short title, and Dashboard link; a finished automation adds optional `links` to
+its source issue, agent trace, and the pull request a coding run opened; no MCP
+tool reads the inbox). These are
 client-side protocol subscriptions, not
 tools: only the host client subscribes, with its own HTTPS callback and secret,
 so never try to create one through a tool call or a workspace command. An event

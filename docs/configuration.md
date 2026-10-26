@@ -602,9 +602,16 @@ adds an advisory `data.diagnosis` to GitHub actions that end in the generic
 is `advisor_or_approval`. It also needs the owner to enable the advisor in the
 global agent policy (see [Agent execution policies](security-model.md#agent-execution-policies));
 its threshold, confidence floor and fallback live in that policy, not here. Any
-failure falls back to approval, or to deny when the policy says so. The
-advisor is consulted when an agent action executes, which arrives with the
-coding broker; until then listing the purpose sends nothing.
+failure falls back to approval, or to deny when the policy says so. The coding
+broker (`AGENT_CODING_ENABLED`) consults the advisor when a coding run executes
+an `advisor_or_approval` action that passed every deterministic check, so with
+all three opt-ins each such action sends TypeSafe one redacted, runner-computed
+summary. Its fields are listed under
+[what leaves the runner](security-model.md#decision-plane) and built by
+[`apps/runner/src/decision-plane/execution-risk-advisor.ts`](../apps/runner/src/decision-plane/execution-risk-advisor.ts);
+paths, arguments, branch and repository names, and agent or issue text are not
+sent, and the command digest is an unsalted truncated SHA-256, so a guessed
+low-entropy command can be confirmed against it.
 Before rolling back to a release that predates `execution-risk`, remove it from
 `DECISION_PLANE_PURPOSES`: older runners reject the value and fail startup.
 The purpose list is owned by
@@ -672,7 +679,7 @@ What a trace may contain is described in
 
 | Variable | Default | Decision |
 |---|---|---|
-| `NOTIFICATIONS_ENABLED` | off | Runner only. Writes a notification to the owner's inbox on terminal automation runs and top-level agents, delivers it to the channels the owner's preferences allow (the `cloudharness.notification.created` MCP event and the GitHub comment mirror), and shows the Dashboard Inbox. Off, nothing is written or sent, the inbox list and preference routes answer `FEATURE_DISABLED`, and the Inbox entry stays hidden. |
+| `NOTIFICATIONS_ENABLED` | off | Runner only. Writes a notification to the owner's inbox on terminal automation runs and top-level agents and, with `AGENT_APPROVALS_ENABLED`, when a coding run starts waiting for an approval (`workflow.waiting_for_human`) and when that approval is decided or expires (`approval.decided`). Delivers it to the channels the owner's preferences allow (the `cloudharness.notification.created` MCP event and the GitHub comment mirror), and shows the Dashboard Inbox. Off, nothing is written or sent, the inbox list and preference routes answer `FEATURE_DISABLED`, and the Inbox entry stays hidden. |
 
 Notifications live in the runner's state database. Turning the flag off is the
 rollback: emission and delivery stop at once, while the retention purge keeps

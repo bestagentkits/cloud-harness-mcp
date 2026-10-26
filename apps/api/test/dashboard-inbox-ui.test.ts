@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import './dashboard-test-dom.js';
 import {
   NOTIFICATION_KIND_LABELS, createInboxView, inboxListPath, inboxStatus, inboxUnreadOnly, renderInboxPage, renderInboxPreferences,
-  renderInboxTable, safeNotificationLink
+  renderInboxTable, safeExternalNotificationLink, safeNotificationLink
 } from '../dashboard/dashboard-inbox.js';
 import { FakeElement } from './dashboard-test-dom.js';
 
@@ -34,6 +34,39 @@ describe('inbox rendering', () => {
     expect(markup).not.toMatch(/style=/i);
     expect(safeNotificationLink('//evil.example.com')).toBeNull();
     expect(safeNotificationLink('/dashboard/approvals')).toBe('/dashboard/approvals');
+  });
+
+  it('renders an automation run\'s related links escaped, opening off-site links in a new tab', () => {
+    const markup = renderInboxTable([notification({
+      links: {
+        source: 'https://github.com/acme/widgets/issues/7',
+        trace: '/dashboard/traces/trc_abcdefghijklmnopqrstuvwxyz',
+        pullRequest: 'https://github.com/acme/widgets/pull/12'
+      }
+    })]);
+    expect(markup).toContain('<ul class="inbox-links" aria-label="Related links">');
+    expect(markup).toContain('<a href="https://github.com/acme/widgets/issues/7" target="_blank" rel="noopener noreferrer">Source</a>');
+    expect(markup).toContain('<a href="/dashboard/traces/trc_abcdefghijklmnopqrstuvwxyz">Trace</a>');
+    expect(markup).toContain('<a href="https://github.com/acme/widgets/pull/12" target="_blank" rel="noopener noreferrer">Pull request</a>');
+    // The primary run link stays the title's link.
+    expect(markup).toContain('<a href="/dashboard/automations/runs/wfl_1">Automation failed: acme/widgets#7</a>');
+  });
+
+  it('drops related links that are not safe to follow', () => {
+    const markup = renderInboxTable([notification({
+      links: {
+        source: 'javascript:alert(1)',
+        trace: 'https://evil.example.com/dashboard/traces/x',
+        pullRequest: `https://user:token@github.com/acme/widgets/pull/12?x="${hostile}`
+      }
+    })]);
+    expect(markup).not.toContain('inbox-links');
+    expect(markup).not.toContain('javascript:');
+    expect(markup).not.toContain('evil.example.com');
+    expect(markup).not.toContain('token');
+    expect(safeExternalNotificationLink('https://github.com/a/b/pull/1#x')).toBeNull();
+    expect(safeExternalNotificationLink('http://github.com/a/b/pull/1')).toBeNull();
+    expect(safeExternalNotificationLink('https://github.com/a/b/pull/1')).toBe('https://github.com/a/b/pull/1');
   });
 
   it('states delivery and read state in words, not colour alone', () => {

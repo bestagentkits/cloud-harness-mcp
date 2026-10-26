@@ -9,11 +9,11 @@ An agent policy decides whether an agent action is allowed, needs your
 approval, or is denied. You write one **global** policy and, when a project
 needs tighter rules, a **project** policy that narrows it.
 
-::: info Enforcement arrives with the coding broker
-This release stores, checks and simulates policies. It does not yet stop or
-hold a running agent's actions: that enforcement arrives with the coding
-broker, which uses the same evaluator as the simulation. Until then a saved
-policy changes what **Simulate an action** returns, not what agents do.
+::: info Policies are enforced on coding automations
+A policy decides every action of a [coding automation](/dashboard/automations)
+run (`AGENT_CODING_ENABLED`), using the same evaluator as the simulation.
+Agents started outside a coding run are not governed by a policy; for them a
+saved policy changes only what **Simulate an action** returns.
 :::
 
 - **Settings > Agent policies** (`/dashboard/settings/agent-policies`) edits the
@@ -84,11 +84,18 @@ Otherwise it waits for you, or is denied if the fallback is **Deny** and Jev
 could not give a confident answer. A confident "this is risky" always waits
 for you; it is never a deny.
 
-::: info Asked at execution time, by the coding broker
-Jev is consulted when an agent action runs, and the coding broker is what runs
-agent actions. Until that broker ships, no action is executed under a policy,
-so Jev is never called; the settings already shape what **Simulate an action**
-shows.
+::: info Asked at execution time, during coding runs
+Jev is consulted when a coding automation run executes an **Advisor or
+approval** action. With all three settings in place, each such action sends
+TypeSafe one summary: the action class, whether the command runs `git push`,
+whether a branch is named, counts of the paths touched by kind (tests,
+dependency manifests, CI files, hidden files), the kind of program, its
+argument count and a short digest, whether a network host is requested, the
+package ecosystem when a package changes (one of eight known names, otherwise
+`other`), the number of changed lines, and whether tests passed. The digest is
+an unsalted, truncated SHA-256 of the command, so it is the same every time and
+someone who guesses a short command could confirm it. **Simulate an action**
+never calls Jev.
 :::
 
 **When the advisor cannot answer** decides what happens on a timeout, rate
@@ -144,7 +151,7 @@ command, paths, package or host, and any platform effects) and shows the
 decision the runner would make: **Allow**, **Requires approval** or **Deny**,
 with the reason code, the matched rules, the policy revisions used and a
 fingerprint of the action. The simulation uses the same evaluator, policy
-snapshot and advisor setting that the coding broker will use, so its answer is
+snapshot and advisor setting that a coding run uses, so its answer is
 the decision execution starts from. The one difference is the advisor: when an
 advisor is configured, an **Advisor or approval** action shows as **Requires
 approval** with `ADVISOR_REQUIRED`, because the advisor answers only at
@@ -152,9 +159,8 @@ execution time. A simulation never sends anything to TypeSafe. At execution the
 action becomes **Allow** only if the advisor answers that nothing needs to
 change. When the policy enables the advisor but it is unavailable, the
 simulation already shows the fallback and its reason, such as **Jev not
-consulted (no TypeSafe key)**. Once the coding broker executes actions, its
-decisions show whether Jev was consulted, with its decision id, risk and
-confidence.
+consulted (no TypeSafe key)**. A coding run's action receipts name the
+Decision Plane id of each action Jev was consulted on.
 
 Commands have two platform outcomes. A command that runs a container runtime or
 a privilege tool such as `sudo` is denied, and no policy or approval can allow
