@@ -9,7 +9,10 @@ import { AutomationWorkflowIdSchema } from './automations-api.js';
  * part of these shapes; every object is strict so an extra field cannot ride along.
  */
 
-/** Span kinds. `action` spans record brokered coding actions; `workflow`, `decision` and `approval` are reserved for later producers. */
+/**
+ * Span kinds. `action` spans record brokered coding actions and `approval` spans an owner approval of
+ * one of them (requested, then decided); `workflow` and `decision` are reserved for later producers.
+ */
 export const TRACE_SPAN_KINDS = [
   'agent_run', 'model_call', 'tool_call', 'gateway', 'budget', 'hook',
   'workflow', 'action', 'decision', 'approval'
@@ -155,7 +158,8 @@ export const TRACE_ATTRIBUTE_KEYS = [
   'requests', 'requests_without_usage', 'reasoning_tokens', 'overrun_cost_micros', 'settlement_reason',
   'terminal_status', 'marker', 'dropped_spans', 'preview', 'usage_missing', 'turn',
   'reserved_cost_micros', 'settled_cost_micros', 'limit',
-  'action_id', 'action_class', 'decision', 'reason_code', 'action_state', 'branch', 'commit_sha', 'pr_number', 'workflow_step'
+  'action_id', 'action_class', 'decision', 'reason_code', 'action_state', 'branch', 'commit_sha', 'pr_number', 'workflow_step',
+  'approval_id'
 ] as const;
 export const TraceAttributeKeySchema = z.enum(TRACE_ATTRIBUTE_KEYS);
 export const TraceAttributeValueSchema = z.union([z.string().max(512), z.number().finite(), z.boolean(), z.null()]);

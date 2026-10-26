@@ -31,6 +31,8 @@ export type CodingGitPort = {
   status(ownerId: string, workspaceId: string, signal: AbortSignal): Promise<CodingGitResult<CodingGitStatus>>;
   /** The commit `revision` resolves to, its parents and message, and the paths it changes relative to `base`. */
   commit(ownerId: string, workspaceId: string, revision: string, base: string, signal: AbortSignal): Promise<CodingGitResult<CodingGitCommit>>;
+  /** The unified diff of commit `sha` against `base`, for the owner to review; never used to decide a push. */
+  diff(ownerId: string, workspaceId: string, base: string, sha: string, signal: AbortSignal): Promise<CodingGitResult<{ text: string; truncated: boolean }>>;
 };
 
 /**
@@ -200,6 +202,17 @@ export function createCodingGitPort(run: CodingGitRunner): CodingGitPort {
         if (!parsed) throw inspectFailed();
         const diff = await git(ownerId, workspaceId, ['diff-tree', '-r', '--no-renames', '--no-commit-id', '--name-only', '-z', base, sha, '--'], signal);
         return { ok: true, data: { sha, ...parsed, paths: nulPaths(diff.stdout), truncated: diff.truncated } };
+      } catch (error) {
+        return failure(error);
+      }
+    },
+    async diff(ownerId, workspaceId, base, sha, signal) {
+      if (!SHA.test(base) || !SHA.test(sha)) return { ok: false, code: 'GIT_INSPECT_FAILED', retryable: false };
+      try {
+        // Plumbing with external diff drivers and text conversion off, so the checkout's configuration
+        // cannot run a program while the diff is read.
+        const patch = await git(ownerId, workspaceId, ['diff-tree', '-r', '-p', '--no-renames', '--no-color', '--no-ext-diff', '--no-textconv', base, sha, '--'], signal);
+        return { ok: true, data: { text: patch.stdout, truncated: patch.truncated } };
       } catch (error) {
         return failure(error);
       }

@@ -155,6 +155,20 @@ class LocalWorkspaces {
         writeFileSync(target, input.content);
         return ok({ path: input.path, bytes: Buffer.byteLength(input.content) });
       }
+      case 'files_delete': {
+        const target = this.path(workspaceId, input.path);
+        if (!target) return fail('INVALID_INPUT');
+        if (!existsSync(target)) return fail('NOT_FOUND');
+        rmSync(target, { recursive: input.recursive === true, force: false });
+        return ok({ path: input.path, deleted: true });
+      }
+      case 'workspace_lease_renew': {
+        // The real renewal never passes the hard deadline.
+        const expiresAt = Math.min(this.now() + Number(input.extensionSeconds ?? 900) * 1_000, record.hardExpiresAt);
+        this.store.update(workspaceId, { expiresAt });
+        return ok({ workspaceId, expiresAt: new Date(expiresAt).toISOString(), hardExpiresAt: new Date(record.hardExpiresAt).toISOString() });
+      }
+      case 'workspace_status': return ok({ workspaceId, expiresAt: new Date(record.expiresAt).toISOString(), hardExpiresAt: new Date(record.hardExpiresAt).toISOString() });
       case 'exec_run': {
         if (input.privileged === true || input.async === true) return fail('FORBIDDEN');
         const argv = String(input.command ?? '').split(' ').filter(Boolean);
@@ -321,6 +335,10 @@ export type CodingHarnessOptions = {
   branches?: string[];
   /** The rule's own concurrency limit (default 1). */
   ruleMaxConcurrent?: number;
+  /** AGENT_APPROVALS_ENABLED (default off); changeable with `setApprovalsEnabled`. */
+  approvals?: boolean;
+  /** AGENT_APPROVAL_TTL_MINUTES in seconds (default one hour). */
+  approvalTtlSeconds?: number;
 };
 
 export type CodingHarness = Awaited<ReturnType<typeof createCodingHarness>>;
@@ -336,11 +354,14 @@ export async function createCodingHarness(options: CodingHarnessOptions = {}) {
   const policies = createPolicyService(store.database, (selector) => store.resolvePrincipal(selector), owner);
   policies.saveGlobal(options.policy ?? CODING_GLOBAL_POLICY);
   let codingEnabled = true;
+  let approvalsEnabled = options.approvals ?? false;
   const traces = new AgentTraceStore(store.database, { retentionDays: 14, maxTracesPerPrincipal: 5_000 });
   const recorder = new AgentTraceRecorder(traces, { maxSpansPerTrace: 500, previewBytes: 256 });
   const workspaces = new LocalWorkspaces(root, store, github, now);
   const calls: OperationCall[] = [];
   const agentCalls: AgentToolRequest[] = [];
+  /** Audit entries the automation engine wrote, in order. */
+  const audits: { action: string; subjectType: string; subjectId: string; details: Record<string, string | number | boolean> }[] = [];
 
   const newBroker = () => new CodingActionBroker({
     database: store.database,
@@ -402,9 +423,11 @@ export async function createCodingHarness(options: CodingHarnessOptions = {}) {
     keyring,
     selfLogin: 'cloud-harness[bot]',
     now,
+    audit: (_database, _principalId, action, subjectType, subjectId, _generation, details) => { audits.push({ action, subjectType, subjectId, details }); },
     coding: broker,
     codingGit: workspaces.runGit,
-    codingPublish: workspaces.publish
+    codingPublish: workspaces.publish,
+    approvals: { enabled: () => approvalsEnabled, ttlSeconds: () => options.approvalTtlSeconds ?? 3_600, traces: recorder }
   });
   let service = newService();
 
@@ -432,12 +455,21 @@ export async function createCodingHarness(options: CodingHarnessOptions = {}) {
 
   let sequence = 0;
   const harness = {
-    root, github, store, ownerId, owner, clock, policies, traces, manager, launcher, workspaces, calls, agentCalls,
+    root, github, store, ownerId, owner, clock, policies, traces, manager, launcher, workspaces, calls, agentCalls, audits,
     get broker() { return broker; },
     get service() { return service; },
 
     setCodingEnabled(value: boolean): void {
       codingEnabled = value;
+    },
+
+    setApprovalsEnabled(value: boolean): void {
+      approvalsEnabled = value;
+    },
+
+    /** An owner approvals operation, answered as the runner answers it (no throw). */
+    approvals(operation: 'approvals_list' | 'approval_get' | 'approval_decide', input: Record<string, unknown>, principal: RunnerPrincipalSelector = owner) {
+      return service.approvals.execute({ version: 1, principal, operation, input });
     },
 
     /** A signed `issues.labeled` delivery; `extra` adds payload fields the pipeline must ignore. */

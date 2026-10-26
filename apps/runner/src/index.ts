@@ -170,7 +170,12 @@ const automations = new AutomationService({
   },
   codingGit: async (ownerId, workspaceId, args, signal) => await service.runCodingGit(ownerId, workspaceId, args, signal),
   codingPublish: async (ownerId, input, verifier) =>
-    await automationResult(async () => await service.execute(ownerId, 'git_push', input, undefined, { pushVerifier: verifier }))
+    await automationResult(async () => await service.execute(ownerId, 'git_push', input, undefined, { pushVerifier: verifier })),
+  approvals: {
+    enabled: () => config.agentApprovalsEnabled,
+    ttlSeconds: () => config.agentApprovalTtlMinutes * 60,
+    traces: service.actionTraces
+  }
 });
 automations.start();
 // Agent trace retention: traces past their retention period are removed hourly in bounded,

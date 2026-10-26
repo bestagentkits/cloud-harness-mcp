@@ -103,7 +103,8 @@ async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; 
       inspections.push({ kind: 'commit', revision });
       if (revision === 'HEAD' && checkout.head === BASE) return { ok: true, data: { sha: BASE, parents: ['b'.repeat(40)], author: null, committer: null, message: 'Initial', paths: [], truncated: false } };
       return { ok: true, data: { ...checkout.commit, paths: [...checkout.commit.paths] } };
-    }
+    },
+    diff: async () => ({ ok: true, data: { text: 'diff --git a/src/a.ts b/src/a.ts\n+added\n-removed\n', truncated: false } })
   };
   const verifiers: PushVerifier[] = [];
   // As the workspace service runs a verified push: the staged clone is read and decided before anything
@@ -593,10 +594,10 @@ describe('CodingWorkflowEngine', () => {
     expect(context.outcome).toMatchObject({ code: 'EFFECT_UNKNOWN' });
   });
 
-  it('fails closed when publishing needs approval, with no effect', async () => {
+  it('fails closed when publishing needs approval and approvals are off, with no effect', async () => {
     const context = await setup({ phase: 'COMMIT', policy: { ...CODING_GLOBAL_POLICY, defaults: { ...CODING_GLOBAL_POLICY.defaults, publish_branch: { effect: 'require_approval', delegable: false } } } });
     await context.run();
-    expect(context.outcome.code).toMatch(/^ACTION_REQUIRES_APPROVAL:/u);
+    expect(context.outcome.code).toBe('ACTION_DENIED:APPROVALS_DISABLED');
     expect(context.count('git_push')).toBe(0);
   });
 });

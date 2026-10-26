@@ -391,14 +391,21 @@ export const RunnerConfigSchema = z.object({
   agentCodingEnabled: enabled,
   /** Admits the lockfile-only package install executor for coding runs. Off by default; policy still decides. */
   agentCodingPackageInstallEnabled: enabled,
+  /**
+   * Lets a coding workflow wait for an owner decision when a runner step needs approval. Off by default:
+   * such a step then fails as APPROVALS_DISABLED, and workflows already waiting are failed by the sweeper.
+   * It has no effect while AGENT_CODING_ENABLED is off, so the coding kill switch never needs it changed.
+   */
+  agentApprovalsEnabled: enabled,
+  /** Longest time a coding workflow waits for a decision; the policy's approval TTL and the workspace lease can only shorten it. */
+  agentApprovalTtlMinutes: positiveBoundedInteger(10_080, 60),
   /** Records the notification inbox and dispatches its channels. Off by default; the schema is created either way. */
   notificationsEnabled: enabled
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
   if (config.agentCodingEnabled && !(config.agentPoliciesEnabled && config.automationsEnabled)) {
     context.addIssue({ code: 'custom', path: ['agentCodingEnabled'], message: 'AGENT_CODING_ENABLED requires AGENT_POLICIES_ENABLED and AUTOMATIONS_ENABLED' });
-  }
-  if (config.agentCodingPackageInstallEnabled && !config.agentCodingEnabled) {
+  }  if (config.agentCodingPackageInstallEnabled && !config.agentCodingEnabled) {
     context.addIssue({ code: 'custom', path: ['agentCodingPackageInstallEnabled'], message: 'AGENT_CODING_PACKAGE_INSTALL_ENABLED requires AGENT_CODING_ENABLED' });
   }
   if (config.packagesMaxReleaseBytes > config.packagesMaxOwnerBytes) {

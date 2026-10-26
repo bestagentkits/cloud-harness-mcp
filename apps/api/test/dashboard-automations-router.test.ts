@@ -37,7 +37,7 @@ const rule = { id: ruleId, connectionId, name: 'Triage', enabled: false, generat
 const workflow = {
   id: workflowId, ruleId, ruleGeneration: 1, connectionId, deliveryId, eventType: 'github.issue.label_added',
   repository: 'example/project', resourceNumber: 7, resourceUrl: 'https://github.com/example/project/issues/7', label: 'triage',
-  state: 'RUNNING', workspaceId: null, agentId: null, agentStatus: null, errorCode: null, publishState: 'NONE', usage: null, coding: null,
+  state: 'RUNNING', workspaceId: null, agentId: null, agentStatus: null, errorCode: null, publishState: 'NONE', usage: null, approvalId: null, coding: null,
   createdAt: at, updatedAt: at, terminalAt: null
 };
 const delivery = {

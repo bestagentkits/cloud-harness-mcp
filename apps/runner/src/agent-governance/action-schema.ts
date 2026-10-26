@@ -21,7 +21,15 @@ const WORKFLOW_COLUMNS: readonly [string, string][] = [
   /** Consecutive engine steps of the workflow that threw; the engine backs off and finally fails it. */
   ['step_failures', 'INTEGER NOT NULL DEFAULT 0'],
   /** Push attempts that ended before the staged transfer clone could be inspected; a few fail the push. */
-  ['push_unverified_attempts', 'INTEGER NOT NULL DEFAULT 0']
+  ['push_unverified_attempts', 'INTEGER NOT NULL DEFAULT 0'],
+  /** The approval the workflow waits for, or the last one it paused for. */
+  ['approval_id', 'TEXT'],
+  /** Counts the workflow's pauses; an approval is valid only for the pause it was requested in. */
+  ['approval_generation', 'INTEGER NOT NULL DEFAULT 0'],
+  /** When the current wait started; null while not waiting. */
+  ['waiting_since', 'INTEGER'],
+  /** Time spent waiting for decisions, which the policy's run-time budget does not count. */
+  ['paused_ms', 'INTEGER NOT NULL DEFAULT 0']
 ];
 
 export function initializeCodingActionSchema(database: DatabaseSync): void {

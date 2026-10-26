@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { AgentIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { RunnerPrincipalSelectorSchema } from './runner-api.js';
-import { CodingActionReceiptSchema, CodingRuleActionSchema, CodingWorkflowSummarySchema } from './coding-actions.js';
+import { AgentApprovalIdSchema, CodingActionReceiptSchema, CodingRuleActionSchema, CodingWorkflowSummarySchema } from './coding-actions.js';
 
 /**
  * Webhook-triggered automations. A provider webhook reaches the API's public ingress, which forwards
@@ -40,7 +40,8 @@ export const AutomationEventTypeSchema = z.enum(['github.issue.label_added', 'gi
 /** GitHub `X-GitHub-Event` values a rule may listen to. */
 export const AutomationGitHubEventSchema = z.enum(['issues', 'pull_request']);
 
-export const AutomationWorkflowStateSchema = z.enum(['QUEUED', 'STARTING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED']);
+/** WAITING_FOR_HUMAN: a coding workflow paused at a runner step until its owner approves or denies it. */
+export const AutomationWorkflowStateSchema = z.enum(['QUEUED', 'STARTING', 'RUNNING', 'WAITING_FOR_HUMAN', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED']);
 export const AUTOMATION_TERMINAL_WORKFLOW_STATES = ['COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED'] as const;
 export const AutomationDeliveryStateSchema = z.enum(['RECEIVED', 'PROCESSED', 'IGNORED', 'QUARANTINED']);
 export const AutomationPublishStateSchema = z.enum(['NONE', 'PENDING', 'DELIVERED', 'FAILED']);
@@ -222,6 +223,8 @@ export const AutomationWorkflowSummarySchema = z.object({
   usage: z.object({ inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(), costMicros: z.number().int().nonnegative() }).strict().nullable(),
   /** Present only for coding workflows. */
   coding: CodingWorkflowSummarySchema.nullable().default(null),
+  /** The approval a WAITING_FOR_HUMAN workflow waits for, or the last one it was paused for; null when it never paused. */
+  approvalId: AgentApprovalIdSchema.nullable().default(null),
   createdAt: instant,
   updatedAt: instant,
   terminalAt: instant.nullable()

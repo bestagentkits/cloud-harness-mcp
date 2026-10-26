@@ -103,7 +103,7 @@ import {
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
 import { AgentTraceStore, executeAgentTraceOperation } from './agent-trace-store.js';
-import { AgentTraceRecorder, type AgentActionTraceSink } from './agent-trace-recorder.js';
+import { AgentTraceRecorder, type AgentActionTraceSink, type AgentApprovalTraceSink } from './agent-trace-recorder.js';
 import type { CodingActionBroker } from './agent-governance/action-broker.js';
 import { LockfileInstallExecutor, type InstallResult } from './agent-governance/install-executor.js';
 import { CODING_GIT_ARGS, CODING_GIT_ENV, CODING_GIT_SUBCOMMANDS, isCommitSha, parseTransferInspection, type PushVerifier } from './agent-governance/coding-git.js';
@@ -500,7 +500,7 @@ export class WorkspaceService {
   private readonly traceStore: AgentTraceStore | undefined;
   private readonly tracePurger: AgentTraceStore;
   /** Where brokered coding actions write their spans; absent when agent traces are disabled. */
-  readonly actionTraces: AgentActionTraceSink | undefined;
+  readonly actionTraces: (AgentActionTraceSink & AgentApprovalTraceSink) | undefined;
   /** The coding action broker, attached only when coding automations are enabled. */
   private codingBroker: CodingActionBroker | undefined;
   private readonly metadata?: MetadataStore | undefined;

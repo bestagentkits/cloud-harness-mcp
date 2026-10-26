@@ -461,7 +461,7 @@ describe('coding automation: issue to pull request', { timeout: 30_000 }, () => 
     expect(harness.github.pulls).toHaveLength(0);
   });
 
-  it('fails closed before publishing when the policy requires approval for the branch push', async () => {
+  it('fails closed before publishing when the policy requires approval for the branch push and approvals are off', async () => {
     const harness = await setup({ policy: { ...CODING_GLOBAL_POLICY, defaults: { ...CODING_GLOBAL_POLICY.defaults, publish_branch: { effect: 'require_approval', delegable: false } } } });
     const workflowId = await started(harness);
     await harness.runAgent(workflowId, FIX_BOTH);
@@ -469,7 +469,7 @@ describe('coding automation: issue to pull request', { timeout: 30_000 }, () => 
 
     const { workflow } = harness.workflow(workflowId);
     expect(workflow.state).toBe('FAILED');
-    expect(workflow.errorCode).toMatch(/^ACTION_REQUIRES_APPROVAL:/u);
+    expect(workflow.errorCode).toBe('ACTION_DENIED:APPROVALS_DISABLED');
     expect(receipts(harness, workflowId).find((receipt) => receipt.step === 'push')).toMatchObject({ decision: 'REQUIRE_APPROVAL', state: 'REJECTED' });
     expect(harness.github.pushAttempts).toBe(0);
     expect(harness.github.remoteBranches()).toEqual(['main']);
