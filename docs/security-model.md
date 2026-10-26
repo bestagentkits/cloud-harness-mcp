@@ -1273,9 +1273,10 @@ behaviour the model sees):
   only. Stored text stays in the runner's state database, is never returned by
   an MCP tool, and has the agent's model lease redacted before it is stored.
   Read-safe result text may fill at most half of that cap. Receipt content is
-  cleared once no session of its lineage can replay it any more (the session
-  retention, counted from the latest end of an agent in the lineage), and the
-  workspace's receipts are deleted when it closes, expires, or is compacted.
+  kept until its writer's expiry plus the session retention, extended to the
+  retention of a later-sealed or continuing session of its lineage, so it never
+  expires before a session that can replay it. The workspace's receipts are
+  deleted when it closes, expires, or is compacted.
 - The runner never re-issues a mutation on its own. A mutation whose outcome
   was lost is settled by reading workspace state through the same fenced
   executor path, never by repeating it, and an undecidable outcome is reported

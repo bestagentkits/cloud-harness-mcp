@@ -490,11 +490,50 @@ describe('AgentStateRepository', () => {
       expect(sealed.retainUntil).toBe(endedAt + retention);
       expect(repository.findEffect(key)?.retainUntil).toBe(sealed.retainUntil);
 
-      // A successor can replay the predecessor's receipt until its own session expires.
-      const successor = running(repository, workspaceRecord, 'u', epoch, { continuedFrom: predecessor.id });
-      expect(repository.findEffect(key)?.retainUntil).toBe(Math.max(sealed.retainUntil!, successor.expiresAt + retention));
       expect(repository.purgeExpiredReceipts(sealed.retainUntil! - 1)).toBe(0);
       expect(repository.findEffect(key)?.resultJson).toBe('{"ok":true}');
+    });
+
+    it('extends a lineage\'s receipts to the retention of a continuation\'s session', () => {
+      const { repository, workspace: workspaceRecord, epoch } = receiptSetup();
+      const predecessor = running(repository, workspaceRecord, 'x', epoch);
+      repository.reserveEffect(reserveInput(predecessor, epoch));
+      const key = { rootAgentId: predecessor.id, requestId: 'toolu_1', kind: 'files_write' };
+      repository.dispatchEffect({ ...key, fence: fenceOf(predecessor, epoch), expectedStates: ['INTENT'], now: Date.now() });
+      repository.completeEffect({ ...key, fence: fenceOf(predecessor, epoch), expectedStates: ['DISPATCHED'], state: 'APPLIED', receipt: { text: '{"ok":true}' }, now: Date.now() });
+      const endedAt = Date.now();
+      for (const [from, to] of [['RUNNING', 'CANCELLING'], ['CANCELLING', 'SUCCEEDED']] as const) {
+        repository.transitionStatus({
+          ownerId: predecessor.ownerId, workspaceId: predecessor.workspaceId, agentId: predecessor.id, generation: predecessor.generation,
+          expectedStatuses: [from], status: to, now: endedAt
+        });
+      }
+      const retention = limits().sessionRetentionMs;
+      const before = repository.findEffect(key)!.retainUntil!;
+      const successor = running(repository, workspaceRecord, 'y', epoch, { continuedFrom: predecessor.id });
+      // The successor's session outlives everything the predecessor recorded, so it sets the deadline.
+      expect(successor.expiresAt + retention).toBeGreaterThan(before);
+      expect(repository.findEffect(key)?.retainUntil).toBe(successor.expiresAt + retention);
+      expect(repository.purgeExpiredReceipts(successor.expiresAt + retention - 1)).toBe(0);
+    });
+
+    it('lets read-safe text fill exactly half of the lineage cap and mutations the rest', () => {
+      const context = setup();
+      const repository = new AgentStateRepository(context.store.database, limits({ maxReceiptBytesPerLineage: 1_000 }), 'runner-test');
+      const epoch = repository.bumpEpoch('runner-test', Date.now());
+      const agent = running(repository, context.workspace, 'h', epoch);
+      const complete = (requestId: string, kind: string, replayClass: 'read-safe' | 'conditional-write', bytes: number) => {
+        repository.reserveEffect(reserveInput(agent, epoch, { requestId, kind, replayClass }));
+        const key = { rootAgentId: agent.id, requestId, kind };
+        repository.dispatchEffect({ ...key, fence: fenceOf(agent, epoch), expectedStates: ['INTENT'], now: Date.now() });
+        repository.completeEffect({ ...key, fence: fenceOf(agent, epoch), expectedStates: ['DISPATCHED'], state: 'APPLIED', receipt: { text: 'r'.repeat(bytes) }, now: Date.now() });
+        return repository.findEffect(key)!.resultJson !== null;
+      };
+      expect(complete('read_1', 'files_read', 'read-safe', 500)).toBe(true);
+      expect(complete('read_2', 'files_read', 'read-safe', 1)).toBe(false);
+      expect(complete('write_1', 'files_write', 'conditional-write', 500)).toBe(true);
+      // The whole cap is now held, so even a mutation keeps only its hash.
+      expect(complete('write_2', 'files_write', 'conditional-write', 1)).toBe(false);
     });
 
     it('purges receipt content past retention but keeps the outcome, and deletes effects with the workspace sessions', () => {
