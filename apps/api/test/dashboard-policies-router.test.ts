@@ -194,6 +194,32 @@ describe('dashboard agent policy BFF', () => {
     expect(requests[0]).toMatchObject({ principal, input: { scope: 'project', projectId } });
   });
 
+  it('refuses a body project or revision id that differs from the path, and accepts a repeated one', async () => {
+    const headers = await mutationHeaders();
+    const otherProjectId = `prj_${'q'.repeat(32)}`;
+    const mismatched: Array<[string, string, Record<string, unknown>, string]> = [
+      ['PUT', `/api/v1/agent-policies/projects/${projectId}`, { document: projectDocument, expectedVersion: 0, projectId: otherProjectId }, 'projectId'],
+      ['DELETE', `/api/v1/agent-policies/projects/${projectId}`, { expectedVersion: 1, projectId: otherProjectId }, 'projectId'],
+      ['POST', `/api/v1/agent-policies/projects/${projectId}/validate`, { document: projectDocument, projectId: otherProjectId }, 'projectId'],
+      ['POST', `/api/v1/agent-policies/revisions/${revisionId}/rollback`, { expectedVersion: 1, revisionId: otherRevisionId }, 'revisionId']
+    ];
+    for (const [method, path, body, key] of mismatched) {
+      const response = await send(path, { method, headers, body: JSON.stringify(body) });
+      expect(response.status, `${method} ${path}`).toBe(400);
+      expect(response.json, `${method} ${path}`).toEqual({ error: 'path_id_mismatch', message: `The request body names a different ${key} than the URL.` });
+    }
+    expect(requests).toEqual([]);
+
+    const repeated = await send(`/api/v1/agent-policies/revisions/${revisionId}/rollback`, { method: 'POST', headers, body: JSON.stringify({ expectedVersion: 4, revisionId }) });
+    expect(repeated.status).toBe(200);
+    const sameProject = await send(`/api/v1/agent-policies/projects/${projectId}`, { method: 'PUT', headers, body: JSON.stringify({ document: projectDocument, expectedVersion: 2, projectId }) });
+    expect(sameProject.status).toBe(200);
+    expect(requests).toEqual([
+      { version: 1, principal, operation: 'policy_rollback', input: { revisionId, expectedVersion: 4, confirmWeakening: false } },
+      { version: 1, principal, operation: 'policy_put', input: { scope: 'project', projectId, document: projectDocument, expectedVersion: 2, confirmWeakening: false } }
+    ]);
+  });
+
   it('rejects malformed identifiers and queries before reaching the runner', async () => {
     for (const path of [
       '/api/v1/agent-policies/projects/not-a-project',

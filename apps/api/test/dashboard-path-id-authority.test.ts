@@ -34,6 +34,8 @@ const cred = id('cred', 'a');
 const icr = id('icr', 'a');
 const artifact = id('art', 'a');
 const server = id('mcps', 'a');
+const project = `prj_${'p'.repeat(32)}`;
+const policyRevision = `apr_${'1'.repeat(32)}`;
 
 /** [method, path, body key the path owns, a different value for that key]. */
 const ROUTES: Array<[string, string, string, string]> = [
@@ -86,7 +88,11 @@ const ROUTES: Array<[string, string, string, string]> = [
   ['POST', `/artifacts/${artifact}/restore`, 'artifactId', id('art', 'b')],
   ['PUT', '/knowledge/note-1', 'id', 'note-2'],
   ['PATCH', `/mcp-servers/${server}`, 'serverId', id('mcps', 'b')],
-  ['POST', `/mcp-servers/${server}/enabled`, 'serverId', id('mcps', 'b')]
+  ['POST', `/mcp-servers/${server}/enabled`, 'serverId', id('mcps', 'b')],
+  ['PUT', `/agent-policies/projects/${project}`, 'projectId', `prj_${'q'.repeat(32)}`],
+  ['DELETE', `/agent-policies/projects/${project}`, 'projectId', `prj_${'q'.repeat(32)}`],
+  ['POST', `/agent-policies/projects/${project}/validate`, 'projectId', `prj_${'q'.repeat(32)}`],
+  ['POST', `/agent-policies/revisions/${policyRevision}/rollback`, 'revisionId', `apr_${'2'.repeat(32)}`]
 ];
 
 let httpServer: Server;
@@ -99,7 +105,14 @@ beforeEach(async () => {
     operations.push({ operation, input });
     return { ok: true, message: 'ok', truncated: false, data: {} };
   };
-  const runner: DashboardRunnerClient = { call: vi.fn(ok), callInternal: vi.fn(ok) };
+  const runner: DashboardRunnerClient = {
+    call: vi.fn(ok),
+    callInternal: vi.fn(ok),
+    callAgentPolicies: vi.fn(async (request) => {
+      operations.push({ operation: request.operation, input: request.input as Record<string, unknown> });
+      return { ok: true, data: {} } as never;
+    })
+  };
   const app = express();
   app.use((request: any, _response, next) => { request.auth = { token: 'cloudflare-access', clientId: 'operator', scopes: [], extra: { principal } }; next(); });
   app.use('/dashboard', createDashboardRouter(config, runner));
