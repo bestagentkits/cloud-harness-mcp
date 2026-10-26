@@ -331,11 +331,15 @@ describe('agent runtime benchmark (offline, scripted faux model)', () => {
       allPriorMessagesInFirstRequest: true, followUpNewContainer: true, followUpNewLease: true,
       followUpState: 'SUCCEEDED', followUpOutcome: 'CONTINUED', leftoverSessionRows: 0
     });
-    // Killed at the same point: never reported as success, the in-flight patch is UNKNOWN in the
-    // ledger, and the resumed run applies no logical effect twice.
+    // Killed at the same point: never reported as success and the in-flight patch is UNKNOWN in the
+    // ledger. The engine settles the interrupted call as failed, and the model re-issues the patch
+    // under a new request ID, so the ledger does not match it and the executor runs it a second
+    // time. Only the patch's oldText guard refuses that second write; a non-idempotent call
+    // (files_write, files_delete, files_move) in flight at the kill could be applied twice.
     expect(engine['killed-run-with-effects']).toMatchObject({
       killedState: 'INTERRUPTED', reportedSuccess: false, inFlightAtKill: 1, effectsUnknownAfterKill: 1,
-      restartContinued: true, restartOutcome: 'CONTINUED', duplicateEffects: 0, leftoverSessionRows: 0, leftoverEffectRows: 0
+      restartContinued: true, restartOutcome: 'CONTINUED', duplicateEffects: 0, repeatedInvocations: 1,
+      leftoverSessionRows: 0, leftoverEffectRows: 0
     });
     expect(engine['parent-child-cleanup']).toMatchObject({ agents: 3, cancelled: 3, toolCancelsEmitted: 3, toolEffects: 0, leftoverSessionRows: 0, leftoverEffectRows: 0 });
 
