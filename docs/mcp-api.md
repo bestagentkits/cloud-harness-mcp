@@ -210,8 +210,9 @@ then given the new `prompt`.
   persistence off report none of these fields.
 - A session becomes continuable when its agent reaches any terminal status,
   including `CANCELLED` and `INTERRUPTED`. It is not continuable when its log
-  is incomplete or exceeded the configured message or byte bounds; the run
-  itself is not affected. A tool call the earlier run never answered is closed
+  is incomplete, exceeded the configured message or byte bounds, or would
+  have pushed the stored sessions of its workspace, owner, or instance past
+  their aggregate byte budget; the run itself is not affected. A tool call the earlier run never answered is closed
   with an error result before the new prompt.
 - `continueFrom` is refused before any agent exists with `NOT_SUPPORTED` when
   persistence is off; `NOT_FOUND` for an agent outside this owner and
@@ -222,7 +223,11 @@ then given the new `prompt`.
   session has at most one successor; continue that one instead);
   `LIMIT_EXCEEDED` when the replayed log and the new prompt together cannot
   fit one agent start record (the earlier agent stays continuable with a
-  shorter prompt); and `EXPIRED` once retention purged the log. Normal spawn
+  shorter prompt) or when copying the log would exceed the workspace, owner,
+  or instance session byte budget (the message names which; it is not
+  retryable as is, since stored sessions are freed only when retention purges
+  them or their workspace closes, so start a fresh agent instead); and
+  `EXPIRED` once retention purged the log. Normal spawn
   admission and budget checks also apply. When the log leaves little room,
   repository guidance is shortened to fit.
 - Repository guidance is composed into the new prompt as for any spawn. Pass

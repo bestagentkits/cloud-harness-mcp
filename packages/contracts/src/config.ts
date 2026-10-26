@@ -114,7 +114,12 @@ export const RunnerAgentLimitsSchema = z.object({
   // record (8 MiB, which also carries a prompt of up to 256 KiB), so the byte bound stays below it.
   maxSessionMessages: positiveBoundedInteger(MAX_AGENT_SESSION_MESSAGES, 2_000),
   maxSessionBytes: positiveBoundedInteger(MAX_AGENT_SESSION_BYTES, 7_340_032),
-  sessionRetentionMs: positiveBoundedInteger(31_536_000_000, 604_800_000)
+  sessionRetentionMs: positiveBoundedInteger(31_536_000_000, 604_800_000),
+  // Aggregate bytes of every stored session log, per workspace, principal, and instance. A continuation
+  // copies its predecessor's whole log, so without these the store grows with each continuation.
+  globalSessionBytes: positiveBoundedInteger(17_179_869_184, 1_073_741_824),
+  principalSessionBytes: positiveBoundedInteger(8_589_934_592, 536_870_912),
+  workspaceSessionBytes: positiveBoundedInteger(1_073_741_824, 67_108_864)
 }).strict().superRefine((limits, context) => {
   if (limits.minTtlSeconds > limits.maxTtlSeconds) {
     context.addIssue({ code: 'custom', path: ['minTtlSeconds'], message: 'minimum agent TTL cannot exceed maximum agent TTL' });
@@ -130,6 +135,12 @@ export const RunnerAgentLimitsSchema = z.object({
   }
   if (limits.workspaceRetainedBytes > limits.principalRetainedBytes || limits.principalRetainedBytes > limits.globalRetainedBytes) {
     context.addIssue({ code: 'custom', path: ['workspaceRetainedBytes'], message: 'retained byte limits must satisfy workspace <= principal <= global' });
+  }
+  if (limits.workspaceSessionBytes > limits.principalSessionBytes || limits.principalSessionBytes > limits.globalSessionBytes) {
+    context.addIssue({ code: 'custom', path: ['workspaceSessionBytes'], message: 'session byte limits must satisfy workspace <= principal <= global' });
+  }
+  if (limits.maxSessionBytes > limits.workspaceSessionBytes) {
+    context.addIssue({ code: 'custom', path: ['maxSessionBytes'], message: 'one session cannot be allowed more bytes than its workspace session budget' });
   }
   if (limits.retentionSeconds > limits.lookupHorizonSeconds) {
     context.addIssue({ code: 'custom', path: ['retentionSeconds'], message: 'retention cannot exceed lookup horizon' });
