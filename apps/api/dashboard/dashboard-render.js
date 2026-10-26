@@ -188,8 +188,74 @@ export function renderWorkspaceCockpitHeader(workspace, options = {}) {
   return `<div class="cockpit-header"><div class="record-heading"><div><h2 id="workspace-detail-title">${escape(repositoryName(workspace.repositoryUrl))}</h2><p>${renderCopyChip({ value: workspace.workspaceId, label: 'Workspace ID' })}</p></div><span class="status ${escape(String(workspace.status ?? '').toLowerCase())}">${escape(statusLabel(workspace.status))}</span></div><dl class="facts"><dt>Ref</dt><dd>${escape(workspace.ref ?? 'Default branch')}</dd>${renderRepositoryFacts(workspace)}<dt>Network</dt><dd>${escape(networkLabel(workspace.networkProfile))}</dd><dt>Lease</dt><dd class="lease-${escape(lease.state)}">${escape(lease.label)}</dd><dt>Attention</dt><dd>${attention.length ? `${escape(attention.length)} item(s) need action` : 'Nothing needs attention'}</dd></dl>${actions}</div>`;
 }
 
-export function renderWorkspaceTabs(workspaceId, current) {
-  return `<nav class="cockpit-tabs" aria-label="Workspace sections">${WORKSPACE_TABS.map((tab) => `<a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/${tab.id}" ${tab.id === current ? 'aria-current="page"' : ''}>${escape(tab.label)}</a>`).join('')}</nav>`;
+/** The cockpit tabs a multi-repository workspace scopes to one checkout. */
+export const REPOSITORY_SCOPED_TABS = new Set(['terminal', 'files', 'git']);
+
+/** A cockpit tab link; a selected repository rides along to the other repository-scoped tabs. */
+export function workspaceTabHref(workspaceId, tab, repository = '') {
+  const scoped = repository && REPOSITORY_SCOPED_TABS.has(tab) ? `?repository=${encodeURIComponent(repository)}` : '';
+  return `/dashboard/workspaces/${encodeURIComponent(workspaceId)}/${tab}${scoped}`;
+}
+
+export function renderWorkspaceTabs(workspaceId, current, repository = '') {
+  return `<nav class="cockpit-tabs" aria-label="Workspace sections">${WORKSPACE_TABS.map((tab) => `<a href="${escape(workspaceTabHref(workspaceId, tab.id, repository))}" ${tab.id === current ? 'aria-current="page"' : ''}>${escape(tab.label)}</a>`).join('')}</nav>`;
+}
+
+/** The checkout a selector value names, by alias or stable `repo_` id; anything else names none. */
+export function selectedRepository(repositories = [], value = '') {
+  if (!value) return undefined;
+  return repositories.find((entry) => entry.alias === value || entry.repositoryId === value);
+}
+
+/**
+ * The repository scope control of a multi-repository workspace. Files and Terminal may stay at the
+ * workspace root; Git has no root state, so it offers only the checkouts and starts unselected rather
+ * than defaulting to the primary repository. Applying the choice is an explicit submit, never a change
+ * event, so moving through the options with the keyboard does not navigate.
+ */
+export function renderRepositorySelector({ repositories = [], selected = '', allowRoot = true } = {}) {
+  const current = selectedRepository(repositories, selected)?.alias ?? '';
+  const first = allowRoot
+    ? `<option value=""${current ? '' : ' selected'}>Workspace root</option>`
+    : `<option value="" disabled${current ? '' : ' selected'}>Choose a repository</option>`;
+  const options = repositories.map((entry) => `<option value="${escape(entry.alias)}"${entry.alias === current ? ' selected' : ''}>${escape(entry.alias)} · ${escape(repositoryName(entry.repositoryUrl))}${entry.access === 'read-only' ? ' (read-only)' : ''}</option>`).join('');
+  return `<form id="repository-scope-form" class="repository-scope" aria-label="Repository scope"><label for="repository-scope-select">Repository</label><select id="repository-scope-select" name="repository"${allowRoot ? '' : ' required'}>${first}${options}</select><button type="submit">Show repository</button></form>`;
+}
+
+/** The Git tab of a multi-repository workspace before a repository is chosen. */
+export function renderRepositoryRequired(repositories = []) {
+  return `<section class="panel" aria-labelledby="repository-required-heading"><h2 id="repository-required-heading">Choose a repository</h2><p class="page-note">This workspace holds ${escape(repositories.length)} repositories, each with its own branch, history and worktrees. Choose one above to read its Git state or to run a Git operation on it.</p></section>`;
+}
+
+const repositoryChanges = (entry, statusAvailable) => {
+  if (!statusAvailable) return 'Not reported';
+  if (entry.statusError === true) return 'Status unavailable';
+  if (entry.dirty === true) return `Uncommitted changes (${Number(entry.changedFiles) || 0} file(s))`;
+  return 'Clean';
+};
+const repositoryUnpushed = (entry, statusAvailable) => {
+  if (!statusAvailable || entry.statusError === true) return 'Not reported';
+  if (!entry.upstream) return 'No upstream branch';
+  const ahead = Number(entry.ahead) || 0;
+  const behind = Number(entry.behind) || 0;
+  const pushed = ahead > 0 ? `${ahead} unpushed commit(s)` : 'Nothing unpushed';
+  return behind > 0 ? `${pushed} · ${behind} behind` : pushed;
+};
+const repositoryBranch = (entry, statusAvailable) => (!statusAvailable || entry.statusError === true ? 'Not reported' : String(entry.branch ?? 'Not reported'));
+
+/**
+ * The repository explorer on the Summary tab of a multi-repository workspace: each checkout's branch,
+ * uncommitted state and unpushed commits as text, with links that open Files, Git or Terminal scoped
+ * to it. Without a status read every posture cell says "Not reported" instead of looking clean.
+ */
+export function renderRepositoryExplorer({ workspaceId = '', repositories = [], statusAvailable = false } = {}) {
+  const links = (entry) => `<div class="row-actions">${['files', 'git', 'terminal'].map((tab) => `<a class="secondary button" href="${escape(workspaceTabHref(workspaceId, tab, entry.alias))}">${escape(WORKSPACE_TABS.find((item) => item.id === tab)?.label ?? tab)}<span class="sr-only"> for ${escape(entry.alias)}</span></a>`).join('')}</div>`;
+  const badges = (entry) => `${entry.access === 'read-only' ? ' <span class="tag-badge">Read-only</span>' : ''}${entry.primary ? ' <span class="tag-badge">Primary</span>' : ''}`;
+  const upstream = (entry) => (statusAvailable && entry.upstream ? `<small class="mono">${escape(entry.upstream)}</small>` : '');
+  const rows = repositories.map((entry) => `<tr><th scope="row">${escape(entry.alias)}${badges(entry)}<small class="mono wrap">${escape(entry.path)} · ${escape(repositoryName(entry.repositoryUrl))}</small></th><td>${escape(repositoryBranch(entry, statusAvailable))}${upstream(entry)}</td><td>${escape(repositoryChanges(entry, statusAvailable))}</td><td>${escape(repositoryUnpushed(entry, statusAvailable))}</td><td>${links(entry)}</td></tr>`).join('');
+  const cards = repositories.map((entry) => `<li><h3>${escape(entry.alias)}${badges(entry)}</h3><p class="mono wrap">${escape(entry.path)} · ${escape(repositoryName(entry.repositoryUrl))}</p><dl><dt>Branch</dt><dd>${escape(repositoryBranch(entry, statusAvailable))}</dd><dt>Changes</dt><dd>${escape(repositoryChanges(entry, statusAvailable))}</dd><dt>Unpushed</dt><dd>${escape(repositoryUnpushed(entry, statusAvailable))}</dd></dl>${links(entry)}</li>`).join('');
+  const note = statusAvailable ? '' : '<p class="page-note">Repository status is read only while the workspace is active; it could not be read now.</p>';
+  return `<section class="panel repository-explorer" aria-labelledby="repository-explorer-heading"><h2 id="repository-explorer-heading">Repositories</h2>${note}<div class="desktop-table"><table><caption>${escape(repositories.length)} repositories</caption><thead><tr><th scope="col">Repository</th><th scope="col">Branch</th><th scope="col">Changes</th><th scope="col">Unpushed</th><th scope="col">Open</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`;
 }
 
 export function renderWorkspaceAttentionPanel(workspace, options = {}) {
@@ -229,13 +295,18 @@ export function renderWorkspaceActivity({ events = [], workspaceId = '' } = {}) 
   return `<section class="panel" aria-labelledby="workspace-activity-heading"><h2 id="workspace-activity-heading">Activity</h2><p class="page-note">Live runtime rows and retained audit rows recorded against <span class="mono">${escape(workspaceId)}</span>. The cross-workspace view is the Activity Center.</p><ul class="activity-list">${rows}</ul></section>`;
 }
 
-/** The finalize dialog: a commit message, plus the push decision. */
-export function renderFinalizeDialog() {
+/**
+ * The finalize dialog: a commit message, plus the push decision. A multi-repository
+ * workspace finalizes one checkout, so the dialog asks which one instead of guessing.
+ */
+export function renderFinalizeDialog(workspace = {}, selected = '') {
+  const entries = workspaceRepositories(workspace);
+  const repository = entries.length < 2 ? '' : `<label for="finalize-repository">Repository</label><select id="finalize-repository" name="repositoryId" required>${selected ? '' : '<option value="" selected disabled>Choose a repository</option>'}${entries.map((entry) => `<option value="${escape(entry.alias)}"${entry.alias === selected ? ' selected' : ''}>${escape(entry.alias)}</option>`).join('')}</select>`;
   return renderFormDialog({
     id: 'finalize-workspace-dialog', title: 'Finalize workspace',
     description: 'Stages the changes, runs the preflights, commits with the workspace identity, and pushes when you ask it to.',
     formId: 'finalize-workspace-form', submitId: 'finalize-workspace-submit', submitLabel: 'Finalize workspace',
-    body: '<label for="finalize-commit-message">Commit message</label><input id="finalize-commit-message" name="commitMessage" required maxlength="10000"><label class="checkbox-label"><input name="push" type="checkbox" checked><span>Push to the remote after committing</span></label>'
+    body: repository + '<label for="finalize-commit-message">Commit message</label><input id="finalize-commit-message" name="commitMessage" required maxlength="10000"><label class="checkbox-label"><input name="push" type="checkbox" checked><span>Push to the remote after committing</span></label>'
   });
 }
 
@@ -334,7 +405,7 @@ export function renderAgentsIndex({ agents = [], filters = {}, now = Date.now() 
   const attentionOptions = [['', 'Any attention state'], ['needs-attention', 'Needs attention'], ['clear', 'Clear']].map(([value, label]) => `<option value="${value}"${(filters.attention ?? '') === value ? ' selected' : ''}>${label}</option>`).join('');
   const filterRow = '<form id="agent-filters" class="resource-filters" role="search" aria-label="Filter agents">'
     + `<label for="agent-status-filter">Status</label><select id="agent-status-filter" name="status">${statusOptions}</select>`
-    + (filters.workspaceId ? `<input type="hidden" name="workspaceId" value="${escape(filters.workspaceId)}">` : `<label for="agent-workspace-filter">Workspace</label><input id="agent-workspace-filter" name="workspaceId" value="${escape(filters.workspaceId ?? '')}" placeholder="ws_…" pattern="ws_[A-Za-z0-9_-]{20,80}">`)
+    + (filters.workspaceId ? `<input type="hidden" name="workspaceId" value="${escape(filters.workspaceId)}">` : `<label for="agent-workspace-filter">Workspace</label><input id="agent-workspace-filter" name="workspaceId" value="${escape(filters.workspaceId ?? '')}" placeholder="ws_…" pattern="ws_[A-Za-z0-9_\\-]{20,80}">`)
     + `<label for="agent-profile-filter">Profile</label><input id="agent-profile-filter" name="profileId" value="${escape(filters.profileId ?? '')}" placeholder="coding-fast">`
     + `<label for="agent-parent-filter">Parent agent</label><input id="agent-parent-filter" name="parentAgentId" value="${escape(filters.parentAgentId ?? '')}" placeholder="agent_…">`
     + `<label for="agent-attention-filter">Attention</label><select id="agent-attention-filter" name="attention">${attentionOptions}</select>`
@@ -538,7 +609,7 @@ const terminalSize = (terminal) => (Number.isInteger(terminal?.cols) && Number.i
 export function renderTerminalPanel({ workspaceId = '', terminals = [], now = Date.now() } = {}) {
   const running = terminals.filter((terminal) => terminal?.status === 'running');
   const offers = running.length
-    ? `<div id="terminal-reattach" class="terminal-reattach"><h3 id="terminal-reattach-heading">Running terminals</h3><p class="page-note">These shells are still running in this workspace. Re-attach to continue one; recent output is replayed.</p><ul class="record-list" aria-labelledby="terminal-reattach-heading">${running.map((terminal) => `<li><span><span class="mono">${escape(terminal.terminalId)}</span> <small>${escape(terminalSize(terminal))} · started ${escape(terminalAge(terminal.createdAt, now))} ago · idle expiry ${terminalTime(terminal.idleExpiresAt)}</small></span><button class="reattach-terminal" type="button" data-terminal-id="${escape(terminal.terminalId)}">Re-attach</button></li>`).join('')}</ul></div>`
+    ? `<div id="terminal-reattach" class="terminal-reattach"><h3 id="terminal-reattach-heading">Running terminals</h3><p class="page-note">These shells are still running in this workspace. Re-attach to continue one; recent output is replayed.</p><ul class="record-list" aria-labelledby="terminal-reattach-heading">${running.map((terminal) => `<li><span><span class="mono">${escape(terminal.terminalId)}</span> <small>${escape(terminalSize(terminal))} · started ${escape(terminalAge(terminal.createdAt, now))} ago · idle expiry ${terminalTime(terminal.idleExpiresAt)}${terminal.cwd && terminal.cwd !== '.' ? ` · in <span class="mono">${escape(terminal.cwd)}</span>` : ''}</small></span><button class="reattach-terminal" type="button" data-terminal-id="${escape(terminal.terminalId)}">Re-attach</button></li>`).join('')}</ul></div>`
     : '';
   return `<section id="terminal-panel" class="panel terminal-panel" aria-labelledby="terminal-heading" data-workspace-id="${escape(workspaceId)}">`
     + '<h2 id="terminal-heading">Terminal</h2>'
@@ -593,7 +664,7 @@ export function renderWorktrees(worktrees = []) {
   const rows = worktrees.length
     ? worktrees.map((tree) => `<li class="worktree-row"><span class="mono wrap">${escape(String(tree.path ?? ''))}</span><span class="mono">${escape(String(tree.head ?? '').slice(0, 12))}</span><span>${escape(String(tree.branch ?? 'detached'))}</span><button class="danger remove-worktree" type="button" data-worktree-name="${escape(String(tree.path ?? '').split('/').pop() ?? '')}">Remove</button></li>`).join('')
     : '<li class="empty">No managed worktrees.</li>';
-  return `<details class="row-edit"><summary>Worktrees</summary><ul class="record-list worktree-list">${rows}</ul><form id="create-worktree-form" class="stack-form"><label for="worktree-name">Name</label><input id="worktree-name" name="name" required pattern="[A-Za-z0-9._-]{1,80}"><label for="worktree-ref">Ref</label><input id="worktree-ref" name="ref" required maxlength="255"><button type="submit">Create worktree</button><p class="form-status" aria-live="polite"></p></form></details>`;
+  return `<details class="row-edit"><summary>Worktrees</summary><ul class="record-list worktree-list">${rows}</ul><form id="create-worktree-form" class="stack-form"><label for="worktree-name">Name</label><input id="worktree-name" name="name" required pattern="[A-Za-z0-9._\\-]{1,80}"><label for="worktree-ref">Ref</label><input id="worktree-ref" name="ref" required maxlength="255"><button type="submit">Create worktree</button><p class="form-status" aria-live="polite"></p></form></details>`;
 }
 
 /**
@@ -639,25 +710,58 @@ export function renderHookPipeline(groups = []) {
   return `<ol class="hook-pipeline" aria-label="Hook lifecycle in run order">${stages}</ol>`;
 }
 
-/** Hooks, grouped by lifecycle, with the retained text list beside the pipeline. */
-export function renderHooks(hooks = []) {
+/**
+ * Hooks, grouped by lifecycle, with the retained text list beside the pipeline. A manual run names
+ * one hook from the manifest and the manifest digest this page was rendered from, so a manifest
+ * that changed since is refused rather than run.
+ */
+export function renderHooks(hooks = [], manifestSha256 = '') {
   const groups = groupHooksByLifecycle(hooks);
   const lists = groups.map((group) => {
     const rows = group.hooks.length
-      ? `<ul class="record-list">${group.hooks.map((hook) => `<li><strong>${escape(String(hook.name ?? hook.path ?? 'hook'))}</strong> <span class="status${hook.active === false ? '' : ' active'}">${hook.active === false ? 'Inactive' : 'Active'}</span>${hook.description ? `<p>${escape(String(hook.description))}</p>` : ''}</li>`).join('')}</ul>`
+      ? `<ul class="record-list">${group.hooks.map((hook) => `<li><strong>${escape(String(hook.name ?? hook.path ?? 'hook'))}</strong>${hook.active === true ? ' <span class="status active">Active</span>' : hook.active === false ? ' <span class="status">Inactive</span>' : ''}${hook.description ? `<p>${escape(String(hook.description))}</p>` : ''}</li>`).join('')}</ul>`
       : '<p class="empty-note">No hooks run at this stage.</p>';
     return `<section aria-labelledby="hooks-${escape(group.id)}"><h3 id="hooks-${escape(group.id)}">${escape(group.label)}</h3>${rows}</section>`;
   }).join('');
-  const options = HOOK_LIFECYCLE.map((event) => `<option value="${escape(event.id)}">${escape(event.label)}</option>`).join('');
-  return `<section class="panel" aria-labelledby="hooks-heading"><h2 id="hooks-heading">Hooks</h2>${renderHookPipeline(groups)}${lists}<form id="hook-run-form" class="stack-form"><label for="hook-event">Run the hooks for this event</label><select id="hook-event" name="event">${options}</select><button type="submit">Run hooks</button><p class="form-status" aria-live="polite"></p></form><p class="page-note">Activation and deactivation stay with the runner's manifest contract; this page runs only what is already active.</p></section>`;
+  const runnable = /^[a-f0-9]{64}$/.test(String(manifestSha256)) ? hooks.filter((hook) => /^[A-Za-z0-9._-]{1,120}$/.test(String(hook.name ?? ''))) : [];
+  const options = runnable.map((hook) => `<option value="${escape(String(hook.name))}">${escape(String(hook.name))}</option>`).join('');
+  const form = runnable.length
+    ? `<form id="hook-run-form" class="stack-form" data-manifest-sha256="${escape(String(manifestSha256))}"><label for="hook-name">Run a hook from the repository manifest</label><select id="hook-name" name="name" required>${options}</select><button type="submit">Run hook</button><p class="form-status" aria-live="polite"></p></form>`
+    : '<p class="empty-note">No hook can run from this page.</p>';
+  return `<section class="panel" aria-labelledby="hooks-heading"><h2 id="hooks-heading">Hooks</h2>${renderHookPipeline(groups)}${lists}${form}<p class="page-note">Activation and deactivation stay with the runner's manifest contract. Running a hook here is a one-off manual run you confirm first; it does not activate the hook.</p></section>`;
 }
 
 /** The workspace skill set, with a guarded run form for an explicitly named script. */
 export function renderWorkspaceSkills(skills = []) {
+  const digest = (skill) => String(skill.contentSha256 ?? '');
   const rows = skills.length
-    ? `<ul class="record-list">${skills.map((skill) => `<li><strong>${escape(String(skill.name ?? 'skill'))}</strong>${skill.tier ? ` <span class="status">${escape(String(skill.tier))}</span>` : ''}${skill.description ? `<p>${escape(String(skill.description))}</p>` : ''}${skill.sha256 ? `<small class="mono wrap">${escape(String(skill.sha256).slice(0, 16))}</small>` : ''}</li>`).join('')}</ul>`
+    ? `<ul class="record-list">${skills.map((skill) => `<li><strong>${escape(String(skill.name ?? 'skill'))}</strong>${skill.tier ? ` <span class="status">${escape(String(skill.tier))}</span>` : ''}${skill.description ? `<p>${escape(String(skill.description))}</p>` : ''}${digest(skill) ? `<small class="mono wrap">${escape(digest(skill).slice(0, 16))}</small>` : ''}</li>`).join('')}</ul>`
     : '<p class="empty-note">No skills are resolved for this workspace.</p>';
-  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs inside the workspace executor under the runner's verified-bytes contract. Nothing runs unless you name it here.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><input id="skill-run-name" name="name" required maxlength="120"><label for="skill-run-script">Script path</label><input id="skill-run-script" name="script" required maxlength="255"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form></details></section>`;
+  // A run names the skill revision listed here: the runner refuses it if the bundle changed since.
+  const runnable = skills.filter((skill) => skill.name && /^[0-9a-f]{64}$/.test(digest(skill)));
+  const options = runnable.map((skill) => `<option value="${escape(String(skill.name))}" data-content-sha256="${escape(digest(skill))}">${escape(String(skill.name))}</option>`).join('');
+  const form = runnable.length
+    ? `<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs once in a disposable helper container from the verified skill revision listed here. Nothing runs unless you name it here, and each run asks for your approval first.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><select id="skill-run-name" name="name" required>${options}</select><label for="skill-run-script">Script name</label><input id="skill-run-script" name="script" required maxlength="120" placeholder="run.sh"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form><div id="skill-run-result"></div></details>`
+    : '';
+  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}${form}</section>`;
+}
+
+/** A finished skill run: exit code, where it ran, the signal that stopped it (a timeout) and its bounded, redacted output. */
+export function renderSkillRunResult(result = {}, { failed = false } = {}) {
+  const fact = (value, suffix = '') => value === undefined || value === null || value === '' ? 'Not reported' : `${escape(String(value))}${suffix}`;
+  const output = typeof result.output === 'string' && result.output ? escape(result.output) : 'No output.';
+  return `<section class="skill-run-result" aria-labelledby="skill-run-result-heading"><h3 id="skill-run-result-heading">${failed ? 'Script exited with an error' : 'Script finished'}</h3><dl class="facts"><dt>Exit code</dt><dd>${fact(result.exitCode)}</dd><dt>Ran in</dt><dd>${result.executionMode === 'helper-container' ? 'Disposable helper container' : fact(result.executionMode)}</dd>${result.signal ? `<dt>Stopped by</dt><dd>${escape(String(result.signal))}</dd>` : ''}</dl><pre class="mono">${output}</pre>${result.truncated === true ? '<p class="status-message" role="status">Output is truncated.</p>' : ''}</section>`;
+}
+
+/** The confirm-dialog copy for a skill run the runner holds for an owner privilege grant. */
+export function skillRunApprovalPrompt({ name, script, contentSha256, expiresAt }) {
+  // The confirm dialog sets this copy as text, so the expiry is a plain local time, not markup.
+  const expiry = expiresAt ? ` The approval expires at ${new Date(expiresAt).toLocaleTimeString()} and is used by this one run.` : ' The approval is used by this one run.';
+  return {
+    title: 'Approve and run this skill script?',
+    description: `The script runs once in a disposable helper container from the verified skill revision.${expiry}`,
+    target: `${name} / ${script} @ ${String(contentSha256).slice(0, 16)}`
+  };
 }
 
 /** Deploy targets: external-effect risk, so every run confirms and every failure shows. */
@@ -672,10 +776,10 @@ export function renderDeployPanel(deployments = []) {
 }
 
 /** The cockpit Automation tab: the workspace skill set and its hooks. */
-export function renderAutomationPanel({ skills = [], hooks = [] } = {}) {
+export function renderAutomationPanel({ skills = [], hooks = [], manifestSha256 = '' } = {}) {
   return `${renderResourcePage({
     note: '<div class="page-note"><strong>Workspace automation.</strong> Skills resolve from your library and pinned sets; hooks run at lifecycle events inside the executor.</div>',
-    body: `${renderWorkspaceSkills(skills)}${renderHooks(hooks)}`
+    body: `${renderWorkspaceSkills(skills)}${renderHooks(hooks, manifestSha256)}`
   })}`;
 }
 
@@ -1114,7 +1218,7 @@ export function renderArtifactIndex(artifacts, cursor) {
     id: 'snapshot-dialog', title: 'Create snapshot',
     description: 'Copy one workspace file into retained, bounded storage. The snapshot expires at the retention you set, or at the server default.',
     formId: 'snapshot-form', submitId: 'snapshot-submit', submitLabel: 'Create retained snapshot',
-    body: '<label for="snapshot-workspace">Workspace ID</label><input id="snapshot-workspace" name="workspaceId" required pattern="ws_[A-Za-z0-9_-]{20,80}"><label for="snapshot-path">Workspace path</label><input id="snapshot-path" name="path" required maxlength="1024"><label for="snapshot-name">Logical name</label><input id="snapshot-name" name="logicalName" required maxlength="128"><label for="snapshot-retention">Retention in seconds</label><input id="snapshot-retention" name="retentionSeconds" type="number" min="60" max="2592000" placeholder="Use server default">'
+    body: '<label for="snapshot-workspace">Workspace ID</label><input id="snapshot-workspace" name="workspaceId" required pattern="ws_[A-Za-z0-9_\\-]{20,80}"><label for="snapshot-path">Workspace path</label><input id="snapshot-path" name="path" required maxlength="1024"><label for="snapshot-name">Logical name</label><input id="snapshot-name" name="logicalName" required maxlength="128"><label for="snapshot-retention">Retention in seconds</label><input id="snapshot-retention" name="retentionSeconds" type="number" min="60" max="2592000" placeholder="Use server default">'
   })}`;
 }
 
@@ -1375,14 +1479,35 @@ export function renderRuntime(data) {
   return `<p class="eyebrow">CURRENT RUNTIME STATE</p><p>Not retained across runner restart.</p><section><h2>Tasks</h2>${records(data.tasks, 'task')}</section><section><h2>Named sessions</h2>${records(data.sessions, 'session')}</section>`;
 }
 
-export function renderFileList(workspaceId, data) {
+/**
+ * A Files tab link. In a repository-scoped view paths are relative to that checkout, so the selected
+ * repository rides along on every link; without one the link keeps the workspace-root form unchanged.
+ * Every component is URI-encoded, so the result is safe inside an attribute as written.
+ */
+export function filesHref(workspaceId, path, { file = false, repository = '' } = {}) {
+  return `/dashboard/workspaces/${encodeURIComponent(workspaceId)}/files?path=${encodeURIComponent(path)}${file ? '&file=1' : ''}${repository ? `&repository=${encodeURIComponent(repository)}` : ''}`;
+}
+const filesRootLabel = (repository) => (repository ? `Repository root (${repository})` : 'Workspace root');
+
+export function renderFileList(workspaceId, data, { repository = '' } = {}) {
   const path = data.path ?? '.';
-  const items = data.entries.length ? data.entries.map((entry) => `<li><a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/files?path=${encodeURIComponent(join(path, entry.name))}${entry.type === 'file' ? '&file=1' : ''}">${escape(entry.name)}</a><span>${escape(entry.type)}</span></li>`).join('') : '<li>No files in this folder.</li>';
-  return `<nav aria-label="Breadcrumb"><a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/files?path=.">Workspace root</a><span class="mono wrap">${escape(path)}</span></nav><h2>Files</h2><ul class="file-list">${items}</ul><form id="folder-form"><label for="folder-path">New folder path</label><input id="folder-path" name="path" required><button type="submit">Create folder</button></form><form id="move-form"><label for="move-source">Source</label><input id="move-source" name="source" required><label for="move-destination">Destination</label><input id="move-destination" name="destination" required><button type="submit">Move</button></form>`;
+  const items = data.entries.length ? data.entries.map((entry) => `<li><a href="${filesHref(workspaceId, join(path, entry.name), { file: entry.type === 'file', repository })}">${escape(entry.name)}</a><span>${escape(entry.type)}</span></li>`).join('') : '<li>No files in this folder.</li>';
+  return `<nav aria-label="Breadcrumb"><a href="${filesHref(workspaceId, '.', { repository })}">${escape(filesRootLabel(repository))}</a><span class="mono wrap">${escape(path)}</span></nav><h2>Files</h2><ul class="file-list">${items}</ul><form id="folder-form"><label for="folder-path">New folder path</label><input id="folder-path" name="path" required><button type="submit">Create folder</button></form><form id="move-form"><label for="move-source">Source</label><input id="move-source" name="source" required><label for="move-destination">Destination</label><input id="move-destination" name="destination" required><button type="submit">Move</button></form>`;
 }
 
-export function renderFile(workspaceId, data) {
-  return `<nav aria-label="Breadcrumb"><a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/files?path=.">Workspace root</a></nav><h2 class="mono wrap">${escape(data.path)}</h2><p>Version <span class="mono wrap">${escape(data.sha256)}</span></p><pre><code>${escape(data.content)}</code></pre><form id="file-editor"><label for="file-content">File content</label><textarea id="file-content" name="content" spellcheck="false">${escape(data.content)}</textarea><input type="hidden" name="sha" value="${escape(data.sha256)}"><button type="submit">Save file</button><button id="delete-file" class="danger" type="button">Delete file</button></form><form id="patch-form"><label for="old-text">Text to replace</label><textarea id="old-text" name="oldText" spellcheck="false"></textarea><label for="new-text">Replacement text</label><textarea id="new-text" name="newText" spellcheck="false"></textarea><button type="submit">Apply text patch</button></form>`;
+/**
+ * Whether a `files_read` result holds the whole file. Its `sha256` always covers the whole file, so a
+ * whole-file save of a partial window would pass the conflict fence and cut the file short.
+ */
+export const isWholeFileRead = (data) => data?.eof === true;
+
+export function renderFile(workspaceId, data, { repository = '' } = {}) {
+  const whole = isWholeFileRead(data);
+  const loaded = Number.isFinite(data.bytesReturned) && Number.isFinite(data.totalBytes)
+    ? `Showing the first ${formatBytes(data.bytesReturned)} of ${formatBytes(data.totalBytes)}.`
+    : 'The runner did not confirm this is the whole file.';
+  const partialNotice = whole ? '' : `<p class="warning" id="file-partial-notice">${escape(loaded)} Saving the whole file is turned off so the rest of it is not lost. Use the text patch below, which edits the full file on the server.</p>`;
+  return `<nav aria-label="Breadcrumb"><a href="${filesHref(workspaceId, '.', { repository })}">${escape(filesRootLabel(repository))}</a></nav><h2 class="mono wrap">${escape(data.path)}</h2><p>Version <span class="mono wrap">${escape(data.sha256)}</span></p>${partialNotice}<pre><code>${escape(data.content)}</code></pre><form id="file-editor"><label for="file-content">File content${whole ? '' : ' (read-only, partial)'}</label><textarea id="file-content" name="content" spellcheck="false"${whole ? '' : ' readonly aria-describedby="file-partial-notice"'}>${escape(data.content)}</textarea><input type="hidden" name="sha" value="${escape(data.sha256)}">${whole ? '<button type="submit">Save file</button>' : ''}<button id="delete-file" class="danger" type="button">Delete file</button></form><form id="patch-form"><label for="old-text">Text to replace</label><textarea id="old-text" name="oldText" spellcheck="false"></textarea><label for="new-text">Replacement text</label><textarea id="new-text" name="newText" spellcheck="false"></textarea><button type="submit">Apply text patch</button></form>`;
 }
 
 const workspaceRepositories = (workspace) => Array.isArray(workspace.repositories) ? workspace.repositories : [];

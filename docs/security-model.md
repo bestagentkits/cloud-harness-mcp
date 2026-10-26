@@ -624,6 +624,37 @@ unchanged and the checkouts share the workspace byte ceiling.
 - **No silent fallback.** Git-bound tools refuse an unselected call in a
   multi-repository workspace instead of defaulting to one checkout, so a commit
   or push cannot land in the wrong repository by omission.
+- **Adding and removing checkouts.** `workspace_repo_add` applies the open-time
+  policy and clone path, so an added repository gets the same brokered,
+  credential-free checkout. Both changes touch the host filesystem only at the
+  canonical `repos/<alias>` path, verified host-side to be a real directory
+  that resolves exactly there (never a symlink the executor swapped in) before
+  any removal, and the removal stays confined to the jobs root. Because a
+  recursive delete re-resolves each path it descends, the runner never
+  changes `repos/` while anything in the workspace can write to it: the
+  executor is paused from the last check through the change, and the change is
+  refused (retryable `CONFLICT`) while a privileged command, transfer helper,
+  or other container that mounts the tree runs, or with `UNAVAILABLE` when the
+  executor cannot be paused. A pause that fails or times out is undone before
+  the refusal, and the resume is retried; an executor still paused after a
+  committed change is reported (`executorResumed: false`) rather than turning
+  that change into a failure, and `workspace_recover` or a runner restart
+  resumes it (`workspace_recover` rebuilds a `dependency-access` executor
+  instead, so its running processes end). Only a paused container carrying this
+  workspace's managed labels is resumed. Recovery refuses with a retryable
+  `CONFLICT` while the runner itself holds the pause, and a pause or freeze is
+  refused while a recovery is in flight, so no executor is resumed, restarted,
+  or rebuilt inside a freeze. An add
+  clones into a staging directory outside the executor's and the privileged
+  and skill helpers' mounts (only the trusted clone, Git-transfer, and size
+  helpers mount the workspace root) and moves it into place only while the
+  path is still free, so a failed add removes only the directory it created;
+  an existing path is refused rather than overwritten. At startup, after every
+  helper container is gone, the runner removes the add and Git-transfer
+  staging directories a crash left directly in a retained workspace,
+  matching only real directories with the exact staging name. Remove refuses while the checkout
+  holds work no remote has or anything runs inside it, and runs that check
+  inside the paused window, so it cannot discard work the owner did not save.
 
 Scoping and the write refusal are owned by
 [`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts)
@@ -658,7 +689,7 @@ Workspace disk usage metering calculates the combined footprint of all three per
 Skills are resolved across four deterministic precedence tiers (`built-in > owner > workspace > repository`):
 
 1. **Built-in & Owner Tiers (`/opt/cloud-harness/skills:ro`, `/opt/cloud-harness/owner-skills:ro`)**: Mounted read-only (`:ro`) at the container boundary. Because they reside on immutable host mounts, processes within the executor (including any process running as UID 10001) cannot modify these skill files.
-2. **Workspace & Repository Tiers (`/workspace/.cloud-harness/skills`, `/workspace/.agents/skills`)**: Reside on the mutable working tree volume. Execution creates an isolated snapshot under `/tmp/cloud-harness-exec/<runId>` and validates the full-tree bundle digest and script SHA before invocation to prevent unintentional concurrent filesystem race conditions. Within the single-tenant container boundary, all processes share UID 10001; users requiring kernel-enforced mount immutability should install skills into the `owner` scope. A skill revision that carries instructions but no scripts is refused with `NO_EXECUTABLE_ASSETS` rather than a generic miss, because the revision exists and simply has nothing to run. Where those bytes execute is a deliberate choice, not an accident: the script runs in a disposable helper container launched through `runPrivilegedEphemeralExec`, which is gated on an owner privilege grant. Without a grant the runner returns `PRIVILEGE_APPROVAL_REQUIRED` naming the grant it needs, and it never falls back to running the script locally, so a caller cannot read a stronger isolation guarantee into the result than the run actually had. The response reports `executionMode: 'helper-container'`. The helper container reuses the worker's one-shot entry point, so the isolated snapshot, the full-tree bundle digest, and the script SHA checks described here still happen before the script is invoked; only the process that finally runs it moves into a container of its own.
+2. **Workspace & Repository Tiers (`/workspace/.cloud-harness/skills`, `/workspace/.agents/skills`)**: Reside on the mutable working tree volume. Execution creates an isolated snapshot under `/tmp/cloud-harness-exec/<runId>` and validates the full-tree bundle digest and script SHA before invocation to prevent unintentional concurrent filesystem race conditions. Within the single-tenant container boundary, all processes share UID 10001; users requiring kernel-enforced mount immutability should install skills into the `owner` scope. A skill revision that carries instructions but no scripts is refused with `NO_EXECUTABLE_ASSETS` rather than a generic miss, because the revision exists and simply has nothing to run. Where those bytes execute is a deliberate choice, not an accident: the script runs in a disposable helper container launched through `runPrivilegedEphemeralExec`, which is gated on an owner privilege grant. The grant binds every input that reaches the helper container: the skill name, script, and expected digest, plus the provenance `source`, a non-default `timeoutMs`, and the script `args` whenever the caller supplies them, so the owner approves exactly the run that will execute and a retry with different arguments, source, or timeout is refused with `FORBIDDEN` without consuming the grant (`skillRunGrantDescriptor` in `apps/runner/src/workspace-service.ts` owns the descriptor). Without a grant the runner returns `PRIVILEGE_APPROVAL_REQUIRED` naming the grant it needs, and it never falls back to running the script locally, so a caller cannot read a stronger isolation guarantee into the result than the run actually had. The response reports `executionMode: 'helper-container'`. The helper container reuses the worker's one-shot entry point, so the isolated snapshot, the full-tree bundle digest, and the script SHA checks described here still happen before the script is invoked; only the process that finally runs it moves into a container of its own.
 
 ### Skills served over MCP
 
@@ -725,6 +756,20 @@ When `exec_run` is invoked with `privileged: true`:
 2. In `cloudflare-access` mode, an unapproved request is rejected with `PRIVILEGE_APPROVAL_REQUIRED` and returns a single-use `grantId` bound to the command and working directory with a 60-second TTL.
 3. The operator must explicitly approve the grant via the authenticated Dashboard BFF API (`POST /api/v1/privilege-grants/:grantId/approve`). MCP clients cannot self-approve.
 4. The caller provides the `approvalGrantToken`. The runner validates the grant and command/cwd hash, atomically consumes it (single-use), and executes the command in an isolated ephemeral container with `try/finally` cleanup. The standard executor container remains permanently hardened and unmodified.
+
+`skills_run` uses the same grant store, bound to the skill name, script and
+expected bundle digest. The workspace cockpit's Automation tab completes it in
+one owner action: the BFF answers an ungranted run with HTTP 428 carrying only
+the grant id and expiry (`sendRunnerResponse` in
+[`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts)),
+the owner confirms the named skill, script and digest, and the page approves the
+grant and retries with it. The grant id lives only in that confirm action's
+closure: never in browser storage, the URL, or a query cache. A script that exits
+non-zero is answered with HTTP 422 carrying the same bounded, redacted projection
+as a successful run, never the runner's error text; other execution failures stay
+generic server errors. A skill-run grant record persists its request descriptor
+in runner state and shows it to the owner on the Approvals page, so `skills_run`
+arguments, which that descriptor names, must never carry secrets.
 
 The Dashboard Approvals page lists grants in every state the runner returns,
 labelled with their real status, and offers Approve and Reject only for an

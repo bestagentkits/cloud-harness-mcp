@@ -64,6 +64,51 @@ describe('multi-repository workspace contracts', () => {
     }
   });
 
+  const workspaceId = `ws_${'a'.repeat(32)}`;
+
+  it('registers repository add and remove as idempotent writes with a required key', () => {
+    expect(TOOL_SPECS.find((entry) => entry.name === 'workspace_repo_add')).toMatchObject({ readOnly: false, destructive: false, idempotent: true, openWorld: true });
+    expect(TOOL_SPECS.find((entry) => entry.name === 'workspace_repo_remove')).toMatchObject({ readOnly: false, destructive: true, idempotent: true });
+
+    const add = TOOL_SCHEMA_BY_NAME.workspace_repo_add;
+    const entry = { workspaceId, url: 'https://github.com/acme/docs.git', alias: 'docs', idempotencyKey: 'add-docs-1' };
+    expect(add.parse(entry)).toMatchObject({ alias: 'docs', access: 'read-write' });
+    expect(add.parse({ ...entry, ref: 'main', access: 'read-only' })).toMatchObject({ ref: 'main', access: 'read-only' });
+    expect(() => add.parse({ ...entry, idempotencyKey: undefined })).toThrow();
+    expect(() => add.parse({ ...entry, alias: 'repo_docs' })).toThrow();
+    expect(() => add.parse({ ...entry, primary: true })).toThrow();
+
+    const remove = TOOL_SCHEMA_BY_NAME.workspace_repo_remove;
+    expect(remove.parse({ workspaceId, repositoryId: 'docs', idempotencyKey: 'rm-docs-1' })).toMatchObject({ repositoryId: 'docs' });
+    expect(() => remove.parse({ workspaceId, idempotencyKey: 'rm-docs-1' })).toThrow();
+    expect(() => remove.parse({ workspaceId, repositoryId: '../docs', idempotencyKey: 'rm-docs-1' })).toThrow();
+  });
+
+  it('accepts scope "all" on the search tools, exclusive of repositoryId, and keeps the default shape', () => {
+    const searches = [
+      ['grep_search', { pattern: 'x' }],
+      ['symbols_search', { query: 'x' }],
+      ['symbols_references', { symbol: 'x' }]
+    ] as const;
+    for (const [name, input] of searches) {
+      const schema = TOOL_SCHEMA_BY_NAME[name];
+      expect(schema.parse({ ...input, scope: 'all', cursor: `repo_${'a'.repeat(32)}` }), name).toMatchObject({ scope: 'all' });
+      expect(() => schema.parse({ ...input, scope: 'all', repositoryId: 'api' }), name).toThrow(/mutually exclusive/);
+      expect(() => schema.parse({ ...input, scope: 'workspace' }), name).toThrow();
+      const plain = schema.parse(input);
+      expect(plain, name).not.toHaveProperty('scope');
+      expect(schema.parse({ ...input, repositoryId: 'api' }), name).toMatchObject({ repositoryId: 'api' });
+    }
+  });
+
+  it('accepts a repository selector on artifact snapshot and restore', () => {
+    expect(TOOL_SCHEMA_BY_NAME.artifacts_snapshot.parse({ workspaceId, repositoryId: 'web', path: 'a.md', logicalName: 'a.md' }))
+      .toMatchObject({ repositoryId: 'web' });
+    expect(TOOL_SCHEMA_BY_NAME.artifacts_restore.parse({ artifactId: `art_${'b'.repeat(24)}`, workspaceId, repositoryId: 'web', path: 'a.md' }))
+      .toMatchObject({ repositoryId: 'web' });
+    expect(() => TOOL_SCHEMA_BY_NAME.artifacts_snapshot.parse({ workspaceId, repositoryId: '../web', path: 'a.md', logicalName: 'a.md' })).toThrow();
+  });
+
   it('lets the operator lower the per-workspace repository limit but not exceed the schema bound', () => {
     const runner = {
       serviceToken: 'runner-token-that-is-longer-than-32-characters', jobsRoot: '/jobs', stateDb: '/state/state.db',

@@ -45,6 +45,28 @@ checkouts changes.
   fingerprints only in a multi-repository workspace.
 - **Bound.** An operator-set per-workspace limit, inside a schema ceiling,
   bounds clone cost and disk use against the shared workspace byte ceiling.
+- **Changing the set after open.** `workspace_repo_add` and
+  `workspace_repo_remove` change the set of an active multi-repository
+  workspace; a single-repository workspace keeps its one checkout at the root,
+  because promoting it would move every path. Both hold the mutation lease,
+  commit the registry change and the idempotency replay in one transaction
+  fenced on the workspace generation, and are serialized per workspace. Add
+  reuses the open-time policy, limit, brokered clone, and history defaults and
+  registers the row only after the clone, so a failure leaves at most a
+  directory it then removes, scoped to the verified `repos/<alias>` path. Remove
+  reuses the auto-close unsaved-work check, adds linked worktrees (which that
+  check counts only when dirty), refuses while anything runs inside the
+  checkout, and deletes the row before the directory, so a failed removal
+  leaves an unregistered entry that still blocks auto-close instead of a
+  registered empty checkout. Agents record no repository, so any active agent
+  blocks a removal.
+- **Cross-repository search and artifacts.** The search tools take
+  `scope: "all"` instead of a separate tool: one `maxResults` budget across
+  checkouts, results attributed by `repositoryId` and alias with paths relative
+  to their checkout, and a cursor that names the next repository rather than a
+  position inside one, which keeps the cursor small and stateless. Artifact
+  snapshots record the source repository as provenance; restore never applies
+  it implicitly because the destination may be another workspace.
 
 The executable owners are
 [`apps/runner/src/workspace-repositories.ts`](../../apps/runner/src/workspace-repositories.ts),
@@ -69,10 +91,16 @@ and the boundary in the [security model](../security-model.md#multi-repository-w
 - **Mounting each checkout at a different executor path:** would change the
   executor mount for every workspace; keeping `/workspace` as the tree root
   leaves single-repository workspaces byte-identical.
-- **Adding or removing repositories after open (deferred):** the set is fixed at
-  open. Dynamic changes, a Dashboard repository explorer, repository-targeted
-  guidance and hooks, and coordinated cross-repository pull requests are
-  follow-up work.
+- **Fixing the set at open (superseded):** the first release fixed the set at
+  open. Reopening a workspace to add one repository discards the executor,
+  sessions, and lease, so add and remove are now decided above.
+- **Converting a single-repository workspace on add (rejected):** it would move
+  the root checkout into `repos/<alias>/` and break every path a caller holds.
+- **Resuming a search inside a checkout (rejected):** a per-checkout offset
+  would need either server-side search state or a re-run that can shift under
+  concurrent edits; the caller narrows a truncated checkout with `repositoryId`.
+- **Deferred:** repository-targeted guidance and hooks, and coordinated
+  cross-repository pull requests, remain follow-up work.
 
 ## Consequences
 

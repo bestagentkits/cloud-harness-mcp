@@ -360,6 +360,22 @@ wired, so the visible one is never the only working one. Owners:
   [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts) with
   projections in
   [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts).
+- **Repository scope:** a multi-repository workspace adds a Repositories explorer
+  to Summary. It is a table paired with a card list at phone width. Branch,
+  uncommitted and unpushed state are shown as text, never as colour alone, and an
+  unread status says so instead of reading as clean. Files, Git and Terminal gain
+  one labelled `Repository` select above the tab body. The choice is URL-backed
+  (`?repository=`) and carried by the scoped tab links, so it survives reloads and
+  sharing. Git offers no workspace-root option and shows a "Choose a repository"
+  panel until one is picked, because silently defaulting to the primary would act on
+  the wrong checkout. A single-repository workspace renders none of this, so its
+  markup is unchanged. Owners: `renderRepositoryExplorer`,
+  `renderRepositorySelector`, `renderRepositoryRequired` and `workspaceTabHref` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the
+  `/api/v1/workspaces/:id/repositories` adapter and `repositoryId` query validation
+  in [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts);
+  terminal checkout resolution in
+  [`apps/api/src/dashboard-terminal-router.ts`](../apps/api/src/dashboard-terminal-router.ts).
 - **Agents:** `/dashboard/agents` is the global control center, and the workspace
   cockpit's Agents tab renders the same body scoped to one workspace, so a filter
   and a fact mean the same thing in both places. The filter row carries the five
@@ -469,8 +485,9 @@ wired, so the visible one is never the only working one. Owners:
   beside an ordered pipeline that states each stage and its hook count as text (no
   colour-only or connector-only meaning), and a stage with no hooks says so rather
   than disappearing. Activation and deactivation stay with the runner's manifest
-  contract; the page runs only what is already active, and a skill script runs only
-  when the operator names it, through the verified-bytes contract. The Deploy tab
+  contract; a manual hook run names one hook from the manifest, confirms first, and is
+  pinned to the manifest digest the page rendered, and a skill script runs only when the
+  operator names it, through the verified-bytes contract. The Deploy tab
   lists repository-defined targets with their working directory, last reported result,
   duration and failure detail, and states "Not reported" for a target the runner never
   reported on instead of showing a zero; running a target confirms first because

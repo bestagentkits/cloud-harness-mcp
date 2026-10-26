@@ -25,11 +25,16 @@ List one directory without recursively walking it.
 Read a byte range from one file.
 
 - Input: `workspaceId`, `path`; `offset` defaults to 0; `limit` defaults to
-  65,536 bytes and permits 1–262,144.
-- Returns text `content`, total `bytes`, and the file's lowercase `sha256`.
-- When truncated, use the returned byte-offset cursor with the next call's
-  `offset`. Text characters can occupy multiple bytes, so do not derive the
-  next offset from the displayed character count.
+  65,536 bytes and permits 1–1,048,576. `readAll: true` returns up to
+  1,048,576 bytes in one call.
+- Returns text `content`, `bytesReturned`, the file's `totalBytes`, `eof`, and
+  the lowercase `sha256` of the whole file, not of the returned window.
+- When truncated (`eof` is false), use the returned byte-offset cursor with the
+  next call's `offset`. Text characters can occupy multiple bytes, so do not
+  derive the next offset from the displayed character count.
+- Never pass a partial window to `files_write`: the hash still matches, so the
+  write is accepted and the file is cut short. Use `files_apply_patch`, or read
+  every page first.
 
 <!-- cloudharness-example:files_read
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","path":"src/config.ts","offset":0,"limit":65536}
@@ -127,8 +132,13 @@ Run bounded regular-expression text search.
   `maxResults` defaults to 100 and permits 1–500.
 - Results contain matching paths, line numbers, and bounded line text. The
   pattern uses ripgrep-compatible regular-expression behavior.
-- If truncated, narrow `path`, `glob`, or pattern; search results do not provide
-  a continuation cursor.
+- If truncated, narrow `path`, `glob`, or pattern; a search of one tree does
+  not provide a continuation cursor.
+- In a multi-repository workspace, `repositoryId` searches one checkout and
+  `scope: "all"` searches every checkout with attributed results and a
+  cursor over repositories; see
+  [multi-repository workspaces](multi-repository-workspaces.md#search-every-checkout).
+  The same applies to `symbols_search` and `symbols_references`.
 
 <!-- cloudharness-example:grep_search
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","pattern":"TODO|FIXME","path":"src","glob":"*.ts","maxResults":100}

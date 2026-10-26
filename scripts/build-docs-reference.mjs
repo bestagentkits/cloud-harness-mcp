@@ -20,7 +20,7 @@ const CATEGORIES = [
   {
     title: 'Workspace Lifecycle',
     description: 'Tools for opening, inspecting, listing, secrets discovery, and closing isolated TTL-bound workspaces.',
-    names: ['workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_context', 'workspace_set_active', 'workspace_repos_list', 'workspace_repo_status', 'workspace_lease_renew', 'workspace_recover', 'workspace_close', 'secrets_list']
+    names: ['workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_context', 'workspace_set_active', 'workspace_repos_list', 'workspace_repo_status', 'workspace_repo_add', 'workspace_repo_remove', 'workspace_lease_renew', 'workspace_recover', 'workspace_close', 'secrets_list']
   },
   {
     title: 'Files and Code Intelligence',

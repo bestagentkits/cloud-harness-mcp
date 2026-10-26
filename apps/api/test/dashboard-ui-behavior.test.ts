@@ -391,6 +391,23 @@ describe('dashboard UI behavior', () => {
     expect(trigger.focus).toHaveBeenCalledOnce();
   });
 
+  it('lets a declined confirmation release what its action reserved', async () => {
+    const dialog = new FakeElement(); const cancel = new FakeElement(); const action = new FakeElement();
+    const status = new FakeElement(); const invoker = new FakeElement();
+    const onCancel = vi.fn(); const run = vi.fn(async () => undefined);
+    const controller = createAsyncDialogController({ dialog, cancelButton: cancel, actionButton: action, status, reportError: vi.fn() });
+    controller.open({ label: 'Approve and run', pendingLabel: 'Running…', action: run, onCancel }, invoker);
+    controller.cancel();
+    expect(dialog.open).toBe(false);
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(run).not.toHaveBeenCalled();
+    // A confirmed action is not a cancellation.
+    controller.open({ label: 'Approve and run', pendingLabel: 'Running…', action: run, onCancel }, invoker);
+    await controller.submit();
+    expect(run).toHaveBeenCalledOnce();
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
+
   it('keeps confirmation open and non-dismissible until the mutation settles', async () => {
     const dialog = new FakeElement(); const cancel = new FakeElement(); const action = new FakeElement();
     const status = new FakeElement(); const invoker = new FakeElement();
