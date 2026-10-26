@@ -11,13 +11,14 @@ import { DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/co
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { ManagedDialog } from '@/components/ui/managed-dialog';
+import { toast } from '@/components/ui/toast-store';
 import { apiClient } from '@/lib/api-client';
 import { type BffEnvelope, bffPath, bffQuery } from '@/lib/bff-query';
 import { mutationErrorText, useBffMutation } from '@/lib/bff-mutation';
 import type { CockpitTabProps } from '../cockpit-tab-registry';
 import {
   groupHooksByLifecycle, hookRunBody, hooksOf, type RunResult, runResultOf, SCRIPT_PATTERN,
-  skillsOf, type WorkspaceHook, type WorkspaceSkill
+  skillRunFailure, skillsOf, type WorkspaceHook, type WorkspaceSkill
 } from '../automation-model';
 import { RunResultView } from './run-result';
 
@@ -43,7 +44,7 @@ export default function AutomationTab({ workspaceId }: CockpitTabProps) {
           {(body) => <SkillList workspaceId={workspaceId} skills={skillsOf(dataOf(body))} invalidate={[skillsPath]} />}
         </AsyncStatus>
       </Section>
-      <Section title="Hooks" description="Activation and deactivation stay with the runner's manifest contract; this page runs only what is already active.">
+      <Section title="Hooks" description="Activation and deactivation stay with the runner's manifest contract. Running a hook here is a one-off manual run you confirm first; it does not activate the hook.">
         <AsyncStatus query={hooks} label="hooks">
           {(body) => {
             const parsed = hooksOf(dataOf(body));
@@ -57,32 +58,32 @@ export default function AutomationTab({ workspaceId }: CockpitTabProps) {
 
 function SkillList({ workspaceId, skills, invalidate }: { workspaceId: string; skills: WorkspaceSkill[]; invalidate: string[] }) {
   const [running, setRunning] = useState<WorkspaceSkill>();
-  const [result, setResult] = useState<{ title: string; result: RunResult }>();
+  const [result, setResult] = useState<{ title: string; result: RunResult; failed: boolean }>();
   if (!skills.length) return <EmptyState icon={SparklesIcon} title="No skills are resolved for this workspace" />;
   return (
     <>
       <ul className="grid gap-2" aria-label="Workspace skills">
         {skills.map((skill) => (
-          <li key={`${skill.name}:${skill.tier ?? ''}:${skill.sha256 ?? ''}`} className="flex flex-wrap items-start justify-between gap-3 rounded-md border p-3">
+          <li key={`${skill.name}:${skill.tier ?? ''}:${skill.contentSha256 ?? ''}`} className="flex flex-wrap items-start justify-between gap-3 rounded-md border p-3">
             <div className="grid min-w-0 gap-1">
               <span className="flex flex-wrap items-center gap-2 font-medium">{skill.name}{skill.tier ? <StatusBadge status="neutral" label={skill.tier} /> : null}</span>
               {skill.description ? <p className="text-sm text-muted-foreground">{skill.description}</p> : null}
-              {skill.sha256 ? <code className="font-mono text-xs break-all text-muted-foreground">{skill.sha256.slice(0, 16)}</code> : null}
+              {skill.contentSha256 ? <code className="font-mono text-xs break-all text-muted-foreground">{skill.contentSha256.slice(0, 16)}</code> : null}
             </div>
-            <Button size="sm" variant="outline" disabled={!skill.sha256} onClick={() => setRunning(skill)}>
+            <Button size="sm" variant="outline" disabled={!skill.contentSha256} onClick={() => setRunning(skill)}>
               Run script<span className="sr-only"> of {skill.name}</span>
             </Button>
           </li>
         ))}
       </ul>
-      {skills.some((skill) => !skill.sha256) ? <p className="text-xs text-muted-foreground">A skill without a reported content digest cannot run from here: the run is fenced by that digest.</p> : null}
-      {result ? <RunResultView title={result.title} result={result.result} /> : null}
+      {skills.some((skill) => !skill.contentSha256) ? <p className="text-xs text-muted-foreground">A skill without a reported content digest cannot run from here: the run is fenced by that digest.</p> : null}
+      {result ? <RunResultView title={result.title} result={result.result} failed={result.failed} /> : null}
       <SkillRunDialog
         workspaceId={workspaceId}
         skill={running}
         invalidate={invalidate}
         onOpenChange={(open) => { if (!open) setRunning(undefined); }}
-        onResult={(title, next) => setResult({ title, result: next })}
+        onResult={(title, next, failed) => setResult({ title, result: next, failed })}
       />
     </>
   );
@@ -91,39 +92,44 @@ function SkillList({ workspaceId, skills, invalidate }: { workspaceId: string; s
 /**
  * Runs one named script of a skill. The body carries the skill's content digest; the runner
  * may also ask for an owner privilege grant, which the Dashboard cannot attach, so that
- * refusal surfaces as the error it is.
+ * refusal surfaces as the error it is. A script that ran and exited non-zero is not a
+ * dialog error: its exit code and output are shown like a finished run's.
  */
 function SkillRunDialog({ workspaceId, skill, invalidate, onOpenChange, onResult }: {
   workspaceId: string;
   skill: WorkspaceSkill | undefined;
   invalidate: string[];
   onOpenChange: (open: boolean) => void;
-  onResult: (title: string, result: RunResult) => void;
+  onResult: (title: string, result: RunResult, failed: boolean) => void;
 }) {
   const formId = useId();
   const [script, setScript] = useState('');
   const [error, setError] = useState('');
   const open = skill !== undefined;
   const changeOpen = (next: boolean) => { if (!next) { setScript(''); setError(''); } onOpenChange(next); };
-  const run = useBffMutation<{ name: string; script: string; sha256: string }, unknown>({
-    mutationFn: ({ name, script: chosen, sha256 }) => apiClient.request(`${bffPath('workspaces', workspaceId, 'skills', name)}/run`, {
-      method: 'POST', body: { script: chosen, expectedContentSha256: sha256 }
+  const run = useBffMutation<{ name: string; script: string; contentSha256: string }, unknown>({
+    mutationFn: ({ name, script: chosen, contentSha256 }) => apiClient.request(`${bffPath('workspaces', workspaceId, 'skills', name)}/run`, {
+      method: 'POST', body: { script: chosen, expectedContentSha256: contentSha256 }
     }),
     invalidate,
     successToast: 'Skill script finished.',
-    onSuccess: (data, vars) => onResult(`${vars.name} · ${vars.script}`, runResultOf((data as BffEnvelope<unknown> | undefined)?.data))
+    onSuccess: (data, vars) => onResult(`${vars.name} · ${vars.script}`, runResultOf((data as BffEnvelope<unknown> | undefined)?.data), false)
   });
 
   async function submit() {
-    if (!skill?.sha256) return;
+    if (!skill?.contentSha256) return;
     const chosen = script.trim();
     if (!SCRIPT_PATTERN.test(chosen)) { setError('Use the script name only: letters, digits, dot, dash or underscore, at most 120 characters.'); return; }
     setError('');
     try {
-      await run.mutateAsync({ name: skill.name, script: chosen, sha256: skill.sha256 });
+      await run.mutateAsync({ name: skill.name, script: chosen, contentSha256: skill.contentSha256 });
       changeOpen(false);
     } catch (failure) {
-      setError(mutationErrorText(failure));
+      const ran = skillRunFailure(failure);
+      if (!ran) { setError(mutationErrorText(failure)); return; }
+      onResult(`${skill.name} · ${chosen}`, ran, true);
+      toast({ title: 'Skill script exited with an error.', variant: 'destructive' });
+      changeOpen(false);
     }
   }
 
@@ -186,7 +192,9 @@ function HookPipeline({ workspaceId, hooks, manifestSha256, invalidate }: {
           {group.hooks.length ? (
             <ul className="grid gap-2">
               {group.hooks.map((hook) => {
-                const runnable = hook.active && hookRunBody(hook, group.id, manifestSha256) !== undefined;
+                // The runner runs any manifest hook on request, active or not, as the classic tab does;
+                // a manual run does not activate it.
+                const runnable = hookRunBody(hook, group.id, manifestSha256) !== undefined;
                 return (
                   <li key={hook.name} className="flex flex-wrap items-start justify-between gap-3 rounded-md border p-3">
                     <div className="grid min-w-0 gap-1">
@@ -208,7 +216,7 @@ function HookPipeline({ workspaceId, hooks, manifestSha256, invalidate }: {
         open={pending !== undefined}
         onOpenChange={(open) => { if (!open) setPending(undefined); }}
         title="Run this hook?"
-        description={pending ? `The hook runs now as a bounded shell command inside the executor, for the “${pending.eventLabel}” stage. A hook manifest changed since this page loaded is refused.` : ''}
+        description={pending ? `The hook runs now as a bounded shell command inside the executor, for the “${pending.eventLabel}” stage.${pending.hook.active ? '' : ' This hook is not active: this is a one-off run that does not activate it.'} A hook manifest changed since this page loaded is refused.` : ''}
         {...(pending ? { target: pending.hook.name } : {})}
         confirmLabel="Run hook"
         pendingLabel="Running…"

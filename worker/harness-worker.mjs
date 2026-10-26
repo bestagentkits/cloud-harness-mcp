@@ -4,6 +4,7 @@ import { chmod, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat,
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
+import { TextDecoder } from 'node:util';
 
 function getWorkspaceRoot() {
   const raw = process.env.HARNESS_WORKSPACE_ROOT || process.env.CH_WORKSPACE_ROOT || '/workspace';
@@ -867,6 +868,20 @@ async function hookEntries() {
 }
 
 
+const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
+
+/**
+ * Whether a file cannot round-trip through `files_read` text: a NUL byte or any invalid UTF-8
+ * sequence. `content` is decoded lossily (U+FFFD) while `sha256` covers the raw bytes, so writing
+ * such content back would pass the `expectedSha256` fence and corrupt the file. Judged on the whole
+ * file, never on the returned window, so a multi-byte character split at a window edge does not
+ * make a text file look binary.
+ */
+function isBinaryContent(buffer) {
+  if (buffer.includes(0)) return true;
+  try { strictUtf8.decode(buffer); return false; } catch { return true; }
+}
+
 const handlers = {
   async workspace_context(input) {
     const manifest = await scanWorkspaceContext(input);
@@ -903,6 +918,7 @@ const handlers = {
     const totalBytes = value.length;
     const fileSha = sha256(value);
     const fileTag = fileSha.slice(0, 16);
+    const binary = isBinaryContent(value);
 
     let offset = input.offset ?? 0;
     if (input.cursor !== undefined) {
@@ -925,7 +941,8 @@ const handlers = {
         sha256: fileSha,
         bytesReturned: end,
         totalBytes,
-        eof: !isTruncated
+        eof: !isTruncated,
+        binary
       }, isTruncated ? { truncated: true, cursor: `${end}:${fileTag}` } : { truncated: false });
     }
 
@@ -938,7 +955,8 @@ const handlers = {
       sha256: fileSha,
       bytesReturned: end - offset,
       totalBytes,
-      eof: !isTruncated
+      eof: !isTruncated,
+      binary
     }, isTruncated ? { truncated: true, cursor: `${end}:${fileTag}` } : { truncated: false });
   },
   async files_write(input) {
@@ -1094,8 +1112,12 @@ const handlers = {
   },
   async files_apply_patch(input) {
     const target = await safePath(input.path);
-    const current = await readFile(target, 'utf8');
-    if (input.expectedSha256 && sha256(current) !== input.expectedSha256) return fail('CONFLICT', 'file changed since it was read');
+    // Fence on the raw bytes, the digest files_read reports. A binary file never round-trips through
+    // a string, so it is refused rather than rewritten as lossy UTF-8.
+    const bytes = await readFile(target);
+    if (input.expectedSha256 && sha256(bytes) !== input.expectedSha256) return fail('CONFLICT', 'file changed since it was read');
+    if (isBinaryContent(bytes)) return fail('INVALID_INPUT', 'files_apply_patch edits UTF-8 text files only; this file is binary');
+    const current = bytes.toString('utf8');
     const first = current.indexOf(input.oldText);
     if (first < 0) return fail('CONFLICT', 'oldText was not found');
     if (current.indexOf(input.oldText, first + Math.max(1, input.oldText.length)) >= 0) return fail('CONFLICT', 'oldText is not unique');

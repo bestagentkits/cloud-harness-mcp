@@ -84,7 +84,7 @@ import {
   renderAutomationPanel, renderDeployPanel, renderSkillRunResult, skillRunApprovalPrompt,
   renderActivityCenter, renderApprovals, grantIsActionable, planIsActionable, renderPackages,
   renderTerminalPanel, renderTerminalsIndex,
-  REPOSITORY_SCOPED_TABS, filesHref, isWholeFileRead, renderRepositoryExplorer, renderRepositoryRequired, renderRepositorySelector, selectedRepository, workspaceTabHref,
+  REPOSITORY_SCOPED_TABS, filesHref, isBinaryFileRead, isWholeFileRead, renderRepositoryExplorer, renderRepositoryRequired, renderRepositorySelector, selectedRepository, workspaceTabHref,
   WORKSPACE_LIFECYCLE_FIELDS, isWorkspaceLifecycleView, lifecycleDurationLabel, workspaceLifecycleDisplayValue, workspaceLifecycleFieldBounds,
   AUTOMATION_GITHUB_EVENTS, AUTOMATION_PROXY_OPERATIONS, AUTOMATION_SENDER_TYPES, AUTOMATION_WORKFLOW_STATES,
   automationBlockedState, automationSectionForPath, renderAutomationBlocked, renderAutomationConnections, renderAutomationDeliveries,
@@ -4550,6 +4550,7 @@ export function initializeDashboard() {
     const editor = document.querySelector('#file-editor');
     editor.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (isBinaryFileRead(file)) { showError(new Error('This file is binary or not valid UTF-8 text, so saving the lossy preview would corrupt it.')); return; }
       if (!isWholeFileRead(file)) { showError(new Error('Only part of this file was loaded, so it cannot be saved as a whole. Use the text patch instead.')); return; }
       const form = new FormData(event.currentTarget); const localContent = String(form.get('content') ?? '');
       try { await api(`/workspaces/${encodeURIComponent(id)}/files/content`, { method: 'PUT', body: requestBody(inRepository({ path: file.path, content: localContent, expectedSha256: form.get('sha') }, repository)) }); announce('File saved.'); await loadFiles(id); }

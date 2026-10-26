@@ -760,7 +760,10 @@ and the failure-injection suite
 
 - `files_apply_patch` is not a unified-diff parser. It performs one exact
   `oldText` to `newText` replacement and rejects a missing or non-unique
-  `oldText`. Supply `expectedSha256` when a concurrent edit must be detected.
+  `oldText`. Supply `expectedSha256` when a concurrent edit must be detected;
+  it is compared with the raw file digest, the same one `files_read` reports. A
+  file `files_read` would report as `binary` is refused with `INVALID_INPUT`
+  rather than rewritten as lossy UTF-8.
 - `files_write` replaces a file atomically inside the workspace. Its
   `expectedSha256` option requires the target to exist and match.
 - `files_read` returns the `sha256` of the whole file even when `content` is one
@@ -769,6 +772,14 @@ and the failure-injection suite
   read to `eof` first or edit with `files_apply_patch`. The dashboard projects
   `eof`, `bytesReturned` and `totalBytes` and turns whole-file save off for a
   partial read.
+- `files_read` decodes `content` as UTF-8, replacing invalid bytes with U+FFFD,
+  while `sha256` covers the raw bytes. It reports `binary: true` when the whole
+  file holds a NUL byte or is not valid UTF-8, so `content` is not an exact copy
+  and writing it back would pass the fence and corrupt the file. The flag is
+  judged on the whole file, never the window, so a multi-byte character split at
+  a window edge does not mark text as binary. The dashboard projects `binary`
+  and turns save off when it is `true`; a result without the field (an older
+  runner) keeps the previous behaviour.
 - `skills_run` behind a privilege grant answers `PRIVILEGE_APPROVAL_REQUIRED` with a
   `grantRequest`. The grant binds the skill, script and bundle digest, plus the source, a
   non-default timeout and any arguments, so the approved retry must resend the identical

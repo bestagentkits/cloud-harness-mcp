@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { StatusBadge } from '../shared/status-badge';
 import { CATALOG_PRICE_LABEL, CUSTOM_PRICE_LABEL, KEPT_PRICE_LABEL, availabilityLabel, formatPrice, microsFromDollars, priceProvenanceText } from './models-pricing';
 import {
-  MUTATING_PROXY_OPERATIONS, PERMISSION_PRESETS, applyCustomModel, PROXY_OPERATIONS, type WizardState, normalizeOperations, permissionDiff,
+  MUTATING_PROXY_OPERATIONS, PERMISSION_PRESETS, applyCustomModel, PROXY_OPERATIONS, type WizardState, normalizeOperations, permissionDiff, retainedOperations,
   permissionPresetFor, pricingSaveKind, providerApiModes, setField
 } from './models-wizard-state';
 import { ChoiceCard, type WizardStepProps } from './profile-wizard-steps';
@@ -63,6 +63,7 @@ export function PermissionDiff({ state }: { state: WizardState }) {
 function Permissions({ state, update, errors }: WizardStepProps) {
   const preset = permissionPresetFor(state.operations);
   const chosen = new Set(state.operations);
+  const retained = retainedOperations(state);
   return (
     <fieldset className="grid gap-3" aria-describedby={errors.operations ? 'wizard-operations-error' : undefined}>
       <legend className="text-sm font-medium">Allowed proxy operations</legend>
@@ -90,6 +91,11 @@ function Permissions({ state, update, errors }: WizardStepProps) {
       </div>
       {errors.operations ? <p id="wizard-operations-error" role="alert" className="text-xs text-destructive">{errors.operations}</p> : null}
       <PermissionDiff state={state} />
+      {retained.length ? (
+        <p className="text-xs text-muted-foreground" data-testid="retained-operations">
+          Also kept from the saved profile (granted through the MCP profile tools and decided by execution policy): <span className="font-mono">{retained.join(', ')}</span>.
+        </p>
+      ) : null}
     </fieldset>
   );
 }

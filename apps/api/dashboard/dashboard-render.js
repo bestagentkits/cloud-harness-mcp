@@ -1501,13 +1501,29 @@ export function renderFileList(workspaceId, data, { repository = '' } = {}) {
  */
 export const isWholeFileRead = (data) => data?.eof === true;
 
+/**
+ * Whether the runner reported the file as binary (a NUL byte or invalid UTF-8): `content` is then a
+ * lossy decoding of the bytes `sha256` covers, so saving it would pass the fence and corrupt the file.
+ * Only an explicit `binary: true` counts; an older runner omits the field and keeps the prior behaviour.
+ */
+export const isBinaryFileRead = (data) => data?.binary === true;
+
+/** Whether the editor may save `content` back as the whole file. */
+export const isSavableFileRead = (data) => isWholeFileRead(data) && !isBinaryFileRead(data);
+
 export function renderFile(workspaceId, data, { repository = '' } = {}) {
-  const whole = isWholeFileRead(data);
+  const binary = isBinaryFileRead(data);
+  const savable = isSavableFileRead(data);
   const loaded = Number.isFinite(data.bytesReturned) && Number.isFinite(data.totalBytes)
     ? `Showing the first ${formatBytes(data.bytesReturned)} of ${formatBytes(data.totalBytes)}.`
     : 'The runner did not confirm this is the whole file.';
-  const partialNotice = whole ? '' : `<p class="warning" id="file-partial-notice">${escape(loaded)} Saving the whole file is turned off so the rest of it is not lost. Use the text patch below, which edits the full file on the server.</p>`;
-  return `<nav aria-label="Breadcrumb"><a href="${filesHref(workspaceId, '.', { repository })}">${escape(filesRootLabel(repository))}</a></nav><h2 class="mono wrap">${escape(data.path)}</h2><p>Version <span class="mono wrap">${escape(data.sha256)}</span></p>${partialNotice}<pre><code>${escape(data.content)}</code></pre><form id="file-editor"><label for="file-content">File content${whole ? '' : ' (read-only, partial)'}</label><textarea id="file-content" name="content" spellcheck="false"${whole ? '' : ' readonly aria-describedby="file-partial-notice"'}>${escape(data.content)}</textarea><input type="hidden" name="sha" value="${escape(data.sha256)}">${whole ? '<button type="submit">Save file</button>' : ''}<button id="delete-file" class="danger" type="button">Delete file</button></form><form id="patch-form"><label for="old-text">Text to replace</label><textarea id="old-text" name="oldText" spellcheck="false"></textarea><label for="new-text">Replacement text</label><textarea id="new-text" name="newText" spellcheck="false"></textarea><button type="submit">Apply text patch</button></form>`;
+  const noticeId = binary ? 'file-binary-notice' : 'file-partial-notice';
+  const notice = savable ? ''
+    : binary
+      ? `<p class="warning" id="${noticeId}">This file is binary or not valid UTF-8 text, so the editor shows a lossy preview. Saving it is turned off so the file is not corrupted.</p>`
+      : `<p class="warning" id="${noticeId}">${escape(loaded)} Saving the whole file is turned off so the rest of it is not lost. Use the text patch below, which edits the full file on the server.</p>`;
+  const readOnlyLabel = binary ? ' (read-only, binary)' : ' (read-only, partial)';
+  return `<nav aria-label="Breadcrumb"><a href="${filesHref(workspaceId, '.', { repository })}">${escape(filesRootLabel(repository))}</a></nav><h2 class="mono wrap">${escape(data.path)}</h2><p>Version <span class="mono wrap">${escape(data.sha256)}</span></p>${notice}<pre><code>${escape(data.content)}</code></pre><form id="file-editor"><label for="file-content">File content${savable ? '' : readOnlyLabel}</label><textarea id="file-content" name="content" spellcheck="false"${savable ? '' : ` readonly aria-describedby="${noticeId}"`}>${escape(data.content)}</textarea><input type="hidden" name="sha" value="${escape(data.sha256)}">${savable ? '<button type="submit">Save file</button>' : ''}<button id="delete-file" class="danger" type="button">Delete file</button></form><form id="patch-form"><label for="old-text">Text to replace</label><textarea id="old-text" name="oldText" spellcheck="false"></textarea><label for="new-text">Replacement text</label><textarea id="new-text" name="newText" spellcheck="false"></textarea><button type="submit">Apply text patch</button></form>`;
 }
 
 const workspaceRepositories = (workspace) => Array.isArray(workspace.repositories) ? workspace.repositories : [];
