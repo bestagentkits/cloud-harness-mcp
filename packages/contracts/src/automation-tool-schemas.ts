@@ -119,7 +119,7 @@ export const AUTOMATION_TOOL_SPECS: AutomationToolSpec[] = [
     name: 'automation_run_cancel',
     operation: 'workflow_cancel',
     title: 'Cancel automation run',
-    description: 'Cancel one of your queued, starting, or running automation runs; the result is the run in its CANCELLED state. Cancelling a finished run changes nothing and returns it as it is. Optional reason is recorded in the audit log. ' + DISABLED_NOTE,
+    description: 'Cancel one of your queued, starting, running, or waiting (WAITING_FOR_HUMAN) automation runs; the result is the run in its CANCELLED state, and a waiting run\'s pending approval expires. Cancelling a finished run changes nothing and returns it as it is. Optional reason is recorded in the audit log. ' + DISABLED_NOTE,
     inputSchema: schemas.automation_run_cancel,
     readOnly: false, destructive: true, idempotent: true, openWorld: false, requiredScope: AUTOMATION_TOOL_SCOPES.write
   }

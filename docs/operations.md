@@ -416,6 +416,16 @@ or pull request happened. Check the repository for its `agent/` branch and
 pull request before labelling the issue again; the harness never retries that
 step on its own.
 
+Owner approvals of held coding steps (`AGENT_APPROVALS_ENABLED`) add the
+`agent_action_approvals` table and approval columns on the workflow row, and
+the first start rebuilds the workflow table once to admit the
+`WAITING_FOR_HUMAN` state, keeping every row and index. Before a code-only
+rollback to a release without approvals, set `AGENT_APPROVALS_ENABLED=false`
+and let one engine pass fail the waiting runs with `APPROVALS_DISABLED`: an
+older runner does not know the waiting state and would leave such a run and
+its workspace until the workspace expires. Pending approvals are listed on the
+Dashboard **Approvals** page; there is no MCP tool to decide them.
+
 ## Model catalog state schema rollback
 
 The model catalog adds runner state schema v14: one table of last-good catalog

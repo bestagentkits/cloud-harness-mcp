@@ -722,7 +722,8 @@ describe('managed packages surfaces', () => {
     expect(script).toContain("api('/packages/rollback'");
     expect(script).toContain("api('/packages/remove', { method: 'POST', body: requestBody({ bindingId, expectedGeneration }) })");
     expect(script).toContain('requestBody(approving ? { planDigest } : {})');
-    expect(script).toContain('pendingApprovals(grants, plans)');
+    // The Approvals badge counts pending plans alongside grants and held agent actions.
+    expect(script).toContain('pendingApprovals(grants, plans, agent.approvals)');
   });
 });
 

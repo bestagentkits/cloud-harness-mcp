@@ -18,7 +18,8 @@ const DASHBOARD_ASSETS = new Set([
   'dashboard-models.js',
   'dashboard-policies.js',
   'dashboard-traces.js',
-  'dashboard-inbox.js'
+  'dashboard-inbox.js',
+  'dashboard-action-approvals.js'
 ]);
 
 /**
@@ -187,6 +188,7 @@ export function createDashboardAssetsRouter(): Router {
   router.get('/assets/dashboard-policies.js', (_request, response) => response.sendFile('dashboard-policies.js', legacyOptions));
   router.get('/assets/dashboard-traces.js', (_request, response) => response.sendFile('dashboard-traces.js', legacyOptions));
   router.get('/assets/dashboard-inbox.js', (_request, response) => response.sendFile('dashboard-inbox.js', legacyOptions));
+  router.get('/assets/dashboard-action-approvals.js', (_request, response) => response.sendFile('dashboard-action-approvals.js', legacyOptions));
   for (const [name, path] of DASHBOARD_VENDOR_ASSETS) {
     router.get(`/assets/${name}`, (_request, response) => response.sendFile(path, { headers: legacyOptions.headers }));
   }

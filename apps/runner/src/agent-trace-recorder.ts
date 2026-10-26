@@ -42,13 +42,42 @@ export type TraceActionEvent = {
   commitSha?: string | undefined;
   prNumber?: number | undefined;
   inputDigest?: string | undefined;
+  /** The advisor consult behind the decision, recorded as a `decision` span under the action span. */
+  advisor?: TraceAdvisorConsult | undefined;
   startedAt: number;
   endedAt: number;
+};
+
+/** What a consulted advisor answered: its Decision Plane id and scalar verdict, never the request or rationale. */
+export type TraceAdvisorConsult = {
+  decisionId: string | null;
+  effect: string | null;
+  risk: number | null;
+  confidence: number | null;
+  fallbackReason: string | null;
 };
 
 /** The part of the recorder the coding broker drives. */
 export interface AgentActionTraceSink {
   action(key: TraceRunKey, event: TraceActionEvent): { traceId: string; spanId: string } | null;
+}
+
+/** One owner approval event of a brokered coding action, as an `approval` span records it. Identifiers only. */
+export type TraceApprovalEvent = {
+  approvalId: string;
+  /** The receipt of the step held for approval. */
+  actionId: string;
+  step: string;
+  phase: 'requested' | 'decided';
+  outcome: 'pending' | 'approved' | 'denied' | 'expired';
+  reasonCode: string;
+  startedAt: number;
+  endedAt: number;
+};
+
+/** The part of the recorder the approval service drives. */
+export interface AgentApprovalTraceSink {
+  approval(key: TraceRunKey, event: TraceApprovalEvent): { traceId: string; spanId: string } | null;
 }
 
 /** One reconcileUsage step: the deltas charged to the agent usage ledger plus the runtime's cumulative cache counters. */
@@ -331,7 +360,7 @@ function rootStateOf(state: TraceState): TraceSpanState {
  * guarded: a storage failure degrades the trace to partial coverage, is logged once per trace, and
  * never reaches the agent lifecycle.
  */
-export class AgentTraceRecorder implements AgentTraceHooks, AgentActionTraceSink {
+export class AgentTraceRecorder implements AgentTraceHooks, AgentActionTraceSink, AgentApprovalTraceSink {
   private readonly runs = new Map<string, Run>();
   private readonly loggedFailures = new Set<string>();
   private readonly log: (entry: Record<string, unknown>) => void;
@@ -688,19 +717,9 @@ export class AgentTraceRecorder implements AgentTraceHooks, AgentActionTraceSink
     const traceId = traceIdFor(key.agentId, key.generation);
     let placed: { traceId: string; spanId: string } | null = null;
     this.guard(traceId, () => {
-      const run = this.runs.get(traceId);
-      let seq: number | null;
-      let parentSpanId: string;
-      if (run) {
-        seq = this.allocate(run, event.startedAt);
-        parentSpanId = (event.requestId === undefined ? undefined : run.proxies.get(event.requestId)?.spanId) ?? run.rootSpanId;
-      } else {
-        const existing = this.store.findTrace(traceId);
-        if (!existing || existing.spanCount >= this.options.maxSpansPerTrace) return;
-        seq = this.store.nextSpanSeq(traceId);
-        parentSpanId = spanIdFor(traceId, 0);
-      }
-      if (seq === null) return;
+      const slot = this.slot(traceId, event.startedAt, event.requestId);
+      if (!slot) return;
+      const { seq, parentSpanId } = slot;
       const spanId = spanIdFor(traceId, seq);
       const attributes: TraceAttributes = {
         action_id: event.actionId, action_class: event.actionClass, decision: event.decision,
@@ -719,8 +738,71 @@ export class AgentTraceRecorder implements AgentTraceHooks, AgentActionTraceSink
         attributes, inputDigest: event.inputDigest ?? null, errorClass: state === 'ERROR' ? 'tool' : null
       });
       placed = { traceId, spanId };
+      if (event.advisor) this.advisorConsult(traceId, spanId, start, Math.max(start, event.endedAt), event.advisor);
     });
     return placed;
+  }
+
+  /** A `decision` span under the action span it decided; skipped when the trace is full. */
+  private advisorConsult(traceId: string, actionSpanId: string, startedAt: number, endedAt: number, consult: TraceAdvisorConsult): void {
+    const slot = this.slot(traceId, startedAt, undefined);
+    if (!slot) return;
+    const fallback = consult.fallbackReason !== null;
+    this.store.writeSpan({
+      traceId, spanSeq: slot.seq, spanId: spanIdFor(traceId, slot.seq), parentSpanId: actionSpanId, kind: 'decision', name: 'decision.execution_risk',
+      state: fallback ? 'ERROR' : 'OK', startedAt, endedAt, ttftMs: null,
+      promptTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costMicros: null,
+      attributes: {
+        decision_id: consult.decisionId, advisor_effect: consult.effect, risk: consult.risk,
+        confidence: consult.confidence, fallback_reason: consult.fallbackReason
+      },
+      inputDigest: null, errorClass: fallback ? 'other' : null
+    });
+  }
+
+  /**
+   * Records one owner approval event as an `approval` span: `requested` when a workflow starts waiting,
+   * `decided` when it is approved, denied or expires. Placed like a runner-step action span.
+   */
+  approval(key: TraceRunKey, event: TraceApprovalEvent): { traceId: string; spanId: string } | null {
+    const traceId = traceIdFor(key.agentId, key.generation);
+    let placed: { traceId: string; spanId: string } | null = null;
+    this.guard(traceId, () => {
+      const slot = this.slot(traceId, event.startedAt, undefined);
+      if (!slot) return;
+      const spanId = spanIdFor(traceId, slot.seq);
+      const refused = event.outcome === 'denied' || event.outcome === 'expired';
+      const start = Math.max(0, event.startedAt);
+      this.store.writeSpan({
+        traceId, spanSeq: slot.seq, spanId, parentSpanId: slot.parentSpanId, kind: 'approval', name: `approval.${event.phase}`,
+        state: refused ? 'ERROR' : 'OK', startedAt: start, endedAt: Math.max(start, event.endedAt), ttftMs: null,
+        promptTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costMicros: null,
+        attributes: {
+          approval_id: event.approvalId, action_id: event.actionId, workflow_step: event.step,
+          outcome: event.outcome, reason_code: event.reasonCode
+        },
+        inputDigest: null, errorClass: refused ? 'other' : null
+      });
+      placed = { traceId, spanId };
+    });
+    return placed;
+  }
+
+  /**
+   * Where the next runner-recorded span goes: a live run allocates it under the proxied tool call's span
+   * (or the root); a finished trace appends after its last span, under the root. Null when the trace does
+   * not exist (traces off) or is full.
+   */
+  private slot(traceId: string, startedAt: number, requestId: string | undefined): { seq: number; parentSpanId: string } | null {
+    const run = this.runs.get(traceId);
+    if (run) {
+      const seq = this.allocate(run, startedAt);
+      if (seq === null) return null;
+      return { seq, parentSpanId: (requestId === undefined ? undefined : run.proxies.get(requestId)?.spanId) ?? run.rootSpanId };
+    }
+    const existing = this.store.findTrace(traceId);
+    if (!existing || existing.spanCount >= this.options.maxSpansPerTrace) return null;
+    return { seq: this.store.nextSpanSeq(traceId), parentSpanId: spanIdFor(traceId, 0) };
   }
 
   markIncomplete(key: TraceRunKey, reason: string, at: number): void {

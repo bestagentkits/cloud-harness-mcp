@@ -38,6 +38,8 @@ export const CODING_PROXY_OPERATIONS = [
 export const BROKERED_ONLY_PROXY_OPERATIONS = ['exec_run', 'git_status', 'git_diff'] as const satisfies readonly AgentProxyOperation[];
 
 export const CodingActionIdSchema = z.string().regex(/^act_[a-f0-9]{32}$/u);
+/** An owner approval of one runner step of a coding workflow. */
+export const AgentApprovalIdSchema = z.string().regex(/^apv_[a-f0-9]{32}$/u);
 
 /**
  * INTENT: recorded, not yet attempted. DISPATCHED: handed to the executor. APPLIED / REJECTED: the
@@ -60,7 +62,8 @@ export const CodingPhaseSchema = z.enum(['AGENT', 'VERIFY', 'COMMIT', 'PUSH', 'P
 export const CODING_ERROR_CODES = [
   'CODING_DISABLED', 'ACTION_DENIED', 'ACTION_REQUIRES_APPROVAL', 'EFFECT_UNKNOWN', 'COMMAND_UNSUPPORTED',
   'REPOSITORY_AMBIGUOUS', 'CODING_RULE_INVALID', 'CODING_VERIFY_FAILED', 'CODING_NO_CHANGES', 'CODING_AGENT_FAILED',
-  'CODING_PUBLISH_FAILED', 'CODING_INSTALL_FAILED', 'LOCKFILE_REJECTED', 'HEAD_MOVED', 'PATHS_UNVERIFIABLE', 'COMMIT_UNVERIFIED'
+  'CODING_PUBLISH_FAILED', 'CODING_INSTALL_FAILED', 'LOCKFILE_REJECTED', 'HEAD_MOVED', 'PATHS_UNVERIFIABLE', 'COMMIT_UNVERIFIED',
+  'APPROVALS_DISABLED', 'APPROVAL_DENIED', 'APPROVAL_EXPIRED'
 ] as const;
 export const CodingErrorCodeSchema = z.enum(CODING_ERROR_CODES);
 
@@ -90,6 +93,8 @@ export const CodingActionOutcomeSchema = z.object({
   /** Locked packages an install action covered, and the sha256 of their sorted `ecosystem:name@version registry` lines. */
   packageCount: z.number().int().nonnegative().optional(),
   packagesDigest: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  /** The owner approval that let this step run although the gate required approval. */
+  approvalId: AgentApprovalIdSchema.optional(),
   errorCode: z.string().max(100).optional()
 }).strict();
 

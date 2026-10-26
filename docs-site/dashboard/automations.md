@@ -355,8 +355,14 @@ crash continues the same run instead of starting over or pushing twice. If GitHu
 cannot confirm whether a push or pull request happened, the run stops with
 `EFFECT_UNKNOWN` and is not retried: check the repository before labelling again.
 
-A policy decision of **Require approval** fails the run, because approvals are not
-granted yet. To stop all coding runs at once, the operator sets
+A policy decision of **Require approval** on one of Cloud Harness's own steps (verify,
+path check, commit, push, or opening the pull request) pauses the run as **Waiting for
+approval** when the operator sets `AGENT_APPROVALS_ENABLED=true`. Decide it on the
+[Approvals](/dashboard/approvals#agent-actions) page: approving resumes the run, which
+performs exactly that step once; denying fails it with `APPROVAL_DENIED`. With approvals
+off, or for an agent's own tool call, **Require approval** fails the step instead. A
+waiting run keeps its workspace and concurrency slot, and the wait does not count
+against its time budget. To stop all coding runs at once, the operator sets
 `AGENT_CODING_ENABLED=false`; running ones fail with `CODING_DISABLED` before
 anything else is published. Branches and pull requests already opened stay for you
 to review or close.

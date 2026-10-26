@@ -398,9 +398,10 @@ runner publishes":
   same evaluator the Dashboard simulation uses. The revisions the run started
   under are pinned, so a policy edit or rollback stops it, and each call
   re-checks revocation (workflow state and workspace generation), the run's
-  budget and the kill switch. Only `ALLOW` runs. `REQUIRE_APPROVAL` fails closed
-  with `ACTION_REQUIRES_APPROVAL`, because this release grants no approvals. A
-  refused call never reaches the workspace. Editing a lockfile or package
+  budget and the kill switch. Only `ALLOW` runs. For an agent tool call,
+  `REQUIRE_APPROVAL` fails closed with `ACTION_REQUIRES_APPROVAL`; only the
+  runner's own steps can wait for an owner approval (below). A refused call
+  never reaches the workspace. Editing a lockfile or package
   manifest is a `package_install` action, not an `edit`.
 - **The agent never publishes.** It stays on `network-none` with no Git or
   GitHub credential and is told not to commit. After it ends, the runner runs
@@ -469,6 +470,70 @@ runner publishes":
   span. A receipt stores the action's argv and paths as decided, unredacted,
   and the owner's Dashboard run page shows them; a verify command or path
   should therefore never carry a secret.
+- **An approval lifts one held runner step, once.** With
+  `AGENT_APPROVALS_ENABLED`, a runner step (verify, path checks, commit, push,
+  opening the pull request) that the gate answers with `REQUIRE_APPROVAL`
+  pauses the run as `WAITING_FOR_HUMAN` instead of failing it. The agent has
+  already ended, the workspace is kept and its lease renewed for the wait, and
+  the change is snapshotted as a diff artifact. One PENDING approval records
+  the exact descriptor, its digest, the gate decision with the advisor's
+  Decision Plane id, the policy revisions and the run's pause counter. Only the
+  owning principal can decide it, through the Dashboard's Origin- and
+  CSRF-checked route, and the decision must name the digest it was shown;
+  exactly one approve or deny moves it out of PENDING. A changed digest or a
+  later pause refuses the decision as `APPROVAL_STALE`. A workspace that is gone
+  or was recreated ends the wait at once: the decision or the next sweeper pass
+  expires the approval and fails the run as `APPROVAL_STALE`, notified and
+  audited. Past its deadline (the smallest of `AGENT_APPROVAL_TTL_MINUTES`, the
+  policy's approval TTL and the workspace lease, which must be readable: a run
+  whose lease and hard deadline cannot be read does not wait, and retries the
+  step instead) the approval expires and the run fails. On approval the run
+  resumes and the step runs under a fresh idempotency key
+  (`automation:<workflow>:resume:<approval>`), so a restart replays it at most
+  once. The gate decides the step again when it runs: the approval lifts only
+  `REQUIRE_APPROVAL`, only for the held step itself (its own step key) with
+  that exact digest, and only while approvals are enabled, never a `DENY` such
+  as a hard deny added since. It becomes CONSUMED when the step is admitted,
+  also when the re-gate no longer required it; a replay of that same step
+  after a restart may still use it, no other step can. The one exception is
+  the push's repeat of a commit path check: the push gates the commit's paths
+  again chunk by chunk and cannot wait, so the approval of the commit's check
+  of a chunk covers the push's check of the same chunk with the identical
+  digest in the same run.
+- **An approval covers the change the owner reviewed, not just the action.**
+  The pause binds the complete change: the SHA-256 of Git's raw listing of it,
+  with the mode and full object id of every changed path, read by the runner's
+  own inspection of the checkout (the staged working tree before the commit,
+  the recorded commit against the base from the push on). An object id names
+  a file's whole content, so the binding covers a change of any size, and a
+  listing cut short at the inspection's output cap binds nothing: the run does
+  not wait. The diff artifact only shows the change and is cut short at 1 MiB,
+  which it then says; the listing is read before it, so a change made in
+  between makes the approval stale instead of binding content the owner was
+  not shown. Until the approved step is dispatched, every resumed pass
+  recomputes the binding and compares it; an approved commit is compared once
+  more on every attempt right after it stages the working tree and before it
+  commits, as long as HEAD is still the base, so a retried attempt (for
+  example after a failed branch checkout) is covered too. Anything that changed
+  the checkout or the commit while the run waited or after the approval fails
+  the run as `APPROVAL_STALE` before the step acts (nothing is committed,
+  pushed or opened), and an unused approval is retired as EXPIRED with an
+  `agent.approval.stale` audit entry. The commit itself, made or adopted from
+  an earlier attempt, is compared as well before it is recorded, so content
+  that a `pre_commit` lifecycle hook or a process still running in the
+  executor staged after the last check of the working tree fails the run
+  before anything is pushed (the commit stays local). The push and the pull
+  request then name that commit by its id, so no window remains between the
+  check and what is published. The bound diff artifact is shown cut short
+  above 1 MiB with its line counts omitted; the file count and the binding
+  always cover the whole change.
+  Neither Jev nor any advisor answer can grant an approval; the advisor can
+  only escalate. With the flag off, a held step fails as
+  `ACTION_DENIED:APPROVALS_DISABLED` and the sweeper fails runs still waiting.
+  Waiting time does not count against the run-time budget, and a waiting run
+  still holds its concurrency slot and workspace
+  ([`apps/runner/src/agent-governance/approval-service.ts`](../apps/runner/src/agent-governance/approval-service.ts),
+  [`test/integration/hitl-approval-resume.test.ts`](../test/integration/hitl-approval-resume.test.ts)).
 - **Installs are lockfile-only and separate.** With
   `AGENT_CODING_PACKAGE_INSTALL_ENABLED`, a checkout's npm lockfile is admitted
   only if every entry is a registry tarball with a sha512 integrity from an

@@ -100,6 +100,7 @@ import { createModelWizard, createSpendPanel, renderModelsPage, verificationLabe
 import { createAgentPolicyEditor } from './dashboard-policies.js';
 import { createTracesView, tracesAvailable } from './dashboard-traces.js';
 import { createInboxView, inboxStatus } from './dashboard-inbox.js';
+import { agentApprovalDecision, agentApprovalsPending, readAgentApprovals, renderAgentActionApprovals } from './dashboard-action-approvals.js';
 import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -4503,16 +4504,35 @@ export function initializeDashboard() {
       packages: { enabled: data.enabled === true, approvalMode: typeof data.approvalMode === 'string' ? data.approvalMode : 'required' }
     };
   }
-  const pendingApprovals = (grants, plans) => grants.filter((grant) => grantIsActionable(grant)).length
-    + plans.filter((plan) => planIsActionable(plan)).length;
-  /** The approvals inbox: pending privilege grants, package plans, and their decisions. */
+  const pendingApprovals = (grants, plans, agentApprovals = []) => grants.filter((grant) => grantIsActionable(grant)).length
+    + plans.filter((plan) => planIsActionable(plan)).length + agentApprovalsPending(agentApprovals);
+  /** The approvals inbox: held agent actions, pending privilege grants, package plans, and their decisions. */
   async function loadApprovals() {
     selectNavigation('approvals');
     document.querySelector('#command-surface').hidden = true;
-    const [result, { plans, packages }] = await Promise.all([api('/privilege-grants'), readPackagePlans()]);
+    const [result, { plans, packages }, agent] = await Promise.all([api('/privilege-grants'), readPackagePlans(), readAgentApprovals()]);
     const grants = Array.isArray(result?.data?.grants) ? result.data.grants : [];
-    insertRendered(content, renderApprovals({ grants, plans, packages }));
-    updateApprovalsBadge(pendingApprovals(grants, plans));
+    insertRendered(content, renderApprovals({ grants, plans, packages, agentActions: renderAgentActionApprovals(agent) }));
+    updateApprovalsBadge(pendingApprovals(grants, plans, agent.approvals));
+    for (const button of document.querySelectorAll('.approve-agent-action, .deny-agent-action')) button.addEventListener('click', (event) => {
+      const approving = button.classList.contains('approve-agent-action');
+      const step = button.dataset.approvalStep ?? 'this step';
+      // The digest is the one rendered on this row, so a decision can never cover an action the operator did not see.
+      const request = agentApprovalDecision(button.dataset.approvalId ?? '', approving ? 'approve' : 'deny', button.dataset.approvalDigest ?? '');
+      if (!request) return;
+      void confirmAction({
+        title: approving ? `Approve: ${step}?` : `Deny: ${step}?`,
+        description: approving
+          ? 'The coding run resumes and performs exactly this action once. The policy is checked again when it runs, so a deny added since still wins. The decision is audited.'
+          : 'The coding run fails and the action is not performed; the diff stays available. The decision is audited.',
+        target: `Action digest ${request.body.expectedDigest}`, label: approving ? 'Approve' : 'Deny', pendingLabel: approving ? 'Approving…' : 'Denying…',
+        action: async () => {
+          await api(request.path, { method: 'POST', body: requestBody(request.body) });
+          announce(approving ? `Approved: ${step}.` : `Denied: ${step}.`);
+          await loadApprovals();
+        }
+      }, event.currentTarget);
+    });
     for (const button of document.querySelectorAll('.approve-grant, .reject-grant')) button.addEventListener('click', (event) => {
       const approving = button.classList.contains('approve-grant');
       const grantId = button.dataset.grantId ?? '';
@@ -4609,9 +4629,9 @@ export function initializeDashboard() {
     await inboxView.load(content, location.search);
   }
   async function refreshApprovalsBadge() {
-    const [result, { plans }] = await Promise.all([api('/privilege-grants').catch(() => undefined), readPackagePlans()]);
+    const [result, { plans }, agent] = await Promise.all([api('/privilege-grants').catch(() => undefined), readPackagePlans(), readAgentApprovals()]);
     const grants = Array.isArray(result?.data?.grants) ? result.data.grants : [];
-    updateApprovalsBadge(pendingApprovals(grants, plans));
+    updateApprovalsBadge(pendingApprovals(grants, plans, agent.approvals));
   }
   /**
    * Global Agents page and the workspace-scoped tab share one renderer and one

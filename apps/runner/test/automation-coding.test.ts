@@ -103,7 +103,11 @@ async function setup(options: { policy?: GlobalExecutionPolicy; phase?: string; 
       inspections.push({ kind: 'commit', revision });
       if (revision === 'HEAD' && checkout.head === BASE) return { ok: true, data: { sha: BASE, parents: ['b'.repeat(40)], author: null, committer: null, message: 'Initial', paths: [], truncated: false } };
       return { ok: true, data: { ...checkout.commit, paths: [...checkout.commit.paths] } };
-    }
+    },
+    diff: async () => ({ ok: true, data: { text: 'diff --git a/src/a.ts b/src/a.ts\n+added\n-removed\n', truncated: false } }),
+    change: async (_owner, _workspace, _base, sha) => ({
+      ok: true, data: { head: sha === null ? checkout.head : null, listing: (sha === null ? checkout.paths : checkout.commit.paths).join('\0'), truncated: false }
+    })
   };
   const verifiers: PushVerifier[] = [];
   // As the workspace service runs a verified push: the staged clone is read and decided before anything
@@ -218,6 +222,29 @@ describe('createCodingGitPort', () => {
     // A revision that is not HEAD or an object id never reaches Git.
     expect(await port.commit(OWNER, WORKSPACE, '--output=/tmp/x', BASE, AbortSignal.timeout(1_000))).toMatchObject({ ok: false });
     expect(seen).toHaveLength(5);
+  });
+
+  it('identifies a staged or committed change by its raw listing of full object ids', async () => {
+    const seen: string[][] = [];
+    const listing = `:100644 100644 ${'1'.repeat(40)} ${'2'.repeat(40)} M\0src/a.ts\0`;
+    const port = createCodingGitPort(async (_owner, _workspace, args) => {
+      seen.push([...args]);
+      if (args[0] === 'rev-parse') return { exitCode: 0, stdout: `${BASE}\n`, truncated: false };
+      return { exitCode: 0, stdout: listing, truncated: args[0] === 'diff-tree' };
+    });
+    const signal = AbortSignal.timeout(1_000);
+    expect(await port.change(OWNER, WORKSPACE, BASE, null, signal)).toEqual({ ok: true, data: { head: BASE, listing, truncated: false } });
+    expect(await port.change(OWNER, WORKSPACE, BASE, COMMIT, signal)).toEqual({ ok: true, data: { head: null, listing, truncated: true } });
+    const options = ['-r', '-z', '--no-renames', '--no-abbrev', '--ignore-submodules=none'];
+    expect(seen).toEqual([
+      ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'],
+      ['diff-index', '--cached', ...options, BASE, '--'],
+      ['diff-tree', ...options, '--no-commit-id', BASE, COMMIT, '--']
+    ]);
+    // Anything but an object id never reaches Git.
+    expect(await port.change(OWNER, WORKSPACE, '--output=/tmp/x', null, signal)).toMatchObject({ ok: false, code: 'GIT_INSPECT_FAILED' });
+    expect(await port.change(OWNER, WORKSPACE, BASE, 'HEAD', signal)).toMatchObject({ ok: false, code: 'GIT_INSPECT_FAILED' });
+    expect(seen).toHaveLength(3);
   });
 
   it('refuses a commit object it cannot read completely', async () => {
@@ -593,10 +620,10 @@ describe('CodingWorkflowEngine', () => {
     expect(context.outcome).toMatchObject({ code: 'EFFECT_UNKNOWN' });
   });
 
-  it('fails closed when publishing needs approval, with no effect', async () => {
+  it('fails closed when publishing needs approval and approvals are off, with no effect', async () => {
     const context = await setup({ phase: 'COMMIT', policy: { ...CODING_GLOBAL_POLICY, defaults: { ...CODING_GLOBAL_POLICY.defaults, publish_branch: { effect: 'require_approval', delegable: false } } } });
     await context.run();
-    expect(context.outcome.code).toMatch(/^ACTION_REQUIRES_APPROVAL:/u);
+    expect(context.outcome.code).toBe('ACTION_DENIED:APPROVALS_DISABLED');
     expect(context.count('git_push')).toBe(0);
   });
 });

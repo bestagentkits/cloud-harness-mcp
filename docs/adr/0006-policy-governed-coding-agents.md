@@ -210,3 +210,50 @@ coding workflows fail with `CODING_DISABLED` before publishing anything more;
 published branches and pull requests stay for the owner. The tables are
 additive, so an older runner ignores them and re-enabling needs no migration
 ([configuration](../configuration.md#coding-automations)).
+
+## Implementation notes: owner approvals
+
+`AGENT_APPROVALS_ENABLED` (off by default) lets `REQUIRE_APPROVAL` wait for the
+owner instead of failing. These notes record what that settled; the trust
+boundary is in the [security model](../security-model.md#coding-automations).
+
+- **Only runner steps wait.** Verify, the path checks, commit, push and opening
+  the pull request run after the agent has ended, so pausing them holds no live
+  model session and costs no tokens. A held agent tool call still fails with
+  `ACTION_REQUIRES_APPROVAL`: pausing it would keep a Pi session and its lease
+  open for an unbounded time, which the run budget cannot account for.
+- **One approval per pause, bound to a digest.** The approval stores the
+  descriptor, its sha256, the gate decision (with the advisor's decision id),
+  the policy revisions and the run's pause counter in the existing runner state
+  database (`agent_action_approvals`); there is no second store. A decision
+  names the digest it was shown, and a guarded state change makes it
+  single-use. The approval also binds the change it showed: the SHA-256 of
+  Git's raw listing of it, whose full object ids name every changed file's
+  whole content, so a diff too large to show in full is still bound
+  completely. The resumed run recomputes it before the approved step is
+  dispatched, and an approved commit again right before it commits and on the
+  commit it made, and fails as `APPROVAL_STALE` when it differs. What an
+  approved run commits and publishes is therefore exactly the change the
+  approval is bound to, never content added after the owner reviewed it. A
+  diff over 1 MiB is shown cut short, so for such a change the owner reviews
+  the rest in the workspace; the binding still covers all of it.
+- **Approval never overrides the gate.** On resume the step is decided again;
+  the approval lifts only `REQUIRE_APPROVAL`, only for the held step itself and
+  the same digest, and only while approvals are enabled. It is consumed when
+  that step is admitted, whether or not the re-gate still needed it. The push
+  repeats the commit's path checks and cannot wait, so an approved commit path
+  check also covers the push's check of the same paths with the same digest. A `DENY`
+  (for example a hard deny added while waiting) still wins, and an advisor
+  answer can escalate but never approve.
+- **Fenced resume.** The resumed step runs under
+  `automation:<workflow>:resume:<approval>`, so its receipt is new and a
+  restart replays it at most once; the held step keeps its `REJECTED` receipt.
+- **Waiting is not running.** The wait is subtracted from the run-time budget,
+  the workspace lease is renewed for it, and the deadline is the smallest of
+  the configured TTL, the policy's approval TTL and the lease. The run keeps
+  its concurrency slot and workspace while it waits.
+
+Rollback: set `AGENT_APPROVALS_ENABLED=false`. The sweeper fails waiting runs
+with `APPROVALS_DISABLED` and expires their approvals; later held steps fail as
+`ACTION_DENIED:APPROVALS_DISABLED`. The schema change (the `WAITING_FOR_HUMAN`
+state and the approval columns) is additive, so re-enabling needs no migration.

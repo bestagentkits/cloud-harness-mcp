@@ -255,6 +255,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     agentPoliciesEnabled: process.env.AGENT_POLICIES_ENABLED,
     agentCodingEnabled: process.env.AGENT_CODING_ENABLED,
     agentCodingPackageInstallEnabled: process.env.AGENT_CODING_PACKAGE_INSTALL_ENABLED,
+    agentApprovalsEnabled: process.env.AGENT_APPROVALS_ENABLED,
+    agentApprovalTtlMinutes: process.env.AGENT_APPROVAL_TTL_MINUTES,
     notificationsEnabled: process.env.NOTIFICATIONS_ENABLED
   });
   if (packageApprovalUnavailable(config)) {

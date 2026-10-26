@@ -833,7 +833,8 @@ export function grantIsActionable(grant, now = Date.now()) {
   const expiresAt = Date.parse(String(grant?.expiresAt ?? ''));
   return Number.isNaN(expiresAt) || expiresAt > now;
 }
-export function renderApprovals({ grants = [], plans = [], packages = { enabled: false }, now = Date.now() } = {}) {
+/** `agentActions` is the Agent actions section, already rendered by its own module, shown first. */
+export function renderApprovals({ grants = [], plans = [], packages = { enabled: false }, agentActions = '', now = Date.now() } = {}) {
   const rows = grants.length
     ? grants.map((grant) => {
       const id = String(grant.id ?? '');
@@ -846,7 +847,7 @@ export function renderApprovals({ grants = [], plans = [], packages = { enabled:
     : '<li class="empty"><h3>No approvals are waiting.</h3><p>Privilege requests appear here while they are pending. Decided and expired requests stay listed briefly, without actions.</p></li>';
   return `${renderResourcePage({
     note: '<div class="page-note"><strong>Privilege grants.</strong> Approving lets one command run in a workspace under your identity. Both decisions are audited.</div>',
-    body: `<section aria-labelledby="approvals-heading"><h2 id="approvals-heading">Privilege requests</h2><ul class="record-list approval-list">${rows}</ul></section>${renderPackagePlans({ plans, enabled: packages.enabled === true, approvalMode: packages.approvalMode, now })}`
+    body: `${agentActions}<section aria-labelledby="approvals-heading"><h2 id="approvals-heading">Privilege requests</h2><ul class="record-list approval-list">${rows}</ul></section>${renderPackagePlans({ plans, enabled: packages.enabled === true, approvalMode: packages.approvalMode, now })}`
   })}`;
 }
 
@@ -2668,7 +2669,7 @@ export const AUTOMATION_SECTIONS = [
   { id: 'deliveries', label: 'Deliveries', route: '/dashboard/automations/deliveries' },
   { id: 'metrics', label: 'Metrics', route: '/dashboard/automations/metrics' }
 ];
-export const AUTOMATION_WORKFLOW_STATES = ['QUEUED', 'STARTING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED'];
+export const AUTOMATION_WORKFLOW_STATES = ['QUEUED', 'STARTING', 'RUNNING', 'WAITING_FOR_HUMAN', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED'];
 export const AUTOMATION_DELIVERY_STATES = ['RECEIVED', 'PROCESSED', 'IGNORED', 'QUARANTINED'];
 export const AUTOMATION_PUBLISH_STATES = ['NONE', 'PENDING', 'DELIVERED', 'FAILED'];
 /** Mirrors `AutomationProviderSchema`; the connection fixes a rule's provider. */
@@ -2697,7 +2698,8 @@ export const AUTOMATION_RULE_DEFAULTS = { ttlSeconds: 900, maxInputTokens: 200_0
 export const AUTOMATIONS_DISABLED_COPY = 'Automations are disabled on this instance (set AUTOMATIONS_ENABLED=true on api and runner).';
 
 const AUTOMATION_WORKFLOW_STATE = {
-  QUEUED: ['Queued', 'queued'], STARTING: ['Starting', 'creating'], RUNNING: ['Running', 'running'], COMPLETED: ['Completed', 'succeeded'],
+  QUEUED: ['Queued', 'queued'], STARTING: ['Starting', 'creating'], RUNNING: ['Running', 'running'],
+  WAITING_FOR_HUMAN: ['Waiting for approval', 'pending'], COMPLETED: ['Completed', 'succeeded'],
   FAILED: ['Failed', 'failed'], CANCELLED: ['Cancelled', ''], EXPIRED: ['Expired', 'expired']
 };
 const AUTOMATION_DELIVERY_STATE = { RECEIVED: ['Received', 'info'], PROCESSED: ['Processed', 'succeeded'], IGNORED: ['Ignored', ''], QUARANTINED: ['Quarantined', 'failed'] };
@@ -2913,6 +2915,7 @@ export function renderAutomationRunDetail({ workflow, result = null, transitions
         <dt>Agent status</dt><dd class="mono">${automationText(workflow.agentStatus, 'Not started')}</dd>
         <dt>Trace</dt><dd>${/^agent_[A-Za-z0-9_-]{20,80}$/.test(String(workflow.agentId ?? '')) ? `<a href="/dashboard/traces?agentId=${encodeURIComponent(workflow.agentId)}">View trace</a>` : 'Not started'}</dd>
         <dt>Error</dt><dd class="mono wrap">${automationText(workflow.errorCode, 'None')}</dd>
+        ${workflow.state === 'WAITING_FOR_HUMAN' ? '<dt>Approval</dt><dd>Waiting for your decision. <a href="/dashboard/approvals">Review it on the Approvals page</a>.</dd>' : ''}
         <dt>Publish</dt><dd>${automationPill(AUTOMATION_PUBLISH_STATE, workflow.publishState)}</dd>
         <dt>Usage</dt><dd>${automationUsage(workflow.usage)}</dd>
         <dt>Created</dt><dd>${time(workflow.createdAt)}</dd>

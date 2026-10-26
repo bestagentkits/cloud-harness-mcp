@@ -721,6 +721,8 @@ them on every action a coding workflow takes.
 |---|---|---|
 | `AGENT_CODING_ENABLED` | off | Runner only. Lets an automation rule with a `coding` action edit, test, commit, push an `agent/` branch and open a pull request, each action decided by the execution policy. Needs `AGENT_POLICIES_ENABLED` and `AUTOMATIONS_ENABLED`; the runner refuses to start otherwise. It is also the kill switch: setting it back to off fails running coding workflows with `CODING_DISABLED` at their next step, before anything else is published. |
 | `AGENT_CODING_PACKAGE_INSTALL_ENABLED` | off | Runner only. Lets a coding workflow install the checkout's npm lockfile once, before the agent starts, in a one-shot `dependency-access` container with lifecycle scripts off. Needs `AGENT_CODING_ENABLED`. Each locked package is still a `package_install` action the policy must allow; with the flag off, a lockfile is ignored and the agent works without installed dependencies. |
+| `AGENT_APPROVALS_ENABLED` | off | Runner only. Lets a runner step of a coding workflow (verify, path checks, commit, push, opening the pull request) that the execution policy holds for approval pause the run as `WAITING_FOR_HUMAN` until the owner approves or denies it once on the Dashboard Approvals page. Off: such a step fails as `ACTION_DENIED:APPROVALS_DISABLED`, and the sweeper fails runs still waiting with `APPROVALS_DISABLED`. Agent tool calls are never paused; one that needs approval is refused as before. It has no effect while `AGENT_CODING_ENABLED` is off. |
+| `AGENT_APPROVAL_TTL_MINUTES` | 60 | Runner only, 1 to 10080. The longest a run waits for a decision. The policy's `approval.ttlSeconds` and the workspace lease (renewed for the wait) can only shorten it; an undecided approval then expires and the run fails with `APPROVAL_EXPIRED`. |
 
 Rule fields (`coding.projectId`, `verifyCommand`, `baseBranch`) and receipt
 shapes are owned by
@@ -728,13 +730,19 @@ shapes are owned by
 the pipeline by
 [`apps/runner/src/automation-coding.ts`](../apps/runner/src/automation-coding.ts);
 and the rationale by [ADR 0006](adr/0006-policy-governed-coding-agents.md).
+Approvals are owned by
+[`packages/contracts/src/agent-approvals-api.ts`](../packages/contracts/src/agent-approvals-api.ts)
+and [`apps/runner/src/agent-governance/approval-service.ts`](../apps/runner/src/agent-governance/approval-service.ts).
 
 Rollback: set `AGENT_CODING_ENABLED=false` and restart the runner. Running
 coding workflows fail with `CODING_DISABLED` and their workspaces close;
 branches and pull requests already published stay on GitHub for the owner to
 review or delete. Receipts in `coding_actions` stay readable on the run page
 and are purged with their workflow. No table is dropped, so turning the flag on
-again needs no migration.
+again needs no migration. To stop only the pauses, set
+`AGENT_APPROVALS_ENABLED=false`: waiting runs fail with `APPROVALS_DISABLED` on
+the next sweep, their approvals expire, and later held steps fail instead of
+waiting. Approval records stay readable until their workflow is purged.
 
 ## Compose and logging overrides
 

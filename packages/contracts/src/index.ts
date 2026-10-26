@@ -31,3 +31,4 @@ export * from './agent-policy-api.js';
 export * from './agent-traces-api.js';
 export * from './coding-actions.js';
 export * from './notifications-api.js';
+export * from './agent-approvals-api.js';

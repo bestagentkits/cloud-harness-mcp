@@ -80,8 +80,13 @@ Boundaries:
 <!-- cloudharness-tool:automation_runs_list -->
 ### `automation_runs_list`
 
-- Optional: `ruleId`, `state` (`QUEUED`, `STARTING`, `RUNNING`, `COMPLETED`,
-  `FAILED`, `CANCELLED`, `EXPIRED`), `limit` (default 20, max 100).
+- Optional: `ruleId`, `state` (`QUEUED`, `STARTING`, `RUNNING`,
+  `WAITING_FOR_HUMAN`, `COMPLETED`, `FAILED`, `CANCELLED`, `EXPIRED`), `limit`
+  (default 20, max 100).
+- `WAITING_FOR_HUMAN` is a coding run paused at a step its execution policy
+  holds for the owner. Only the owner approves or denies it, on the Dashboard;
+  no tool decides it. Waiting past the deadline fails the run with
+  `APPROVAL_EXPIRED`, a denial with `APPROVAL_DENIED`, and a lost workspace or a change that no longer matches the approved one with `APPROVAL_STALE`.
 - Newest first, with the rule, event type, source reference, repository,
   state, workspace and agent ids, error code, publish state, and usage.
 
@@ -102,7 +107,7 @@ Boundaries:
 ### `automation_run_cancel`
 
 - Required: `runId`; optional `reason` (max 500, recorded in the audit log).
-- Cancels a queued, starting, or running run; a running run's cancellation is
+- Cancels a queued, starting, running, or waiting run; a running run's cancellation is
   also posted to its source. Cancelling a finished run returns it unchanged,
   so a retry is safe.
 

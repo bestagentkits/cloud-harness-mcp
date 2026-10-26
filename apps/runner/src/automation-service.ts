@@ -60,6 +60,8 @@ import { createCodingGitPort, type CodingGitRunner } from './agent-governance/co
 import { CodingWorkflowEngine, type CodingInstallPort, type CodingPublishPort } from './automation-coding.js';
 import { conformRuntime, PI_RUNTIME_MANIFEST } from './agent-governance/runtime-adapters.js';
 import { traceIdFor } from './agent-trace-store.js';
+import type { AgentApprovalTraceSink } from './agent-trace-recorder.js';
+import { AgentApprovalService } from './agent-governance/approval-service.js';
 
 export type { AutomationOperationResult } from './automation-adapter.js';
 
@@ -141,6 +143,15 @@ export type AutomationServiceOptions = {
   codingGit?: CodingGitRunner | undefined;
   /** `git_push` decided on the staged transfer clone; without it a coding workflow never pushes. */
   codingPublish?: CodingPublishPort | undefined;
+  /**
+   * Owner approvals of coding steps the gate holds for approval. Without it, or while `enabled` is off,
+   * such a step fails as APPROVALS_DISABLED and a waiting workflow is failed the same way.
+   */
+  approvals?: {
+    enabled: () => boolean;
+    ttlSeconds: () => number;
+    traces?: AgentApprovalTraceSink | undefined;
+  } | undefined;
 };
 
 type SealedSecret = { generation: number; keyVersion: number; nonce: string; ciphertext: string; authTag: string };
@@ -175,6 +186,7 @@ type WorkflowRow = {
   /** Coding columns; null for read-only workflows. */
   project_id: string | null; coding_phase: string | null; base_oid: string | null; branch: string | null; commit_sha: string | null;
   pr_number: number | null; pr_url: string | null; trace_id: string | null;
+  approval_id: string | null; approval_generation: number; waiting_since: number | null; paused_ms: number;
 };
 
 type RuleSnapshot = { name: string; match: AutomationRuleMatch; action: AutomationRuleAction };
@@ -457,6 +469,8 @@ export class AutomationService {
   private readonly coding: CodingWorkflowEngine | undefined;
   /** Receipts stay readable (and are purged) whether or not coding is enabled now. */
   private readonly codingActions: CodingActionStore;
+  /** Owner approvals of held coding steps; readable whether or not approvals are enabled now. */
+  readonly approvals: AgentApprovalService;
 
   constructor(options: AutomationServiceOptions) {
     this.database = options.database;
@@ -473,6 +487,25 @@ export class AutomationService {
     this.log = options.log ?? (() => undefined);
     initializeAutomationSchema(this.database);
     this.codingActions = new CodingActionStore(this.database, this.now);
+    const broker = options.coding;
+    this.approvals = new AgentApprovalService({
+      database: this.database,
+      enabled: () => (options.approvals?.enabled() ?? false) && broker !== undefined,
+      ttlSeconds: () => options.approvals?.ttlSeconds() ?? 3_600,
+      resolvePrincipal: options.resolvePrincipal,
+      workflows: {
+        wait: (id, approvalId, generation, at) => this.transition(id, ['RUNNING'], 'WAITING_FOR_HUMAN', 'APPROVAL_REQUIRED',
+          { approval_id: approvalId, approval_generation: generation, waiting_since: at }),
+        resume: (id, approvalId, at) => this.resumeWaiting(id, approvalId, at),
+        fail: (id, code, actor) => this.finish(id, ['WAITING_FOR_HUMAN'], 'FAILED', code, actor, { waiting_since: null, ...this.publishFields(id) })
+      },
+      ...(broker ? { workspaceGeneration: (workspaceId: string) => broker.workspaces.generation(workspaceId) } : {}),
+      traces: options.approvals?.traces,
+      audit: this.audit,
+      now: () => this.now(),
+      log: (record) => this.log(record)
+    });
+    const approvals = this.approvals;
     this.coding = options.coding ? new CodingWorkflowEngine(options.coding, {
       call: async (ownerId, operation, input) => await this.call(ownerId, operation, input),
       update: (id, fields) => this.updateRunning(id, fields),
@@ -481,8 +514,49 @@ export class AutomationService {
       now: () => this.now(),
       ...(options.codingInstall ? { install: options.codingInstall } : {}),
       ...(options.codingGit ? { git: createCodingGitPort(options.codingGit) } : {}),
-      ...(options.codingPublish ? { publish: options.codingPublish } : {})
+      ...(options.codingPublish ? { publish: options.codingPublish } : {}),
+      approvals: {
+        enabled: () => approvals.enabled,
+        ttlSeconds: () => approvals.ttlSeconds(),
+        stepKey: (ownerId, workflowId, key) => approvals.stepKey(ownerId, workflowId, key),
+        approvedFor: (ownerId, workflowId, stepKey, digest) => approvals.approvedFor(ownerId, workflowId, stepKey, digest),
+        consume: (ownerId, workflowId, stepKey) => approvals.consume(ownerId, workflowId, stepKey),
+        latestApproved: (ownerId, workflowId) => approvals.latestApproved(ownerId, workflowId),
+        revoke: (record) => approvals.revoke(record),
+        request: (input) => approvals.request(input)
+      }
     }) : undefined;
+  }
+
+  /**
+   * WAITING_FOR_HUMAN back to RUNNING for the approval it waits for, by the owner's decision. The wait is
+   * added to the paused time, which the run's time budget does not count, and the step runs on the next tick.
+   */
+  private resumeWaiting(id: string, approvalId: string, at: number): boolean {
+    const row = this.database.prepare('SELECT state, approval_id, waiting_since, paused_ms FROM automation_workflows WHERE id = ?')
+      .get(id) as { state: AutomationWorkflowState; approval_id: string | null; waiting_since: number | null; paused_ms: number } | undefined;
+    if (!row || row.state !== 'WAITING_FOR_HUMAN' || row.approval_id !== approvalId) return false;
+    const waited = row.waiting_since === null ? 0 : Math.max(0, at - row.waiting_since);
+    return this.transition(id, ['WAITING_FOR_HUMAN'], 'RUNNING', 'APPROVAL_GRANTED',
+      { paused_ms: row.paused_ms + waited, waiting_since: null, next_attempt_at: at, step_failures: 0 }, 'owner');
+  }
+
+  /**
+   * Settles waiting workflows: a coding workflow stops waiting when coding is turned off (the kill
+   * switch), then the approvals sweeper expires what can no longer be decided and drains every wait
+   * when approvals are turned off.
+   */
+  private settleWaiting(): void {
+    try {
+      if (!this.coding?.enabled) {
+        const waiting = this.database.prepare(`SELECT id FROM automation_workflows WHERE state = 'WAITING_FOR_HUMAN' AND project_id IS NOT NULL
+          ORDER BY updated_at, id LIMIT ${BATCH}`).all() as { id: string }[];
+        for (const row of waiting) this.finish(row.id, ['WAITING_FOR_HUMAN'], 'FAILED', 'CODING_DISABLED', 'system', { waiting_since: null, ...this.publishFields(row.id) });
+      }
+      this.approvals.sweep();
+    } catch (error) {
+      this.log({ event: 'automation_approval_sweep_failed', error: error instanceof Error ? error.name : 'unknown' });
+    }
   }
 
   /** Coding workflows post their outcome when the rule asks for a comment, whichever way they end. */
@@ -736,7 +810,7 @@ export class AutomationService {
       // the owner cancels it (or lets it finish) first. Everything else of the connection goes with it,
       // so no row is left that names a connection, provider or event type that no longer exists.
       const unfinished = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE owner_id = ? AND connection_id = ?
-        AND (state IN ('QUEUED', 'STARTING', 'RUNNING') OR publish_state = 'PENDING' OR (workspace_id IS NOT NULL AND workspace_closed = 0))`)
+        AND (state IN ('QUEUED', 'STARTING', 'RUNNING', 'WAITING_FOR_HUMAN') OR publish_state = 'PENDING' OR (workspace_id IS NOT NULL AND workspace_closed = 0))`)
         .get(ownerId, id) as { count: number };
       if (unfinished.count > 0) {
         throw new AutomationsError('CONFLICT', `connection has ${unfinished.count} unfinished run(s); cancel them or wait for them to finish, then delete`);
@@ -945,7 +1019,8 @@ export class AutomationService {
   private cancelWorkflow(ownerId: string, id: string, reason: string | undefined) {
     const row = this.ownedWorkflow(ownerId, id);
     if (!TERMINAL_STATES.has(row.state)) {
-      this.finish(row.id, ['QUEUED', 'STARTING', 'RUNNING'], 'CANCELLED', 'OWNER_CANCELLED', 'owner', {});
+      // A pending approval of a cancelled workflow can no longer be decided; the sweeper expires it.
+      this.finish(row.id, ['QUEUED', 'STARTING', 'RUNNING', 'WAITING_FOR_HUMAN'], 'CANCELLED', 'OWNER_CANCELLED', 'owner', { waiting_since: null });
       // Workflows are immutable snapshots, so the audited generation is the rule generation they ran.
       this.audit(this.database, ownerId, 'automation.workflow.cancelled', 'automation_workflow', row.id, row.rule_generation,
         reason ? { reason: boundedText(reason, 500) } : {});
@@ -1040,7 +1115,7 @@ export class AutomationService {
     const since = this.now() - windowDays * 86_400_000;
     const providerKey = "COALESCE(provider, 'github')";
     const aggregate = (key: string) => this.database.prepare(`SELECT ${key} AS group_key, MAX(${providerKey}) AS provider, COUNT(*) AS workflows,
-        SUM(state IN ('QUEUED', 'STARTING', 'RUNNING')) AS active, SUM(state = 'COMPLETED') AS completed, SUM(state = 'FAILED') AS failed,
+        SUM(state IN ('QUEUED', 'STARTING', 'RUNNING', 'WAITING_FOR_HUMAN')) AS active, SUM(state = 'COMPLETED') AS completed, SUM(state = 'FAILED') AS failed,
         SUM(state = 'CANCELLED') AS cancelled, SUM(state = 'EXPIRED') AS expired,
         SUM(COALESCE(CAST(json_extract(usage_json, '$.costMicros') AS INTEGER), 0)) AS cost,
         SUM(COALESCE(CAST(json_extract(usage_json, '$.inputTokens') AS INTEGER), 0)) AS input,
@@ -1102,6 +1177,7 @@ export class AutomationService {
       errorCode: row.error_code,
       publishState: row.publish_state,
       usage,
+      approvalId: row.approval_id as AutomationWorkflowSummary['approvalId'],
       coding: row.project_id === null ? null : {
         projectId: row.project_id,
         phase: CodingPhaseSchema.catch('AGENT').parse(row.coding_phase),
@@ -1143,6 +1219,7 @@ export class AutomationService {
   private async pass(): Promise<void> {
     this.processDeliveries();
     this.admitQueued();
+    this.settleWaiting();
     // Each list is read only after the previous launches, so a row already busy is skipped by id.
     for (const row of this.due('STARTING')) this.launch(row, () => this.startWorkflow(row), true);
     for (const row of this.due('RUNNING')) this.launch(row, () => this.poll(row), true);
@@ -1258,7 +1335,7 @@ export class AutomationService {
         continue;
       }
       const active = this.database.prepare(`SELECT 1 FROM automation_workflows WHERE rule_id = ? AND resource_key = ?
-        AND state IN ('QUEUED', 'STARTING', 'RUNNING')`).get(rule.id, event.resourceKey);
+        AND state IN ('QUEUED', 'STARTING', 'RUNNING', 'WAITING_FOR_HUMAN')`).get(rule.id, event.resourceKey);
       if (active) { reasons.add('coalesced'); continue; }
       const last = this.database.prepare(`SELECT MAX(terminal_at) AS at FROM automation_workflows WHERE rule_id = ? AND resource_key = ?`)
         .get(rule.id, event.resourceKey) as { at: number | null };
@@ -1300,7 +1377,7 @@ export class AutomationService {
         ORDER BY created_at, id LIMIT ${BATCH}`).all(ruleId, now) as WorkflowRow[];
       for (const row of queued) {
         if (this.workspacesHeld() >= this.maxConcurrentWorkflows) return;
-        const ruleActive = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE rule_id = ? AND state IN ('STARTING', 'RUNNING')`)
+        const ruleActive = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE rule_id = ? AND state IN ('STARTING', 'RUNNING', 'WAITING_FOR_HUMAN')`)
           .get(ruleId) as { count: number };
         if (ruleActive.count >= this.snapshot(row).action.maxConcurrent) break;
         this.transition(row.id, ['QUEUED'], 'STARTING', null, { start_attempts: row.start_attempts + 1, next_attempt_at: now });
@@ -1313,7 +1390,7 @@ export class AutomationService {
    * ones whose workspace is not closed yet (a comment still publishing, or cleanup still retrying).
    */
   private workspacesHeld(): number {
-    const row = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE state IN ('STARTING', 'RUNNING')
+    const row = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE state IN ('STARTING', 'RUNNING', 'WAITING_FOR_HUMAN')
       OR (workspace_id IS NOT NULL AND workspace_closed = 0)`).get() as { count: number };
     return row.count;
   }
@@ -1720,6 +1797,7 @@ export class AutomationService {
       this.database.prepare(`DELETE FROM automation_deliveries WHERE received_at < ? AND state != 'RECEIVED'`).run(horizon);
       // Receipts carry no foreign key; they go with their workflow's retention.
       this.codingActions.purgeOrphans(horizon);
+      this.approvals.store.purgeOrphans(horizon);
     });
   }
 
@@ -1732,7 +1810,10 @@ export class AutomationService {
   }
 
   /** A guarded non-terminal transition; it does nothing when the workflow already left `from`. */
-  private transition(id: string, from: readonly AutomationWorkflowState[], to: AutomationWorkflowState, code: string | null, fields: Record<string, number | string | null>): boolean {
+  private transition(
+    id: string, from: readonly AutomationWorkflowState[], to: AutomationWorkflowState, code: string | null,
+    fields: Record<string, number | string | null>, actor: 'system' | 'owner' = 'system'
+  ): boolean {
     return withEventSavepoint(this.database, () => {
       const row = this.database.prepare('SELECT state FROM automation_workflows WHERE id = ?').get(id) as { state: AutomationWorkflowState } | undefined;
       if (!row || !from.includes(row.state)) return false;
@@ -1740,7 +1821,7 @@ export class AutomationService {
       const assignments = Object.keys(fields).map((key) => `${key} = ?`);
       this.database.prepare(`UPDATE automation_workflows SET state = ?, updated_at = ?${assignments.map((entry) => `, ${entry}`).join('')} WHERE id = ? AND state = ?`)
         .run(to, now, ...Object.values(fields), id, row.state);
-      this.recordTransition(id, row.state, to, 'system', code, now);
+      this.recordTransition(id, row.state, to, actor, code, now);
       return true;
     });
   }
