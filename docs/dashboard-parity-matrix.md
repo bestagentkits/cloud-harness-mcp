@@ -152,7 +152,10 @@ neither may happen until each row is ported or explicitly dropped. The
 umbrella is
 [#551](https://github.com/bestagentkits/cloud-harness-mcp/issues/551); every
 row below is **re-host** (no row is dropped: each page owns a runner feature
-with no other UI).
+with no other UI). `CLASSIC_ONLY_PAGES` in
+[`apps/dashboard/src/app/page-registry.test.ts`](../apps/dashboard/src/app/page-registry.test.ts)
+names the classic page ids that are exempt from registry parity until their
+port lands; the port removes its entry.
 
 | Legacy route | Page key / loader | Feature | Phase | Deep-link params (keep as search params) | BFF reads (legacy loader) | Security note | Tests to port | Follow-up |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
