@@ -300,13 +300,11 @@ and its evidence are in
   bounds ([configuration](configuration.md#managed-agents)).
 - A continuation's model sees a tool result with `EFFECT_UNKNOWN`: the earlier
   run was stopped while a write, delete, or move was in flight, and the runner
-  could not establish from the workspace whether it landed. For a persisted
-  `pi-coding` continuation the call was not issued again. A durable agent may
-  re-issue the interrupted call under a new request ID, which the effect ledger
-  does not match ([#589](https://github.com/bestagentkits/cloud-harness-mcp/issues/589)), so
-  check the workspace before re-running it. Read the affected path before
-  repeating the change; the agent
-  is told the same. `EFFECT_NOT_APPLIED` means the write provably did not land
+  could not establish from the workspace whether it landed. The call was not
+  issued again: a persisted continuation receives this outcome, and a durable
+  agent reruns the call under its original request ID, which the effect ledger
+  answers with the same outcome. Read the affected path before repeating the
+  change; the agent is told the same. `EFFECT_NOT_APPLIED` means the write provably did not land
   and may be retried with a new call. The rules are in
   [`apps/runner/src/agent-effect-reconciler.ts`](../apps/runner/src/agent-effect-reconciler.ts).
 - An agent killed mid-run reports `INTERRUPTED`, never `SUCCEEDED`, whichever
