@@ -518,9 +518,15 @@ runner publishes":
   the checkout or the commit while the run waited or after the approval fails
   the run as `APPROVAL_STALE` before the step acts (nothing is committed,
   pushed or opened), and an unused approval is retired as EXPIRED with an
-  `agent.approval.stale` audit entry. Only a process still running in the
-  executor between that last check and the commit could slip a change in; the
-  push verifier still gates every path such a change publishes.
+  `agent.approval.stale` audit entry. The commit itself, made or adopted from
+  an earlier attempt, is compared as well before it is recorded, so content
+  that a `pre_commit` lifecycle hook or a process still running in the
+  executor staged after the last check of the working tree fails the run
+  before anything is pushed (the commit stays local). The push and the pull
+  request then name that commit by its id, so no window remains between the
+  check and what is published. The bound diff artifact is shown cut short
+  above 1 MiB with its line counts omitted; the file count and the binding
+  always cover the whole change.
   Neither Jev nor any advisor answer can grant an approval; the advisor can
   only escalate. With the flag off, a held step fails as
   `ACTION_DENIED:APPROVALS_DISABLED` and the sweeper fails runs still waiting.

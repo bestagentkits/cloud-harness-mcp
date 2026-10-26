@@ -430,6 +430,8 @@ describe('coding automation: owner approval of a held step', { timeout: 30_000 }
     const shown = harness.workspaces.artifacts.get(String(held.diff.artifactId))!.content;
     expect(shown).toContain('The diff was cut short at its size limit');
     expect(shown).not.toContain('line 023999');
+    // The file count is complete; the line counts of a diff cut short are not given at all.
+    expect(held.diff).toMatchObject({ files: 3, additions: null, deletions: null });
 
     expect(decide(harness, held, 'approve').ok).toBe(true);
     // A line far past the first MiB of the diff changes; the size stays the same.
@@ -440,6 +442,27 @@ describe('coding automation: owner approval of a held step', { timeout: 30_000 }
     expect(harness.workflow(workflowId).workflow).toMatchObject({ state: 'FAILED', errorCode: 'APPROVAL_STALE' });
     expect(harness.count('git_commit')).toBe(0);
     expect(approval(harness, held.approvalId).state).toBe('EXPIRED');
+    zeroPublishEffects(harness);
+  });
+
+  it('refuses an approved commit that a pre-commit hook added content to, and pushes nothing', async () => {
+    const harness = await setup({ policy: COMMIT_NEEDS_APPROVAL });
+    const { workflowId, approval: held } = await waiting(harness);
+    expect(decide(harness, held, 'approve').ok).toBe(true);
+    // A repository pre-commit hook edits an approved file and stages it after the last check of the staged change.
+    harness.workspaces.beforeCommit = (checkout) => {
+      writeFileSync(join(checkout, 'src/math.mjs'), `${FIXED_SOURCES['src/math.mjs']}\nexport const injected = true;\n`);
+      git(checkout, ['add', 'src/math.mjs']);
+    };
+    await harness.tick(6);
+
+    expect(harness.workflow(workflowId).workflow).toMatchObject({ state: 'FAILED', errorCode: 'APPROVAL_STALE' });
+    expect(harness.count('git_commit')).toBe(1);
+    expect(receiptKeys(harness, workflowId, 'commit')).toContainEqual({ idempotency_key: `automation:${workflowId}:resume:${held.approvalId}`, state: 'REJECTED', decision: 'REQUIRE_APPROVAL' });
+    expect(harness.audits.filter((entry) => entry.action === 'agent.approval.stale')).toEqual([
+      expect.objectContaining({ subjectId: held.approvalId, details: expect.objectContaining({ reason: 'CONTENT_CHANGED' }) })
+    ]);
+    expect(harness.github.pushes).toEqual([]);
     zeroPublishEffects(harness);
   });
 

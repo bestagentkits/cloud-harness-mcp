@@ -231,9 +231,12 @@ boundary is in the [security model](../security-model.md#coding-automations).
   Git's raw listing of it, whose full object ids name every changed file's
   whole content, so a diff too large to show in full is still bound
   completely. The resumed run recomputes it before the approved step is
-  dispatched, and an approved commit again right before it commits, and fails
-  as `APPROVAL_STALE` when it differs, so approving an action never approves
-  content the owner did not see.
+  dispatched, and an approved commit again right before it commits and on the
+  commit it made, and fails as `APPROVAL_STALE` when it differs. What an
+  approved run commits and publishes is therefore exactly the change the
+  approval is bound to, never content added after the owner reviewed it. A
+  diff over 1 MiB is shown cut short, so for such a change the owner reviews
+  the rest in the workspace; the binding still covers all of it.
 - **Approval never overrides the gate.** On resume the step is decided again;
   the approval lifts only `REQUIRE_APPROVAL`, only for the held step itself and
   the same digest, and only while approvals are enabled. It is consumed when

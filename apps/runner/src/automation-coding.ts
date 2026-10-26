@@ -179,13 +179,24 @@ const DIFF_CUT_SHORT_NOTE = '\n[The diff was cut short at its size limit. The ap
 const MAX_SHOWN_DIFF_CHARS = 1_048_576;
 
 /** The diff as the owner is shown it: within the artifact limit, and saying so when it was cut short. */
-function shownDiff(text: string, truncated: boolean): string {
-  if (!truncated && text.length <= MAX_SHOWN_DIFF_CHARS) return text;
+function shownDiff(text: string, cut: boolean): string {
+  if (!cut) return text;
   return `${text.slice(0, MAX_SHOWN_DIFF_CHARS - DIFF_CUT_SHORT_NOTE.length)}${DIFF_CUT_SHORT_NOTE}`;
 }
 
-/** The change an approval binds: the digest of its identity, the HEAD a staged change sits on, and the diff shown. */
-type ChangeRead = { ok: true; digest: string; head: string | null; text: string } | { ok: false; code: string; retryable: boolean };
+/** Files, added and removed lines of a change; the line counts are null when its diff was cut short. */
+type ChangeStats = { files: number; additions: number | null; deletions: number | null };
+
+/**
+ * The change an approval binds: the digest of its identity, the HEAD a staged change sits on, and the
+ * diff shown with its counts.
+ */
+type ChangeRead = { ok: true; digest: string; head: string | null; text: string; stats: ChangeStats } | { ok: false; code: string; retryable: boolean };
+
+/** Entries of a NUL-separated raw listing (`:<modes> <ids> <status>`, then the path), one per changed file. */
+function listedFiles(listing: string): number {
+  return listing.split('\0').filter((field, index) => index % 2 === 0 && field.startsWith(':')).length;
+}
 
 function leaseField(result: AutomationOperationResult, field: 'expiresAt' | 'hardExpiresAt'): unknown {
   return (result.data as Record<string, unknown> | undefined)?.[field];
@@ -558,7 +569,7 @@ export class CodingWorkflowEngine {
     }
     const staged = await this.host.call(row.owner_id, 'git_add', { workspaceId, all: true });
     if (!staged.ok) return this.stepFailed(row, binding, record, staged, startedAt);
-    if (!(await this.stagedChangeApproved(row, binding, record, workspaceId, base, startedAt))) return;
+    if (!(await this.commitChangeApproved(row, binding, record, workspaceId, base, null, startedAt))) return;
     const committed = await this.host.call(row.owner_id, 'git_commit', {
       workspaceId,
       message: this.commitMessage(row),
@@ -588,6 +599,9 @@ export class CodingWorkflowEngine {
       this.host.fail(row.id, own.code);
       return;
     }
+    // The commit made (or adopted) is compared with the approved change too: a pre_commit lifecycle hook
+    // runs between the last staged check and the commit, and can stage more.
+    if (!(await this.commitChangeApproved(row, binding, record, workspaceId, base, own.sha, startedAt))) return;
     this.broker.settle(binding, record, 'APPLIED', { commitSha: own.sha, branch }, startedAt);
     this.phase(row, 'PUSH', { commit_sha: own.sha });
   }
@@ -733,7 +747,8 @@ export class CodingWorkflowEngine {
    * dispatched under its resume key, every pass recomputes the change's identity exactly as the pause did
    * and compares it: anything that changed the checkout or the commit since then fails the workflow as
    * APPROVAL_STALE before the step can act, with an unused approval retired. The commit checks it again
-   * right before it commits (see `stagedChangeApproved`). False when the step must not run on this pass.
+   * right before it commits and on the commit it made (see `commitChangeApproved`). False when the step
+   * must not run on this pass.
    */
   private async approvedChangeHolds(row: CodingWorkflowRow, binding: CodingBinding): Promise<boolean> {
     const approvals = this.host.approvals;
@@ -762,21 +777,24 @@ export class CodingWorkflowEngine {
   }
 
   /**
-   * The last check of an approved commit, made after the commit step staged the working tree and right
-   * before it commits, on every attempt: a pass that skipped the earlier checks (a replay after a failed
-   * branch checkout) or a change made since them is caught here. When the newest approval of the workflow
-   * is one of the commit or of its path checks and HEAD is still the base, the staged change must be the
-   * one approved; otherwise the step is refused as APPROVAL_STALE and nothing is committed. With HEAD
-   * already past the base, an earlier attempt's commit is adopted only as this workflow's own (see
-   * `ownCommit`). False when the step must not go on.
+   * The checks of an approved commit, on every attempt, when the newest approval of the workflow is one of
+   * the commit or of its path checks. With `commit` null it runs after the step staged the working tree
+   * and right before it commits: a pass that skipped the earlier checks (a replay after a failed branch
+   * checkout) or a change made since them is caught here, as long as HEAD is still the base (an earlier
+   * attempt's commit is adopted only as this workflow's own, see `ownCommit`, and checked as below). With
+   * `commit` it runs on the commit made or adopted, before it is recorded: whatever the commit's
+   * pre_commit lifecycle hooks staged is caught here, and nothing is pushed. A change that is not the one
+   * approved refuses the step as APPROVAL_STALE. False when the step must not go on.
    */
-  private async stagedChangeApproved(row: CodingWorkflowRow, binding: CodingBinding, record: CodingActionRecord, workspaceId: string, base: string, startedAt: number): Promise<boolean> {
+  private async commitChangeApproved(
+    row: CodingWorkflowRow, binding: CodingBinding, record: CodingActionRecord, workspaceId: string, base: string, commit: string | null, startedAt: number
+  ): Promise<boolean> {
     const approvals = this.host.approvals;
     if (!approvals?.enabled()) return true;
     const approval = approvals.latestApproved(binding.principalId, binding.workflowId);
     const commitKey = `automation:${row.id}:commit`;
     if (!approval?.contentDigest || (approval.stepKey !== commitKey && !approval.stepKey.startsWith(`${commitKey}:paths:`))) return true;
-    const change = await this.readChange(row, workspaceId, { stage: false, diff: false });
+    const change = await this.readChange(row, workspaceId, { stage: false, diff: false, ...(commit ? { commit } : {}) });
     if (!change.ok) {
       const code = bounded(`CODING_DIFF_FAILED:${change.code}`);
       if (change.retryable) {
@@ -787,7 +805,7 @@ export class CodingWorkflowEngine {
       }
       return false;
     }
-    if (change.head !== base || change.digest === approval.contentDigest) return true;
+    if ((commit === null && change.head !== base) || change.digest === approval.contentDigest) return true;
     approvals.revoke(approval);
     this.refused(row, binding, record, 'APPROVAL_STALE', startedAt);
     return false;
@@ -886,7 +904,7 @@ export class CodingWorkflowEngine {
       else this.host.fail(row.id, bounded(`CODING_DIFF_FAILED:${change.code}`));
       return;
     }
-    const diff = await this.approvalDiff(row, binding, workspaceId, generation, change.text);
+    const diff = await this.approvalDiff(row, binding, workspaceId, generation, change.text, change.stats);
     if (diff === null) return;
     approvals.request({
       principalId: row.owner_id, workflowId: row.id, record: admission.record, decision, generation, diff, expiresAt,
@@ -901,9 +919,9 @@ export class CodingWorkflowEngine {
    * snapshotted from is removed again before the workflow waits, so it can never be committed; when that
    * fails the workflow does not wait (null): it retries a transient failure and fails otherwise.
    */
-  private async approvalDiff(row: CodingWorkflowRow, binding: CodingBinding, workspaceId: string, generation: number, text: string): Promise<AgentApprovalDiff | null> {
+  private async approvalDiff(row: CodingWorkflowRow, binding: CodingBinding, workspaceId: string, generation: number, text: string, counts: ChangeStats): Promise<AgentApprovalDiff | null> {
     const none: AgentApprovalDiff = { artifactId: null, files: null, additions: null, deletions: null };
-    const stats = text.length > 0 ? diffStats(text) : {};
+    const stats = text.length > 0 ? counts : {};
     const admission = await this.broker.begin({
       binding, origin: 'runner', step: 'diff_artifact', idempotencyKey: `automation:${row.id}:approval-diff:${generation}`,
       descriptor: { version: 1, actionClass: 'read', repository: binding.repository }, signal: gateSignal()
@@ -944,7 +962,7 @@ export class CodingWorkflowEngine {
     }
     this.broker.settle(binding, record, artifactId ? 'APPLIED' : 'REJECTED',
       artifactId ? { artifactId } : { errorCode: bounded(written.ok ? 'ARTIFACT_FAILED' : written.error?.code ?? 'FILES_WRITE_FAILED') }, startedAt);
-    return { artifactId, ...diffStats(text) };
+    return { artifactId, ...counts };
   }
 
   /**
@@ -956,11 +974,11 @@ export class CodingWorkflowEngine {
    * size limit, which it then says. The listing is read before the diff, so a change made between the two
    * reads makes the approval stale instead of binding content the owner was not shown.
    */
-  private async readChange(row: CodingWorkflowRow, workspaceId: string, options: { stage: boolean; diff: boolean }): Promise<ChangeRead> {
+  private async readChange(row: CodingWorkflowRow, workspaceId: string, options: { stage: boolean; diff: boolean; commit?: string }): Promise<ChangeRead> {
     const git = this.host.git;
     const base = row.base_oid;
     if (!git || !base) return { ok: false, code: 'COMMIT_UNVERIFIED', retryable: false };
-    const sha = (row.coding_phase === 'PUSH' || row.coding_phase === 'PR') && row.commit_sha ? row.commit_sha : null;
+    const sha = options.commit ?? ((row.coding_phase === 'PUSH' || row.coding_phase === 'PR') && row.commit_sha ? row.commit_sha : null);
     if (sha === null && options.stage) {
       const staged = await this.host.call(row.owner_id, 'git_add', { workspaceId, all: true });
       if (!staged.ok) return { ok: false, code: bounded(staged.error?.code ?? 'GIT_ADD_FAILED'), retryable: retryable(staged) };
@@ -968,17 +986,24 @@ export class CodingWorkflowEngine {
     const read = await git.change(row.owner_id, workspaceId, base, sha, inspectSignal());
     if (!read.ok) return { ok: false, code: bounded(read.code), retryable: read.retryable || RETRYABLE_CODES.has(read.code) };
     if (read.data.truncated) return { ok: false, code: 'CHANGE_UNVERIFIABLE', retryable: false };
+    const files = listedFiles(read.data.listing);
     const identity = { ok: true as const, digest: contentDigest(read.data.listing), head: read.data.head };
-    if (!options.diff) return { ...identity, text: '' };
+    // The file count comes from the complete listing; the line counts only from a diff that was not cut short.
+    const shown = (text: string, truncated: boolean) => {
+      const cut = truncated || text.length > MAX_SHOWN_DIFF_CHARS;
+      const lines = cut ? { additions: null, deletions: null } : diffStats(text);
+      return { ...identity, text: shownDiff(text, cut), stats: { files, additions: lines.additions, deletions: lines.deletions } };
+    };
+    if (!options.diff) return { ...identity, text: '', stats: { files, additions: null, deletions: null } };
     if (sha !== null) {
       const diff = await git.diff(row.owner_id, workspaceId, base, sha, inspectSignal());
       if (!diff.ok) return { ok: false, code: bounded(diff.code), retryable: diff.retryable || RETRYABLE_CODES.has(diff.code) };
-      return { ...identity, text: shownDiff(diff.data.text, diff.data.truncated) };
+      return shown(diff.data.text, diff.data.truncated);
     }
     const diff = await this.host.call(row.owner_id, 'git_diff', { workspaceId, staged: true, readAll: true });
     if (!diff.ok) return { ok: false, code: bounded(diff.error?.code ?? 'GIT_DIFF_FAILED'), retryable: retryable(diff) };
     const data = diff.data as { eof?: unknown; truncated?: unknown } | undefined;
-    return { ...identity, text: shownDiff(outputOf(diff), data?.eof === false || data?.truncated === true) };
+    return shown(outputOf(diff), data?.eof === false || data?.truncated === true);
   }
 
   /**
