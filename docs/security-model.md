@@ -407,12 +407,33 @@ default masquerade off, and a transactional host firewall (installed via a
 single `iptables-restore` commit and verified through an ephemeral
 `NET_ADMIN`-only network-guard container) permits only public DNS and public
 TCP 80/443. The managed jump is the first rule of both `INPUT` and
-`DOCKER-USER`, and forbidden destination classes — loopback-to-host,
+`DOCKER-USER` in the `filter` table (rules in `mangle` and `raw` do not count
+toward that order, since `filter` makes the accept or reject decision), and forbidden destination classes — loopback-to-host,
 Docker/control-plane, RFC 1918, carrier-grade NAT, link-local, and
 cloud-metadata (`169.254.169.254`) — are rejected before the allowed ports.
 IPv6 is disabled on the bridge. The runner attests the Docker network and the
 exact ordered host ruleset before every dependency executor start and during
-periodic reaper reconciliation; on drift it fences the workspace to
+periodic reaper reconciliation. When the only defect is that another host
+service (Tailscale's `ts-input`/`ts-forward` jumps, for example) inserted a rule
+ahead of a managed jump, the runner moves that existing managed jump back to the
+head of its chain through the same network-guard image, in one atomic
+`iptables-restore --noflush` transaction that deletes and re-inserts the jump by
+rule spec, and attests the fresh ruleset again. It never adds, edits, or
+removes any other rule. Moving the managed `INPUT` jump cannot widen access,
+because its chain only rejects. Moving the bridge `DOCKER-USER` jump cannot
+widen bridge access beyond the attested egress policy, though it lets that
+policy's public DNS and TCP 80/443 accepts run before a foreign rule that
+would have dropped them.
+Moving Docker's unconditional `FORWARD -j DOCKER-USER` jump, however, also puts
+any operator rule kept in `DOCKER-USER` ahead of the foreign chain for
+non-bridge traffic, so keep host-wide accept rules out of `DOCKER-USER` on a
+host that runs such a service; a ruleset that would not attest after that move is left
+untouched, and a jump that vanished since the probe fails the transaction
+unchanged. Because the readiness check and reaper run the same attestation,
+they may perform this repair, and a service that keeps re-asserting its own
+head position (Tailscale's default netfilter mode) is moved behind again on
+each attestation. On any other drift it
+fences the workspace to
 `NETWORK_QUARANTINED`, stops the executor, and retains its data for recovery
 after policy reconciliation. If attestation is unavailable the profile fails
 closed (`DEPENDENCY_EGRESS_UNAVAILABLE`) and never falls back to broad bridge
@@ -480,6 +501,30 @@ Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `pr_update`,
 The merge-train actions follow the same model with their own GitHub permission: `commit_status_get`/`commit_status_create` mint `statuses: read|write`, `check_runs_list` mints `checks: read`, and `workflow_runs_list`, `workflow_run_view`, `workflow_dispatch`, and `workflow_run_rerun_failed` mint `actions: read|write`, each beside `contents: read`. A dispatch runs workflow code the repository already holds on the named ref; it passes only string inputs and never a harness credential. The helper validates SHAs, refs, workflow identifiers, and run IDs before placing them in a REST path.
 
 The read-only `commit_list`, `compare`, `release_list`, `tag_list`, and `ref_get` actions mint a `contents: read`-scoped token directly (no `pull_requests`/`issues` scope needed) and are reachable through either `github_action` or the non-destructive `github_read` tool, which shares this broker and helper so read-only calls do not carry `github_action`'s tool-level destructive annotation.
+
+Repository creation (`github_repository_create`) is a separate, workspace-free
+tool, because the repository does not exist yet and `workspace_open` must never
+create one as a side effect of a clone failure. It creates organization-owned
+repositories only, through the requesting principal's own GitHub App
+installation on that organization (in `cloudflare-access` mode, never the
+operator-configured installation; in `owner-bearer` mode, the configured
+installation only after GitHub confirms it belongs to the requested
+organization). Before minting anything, the runner verifies the installation
+live with the App JWT: it must belong to the requested organization, be an
+`Organization` account, be unsuspended, and grant `administration: write`.
+Write access to an existing repository never counts. Only then does it mint an
+installation token narrowed to `administration: write` with no repository
+restriction, used in-process for one `POST /orgs/{org}/repos` call; it never
+reaches a container, a result, an error, or the audit record. No operator or
+principal fallback credential (`GH_TOKEN`, `GITHUB_TOKEN`) is ever used for
+creation. Personal accounts are refused (`NOT_SUPPORTED`) because installation
+tokens cannot create user-owned repositories. The harness never deletes a
+repository it created. Each attempt is audited as `github.repository_create`
+(principal, owner/name, visibility, repository ID, installation ID, success,
+error code). The executable owner is
+[`apps/runner/src/github-repository-creator.ts`](../apps/runner/src/github-repository-creator.ts),
+with evidence in
+[`apps/runner/test/github-repository-creator.test.ts`](../apps/runner/test/github-repository-creator.test.ts).
 
 All write mutations and token authorization denials emit auditable events (`github_action.<action>`) into `audit_events` recording principal, repository, target entity numbers, success status, and structured error codes without storing token secrets or unbounded request payloads. Helper execution failures are classified into structured, typed error codes (`GITHUB_RATE_LIMITED` with retryAfterMs, `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`, and the review/merge codes documented in `docs/mcp-api.md`) to provide deterministic machine-readable recovery semantics for autonomous agents.
 

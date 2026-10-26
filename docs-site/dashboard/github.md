@@ -83,6 +83,7 @@ Before creating the App in GitHub, choose the minimum required permission level:
 | **List check runs for a commit (`check_runs_list`)** | **Checks: Read-only** + **Contents: Read-only** |
 | **Read workflow runs, dispatch workflows, re-run failed jobs** | **Actions: Read-only** or **Read and write** + **Contents: Read-only** |
 | **Use a branch as a merge-train lock (`git_push` leases)** | **Contents: Read and write** |
+| **Create organization repositories (`github_repository_create`)** | **Administration: Read and write** (organization installation only) |
 
 ::: tip Principle of Least Privilege
 Leave every other repository, organization, and user permission set to **No access**.

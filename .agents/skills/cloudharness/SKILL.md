@@ -23,6 +23,7 @@ network isolation.
 | Install, update, roll back, or uninstall a durable CLI tool for every workspace | [Managed packages](references/managed-packages.md) |
 | Inspect or change Git state, transfer origin refs, or use worktrees | [Git and worktrees](references/git-and-worktrees.md) |
 | Run an automated merge train: branch locks, commit statuses, check runs, review state, workflow dispatch and re-runs | [GitHub merge train](references/github-merge-train.md) |
+| Create a new organization repository and bootstrap it (only when the user explicitly asks) | [GitHub repository bootstrap](references/github-repository-bootstrap.md) |
 | Read/run repository skills, hooks, knowledge (memories & journals), or deployments | [Repository automation](references/repository-automation.md) |
 | Snapshot, list, read, restore, or delete retained artifacts | [Retained artifacts](references/artifacts.md) |
 | Choose a subagent model, check a connection, save an agent model profile, or read estimated model spend | [Models and spend](references/models-and-spend.md) |
@@ -217,6 +218,7 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
 | Branch isolation in workspace | `worktrees_*` | manual Git branching |
 | Stage, commit, preflight, push | `workspace_finalize` | sequence of manual `git_*` calls |
 | GitHub PRs / Issues / statuses / workflow runs | `github_read`, then `github_action` for writes | manual external Git/API CLI |
+| New organization repository (user asked for it) | `workspace_capabilities` (`githubRepositoryCreate`), then `github_repository_create` | creating it on github.com by hand |
 | Helper / workflow discovery | native `skills/*` if supported, else `skills_list` then `skills_read` | `skills_run` after review |
 | Automation hooks / deployments | `hooks_list` / `deployments_list` | run only owner-reviewed target |
 | Durable repository note | `memories_*` | never store credentials or personal data |

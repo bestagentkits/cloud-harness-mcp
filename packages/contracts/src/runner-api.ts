@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { AgentIdSchema, IdempotencyKeySchema, WorkspaceIdSchema, WorkspaceNetworkExposureSchema } from './identifiers.js';
 import { ToolResultSchema } from './mcp-results.js';
+import { GitHubRepositoryCreateCapabilitySchema } from './github-repository-schemas.js';
 export const RunnerOperationSchema = z.enum([
   'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close',
   'workspace_lease_renew', 'workspace_recover', 'workspace_context', 'workspace_set_active',
@@ -20,7 +21,7 @@ export const RunnerOperationSchema = z.enum([
   'knowledge_create', 'knowledge_read', 'knowledge_update', 'knowledge_delete', 'knowledge_list', 'knowledge_search', 'knowledge_link', 'knowledge_unlink', 'knowledge_graph',
   'deployments_list', 'deployments_run',
   'artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete',
-  'github_action', 'github_read',
+  'github_action', 'github_read', 'github_repository_create',
   'secrets_list',
   'packages_plan', 'packages_apply', 'packages_list', 'packages_status', 'packages_rollback', 'packages_remove',
   'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list',
@@ -149,14 +150,27 @@ export const WorkspaceCapabilityResultSchema = z.object({
     readOnlyTool: z.literal('github_read'),
     readOnly: z.array(z.string()),
     gated: z.array(z.string())
-  }).strict().optional().describe('Which GitHub actions are read-only (callable through github_read without approval) and which stay gated on github_action')
+  }).strict().optional().describe('Which GitHub actions are read-only (callable through github_read without approval) and which stay gated on github_action'),
+  githubRepositoryCreate: GitHubRepositoryCreateCapabilitySchema.optional()
+    .describe('Principal-level availability of github_repository_create; independent of the workspace repository')
 }).passthrough();
+
+/**
+ * workspace_capabilities called without a workspaceId while the principal has no active workspace:
+ * only principal-level capabilities exist, so the workspace fields are null.
+ */
+export const PrincipalCapabilityResultSchema = z.object({
+  workspaceId: z.null(),
+  repository: z.null(),
+  githubRepositoryCreate: GitHubRepositoryCreateCapabilitySchema
+}).strict();
 
 export type RepositoryCapabilities = z.infer<typeof RepositoryCapabilitiesSchema>;
 export type WorkspaceCapabilities = z.infer<typeof WorkspaceCapabilitiesSchema>;
 export type RepositoryPermissions = z.infer<typeof RepositoryPermissionsSchema>;
 export type RepositoryOperations = z.infer<typeof RepositoryOperationsSchema>;
 export type WorkspaceCapabilityResult = z.infer<typeof WorkspaceCapabilityResultSchema>;
+export type PrincipalCapabilityResult = z.infer<typeof PrincipalCapabilityResultSchema>;
 
 export const ProvenanceSourceSchema = z.enum(['built-in', 'owner', 'workspace', 'repository']);
 export const TrustClassSchema = z.enum(['trusted-control-plane', 'owner-controlled', 'untrusted-executor']);

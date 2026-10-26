@@ -1,6 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { HarnessError } from '@cloud-harness/contracts';
+import { organizationFacts } from './github-installation-store.js';
 import type {
+  GitHubAccountType,
   GitHubInstallationRecord,
   GitHubInstallationMutationAudit,
   GitHubInstallationStore,
@@ -12,6 +14,7 @@ import type {
 type InstallationRow = {
   principal_id: string; app_id: string; installation_id: string; account_id: string; account_login: string;
   issues: GitHubPermissionLevel | null; pull_requests: GitHubPermissionLevel | null;
+  administration: GitHubPermissionLevel | null; account_type: GitHubAccountType | null;
   status: GitHubInstallationRecord['status']; generation: number; created_at: number; updated_at: number; checked_at: number;
 };
 type GrantRow = {
@@ -23,7 +26,10 @@ type GrantRow = {
 const installation = (row: InstallationRow): GitHubInstallationRecord => ({
   principalId: row.principal_id, appId: row.app_id, installationId: row.installation_id,
   accountId: row.account_id, accountLogin: row.account_login,
-  issues: row.issues, pullRequests: row.pull_requests, status: row.status,
+  issues: row.issues, pullRequests: row.pull_requests,
+  ...(row.administration !== null ? { administration: row.administration } : {}),
+  ...(row.account_type !== null ? { accountType: row.account_type } : {}),
+  status: row.status,
   generation: row.generation, createdAt: row.created_at, updatedAt: row.updated_at, checkedAt: row.checked_at
 });
 const grant = (row: GrantRow): GitHubRepositoryGrantRecord => ({
@@ -86,6 +92,13 @@ export function migrateGitHubInstallationSchema(database: DatabaseSync): void {
     if (!permissionColumns.some((column) => column.name === 'pull_requests')) {
       database.exec('ALTER TABLE github_installations ADD COLUMN pull_requests TEXT');
     }
+    // Repository-creation facts: NULL until the installation is verified again.
+    if (!permissionColumns.some((column) => column.name === 'administration')) {
+      database.exec("ALTER TABLE github_installations ADD COLUMN administration TEXT CHECK(administration IN ('none','read','write'))");
+    }
+    if (!permissionColumns.some((column) => column.name === 'account_type')) {
+      database.exec("ALTER TABLE github_installations ADD COLUMN account_type TEXT CHECK(account_type IN ('Organization','User'))");
+    }
 
     database.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS github_installations_principal_account
@@ -147,17 +160,19 @@ export class SqliteGitHubInstallationStore implements GitHubInstallationStore {
         principalId, appId: String(verified.appId), installationId,
         accountId, accountLogin: verified.accountLogin, status: verified.status,
         issues: verified.issues, pullRequests: verified.pullRequests,
+        ...organizationFacts(verified),
         generation: (prior?.generation ?? 0) + 1, createdAt: prior?.createdAt ?? checkedAt,
         updatedAt: checkedAt, checkedAt
       };
       this.database.prepare(`INSERT INTO github_installations
-        (principal_id,app_id,installation_id,account_id,account_login,issues,pull_requests,status,generation,created_at,updated_at,checked_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(principal_id, installation_id) DO UPDATE SET
+        (principal_id,app_id,installation_id,account_id,account_login,issues,pull_requests,administration,account_type,status,generation,created_at,updated_at,checked_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(principal_id, installation_id) DO UPDATE SET
         app_id=excluded.app_id,account_id=excluded.account_id,account_login=excluded.account_login,
         issues=excluded.issues,pull_requests=excluded.pull_requests,
+        administration=excluded.administration,account_type=excluded.account_type,
         status=excluded.status,generation=excluded.generation,updated_at=excluded.updated_at,checked_at=excluded.checked_at`)
         .run(principalId, record.appId, record.installationId, record.accountId, record.accountLogin,
-          record.issues, record.pullRequests, record.status,
+          record.issues, record.pullRequests, record.administration ?? null, record.accountType ?? null, record.status,
           record.generation, record.createdAt, record.updatedAt, record.checkedAt);
 
       const current = new Set<string>();
@@ -206,6 +221,7 @@ export class SqliteGitHubInstallationStore implements GitHubInstallationStore {
       accountLogin: current.accountLogin,
       issues: current.issues,
       pullRequests: current.pullRequests,
+      ...organizationFacts(current),
       status: 'uninstalled',
       repositories: []
     }, checkedAt, audit);
