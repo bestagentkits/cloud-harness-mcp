@@ -34,6 +34,10 @@ const cred = id('cred', 'a');
 const icr = id('icr', 'a');
 const artifact = id('art', 'a');
 const server = id('mcps', 'a');
+const hex = (fill: string) => fill.repeat(32);
+const connection = `whc_${hex('a')}`;
+const rule = `arl_${hex('a')}`;
+const workflow = `wfl_${hex('a')}`;
 
 /** [method, path, body key the path owns, a different value for that key]. */
 const ROUTES: Array<[string, string, string, string]> = [
@@ -86,7 +90,14 @@ const ROUTES: Array<[string, string, string, string]> = [
   ['POST', `/artifacts/${artifact}/restore`, 'artifactId', id('art', 'b')],
   ['PUT', '/knowledge/note-1', 'id', 'note-2'],
   ['PATCH', `/mcp-servers/${server}`, 'serverId', id('mcps', 'b')],
-  ['POST', `/mcp-servers/${server}/enabled`, 'serverId', id('mcps', 'b')]
+  ['POST', `/mcp-servers/${server}/enabled`, 'serverId', id('mcps', 'b')],
+  ['PATCH', `/automations/connections/${connection}`, 'id', `whc_${hex('b')}`],
+  ['POST', `/automations/connections/${connection}/rotate-secret`, 'id', `whc_${hex('b')}`],
+  ['DELETE', `/automations/connections/${connection}`, 'id', `whc_${hex('b')}`],
+  ['PATCH', `/automations/rules/${rule}`, 'id', `arl_${hex('b')}`],
+  ['DELETE', `/automations/rules/${rule}`, 'id', `arl_${hex('b')}`],
+  ['POST', `/automations/rules/${rule}/preview`, 'id', `arl_${hex('b')}`],
+  ['POST', `/automations/workflows/${workflow}/cancel`, 'id', `wfl_${hex('b')}`]
 ];
 
 let httpServer: Server;
@@ -99,7 +110,14 @@ beforeEach(async () => {
     operations.push({ operation, input });
     return { ok: true, message: 'ok', truncated: false, data: {} };
   };
-  const runner: DashboardRunnerClient = { call: vi.fn(ok), callInternal: vi.fn(ok) };
+  const runner: DashboardRunnerClient = {
+    call: vi.fn(ok),
+    callInternal: vi.fn(ok),
+    callAutomations: vi.fn(async (request) => {
+      operations.push({ operation: request.operation, input: request.input as Record<string, unknown> });
+      return { ok: true, data: { connection: null } } as never;
+    })
+  };
   const app = express();
   app.use((request: any, _response, next) => { request.auth = { token: 'cloudflare-access', clientId: 'operator', scopes: [], extra: { principal } }; next(); });
   app.use('/dashboard', createDashboardRouter(config, runner));
@@ -165,6 +183,12 @@ describe('dashboard BFF path id authority', () => {
     const reply = await send(`/api/v1/workspaces/${ws}/lease-renew`, { method: 'POST', headers, body: JSON.stringify({ workspaceId: ws, extensionSeconds: 600 }) });
     expect(reply.status).toBe(200);
     expect(operations).toEqual([{ operation: 'workspace_lease_renew', input: { workspaceId: ws, extensionSeconds: 600 } }]);
+  });
+
+  it('forwards the path automation id when the body repeats it', async () => {
+    const headers = await mutationHeaders();
+    await send(`/api/v1/automations/connections/${connection}`, { method: 'DELETE', headers, body: JSON.stringify({ id: connection, expectedGeneration: 3 }) });
+    expect(operations).toEqual([{ operation: 'connection_delete', input: { id: connection, expectedGeneration: 3 } }]);
   });
 
   it('forwards the path secret scope when the body carries no ids', async () => {
