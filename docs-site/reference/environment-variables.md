@@ -103,12 +103,12 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `AGENT_MAX_SESSION_MESSAGES` | `2000` | Optional | Most messages one persisted session may hold; past it the run continues but is no longer continuable. |
 | `AGENT_MAX_SESSION_BYTES` | `7340032` | Optional | Most message bytes one persisted session may hold (at most 7864320, to fit the 8 MiB agent start record). |
 | `AGENT_SESSION_RETENTION_MS` | `604800000` | Optional | How long a sealed session stays continuable after its agent ends (7 days); workspace close deletes it sooner. |
-| `AGENT_WORKSPACE_SESSION_BYTES` | `67108864` | Optional | Most bytes all stored sessions of one workspace may hold together; a continuation copies its predecessor's log. |
+| `AGENT_WORKSPACE_SESSION_BYTES` | `67108864` | Optional | Most bytes all stored sessions of one workspace may hold together; a continuation copies its predecessor's log, and durable lineage databases count their size on disk too. |
 | `AGENT_PRINCIPAL_SESSION_BYTES` | `536870912` | Optional | Most bytes all stored sessions of one owner may hold together. |
 | `AGENT_GLOBAL_SESSION_BYTES` | `1073741824` | Optional | Most bytes all stored sessions of the instance may hold together (workspace <= principal <= global). |
 | `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` | `33554432` | Optional | Most stored tool-result bytes (receipts) one agent lineage may keep for replay (32 MiB); past it only hashes are kept. |
 | `AGENT_DURABLE_RUNTIME_ENABLED` | `false` | Optional | Opt-in durable agent engine (runner): agent_spawn.runtime "pi-durable" runs the agent on the pi-durable engine, whose session store lives in the runner state directory, so a continuation resumes unfinished work. Needs an agent image built with the INCLUDE_DURABLE_RUNTIME=true build argument; see docs/operations.md. Read at runner start; changing it needs a runner restart, which stops running agents like any restart. Off, durable spawns and continuations are refused with NOT_SUPPORTED and nothing resumes on its own. |
-| `AGENT_DURABLE_MAX_LINEAGE_BYTES` | `268435456` | Optional | Most bytes one durable lineage's session database may hold (256 MiB); past it the run ends LIMIT_EXCEEDED. |
+| `AGENT_DURABLE_MAX_LINEAGE_BYTES` | `268435456` | Optional | Most bytes one durable lineage's session database may hold (256 MiB); past it, or past an AGENT_*_SESSION_BYTES budget, the run ends LIMIT_EXCEEDED. |
 | `GITHUB_APP_ID` | `—` | Optional | Optional GitHub App repository access; required fields depend on AUTH_MODE: |
 | `GITHUB_APP_INSTALLATION_ID` | `—` | Optional | Required in owner-bearer mode; omit in Access mode, where each principal binds an installation: |
 | `GITHUB_APP_SLUG` | `—` | Optional | Required in Access mode for the installation redirect: |

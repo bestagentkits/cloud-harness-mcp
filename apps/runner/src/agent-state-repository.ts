@@ -33,6 +33,12 @@ const STATUS_TRANSITIONS: Record<AgentStatus, readonly AgentStatus[]> = {
   INTERRUPTED: []
 };
 
+/** The on-disk sizes of the durable runtime's per-lineage session databases, as the runner last measured them. */
+export interface DurableStorageUsage {
+  lineageBytes(lineageRootId: string): number;
+  totalBytes(): number;
+}
+
 export type AgentRecord = {
   id: string;
   ownerId: string;
@@ -599,11 +605,19 @@ function redactLogContent(content: string): string {
 }
 
 export class AgentStateRepository {
+  /** Sizes of the runner-side durable session stores; without it they count toward no budget. */
+  private durableStorage?: DurableStorageUsage | undefined;
+
   constructor(
     private readonly database: DatabaseSync,
     private readonly limits: RunnerAgentLimits,
     private readonly instanceId?: string
   ) {}
+
+  /** Counts the durable runtime's lineage databases toward the aggregate session byte budgets. */
+  countDurableStorage(usage: DurableStorageUsage): void {
+    this.durableStorage = usage;
+  }
 
   bumpEpoch(instanceId: string, now: number): number {
     return immediate(this.database, () => {
@@ -1636,20 +1650,45 @@ export class AgentStateRepository {
   }
 
   /**
-   * Names the aggregate session byte budget that `addedBytes` more stored messages would exceed, if
+   * Names the aggregate session byte budget that `addedBytes` more stored bytes would exceed, if
    * any. Every stored log counts, including a discontinued one, until retention or workspace close
-   * deletes it; a purged session holds no bytes.
+   * deletes it; a purged session holds no bytes. Each durable lineage's database counts its size on
+   * disk toward its workspace and owner while an agent record names it, and toward the instance
+   * until its files are deleted.
    */
-  private exceededSessionBudget(ownerId: string, workspaceId: string, addedBytes: number): 'workspace' | 'principal' | 'instance' | undefined {
+  exceededSessionBudget(ownerId: string, workspaceId: string, addedBytes: number): 'workspace' | 'principal' | 'instance' | undefined {
     const usage = this.database.prepare(`SELECT
       (SELECT COALESCE(SUM(bytes), 0) FROM agent_sessions WHERE owner_id=? AND workspace_id=?) AS workspace_bytes,
       (SELECT COALESCE(SUM(bytes), 0) FROM agent_sessions WHERE owner_id=?) AS principal_bytes,
       (SELECT COALESCE(SUM(bytes), 0) FROM agent_sessions) AS global_bytes`)
       .get(ownerId, workspaceId, ownerId) as { workspace_bytes: number; principal_bytes: number; global_bytes: number };
-    if (usage.workspace_bytes + addedBytes > this.limits.workspaceSessionBytes) return 'workspace';
-    if (usage.principal_bytes + addedBytes > this.limits.principalSessionBytes) return 'principal';
-    if (usage.global_bytes + addedBytes > this.limits.globalSessionBytes) return 'instance';
+    const durable = this.durableUsage(ownerId, workspaceId);
+    if (usage.workspace_bytes + durable.workspace + addedBytes > this.limits.workspaceSessionBytes) return 'workspace';
+    if (usage.principal_bytes + durable.principal + addedBytes > this.limits.principalSessionBytes) return 'principal';
+    if (usage.global_bytes + durable.global + addedBytes > this.limits.globalSessionBytes) return 'instance';
     return undefined;
+  }
+
+  /** On-disk bytes of the durable lineage databases of a workspace, its owner, and the instance. */
+  private durableUsage(ownerId: string, workspaceId: string): { workspace: number; principal: number; global: number } {
+    const storage = this.durableStorage;
+    const global = storage?.totalBytes() ?? 0;
+    if (!storage || global === 0) return { workspace: 0, principal: 0, global };
+    const rows = this.database.prepare(`SELECT DISTINCT agent_sessions.root_agent_id AS root, agent_sessions.workspace_id AS workspace_id
+      FROM agent_sessions JOIN agents ON agents.id=agent_sessions.agent_id
+      WHERE agent_sessions.owner_id=? AND agents.runtime='pi-durable'`)
+      .all(ownerId) as Array<{ root: string; workspace_id: string }>;
+    const counted = new Set<string>();
+    let workspace = 0;
+    let principal = 0;
+    for (const row of rows) {
+      if (counted.has(row.root)) continue;
+      counted.add(row.root);
+      const bytes = storage.lineageBytes(row.root);
+      principal += bytes;
+      if (row.workspace_id === workspaceId) workspace += bytes;
+    }
+    return { workspace, principal, global };
   }
 
   /** Stops an active log after a failure to record it, so a partial history is never continued. */

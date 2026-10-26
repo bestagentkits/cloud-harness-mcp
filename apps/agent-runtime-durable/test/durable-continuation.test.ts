@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -23,7 +23,7 @@ const ALL_OPERATIONS = AgentProxyOperationSchema.options;
 const LEASE = `bearer_${'x'.repeat(48)}`;
 const sha256 = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
 
-function agentsConfig(overrides: { durableRuntimeEnabled?: boolean; sessionPersistenceEnabled?: boolean } = {}) {
+function agentsConfig(overrides: { durableRuntimeEnabled?: boolean; sessionPersistenceEnabled?: boolean } = {}, limits: Record<string, number> = {}) {
   return RunnerAgentsConfigSchema.parse({
     image: 'cloud-harness-agent:test',
     gatewayUrl: 'http://model-gateway:3210',
@@ -36,7 +36,7 @@ function agentsConfig(overrides: { durableRuntimeEnabled?: boolean; sessionPersi
       maxInputTokens: 10_000, maxOutputTokens: 2_000, maxCostMicros: 1_000_000,
       maxProxyOperations: ALL_OPERATIONS
     }],
-    limits: { minTtlSeconds: 30, maxTtlSeconds: 3_600 }
+    limits: { minTtlSeconds: 30, maxTtlSeconds: 3_600, ...limits }
   });
 }
 
@@ -218,6 +218,7 @@ type RunnerOptions = {
   durableRuntimeEnabled?: boolean;
   sessionPersistenceEnabled?: boolean;
   maxLineageBytes?: number;
+  limits?: Record<string, number>;
   now?: () => number;
 };
 
@@ -235,7 +236,7 @@ function setup() {
     const config = agentsConfig({
       ...(options.durableRuntimeEnabled === undefined ? {} : { durableRuntimeEnabled: options.durableRuntimeEnabled }),
       ...(options.sessionPersistenceEnabled === undefined ? {} : { sessionPersistenceEnabled: options.sessionPersistenceEnabled })
-    });
+    }, options.limits);
     const repository = new AgentStateRepository(store.database, config.limits, store.instanceId());
     const launcher = new InProcessLauncher(options.responses ?? []);
     const gateway = new FakeGateway();
@@ -406,6 +407,50 @@ describe('durable agent runtime through the runner', () => {
     const runner = context.runner({ maxLineageBytes: 1, responses: [[fauxAssistantMessage('never committed')]] });
     const agentId = await spawn(context, runner, 'cap-root', { runtime: 'pi-durable' });
     expect(await settled(context, runner, agentId)).toBe('LIMIT_EXCEEDED');
+  }, 60_000);
+
+  it('counts a lineage\'s session store toward the aggregate session budgets until its workspace closes', async () => {
+    const context = setup();
+    const { record } = context;
+    const first = context.runner({ responses: [[fauxAssistantMessage('answer')]] });
+    const agentId = await spawn(context, first, 'budget-root', { runtime: 'pi-durable' });
+    expect(await settled(context, first, agentId)).toBe('SUCCEEDED');
+    expect(first.sessions.lineageBytes(agentId)).toBeGreaterThan(0);
+    await first.manager.stop();
+    // Closing checkpoints the write-ahead log; the store is re-measured, so it counts what is on disk.
+    const bytes = first.sessions.lineageBytes(agentId);
+    const wal = `${lineageFile(context, agentId)}-wal`;
+    expect(bytes).toBe(statSync(lineageFile(context, agentId)).size + (existsSync(wal) ? statSync(wal).size : 0));
+    expect(first.sessions.totalBytes()).toBe(bytes);
+
+    // A restarted runner measures the stores on disk before it admits anything. Its workspace budget
+    // holds exactly this store; the owner and instance budgets hold one byte less than two of them.
+    const second = context.runner({
+      responses: [[fauxAssistantMessage('never committed')]],
+      limits: { maxSessionBytes: bytes, workspaceSessionBytes: bytes, principalSessionBytes: bytes * 2 - 1, globalSessionBytes: bytes * 2 - 1 }
+    });
+    await second.manager.start();
+    const otherWorkspace = `ws_${'v'.repeat(24)}`;
+    expect(second.repository.exceededSessionBudget(record.ownerId, record.id, 0)).toBeUndefined();
+    expect(second.repository.exceededSessionBudget(record.ownerId, record.id, 1)).toBe('workspace');
+    expect(second.repository.exceededSessionBudget(record.ownerId, otherWorkspace, bytes)).toBe('principal');
+    expect(second.repository.exceededSessionBudget('other-owner', otherWorkspace, bytes - 1)).toBeUndefined();
+    expect(second.repository.exceededSessionBudget('other-owner', otherWorkspace, bytes)).toBe('instance');
+
+    // A new lineage in the full workspace cannot commit, so its run ends as limit exceeded.
+    const blockedId = await spawn(context, second, 'budget-blocked', { runtime: 'pi-durable' });
+    expect(await settled(context, second, blockedId)).toBe('LIMIT_EXCEEDED');
+    expect(agent(context, second, blockedId)?.terminalReason).toMatch(/size limit/);
+    // The full workspace refuses a continuation at admission, and the predecessor stays continuable.
+    expect(second.sessions.lineageBytes(blockedId)).toBeGreaterThan(0);
+    await expect(spawn(context, second, 'budget-continue', { continueFrom: agentId })).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED', retryable: false });
+    expect(second.repository.findSuccessor(agentId)).toBeUndefined();
+
+    // Closing the workspace deletes its stores and frees the budgets.
+    await second.manager.stopWorkspace(record.ownerId, record.id, 'workspace closed');
+    expect(existsSync(lineageFile(context, agentId))).toBe(false);
+    expect(second.sessions.totalBytes()).toBe(0);
+    expect(second.repository.exceededSessionBudget(record.ownerId, record.id, bytes)).toBeUndefined();
   }, 60_000);
 
   it('deletes a lineage\'s session store when its workspace closes', async () => {

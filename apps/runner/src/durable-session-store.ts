@@ -1,4 +1,4 @@
-import { chmod, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HarnessError } from '@cloud-harness/contracts';
 import {
@@ -46,6 +46,9 @@ export interface DurableStorageBackendLoader {
   /** Whether `error` is the upstream "invalid read request" error, which is not fatal to a session. */
   isRequestError(error: unknown): boolean;
 }
+
+/** Names the aggregate session byte budget that `addedBytes` more stored bytes would exceed, if any. */
+export type DurableSessionBudget = (addedBytes: number) => 'workspace' | 'principal' | 'instance' | undefined;
 
 export interface DurableSessionStoreOptions {
   /** Where lineage databases live; without it the store refuses claims and deletes nothing. */
@@ -99,7 +102,7 @@ interface ClaimState extends DurableSessionClaim {
    * outlives its claim: a new run or a runner restart takes a new claim and fences the old worker.
    */
   lastCommit: { readonly id: string; readonly response: Promise<AgentStorageResponseRecord> } | undefined;
-  /** Set once a commit left the database above its size cap; every later commit is refused. */
+  /** Set once a commit left the database above its size cap or an aggregate budget; every later commit is refused. */
   limitExceeded: boolean;
   /** Set once the database's write-ahead log and shared-memory files were made private after a write. */
   sidecarsPrivate: boolean;
@@ -308,6 +311,8 @@ export class DurableSessionStore {
   readonly #now: () => number;
   readonly #lineages = new Map<string, LineageState>();
   readonly #locks = new Map<string, Promise<unknown>>();
+  /** Last measured on-disk size of each lineage database, by lineage root; counted toward the aggregate session budgets. */
+  readonly #lineageSizes = new Map<string, number>();
   #directoryReady: Promise<void> | undefined;
 
   constructor(options: DurableSessionStoreOptions) {
@@ -428,7 +433,41 @@ export class DurableSessionStore {
     });
   }
 
-  /** Whether a commit of this claim left its lineage's database above the size cap. */
+  /**
+   * Measures every lineage database under the state directory, so stored durable sessions count
+   * toward the aggregate session byte budgets from runner start, including stores an earlier run
+   * left while the durable runtime is now off.
+   */
+  async measure(): Promise<void> {
+    const stateDir = this.#stateDir;
+    if (stateDir === undefined) return;
+    let names: string[];
+    try {
+      names = await readdir(stateDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    for (const name of names) {
+      const lineageRootId = name.endsWith('.sqlite') ? name.slice(0, -'.sqlite'.length) : '';
+      if (!LINEAGE_ID.test(lineageRootId)) continue;
+      await this.#withLock(lineageRootId, async () => await this.#measureLineage(lineageRootId));
+    }
+  }
+
+  /** The last measured on-disk size of one lineage's database; 0 when it has none. */
+  lineageBytes(lineageRootId: string): number {
+    return this.#lineageSizes.get(lineageRootId) ?? 0;
+  }
+
+  /** The last measured on-disk size of every lineage database, including one no agent record names any more. */
+  totalBytes(): number {
+    let total = 0;
+    for (const bytes of this.#lineageSizes.values()) total += bytes;
+    return total;
+  }
+
+  /** Whether a commit of this claim left its lineage's database above the size cap or an aggregate budget. */
   limitExceeded(claim: DurableSessionClaim): boolean {
     return (claim as Partial<ClaimState>).limitExceeded === true;
   }
@@ -443,6 +482,7 @@ export class DurableSessionStore {
         await this.#closeLineage(lineageRootId, lineage);
       }
       if (this.#stateDir !== undefined) await deleteDurableSessionFiles(this.#stateDir, lineageRootId);
+      this.#lineageSizes.delete(lineageRootId);
     });
   }
 
@@ -451,8 +491,12 @@ export class DurableSessionStore {
     for (const lineageRootId of new Set(lineageRootIds)) await this.delete(lineageRootId);
   }
 
-  /** Runs one storage request for a claim and returns the response record to send back. */
-  async handle(claim: DurableSessionClaim, request: unknown): Promise<AgentStorageResponseRecord> {
+  /**
+   * Runs one storage request for a claim and returns the response record to send back. A commit is
+   * refused once the lineage's database is over its size cap, or when `budget` reports that the
+   * request's bytes would pass an aggregate session budget of the run's workspace, owner, or instance.
+   */
+  async handle(claim: DurableSessionClaim, request: unknown, budget?: DurableSessionBudget): Promise<AgentStorageResponseRecord> {
     const id = request && typeof request === 'object' && typeof (request as { id?: unknown }).id === 'string'
       && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test((request as { id: string }).id) ? (request as { id: string }).id : 'invalid';
     const method = request && typeof request === 'object' ? (request as { method?: unknown }).method : undefined;
@@ -481,9 +525,15 @@ export class DurableSessionStore {
     const args = parsed.data.args.map((value) => value === null ? undefined : value);
     if (!argumentsMatch(storageMethod, args)) return failure(id, 'request', `invalid arguments for storage ${storageMethod}`);
     if (storageMethod === 'commit') {
-      if (state.limitExceeded || await this.#databaseBytes(claim.lineageRootId) > this.#maxLineageBytes) {
+      if (state.limitExceeded || await this.#measureLineage(claim.lineageRootId) > this.#maxLineageBytes) {
         state.limitExceeded = true;
         return failure(id, 'limit', 'durable session exceeds its size limit');
+      }
+      // The request's encoded size stands in for what the commit adds; the size cap above catches the rest.
+      const exceeded = budget?.(Buffer.byteLength(encoded, 'utf8'));
+      if (exceeded) {
+        state.limitExceeded = true;
+        return failure(id, 'limit', `durable session would exceed the ${exceeded} agent session byte budget`);
       }
     }
     const response = this.#run(id, state, storageMethod, args).then(async (result) => {
@@ -493,7 +543,7 @@ export class DurableSessionStore {
         await this.#restrictSidecars(claim.lineageRootId);
         state.sidecarsPrivate = true;
       }
-      if (await this.#databaseBytes(claim.lineageRootId) > this.#maxLineageBytes) state.limitExceeded = true;
+      if (await this.#measureLineage(claim.lineageRootId) > this.#maxLineageBytes) state.limitExceeded = true;
       return result;
     });
     if (remembers) this.#remember(state, id, storageMethod, response);
@@ -584,12 +634,16 @@ export class DurableSessionStore {
     const storage = lineage.storage;
     lineage.storage = undefined;
     this.#lineages.delete(lineageRootId);
-    if (!storage) return;
-    try {
-      await storage.close(RUNNER_CONTEXT);
-    } catch {
-      // A database that fails to close is already unusable; its files are still removable.
+    if (storage) {
+      try {
+        await storage.close(RUNNER_CONTEXT);
+      } catch {
+        // A database that fails to close is already unusable; its files are still removable.
+      }
     }
+    // Closing, here or by the worker's own close request, checkpoints the write-ahead log, which
+    // changes the size the budgets count.
+    await this.#measureLineage(lineageRootId).catch(() => undefined);
   }
 
   async #openDatabase(path: string): Promise<StorageBackend> {
@@ -604,6 +658,14 @@ export class DurableSessionStore {
 
   async #restrictSidecars(lineageRootId: string): Promise<void> {
     if (this.#stateDir !== undefined) await restrictSidecarFiles(sessionPaths(this.#stateDir, lineageRootId).database);
+  }
+
+  /** Records and returns the lineage database's current size on disk; an absent database is forgotten. */
+  async #measureLineage(lineageRootId: string): Promise<number> {
+    const bytes = await this.#databaseBytes(lineageRootId);
+    if (bytes > 0) this.#lineageSizes.set(lineageRootId, bytes);
+    else this.#lineageSizes.delete(lineageRootId);
+    return bytes;
   }
 
   /** The lineage database's size on disk, write-ahead log included. */

@@ -1,6 +1,6 @@
 import type { AgentRuntimeKind } from '@cloud-harness/contracts';
 import type { AgentStartRecord, AgentStorageRequestRecord, AgentStorageResponseRecord } from './agent-protocol.js';
-import type { DurableSessionStore } from './durable-session-store.js';
+import type { DurableSessionBudget, DurableSessionStore } from './durable-session-store.js';
 
 /** What the runner knows about one run when it opens the run's engine session. */
 export type AgentRunDescriptor = {
@@ -18,6 +18,8 @@ export type AgentRunDescriptor = {
   resume?: 'continue' | 'abort' | undefined;
   /** The coding runtime's persisted history to replay before the prompt, when the agent persists one. */
   sessionLog?: { messages: unknown[]; headSha256: string } | undefined;
+  /** The aggregate session byte budgets of the run's workspace, owner, and instance, for an engine that stores sessions itself. */
+  sessionBudget?: DurableSessionBudget | undefined;
 };
 
 /** The engine side of one run: how its start record is shaped and where its session state lives. */
@@ -27,7 +29,7 @@ export interface AgentRuntimeSession {
   startRecord(base: AgentStartRecord): AgentStartRecord;
   /**
    * Runs one session-storage request of the run. `limitExceeded` reports that the run's session
-   * store is over its size cap, so the run must end as LIMIT_EXCEEDED.
+   * store is over its size cap or an aggregate session budget, so the run must end as LIMIT_EXCEEDED.
    */
   handleStorage(request: AgentStorageRequestRecord): Promise<{ response: AgentStorageResponseRecord; limitExceeded: boolean }>;
   /** Ends the run's hold on its session state and reports whether a continuation would resume work. */
@@ -80,7 +82,7 @@ export function piDurableAdapter(store: DurableSessionStore): AgentRuntimeAdapte
         kind: 'pi-durable',
         startRecord: (base) => ({ ...base, runtime: 'pi-durable', ...(resume ? { durableResume: resume } : {}) }),
         async handleStorage(request) {
-          const response = await store.handle(claim, request);
+          const response = await store.handle(claim, request, run.sessionBudget);
           return { response, limitExceeded: store.limitExceeded(claim) };
         },
         async seal() {
