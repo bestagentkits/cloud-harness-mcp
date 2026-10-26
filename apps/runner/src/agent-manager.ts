@@ -188,6 +188,8 @@ export class AgentManager {
   private readonly durableSessions: DurableSessionStore;
   private readonly adapters: Readonly<Record<AgentRuntimeKind, AgentRuntimeAdapter>>;
   private lastSpendSweepAt = 0;
+  /** Durable lineages whose sessions are all purged but whose store removal has not succeeded yet. */
+  private readonly purgedLineageStores = new Set<string>();
   private spendSweep?: Promise<void> | undefined;
   private readonly runtimes = new Map<string, RuntimeContext>();
   private readonly launches = new Map<string, Promise<void>>();
@@ -250,6 +252,10 @@ export class AgentManager {
     this.epoch = this.repository.bumpEpoch(this.store.instanceId(), this.now());
     // Sized before any admission, so the session budgets count the durable stores already on disk.
     await this.durableSessions.measure();
+    // A store whose removal failed before a restart is retried by the reaper like any other.
+    for (const lineageRootId of this.repository.purgedDurableLineages(this.durableSessions.lineages())) {
+      this.purgedLineageStores.add(lineageRootId);
+    }
     await this.launcher.reconcile?.();
     const modelProfiles = this.modelProfiles;
     if (modelProfiles && this.hasSnapshotSync()) {
@@ -1428,14 +1434,17 @@ export class AgentManager {
     } catch {
       // A busy store only delays retention to the next tick; it must not skip the spend sweep.
     }
-    try {
-      // A store whose removal failed on an earlier tick, or before a restart, is still on disk and is
-      // retried here, since its sessions are no longer selected for purging.
-      purgedLineages.push(...this.repository.purgedDurableLineages(this.durableSessions.lineages()));
-    } catch {
-      // A busy store only delays the retry to the next tick.
+    // A removal that fails stays queued, since its purged sessions are never selected again, and a
+    // store that keeps failing must not hold back the removal of the others.
+    for (const lineageRootId of purgedLineages) this.purgedLineageStores.add(lineageRootId);
+    for (const lineageRootId of [...this.purgedLineageStores]) {
+      try {
+        await this.durableSessions.delete(lineageRootId);
+        this.purgedLineageStores.delete(lineageRootId);
+      } catch {
+        // Retried on the next tick.
+      }
     }
-    if (purgedLineages.length > 0) await this.durableSessions.deleteLineages(purgedLineages).catch(() => undefined);
     if (now - this.lastSpendSweepAt >= SPEND_SWEEP_INTERVAL_MS) void this.sweepSpend(SPEND_SWEEP_MIN_AGE_MS);
   }
 

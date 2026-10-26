@@ -1803,17 +1803,12 @@ export class AgentStateRepository {
    * session stores may be deleted. A root with no session row is left out.
    */
   purgedDurableLineages(lineageRootIds: readonly string[]): string[] {
-    const purged: string[] = [];
-    const statement = (count: number) => this.database.prepare(`SELECT DISTINCT purged.root_agent_id AS root FROM agent_sessions purged
+    const statement = this.database.prepare(`SELECT 1 FROM agent_sessions purged
       JOIN agents ON agents.id=purged.agent_id AND agents.runtime='pi-durable'
-      WHERE purged.root_agent_id IN (${Array.from({ length: count }, () => '?').join(',')})
-        AND NOT EXISTS (SELECT 1 FROM agent_sessions live WHERE live.root_agent_id=purged.root_agent_id AND live.state<>'PURGED')`);
-    const unique = [...new Set(lineageRootIds)];
-    for (let start = 0; start < unique.length; start += 500) {
-      const page = unique.slice(start, start + 500);
-      purged.push(...(statement(page.length).all(...page) as Array<{ root: string }>).map((row) => row.root));
-    }
-    return purged;
+      WHERE purged.root_agent_id=?
+        AND NOT EXISTS (SELECT 1 FROM agent_sessions live WHERE live.root_agent_id=purged.root_agent_id AND live.state<>'PURGED')
+      LIMIT 1`);
+    return [...new Set(lineageRootIds)].filter((lineageRootId) => statement.get(lineageRootId) !== undefined);
   }
 
   /** The lineage roots of a workspace's durable-runtime agents, whose session stores live in the runner. */
