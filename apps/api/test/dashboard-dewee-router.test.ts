@@ -344,6 +344,8 @@ describe('Dashboard webchat BFF: chat', () => {
     await eventually(() => stub.abortAcks() === 1);
     await eventually(() => stub.openSockets() === 0);
     expect(stub.requests.filter((entry) => entry.method === 'chat.abort')).toHaveLength(1);
+    // The aborted chat.send is not reported as a gateway failure.
+    expect(logged.some((line) => line.includes('dewee.chat'))).toBe(false);
   });
 
   it('waits for chat.abort when the run times out', async () => {

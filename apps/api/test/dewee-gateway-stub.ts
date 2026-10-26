@@ -97,7 +97,7 @@ export async function startDeweeGatewayStub(expectedToken: string) {
           // A real gateway answers after it has cancelled the run; the delay models that, and an
           // ack counts only when the client is still there to receive it.
           const acknowledge = () => { if (socket.writable) { ok({}); abortAcks += 1; } };
-          if (abortDelayMs > 0) setTimeout(acknowledge, abortDelayMs);
+          if (abortDelayMs > 0) setTimeout(acknowledge, abortDelayMs).unref();
           else acknowledge();
         }
       }

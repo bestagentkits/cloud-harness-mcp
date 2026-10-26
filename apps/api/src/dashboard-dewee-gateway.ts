@@ -107,7 +107,8 @@ export async function* runDeweeChat(options: DeweeChatOptions): AsyncGenerator<C
     push({ type: 'done', content: typeof result?.content === 'string' ? result.content : '', ...(result?.usage && typeof result.usage === 'object' ? { usage: result.usage as Record<string, number> } : {}) });
     end();
   }).catch((error: unknown) => {
-    options.onGatewayFailure?.(error);
+    // Closing the socket after an abort rejects `chat.send`; that is not a gateway failure.
+    if (!aborting) options.onGatewayFailure?.(error);
     push(gatewayError());
     end();
   });
