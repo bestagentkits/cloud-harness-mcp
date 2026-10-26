@@ -1148,7 +1148,7 @@ export class AgentStateRepository {
       if (this.isEffectWriterFenced(input.fence, ['RUNNING', 'CANCELLING'])) return false;
       const placeholders = input.expectedStates.map(() => '?').join(',');
       const textBytes = text === undefined ? 0 : Buffer.byteLength(text, 'utf8');
-      const stored = text !== undefined && this.retainsReceiptText(input.fence.agentId, input.rootAgentId, textBytes)
+      const stored = text !== undefined && this.retainsReceiptText(input.fence.agentId, input, textBytes)
         ? text
         : null;
       const result = this.database.prepare(`UPDATE agent_effects SET state=?, updated_at=?,
@@ -1158,7 +1158,7 @@ export class AgentStateRepository {
           input.state, input.now,
           stored, stored === null ? null : textBytes, text === undefined ? null : sha256Hex(text), input.receipt?.reconciled ? 1 : 0,
           text === undefined ? null : input.fence.runnerEpoch,
-          stored === null ? null : input.now + this.limits.sessionRetentionMs,
+          stored === null ? null : this.receiptRetainUntil(input.fence, input.now),
           input.rootAgentId, input.requestId, input.kind, input.fence.ownerId, input.fence.workspaceId, ...input.expectedStates
         );
       return Number(result.changes) === 1;
@@ -1177,14 +1177,39 @@ export class AgentStateRepository {
   /**
    * Whether a receipt's result text is stored, or only its hash. Only a continuation can replay a
    * stored result to the model, so only an agent that records a session stores text, and its
-   * lineage stops at the configured byte cap; past it a repeat behaves as after retention. The cap
-   * sums the recorded text sizes through an index, never the text itself.
+   * lineage stops at the configured byte cap; past it a repeat behaves as after retention. A lost
+   * read-safe receipt only costs a re-read, while a lost mutation receipt costs
+   * `EFFECT_RECEIPT_UNAVAILABLE`, so read-safe text may fill at most half of the cap and the other
+   * half stays reserved for mutations. The cap sums recorded text sizes, never the text itself.
    */
-  private retainsReceiptText(agentId: string, rootAgentId: string, bytes: number): boolean {
+  private retainsReceiptText(agentId: string, key: AgentEffectKey, bytes: number): boolean {
     if (!this.recordsSession(agentId)) return false;
-    const held = this.database.prepare(`SELECT COALESCE(SUM(result_bytes), 0) AS bytes FROM agent_effects
-      WHERE root_agent_id=? AND result_bytes IS NOT NULL`).get(rootAgentId) as { bytes: number };
-    return Number(held.bytes) + bytes <= this.limits.maxReceiptBytesPerLineage;
+    const effect = this.database.prepare('SELECT replay_class FROM agent_effects WHERE root_agent_id=? AND request_id=? AND kind=?')
+      .get(key.rootAgentId, key.requestId, key.kind) as { replay_class: AgentProxyReplayClass | null } | undefined;
+    const held = this.database.prepare(`SELECT COALESCE(SUM(result_bytes), 0) AS bytes,
+        COALESCE(SUM(CASE WHEN replay_class='read-safe' THEN result_bytes ELSE 0 END), 0) AS read_bytes
+      FROM agent_effects WHERE root_agent_id=? AND result_bytes IS NOT NULL`).get(key.rootAgentId) as { bytes: number; read_bytes: number };
+    const cap = this.limits.maxReceiptBytesPerLineage;
+    if (Number(held.bytes) + bytes > cap) return false;
+    return effect?.replay_class !== 'read-safe' || Number(held.read_bytes) + bytes <= Math.floor(cap / 2);
+  }
+
+  /**
+   * A receipt must outlive every session of its lineage that can replay it, and a session's
+   * retention only starts when its agent ends. A new receipt is therefore kept until the writer's
+   * expiry plus the session retention; sealing a session or continuing the lineage extends the
+   * lineage's receipts further, never shortens them.
+   */
+  private receiptRetainUntil(fence: AgentEffectFence, now: number): number {
+    const agent = this.database.prepare('SELECT expires_at FROM agents WHERE owner_id=? AND workspace_id=? AND id=?')
+      .get(fence.ownerId, fence.workspaceId, fence.agentId) as { expires_at: number } | undefined;
+    return Math.max(now, agent?.expires_at ?? now) + this.limits.sessionRetentionMs;
+  }
+
+  private extendLineageReceipts(rootAgentId: string, retainUntil: number): void {
+    this.database.prepare(`UPDATE agent_effects SET retain_until=MAX(retain_until, ?)
+      WHERE root_agent_id=? AND result_json IS NOT NULL AND retain_until IS NOT NULL AND retain_until<?`)
+      .run(retainUntil, rootAgentId, retainUntil);
   }
 
   /** Clears receipt content past its retention; the effect state stays, so a repeat is never re-issued. */
@@ -1696,6 +1721,8 @@ export class AgentStateRepository {
       throw error;
     }
     if (!continuation) return;
+    // The successor can replay any receipt of its lineage until its own session expires.
+    this.extendLineageReceipts(continuation.session.rootAgentId, Math.max(input.now, input.expiresAt) + this.limits.sessionRetentionMs);
     // The new log starts as a copy of the predecessor's, so each session is self-contained.
     this.database.prepare(`INSERT INTO agent_session_messages
       (agent_id, agent_generation, seq, role, message_json, bytes, sha256, created_at)
@@ -1705,10 +1732,16 @@ export class AgentStateRepository {
   }
 
   private sealSession(agentId: string, status: AgentStatus, now: number): void {
+    const retainUntil = now + this.limits.sessionRetentionMs;
+    const session = this.database.prepare(`SELECT root_agent_id FROM agent_sessions WHERE agent_id=? AND state='ACTIVE'`)
+      .get(agentId) as { root_agent_id: string } | undefined;
+    if (!session) return;
     this.database.prepare(`UPDATE agent_sessions SET state='SEALED',
       continuable=CASE WHEN ?=1 THEN continuable ELSE 0 END, retain_until=?, updated_at=?
       WHERE agent_id=? AND state='ACTIVE'`)
-      .run(CONTINUABLE_TERMINAL_STATUSES.includes(status) ? 1 : 0, now + this.limits.sessionRetentionMs, now, agentId);
+      .run(CONTINUABLE_TERMINAL_STATUSES.includes(status) ? 1 : 0, retainUntil, now, agentId);
+    // An agent that ends past its expiry would otherwise leave receipts expiring before its session.
+    this.extendLineageReceipts(session.root_agent_id, retainUntil);
   }
 
   private usageRow(ownerId: string, workspaceId: string, agentId: string, generation: number): UsageRow {

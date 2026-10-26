@@ -491,10 +491,11 @@ describe('agent effect receipts and replay', () => {
     const context = setup();
     const { first, fs } = context;
     fs.files.set('r.txt', 'read me');
-    await spawnRunning(context, first, 'expired-key');
+    const agentId = await spawnRunning(context, first, 'expired-key');
     const read = await request(first.launcher, 0, 'toolu_r', 'files_read', { path: 'r.txt' });
     await request(first.launcher, 0, 'toolu_w', 'files_write', { path: 'w.txt', content: 'w' });
-    expect(first.repository.purgeExpiredReceipts(Date.now() + config.limits.sessionRetentionMs + 1)).toBe(2);
+    const { expiresAt } = first.repository.findAgent(context.record.ownerId, context.record.id, agentId)!;
+    expect(first.repository.purgeExpiredReceipts(expiresAt + config.limits.sessionRetentionMs + 1)).toBe(2);
     // Purged text no longer counts toward the lineage's receipt byte cap.
     expect(context.store.database.prepare('SELECT COUNT(*) AS count FROM agent_effects WHERE result_bytes IS NOT NULL').get()).toEqual({ count: 0 });
 
@@ -892,25 +893,46 @@ describe('stored receipt results', () => {
     const capped = RunnerAgentsConfigSchema.parse({ ...config, limits: { ...config.limits, maxReceiptBytesPerLineage: 1_000 } });
     const context = setup(undefined, capped);
     const { first, fs } = context;
-    fs.files.set('a.txt', 'a'.repeat(400));
-    fs.files.set('b.txt', 'b'.repeat(400));
+    fs.files.set('a.txt', 'a'.repeat(250));
+    fs.files.set('b.txt', 'b'.repeat(250));
     const agentId = await spawnRunning(context, first, 'capped-key');
     const a = await request(first.launcher, 0, 'toolu_a', 'files_read', { path: 'a.txt' });
     const b = await request(first.launcher, 0, 'toolu_b', 'files_read', { path: 'b.txt' });
-    expect(Buffer.byteLength(a.text) + Buffer.byteLength(b.text)).toBeGreaterThan(1_000);
+    expect(Buffer.byteLength(a.text)).toBeLessThanOrEqual(500);
+    expect(Buffer.byteLength(a.text) + Buffer.byteLength(b.text)).toBeGreaterThan(500);
     expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_a', kind: 'files_read' })).toMatchObject({ resultJson: a.text });
     expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_b', kind: 'files_read' })).toMatchObject({
       resultJson: null, resultSha256: sha256(b.text)
     });
     const held = context.store.database.prepare(`SELECT SUM(length(CAST(result_json AS BLOB))) AS bytes, SUM(result_bytes) AS recorded
       FROM agent_effects WHERE root_agent_id=?`).get(agentId) as { bytes: number; recorded: number };
-    expect(held.bytes).toBeLessThanOrEqual(1_000);
-    // The cap is summed from the recorded sizes, which match the stored text exactly.
+    // Read-safe text fills at most half of the cap; the cap is summed from the recorded sizes.
+    expect(held.bytes).toBeLessThanOrEqual(500);
     expect(held.recorded).toBe(Buffer.byteLength(a.text));
     expect(held.recorded).toBe(held.bytes);
     // Past the cap a repeat behaves as after retention: the read runs again, the stored one replays.
     expect((await request(first.launcher, 0, 'toolu_b', 'files_read', { path: 'b.txt' })).body).toMatchObject({ replayed: 're-executed' });
     expect((await request(first.launcher, 0, 'toolu_a', 'files_read', { path: 'a.txt' })).text).toBe(a.text);
     expect(fs.executions('files_read')).toBe(3);
+  });
+
+  it('keeps the other half of the receipt byte cap for mutations once reads have filled theirs', async () => {
+    const capped = RunnerAgentsConfigSchema.parse({ ...config, limits: { ...config.limits, maxReceiptBytesPerLineage: 1_000 } });
+    const context = setup(undefined, capped);
+    const { first, fs } = context;
+    for (const name of ['a', 'b', 'c']) fs.files.set(`${name}.txt`, name.repeat(150));
+    const agentId = await spawnRunning(context, first, 'reserve-key');
+    for (const name of ['a', 'b', 'c']) await request(first.launcher, 0, `toolu_${name}`, 'files_read', { path: `${name}.txt` });
+    const reads = context.store.database.prepare(`SELECT COALESCE(SUM(result_bytes), 0) AS bytes FROM agent_effects
+      WHERE root_agent_id=? AND replay_class='read-safe'`).get(agentId) as { bytes: number };
+    expect(reads.bytes).toBeGreaterThan(0);
+    expect(reads.bytes).toBeLessThanOrEqual(500);
+    expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_c', kind: 'files_read' })).toMatchObject({ resultJson: null });
+
+    const write = await request(first.launcher, 0, 'toolu_w', 'files_write', { path: 'w.txt', content: 'w' });
+    expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_w', kind: 'files_write' })).toMatchObject({ resultJson: write.text });
+    // The mutation's repeat replays its stored bytes instead of reporting the receipt unavailable.
+    expect((await request(first.launcher, 0, 'toolu_w', 'files_write', { path: 'w.txt', content: 'w' })).text).toBe(write.text);
+    expect(fs.applied).toEqual(['files_write']);
   });
 });

@@ -394,7 +394,7 @@ describe('AgentStateRepository', () => {
       expect(replay.replayed).toBe(true);
       expect(replay.effect).toMatchObject({
         state: 'APPLIED', resultJson: text, intendedSha256: 'b'.repeat(64), executorGeneration: epoch,
-        retainUntil: 1_000 + limits().sessionRetentionMs, reconciled: false
+        retainUntil: agent.expiresAt + limits().sessionRetentionMs, reconciled: false
       });
       expect(replay.effect.resultSha256).toMatch(/^[0-9a-f]{64}$/);
       // A completed effect cannot be completed again.
@@ -468,6 +468,35 @@ describe('AgentStateRepository', () => {
       expect(repository.addUsage(successor.ownerId, successor.workspaceId, successor.id, successor.generation, { toolTimeMs: 50 }, { runnerEpoch: epoch }).toolTimeMs).toBe(50);
     });
 
+    it('keeps a lineage\'s receipts at least as long as the sessions that can replay them', () => {
+      const { repository, workspace: workspaceRecord, epoch } = receiptSetup();
+      const predecessor = running(repository, workspaceRecord, 'q', epoch);
+      repository.reserveEffect(reserveInput(predecessor, epoch));
+      const key = { rootAgentId: predecessor.id, requestId: 'toolu_1', kind: 'files_write' };
+      repository.dispatchEffect({ ...key, fence: fenceOf(predecessor, epoch), expectedStates: ['INTENT'], now: Date.now() });
+      repository.completeEffect({ ...key, fence: fenceOf(predecessor, epoch), expectedStates: ['DISPATCHED'], state: 'APPLIED', receipt: { text: '{"ok":true}' }, now: Date.now() });
+      const retention = limits().sessionRetentionMs;
+      expect(repository.findEffect(key)?.retainUntil).toBe(predecessor.expiresAt + retention);
+
+      // An agent that ends after its expiry (a late reaper) extends its receipts to its session's retention.
+      const endedAt = predecessor.expiresAt + 5_000;
+      for (const [from, to] of [['RUNNING', 'CANCELLING'], ['CANCELLING', 'SUCCEEDED']] as const) {
+        repository.transitionStatus({
+          ownerId: predecessor.ownerId, workspaceId: predecessor.workspaceId, agentId: predecessor.id, generation: predecessor.generation,
+          expectedStatuses: [from], status: to, now: endedAt
+        });
+      }
+      const sealed = repository.findSession(predecessor.id)!;
+      expect(sealed.retainUntil).toBe(endedAt + retention);
+      expect(repository.findEffect(key)?.retainUntil).toBe(sealed.retainUntil);
+
+      // A successor can replay the predecessor's receipt until its own session expires.
+      const successor = running(repository, workspaceRecord, 'u', epoch, { continuedFrom: predecessor.id });
+      expect(repository.findEffect(key)?.retainUntil).toBe(Math.max(sealed.retainUntil!, successor.expiresAt + retention));
+      expect(repository.purgeExpiredReceipts(sealed.retainUntil! - 1)).toBe(0);
+      expect(repository.findEffect(key)?.resultJson).toBe('{"ok":true}');
+    });
+
     it('purges receipt content past retention but keeps the outcome, and deletes effects with the workspace sessions', () => {
       const { repository, workspace: workspaceRecord, epoch, store } = receiptSetup();
       const agent = running(repository, workspaceRecord, 'g', epoch);
@@ -475,8 +504,9 @@ describe('AgentStateRepository', () => {
       const key = { rootAgentId: agent.id, requestId: 'toolu_1', kind: 'files_write' };
       repository.dispatchEffect({ ...key, fence: fenceOf(agent, epoch), expectedStates: ['INTENT'], now: Date.now() });
       repository.completeEffect({ ...key, fence: fenceOf(agent, epoch), expectedStates: ['DISPATCHED'], state: 'APPLIED', receipt: { text: '{"ok":true}' }, now: 1_000 });
-      expect(repository.purgeExpiredReceipts(1_000 + limits().sessionRetentionMs - 1)).toBe(0);
-      expect(repository.purgeExpiredReceipts(1_000 + limits().sessionRetentionMs)).toBe(1);
+      // Retention counts from the writer's expiry, since its session's retention starts only when it ends.
+      expect(repository.purgeExpiredReceipts(agent.expiresAt + limits().sessionRetentionMs - 1)).toBe(0);
+      expect(repository.purgeExpiredReceipts(agent.expiresAt + limits().sessionRetentionMs)).toBe(1);
       expect(repository.findEffect(key)).toMatchObject({ state: 'APPLIED', resultJson: null, resultSha256: null, retainUntil: null });
 
       repository.deleteWorkspaceSessions(agent.ownerId, agent.workspaceId);

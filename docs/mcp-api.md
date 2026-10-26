@@ -262,8 +262,11 @@ the ledger and its fences are in
   reaches the executor and records its outcome, with the result's hash, before
   sending the result. An agent spawned with session persistence also stores the
   exact result text (its receipt) until its lineage holds
-  `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` bytes; any other result is kept as a
-  hash only and replays as if its receipt had been purged.
+  `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` bytes. Read-safe results may fill at
+  most half of that cap, so a lineage that reads a lot still stores the
+  receipts of its mutations, whose loss costs `EFFECT_RECEIPT_UNAVAILABLE`
+  rather than a re-read. Any other result is kept as a hash only and replays
+  as if its receipt had been purged.
 - A repeated call whose result text is stored returns those bytes exactly,
   applied or rejected, and runs nothing.
 - A repeated read-safe call whose receipt was purged runs again, and its result
@@ -321,8 +324,10 @@ the ledger and its fences are in
   outcome, add usage, or append session messages; recording an outcome also
   needs the active workspace generation, and an agent that a successor
   continued can do none of these.
-  Receipts are kept for the session retention and deleted with the workspace's
-  sessions.
+  A receipt is kept at least as long as every session of its lineage that can
+  replay it: until its writer's expiry plus `AGENT_SESSION_RETENTION_MS`,
+  extended when a session of the lineage is sealed later than that or the
+  lineage is continued. Receipts are deleted with the workspace's sessions.
 
 ### Model setup and spend
 

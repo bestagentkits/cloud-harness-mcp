@@ -106,7 +106,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `AGENT_WORKSPACE_SESSION_BYTES` | `67108864` | Optional | Most bytes all stored sessions of one workspace may hold together; a continuation copies its predecessor's log. |
 | `AGENT_PRINCIPAL_SESSION_BYTES` | `536870912` | Optional | Most bytes all stored sessions of one owner may hold together. |
 | `AGENT_GLOBAL_SESSION_BYTES` | `1073741824` | Optional | Most bytes all stored sessions of the instance may hold together (workspace <= principal <= global). |
-| `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` | `33554432` | Optional | Most stored tool-result bytes (receipts) one agent lineage may keep for replay (32 MiB); past it only hashes are kept. |
+| `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` | `33554432` | Optional | Most stored tool-result bytes (receipts) one agent lineage may keep for replay (32 MiB); read-safe results may use at most half, and past the cap only hashes are kept. |
 | `GITHUB_APP_ID` | `—` | Optional | Optional GitHub App repository access; required fields depend on AUTH_MODE: |
 | `GITHUB_APP_INSTALLATION_ID` | `—` | Optional | Required in owner-bearer mode; omit in Access mode, where each principal binds an installation: |
 | `GITHUB_APP_SLUG` | `—` | Optional | Required in Access mode for the installation redirect: |
