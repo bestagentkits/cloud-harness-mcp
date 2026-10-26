@@ -145,8 +145,8 @@ current:
   `dev` is not shipped: its issue stays `done` (release automation adds
   `released on @beta`) until `dev` is promoted to `main` as described in
   [`docs/development.md`](docs/development.md#promoting-dev-to-main). A fix
-  that has to reach `main` first must also land on `dev`, so the next
-  promotion does not revert it.
+  that has to reach `main` first must also land on `dev`, so `dev` does not
+  keep running without it and the next promotion does not conflict with it.
 - When you find a related or duplicate issue, comment on it with a reference to
   the issue you are working on instead of duplicating work. File an unrelated
   defect you discover as its own issue rather than widening the current PR.
