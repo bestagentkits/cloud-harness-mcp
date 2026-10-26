@@ -405,7 +405,8 @@ export const RunnerConfigSchema = z.object({
   const mode = config.authMode ?? 'owner-bearer';
   if (config.agentCodingEnabled && !(config.agentPoliciesEnabled && config.automationsEnabled)) {
     context.addIssue({ code: 'custom', path: ['agentCodingEnabled'], message: 'AGENT_CODING_ENABLED requires AGENT_POLICIES_ENABLED and AUTOMATIONS_ENABLED' });
-  }  if (config.agentCodingPackageInstallEnabled && !config.agentCodingEnabled) {
+  }
+  if (config.agentCodingPackageInstallEnabled && !config.agentCodingEnabled) {
     context.addIssue({ code: 'custom', path: ['agentCodingPackageInstallEnabled'], message: 'AGENT_CODING_PACKAGE_INSTALL_ENABLED requires AGENT_CODING_ENABLED' });
   }
   if (config.packagesMaxReleaseBytes > config.packagesMaxOwnerBytes) {
