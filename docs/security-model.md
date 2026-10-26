@@ -1330,8 +1330,10 @@ and [`apps/runner/src/agent-runtime-adapter.ts`](../apps/runner/src/agent-runtim
   The flag is read at runner start: turning it off takes a runner restart,
   which stops running agents as any restart does (none resumes on its own),
   and afterwards new durable spawns and continuations are refused.
-- The store is bounded on disk by `AGENT_DURABLE_MAX_LINEAGE_BYTES`; a run that
-  exceeds it ends as `LIMIT_EXCEEDED`. Closing or expiring the workspace deletes
+- The store is bounded on disk by `AGENT_DURABLE_MAX_LINEAGE_BYTES`, and its
+  size counts toward the same workspace, owner, and instance session byte
+  budgets as persisted logs, measured at runner start and around every commit;
+  a run whose commit would pass either ends as `LIMIT_EXCEEDED`. Closing or expiring the workspace deletes
   its lineage databases, and the reaper deletes a lineage's database once
   retention has purged every session of it.
 

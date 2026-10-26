@@ -348,6 +348,64 @@ describe('DurableSessionStore', () => {
     expect(existsSync(join(dir, `${SUCCESSOR}.sqlite`))).toBe(false);
   });
 
+  it('refuses a commit that an aggregate session budget would not hold, and every later commit', async () => {
+    const backend = fakeBackend(100);
+    const store = await createStore({ loader: backend.loader });
+    const claim = await store.claim(LINEAGE, OWNER, 1, 0);
+    const offered: number[] = [];
+    let full = false;
+    const budget = (addedBytes: number) => {
+      offered.push(addedBytes);
+      return full ? 'workspace' as const : undefined;
+    };
+    const first = request('r-1', 'commit', [[]]);
+    expect(await store.handle(claim, first, budget)).toMatchObject({ ok: true });
+    // The budget is offered the commit's encoded size.
+    expect(offered).toEqual([Buffer.byteLength(JSON.stringify(first), 'utf8')]);
+    full = true;
+    expect(await store.handle(claim, request('r-2', 'commit', [[]]), budget)).toMatchObject({
+      ok: false, error: { code: 'limit', message: 'durable session would exceed the workspace agent session byte budget', retryable: false }
+    });
+    expect(store.limitExceeded(claim)).toBe(true);
+    full = false;
+    expect(await store.handle(claim, request('r-3', 'commit', [[]]), budget)).toMatchObject({ ok: false, error: { code: 'limit' } });
+    expect(backend.commits).toBe(1);
+    // Reads stay available, so the run can still end cleanly.
+    expect(await store.handle(claim, request('r-4', 'mintId'), budget)).toMatchObject({ ok: true });
+  });
+
+  it('measures lineage databases on disk for the aggregate budgets, through commits, restart, and delete', async () => {
+    const backend = fakeBackend(1_500);
+    const dir = await stateDir();
+    const before = new DurableSessionStore({ stateDir: dir, enabled: true, loader: backend.loader });
+    expect(before.totalBytes()).toBe(0);
+    // A store without its directory yet measures nothing.
+    await before.measure();
+    expect(before.totalBytes()).toBe(0);
+    for (const lineage of [LINEAGE, SUCCESSOR]) {
+      const claim = await before.claim(lineage, OWNER, 1, 0);
+      await before.handle(claim, request('r-1', 'commit', [[]]));
+    }
+    const lineageBytes = (await stat(join(dir, `${LINEAGE}.sqlite`))).size;
+    expect(lineageBytes).toBeGreaterThanOrEqual(1_500);
+    expect(before.lineageBytes(LINEAGE)).toBe(lineageBytes);
+    expect(before.totalBytes()).toBe(lineageBytes + (await stat(join(dir, `${SUCCESSOR}.sqlite`))).size);
+    await before.close();
+
+    // A restarted runner, durable runtime on or off, counts what an earlier run left.
+    const after = new DurableSessionStore({ stateDir: dir, enabled: false });
+    stores.push(after);
+    expect(after.totalBytes()).toBe(0);
+    await after.measure();
+    expect(after.lineageBytes(LINEAGE)).toBe(lineageBytes);
+    expect(after.lineageBytes(`agent_${'x'.repeat(24)}`)).toBe(0);
+    await after.delete(LINEAGE);
+    expect(after.lineageBytes(LINEAGE)).toBe(0);
+    expect(after.totalBytes()).toBe(after.lineageBytes(SUCCESSOR));
+    await after.deleteLineages([SUCCESSOR]);
+    expect(after.totalBytes()).toBe(0);
+  });
+
   it.skipIf(process.platform === 'win32')('keeps the database and its directory private to the runner user', async () => {
     // POSIX permission bits; Windows ACLs do not map onto these modes.
     const dir = await stateDir();

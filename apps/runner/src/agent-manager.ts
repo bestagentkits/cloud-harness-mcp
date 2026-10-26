@@ -212,6 +212,8 @@ export class AgentManager {
     this.spendLedger = dependencies.spendLedger ?? new ModelSpendLedger(store.database);
     this.durableSessions = dependencies.durableSessions ?? new DurableSessionStore({ stateDir: undefined, enabled: false });
     this.adapters = { 'pi-coding': piCodingAdapter, 'pi-durable': piDurableAdapter(this.durableSessions) };
+    // Durable lineage databases count toward the same aggregate session byte budgets as persisted logs.
+    this.repository.countDurableStorage(this.durableSessions);
     this.epoch = this.repository.currentEpoch(store.instanceId());
     if (this.epoch === 0) {
       this.epoch = this.repository.bumpEpoch(store.instanceId(), this.now());
@@ -246,6 +248,8 @@ export class AgentManager {
     this.accepting = false;
     this.stopping = false;
     this.epoch = this.repository.bumpEpoch(this.store.instanceId(), this.now());
+    // Sized before any admission, so the session budgets count the durable stores already on disk.
+    await this.durableSessions.measure();
     await this.launcher.reconcile?.();
     const modelProfiles = this.modelProfiles;
     if (modelProfiles && this.hasSnapshotSync()) {
@@ -581,7 +585,8 @@ export class AgentManager {
         epoch: this.epoch,
         depth: this.repository.lineageDepth(record.id),
         resume: this.durableResume(record),
-        sessionLog
+        sessionLog,
+        sessionBudget: (addedBytes) => this.repository.exceededSessionBudget(record.ownerId, record.workspaceId, addedBytes)
       });
       const session = runSession;
       if (!this.stillSpawning(record)) {
@@ -705,14 +710,14 @@ export class AgentManager {
   }
 
   /**
-   * Runs one durable-runtime storage request against the run's claim. A store over its size cap
-   * ends the run as LIMIT_EXCEEDED; the cancel is not awaited, because finishing the run may need
+   * Runs one durable-runtime storage request against the run's claim. A store over its size cap or
+   * an aggregate session byte budget ends the run as LIMIT_EXCEEDED; the cancel is not awaited, because finishing the run may need
    * further storage requests on this same chain.
    */
   private async onStorage(context: RuntimeContext, request: AgentStorageRequestRecord): Promise<void> {
     const { response, limitExceeded } = await context.session.handleStorage(request);
     if (!context.channel.isClosed) await context.channel.send(response);
-    if (limitExceeded) void this.cancelOne(context.record, 'durable agent session exceeded its size limit', 'LIMIT_EXCEEDED').catch(() => undefined);
+    if (limitExceeded) void this.cancelOne(context.record, 'durable agent session exceeded its size limit or a session byte budget', 'LIMIT_EXCEEDED').catch(() => undefined);
   }
 
   private stillSpawning(record: AgentRecord): boolean {

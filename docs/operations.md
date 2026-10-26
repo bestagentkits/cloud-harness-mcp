@@ -445,6 +445,9 @@ image. To offer it:
    without it produces the default image again.
 2. Set `AGENT_DURABLE_RUNTIME_ENABLED=true` for the runner and restart it. Keep
    `AGENT_DURABLE_MAX_LINEAGE_BYTES` within the free space of the state volume.
+   Lineage databases also count toward the `AGENT_*_SESSION_BYTES` budgets, so
+   raise `AGENT_WORKSPACE_SESSION_BYTES` (and the owner and instance budgets
+   above it) when durable runs need more than the 64 MiB workspace default.
 
 With the flag on but the default image, each durable run fails at start with an
 error that names the build argument. Lineage databases live in
