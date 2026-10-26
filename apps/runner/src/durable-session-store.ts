@@ -157,7 +157,13 @@ const isObject = (value: unknown): boolean => typeof value === 'object' && value
 const isNumber = (value: unknown): boolean => typeof value === 'number' && Number.isFinite(value);
 const isOptionalCursor = (value: unknown): boolean => value === undefined || isObject(value);
 const isDocumentPoint = (value: unknown): boolean => value === 'current' || isNumber(value);
-const SCAN = [isObject, isNumber, isOptionalCursor];
+/**
+ * The most items one scan may ask for. The engine pages by 256; a larger page would only let one
+ * request make the runner read and serialize more of the database before the response bound applies.
+ */
+export const MAX_STORAGE_SCAN_LIMIT = 1_000;
+const isScanLimit = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= MAX_STORAGE_SCAN_LIMIT;
+const SCAN = [isObject, isScanLimit, isOptionalCursor];
 
 /** Argument shapes per method; values themselves are validated by the storage. */
 const ARGUMENTS: Record<AgentStorageMethod, ReadonlyArray<ReadonlyArray<(value: unknown) => boolean>>> = {
