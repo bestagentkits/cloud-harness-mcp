@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_PROXY_REPLAY_CLASS } from '@cloud-harness/contracts';
 import { AgentProxyOperationSchema } from '../../agent-runtime/src/protocol-schemas.js';
 import { ProxyToolBroker } from '../../agent-runtime/src/proxy-tools.js';
 import { createRedactor } from '../../agent-runtime/src/redaction.js';
 import { DurableEventProjector } from '../src/events.js';
-import { PROXY_OPERATIONS, REPLAY_SAFE_OPERATIONS } from '../src/protocol.js';
+import { PROXY_OPERATIONS } from '../src/protocol.js';
 import { DurableToolBroker } from '../src/proxy-tools.js';
 
 /** Schema JSON without library-internal markers, which differ between schema library versions. */
@@ -23,15 +22,11 @@ describe('durable proxy tools', () => {
     }
   });
 
-  it('lets only operations the contracts classify as read-safe rerun after a crash', () => {
+  it('reruns every operation after a crash, so the runner\'s effect ledger sees the original request id', () => {
     const tools = new DurableToolBroker(() => undefined, createRedactor(), 1_024).createTools(PROXY_OPERATIONS);
-    const replay = Object.fromEntries(tools.map((tool) => [tool.name, tool.replay]));
-    expect(replay).toEqual(Object.fromEntries(PROXY_OPERATIONS.map((operation) => [
-      operation,
-      AGENT_PROXY_REPLAY_CLASS[operation] === 'read-safe' ? 'safe' : 'unsafe'
-    ])));
-    // Every mutation, conditional or destructive, is interrupted rather than rerun.
-    expect([...REPLAY_SAFE_OPERATIONS].sort()).toEqual(['files_list', 'files_read', 'grep_search', 'symbols_references', 'symbols_search']);
+    // A mutation is not applied twice by its rerun: the ledger returns or reconciles it by request id.
+    expect(Object.fromEntries(tools.map((tool) => [tool.name, tool.replay])))
+      .toEqual(Object.fromEntries(PROXY_OPERATIONS.map((operation) => [operation, 'safe'])));
   });
 });
 describe('durable event projection', () => {

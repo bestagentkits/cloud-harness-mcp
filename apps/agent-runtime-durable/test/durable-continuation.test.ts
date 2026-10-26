@@ -331,13 +331,14 @@ describe('durable agent runtime through the runner', () => {
     expect(await settled(context, second, successorId)).toBe('SUCCEEDED');
     const start = second.launcher.launches[0]!.received.find((item) => item.type === 'start')!;
     expect(start).toMatchObject({ runtime: 'pi-durable', durableResume: 'continue' });
-    // The engine settles its interrupted calls itself on resume; it never receives a replayed transcript.
+    // The engine resumes its interrupted calls itself; it never receives a replayed transcript.
     expect(start).not.toHaveProperty('session');
     expect(fs.applied).toEqual(['files_write']);
     expect(fs.executions('files_write')).toBe(1);
-    expect(toolRequests(second.launcher.launches[0], 'files_write')).toEqual([]);
+    // The interrupted write reruns under its first request ID and the ledger settles it from the workspace.
+    expect(toolRequests(second.launcher.launches[0], 'files_write').map((request) => request.requestId)).toEqual([writeRequest!.requestId]);
     expect(fs.files.get('out.txt')).toBe('new content');
-    expect(second.repository.findEffect(writeKey)).toMatchObject({ state: 'UNKNOWN', agentId });
+    expect(second.repository.findEffect(writeKey)).toMatchObject({ state: 'APPLIED', agentId });
 
     // Each run holds its own lease with its own caps; the predecessor's usage stays its own.
     expect(second.gateway.issued).toHaveLength(1);
@@ -352,6 +353,51 @@ describe('durable agent runtime through the runner', () => {
     const bytes = readFileSync(lineageFile(context, agentId));
     expect(bytes.includes(Buffer.from(LEASE))).toBe(false);
     expect(bytes.includes(Buffer.from('bearer_'))).toBe(false);
+  }, 60_000);
+
+  it('settles a write interrupted at the kill under its own request ID, so a model that would retry it never writes twice', async () => {
+    const context = setup();
+    const { fs } = context;
+    const first = context.runner({
+      responses: [[
+        fauxAssistantMessage(fauxToolCall('files_write', { path: 'out.txt', content: 'new content' }, { id: 'call-write' }), { stopReason: 'toolUse' }),
+        fauxAssistantMessage('done before the crash')
+      ]]
+    });
+    fs.stallAfter('files_write');
+    const agentId = await spawn(context, first, 'durable-retry', { runtime: 'pi-durable' });
+    await vi.waitFor(() => expect(fs.applied).toEqual(['files_write']), { timeout: 20_000, interval: 25 });
+    const [writeRequest] = toolRequests(first.launcher.launches[0], 'files_write');
+    first.launcher.kill(0);
+    await first.sessions.close();
+
+    // Like the benchmark's model, this one issues the write again whenever its result is an error.
+    const seen: Array<{ isError: boolean; text: string }> = [];
+    const retryOnError: FauxResponseStep = (modelContext) => {
+      const last = modelContext.messages.at(-1);
+      if (last?.role !== 'toolResult') return fauxAssistantMessage('nothing to do');
+      const text = last.content.map((item) => item.type === 'text' ? item.text : '').join('');
+      seen.push({ isError: last.isError, text });
+      return last.isError
+        ? fauxAssistantMessage(fauxToolCall('files_write', { path: 'out.txt', content: 'new content' }, { id: `call-retry-${seen.length}` }), { stopReason: 'toolUse' })
+        : fauxAssistantMessage('the write landed');
+    };
+    const second = context.runner({ responses: [[retryOnError, retryOnError, retryOnError]] });
+    await second.manager.start();
+    const successorId = await spawn(context, second, 'durable-retry-continue', { continueFrom: agentId, prompt: 'finish up' });
+    expect(await settled(context, second, successorId)).toBe('SUCCEEDED');
+
+    // The resumed call asks the runner under the request ID it was first issued with, and the
+    // ledger settles it from the workspace instead of the executor applying it a second time.
+    const resumed = toolRequests(second.launcher.launches[0], 'files_write');
+    expect(resumed.map((request) => request.requestId)).toEqual([writeRequest!.requestId]);
+    expect(fs.applied).toEqual(['files_write']);
+    expect(fs.executions('files_write')).toBe(1);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.isError).toBe(false);
+    expect(JSON.parse(seen[0]!.text)).toMatchObject({ ok: true, reconciled: true, data: { path: 'out.txt' } });
+    expect(second.repository.findEffect({ rootAgentId: agentId, requestId: writeRequest!.requestId as string, kind: 'files_write' }))
+      .toMatchObject({ state: 'APPLIED' });
   }, 60_000);
 
   it('lets only one of two racing continuations claim the lineage', async () => {
@@ -400,6 +446,29 @@ describe('durable agent runtime through the runner', () => {
     expect(await settled(context, runner, successorId)).toBe('SUCCEEDED');
     expect(runner.launcher.launches[1]!.received.find((item) => item.type === 'start')).toMatchObject({ durableResume: 'abort' });
     expect(fs.executions('files_read')).toBe(1);
+  }, 60_000);
+
+  it('never reruns a write that a cancelled predecessor left in flight', async () => {
+    const context = setup();
+    const { fs, record } = context;
+    const runner = context.runner({
+      responses: [
+        [fauxAssistantMessage(fauxToolCall('files_write', { path: 'out.txt', content: 'new content' }, { id: 'call-write' }), { stopReason: 'toolUse' })],
+        [fauxAssistantMessage('starting over')]
+      ]
+    });
+    const stalled = fs.stallAfter('files_write');
+    const agentId = await spawn(context, runner, 'cancel-write-root', { runtime: 'pi-durable' });
+    await vi.waitFor(() => expect(fs.executions('files_write')).toBe(1), { timeout: 20_000, interval: 25 });
+    await runner.manager.dispatch(record.ownerId, record, 'agent_cancel', { workspaceId: record.id, agentId });
+    stalled.resolve();
+    expect(agent(context, runner, agentId)?.status).toBe('CANCELLED');
+
+    const successorId = await spawn(context, runner, 'cancel-write-continue', { continueFrom: agentId, prompt: 'start over' });
+    expect(await settled(context, runner, successorId)).toBe('SUCCEEDED');
+    expect(runner.launcher.launches[1]!.received.find((item) => item.type === 'start')).toMatchObject({ durableResume: 'abort' });
+    expect(toolRequests(runner.launcher.launches[1], 'files_write')).toEqual([]);
+    expect(fs.executions('files_write')).toBe(1);
   }, 60_000);
 
   it('ends a run whose session store outgrows its cap as limit exceeded', async () => {

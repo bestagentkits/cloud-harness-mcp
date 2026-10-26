@@ -665,7 +665,8 @@ export class AgentManager {
       context.deadline.unref();
       // A coding continuation learns what became of the tool calls its predecessor left unanswered
       // before its first turn, so it never issues an applied mutation again under a new tool call
-      // ID. The durable engine settles its own interrupted calls when it resumes, so it gets none.
+      // ID. The durable engine reruns its interrupted calls under their first request IDs when it
+      // resumes, and the ledger settles those repeats, so it gets none.
       // A cancel that lands meanwhile closes the channel, so the send below fails into failLaunch,
       // which leaves the cancel's cleanup in charge.
       const toolOutcomes = sessionLog ? await this.danglingToolOutcomes(context, sessionLog.messages) : [];

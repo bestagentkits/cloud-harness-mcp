@@ -3,7 +3,6 @@ import type { Context, JsonValue } from '@earendil-works/chord';
 import { Type, type TSchema } from '@earendil-works/pi-ai';
 import { defineTool, type ToolExecutionResult, type ToolRegistration } from '@earendil-works/pi-durable';
 import {
-  REPLAY_SAFE_OPERATIONS,
   type DurableOutputRecord,
   type DurableRedactor,
   type ProxyOperation,
@@ -87,7 +86,7 @@ export function boundedToolCallId(value: string): string {
 
 /**
  * The run's request id for one durable tool task. The task id is assigned when the call is admitted
- * and survives a resume, so a replay-safe call that reruns asks the runner under the same id.
+ * and survives a resume, so a call that reruns asks the runner under the same id.
  */
 export function durableToolRequestId(taskId: number): string {
   return `durable-task-${taskId}`;
@@ -100,8 +99,12 @@ function toJsonValue(value: unknown): JsonValue | undefined {
 
 /**
  * Forwards every proxy tool call to the runner as a `tool_request` and resolves it from the
- * matching `tool_result`. Read-only operations are registered replay-safe; every operation that
- * can change the workspace is replay-unsafe, so the harness never reruns it after a crash.
+ * matching `tool_result`. Every operation is registered replay-safe: a call interrupted by a crash
+ * reruns on resume under its original request id, and the runner's effect ledger, keyed by that id
+ * across the lineage, returns the stored result or settles a mutation whose outcome was lost from
+ * workspace state, never applying it twice. Registered replay-unsafe, the engine would instead
+ * hand the model a bare interruption, and a model that issues the call again does so under a new
+ * request id the ledger cannot recognise as a repeat.
  */
 export class DurableToolBroker {
   readonly #emit: (record: ToolRecord) => void;
@@ -121,7 +124,7 @@ export class DurableToolBroker {
       name: operation,
       description: `Execute the bounded ${operation} operation in the validated workspace.`,
       parameters: PROXY_PARAMETERS[operation],
-      replay: REPLAY_SAFE_OPERATIONS.has(operation) ? 'safe' : 'unsafe',
+      replay: 'safe',
       execute: (args, api, context) => this.#execute(operation, args, api.taskId, api.callId, (text) => api.output(text), context)
     }) as ToolRegistration);
   }
