@@ -1,3 +1,10 @@
+## [0.76.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.76.1...v0.76.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **dashboard:** open the workspace from classic /summary links instead of a 404 ([#538](https://github.com/bestagentkits/cloud-harness-mcp/issues/538)) ([9257bfa](https://github.com/bestagentkits/cloud-harness-mcp/commit/9257bfaae921078c374a8502d7d361fc0ccf150e))
+
 ## [0.76.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.76.0...v0.76.1) (2026-10-26)
 
 
