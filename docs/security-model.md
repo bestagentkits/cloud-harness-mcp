@@ -1272,8 +1272,11 @@ behaviour the model sees):
   per-lineage byte cap. Every other effect keeps its payload and result hashes
   only. Stored text stays in the runner's state database, is never returned by
   an MCP tool, and has the agent's model lease redacted before it is stored.
-  Receipt content is cleared after the session retention, and the workspace's
-  receipts are deleted when it closes, expires, or is compacted.
+  Read-safe result text may fill at most half of that cap. Receipt content is
+  kept until its writer's expiry plus the session retention, extended to the
+  retention of a later-sealed or continuing session of its lineage, so it never
+  expires before a session that can replay it. The workspace's receipts are
+  deleted when it closes, expires, or is compacted.
 - The runner never re-issues a mutation on its own. A mutation whose outcome
   was lost is settled by reading workspace state through the same fenced
   executor path, never by repeating it, and an undecidable outcome is reported
