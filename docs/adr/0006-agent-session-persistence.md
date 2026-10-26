@@ -323,7 +323,10 @@ Findings:
   `apps/runner/src/principal-store.ts`, which passes through
   `downgradeStateSchemaToV16` and `downgradeStateSchemaToV15`. Each step refuses
   while durable agents, stored receipt text or persisted sessions exist unless
-  data loss is allowed, so the flags go off and retention runs first. Effects
+  data loss is allowed. Retention clears receipt text but keeps purged session
+  rows and durable agent records, so a lossless downgrade first turns the flags
+  off, closes the affected workspaces and waits for their agent records to be
+  compacted. Effects
   that kept only hashes, as every effect of an agent spawned without persistence
   or the durable engine does, do not block it. `agent-sessions/` is
   deleted after a downgrade below v17. The steps are in

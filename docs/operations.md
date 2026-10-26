@@ -483,9 +483,14 @@ and `downgradeStateSchemaToV15`. Each step refuses while the data it drops
 exists unless data loss is allowed: durable agents for v16, stored receipt text
 for v15, and persisted sessions for v14. Only agents spawned with persistence
 or on the durable engine store receipt text; every other effect keeps hashes
-only and never blocks the v15 step. Turn the flags off and let retention purge,
-or close the affected workspaces, before stepping down without data loss.
-Delete `agent-sessions/` after a downgrade below v17.
+only and never blocks the v15 step. Retention alone does not clear the way:
+it clears receipt text, but a purged session keeps its row (`PURGED`), which
+still blocks v14, and a durable agent's record still blocks v16. To step down
+without data loss, turn the flags off, close the affected workspaces (which
+deletes their sessions, receipts, and lineage databases), and wait until their
+agent records are compacted after `AGENT_RETENTION_SECONDS`. Otherwise the
+downgrade needs data loss allowed. Delete `agent-sessions/` after a downgrade
+below v17.
 
 ### Durable agent engine
 
