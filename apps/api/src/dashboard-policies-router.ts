@@ -6,6 +6,7 @@ import {
   type AgentPoliciesRunnerOperation,
   type RunnerPrincipalSelector
 } from '@cloud-harness/contracts';
+import { withPathIds } from './dashboard-path-ids.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
 
 const ERROR_STATUS: Record<AgentPoliciesRunnerErrorCode, number> = {
@@ -35,7 +36,7 @@ const historyQuery = (request: DashboardRequest) => defined({ beforeVersion: que
 /**
  * Owner Dashboard routes for agent execution policies (`/api/v1/agent-policies`). The session decides
  * the principal; the route decides scope and project from the path, after the body, so a body field
- * cannot redirect a write. Every request is validated against the full runner schema before it is
+ * cannot redirect a write, and a body that repeats a path id with a different value is refused. Every request is validated against the full runner schema before it is
  * forwarded, and mutations pass the Dashboard Origin and CSRF checks like every other write.
  */
 export function registerAgentPolicyRoutes(
@@ -50,12 +51,12 @@ export function registerAgentPolicyRoutes(
   router.post(`${base}/global/validate`, endpoint('policy_validate', (request) => ({ ...jsonObject(request.body), scope: 'global' })));
   router.get(`${base}/global/history`, endpoint('policy_history', (request) => ({ ...historyQuery(request), scope: 'global' })));
   router.get(`${base}/projects/:projectId`, endpoint('policy_get', (request) => ({ scope: 'project', projectId: request.params.projectId })));
-  router.put(`${base}/projects/:projectId`, endpoint('policy_put', (request) => ({ ...jsonObject(request.body), scope: 'project', projectId: request.params.projectId })));
-  router.delete(`${base}/projects/:projectId`, endpoint('policy_delete', (request) => ({ ...jsonObject(request.body), projectId: request.params.projectId })));
-  router.post(`${base}/projects/:projectId/validate`, endpoint('policy_validate', (request) => ({ ...jsonObject(request.body), scope: 'project', projectId: request.params.projectId })));
+  router.put(`${base}/projects/:projectId`, endpoint('policy_put', (request) => ({ ...withPathIds(request.body, { projectId: request.params.projectId }), scope: 'project' })));
+  router.delete(`${base}/projects/:projectId`, endpoint('policy_delete', (request) => withPathIds(request.body, { projectId: request.params.projectId })));
+  router.post(`${base}/projects/:projectId/validate`, endpoint('policy_validate', (request) => ({ ...withPathIds(request.body, { projectId: request.params.projectId }), scope: 'project' })));
   router.get(`${base}/projects/:projectId/history`, endpoint('policy_history', (request) => ({ ...historyQuery(request), scope: 'project', projectId: request.params.projectId })));
   router.get(`${base}/revisions/:revisionId`, endpoint('policy_revision_get', (request) => ({ revisionId: request.params.revisionId })));
-  router.post(`${base}/revisions/:revisionId/rollback`, endpoint('policy_rollback', (request) => ({ ...jsonObject(request.body), revisionId: request.params.revisionId })));
+  router.post(`${base}/revisions/:revisionId/rollback`, endpoint('policy_rollback', (request) => withPathIds(request.body, { revisionId: request.params.revisionId })));
   router.get(`${base}/diff`, endpoint('policy_diff', (request) => defined({ fromRevisionId: queryValue(request.query.from), toRevisionId: queryValue(request.query.to) })));
   router.post(`${base}/simulate`, endpoint('policy_simulate', (request) => jsonObject(request.body)));
 
