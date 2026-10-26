@@ -28,8 +28,14 @@ export function sessionHead(messages: readonly unknown[]): string {
   return head;
 }
 
+/**
+ * Tool calls the provider will see. Pi drops an assistant reply that stopped with `error` or
+ * `aborted` from the provider context, so its calls are never answered: a result for one would be
+ * sent as an orphaned tool result, which providers reject.
+ */
 function toolCalls(message: SessionMessage): Array<{ id: string; name: string }> {
   if (message.role !== 'assistant' || !Array.isArray(message.content)) return [];
+  if (message.stopReason === 'error' || message.stopReason === 'aborted') return [];
   const calls: Array<{ id: string; name: string }> = [];
   for (const block of message.content as unknown[]) {
     if (typeof block !== 'object' || block === null) continue;

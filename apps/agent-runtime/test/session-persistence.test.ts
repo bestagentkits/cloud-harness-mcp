@@ -69,6 +69,18 @@ describe('persisted session replay planning', () => {
     expect(plan.replay[2]).toMatchObject({ toolCallId: 'call-1', isError: true });
   });
 
+  it('never answers a tool call of an errored or aborted reply, which Pi drops from the provider context', () => {
+    // Pi's transformMessages skips assistant messages that stopped with `error` or `aborted`, so a
+    // result for one of their calls would reach the provider as an orphaned tool result.
+    for (const stopReason of ['error', 'aborted']) {
+      const broken = { ...assistantCall('call-1'), stopReason };
+      const trailing = planSessionReplay([user('task'), broken], 42);
+      expect(trailing).toEqual({ replay: [user('task'), broken], trailingRepairs: [] });
+      const inner = planSessionReplay([user('task'), broken, user('next'), assistantText('done')], 42);
+      expect(inner).toEqual({ replay: [user('task'), broken, user('next'), assistantText('done')], trailingRepairs: [] });
+    }
+  });
+
   it('redacts only the lease and keeps every other byte of the message', () => {
     const message = { role: 'assistant', z: 1, a: [`key ${LEASE} here`, { [LEASE]: 'value', token: 'kept' }] };
     const redacted = redactSecretDeep(message, LEASE);
