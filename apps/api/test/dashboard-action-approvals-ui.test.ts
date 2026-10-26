@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import './dashboard-test-dom.js';
 import {
-  AGENT_APPROVALS_DISABLED_COPY, agentApprovalDecision, agentApprovalIsActionable, agentApprovalsPending, renderAgentActionApprovals
+  AGENT_APPROVALS_DISABLED_COPY, agentApprovalDecision, commandText, agentApprovalIsActionable, agentApprovalsPending, renderAgentActionApprovals
 } from '../dashboard/dashboard-action-approvals.js';
 import { AUTOMATION_WORKFLOW_STATES, automationWorkflowStateLabel, renderApprovals, renderAutomationRunDetail } from '../dashboard/dashboard-render.js';
 
@@ -51,6 +51,19 @@ describe('agent action approvals rendering', () => {
     expect(markup).toContain('&lt;img');
     expect(markup).not.toContain('href="/dashboard/automations/runs/&lt;');
     expect(markup).not.toMatch(/style=/i);
+  });
+
+  it('shows a verify command token by token so different argv never read alike', () => {
+    expect(commandText(['npm', 'test'])).toBe('npm test');
+    expect(commandText(['a,b'])).toBe('"a,b"');
+    expect(commandText(['a', 'b'])).toBe('a b');
+    expect(commandText(['node', 'scripts/run tests.mjs', ''])).toBe('node "scripts/run tests.mjs" ""');
+    const markup = renderAgentActionApprovals({
+      approvals: [approval({ step: 'verify', descriptor: { version: 1, actionClass: 'test', repository: 'acme/widgets', command: ['sh', '-c', 'echo "<b>"'] } })],
+      enabled: true, now: NOW
+    });
+    expect(markup).toContain('sh -c &quot;echo \\&quot;&lt;b&gt;\\&quot;&quot;');
+    expect(markup).not.toContain('<b>');
   });
 
   it('offers no decision for an expired, decided or malformed approval and says so in words', () => {

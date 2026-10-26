@@ -39,11 +39,24 @@ export function agentApprovalIsActionable(approval, now = Date.now()) {
   return Number.isNaN(expiresAt) || expiresAt > now;
 }
 
+/**
+ * An argv as the owner should read it: one token per word, and a token that is empty or holds
+ * whitespace, quotes, a backslash or a comma is JSON-quoted, so `["a,b"]` and `["a", "b"]` never look
+ * alike. The caller escapes the result.
+ */
+export function commandText(command) {
+  const tokens = Array.isArray(command) ? command : [command];
+  return tokens.map((token) => {
+    const value = String(token ?? '');
+    return value === '' || /[\s"'\\,]/u.test(value) ? JSON.stringify(value) : value;
+  }).join(' ');
+}
+
 /** The action the approval covers, in the descriptor's own terms. */
 function actionFacts(descriptor) {
   const facts = [`<dt>Action class</dt><dd class="mono">${text(descriptor?.actionClass)}</dd>`, `<dt>Repository</dt><dd class="mono wrap">${text(descriptor?.repository)}</dd>`];
   if (descriptor?.branch) facts.push(`<dt>Branch</dt><dd class="mono wrap">${escape(String(descriptor.branch))}</dd>`);
-  if (descriptor?.command) facts.push(`<dt>Command</dt><dd class="mono wrap">${escape(String(descriptor.command))}</dd>`);
+  if (descriptor?.command) facts.push(`<dt>Command</dt><dd class="mono wrap">${escape(commandText(descriptor.command))}</dd>`);
   const paths = Array.isArray(descriptor?.paths) ? descriptor.paths : [];
   if (paths.length) facts.push(`<dt>Paths</dt><dd class="mono wrap">${paths.slice(0, 20).map((path) => escape(String(path))).join(', ')}${paths.length > 20 ? ` and ${paths.length - 20} more` : ''}</dd>`);
   return facts.join('');
