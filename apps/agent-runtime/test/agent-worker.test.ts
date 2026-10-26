@@ -109,6 +109,8 @@ describe('AgentSession worker lifecycle', () => {
       { stopReason: 'error', errorMessage: '429 budget_exceeded: model budget exhausted' },
       { stopReason: 'error', errorMessage: '413 model_bound_exceeded' },
       { stopReason: 'error', errorMessage: '413 model bound exceeded' },
+      { stopReason: 'error', errorMessage: 'model_bound_exceeded: model output bound exceeded' },
+      { stopReason: 'error', errorMessage: '{"type":"error","error":{"code":"model_bound_exceeded","type":"model_bound_exceeded"}}' },
       { stopReason: 'length' }
     ];
     for (const failure of failures) {
