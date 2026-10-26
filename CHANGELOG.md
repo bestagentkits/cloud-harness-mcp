@@ -1,3 +1,17 @@
+# [0.66.0-beta.41](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.40...v0.66.0-beta.41) (2026-10-26)
+
+
+### Bug Fixes
+
+* **notifications:** link a run's source only for host-pinned providers ([1ca22b9](https://github.com/bestagentkits/cloud-harness-mcp/commit/1ca22b9396cdaba9bd3e24ab723a49fa0d040e45)), closes [#417](https://github.com/bestagentkits/cloud-harness-mcp/issues/417)
+* **traces:** keep a waiting workflow's trace until its spans are written ([3b646f6](https://github.com/bestagentkits/cloud-harness-mcp/commit/3b646f653ac1b7eea1fedd531360ad96c1722c89)), closes [#603](https://github.com/bestagentkits/cloud-harness-mcp/issues/603)
+* **traces:** keep held traces readable and hold full traces through approvals ([5b35573](https://github.com/bestagentkits/cloud-harness-mcp/commit/5b355737236fe53f33d44099b5f0f8604e120f6b))
+
+
+### Features
+
+* **notifications:** link automation notifications to the source, trace and pull request ([cce45a4](https://github.com/bestagentkits/cloud-harness-mcp/commit/cce45a4532bda2ccddfe7325835721408862cdab)), closes [#417](https://github.com/bestagentkits/cloud-harness-mcp/issues/417)
+
 # [0.66.0-beta.40](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.39...v0.66.0-beta.40) (2026-10-26)
 
 
