@@ -396,7 +396,7 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 ---
 
 ### 34. A continued agent reports `EFFECT_UNKNOWN` for a write, delete, or move
-**Cause:** The earlier agent was stopped (cancelled, killed, or interrupted by a runner restart) while that change was in flight, and the runner could not tell from the workspace whether it landed. It did not run the change again, and an interrupted agent is never reported as `SUCCEEDED`. `EFFECT_NOT_APPLIED` instead means the write provably did not land.
+**Cause:** The earlier agent was stopped (cancelled, killed, or interrupted by a runner restart) while that change was in flight, and the runner could not tell from the workspace whether it landed. For a continued agent on the default engine (session persistence), the runner did not run the change again. A durable agent (`runtime: "pi-durable"`) is different: it may re-issue the interrupted call under a new request ID, which the runner does not recognize as a repeat (tracked in [#589](https://github.com/bestagentkits/cloud-harness-mcp/issues/589)), so check the workspace before running the change again. An interrupted agent is never reported as `SUCCEEDED`. `EFFECT_NOT_APPLIED` instead means the write provably did not land.
 
 **Fix:**
 1. Read the affected file or path before repeating the change; the agent receives the same instruction.
