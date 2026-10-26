@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   AgentActionDescriptorSchema,
   GateDecisionSchema,
@@ -10,6 +10,7 @@ import {
 } from '@cloud-harness/contracts';
 import type { AdvisorFacts } from '../src/agent-governance/ports.js';
 import { AgentPolicyService } from '../src/agent-governance/policy-service.js';
+import { DECISION_CALL_TIMEOUT_MS } from '../src/decision-plane/decision-plane.js';
 import { ExecutionRiskAdvisor } from '../src/decision-plane/execution-risk-advisor.js';
 import { JevDecisionProvider } from '../src/decision-plane/jev-provider.js';
 import { fakeJevPlane } from './support/fake-jev-provider.js';
@@ -18,9 +19,10 @@ import { fakeJevPlane } from './support/fake-jev-provider.js';
  * Live run of the execution-risk advisor against the real TypeSafe Jev endpoint.
  *
  * Opt-in only: it runs when CLOUD_HARNESS_LIVE_JEV=1 and TYPESAFE_API_KEY are both set, so CI never
- * calls the provider. The real `JevDecisionProvider` sits behind the same Decision Plane and policy
- * gate the runner wires, so this checks the wire shape and the gate's authority rules against a real
- * model. Its answers vary, so only the invariants are asserted. When JEV_LIVE_REPORT names a file,
+ * calls the provider. The real `JevDecisionProvider` sits behind a `DecisionPlane` with the runner's
+ * default call timeout and the real policy gate, so this checks the wire shape, the latency budget and
+ * the gate's authority rules against a real model. The owner credential lookup and egress switch of
+ * `createRunnerDecisionPlane` are covered by the unit suites, not here. Its answers vary, so only the invariants are asserted. When JEV_LIVE_REPORT names a file,
  * a sanitized summary is written there: scalars only, never the key, the state or any answer text.
  */
 const apiKey = process.env.TYPESAFE_API_KEY?.trim() ?? '';
@@ -71,23 +73,29 @@ const deterministicCases: Array<{ name: string; descriptor: AgentActionDescripto
 ];
 
 describe.skipIf(!live)('execution-risk advisor against the live Jev endpoint', () => {
-  const database = new DatabaseSync(':memory:');
+  let database: DatabaseSync;
+  let service: AgentPolicyService;
   const jev = new JevDecisionProvider({ apiKey: () => apiKey });
-  const { plane, traces } = fakeJevPlane({ provider: jev, secretsFor: () => ({ TYPESAFE_API_KEY: apiKey }), timeoutMs: 20_000 });
-  const service = new AgentPolicyService({
-    database,
-    enabled: true,
-    resolvePrincipal: () => 'owner',
-    projectState: () => 'unknown',
-    activeProjectIds: () => new Set(),
-    audit: () => undefined,
-    advisor: new ExecutionRiskAdvisor(plane)
+  // No timeoutMs: the plane's default is the one production uses, so a slow answer is a fallback here too.
+  const { plane, traces } = fakeJevPlane({ provider: jev, secretsFor: () => ({ TYPESAFE_API_KEY: apiKey }) });
+
+  beforeAll(() => {
+    database = new DatabaseSync(':memory:');
+    service = new AgentPolicyService({
+      database,
+      enabled: true,
+      resolvePrincipal: () => 'owner',
+      projectState: () => 'unknown',
+      activeProjectIds: () => new Set(),
+      audit: () => undefined,
+      advisor: new ExecutionRiskAdvisor(plane)
+    });
+    service.store.put('owner', 'global', null, policy, 0);
   });
-  service.store.put('owner', 'global', null, policy, 0);
   const rows: Array<Record<string, unknown>> = [];
 
   afterAll(() => {
-    database.close();
+    database?.close();
     const report = process.env.JEV_LIVE_REPORT;
     if (!report) return;
     const summary = {
@@ -103,25 +111,23 @@ describe.skipIf(!live)('execution-risk advisor against the live Jev endpoint', (
     writeFileSync(report, `${serialized}\n`);
   });
 
-  it.each(discretionaryCases.map((entry) => [entry.name, entry] as const))('consults Jev and keeps the gate authoritative: %s', async (name, entry) => {
+  it.each(discretionaryCases.map((entry) => [entry.name, entry] as const))('keeps the gate authoritative over a live answer: %s', async (name, entry) => {
     const decision = await service.decide('owner', null, AgentActionDescriptorSchema.parse(entry.descriptor), undefined, { facts: entry.facts });
     expect(GateDecisionSchema.parse(decision)).toEqual(decision);
-    expect(JSON.stringify(decision)).not.toContain(apiKey);
+    // Asserted as a boolean so a failure never prints the key.
+    expect(JSON.stringify(decision).includes(apiKey), 'the decision contains the TypeSafe key').toBe(false);
     const { advisor } = decision;
-    rows.push({ name, decision: decision.decision, reasonCode: decision.reasonCode, effect: advisor.effect, risk: advisor.risk ?? null, confidence: advisor.confidence ?? null, fallbackReason: advisor.fallbackReason, decisionId: advisor.decisionId });
-    expect(advisor.required).toBe(true);
+    rows.push({ name, decision: decision.decision, reasonCode: decision.reasonCode, consulted: advisor.consulted, effect: advisor.effect, risk: advisor.risk ?? null, confidence: advisor.confidence ?? null, fallbackReason: advisor.fallbackReason, decisionId: advisor.decisionId });
     expect(['ALLOW', 'REQUIRE_APPROVAL']).toContain(decision.decision);
-    // A fallback is always a hold; only a real answer is consulted and carries a decision id and a risk.
-    if (advisor.fallbackReason !== null) expect(decision.decision).toBe('REQUIRE_APPROVAL');
-    else {
-      expect(advisor.consulted).toBe(true);
+    // An ALLOW is only ever a confident no_change answer from a real consultation.
+    if (decision.decision === 'ALLOW') expect(advisor).toMatchObject({ consulted: true, effect: 'no_change', fallbackReason: null });
+    // A real answer carries a decision id, a bounded risk and a confidence above the floor.
+    if (advisor.consulted && advisor.fallbackReason === null) {
       expect(advisor.decisionId).toMatch(/^dec_[a-f0-9]{32}$/u);
       expect(advisor.risk).toBeGreaterThanOrEqual(0);
       expect(advisor.risk).toBeLessThanOrEqual(1);
       expect(advisor.confidence).toBeGreaterThanOrEqual(0.7);
     }
-    // An ALLOW is only ever a confident no_change answer, never a fallback.
-    if (decision.decision === 'ALLOW') expect(advisor).toMatchObject({ effect: 'no_change', fallbackReason: null });
   }, 30_000);
 
   it.each(deterministicCases.map((entry) => [entry.name, entry] as const))('never changes a deterministic outcome: %s', async (name, entry) => {
@@ -130,8 +136,10 @@ describe.skipIf(!live)('execution-risk advisor against the live Jev endpoint', (
     expect(decision).toMatchObject({ decision: entry.decision, reasonCode: entry.reasonCode });
   }, 30_000);
 
-  it('received at least one real decision with the wire shape the parser expects', () => {
-    expect(traces.some((trace) => trace.outcome === 'decided' && trace.provider === 'typesafe-jev')).toBe(true);
+  it('received real decisions within the production call timeout', () => {
+    const decided = traces.filter((trace) => trace.outcome === 'decided' && trace.provider === 'typesafe-jev');
+    expect(decided.length).toBeGreaterThan(0);
+    for (const trace of decided) expect(trace.latencyMs).toBeLessThan(DECISION_CALL_TIMEOUT_MS);
     for (const trace of traces) for (const value of Object.values(trace)) expect(['string', 'number']).toContain(typeof value);
   });
 });

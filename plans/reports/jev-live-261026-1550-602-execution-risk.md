@@ -3,12 +3,12 @@
 Date: 2026-10-26T15:56:42.407Z. Provider `typesafe-jev`, model `jev-1.14.0`, endpoint `https://api.typesafe.ai/v1/systemone`.
 Harness code: `dev` at `a6669bf`, plus `apps/runner/test/execution-risk-advisor.live.test.ts`.
 
-The real `JevDecisionProvider` was used behind the runner's `DecisionPlane` and
+The real `JevDecisionProvider` was used behind a `DecisionPlane` and the real
 `AgentPolicyService`, with the same policy shape as the unit fixtures: discretionary
 `edit`, `test`, `vcs_local`, `open_pr` and `package_install`; hard-deny `network`;
 mandatory approval for `publish_branch`; risk threshold 0.5; minimum confidence 0.7.
 
-Result: 10 of 10 assertions passed. That is 7 real decisions (`outcome: decided`) and
+Result: 10 of 10 tests passed. That is 7 real decisions (`outcome: decided`) and
 0 fallbacks. Latency was 74–343 ms, and the tokens totalled
 3344 in and 385 out.
 Every state was redacted before egress (redaction count 0, since the summary has no
@@ -26,7 +26,13 @@ free text). The report holds no key: `grep` of the key against the report finds 
 | global hard deny | DENY / GLOBAL_HARD_DENY | not consulted | — | — | — |
 | mandatory approval | REQUIRE_APPROVAL / MANDATORY_APPROVAL | not consulted | — | — | — |
 
-A second run produced the same decisions, with risk values within ±0.03.
+Two more runs produced the same decisions, with risk values within ±0.03. The
+third run used the production call timeout (1.5 s, `DECISION_CALL_TIMEOUT_MS`).
+All 7 answers arrived in 74–281 ms, well inside it.
+
+The manifest case's confidence ranged from 0.70 to 0.76 across runs. That sits on
+the 0.7 floor, so its ALLOW is unstable: a run slightly lower becomes a
+`low_confidence` hold.
 
 ## Findings
 
@@ -37,6 +43,12 @@ A second run produced the same decisions, with risk values within ±0.03.
 - **Calibration gap.** Jev rates a 2,400-line manifest and lockfile rewrite and a
   `.github/workflows` edit as low risk with high confidence, so the gate clears them.
   The golden fixtures assume escalation. This is tracked and fixed in #606.
+- **Not covered by the path rule.** Jev also clears `open_pr` (risk 0.05–0.08). The
+  fixture expects an escalation on uncertain side effects. Jev clears `package_install`
+  too (risk 0.01). #606 keys on paths, so neither case is affected by it. Opening a PR
+  publishes nothing that merges by itself, and the coding broker already refuses an
+  install that would need advisor clearance. Owners who want review here set those
+  classes to `require_approval`.
 
 ## Not run
 

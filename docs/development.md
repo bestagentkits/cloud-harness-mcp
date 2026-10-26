@@ -136,20 +136,22 @@ the real endpoint. Neither prints the key, the prompt state or any answer text:
 
 - `npm run verify:typesafe` checks the response shape the parsers depend on
   ([`scripts/verify-typesafe.mjs`](../scripts/verify-typesafe.mjs)).
-- The live execution-risk suite runs the real Jev provider behind the same
-  Decision Plane and policy gate the runner wires. It asserts only the gate's
-  invariants, because the model's answers vary. With `JEV_LIVE_REPORT` set, it
+- The live execution-risk suite runs the real Jev provider behind a Decision
+  Plane with the production call timeout and the real policy gate. It asserts
+  only the gate's invariants and the latency budget, because the model's
+  answers vary. With `JEV_LIVE_REPORT` set, it
   also writes a sanitized summary of the decisions, risks, latency and token
   counts. Export `TYPESAFE_API_KEY` from your secret store first rather than
   typing it on the command line:
 
   ```bash
-  CLOUD_HARNESS_LIVE_JEV=1 JEV_LIVE_REPORT=/tmp/jev.json \
+  CLOUD_HARNESS_LIVE_JEV=1 JEV_LIVE_REPORT=./jev-live.json \
     npx vitest run apps/runner/test/execution-risk-advisor.live.test.ts
   ```
 
   Without `CLOUD_HARNESS_LIVE_JEV=1` the suite is skipped, so it never runs as
-  part of `npm test`. Build `@cloud-harness/contracts` first if it has not been
+  part of `npm test`. On PowerShell, set the variables with `$env:NAME = '1'`
+  first. Build `@cloud-harness/contracts` first if it has not been
   built yet.
 
 ## Local service development
