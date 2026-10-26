@@ -166,11 +166,13 @@ export class GitHubRepositoryCreator {
       try {
         result = await this.postRepository(token, input, signal);
       } catch (error) {
-        if (error instanceof CreateFailure && !error.outcomeUnknown) {
+        // An earlier unresolved attempt keeps its PENDING record, so every later replay with this
+        // key still reports the unknown outcome instead of treating the name as someone else's.
+        if (error instanceof CreateFailure && !error.outcomeUnknown && !earlierAttemptUnresolved) {
           this.options.idempotency.releaseRepositoryCreateIdempotency(principalId, key, fingerprint);
-          if (error.code === 'GITHUB_REPOSITORY_EXISTS' && earlierAttemptUnresolved) {
-            throw new CreateFailure('UNKNOWN_REMOTE_STATE', `Repository ${input.owner}/${input.name} exists, and an earlier attempt with this idempotencyKey did not record its outcome, so the harness cannot tell whether that attempt created it. Inspect the repository before using it; the harness never deletes it.`);
-          }
+        }
+        if (error instanceof CreateFailure && error.code === 'GITHUB_REPOSITORY_EXISTS' && earlierAttemptUnresolved) {
+          throw new CreateFailure('UNKNOWN_REMOTE_STATE', `Repository ${input.owner}/${input.name} exists, and an earlier attempt with this idempotencyKey did not record its outcome, so the harness cannot tell whether that attempt created it. Inspect the repository before using it; the harness never deletes it.`);
         }
         throw error;
       }
@@ -325,6 +327,10 @@ export class GitHubRepositoryCreator {
     }
     if (response.status === 404) {
       throw new CreateFailure('NOT_FOUND', `Organization ${input.owner} was not found or is not visible to the GitHub App installation.`);
+    }
+    if (response.status >= 500) {
+      // A gateway or server error can follow a create GitHub already committed; keep the PENDING record.
+      throw new CreateFailure('UNKNOWN_REMOTE_STATE', `GitHub answered HTTP ${response.status} to the create request for ${input.owner}/${input.name}, so it may or may not have created the repository. Retry with the same idempotencyKey.`, true, undefined, true);
     }
     throw await httpFailure(response, 'create the repository');
   }

@@ -305,6 +305,28 @@ describe('github_repository_create broker', () => {
     const retry = await creator.create(ownerId, input());
     expect(retry.error?.code).toBe('UNKNOWN_REMOTE_STATE');
     expect(retry.error?.message).toMatch(/never deletes/);
+    // The marker survives the report, so later replays and a changed payload stay guarded.
+    expect(store.getRepositoryCreateIdempotency(ownerId, 'create-service-1')?.status).toBe('PENDING');
+    expect((await creator.create(ownerId, input())).error?.code).toBe('UNKNOWN_REMOTE_STATE');
+    expect((await creator.create(ownerId, input({ visibility: 'private' }))).error?.code).toBe('CONFLICT');
+  });
+
+  it('treats a GitHub 5xx on the create request as an unknown outcome and keeps the key pending', async () => {
+    let attempt = 0;
+    const { creator, ownerId, store } = fixture({
+      handlers: {
+        'POST /orgs/acme/repos': () => {
+          attempt += 1;
+          if (attempt === 1) return new Response('bad gateway', { status: 502 });
+          return Response.json({ message: 'Repository creation failed.', errors: [{ message: 'name already exists on this account' }] }, { status: 422 });
+        }
+      }
+    });
+    const first = await creator.create(ownerId, input());
+    expect(first).toMatchObject({ ok: false, error: { code: 'UNKNOWN_REMOTE_STATE', retryable: true } });
+    expect(store.getRepositoryCreateIdempotency(ownerId, 'create-service-1')?.status).toBe('PENDING');
+    const retry = await creator.create(ownerId, input());
+    expect(retry.error?.code).toBe('UNKNOWN_REMOTE_STATE');
   });
 
   it('uses the configured installation in owner-bearer mode only after proving it belongs to the organization', async () => {

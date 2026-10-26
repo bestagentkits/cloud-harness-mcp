@@ -27,6 +27,10 @@ Call `workspace_capabilities` and read `githubRepositoryCreate`. Without a
 `administration: null` means the runner has not verified that installation since
 it began tracking the permission. `github_repository_create` always verifies the
 installation live, so it is safe to call; the result also refreshes discovery.
+The same holds when `available` is false with a `reason` saying the configured
+installation is verified live on use: an operator-configured installation with
+no dashboard connection is only checked by the call itself, so call it rather
+than giving up. Any other `available: false` means the call will be refused.
 
 <!-- cloudharness-example:workspace_capabilities
 {}
