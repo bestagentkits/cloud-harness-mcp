@@ -1,3 +1,10 @@
+# [0.78.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.77.0...v0.78.0) (2026-10-26)
+
+
+### Features
+
+* **agents:** keep tool receipts and reconcile lost effects instead of replaying mutations ([#430](https://github.com/bestagentkits/cloud-harness-mcp/issues/430)) ([7bfd5a1](https://github.com/bestagentkits/cloud-harness-mcp/commit/7bfd5a147f819db9cc6970df9b6e961c53ca9423))
+
 # [0.77.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.76.2...v0.77.0) (2026-10-26)
 
 
