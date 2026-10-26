@@ -580,8 +580,13 @@ including the full-scope MCP key, is in the
    for example `https://api.harness.zuey.me/mcp`; the Access-protected
    Dashboard host refuses API keys) and
    authenticates with a managed API key created for the agent on the API
-   Access page. Pass the key through the gateway's non-echoing input, never on
-   a command line.
+   Access page, sent as an `Authorization: Bearer <key>` header. Set it in the
+   server's headers (for example `mcp update <server> --headers-file -` with
+   the header JSON on stdin), not only in the gateway's `api_key` field: the
+   gateway's tool discovery ignores that field, so the server lists 0 tools
+   ([nextlevelbuilder/dewee#1678](https://github.com/nextlevelbuilder/dewee/issues/1678)).
+   Pass the key through that non-echoing input, never on a command line, and
+   confirm the server lists its tools after a reload.
 2. As root, add to `/etc/cloud-harness-mcp/runtime.env` without printing the
    file: `DEWEE_GATEWAY_URL` (the gateway's `https` origin),
    `DEWEE_GATEWAY_TOKEN` (the gateway's server-side token) and
@@ -595,8 +600,20 @@ including the full-scope MCP key, is in the
    sudo /usr/local/sbin/cloud-harness-service-compose up -d --no-deps --force-recreate api
    ```
 
-4. Open the Dashboard, open the Assistant, and ask it to open a page. A
-   `503 dewee_disabled` means one of the three settings is missing.
+4. Share the agent with the operator's chat user. Unless the agent is the
+   tenant default, the gateway answers each chat with `no access to this
+   agent` (the `api` log shows `route: dewee.chat`, `code: UNAUTHORIZED`)
+   until the agent is shared with the user id the Dashboard sends. That id is
+   `webchat-` plus a keyed hash of the operator's Access issuer and subject;
+   `visitorIdFor` in `apps/api/src/dashboard-dewee-router.ts` owns the
+   derivation. Compute it inside the `api` container so the secret never
+   leaves it, then share the agent with that id through the gateway's
+   `POST /v1/agents/<agent-uuid>/shares` with an admin token. Rotating
+   `DEWEE_WEBCHAT_SECRET` changes the id, so share again after a rotation.
+5. Open the Dashboard, open the Assistant, and ask it to open a page. A
+   `503 dewee_disabled` means one of the three settings is missing; a run
+   that fails after the gateway accepts it points at the agent's model
+   provider, not at Cloud Harness.
 
 To disable the assistant, remove the three settings and recreate the `api`
 container the same way. To remove the agent's MCP authority, revoke its key on
