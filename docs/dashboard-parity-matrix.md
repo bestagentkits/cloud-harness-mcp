@@ -478,7 +478,8 @@ secret except the automation connection create and rotate responses. Fence
 legend as in section 4. In the Override column, **drop** marks a handler that
 spreads the body first and then sets the path id: the path id wins, but a
 conflicting body id is dropped silently instead of being refused with
-`400 path_id_mismatch`. #547 and #566 move these handlers to `withPathIds`.
+`400 path_id_mismatch`. #547 (policy routes, PR #569) and #571 (automation
+routes) move these handlers to `withPathIds`.
 
 | Method | Path | Owner | Fence / idem | Override | UI caller | Feature | Phase | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
