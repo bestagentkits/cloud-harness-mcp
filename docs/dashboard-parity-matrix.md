@@ -197,6 +197,9 @@ path-derived keys, so a body key with the same name won (finding F1, fixed in
 [`apps/api/src/dashboard-path-ids.ts`](../apps/api/src/dashboard-path-ids.ts):
 the path id always wins, and a body that repeats a path id with a different
 value is refused with `400 path_id_mismatch` before the runner is called.
+The automation connection, rule and workflow routes and the agent-policy
+project and revision routes, which let the path id silently replace a body id,
+use the same merge since #547; the policy routes still force `scope`.
 React should still send only schema fields and not repeat path ids.
 
 "UI caller" is the legacy caller found by grep; **none** means no legacy code

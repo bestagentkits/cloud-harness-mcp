@@ -34,6 +34,12 @@ const cred = id('cred', 'a');
 const icr = id('icr', 'a');
 const artifact = id('art', 'a');
 const server = id('mcps', 'a');
+const hex = (prefix: string, fill: string) => `${prefix}_${fill.repeat(32)}`;
+const connection = hex('whc', 'a');
+const rule = hex('arl', 'a');
+const workflow = hex('wfl', 'a');
+const project = id('prj', 'a');
+const policyRevision = hex('apr', 'a');
 
 /** [method, path, body key the path owns, a different value for that key]. */
 const ROUTES: Array<[string, string, string, string]> = [
@@ -86,7 +92,34 @@ const ROUTES: Array<[string, string, string, string]> = [
   ['POST', `/artifacts/${artifact}/restore`, 'artifactId', id('art', 'b')],
   ['PUT', '/knowledge/note-1', 'id', 'note-2'],
   ['PATCH', `/mcp-servers/${server}`, 'serverId', id('mcps', 'b')],
-  ['POST', `/mcp-servers/${server}/enabled`, 'serverId', id('mcps', 'b')]
+  ['POST', `/mcp-servers/${server}/enabled`, 'serverId', id('mcps', 'b')],
+  ['PATCH', `/automations/connections/${connection}`, 'id', hex('whc', 'b')],
+  ['POST', `/automations/connections/${connection}/rotate-secret`, 'id', hex('whc', 'b')],
+  ['DELETE', `/automations/connections/${connection}`, 'id', hex('whc', 'b')],
+  ['PATCH', `/automations/rules/${rule}`, 'id', hex('arl', 'b')],
+  ['DELETE', `/automations/rules/${rule}`, 'id', hex('arl', 'b')],
+  ['POST', `/automations/rules/${rule}/preview`, 'id', hex('arl', 'b')],
+  ['POST', `/automations/workflows/${workflow}/cancel`, 'id', hex('wfl', 'b')],
+  ['PUT', `/agent-policies/projects/${project}`, 'projectId', id('prj', 'b')],
+  ['DELETE', `/agent-policies/projects/${project}`, 'projectId', id('prj', 'b')],
+  ['POST', `/agent-policies/projects/${project}/validate`, 'projectId', id('prj', 'b')],
+  ['POST', `/agent-policies/revisions/${policyRevision}/rollback`, 'revisionId', hex('apr', 'b')]
+];
+
+const sample = { event: 'issues', repository: 'example/project', label: 'triage', senderLogin: 'octocat' };
+/** [method, path, runner operation, body that repeats the path id with the same value, forwarded input]. */
+const MATCHING: Array<[string, string, string, Record<string, unknown>, Record<string, unknown>]> = [
+  ['PATCH', `/automations/connections/${connection}`, 'connection_update', { id: connection, expectedGeneration: 1, enabled: false }, { id: connection, expectedGeneration: 1, enabled: false }],
+  ['POST', `/automations/connections/${connection}/rotate-secret`, 'connection_rotate_secret', { id: connection, expectedGeneration: 1 }, { id: connection, expectedGeneration: 1 }],
+  ['DELETE', `/automations/connections/${connection}`, 'connection_delete', { id: connection, expectedGeneration: 2 }, { id: connection, expectedGeneration: 2 }],
+  ['PATCH', `/automations/rules/${rule}`, 'rule_update', { id: rule, expectedGeneration: 1, enabled: true }, { id: rule, expectedGeneration: 1, enabled: true }],
+  ['DELETE', `/automations/rules/${rule}`, 'rule_delete', { id: rule, expectedGeneration: 1 }, { id: rule, expectedGeneration: 1 }],
+  ['POST', `/automations/rules/${rule}/preview`, 'rule_preview', { id: rule, sample }, { id: rule, sample: { ...sample, senderType: 'User' } }],
+  ['POST', `/automations/workflows/${workflow}/cancel`, 'workflow_cancel', { id: workflow, reason: 'not needed' }, { id: workflow, reason: 'not needed' }],
+  ['PUT', `/agent-policies/projects/${project}`, 'policy_put', { projectId: project, document: {}, expectedVersion: 2 }, { scope: 'project', projectId: project, document: {}, expectedVersion: 2, confirmWeakening: false }],
+  ['DELETE', `/agent-policies/projects/${project}`, 'policy_delete', { projectId: project, expectedVersion: 3 }, { projectId: project, expectedVersion: 3, confirmWeakening: false }],
+  ['POST', `/agent-policies/projects/${project}/validate`, 'policy_validate', { projectId: project, document: {} }, { scope: 'project', projectId: project, document: {}, intent: 'save' }],
+  ['POST', `/agent-policies/revisions/${policyRevision}/rollback`, 'policy_rollback', { revisionId: policyRevision, expectedVersion: 4 }, { revisionId: policyRevision, expectedVersion: 4, confirmWeakening: false }]
 ];
 
 let httpServer: Server;
@@ -99,7 +132,12 @@ beforeEach(async () => {
     operations.push({ operation, input });
     return { ok: true, message: 'ok', truncated: false, data: {} };
   };
-  const runner: DashboardRunnerClient = { call: vi.fn(ok), callInternal: vi.fn(ok) };
+  // Automation and policy routes forward a typed request; record its operation and input like the rest.
+  const record = async (request: { operation: string; input: unknown }) => {
+    operations.push({ operation: request.operation, input: request.input as Record<string, unknown> });
+    return { ok: true as const, data: {} };
+  };
+  const runner: DashboardRunnerClient = { call: vi.fn(ok), callInternal: vi.fn(ok), callAutomations: vi.fn(record), callAgentPolicies: vi.fn(record) };
   const app = express();
   app.use((request: any, _response, next) => { request.auth = { token: 'cloudflare-access', clientId: 'operator', scopes: [], extra: { principal } }; next(); });
   app.use('/dashboard', createDashboardRouter(config, runner));
@@ -158,6 +196,13 @@ describe('dashboard BFF path id authority', () => {
     expect(reply.status).toBe(400);
     expect(reply.json).toEqual({ error: 'path_id_mismatch', message: `The request body names a different ${key} than the URL.` });
     expect(operations).toEqual([]);
+  });
+
+  it.each(MATCHING)('%s %s forwards %s when the body repeats the same id', async (method, path, operation, body, input) => {
+    const headers = await mutationHeaders();
+    const reply = await send(`/api/v1${path}`, { method, headers, body: JSON.stringify(body) });
+    expect(reply.status).not.toBe(400);
+    expect(operations).toEqual([{ operation, input }]);
   });
 
   it('forwards the path workspace when the body repeats the same id', async () => {
