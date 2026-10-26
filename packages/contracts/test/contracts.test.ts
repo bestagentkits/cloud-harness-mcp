@@ -670,6 +670,11 @@ describe('contracts', () => {
       name: 'verify',
       expectedManifestSha256: 'd'.repeat(64)
     });
+    // An omitted timeoutMs stays unset so the worker applies the manifest hook's own timeout.
+    expect(TOOL_SCHEMA_BY_NAME.hooks_run.parse({ name: 'verify', expectedManifestSha256: 'd'.repeat(64) })).not.toHaveProperty('timeoutMs');
+    expect(TOOL_SCHEMA_BY_NAME.hooks_run.parse({ name: 'verify', expectedManifestSha256: 'd'.repeat(64), timeoutMs: 300_000 }).timeoutMs).toBe(300_000);
+    expect(() => TOOL_SCHEMA_BY_NAME.hooks_run.parse({ name: 'verify', expectedManifestSha256: 'd'.repeat(64), timeoutMs: 99 })).toThrow();
+    expect(() => TOOL_SCHEMA_BY_NAME.hooks_run.parse({ name: 'verify', expectedManifestSha256: 'd'.repeat(64), timeoutMs: 300_001 })).toThrow();
   });
   it('enforces capability consistency between advertised GitHub operations and exposed github_action tool', () => {
     const githubOps = [
@@ -849,7 +854,8 @@ describe('contracts', () => {
     expect(() => AgentIdSchema.parse(`agent_${'x'.repeat(19)}`)).toThrow();
     expect(AgentProxyOperationSchema.options).toEqual([
       'files_list', 'files_read', 'files_write', 'files_apply_patch', 'files_delete',
-      'files_move', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references'
+      'files_move', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references',
+      'exec_run', 'git_status', 'git_diff'
     ]);
     expect(() => TOOL_SCHEMA_BY_NAME.agent_spawn.parse({
       workspaceId,
@@ -905,12 +911,13 @@ describe('contracts', () => {
   it('publishes exact truthful agent annotations', () => {
     const specs = Object.fromEntries(TOOL_SPECS.filter(({ name }) => name.startsWith('agent_')).map((spec) => [spec.name, spec]));
     expect(Object.keys(specs).sort()).toEqual([
-      'agent_cancel', 'agent_list', 'agent_logs', 'agent_message', 'agent_spawn', 'agent_status'
-    ]);
+      'agent_cancel', 'agent_list', 'agent_logs', 'agent_message', 'agent_spawn', 'agent_status',
+      'agent_trace_export', 'agent_trace_get', 'agent_trace_spans', 'agent_traces_list'
+    ].sort());
     expect(specs.agent_spawn).toMatchObject({ title: 'Spawn coding agent', readOnly: false, destructive: true, idempotent: true, openWorld: true });
     expect(specs.agent_message).toMatchObject({ title: 'Message coding agent', readOnly: false, destructive: true, idempotent: true, openWorld: true });
     expect(specs.agent_cancel).toMatchObject({ title: 'Cancel coding agent', readOnly: false, destructive: true, idempotent: true, openWorld: false });
-    for (const name of ['agent_status', 'agent_logs', 'agent_list']) {
+    for (const name of ['agent_status', 'agent_logs', 'agent_list', 'agent_traces_list', 'agent_trace_get', 'agent_trace_spans', 'agent_trace_export']) {
       expect(specs[name]).toMatchObject({ readOnly: true, destructive: false, idempotent: true, openWorld: false });
     }
   });

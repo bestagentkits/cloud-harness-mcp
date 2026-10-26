@@ -10,7 +10,11 @@ See [workspace lifecycle and results](workspace-lifecycle-and-results.md).
 
 `workspace_open` `workspace_list` `workspace_status` `workspace_capabilities`
 `workspace_close` `workspace_lease_renew` `workspace_recover`
-`workspace_context` `workspace_set_active`
+`workspace_context` `workspace_set_active` `workspace_repos_list`
+`workspace_repo_status` `workspace_repo_add` `workspace_repo_remove`
+
+Several repositories in one workspace: see
+[multi-repository workspaces](multi-repository-workspaces.md).
 
 ## Files and code search
 
@@ -28,6 +32,15 @@ See [execution and tasks](execution-and-tasks.md).
 `sessions_open` `sessions_io` `sessions_close` `tasks_list` `tasks_run`
 `tasks_status` `tasks_cancel` `tasks_graph` `operation_status`
 `operation_cancel` `operation_wait`
+
+Coding agents: `agent_spawn` `agent_status` `agent_logs` `agent_message`
+`agent_cancel` `agent_list`.
+
+## Agent traces
+
+See [agent traces](agent-traces.md).
+
+`agent_traces_list` `agent_trace_get` `agent_trace_spans` `agent_trace_export`
 
 ## Managed toolbox packages
 
@@ -83,6 +96,8 @@ See [retained artifacts](artifacts.md).
   handles. Copy them exactly from results; never derive them from names or paths.
 - Paths are workspace-relative, at most 1,024 characters, and cannot be
   absolute, contain NUL, use a Windows drive prefix, or include `..` segments.
+- `repositoryId` (a `repo_` id or alias) selects one checkout of a
+  multi-repository workspace; Git-bound tools require it there.
 - Entry paths for move/delete/mkdir must identify something below the workspace
   root; `.` is not an entry path.
 - Pagination defaults to `limit: 100`, permits `1..500`, and accepts a cursor of

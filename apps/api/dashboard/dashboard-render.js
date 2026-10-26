@@ -71,7 +71,7 @@ export function renderWorkspaceIndex(workspaces, query) {
   const filtered = workspaces.filter((workspace) => {
     const term = query.q.toLowerCase();
     if (query.status && workspace.status !== query.status) return false;
-    if (term && !`${workspace.repositoryUrl} ${workspace.workspaceId}`.toLowerCase().includes(term)) return false;
+    if (term && !`${workspace.repositoryUrl} ${workspace.workspaceId} ${repositoryAliases(workspace)}`.toLowerCase().includes(term)) return false;
     // The Overview's "Expiring soon" tile links here with a minute budget, so the view
     // shows exactly the leases that budget names instead of the whole list.
     if (Number.isFinite(expiringMinutes) && expiringMinutes > 0) {
@@ -82,8 +82,8 @@ export function renderWorkspaceIndex(workspaces, query) {
   });
   if (!workspaces.length) return '<h2 id="workspace-list-heading">Workspace list</h2><div class="empty"><h3>No workspaces yet.</h3><p>Open one from an MCP client and it will appear here.</p></div>';
   if (!filtered.length) return '<h2 id="workspace-list-heading">Workspace list</h2><div class="empty"><h3>No workspaces match these filters.</h3><button id="clear-filters" type="button">Clear filters</button></div>';
-  const rows = filtered.map((workspace) => `<tr><th scope="row"><a href="/dashboard/workspaces/${encodeURIComponent(workspace.workspaceId)}">${escape(repositoryName(workspace.repositoryUrl))}</a><small class="mono">${escape(workspace.workspaceId)}</small></th><td><span class="status ${escape(workspace.status.toLowerCase())}">${statusLabel(workspace.status)}</span></td><td>${time(workspace.lastActivityAt)}</td><td>${time(workspace.expiresAt)}</td><td>${networkLabel(workspace.networkProfile)}</td></tr>`).join('');
-  const cards = filtered.map((workspace) => `<li><h3><a href="/dashboard/workspaces/${encodeURIComponent(workspace.workspaceId)}">${escape(repositoryName(workspace.repositoryUrl))}</a></h3><dl><dt>State</dt><dd>${statusLabel(workspace.status)}</dd><dt>Last activity</dt><dd>${time(workspace.lastActivityAt)}</dd><dt>Expires</dt><dd>${time(workspace.expiresAt)}</dd></dl></li>`).join('');
+  const rows = filtered.map((workspace) => `<tr><th scope="row"><a href="/dashboard/workspaces/${encodeURIComponent(workspace.workspaceId)}">${escape(repositoryName(workspace.repositoryUrl))}</a>${renderRepositoryCount(workspace)}<small class="mono">${escape(workspace.workspaceId)}</small></th><td><span class="status ${escape(workspace.status.toLowerCase())}">${statusLabel(workspace.status)}</span></td><td>${time(workspace.lastActivityAt)}</td><td>${time(workspace.expiresAt)}</td><td>${networkLabel(workspace.networkProfile)}</td></tr>`).join('');
+  const cards = filtered.map((workspace) => `<li><h3><a href="/dashboard/workspaces/${encodeURIComponent(workspace.workspaceId)}">${escape(repositoryName(workspace.repositoryUrl))}</a>${renderRepositoryCount(workspace)}</h3><dl><dt>State</dt><dd>${statusLabel(workspace.status)}</dd><dt>Last activity</dt><dd>${time(workspace.lastActivityAt)}</dd><dt>Expires</dt><dd>${time(workspace.expiresAt)}</dd></dl></li>`).join('');
   return `<h2 id="workspace-list-heading">Workspace list</h2><div class="desktop-table"><table><caption>${filtered.length} workspaces</caption><thead><tr><th>Repository</th><th>State</th><th>Last activity</th><th>Expires</th><th>Network</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul>`;
 }
 
@@ -185,11 +185,77 @@ export function renderWorkspaceCockpitHeader(workspace, options = {}) {
   const actions = canOpen
     ? '<div class="cockpit-actions"><a class="secondary button" href="/dashboard/workspaces">Open new workspace</a></div>'
     : `<div class="cockpit-actions">${primaryActions}${secondaryActions ? `<details class="row-edit"><summary>More actions</summary>${secondaryActions}</details>` : ''}</div>`;
-  return `<div class="cockpit-header"><div class="record-heading"><div><h2 id="workspace-detail-title">${escape(repositoryName(workspace.repositoryUrl))}</h2><p>${renderCopyChip({ value: workspace.workspaceId, label: 'Workspace ID' })}</p></div><span class="status ${escape(String(workspace.status ?? '').toLowerCase())}">${escape(statusLabel(workspace.status))}</span></div><dl class="facts"><dt>Ref</dt><dd>${escape(workspace.ref ?? 'Default branch')}</dd><dt>Network</dt><dd>${escape(networkLabel(workspace.networkProfile))}</dd><dt>Lease</dt><dd class="lease-${escape(lease.state)}">${escape(lease.label)}</dd><dt>Attention</dt><dd>${attention.length ? `${escape(attention.length)} item(s) need action` : 'Nothing needs attention'}</dd></dl>${actions}</div>`;
+  return `<div class="cockpit-header"><div class="record-heading"><div><h2 id="workspace-detail-title">${escape(repositoryName(workspace.repositoryUrl))}</h2><p>${renderCopyChip({ value: workspace.workspaceId, label: 'Workspace ID' })}</p></div><span class="status ${escape(String(workspace.status ?? '').toLowerCase())}">${escape(statusLabel(workspace.status))}</span></div><dl class="facts"><dt>Ref</dt><dd>${escape(workspace.ref ?? 'Default branch')}</dd>${renderRepositoryFacts(workspace)}<dt>Network</dt><dd>${escape(networkLabel(workspace.networkProfile))}</dd><dt>Lease</dt><dd class="lease-${escape(lease.state)}">${escape(lease.label)}</dd><dt>Attention</dt><dd>${attention.length ? `${escape(attention.length)} item(s) need action` : 'Nothing needs attention'}</dd></dl>${actions}</div>`;
 }
 
-export function renderWorkspaceTabs(workspaceId, current) {
-  return `<nav class="cockpit-tabs" aria-label="Workspace sections">${WORKSPACE_TABS.map((tab) => `<a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/${tab.id}" ${tab.id === current ? 'aria-current="page"' : ''}>${escape(tab.label)}</a>`).join('')}</nav>`;
+/** The cockpit tabs a multi-repository workspace scopes to one checkout. */
+export const REPOSITORY_SCOPED_TABS = new Set(['terminal', 'files', 'git']);
+
+/** A cockpit tab link; a selected repository rides along to the other repository-scoped tabs. */
+export function workspaceTabHref(workspaceId, tab, repository = '') {
+  const scoped = repository && REPOSITORY_SCOPED_TABS.has(tab) ? `?repository=${encodeURIComponent(repository)}` : '';
+  return `/dashboard/workspaces/${encodeURIComponent(workspaceId)}/${tab}${scoped}`;
+}
+
+export function renderWorkspaceTabs(workspaceId, current, repository = '') {
+  return `<nav class="cockpit-tabs" aria-label="Workspace sections">${WORKSPACE_TABS.map((tab) => `<a href="${escape(workspaceTabHref(workspaceId, tab.id, repository))}" ${tab.id === current ? 'aria-current="page"' : ''}>${escape(tab.label)}</a>`).join('')}</nav>`;
+}
+
+/** The checkout a selector value names, by alias or stable `repo_` id; anything else names none. */
+export function selectedRepository(repositories = [], value = '') {
+  if (!value) return undefined;
+  return repositories.find((entry) => entry.alias === value || entry.repositoryId === value);
+}
+
+/**
+ * The repository scope control of a multi-repository workspace. Files and Terminal may stay at the
+ * workspace root; Git has no root state, so it offers only the checkouts and starts unselected rather
+ * than defaulting to the primary repository. Applying the choice is an explicit submit, never a change
+ * event, so moving through the options with the keyboard does not navigate.
+ */
+export function renderRepositorySelector({ repositories = [], selected = '', allowRoot = true } = {}) {
+  const current = selectedRepository(repositories, selected)?.alias ?? '';
+  const first = allowRoot
+    ? `<option value=""${current ? '' : ' selected'}>Workspace root</option>`
+    : `<option value="" disabled${current ? '' : ' selected'}>Choose a repository</option>`;
+  const options = repositories.map((entry) => `<option value="${escape(entry.alias)}"${entry.alias === current ? ' selected' : ''}>${escape(entry.alias)} · ${escape(repositoryName(entry.repositoryUrl))}${entry.access === 'read-only' ? ' (read-only)' : ''}</option>`).join('');
+  return `<form id="repository-scope-form" class="repository-scope" aria-label="Repository scope"><label for="repository-scope-select">Repository</label><select id="repository-scope-select" name="repository"${allowRoot ? '' : ' required'}>${first}${options}</select><button type="submit">Show repository</button></form>`;
+}
+
+/** The Git tab of a multi-repository workspace before a repository is chosen. */
+export function renderRepositoryRequired(repositories = []) {
+  return `<section class="panel" aria-labelledby="repository-required-heading"><h2 id="repository-required-heading">Choose a repository</h2><p class="page-note">This workspace holds ${escape(repositories.length)} repositories, each with its own branch, history and worktrees. Choose one above to read its Git state or to run a Git operation on it.</p></section>`;
+}
+
+const repositoryChanges = (entry, statusAvailable) => {
+  if (!statusAvailable) return 'Not reported';
+  if (entry.statusError === true) return 'Status unavailable';
+  if (entry.dirty === true) return `Uncommitted changes (${Number(entry.changedFiles) || 0} file(s))`;
+  return 'Clean';
+};
+const repositoryUnpushed = (entry, statusAvailable) => {
+  if (!statusAvailable || entry.statusError === true) return 'Not reported';
+  if (!entry.upstream) return 'No upstream branch';
+  const ahead = Number(entry.ahead) || 0;
+  const behind = Number(entry.behind) || 0;
+  const pushed = ahead > 0 ? `${ahead} unpushed commit(s)` : 'Nothing unpushed';
+  return behind > 0 ? `${pushed} · ${behind} behind` : pushed;
+};
+const repositoryBranch = (entry, statusAvailable) => (!statusAvailable || entry.statusError === true ? 'Not reported' : String(entry.branch ?? 'Not reported'));
+
+/**
+ * The repository explorer on the Summary tab of a multi-repository workspace: each checkout's branch,
+ * uncommitted state and unpushed commits as text, with links that open Files, Git or Terminal scoped
+ * to it. Without a status read every posture cell says "Not reported" instead of looking clean.
+ */
+export function renderRepositoryExplorer({ workspaceId = '', repositories = [], statusAvailable = false } = {}) {
+  const links = (entry) => `<div class="row-actions">${['files', 'git', 'terminal'].map((tab) => `<a class="secondary button" href="${escape(workspaceTabHref(workspaceId, tab, entry.alias))}">${escape(WORKSPACE_TABS.find((item) => item.id === tab)?.label ?? tab)}<span class="sr-only"> for ${escape(entry.alias)}</span></a>`).join('')}</div>`;
+  const badges = (entry) => `${entry.access === 'read-only' ? ' <span class="tag-badge">Read-only</span>' : ''}${entry.primary ? ' <span class="tag-badge">Primary</span>' : ''}`;
+  const upstream = (entry) => (statusAvailable && entry.upstream ? `<small class="mono">${escape(entry.upstream)}</small>` : '');
+  const rows = repositories.map((entry) => `<tr><th scope="row">${escape(entry.alias)}${badges(entry)}<small class="mono wrap">${escape(entry.path)} · ${escape(repositoryName(entry.repositoryUrl))}</small></th><td>${escape(repositoryBranch(entry, statusAvailable))}${upstream(entry)}</td><td>${escape(repositoryChanges(entry, statusAvailable))}</td><td>${escape(repositoryUnpushed(entry, statusAvailable))}</td><td>${links(entry)}</td></tr>`).join('');
+  const cards = repositories.map((entry) => `<li><h3>${escape(entry.alias)}${badges(entry)}</h3><p class="mono wrap">${escape(entry.path)} · ${escape(repositoryName(entry.repositoryUrl))}</p><dl><dt>Branch</dt><dd>${escape(repositoryBranch(entry, statusAvailable))}</dd><dt>Changes</dt><dd>${escape(repositoryChanges(entry, statusAvailable))}</dd><dt>Unpushed</dt><dd>${escape(repositoryUnpushed(entry, statusAvailable))}</dd></dl>${links(entry)}</li>`).join('');
+  const note = statusAvailable ? '' : '<p class="page-note">Repository status is read only while the workspace is active; it could not be read now.</p>';
+  return `<section class="panel repository-explorer" aria-labelledby="repository-explorer-heading"><h2 id="repository-explorer-heading">Repositories</h2>${note}<div class="desktop-table"><table><caption>${escape(repositories.length)} repositories</caption><thead><tr><th scope="col">Repository</th><th scope="col">Branch</th><th scope="col">Changes</th><th scope="col">Unpushed</th><th scope="col">Open</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`;
 }
 
 export function renderWorkspaceAttentionPanel(workspace, options = {}) {
@@ -229,13 +295,18 @@ export function renderWorkspaceActivity({ events = [], workspaceId = '' } = {}) 
   return `<section class="panel" aria-labelledby="workspace-activity-heading"><h2 id="workspace-activity-heading">Activity</h2><p class="page-note">Live runtime rows and retained audit rows recorded against <span class="mono">${escape(workspaceId)}</span>. The cross-workspace view is the Activity Center.</p><ul class="activity-list">${rows}</ul></section>`;
 }
 
-/** The finalize dialog: a commit message, plus the push decision. */
-export function renderFinalizeDialog() {
+/**
+ * The finalize dialog: a commit message, plus the push decision. A multi-repository
+ * workspace finalizes one checkout, so the dialog asks which one instead of guessing.
+ */
+export function renderFinalizeDialog(workspace = {}, selected = '') {
+  const entries = workspaceRepositories(workspace);
+  const repository = entries.length < 2 ? '' : `<label for="finalize-repository">Repository</label><select id="finalize-repository" name="repositoryId" required>${selected ? '' : '<option value="" selected disabled>Choose a repository</option>'}${entries.map((entry) => `<option value="${escape(entry.alias)}"${entry.alias === selected ? ' selected' : ''}>${escape(entry.alias)}</option>`).join('')}</select>`;
   return renderFormDialog({
     id: 'finalize-workspace-dialog', title: 'Finalize workspace',
     description: 'Stages the changes, runs the preflights, commits with the workspace identity, and pushes when you ask it to.',
     formId: 'finalize-workspace-form', submitId: 'finalize-workspace-submit', submitLabel: 'Finalize workspace',
-    body: '<label for="finalize-commit-message">Commit message</label><input id="finalize-commit-message" name="commitMessage" required maxlength="10000"><label class="checkbox-label"><input name="push" type="checkbox" checked><span>Push to the remote after committing</span></label>'
+    body: repository + '<label for="finalize-commit-message">Commit message</label><input id="finalize-commit-message" name="commitMessage" required maxlength="10000"><label class="checkbox-label"><input name="push" type="checkbox" checked><span>Push to the remote after committing</span></label>'
   });
 }
 
@@ -334,7 +405,7 @@ export function renderAgentsIndex({ agents = [], filters = {}, now = Date.now() 
   const attentionOptions = [['', 'Any attention state'], ['needs-attention', 'Needs attention'], ['clear', 'Clear']].map(([value, label]) => `<option value="${value}"${(filters.attention ?? '') === value ? ' selected' : ''}>${label}</option>`).join('');
   const filterRow = '<form id="agent-filters" class="resource-filters" role="search" aria-label="Filter agents">'
     + `<label for="agent-status-filter">Status</label><select id="agent-status-filter" name="status">${statusOptions}</select>`
-    + (filters.workspaceId ? `<input type="hidden" name="workspaceId" value="${escape(filters.workspaceId)}">` : `<label for="agent-workspace-filter">Workspace</label><input id="agent-workspace-filter" name="workspaceId" value="${escape(filters.workspaceId ?? '')}" placeholder="ws_…" pattern="ws_[A-Za-z0-9_-]{20,80}">`)
+    + (filters.workspaceId ? `<input type="hidden" name="workspaceId" value="${escape(filters.workspaceId)}">` : `<label for="agent-workspace-filter">Workspace</label><input id="agent-workspace-filter" name="workspaceId" value="${escape(filters.workspaceId ?? '')}" placeholder="ws_…" pattern="ws_[A-Za-z0-9_\\-]{20,80}">`)
     + `<label for="agent-profile-filter">Profile</label><input id="agent-profile-filter" name="profileId" value="${escape(filters.profileId ?? '')}" placeholder="coding-fast">`
     + `<label for="agent-parent-filter">Parent agent</label><input id="agent-parent-filter" name="parentAgentId" value="${escape(filters.parentAgentId ?? '')}" placeholder="agent_…">`
     + `<label for="agent-attention-filter">Attention</label><select id="agent-attention-filter" name="attention">${attentionOptions}</select>`
@@ -360,7 +431,9 @@ export function renderAgentDetail({ agent, logs = [] } = {}) {
   const usagePanel = `<section class="panel" aria-labelledby="agent-usage-heading"><h2 id="agent-usage-heading">Usage</h2><dl class="facts"><dt>Input tokens</dt><dd>${escape(countOf(usage.inputTokens))} of ${escape(countOf(budget.maxInputTokens))} (${escape(percentOf(usage.inputTokens, budget.maxInputTokens))})</dd><dt>Output tokens</dt><dd>${escape(countOf(usage.outputTokens))} of ${escape(countOf(budget.maxOutputTokens))} (${escape(percentOf(usage.outputTokens, budget.maxOutputTokens))})</dd><dt>Cost</dt><dd>${escape(costOf(usage.costMicros))} of ${escape(costOf(budget.maxCostMicros))} (${escape(percentOf(usage.costMicros, budget.maxCostMicros))})</dd><dt>Output bytes</dt><dd>${escape(countOf(usage.outputBytes))} of ${escape(countOf(budget.maxOutputBytes))}</dd><dt>Tool time</dt><dd>${escape(countOf(usage.toolTimeMs))} ms</dd><dt>Wall time</dt><dd>${escape(countOf(usage.wallTimeMs))} ms</dd><dt>Events</dt><dd>${escape(countOf(usage.eventCount))}</dd></dl><p class="page-note">Usage is the runner's reported counters; a limit that was never configured reads as “Not reported”.</p></section>`;
   const logsPanel = `<section class="panel" aria-labelledby="agent-logs-heading"><h2 id="agent-logs-heading">Logs</h2><p class="page-note">Bounded and redacted: large events are truncated before they reach this page.</p><ul class="agent-log-list">${logRows}</ul></section>`;
   const messagesPanel = `<section class="panel" aria-labelledby="agent-messages-heading"><h2 id="agent-messages-heading">Messages</h2><form id="agent-message-form" class="stack-form"><label for="agent-message-mode">Delivery</label><select id="agent-message-mode" name="mode"><option value="steer" selected>Steer the running agent</option><option value="followUp">Queue a follow-up</option></select><label for="agent-message-text">Message</label><textarea id="agent-message-text" name="message" rows="3" required maxlength="65536"></textarea><div class="form-row-actions"><button type="submit" class="accent-btn">Send message</button><button id="cancel-agent" class="danger" type="button">Cancel agent</button></div><p class="form-status" aria-live="polite"></p></form></section>`;
-  return `${overview}${usagePanel}${logsPanel}${messagesPanel}`;
+  // Filled by the trace views once they answer; it stays hidden when traces are turned off.
+  const tracesPanel = '<section class="panel" id="agent-traces" aria-labelledby="agent-traces-heading" hidden><h2 id="agent-traces-heading">Traces</h2><p class="empty-note">Loading traces…</p></section>';
+  return `${overview}${usagePanel}${tracesPanel}${logsPanel}${messagesPanel}`;
 }
 
 const TASK_STATUS_LABELS = {
@@ -536,7 +609,7 @@ const terminalSize = (terminal) => (Number.isInteger(terminal?.cols) && Number.i
 export function renderTerminalPanel({ workspaceId = '', terminals = [], now = Date.now() } = {}) {
   const running = terminals.filter((terminal) => terminal?.status === 'running');
   const offers = running.length
-    ? `<div id="terminal-reattach" class="terminal-reattach"><h3 id="terminal-reattach-heading">Running terminals</h3><p class="page-note">These shells are still running in this workspace. Re-attach to continue one; recent output is replayed.</p><ul class="record-list" aria-labelledby="terminal-reattach-heading">${running.map((terminal) => `<li><span><span class="mono">${escape(terminal.terminalId)}</span> <small>${escape(terminalSize(terminal))} · started ${escape(terminalAge(terminal.createdAt, now))} ago · idle expiry ${terminalTime(terminal.idleExpiresAt)}</small></span><button class="reattach-terminal" type="button" data-terminal-id="${escape(terminal.terminalId)}">Re-attach</button></li>`).join('')}</ul></div>`
+    ? `<div id="terminal-reattach" class="terminal-reattach"><h3 id="terminal-reattach-heading">Running terminals</h3><p class="page-note">These shells are still running in this workspace. Re-attach to continue one; recent output is replayed.</p><ul class="record-list" aria-labelledby="terminal-reattach-heading">${running.map((terminal) => `<li><span><span class="mono">${escape(terminal.terminalId)}</span> <small>${escape(terminalSize(terminal))} · started ${escape(terminalAge(terminal.createdAt, now))} ago · idle expiry ${terminalTime(terminal.idleExpiresAt)}${terminal.cwd && terminal.cwd !== '.' ? ` · in <span class="mono">${escape(terminal.cwd)}</span>` : ''}</small></span><button class="reattach-terminal" type="button" data-terminal-id="${escape(terminal.terminalId)}">Re-attach</button></li>`).join('')}</ul></div>`
     : '';
   return `<section id="terminal-panel" class="panel terminal-panel" aria-labelledby="terminal-heading" data-workspace-id="${escape(workspaceId)}">`
     + '<h2 id="terminal-heading">Terminal</h2>'
@@ -591,7 +664,7 @@ export function renderWorktrees(worktrees = []) {
   const rows = worktrees.length
     ? worktrees.map((tree) => `<li class="worktree-row"><span class="mono wrap">${escape(String(tree.path ?? ''))}</span><span class="mono">${escape(String(tree.head ?? '').slice(0, 12))}</span><span>${escape(String(tree.branch ?? 'detached'))}</span><button class="danger remove-worktree" type="button" data-worktree-name="${escape(String(tree.path ?? '').split('/').pop() ?? '')}">Remove</button></li>`).join('')
     : '<li class="empty">No managed worktrees.</li>';
-  return `<details class="row-edit"><summary>Worktrees</summary><ul class="record-list worktree-list">${rows}</ul><form id="create-worktree-form" class="stack-form"><label for="worktree-name">Name</label><input id="worktree-name" name="name" required pattern="[A-Za-z0-9._-]{1,80}"><label for="worktree-ref">Ref</label><input id="worktree-ref" name="ref" required maxlength="255"><button type="submit">Create worktree</button><p class="form-status" aria-live="polite"></p></form></details>`;
+  return `<details class="row-edit"><summary>Worktrees</summary><ul class="record-list worktree-list">${rows}</ul><form id="create-worktree-form" class="stack-form"><label for="worktree-name">Name</label><input id="worktree-name" name="name" required pattern="[A-Za-z0-9._\\-]{1,80}"><label for="worktree-ref">Ref</label><input id="worktree-ref" name="ref" required maxlength="255"><button type="submit">Create worktree</button><p class="form-status" aria-live="polite"></p></form></details>`;
 }
 
 /**
@@ -637,25 +710,58 @@ export function renderHookPipeline(groups = []) {
   return `<ol class="hook-pipeline" aria-label="Hook lifecycle in run order">${stages}</ol>`;
 }
 
-/** Hooks, grouped by lifecycle, with the retained text list beside the pipeline. */
-export function renderHooks(hooks = []) {
+/**
+ * Hooks, grouped by lifecycle, with the retained text list beside the pipeline. A manual run names
+ * one hook from the manifest and the manifest digest this page was rendered from, so a manifest
+ * that changed since is refused rather than run.
+ */
+export function renderHooks(hooks = [], manifestSha256 = '') {
   const groups = groupHooksByLifecycle(hooks);
   const lists = groups.map((group) => {
     const rows = group.hooks.length
-      ? `<ul class="record-list">${group.hooks.map((hook) => `<li><strong>${escape(String(hook.name ?? hook.path ?? 'hook'))}</strong> <span class="status${hook.active === false ? '' : ' active'}">${hook.active === false ? 'Inactive' : 'Active'}</span>${hook.description ? `<p>${escape(String(hook.description))}</p>` : ''}</li>`).join('')}</ul>`
+      ? `<ul class="record-list">${group.hooks.map((hook) => `<li><strong>${escape(String(hook.name ?? hook.path ?? 'hook'))}</strong>${hook.active === true ? ' <span class="status active">Active</span>' : hook.active === false ? ' <span class="status">Inactive</span>' : ''}${hook.description ? `<p>${escape(String(hook.description))}</p>` : ''}</li>`).join('')}</ul>`
       : '<p class="empty-note">No hooks run at this stage.</p>';
     return `<section aria-labelledby="hooks-${escape(group.id)}"><h3 id="hooks-${escape(group.id)}">${escape(group.label)}</h3>${rows}</section>`;
   }).join('');
-  const options = HOOK_LIFECYCLE.map((event) => `<option value="${escape(event.id)}">${escape(event.label)}</option>`).join('');
-  return `<section class="panel" aria-labelledby="hooks-heading"><h2 id="hooks-heading">Hooks</h2>${renderHookPipeline(groups)}${lists}<form id="hook-run-form" class="stack-form"><label for="hook-event">Run the hooks for this event</label><select id="hook-event" name="event">${options}</select><button type="submit">Run hooks</button><p class="form-status" aria-live="polite"></p></form><p class="page-note">Activation and deactivation stay with the runner's manifest contract; this page runs only what is already active.</p></section>`;
+  const runnable = /^[a-f0-9]{64}$/.test(String(manifestSha256)) ? hooks.filter((hook) => /^[A-Za-z0-9._-]{1,120}$/.test(String(hook.name ?? ''))) : [];
+  const options = runnable.map((hook) => `<option value="${escape(String(hook.name))}">${escape(String(hook.name))}</option>`).join('');
+  const form = runnable.length
+    ? `<form id="hook-run-form" class="stack-form" data-manifest-sha256="${escape(String(manifestSha256))}"><label for="hook-name">Run a hook from the repository manifest</label><select id="hook-name" name="name" required>${options}</select><button type="submit">Run hook</button><p class="form-status" aria-live="polite"></p></form>`
+    : '<p class="empty-note">No hook can run from this page.</p>';
+  return `<section class="panel" aria-labelledby="hooks-heading"><h2 id="hooks-heading">Hooks</h2>${renderHookPipeline(groups)}${lists}${form}<p class="page-note">Activation and deactivation stay with the runner's manifest contract. Running a hook here is a one-off manual run you confirm first; it does not activate the hook.</p></section>`;
 }
 
 /** The workspace skill set, with a guarded run form for an explicitly named script. */
 export function renderWorkspaceSkills(skills = []) {
+  const digest = (skill) => String(skill.contentSha256 ?? '');
   const rows = skills.length
-    ? `<ul class="record-list">${skills.map((skill) => `<li><strong>${escape(String(skill.name ?? 'skill'))}</strong>${skill.tier ? ` <span class="status">${escape(String(skill.tier))}</span>` : ''}${skill.description ? `<p>${escape(String(skill.description))}</p>` : ''}${skill.sha256 ? `<small class="mono wrap">${escape(String(skill.sha256).slice(0, 16))}</small>` : ''}</li>`).join('')}</ul>`
+    ? `<ul class="record-list">${skills.map((skill) => `<li><strong>${escape(String(skill.name ?? 'skill'))}</strong>${skill.tier ? ` <span class="status">${escape(String(skill.tier))}</span>` : ''}${skill.description ? `<p>${escape(String(skill.description))}</p>` : ''}${digest(skill) ? `<small class="mono wrap">${escape(digest(skill).slice(0, 16))}</small>` : ''}</li>`).join('')}</ul>`
     : '<p class="empty-note">No skills are resolved for this workspace.</p>';
-  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs inside the workspace executor under the runner's verified-bytes contract. Nothing runs unless you name it here.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><input id="skill-run-name" name="name" required maxlength="120"><label for="skill-run-script">Script path</label><input id="skill-run-script" name="script" required maxlength="255"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form></details></section>`;
+  // A run names the skill revision listed here: the runner refuses it if the bundle changed since.
+  const runnable = skills.filter((skill) => skill.name && /^[0-9a-f]{64}$/.test(digest(skill)));
+  const options = runnable.map((skill) => `<option value="${escape(String(skill.name))}" data-content-sha256="${escape(digest(skill))}">${escape(String(skill.name))}</option>`).join('');
+  const form = runnable.length
+    ? `<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs once in a disposable helper container from the verified skill revision listed here. Nothing runs unless you name it here, and each run asks for your approval first.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><select id="skill-run-name" name="name" required>${options}</select><label for="skill-run-script">Script name</label><input id="skill-run-script" name="script" required maxlength="120" placeholder="run.sh"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form><div id="skill-run-result"></div></details>`
+    : '';
+  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}${form}</section>`;
+}
+
+/** A finished skill run: exit code, where it ran, the signal that stopped it (a timeout) and its bounded, redacted output. */
+export function renderSkillRunResult(result = {}, { failed = false } = {}) {
+  const fact = (value, suffix = '') => value === undefined || value === null || value === '' ? 'Not reported' : `${escape(String(value))}${suffix}`;
+  const output = typeof result.output === 'string' && result.output ? escape(result.output) : 'No output.';
+  return `<section class="skill-run-result" aria-labelledby="skill-run-result-heading"><h3 id="skill-run-result-heading">${failed ? 'Script exited with an error' : 'Script finished'}</h3><dl class="facts"><dt>Exit code</dt><dd>${fact(result.exitCode)}</dd><dt>Ran in</dt><dd>${result.executionMode === 'helper-container' ? 'Disposable helper container' : fact(result.executionMode)}</dd>${result.signal ? `<dt>Stopped by</dt><dd>${escape(String(result.signal))}</dd>` : ''}</dl><pre class="mono">${output}</pre>${result.truncated === true ? '<p class="status-message" role="status">Output is truncated.</p>' : ''}</section>`;
+}
+
+/** The confirm-dialog copy for a skill run the runner holds for an owner privilege grant. */
+export function skillRunApprovalPrompt({ name, script, contentSha256, expiresAt }) {
+  // The confirm dialog sets this copy as text, so the expiry is a plain local time, not markup.
+  const expiry = expiresAt ? ` The approval expires at ${new Date(expiresAt).toLocaleTimeString()} and is used by this one run.` : ' The approval is used by this one run.';
+  return {
+    title: 'Approve and run this skill script?',
+    description: `The script runs once in a disposable helper container from the verified skill revision.${expiry}`,
+    target: `${name} / ${script} @ ${String(contentSha256).slice(0, 16)}`
+  };
 }
 
 /** Deploy targets: external-effect risk, so every run confirms and every failure shows. */
@@ -670,10 +776,10 @@ export function renderDeployPanel(deployments = []) {
 }
 
 /** The cockpit Automation tab: the workspace skill set and its hooks. */
-export function renderAutomationPanel({ skills = [], hooks = [] } = {}) {
+export function renderAutomationPanel({ skills = [], hooks = [], manifestSha256 = '' } = {}) {
   return `${renderResourcePage({
     note: '<div class="page-note"><strong>Workspace automation.</strong> Skills resolve from your library and pinned sets; hooks run at lifecycle events inside the executor.</div>',
-    body: `${renderWorkspaceSkills(skills)}${renderHooks(hooks)}`
+    body: `${renderWorkspaceSkills(skills)}${renderHooks(hooks, manifestSha256)}`
   })}`;
 }
 
@@ -1053,7 +1159,7 @@ export function renderWorkspaceDetail(workspace, dedicated = false, modal = fals
   const heading = dedicated ? 'h1' : 'h2';
   const warning = workspace.networkProfile === 'dependency-access' ? '<p class="warning">Executor network access is enabled for this workspace (public DNS/HTTP/HTTPS).</p>' : '';
   const close = modal ? '<button id="close-detail" class="drawer-close" type="button">Close workspace details</button>' : '';
-  return `${close}<${heading} id="workspace-detail-title">${escape(repositoryName(workspace.repositoryUrl))}</${heading}><p class="mono wrap">${escape(workspace.workspaceId)}</p><span class="status ${escape(workspace.status.toLowerCase())}">${statusLabel(workspace.status)}</span><ol class="lifecycle" aria-label="Workspace lifecycle"><li><strong>Created</strong>${time(workspace.createdAt)}</li><li><strong>Last activity</strong>${time(workspace.lastActivityAt)}</li><li><strong>Expires</strong>${time(workspace.expiresAt)}</li></ol><dl class="facts"><dt>Repository</dt><dd class="wrap">${escape(workspace.repositoryUrl)}</dd><dt>Ref</dt><dd>${escape(workspace.ref ?? 'Default branch')}</dd><dt>Network</dt><dd>${networkLabel(workspace.networkProfile)}</dd></dl>${warning}<nav class="detail-actions" aria-label="Workspace sections"><a href="/dashboard/workspaces/${encodeURIComponent(workspace.workspaceId)}/files">Files</a><a href="/dashboard/workspaces/${encodeURIComponent(workspace.workspaceId)}/runtime">Runtime</a></nav><div class="danger-zone"><button id="close-workspace" class="danger" type="button" ${workspace.version ? '' : 'disabled'}>Close workspace</button>${workspace.version ? '' : '<p>Close is unavailable until lifecycle fencing is ready.</p>'}</div>`;
+  return `${close}<${heading} id="workspace-detail-title">${escape(repositoryName(workspace.repositoryUrl))}</${heading}><p class="mono wrap">${escape(workspace.workspaceId)}</p><span class="status ${escape(workspace.status.toLowerCase())}">${statusLabel(workspace.status)}</span><ol class="lifecycle" aria-label="Workspace lifecycle"><li><strong>Created</strong>${time(workspace.createdAt)}</li><li><strong>Last activity</strong>${time(workspace.lastActivityAt)}</li><li><strong>Expires</strong>${time(workspace.expiresAt)}</li></ol><dl class="facts"><dt>Repository</dt><dd class="wrap">${escape(workspace.repositoryUrl)}</dd><dt>Ref</dt><dd>${escape(workspace.ref ?? 'Default branch')}</dd>${renderRepositoryFacts(workspace)}<dt>Network</dt><dd>${networkLabel(workspace.networkProfile)}</dd></dl>${warning}<nav class="detail-actions" aria-label="Workspace sections"><a href="/dashboard/workspaces/${encodeURIComponent(workspace.workspaceId)}/files">Files</a><a href="/dashboard/workspaces/${encodeURIComponent(workspace.workspaceId)}/runtime">Runtime</a></nav><div class="danger-zone"><button id="close-workspace" class="danger" type="button" ${workspace.version ? '' : 'disabled'}>Close workspace</button>${workspace.version ? '' : '<p>Close is unavailable until lifecycle fencing is ready.</p>'}</div>`;
 }
 
 export function renderProjectIndex(projects) {
@@ -1112,7 +1218,7 @@ export function renderArtifactIndex(artifacts, cursor) {
     id: 'snapshot-dialog', title: 'Create snapshot',
     description: 'Copy one workspace file into retained, bounded storage. The snapshot expires at the retention you set, or at the server default.',
     formId: 'snapshot-form', submitId: 'snapshot-submit', submitLabel: 'Create retained snapshot',
-    body: '<label for="snapshot-workspace">Workspace ID</label><input id="snapshot-workspace" name="workspaceId" required pattern="ws_[A-Za-z0-9_-]{20,80}"><label for="snapshot-path">Workspace path</label><input id="snapshot-path" name="path" required maxlength="1024"><label for="snapshot-name">Logical name</label><input id="snapshot-name" name="logicalName" required maxlength="128"><label for="snapshot-retention">Retention in seconds</label><input id="snapshot-retention" name="retentionSeconds" type="number" min="60" max="2592000" placeholder="Use server default">'
+    body: '<label for="snapshot-workspace">Workspace ID</label><input id="snapshot-workspace" name="workspaceId" required pattern="ws_[A-Za-z0-9_\\-]{20,80}"><label for="snapshot-path">Workspace path</label><input id="snapshot-path" name="path" required maxlength="1024"><label for="snapshot-name">Logical name</label><input id="snapshot-name" name="logicalName" required maxlength="128"><label for="snapshot-retention">Retention in seconds</label><input id="snapshot-retention" name="retentionSeconds" type="number" min="60" max="2592000" placeholder="Use server default">'
   })}`;
 }
 
@@ -1373,16 +1479,47 @@ export function renderRuntime(data) {
   return `<p class="eyebrow">CURRENT RUNTIME STATE</p><p>Not retained across runner restart.</p><section><h2>Tasks</h2>${records(data.tasks, 'task')}</section><section><h2>Named sessions</h2>${records(data.sessions, 'session')}</section>`;
 }
 
-export function renderFileList(workspaceId, data) {
+/**
+ * A Files tab link. In a repository-scoped view paths are relative to that checkout, so the selected
+ * repository rides along on every link; without one the link keeps the workspace-root form unchanged.
+ * Every component is URI-encoded, so the result is safe inside an attribute as written.
+ */
+export function filesHref(workspaceId, path, { file = false, repository = '' } = {}) {
+  return `/dashboard/workspaces/${encodeURIComponent(workspaceId)}/files?path=${encodeURIComponent(path)}${file ? '&file=1' : ''}${repository ? `&repository=${encodeURIComponent(repository)}` : ''}`;
+}
+const filesRootLabel = (repository) => (repository ? `Repository root (${repository})` : 'Workspace root');
+
+export function renderFileList(workspaceId, data, { repository = '' } = {}) {
   const path = data.path ?? '.';
-  const items = data.entries.length ? data.entries.map((entry) => `<li><a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/files?path=${encodeURIComponent(join(path, entry.name))}${entry.type === 'file' ? '&file=1' : ''}">${escape(entry.name)}</a><span>${escape(entry.type)}</span></li>`).join('') : '<li>No files in this folder.</li>';
-  return `<nav aria-label="Breadcrumb"><a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/files?path=.">Workspace root</a><span class="mono wrap">${escape(path)}</span></nav><h2>Files</h2><ul class="file-list">${items}</ul><form id="folder-form"><label for="folder-path">New folder path</label><input id="folder-path" name="path" required><button type="submit">Create folder</button></form><form id="move-form"><label for="move-source">Source</label><input id="move-source" name="source" required><label for="move-destination">Destination</label><input id="move-destination" name="destination" required><button type="submit">Move</button></form>`;
+  const items = data.entries.length ? data.entries.map((entry) => `<li><a href="${filesHref(workspaceId, join(path, entry.name), { file: entry.type === 'file', repository })}">${escape(entry.name)}</a><span>${escape(entry.type)}</span></li>`).join('') : '<li>No files in this folder.</li>';
+  return `<nav aria-label="Breadcrumb"><a href="${filesHref(workspaceId, '.', { repository })}">${escape(filesRootLabel(repository))}</a><span class="mono wrap">${escape(path)}</span></nav><h2>Files</h2><ul class="file-list">${items}</ul><form id="folder-form"><label for="folder-path">New folder path</label><input id="folder-path" name="path" required><button type="submit">Create folder</button></form><form id="move-form"><label for="move-source">Source</label><input id="move-source" name="source" required><label for="move-destination">Destination</label><input id="move-destination" name="destination" required><button type="submit">Move</button></form>`;
 }
 
-export function renderFile(workspaceId, data) {
-  return `<nav aria-label="Breadcrumb"><a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/files?path=.">Workspace root</a></nav><h2 class="mono wrap">${escape(data.path)}</h2><p>Version <span class="mono wrap">${escape(data.sha256)}</span></p><pre><code>${escape(data.content)}</code></pre><form id="file-editor"><label for="file-content">File content</label><textarea id="file-content" name="content" spellcheck="false">${escape(data.content)}</textarea><input type="hidden" name="sha" value="${escape(data.sha256)}"><button type="submit">Save file</button><button id="delete-file" class="danger" type="button">Delete file</button></form><form id="patch-form"><label for="old-text">Text to replace</label><textarea id="old-text" name="oldText" spellcheck="false"></textarea><label for="new-text">Replacement text</label><textarea id="new-text" name="newText" spellcheck="false"></textarea><button type="submit">Apply text patch</button></form>`;
+/**
+ * Whether a `files_read` result holds the whole file. Its `sha256` always covers the whole file, so a
+ * whole-file save of a partial window would pass the conflict fence and cut the file short.
+ */
+export const isWholeFileRead = (data) => data?.eof === true;
+
+export function renderFile(workspaceId, data, { repository = '' } = {}) {
+  const whole = isWholeFileRead(data);
+  const loaded = Number.isFinite(data.bytesReturned) && Number.isFinite(data.totalBytes)
+    ? `Showing the first ${formatBytes(data.bytesReturned)} of ${formatBytes(data.totalBytes)}.`
+    : 'The runner did not confirm this is the whole file.';
+  const partialNotice = whole ? '' : `<p class="warning" id="file-partial-notice">${escape(loaded)} Saving the whole file is turned off so the rest of it is not lost. Use the text patch below, which edits the full file on the server.</p>`;
+  return `<nav aria-label="Breadcrumb"><a href="${filesHref(workspaceId, '.', { repository })}">${escape(filesRootLabel(repository))}</a></nav><h2 class="mono wrap">${escape(data.path)}</h2><p>Version <span class="mono wrap">${escape(data.sha256)}</span></p>${partialNotice}<pre><code>${escape(data.content)}</code></pre><form id="file-editor"><label for="file-content">File content${whole ? '' : ' (read-only, partial)'}</label><textarea id="file-content" name="content" spellcheck="false"${whole ? '' : ' readonly aria-describedby="file-partial-notice"'}>${escape(data.content)}</textarea><input type="hidden" name="sha" value="${escape(data.sha256)}">${whole ? '<button type="submit">Save file</button>' : ''}<button id="delete-file" class="danger" type="button">Delete file</button></form><form id="patch-form"><label for="old-text">Text to replace</label><textarea id="old-text" name="oldText" spellcheck="false"></textarea><label for="new-text">Replacement text</label><textarea id="new-text" name="newText" spellcheck="false"></textarea><button type="submit">Apply text patch</button></form>`;
 }
 
+const workspaceRepositories = (workspace) => Array.isArray(workspace.repositories) ? workspace.repositories : [];
+const repositoryAliases = (workspace) => workspaceRepositories(workspace).map((entry) => entry.alias).join(' ');
+// A multi-repository workspace is titled by its primary repository; the count tells the rest apart.
+const renderRepositoryCount = (workspace) => workspaceRepositories(workspace).length > 1 ? ` <span class="tag-badge">${escape(workspaceRepositories(workspace).length)} repositories</span>` : '';
+const renderRepositoryFacts = (workspace) => {
+  const entries = workspaceRepositories(workspace);
+  if (entries.length < 2) return '';
+  const items = entries.map((entry) => `<li><strong>${escape(entry.alias)}</strong> <span class="mono">${escape(entry.path)}</span> ${escape(repositoryName(entry.repositoryUrl))}${entry.ref ? ` @ ${escape(entry.ref)}` : ''}${entry.access === 'read-only' ? ' <span class="tag-badge">Read-only</span>' : ''}${entry.primary ? ' <span class="tag-badge">Primary</span>' : ''}</li>`).join('');
+  return `<dt>Repositories</dt><dd><ul class="repository-list">${items}</ul></dd>`;
+};
 export const repositoryName = (url) => { try { return new URL(url).pathname.replace(/^\//, '').replace(/\.git$/, ''); } catch { return 'Repository'; } };
 const join = (base, name) => base === '.' ? name : `${base}/${name}`;
 const statusLabelRuntime = (status) => ({ queued: 'Queued', running: 'Running', succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled', blocked: 'Blocked' })[status] ?? 'Unknown';
@@ -2515,4 +2652,455 @@ export function renderPaletteResults(entries, activeIndex) {
     const selected = index === activeIndex;
     return `<li id="palette-opt-${index}" class="palette-option${selected ? ' selected' : ''}" role="option" aria-selected="${selected}" data-palette-index="${index}" data-href="${escape(entry.href)}"><span class="palette-option-label">${escape(entry.label)}</span><span class="palette-option-group">${escape(entry.group)}</span><span class="palette-option-hint mono wrap">${escape(entry.hint)}</span></li>`;
   }).join('');
+}
+
+/*
+ * Webhook automations. The data shapes are the Dashboard BFF payloads owned by
+ * `packages/contracts/src/automations-api.ts`. Repository, label, result, error and
+ * outcome strings come from a provider webhook or the agent, so every one is treated
+ * as untrusted text: escaped on output, and a provider URL becomes a link only when it
+ * parses as https.
+ */
+export const AUTOMATION_SECTIONS = [
+  { id: 'runs', label: 'Runs', route: '/dashboard/automations' },
+  { id: 'rules', label: 'Rules', route: '/dashboard/automations/rules' },
+  { id: 'connections', label: 'Connections', route: '/dashboard/automations/connections' },
+  { id: 'deliveries', label: 'Deliveries', route: '/dashboard/automations/deliveries' }
+];
+export const AUTOMATION_WORKFLOW_STATES = ['QUEUED', 'STARTING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED'];
+const AUTOMATION_TERMINAL_STATES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED']);
+/** Mirrors `AgentProxyOperationSchema`; the first five are the contract's read-only default. */
+// Mirrors the contract's read-only automation operation set; the runner rejects anything else.
+export const AUTOMATION_PROXY_OPERATIONS = ['files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references'];
+export const AUTOMATION_DEFAULT_PROXY_OPERATIONS = [...AUTOMATION_PROXY_OPERATIONS];
+export const AUTOMATION_GITHUB_EVENTS = [['issues', 'Issues'], ['pull_request', 'Pull requests']];
+export const AUTOMATION_SENDER_TYPES = ['User', 'Bot', 'Organization'];
+export const AUTOMATION_RULE_DEFAULTS = { ttlSeconds: 900, maxInputTokens: 200_000, maxOutputTokens: 32_000, maxCostMicros: 2_000_000, cooldownSeconds: 300, maxConcurrent: 1 };
+export const AUTOMATIONS_DISABLED_COPY = 'Automations are disabled on this instance (set AUTOMATIONS_ENABLED=true on api and runner).';
+
+const AUTOMATION_WORKFLOW_STATE = {
+  QUEUED: ['Queued', 'queued'], STARTING: ['Starting', 'creating'], RUNNING: ['Running', 'running'], COMPLETED: ['Completed', 'succeeded'],
+  FAILED: ['Failed', 'failed'], CANCELLED: ['Cancelled', ''], EXPIRED: ['Expired', 'expired']
+};
+const AUTOMATION_DELIVERY_STATE = { RECEIVED: ['Received', 'info'], PROCESSED: ['Processed', 'succeeded'], IGNORED: ['Ignored', ''], QUARANTINED: ['Quarantined', 'failed'] };
+const AUTOMATION_PUBLISH_STATE = { NONE: ['Not published', ''], PENDING: ['Publishing', 'pending'], DELIVERED: ['Comment posted', 'succeeded'], FAILED: ['Publish failed', 'failed'] };
+const automationPill = (table, value) => {
+  const [label, className] = table[value] ?? ['Unknown', ''];
+  return `<span class="status${className ? ` ${className}` : ''}">${escape(label)}</span>`;
+};
+const automationList = (value) => (Array.isArray(value) ? value : []);
+const automationText = (value, empty = '—') => (value === null || value === undefined || value === '' ? empty : escape(value));
+
+export function automationWorkflowStateLabel(state) {
+  return (AUTOMATION_WORKFLOW_STATE[state] ?? ['Unknown'])[0];
+}
+
+export function automationWorkflowIsTerminal(state) {
+  return AUTOMATION_TERMINAL_STATES.has(state);
+}
+
+/** The section a pathname selects, or `undefined` for a path this page does not own. */
+export function automationSectionForPath(pathname) {
+  const path = String(pathname ?? '').replace(/\/$/, '');
+  if (/^\/dashboard\/automations\/runs\/wfl_[a-f0-9]{32}$/.test(path)) return 'runs';
+  return AUTOMATION_SECTIONS.find((section) => section.route === path)?.id;
+}
+
+/**
+ * Which blocked state an error puts the page in. The BFF answers 503 both when the
+ * feature is switched off and when the runner is briefly unreachable; only the first
+ * is a configuration the operator must change, so the two read differently.
+ */
+export function automationBlockedState(error) {
+  if (error?.status === 403) return 'denied';
+  if (error?.status !== 503) return undefined;
+  const message = String(error.message ?? '').toLowerCase();
+  return message.startsWith('automations are disabled') || message.startsWith('automations are not available') ? 'disabled' : 'unavailable';
+}
+
+export function renderAutomationBlocked(state) {
+  if (state === 'disabled') {
+    return `<div class="empty automation-blocked" role="status"><h3>Automations are disabled on this instance</h3><p>${escape(AUTOMATIONS_DISABLED_COPY)}</p><p>Set <code>AUTOMATIONS_ENABLED=true</code> for both the api and runner services and restart them to create connections and rules.</p></div>`;
+  }
+  if (state === 'denied') {
+    return '<div class="empty automation-blocked" role="status"><h3>You cannot manage automations</h3><p>Your signed-in identity does not have permission to view or change webhook automations on this instance.</p></div>';
+  }
+  return '<div class="empty automation-blocked" role="status"><h3>Automations are temporarily unavailable</h3><p>The runner did not answer. Try again in a moment.</p><button type="button" data-automation-retry>Try again</button></div>';
+}
+
+export function renderAutomationLoading() {
+  return '<p class="empty-note" role="status">Loading automations…</p>';
+}
+
+/** Section links for the shell's `#context-nav`; the current section carries `aria-current`. */
+export function renderAutomationTabs(current) {
+  return AUTOMATION_SECTIONS.map((section) => `<a href="${escape(section.route)}"${section.id === current ? ' aria-current="page"' : ''}>${escape(section.label)}</a>`).join('');
+}
+
+/** A provider resource URL becomes a link only when it is a well-formed https URL. */
+export function automationResourceHref(value) {
+  try {
+    const url = new URL(String(value ?? ''));
+    return url.protocol === 'https:' ? url.toString() : undefined;
+  } catch { return undefined; }
+}
+
+/** The payload URL GitHub posts to: the dashboard's public origin plus the connection's relative path. */
+export function automationWebhookUrl(origin, webhookPath) {
+  const path = String(webhookPath ?? '');
+  if (!path.startsWith('/') || path.startsWith('//')) return path;
+  try { return new URL(path, String(origin ?? '')).toString(); } catch { return path; }
+}
+
+function automationResource(workflow) {
+  const text = `${workflow?.repository ?? 'Unknown repository'}#${workflow?.resourceNumber ?? '?'}`;
+  const href = automationResourceHref(workflow?.resourceUrl);
+  return href ? `<a class="mono" href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(text)}</a>` : `<span class="mono">${escape(text)}</span>`;
+}
+
+const automationWorkspacePath = (workspaceId) => `/dashboard/workspaces/${encodeURIComponent(workspaceId)}/agents`;
+/** Tables show a short id; the link's accessible name and the detail view carry the full one. */
+const automationIdText = (value, full) => (full ? String(value) : `${String(value).slice(0, 14)}…`);
+function automationWorkspaceLinks(workflow, full = false) {
+  if (!workflow?.workspaceId) return '<span>Not opened</span>';
+  const path = escape(automationWorkspacePath(workflow.workspaceId));
+  const agent = workflow.agentId ? `<br><a class="mono wrap" href="${path}" aria-label="Open agent ${escape(workflow.agentId)}">${escape(automationIdText(workflow.agentId, full))}</a>` : '';
+  return `<a class="mono wrap" href="${path}" aria-label="Open workspace ${escape(workflow.workspaceId)}">${escape(automationIdText(workflow.workspaceId, full))}</a>${agent}`;
+}
+
+function automationUsage(usage) {
+  if (!usage) return 'Not reported';
+  return `${escape(countOf(usage.inputTokens))} in · ${escape(countOf(usage.outputTokens))} out · ${escape(costOf(usage.costMicros))}`;
+}
+
+const automationRunPath = (id) => `/dashboard/automations/runs/${encodeURIComponent(id)}`;
+const automationShortId = (id) => String(id ?? '').slice(0, 12);
+
+export function renderAutomationRuns({ workflows = [], rules = [], filters = {} } = {}) {
+  const list = automationList(workflows);
+  const ruleNames = new Map(automationList(rules).map((rule) => [rule.id, rule.name]));
+  const ruleName = (workflow) => escape(ruleNames.get(workflow.ruleId) ?? workflow.ruleId);
+  const stateOptions = AUTOMATION_WORKFLOW_STATES.map((state) => `<option value="${state}"${filters.state === state ? ' selected' : ''}>${escape(automationWorkflowStateLabel(state))}</option>`).join('');
+  const ruleOptions = automationList(rules).map((rule) => `<option value="${escape(rule.id)}"${filters.ruleId === rule.id ? ' selected' : ''}>${escape(rule.name)}</option>`).join('');
+  const runLink = (workflow) => `<a class="mono" href="${escape(automationRunPath(workflow.id))}" aria-label="Open run ${escape(workflow.id)}">${escape(automationShortId(workflow.id))}</a>`;
+  const statePill = (workflow) => `${automationPill(AUTOMATION_WORKFLOW_STATE, workflow.state)}${workflow.agentStatus ? `<small class="mono">${escape(workflow.agentStatus)}</small>` : ''}`;
+  const rows = list.length ? list.map((workflow) => `<tr>
+        <th scope="row">${runLink(workflow)}</th>
+        <td>${statePill(workflow)}</td>
+        <td>${automationResource(workflow)}</td>
+        <td class="mono">${escape(workflow.label)}</td>
+        <td>${ruleName(workflow)}</td>
+        <td>${automationWorkspaceLinks(workflow)}</td>
+        <td class="mono wrap">${automationText(workflow.errorCode)}</td>
+        <td>${automationPill(AUTOMATION_PUBLISH_STATE, workflow.publishState)}</td>
+        <td class="nowrap">${automationUsage(workflow.usage)}</td>
+        <td>${time(workflow.createdAt)}<small>Updated ${time(workflow.updatedAt)}</small></td>
+      </tr>`).join('') : '<tr><td colspan="10">No automation runs yet.</td></tr>';
+  const cards = list.length ? list.map((workflow) => `<li><h3>${automationResource(workflow)}</h3><dl><dt>Run</dt><dd>${runLink(workflow)}</dd><dt>State</dt><dd>${statePill(workflow)}</dd><dt>Label</dt><dd class="mono wrap">${escape(workflow.label)}</dd><dt>Rule</dt><dd>${ruleName(workflow)}</dd><dt>Workspace</dt><dd>${automationWorkspaceLinks(workflow)}</dd><dt>Error</dt><dd class="mono wrap">${automationText(workflow.errorCode)}</dd><dt>Publish</dt><dd>${automationPill(AUTOMATION_PUBLISH_STATE, workflow.publishState)}</dd><dt>Usage</dt><dd>${automationUsage(workflow.usage)}</dd><dt>Created</dt><dd>${time(workflow.createdAt)}</dd></dl></li>`).join('')
+    : '<li class="empty"><h3>No automation runs yet.</h3><p>A run starts when a labeled GitHub delivery matches an enabled rule.</p></li>';
+  return renderResourcePage({
+    filters: `<form id="automation-runs-filter" aria-label="Filter runs"><label for="automation-runs-state">State</label><select id="automation-runs-state" name="state"><option value="">All states</option>${stateOptions}</select><label for="automation-runs-rule">Rule</label><select id="automation-runs-rule" name="ruleId"><option value="">All rules</option>${ruleOptions}</select><button type="submit">Apply filters</button></form>`,
+    body: `<section class="automation-runs" aria-labelledby="automation-runs-heading"><div class="record-heading"><div><h2 id="automation-runs-heading">Runs</h2><p>Each run opens one workspace and runs one agent for a matching labeled issue or pull request.</p></div></div><div class="desktop-table"><table><caption>${escape(list.length)} automation runs</caption><thead><tr><th>Run</th><th>State</th><th>Resource</th><th>Label</th><th>Rule</th><th>Workspace / agent</th><th>Error</th><th>Publish</th><th>Usage</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`
+  });
+}
+
+/** One line per receipt outcome: what the action produced, or why it stopped. */
+function automationActionOutcome(outcome) {
+  if (!outcome || typeof outcome !== 'object') return '';
+  const parts = [];
+  if (outcome.exitCode !== undefined && outcome.exitCode !== null) parts.push(`exit ${outcome.exitCode}`);
+  if (outcome.commitSha) parts.push(String(outcome.commitSha).slice(0, 12));
+  if (outcome.prNumber) parts.push(`PR #${outcome.prNumber}`);
+  if (outcome.artifactId) parts.push(String(outcome.artifactId));
+  if (outcome.errorCode) parts.push(String(outcome.errorCode));
+  return parts.join(' · ');
+}
+
+/**
+ * Coding runs: the publish phase, what was published, and the brokered actions' receipts, newest
+ * first. The runner pages receipts; `actionsCursor` names the next, older page.
+ */
+function automationCodingSection(coding, actions, actionsCursor) {
+  if (!coding) return '';
+  const prHref = automationResourceHref(coding.prUrl);
+  const pr = coding.prNumber ? (prHref ? `<a class="mono" href="${escape(prHref)}" target="_blank" rel="noopener noreferrer">#${escape(coding.prNumber)}</a>` : `<span class="mono">#${escape(coding.prNumber)}</span>`) : 'Not opened';
+  const receipts = automationList(actions);
+  const decision = (action) => `${escape(action.decision)}<small>${escape(action.reasonCode)}</small>`;
+  const rows = receipts.length ? receipts.map((action) => `<tr>
+        <td>${time(action.createdAt)}</td>
+        <td class="mono">${escape(action.origin)}</td>
+        <th scope="row" class="mono">${escape(action.step)}</th>
+        <td class="mono">${escape(action.actionClass)}</td>
+        <td class="mono wrap">${decision(action)}</td>
+        <td class="mono">${escape(action.state)}</td>
+        <td class="mono wrap">${escape(automationActionOutcome(action.outcome))}</td>
+      </tr>`).join('') : '<tr><td colspan="7">No actions recorded yet.</td></tr>';
+  const cards = receipts.length ? receipts.map((action) => `<li><h3 class="mono">${escape(action.step)}</h3><dl><dt>Time</dt><dd>${time(action.createdAt)}</dd><dt>Origin</dt><dd class="mono">${escape(action.origin)}</dd><dt>Class</dt><dd class="mono">${escape(action.actionClass)}</dd><dt>Decision</dt><dd class="mono wrap">${decision(action)}</dd><dt>State</dt><dd class="mono">${escape(action.state)}</dd><dt>Outcome</dt><dd class="mono wrap">${escape(automationActionOutcome(action.outcome))}</dd></dl></li>`).join('')
+    : '<li class="empty"><h3>No actions recorded yet.</h3></li>';
+  const older = typeof actionsCursor === 'string' && actionsCursor
+    ? `<div class="row-actions"><button type="button" data-automation-older-actions="${escape(actionsCursor)}">Show older actions</button></div>`
+    : '';
+  return `
+    <section class="panel" aria-labelledby="automation-coding-heading">
+      <h2 id="automation-coding-heading" tabindex="-1">Coding</h2>
+      <p>The runner commits, pushes and opens the pull request itself after the agent finishes and verification passes. It never merges.</p>
+      <dl class="facts">
+        <dt>Phase</dt><dd class="mono">${escape(coding.phase)}</dd>
+        <dt>Project</dt><dd class="mono wrap">${escape(coding.projectId)}</dd>
+        <dt>Branch</dt><dd class="mono wrap">${automationText(coding.branch, 'Not created')}</dd>
+        <dt>Commit</dt><dd class="mono wrap">${automationText(coding.commitSha, 'None')}</dd>
+        <dt>Pull request</dt><dd>${pr}</dd>
+      </dl>
+      <div class="desktop-table"><table><caption>${escape(receipts.length)} brokered actions</caption><thead><tr><th>Time</th><th>Origin</th><th>Step</th><th>Class</th><th>Decision</th><th>State</th><th>Outcome</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <ul class="mobile-list">${cards}</ul>${older}
+    </section>`;
+}
+
+export function renderAutomationRunDetail({ workflow, result = null, transitions = [], ruleName, actions = [], actionsCursor = null } = {}) {
+  if (!workflow) return '<div class="empty"><h3>Automation run not found.</h3><p>It may have been purged after the retention window or belong to another identity.</p></div>';
+  const cancel = automationWorkflowIsTerminal(workflow.state) ? '' : `<div class="row-actions"><button class="danger" type="button" data-automation-cancel="${escape(workflow.id)}">Cancel run</button></div>`;
+  const resultBody = typeof result === 'string' && result
+    ? `<pre class="automation-result"><code>${escape(result)}</code></pre>`
+    : `<p class="empty-note">${automationWorkflowIsTerminal(workflow.state) ? 'This run recorded no result.' : 'The result appears here when the agent finishes.'}</p>`;
+  const steps = automationList(transitions);
+  const timeline = steps.length ? steps.map((step) => `<li class="activity-event"><div class="record-heading"><span class="mono">${time(step.at)}</span>${automationPill(AUTOMATION_WORKFLOW_STATE, step.toState)}</div><p><strong>${step.fromState ? `${escape(automationWorkflowStateLabel(step.fromState))} → ` : ''}${escape(automationWorkflowStateLabel(step.toState))}</strong></p><p class="activity-meta">${step.actor === 'owner' ? 'Owner' : 'System'}${step.code ? ` · <span class="mono wrap">${escape(step.code)}</span>` : ''}</p></li>`).join('')
+    : '<li class="empty">No transitions recorded.</li>';
+  return `
+    <nav aria-label="Breadcrumb"><a href="/dashboard/automations">Automations</a><span>Run ${escape(automationShortId(workflow.id))}</span></nav>
+    <div class="record-heading">
+      <div><h2 id="automation-run-heading">${automationResource(workflow)}</h2><p>${automationPill(AUTOMATION_WORKFLOW_STATE, workflow.state)} ${renderCopyChip({ value: workflow.id, label: 'Run ID' })}</p></div>
+      ${cancel}
+    </div>
+    <section class="panel" aria-labelledby="automation-run-facts-heading">
+      <h2 id="automation-run-facts-heading">Run</h2>
+      <dl class="facts">
+        <dt>Label</dt><dd class="mono wrap">${escape(workflow.label)}</dd>
+        <dt>Event</dt><dd class="mono">${escape(workflow.eventType)}</dd>
+        <dt>Rule</dt><dd>${escape(ruleName ?? workflow.ruleId)} <span class="mono">(generation ${escape(workflow.ruleGeneration)})</span></dd>
+        <dt>Delivery</dt><dd class="mono wrap">${escape(workflow.deliveryId)}</dd>
+        <dt>Workspace / agent</dt><dd>${automationWorkspaceLinks(workflow, true)}</dd>
+        <dt>Agent status</dt><dd class="mono">${automationText(workflow.agentStatus, 'Not started')}</dd>
+        <dt>Trace</dt><dd>${/^agent_[A-Za-z0-9_-]{20,80}$/.test(String(workflow.agentId ?? '')) ? `<a href="/dashboard/traces?agentId=${encodeURIComponent(workflow.agentId)}">View trace</a>` : 'Not started'}</dd>
+        <dt>Error</dt><dd class="mono wrap">${automationText(workflow.errorCode, 'None')}</dd>
+        <dt>Publish</dt><dd>${automationPill(AUTOMATION_PUBLISH_STATE, workflow.publishState)}</dd>
+        <dt>Usage</dt><dd>${automationUsage(workflow.usage)}</dd>
+        <dt>Created</dt><dd>${time(workflow.createdAt)}</dd>
+        <dt>Updated</dt><dd>${time(workflow.updatedAt)}</dd>
+        <dt>Finished</dt><dd>${workflow.terminalAt ? time(workflow.terminalAt) : 'Not finished'}</dd>
+      </dl>
+    </section>${automationCodingSection(workflow.coding, actions, actionsCursor)}
+    <section class="panel" aria-labelledby="automation-result-heading">
+      <h2 id="automation-result-heading">Result</h2>
+      <p>The agent's answer, shown as plain text exactly as recorded.</p>
+      ${resultBody}
+    </section>
+    <section class="panel" aria-labelledby="automation-transitions-heading">
+      <h2 id="automation-transitions-heading">Transitions</h2>
+      <ol class="activity-list automation-transitions">${timeline}</ol>
+    </section>
+  `;
+}
+
+const automationEventsText = (events) => automationList(events).map((event) => (AUTOMATION_GITHUB_EVENTS.find(([id]) => id === event)?.[1] ?? event)).join(', ');
+
+function automationRuleActions(rule) {
+  const id = escape(rule.id);
+  const generation = escape(rule.generation);
+  return `<div class="row-actions">
+          <button type="button" data-automation-rule-edit="${id}">Edit</button>
+          <button type="button" data-automation-rule-toggle="${id}" data-next-enabled="${rule.enabled ? 'false' : 'true'}" data-generation="${generation}">${rule.enabled ? 'Disable' : 'Enable'}</button>
+          <button type="button" data-automation-rule-test="${id}">Test event</button>
+          <button class="danger" type="button" data-automation-rule-delete="${id}" data-generation="${generation}" data-rule-name="${escape(rule.name)}">Delete</button>
+        </div>`;
+}
+
+export function renderAutomationRules({ rules = [], connections = [], profiles = [] } = {}) {
+  const list = automationList(rules);
+  const connectionNames = new Map(automationList(connections).map((connection) => [connection.id, connection.name]));
+  const profileNames = new Map(automationList(profiles).map((profile) => [profile.id, profile.displayName]));
+  const enabledPill = (rule) => `<span class="status${rule.enabled ? ' enabled' : ''}">${rule.enabled ? 'Enabled' : 'Disabled'}</span>`;
+  const match = (rule) => `<span class="mono wrap">${escape(rule.match?.repository)}</span><small>${escape(automationEventsText(rule.match?.events))} · label <span class="mono">${escape(rule.match?.label)}</span>${rule.match?.ignoreBots === false ? ' · bots allowed' : ''}${automationList(rule.match?.actorAllowlist).length ? ` · ${escape(rule.match.actorAllowlist.length)} allowed actors` : ''}</small>`;
+  const agent = (rule) => `${escape(profileNames.get(rule.action?.profileId) ?? rule.action?.profileId)}<small>${rule.action?.publishComment ? 'Posts a comment' : 'No comment'} · ${rule.action?.coding ? 'Coding: opens a pull request' : `${escape(automationList(rule.action?.proxyOperations).length)} operations`}</small>`;
+  const connection = (rule) => escape(connectionNames.get(rule.connectionId) ?? rule.connectionId);
+  const rows = list.length ? list.map((rule) => `<tr>
+        <th scope="row">${escape(rule.name)}<small class="mono wrap">${escape(rule.id)}</small></th>
+        <td class="wrap">${connection(rule)}</td>
+        <td>${match(rule)}</td>
+        <td class="wrap">${agent(rule)}</td>
+        <td>${enabledPill(rule)}</td>
+        <td>${time(rule.updatedAt)}</td>
+        <td>${automationRuleActions(rule)}</td>
+      </tr>`).join('') : '<tr><td colspan="7">No rules yet.</td></tr>';
+  const cards = list.length ? list.map((rule) => `<li><h3>${escape(rule.name)}</h3><dl><dt>Connection</dt><dd>${connection(rule)}</dd><dt>Match</dt><dd>${match(rule)}</dd><dt>Agent</dt><dd>${agent(rule)}</dd><dt>Status</dt><dd>${enabledPill(rule)}</dd></dl>${automationRuleActions(rule)}</li>`).join('')
+    : '<li class="empty"><h3>No rules yet.</h3><p>A rule says which labeled issue or pull request starts an agent, and what that agent is told to do.</p></li>';
+  const note = automationList(connections).length
+    ? ''
+    : '<div class="page-note"><strong>Create a connection first.</strong> Rules listen to a GitHub webhook connection. <a href="/dashboard/automations/connections">Open Connections</a> to create one.</div>';
+  const profileNote = automationList(profiles).length
+    ? ''
+    : '<p class="warning" role="status">No model profiles are available. Add one on <a href="/dashboard/models">Models &amp; Budgets</a> before saving a rule.</p>';
+  return `${renderResourcePage({
+    note: `${note}${profileNote}`,
+    body: `<section class="automation-rules" aria-labelledby="automation-rules-heading"><div class="record-heading"><div><h2 id="automation-rules-heading">Rules</h2><p>Rules match exactly: one repository, one added label, and the chosen events. New rules start disabled until you enable them.</p></div></div><div class="desktop-table"><table><caption>${escape(list.length)} automation rules</caption><thead><tr><th>Name</th><th>Connection</th><th>Match</th><th>Agent</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`
+  })}<div id="automation-dialog-host"></div>`;
+}
+
+const automationChecked = (value) => (value ? ' checked' : '');
+const automationNumberField = ({ id, name, label, value, min, max, step = 1, help }) => `<label for="${id}">${escape(label)}<input id="${id}" name="${name}" type="number" inputmode="${step === 1 ? 'numeric' : 'decimal'}" min="${min}" max="${max}" step="${step}" value="${escape(value)}" required></label>${help ? `<p class="field-help">${escape(help)}</p>` : ''}`;
+
+/** The create/edit form for one rule. An edit cannot move a rule to another connection, so that field is fixed. */
+export function renderAutomationRuleDialog({ rule, connections = [], profiles = [] } = {}) {
+  const editing = Boolean(rule);
+  const match = rule?.match ?? {};
+  const action = rule?.action ?? {};
+  const budget = { ...AUTOMATION_RULE_DEFAULTS, ...(action.budget ?? {}) };
+  const events = automationList(match.events).length ? match.events : ['issues'];
+  const operations = automationList(action.proxyOperations).length ? action.proxyOperations : AUTOMATION_DEFAULT_PROXY_OPERATIONS;
+  const connectionOptions = automationList(connections).map((connection) => `<option value="${escape(connection.id)}"${rule?.connectionId === connection.id ? ' selected' : ''}>${escape(connection.name)}${connection.enabled ? '' : ' (disabled)'}</option>`).join('');
+  const profileList = automationList(profiles);
+  const missingProfile = action.profileId && !profileList.some((profile) => profile.id === action.profileId)
+    ? `<option value="${escape(action.profileId)}" selected>${escape(action.profileId)} (not found)</option>` : '';
+  const profileOptions = profileList.map((profile) => `<option value="${escape(profile.id)}"${action.profileId === profile.id ? ' selected' : ''}>${escape(profile.displayName)} (${escape(profile.id)})${profile.status && profile.status !== 'ACTIVE' ? ` - ${escape(String(profile.status).toLowerCase())}` : ''}</option>`).join('');
+  const eventBoxes = AUTOMATION_GITHUB_EVENTS.map(([id, label]) => `<label class="checkbox-label"><input type="checkbox" name="events" value="${id}"${automationChecked(events.includes(id))}><span>${escape(label)} <code class="mono">${id}</code></span></label>`).join('');
+  const operationBoxes = AUTOMATION_PROXY_OPERATIONS.map((operation) => `<label class="checkbox-label"><input type="checkbox" name="proxyOperations" value="${operation}"${automationChecked(operations.includes(operation))}><span><code class="mono">${operation}</code></span></label>`).join('');
+  const costUsd = Number.isFinite(budget.maxCostMicros) ? String(budget.maxCostMicros / 1_000_000) : '2';
+  const body = `
+    <input type="hidden" name="ruleId" value="${escape(rule?.id ?? '')}">
+    <input type="hidden" name="expectedGeneration" value="${escape(rule?.generation ?? '')}">
+    <label for="automation-rule-name">Rule name<input id="automation-rule-name" name="name" required maxlength="100" autocomplete="off" value="${escape(rule?.name ?? '')}"></label>
+    <label for="automation-rule-connection">Connection<select id="automation-rule-connection" name="connectionId" required${editing ? ' disabled' : ''}>${connectionOptions}</select></label>
+    ${editing ? '<p class="field-help">A rule stays on the connection it was created for.</p>' : ''}
+    <fieldset class="automation-fieldset"><legend>When</legend>
+      <label for="automation-rule-repository">Repository<input id="automation-rule-repository" name="repository" required maxlength="140" autocomplete="off" spellcheck="false" placeholder="owner/name" value="${escape(match.repository ?? '')}"></label>
+      <p class="field-help">Exact GitHub <code>owner/name</code>, without <code>.git</code>.</p>
+      <div role="group" aria-label="Events">${eventBoxes}</div>
+      <label for="automation-rule-label">Added label<input id="automation-rule-label" name="label" required maxlength="100" autocomplete="off" value="${escape(match.label ?? '')}"></label>
+      <label class="checkbox-label"><input type="checkbox" name="ignoreBots"${automationChecked(match.ignoreBots !== false)}><span>Ignore bot senders (this harness's own GitHub App is always ignored when its slug is configured)</span></label>
+      <label for="automation-rule-actors">Allowed actors (optional)<input id="automation-rule-actors" name="actorAllowlist" autocomplete="off" spellcheck="false" placeholder="octocat, hubot" value="${escape(automationList(match.actorAllowlist).join(', '))}"></label>
+      <p class="field-help">Comma-separated GitHub logins. Leave empty to let anyone who can label trigger the rule.</p>
+    </fieldset>
+    <fieldset class="automation-fieldset"><legend>Then</legend>
+      <label for="automation-rule-ref">Branch or tag (optional)<input id="automation-rule-ref" name="ref" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Default branch" value="${escape(action.ref ?? '')}"></label>
+      <label for="automation-rule-profile">Model profile<select id="automation-rule-profile" name="profileId" required>${missingProfile}${profileOptions}</select></label>
+      <label for="automation-rule-instructions">Instructions<textarea id="automation-rule-instructions" name="instructions" required maxlength="16000" spellcheck="true">${escape(action.instructions ?? '')}</textarea></label>
+      <p class="field-help">The agent also receives the issue or pull request title and body as untrusted context.</p>
+      <div role="group" aria-label="Allowed operations">${operationBoxes}</div>
+      <label class="checkbox-label"><input type="checkbox" name="publishComment"${automationChecked(action.publishComment === true)}><span>Post the agent's answer as one comment on the issue or pull request</span></label>
+    </fieldset>
+    <fieldset class="automation-fieldset"><legend>Coding (optional)</legend>
+      <p class="field-help">Fill all three to let the agent change code. The project's execution policy decides every action, the allowed operations above are replaced by the coding tool set, and the runner opens a pull request on an <code>agent/</code> branch after the verify command passes. It never merges. Needs <code>AGENT_CODING_ENABLED=true</code> on the runner.</p>
+      <label for="automation-rule-coding-project">Policy project<input id="automation-rule-coding-project" name="codingProjectId" maxlength="84" autocomplete="off" spellcheck="false" placeholder="prj_…" value="${escape(action.coding?.projectId ?? '')}"></label>
+      <label for="automation-rule-coding-verify">Verify command<input id="automation-rule-coding-verify" name="codingVerifyCommand" maxlength="512" autocomplete="off" spellcheck="false" placeholder="npm test" value="${escape(action.coding?.verifyCommand ?? '')}"></label>
+      <p class="field-help">Plain space-separated words without shell syntax. It must pass before anything is committed.</p>
+      <label for="automation-rule-coding-base">Pull request base branch<input id="automation-rule-coding-base" name="codingBaseBranch" maxlength="200" autocomplete="off" spellcheck="false" placeholder="main" value="${escape(action.coding?.baseBranch ?? '')}"></label>
+    </fieldset>
+    <fieldset class="automation-fieldset"><legend>Limits</legend>
+      ${automationNumberField({ id: 'automation-rule-ttl', name: 'ttlSeconds', label: 'Time limit (seconds)', value: budget.ttlSeconds, min: 60, max: 7200 })}
+      ${automationNumberField({ id: 'automation-rule-input-tokens', name: 'maxInputTokens', label: 'Max input tokens', value: budget.maxInputTokens, min: 1, max: 2000000 })}
+      ${automationNumberField({ id: 'automation-rule-output-tokens', name: 'maxOutputTokens', label: 'Max output tokens', value: budget.maxOutputTokens, min: 1, max: 2000000 })}
+      ${automationNumberField({ id: 'automation-rule-cost', name: 'maxCostUsd', label: 'Max cost (USD)', value: costUsd, min: 0, max: 100, step: 0.000001 })}
+      ${automationNumberField({ id: 'automation-rule-cooldown', name: 'cooldownSeconds', label: 'Cooldown (seconds)', value: action.cooldownSeconds ?? AUTOMATION_RULE_DEFAULTS.cooldownSeconds, min: 0, max: 86400, help: 'A repeat trigger on the same issue or pull request is ignored for this long after a run ends.' })}
+      ${automationNumberField({ id: 'automation-rule-concurrency', name: 'maxConcurrent', label: 'Max concurrent runs', value: action.maxConcurrent ?? AUTOMATION_RULE_DEFAULTS.maxConcurrent, min: 1, max: 5 })}
+    </fieldset>
+    <label class="checkbox-label"><input type="checkbox" name="enabled"${automationChecked(rule?.enabled === true)}><span>Enabled</span></label>`;
+  return renderFormDialog({
+    id: 'automation-rule-dialog', title: editing ? 'Edit rule' : 'New rule',
+    description: 'A matching labeled delivery opens a workspace and runs one agent with these instructions.',
+    formId: 'automation-rule-form', submitId: 'automation-rule-submit', submitLabel: editing ? 'Save rule' : 'Create rule', body
+  });
+}
+
+/** A sample delivery checked against one saved rule without starting anything. */
+export function renderAutomationPreviewDialog(rule) {
+  const match = rule?.match ?? {};
+  const firstEvent = automationList(match.events)[0] ?? 'issues';
+  const eventOptions = AUTOMATION_GITHUB_EVENTS.map(([id, label]) => `<option value="${id}"${id === firstEvent ? ' selected' : ''}>${escape(label)}</option>`).join('');
+  const senderOptions = AUTOMATION_SENDER_TYPES.map((type) => `<option value="${type}">${type}</option>`).join('');
+  return renderFormDialog({
+    id: 'automation-preview-dialog', title: 'Test event',
+    description: `Check whether a sample delivery would match "${rule?.name ?? 'this rule'}". Nothing is started.`,
+    formId: 'automation-preview-form', submitId: 'automation-preview-submit', submitLabel: 'Test event',
+    body: `<input type="hidden" name="ruleId" value="${escape(rule?.id ?? '')}">
+      <label for="automation-preview-event">Event<select id="automation-preview-event" name="event">${eventOptions}</select></label>
+      <label for="automation-preview-repository">Repository<input id="automation-preview-repository" name="repository" required autocomplete="off" spellcheck="false" value="${escape(match.repository ?? '')}"></label>
+      <label for="automation-preview-label">Added label<input id="automation-preview-label" name="label" required maxlength="100" autocomplete="off" value="${escape(match.label ?? '')}"></label>
+      <label for="automation-preview-sender">Sender login<input id="automation-preview-sender" name="senderLogin" required maxlength="45" autocomplete="off" spellcheck="false" placeholder="octocat"></label>
+      <label for="automation-preview-sender-type">Sender type<select id="automation-preview-sender-type" name="senderType">${senderOptions}</select></label>
+      <div id="automation-preview-result" class="automation-preview-result" aria-live="polite"></div>`
+  });
+}
+
+export function renderAutomationPreviewResult(preview) {
+  const matched = preview?.matched === true;
+  return `<p><span class="status${matched ? ' succeeded' : ' failed'}">${matched ? 'Would match' : 'Would not match'}</span> <span class="wrap">${escape(preview?.reason ?? '')}</span></p>`;
+}
+
+function automationConnectionCard(connection, origin) {
+  const id = escape(connection.id);
+  const generation = escape(connection.generation);
+  const url = automationWebhookUrl(origin, connection.webhookPath);
+  return `<li class="panel automation-connection"><div class="record-heading"><div><h3>${escape(connection.name)}</h3><p><span class="status${connection.enabled ? ' enabled' : ''}">${connection.enabled ? 'Enabled' : 'Disabled'}</span> <span class="mono">${escape(connection.provider)}</span></p></div><div class="row-actions">
+        <button type="button" data-automation-connection-toggle="${id}" data-next-enabled="${connection.enabled ? 'false' : 'true'}" data-generation="${generation}">${connection.enabled ? 'Disable' : 'Enable'}</button>
+        <button type="button" data-automation-connection-rotate="${id}" data-generation="${generation}" data-connection-name="${escape(connection.name)}">Rotate secret</button>
+        <button class="danger" type="button" data-automation-connection-delete="${id}" data-generation="${generation}" data-connection-name="${escape(connection.name)}">Delete</button>
+      </div></div><dl class="facts"><dt>Webhook URL</dt><dd>${renderCopyChip({ value: url, label: 'Webhook URL' })}</dd><dt>Connection ID</dt><dd class="mono wrap">${id}</dd><dt>Secret rotated</dt><dd>${optionalTime(connection.secretRotatedAt)}</dd><dt>Last delivery</dt><dd>${optionalTime(connection.lastDeliveryAt)}</dd><dt>Created</dt><dd>${optionalTime(connection.createdAt)}</dd></dl></li>`;
+}
+
+export function renderAutomationConnections({ connections = [], origin = '' } = {}) {
+  const list = automationList(connections);
+  const items = list.length ? list.map((connection) => automationConnectionCard(connection, origin)).join('')
+    : '<li class="empty"><h3>No connections yet.</h3><p>Create a GitHub webhook connection to get a payload URL and a signing secret for your repository webhook.</p></li>';
+  return `${renderResourcePage({
+    body: `<section aria-labelledby="automation-connections-heading"><div class="record-heading"><div><h2 id="automation-connections-heading">Connections</h2><p>Each connection is one GitHub webhook endpoint with its own signing secret. Deliveries with a bad signature are refused.</p></div></div><ul class="record-list automation-connection-list">${items}</ul></section>`
+  })}${renderFormDialog({
+    id: 'automation-connection-dialog', title: 'New connection',
+    description: 'The signing secret is shown once after the connection is created and cannot be recovered.',
+    formId: 'automation-connection-form', submitId: 'automation-connection-submit', submitLabel: 'Create connection',
+    body: '<label for="automation-connection-name">Connection name<input id="automation-connection-name" name="name" required maxlength="100" autocomplete="off" placeholder="acme GitHub"></label>'
+  })}`;
+}
+
+/**
+ * The one-time reveal for a new or rotated signing secret. The secret itself is never
+ * rendered into markup: the loader writes it into the read-only field afterwards and
+ * clears it on dismissal, the same rule the API-key reveal follows.
+ */
+export function renderAutomationSecretPanel({ connection, origin = '', rotated = false } = {}) {
+  const url = automationWebhookUrl(origin, connection?.webhookPath);
+  return `<section id="automation-secret-panel" class="panel automation-secret-panel" aria-labelledby="automation-secret-heading" tabindex="-1">
+      <h2 id="automation-secret-heading">${rotated ? 'Copy the new signing secret now' : 'Copy the webhook secret now'}</h2>
+      <p class="warning"><strong>This secret is shown once.</strong> It cannot be recovered after you dismiss this panel or leave the page. ${rotated ? 'The previous secret no longer verifies deliveries, so update the GitHub webhook now.' : 'Rotate the secret if you lose it.'}</p>
+      <p>In GitHub, open the repository's <strong>Settings → Webhooks → Add webhook</strong> for <strong>${escape(connection?.name ?? 'this connection')}</strong>. Use content type <code>application/json</code> and select the <strong>Issues</strong> and/or <strong>Pull requests</strong> events.</p>
+      <label for="automation-webhook-url">Payload URL</label>
+      <div class="automation-copy-row"><input id="automation-webhook-url" class="mono" readonly value="${escape(url)}"><button type="button" id="copy-automation-webhook-url">Copy URL</button></div>
+      <label for="automation-webhook-secret">Secret</label>
+      <div class="automation-copy-row"><input id="automation-webhook-secret" class="mono" readonly autocomplete="off" spellcheck="false"><button type="button" id="copy-automation-webhook-secret">Copy secret</button></div>
+      <p id="automation-secret-status" class="form-status" aria-live="polite"></p>
+      <div class="row-actions"><button type="button" class="accent-btn" id="dismiss-automation-secret">I saved the secret</button></div>
+    </section>`;
+}
+
+export function renderAutomationDeliveries({ deliveries = [], connections = [], filters = {} } = {}) {
+  const list = automationList(deliveries);
+  const connectionNames = new Map(automationList(connections).map((connection) => [connection.id, connection.name]));
+  const connectionOptions = automationList(connections).map((connection) => `<option value="${escape(connection.id)}"${filters.connectionId === connection.id ? ' selected' : ''}>${escape(connection.name)}</option>`).join('');
+  const resource = (delivery) => (delivery.repository ? `<span class="mono wrap">${escape(delivery.repository)}${delivery.resourceNumber ? `#${escape(delivery.resourceNumber)}` : ''}</span>` : '—');
+  const event = (delivery) => `<span class="mono">${escape(delivery.providerEvent)}</span>${delivery.eventType ? `<small class="mono">${escape(delivery.eventType)}</small>` : ''}`;
+  const rows = list.length ? list.map((delivery) => `<tr>
+        <th scope="row">${time(delivery.receivedAt)}</th>
+        <td class="wrap">${escape(connectionNames.get(delivery.connectionId) ?? delivery.connectionId)}</td>
+        <td>${event(delivery)}</td>
+        <td>${resource(delivery)}</td>
+        <td class="mono wrap">${automationText(delivery.label)}</td>
+        <td>${automationPill(AUTOMATION_DELIVERY_STATE, delivery.state)}</td>
+        <td class="mono wrap">${automationText(delivery.outcome)}</td>
+        <td class="mono">${escape(countOf(delivery.workflowsCreated))}</td>
+        <td class="mono wrap">${escape(delivery.providerDeliveryId)}</td>
+      </tr>`).join('') : '<tr><td colspan="9">No deliveries received yet.</td></tr>';
+  const cards = list.length ? list.map((delivery) => `<li><h3>${time(delivery.receivedAt)}</h3><dl><dt>Event</dt><dd>${event(delivery)}</dd><dt>Resource</dt><dd>${resource(delivery)}</dd><dt>Label</dt><dd class="mono wrap">${automationText(delivery.label)}</dd><dt>State</dt><dd>${automationPill(AUTOMATION_DELIVERY_STATE, delivery.state)}</dd><dt>Outcome</dt><dd class="mono wrap">${automationText(delivery.outcome)}</dd><dt>Runs</dt><dd class="mono">${escape(countOf(delivery.workflowsCreated))}</dd></dl></li>`).join('')
+    : '<li class="empty"><h3>No deliveries received yet.</h3><p>Deliveries appear once GitHub posts to a connection\'s webhook URL with a valid signature.</p></li>';
+  return renderResourcePage({
+    filters: `<form id="automation-deliveries-filter" aria-label="Filter deliveries"><label for="automation-deliveries-connection">Connection</label><select id="automation-deliveries-connection" name="connectionId"><option value="">All connections</option>${connectionOptions}</select><button type="submit">Apply filter</button></form>`,
+    body: `<section aria-labelledby="automation-deliveries-heading"><div class="record-heading"><div><h2 id="automation-deliveries-heading">Recent deliveries</h2><p>Signed inbound webhooks, newest first. Deliveries are kept for 30 days.</p></div></div><div class="desktop-table"><table><caption>${escape(list.length)} deliveries</caption><thead><tr><th>Received</th><th>Connection</th><th>Event</th><th>Resource</th><th>Label</th><th>State</th><th>Outcome</th><th>Runs</th><th>Delivery ID</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`
+  });
 }

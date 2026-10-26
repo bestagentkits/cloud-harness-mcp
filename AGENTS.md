@@ -19,8 +19,10 @@ instead of copying behavior, defaults, command inventories, or configuration.
 | Trust model and isolation | [`docs/security-model.md`](docs/security-model.md) | `apps/api/src/request-security.ts`, `apps/runner/src/workspace-service.ts`, `test/integration/docker-sandbox.docker.test.ts` |
 | Public MCP contract | [`docs/mcp-api.md`](docs/mcp-api.md) | `packages/contracts/src/`, `apps/api/src/mcp-server.ts`, `packages/contracts/test/`, `test/integration/` |
 | MCP Events (webhook delivery) | [`docs/mcp-api.md`](docs/mcp-api.md), [`docs/security-model.md`](docs/security-model.md) | `packages/contracts/src/events-api.ts`, `apps/api/src/events/`, `apps/runner/src/event-outbox.ts`, `apps/runner/src/mcp-event-service.ts`, `test/integration/mcp-events-http.test.ts` |
+| Agent execution policies | [`docs/adr/0006-policy-governed-coding-agents.md`](docs/adr/0006-policy-governed-coding-agents.md), [`docs/security-model.md`](docs/security-model.md) | `packages/contracts/src/agent-policy-api.ts`, `apps/runner/src/agent-governance/`, `apps/api/src/dashboard-policies-router.ts`, `apps/runner/test/gate-evaluator.test.ts` |
 | API/runner boundary | [`docs/system-architecture.md`](docs/system-architecture.md) | `apps/api/src/`, `apps/runner/src/`, `compose*.yaml`, `scripts/verify-compose-boundaries.mjs` |
 | Repository and executor behavior | [`docs/security-model.md`](docs/security-model.md) | `apps/runner/src/repository-policy.ts`, `worker/`, runner and Docker tests |
+| Multi-repository workspaces | [`docs/mcp-api.md`](docs/mcp-api.md), [`docs/adr/0005-multi-repository-workspaces.md`](docs/adr/0005-multi-repository-workspaces.md) | `apps/runner/src/workspace-repositories.ts`, `apps/runner/src/workspace-service.ts`, `apps/runner/test/multi-repository-workspaces.test.ts` |
 | Configuration | [`docs/configuration.md`](docs/configuration.md) | `.env.example`, `packages/contracts/src/config.ts`, `apps/api/src/config.ts`, `apps/runner/src/config.ts`, `compose*.yaml` |
 | Development and verification | [`docs/development.md`](docs/development.md) | `package.json`, `.github/workflows/ci.yml`, tests |
 | Deployment and recovery | [`docs/deployment.md`](docs/deployment.md), [`docs/operations.md`](docs/operations.md), [`docs/troubleshooting.md`](docs/troubleshooting.md) | `deploy/`, `compose.production.yaml`, `scripts/verify-production.mjs`, `scripts/deploy-canary.mjs` |
@@ -110,6 +112,17 @@ page moves; never delete coverage. Track page ownership in the
   killed after stopping the release; `cloud-harness-deploy-recover.service`
   (boot) or the deploy unit's `ExecStopPost` rolls it back. Do not delete the
   marker by hand before reading its journal.
+- A `Release` failure with `tag 'vX-beta.N' already exists` usually means a
+  prerelease tag merged into `dev` lacks its
+  `refs/notes/semantic-release-<tag>` channel note. The release config's
+  verify step restores it and stops that run (opening a failing-release issue);
+  the next run, after a new `dev` push or a re-run of that Release run,
+  releases and closes the issue. If the
+  error persists, check whether the tag is merged into the branch at all.
+  Never delete or move a published release tag to get past it.
+- `release.yml` always runs from `main` (it is a `workflow_run` workflow), so
+  an edit to it on `dev` does not affect `dev` releases until it reaches
+  `main`. Put release logic `dev` needs now in `.releaserc.json` or its scripts.
 
 ## Issue and PR coordination
 
@@ -122,9 +135,15 @@ current:
   one status label at a time: `in progress` while implementing, `blocked` when
   waiting on an external decision or prerequisite (comment what blocks it),
   `in review` during isolated code review, `done` once the PR is open and green,
-  and `shipped` after it merges to `main`.
-- `main` is the integration branch; merging to it triggers `Deploy production`,
-  so a merge is a live operation that needs owner authorization.
+  and `shipped` after it reaches `main`.
+- Pull requests normally land on `dev`, which publishes `-beta.N` releases only. `main`
+  is the stable branch; merging to it triggers `Deploy production`, so a merge
+  is a live operation that needs owner authorization. A change merged only to
+  `dev` is not shipped: its issue stays `done` (release automation adds
+  `released on @beta`) until `dev` is promoted to `main` as described in
+  [`docs/development.md`](docs/development.md#promoting-dev-to-main). A fix
+  that has to reach `main` first must also land on `dev`, so the next
+  promotion does not revert it.
 - When you find a related or duplicate issue, comment on it with a reference to
   the issue you are working on instead of duplicating work. File an unrelated
   defect you discover as its own issue rather than widening the current PR.
@@ -139,10 +158,12 @@ current:
 3. Run the narrowest relevant test first, then the applicable repository gate:
    - Normal code changes: `npm run verify`. On Windows or non-POSIX hosts, use
      targeted suites (`npm run test:unit`, `npm run test:integration`, `npm run lint`,
-     `npm run typecheck`) as your baseline; shell fixture tests in
-     `test/deploy-release-runtime.test.ts` and `test/upgrade-nginx-routes.test.ts`
-     require a POSIX host and are verified in Linux CI. The nginx upgrade
-     script refuses its test root when run as root, so in a root-only
+     `npm run typecheck`) as your baseline. POSIX-only tests skip on win32
+     with a stated reason and are verified in Linux CI; the "Windows hosts"
+     section of `docs/development.md` lists them and the failures still
+     unexplained. Guard a new POSIX-only test the same way
+     (`apps/runner/test/platform-support.ts`) and add it to that list. The nginx
+     upgrade script refuses its test root when run as root, so in a root-only
      container run that suite as an unprivileged user instead of treating the
      failure as a regression.
    - Compose or network-boundary changes: `npm run verify:compose` and
@@ -190,7 +211,7 @@ current on the issue you are working on and assign its owner:
 - `in progress` while implementing, `blocked` while waiting on a dependency or
   decision (say what in a comment), `in review` while an isolated reviewer
   checks the change, `done` once the PR is open, and `shipped` once it is
-  merged. Replace the previous state label rather than stacking them. The
+  on `main`. Replace the previous state label rather than stacking them. The
   `released` label is applied by the release automation, not by hand.
 - Before starting, check for an existing `in progress` owner or a duplicate
   issue. Comment on related or duplicate issues with a reference instead of

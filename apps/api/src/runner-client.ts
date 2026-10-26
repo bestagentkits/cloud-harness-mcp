@@ -1,9 +1,15 @@
 import {
+  AgentPoliciesRunnerRequestSchema,
+  AgentPoliciesRunnerResponseSchema,
+  AutomationsRunnerRequestSchema,
+  AutomationsRunnerResponseSchema,
   InternalRunnerRequestSchema,
   InternalRunnerResponseSchema,
   McpEventsRunnerRequestSchema,
   McpEventsRunnerResponseSchema,
   MetadataRunnerRequestSchema,
+  NotificationsRunnerRequestSchema,
+  NotificationsRunnerResponseSchema,
   ApiKeyAuthenticationRequestSchema,
   ApiKeyAuthenticationResponseSchema,
   ApiKeyManagementRequestSchema,
@@ -14,10 +20,16 @@ import {
   type ApiKeyAuthenticationResponse,
   type ApiKeyManagementOperation,
   type ApiKeyManagementResponse,
+  type AgentPoliciesRunnerRequest,
+  type AgentPoliciesRunnerResponse,
+  type AutomationsRunnerRequest,
+  type AutomationsRunnerResponse,
   type InternalRunnerOperation,
   type McpEventsRunnerRequest,
   type McpEventsRunnerResponse,
   type MetadataRunnerOperation,
+  type NotificationsRunnerRequest,
+  type NotificationsRunnerResponse,
   type RunnerOperation,
   type RunnerPrincipalSelector,
   type RunnerResponse
@@ -61,6 +73,26 @@ export class RunnerClient {
   /** MCP Events subscription and delivery-queue operations; principal scoping travels in the request. */
   async callEvents(request: McpEventsRunnerRequest, signal?: AbortSignal): Promise<McpEventsRunnerResponse> {
     return await this.requestJson('/v1/internal/events', McpEventsRunnerRequestSchema.parse(request), McpEventsRunnerResponseSchema, () => ({
+      ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' }
+    }), signal);
+  }
+
+  /** Automation webhook ingest and owner-scoped management; principal scoping travels in the request. */
+  async callAutomations(request: AutomationsRunnerRequest, signal?: AbortSignal): Promise<AutomationsRunnerResponse> {
+    return await this.requestJson('/v1/internal/automations', AutomationsRunnerRequestSchema.parse(request), AutomationsRunnerResponseSchema, () => ({
+      ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' }
+    }), signal);
+  }
+
+  /** Owner-scoped agent execution policies and the gate simulation; principal scoping travels in the request. */
+  async callAgentPolicies(request: AgentPoliciesRunnerRequest, signal?: AbortSignal): Promise<AgentPoliciesRunnerResponse> {
+    return await this.requestJson('/v1/internal/agent-policies', AgentPoliciesRunnerRequestSchema.parse(request), AgentPoliciesRunnerResponseSchema, () => ({
+      ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' }
+    }), signal);
+  }
+
+  async callNotifications(request: NotificationsRunnerRequest, signal?: AbortSignal): Promise<NotificationsRunnerResponse> {
+    return await this.requestJson('/v1/internal/notifications', NotificationsRunnerRequestSchema.parse(request), NotificationsRunnerResponseSchema, () => ({
       ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' }
     }), signal);
   }

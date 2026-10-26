@@ -92,7 +92,8 @@ beforeAll(async () => {
         maxProxyOperations: ['files_write', 'files_apply_patch']
       }],
       limits
-    }
+    },
+    agentTraces: { enabled: true, retentionDays: 14, maxSpansPerTrace: 2_000, maxTracesPerPrincipal: 5_000, previewBytes: 0 }
   };
   store = new StateStore(runnerConfig.stateDb);
   ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
@@ -235,6 +236,26 @@ describe.skipIf(Boolean(prerequisiteIssue))('actual Pi agent through MCP and the
     if (!successRecord) throw new Error('successful agent record was not retained');
     await expectAgentResourcesRemoved(successRecord.containerName, successRecord.networkName);
 
+    // The run left exactly one trace whose model and tool spans add up to the agent's usage ledger.
+    const traceList = await call('agent_traces_list', { agentId, limit: 10 });
+    expect(traceList.data.traces).toHaveLength(1);
+    const traceId = traceList.data.traces[0].traceId as string;
+    const trace = (await call('agent_trace_get', { traceId })).data.trace;
+    expect(trace).toMatchObject({ agentId, workspaceId, state: 'COMPLETED', profileId: 'fake-test-only', reconciliationStatus: 'reconciled' });
+    expect(trace.modelCalls).toBeGreaterThanOrEqual(1);
+    expect(trace.toolCalls).toBeGreaterThanOrEqual(2);
+    // Tokens must match exactly; cost within the per-call rounding tolerance that `reconciled` already enforces.
+    expect(trace.reconciliation.spans.inputTokens).toBe(trace.reconciliation.ledger.inputTokens);
+    expect(trace.reconciliation.spans.outputTokens).toBe(trace.reconciliation.ledger.outputTokens);
+    expect(trace.reconciliation.ledger).toEqual({
+      inputTokens: terminal.usage.inputTokens, outputTokens: terminal.usage.outputTokens, costMicros: terminal.usage.costMicros
+    });
+    const traceSpans = (await call('agent_trace_spans', { traceId, limit: 500 })).data.spans as Array<{ kind: string; name: string }>;
+    const spanKinds = new Set(traceSpans.map((span) => span.kind));
+    expect(spanKinds).toContain('model_call');
+    expect(spanKinds).toContain('tool_call');
+    expect(JSON.stringify(traceSpans)).not.toContain('edited by actual Pi agent');
+
     const held = await call('agent_spawn', {
       ...spawnInput,
       prompt: '[FAKE_PROVIDER_HOLD] Wait for owner steering until cancelled.',
@@ -274,6 +295,8 @@ describe.skipIf(Boolean(prerequisiteIssue))('actual Pi agent through MCP and the
     const cancelledRecord = repository.findAgent(ownerId, workspaceId, heldAgentId);
     if (!cancelledRecord) throw new Error('cancelled agent record was not retained');
     await expectAgentResourcesRemoved(cancelledRecord.containerName, cancelledRecord.networkName);
+    const cancelledTraces = (await call('agent_traces_list', { agentId: heldAgentId, limit: 10 })).data.traces;
+    expect(cancelledTraces).toEqual([expect.objectContaining({ state: 'CANCELLED', coverage: 'partial' })]);
 
     const providerRequestsBeforeBudgetStop = fakeProviderRequestCount();
     const budgetStopped = await call('agent_spawn', {
@@ -325,7 +348,13 @@ describe.skipIf(Boolean(prerequisiteIssue))('actual Pi agent through MCP and the
     });
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toMatchObject({ error: { code: 'CONFLICT' } });
-    expect(await agentResourceInventory()).toEqual(before);
+    // An earlier test's agent resources may still be tearing down, so only resources absent from the
+    // before snapshot prove this rejected spawn created something.
+    const after = await agentResourceInventory();
+    expect({
+      containers: after.containers.filter((name) => !before.containers.includes(name)),
+      networks: after.networks.filter((name) => !before.networks.includes(name))
+    }).toEqual({ containers: [], networks: [] });
     await call('workspace_close', { workspaceId });
     activeWorkspaceIds.delete(workspaceId);
   }, 60_000);

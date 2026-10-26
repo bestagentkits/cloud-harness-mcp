@@ -34,6 +34,16 @@ MCP Events webhook delivery
   -> client-registered public HTTPS callback over an API-owned, address-pinned
      outbound socket (Standard Webhooks signature)
 
+GitHub webhook automation (optional)
+  -> existing nginx /integrations/webhooks/ (no Access, no bearer)
+  -> credential-free TCP ingress proxy -> API (host check, own rate window,
+     raw bytes forwarded unparsed)
+  -> runner internal automations channel (signature, dedupe, rule matching)
+  -> runner automation engine -> the runner's own workspace and agent
+     operations -> optional brokered GitHub comment
+  -> coding rules only: coding broker (policy gate on every agent action)
+     -> verify -> runner commit, create-only agent/ branch push, pull request
+
 Dashboard Terminal (browser)
   -> /dashboard BFF on the API (session cookie, Origin, CSRF)
   -> runner internal terminal operation (service bearer, not an MCP tool)
@@ -187,6 +197,64 @@ gateway `search` reaches it only through the internal `decision_rerank_tools`
 operation, and checks the returned ordering against its own candidate pool. The
 API never holds the provider credential.
 
+Webhook automations live in the runner under
+[`apps/runner/src/automation-service.ts`](../apps/runner/src/automation-service.ts).
+The API owns only the public ingress
+([`apps/api/src/automations/webhook-ingress.ts`](../apps/api/src/automations/webhook-ingress.ts))
+and the Dashboard BFF routes; both reach the runner over the internal
+automations channel whose schema is
+[`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
+Ingest only verifies, deduplicates, and stores a normalized delivery, so a
+webhook returns quickly; an in-process engine tick, outside any request path,
+matches deliveries to rules and drives each workflow through the same
+`workspace_open`, `agent_spawn`, `agent_status`, `agent_logs`, `github_action`,
+and `workspace_close` operations an MCP client uses, under the rule owner's
+principal. Every step carries an idempotency key derived from the workflow id,
+so a runner restart resumes rather than duplicates a workspace, agent, or
+comment. Success is the agent's authoritative status, never log scraping; the
+logs supply only the final answer text. The terminal transition and its
+[MCP event](mcp-api.md#mcp-events-webhook-delivery) commit together. The
+tables are additive and unversioned
+([`apps/runner/src/automation-schema.ts`](../apps/runner/src/automation-schema.ts)),
+and the trust decisions are in the
+[security model](security-model.md#webhook-automation-ingress).
+
+Agent execution policies live in the runner under
+[`apps/runner/src/agent-governance/`](../apps/runner/src/agent-governance/)
+([ADR 0006](adr/0006-policy-governed-coding-agents.md)). The policy store keeps
+immutable revisions and compare-and-swap heads in the runner state database;
+the resolver turns the global and project heads into a frozen snapshot; the
+pure gate evaluator (`PURE_GATE_EVALUATOR`) decides. It serves both the
+Dashboard simulation and the coding broker. The API holds no policy state: the Dashboard BFF
+([`apps/api/src/dashboard-policies-router.ts`](../apps/api/src/dashboard-policies-router.ts))
+forwards validated owner requests over the internal agent-policies channel,
+whose schema is
+[`packages/contracts/src/agent-policy-api.ts`](../packages/contracts/src/agent-policy-api.ts).
+The versioned ports in
+[`ports.ts`](../apps/runner/src/agent-governance/ports.ts) are the seams that
+runtime adapters, the action broker and advisors plug into.
+
+Coding automations (`AGENT_CODING_ENABLED`) extend the same engine. A rule's
+optional `coding` action admits the workflow against the policy and pins its
+revisions; the engine then runs one step per tick through
+[`apps/runner/src/automation-coding.ts`](../apps/runner/src/automation-coding.ts):
+the agent phase, verify, commit, push and pull request. The coding broker
+([`action-broker.ts`](../apps/runner/src/agent-governance/action-broker.ts))
+wraps the agent manager's tool executor, so the agent's edits and commands
+reach the workspace only after a gate decision, and it records every agent and
+runner action as a receipt in `coding_actions`
+([`action-store.ts`](../apps/runner/src/agent-governance/action-store.ts)) and
+as an `action` span on the agent's trace. Receipts are what make a restart
+safe: a step whose receipt is applied is skipped, and one whose effect is
+unknown is reconciled by reading GitHub before anything is repeated. Commits,
+pushes and pull requests use the runner's own `git_commit`, `git_push` and
+`github_action` operations, so publishing credentials stay in the runner. The
+optional lockfile install
+([`install-executor.ts`](../apps/runner/src/agent-governance/install-executor.ts))
+is a one-shot container the runner starts before the agent; it is not an agent
+tool. The trust decisions are in the
+[security model](security-model.md#coding-automations).
+
 Third-party agent toolkits are acquired and normalized via disposable clone helpers running on a dedicated internal Docker network (`cloud-harness-provisioning`). All helper egress routes through the dual-homed `provisioning-proxy` (port 3128) with DNS destination allowlists. Normalized bundles are published to runner Content-Addressed Storage (`TOOLKIT_CACHE_ROOT`) and mounted into executors read-only at `/opt/cloud-harness/owner-skills:ro` or staged into `.cloud-harness/skills` under explicit confirmation.
 
 ## Composition roots and transports
@@ -325,6 +393,17 @@ repository checkout lives under the configured jobs root and persists across
 MCP calls while the workspace is active. Close or TTL cleanup removes the
 executor and its workspace directory; SQLite retains the resulting metadata.
 
+A multi-repository workspace keeps the same executor mount: its tree root holds
+one checkout per alias under `repos/<alias>/`, and the repository set is written
+to an additive registry in the transaction that admits the workspace. The
+runner resolves a `repositoryId` selector to an in-memory record view scoped to
+one checkout, which every existing clone, transfer, recovery, GitHub, and
+capability helper receives unchanged, so per-repository behaviour needs no
+second code path. A single-repository workspace has no registry rows and gets a
+synthesized deterministic entry. The resolver lives in
+[`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts);
+the reasoning is in [ADR 0005](adr/0005-multi-repository-workspaces.md).
+
 The skill registry is a separate concern that shares that store. Sources, revisions, sets, and import
 jobs are written through [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts), while
 4-tier resolution and the same-tier conflict rule live in
@@ -392,6 +471,31 @@ and
 [`apps/api/src/events/event-delivery-worker.ts`](../apps/api/src/events/event-delivery-worker.ts);
 the protocol contract is in [MCP API](mcp-api.md#mcp-events-webhook-delivery).
 
+The notification inbox, when enabled, rides the same savepoints: the outbox's
+terminal emitters also write a deduplicated `notifications` row and one
+`notification_deliveries` row per channel (tables created additively, without
+a schema version bump). The inbox channel is settled at write time; the MCP
+Events channel records a `cloudharness.notification.created` outbox event and
+then mirrors that event's delivery state, and the GitHub channel mirrors the
+automation's own comment state, so the dispatcher opens no network connection
+itself. A failure to write a notification is caught inside a nested savepoint,
+logged, and counted, and does not roll back the transition; only an error after
+which SQLite has already rolled back the enclosing transaction is re-thrown,
+since the transition is lost either way. Turning the MCP Events channel off
+revokes its pending notification deliveries and, in the same transaction,
+abandons the pending webhook deliveries of their events, so nothing is sent
+afterwards. The dispatcher leases due deliveries with a compare-and-set token,
+backs off retries to a bounded attempt count (an expired lease counts as a
+failed attempt and backs off too, so a delivery that keeps crashing its
+dispatcher still stops), fails a delivery still open past
+twice the retention window, and keeps purging old notifications while the
+feature is off. The owners
+are
+[`apps/runner/src/notifications/notification-emitter.ts`](../apps/runner/src/notifications/notification-emitter.ts),
+[`apps/runner/src/notifications/notification-store.ts`](../apps/runner/src/notifications/notification-store.ts),
+and
+[`apps/runner/src/notifications/notification-dispatcher.ts`](../apps/runner/src/notifications/notification-dispatcher.ts).
+
 Aggregate model spend is tracked in a durable ledger in the same database
 (`model_spend_ledger` and `model_spend_policies`, created additively without a
 schema version bump, so an older runner ignores them). A gateway lease is the
@@ -417,6 +521,24 @@ crossing of a policy's warning threshold writes one structured
 [`apps/runner/src/model-spend-ledger.ts`](../apps/runner/src/model-spend-ledger.ts),
 [`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts), and
 [`packages/contracts/src/model-spend-schemas.ts`](../packages/contracts/src/model-spend-schemas.ts).
+
+Agent traces, when enabled, add `agent_traces` and `agent_trace_spans` to the
+runner state database, created by an idempotent initializer without a schema
+version bump and without foreign keys, so a trace outlives its workspace and
+agent rows. The agent manager feeds a recorder from the same runtime events,
+proxy tool calls, and gateway settlement it already handles; the recorder
+writes only at span boundaries (never per stream delta), and a store failure is
+logged once and marks the trace degraded instead of affecting the agent. At
+startup, traces left `RUNNING` by a previous runner epoch become `INCOMPLETE`.
+At startup and hourly, a purge removes traces past retention, even with traces
+disabled, in bounded batches of one transaction each that yield to the event
+loop between batches; shutdown stops it between batches and waits for it before
+the database closes. The per-principal quota evicts in the same bounded batches.
+The owners are
+[`apps/runner/src/agent-trace-schema.ts`](../apps/runner/src/agent-trace-schema.ts),
+[`apps/runner/src/agent-trace-recorder.ts`](../apps/runner/src/agent-trace-recorder.ts),
+and
+[`apps/runner/src/agent-trace-store.ts`](../apps/runner/src/agent-trace-store.ts).
 
 The admission policy permits up to `MAX_ACTIVE_WORKSPACES_PER_OWNER` concurrent
 counted workspaces per principal (default 3; `1` restores single-workspace

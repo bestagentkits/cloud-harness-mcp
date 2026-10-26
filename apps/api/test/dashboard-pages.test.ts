@@ -56,8 +56,11 @@ describe('dashboard page registry', () => {
     expect(groups.map((group) => group.label)).toEqual(['Home', 'Operate', 'Configure', 'Data', 'Admin']);
     expect(groups.flatMap((group) => group.pages.map((page) => page.id))).toEqual([
       'overview',
+      'inbox',
       'workspaces',
       'agents',
+      'traces',
+      'automations',
       'activity',
       'approvals',
       'packages',
@@ -90,6 +93,9 @@ describe('dashboard page registry', () => {
     expect(pageForPath('/dashboard/mcp-servers')?.id).toBe('mcp-servers');
     // A drill-down route for one MCP server keeps the MCP Servers entry current.
     expect(pageForPath('/dashboard/mcp-servers/mcps_abcdefghijklmnopqrstuvwx')?.id).toBe('mcp-servers');
+    // Automation sections and a run detail keep the Automations entry current.
+    expect(pageForPath('/dashboard/automations/rules')?.id).toBe('automations');
+    expect(pageForPath(`/dashboard/automations/runs/wfl_${'a'.repeat(32)}`)?.id).toBe('automations');
     expect(pageForPath('/dashboard/not-a-page')).toBeUndefined();
   });
 

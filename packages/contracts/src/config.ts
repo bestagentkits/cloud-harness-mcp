@@ -45,6 +45,19 @@ const deweeGatewayUrl = z.url().refine((value) => {
 const positiveBoundedInteger = (maximum: number, defaultValue: number) =>
   z.coerce.number().int().min(1).max(maximum).default(defaultValue);
 
+/**
+ * Durable agent traces. `previewBytes` bounds an optional redacted preview of tool input; the
+ * default 0 stores digests only.
+ */
+export const AgentTracesConfigSchema = z.object({
+  enabled,
+  retentionDays: positiveBoundedInteger(90, 14),
+  maxSpansPerTrace: z.coerce.number().int().min(16).max(10_000).default(2_000),
+  maxTracesPerPrincipal: z.coerce.number().int().min(10).max(100_000).default(5_000),
+  previewBytes: z.coerce.number().int().min(0).max(512).default(0)
+}).strict().prefault({});
+export type AgentTracesConfig = z.infer<typeof AgentTracesConfigSchema>;
+
 const gatewayUrl = z.url().refine((value) => {
   try {
     const url = new URL(value);
@@ -138,6 +151,10 @@ export const DEFAULT_RUNNER_AGENT_LIMITS = RunnerAgentLimitsSchema.parse({});
  * single-workspace behaviour.
  */
 export const DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER = 3;
+/** Repositories a multi-repository workspace holds unless the operator sets MAX_WORKSPACE_REPOSITORIES. */
+export const DEFAULT_MAX_WORKSPACE_REPOSITORIES = 5;
+/** The schema bound on one workspace_open repository set; the operator setting may only lower it. */
+export const MAX_WORKSPACE_REPOSITORIES_LIMIT = 20;
 
 export const RunnerAgentsConfigSchema = z.object({
   image: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/),
@@ -160,6 +177,8 @@ export const ApiConfigSchema = z.object({
   accessAudience: z.string().min(1).max(512).optional(),
   accessJwksUrl: httpsUrl.optional(),
   apiKeyAuthEnabled: enabled,
+  /** Mounts the public webhook ingress for automations. Off by default; the runner flag must match. */
+  automationsEnabled: enabled,
   apiKeyGatewayAccessAudience: z.string().min(1).max(512).optional(),
   apiKeyGatewayServiceSubject: z.string().regex(/^cf-service:[A-Za-z0-9_-]+$/).max(512).optional(),
   apiKeyGatewayPublicUrl: httpsUrl.optional(),
@@ -289,7 +308,7 @@ export const RunnerConfigSchema = z.object({
   typesafeEgress: z.enum(['on', 'off']).default('on'),
   // Decision Plane purposes the operator opted into. Empty (the default) keeps every path on its
   // deterministic behaviour; an enabled purpose still needs the owner's TypeSafe credential.
-  decisionPlanePurposes: z.array(ImplementedDecisionPurposeSchema).max(2)
+  decisionPlanePurposes: z.array(ImplementedDecisionPurposeSchema).max(3)
     .refine((values) => new Set(values).size === values.length, 'decision plane purposes must be unique')
     .default([]),
   // Concurrent toolbox containers per runner. Each one holds the executor memory, CPU, and pid bounds, so
@@ -314,6 +333,8 @@ export const RunnerConfigSchema = z.object({
   packagesBuildTimeoutMs: z.coerce.number().int().min(60_000).max(1_800_000).default(600_000),
   minFreeBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
   maxWorkspaceBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
+  // Repositories one multi-repository workspace may hold; they share the workspace's disk ceiling.
+  maxWorkspaceRepositories: z.coerce.number().int().min(1).max(MAX_WORKSPACE_REPOSITORIES_LIMIT).default(DEFAULT_MAX_WORKSPACE_REPOSITORIES),
   maxActiveWorkspacesPerOwner: z.coerce.number().int().min(1).max(64).default(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER),
   // An expired workspace stays recoverable this long before the reaper may close it; a Dashboard override
   // replaces it for workspaces opened afterwards. 0 closes clean expired workspaces on the next pass.
@@ -389,9 +410,32 @@ export const RunnerConfigSchema = z.object({
     /** The provider's longest grant, in seconds. Defaults to the documented Cloudflare maximum. */
     maxGrantSeconds: z.coerce.number().int().min(3_600).max(315_360_000).optional()
   }).strict().optional(),
-  agents: RunnerAgentsConfigSchema.optional()
+  agents: RunnerAgentsConfigSchema.optional(),
+  /** Admits webhook-triggered automation workflows. Off by default. */
+  automationsEnabled: enabled,
+  /** Instance-wide ceiling on automation workflows holding a workspace at once. */
+  automationsMaxConcurrentWorkflows: positiveBoundedInteger(16, 2),
+  /** Enables the owner-authored agent execution policies and the gate simulation. Off by default. */
+  agentPoliciesEnabled: enabled,
+  /** Durable agent run traces recorded by the runner. Off by default; the schema is created either way. */
+  agentTraces: AgentTracesConfigSchema,
+  /**
+   * Lets an owner-authored automation rule opt into brokered coding (edit, test, commit, push, pull
+   * request). Off by default; turning it off is also the kill switch for running coding workflows.
+   */
+  agentCodingEnabled: enabled,
+  /** Admits the lockfile-only package install executor for coding runs. Off by default; policy still decides. */
+  agentCodingPackageInstallEnabled: enabled,
+  /** Records the notification inbox and dispatches its channels. Off by default; the schema is created either way. */
+  notificationsEnabled: enabled
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
+  if (config.agentCodingEnabled && !(config.agentPoliciesEnabled && config.automationsEnabled)) {
+    context.addIssue({ code: 'custom', path: ['agentCodingEnabled'], message: 'AGENT_CODING_ENABLED requires AGENT_POLICIES_ENABLED and AUTOMATIONS_ENABLED' });
+  }
+  if (config.agentCodingPackageInstallEnabled && !config.agentCodingEnabled) {
+    context.addIssue({ code: 'custom', path: ['agentCodingPackageInstallEnabled'], message: 'AGENT_CODING_PACKAGE_INSTALL_ENABLED requires AGENT_CODING_ENABLED' });
+  }
   if (config.packagesMaxReleaseBytes > config.packagesMaxOwnerBytes) {
     context.addIssue({ code: 'custom', path: ['packagesMaxReleaseBytes'], message: 'PACKAGES_MAX_RELEASE_BYTES must not exceed PACKAGES_MAX_OWNER_BYTES' });
   }

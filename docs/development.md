@@ -102,6 +102,38 @@ The root `package.json` `overrides` pin a single React 19 copy across the
 workspace, because the docs site's VitePress dependencies would otherwise pull a
 second React and break hooks in the dashboard. `npm run docs:build` still runs
 in CI and tolerates the resulting peer warning.
+### Windows hosts
+
+The runner ships only as a Linux container, and local stdio mode is POSIX-only
+by default.
+Linux CI therefore runs every test. On a Windows host, tests that depend on
+POSIX behavior skip, and each skip is guarded by a comment that states the
+reason. A skipped test is a host limitation. A test that fails there is a
+regression unless it appears below as unexplained.
+
+| Skips on win32 | Reason |
+| --- | --- |
+| `apps/runner/test/skill-extension-workspace.test.ts` (whole file) | Workspace and repository skill tiers verify opened descriptors through `/proc/self/fd` |
+| `apps/runner/test/package-builder.test.ts`: release tree verification and the three apply builds that verify a release | Symlinks, POSIX mode and execute bits, setuid and sticky bits, and FIFOs |
+| `apps/runner/test/tree-digest.test.ts`: nested tree and multi-MiB file | Symlinks and POSIX mode bits |
+| `apps/runner/test/worker-close-check.test.ts`: newline worktree path | Windows file names cannot contain a newline |
+| `apps/api/test/local/multi-local-workspace-backend.test.ts`: two `pwd` tests | The local backend runs commands through `cmd.exe` |
+| `test/integration/mcp-local-multi-workspace.test.ts` (whole file) | The server refuses local mode on win32 unless `HARNESS_ALLOW_WIN32_STDIO=1` |
+| `test/integration/dynamic-model-profiles.test.ts`: four TLS tests | They need `openssl` on PATH or pre-generated fixtures |
+| `test/deploy-release-runtime.test.ts`, `test/upgrade-nginx-routes.test.ts`, `apps/runner/test/terminal-session-scripts.test.ts`, `test/git-transfer-helper-lease.test.ts`, `test/gh-helper-*.test.ts` | POSIX shell scripts |
+| `test/production-deploy-classify.test.ts`: the eight tests that run the release tip check and release CI request scripts | They run workflow scripts through `bash` with a POSIX `PATH` |
+
+The remaining symlink fixtures in the runner tests skip only when `symlink`
+fails, so they run on a Windows host with Developer Mode or elevation. The
+guards live in
+[`apps/runner/test/platform-support.ts`](../apps/runner/test/platform-support.ts).
+The nginx upgrade suite also refuses its test root when run as root, so in a
+root-only container run it as an unprivileged user.
+
+`apps/runner/test/terminal-dispatch.test.ts` and `apps/runner/test/mcp-event-service.test.ts`
+also fail on Windows, but no POSIX dependency explains it yet. They are not
+skipped. [#435](https://github.com/bestagentkits/cloud-harness-mcp/issues/435)
+tracks the root cause.
 
 ### Running local stdio mode
 
@@ -229,3 +261,53 @@ automated release, create and protect `dev`, and either seed the intended
 `v0.2.0` baseline tag or accept `1.0.0` as the first generated version. Branch
 rules must allow the repository's `GITHUB_TOKEN` to write these generated
 release commits.
+
+### Promoting `dev` to `main`
+
+Only `main` deploys production, so a fix that stays on `dev` is released as a
+beta and never reaches users. Promote `dev` regularly, and before marking any
+issue `shipped`:
+
+1. Branch from `origin/main`, then merge `origin/dev` into it with a merge
+   commit. Never squash or rebase a promotion: the merge records every `dev`
+   commit as reachable from `main`, which is how the next promotion and the
+   check below know what is already there.
+2. Resolve conflicts in the generated release metadata (versions in the
+   release assets listed in [`.releaserc.json`](../.releaserc.json), and
+   [`CHANGELOG.md`](../CHANGELOG.md)) to `main`'s side, keep `main`'s
+   `package-lock.json` unless dependencies changed, and resolve source
+   conflicts on their merits. Then run `npm run verify`.
+3. Open the pull request against `main`. Merging it is a production deploy and
+   needs owner authorization.
+
+After a promotion, this lists the `dev` changes still missing from `main`; it
+should print nothing:
+
+```bash
+git fetch origin main dev
+git log origin/main..origin/dev --no-merges --oneline | grep -v 'chore(release)'
+```
+
+semantic-release records each prerelease tag's channel in a per-tag git note
+and pushes the tag before the note. A prerelease tag whose note never reached
+the remote is invisible to the `dev` lane, which would recompute the same
+version and fail with `tag ... already exists` on every run. The release
+configuration therefore runs
+[`scripts/repair-release-channel-notes.mjs`](../scripts/repair-release-channel-notes.mjs)
+as its first verify step. semantic-release has already chosen the last release
+by then, so a run that restores a note stops before committing anything, and
+the next release run on that branch resumes at the next `-beta.N`. That next
+run starts after the next push to the branch passes CI, or when the stopped
+Release run is re-run while the branch tip is unchanged. The stopped run also
+opens semantic-release's failing-release issue, which the next successful
+release closes. The run that
+lost the note never reached its publish step, so the repaired tag has no GitHub
+release; its notes stay in `CHANGELOG.md` unless the owner creates that
+prerelease by hand.
+
+Release is a `workflow_run` workflow, so GitHub always runs the copy of
+[`release.yml`](../.github/workflows/release.yml) on the default branch, `main`.
+A change to that file reaches `dev` releases only after it lands on `main`;
+release behaviour that `dev` must pick up at once belongs in
+[`.releaserc.json`](../.releaserc.json) or the scripts it calls, which come
+from the released commit's own checkout.

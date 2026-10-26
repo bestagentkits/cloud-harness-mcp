@@ -40,6 +40,12 @@ Interactive shell, session, and Dashboard Terminal streams remain in-memory, whi
 and dependency graphs are durable in SQLite. Startup reconciles in-flight tasks
 from prior process boots to `FAILED` with `error_code: "RUNNER_RESTARTED"` while
 preserving completed task metadata and file logs.
+Startup also restarts each retained workspace executor. One that will not
+restart is replaced from its kept checkout; if that fails too, only that
+workspace moves to `EXPIRED_RECOVERABLE` for `workspace_recover` (or closes, if
+its checkout is gone), the runner logs a warning naming it, and startup
+continues for the others
+([troubleshooting](troubleshooting.md#containers-and-cleanup)).
 Workspace clones are operational, TTL-bound data and are deleted on
 close/expiry; they are not a durable source control remote or a backup.
 The same state database also owns the stable random runner-instance identity
@@ -95,7 +101,8 @@ one-off runner re-encryption entry point owned by
 the `secrets:rekey` package script or its compiled runner command.
 
 That command re-encrypts secret versions, workspace secret snapshots,
-downstream MCP OAuth grants and pending flows, and MCP Events webhook secrets. A grant is rewritten only while
+downstream MCP OAuth grants and pending flows, MCP Events webhook secrets, and
+webhook automation connection secrets. A grant is rewritten only while
 its generation is unchanged, so a concurrent token refresh is never overwritten.
 
 The command is interruptible and safe to resume; verify that it completes,
@@ -356,6 +363,38 @@ row exists unless data loss is explicitly allowed. A lossy downgrade discards
 every subscription and undelivered event; clients must subscribe again after a
 later upgrade, and nothing replays the lost events.
 
+## Webhook automation state
+
+Automation connections, rules, deliveries, workflows, and transitions live in
+additive, unversioned tables in the runner state database
+([`apps/runner/src/automation-schema.ts`](../apps/runner/src/automation-schema.ts)).
+An older runner ignores them, so a code-only rollback needs no data change, and
+the normal state backup covers them. Raw webhook payloads are never stored.
+Terminal workflows and deliveries are purged after the retention window in
+[`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
+
+To stop new runs, disable the connection (its deliveries then return `401`) or
+the rule (its queued workflows are cancelled) on the Dashboard. A workflow that
+already holds a workspace keeps running until it ends or is cancelled from its
+run page, which also cancels the agent and closes the workspace. Cancel running
+workflows before unsetting `AUTOMATIONS_ENABLED`: with the flag off the runner's
+engine does not tick, so an in-flight workflow is left until the flag returns
+and its workspace is reclaimed only by normal expiry. After a suspected secret leak, use **Rotate secret** on
+the connection and update the GitHub webhook at once: rotation has no grace
+window, so deliveries signed with the old secret return `401` until GitHub has
+the new one.
+
+Coding workflows add the `coding_actions` receipt table and coding columns on
+the workflow row, also additive. To stop coding at once, set
+`AGENT_CODING_ENABLED=false` and restart the runner: each running coding
+workflow fails with `CODING_DISABLED` at its next step, before anything more
+is published, and is cleaned up like any other workflow
+([configuration](configuration.md#coding-automations)). A workflow that failed
+with `EFFECT_UNKNOWN` stopped because GitHub could not confirm whether its push
+or pull request happened. Check the repository for its `agent/` branch and
+pull request before labelling the issue again; the harness never retries that
+step on its own.
+
 ## Model catalog state schema rollback
 
 The model catalog adds runner state schema v14: one table of last-good catalog
@@ -427,8 +466,9 @@ from configuration. After a release that ships or changes events:
 
 1. Deploy through the normal release path and confirm readiness.
 2. Confirm `server/discover` on the remote `/mcp` endpoint advertises
-   `capabilities.events` and that `events/list` returns the four
-   `cloudharness.*` events.
+   `capabilities.events` and that `events/list` returns every
+   `cloudharness.*` event in `MCP_EVENT_NAMES`
+   ([`packages/contracts/src/events-api.ts`](../packages/contracts/src/events-api.ts)).
 3. From ChatGPT with the Cloud Harness connector, subscribe to a task or agent
    event, so ChatGPT supplies its own callback URL and secret. Confirm the
    subscription appears in `GET /dashboard/api/v1/event-subscriptions` with

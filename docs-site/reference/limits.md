@@ -11,7 +11,7 @@ To prevent unbounded memory growth and buffer overflow attacks, Cloud Harness MC
 
 | Surface | Limit | Configurable Env Var |
 |---|---|---|
-| **Max File Read Size** | 256 KB (default 64 KB) | `files_read.limit` |
+| **Max File Read Size** | 1 MiB per call (default 64 KB; the dashboard reads at most 256 KB) | `files_read.limit`, `files_read.readAll` |
 | **Max Command Exec Output** | 1 MB | `exec_run` and `bash` buffer |
 | **Max Artifact Size** | 16 MB | `MAX_ARTIFACT_BYTES` |
 | **Total Principal Artifacts** | 128 MB | `MAX_PRINCIPAL_ARTIFACT_BYTES` |
@@ -19,6 +19,7 @@ To prevent unbounded memory growth and buffer overflow attacks, Cloud Harness MC
 | **Workspace Idle TTL** | 300s (5 min) | `WORKSPACE_IDLE_TTL_SECONDS` |
 | **Recoverable Grace** | 3600s (60 min) | `WORKSPACE_RECOVERABLE_GRACE_SECONDS` |
 | **Active Workspaces** | 3 per principal | `MAX_ACTIVE_WORKSPACES_PER_OWNER` |
+| **Repositories per Workspace** | 5 (at most 20) | `MAX_WORKSPACE_REPOSITORIES` |
 | **Max File List Entries** | 500 entries / page | `files_list.limit` |
 | **Max Active API Keys** | 10 per identity | Hard bound |
 | **Managed Package Release Size** | 512 MiB per release | `PACKAGES_MAX_RELEASE_BYTES` |
@@ -41,4 +42,4 @@ Every `agent_spawn` model request goes through the Model Gateway. Before sending
 - **Output** is reserved at the output cap the gateway sends upstream. The cap is lowered to what the remaining cost budget can pay for. Reasoning tokens count as output.
 - When the response ends, the gateway charges the usage the provider reported, including cache reads, cache writes, reasoning, and long-context price tiers. It never charges less than a cost the provider reports. Unused reservation is refunded. A request that fails, is cancelled, or reports no usage is charged its full reservation.
 
-A request that the remaining budget cannot cover is refused with `429 model_budget_exhausted`. All figures are gateway estimates, not a provider invoice. The exact reservation rules, surcharge, and pricing are owned by [`apps/model-gateway/src/budget.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/main/apps/model-gateway/src/budget.ts).
+A request that the remaining budget cannot cover is refused with `429 model_budget_exhausted`. The error envelope also carries the refusal code `budget_exceeded`, in `type` and at the start of the message, so agent logs and traces report the refusal as a `budget` error rather than as provider rate limiting (`rate_limit`). All figures are gateway estimates, not a provider invoice. The exact reservation rules, surcharge, and pricing are owned by [`apps/model-gateway/src/budget.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/main/apps/model-gateway/src/budget.ts).

@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   AgentProxyOperationSchema,
+  BROKERED_ONLY_PROXY_OPERATIONS,
   HarnessError,
   composeAgentBootstrapPrompt,
   resolveEffectivePricing,
@@ -44,6 +45,7 @@ import {
 } from './agent-protocol.js';
 import { DockerAgentLauncher, type AgentLaunchSpec, type AgentLauncher, type AgentRuntimeProcess } from './agent-launcher.js';
 import type { StateStore, WorkspaceRecord } from './state-store.js';
+import type { AgentTraceHooks } from './agent-trace-recorder.js';
 
 /** A profile whose cache prices are resolved to the concrete prices the agent reports. */
 type PricedAgentModelProfile = AgentModelProfile & {
@@ -53,6 +55,8 @@ type PricedAgentModelProfile = AgentModelProfile & {
   spendProfileKey: string;
   revisionId: string | null;
 };
+
+const BROKERED_ONLY: ReadonlySet<AgentProxyOperation> = new Set(BROKERED_ONLY_PROXY_OPERATIONS);
 
 /** How often, and after how long, open spend ledger rows are swept for settlement. */
 const SPEND_SWEEP_INTERVAL_MS = 60_000;
@@ -80,6 +84,8 @@ export type AgentToolExecutor = (input: {
   requestId: string;
   operation: AgentProxyOperation;
   toolInput: Record<string, unknown>;
+  /** The run's ledger usage when the request arrived, for budget re-checks at execution. */
+  usage: { inputTokens: number; outputTokens: number; costMicros: number };
   signal: AbortSignal;
 }) => Promise<RunnerResponse>;
 type RuntimeContext = {
@@ -118,6 +124,15 @@ export type AgentManagerDependencies = {
   modelProfiles?: ModelProfileStateRepository | undefined;
   spendLedger?: ModelSpendLedger | undefined;
   now?: (() => number) | undefined;
+  /** Durable trace recording; absent when agent traces are disabled. Its failures never fail an agent. */
+  traceRecorder?: AgentTraceHooks | undefined;
+  /** Resolves the automation workflow that owns a workspace, so its runs' traces carry the workflow id. */
+  workflowFor?: ((ownerId: string, workspaceId: string) => string | null) | undefined;
+  /**
+   * Whether this workspace's agents may be granted the brokered-only proxy operations (commands and Git
+   * reads). Absent means never: only a coding workflow's broker can execute them.
+   */
+  permitsBrokeredOperations?: ((ownerId: string, workspaceId: string) => boolean) | undefined;
 };
 
 export class AgentManager {
@@ -305,6 +320,9 @@ export class AgentManager {
     if (tools.some((operation) => !profile.maxProxyOperations.includes(operation))) {
       throw new HarnessError('INVALID_INPUT', 'requested proxy operation exceeds the selected profile');
     }
+    if (tools.some((operation) => BROKERED_ONLY.has(operation)) && this.dependencies.permitsBrokeredOperations?.(ownerId, workspace.id) !== true) {
+      throw new HarnessError('FORBIDDEN', 'exec_run, git_status and git_diff are available only to a coding workflow agent', 403, false);
+    }
     const budget: AgentBudget = {
       ttlSeconds: input.ttlSeconds as number,
       maxOutputBytes: input.maxOutputBytes as number,
@@ -364,6 +382,23 @@ export class AgentManager {
     if (reservation.replayed) {
       return success('Agent spawn replayed', spawnData(reservation.record, true));
     }
+    const parentAgentId = reservation.record.parentAgentId;
+    this.traced(reservation.record, (traces) => traces.begin({
+      agentId: reservation.record.id,
+      generation: reservation.record.generation,
+      principalId: ownerId,
+      workspaceId: workspace.id,
+      parent: parentAgentId
+        ? { agentId: parentAgentId, generation: this.repository.findAgent(ownerId, workspace.id, parentAgentId)?.generation ?? 1 }
+        : null,
+      profileId: profile.spendProfileKey.replace(/^(?:profile|static):/u, ''),
+      profileRevisionId: profile.revisionId,
+      workflowId: this.dependencies.workflowFor?.(ownerId, workspace.id) ?? null,
+      at: now
+    }));
+    this.traced(reservation.record, (traces) => traces.budget(traceKey(reservation.record), {
+      phase: 'reserve', reservedCostMicros: budget.maxCostMicros, at: now
+    }));
     const repositoryContext = (input.repositoryContext as AgentRepositoryContext | undefined) ?? 'codex';
     const launch = this.launch(reservation.record, prompt, profile, repositoryContext, dashboardManaged)
       .finally(() => this.launches.delete(reservation.record.id));
@@ -452,6 +487,7 @@ export class AgentManager {
       leaseMayExist = true;
       this.spendLedger.markIssuing(record.gatewayLeaseId);
       let grant: Awaited<ReturnType<AgentGatewayControl['issue']>>;
+      const issueStartedAt = this.now();
       try {
         grant = await this.gateway.issue({
           leaseId: record.gatewayLeaseId,
@@ -464,9 +500,16 @@ export class AgentManager {
         });
       } catch (error) {
         // An explicit refusal means no lease exists; any other failure may have issued one.
-        if (isDefiniteIssueRefusal(error)) this.spendLedger.releaseRefusedIssue(record.gatewayLeaseId, this.now());
+        const refused = isDefiniteIssueRefusal(error);
+        this.traced(record, (traces) => traces.budget(traceKey(record), {
+          phase: 'lease_issue', outcome: refused ? 'refused' : 'unknown', startedAt: issueStartedAt, endedAt: this.now()
+        }));
+        if (refused) this.spendLedger.releaseRefusedIssue(record.gatewayLeaseId, this.now());
         throw error;
       }
+      this.traced(record, (traces) => traces.budget(traceKey(record), {
+        phase: 'lease_issue', outcome: 'issued', startedAt: issueStartedAt, endedAt: this.now()
+      }));
       if (grant.gatewayBootId !== undefined) this.spendLedger.recordGatewayBoot(record.gatewayLeaseId, grant.gatewayBootId);
       const runtime = await this.launcher.launch(spec);
       const lease = grant.lease;
@@ -651,6 +694,7 @@ export class AgentManager {
   private async onRecord(context: RuntimeContext, output: AgentOutputRecord): Promise<void> {
     if (output.type === 'event') {
       this.appendLogOrLimit(context.record, 'event', JSON.stringify(output.event));
+      this.traced(context.record, (traces) => traces.observeEvent(traceKey(context.record), output.event, this.now()));
       return;
     }
     if (output.type === 'usage') {
@@ -717,15 +761,21 @@ export class AgentManager {
       runnerEpoch: this.epoch,
       now: startedAt
     });
+    this.traced(record, (traces) => traces.toolRequested(traceKey(record), {
+      requestId: output.requestId, toolCallId: output.toolCallId, operation: output.operation, input: raw
+    }, startedAt));
     const controller = new AbortController();
     const completion = (async () => {
       let isOk = false;
       try {
         const toolInput = TOOL_SCHEMA_BY_NAME[output.operation].parse({ ...raw, workspaceId: record.workspaceId }) as Record<string, unknown>;
+        const usage = this.repository.usage(record.ownerId, record.workspaceId, record.id, record.generation);
         const result = await this.dependencies.toolExecutor({
           ownerId: record.ownerId, workspaceId: record.workspaceId, workspaceGeneration: record.workspaceGeneration,
           agentId: record.id, agentGeneration: record.generation, requestId: output.requestId,
-          operation: output.operation, toolInput, signal: controller.signal
+          operation: output.operation, toolInput,
+          usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costMicros: usage.costMicros },
+          signal: controller.signal
         });
         this.requireRunnable(record);
         isOk = result.ok;
@@ -758,6 +808,7 @@ export class AgentManager {
         this.repository.addUsage(record.ownerId, record.workspaceId, record.id, record.generation, {
           toolTimeMs: Math.max(0, this.now() - startedAt)
         });
+        this.traced(record, (traces) => traces.toolCompleted(traceKey(record), output.requestId, { ok: isOk }, this.now()));
       }
     })();
     context.proxy.set(output.requestId, { controller, completion });
@@ -805,6 +856,7 @@ export class AgentManager {
       const drainErrors: unknown[] = [];
       try {
         const revocation = revocationOf(await this.gateway.revokeAndDrain(record.gatewayLeaseId));
+        this.traced(record, (traces) => traces.settled(traceKey(record), revocation?.settlement, this.now()));
         this.spendLedger.settle(record.gatewayLeaseId, revocation, this.now());
       } catch (error) {
         // The ledger row stays open, so the cleanup retry or the spend sweep settles it later.
@@ -844,6 +896,11 @@ export class AgentManager {
       });
       if (!transitioned && !terminalStatuses.has(this.requireAgent(record.ownerId, record.workspaceId, record.id).status)) {
         throw new HarnessError('CONFLICT', 'agent terminal transition lost its lifecycle fence', 409, true);
+      }
+      if (transitioned) {
+        this.traced(record, (traces) => traces.finish(traceKey(record), {
+          terminal, reason, ledger: this.ledgerTotals(record), at: this.now()
+        }));
       }
       this.cleanupTargets.delete(record.id);
     } catch (error) {
@@ -900,6 +957,7 @@ export class AgentManager {
       expectedStatuses: [record.status], status: 'CANCELLING', now: this.now(), cleanupReason: 'runner restart reconciliation'
     });
     if (!current) return;
+    this.traced(current, (traces) => traces.markIncomplete(traceKey(current), 'runner_restart', this.now()));
     await this.cleanup(current, undefined, 'runner restart interrupted agent execution', 'INTERRUPTED');
   }
 
@@ -980,19 +1038,56 @@ export class AgentManager {
     }
   }
 
-  private reconcileUsage(context: RuntimeContext, usage: { input: number; output: number; cost: number }): void {
+  private reconcileUsage(
+    context: RuntimeContext,
+    usage: { input: number; output: number; cost: number; cacheRead?: number | undefined; cacheWrite?: number | undefined }
+  ): void {
     const current = {
       input: usage.input,
       output: usage.output,
       costMicros: Math.max(0, Math.floor(usage.cost * 1_000_000))
     };
-    this.repository.addUsage(context.record.ownerId, context.record.workspaceId, context.record.id, context.record.generation, {
+    const delta = {
       inputTokens: Math.max(0, current.input - context.lastUsage.input),
       outputTokens: Math.max(0, current.output - context.lastUsage.output),
-      costMicros: Math.max(0, current.costMicros - context.lastUsage.costMicros),
+      costMicros: Math.max(0, current.costMicros - context.lastUsage.costMicros)
+    };
+    this.repository.addUsage(context.record.ownerId, context.record.workspaceId, context.record.id, context.record.generation, {
+      ...delta,
       wallTimeMs: Math.max(0, this.now() - context.lastUsage.wallAt)
     });
     context.lastUsage = { ...current, wallAt: this.now() };
+    // The trace receives exactly the deltas charged to the usage ledger, so the two reconcile.
+    this.traced(context.record, (traces) => traces.observeUsage(traceKey(context.record), {
+      ...delta, cacheReadTotal: usage.cacheRead, cacheWriteTotal: usage.cacheWrite
+    }, this.now()));
+  }
+
+  /**
+   * Runs one trace hook. A trace failure is contained here: it downgrades the trace to partial
+   * coverage and is never allowed to change the agent's lifecycle.
+   */
+  private traced(record: { id: string; generation: number }, hook: (traces: AgentTraceHooks) => void): void {
+    const traces = this.dependencies.traceRecorder;
+    if (!traces) return;
+    try {
+      hook(traces);
+    } catch (error) {
+      try {
+        traces.degrade(traceKey(record), error);
+      } catch {
+        // The recorder itself is unavailable; the agent continues untraced.
+      }
+    }
+  }
+
+  private ledgerTotals(record: AgentRecord): { inputTokens: number; outputTokens: number; costMicros: number } | null {
+    try {
+      const usage = this.repository.usage(record.ownerId, record.workspaceId, record.id, record.generation);
+      return { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costMicros: usage.costMicros };
+    } catch {
+      return null;
+    }
   }
 
   private appendLogOrLimit(record: AgentRecord, type: string, content: string): void {
@@ -1000,6 +1095,7 @@ export class AgentManager {
       this.repository.appendLog(record.ownerId, record.workspaceId, record.id, record.generation, type, content.slice(0, 65_536), this.now());
     } catch (error) {
       if (error instanceof HarnessError && error.code === 'LIMIT_EXCEEDED') {
+        this.traced(record, (traces) => traces.budget(traceKey(record), { phase: 'limit', limit: 'output_bytes', at: this.now() }));
         void this.cancelOne(record, error.message, 'LIMIT_EXCEEDED');
         return;
       }
@@ -1146,6 +1242,10 @@ export class AgentManager {
       }
     };
   }
+}
+
+function traceKey(record: { id: string; generation: number }): { agentId: string; generation: number } {
+  return { agentId: record.id, generation: record.generation };
 }
 
 function success(message: string, data: unknown, truncated = false): RunnerResponse {

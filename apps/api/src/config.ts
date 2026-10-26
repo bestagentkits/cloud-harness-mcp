@@ -48,6 +48,7 @@ export function loadApiConfig(): ApiConfig {
     deweeWebchatSecret: secret('DEWEE_WEBCHAT_SECRET') || undefined,
     deweeTenantId: environment('DEWEE_TENANT_ID') || undefined,
     deweeAgentId: environment('DEWEE_AGENT_ID') || undefined,
-    deweeChatTimeoutMs: environment('DEWEE_CHAT_TIMEOUT_MS') || undefined
+    deweeChatTimeoutMs: environment('DEWEE_CHAT_TIMEOUT_MS') || undefined,
+    automationsEnabled: environment('AUTOMATIONS_ENABLED')
   });
 }

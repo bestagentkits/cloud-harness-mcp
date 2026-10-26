@@ -13,6 +13,7 @@ The Workspaces panel lists all currently active and recently closed workspace en
 - **TTL Countdown:** Inspect remaining wall-clock TTL and idle timer before automatic cleanup.
 - **Resource Details:** Check memory limits, container status, and the effective network profile (`dependency-access` or `network-none`).
 - **Force Close:** Immediately terminate a stuck container and permanently purge all temporary workspace files from the host disk.
+- **Multi-repository workspaces:** A workspace opened over MCP with several repositories is titled by its primary repository and shows a repository count; search also matches its aliases. The detail view lists each repository's alias, checkout path, ref, and **Primary** or **Read-only** badge. The **Open Workspace** form opens one repository; use `workspace_open` with `repositories` for more.
 
 ## Opening Workspaces
 
@@ -53,6 +54,10 @@ dashboard can read: a lease inside its threshold, a failed workspace, a quaranti
   sessions whose output is read-only and bounded. See [Runtime](#runtime).
 - **Terminal** opens an interactive shell inside the workspace; see
   [Terminal](/dashboard/terminal).
+- **Files** browses, edits, patches and deletes files. The editor loads the first
+  64 KB of a file. For a larger file it shows how much was loaded, makes the editor
+  read-only and hides **Save file**, so a save can never cut the file short; use
+  **Apply text patch**, which edits the whole file on the server.
 - **Git** keeps **Finalize** as the happy path and stays collapsed for everything else:
   branch, ahead/behind, staged/modified/untracked counts, the changed-file list, a
   bounded staged or unstaged diff, recent commits, worktrees, and advanced operations
@@ -62,12 +67,52 @@ dashboard can read: a lease inside its threshold, a failed workspace, a quaranti
 - **Automation** groups hooks by the lifecycle event that runs them
   (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`) beside an
   ordered pipeline, lists the resolved skills, and offers a guarded skill-script runner.
+  Pick a skill and name one of its scripts (for example `run.sh`); the run is pinned to
+  the skill digest shown in the list. Each run then asks you to approve it: the dialog
+  names the skill, script and digest, and **Approve and run** grants that one run and
+  executes it in a disposable helper container. The approval expires after about a
+  minute and is used up by the run, even one that fails, so a later run asks again.
+  **Cancel** rejects the approval so it does not wait on the Approvals page. If the skill changed
+  since the list loaded, the run is refused; reload the tab and try again. When the run
+  ends, its exit code, where it ran, the signal that stopped it on a timeout, and its
+  bounded, redacted output appear below the
+  form, including for a script that exits with an error. **Run hook** runs one hook from
+  the repository manifest by name, after a confirmation, against the hook manifest digest
+  the page rendered; a manifest that changed since is refused. A manual run does not
+  activate the hook for its lifecycle event.
 - **Deploy** lists repository-defined deployment targets with their last reported result,
   duration and failure detail; running one asks for confirmation because deployments act
   outside the sandbox.
 
 The sections are contextual: they never appear as rail entries, because a workspace
 capability is not a global destination.
+
+## Repository explorer
+
+A multi-repository workspace adds a **Repositories** panel to **Summary**. Each repository
+shows its alias, `owner/name`, ref, checkout path, **Primary** or **Read-only** badges, its
+branch, whether it has uncommitted changes, and how many commits are unpushed or behind
+its upstream, with links that open its **Files**, **Git**, or **Terminal** view. The
+dashboard reads this status from inside the executor, so it appears only while the
+workspace is active. If a checkout cannot be read, that repository shows **Status
+unavailable** rather than looking clean. A branch with no upstream shows **No upstream
+branch** instead of "Nothing unpushed".
+
+**Files**, **Git**, and **Terminal** show a **Repository** selector above the view, and
+the choice stays in the address (`?repository=<alias>`), so links and reloads keep it:
+
+- **Files** browses and edits inside the selected repository, or the workspace root
+  when **Workspace root** is chosen.
+- **Git** needs a repository: until you choose one it shows **Choose a repository**
+  instead of defaulting to the primary. Every read and operation (fetch, pull,
+  checkout, branch, merge, rebase, worktrees) acts on the selected repository.
+- **Terminal** opens new sessions in `repos/<alias>`, and the re-attach list shows the
+  directory of each session that did not start at the workspace root.
+- **Finalize** commits one repository. In a multi-repository workspace the dialog asks
+  which one, preselecting the repository of the current **Files**, **Git**, or
+  **Terminal** view.
+
+A single-repository workspace shows no selector and behaves exactly as before.
 
 ## Runtime
 

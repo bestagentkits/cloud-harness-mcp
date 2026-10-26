@@ -1,8 +1,8 @@
 import express, { Router, type NextFunction, type Response } from 'express';
-import { InstanceSettingsUpdateInputSchema, OAuthGrantSettingsUpdateInputSchema, TOOL_SCHEMA_BY_NAME, type ApiConfig, type RunnerOperation, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
+import { InstanceSettingsUpdateInputSchema, OAuthGrantSettingsUpdateInputSchema, RepositorySelectorSchema, TOOL_SCHEMA_BY_NAME, type ApiConfig, type RunnerOperation, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { principalFromAuthInfo } from './auth.js';
-import { agentNeedsAttention, buildActivityProjection, buildMetricsProjection, buildOverviewProjection, buildReliabilityProjection, METRIC_WINDOWS, mapDashboardData, sendRunnerResponse, type DashboardResponseOperation } from './dashboard-response.js';
+import { agentNeedsAttention, buildActivityProjection, buildRepositoryExplorerProjection, buildMetricsProjection, buildOverviewProjection, buildReliabilityProjection, METRIC_WINDOWS, mapDashboardData, sendRunnerResponse, type DashboardResponseOperation } from './dashboard-response.js';
 import { dashboardSecurity, requireJson, SKILL_ARCHIVE_PATH } from './dashboard-security.js';
 import { createDashboardSessions } from './dashboard-session.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
@@ -11,6 +11,7 @@ import { registerDashboardDeweeRoutes } from './dashboard-dewee-router.js';
 import { PathIdMismatchError, withPathIds } from './dashboard-path-ids.js';
 import { registerDashboardGatewayRoutes } from './dashboard-gateway-router.js';
 import { registerDashboardTerminalRoutes } from './dashboard-terminal-router.js';
+import { registerDashboardTraceRoutes } from './dashboard-traces-router.js';
 import type { McpGatewayService } from './mcp-gateway/service.js';
 import { serverVersion } from './version.js';
 
@@ -54,6 +55,16 @@ const agentStatus = z.enum(['SPAWNING', 'RUNNING', 'CANCELLING', 'SUCCEEDED', 'F
 const pageQuery = z.object({ cursor: z.string().max(256).optional(), limit: z.coerce.number().int().min(1).max(100).default(100) });
 const fileQuery = pageQuery.extend({ path: z.string().min(1).max(1_024).default('.') });
 const readQuery = z.object({ path: z.string().min(1).max(1_024), offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(262_144).default(65_536) });
+const repositoriesQuery = z.object({ status: z.enum(['true', 'false']).default('true') });
+
+/**
+ * The checkout a read is scoped to in a multi-repository workspace, validated with the contract's own
+ * selector before it reaches the runner. Mutations carry it in the body, where the operation schema
+ * applies the same selector. Absent means the workspace tree root, exactly as before.
+ */
+function repositoryScope(query: DashboardRequest['query']): { repositoryId?: string } {
+  return query.repositoryId === undefined ? {} : { repositoryId: RepositorySelectorSchema.parse(query.repositoryId) };
+}
 
 function principal(request: DashboardRequest, response: Response): RunnerPrincipalSelector | undefined {
   const selected = principalFromAuthInfo(request.auth);
@@ -125,6 +136,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   if (gateway) registerDashboardGatewayRoutes(router, gateway, principal, config);
   registerDashboardTerminalRoutes(router, runner, principal, config.requestTimeoutMs);
   registerDashboardDeweeRoutes(router, config, principal);
+  registerDashboardTraceRoutes(router, runner, principal);
 
   router.get('/api/v1/profile', (request: DashboardRequest, response) => {
     const selected = principal(request, response);
@@ -301,11 +313,31 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
       sendRunnerResponse(response, 'workspace_detail', await runner.callInternal('workspace_detail', { workspaceId: workspaceId.parse(request.params.workspaceId) }, selected));
     } catch (error) { next(error); }
   });
+  // The repository explorer. The registry read is metadata only; the per-checkout status runs one
+  // Git read per repository in the executor, so it is skipped for a single-repository workspace (its
+  // Git tab already reports that state) and when the caller only needs the selector (`status=false`).
+  // A failed status read degrades to the registry with `statusAvailable: false` instead of failing.
+  router.get('/api/v1/workspaces/:workspaceId/repositories', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      const id = workspaceId.parse(request.params.workspaceId);
+      const { status } = repositoriesQuery.parse(request.query);
+      const listed = await runner.call('workspace_repos_list', input('workspace_repos_list', { workspaceId: id }), selected);
+      if (!listed.ok) { sendRunnerResponse(response, 'workspace_repos_list', listed); return; }
+      const registry = mapDashboardData('workspace_repos_list', listed.data);
+      const statusResult = status === 'true' && registry.multiRepository === true
+        ? await runner.call('workspace_repo_status', input('workspace_repo_status', { workspaceId: id }), selected).catch(() => undefined)
+        : undefined;
+      const statuses = statusResult?.ok ? mapDashboardData('workspace_repo_status', statusResult.data) : undefined;
+      response.json({ data: buildRepositoryExplorerProjection(registry, statuses) });
+    } catch (error) { next(error); }
+  });
   router.get('/api/v1/workspaces/:workspaceId/files', async (request: DashboardRequest, response, next) => {
-    await call(runner, request, response, next, 'files_list', { workspaceId: workspaceId.parse(request.params.workspaceId), ...fileQuery.parse(request.query) });
+    await call(runner, request, response, next, 'files_list', { workspaceId: workspaceId.parse(request.params.workspaceId), ...repositoryScope(request.query), ...fileQuery.parse(request.query) });
   });
   router.get('/api/v1/workspaces/:workspaceId/files/content', async (request: DashboardRequest, response, next) => {
-    await call(runner, request, response, next, 'files_read', { workspaceId: workspaceId.parse(request.params.workspaceId), ...readQuery.parse(request.query) });
+    await call(runner, request, response, next, 'files_read', { workspaceId: workspaceId.parse(request.params.workspaceId), ...repositoryScope(request.query), ...readQuery.parse(request.query) });
   });
   router.put('/api/v1/workspaces/:workspaceId/files/content', mutation('files_write'));
   router.patch('/api/v1/workspaces/:workspaceId/files/content', mutation('files_apply_patch'));
@@ -379,12 +411,13 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   // Git and worktrees. Reads are bounded; mutations keep the contract's own fencing
   // (identity, expected head, constrained ref arguments) and confirm in the UI.
   router.get('/api/v1/workspaces/:workspaceId/git/status', async (request: DashboardRequest, response, next) => {
-    await call(runner, request, response, next, 'git_status', { workspaceId: workspaceId.parse(request.params.workspaceId) });
+    await call(runner, request, response, next, 'git_status', { workspaceId: workspaceId.parse(request.params.workspaceId), ...repositoryScope(request.query) });
   });
 
   router.get('/api/v1/workspaces/:workspaceId/git/diff', async (request: DashboardRequest, response, next) => {
     await call(runner, request, response, next, 'git_diff', {
       workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...repositoryScope(request.query),
       staged: request.query.staged === 'true',
       ...(typeof request.query.path === 'string' ? { path: request.query.path } : {})
     });
@@ -393,12 +426,13 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   router.get('/api/v1/workspaces/:workspaceId/git/log', async (request: DashboardRequest, response, next) => {
     await call(runner, request, response, next, 'git_log', {
       workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...repositoryScope(request.query),
       ...(typeof request.query.limit === 'string' ? { limit: z.coerce.number().int().min(1).max(500).parse(request.query.limit) } : {})
     });
   });
 
   router.get('/api/v1/workspaces/:workspaceId/worktrees', async (request: DashboardRequest, response, next) => {
-    await call(runner, request, response, next, 'worktrees_list', { workspaceId: workspaceId.parse(request.params.workspaceId) });
+    await call(runner, request, response, next, 'worktrees_list', { workspaceId: workspaceId.parse(request.params.workspaceId), ...repositoryScope(request.query) });
   });
 
   const gitMutation = (operation: 'git_fetch' | 'git_pull' | 'git_checkout' | 'git_branch' | 'git_merge' | 'git_rebase' | 'worktrees_create' | 'worktrees_remove') => {

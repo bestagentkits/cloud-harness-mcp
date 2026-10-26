@@ -26,7 +26,7 @@ vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
 }));
 
 import type * as GitHubAppBroker from '../src/github-app-broker.js';
-import { WorkspaceService } from '../src/workspace-service.js';
+import { WorkspaceService, gitTransferVolumes } from '../src/workspace-service.js';
 
 const temporaryDirectories: string[] = [];
 afterEach(() => {
@@ -88,6 +88,46 @@ describe('remote Git credential boundary', () => {
     }
   });
 
+
+  it('mounts each transfer helper on its own transfer repository, never the whole workspace', async () => {
+    const { workspaceId, store, service } = fixture('d');
+    try {
+      const workspacePath = store.byId(workspaceId)!.workspacePath;
+      await service.execute('owner', 'git_push', { workspaceId, remote: 'origin', forceWithLease: false });
+      await service.execute('owner', 'git_fetch', { workspaceId, remote: 'origin', branch: 'main' });
+      const helperCalls = docker.runDocker.mock.calls.map(([args]) => args).filter((args) => args.includes('/opt/harness/git-transfer-helper.sh'));
+      const volumes = (args: string[]) => args.flatMap((value, index) => args[index - 1] === '--volume' ? [value] : []);
+      const byMode = (mode: string) => helperCalls.find((args) => args[args.indexOf('executor') + 1] === mode)!;
+      const transferOf = (args: string[]) => args[args.indexOf('executor') + 4]!;
+      for (const args of helperCalls) expect(volumes(args).some((volume) => volume.startsWith(`${workspacePath}:`))).toBe(false);
+
+      const staged = transferOf(byMode('stage-push'));
+      const stagedDirectory = staged.slice(0, -'/repository.git'.length);
+      const hostOf = (directory: string) => `${workspacePath}${directory.slice('/job'.length)}`;
+      expect(staged).toMatch(/^\/job\/git-transfer-[0-9a-f]{24}\/repository\.git$/);
+      expect(transferOf(byMode('push'))).toBe(staged);
+      expect(volumes(byMode('stage-push'))).toEqual([`${workspacePath}/repo:/job/repo:ro`, `${hostOf(stagedDirectory)}:${stagedDirectory}:rw`]);
+      expect(volumes(byMode('push'))).toEqual([`${hostOf(stagedDirectory)}:${stagedDirectory}:rw`]);
+
+      const fetched = transferOf(byMode('fetch'));
+      const fetchedDirectory = fetched.slice(0, -'/repository.git'.length);
+      expect(fetchedDirectory).not.toBe(stagedDirectory);
+      expect(volumes(byMode('fetch'))).toEqual([`${hostOf(fetchedDirectory)}:${fetchedDirectory}:rw`]);
+      expect(volumes(byMode('import'))).toEqual([`${workspacePath}/repo:/job/repo:rw`, `${hostOf(fetchedDirectory)}:${fetchedDirectory}:ro`]);
+      expect(JSON.stringify(volumes(byMode('import')))).not.toContain(stagedDirectory);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('binds the checkout tree root, never a scoped checkout path the executor could swap for a symlink', () => {
+    for (const mode of ['fetch', 'import', 'stage-push', 'inspect', 'push'] as const) {
+      const sources = gitTransferVolumes(mode, '/jobs/ws_a', 'git-transfer-x').filter((value) => value !== '--volume').map((value) => value.split(':')[0]);
+      for (const source of sources) expect(['/jobs/ws_a/repo', '/jobs/ws_a/git-transfer-x']).toContain(source);
+    }
+    // An inspection only reads the staged clone, so it mounts that alone and read-only.
+    expect(gitTransferVolumes('inspect', '/jobs/ws_a', 'git-transfer-x')).toEqual(['--volume', '/jobs/ws_a/git-transfer-x:/job/git-transfer-x:ro']);
+  });
 
   it('orchestrates pull as credentialed fetch plus uncredentialed rebase inside the executor', async () => {
     const { workspaceId, store, service } = fixture('b');

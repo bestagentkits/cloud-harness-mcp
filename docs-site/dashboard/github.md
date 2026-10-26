@@ -104,7 +104,11 @@ issue and pull-request permissions cannot mint an action-scoped token.
    - **GitHub App name:** `Cloud-Harness-<YourName>` (must be globally unique across GitHub).
    - **Homepage URL:** `https://harness.agentkit.best` (or your repository URL).
    - **Callback URL:** Leave empty (unless using Access SSO OAuth redirect).
-   - **Setup URL:** Leave empty.
+   - **Setup URL:** `https://<your-dashboard-domain>/dashboard/integrations/github`, with
+     **Redirect on setup** checked. GitHub returns here after installation so the
+     dashboard can finish connecting the installation. An App registered earlier with
+     `/dashboard/github` still works; that path redirects here and keeps the setup
+     callback parameters.
 4. **Webhook:**
    - Uncheck **Active** under the Webhook section (Cloud Harness does not require webhooks).
 5. **Repository permissions:**

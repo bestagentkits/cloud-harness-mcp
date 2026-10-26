@@ -86,7 +86,8 @@ site under `/etc/cloud-harness-mcp/nginx-backups/`, installs the two
 `/mcp-api-key/gateway` locations, and the streaming `^~ /mcp/workspaces/` prefix
 location for the workspace-bound MCP endpoint, and the exact
 `/dashboard/mcp-oauth/callback` location that keeps the downstream MCP OAuth
-callback's one-time query out of the access log, when they are missing, validates
+callback's one-time query out of the access log, and the `^~ /integrations/webhooks/`
+prefix location for webhook automations, when they are missing, validates
 with `nginx -t`, and reloads nginx. Existing routes
 must match the managed blocks exactly after comments and blank lines are
 removed; otherwise the command fails closed without changing the site, with a
@@ -100,7 +101,8 @@ by hand, then rerun the command. Exit status `10` is the same refusal for an
 unmanaged route to `127.0.0.1:3100/mcp-api-key/` that is not the managed
 `/mcp-api-key/gateway` block. Exit status `11` is the same refusal for an
 existing route mentioning `/dashboard/mcp-oauth` that is not the managed
-callback block. A
+callback block, and `12` for an existing route mentioning `/integrations/` that
+is not the managed webhook block. A
 failed validation or reload restores the exact backup and attempts to reload
 it. The operation is idempotent. Do not use bootstrap for this upgrade.
 
@@ -325,6 +327,33 @@ Record the exact release SHA, Access application identifiers/audiences, Worker
 deployment, hostnames, and sanitized results separately. Never record either
 the key or service-token values. The Worker route can be removed independently;
 the OAuth/dashboard lane remains available.
+
+### Webhook automations rollout
+
+Webhook automations are off until `AUTOMATIONS_ENABLED` is set for both the API
+and the runner ([configuration](configuration.md#webhook-automations)). The
+release's nginx upgrade installs the `/integrations/webhooks/` location whether
+or not the feature is enabled; with the feature off the API does not mount the
+route.
+
+In Access mode the hostname-wide application would send GitHub's deliveries to
+a login page, and GitHub cannot present an Access credential. Add a separate
+Self-hosted Access application scoped to the path
+`<public-host>/integrations/webhooks/` whose only policy is **Bypass**, so
+Access's more specific path match exempts only that prefix. Do not widen the
+bypass to the hostname, `/dashboard`, or `/mcp`: the per-connection signature
+the runner verifies is the authentication for this path and no other. The
+reasoning is in the [security model](security-model.md#webhook-automation-ingress).
+
+After deploying with the feature enabled, create a connection on the Dashboard
+Automations page, copy its webhook URL and one-time secret into a GitHub
+repository webhook (content type `application/json`, the **Issues** and/or
+**Pull requests** events), and confirm GitHub's `ping` delivery is answered
+`202` and listed as ignored. Disable the feature by cancelling running
+workflows ([operations](operations.md#webhook-automation-state)), then unsetting
+the variable on both services and redeploying; the stored connections, rules, and history stay
+in the state database. Remove the Access bypass application when the feature is
+retired.
 
 ## Deploy a release
 

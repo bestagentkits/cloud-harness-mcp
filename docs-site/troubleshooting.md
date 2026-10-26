@@ -29,6 +29,8 @@ docker compose --profile images build executor-image
 **Cause:** The workspace reached its wall-clock lifetime or idle timeout (15 and 5 minutes by default; the operator can change both in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle) for workspaces opened afterwards).
 **Fix:** Workspaces are ephemeral by design. While the workspace is `EXPIRED_RECOVERABLE`, `workspace_recover` restores or exports its work. Otherwise re-open a workspace using `workspace_open` with a fresh idempotency key.
 
+If the workspace `error` starts `executor reconciliation failed during startup:`, the workspace did not time out: its executor could not be restarted or rebuilt after a runner restart. Other workspaces are unaffected. During the recoverable grace its checkout is kept, so `workspace_recover` rebuilds the executor once the cause in the message is fixed; afterwards it is auto-closed like any expired workspace.
+
 ---
 
 ### 4. API Key Denied (`401 Unauthorized`)
@@ -106,13 +108,13 @@ Non-browser clients keep receiving the compact `{"error":"authentication_failed"
 ---
 
 ### 10. `DEPENDENCY_EGRESS_UNAVAILABLE` on `workspace_open` (HTTP 503)
-**Cause:** The effective network profile is `dependency-access` — the shipped default — but the Linux host firewall is not provisioned, or its rules have drifted, so the runner fails the open closed instead of silently downgrading to `network-none`.
+**Cause:** The effective network profile is `dependency-access` — the shipped default — but the Linux host firewall is not provisioned, or its rules have drifted, so the runner fails the open closed instead of silently downgrading to `network-none`. When another host service such as Tailscale only inserts its own jump ahead of a managed one (for example `-A INPUT -j ts-input`), the runner moves the managed jump back to the top and continues, logging a warning. Every attestation does this, including the Settings readiness check, so a Tailscale host in its default netfilter mode is corrected again each time tailscaled re-asserts its rules; this error therefore means the managed rules are missing or changed.
 **Fix:**
 1. Provision the host firewall on the Docker host:
 ```bash
 bash deploy/scripts/setup-dependency-firewall.sh
 ```
-2. Confirm **Egress readiness** reports `Ready` on the dashboard [Settings](/dashboard/settings) page.
+2. Confirm **Egress readiness** reports `Ready` on the dashboard [Settings](/dashboard/settings) page. If it still reports a rule-order reason that names a foreign chain, inspect `sudo iptables -S INPUT`, `sudo iptables -S FORWARD`, and `sudo iptables -S DOCKER-USER`; on a Tailscale host, `sudo tailscale set --netfilter-mode=nodivert` stops tailscaled from inserting its jumps at the head of those chains, but then you must add the `ts-input` and `ts-forward` jumps yourself, after the managed jumps, or Tailscale's own filtering stops applying.
 3. Open the workspace again with a fresh idempotency key. The failed attempt kept its key with a `FAILED` status, and replaying that key returns the failed record without retrying the attestation.
 To work without egress meanwhile, reset the default to `network-none` on the Settings page or open the workspace with `networkProfile: "network-none"` under a new idempotency key. An omitted profile and an explicit `network-none` are different requests, so reusing the failed open's key with the explicit profile returns `CONFLICT`.
 
@@ -311,7 +313,7 @@ If an agent started but followed the wrong files, read the `repository_context` 
 ---
 
 ### 27. MCP gateway `search` says `ranking: "lexical"` although semantic routing is on, or a GitHub error has no `diagnosis`
-**Cause:** The Decision Plane is advisory and falls back silently to the deterministic result. That happens when the purpose is not listed in `DECISION_PLANE_PURPOSES`, `TYPESAFE_EGRESS=off`, the owner has no TypeSafe key, the provider timed out or was rate limited, the answer was malformed or low-confidence, or fewer than two tools matched lexically. A `diagnosis` is attached only to failures the deterministic classifier could not name (`GITHUB_ACTION_FAILED`).
+**Cause:** The Decision Plane is advisory and falls back silently to the deterministic result. That happens when the purpose is not listed in `DECISION_PLANE_PURPOSES`, `TYPESAFE_EGRESS=off`, the owner has no TypeSafe key, the provider timed out or was rate limited, the answer was malformed or low-confidence, or fewer than two tools matched lexically. A `diagnosis` is attached only to failures the deterministic classifier could not name (`GITHUB_ACTION_FAILED`). For agent policies, the same causes make an **Advisor or approval** action wait for approval (or deny it, if the policy says so), and the decision names the reason, for example `Jev not consulted (no TypeSafe key)`; the `execution-risk` purpose also needs the advisor enabled in the global agent policy.
 **Fix:**
 1. Read `GET /api/v1/decision-plane/status`. `enabled` and `purposes` show what is on, `configured` shows whether this owner has a key, and `metrics.<purpose>.fallbackReasons` counts why calls fell back.
 2. Search the audit log for `decision.evaluated` rows. Each one carries the `outcome` and `fallbackReason` without any prompt text.
@@ -372,3 +374,86 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 1. Run `model_profile_validate` with the same change: its `escalations` list shows exactly what a save would refuse. Drop those fields to save the rest over MCP.
 2. Otherwise, ask the owner to make the change on the Dashboard [Models page](/dashboard/models), where the same change is saved. Once the owner has saved a profile on a Custom upstream URL, MCP calls may use that URL with that credential.
 3. A profile created over MCP starts **Disabled**. `agent_spawn` cannot use it until the owner activates it on the Models page; no MCP tool activates, disables, or deletes a profile.
+
+---
+
+### 32. GitHub automation deliveries fail, or no run starts
+**Cause:** A [webhook automation](/dashboard/automations) delivery is refused before it reaches a rule, or it reaches the rules and none of them starts a run. GitHub's webhook **Recent Deliveries** view shows the response; the Dashboard **Automations → Deliveries** view shows what happened next.
+**Fix:**
+1. `404` or an nginx page: automations are off on the API (`AUTOMATIONS_ENABLED`), or the server is missing the managed `/integrations/webhooks/` nginx route. A Cloudflare Access login page means Access is protecting the path; the operator must add an Access bypass for `/integrations/webhooks/` only.
+2. `401`: the connection id in the URL is wrong, the connection is disabled or deleted, or the secret does not match. The response is the same for all of these on purpose. After **Rotate secret**, paste the new secret into GitHub; old signatures are refused immediately.
+3. `415`: set the GitHub webhook content type to `application/json`.
+4. `429`: too many deliveries in a minute. GitHub does not retry by itself; use **Redeliver** in GitHub after a minute.
+5. `503`: the runner is not answering, has automations off while the API has them on, or has no secret keyring. Ask the operator to check both services.
+6. `202` with `ignored`: the event is not a label addition on an issue or pull request (GitHub's `ping` is always ignored), or the body was malformed (listed as quarantined).
+7. Processed but no run: the delivery's outcome names the reason, such as `no_matching_rule`, `bot_sender`, `self_trigger`, `actor_not_allowed`, `coalesced` (a run for that issue is already active), or `cooldown`. Check that the rule is enabled and use **Test event** on it.
+8. A run ends `FAILED`, `EXPIRED`, or with **Publish failed**: its error code names the step. A private repository or a comment needs the [GitHub App](/dashboard/github) to have access to that repository (and issue write access for comments).
+9. A [coding run](/dashboard/automations#coding-runs) ends `FAILED`: the run page's **Coding** section shows which action stopped it and why. `CODING_DISABLED` means `AGENT_CODING_ENABLED` is off. `ACTION_DENIED:<reason>` or `ACTION_REQUIRES_APPROVAL:<reason>` means the execution policy refused a step; simulate it on [Agent Policies](/dashboard/agent-policies). `CODING_VERIFY_FAILED` means the verify command failed and nothing was committed (the diff is kept as an artifact). `EFFECT_UNKNOWN` means GitHub could not confirm a push or pull request: check the repository for the run's `agent/` branch before labelling again, because the run is not retried. `BRANCH_EXISTS` means the run's `agent/` branch already existed and was left alone: delete it and label again. `HEAD_MOVED` means something in the workspace committed by itself, so nothing was committed on top. `COMMIT_UNVERIFIED` means the commit to publish was not exactly the one Cloud Harness made, or could not be read: check the repository for Git settings, replace refs or grafts that change how its history reads. `PATHS_UNVERIFIABLE` means the changed files could not be listed completely before the commit or the push: split the change. `CODING_PUBLISH_FAILED` means GitHub refused a push or pull request for another reason, such as a ruleset, a hook or a missing permission. Pushing and opening pull requests need the GitHub App to have contents and pull request write access on that repository.
+
+---
+
+### 33. Multi-repository workspace: `needs repositoryId`, `is read-only`, or a repository-limit `LIMIT_EXCEEDED`
+**Cause:** A workspace opened with `repositories` holds one checkout per alias under `repos/<alias>/`, and some tools need to know which one you mean.
+- `INVALID_INPUT: <tool> needs repositoryId in a multi-repository workspace` comes from a Git, worktree, `workspace_finalize`, `workspace_recover` `export`, `github_read`, or `github_action` call without a selector. These tools never guess, so a commit or push cannot land in the wrong repository.
+- `FORBIDDEN: repository <alias> is read-only in this workspace` means that repository was opened with `access: "read-only"`, which refuses pushes, pushing finalizes, recovery exports, and GitHub write actions for it.
+- `LIMIT_EXCEEDED: a workspace holds at most N repositories on this instance` means the `repositories` set is larger than the operator's `MAX_WORKSPACE_REPOSITORIES`.
+- `repository <alias>: ...` on `workspace_open` means that repository's clone failed. The whole open fails and no checkout is kept.
+- `repositoryId is unsupported in local mode` means you are on a local stdio server, which has one directory per workspace.
+
+**Fix:**
+1. Call `workspace_repos_list` and pass the `alias` or `repositoryId` it returns as `repositoryId`.
+2. To push to a read-only repository, remove it with `workspace_repo_remove` and add it again with `workspace_repo_add` and `access: "read-write"`, or open a new workspace that lists it as `read-write`. An entry's access does not change in place.
+3. Open fewer repositories, or ask the operator to raise `MAX_WORKSPACE_REPOSITORIES` (see [Environment Variables](/reference/environment-variables)).
+4. For a failed clone, fix that repository's URL, ref, or access, then open again with a new idempotency key.
+
+File and command tools without `repositoryId` work on the workspace root, so paths start with `repos/<alias>/`. `read-only` is not isolation: commands in the workspace can still change files in every checkout.
+
+### 34. Agent traces: `FEATURE_DISABLED`, `TRACE_EXPIRED`, `NOT_FOUND`, or a trace marked `unreconciled`
+**Cause:**
+- `FEATURE_DISABLED` (409) from any `agent_trace*` tool, or no **Traces** entry in the Dashboard sidebar, means the operator has not set `AGENT_TRACES_ENABLED=true` on the runner.
+- `TRACE_EXPIRED` (410) means retention or the per-principal quota removed the trace, or the trace a list cursor continued from.
+- `NOT_FOUND` means the trace does not exist or belongs to another identity; the two are reported the same way on purpose.
+- `unreconciled` means the model-call spans and the agent usage ledger disagree beyond the rounding tolerance. Its `reasons` name why, for example usage missing from a model call or `recorder_degraded` when a trace write failed during the run.
+
+**Fix:**
+1. Ask the operator to enable agent traces (see [Environment Variables](/reference/environment-variables)). Runs from before the flag was on have no trace.
+2. For `TRACE_EXPIRED` on a list, start the listing again without a cursor. To keep traces longer, ask the operator to raise `AGENT_TRACE_RETENTION_DAYS`.
+3. Copy `traceId` exactly from a list result under the same identity that ran the agent.
+4. Treat an `unreconciled` trace's totals as approximate; `agent_status` usage and the gateway settlement on the trace are the reference figures.
+
+### 35. Notifications: no Inbox entry, a channel stays pending, or failed
+**Cause:**
+- No **Inbox** entry in the Dashboard sidebar, or `FEATURE_DISABLED` from the inbox API, means the operator has not set `NOTIFICATIONS_ENABLED=true` on the runner.
+- An **MCP Events** delivery stays `pending` while its event waits in the webhook queue: the API's delivery worker is down or retrying the callback. It turns `stopped` when the subscription is revoked or lapses, and has no row at all when no `cloudharness.notification.created` subscription existed when the notification was written.
+- A **GitHub comment** delivery mirrors the automation's own comment: `pending` while the comment is retried, `failed` with `publish_failed` when it gave up. A rule that does not publish a comment has no GitHub row.
+- `stopped` with `preference_disabled` means you turned that channel off for that kind before it was delivered.
+
+**Fix:**
+1. Ask the operator to enable notifications (see [Environment Variables](/reference/environment-variables)). Runs from before the flag was on have no notification.
+2. For a stuck MCP Events delivery, check the subscription on `/dashboard/api/v1/event-subscriptions` and the API delivery worker; the notification follows the event once it is delivered.
+3. For a GitHub comment failure, open the automation run page and follow [troubleshooting 32](/troubleshooting#_32-github-automation-deliveries-fail-or-no-run-starts).
+4. Turn the channel back on under **Delivery preferences**; a stopped delivery is not resent, but later notifications are.
+
+---
+
+### 36. `workspace_repo_add` or `workspace_repo_remove` is refused
+**Cause:** Adding and removing checkouts is guarded so it never overwrites or discards your work.
+- `INVALID_INPUT: ... applies only to a multi-repository workspace` means the workspace was opened with one `repositoryUrl`. Its checkout stays at the root, so it cannot gain siblings.
+- `INVALID_INPUT: duplicate repository alias` or `duplicate repository URL`, or `LIMIT_EXCEEDED: a workspace holds at most N repositories`, are the same rules `workspace_open` applies.
+- `CONFLICT: repos/<alias> already exists in the workspace tree` means something is already at that path. The harness leaves it alone.
+- `repository <alias>: ...` means the clone failed. Only the new checkout was removed, and nothing was registered, so you can retry with the same idempotency key.
+- `CONFLICT: repository <alias> has work that removing it would lose: ...` lists uncommitted or untracked paths, stashes, linked worktrees, or commits on no remote.
+- `CONFLICT: repository <alias> is in use by ...` names the tasks, shells, sessions, terminals, or operations running inside the checkout, or says an agent is running in the workspace. It is retryable.
+- `CONFLICT: a privileged command or Git transfer is writing to the workspace tree` or `another container is using the workspace tree` means a helper that can write to the checkouts is running. Each change pauses the executor and refuses to run beside such a helper. It is retryable. `UNAVAILABLE: executor could not be paused` means the executor could not be frozen, so nothing was changed.
+- A result with `executorResumed: false` (and a message saying the executor could not be resumed) means the add or remove was committed and audited, but the executor stayed paused afterwards. Commands, shells, and file tools fail until it is resumed. Replaying the same idempotency key returns the committed result.
+- `INVALID_INPUT: the last repository of a workspace cannot be removed` means only one checkout is left.
+- `CONFLICT: Idempotency key reused with different repository change parameters` means the key was already used for another change.
+- `EXPIRED` means the workspace was closed, expired, or recovered during the change. Nothing was registered or removed.
+
+**Fix:**
+1. Pick a free alias, check `workspace_repos_list`, or move the existing `repos/<alias>` directory away.
+2. Before removing, commit and push the work (or delete what you do not need), remove linked worktrees with `worktrees_remove`, and drop stashes.
+3. Wait for the named work to finish, or cancel it with `tasks_cancel`, `shell_close`, `sessions_close`, or `agent_cancel`, then retry.
+4. To end the last checkout, close the workspace with `workspace_close`.
+5. Use a new idempotency key for each distinct change.
+6. After `executorResumed: false`, call `workspace_recover` with `mode: "resume"`; it resumes the paused executor (a runner restart does too). A `dependency-access` workspace, or one whose executor cannot be resumed, gets a rebuilt executor from the retained checkouts, so running processes end. A recover sent while a repository change or Git transfer still holds the pause, or while another recover of the same workspace is running, returns a retryable `CONFLICT`; retry it shortly.

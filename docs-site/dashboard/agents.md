@@ -41,6 +41,9 @@ Opening an agent shows four sections:
   client-generated idempotency key, so a retry cannot double-deliver. **Cancel** cascades
   to every child agent and asks for confirmation first.
 
+When agent traces are enabled, a **Traces** panel lists the agent's recent runs and
+draws the newest run's span waterfall; see [Traces](./traces.md).
+
 ## Filters
 
 Status, workspace, parent agent, profile, and attention state. Filters are reflected in

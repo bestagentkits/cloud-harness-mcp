@@ -26,7 +26,8 @@ Trusted control plane:
 Untrusted execution input:
 
 - repository content, dependencies, Git metadata, hook and deployment
-  manifests, skills, memories, and commands supplied through tools.
+  manifests, skills, memories, commands supplied through tools, and webhook
+  event data received by automations.
 
 The API is deliberately separated from Docker authority. A credential-free
 TCP proxy is the only Compose service with a loopback-published port. It joins
@@ -323,6 +324,171 @@ The executable owners are
 [`apps/api/src/mcp-gateway/url-policy.ts`](../apps/api/src/mcp-gateway/url-policy.ts),
 and [`apps/runner/src/mcp-event-service.ts`](../apps/runner/src/mcp-event-service.ts).
 
+## Webhook automation ingress
+
+Webhook automations (off unless `AUTOMATIONS_ENABLED`) let a GitHub label on an
+issue or pull request start a budgeted agent run. They add the only public
+route that carries no bearer, Access assertion, or API key, because GitHub
+cannot authenticate to Cloudflare Access. The decisions that keep that safe:
+
+- **The signature is the authentication.** Each connection has its own secret,
+  generated server-side, sealed with the runner keyring (and re-sealed by
+  `secrets:rekey`), and shown once on create or rotate. The runner checks
+  GitHub's HMAC-SHA256 signature in constant time over the exact bytes the API
+  forwarded uninflated and unparsed; nothing is parsed before it verifies.
+  Rotation takes effect immediately with no grace window. An unknown, disabled,
+  or deleted connection and a bad signature return the same `401`, so the route
+  is not an oracle for connection ids.
+- **The API only bounds the request.** The ingress is mounted only when
+  enabled, checks the host, answers a malformed connection id with the same
+  `401`, and keeps a process-local rate window per connection id, so traffic
+  aimed at other ids cannot exhaust a real connection's window and a webhook
+  burst cannot consume the MCP pre-auth budget. The runner adds
+  per-connection delivery dedupe, by delivery id and by body digest so a
+  captured body replayed under a new delivery id is a duplicate, and a
+  per-connection delivery rate.
+- **Event data is untrusted input.** Only label additions on `issues` and
+  `pull_request` are admitted; other events and actions are recorded as ignored
+  and malformed bodies as quarantined. The raw payload is never stored, only
+  its digest and bounded normalized fields, and the title and body are cleared
+  after matching. Rule matching is deterministic and never consults a model.
+  The prompt places event text after the owner's instructions in a fenced
+  untrusted block whose delimiter is stripped from the event text.
+- **Triggers are narrow and opt-in.** A rule matches an exact repository,
+  label, and event set, starts disabled, ignores bot senders by default, and,
+  when `GITHUB_APP_SLUG` is configured, always ignores this harness's own
+  GitHub App. Posted comments do not raise label events, so the harness cannot
+  re-trigger itself either way. An optional actor allowlist narrows it further.
+- **The agent is read-only unless the rule opts into coding.** Each run opens
+  a fresh `network-none` workspace on the rule's ref (the default branch unless
+  set) and spawns an agent whose proxy operations are limited by the rule
+  contract to the read-only set, with the rule's budget. A pull request's head
+  is not checked out. Its only GitHub write is an optional single comment
+  through the brokered `issue_comment` action, with `@` mentions neutralized. A
+  rule with a `coding` action follows [Coding automations](#coding-automations)
+  instead.
+
+Residual risk: anyone who can add a label in a watched repository can spend
+that rule's budget, bounded by cooldown, per-rule and instance concurrency, and
+the per-connection delivery rate; prompt injection through issue text can still
+shape the answer that may be posted. Approval grants, non-GitHub providers, and
+MCP tools for automation management are not supported. The executable owners are
+[`apps/api/src/automations/webhook-ingress.ts`](../apps/api/src/automations/webhook-ingress.ts),
+[`apps/runner/src/automation-github.ts`](../apps/runner/src/automation-github.ts),
+[`apps/runner/src/automation-service.ts`](../apps/runner/src/automation-service.ts),
+and [`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
+
+## Coding automations
+
+A rule with a `coding` action (off unless `AGENT_CODING_ENABLED`, which needs
+`AGENT_POLICIES_ENABLED` and `AUTOMATIONS_ENABLED`) lets a labelled issue
+become a pull request. The agent may now change files and run commands, so the
+boundary moves from "read-only" to "every action is decided, and only the
+runner publishes":
+
+- **Identity comes from the rule, never the payload.** The principal is the
+  rule's owner, the project is the rule's `coding.projectId`, and the policy is
+  the owner's global and project head, pinned on the workflow when it starts.
+  Fields in the webhook body that name a principal, project, policy or base
+  branch are ignored.
+- **Every action goes through one gate.** The coding broker
+  ([`apps/runner/src/agent-governance/action-broker.ts`](../apps/runner/src/agent-governance/action-broker.ts))
+  sits between the agent's tool calls and the workspace. Edits, `exec_run`,
+  `git_status` and `git_diff` are described as an action and decided by the
+  same evaluator the Dashboard simulation uses. The revisions the run started
+  under are pinned, so a policy edit or rollback stops it, and each call
+  re-checks revocation (workflow state and workspace generation), the run's
+  budget and the kill switch. Only `ALLOW` runs. `REQUIRE_APPROVAL` fails closed
+  with `ACTION_REQUIRES_APPROVAL`, because this release grants no approvals. A
+  refused call never reaches the workspace. Editing a lockfile or package
+  manifest is a `package_install` action, not an `edit`.
+- **The agent never publishes.** It stays on `network-none` with no Git or
+  GitHub credential and is told not to commit. After it ends, the runner runs
+  the rule's verify command (argv only, no shell), and only if it passes does
+  the runner re-check the changed paths, commit, push a create-only
+  `agent/<issue>-<id>` branch, and open a pull request against the rule's
+  explicit base. It never merges, deploys, or pushes to an existing branch.
+  When verification fails, nothing is committed and the staged diff is kept as
+  a workspace artifact.
+- **The runner trusts only what it reads itself.** The agent and the verify
+  command run arbitrary code in the checkout, including its Git configuration,
+  replace refs and grafts. The runner therefore never asks the worker's tools.
+  Its own reads of HEAD and the changed paths run in a fresh, network-less,
+  read-only helper container. Each read uses an allowlisted subcommand, an
+  explicit Git directory and work tree, a clean environment, and `-c`
+  overrides, so a checkout's `core.worktree`, `diff.relative`,
+  `core.useReplaceRefs`, grafts, hooks, fsmonitor and pager cannot reshape it
+  ([`apps/runner/src/agent-governance/coding-git.ts`](../apps/runner/src/agent-governance/coding-git.ts)).
+  It refuses to stage unless HEAD is still the base (`HEAD_MOVED`), gates
+  every changed path in bounded chunks, and refuses a listing it could not
+  read completely (`PATHS_UNVERIFIABLE`). These checkout reads are defence in
+  depth. The authoritative check runs on the transfer clone that the push
+  sends from: the runner copies the checkout through the pack protocol (no
+  shared object files or alternates), then the transfer helper reads the raw
+  commit object and the paths it changes there, with replace objects and
+  grafts off. The commit must have exactly one parent, the base. Its author and
+  committer must be the runner's identity, and its message must be exactly the
+  runner's message, which carries this run's `Cloud-Harness-Workflow`
+  trailer (the worker commits with hooks off, so nothing may append to it). Every path it changes is gated again, and the listing must be
+  complete. On a refusal (`COMMIT_UNVERIFIED`, `PATHS_UNVERIFIABLE` or
+  `ACTION_DENIED:PATH_OUT_OF_SCOPE`) the clone is discarded and nothing is
+  pushed ([`worker/git-transfer-helper.sh`](../worker/git-transfer-helper.sh),
+  [`test/integration/coding-publish.docker.test.ts`](../test/integration/coding-publish.docker.test.ts)).
+  When the transfer helper fails to stage or read the copy three attempts in a
+  row, the run stops as `COMMIT_UNVERIFIED` instead of retrying until it times
+  out; failures around the helper, such as a credential or the remote probe,
+  are not counted. A branch that already holds another commit is never
+  overwritten, and the run stops as `BRANCH_EXISTS`. The
+  helper also overrides the settings through which a checkout's configuration
+  would make Git run a command (hooks, fsmonitor, the alternate refs command).
+  It does not serialise transfers, but the staged clone is mounted only into
+  the helpers for this push, and read-only while it is inspected, so another
+  transfer for the same workspace, such as an owner's concurrent `git_fetch`,
+  cannot change it between the check and the push. The runner commits
+  first and reads HEAD afterwards, so a process the agent left running could
+  still substitute a commit in between. That commit would have to match all
+  of the above, including the runner's message and identity, and only paths
+  the policy allows can be published through it.
+  The push names that commit by its id, never `HEAD`. A first attempt refuses
+  a branch that already exists (`BRANCH_EXISTS`) instead of adopting it; only
+  a replay of the run's own recorded commit step may reuse its branch. An
+  existing pull request is adopted only when it comes from the same
+  repository, the run's branch and the rule's base.
+- **Concurrency is decided at admission.** The policy's `maxConcurrentRuns`
+  counts the owner's coding runs in progress; a run over the limit waits in
+  `STARTING` until a slot frees or the start window expires, rather than being
+  admitted and stopped later.
+- **Effects are recorded before they happen.** Each step writes a receipt in
+  `coding_actions` (intent, dispatched, then applied, rejected, unknown or
+  blocked) under an idempotency key, so a redelivery, a restart or a crash
+  replays the step instead of repeating it. An answer lost after the effect is
+  reconciled by reading the remote branch or pull request list; when GitHub
+  cannot be read, the step stops as `EFFECT_UNKNOWN` and is never retried
+  blindly. Receipts have no foreign key, so they stay readable after the
+  workspace closes, and each one is joined to the agent's trace by an `action`
+  span. A receipt stores the action's argv and paths as decided, unredacted,
+  and the owner's Dashboard run page shows them; a verify command or path
+  should therefore never carry a secret.
+- **Installs are lockfile-only and separate.** With
+  `AGENT_CODING_PACKAGE_INSTALL_ENABLED`, a checkout's npm lockfile is admitted
+  only if every entry is a registry tarball with a sha512 integrity from an
+  allowed registry, and each package is a `package_install` action the policy
+  must allow outright. A package that would need advisor clearance is refused,
+  not cleared in bulk. One install receipt describes the lockfile with its
+  package count and digest. `npm ci --ignore-scripts` runs once before the agent starts in a
+  one-shot `dependency-access` container that mounts only the checkout and
+  receives no secrets, Docker socket, tools or caches
+  ([`apps/runner/src/agent-governance/install-executor.ts`](../apps/runner/src/agent-governance/install-executor.ts)).
+  The workspace and the agent stay on `network-none`.
+
+Residual risk: within what the policy allows, the agent can write any content
+to allowed paths, and the verify command runs that content inside the executor.
+A reviewer must read the pull request before merging; the executor isolation,
+not the gate, contains what the code does when it runs. Evidence is
+[`test/integration/coding-issue-to-pr.test.ts`](../test/integration/coding-issue-to-pr.test.ts)
+and
+[`test/integration/install-executor.docker.test.ts`](../test/integration/install-executor.docker.test.ts).
+
 ## Downstream MCP OAuth client
 
 The gateway can also hold an OAuth grant for a downstream MCP server. This is
@@ -407,12 +573,25 @@ default masquerade off, and a transactional host firewall (installed via a
 single `iptables-restore` commit and verified through an ephemeral
 `NET_ADMIN`-only network-guard container) permits only public DNS and public
 TCP 80/443. The managed jump is the first rule of both `INPUT` and
-`DOCKER-USER`, and forbidden destination classes — loopback-to-host,
+`DOCKER-USER` in the `filter` table (rules in `mangle` and `raw` do not count
+toward that order, since `filter` makes the accept or reject decision), and forbidden destination classes — loopback-to-host,
 Docker/control-plane, RFC 1918, carrier-grade NAT, link-local, and
 cloud-metadata (`169.254.169.254`) — are rejected before the allowed ports.
 IPv6 is disabled on the bridge. The runner attests the Docker network and the
 exact ordered host ruleset before every dependency executor start and during
-periodic reaper reconciliation; on drift it fences the workspace to
+periodic reaper reconciliation. When the only defect is that another host
+service (Tailscale's `ts-input`/`ts-forward` jumps, for example) inserted a rule
+ahead of a managed jump, the runner moves that existing managed jump back to the
+head of its chain through the same network-guard image, in one atomic
+`iptables-restore --noflush` transaction that deletes and re-inserts the jump by
+rule spec, and attests the fresh ruleset again. It never adds, widens, or
+removes any other rule; a ruleset that would not attest after that move is left
+untouched, and a jump that vanished since the probe fails the transaction
+unchanged. Because the readiness check and reaper run the same attestation,
+they may perform this repair, and a service that keeps re-asserting its own
+head position (Tailscale's default netfilter mode) is moved behind again on
+each attestation. On any other drift it
+fences the workspace to
 `NETWORK_QUARANTINED`, stops the executor, and retains its data for recovery
 after policy reconciliation. If attestation is unavailable the profile fails
 closed (`DEPENDENCY_EGRESS_UNAVAILABLE`) and never falls back to broad bridge
@@ -473,6 +652,77 @@ When repository caching is enabled (`enableRepoCache: true`):
 3. Initial workspace checkouts mount the cache directory strictly read-only (`:ro`) in the clone helper and use `git clone --reference-if-able <cache> --dissociate <workspace>`. The `--dissociate` flag copies referenced objects into the workspace repository during creation, severing any ongoing link to the shared object store before the executor starts.
 4. Checkouts are fully independent and writable only to their own workspace; no writable Git state is ever shared across workspaces or principals.
 
+### Multi-repository workspaces
+
+A multi-repository workspace widens what one workspace holds, not who can
+reach it. Every checkout shares the workspace's single executor, lease, owner,
+and trust domain, and lives at `repos/<alias>/` under the one writable
+workspace mount, so the executor restrictions and resource bounds above apply
+unchanged and the checkouts share the workspace byte ceiling.
+
+- **Per-repository brokering.** Each URL passes the repository opening policy
+  before admission. Clone, fetch, push, and GitHub helpers resolve the target
+  repository from the runner's registry, never from caller input, and the
+  trusted broker mints private-clone and push tokens for that repository URL
+  only. No token is shared between checkouts or written into any of them.
+- **Selector confinement.** A `repositoryId` on a file or search tool sets the
+  worker's root to that checkout, which resolves every path and symlink, so the
+  call cannot reach a sibling checkout. The worker root variables use reserved
+  secret-name prefixes, so a runtime secret cannot override them. A scoped call
+  refuses a checkout whose `repos/<alias>` entry is missing or is no longer a
+  real directory, so a symlink swapped in by the executor is not followed.
+  Command tools only start in the selected checkout.
+- **`read-only` is policy, not isolation.** It refuses brokered writes for that
+  repository (push, pushing finalize, recovery export, GitHub write actions)
+  and clamps its advertised capabilities. Any process in the executor can still
+  modify files and local Git state in every checkout, including a `read-only`
+  one, and with `dependency-access` egress or an operator-injected
+  `GH_TOKEN`/`GITHUB_TOKEN` could push by its own means. Do not group
+  repositories of different sensitivity in one workspace on the strength of
+  `read-only`.
+- **No silent fallback.** Git-bound tools refuse an unselected call in a
+  multi-repository workspace instead of defaulting to one checkout, so a commit
+  or push cannot land in the wrong repository by omission.
+- **Adding and removing checkouts.** `workspace_repo_add` applies the open-time
+  policy and clone path, so an added repository gets the same brokered,
+  credential-free checkout. Both changes touch the host filesystem only at the
+  canonical `repos/<alias>` path, verified host-side to be a real directory
+  that resolves exactly there (never a symlink the executor swapped in) before
+  any removal, and the removal stays confined to the jobs root. Because a
+  recursive delete re-resolves each path it descends, the runner never
+  changes `repos/` while anything in the workspace can write to it: the
+  executor is paused from the last check through the change, and the change is
+  refused (retryable `CONFLICT`) while a privileged command, transfer helper,
+  or other container that mounts the tree runs, or with `UNAVAILABLE` when the
+  executor cannot be paused. A pause that fails or times out is undone before
+  the refusal, and the resume is retried; an executor still paused after a
+  committed change is reported (`executorResumed: false`) rather than turning
+  that change into a failure, and `workspace_recover` or a runner restart
+  resumes it (`workspace_recover` rebuilds a `dependency-access` executor
+  instead, so its running processes end). Only a paused container carrying this
+  workspace's managed labels is resumed. Recovery refuses with a retryable
+  `CONFLICT` while the runner itself holds the pause, and a pause or freeze is
+  refused while a recovery is in flight, so no executor is resumed, restarted,
+  or rebuilt inside a freeze. An add
+  clones into a staging directory outside the executor's and the privileged
+  and skill helpers' mounts (only the trusted clone, Git-transfer, and size
+  helpers mount the workspace root) and moves it into place only while the
+  path is still free, so a failed add removes only the directory it created;
+  an existing path is refused rather than overwritten. At startup, after every
+  helper container is gone, the runner removes the add and Git-transfer
+  staging directories a crash left directly in a retained workspace,
+  matching only real directories with the exact staging name. Remove refuses while the checkout
+  holds work no remote has or anything runs inside it, and runs that check
+  inside the paused window, so it cannot discard work the owner did not save.
+
+Scoping and the write refusal are owned by
+[`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts)
+and [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts);
+the reserved prefixes by
+[`packages/contracts/src/secret-policy.ts`](../packages/contracts/src/secret-policy.ts).
+The decision record is
+[ADR 0005](adr/0005-multi-repository-workspaces.md).
+
 ### Brokered GitHub actions
 
 Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `pr_update`, `pr_comment`, `pr_review_threads`, the review, reviewer, draft/ready, and merge actions listed in `docs/mcp-api.md`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`, `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`, `issue_update`, `issue_publish`) are executed through the `github_action` tool using an ephemeral helper container (`worker/gh-helper.sh`). Action-scoped tokens (`pull_requests: read|write`, `issues: read|write`, each also carrying `contents: read`) are minted by the runner from the trusted GitHub App installation, or resolved from the operator fallback described above when no App token is available, and passed exclusively via `stdin`. `pr_merge` and `pr_auto_merge_enable` additionally mint `contents: write`, and are refused with `GITHUB_PERMISSION_MISSING` naming both scopes when the token GitHub reports lacks it; they never widen any other action. Issue actions that take a number (`issue_view`, `issue_comment`, `issue_update`, `issue_labels_add`, `issue_labels_remove`, `issue_publish`) also ask for `pull_requests` at the same level, because every pull request is also an issue and `gh` resolves the number through `issueOrPullRequest`, which GitHub refuses for a pull request without that permission. That scope is optional: when the installation does not grant it, the runner mints the issues-only token instead, and GitHub's refusal on a pull request number (`Resource not accessible by integration`) is reported as `GITHUB_PERMISSION_MISSING` naming `pull_requests` and the matching `pr_*` action. The accompanying `contents: read` is required for the action to work at all: `gh` resolves repository metadata (such as `defaultBranchRef`) over the GraphQL API, and GitHub refuses those fields for a token narrowed to the action scope alone. The helper container runs read-only with dropped capabilities, and is forcibly removed on all exit paths in a `try/finally` block. Credentials resolved this way never enter the helper environment, workspace filesystem, workspace environment, client result, or audit payload.
@@ -498,7 +748,7 @@ Workspace disk usage metering calculates the combined footprint of all three per
 Skills are resolved across four deterministic precedence tiers (`built-in > owner > workspace > repository`):
 
 1. **Built-in & Owner Tiers (`/opt/cloud-harness/skills:ro`, `/opt/cloud-harness/owner-skills:ro`)**: Mounted read-only (`:ro`) at the container boundary. Because they reside on immutable host mounts, processes within the executor (including any process running as UID 10001) cannot modify these skill files.
-2. **Workspace & Repository Tiers (`/workspace/.cloud-harness/skills`, `/workspace/.agents/skills`)**: Reside on the mutable working tree volume. Execution creates an isolated snapshot under `/tmp/cloud-harness-exec/<runId>` and validates the full-tree bundle digest and script SHA before invocation to prevent unintentional concurrent filesystem race conditions. Within the single-tenant container boundary, all processes share UID 10001; users requiring kernel-enforced mount immutability should install skills into the `owner` scope. A skill revision that carries instructions but no scripts is refused with `NO_EXECUTABLE_ASSETS` rather than a generic miss, because the revision exists and simply has nothing to run. Where those bytes execute is a deliberate choice, not an accident: the script runs in a disposable helper container launched through `runPrivilegedEphemeralExec`, which is gated on an owner privilege grant. Without a grant the runner returns `PRIVILEGE_APPROVAL_REQUIRED` naming the grant it needs, and it never falls back to running the script locally, so a caller cannot read a stronger isolation guarantee into the result than the run actually had. The response reports `executionMode: 'helper-container'`. The helper container reuses the worker's one-shot entry point, so the isolated snapshot, the full-tree bundle digest, and the script SHA checks described here still happen before the script is invoked; only the process that finally runs it moves into a container of its own.
+2. **Workspace & Repository Tiers (`/workspace/.cloud-harness/skills`, `/workspace/.agents/skills`)**: Reside on the mutable working tree volume. Execution creates an isolated snapshot under `/tmp/cloud-harness-exec/<runId>` and validates the full-tree bundle digest and script SHA before invocation to prevent unintentional concurrent filesystem race conditions. Within the single-tenant container boundary, all processes share UID 10001; users requiring kernel-enforced mount immutability should install skills into the `owner` scope. A skill revision that carries instructions but no scripts is refused with `NO_EXECUTABLE_ASSETS` rather than a generic miss, because the revision exists and simply has nothing to run. Where those bytes execute is a deliberate choice, not an accident: the script runs in a disposable helper container launched through `runPrivilegedEphemeralExec`, which is gated on an owner privilege grant. The grant binds every input that reaches the helper container: the skill name, script, and expected digest, plus the provenance `source`, a non-default `timeoutMs`, and the script `args` whenever the caller supplies them, so the owner approves exactly the run that will execute and a retry with different arguments, source, or timeout is refused with `FORBIDDEN` without consuming the grant (`skillRunGrantDescriptor` in `apps/runner/src/workspace-service.ts` owns the descriptor). Without a grant the runner returns `PRIVILEGE_APPROVAL_REQUIRED` naming the grant it needs, and it never falls back to running the script locally, so a caller cannot read a stronger isolation guarantee into the result than the run actually had. The response reports `executionMode: 'helper-container'`. The helper container reuses the worker's one-shot entry point, so the isolated snapshot, the full-tree bundle digest, and the script SHA checks described here still happen before the script is invoked; only the process that finally runs it moves into a container of its own.
 
 ### Skills served over MCP
 
@@ -566,6 +816,20 @@ When `exec_run` is invoked with `privileged: true`:
 3. The operator must explicitly approve the grant via the authenticated Dashboard BFF API (`POST /api/v1/privilege-grants/:grantId/approve`). MCP clients cannot self-approve.
 4. The caller provides the `approvalGrantToken`. The runner validates the grant and command/cwd hash, atomically consumes it (single-use), and executes the command in an isolated ephemeral container with `try/finally` cleanup. The standard executor container remains permanently hardened and unmodified.
 
+`skills_run` uses the same grant store, bound to the skill name, script and
+expected bundle digest. The workspace cockpit's Automation tab completes it in
+one owner action: the BFF answers an ungranted run with HTTP 428 carrying only
+the grant id and expiry (`sendRunnerResponse` in
+[`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts)),
+the owner confirms the named skill, script and digest, and the page approves the
+grant and retries with it. The grant id lives only in that confirm action's
+closure: never in browser storage, the URL, or a query cache. A script that exits
+non-zero is answered with HTTP 422 carrying the same bounded, redacted projection
+as a successful run, never the runner's error text; other execution failures stay
+generic server errors. A skill-run grant record persists its request descriptor
+in runner state and shows it to the owner on the Approvals page, so `skills_run`
+arguments, which that descriptor names, must never carry secrets.
+
 The Dashboard Approvals page lists grants in every state the runner returns,
 labelled with their real status, and offers Approve and Reject only for an
 unexpired pending grant; only those count toward the rail badge. A decided,
@@ -599,7 +863,19 @@ through a lease: an expected object ID (compare-and-swap or delete-if-match) or
 an expected-absent create. Policy refusals from the remote (`[remote rejected]`)
 are reported as non-retryable `FORBIDDEN`, never as a transport failure. Private clone/fetch/pull require GitHub App Contents read
 access, or the operator fallback above; push requires Contents read and write
-access, or the operator fallback above. The executable boundary
+access, or the operator fallback above. Each transfer helper mounts only its own
+transfer repository and, when its mode needs it, the checkout: never the whole
+workspace directory. A command the repository configures that Git runs during an
+import or a stage therefore cannot reach another transfer's repository, so
+nothing can rewrite a staged push clone between its stage and its push. The
+checkout is read-only while it is staged, the staged clone is read-only while it
+is inspected, and the fetched transfer repository is read-only while it is
+imported. The checkout is always bound from its tree root,
+never a scoped `repos/<alias>` path: the executor can replace that path with a
+symlink, and Docker would follow it on the host, while the helper resolves it
+inside its own mounts. Because the checkout and the staged clone are separate
+mounts, staging copies objects instead of hardlinking them, so the resumed
+executor cannot edit a staged object in place; the copy is the cost of that. The executable boundary
 and its evidence are
 [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts),
 [`worker/git-transfer-helper.sh`](../worker/git-transfer-helper.sh),
@@ -1014,11 +1290,19 @@ the owner has stored a TypeSafe integration key.
   filtering already allowed, and it can attach `data.diagnosis` to a generic
   GitHub failure. It cannot add a tool, change an error code or `retryable`,
   retry anything, or grant access. The API rejects an ordering that is not an
-  exact permutation of the candidates it sent.
+  exact permutation of the candidates it sent. For `execution-risk` it can
+  only keep or escalate an agent action the policy already marked
+  discretionary; see [Agent execution policies](#agent-execution-policies).
 - **What leaves the runner.** For `mcp-routing`: the search query plus the
   names and shortened descriptions of the allowed candidate tools. For
   `failure-classification`: the action name, exit code, network profile, and a
-  tail of the stderr and stdout. Repository contents are never sent.
+  tail of the stderr and stdout. For `execution-risk`: a typed summary of the
+  action (its class, counts of touched, test, manifest, CI and hidden paths, a
+  command category with its argument count and a short digest, whether the
+  command runs `git push`, whether a branch or network host is named, the
+  package ecosystem from a fixed list (anything else is `other`), diff size
+  and test result). Paths, arguments, branch, repository and package names and the
+  action's free-text reason are not sent. Repository contents are never sent.
 - **Redaction fails closed, and comes before any cut.** Output and
   descriptions are redacted whole and only then shortened, so a secret that
   straddles the cut is replaced, never left as an unrecognised fragment. Every
@@ -1037,6 +1321,132 @@ the owner has stored a TypeSafe integration key.
   counted in full in the metrics. Prompt text and answers are not stored. The
   metrics at `GET /api/v1/decision-plane/status` are in-memory, instance-wide
   aggregates, not per owner, and reset when the runner restarts.
+
+## Agent execution policies
+
+Coding-agent execution policies are owner-authored
+([ADR 0006](adr/0006-policy-governed-coding-agents.md)) and sit behind
+`AGENT_POLICIES_ENABLED`. This release ships the policy store, the gate
+evaluator and the Dashboard simulation. It does not yet enforce anything on a
+running agent: action enforcement arrives with the coding broker, which calls
+the same evaluator through the `GateEvaluator` port. Until then a saved policy
+changes simulation results only.
+
+- **One authority.** Only the owner writes policy, through owner-authenticated
+  Dashboard routes with the usual Origin and CSRF checks. The principal comes
+  from the session and the project from the route path, after the body is
+  read. Webhook payloads, repository files, agent output and request bodies
+  cannot select the principal, the project or the policy.
+- **Projects only narrow.** A project policy may remove classes, add denies or
+  mandatory approvals, shorten scope lists and lower budgets. A save that
+  widens the global policy is refused, and evaluation ignores any widening
+  field. A project can choose a class's effect only where the owner marked the
+  class delegable. A policy for a project that no longer exists denies every
+  action bound to it, and its effective-policy preview is empty.
+- **One pure gate.** The simulation and the future broker use one frozen
+  evaluator instance and the same resolved snapshot and advisor availability,
+  so a simulation returns what execution will start from. The one difference
+  is the advisor: a discretionary action shows as pending (`ADVISOR_REQUIRED`,
+  which is REQUIRE_APPROVAL) because the advisor's answer exists only at
+  execution time. A simulation never calls the advisor. The descriptor's
+  free-text reason is never read.
+- **The advisor can only keep or escalate.** The Jev execution-risk advisor
+  runs only when three opt-ins hold: the owner stored a TypeSafe key, the
+  operator listed `execution-risk` in `DECISION_PLANE_PURPOSES`, and the
+  global policy's `advisor.enabled` is true. A project may turn it off or make
+  it stricter, never enable or loosen it, and enabling or loosening it is a
+  weakening the owner confirms. It is asked only about an
+  `advisor_or_approval` action that passed every deterministic check, and a
+  confident low-risk answer is the only thing that lets that action run
+  without a human. Every other outcome (advisor off or unconfigured, timeout,
+  rate limit, invalid answer, low confidence, redaction failure) applies the
+  policy's fallback: approval by default, or deny. The decision records the
+  Jev decision id, risk and confidence, or the fallback reason. No answer
+  lowers a deny or a required approval, including
+  `PLATFORM_COMMAND_UNANALYZABLE`. The gate itself enforces the confidence
+  floor, so no advisor implementation can clear an action with a `no_change`
+  below it. Jev is told the class the gate judged (`publish_branch` for a
+  declared class whose command runs `git push`), never only the declared one.
+  The execution-time call (`AgentPolicyService.decide`) is consulted by the
+  coding broker, which ships later; until then nothing calls Jev for an agent
+  action.
+- **Platform invariants have two outcomes.** Credential and Docker access,
+  network escalation, paths outside the workspace and privilege escalation
+  deny before any policy is read. A command is an argv run through execve,
+  with no shell, and the gate reads only argv: it unwraps the launchers whose
+  options it knows exactly (such as `env`, `nice`, `timeout`, `xargs`,
+  `setsid`, `npx`, `npm exec` and `busybox`) and reads each wrapped program.
+
+  Shell strings are never analysed; they always require approval. A shell
+  given `-c`, `env -S`, `npx -c`, `bun exec`, `eval`, `source` and an
+  interpreter's inline code are all unanalyzable, whatever the string
+  contains. Run commands as argv to keep them readable.
+
+  The gate is a policy layer, not a sandbox. A program it does not know is a
+  leaf command: when the owner's command scope admits it, the gate does not
+  model whether its arguments make it run something else (a test runner's
+  plugin option, a build tool's hook). Containment for that comes from the
+  executor restrictions owned by `apps/runner/src/workspace-service.ts`, and
+  in the coding flow the runner, not the executor, pushes branches and opens
+  pull requests. The analysis itself lives in
+  `apps/runner/src/agent-governance/command-analysis.ts`.
+
+  A container runtime or privilege tool in program position, or the Docker
+  socket handed to a program, is a definite match and denies. Inside a shell
+  string, such a program at the start of a command also denies, and a
+  `git push` there is treated as a push of unknown refs, so the publish policy
+  and branch scope deny it. A command the analysis cannot read exactly is not
+  denied: it needs owner approval with `PLATFORM_COMMAND_UNANALYZABLE`. That
+  approval is mandatory, so no advisor answer, project rule or delegation
+  lowers it, while a hard deny, a scope deny or the `publish_branch`
+  evaluation of a detected push still wins. Besides shell strings, the
+  following are unanalyzable:
+  - setting an environment variable (a leading `NAME=value` or
+    `env NAME=value`) outside a short safe list (`CI`, `NODE_ENV`,
+    `FORCE_COLOR`, `NO_COLOR`, `TZ`, `LANG`, `LC_ALL`, `DEBUG`, and the npm
+    settings `loglevel`, `color`, `progress`, `fund`, `audit`,
+    `update_notifier` and `yes`), since variables such as `PAGER`, `EDITOR`,
+    `LESSOPEN`, `GIT_*` or `npm_config_call` make a program run another one;
+  - an unknown launcher option;
+  - a program name containing shell syntax;
+  - a shell or interpreter reading standard input;
+  - a `git -c` setting outside a small safe list, or a git alias;
+  - an unknown program given a shell, launcher, git, interpreter, container
+    or privilege name as an argument (an option's value only counts when it
+    names a shell, launcher, git, container runtime or privilege tool);
+  - nesting beyond the analysis bounds.
+
+  `command -v` and `command -V` only look a name up and are not a match.
+  Data-only programs (`grep`, `rg`, `cat`, `echo`, `jq` and similar) are never
+  treated as running their arguments, unless an option tells them to run a
+  program (`rg --pre` or `-z`, `sort --compress-program`, `diff --paginate`).
+  A tool whose program execution argv cannot show, such as `less` with its
+  lesskey file, is not data-only.
+  The analysis does not read the content of files a command runs (a script, a
+  Makefile, a package script, git hooks). The executor's isolation stays the
+  boundary for those, and the gate is defence in depth.
+- **Branches are checked, not trusted.** Branch names must pass the basic
+  `git check-ref-format` rules. A command that runs `git push` is also judged
+  as `publish_branch`, and the stricter decision wins, so declaring it as
+  another class cannot avoid a publish hard deny, approval or rule. A push
+  must declare a branch and name an explicit refspec. Every pushed refspec
+  must target that branch inside the branch prefixes, and `--all`,
+  `--mirror`, `--tags` and deletions are refused.
+- **Advisors only escalate.** An advisor may answer `no_change` or `escalate`.
+  A discretionary action stays at REQUIRE_APPROVAL until a valid `no_change`
+  arrives; a missing or malformed answer escalates. No advisor, project or
+  prompt can override a hard deny or a mandatory approval.
+- **Weakening is explicit and recorded.** A save, rollback or removal that
+  loosens the effective policy requires a confirmation bound to a digest of
+  the weakening list the owner reviewed, the operation (save, rollback or
+  removal), the global revision, the target head version and the highest
+  version the policy ever had. A confirmation given before another save or
+  removal, or for another operation, is refused. The digest covers only a list
+  shown in full: a change with more weakenings than one review can show is
+  refused and must be made in smaller steps. A stale client gets a version
+  conflict before any policy check. Revisions are
+  immutable, the head moves by compare-and-swap, and every change is audited.
+  Simulations are read-only and not audited.
 
 ## Storage and state limits
 
@@ -1082,6 +1492,52 @@ Close/TTL removes the executor and workspace directory. Shell/session/task
 state is in-memory and disappears on runner restart. Startup restarts surviving
 executors to stop processes whose handles were lost; this remains a durability
 limitation, not a security guarantee.
+
+### Agent traces
+
+Agent traces are off unless the operator sets `AGENT_TRACES_ENABLED`. When on,
+the runner stores, per coding-agent run, span identifiers, timings, token
+counts, cost, outcomes, bounded error classes, a closed allowlist of span
+attributes, and a one-way `sha256:` digest of each tool input's canonical JSON
+with the values of credential-named keys removed. It never stores prompts,
+model output, raw tool arguments, auth headers, tokens, or the agent
+environment. The only optional content is a tool-input preview, default `0`
+bytes and capped at 512, built from a redacted copy (credential-named keys lose
+their values; token- and key-shaped strings are replaced). Redaction runs only
+for the preview, uses bounded patterns over at most the first 4 KiB of each
+string, and walks a bounded share of the input, so an oversized or adversarial
+tool input cannot stall the runner; the digest matches no patterns at all. The
+redaction and attribute allowlist are owned by
+[`apps/runner/src/agent-trace-recorder.ts`](../apps/runner/src/agent-trace-recorder.ts)
+and
+[`packages/contracts/src/agent-traces-api.ts`](../packages/contracts/src/agent-traces-api.ts).
+
+Every read is scoped to the caller's principal, and a foreign trace is
+reported exactly like a missing one. The API and Dashboard parse runner
+results through the strict trace schemas, so an unexpected field fails closed
+instead of reaching a client. Traces have bounded retention, a per-trace span
+cap, and a per-principal quota. Exports are pull-only documents returned to
+the owner; the harness opens no egress to a trace collector.
+
+### Notifications
+
+Notifications are off unless the operator sets `NOTIFICATIONS_ENABLED`. A
+notification stores identifiers, its kind, a title bounded to 160 characters
+and passed through the trace redaction (token- and key-shaped strings are
+replaced, control and format characters removed), and a relative `/dashboard`
+link; never prompts, agent output, issue bodies, or credentials. The contract
+refuses any other link, and the Dashboard follows a link only when it is such a
+path, so a notification cannot become an off-site redirect. Inbox reads and
+writes are scoped to the session principal, and marking another principal's
+notification is reported as not found and changes nothing. Delivery adds no
+egress: the MCP Events channel uses the existing webhook sender and its callback
+rules, and the GitHub channel only reports the automation's own comment.
+Turning the MCP Events channel off also abandons the pending webhook deliveries
+of the affected notifications, so a disabled preference stops the external send.
+Owners:
+[`apps/runner/src/notifications/notification-emitter.ts`](../apps/runner/src/notifications/notification-emitter.ts)
+and
+[`packages/contracts/src/notifications-api.ts`](../packages/contracts/src/notifications-api.ts).
 
 ## Local stdio security model
 

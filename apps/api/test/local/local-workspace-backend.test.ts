@@ -212,6 +212,21 @@ describe('LocalWorkspaceBackend', () => {
     }
   });
 
+  it('refuses repository changes and cross-repository search because a local workspace is one directory', async () => {
+    const calls: Array<[string, Record<string, unknown>, string]> = [
+      ['workspace_repo_add', { url: 'https://github.com/acme/docs.git', alias: 'docs', idempotencyKey: 'add-docs-1' }, 'workspace_repo_add'],
+      ['workspace_repo_remove', { repositoryId: 'docs', idempotencyKey: 'rm-docs-1' }, 'repositoryId'],
+      ['grep_search', { pattern: 'x', scope: 'all' }, 'scope "all"'],
+      ['symbols_search', { query: 'x', scope: 'all' }, 'scope "all"']
+    ];
+    for (const [operation, input, selector] of calls) {
+      const res = await backend.call(operation as Parameters<typeof backend.call>[0], { workspaceId: backend.workspaceId, ...input });
+      expect(res.ok, operation).toBe(false);
+      expect(res.error?.code, operation).toBe('INVALID_INPUT');
+      expect(res.message, operation).toContain(`${selector} is unsupported in local mode`);
+    }
+  });
+
   it('refuses every model tool in local mode because profiles live in the remote runner', async () => {
     for (const operation of MODEL_TOOL_OPERATIONS) {
       const res = await backend.call(operation, { workspaceId: backend.workspaceId });

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { AgentProxyOperationSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
 import { SkillSuggestInputSchema } from './typesafe-schemas.js';
+import { MAX_WORKSPACE_REPOSITORIES_LIMIT } from './config.js';
 import {
   ModelConnectionVerifyToolInputSchema,
   ModelProfileCreateToolInputSchema,
@@ -12,6 +13,7 @@ import {
   ModelSpendSummaryToolInputSchema
 } from './model-tool-schemas.js';
 import { ModelCatalogSearchInputSchema } from './model-catalog-schemas.js';
+import { AgentTraceExportInputSchema, AgentTraceGetInputSchema, AgentTraceSpansInputSchema, AgentTracesListInputSchema } from './agent-traces-api.js';
 import { PackagesApplyInputSchema, PackagesListInputSchema, PackagesPlanInputSchema, PackagesRemoveInputSchema, PackagesRollbackInputSchema, PackagesStatusInputSchema } from './package-schemas.js';
 import {
   JournalTypeSchema,
@@ -29,6 +31,21 @@ const relativePath = z.string().min(1).max(1_024).refine((value) => {
 }, 'path must stay workspace-relative');
 const entryPath = relativePath.refine((value) => value.replaceAll('\\', '/') !== '.', 'path must identify an entry below the workspace root');
 const workspace = { workspaceId: WorkspaceIdSchema.optional() };
+/** A repository alias names one checkout under `repos/<alias>/`; it can never contain `_`, so it cannot collide with a `repo_…` id. */
+export const RepositoryAliasSchema = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/, 'repository alias must be 1-40 lowercase letters, digits, or inner hyphens');
+/** Selects one repository of a multi-repository workspace by its stable `repo_…` id or its alias. */
+export const RepositorySelectorSchema = z.string()
+  .regex(/^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$/, 'repositoryId must be a repo_ id or a repository alias')
+  .describe('Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository.');
+const repository = { repositoryId: RepositorySelectorSchema.optional() };
+export const WorkspaceRepositoryAccessSchema = z.enum(['read-write', 'read-only']);
+export const WorkspaceRepositoryInputSchema = z.object({
+  url: z.url(),
+  alias: RepositoryAliasSchema,
+  ref: z.string().min(1).max(255).refine((value) => !value.startsWith('-') && !value.includes('\0'), 'Git argument cannot start with a dash').optional(),
+  access: WorkspaceRepositoryAccessSchema.default('read-write')
+    .describe('read-only blocks brokered pushes, finalize pushes, and GitHub write actions for this repository; it is not runtime isolation.')
+}).strict();
 const pagination = { cursor: z.string().max(256).optional(), limit: z.number().int().min(1).max(500).default(100) };
 const gitArgument = z.string().min(1).max(255).refine((value) => !value.startsWith('-') && !value.includes('\0'), 'Git argument cannot start with a dash');
 const gitFetchRef = gitArgument.refine((value) => !value.includes(':'), 'Git fetch ref cannot contain a destination');
@@ -221,39 +238,46 @@ const workflowDispatchRef = githubRevision.refine((value) => !/^(?:[0-9a-f]{40}|
 const githubReadActionSchemas = [
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_list'),
     limit: z.number().int().min(1).max(100).default(20),
     state: z.enum(['open', 'closed', 'all']).default('open')
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_view'),
     prNumber: z.number().int().positive()
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_review_threads'),
     prNumber: z.number().int().positive(),
     limit: z.number().int().min(1).max(100).default(50)
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_reviews'),
     prNumber: z.number().int().positive()
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('issue_list'),
     limit: z.number().int().min(1).max(100).default(20),
     state: z.enum(['open', 'closed', 'all']).default('open')
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('issue_view'),
     issueNumber: z.number().int().positive()
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('commit_list'),
     limit: z.number().int().min(1).max(100).default(30),
     sha: githubRevision.optional(),
@@ -263,6 +287,7 @@ const githubReadActionSchemas = [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('compare'),
     base: githubRevision,
     head: githubRevision,
@@ -270,27 +295,32 @@ const githubReadActionSchemas = [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('release_list'),
     limit: z.number().int().min(1).max(100).default(20)
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('tag_list'),
     limit: z.number().int().min(1).max(100).default(30)
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('ref_get'),
     ref: githubRef
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('commit_status_get'),
     sha: githubRevision,
     limit: z.number().int().min(1).max(100).default(100)
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('check_runs_list'),
     sha: githubRevision,
     checkName: z.string().min(1).max(255).refine((val) => !val.includes('\0'), 'checkName cannot contain null bytes').optional(),
@@ -298,6 +328,7 @@ const githubReadActionSchemas = [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('workflow_runs_list'),
     workflow: workflowRef.optional(),
     headSha: gitObjectId.optional(),
@@ -308,6 +339,7 @@ const githubReadActionSchemas = [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('workflow_run_view'),
     runId: workflowRunId,
     limit: z.number().int().min(1).max(100).default(100)
@@ -318,6 +350,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
   ...githubReadActionSchemas,
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_create'),
     title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
     body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default(''),
@@ -328,6 +361,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_update'),
     prNumber: z.number().int().positive(),
     title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes').optional(),
@@ -341,6 +375,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_comment'),
     prNumber: z.number().int().positive(),
     body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes'),
@@ -348,6 +383,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_review'),
     prNumber: z.number().int().positive(),
     event: z.enum(['COMMENT', 'APPROVE', 'REQUEST_CHANGES']),
@@ -360,6 +396,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_review_comment'),
     prNumber: z.number().int().positive(),
     body: reviewBody,
@@ -380,6 +417,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_review_reply'),
     threadId: reviewThreadId,
     body: reviewBody,
@@ -387,16 +425,19 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_review_thread_resolve'),
     threadId: reviewThreadId
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_review_thread_unresolve'),
     threadId: reviewThreadId
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_reviewers_request'),
     prNumber: z.number().int().positive(),
     reviewers: reviewerList(githubLogin).optional(),
@@ -409,6 +450,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_reviewers_remove'),
     prNumber: z.number().int().positive(),
     reviewers: reviewerList(githubLogin).optional(),
@@ -420,16 +462,19 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_ready'),
     prNumber: z.number().int().positive()
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_convert_to_draft'),
     prNumber: z.number().int().positive()
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_merge'),
     prNumber: z.number().int().positive(),
     method: mergeMethod,
@@ -444,6 +489,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_auto_merge_enable'),
     prNumber: z.number().int().positive(),
     method: mergeMethod,
@@ -457,11 +503,13 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('pr_auto_merge_disable'),
     prNumber: z.number().int().positive()
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('commit_status_create'),
     sha: gitObjectId,
     state: commitStatusState,
@@ -472,6 +520,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('workflow_dispatch'),
     workflow: workflowRef,
     ref: workflowDispatchRef,
@@ -480,12 +529,14 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('workflow_run_rerun_failed'),
     runId: workflowRunId,
     idempotencyKey: IdempotencyKeySchema.optional()
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('issue_create'),
     title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
     body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default(''),
@@ -494,6 +545,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('issue_comment'),
     issueNumber: z.number().int().positive(),
     body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes'),
@@ -501,12 +553,14 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('issue_comment_update'),
     commentId: z.number().int().positive(),
     body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes')
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('label_create'),
     name: z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label name cannot contain null bytes'),
     color: z.string().regex(/^[0-9A-Fa-f]{6}$/).optional(),
@@ -514,6 +568,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('issue_labels_add'),
     issueNumber: z.number().int().positive(),
     labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).min(1).max(50),
@@ -522,12 +577,14 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('issue_labels_remove'),
     issueNumber: z.number().int().positive(),
     label: z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('issue_update'),
     issueNumber: z.number().int().positive(),
     title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes').optional(),
@@ -544,6 +601,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    ...repository,
     action: z.literal('issue_publish'),
     issueNumber: z.number().int().positive(),
     comment: z.string().max(65_536).refine((val) => !val.includes('\0'), 'comment cannot contain null bytes').optional(),
@@ -582,6 +640,7 @@ const githubReadUnion = z.discriminatedUnion('action', [...githubReadActionSchem
 
 const githubReadInput = z.object({
   ...workspace,
+  ...repository,
   action: z.enum(GITHUB_READ_ACTIONS),
   limit: z.number().int().min(1).max(250).optional(),
   state: z.enum(['open', 'closed', 'all']).optional(),
@@ -605,6 +664,7 @@ const githubReadInput = z.object({
 
 const githubActionInput = z.object({
   ...workspace,
+  ...repository,
   action: z.enum([...GITHUB_READ_ACTIONS, ...GITHUB_WRITE_ACTIONS]),
   limit: z.number().int().min(1).max(250).optional(),
   state: z.union([z.enum(['open', 'closed', 'all']), commitStatusState]).optional(),
@@ -687,9 +747,40 @@ export const COMMAND_MAX_TIMEOUT_MS = 300_000;
 /** A NUL byte cannot cross a process argv, so a command containing one is invalid input rather than a spawn failure. */
 const shellCommand = z.string().min(1).max(32_768).refine((value) => !value.includes('\0'), 'command must not contain NUL bytes');
 
+/** Two repositories entries naming the same remote, modulo case, a trailing slash, or `.git`, are one repository. */
+export function normalizedRepositoryUrlKey(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host.toLowerCase()}${url.pathname.replace(/\/+$/, '').replace(/\.git$/i, '').toLowerCase()}`;
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * `scope: "all"` searches every checkout of the workspace and attributes each result to its repository.
+ * Its continuation cursor names the next repository to search; a search without that scope ignores it,
+ * as it ignored the field before the scope existed.
+ */
+const searchScope = {
+  scope: z.enum(['all']).optional()
+    .describe('all searches every repository checkout and annotates each result with repositoryId and alias; result paths are relative to that checkout. Mutually exclusive with repositoryId.'),
+  cursor: z.string().max(256).optional().describe('Continuation cursor from a scope "all" search; it names the next repository to search.')
+};
+
+function refineSearchScope(input: { repositoryId?: string | undefined; scope?: 'all' | undefined }, context: z.RefinementCtx): void {
+  if (input.scope === 'all' && input.repositoryId !== undefined) {
+    context.addIssue({ code: 'custom', path: ['scope'], message: 'scope "all" and repositoryId are mutually exclusive' });
+  }
+}
+
 const schemas = {
   workspace_open: z.object({
-    repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema,
+    repositoryUrl: z.url().optional(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema,
+    repositories: z.array(WorkspaceRepositoryInputSchema).min(1).max(MAX_WORKSPACE_REPOSITORIES_LIMIT).optional()
+      .describe('Open a multi-repository workspace: one independent checkout per entry under `repos/<alias>/`. Mutually exclusive with repositoryUrl and ref.'),
+    primaryRepositoryAlias: RepositoryAliasSchema.optional()
+      .describe('Alias of the repository workspace-level defaults (status, guidance) report first; defaults to the first entry.'),
     fetchDepth: z.number().int().min(0).max(100_000).optional()
       .describe('Commits of history to clone; 0 clones full history. Omitted keeps the default single-commit clone.'),
     shallowSince: isoInstant.optional().describe('Clone history newer than this ISO date or datetime instead of a commit count.'),
@@ -705,6 +796,28 @@ const schemas = {
     skillOverrides: SkillOverrideMapSchema.default({}),
     allowToolkitWorkspaceChanges: z.literal(true).optional()
   }).superRefine((input, context) => {
+    if ((input.repositoryUrl === undefined) === (input.repositories === undefined)) {
+      context.addIssue({ code: 'custom', path: ['repositoryUrl'], message: 'provide either repositoryUrl or repositories, but not both' });
+    }
+    if (input.repositories !== undefined) {
+      if (input.ref !== undefined) {
+        context.addIssue({ code: 'custom', path: ['ref'], message: 'set ref on each repositories entry instead of the top level' });
+      }
+      const aliases = new Set<string>();
+      const urls = new Set<string>();
+      input.repositories.forEach((entry, index) => {
+        if (aliases.has(entry.alias)) context.addIssue({ code: 'custom', path: ['repositories', index, 'alias'], message: `duplicate repository alias: ${entry.alias}` });
+        aliases.add(entry.alias);
+        const url = normalizedRepositoryUrlKey(entry.url);
+        if (urls.has(url)) context.addIssue({ code: 'custom', path: ['repositories', index, 'url'], message: 'duplicate repository URL' });
+        urls.add(url);
+      });
+      if (input.primaryRepositoryAlias !== undefined && !aliases.has(input.primaryRepositoryAlias)) {
+        context.addIssue({ code: 'custom', path: ['primaryRepositoryAlias'], message: 'primaryRepositoryAlias must name one of the repositories' });
+      }
+    } else if (input.primaryRepositoryAlias !== undefined) {
+      context.addIssue({ code: 'custom', path: ['primaryRepositoryAlias'], message: 'primaryRepositoryAlias requires repositories' });
+    }
     if (input.networkMode !== undefined) {
       context.addIssue({
         code: 'custom',
@@ -748,12 +861,13 @@ const schemas = {
   }),
   workspace_list: z.object(pagination),
   workspace_status: z.object(workspace),
-  workspace_capabilities: z.object(workspace),
+  workspace_capabilities: z.object({ ...workspace, ...repository }),
   workspace_close: z.object(workspace),
   workspace_lease_renew: z.object({ ...workspace, extensionSeconds: z.number().int().min(60).max(86_400).optional() }),
-  workspace_recover: z.object({ ...workspace, mode: z.enum(['resume', 'status', 'patch', 'export']).default('resume'), targetBranch: gitArgument.optional() }),
+  workspace_recover: z.object({ ...workspace, ...repository, mode: z.enum(['resume', 'status', 'patch', 'export']).default('resume'), targetBranch: gitArgument.optional() }),
   workspace_context: z.object({
     ...workspace,
+    ...repository,
     clientProfile: z.enum(['all', 'claude', 'codex', 'cursor', 'aider']).default('all'),
     include: z.array(z.enum(['instructions', 'languages', 'test_commands', 'skills'])).max(4).default(['instructions', 'languages', 'test_commands', 'skills']),
     contentMode: z.enum(['none', 'excerpt']).default('none'),
@@ -762,8 +876,17 @@ const schemas = {
     maxBytes: z.number().int().min(4_096).max(131_072).default(32_768)
   }),
   workspace_set_active: z.object({ workspaceId: WorkspaceIdSchema }),
+  workspace_repos_list: z.object(workspace),
+  workspace_repo_status: z.object({ ...workspace, ...repository }),
+  workspace_repo_add: z.object({ ...workspace, ...WorkspaceRepositoryInputSchema.shape, idempotencyKey: IdempotencyKeySchema }).strict(),
+  workspace_repo_remove: z.object({
+    ...workspace,
+    repositoryId: RepositorySelectorSchema.describe('Repository to remove, by repo_ id or alias.'),
+    idempotencyKey: IdempotencyKeySchema
+  }).strict(),
   workspace_finalize: z.object({
     ...workspace,
+    ...repository,
     paths: z.array(relativePath).max(500).optional(),
     all: z.boolean().default(true),
     commitMessage: z.string().min(1).max(10_000),
@@ -781,11 +904,12 @@ const schemas = {
       context.addIssue({ code: 'custom', path: ['paths'], message: 'paths must be empty when all is true' });
     }
   }),
-  files_list: z.object({ ...workspace, path: relativePath.default('.'), ...pagination }),
-  files_read: z.object({ ...workspace, path: relativePath, offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(1_048_576).default(65_536), cursor: z.string().max(256).optional(), readAll: z.boolean().optional() }),
-  files_write: z.object({ ...workspace, path: relativePath, content: z.string().max(1_048_576), expectedSha256: z.string().length(64).optional() }),
+  files_list: z.object({ ...workspace, ...repository, path: relativePath.default('.'), ...pagination }),
+  files_read: z.object({ ...workspace, ...repository, path: relativePath, offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(1_048_576).default(65_536), cursor: z.string().max(256).optional(), readAll: z.boolean().optional() }),
+  files_write: z.object({ ...workspace, ...repository, path: relativePath, content: z.string().max(1_048_576), expectedSha256: z.string().length(64).optional() }),
   files_write_batch: z.object({
     ...workspace,
+    ...repository,
     files: z.array(z.object({
       path: relativePath,
       content: z.string().max(1_048_576),
@@ -795,15 +919,16 @@ const schemas = {
     atomic: z.boolean().default(true),
     idempotencyKey: IdempotencyKeySchema.optional()
   }),
-  files_apply_patch: z.object({ ...workspace, path: relativePath, oldText: z.string().max(262_144), newText: z.string().max(262_144), expectedSha256: z.string().length(64).optional() }),
-  files_delete: z.object({ ...workspace, path: entryPath, recursive: z.boolean().default(false), expectedSha256: z.string().length(64).optional() }),
-  files_move: z.object({ ...workspace, source: entryPath, destination: entryPath, overwrite: z.boolean().default(false) }),
-  files_mkdir: z.object({ ...workspace, path: entryPath, recursive: z.boolean().default(true) }),
-  grep_search: z.object({ ...workspace, pattern: z.string().min(1).max(4_096), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
-  symbols_search: z.object({ ...workspace, query: z.string().min(1).max(256), path: relativePath.default('.'), language: z.string().regex(/^[A-Za-z0-9_+#.-]{1,40}$/).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
-  symbols_references: z.object({ ...workspace, symbol: z.string().min(1).max(256).refine((value) => !value.includes('\0') && !value.includes('\n')), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
+  files_apply_patch: z.object({ ...workspace, ...repository, path: relativePath, oldText: z.string().max(262_144), newText: z.string().max(262_144), expectedSha256: z.string().length(64).optional() }),
+  files_delete: z.object({ ...workspace, ...repository, path: entryPath, recursive: z.boolean().default(false), expectedSha256: z.string().length(64).optional() }),
+  files_move: z.object({ ...workspace, ...repository, source: entryPath, destination: entryPath, overwrite: z.boolean().default(false) }),
+  files_mkdir: z.object({ ...workspace, ...repository, path: entryPath, recursive: z.boolean().default(true) }),
+  grep_search: z.object({ ...workspace, ...repository, ...searchScope, pattern: z.string().min(1).max(4_096), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }).superRefine(refineSearchScope),
+  symbols_search: z.object({ ...workspace, ...repository, ...searchScope, query: z.string().min(1).max(256), path: relativePath.default('.'), language: z.string().regex(/^[A-Za-z0-9_+#.-]{1,40}$/).optional(), maxResults: z.number().int().min(1).max(500).default(100) }).superRefine(refineSearchScope),
+  symbols_references: z.object({ ...workspace, ...repository, ...searchScope, symbol: z.string().min(1).max(256).refine((value) => !value.includes('\0') && !value.includes('\n')), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }).superRefine(refineSearchScope),
   exec_run: z.object({
     ...workspace,
+    ...repository,
     command: shellCommand,
     cwd: relativePath.default('.'),
     timeoutMs: z.number().int().min(100).max(COMMAND_MAX_TIMEOUT_MS).default(60_000),
@@ -816,6 +941,7 @@ const schemas = {
   // privileged commands can only take the `exec_run` approval path.
   bash: z.object({
     ...workspace,
+    ...repository,
     command: shellCommand,
     target: z.enum(['workspace', 'toolbox']).default('workspace')
       .describe('workspace runs in the workspace executor like exec_run; toolbox runs in a disposable no-network container with no checkout.'),
@@ -826,6 +952,7 @@ const schemas = {
   }).strict().superRefine((input, context) => {
     if (input.target !== 'toolbox') return;
     if (input.workspaceId !== undefined) context.addIssue({ code: 'custom', path: ['workspaceId'], message: 'workspaceId is not allowed for the toolbox target' });
+    if (input.repositoryId !== undefined) context.addIssue({ code: 'custom', path: ['repositoryId'], message: 'repositoryId is not allowed for the toolbox target' });
     if (input.cwd !== '.') context.addIssue({ code: 'custom', path: ['cwd'], message: 'cwd is only valid for the workspace target' });
   }),
   packages_plan: PackagesPlanInputSchema,
@@ -842,37 +969,42 @@ const schemas = {
   model_profile_create: ModelProfileCreateToolInputSchema,
   model_profile_update: ModelProfileUpdateToolInputSchema,
   model_spend_summary: ModelSpendSummaryToolInputSchema,
-  shell_open: z.object({ ...workspace, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
+  agent_traces_list: AgentTracesListInputSchema,
+  agent_trace_get: AgentTraceGetInputSchema,
+  agent_trace_spans: AgentTraceSpansInputSchema,
+  agent_trace_export: AgentTraceExportInputSchema,
+  shell_open: z.object({ ...workspace, ...repository, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
   shell_io: z.object({ ...workspace, shellId: ShellIdSchema, input: z.string().max(65_536).optional(), cursor: z.string().max(256).optional(), waitMs: z.number().int().min(0).max(5_000).default(100) }),
   shell_close: z.object({ ...workspace, shellId: ShellIdSchema }),
   sessions_list: z.object({ ...workspace, ...pagination }),
-  sessions_open: z.object({ ...workspace, name: sessionName, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
+  sessions_open: z.object({ ...workspace, ...repository, name: sessionName, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
   sessions_io: z.object({ ...workspace, sessionId: SessionIdSchema, input: z.string().max(65_536).optional(), cursor: z.string().max(256).optional(), waitMs: z.number().int().min(0).max(5_000).default(100) }),
   sessions_close: z.object({ ...workspace, sessionId: SessionIdSchema }),
   tasks_list: z.object({ ...workspace, ...pagination }),
-  tasks_run: z.object({ ...workspace, command: z.string().min(1).max(32_768), cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema, timeoutMs: z.number().int().min(100).max(86_400_000).default(900_000), dependsOn: z.array(TaskIdSchema).max(32).default([]) }),
+  tasks_run: z.object({ ...workspace, ...repository, command: z.string().min(1).max(32_768), cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema, timeoutMs: z.number().int().min(100).max(86_400_000).default(900_000), dependsOn: z.array(TaskIdSchema).max(32).default([]) }),
   tasks_status: z.object({ ...workspace, taskId: TaskIdSchema, cursor: z.string().max(256).optional() }),
   tasks_cancel: z.object({ ...workspace, taskId: TaskIdSchema }),
   tasks_graph: z.object(workspace),
   operation_status: z.object({ operationId: OperationIdSchema, cursor: z.string().max(256).optional() }),
   operation_cancel: z.object({ operationId: OperationIdSchema }),
   operation_wait: z.object({ operationId: OperationIdSchema, timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
-  git_status: z.object(workspace),
-  git_diff: z.object({ ...workspace, staged: z.boolean().default(false), path: relativePath.optional(), cursor: z.string().max(256).optional(), limit: z.number().int().min(1).max(500_000).default(65_536), readAll: z.boolean().optional() }),
-  git_log: z.object({ ...workspace, limit: z.number().int().min(1).max(500).default(20), cursor: z.string().max(256).optional(), readAll: z.boolean().optional() }),
-  git_branch: z.object({ ...workspace, action: z.enum(['list', 'create', 'delete']), name: gitArgument.optional(), startPoint: gitArgument.optional(), force: z.boolean().default(false) }).superRefine((input, context) => {
+  git_status: z.object({ ...workspace, ...repository }),
+  git_diff: z.object({ ...workspace, ...repository, staged: z.boolean().default(false), path: relativePath.optional(), cursor: z.string().max(256).optional(), limit: z.number().int().min(1).max(500_000).default(65_536), readAll: z.boolean().optional() }),
+  git_log: z.object({ ...workspace, ...repository, limit: z.number().int().min(1).max(500).default(20), cursor: z.string().max(256).optional(), readAll: z.boolean().optional() }),
+  git_branch: z.object({ ...workspace, ...repository, action: z.enum(['list', 'create', 'delete']), name: gitArgument.optional(), startPoint: gitArgument.optional(), force: z.boolean().default(false) }).superRefine((input, context) => {
     if (input.action !== 'list' && !input.name) context.addIssue({ code: 'custom', path: ['name'], message: 'name is required for create and delete' });
   }),
-  git_checkout: z.object({ ...workspace, ref: gitArgument, create: z.boolean().default(false) }),
-  git_add: z.object({ ...workspace, all: z.boolean().default(false), paths: z.array(relativePath).max(200).default([]) }).superRefine((input, context) => {
+  git_checkout: z.object({ ...workspace, ...repository, ref: gitArgument, create: z.boolean().default(false) }),
+  git_add: z.object({ ...workspace, ...repository, all: z.boolean().default(false), paths: z.array(relativePath).max(200).default([]) }).superRefine((input, context) => {
     if (!input.all && input.paths.length === 0) context.addIssue({ code: 'custom', path: ['paths'], message: 'paths are required unless all is true' });
     if (input.all && input.paths.length > 0) context.addIssue({ code: 'custom', path: ['paths'], message: 'paths must be empty when all is true' });
   }),
-  git_commit: z.object({ ...workspace, message: z.string().min(1).max(10_000), authorName: z.string().min(1).max(200).optional(), authorEmail: z.email().optional(), all: z.boolean().default(false), expectedHeadOid: gitObjectId.optional(), idempotencyKey: z.string().min(1).max(256).optional() }),
+  git_commit: z.object({ ...workspace, ...repository, message: z.string().min(1).max(10_000), authorName: z.string().min(1).max(200).optional(), authorEmail: z.email().optional(), all: z.boolean().default(false), expectedHeadOid: gitObjectId.optional(), idempotencyKey: z.string().min(1).max(256).optional() }),
   git_identity_status: z.object(workspace),
   git_identity_set: z.object({ ...workspace, name: z.string().min(1).max(200), email: z.email() }),
   git_fetch: z.object({
     ...workspace,
+    ...repository,
     remote: z.literal('origin').default('origin'),
     refspec: gitFetchRef.optional(),
     depth: z.number().int().min(1).max(100_000).optional().describe('Deepen history to this many commits from each fetched tip.'),
@@ -884,9 +1016,10 @@ const schemas = {
       context.addIssue({ code: 'custom', path: ['depth'], message: 'choose at most one of depth, unshallow, or shallowSince' });
     }
   }),
-  git_pull: z.object({ ...workspace, remote: z.literal('origin').default('origin'), branch: gitArgument.optional(), strategy: z.enum(['ff-only', 'merge', 'rebase']).default('ff-only') }),
+  git_pull: z.object({ ...workspace, ...repository, remote: z.literal('origin').default('origin'), branch: gitArgument.optional(), strategy: z.enum(['ff-only', 'merge', 'rebase']).default('ff-only') }),
   git_push: z.object({
     ...workspace,
+    ...repository,
     remote: z.literal('origin').default('origin'),
     refspec: gitRefspec.optional(),
     forceWithLease: z.boolean().default(false),
@@ -906,14 +1039,14 @@ const schemas = {
       context.addIssue({ code: 'custom', path: ['refspec'], message: 'an explicit destination branch is required with forceWithLease' });
     }
   }),
-  git_merge: z.object({ ...workspace, ref: gitArgument, fastForward: z.enum(['allow', 'only', 'never']).default('allow'), message: z.string().min(1).max(10_000).optional() }),
-  git_rebase: z.object({ ...workspace, action: z.enum(['start', 'continue', 'abort']), upstream: gitArgument.optional() }).superRefine((input, context) => {
+  git_merge: z.object({ ...workspace, ...repository, ref: gitArgument, fastForward: z.enum(['allow', 'only', 'never']).default('allow'), message: z.string().min(1).max(10_000).optional() }),
+  git_rebase: z.object({ ...workspace, ...repository, action: z.enum(['start', 'continue', 'abort']), upstream: gitArgument.optional() }).superRefine((input, context) => {
     if (input.action === 'start' && !input.upstream) context.addIssue({ code: 'custom', path: ['upstream'], message: 'upstream is required when starting a rebase' });
     if (input.action !== 'start' && input.upstream) context.addIssue({ code: 'custom', path: ['upstream'], message: 'upstream is only valid when starting a rebase' });
   }),
-  worktrees_list: z.object(workspace),
-  worktrees_create: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/), ref: gitArgument, createBranch: z.boolean().default(false) }),
-  worktrees_remove: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/), force: z.boolean().default(false) }),
+  worktrees_list: z.object({ ...workspace, ...repository }),
+  worktrees_create: z.object({ ...workspace, ...repository, name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/), ref: gitArgument, createBranch: z.boolean().default(false) }),
+  worktrees_remove: z.object({ ...workspace, ...repository, name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/), force: z.boolean().default(false) }),
   skills_list: z.object({ ...workspace, limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional(), includeShadowed: z.boolean().default(true) }),
   skills_read: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/), source: ProvenanceSourceSchema.optional(), expectedSha256: z.string().length(64).optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(262_144).default(65_536) }),
   skills_run: z.object({
@@ -936,14 +1069,15 @@ const schemas = {
   }),
   // The prompt bound is measured in bytes, because the bound exists to limit what leaves the process.
   skill_suggest: SkillSuggestInputSchema,
-  hooks_list: z.object({ ...workspace, event: HookEventSchema.optional(), includeInactive: z.boolean().default(false), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
+  hooks_list: z.object({ ...workspace, event: HookEventSchema.optional(), includeInactive: z.boolean().default(false).describe('Accepted for compatibility and currently ignored: every hook is always listed, each with an `active` flag that reports whether lifecycle events would run it.'), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
   hooks_run: z.object({
     ...workspace,
     name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
     event: HookEventSchema.optional(),
     expectedSha256: z.string().length(64).optional(),
     expectedManifestSha256: z.string().length(64).optional(),
-    timeoutMs: z.number().int().min(100).max(300_000).default(60_000)
+    // No default: an omitted value lets the worker apply the manifest hook's own timeoutMs.
+    timeoutMs: z.number().int().min(100).max(COMMAND_MAX_TIMEOUT_MS).optional()
   }).superRefine((input, context) => {
     if (!input.expectedSha256 && !input.expectedManifestSha256) {
       context.addIssue({ code: 'custom', path: ['expectedManifestSha256'], message: 'expectedManifestSha256 or expectedSha256 is required to prevent TOCTOU execution of modified hooks' });
@@ -1083,6 +1217,7 @@ const schemas = {
   deployments_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
   artifacts_snapshot: z.object({
     ...workspace,
+    ...repository,
     path: relativePath,
     logicalName: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, 'invalid artifact logical name'),
     retentionSeconds: z.number().int().min(60).max(2_592_000).optional()
@@ -1098,6 +1233,7 @@ const schemas = {
   }),
   artifacts_restore: z.object({
     ...workspace,
+    ...repository,
     artifactId: z.string().regex(/^art_[A-Za-z0-9_-]{20,80}$/, 'invalid artifact identifier'),
     path: relativePath,
     overwrite: z.boolean().default(false),
@@ -1172,7 +1308,7 @@ export type ToolSpec = {
 
 const titles: Record<RunnerOperation, string> = {
   workspace_open: 'Open workspace', workspace_list: 'List workspaces', workspace_status: 'Workspace status', workspace_capabilities: 'Workspace capabilities', workspace_close: 'Close workspace',
-  workspace_lease_renew: 'Renew workspace lease', workspace_recover: 'Recover workspace state', workspace_context: 'Workspace context', workspace_set_active: 'Set active workspace',
+  workspace_lease_renew: 'Renew workspace lease', workspace_recover: 'Recover workspace state', workspace_context: 'Workspace context', workspace_set_active: 'Set active workspace', workspace_repos_list: 'List workspace repositories', workspace_repo_status: 'Workspace repository status', workspace_repo_add: 'Add workspace repository', workspace_repo_remove: 'Remove workspace repository',
   workspace_finalize: 'Finalize workspace commit and push',
   files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_write_batch: 'Write batch files', files_apply_patch: 'Apply text patch', files_delete: 'Delete file or directory', files_move: 'Move file or directory', files_mkdir: 'Create directory', grep_search: 'Search workspace',
   symbols_search: 'Find symbol definitions', symbols_references: 'Find lexical symbol references',
@@ -1181,6 +1317,7 @@ const titles: Record<RunnerOperation, string> = {
   model_provider_list: 'List model providers', model_catalog_search: 'Search model catalog', model_connection_verify: 'Check model connection',
   model_profile_list: 'List agent model profiles', model_profile_validate: 'Dry-run agent model profile change', model_profile_create: 'Create agent model profile',
   model_profile_update: 'Update agent model profile', model_spend_summary: 'Read estimated model spend',
+  agent_traces_list: 'List agent traces', agent_trace_get: 'Read agent trace', agent_trace_spans: 'List agent trace spans', agent_trace_export: 'Export agent trace',
   shell_open: 'Open shell', shell_io: 'Use shell', shell_close: 'Close shell', tasks_list: 'List tasks', tasks_run: 'Run task', tasks_status: 'Task status', tasks_cancel: 'Cancel task',
   sessions_list: 'List coding sessions', sessions_open: 'Open coding session', sessions_io: 'Use coding session', sessions_close: 'Close coding session',
   tasks_graph: 'Read task dependency graph',
@@ -1215,6 +1352,10 @@ const descriptions: Record<RunnerOperation, string> = {
   workspace_recover: 'Recover a recoverable expired workspace to active state, or inspect, patch, or export unpushed work.',
   workspace_context: 'Read the active workspace ID, branch, lease time, Git identity, and repository overview.',
   workspace_set_active: 'Set the caller preferred active workspace when multiple workspaces exist.',
+  workspace_repos_list: 'List the repositories of a workspace with their stable repo_ ids, aliases, checkout paths below the workspace root, requested refs, and access modes. A single-repository workspace reports its one checkout at the workspace root.',
+  workspace_repo_status: 'Summarize each repository checkout of a workspace (its branch tracking line, whether it has uncommitted changes, and the short Git status) without modifying state; pass repositoryId to inspect one repository. A checkout whose status cannot be read reports an error instead.',
+  workspace_repo_add: 'Clone one more repository into a multi-repository workspace at `repos/<alias>/`, with the same URL policy, brokered clone credentials, and per-workspace limit as workspace_open. The repository joins the registry only after its clone succeeds; a failed add removes only the new checkout. A single-repository workspace refuses. Replaying the idempotencyKey returns the first result.',
+  workspace_repo_remove: 'Remove one repository from a multi-repository workspace: delete its registry entry, then its checkout directory. Refused while the checkout has uncommitted or untracked paths, stashes, linked worktrees, or commits on no remote, while a task, shell, session, terminal, or operation runs inside it, or while an agent runs in the workspace. The last repository cannot be removed; removing the primary makes the next repository primary. Replaying the idempotencyKey returns the first result.',
   workspace_finalize: 'Transactionally stage changes, run preflights, commit with default or explicit identity, and push to remote in one call.',
   files_list: 'List one workspace directory with bounded cursor pagination.',
   files_read: 'Read a bounded byte range from a workspace file with its size, SHA-256, and continuation cursor.',
@@ -1224,9 +1365,9 @@ const descriptions: Record<RunnerOperation, string> = {
   files_delete: 'Delete one workspace file or directory, with explicit recursion and optional file hash guard.',
   files_move: 'Move or rename one workspace entry, optionally overwriting an existing file.',
   files_mkdir: 'Create one workspace directory, including missing parents by default.',
-  grep_search: 'Search workspace text with a bounded regular expression and optional path, glob filter, and continuation cursor.',
-  symbols_search: 'Find bounded indexed symbol definitions by case-insensitive substring.',
-  symbols_references: 'Find bounded lexical whole-word occurrences of a symbol in workspace text.',
+  grep_search: 'Search workspace text with a bounded regular expression and optional path and glob filter. scope "all" searches every repository checkout with attributed results and a cross-repository continuation cursor.',
+  symbols_search: 'Find bounded indexed symbol definitions by case-insensitive substring. scope "all" searches every repository checkout with attributed results and a cross-repository continuation cursor.',
+  symbols_references: 'Find bounded lexical whole-word occurrences of a symbol in workspace text. scope "all" searches every repository checkout with attributed results and a cross-repository continuation cursor.',
   exec_run: 'Run one bounded shell command in the workspace and return captured output.',
   packages_plan: 'Resolve one managed toolbox package change into an immutable plan without installing anything and without running package code (uv accepts wheels only; npm lifecycle scripts stay off unless allowed). ecosystem "npm" or "uv" (uv tools get their own managed Python); "apt" is not supported and returns NOT_SUPPORTED because system packages need a reviewed executor image variant. scope "owner" (default) makes the tool available to all your new workspaces and the bash toolbox target; scope "workspace" needs workspaceId and overrides the owner binding there. "instance" scope does not exist. If resolution is still running after about 20 seconds, the result is { resolutionId, state: "RESOLVING" } instead: poll packages_status with that resolutionId (and waitMs) until it is READY with the plan or FAILED. The plan lists the exact version, source, integrity, dependency count, size, binaries, conflicts, affected workspaces, and planDigest. approval "required" means an operator approves the plan in the Dashboard first; "unavailable" means this instance cannot approve plans. Use for durable CLI tools; use npm install or uv in a workspace for project dependencies. Off unless the operator sets PACKAGES_ENABLED=true.',
   packages_apply: 'Build an approved plan (planId with the exact planDigest from packages_plan) into an immutable release in an isolated builder, verify its file tree, and launch-check every binary without network. Returns an applyId immediately; poll packages_status with applyId. Replaying the same plan returns the same apply. A release is installed only when the apply reaches SUCCEEDED. Existing workspaces keep their mounted releases until they are recreated; new workspaces and the bash toolbox target use the new release.',
@@ -1299,10 +1440,10 @@ const descriptions: Record<RunnerOperation, string> = {
   knowledge_graph: 'Traverse and query the bounded neighborhood knowledge graph for a root node.',
   deployments_list: 'List repository-defined deployment targets without running them.',
   deployments_run: 'Execute one named repository-defined deployment target with external-effect risk.',
-  artifacts_snapshot: 'Preserve one workspace file as a principal-owned, TTL-retained artifact snapshot.',
+  artifacts_snapshot: 'Preserve one workspace file as a principal-owned, TTL-retained artifact snapshot. With repositoryId the path resolves inside that checkout and the artifact records the repository as provenance.',
   artifacts_list: 'List principal-owned retained artifact snapshots with bounded pagination.',
   artifacts_read: 'Read a bounded base64 byte chunk from a principal-owned retained artifact with hash and EOF verification.',
-  artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection.',
+  artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection. With repositoryId the path resolves inside that checkout; without it the path is relative to the workspace root.',
   artifacts_delete: 'Delete a principal-owned retained artifact snapshot before its retention expiry.',
   github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, comment on, review (native COMMENT/APPROVE/REQUEST_CHANGES reviews, inline file/line comments, review-thread reply/resolve/unresolve), assign reviewers, toggle draft/ready, merge, and auto-merge pull requests; create commit statuses on a SHA (commit_status_create: state, context, description, targetUrl); dispatch a workflow on a ref with inputs (workflow_dispatch) and re-run only the failed jobs of a run (workflow_run_rerun_failed), in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, pullRequestCreate, pullRequestReview, pullRequestMerge, commitStatusCreate, workflowDispatch, and workflowRunRerun; workspace_capabilities.githubActions is the authoritative action list. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_reviews, pr_review_threads, pr_create, pr_update, pr_comment, pr_review, pr_review_comment, pr_review_reply, pr_review_thread_resolve, pr_review_thread_unresolve, pr_reviewers_request, pr_reviewers_remove, pr_ready, pr_convert_to_draft, pr_merge, pr_auto_merge_enable, pr_auto_merge_disable, commit_status_create, workflow_dispatch, workflow_run_rerun_failed, commit_list, compare, release_list, tag_list, ref_get, commit_status_get, check_runs_list, workflow_runs_list, workflow_run_view. Writes that can duplicate a side effect accept an idempotencyKey. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Atomic ref creation, compare-and-swap, and delete-if-match go through git_push leases, not this tool. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
   github_read: 'Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, pr_reviews (every review with its state and the latest state per reviewer, including CHANGES_REQUESTED), pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list, ref_get (current OID of refs/heads/... or refs/tags/..., or exists: false), commit_status_get (combined status and every status context for a SHA or ref), check_runs_list (check runs for a SHA or ref), workflow_runs_list (Actions runs filtered by workflow, headSha, branch, event, status), and workflow_run_view (one run with its jobs and conclusions). Maps to operations.pullRequestList, pullRequestView, pullRequestReviewList, issueList, issueView, commitList, compare, releaseList, tagList, refGet, commitStatusRead, checkRunList, and workflowRunRead. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
@@ -1312,11 +1453,15 @@ const descriptions: Record<RunnerOperation, string> = {
   agent_logs: 'Read bounded streaming diagnostic and tool events from one coding agent.',
   agent_message: 'Send an idempotent steering or follow-up message to a running coding agent.',
   agent_cancel: 'Cancel an in-flight coding agent and cascade cancellation to all its child agents.',
-  agent_list: 'List coding agents in a workspace with bounded pagination.'
+  agent_list: 'List coding agents in a workspace with bounded pagination.',
+  agent_traces_list: 'List your durable coding-agent run traces, newest first, with KPI aggregates on the first page (state counts, tokens, cost, model-call p50/p95 latency and time to first token, per-profile cohorts). Filter by workspaceId, agentId, profileId, state, workflowId, and a since/until start-time window; page with the opaque cursor. Read-only. Traces outlive their workspace until retention removes them; a cursor whose position was removed fails with TRACE_EXPIRED. Returns FEATURE_DISABLED when the operator has not enabled agent traces.',
+  agent_trace_get: 'Read one agent trace: state and finish reason, the immutable model profile revision, token and cost totals with their provenance, coverage, and the reconciliation of model-call spans against the agent usage ledger and the gateway settlement. Read-only; no prompts, model output, or tool arguments.',
+  agent_trace_spans: 'Page through the spans of one agent trace in recording order (span sequence, not start time): the agent run, each model call (timings, time to first token, tokens, cost, error class), each tool call (operation, outcome, input digest, and a redacted input preview only when the operator enabled one), budget reservation, lease issue, settlement and limit spans, and the gateway settlement. Optional kind filter. Read-only.',
+  agent_trace_export: 'Export one agent trace as a bounded pull-only document: json (the trace and all spans), csv (one row per span), or otlp-json (OpenTelemetry OTLP/JSON resource spans). Nothing is pushed to any collector. Read-only and redaction-safe.'
 };
 
 const readOnly = new Set<RunnerOperation>([
-  'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_context',
+  'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_context', 'workspace_repos_list', 'workspace_repo_status',
   'files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references',
   'sessions_list', 'tasks_list', 'tasks_status', 'tasks_graph',
   'operation_status', 'operation_wait',
@@ -1326,10 +1471,11 @@ const readOnly = new Set<RunnerOperation>([
   'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read',
   'packages_list', 'packages_status',
   'agent_status', 'agent_logs', 'agent_list',
-  'model_provider_list', 'model_catalog_search', 'model_profile_list', 'model_profile_validate', 'model_spend_summary'
+  'model_provider_list', 'model_catalog_search', 'model_profile_list', 'model_profile_validate', 'model_spend_summary',
+  'agent_traces_list', 'agent_trace_get', 'agent_trace_spans', 'agent_trace_export'
 ]);
 const destructive = new Set<RunnerOperation>([
-  'workspace_close', 'workspace_recover', 'workspace_finalize',
+  'workspace_close', 'workspace_recover', 'workspace_finalize', 'workspace_repo_remove',
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move',
   'exec_run', 'bash', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close',
   'tasks_run', 'tasks_cancel', 'operation_cancel',
@@ -1342,7 +1488,7 @@ const destructive = new Set<RunnerOperation>([
   'model_profile_update'
 ]);
 const idempotent = new Set<RunnerOperation>([
-  'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize',
+  'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize', 'workspace_repos_list', 'workspace_repo_status', 'workspace_repo_add', 'workspace_repo_remove',
   'files_list', 'files_read', 'files_write', 'files_write_batch', 'files_apply_patch', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references',
   'shell_open', 'shell_close', 'sessions_list', 'sessions_open', 'sessions_close',
   'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph',
@@ -1355,10 +1501,11 @@ const idempotent = new Set<RunnerOperation>([
   'packages_apply', 'packages_list', 'packages_status', 'packages_rollback',
   'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list',
   'model_provider_list', 'model_catalog_search', 'model_profile_list', 'model_profile_validate', 'model_profile_create', 'model_profile_update',
-  'model_spend_summary'
+  'model_spend_summary',
+  'agent_traces_list', 'agent_trace_get', 'agent_trace_spans', 'agent_trace_export'
 ]);
 const openWorld = new Set<RunnerOperation>([
-  'workspace_open', 'workspace_finalize', 'exec_run', 'bash', 'shell_io', 'sessions_io', 'tasks_run',
+  'workspace_open', 'workspace_repo_add', 'workspace_finalize', 'exec_run', 'bash', 'shell_io', 'sessions_io', 'tasks_run',
   'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action', 'github_read',
   'packages_plan', 'packages_apply',
   'agent_spawn', 'agent_message',

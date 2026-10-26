@@ -31,6 +31,7 @@
     [
       "@semantic-release/exec",
       {
+        "verifyConditionsCmd": "node scripts/repair-release-channel-notes.mjs ${branch.name} ${options.dryRun}",
         "prepareCmd": "node scripts/update-release-version.mjs ${nextRelease.version}"
       }
     ],

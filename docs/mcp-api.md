@@ -121,6 +121,139 @@ duplicating work:
   their cached result within their configured retention window (GitHub action
   idempotency records expire after 24 hours).
 
+## Multi-repository workspaces
+
+`workspace_open` accepts either the single-repository `repositoryUrl` (with an
+optional top-level `ref`) or a `repositories` set, never both. Each entry names
+a credential-free `url`, a unique `alias`, an optional `ref`, and an `access`
+mode (`read-write` by default, or `read-only`); `primaryRepositoryAlias`
+defaults to the first entry. The schema rejects duplicate aliases, duplicate
+URLs, a top-level `ref`, and an unknown primary alias; the per-workspace count
+is bounded by the runner's `MAX_WORKSPACE_REPOSITORIES` (see
+[configuration](configuration.md#workspace-and-repository-policy)). Every URL
+passes the [repository opening policy](#repository-opening-policy) before
+anything is admitted, and a clone failure fails the whole open and names the
+repository.
+
+All checkouts share one executor, lease, owner, and trust domain. The
+executor's `/workspace` is the tree root and each checkout lives at
+`repos/<alias>/`. Callers address one checkout with the optional
+`repositoryId` selector, which accepts the stable `repo_` id or the alias:
+
+- **Git-bound tools require it.** Git, worktree, `workspace_finalize`,
+  `workspace_recover` `export`, `github_read`, and `github_action` refuse an
+  unselected call in a multi-repository workspace with `INVALID_INPUT` that
+  lists the aliases, unless the set has only one entry.
+- **File, search, and command tools default to the tree root.** Without a
+  selector their paths and `cwd` are relative to the tree root, so a build can
+  span checkouts. With one, paths and `cwd` resolve inside that checkout, and
+  file and search tools cannot reach a sibling through `..` or a symlink. A
+  scoped call to a checkout whose directory was removed or replaced by a
+  symlink fails with `CONFLICT`. A
+  command still runs in the shared executor and can reach every checkout.
+- **Workspace-level reads pick a default.** Workspace records from
+  `workspace_open`, `workspace_status`, and `workspace_list` carry the primary
+  repository's capabilities and add `primaryRepositoryId` and `repositories`.
+  `workspace_capabilities` describes the primary repository unless a selector
+  names another. `workspace_recover` `status` and `patch` without a selector
+  report every checkout under `data.repositories`.
+- **Single-repository workspaces are unchanged.** They accept a selector naming
+  their only checkout (`workspace_repos_list` reports its synthesized id and
+  alias at path `.`), behave identically with or without it, and keep their
+  idempotency fingerprints. In a multi-repository workspace the resolved
+  repository joins push, finalize, and batch-write fingerprints.
+
+`workspace_repos_list` returns each checkout's `repositoryId`, `alias`,
+`repositoryUrl`, requested `ref`, `access`, `primary`, and `path`.
+`workspace_repo_status` returns, per checkout, the branch tracking line,
+`hasUncommitted`, and the short Git status, or an `error` when that checkout
+cannot be read. Both are read-only.
+
+The repository set can change while the workspace is active. Both tools apply
+only to a multi-repository workspace (a single-repository one refuses with
+`INVALID_INPUT`), require an `idempotencyKey`, hold the workspace mutation
+lease, and commit their registry change fenced on the workspace generation, so
+a close, expiry, or recovery meanwhile fails the call with `EXPIRED` and leaves
+the registry unchanged. A replayed key returns the first result; the same key
+with different parameters is a `CONFLICT`. A second change to the same
+workspace while one is in flight is a retryable `CONFLICT`. Each change pauses
+the workspace executor briefly while it checks and changes `repos/<alias>`
+(commands in the executor resume afterwards); it is a retryable `CONFLICT`
+while a privileged command or another helper container uses the workspace
+tree, and `UNAVAILABLE` when the executor cannot be paused.
+
+- **`workspace_repo_add`** takes one `repositories` entry (`url`, `alias`,
+  optional `ref`, `access`). It applies the open-time rules: the
+  [repository opening policy](#repository-opening-policy), unique alias and
+  URL, and `MAX_WORKSPACE_REPOSITORIES` (`LIMIT_EXCEEDED`). It clones into
+  `repos/<alias>/` with the same brokered credentials and constrained clone
+  helper as open, using the default history (deepen it with `git_fetch`), and
+  writes the registry row only after the clone succeeded and the workspace
+  stayed inside its size bounds. A `repos/<alias>` path that already exists,
+  or that appears while the clone runs, is refused with `CONFLICT` and left
+  untouched. Any failure removes only the new checkout and names the
+  repository. The added checkout is not the primary.
+- **`workspace_repo_remove`** takes a `repositoryId` and refuses, without
+  changing anything, while the checkout has uncommitted or untracked paths,
+  stashes, linked worktrees, or commits on no remote (non-retryable
+  `CONFLICT`, the same checks auto-close applies), or while a task, shell,
+  session, terminal, or operation runs inside it or an agent runs in the
+  workspace (retryable `CONFLICT`). The last repository cannot be removed;
+  close the workspace instead. Removing the primary promotes the next
+  repository in open order. The registry row is deleted first, then the
+  checkout directory; `checkoutRemoved: false` reports a directory that could
+  not be deleted, which then counts as unsaved work at auto-close.
+- Both changes pause the executor. When the change committed but the executor
+  could not be resumed afterwards, the result still reports the change, adds
+  `executorResumed: false`, and says so in its message; replaying the key
+  returns the committed result. Commands in the workspace fail until
+  `workspace_recover` with `mode: "resume"` (or a runner restart) resumes the
+  executor; a `dependency-access` executor is rebuilt by recover instead, so its
+  running processes end.
+
+`grep_search`, `symbols_search`, and `symbols_references` accept
+`scope: "all"`, mutually exclusive with `repositoryId`, to search every
+checkout in registry order within one `maxResults` budget. Each result carries
+`repositoryId` and `alias`; line results become `{ repositoryId, alias, match }`
+(or `reference`) with the path relative to that checkout, and symbols keep
+their checkout-relative `path`. `data.repositories` summarizes each searched
+checkout's result count and `truncated` flag, or its `error` (the search fails
+only when no checkout could be searched). When the budget runs out the
+response is `truncated` and its top-level `cursor` names the next repository;
+pass it back with the same input to continue. A checkout cut short midway is
+not resumed; narrow it with `repositoryId`. A cursor that no longer names a
+repository is `INVALID_INPUT`. Without the scope these tools behave exactly as
+before and ignore `cursor`.
+
+`artifacts_snapshot` and `artifacts_restore` accept `repositoryId`. With it the
+path is resolved and confined inside that checkout; without it the path stays
+relative to the tree root. A snapshot taken with a selector in a
+multi-repository workspace records `repositoryId` and `repositoryAlias` as
+provenance, which `artifacts_list` and `artifacts_read` return. Restore never
+applies the recorded repository implicitly, because the artifact may be
+restored into another workspace; pass `repositoryId` to restore into a
+checkout.
+
+`read-only` refuses brokered writes for that repository (`git_push`, a pushing
+`workspace_finalize`, `workspace_recover` `export`, and GitHub write actions)
+with non-retryable `FORBIDDEN` whose `error.repository` names the alias, and
+reports `repositoryAccess: "read-only"` with its write capabilities and
+operations clamped to `false` in `workspace_capabilities`. It is
+not isolation; see the
+[security model](security-model.md#multi-repository-workspaces). Local stdio
+mode rejects `repositoryId`, `scope: "all"`, and the repository tools. The schemas are owned by
+[`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts),
+resolution and scoping by
+[`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts)
+and [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts),
+and the behaviour is exercised by
+[`apps/runner/test/multi-repository-workspaces.test.ts`](../apps/runner/test/multi-repository-workspaces.test.ts),
+[`apps/runner/test/dynamic-repositories.test.ts`](../apps/runner/test/dynamic-repositories.test.ts),
+and
+[`packages/contracts/test/multi-repository-contracts.test.ts`](../packages/contracts/test/multi-repository-contracts.test.ts).
+The design record is
+[ADR 0005](adr/0005-multi-repository-workspaces.md).
+
 ## Coding-agent operations
 
 The six `agent_*` tools run a bounded Pi coding session against an existing
@@ -135,6 +268,13 @@ Agent calls do not refresh the parent workspace idle TTL.
   requested proxy-tool subset before launch. Its result is an acknowledgement
   with an opaque ID, generation, status, and replay flag—not prompt
   completion.
+  The proxy-tool enum also lists `exec_run`, `git_status` and `git_diff`, and
+  a profile's `maxProxyOperations` may hold up to 13 entries, so an owner can
+  build a profile for coding automations. Those three are granted only to an
+  agent a coding automation starts, where the coding broker decides each call
+  ([security model](security-model.md#coding-automations)); an MCP client that
+  requests them is refused with `FORBIDDEN` (403, not retryable) before any
+  agent exists.
   When the owner has set an aggregate model spend policy (daily or monthly,
   for the principal or for one model profile), the spawn also reserves its
   whole `maxCostMicros` against it. A spawn that would take any applicable
@@ -154,7 +294,12 @@ Agent calls do not refresh the parent workspace idle TTL.
   budgets, usage, timestamps, terminal reason, and `outcomeUnknown`.
   `SPAWNING`, `RUNNING`, and `CANCELLING` are nonterminal; `SUCCEEDED`,
   `FAILED`, `CANCELLED`, `TIMED_OUT`, `LIMIT_EXCEEDED`, and `INTERRUPTED` are
-  terminal.
+  terminal. `LIMIT_EXCEEDED` means a harness limit stopped the run, for
+  example its output, event, or tool-result byte bounds, a model turn that
+  stopped at its output token cap, or a Model Gateway budget refusal or request
+  bound recognised by the gateway's own error code. A run the provider
+  throttled or rejected (a provider 429, rate limit, quota, or provider 413)
+  ends `FAILED`, because no harness limit can be raised to fix it.
 - `agent_logs` uses a nonnegative decimal byte cursor. Continue with
   `nextCursor` while `hasMore` is true. `truncated` means the requested cursor
   predates `retainedBaseCursor`; it can also coexist with another bounded page,
@@ -187,6 +332,90 @@ A runner restart never replays prompts, messages, model requests, or proxy
 writes. Any active agent from a prior runner epoch is reconciled: its model
 lease is revoked, its container is removed, and its status transitions to
 `INTERRUPTED` with `outcomeUnknown: true`.
+
+### Agent traces
+
+When the operator sets `AGENT_TRACES_ENABLED=true`, every agent run also
+writes one durable trace: an `agent_run` span, one span per model call and
+tool call, `budget` spans (the cost reservation, the gateway lease issue, a
+run limit that ended the run, and the settlement against the reservation),
+and a `gateway` settlement span. The `hook` span kind is reserved: workspace
+lifecycle hooks run only on commit, finalize, checkout, and workspace open,
+and no operation an agent can reach runs one, so no agent run emits it. A spawn
+refused by a spend policy creates no agent and therefore no trace. Four
+read-only, idempotent tools
+read them: `agent_traces_list`, `agent_trace_get`, `agent_trace_spans`, and
+`agent_trace_export`. Input and result shapes are owned by
+[`packages/contracts/src/agent-traces-api.ts`](../packages/contracts/src/agent-traces-api.ts);
+storage, cursors, and retention by
+[`apps/runner/src/agent-trace-store.ts`](../apps/runner/src/agent-trace-store.ts);
+event-to-span mapping by
+[`apps/runner/src/agent-trace-recorder.ts`](../apps/runner/src/agent-trace-recorder.ts).
+
+- **Scope.** Reads are bound to the caller's principal and are independent of
+  any workspace: a trace outlives its workspace until retention removes it.
+  Another principal's trace is `NOT_FOUND`, indistinguishable from a missing
+  one. With traces disabled every tool returns `FEATURE_DISABLED` (409).
+- **Cursors.** List and span cursors are opaque `tc1.` tokens bound to the
+  caller and the exact filter set; reusing one with other filters is
+  `INVALID_INPUT`. The list is keyset-paged by start time and trace ID, so
+  traces written during a walk never shift or duplicate a page. A cursor whose
+  anchor trace was removed by retention or the per-principal quota fails with
+  `TRACE_EXPIRED` (410) and `resumeAction: "restart_without_cursor"`; reading
+  an expired trace directly is also `TRACE_EXPIRED`.
+- **States.** A trace is `RUNNING` until the agent ends, then takes the
+  agent's terminal state: `COMPLETED`, `FAILED`, `CANCELLED`, `TIMED_OUT`,
+  `EXPIRED` (model lease expired), or `INCOMPLETE` (a runner restart ended the
+  run; `INTERRUPTED` agents map to `FAILED` with `runtime_exited`). Spans the
+  run never closed read `UNKNOWN`. Spans past the per-trace cap are dropped
+  behind a single truncation marker with `truncated: true`.
+- **Coverage.** `coverage` describes data completeness, not the outcome. It is
+  `"partial"` when the run was interrupted by a runner restart, recording
+  degraded, the span cap truncated the trace, a model call reported no usage,
+  any span ended `UNKNOWN`, no gateway settlement arrived, or the settlement
+  counted requests without usage; otherwise `"full"`. A failed or cancelled run
+  whose every span closed with usage is `"full"`.
+- **Tokens.** `tokens.prompt` is uncached input on every path; the whole prompt
+  is `prompt + cacheRead + cacheWrite`. When no runtime usage was reported the
+  totals fall back to the gateway settlement with its cached share removed;
+  `reconciliation.gateway.promptTokens` keeps the gateway's own total.
+- **Nulls and percentiles.** A figure that was not observed is `null`, never
+  `0`. Model-call p50/p95 and time to first token are nearest-rank
+  percentiles over spans that have the timestamps; with no samples they are
+  `null`. Per-profile cohorts report percentiles only at 20 or more traces and
+  `insufficient_sample` otherwise. The list `summary` is computed only for a
+  first page (no `cursor`) unless `includeSummary: false`; otherwise it is
+  `null`. Its `costMicros` is `null` when no trace in the window has a known
+  cost.
+- **Spans** are returned in recording order (span sequence), not start time.
+- **Coding automations.** The trace of an agent a coding automation started
+  carries the run's `workflowId` (filterable in `agent_traces_list`), and each
+  brokered action adds an `action` span with its decision, reason code and
+  receipt state. The runner verifies, commits, pushes and opens the pull
+  request after the agent ends, so those spans are appended to a trace that is
+  already terminal; a finished trace's span list can still grow. The receipts
+  themselves are on the Dashboard Automations run page, read through the
+  runner's `workflow_get` newest first and keyset-paged by `actionsCursor`
+  ([`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts)).
+- **Error classes.** A failed model call carries a bounded `errorClass`. A
+  Model Gateway budget refusal is `budget`, recognised by the gateway's
+  structured refusal code `budget_exceeded` (owned by
+  [`apps/model-gateway/src/budget.ts`](../apps/model-gateway/src/budget.ts)),
+  and, unless the run already recorded another limit, the run's
+  `budget.limit` span with `limit: "model_budget"`. Provider throttling, including a provider quota
+  429, stays `rate_limit`. Raise the agent's budget for the first; wait and
+  retry for the second.
+- **Reconciliation.** When the agent ends, model-call span sums are compared
+  with the agent usage ledger. Tokens must match exactly; cost may differ by a
+  tolerance of one micro-dollar per model-call span (per-call rounding). A
+  mismatch is `unreconciled` with machine-readable reasons; the gateway
+  settlement is reported alongside for comparison. Every tool result is
+  validated against its strict result schema in the runner before it is
+  returned; a result outside the contract fails closed as `INTERNAL_ERROR`.
+- **Export.** `agent_trace_export` returns a bounded document in the result
+  (`json`, `csv`, or `otlp-json`), with `truncated` when it hit its size
+  bound. It is pull-only: the harness never pushes traces to a collector. The
+  Dashboard serves the same export as a download.
 
 ### Model setup and spend
 
@@ -402,22 +631,41 @@ Decisions that are easy to misread:
   The event-specific JSON-RPC error codes follow the sketch revision ChatGPT
   implements (`-32011`…`-32015`). They live in one constant,
   `MCP_EVENTS_ERROR_CODES`, so a protocol renumbering is a single change.
-- **Four terminal-state events.** `cloudharness.task.completed`,
-  `cloudharness.task.failed`, `cloudharness.agent.settled`, and
-  `cloudharness.agent.failed`. Their filter arguments, payload schemas, and the
+- **Terminal-state events.** `cloudharness.task.completed`,
+  `cloudharness.task.failed`, `cloudharness.agent.settled`,
+  `cloudharness.agent.failed`, and the webhook-automation pair
+  `cloudharness.automation.completed` / `cloudharness.automation.failed`
+  ([security model](security-model.md#webhook-automation-ingress)). Their
+  filter arguments, payload schemas, and the
   status sets each one covers are owned by `MCP_EVENT_DEFINITIONS` and are
   returned verbatim by `events/list`. A task event fires once, on the task's
   first transition into a terminal status, including a task the runner marks
   `RUNNER_RESTARTED` after a restart. `agent.settled` means the agent reached
   its terminal `SUCCEEDED` record and released its runtime; a turn ending is
-  never settlement.
+  never settlement. An automation event is recorded in the same transaction as
+  the workflow's terminal transition, so a completed event can precede the
+  optional GitHub comment. A coding automation completes only once its pull
+  request is open; a refused, unverified or unreadable step fails it with its
+  code (for example `ACTION_DENIED:<reason>`, `CODING_VERIFY_FAILED` or
+  `EFFECT_UNKNOWN`), and the run page lists every action receipt.
+- **Notification event.** `cloudharness.notification.created` fires when a
+  notification enters the principal's inbox (see
+  [notification inbox](#notification-inbox)), with an optional `kind` filter.
+  Its payload is the notification id, kind, subject type and id, a bounded,
+  redacted title, a relative Dashboard link, and the creation time. It is
+  feature-flagged: it fires only while the operator sets
+  `NOTIFICATIONS_ENABLED=true` and the principal's MCP Events preference for
+  that kind is on. Turning the flag off (the rollback) stops new events;
+  existing subscriptions stay listed and simply receive nothing.
 - **Payloads are notifications, not results.** They carry identifiers, status,
   exit or error codes, and timestamps only, never command text, output,
   prompts, or messages. Read the result with `tasks_status` or `agent_status`
-  after the event arrives.
+  after the event arrives, or, for an automation whose workspace is already
+  closed, on the Dashboard Automations run page.
 - **Owner scoping.** Subscriptions belong to the authenticated principal, and
   a `workspaceId`, `taskId`, or `agentId` filter must name something that
-  principal owns. An unauthenticated request is refused before reaching the
+  principal owns. Automation `ruleId` and `workflowId` filters are not
+  existence-checked; they only narrow the principal's own events. An unauthenticated request is refused before reaching the
   runner. Events fan out only to the owner's matching, unexpired
   subscriptions.
 - **Subscriptions are leases.** A subscription is identified by principal,
@@ -467,6 +715,44 @@ These tests use a mock callback receiver; they are not evidence of a live
 ChatGPT subscription (see
 [operations](operations.md#mcp-events-deployment-verification)).
 
+### Notification inbox
+
+When the operator sets `NOTIFICATIONS_ENABLED=true`, terminal automation runs
+and terminal top-level agents (not child agents, and not agents an automation
+started, which notify through their workflow) each write one notification to
+the owner's inbox in the same savepoint as the transition. The
+`workflow.waiting_for_human` and `approval.decided` kinds are defined for the
+approval flow and are written only once that flow emits them. A notification is deduplicated per principal, subject, and
+transition, so a replayed transition never notifies twice. The inbox copy is
+always recorded; the owner chooses per kind whether it is also delivered as the
+`cloudharness.notification.created` MCP event and whether the GitHub column
+mirrors the automation's own result comment. The harness adds no new egress:
+the MCP Events channel rides the existing webhook delivery, and the GitHub
+column reports the state of the comment the automation already posts.
+
+Each channel keeps its own delivery state (`PENDING`, `CLAIMED`, `DELIVERED`,
+`FAILED`, `REVOKED`) and last error class, visible on the Dashboard Inbox.
+Delivery is leased and compare-and-set, so a restarted runner or a second
+dispatcher delivers once; retries back off up to a bounded attempt count, and
+a lease lost to a stopped dispatcher counts as a failed attempt (`lease_lost`)
+with the same backoff and cap; and turning a channel off stops its pending
+deliveries, including the not yet sent webhook deliveries of the
+`cloudharness.notification.created` event. A delivery still open after twice
+the retention window is failed as `expired` and purged. Mark-all requires the
+`readThrough` insertion watermark of an inbox list, so a notification written
+after the owner loaded the inbox stays unread whatever its transition time.
+Notification work never
+relaunches an agent or repeats a transition. The inbox is read and marked only
+by its owner, through the Dashboard (`/dashboard/api/v1/inbox`,
+`/dashboard/api/v1/notification-preferences`); there is no MCP tool for it.
+
+Executable owners:
+[`packages/contracts/src/notifications-api.ts`](../packages/contracts/src/notifications-api.ts),
+[`apps/runner/src/notifications/`](../apps/runner/src/notifications/),
+[`apps/api/src/dashboard-inbox-router.ts`](../apps/api/src/dashboard-inbox-router.ts),
+and the failure-injection suite
+[`test/integration/notifications-failure-injection.test.ts`](../test/integration/notifications-failure-injection.test.ts).
+
 ## Semantics that are easy to misread
 
 - `files_apply_patch` is not a unified-diff parser. It performs one exact
@@ -474,6 +760,17 @@ ChatGPT subscription (see
   `oldText`. Supply `expectedSha256` when a concurrent edit must be detected.
 - `files_write` replaces a file atomically inside the workspace. Its
   `expectedSha256` option requires the target to exist and match.
+- `files_read` returns the `sha256` of the whole file even when `content` is one
+  window of it (`eof: false`). A client that writes back a partial window with
+  that hash passes the `files_write` fence and truncates the file, so it must
+  read to `eof` first or edit with `files_apply_patch`. The dashboard projects
+  `eof`, `bytesReturned` and `totalBytes` and turns whole-file save off for a
+  partial read.
+- `skills_run` behind a privilege grant answers `PRIVILEGE_APPROVAL_REQUIRED` with a
+  `grantRequest`. The grant binds the skill, script and bundle digest, plus the source, a
+  non-default timeout and any arguments, so the approved retry must resend the identical
+  request with `approvalGrantToken`; a changed retry is `FORBIDDEN` and leaves the grant
+  unused.
 - `exec_run` accepts raw Bash and is intentionally remote code execution
   inside the executor. It is request-owned and bounded by timeout/output
   settings. Standard execution runs as user `10001:10001` with `--read-only` rootfs
@@ -912,6 +1209,12 @@ ChatGPT subscription (see
 - Hooks support declarative JSON format in `.cloud-harness/hooks.json` with named lifecycle events
   (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`). Automatic lifecycle
   execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest.
+  `hooks_list` always returns every hook and marks each with `active`, which is true only when an
+  unexpired activation for one of its events pins the listed `manifestSha256`; `includeInactive` is
+  accepted for compatibility and ignored.
+  A hook run's timeout is the caller's `hooks_run` `timeoutMs` when given, otherwise the hook's own
+  manifest `timeoutMs`, otherwise 60,000 ms; lifecycle runs always use the manifest value. Both are
+  held to 100–300,000 ms, and a manifest value outside that range fails the run with `INVALID_INPUT`.
   Execution runs exclusively inside the container executor with `networkMode: none` by default.
 - Knowledge (Memories & Journals) is stored in principal-isolated SQLite `StateStore` (schema v10) supporting `owner`, `project`, and `workspace` scopes for memories, and chronological journals (`engineering-log`, `decision-record`, `session-reflection`). Operations (`knowledge_create`, `knowledge_read`, `knowledge_update`, `knowledge_delete`, `knowledge_list`, `knowledge_search`, `knowledge_link`, `knowledge_unlink`, `knowledge_graph`) provide CAS concurrency (`expectedGeneration`), RRF hybrid search (FTS5 + vector similarity), and bidirectional graph relations with wikilink extraction.
 - Named deployments come from the repository's `.cloud-harness/deployments.json` and execute inside the
@@ -928,8 +1231,9 @@ When running Cloud Harness MCP over local stdio (`--transport stdio --workspace 
 1. **Pre-opened workspace:** The workspace is configured at process startup. Calling `workspace_open` returns `INVALID_INPUT` explaining that the workspace is already selected.
 2. **Lifecycle operations:** `workspace_list` lists the active local workspace. `workspace_status` and `workspace_capabilities` return structured repository and workspace capabilities (`mode: 'local'`, `gitNetwork`, `gitPush`, `sandboxed: false`, granular operations and permissions). `workspace_close` terminates owned child processes but **never deletes the local folder**.
 3. **Subprocess execution:** `exec_run`, `shell_*`, `sessions_*`, and `tasks_*` execute on the local host with the current user's permissions. Output is bounded by ring buffers and paginated with monotonic cursors.
-4. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action`, `exec_run.privileged=true`, and `bash` with `target: "toolbox"` return structured unsupported errors; `bash` with `target: "workspace"` behaves like `exec_run`.
-5. **Filesystem operations:** File reading, writing, patching, deletion, and searching apply within the canonical workspace root. Traversal escapes are rejected.
+4. **Single checkout only:** `repositoryId`, `scope: "all"` on the search tools, `workspace_repos_list`, `workspace_repo_status`, `workspace_repo_add`, and `workspace_repo_remove` return `INVALID_INPUT`, because a local workspace is one directory chosen at startup; [multi-repository workspaces](#multi-repository-workspaces) need the remote runner.
+5. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action`, `exec_run.privileged=true`, and `bash` with `target: "toolbox"` return structured unsupported errors; `bash` with `target: "workspace"` behaves like `exec_run`.
+6. **Filesystem operations:** File reading, writing, patching, deletion, and searching apply within the canonical workspace root. Traversal escapes are rejected.
 
 ### Local multi-workspace mode
 

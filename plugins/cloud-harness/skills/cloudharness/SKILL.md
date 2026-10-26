@@ -18,6 +18,7 @@ network isolation.
 | Install the skill, connect a client, use the MCP gateway surface, or understand trust boundaries | [Installation and security](references/installation-and-security.md) |
 | Choose a tool and locate its detailed contract | [Tool reference index](references/tool-reference.md) |
 | Open, recover, inspect, or close a workspace; interpret results/errors | [Workspace lifecycle and results](references/workspace-lifecycle-and-results.md) |
+| Work across several repositories in one workspace, choose `repositoryId`, or handle a `read-only` repository | [Multi-repository workspaces](references/multi-repository-workspaces.md) |
 | List, read, write, patch, move, delete, grep, or search symbols | [Files and search](references/files-and-search.md) |
 | Run a command, interactive shell, coding session, or dependency task | [Execution and tasks](references/execution-and-tasks.md) |
 | Install, update, roll back, or uninstall a durable CLI tool for every workspace | [Managed packages](references/managed-packages.md) |
@@ -26,6 +27,7 @@ network isolation.
 | Read/run repository skills, hooks, knowledge (memories & journals), or deployments | [Repository automation](references/repository-automation.md) |
 | Snapshot, list, read, restore, or delete retained artifacts | [Retained artifacts](references/artifacts.md) |
 | Choose a subagent model, check a connection, save an agent model profile, or read estimated model spend | [Models and spend](references/models-and-spend.md) |
+| Explain where a finished coding-agent run spent time, tokens, and cost; compare profiles; export a run trace | [Agent traces](references/agent-traces.md) |
 
 Read a reference before using an unfamiliar, destructive, networked, or
 recovery-sensitive operation. The references are bundled with this skill and do
@@ -72,10 +74,16 @@ Details: [Repository automation](references/repository-automation.md#skills).
 ## MCP Events
 
 The remote HTTP endpoint also advertises MCP Events (`events/list`,
-`events/subscribe`, `events/unsubscribe`, webhook delivery only) for four
+`events/subscribe`, `events/unsubscribe`, webhook delivery only) for
 terminal-state notifications: `cloudharness.task.completed`,
-`cloudharness.task.failed`, `cloudharness.agent.settled`, and
-`cloudharness.agent.failed`. These are client-side protocol subscriptions, not
+`cloudharness.task.failed`, `cloudharness.agent.settled`,
+`cloudharness.agent.failed`, and, for owner-configured webhook automations,
+`cloudharness.automation.completed` and `cloudharness.automation.failed`
+(filter by `ruleId` or `workflowId`; no MCP tool manages automations, so read
+their results on the Dashboard), plus `cloudharness.notification.created` when
+the operator enabled the notification inbox (filter by `kind`; the payload is a
+notification id, kind, subject id, short title, and Dashboard link; no MCP tool
+reads the inbox). These are client-side protocol subscriptions, not
 tools: only the host client subscribes, with its own HTTPS callback and secret,
 so never try to create one through a tool call or a workspace command. An event
 carries ids, status, codes, and timestamps only, so after one arrives call
@@ -124,6 +132,13 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    records. Anything else returns `CONFLICT` naming the candidates.
    `workspace_open` never moves that preference, so repin deliberately when you
    switch repositories.
+   When one change spans repositories, open them together with `repositories`
+   instead of `repositoryUrl`; each checkout lives at `repos/<alias>/`, Git and
+   GitHub tools then need `repositoryId`, and `read-only` access blocks only
+   brokered writes, not file edits. Add or remove a checkout later with
+   `workspace_repo_add`/`workspace_repo_remove`, and search every checkout
+   with `scope: "all"`. Details:
+   [Multi-repository workspaces](references/multi-repository-workspaces.md).
    On a local server (its instructions say "local stdio workspace" or "local
    multi-workspace server"), workspaces are already open and `workspace_open`
    is refused: call `workspace_list`, choose by `name`/`root`, and pass that
@@ -174,7 +189,11 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    - Use interactive `shell_*` or `sessions_*` only when terminal state is required.
    - For `privileged: true` commands in Cloudflare Access mode, expect
      `PRIVILEGE_APPROVAL_REQUIRED` and wait for the operator to approve the
-     grant in the dashboard, then pass `approvalGrantToken`.
+     grant in the dashboard, then pass `approvalGrantToken`. `skills_run` is
+     gated the same way, and its grant binds the whole request (`name`,
+     `script`, `expectedContentSha256`, `source`, `timeoutMs`, `args`): resend
+     it unchanged with `approvalGrantToken`. A changed retry is `FORBIDDEN` and
+     leaves the grant unused, so do not ask for a new approval.
    - Injected secrets are available to container processes automatically; never
      attempt to print, echo, or exfiltrate secret values.
 7. **Git workflow and finalization.**

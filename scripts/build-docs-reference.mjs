@@ -20,7 +20,7 @@ const CATEGORIES = [
   {
     title: 'Workspace Lifecycle',
     description: 'Tools for opening, inspecting, listing, secrets discovery, and closing isolated TTL-bound workspaces.',
-    names: ['workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_context', 'workspace_set_active', 'workspace_lease_renew', 'workspace_recover', 'workspace_close', 'secrets_list']
+    names: ['workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_context', 'workspace_set_active', 'workspace_repos_list', 'workspace_repo_status', 'workspace_repo_add', 'workspace_repo_remove', 'workspace_lease_renew', 'workspace_recover', 'workspace_close', 'secrets_list']
   },
   {
     title: 'Files and Code Intelligence',
@@ -56,6 +56,11 @@ const CATEGORIES = [
     title: 'Models and Spend',
     description: 'Choose a provider and model, check a connection, save agent model profiles (created disabled; the owner activates them on the Dashboard), and read estimated model spend. Keys, activation, deletion, and spend policies stay on the Dashboard.',
     names: ['model_provider_list', 'model_catalog_search', 'model_connection_verify', 'model_profile_list', 'model_profile_validate', 'model_profile_create', 'model_profile_update', 'model_spend_summary']
+  },
+  {
+    title: 'Agent Traces',
+    description: 'Read-only, owner-scoped traces of coding-agent runs: list with KPI aggregates, read one trace and its reconciliation, page its spans, and pull a bounded json, csv, or OTLP/JSON export (off unless the operator enables agent traces). No prompts, model output, or tool arguments are recorded.',
+    names: ['agent_traces_list', 'agent_trace_get', 'agent_trace_spans', 'agent_trace_export']
   },
   {
     title: 'Retained Artifacts',

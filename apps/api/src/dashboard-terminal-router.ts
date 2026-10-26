@@ -10,6 +10,8 @@ import {
   TerminalReadInputSchema,
   TerminalResizeInputSchema,
   TerminalRowsSchema,
+  RepositorySelectorSchema,
+  TOOL_SCHEMA_BY_NAME,
   WorkspaceIdSchema,
   type InternalRunnerOperation,
   type RunnerPrincipalSelector
@@ -34,8 +36,24 @@ const LONG_POLL_HEADROOM_MS = 5_000;
 const openBody = z.object({
   cwd: z.string().optional(),
   cols: TerminalColsSchema.optional(),
-  rows: TerminalRowsSchema.optional()
+  rows: TerminalRowsSchema.optional(),
+  repositoryId: RepositorySelectorSchema.optional()
 }).strict();
+
+/**
+ * The checkout path of the repository a selector names, from the workspace's own registry. Terminals have
+ * no repository parameter, so a repository-scoped terminal opens with its working directory at that path;
+ * the path comes from the runner, never from the browser, and `cwd` stays relative inside it.
+ */
+function repositoryCwd(registry: unknown, selector: string, cwd: string | undefined): string | undefined {
+  const repositories = (registry as { repositories?: unknown } | undefined)?.repositories;
+  const entry = (Array.isArray(repositories) ? repositories as Array<Record<string, unknown>> : [])
+    .find((candidate) => candidate.repositoryId === selector || candidate.alias === selector);
+  if (!entry || typeof entry.path !== 'string') return undefined;
+  const inner = cwd === undefined || cwd === '.' ? '' : cwd.replace(/^\.\//, '');
+  if (entry.path === '.') return inner || '.';
+  return inner ? `${entry.path}/${inner}` : entry.path;
+}
 const inputBody = z.object({ data: z.string() }).strict();
 const resizeBody = z.object({ cols: TerminalColsSchema, rows: TerminalRowsSchema }).strict();
 const emptyBody = z.object({}).strict();
@@ -69,9 +87,27 @@ export function registerDashboardTerminalRoutes(
   router.get('/api/v1/workspaces/:workspaceId/terminals', endpoint('terminal_list', (request) => (
     TerminalListInputSchema.parse({ workspaceId: workspaceOf(request) })
   )));
-  router.post('/api/v1/workspaces/:workspaceId/terminals', endpoint('terminal_open', (request) => (
-    TerminalOpenInputSchema.parse({ ...openBody.parse(request.body ?? {}), workspaceId: workspaceOf(request) })
-  )));
+  router.post('/api/v1/workspaces/:workspaceId/terminals', async (request: DashboardRequest, response: Response, next: NextFunction) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      const { repositoryId, ...body } = openBody.parse(request.body ?? {});
+      const workspaceId = workspaceOf(request);
+      if (!runner.callInternal) { unavailable(response); return; }
+      let cwd = body.cwd;
+      if (repositoryId !== undefined) {
+        const listed = await runner.call('workspace_repos_list', TOOL_SCHEMA_BY_NAME.workspace_repos_list.parse({ workspaceId }) as Record<string, unknown>, selected);
+        if (!listed.ok) { sendRunnerResponse(response, 'workspace_repos_list', listed); return; }
+        cwd = repositoryCwd(listed.data, repositoryId, body.cwd);
+        if (cwd === undefined) {
+          response.status(400).json({ error: 'invalid_request', message: 'repositoryId does not name a repository of this workspace.' });
+          return;
+        }
+      }
+      const input = TerminalOpenInputSchema.parse({ ...body, ...(cwd === undefined ? {} : { cwd }), workspaceId });
+      sendRunnerResponse(response, 'terminal_open', await runner.callInternal('terminal_open', input, selected));
+    } catch (error) { next(error); }
+  });
   router.post('/api/v1/workspaces/:workspaceId/terminals/:terminalId/input', endpoint('terminal_input', (request) => (
     TerminalInputInputSchema.parse({ ...inputBody.parse(request.body ?? {}), workspaceId: workspaceOf(request), terminalId: terminalOf(request) })
   )));

@@ -106,7 +106,7 @@ function containerDepth(markup: string, ownerId: string, id: string): number {
 describe('dashboard static UI contract', () => {
   const html = asset('index.html');
   const css = asset('dashboard.css');
-  const script = `${asset('dashboard.js')}\n${asset('dashboard-api.js')}\n${asset('dashboard-render.js')}\n${asset('dashboard-pages.js')}\n${asset('dashboard-models.js')}`;
+  const script = `${asset('dashboard.js')}\n${asset('dashboard-api.js')}\n${asset('dashboard-render.js')}\n${asset('dashboard-pages.js')}\n${asset('dashboard-models.js')}\n${asset('dashboard-policies.js')}`;
   const squishedCss = squish(css);
 
   it('provides native landmarks, focus entry, live status, and destructive confirmation', () => {
@@ -348,6 +348,11 @@ describe('dashboard static UI contract', () => {
     expect(script).toContain("api('/skill-imports'");
     // The bare state token is what the job line used to print, and it is not guidance.
     expect(script).not.toContain("String(job.state ?? 'queued')");
+    // The cancel is fenced on the generation of the job line the operator is watching, never a constant,
+    // so a cancel that raced the job's own transition is refused instead of landing unseen.
+    expect(script).toContain("jobBox.setAttribute('data-job-generation', String(job.generation))");
+    expect(script).toContain('body: JSON.stringify({ expectedGeneration: generation })');
+    expect(script).not.toContain('JSON.stringify({ expectedGeneration: 1 })');
   });
 
   it('reduces the open workspace dialog to skill-set selection and drops the dead toolkit grid', () => {
@@ -753,5 +758,32 @@ describe('model pricing and spend surfaces', () => {
   it('never shows an unknown saved price as zero', () => {
     expect(models).toContain("export const UNKNOWN_SAVED_PRICE = 'Unknown (charged conservatively)';");
     expect(models).not.toMatch(/\?\?\s*['"]\$0/);
+  });
+});
+
+describe('repository scope wiring', () => {
+  const client = readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8');
+  const styles = readFileSync(new URL('../dashboard/dashboard.css', import.meta.url), 'utf8');
+
+  it('reads the registry without executor status for the selector and live status only for the explorer', () => {
+    expect(client).toContain('/repositories?status=false`');
+    expect(client).toContain("/repositories?status=${live ? 'true' : 'false'}`");
+  });
+
+  it('requires a repository choice before Git renders or binds in a multi-repository workspace', () => {
+    expect(client).toContain("if (tab === 'git' && scope.repositories.length && !scope.repository) return renderRepositoryRequired(scope.repositories);");
+    expect(client).toContain("tab === 'git' && (scope.repository || !scope.repositories.length)) bindGitControls(id, scope.repository);");
+    expect(client).toContain("allowRoot: tab !== 'git'");
+  });
+
+  it('scopes the cockpit tabs, the selector form, and the Git return paths to the selected repository', () => {
+    expect(client).toContain('renderWorkspaceTabs(id, tab, scope.repository)');
+    expect(client).toContain("document.querySelector('#repository-scope-form')");
+    expect(client).toContain("const gitTab = workspaceTabHref(workspaceId, 'git', repository);");
+  });
+
+  it('lays the scope selector out with tokens so it wraps at phone width', () => {
+    expect(styles).toMatch(/\.repository-scope \{[^}]*var\(--space-4\)/);
+    expect(styles).toMatch(/\.repository-scope select \{[^}]*max-width: 100%/);
   });
 });

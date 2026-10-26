@@ -23,7 +23,10 @@ export const AgentProxyOperationSchema = z.enum([
   'files_mkdir',
   'grep_search',
   'symbols_search',
-  'symbols_references'
+  'symbols_references',
+  'exec_run',
+  'git_status',
+  'git_diff'
 ]);
 
 function isBoundedJson(value: unknown): boolean {
@@ -123,8 +126,21 @@ export const InputRecordSchema = z.discriminatedUnion('type', [
   CancelRecordSchema
 ]);
 
+/** How a model turn ended, from the assistant message's stop reason. */
+export const TurnOutcomeSchema = z.enum(['stop', 'length', 'toolUse', 'error', 'aborted', 'deferred', 'pending', 'unknown']);
+/** Bounded classification of a failed model turn. */
+export const TurnErrorClassSchema = z.enum([
+  'auth', 'rate_limit', 'budget', 'server', 'timeout', 'network', 'context_length', 'aborted', 'invalid_request', 'other'
+]);
+
 export const SafeEventSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('lifecycle'), phase: z.enum(['started', 'turn_started', 'turn_ended', 'settled']) }).strict(),
+  z.object({
+    kind: z.literal('lifecycle'),
+    phase: z.enum(['started', 'turn_started', 'turn_ended', 'settled']),
+    // Reported on turn_ended only. Both are bounded enums; the provider's error text never leaves the runtime here.
+    outcome: TurnOutcomeSchema.optional(),
+    errorClass: TurnErrorClassSchema.optional()
+  }).strict(),
   z.object({ kind: z.literal('text_delta'), text: BoundedTextSchema }).strict(),
   z.object({
     kind: z.literal('tool'),

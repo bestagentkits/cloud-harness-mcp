@@ -33,7 +33,8 @@ function run(args: string[]) {
   });
 }
 
-describe('gh-helper issue_publish label steps', () => {
+// gh-helper.sh and its stub binaries are POSIX shell scripts that run only inside the Linux executor container.
+describe.skipIf(process.platform === 'win32')('gh-helper issue_publish label steps', () => {
   it('keeps the gh refusal when adding labels fails so the classifier maps its real code', () => {
     const result = run(['1379', '', 'triage', '', 'true']);
 

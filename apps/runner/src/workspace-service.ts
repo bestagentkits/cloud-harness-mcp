@@ -1,10 +1,29 @@
 import { createHash, randomBytes } from 'node:crypto';
+import {
+  assertRepositoryWritable,
+  checkoutContainerPath,
+  checkoutHostPath,
+  checkoutJobPath,
+  findRepository,
+  legacyRepositoryEntry,
+  publicRepositoryEntry,
+  REPOSITORIES_DIRECTORY,
+  repositoryIdempotencyKey,
+  repositorySubpath,
+  scopedRecordView,
+  scopedWorkdirArgs,
+  scopedWorkerArgs,
+  unknownRepository
+} from './workspace-repositories.js';
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
-import { chmod, chown, cp, mkdir, readFile, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
+import { chmod, chown, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
+  BROKERED_ONLY_PROXY_OPERATIONS,
+  COMMAND_MAX_TIMEOUT_MS,
   DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
+  DEFAULT_MAX_WORKSPACE_REPOSITORIES,
   DEFAULT_RECOVERABLE_GRACE_SECONDS,
   GITHUB_READ_ACTIONS,
   WORKSPACE_LIFECYCLE_BOUNDS,
@@ -16,6 +35,7 @@ import {
   RunnerResponseSchema,
   TOOL_SCHEMA_BY_NAME,
   applyGuidanceActivity,
+  normalizedRepositoryUrlKey,
   buildRepositoryGuidanceSnapshot,
   repositoryGuidanceSummary,
   sanitizeAndAttributeProvenance,
@@ -32,11 +52,12 @@ import {
   type WorkspaceLifecycleSettingName,
   type WorkspaceLifecycleSettingsUpdate,
   type WorkspaceLifecycleSettingsView,
-  TERMINAL_MAX_INPUT_BYTES
+  TERMINAL_MAX_INPUT_BYTES,
+  isAgentTraceOperation
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
 import { EXECUTOR_HARDENING_ARGS, EXECUTOR_RESOURCE_CEILINGS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
-import { PackageBuilder } from './package-builder.js';
+import { DEFAULT_NPM_REGISTRY, PackageBuilder } from './package-builder.js';
 import { PACKAGE_OPERATIONS, PackageService, databaseWorkspaceDirectory, type PackageOperation } from './package-service.js';
 import { PackageStore } from './package-store.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
@@ -51,13 +72,18 @@ import { cloneHistorySpec, fetchHistorySpec } from './git-history-spec.js';
 import {
   ActiveWorkspaceLimitReachedError,
   COUNTED_WORKSPACE_STATUSES,
+  RepositoryRegistryConflictError,
+  RepositoryRegistryFenceError,
   SettingsRevisionConflictError,
   type WorkspaceLifecycleOverrides,
   type GitOperationStatus,
   type PrincipalSelector,
   type StateStore,
-  type WorkspaceRecord
+  type WorkspaceRecord,
+  type WorkspaceRepositoryRecord,
+  type WorkspaceRepositoryScope
 } from './state-store.js';
+import { withHookActivationState } from './hook-activation-state.js';
 import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { ToolkitCacheManager } from './toolkit-cache-manager.js';
@@ -76,6 +102,11 @@ import {
   resolveGitHubFallbackToken
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
+import { AgentTraceStore, executeAgentTraceOperation } from './agent-trace-store.js';
+import { AgentTraceRecorder, type AgentActionTraceSink } from './agent-trace-recorder.js';
+import type { CodingActionBroker } from './agent-governance/action-broker.js';
+import { LockfileInstallExecutor, type InstallResult } from './agent-governance/install-executor.js';
+import { CODING_GIT_ARGS, CODING_GIT_ENV, CODING_GIT_SUBCOMMANDS, isCommitSha, parseTransferInspection, type PushVerifier } from './agent-governance/coding-git.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -121,7 +152,46 @@ const countedStatus = new Set<WorkspaceRecord['status']>(COUNTED_WORKSPACE_STATU
  * an operator or agent to act, and every check starts a short-lived helper container.
  */
 const AUTO_CLOSE_RETRY_MS = 3_600_000;
+/** Git in the executor image (Debian), named absolutely so nothing on the checkout's PATH can stand in for it. */
+const CODING_GIT_BINARY = '/usr/bin/git';
+/** Output cap of one coding Git inspection; a larger listing is reported truncated and refused. */
+const CODING_GIT_MAX_BYTES = 1_048_576;
+
+const SKILL_RUN_DEFAULT_TIMEOUT_MS = 60_000;
+
+/**
+ * The privilege-grant descriptor for `skills_run`. The grant is bound to a descriptor the owner can
+ * actually read, rather than to the shell command that carries it, and it names every input that
+ * reaches the helper container: the skill, script and digest, plus the provenance source, a
+ * non-default timeout and the script arguments when the caller supplies them. Approving therefore
+ * means "run this skill script at this digest with exactly these inputs", and a retry that changes
+ * any of them hashes to a different descriptor and cannot consume the grant. A plain call keeps the
+ * original descriptor byte for byte. The arguments come last and are JSON-encoded, so no argument
+ * value can imitate another field.
+ */
+export function skillRunGrantDescriptor(input: Record<string, unknown>): string {
+  const name = input.name as string;
+  const script = input.script as string;
+  const expectedSha = (input.expectedContentSha256 ?? input.expectedSha256) as string;
+  const timeoutMs = (input.timeoutMs as number) || SKILL_RUN_DEFAULT_TIMEOUT_MS;
+  const args = Array.isArray(input.args) ? input.args as unknown[] : [];
+  let descriptor = `skills_run ${name} script=${script} expected=${expectedSha}`;
+  if (typeof input.source === 'string') descriptor += ` source=${input.source}`;
+  if (timeoutMs !== SKILL_RUN_DEFAULT_TIMEOUT_MS) descriptor += ` timeoutMs=${timeoutMs}`;
+  if (args.length > 0) descriptor += ` args=${JSON.stringify(args)}`;
+  return descriptor;
+}
+
+/** A retained workspace that startup reconciliation could not bring back; the runner logs each one. */
+export interface StartupReconcileFailure {
+  workspaceId: string;
+  reason: string;
+}
 const AUTO_CLOSE_DEFERRED_PREFIX = 'auto-close deferred: ';
+/** Waits before each attempt to unpause an executor; a busy daemon usually completes the first or second. */
+const EXECUTOR_RESUME_RETRY_DELAYS_MS = [0, 250, 1_000] as const;
+/** Per-call staging directories a crashed runner can leave directly inside a retained workspace directory. */
+const WORKSPACE_STAGING_DIRECTORY = /^(?:repository-add|git-transfer)-[0-9a-f]{24}$/;
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
 ]);
@@ -137,8 +207,35 @@ export function builtinSkillsMountArgs(builtinSkillsRoot: string | undefined): s
   return ['--volume', `${builtinSkillsRoot}:/opt/cloud-harness/skills:ro`];
 }
 
+/**
+ * The bind mounts of one Git transfer helper: its own transfer directory and, when the mode reads or
+ * writes the checkout, the checkout tree. Never the whole workspace directory, so a repository-configured
+ * command that runs during one transfer (an import's fetch, a stage's clone) cannot reach the transfer
+ * repository of another; above all, nothing can write a staged push clone between its stage and its push.
+ * The checkout is read-only while it is staged and writable only for an import, which updates its refs.
+ * An inspection only reads the staged clone, so it mounts that alone, read-only.
+ * The checkout source is always the tree root the executor mounts, never a scoped subdirectory: the
+ * executor can replace `repos/<alias>` with a symlink, and Docker resolves a bind source on the host,
+ * whereas the helper resolves the scoped path inside its own mount namespace.
+ */
+export function gitTransferVolumes(mode: 'fetch' | 'import' | 'stage-push' | 'inspect' | 'push', workspacePath: string, transferName: string): string[] {
+  const transfer = ['--volume', `${join(workspacePath, transferName)}:/job/${transferName}:${mode === 'import' || mode === 'inspect' ? 'ro' : 'rw'}`];
+  if (mode === 'fetch' || mode === 'inspect' || mode === 'push') return transfer;
+  return ['--volume', `${join(workspacePath, 'repo')}:/job/repo:${mode === 'import' ? 'rw' : 'ro'}`, ...transfer];
+}
+
+/**
+ * The transfer repository sits one level inside its mounted directory, so the helper creates it and owns
+ * it: Git refuses a repository owned by another UID, and the runner's UID need not be the helper's.
+ */
+export function gitTransferRepositoryPath(transferName: string): string {
+  return `/job/${transferName}/repository.git`;
+}
+
 export function computeWorkspaceOpenFingerprint(input: {
-  repositoryUrl: string | URL;
+  repositoryUrl?: string | URL | undefined;
+  repositories?: Array<{ url: string; alias: string; ref?: string | undefined; access: string }> | undefined;
+  primaryRepositoryAlias?: string | undefined;
   ref?: string | undefined;
   environmentId?: string | undefined;
   networkProfile?: string | undefined;
@@ -150,7 +247,7 @@ export function computeWorkspaceOpenFingerprint(input: {
   const canonicalToolkits = [...(input.toolkits ?? [])].sort((a, b) =>
     toolkitSelectionIdentity(a).localeCompare(toolkitSelectionIdentity(b)));
   const payload = {
-    repositoryUrl: String(input.repositoryUrl),
+    repositoryUrl: input.repositoryUrl === undefined ? null : String(input.repositoryUrl),
     ref: input.ref ?? null,
     environmentId: input.environmentId ?? null,
     // An omitted profile resolves through the instance default at open time, so it is a distinct
@@ -160,7 +257,12 @@ export function computeWorkspaceOpenFingerprint(input: {
     allowToolkitWorkspaceChanges: input.allowToolkitWorkspaceChanges ?? false,
     // History options join the fingerprint only when set, so replays of earlier requests keep matching.
     ...(input.fetchDepth !== undefined ? { fetchDepth: input.fetchDepth } : {}),
-    ...(input.shallowSince !== undefined ? { shallowSince: input.shallowSince } : {})
+    ...(input.shallowSince !== undefined ? { shallowSince: input.shallowSince } : {}),
+    // A repository set joins only multi-repository requests, so single-repository replays keep matching.
+    ...(input.repositories !== undefined ? {
+      repositories: input.repositories.map((entry) => ({ url: entry.url, alias: entry.alias, ref: entry.ref ?? null, access: entry.access })),
+      primaryRepositoryAlias: input.primaryRepositoryAlias ?? input.repositories[0]?.alias ?? null
+    } : {})
   };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
@@ -204,6 +306,69 @@ function availableLifecycleActions(status: WorkspaceRecord['status'], canRenewLe
     default:
       return [];
   }
+}
+
+/** Operations bound to one Git repository: a multi-repository workspace must say which. */
+const REPOSITORY_SELECTOR_REQUIRED = new Set<RunnerOperation>([
+  'git_status', 'git_diff', 'git_log', 'git_branch', 'git_checkout', 'git_add', 'git_commit',
+  'git_fetch', 'git_pull', 'git_push', 'git_merge', 'git_rebase',
+  'worktrees_list', 'worktrees_create', 'worktrees_remove',
+  'workspace_finalize', 'github_read', 'github_action'
+]);
+/** Command tools the operation manager runs with a tree-relative `cwd` rather than through the worker. */
+const CWD_REBASED_OPERATIONS = new Set<RunnerOperation>(['shell_open', 'sessions_open', 'tasks_run']);
+/** Search tools that accept `scope: "all"`, with the result list each one returns. */
+const SEARCH_RESULT_KEYS = { grep_search: 'matches', symbols_search: 'symbols', symbols_references: 'references' } as const;
+type SearchOperation = keyof typeof SEARCH_RESULT_KEYS;
+
+function isSearchOperation(operation: string): operation is SearchOperation {
+  return Object.hasOwn(SEARCH_RESULT_KEYS, operation);
+}
+
+/**
+ * Whether a search spans every checkout. A search without `scope: "all"` drops the cursor, which it
+ * ignored before the scope existed, so its worker input is unchanged.
+ */
+function prepareSearchInput(operation: RunnerOperation, validated: Record<string, unknown>): boolean {
+  if (!isSearchOperation(operation)) return false;
+  if (validated.scope === 'all') return true;
+  delete validated.cursor;
+  return false;
+}
+
+/**
+ * One result of a `scope: "all"` search, attributed to its checkout. Line matches arrive as
+ * `<absolute path>:<line>:<column>:<text>` and lose the checkout prefix; symbols already carry a
+ * checkout-relative path.
+ */
+function annotateSearchResult(operation: SearchOperation, item: unknown, prefix: string, attribution: { repositoryId: string; alias: string }): Record<string, unknown> {
+  if (operation === 'symbols_search') {
+    return { ...(item && typeof item === 'object' ? item as Record<string, unknown> : { symbol: item }), ...attribution };
+  }
+  const line = typeof item === 'string' && item.startsWith(prefix) ? item.slice(prefix.length) : item;
+  return { ...attribution, [operation === 'grep_search' ? 'match' : 'reference']: line };
+}
+
+/** A repository add or remove after its replay and multi-repository checks passed. */
+type RepositoryChange = {
+  ownerId: string;
+  record: WorkspaceRecord;
+  entries: WorkspaceRepositoryRecord[];
+  key: string;
+  fingerprint: string;
+};
+
+/** The device and inode of a checkout directory, so a removal touches only the directory it verified. */
+type CheckoutIdentity = { dev: number; ino: number };
+
+/** A scoped mutation's audit row names the repository it targeted, beside the workspace and generation. */
+function withRepositoryAudit(record: WorkspaceRecord, details: Record<string, string | number | boolean>): Record<string, string | number | boolean> {
+  return record.repositoryScope ? { ...details, repositoryId: record.repositoryScope.id, repositoryAlias: record.repositoryScope.alias } : details;
+}
+
+/** Each checkout of a multi-repository workspace has its own guidance, so it has its own cache entry. */
+function guidanceCacheKey(record: WorkspaceRecord): string {
+  return record.repositoryScope ? `${record.id}:${record.repositoryScope.id}` : record.id;
 }
 
 function publicRecord(record: WorkspaceRecord, capabilities?: WorkspaceCapabilityResult) {
@@ -302,6 +467,25 @@ export class WorkspaceService {
    * restart simply rescans on first use.
    */
   private readonly guidanceCache = new Map<string, { generation: number; fingerprint: string; snapshot: RepositoryGuidanceSnapshot }>();
+  /**
+   * Workspaces with a repository add or remove in flight; a second change is refused with a retryable
+   * `CONFLICT` rather than queued. This lock, `frozenTrees`, and `treeWriters` are in memory only: they
+   * rely on one runner process per instance, which the deployment provides (one runner service owning
+   * the SQLite state). The registry transaction still fences the rows if that ever changes.
+   */
+  private readonly repositoryChanges = new Set<string>();
+  /** Workspaces whose tree is frozen for a host-side check-and-change; no new tree writer may start. */
+  private readonly frozenTrees = new Set<string>();
+  /** In-flight helper containers that mount a workspace tree read-write, by workspace. */
+  private readonly treeWriters = new Map<string, number>();
+  /**
+   * Workspaces whose executor this runner has paused for an atomic step. Only one pause may be held at a
+   * time, so a failed pause can be undone without resuming someone else's, and a paused executor found
+   * outside this set was left behind by a failed resume and may be resumed.
+   */
+  private readonly pausedExecutors = new Set<string>();
+  /** Workspaces whose executor this runner is resuming, restarting, or rebuilding; no pause may start meanwhile. */
+  private readonly repairingExecutors = new Set<string>();
   private reaper?: NodeJS.Timeout | undefined;
   private reaperRunning = false;
   /** Toolbox containers this runner is running now; the semaphore count and the sweep's exclusion list. */
@@ -312,6 +496,13 @@ export class WorkspaceService {
 
   public readonly networkProfileManager: NetworkProfileManager;
   private readonly agentManager?: AgentManager | undefined;
+  /** Present only when agent traces are enabled; the trace tools report FEATURE_DISABLED otherwise. */
+  private readonly traceStore: AgentTraceStore | undefined;
+  private readonly tracePurger: AgentTraceStore;
+  /** Where brokered coding actions write their spans; absent when agent traces are disabled. */
+  readonly actionTraces: AgentActionTraceSink | undefined;
+  /** The coding action broker, attached only when coding automations are enabled. */
+  private codingBroker: CodingActionBroker | undefined;
   private readonly metadata?: MetadataStore | undefined;
   private failureIntelligence?: FailureIntelligence | undefined;
   constructor(
@@ -333,16 +524,40 @@ export class WorkspaceService {
     this.metadata = metadata;
     this.instanceId = store.instanceId();
     const { manager, ...managerDependencies } = agentDeps ?? {};
+    const traceConfig = config.agentTraces;
+    this.traceStore = traceConfig?.enabled === true
+      ? new AgentTraceStore(store.database, { retentionDays: traceConfig.retentionDays, maxTracesPerPrincipal: traceConfig.maxTracesPerPrincipal })
+      : undefined;
+    // The trace tables always exist (the state store creates them), and every row carries its own
+    // retention deadline, so retention is enforced even while recording and reading are off.
+    this.tracePurger = this.traceStore ?? new AgentTraceStore(store.database, {
+      retentionDays: traceConfig?.retentionDays ?? 14, maxTracesPerPrincipal: traceConfig?.maxTracesPerPrincipal ?? 5_000
+    });
+    const traceRecorder = managerDependencies.traceRecorder ?? (this.traceStore && traceConfig
+      ? new AgentTraceRecorder(this.traceStore, { maxSpansPerTrace: traceConfig.maxSpansPerTrace, previewBytes: traceConfig.previewBytes })
+      : undefined);
+    this.actionTraces = traceRecorder instanceof AgentTraceRecorder ? traceRecorder : undefined;
     this.agentManager = manager ?? (config.agents
       ? new AgentManager(config.agents, store, {
+          workflowFor: (ownerId, workspaceId) => this.codingBroker?.workflowFor(ownerId, workspaceId) ?? null,
+          permitsBrokeredOperations: (ownerId, workspaceId) => this.codingBroker?.permitsBrokeredSpawn(ownerId, workspaceId) === true,
           ...managerDependencies,
-          toolExecutor: async (request) => await this.executeAgentProxy(request),
+          traceRecorder,
+          // Every agent tool call passes the coding broker when one is attached; without it the
+          // brokered-only operations are refused here as well as at spawn.
+          toolExecutor: async (request) => {
+            if (this.codingBroker) return await this.codingBroker.executeAgentTool(request, async (brokered) => await this.executeAgentProxy(brokered));
+            if ((BROKERED_ONLY_PROXY_OPERATIONS as readonly string[]).includes(request.operation)) {
+              throw new HarnessError('FORBIDDEN', `${request.operation} is available only to a coding workflow agent`, 403, false);
+            }
+            return await this.executeAgentProxy(request);
+          },
           repositoryGuidance: async (request) => {
             const record = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
             if (record.generation !== request.workspaceGeneration) {
               throw new HarnessError('EXPIRED', 'agent bootstrap lost its workspace fence', 410, false);
             }
-            return await this.repositoryGuidance(record, request.signal);
+            return await this.repositoryGuidance(this.primaryRecordView(record), request.signal);
           }
         })
       : undefined);
@@ -418,6 +633,82 @@ export class WorkspaceService {
   /** Attaches the Decision Plane. Without it every failure keeps only its deterministic classification. */
   useDecisionPlane(plane: DecisionPlane): void {
     this.failureIntelligence = new FailureIntelligence(plane);
+  }
+
+  /** Attaches the coding action broker; from then on every agent tool call of a coding workspace is brokered. */
+  useCodingBroker(broker: CodingActionBroker): void {
+    this.codingBroker = broker;
+  }
+
+  /** Workspace facts the coding broker re-checks before each action: the live generation and the checkout count. */
+  codingWorkspaceFacts(): { generation(workspaceId: string): number | null; repositoryCount(workspaceId: string): number } {
+    return {
+      generation: (workspaceId) => {
+        const record = this.store.byId(workspaceId);
+        return record && record.status === 'ACTIVE' ? record.generation : null;
+      },
+      repositoryCount: (workspaceId) => Math.max(1, this.store.workspaceRepositories(workspaceId).length)
+    };
+  }
+
+  /**
+   * Installs a coding workspace's admitted npm lockfile in a one-shot `dependency-access` container (see
+   * `agent-governance/install-executor.ts`). Only the coding engine calls this, after the gate allowed
+   * every locked package; the workspace's own network profile is not touched.
+   */
+  async installCodingDependencies(ownerId: string, workspaceId: string, signal?: AbortSignal): Promise<InstallResult> {
+    if (!this.config.agentCodingPackageInstallEnabled) {
+      throw new HarnessError('FORBIDDEN', 'coding package installs are disabled on this instance', 403, false);
+    }
+    const record = this.store.byId(workspaceId);
+    if (!record || record.ownerId !== ownerId || record.status !== 'ACTIVE') throw new HarnessError('NOT_FOUND', 'workspace not found', 404, false);
+    if (record.repositoryScope || this.store.workspaceRepositories(workspaceId).length > 1) {
+      return { ok: false, code: 'CODING_INSTALL_FAILED', exitCode: null, output: 'installs need a single, unscoped checkout' };
+    }
+    const executor = new LockfileInstallExecutor({
+      image: this.config.executorImage,
+      instanceId: this.instanceId,
+      network: this.networkProfileManager,
+      registry: DEFAULT_NPM_REGISTRY
+    });
+    return await executor.install({ workspaceId: record.id, workspacePath: record.workspacePath }, signal);
+  }
+
+  /**
+   * Runs one read-only Git inspection in a coding checkout for the coding engine (see
+   * `agent-governance/coding-git.ts`): owner-scoped, ACTIVE only, and a fixed subcommand allow-list.
+   * Every read runs in a fresh, unprivileged helper container with the checkout mounted read-only, never
+   * through `docker exec` into the executor, so no process the agent left running there can observe or
+   * steer it. System and global configuration, replace refs (including a repository's own
+   * core.useReplaceRefs), grafts, hooks, fsmonitor, pagers, path quoting and relative diff listings are
+   * off, and the Git directory and work tree are named explicitly so a checkout's core.worktree cannot
+   * move them. This is a defence in depth: what is published is decided on the transfer clone (see
+   * `remotePush`). Output is capped and the cap is reported.
+   */
+  async runCodingGit(ownerId: string, workspaceId: string, args: readonly string[], signal?: AbortSignal): Promise<{ exitCode: number; stdout: string; truncated: boolean }> {
+    if (!CODING_GIT_SUBCOMMANDS.has(args[0] ?? '')) throw new HarnessError('FORBIDDEN', 'git subcommand is not inspectable', 403, false);
+    const record = this.store.byId(workspaceId);
+    if (!record || record.ownerId !== ownerId || record.status !== 'ACTIVE') throw new HarnessError('NOT_FOUND', 'workspace not found', 404, false);
+    const helperName = `chm-cg-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
+    try {
+      const result = await runDocker([
+        'run', '--rm', '--pull', 'never', '--name', helperName,
+        '--label', 'cloud-harness.role=coding-git-inspect', '--label', 'cloud-harness.ephemeral=true',
+        '--label', `cloud-harness.instance=${this.instanceId}`, '--label', `cloud-harness.workspace=${record.id}`,
+        '--network', 'none', '--user', '10001:10001', '--read-only',
+        '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=16m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+        '--pids-limit', '64', '--memory', '256m', '--memory-swap', '256m', '--cpus', '1',
+        ...CODING_GIT_ENV.flatMap((entry) => ['--env', entry]),
+        '--volume', `${record.workspacePath}/repo:/workspace:ro`,
+        '--workdir', checkoutContainerPath(record),
+        '--entrypoint', CODING_GIT_BINARY,
+        this.config.executorImage,
+        ...CODING_GIT_ARGS, ...args
+      ], { timeoutMs: 60_000, maxBytes: CODING_GIT_MAX_BYTES, ...(signal ? { signal } : {}) });
+      return { exitCode: result.exitCode, stdout: result.stdout, truncated: result.truncated };
+    } finally {
+      await removeContainer(helperName);
+    }
   }
 
   /**
@@ -506,7 +797,11 @@ export class WorkspaceService {
     }
   }
 
-  async start(): Promise<void> {
+  /**
+   * Returns the workspaces startup could not reconcile; each is already closed or held for recovery,
+   * so the caller only reports them.
+   */
+  async start(): Promise<StartupReconcileFailure[]> {
     if ((this.config.authMode ?? 'owner-bearer') === 'cloudflare-access') {
       const legacyOwners = this.store.legacyWorkspaceOwnerIds();
       if (legacyOwners.length > 0 && !this.config.legacyPrincipalMapping) {
@@ -527,50 +822,23 @@ export class WorkspaceService {
       });
     }
     await mkdir(this.config.jobsRoot, { recursive: true, mode: 0o700 });
+    const failures: StartupReconcileFailure[] = [];
     for (const record of this.store.active()) {
-      if (record.status === 'NETWORK_QUARANTINED') {
-        if (record.containerName) {
-          try {
-            await removeContainer(record.containerName);
-            this.store.update(record.id, { containerName: null });
-          } catch {
-            // retain record.containerName for retry
-          }
+      try {
+        await this.reconcileRetainedWorkspace(record);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        failures.push({ workspaceId: record.id, reason });
+        if (error instanceof HarnessError && error.code === 'EXPIRED') {
+          // The checkout is gone, so there is nothing to recover; close it like a missing executor.
+          await this.closeRecord(record, `executor reconciliation failed during startup: ${reason}`).catch(() => undefined);
+        } else {
+          await this.holdForRecovery(record, `executor reconciliation failed during startup: ${reason}`);
         }
-        continue;
-      }
-      if (record.status === 'CREATING') await this.closeRecord(record, 'runner restarted during workspace creation');
-      else if (!record.containerName || !(await inspectContainer(record.containerName))) await this.closeRecord(record, 'executor missing during startup reconciliation');
-      else {
-        const inspection = await inspectContainer(record.containerName);
-        const hostConfig = inspection?.HostConfig as { NetworkMode?: string } | undefined;
-        const expectedNetwork = record.networkProfile === 'network-none' ? 'none' : (this.config.dependencyNetworkName ?? 'cloud-harness-dependency-access');
-        if (hostConfig?.NetworkMode !== expectedNetwork) {
-          await removeContainer(record.containerName).catch(() => undefined);
-          if (record.networkProfile === 'dependency-access') {
-            const readiness = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
-            if (!readiness.ok) {
-              this.store.update(record.id, { containerName: null, status: 'NETWORK_QUARANTINED', error: `dependency-access network unavailable: ${readiness.reason}` });
-              continue;
-            }
-          }
-          await this.ensureActiveExecutor(record);
-          continue;
-        }
-        if (record.networkProfile === 'dependency-access') {
-          const readiness = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
-          if (!readiness.ok) {
-            await removeContainer(record.containerName).catch(() => undefined);
-            this.store.update(record.id, { containerName: null, status: 'NETWORK_QUARANTINED', error: `dependency-access network unavailable: ${readiness.reason}` });
-            continue;
-          }
-        }
-        const restarted = await runDocker(['restart', record.containerName], { timeoutMs: 30_000, maxBytes: 65_536 });
-        if (restarted.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'executor restart reconciliation failed', 503, true);
       }
     }
     await this.toolkitCacheManager.reconcileStartup().catch(() => undefined);
-    await this.reconcileContainers();
+    await this.reconcileContainers(failures);
     // After leftover containers are gone, so no builder can still be writing below the packages root.
     if (this.config.packagesEnabled === true) await this.packages.reconcileStartup();
     await this.reconcileJobDirectories();
@@ -581,6 +849,73 @@ export class WorkspaceService {
       void this.reapExpired().catch(() => undefined).finally(() => { this.reaperRunning = false; });
     }, this.config.reaperIntervalSeconds * 1_000);
     this.reaper.unref();
+    return failures;
+  }
+
+  /**
+   * Brings one retained workspace back to a usable executor after a runner restart. A failure here
+   * belongs to this workspace alone; the caller holds it for recovery so startup finishes for the rest.
+   */
+  private async reconcileRetainedWorkspace(record: WorkspaceRecord): Promise<void> {
+    if (record.status === 'NETWORK_QUARANTINED') {
+      if (record.containerName) {
+        try {
+          await removeContainer(record.containerName);
+          this.store.update(record.id, { containerName: null });
+        } catch {
+          // retain record.containerName for retry
+        }
+      }
+      return;
+    }
+    if (record.status === 'CREATING') await this.closeRecord(record, 'runner restarted during workspace creation');
+    else if (!record.containerName || !(await inspectContainer(record.containerName))) await this.closeRecord(record, 'executor missing during startup reconciliation');
+    else {
+      const inspection = await inspectContainer(record.containerName);
+      const hostConfig = inspection?.HostConfig as { NetworkMode?: string } | undefined;
+      const expectedNetwork = record.networkProfile === 'network-none' ? 'none' : (this.config.dependencyNetworkName ?? 'cloud-harness-dependency-access');
+      if (hostConfig?.NetworkMode !== expectedNetwork) {
+        await removeContainer(record.containerName).catch(() => undefined);
+        if (record.networkProfile === 'dependency-access') {
+          const readiness = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
+          if (!readiness.ok) {
+            this.store.update(record.id, { containerName: null, status: 'NETWORK_QUARANTINED', error: `dependency-access network unavailable: ${readiness.reason}` });
+            return;
+          }
+        }
+        await this.ensureActiveExecutor(record);
+        return;
+      }
+      if (record.networkProfile === 'dependency-access') {
+        const readiness = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
+        if (!readiness.ok) {
+          await removeContainer(record.containerName).catch(() => undefined);
+          this.store.update(record.id, { containerName: null, status: 'NETWORK_QUARANTINED', error: `dependency-access network unavailable: ${readiness.reason}` });
+          return;
+        }
+      }
+      // A runner that stopped mid-pause leaves the executor paused; resume it before the restart.
+      if (inspection) await this.resumeLeftoverPause(record, inspection);
+      const restarted = await runDocker(['restart', record.containerName], { timeoutMs: 30_000, maxBytes: 65_536 });
+      if (restarted.exitCode !== 0) {
+        // A container that will not restart is replaced; the checkout lives on the host, not in it.
+        await removeContainer(record.containerName).catch(() => undefined);
+        await this.ensureActiveExecutor({ ...record, containerName: null });
+      }
+    }
+  }
+
+  /**
+   * Moves a workspace whose executor could not be reconciled into the recoverable state an idle expiry
+   * leaves, so its checkout is kept and `workspace_recover` rebuilds the executor. Any other state
+   * (closed, quarantined, or already demoted by a failed close) is left as it is.
+   */
+  private async holdForRecovery(record: WorkspaceRecord, reason: string): Promise<void> {
+    const current = this.store.byId(record.id);
+    if (!current || current.status !== 'ACTIVE' || !this.store.claimForReaping(current.id, current.generation, true)) return;
+    const claimed = this.store.byId(current.id)!;
+    if (claimed.containerName) await removeContainer(claimed.containerName).catch(() => undefined);
+    this.markExpiredRecoverable(claimed, Date.now(), reason);
   }
 
   /**
@@ -619,7 +954,12 @@ export class WorkspaceService {
     await this.agentManager?.stop();
     await this.packageService?.shutdown();
   }
-  private async reconcileContainers(): Promise<void> {
+  /**
+   * Removes managed containers no active workspace owns. A workspace executor that Docker will not remove is
+   * reported and left for the next startup (a fixed-name rebuild also removes it first) instead of aborting this
+   * one. Ephemeral helpers stay strict: package startup cleanup relies on every builder being gone.
+   */
+  private async reconcileContainers(failures: StartupReconcileFailure[]): Promise<void> {
     const managed = await runDocker([
       'ps', '-a', '--filter', 'label=cloud-harness.managed=true',
       '--filter', `label=cloud-harness.instance=${this.instanceId}`,
@@ -630,7 +970,12 @@ export class WorkspaceService {
       const [name, workspaceId] = line.split('\t');
       if (!name) continue;
       const record = workspaceId ? this.store.byId(workspaceId) : undefined;
-      if (!record || !activeStatus.has(record.status) || record.containerName !== name) await removeContainer(name);
+      if (record && activeStatus.has(record.status) && record.containerName === name) continue;
+      try {
+        await removeContainer(name);
+      } catch (error) {
+        failures.push({ workspaceId: workspaceId || name, reason: `leftover container ${name} could not be removed: ${error instanceof Error ? error.message : String(error)}` });
+      }
     }
 
     const helpers = await runDocker([
@@ -647,7 +992,28 @@ export class WorkspaceService {
       const record = this.store.byId(entry.name);
       if (!record || (!activeStatus.has(record.status) && record.status !== 'EXPIRED_RECOVERABLE')) {
         await this.safeRemovePath(join(this.config.jobsRoot, entry.name));
+      } else {
+        // A leftover only costs disk until the workspace closes, so a failed sweep does not block startup.
+        await this.removeLeftoverStaging(record, join(this.config.jobsRoot, entry.name)).catch((error: unknown) => {
+          console.warn('[runner] leftover workspace staging cleanup failed', record.id, error instanceof Error ? error.message : String(error));
+        });
       }
+    }
+  }
+
+  /**
+   * Removes the clone and Git-transfer staging directories a runner that stopped mid-call left in a retained
+   * workspace. Runs at startup after every helper container is gone, and touches only real directories that
+   * sit directly in the workspace's canonical directory and match the exact staging name.
+   */
+  private async removeLeftoverStaging(record: WorkspaceRecord, workspaceDirectory: string): Promise<void> {
+    if (resolve(record.workspacePath) !== resolve(workspaceDirectory)) return;
+    for (const entry of await readdir(workspaceDirectory, { withFileTypes: true })) {
+      if (!WORKSPACE_STAGING_DIRECTORY.test(entry.name)) continue;
+      const path = join(workspaceDirectory, entry.name);
+      const stats = await lstat(path).catch(() => undefined);
+      if (!stats?.isDirectory() || stats.isSymbolicLink()) continue;
+      await this.safeRemovePath(path);
     }
   }
 
@@ -702,10 +1068,11 @@ export class WorkspaceService {
    * Finishes an expiry claimed with `claimForExpiry`: the executor is already gone, the slot is released,
    * and the recoverable window opens from the expiry itself rather than from the last tool activity.
    */
-  private markExpiredRecoverable(claimed: WorkspaceRecord, now: number): WorkspaceRecord | undefined {
+  private markExpiredRecoverable(claimed: WorkspaceRecord, now: number, error?: string): WorkspaceRecord | undefined {
     return this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
       status: 'EXPIRED_RECOVERABLE',
       containerName: null,
+      ...(error ? { error } : {}),
       lastActivityAt: now,
       expiredAt: now,
       recoverableUntil: now + this.recoverableGraceSecondsFor(claimed) * 1_000
@@ -816,10 +1183,21 @@ export class WorkspaceService {
     return Math.min(record.hardExpiresAt, activityAt + (record.idleTtlSeconds ?? this.config.idleTtlSeconds) * 1_000);
   }
 
-  private async clone(record: WorkspaceRecord, repositoryUrl: URL, ref?: string, historySpec = ''): Promise<string> {
+  /**
+   * Clones into the record's checkout, or into `destination` (a host path and its `/job` path) when given.
+   * A retry removes the failed attempt host-side, so a destination must be a directory the executor cannot
+   * reach; the default checkout path qualifies only while no executor runs yet (open).
+   */
+  private async clone(
+    record: WorkspaceRecord,
+    repositoryUrl: URL,
+    ref?: string,
+    historySpec = '',
+    destination?: { hostPath: string; jobPath: string }
+  ): Promise<string> {
     const jobPath = record.workspacePath;
-    const repositoryPath = join(jobPath, 'repo');
-    const helperName = `chm-clone-${record.id.slice(3, 15)}`;
+    const repositoryPath = destination?.hostPath ?? checkoutHostPath(record);
+    const helperName = `chm-clone-${record.id.slice(3, 15)}${record.repositoryScope ? `-${record.repositoryScope.alias}` : ''}`;
     await mkdir(jobPath, { recursive: true, mode: 0o700 });
     await chmod(jobPath, 0o777);
 
@@ -845,7 +1223,7 @@ export class WorkspaceService {
       '--volume', `${jobPath}:/job`,
       ...(cachePath ? ['--volume', `${cachePath}:/job/cache:ro`] : []),
       '--entrypoint', '/opt/harness/clone-helper.sh', this.config.executorImage,
-      record.repositoryUrl, '/job/repo', ref ?? '', cachePath ? '/job/cache' : '', historySpec
+      record.repositoryUrl, destination?.jobPath ?? checkoutJobPath(record), ref ?? '', cachePath ? '/job/cache' : '', historySpec
     ];
 
     const runClone = async (token: string | undefined, cachePath?: string) => {
@@ -1003,6 +1381,25 @@ export class WorkspaceService {
   }
 
   private async ensureActiveExecutor(record: WorkspaceRecord): Promise<WorkspaceRecord> {
+    // A pause or tree freeze this runner holds must outlive the change it protects; resuming, restarting, or
+    // rebuilding the executor in that window would let workspace processes write into a verified tree.
+    if (this.pausedExecutors.has(record.id) || this.frozenTrees.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'the executor is paused for a repository change or Git transfer; retry shortly', 409, true);
+    }
+    // The repair spans several awaits, so it is claimed for its whole run: a pause or freeze that began after
+    // the check above would otherwise freeze a container this repair then replaces with a running one.
+    if (this.repairingExecutors.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'the executor is already being recovered; retry shortly', 409, true);
+    }
+    this.repairingExecutors.add(record.id);
+    try {
+      return await this.repairExecutor(record);
+    } finally {
+      this.repairingExecutors.delete(record.id);
+    }
+  }
+
+  private async repairExecutor(record: WorkspaceRecord): Promise<WorkspaceRecord> {
     // Dependency-access requires a fresh attestation before reuse; a quarantined
     // record must never resume its existing container. Force removal and rebuild
     // through createExecutor (which re-attests) instead of reusing a container
@@ -1013,8 +1410,9 @@ export class WorkspaceService {
     } else if (record.containerName) {
       const inspected = await inspectContainer(record.containerName);
       if (inspected) {
-        const state = inspected.State as { Running?: boolean } | undefined;
-        if (state?.Running) {
+        const state = inspected.State as { Running?: boolean; Paused?: boolean } | undefined;
+        // A paused executor reports Running; one a failed resume left paused is resumed, else rebuilt.
+        if (state?.Running && await this.resumeLeftoverPause(record, inspected)) {
           return record;
         }
         const started = await runDocker(['start', record.containerName], { timeoutMs: 30_000 });
@@ -1080,17 +1478,19 @@ export class WorkspaceService {
       return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(prior), truncated: false };
     }
     await this.ensureCapacity(ownerId);
-    const url = await validateRepositoryUrl(parsed.repositoryUrl, this.config.allowedGitHosts);
-    if (parsed.ref?.startsWith('-')) throw new HarnessError('INVALID_INPUT', 'ref cannot start with a dash');
     const now = Date.now();
     const workspaceId = opaqueId('ws');
+    const repositories = await this.openRepositorySet(workspaceId, parsed);
+    const primary = repositories.find((entry) => entry.primary);
+    const url = await validateRepositoryUrl(primary?.repositoryUrl ?? parsed.repositoryUrl ?? '', this.config.allowedGitHosts);
+    if (parsed.ref?.startsWith('-')) throw new HarnessError('INVALID_INPUT', 'ref cannot start with a dash');
     // The lifecycle policy is snapshotted here: a later Settings change applies to workspaces opened after
     // it and never shortens or extends this one. The hard deadline is the wall-TTL snapshot.
     const policy = this.effectiveLifecyclePolicy();
     const hardExpiresAt = now + policy.wallTtlSeconds * 1_000;
     const record: WorkspaceRecord = {
       id: workspaceId, ownerId, idempotencyKey: parsed.idempotencyKey, repositoryUrl: url.toString(),
-      repositoryRef: parsed.ref ?? null, containerName: null, workspacePath: join(this.config.jobsRoot, workspaceId),
+      repositoryRef: primary ? primary.repositoryRef : parsed.ref ?? null, containerName: null, workspacePath: join(this.config.jobsRoot, workspaceId),
       environmentId: parsed.environmentId ?? null,
       // Resolution order: explicit request, then the operator's persisted instance
       // default, then the runner configuration (shipped default: dependency-access).
@@ -1100,7 +1500,7 @@ export class WorkspaceService {
       idleTtlSeconds: policy.idleTtlSeconds, recoverableGraceSeconds: policy.recoverableGraceSeconds, expiredAt: null, recoverableUntil: null
     };
     try {
-      this.store.admit(record, this.configuredActiveWorkspaceLimit());
+      this.store.admit(record, this.configuredActiveWorkspaceLimit(), repositories);
     } catch (error) {
       const replay = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
       if (replay) {
@@ -1163,9 +1563,18 @@ export class WorkspaceService {
 
       await this.composeOwnerToolkitProjection(record, ownerBundles, parsed.skillOverrides);
 
-      const repositoryPath = await this.clone(record, url, parsed.ref, cloneHistorySpec(parsed.fetchDepth, parsed.shallowSince));
-      if (workspaceBundles.length > 0) {
-        await this.applyWorkspaceToolkitPatches(record, workspaceBundles, repositoryPath);
+      const historySpec = cloneHistorySpec(parsed.fetchDepth, parsed.shallowSince);
+      let repositoryPath: string;
+      if (repositories.length === 0) {
+        repositoryPath = await this.clone(record, url, parsed.ref, historySpec);
+        if (workspaceBundles.length > 0) {
+          await this.applyWorkspaceToolkitPatches(record, workspaceBundles, repositoryPath);
+        }
+      } else {
+        repositoryPath = await this.cloneRepositorySet(record, repositories, historySpec);
+        if (workspaceBundles.length > 0 && primary) {
+          await this.applyWorkspaceToolkitPatches(record, workspaceBundles, checkoutHostPath(scopedRecordView(record, primary)));
+        }
       }
 
       this.store.saveWorkspaceToolkits(
@@ -1192,7 +1601,7 @@ export class WorkspaceService {
       await this.runLifecycleHooks(active, 'on_workspace_open').catch(() => undefined);
       // Eager guidance bootstrap: scanned after open hooks so the snapshot reflects the checkout an
       // agent will see. A scan failure never fails the open; agent_spawn rescans and fails closed.
-      const guidance = await this.repositoryGuidance(active).catch(() => undefined);
+      const guidance = await this.repositoryGuidance(this.primaryRecordView(active)).catch(() => undefined);
       return {
         ok: true,
         message: 'Workspace opened',
@@ -1210,6 +1619,62 @@ export class WorkspaceService {
       await this.safeRemovePath(record.workspacePath);
       throw error;
     }
+  }
+
+  /**
+   * The registry rows of a multi-repository open, or none for a single-repository open. Every URL is
+   * validated before admission, so a disallowed host or address never reaches the store or a clone.
+   */
+  private async openRepositorySet(
+    workspaceId: string,
+    parsed: { repositories?: Array<{ url: string; alias: string; ref?: string | undefined; access: 'read-write' | 'read-only' }> | undefined; primaryRepositoryAlias?: string | undefined }
+  ): Promise<WorkspaceRepositoryRecord[]> {
+    if (!parsed.repositories) return [];
+    const limit = this.config.maxWorkspaceRepositories ?? DEFAULT_MAX_WORKSPACE_REPOSITORIES;
+    if (parsed.repositories.length > limit) {
+      throw new HarnessError('LIMIT_EXCEEDED', `a workspace holds at most ${limit} repositories on this instance; ${parsed.repositories.length} were requested`, 400, false);
+    }
+    const primaryAlias = parsed.primaryRepositoryAlias ?? parsed.repositories[0]!.alias;
+    const entries: WorkspaceRepositoryRecord[] = [];
+    for (const [position, entry] of parsed.repositories.entries()) {
+      const url = await validateRepositoryUrl(entry.url, this.config.allowedGitHosts);
+      entries.push({
+        id: opaqueId('repo'),
+        workspaceId,
+        alias: entry.alias,
+        repositoryUrl: url.toString(),
+        repositoryRef: entry.ref ?? null,
+        access: entry.access,
+        position,
+        primary: entry.alias === primaryAlias
+      });
+    }
+    return entries;
+  }
+
+  /**
+   * Clones each repository into its own `repos/<alias>` checkout, two at a time. The first failure
+   * stops further clones and names the repository; the caller removes the whole job directory.
+   */
+  private async cloneRepositorySet(record: WorkspaceRecord, repositories: readonly WorkspaceRepositoryRecord[], historySpec: string): Promise<string> {
+    const pending = [...repositories];
+    let failure: unknown;
+    const worker = async () => {
+      for (let entry = pending.shift(); entry && failure === undefined; entry = pending.shift()) {
+        const view = scopedRecordView(record, entry);
+        try {
+          const url = await validateRepositoryUrl(entry.repositoryUrl, this.config.allowedGitHosts);
+          await this.clone(view, url, entry.repositoryRef ?? undefined, historySpec);
+        } catch (error) {
+          failure ??= error instanceof HarnessError
+            ? new HarnessError(error.code, `repository ${entry.alias}: ${error.message}`.slice(0, 2_000), error.status, error.retryable)
+            : error;
+        }
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    if (failure !== undefined) throw failure;
+    return join(record.workspacePath, 'repo');
   }
 
   private async composeOwnerToolkitProjection(
@@ -1346,7 +1811,16 @@ export class WorkspaceService {
   }
 
   publicWorkspaceRecord(record: WorkspaceRecord): Record<string, unknown> {
-    return publicRecord(record, this.computeWorkspaceCapabilities(record));
+    const repositories = this.store.workspaceRepositories(record.id);
+    if (repositories.length === 0) return publicRecord(record, this.computeWorkspaceCapabilities(record));
+    // A multi-repository workspace reports its primary repository's capabilities at the top level, as
+    // single-repository callers expect, and lists every checkout for repository-scoped calls.
+    const primary = repositories.find((entry) => entry.primary) ?? repositories[0]!;
+    return {
+      ...publicRecord(record, this.computeWorkspaceCapabilities(scopedRecordView(record, primary))),
+      primaryRepositoryId: primary.id,
+      repositories: repositories.map((entry) => publicRepositoryEntry(entry, true))
+    };
   }
 
   private extractRepositoryName(repositoryUrl: URL): string | null {
@@ -1455,12 +1929,26 @@ export class WorkspaceService {
       }
     }
 
+    // A read-only repository of a multi-repository workspace advertises no brokered write, whatever the
+    // credential could do; the matching write paths refuse with FORBIDDEN.
+    const readOnlyRepository = record.repositoryScope?.access === 'read-only';
+    if (readOnlyRepository) {
+      contentsWrite = false;
+      issuesWrite = false;
+      pullRequestsWrite = false;
+    }
+    const brokeredWrite = githubBrokered && !readOnlyRepository;
     const privileged = authMode === 'cloudflare-access';
 
     return {
       workspaceId: record.id,
       repository: repoName,
       repositoryUrl: record.repositoryUrl,
+      ...(record.repositoryScope ? {
+        repositoryId: record.repositoryScope.id,
+        repositoryAlias: record.repositoryScope.alias,
+        repositoryAccess: record.repositoryScope.access
+      } : {}),
       capabilities: {
         repository: {
           read: contentsRead,
@@ -1527,11 +2015,11 @@ export class WorkspaceService {
         refCompareAndSwap: contentsWrite,
         refDeleteIfMatch: contentsWrite,
         commitStatusRead: githubBrokered,
-        commitStatusCreate: githubBrokered,
+        commitStatusCreate: brokeredWrite,
         checkRunList: githubBrokered,
         workflowRunRead: githubBrokered,
-        workflowDispatch: githubBrokered,
-        workflowRunRerun: githubBrokered,
+        workflowDispatch: brokeredWrite,
+        workflowRunRerun: brokeredWrite,
         execRun: true,
         privilegedExec: privileged,
         deploymentsRun: true
@@ -1674,12 +2162,9 @@ export class WorkspaceService {
   ): Promise<RunnerResponse> {
     const name = input.name as string;
     const script = input.script as string;
-    const expectedSha = (input.expectedContentSha256 ?? input.expectedSha256) as string;
-    const timeoutMs = (input.timeoutMs as number) || 60_000;
+    const timeoutMs = (input.timeoutMs as number) || SKILL_RUN_DEFAULT_TIMEOUT_MS;
     const maxOutputBytes = this.config.maxOutputBytes;
-    // The grant is bound to a descriptor the owner can actually read, rather than to the shell command
-    // that happens to carry it, so approving means "run this skill script at this digest".
-    const grantCommand = `skills_run ${name} script=${script} expected=${expectedSha}`;
+    const grantCommand = skillRunGrantDescriptor(input);
     const commandSha256 = createHash('sha256').update(grantCommand).digest('hex');
     const approvalGrantToken = input.approvalGrantToken as string | undefined;
 
@@ -1718,7 +2203,7 @@ export class WorkspaceService {
       cwd: '.'
     });
     if (!grantValid) {
-      throw new HarnessError('FORBIDDEN', 'Invalid, expired, or already-consumed approval grant token', 403, false);
+      throw new HarnessError('FORBIDDEN', 'Invalid, expired, or already-consumed approval grant token, or the request does not match the approved run', 403, false);
     }
 
     // The helper container reuses the worker's one-shot entry point, so the snapshot, the digest check,
@@ -1747,7 +2232,7 @@ export class WorkspaceService {
 
   /** An open replay carries the cached guidance summary when this runner still holds one. */
   private openedWorkspaceData(record: WorkspaceRecord) {
-    const cached = this.guidanceCache.get(record.id);
+    const cached = this.guidanceCache.get(guidanceCacheKey(this.primaryRecordView(record)));
     return {
       ...this.publicWorkspaceRecord(record),
       ...(cached && cached.generation === record.generation ? { repositoryContext: repositoryGuidanceSummary(cached.snapshot) } : {})
@@ -1760,7 +2245,8 @@ export class WorkspaceService {
    * reuses the digest-addressed snapshot instead of re-reading guidance for every agent.
    */
   async repositoryGuidance(record: WorkspaceRecord, signal?: AbortSignal): Promise<{ snapshot: RepositoryGuidanceSnapshot; reused: boolean }> {
-    const cached = this.guidanceCache.get(record.id);
+    const cacheKey = guidanceCacheKey(record);
+    const cached = this.guidanceCache.get(cacheKey);
     const known = cached && cached.generation === record.generation ? cached : undefined;
     const response = await this.runWorker(
       record, 'workspace_bootstrap_context', { timeoutMs: 10_000, ...(known ? { knownFingerprint: known.fingerprint } : {}) }, signal
@@ -1775,7 +2261,7 @@ export class WorkspaceService {
     // incomplete snapshot for every later agent. A workspace closed mid-scan is not re-cached.
     const current = this.store.byId(record.id);
     if (!snapshot.truncationReasons.includes('time-limit') && current?.status === 'ACTIVE' && current.generation === record.generation) {
-      this.guidanceCache.set(record.id, { generation: record.generation, fingerprint, snapshot });
+      this.guidanceCache.set(cacheKey, { generation: record.generation, fingerprint, snapshot });
     }
     return { snapshot, reused: false };
   }
@@ -1795,7 +2281,11 @@ export class WorkspaceService {
     }
     if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
     const containerName = record.containerName;
-    const timeout = typeof input.timeoutMs === 'number' ? input.timeoutMs + 5_000 : 65_000;
+    // A hook run that names no timeout uses its manifest value, which only the worker reads, so the
+    // executor call allows the largest bound the worker enforces on that value.
+    const timeout = typeof input.timeoutMs === 'number'
+      ? input.timeoutMs + 5_000
+      : (operation === 'hooks_run' ? COMMAND_MAX_TIMEOUT_MS : 60_000) + 5_000;
     const operationId = (typeof input.operationId === 'string' && input.operationId) || opaqueId('op');
     const pidFile = `/tmp/cloud-harness-operations/${operationId}.pid`;
     const jsonMaxBytes = Math.min(67_108_864, Math.max(this.config.maxOutputBytes, 262_144) * 6 + 8_192);
@@ -1804,13 +2294,15 @@ export class WorkspaceService {
       workspaceId: record.id,
       kind: operation,
       deadlineMs: Date.now() + timeout,
-      container: containerName
+      container: containerName,
+      // A scoped call runs inside its checkout; an unscoped one at its cwd below the tree root.
+      cwd: record.repositoryScope?.subpath ?? (typeof input.cwd === 'string' ? input.cwd : '.')
     });
 
     let result;
     try {
       result = await runDocker([
-        'exec', '-i', containerName, '/usr/bin/setsid', '--wait', '/opt/harness/worker-runner.sh', operationId
+        'exec', '-i', ...scopedWorkerArgs(record), containerName, '/usr/bin/setsid', '--wait', '/opt/harness/worker-runner.sh', operationId
       ], {
         stdin: JSON.stringify({ operation, input }), timeoutMs: Math.min(timeout, 305_000), maxBytes: jsonMaxBytes,
         abortKillGraceMs: 2_000,
@@ -1863,9 +2355,11 @@ export class WorkspaceService {
     operation: RunnerOperation,
     input: Record<string, unknown>,
     signal?: AbortSignal,
-    writable = false
+    writable = false,
+    /** A paused executor cannot take a `docker exec`, so the check runs in a read-only helper instead. */
+    executorPaused = false
   ): Promise<RunnerResponse> {
-    if (record.containerName) {
+    if (record.containerName && !executorPaused) {
       return await this.runWorker(record, operation, input, signal);
     }
     const helperName = `chm-rec-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
@@ -1882,6 +2376,7 @@ export class WorkspaceService {
         '--pids-limit', '64', '--memory', '256m', '--memory-swap', '256m', '--cpus', '1',
         '--volume', `${record.workspacePath}/repo:/workspace:${mode}`,
         '--workdir', '/workspace',
+        ...scopedWorkerArgs(record),
         '--env', 'HOME=/tmp/cloud-harness-home',
         '--entrypoint', '/opt/harness/worker-runner.sh',
         this.config.executorImage,
@@ -1901,7 +2396,7 @@ export class WorkspaceService {
 
   private async runGitTransferHelper(
     record: WorkspaceRecord,
-    mode: 'fetch' | 'import' | 'stage-push' | 'push',
+    mode: 'fetch' | 'import' | 'stage-push' | 'inspect' | 'push',
     transferName: string,
     argument: string,
     token: string | undefined,
@@ -1911,7 +2406,9 @@ export class WorkspaceService {
   ) {
     const helperName = `chm-git-${mode.replaceAll('-', '').slice(0, 5)}-${randomBytes(6).toString('hex')}`;
     const network = mode === 'fetch' || mode === 'push' ? 'bridge' : 'none';
+    const releaseTreeWriter = this.claimTreeWriter(record);
     try {
+      if (mode === 'fetch' || mode === 'stage-push') await this.createTransferDirectory(join(record.workspacePath, transferName));
       const result = await runDocker([
         'run', '-i', '--rm', '--pull', 'never', '--name', helperName,
         '--label', 'cloud-harness.role=git-transfer-helper', '--label', 'cloud-harness.ephemeral=true',
@@ -1920,10 +2417,15 @@ export class WorkspaceService {
         '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
         '--pids-limit', '128', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
         '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_TERMINAL_PROMPT=0',
-        '--volume', `${record.workspacePath}:/job:rw`, '--entrypoint', '/opt/harness/git-transfer-helper.sh',
-        this.config.executorImage, mode, record.repositoryUrl, '/job/repo', `/job/${transferName}`, argument, expectedRemoteOid ?? '', historySpec
+        ...gitTransferVolumes(mode, record.workspacePath, transferName),
+        '--entrypoint', '/opt/harness/git-transfer-helper.sh',
+        this.config.executorImage, mode, record.repositoryUrl, checkoutJobPath(record), gitTransferRepositoryPath(transferName), argument, expectedRemoteOid ?? '', historySpec
       ], {
-        stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes,
+        // An inspection is decided on, not shown, so it is never capped by the operator's output cap: a commit
+        // that passed the checkout gate must not be refused at push for its size. Its answer holds the commit
+        // object in base64 (4/3 of its size) and the path listing, each read within CODING_GIT_MAX_BYTES on
+        // the checkout, so three times that cap holds both (4/3 + 1, with room for the framing lines).
+        stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: mode === 'inspect' ? 3 * CODING_GIT_MAX_BYTES : this.config.maxOutputBytes,
         ...(signal ? { signal } : {})
       });
       if (result.exitCode !== 0) {
@@ -1968,29 +2470,140 @@ export class WorkspaceService {
       }
       return result;
     } finally {
-      await removeContainer(helperName);
+      try { await removeContainer(helperName); } finally { releaseTreeWriter(); }
     }
   }
 
-  private async withPausedExecutor<T>(record: WorkspaceRecord, action: () => Promise<T>): Promise<T> {
-    if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
-    const paused = await runDocker(['pause', record.containerName], { timeoutMs: 30_000, maxBytes: 8_192 });
-    if (paused.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'executor could not be paused for an atomic Git transfer', 503, true);
-    let value: T | undefined;
-    let actionError: unknown;
+  private async withPausedExecutor<T>(record: WorkspaceRecord, action: () => Promise<T>, purpose = 'an atomic Git transfer'): Promise<T> {
+    const { value, resumed } = await this.runWithPausedExecutor(record, action, purpose);
+    if (!resumed) throw new HarnessError('UNAVAILABLE', `executor could not be resumed after ${purpose}`, 503, true);
+    return value;
+  }
+
+  /**
+   * Pauses the executor for `action` and always tries to resume it. A pause that fails or times out may still
+   * have taken effect in the daemon, so it is undone before the refusal. `resumed: false` reports an executor
+   * left paused after a completed action; the caller decides whether that action's result still stands.
+   */
+  private async runWithPausedExecutor<T>(record: WorkspaceRecord, action: () => Promise<T>, purpose: string): Promise<{ value: T; resumed: boolean }> {
+    const containerName = record.containerName;
+    if (!containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
+    if (this.pausedExecutors.has(record.id)) {
+      throw new HarnessError('UNAVAILABLE', `executor could not be paused for ${purpose}: it is paused for another change; retry shortly`, 503, true);
+    }
+    if (this.repairingExecutors.has(record.id)) {
+      throw new HarnessError('UNAVAILABLE', `executor could not be paused for ${purpose}: it is being recovered; retry shortly`, 503, true);
+    }
+    this.pausedExecutors.add(record.id);
     try {
-      value = await action();
-    } catch (error) { actionError = error; }
-    const resumed = await runDocker(['unpause', record.containerName], { timeoutMs: 30_000, maxBytes: 8_192 });
-    if (resumed.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'executor could not be resumed after Git transfer', 503, true);
-    if (actionError) throw actionError;
-    return value!;
+      const paused = await runDocker(['pause', containerName], { timeoutMs: 30_000, maxBytes: 8_192 }).catch(() => undefined);
+      if (paused?.exitCode !== 0) {
+        await this.resumeExecutor(containerName);
+        throw new HarnessError('UNAVAILABLE', `executor could not be paused for ${purpose}`, 503, true);
+      }
+      let value: T | undefined;
+      let actionError: unknown;
+      try {
+        value = await action();
+      } catch (error) { actionError = error; }
+      const resumed = await this.resumeExecutor(containerName);
+      if (!resumed) console.warn('[runner] executor could not be resumed', record.id, purpose);
+      if (actionError) throw actionError;
+      return { value: value as T, resumed };
+    } finally {
+      this.pausedExecutors.delete(record.id);
+    }
+  }
+
+  /** Unpauses an executor, retrying with a short backoff; an executor that is not paused counts as resumed. */
+  private async resumeExecutor(containerName: string): Promise<boolean> {
+    for (const delayMs of EXECUTOR_RESUME_RETRY_DELAYS_MS) {
+      if (delayMs > 0) await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+      const resumed = await runDocker(['unpause', containerName], { timeoutMs: 30_000, maxBytes: 8_192 }).catch(() => undefined);
+      if (resumed && (resumed.exitCode === 0 || /is not paused/i.test(resumed.stderr))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Resumes this workspace's own managed executor when a failed resume left it paused. Callers have already
+   * refused while this runner holds the pause, and a container without this workspace's managed labels is left
+   * as it is. Returns false only when resuming this workspace's executor failed.
+   */
+  private async resumeLeftoverPause(record: WorkspaceRecord, inspected: Record<string, unknown>): Promise<boolean> {
+    const state = inspected.State as { Paused?: boolean } | undefined;
+    if (!state?.Paused || !record.containerName) return true;
+    const labels = (inspected.Config as { Labels?: Record<string, string> } | undefined)?.Labels ?? {};
+    if (labels['cloud-harness.managed'] !== 'true' || labels['cloud-harness.instance'] !== this.instanceId || labels['cloud-harness.workspace'] !== record.id) {
+      return true;
+    }
+    return await this.resumeExecutor(record.containerName);
+  }
+
+  /**
+   * Runs a host-side check-and-change of the workspace tree while nothing in the workspace can write to it.
+   * Node's recursive `rm` re-resolves every path it descends, so a link swapped in mid-removal would be
+   * followed; freezing the writers is what keeps a verified path verified. The executor (and every process
+   * exec'd into it) is paused for the whole action, a privileged or transfer helper that mounts the tree
+   * read-write may neither be running nor start meanwhile, and any other running workspace container
+   * refuses the change. Agent containers mount no workspace tree; they reach it through the executor.
+   * Every failure to establish the freeze refuses the change instead of running it unfrozen.
+   */
+  private async withFrozenWorkspaceTree<T>(record: WorkspaceRecord, action: () => Promise<T>): Promise<{ value: T; resumed: boolean }> {
+    if (this.frozenTrees.has(record.id)) throw new HarnessError('CONFLICT', 'the workspace tree is frozen for another change; retry shortly', 409, true);
+    this.frozenTrees.add(record.id);
+    try {
+      if ((this.treeWriters.get(record.id) ?? 0) > 0) {
+        throw new HarnessError('CONFLICT', 'a privileged command or Git transfer is writing to the workspace tree; retry once it finishes', 409, true);
+      }
+      return await this.runWithPausedExecutor(record, async () => {
+        await this.assertNoOtherTreeContainers(record);
+        return await action();
+      }, 'a repository change');
+    } finally {
+      this.frozenTrees.delete(record.id);
+    }
+  }
+
+  private async assertNoOtherTreeContainers(record: WorkspaceRecord): Promise<void> {
+    const listed = await runDocker([
+      'ps', '--filter', `label=cloud-harness.instance=${this.instanceId}`, '--filter', `label=cloud-harness.workspace=${record.id}`,
+      '--format', '{{.Names}}\t{{.Label "cloud-harness.agent-container"}}'
+    ], { timeoutMs: 30_000, maxBytes: 65_536 });
+    if (listed.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'the workspace containers could not be listed for a repository change', 503, true);
+    const others = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean)
+      .map((line) => line.split('\t'))
+      .filter(([name, agent]) => name !== record.containerName && agent !== 'true')
+      .map(([name]) => name!);
+    if (others.length > 0) {
+      throw new HarnessError('CONFLICT', `another container is using the workspace tree (${others.slice(0, 3).join(', ')}); retry once it finishes`, 409, true);
+    }
+  }
+
+  /**
+   * Counts a helper that mounts the workspace tree read-write until the returned release runs; none may
+   * start while the tree is frozen. The check and the count are synchronous, so a freeze either sees the
+   * helper or the helper sees the freeze.
+   */
+  private claimTreeWriter(record: WorkspaceRecord): () => void {
+    if (this.frozenTrees.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'the workspace tree is briefly frozen for a repository change; retry shortly', 409, true);
+    }
+    this.treeWriters.set(record.id, (this.treeWriters.get(record.id) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.treeWriters.get(record.id) ?? 1) - 1;
+      if (remaining > 0) this.treeWriters.set(record.id, remaining);
+      else this.treeWriters.delete(record.id);
+    };
   }
 
   private async currentBranch(record: WorkspaceRecord, signal?: AbortSignal): Promise<string> {
     if (record.containerName) {
       const result = await runDocker([
-        'exec', record.containerName, 'git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat', 'branch', '--show-current'
+        'exec', ...scopedWorkdirArgs(record), record.containerName, 'git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat', 'branch', '--show-current'
       ], { timeoutMs: 30_000, maxBytes: 8_192, ...(signal ? { signal } : {}) });
       if (result.exitCode !== 0) throw new HarnessError('CONFLICT', 'current Git branch could not be determined', 409, false);
       return result.stdout.trim();
@@ -2002,7 +2615,7 @@ export class WorkspaceService {
         '--label', 'cloud-harness.ephemeral=true',
         '--network', 'none', '--user', '10001:10001', '--read-only',
         '--volume', `${record.workspacePath}/repo:/workspace:ro`,
-        '--workdir', '/workspace',
+        '--workdir', checkoutContainerPath(record),
         '--entrypoint', 'git',
         this.config.executorImage,
         '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat', 'branch', '--show-current'
@@ -2030,7 +2643,7 @@ export class WorkspaceService {
     const unresolved = revision === 'HEAD' ? 'current Git HEAD could not be determined' : `Git revision ${revision} could not be resolved`;
     if (record.containerName) {
       const result = await runDocker([
-        'exec', record.containerName, 'git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat', ...revParse
+        'exec', ...scopedWorkdirArgs(record), record.containerName, 'git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat', ...revParse
       ], { timeoutMs: 30_000, maxBytes: 8_192, ...(signal ? { signal } : {}) });
       if (result.exitCode !== 0) throw new HarnessError('CONFLICT', unresolved, 409, false);
       return result.stdout.trim();
@@ -2042,7 +2655,7 @@ export class WorkspaceService {
         '--label', 'cloud-harness.ephemeral=true',
         '--network', 'none', '--user', '10001:10001', '--read-only',
         '--volume', `${record.workspacePath}/repo:/workspace:ro`,
-        '--workdir', '/workspace',
+        '--workdir', checkoutContainerPath(record),
         '--entrypoint', 'git',
         this.config.executorImage,
         '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat', ...revParse
@@ -2119,7 +2732,458 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
   }
 
-  private async remotePush(record: WorkspaceRecord, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  /** The registry of a workspace: its multi-repository rows, or the synthesized entry of its one checkout. */
+  workspaceRepositoryEntries(record: WorkspaceRecord): { multiRepository: boolean; entries: WorkspaceRepositoryRecord[] } {
+    const rows = this.store.workspaceRepositories(record.id);
+    return rows.length > 0 ? { multiRepository: true, entries: rows } : { multiRepository: false, entries: [legacyRepositoryEntry(record)] };
+  }
+
+  /**
+   * Resolves `repositoryId` to a record view of one checkout. A single-repository workspace accepts its
+   * own id or alias and keeps the unscoped record, so its calls are unchanged; the selector is dropped from
+   * `validated` so idempotency fingerprints match calls without it. In a multi-repository workspace the
+   * selector is normalized to the stable id, Git-bound operations require it (unless only one repository
+   * exists), and command tools that take a `cwd` are rebased onto the chosen checkout.
+   */
+  private scopeRecordForOperation(record: WorkspaceRecord, operation: RunnerOperation, validated: Record<string, unknown>): WorkspaceRecord {
+    const { entry, scoped } = this.resolveRepositoryView(record, validated, REPOSITORY_SELECTOR_REQUIRED.has(operation) ? 'required' : 'optional', operation);
+    if (!entry) return scoped;
+    if (CWD_REBASED_OPERATIONS.has(operation)) {
+      const cwd = String(validated.cwd ?? '.').replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '');
+      validated.cwd = cwd === '' || cwd === '.' ? repositorySubpath(entry.alias) : `${repositorySubpath(entry.alias)}/${cwd}`;
+    }
+    return scoped;
+  }
+
+  /**
+   * The shared selector resolution. `optional` leaves an unselected multi-repository call on the tree root,
+   * `required` refuses it unless only one repository exists, and `primary` falls back to the primary one.
+   */
+  /**
+   * The view workspace-level guidance reads: the primary checkout of a multi-repository workspace, so
+   * open, its replay, and agent bootstrap all describe the same repository. Unchanged for one repository.
+   */
+  private primaryRecordView(record: WorkspaceRecord): WorkspaceRecord {
+    const { multiRepository, entries } = this.workspaceRepositoryEntries(record);
+    const primary = multiRepository ? entries.find((entry) => entry.primary) ?? entries[0] : undefined;
+    return primary ? scopedRecordView(record, primary) : record;
+  }
+
+  private resolveRepositoryView(
+    record: WorkspaceRecord,
+    validated: Record<string, unknown>,
+    mode: 'optional' | 'required' | 'primary',
+    operation: string
+  ): { entry: WorkspaceRepositoryRecord | undefined; scoped: WorkspaceRecord } {
+    const selector = validated.repositoryId as string | undefined;
+    const { multiRepository, entries } = this.workspaceRepositoryEntries(record);
+    let entry = selector === undefined ? undefined : findRepository(entries, selector);
+    if (selector !== undefined && !entry) throw unknownRepository(entries, selector);
+    if (!multiRepository) {
+      delete validated.repositoryId;
+      return { entry: undefined, scoped: record };
+    }
+    if (!entry && mode === 'primary') entry = entries.find((candidate) => candidate.primary) ?? entries[0];
+    if (!entry && mode === 'required') {
+      if (entries.length !== 1) {
+        throw new HarnessError('INVALID_INPUT', `${operation} needs repositoryId in a multi-repository workspace; choose one of: ${entries.map((candidate) => candidate.alias).join(', ')}`, 400, false);
+      }
+      entry = entries[0];
+    }
+    if (!entry) return { entry: undefined, scoped: record };
+    const scoped = scopedRecordView(record, entry);
+    // The executor can replace repos/<alias> with a symlink to a sibling checkout or elsewhere; a scoped call
+    // then refuses to follow it instead of operating, or confining the worker, on the link's target.
+    let checkout: ReturnType<typeof lstatSync> | undefined;
+    try { checkout = lstatSync(checkoutHostPath(scoped)); } catch { checkout = undefined; }
+    if (!checkout?.isDirectory()) {
+      throw new HarnessError('CONFLICT', `repository ${entry.alias} checkout at ${repositorySubpath(entry.alias)} is missing or is not a directory`, 409, false);
+    }
+    validated.repositoryId = entry.id;
+    return { entry, scoped };
+  }
+
+  /**
+   * The canonical host path of a checkout, for host-side reads and removal. The executor can replace
+   * `repos/` or `repos/<alias>` with a symlink, so each component below the tree root must be a real
+   * directory and the resolved path must be exactly the expected one; nothing here follows a link.
+   */
+  private async verifiedCheckoutPath(view: WorkspaceRecord): Promise<string> {
+    const treeRoot = await realpath(join(view.workspacePath, 'repo'));
+    if (!view.repositoryScope) return treeRoot;
+    const { alias, subpath } = view.repositoryScope;
+    const repositoriesDirectory = join(treeRoot, REPOSITORIES_DIRECTORY);
+    const checkout = join(repositoriesDirectory, alias);
+    for (const path of [repositoriesDirectory, checkout]) {
+      const stats = await lstat(path).catch(() => undefined);
+      if (!stats?.isDirectory()) throw new HarnessError('CONFLICT', `repository ${alias} checkout at ${subpath} is missing or is not a directory`, 409, false);
+    }
+    if (await realpath(checkout) !== checkout) {
+      throw new HarnessError('CONFLICT', `repository ${alias} checkout at ${subpath} does not resolve inside the workspace tree`, 409, false);
+    }
+    return checkout;
+  }
+
+  /**
+   * Adds or removes one checkout of a multi-repository workspace. Both are fenced by the workspace
+   * generation (the mutation lease and the registry transaction), keyed by the caller's idempotency key,
+   * and serialized per workspace so two changes never race for one `repos/<alias>` directory.
+   */
+  private async changeRepositories(ownerId: string, operation: 'workspace_repo_add' | 'workspace_repo_remove', validated: Record<string, unknown>): Promise<RunnerResponse> {
+    const record = this.touch(this.requireWorkspace(ownerId, validated.workspaceId as string | undefined, true, false));
+    const key = validated.idempotencyKey as string;
+    const request = operation === 'workspace_repo_add'
+      ? { operation, url: validated.url, alias: validated.alias, ref: validated.ref ?? null, access: validated.access }
+      : { operation, repositoryId: validated.repositoryId };
+    const fingerprint = createHash('sha256').update(JSON.stringify(request)).digest('hex');
+    const replay = this.store.repositoryChangeReplay(ownerId, record.id, key);
+    if (replay) {
+      if (replay.fingerprint !== fingerprint) {
+        throw new HarnessError('CONFLICT', 'Idempotency key reused with different repository change parameters', 409, false);
+      }
+      return parseCachedResponse(replay.resultJson);
+    }
+    const { multiRepository, entries } = this.workspaceRepositoryEntries(record);
+    if (!multiRepository) {
+      throw new HarnessError('INVALID_INPUT', `${operation} applies only to a multi-repository workspace; this workspace keeps its one checkout at the workspace root`, 400, false);
+    }
+    if (this.repositoryChanges.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'another repository change is in progress for this workspace', 409, true);
+    }
+    this.repositoryChanges.add(record.id);
+    try {
+      const change = { ownerId, record, entries, key, fingerprint };
+      return await this.withMutationLease(record, () => operation === 'workspace_repo_add'
+        ? this.addRepository(change, validated)
+        : this.removeRepository(change, validated.repositoryId as string));
+    } catch (error) {
+      if (error instanceof RepositoryRegistryFenceError) throw new HarnessError('EXPIRED', error.message, 410, false);
+      if (error instanceof RepositoryRegistryConflictError) throw new HarnessError('CONFLICT', error.message, 409, false);
+      throw error;
+    } finally {
+      this.repositoryChanges.delete(record.id);
+    }
+  }
+
+  /**
+   * Clones the new repository with the same helper as open, then moves it to `repos/<alias>` and registers
+   * it in one frozen step. The row is written only after the clone succeeded and the workspace stayed inside
+   * its disk bounds; any failure removes only the directory this call created, never one found in its place.
+   */
+  private async addRepository(change: RepositoryChange, validated: Record<string, unknown>): Promise<RunnerResponse> {
+    const { ownerId, record, entries } = change;
+    const alias = validated.alias as string;
+    const requestedUrl = validated.url as string;
+    if (entries.some((entry) => entry.alias === alias)) throw new HarnessError('INVALID_INPUT', `duplicate repository alias: ${alias}`, 400, false);
+    if (entries.some((entry) => normalizedRepositoryUrlKey(entry.repositoryUrl) === normalizedRepositoryUrlKey(requestedUrl))) {
+      throw new HarnessError('INVALID_INPUT', 'duplicate repository URL', 400, false);
+    }
+    const limit = this.config.maxWorkspaceRepositories ?? DEFAULT_MAX_WORKSPACE_REPOSITORIES;
+    if (entries.length >= limit) {
+      throw new HarnessError('LIMIT_EXCEEDED', `a workspace holds at most ${limit} repositories on this instance; this one already holds ${entries.length}`, 400, false);
+    }
+    const url = await validateRepositoryUrl(requestedUrl, this.config.allowedGitHosts);
+    const entry: WorkspaceRepositoryRecord = {
+      id: opaqueId('repo'),
+      workspaceId: record.id,
+      alias,
+      repositoryUrl: url.toString(),
+      repositoryRef: (validated.ref as string | undefined) ?? null,
+      access: validated.access === 'read-only' ? 'read-only' : 'read-write',
+      position: Math.max(...entries.map((candidate) => candidate.position)) + 1,
+      primary: false
+    };
+    const view = scopedRecordView(record, entry);
+    await this.assertCheckoutPathFree(view);
+    // The clone lands in a staging directory beside the tree, outside the executor's and the privileged and
+    // skill helpers' mounts, so the executor can reach neither the clone nor its retry cleanup, and nothing it
+    // writes is ever removed. Only the trusted clone, Git-transfer and size helpers mount the workspace root.
+    const stagingName = `repository-add-${randomBytes(12).toString('hex')}`;
+    const stagingRoot = join(record.workspacePath, stagingName);
+    try {
+      await mkdir(stagingRoot, { mode: 0o700 });
+      await chmod(stagingRoot, 0o777);
+      const staged = await this.clone(view, url, entry.repositoryRef ?? undefined, '', {
+        hostPath: join(stagingRoot, alias),
+        jobPath: `/job/${stagingName}/${alias}`
+      });
+      const violation = await this.resourceViolation(record);
+      if (violation) throw new HarnessError('LIMIT_EXCEEDED', `${violation}; the new checkout was removed`, 507, false);
+      const repositories = [...entries, entry];
+      const result: RunnerResponse = {
+        ok: true,
+        message: `Repository ${alias} added`,
+        data: {
+          workspaceId: record.id,
+          repository: publicRepositoryEntry(entry, true),
+          repositories: repositories.map((candidate) => publicRepositoryEntry(candidate, true))
+        },
+        truncated: false
+      };
+      const { resumed } = await this.withFrozenWorkspaceTree(record, async () => {
+        const identity = await this.placeStagedCheckout(view, staged);
+        try {
+          this.store.addWorkspaceRepository(entry, { generation: record.generation, limit, urlKey: normalizedRepositoryUrlKey }, {
+            ownerId, key: change.key, operation: 'workspace_repo_add', fingerprint: change.fingerprint, resultJson: JSON.stringify(result)
+          });
+        } catch (error) {
+          // An unregistered checkout would read as unsaved work and block auto-close, so the placed directory
+          // is removed; a removal failure keeps the original error, and the leftover still blocks auto-close.
+          await this.removeVerifiedCheckout(view, identity).catch(() => undefined);
+          throw error;
+        }
+      });
+      this.auditWorkspaceMutation(ownerId, 'workspace.repository_added', view, { operation: 'workspace_repo_add' });
+      return resumed ? result : withExecutorLeftPaused(result);
+    } catch (error) {
+      if (error instanceof HarnessError && !(error.message.startsWith(`repository ${alias}`))) {
+        throw new HarnessError(error.code, `repository ${alias}: ${error.message}`.slice(0, 2_000), error.status, error.retryable);
+      }
+      throw error;
+    } finally {
+      await this.safeRemovePath(stagingRoot).catch(() => undefined);
+    }
+  }
+
+  /**
+   * The new checkout's directory must not exist yet: anything already there is the caller's data. Returns
+   * the checkout path below a `repos/` that is a real directory inside the tree.
+   */
+  private async assertCheckoutPathFree(view: WorkspaceRecord): Promise<string> {
+    const { alias, subpath } = view.repositoryScope!;
+    const treeRoot = await realpath(join(view.workspacePath, 'repo'));
+    const repositoriesDirectory = join(treeRoot, REPOSITORIES_DIRECTORY);
+    const stats = await lstat(repositoriesDirectory).catch(() => undefined);
+    if (!stats?.isDirectory() || await realpath(repositoriesDirectory) !== repositoriesDirectory) {
+      throw new HarnessError('CONFLICT', `${REPOSITORIES_DIRECTORY}/ is missing or is not a directory in the workspace tree`, 409, false);
+    }
+    const target = join(repositoriesDirectory, alias);
+    const existing = await lstat(target).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (existing) {
+      throw new HarnessError('CONFLICT', `${subpath} already exists in the workspace tree; move or delete it before adding repository ${alias}`, 409, false);
+    }
+    return target;
+  }
+
+  /**
+   * Moves the staged clone to `repos/<alias>` inside a frozen tree. The path must still be free, so nothing
+   * created there meanwhile is replaced, and the returned identity is the only directory a rollback removes.
+   */
+  private async placeStagedCheckout(view: WorkspaceRecord, staged: string): Promise<CheckoutIdentity> {
+    const target = await this.assertCheckoutPathFree(view);
+    const stats = await lstat(staged);
+    if (!stats.isDirectory()) throw new HarnessError('INTERNAL_ERROR', 'the cloned checkout is not a directory', 500, false);
+    await rename(staged, target);
+    const identity: CheckoutIdentity = { dev: stats.dev, ino: stats.ino };
+    this.assertCheckoutIdentity(view, identity, await lstat(await this.verifiedCheckoutPath(view)));
+    return identity;
+  }
+
+  private assertCheckoutIdentity(view: WorkspaceRecord, expected: CheckoutIdentity, actual: CheckoutIdentity): void {
+    if (actual.dev !== expected.dev || actual.ino !== expected.ino) {
+      const { alias, subpath } = view.repositoryScope!;
+      throw new HarnessError('CONFLICT', `repository ${alias} checkout at ${subpath} was replaced while it was being changed`, 409, false);
+    }
+  }
+
+  /**
+   * Removes a checkout directory inside a frozen tree. Each component of `repos/<alias>` is verified again
+   * to be a real directory resolving exactly there, and the directory must still be the one identified
+   * earlier, so the removal cannot reach anything else.
+   */
+  private async removeVerifiedCheckout(view: WorkspaceRecord, identity: CheckoutIdentity): Promise<void> {
+    const path = await this.verifiedCheckoutPath(view);
+    this.assertCheckoutIdentity(view, identity, await lstat(path));
+    await this.safeRemovePath(path);
+  }
+
+  /**
+   * Removes one checkout once nothing would be lost: no unsaved work (the auto-close check plus linked
+   * worktrees) and nothing running inside it. The registry row goes first, so a failed directory removal
+   * leaves an unregistered entry that still blocks auto-close rather than a registered empty checkout.
+   */
+  private async removeRepository(change: RepositoryChange, selector: string): Promise<RunnerResponse> {
+    const { ownerId, record, entries } = change;
+    const entry = findRepository(entries, selector);
+    if (!entry) throw unknownRepository(entries, selector);
+    if (entries.length === 1) {
+      throw new HarnessError('INVALID_INPUT', 'the last repository of a workspace cannot be removed; close the workspace instead', 400, false);
+    }
+    const view = scopedRecordView(record, entry);
+    this.assertCheckoutUnused(ownerId, view);
+    const remaining = entries.filter((candidate) => candidate.id !== entry.id);
+    const promoted = entry.primary ? remaining[0]!.id : undefined;
+    const result = (checkoutRemoved: boolean): RunnerResponse => ({
+      ok: true,
+      message: checkoutRemoved
+        ? `Repository ${entry.alias} removed`
+        : `Repository ${entry.alias} removed; its checkout directory could not be deleted and blocks auto-close until it is`,
+      data: {
+        workspaceId: record.id,
+        removed: publicRepositoryEntry(entry, true),
+        repositories: remaining.map((candidate) => publicRepositoryEntry(candidate.id === promoted ? { ...candidate, primary: true } : candidate, true)),
+        checkoutRemoved
+      },
+      truncated: false
+    });
+    // Everything in the workspace that can write to the tree stays frozen from the unsaved-work check through
+    // the removal, so no work can land in the checkout, and no link can be swapped into it, once it was checked.
+    const { value: checkoutRemoved, resumed } = await this.withFrozenWorkspaceTree(record, async () => {
+      // A checkout that is already gone has nothing left to lose; a link or file in its place is refused.
+      const present = await lstat(checkoutHostPath(view)).then(() => true, () => false);
+      let identity: CheckoutIdentity | undefined;
+      if (present) {
+        const checked = await lstat(await this.verifiedCheckoutPath(view));
+        identity = { dev: checked.dev, ino: checked.ino };
+        const blockers = [await this.linkedWorktreeBlocker(view), await this.checkoutCloseBlocker(view, true)].filter(Boolean);
+        if (blockers.length > 0) {
+          throw new HarnessError('CONFLICT', `repository ${entry.alias} has work that removing it would lose: ${blockers.join(', ')}; commit and push it, or move it out of the checkout first`, 409, false);
+        }
+        // Refuse anything that started inside the checkout before the freeze took hold.
+        this.assertCheckoutUnused(ownerId, view);
+        this.assertCheckoutIdentity(view, identity, await lstat(await this.verifiedCheckoutPath(view)));
+      }
+      this.store.removeWorkspaceRepository(record.id, entry.id, record.generation, {
+        ownerId, key: change.key, operation: 'workspace_repo_remove', fingerprint: change.fingerprint, resultJson: JSON.stringify(result(true))
+      });
+      this.guidanceCache.delete(guidanceCacheKey(view));
+      if (!identity) return true;
+      try {
+        await this.removeVerifiedCheckout(view, identity);
+        return true;
+      } catch {
+        this.store.updateRepositoryChangeResult(ownerId, record.id, change.key, JSON.stringify(result(false)));
+        return false;
+      }
+    });
+    this.auditWorkspaceMutation(ownerId, 'workspace.repository_removed', view, { operation: 'workspace_repo_remove', checkoutRemoved });
+    return resumed ? result(checkoutRemoved) : withExecutorLeftPaused(result(checkoutRemoved));
+  }
+
+  /**
+   * Tasks, shells, sessions, terminals, and operations record the directory they run in, so one inside the
+   * checkout uses it. An agent records no repository and can reach every checkout, so any active agent
+   * in the workspace counts as a user of each one.
+   */
+  private assertCheckoutUnused(ownerId: string, view: WorkspaceRecord): void {
+    const { alias, subpath } = view.repositoryScope!;
+    const users = this.operations.checkoutUsers(view.id, subpath, ownerId);
+    if (this.agentManager?.hasActiveAgents(ownerId, view.id)) users.unshift('agents running in the workspace');
+    if (users.length === 0) return;
+    const named = users.length > 5 ? `${users.slice(0, 5).join(', ')} and ${users.length - 5} more` : users.join(', ');
+    throw new HarnessError('CONFLICT', `repository ${alias} is in use by ${named}; wait for them to finish or stop them first`, 409, true);
+  }
+
+  /**
+   * The auto-close check counts dirty linked worktrees but not clean ones, whose directories and branches
+   * a removal would still delete. Git registers each linked worktree under `.git/worktrees/`.
+   */
+  private async linkedWorktreeBlocker(view: WorkspaceRecord): Promise<string | undefined> {
+    const gitDirectory = join(await this.verifiedCheckoutPath(view), '.git');
+    const git = await lstat(gitDirectory).catch(() => undefined);
+    if (!git?.isDirectory()) return 'the linked-worktree check could not run';
+    const worktrees = join(gitDirectory, 'worktrees');
+    const registered = await lstat(worktrees).catch((error: NodeJS.ErrnoException) => (error.code === 'ENOENT' ? null : undefined));
+    if (registered === null) return undefined;
+    if (!registered?.isDirectory()) return 'the linked-worktree check could not run';
+    const names = await readdir(worktrees);
+    return names.length > 0 ? `${names.length} linked worktree(s)` : undefined;
+  }
+
+  /**
+   * `scope: "all"` runs the search in each checkout in registry order, bounded by one `maxResults` budget.
+   * Results carry the repository id and alias, with paths relative to that checkout. The cursor names
+   * the next repository to search; a repository whose results were cut short is reported as truncated
+   * in the per-repository summary, to be narrowed with repositoryId.
+   */
+  private async searchAllRepositories(record: WorkspaceRecord, operation: SearchOperation, validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+    const { multiRepository, entries } = this.workspaceRepositoryEntries(record);
+    const cursor = validated.cursor as string | undefined;
+    const start = cursor === undefined ? 0 : entries.findIndex((entry) => entry.id === cursor);
+    if (start < 0) {
+      throw new HarnessError('INVALID_INPUT', 'search cursor does not name a repository of this workspace; restart the search without a cursor', 400, false);
+    }
+    const input: Record<string, unknown> = { ...validated };
+    delete input.scope;
+    delete input.cursor;
+    const resultKey = SEARCH_RESULT_KEYS[operation];
+    const maxResults = validated.maxResults as number;
+    const results: unknown[] = [];
+    const repositories: Record<string, unknown>[] = [];
+    let firstError: unknown;
+    let nextCursor: string | undefined;
+    let truncated = false;
+    for (let index = start; index < entries.length; index += 1) {
+      const entry = entries[index]!;
+      const budget = maxResults - results.length;
+      if (budget === 0) {
+        nextCursor = entry.id;
+        break;
+      }
+      const attribution = { repositoryId: entry.id, alias: entry.alias };
+      let response: RunnerResponse;
+      let prefix: string;
+      try {
+        const view = multiRepository ? this.resolveRepositoryView(record, { repositoryId: entry.id }, 'optional', operation).scoped : record;
+        prefix = `${checkoutContainerPath(view)}/`;
+        // One result past the budget proves the checkout had more: `grep_search` cuts at `maxResults`
+        // without reporting truncation, so the worker's own flag alone would hide the cut.
+        response = await this.runWorker(view, operation, { ...input, maxResults: budget + 1 }, signal);
+      } catch (error) {
+        firstError ??= error;
+        repositories.push({ ...attribution, error: (error instanceof Error ? error.message : 'search failed').slice(0, 2_000) });
+        continue;
+      }
+      const data = response.data && typeof response.data === 'object' ? response.data as Record<string, unknown> : {};
+      const items = Array.isArray(data[resultKey]) ? data[resultKey] as unknown[] : [];
+      if (!response.ok) {
+        firstError ??= new HarnessError(response.error?.code ?? 'INTERNAL_ERROR', response.error?.message ?? response.message, 500, response.error?.retryable ?? false);
+        repositories.push({ ...attribution, error: (response.error?.message ?? response.message).slice(0, 2_000) });
+        continue;
+      }
+      const taken = items.slice(0, budget).map((item) => annotateSearchResult(operation, item, prefix, attribution));
+      const repositoryTruncated = response.truncated === true || items.length > budget;
+      results.push(...taken);
+      repositories.push({ ...attribution, results: taken.length, truncated: repositoryTruncated });
+      truncated ||= repositoryTruncated;
+    }
+    // Per-repository failures are reported beside the results; only a search that reached no checkout fails.
+    if (firstError !== undefined && repositories.every((summary) => 'error' in summary)) throw firstError;
+    return {
+      ok: true,
+      message: `Searched ${repositories.length} of ${entries.length} repositories`,
+      data: { scope: 'all', [resultKey]: results, repositories },
+      truncated: truncated || nextCursor !== undefined,
+      ...(nextCursor !== undefined ? { cursor: nextCursor } : {})
+    };
+  }
+
+  /**
+   * The authoritative read of a verified push: the commit is read in the staged transfer clone (the
+   * exact repository the push sends from, outside the executor's mount) with a clean configuration, and
+   * the caller's verifier decides it. A refusal, or a read that cannot be made, throws before anything
+   * is sent; the caller's `finally` discards the clone.
+   */
+  private async verifyStagedPush(record: WorkspaceRecord, transferName: string, source: string, verifier: PushVerifier, signal?: AbortSignal): Promise<void> {
+    if (source !== verifier.sha || !isCommitSha(verifier.sha) || !isCommitSha(verifier.base)) {
+      throw new HarnessError('INVALID_INPUT', 'a verified push must name the verified commit id as its source', 400, false);
+    }
+    const inspected = await this.runGitTransferHelper(record, 'inspect', transferName, verifier.sha, undefined, verifier.base, signal)
+      .catch((error: unknown) => { verifier.stagingFailed?.(); throw error; });
+    let refusal: string | null;
+    try {
+      refusal = await verifier.verify(parseTransferInspection(inspected.stdout, inspected.truncated));
+    } catch {
+      refusal = 'COMMIT_UNVERIFIED';
+    }
+    if (refusal !== null) throw new HarnessError('FORBIDDEN', `push refused before anything was sent: ${refusal}`.slice(0, 200), 403, false);
+  }
+
+  private async remotePush(record: WorkspaceRecord, input: Record<string, unknown>, signal?: AbortSignal, verifier?: PushVerifier): Promise<RunnerResponse> {
+    assertRepositoryWritable(record, 'push');
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
     const repoStr = this.extractRepositoryName(repositoryUrl);
     let token: string | undefined;
@@ -2142,7 +3206,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         requiredCapability: 'repository.push'
       });
     }
-    const idempotencyKey = input.idempotencyKey as string | undefined;
+    const idempotencyKey = repositoryIdempotencyKey(record, input.idempotencyKey as string | undefined);
     const requestedRefspec = input.refspec as string | undefined;
     const branch = requestedRefspec ? '' : await this.currentBranch(record, signal);
     if (!requestedRefspec && !branch) throw new HarnessError('CONFLICT', 'git_push requires refspec when HEAD is detached', 409, false);
@@ -2249,13 +3313,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
     const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
     try {
+      // A verified push stages an isolated copy (no object files shared with the checkout), so the commit
+      // inspected below is exactly what the push sends even after the executor resumes.
+      const stageArgument = verifier ? 'isolated' : '';
+      // Only the helper's own failure is reported to the verifier, not the executor pause around it.
+      const stage = async () => await this.runGitTransferHelper(record, 'stage-push', transferName, stageArgument, undefined, undefined, signal)
+        .catch((error: unknown) => { verifier?.stagingFailed?.(); throw error; });
       if (record.containerName) {
-        await this.withPausedExecutor(record, async () =>
-          await this.runGitTransferHelper(record, 'stage-push', transferName, '', undefined, undefined, signal)
-        );
+        await this.withPausedExecutor(record, stage);
       } else {
-        await this.runGitTransferHelper(record, 'stage-push', transferName, '', undefined, undefined, signal);
+        await stage();
       }
+      if (verifier) await this.verifyStagedPush(record, transferName, pushedSource, verifier, signal);
       let pushed: { exitCode: number; stdout: string; stderr: string; truncated: boolean };
       try {
         pushed = await this.runGitTransferHelper(record, 'push', transferName, refspec, token, lease, signal);
@@ -2298,6 +3367,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const maxOutputBytes = (validated.maxOutputBytes as number) || this.config.maxOutputBytes;
     const privileged = Boolean(validated.privileged);
     const approvalGrantToken = validated.approvalGrantToken as string | undefined;
+    // A grant names the tree-relative directory it approved, so it cannot be spent in a sibling checkout.
+    const grantCwd = record.repositoryScope ? (cwd === '.' ? record.repositoryScope.subpath : `${record.repositoryScope.subpath}/${cwd}`) : cwd;
 
     if (privileged) {
       if ((this.config.authMode ?? 'owner-bearer') === 'owner-bearer') {
@@ -2309,7 +3380,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           ownerId: record.ownerId,
           workspaceId: record.id,
           command,
-          cwd,
+          cwd: grantCwd,
           ttlMs: 60_000
         });
 
@@ -2337,7 +3408,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         workspaceId: record.id,
         grantId: approvalGrantToken,
         commandSha256,
-        cwd
+        cwd: grantCwd
       });
 
       if (!grantValid) {
@@ -2355,6 +3426,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         kind: 'exec_run',
         deadlineMs: Date.now() + timeoutMs,
         container: record.containerName ?? undefined,
+        cwd: grantCwd,
         abortController: serverAbortController
       });
       const lockExpiry = Date.now() + timeoutMs + 10_000;
@@ -2489,7 +3561,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const toolsPath = join(record.workspacePath, 'tools');
     const cachePath = join(record.workspacePath, 'cache');
     const normalizedCwd = input.cwd.replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '') || '.';
-    const workdir = normalizedCwd === '.' ? '/workspace' : `/workspace/${normalizedCwd}`;
+    const checkoutPath = checkoutContainerPath(record);
+    const workdir = normalizedCwd === '.' ? checkoutPath : `${checkoutPath}/${normalizedCwd}`;
+    const releaseTreeWriter = this.claimTreeWriter(record);
     try {
       await this.networkProfileManager.ensureProfileReady(record.networkProfile);
       const result = await runDocker([
@@ -2531,7 +3605,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         truncated: result.truncated
       };
     } finally {
-      await removeContainer(privName);
+      try { await removeContainer(privName); } finally { releaseTreeWriter(); }
     }
   }
 
@@ -2669,7 +3743,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         // Merging holds contents:write, so those helpers never see the agent-writable checkout; GH_REPO names the target.
         ...(GITHUB_CHECKOUT_FREE_ACTIONS.has(action)
           ? ['--workdir', '/tmp']
-          : ['--volume', `${record.workspacePath}/repo:/workspace:ro`, '--workdir', '/workspace']),
+          : ['--volume', `${record.workspacePath}/repo:/workspace:ro`, '--workdir', checkoutContainerPath(record)]),
         '--env', 'HOME=/tmp/cloud-harness-home',
         '--env', `GH_REPO=${new URL(record.repositoryUrl).pathname.replace(/^\//, '').replace(/\.git$/, '')}`,
         '--entrypoint', '/opt/harness/gh-helper.sh',
@@ -2761,7 +3835,25 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return op;
   }
 
-  async execute(principal: PrincipalSelector | string, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  /**
+   * Removes agent traces past their retention, in bounded batches. It runs whether or not traces
+   * are enabled, so turning the feature off never keeps old traces past their retention.
+   */
+  async purgeAgentTraces(now = Date.now(), signal?: AbortSignal): Promise<number> {
+    return await this.tracePurger.purgeExpired(now, signal ? { signal } : {});
+  }
+
+  /**
+   * `internal` is never reachable from the public API: only in-process callers (the coding engine) pass
+   * it. `pushVerifier` makes a `git_push` decide the staged commit before anything is sent.
+   */
+  async execute(
+    principal: PrincipalSelector | string,
+    operation: RunnerOperation,
+    input: Record<string, unknown>,
+    signal?: AbortSignal,
+    internal: { pushVerifier?: PushVerifier } = {}
+  ): Promise<RunnerResponse> {
     const ownerId = this.store.resolvePrincipal(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal);
     RunnerOperationSchema.parse(operation);
     const validated = TOOL_SCHEMA_BY_NAME[operation].parse(input) as Record<string, unknown>;
@@ -2771,6 +3863,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (operation === 'bash' && validated.target === 'toolbox') return await this.runToolbox(ownerId, validated, signal);
     // Package operations are owner-scoped and never take a workspace mutation lock.
     if (isPackageOperation(operation)) return await this.runPackageOperation(ownerId, operation, validated, signal);
+    // Trace reads are owner-scoped and workspace-independent: a trace outlives its workspace.
+    if (isAgentTraceOperation(operation)) {
+      return executeAgentTraceOperation(this.traceStore, ownerId, operation, validated, {
+        now: Date.now(), maxSpans: this.config.agentTraces?.maxSpansPerTrace ?? 2_000
+      });
+    }
     if (operation === 'operation_status') {
       const op = this.ownedOperation(ownerId, validated.operationId as string);
       const offset = validated.cursor ? Number(validated.cursor) : 0;
@@ -2961,13 +4059,52 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (operation === 'workspace_status') return this.status(ownerId, workspaceId);
     if (operation === 'workspace_capabilities') {
       const rec = this.requireWorkspace(ownerId, workspaceId, false, true);
-      const caps = this.computeWorkspaceCapabilities(rec);
+      const caps = this.computeWorkspaceCapabilities(this.resolveRepositoryView(rec, validated, 'primary', operation).scoped);
       return {
         ok: true,
         message: 'Workspace capabilities retrieved',
         data: caps,
         truncated: false
       };
+    }
+    if (operation === 'workspace_repos_list') {
+      const rec = this.requireWorkspace(ownerId, workspaceId, false, true);
+      const { multiRepository, entries } = this.workspaceRepositoryEntries(rec);
+      return {
+        ok: true,
+        message: 'Workspace repositories listed',
+        data: { workspaceId: rec.id, multiRepository, repositories: entries.map((entry) => publicRepositoryEntry(entry, multiRepository)) },
+        truncated: false
+      };
+    }
+    if (operation === 'workspace_repo_status') {
+      const rec = this.requireWorkspace(ownerId, workspaceId, false, true);
+      if (rec.status === 'CLOSED' || rec.status === 'FAILED' || rec.status === 'CREATING' || rec.status === 'REAPING') {
+        throw new HarnessError('CONFLICT', `workspace is ${rec.status.toLowerCase()}`, 409, rec.status === 'CREATING' || rec.status === 'REAPING');
+      }
+      const { multiRepository, entries } = this.workspaceRepositoryEntries(rec);
+      const selector = validated.repositoryId as string | undefined;
+      const selected = selector === undefined ? entries : [findRepository(entries, selector)];
+      if (selected.some((entry) => entry === undefined)) throw unknownRepository(entries, selector!);
+      const repositories: Record<string, unknown>[] = [];
+      for (const entry of selected as WorkspaceRepositoryRecord[]) {
+        const view = multiRepository ? scopedRecordView(rec, entry) : rec;
+        const result = await this.runRecoveryWorker(view, 'workspace_recover', { mode: 'status' }, signal).catch((error: unknown) => ({
+          ok: false, message: error instanceof Error ? error.message : 'repository status failed', data: undefined
+        }));
+        const data = result.ok && result.data && typeof result.data === 'object' ? result.data as Record<string, unknown> : undefined;
+        const statusText = typeof data?.status === 'string' ? data.status : '';
+        const branchLine = statusText.split('\n').find((line) => line.startsWith('## '))?.slice(3) ?? null;
+        repositories.push({
+          ...publicRepositoryEntry(entry, multiRepository),
+          ...(data ? {
+            branch: branchLine,
+            hasUncommitted: data.hasUncommitted === true,
+            status: statusText
+          } : { error: result.message.slice(0, 2_000) })
+        });
+      }
+      return { ok: true, message: 'Workspace repository status', data: { workspaceId: rec.id, multiRepository, repositories }, truncated: false };
     }
     if (operation === 'workspace_close') {
       const rec = this.requireWorkspace(ownerId, workspaceId, false, true);
@@ -3094,8 +4231,29 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           }
         }
       }
+      const { multiRepository, entries: repositoryEntries } = this.workspaceRepositoryEntries(rec);
+      const view = this.resolveRepositoryView(rec, validated, mode === 'export' ? 'required' : 'optional', 'workspace_recover').scoped;
+      if ((mode === 'status' || mode === 'patch') && multiRepository && !view.repositoryScope) {
+        // Without a selector a multi-repository workspace reports every checkout, each under its own key.
+        const repositories: Record<string, unknown>[] = [];
+        for (const entry of repositoryEntries) {
+          const result = await this.runRecoveryWorker(scopedRecordView(rec, entry), 'workspace_recover', { mode }, signal);
+          repositories.push({
+            repositoryId: entry.id,
+            alias: entry.alias,
+            ...(result.data && typeof result.data === 'object' ? result.data : {}),
+            ...(result.ok ? {} : { error: result.error ?? { code: 'INTERNAL_ERROR', message: result.message, retryable: true } })
+          });
+        }
+        return {
+          ok: true,
+          message: mode === 'status' ? 'Workspace recovery status' : 'Workspace recovery patch',
+          data: { workspace: publicRecord(rec), repositories },
+          truncated: false
+        };
+      }
       if (mode === 'status') {
-        const recoverRes = await this.runRecoveryWorker(rec, 'workspace_recover', { mode: 'status' }, signal);
+        const recoverRes = await this.runRecoveryWorker(view, 'workspace_recover', { mode: 'status' }, signal);
         return {
           ok: true,
           message: 'Workspace recovery status',
@@ -3107,7 +4265,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         };
       }
       if (mode === 'patch') {
-        const patchRes = await this.runRecoveryWorker(rec, 'workspace_recover', { mode: 'patch' }, signal);
+        const patchRes = await this.runRecoveryWorker(view, 'workspace_recover', { mode: 'patch' }, signal);
         return {
           ok: true,
           message: 'Workspace recovery patch',
@@ -3119,6 +4277,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         };
       }
       if (mode === 'export') {
+        assertRepositoryWritable(view, 'workspace_recover export');
         const holdExpiry = Date.now() + 300_000;
         try {
           this.store.acquireRecoverableMutationLease(rec.id, rec.generation, holdExpiry);
@@ -3126,8 +4285,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           throw new HarnessError('CONFLICT', 'workspace lifecycle changed during export', 409);
         }
         try {
-          const targetBranch = (validated.targetBranch as string | undefined) ?? await this.currentBranch(rec, signal);
-          const snapshotRes = await this.runRecoveryWorker(rec, 'workspace_recover', {
+          const targetBranch = (validated.targetBranch as string | undefined) ?? await this.currentBranch(view, signal);
+          const snapshotRes = await this.runRecoveryWorker(view, 'workspace_recover', {
             mode: 'snapshot_commit',
             message: `chore(recovery): export snapshot for ${targetBranch}`
           }, signal, true);
@@ -3141,7 +4300,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             };
           }
           const snapshotData = snapshotRes.data as { headCommitSha?: string; committedChanges?: boolean } | undefined;
-          const pushResult = await this.remotePush(rec, { refspec: `HEAD:refs/heads/${targetBranch}` }, signal);
+          const pushResult = await this.remotePush(view, { refspec: `HEAD:refs/heads/${targetBranch}` }, signal);
           return {
             ok: pushResult.ok,
             message: pushResult.ok ? `Recovered work exported to ${targetBranch}` : 'Workspace export failed',
@@ -3164,14 +4323,19 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       const targetWorkspace = this.requireWorkspace(ownerId, workspaceId, false, true);
       return await this.agentManager.dispatch(ownerId, targetWorkspace, operation, validated);
     }
+    if (operation === 'workspace_repo_add' || operation === 'workspace_repo_remove') {
+      return await this.changeRepositories(ownerId, operation, validated);
+    }
 
-    const record = this.touch(this.requireWorkspace(ownerId, workspaceId, true, false));
-    await this.enforceActiveLimits(record);
+    const workspaceRecord = this.touch(this.requireWorkspace(ownerId, workspaceId, true, false));
+    await this.enforceActiveLimits(workspaceRecord);
+    const record = this.scopeRecordForOperation(workspaceRecord, operation, validated);
 
     const dispatchAction = async (): Promise<RunnerResponse> => {
     if (operation === 'artifacts_snapshot') {
       const created = await this.snapshotArtifact(principal, validated as {
         workspaceId?: string;
+        repositoryId?: string;
         path: string;
         logicalName: string;
         retentionSeconds?: number;
@@ -3182,6 +4346,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       const restored = await this.restoreArtifact(principal, validated as {
         artifactId: string;
         workspaceId?: string;
+        repositoryId?: string;
         path: string;
         overwrite?: boolean;
         expectedSha256?: string;
@@ -3643,6 +4808,16 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       this.auditWorkspaceMutation(ownerId, 'hook.activated', record, { events: Array.isArray(validated.events) ? (validated.events as string[]).join(',') : '', manifestSha256: String(validated.manifestSha256) });
       return { ok: true, message: 'Hooks activated', data: { activations: results }, truncated: false };
     }
+    if (operation === 'hooks_list') {
+      // Every hook is listed so callers can discover what to activate; `active` reports which ones
+      // lifecycle events would run now. The internal lifecycle listing calls the worker directly.
+      const result = withHookActivationState(
+        await this.runWorker(record, 'hooks_list', validated, signal),
+        this.store.getActiveHookActivations(ownerId, record.id)
+      );
+      await this.enforceActiveLimits(record);
+      return result;
+    }
     if (operation === 'hooks_deactivate') {
       const events = validated.events as string[] | undefined;
       if (events && events.length > 0) {
@@ -3656,7 +4831,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       return { ok: true, message: 'Hooks deactivated', data: { deactivated: true }, truncated: false };
     }
     if (operation === 'files_write_batch') {
-      const idempotencyKey = validated.idempotencyKey as string | undefined;
+      const idempotencyKey = repositoryIdempotencyKey(record, validated.idempotencyKey as string | undefined);
       if (idempotencyKey) {
         const cached = this.store.getBatchWriteIdempotency(ownerId, record.id, idempotencyKey);
         if (cached) {
@@ -3671,9 +4846,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       return result;
     }
     if (operation === 'workspace_finalize') {
+      if (validated.push !== false) assertRepositoryWritable(record, 'workspace_finalize with push');
       const branch = (validated.branch as string | undefined) ?? await this.currentBranch(record, signal);
       const targetRef = `refs/heads/${branch}`;
-      const idempotencyKey = validated.idempotencyKey as string | undefined;
+      const idempotencyKey = repositoryIdempotencyKey(record, validated.idempotencyKey as string | undefined);
       const requestFingerprint = idempotencyKey
         ? createHash('sha256').update(JSON.stringify(validated)).digest('hex')
         : undefined;
@@ -3977,6 +5153,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       if (operation === 'github_read' && requiredGitHubPermissions(action)?.write !== false) {
         throw new HarnessError('INVALID_INPUT', `github_read accepts read-only actions only; use github_action for ${action}`);
       }
+      if (requiredGitHubPermissions(action)?.write !== false) assertRepositoryWritable(record, `github_action ${action}`);
       let fingerprint: string | undefined;
       if (validated.idempotencyKey) {
         fingerprint = createHash('sha256').update(JSON.stringify({ action, workspaceId: record.id, repo: record.repositoryUrl, validated })).digest('hex');
@@ -4270,13 +5447,13 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       return result.ok ? { ...result, message: 'Git pull complete' } : result;
     }
     if (operation === 'git_push') {
-      const result = await this.remotePush(record, validated, signal);
+      const result = await this.remotePush(record, validated, signal, internal.pushVerifier);
       await this.enforceActiveLimits(record);
       return result;
     }
     if (operation === 'git_commit') {
       const expectedHeadOid = validated.expectedHeadOid as string | undefined;
-      const idempotencyKey = validated.idempotencyKey as string | undefined;
+      const idempotencyKey = repositoryIdempotencyKey(record, validated.idempotencyKey as string | undefined);
       let requestFingerprint: string | undefined;
       if (idempotencyKey) {
         requestFingerprint = createHash('sha256')
@@ -4358,6 +5535,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify(result.error ?? { message: result.message }), currentHeadOid);
       }
       return result;
+    }
+    if (prepareSearchInput(operation, validated)) {
+      return await this.searchAllRepositories(record, operation as SearchOperation, validated, signal);
     }
     if (!auditedFileMutations.has(operation)) {
       const result = await this.runWorker(record, operation, validated, signal);
@@ -4443,7 +5623,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         'workspace',
         record.id,
         record.generation,
-        details
+        withRepositoryAudit(record, details)
       );
     } catch { /* mutation audit persistence is best-effort */ }
   }
@@ -4455,25 +5635,28 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     details: Record<string, string | number | boolean>
   ): void {
     try {
-      this.metadata?.recordAudit(ownerId, action, 'workspace', record.id, record.generation, details);
+      this.metadata?.recordAudit(ownerId, action, 'workspace', record.id, record.generation, withRepositoryAudit(record, details));
     } catch { /* outcome audit persistence is best-effort */ }
   }
 
   async readArtifactSource(
     principal: PrincipalSelector,
-    input: { workspaceId: string; path: string }
-  ): Promise<{ ownerId: string; content: Buffer }> {
+    input: { workspaceId: string; path: string; repositoryId?: string | undefined }
+  ): Promise<{ ownerId: string; content: Buffer; repository?: WorkspaceRepositoryScope | undefined }> {
     const ownerId = this.store.resolvePrincipal(principal);
     const record = this.requireWorkspace(ownerId, input.workspaceId);
-    const repositoryRoot = await realpath(join(record.workspacePath, 'repo'));
+    // A selected checkout is the read root, with the same confinement the file tools get from the worker.
+    const view = this.resolveRepositoryView(record, { repositoryId: input.repositoryId }, 'optional', 'artifacts_snapshot').scoped;
+    const repositoryRoot = await this.verifiedCheckoutPath(view);
     const content = await readVerifiedWorkspaceFile(repositoryRoot, input.path, this.config.maxArtifactBytes);
-    return { ownerId, content };
+    return { ownerId, content, ...(view.repositoryScope ? { repository: view.repositoryScope } : {}) };
   }
 
   async snapshotArtifact(
     principal: PrincipalSelector | string,
     input: {
       workspaceId?: string | undefined;
+      repositoryId?: string | undefined;
       path: string;
       logicalName: string;
       retentionSeconds?: number | undefined;
@@ -4492,12 +5675,16 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         throw new HarnessError('NOT_FOUND', 'artifact provenance is unavailable', 404, false);
       }
     }
-    const source = await this.readArtifactSource(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal, { workspaceId: record.id, path: input.path });
+    const source = await this.readArtifactSource(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal, {
+      workspaceId: record.id, path: input.path, repositoryId: input.repositoryId
+    });
     const artifacts = this.requireArtifacts();
     return artifacts.create(ownerId, {
       logicalName: input.logicalName,
       content: source.content,
       workspaceId: record.id,
+      // The checkout the file came from is provenance, so a later restore can name the same repository.
+      ...(source.repository ? { repositoryId: source.repository.id, repositoryAlias: source.repository.alias } : {}),
       ...(input.projectId ? { projectId: input.projectId } : {}),
       ...(input.environmentId ? { environmentId: input.environmentId } : {}),
       ...(input.retentionSeconds ? { retentionMs: input.retentionSeconds * 1_000 } : {})
@@ -4509,7 +5696,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       this.metadata?.recordAuditInTransaction(
         database, ownerId, 'artifact.created', 'artifact', artifact.artifactId,
-        artifact.generation, { sizeBytes: artifact.sizeBytes }
+        artifact.generation, { sizeBytes: artifact.sizeBytes, ...(artifact.repositoryId ? { repositoryId: artifact.repositoryId } : {}) }
       );
     });
   }
@@ -4519,14 +5706,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     input: {
       artifactId: string;
       workspaceId?: string | undefined;
+      repositoryId?: string | undefined;
       path: string;
       overwrite?: boolean | undefined;
       expectedSha256?: string | undefined;
     },
     signal?: AbortSignal
-  ): Promise<{ artifactId: string; workspaceId: string; path: string; sizeBytes: number; sha256: string }> {
+  ): Promise<{ artifactId: string; workspaceId: string; path: string; sizeBytes: number; sha256: string; repositoryId?: string; alias?: string }> {
     const ownerId = this.store.resolvePrincipal(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal);
-    const record = this.requireWorkspace(ownerId, input.workspaceId, true, false);
+    const workspaceRecord = this.requireWorkspace(ownerId, input.workspaceId, true, false);
+    // Without a selector the path is relative to the workspace root, as for every other file tool; the
+    // artifact's recorded repository is never applied implicitly, since it may belong to another workspace.
+    const record = this.resolveRepositoryView(workspaceRecord, { repositoryId: input.repositoryId }, 'optional', 'artifacts_restore').scoped;
     const artifacts = this.requireArtifacts();
     let artifactMeta: ArtifactMetadata;
     let content: Buffer;
@@ -4567,6 +5758,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       {
         sourceWorkspaceId: artifactMeta.workspaceId ?? '',
         destinationWorkspaceId: record.id,
+        ...(record.repositoryScope ? { destinationRepositoryId: record.repositoryScope.id } : {}),
         destinationPath: input.path,
         sha256: artifactMeta.sha256,
         sizeBytes: artifactMeta.sizeBytes
@@ -4577,7 +5769,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       workspaceId: record.id,
       path: input.path,
       sizeBytes: artifactMeta.sizeBytes,
-      sha256: artifactMeta.sha256
+      sha256: artifactMeta.sha256,
+      ...(record.repositoryScope ? { repositoryId: record.repositoryScope.id, alias: record.repositoryScope.alias } : {})
     };
   }
 
@@ -4758,6 +5951,25 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return { ok: true, message: 'Workspace closed', data: publicRecord(finalRecord), truncated: false };
   }
 
+  /**
+   * A transfer directory is bind-mounted on its own, so it must exist before its helper starts (Docker
+   * would otherwise create it as root) and be writable by the helper's UID.
+   */
+  private async createTransferDirectory(path: string): Promise<void> {
+    try {
+      await mkdir(path, { mode: 0o700 });
+      try {
+        await chown(path, 10001, 10001);
+      } catch {
+        // A runner that is neither root nor UID 10001 cannot hand the directory over, so it opens it the way
+        // it opens the workspace directory itself.
+        await chmod(path, 0o777);
+      }
+    } catch (error) {
+      throw new HarnessError('UNAVAILABLE', `Git transfer directory could not be created (${(error as Error).message})`.slice(0, 2_000), 503, true);
+    }
+  }
+
   private async safeRemovePath(path: string): Promise<void> {
     const root = resolve(this.config.jobsRoot);
     const target = resolve(path);
@@ -4861,6 +6073,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     this.store.reapWorkspaceMemories(claimed.ownerId, claimed.id);
     this.redactorCache.delete(claimed.id);
     this.guidanceCache.delete(claimed.id);
+    for (const key of this.guidanceCache.keys()) {
+      if (key.startsWith(`${claimed.id}:`)) this.guidanceCache.delete(key);
+    }
     const closed = this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], { status: 'CLOSED', containerName: null, error: reason, expiresAt: Date.now() });
     if (!closed) {
       const finalState = this.store.byId(claimed.id);
@@ -4876,9 +6091,35 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
    */
   private async autoCloseBlocker(record: WorkspaceRecord): Promise<string | undefined> {
     if (this.agentManager?.hasActiveAgents(record.ownerId, record.id)) return 'agents are still running';
+    const repositories = this.store.workspaceRepositories(record.id);
+    if (repositories.length === 0) return await this.checkoutCloseBlocker(record);
+    // Every checkout of a multi-repository workspace is checked; the reasons name each blocked repository.
+    const reasons: string[] = [];
+    for (const entry of repositories) {
+      const blocker = await this.checkoutCloseBlocker(scopedRecordView(record, entry));
+      if (blocker) reasons.push(`${entry.alias}: ${blocker}`);
+    }
+    // Files written beside the checkouts belong to no repository, so no remote holds them.
+    // Entries under repos/ that are not a registered checkout directory (scratch files, an extra clone, or a
+    // symlink swapped in for a checkout) are equally unprotected.
+    try {
+      const root = join(record.workspacePath, 'repo');
+      const outside = (await readdir(root)).filter((name) => name !== REPOSITORIES_DIRECTORY);
+      const aliases = new Set(repositories.map((entry) => entry.alias));
+      const repositoryEntries = await readdir(join(root, REPOSITORIES_DIRECTORY), { withFileTypes: true });
+      const unregistered = repositoryEntries.filter((entry) => !aliases.has(entry.name) || !entry.isDirectory());
+      const count = outside.length + unregistered.length;
+      if (count > 0) reasons.push(`${count} path(s) outside the repository checkouts`);
+    } catch {
+      reasons.push('the workspace tree could not be listed');
+    }
+    return reasons.length > 0 ? reasons.join('; ') : undefined;
+  }
+
+  private async checkoutCloseBlocker(record: WorkspaceRecord, executorPaused = false): Promise<string | undefined> {
     let check: RunnerResponse;
     try {
-      check = await this.runRecoveryWorker(record, 'workspace_recover', { mode: 'close_check', cloneRef: record.repositoryRef ?? '' });
+      check = await this.runRecoveryWorker(record, 'workspace_recover', { mode: 'close_check', cloneRef: record.repositoryRef ?? '' }, undefined, false, executorPaused);
     } catch {
       return 'the unsaved-work check could not run';
     }
@@ -5188,11 +6429,22 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   private async executeAgentProxy(request: Parameters<AgentManagerDependencies['toolExecutor']>[0]): Promise<RunnerResponse> {
     const operation = AgentProxyOperationSchema.parse(request.operation) as AgentProxyOperation;
     const validated = TOOL_SCHEMA_BY_NAME[operation].parse(request.toolInput) as Record<string, unknown>;
+    if (operation === 'exec_run') {
+      // An agent command is always foreground and unprivileged; there is no approval path through the proxy.
+      if (validated.privileged === true || validated.async === true || validated.approvalGrantToken !== undefined) {
+        throw new HarnessError('FORBIDDEN', 'agent commands cannot be privileged, detached, or carry an approval grant', 403, false);
+      }
+      validated.maxOutputBytes = Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes);
+    }
     const before = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
     if (before.generation !== request.workspaceGeneration || before.networkProfile !== 'network-none') {
       throw new HarnessError('EXPIRED', 'agent tool execution lost its workspace fence', 410, false);
     }
-    const result = await this.runWorker(before, operation, validated, request.signal);
+    // An agent's repositoryId confines its call to that checkout, exactly as the direct tool does.
+    const scoped = this.scopeRecordForOperation(before, operation, validated);
+    const result = prepareSearchInput(operation, validated)
+      ? await this.searchAllRepositories(scoped, operation as SearchOperation, validated, request.signal)
+      : await this.runWorker(scoped, operation, validated, request.signal);
     const after = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
     if (after.generation !== request.workspaceGeneration || after.networkProfile !== 'network-none') {
       throw new HarnessError('EXPIRED', 'agent tool execution lost its workspace fence', 410, false);
@@ -5216,6 +6468,19 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 }
 
 /** Helpers that hold contents:write and need no checkout. */
+/**
+ * A committed repository change stands even when the executor could not be resumed afterwards: the result
+ * reports it, and the stored replay keeps the committed result. `workspace_recover` with mode `resume`
+ * resumes the executor.
+ */
+function withExecutorLeftPaused(result: RunnerResponse): RunnerResponse {
+  return {
+    ...result,
+    message: `${result.message}; the executor could not be resumed afterwards, so commands fail until workspace_recover with mode "resume" resumes it`,
+    data: { ...(result.data as Record<string, unknown>), executorResumed: false }
+  };
+}
+
 const GITHUB_CHECKOUT_FREE_ACTIONS: ReadonlySet<string> = new Set(['pr_merge', 'pr_auto_merge_enable']);
 
 /** Mutations that can duplicate a visible side effect, so an `idempotencyKey` replays the first result. */

@@ -216,6 +216,12 @@ requireBoundary(
   'nginx MCP OAuth callback route must keep its one-time code and state out of the access log'
 );
 
+const webhookIngress = locationBlock(/location \^~ \/integrations\/webhooks\/ \{[^}]+\}/s);
+requireBoundary(
+  webhookIngress.includes('client_max_body_size 1m;') && webhookIngress.includes('proxy_pass http://127.0.0.1:3100/integrations/webhooks/;'),
+  'nginx automation webhook route must preserve its upstream path and 1m body cap'
+);
+
 const nginxUpgrade = readFileSync('deploy/scripts/upgrade-nginx-dashboard.sh', 'utf8');
 requireBoundary(
   nginxUpgrade.includes('dashboard_installed -eq 1 && $api_key_installed -eq 1 && $gateway_installed -eq 1'),
@@ -238,8 +244,14 @@ requireBoundary(
   nginxUpgrade.includes('location = /mcp-api-key/gateway {') &&
     nginxUpgrade.includes('proxy_pass http://127.0.0.1:3100/mcp-api-key/gateway;') &&
     nginxUpgrade.includes('add_api_key_gateway="$((1 - api_key_gateway_installed))"') &&
-    nginxUpgrade.includes('$api_key_gateway_installed -eq 1 && $oauth_callback_installed -eq 1 ]]'),
+    nginxUpgrade.includes('$api_key_gateway_installed -eq 1 && $oauth_callback_installed -eq 1 && $webhook_installed -eq 1 ]]'),
   'nginx upgrade must install the hidden API-key MCP gateway route when it is absent'
+);
+requireBoundary(
+  nginxUpgrade.includes('location ^~ /integrations/webhooks/ {') &&
+    nginxUpgrade.includes('add_webhook="$((1 - webhook_installed))"') &&
+    nginxUpgrade.includes('webhook_installed -eq 0'),
+  'nginx upgrade must install the automation webhook route when it is absent'
 );
 requireBoundary(
   nginxUpgrade.includes('location = /dashboard/mcp-oauth/callback {') &&

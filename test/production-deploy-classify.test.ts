@@ -407,6 +407,9 @@ describe('release commit CI request', () => {
   });
 });
 
+// The workflow scripts run under bash on Linux CI runners with a POSIX PATH, so the tests that execute them skip on win32.
+const runsWorkflowScripts = it.skipIf(process.platform === 'win32');
+
 function firstScript(job: string): string {
   const start = job.indexOf('run: |\n') + 'run: |\n'.length;
   const lines = job.slice(start).split('\n');
@@ -457,14 +460,14 @@ describe('release tip check', () => {
 
   const switched = (calls: string[]) => calls.some((call) => call.startsWith('switch'));
 
-  it('releases only when CI tested the current tip', () => {
+  runsWorkflowScripts('releases only when CI tested the current tip', () => {
     const result = run({});
     expect(result.status).toBe(0);
     expect(result.output).toBe('current=true\n');
     expect(result.calls).toContain(`switch --force-create main ${MERGE}`);
   });
 
-  it('skips the release instead of failing when the branch moved on', () => {
+  runsWorkflowScripts('skips the release instead of failing when the branch moved on', () => {
     const result = run({ tip: OTHER });
     expect(result.status).toBe(0);
     expect(result.output).toBe('current=false\n');
@@ -472,7 +475,7 @@ describe('release tip check', () => {
     expect(switched(result.calls)).toBe(false);
   });
 
-  it('fails when the tip cannot be read or the branch is not a release branch', () => {
+  runsWorkflowScripts('fails when the tip cannot be read or the branch is not a release branch', () => {
     for (const options of [{ tip: '' }, { lsRemoteStatus: 128 }, { branch: 'feature' }]) {
       const result = run(options);
       expect(result.status).not.toBe(0);
@@ -547,7 +550,7 @@ describe('release commit CI request script', () => {
   const dispatch = (token: string) => `${token} workflow run ci.yml --ref main --repo owner/repo`;
   const headRead = 'wf api repos/owner/repo/commits/main --jq .sha';
 
-  it('does nothing when semantic-release created no version commit', () => {
+  runsWorkflowScripts('does nothing when semantic-release created no version commit', () => {
     for (const releaseCommit of [MERGE, '']) {
       const result = run({ releaseCommit });
       expect(result.status).toBe(0);
@@ -556,27 +559,27 @@ describe('release commit CI request script', () => {
     }
   });
 
-  it('does nothing when main already moved past the release commit', () => {
+  runsWorkflowScripts('does nothing when main already moved past the release commit', () => {
     const result = run({ mainSha: OTHER });
     expect(result.status).toBe(0);
     expect(result.calls).toEqual([headRead]);
     expect(result.stdout).toContain('main moved to');
   });
 
-  it('dispatches CI on main with the release PAT', () => {
+  runsWorkflowScripts('dispatches CI on main with the release PAT', () => {
     const result = run({});
     expect(result.status).toBe(0);
     expect(result.calls).toEqual([headRead, dispatch('pat')]);
   });
 
-  it('falls back to the workflow token when the PAT is missing or refused', () => {
+  runsWorkflowScripts('falls back to the workflow token when the PAT is missing or refused', () => {
     expect(run({ release: '' }).calls).toEqual([headRead, dispatch('wf')]);
     const refused = run({ failingTokens: ['pat'] });
     expect(refused.status).toBe(0);
     expect(refused.calls).toEqual([headRead, dispatch('pat'), dispatch('wf')]);
   });
 
-  it('fails the job when no token can dispatch CI', () => {
+  runsWorkflowScripts('fails the job when no token can dispatch CI', () => {
     const result = run({ failingTokens: ['pat', 'wf'] });
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('::error::Could not request CI for release commit');

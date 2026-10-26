@@ -25,6 +25,8 @@ import {
 } from './principal-store.js';
 
 import { KnowledgeStore } from './knowledge-store.js';
+import { initializeAgentTraceSchema } from './agent-trace-schema.js';
+import { initializeNotificationSchema } from './notifications/notification-schema.js';
 export { KnowledgeStore } from './knowledge-store.js';
 export type {
   CreateKnowledgeItemParams,
@@ -175,6 +177,53 @@ export type WorkspaceRecord = {
   expiredAt?: number | null;
   /** When the reaper may next try to auto-close the recoverable record; cleared with `expiredAt`. */
   recoverableUntil?: number | null;
+  /**
+   * Set only on an in-memory view scoped to one checkout of a multi-repository workspace,
+   * whose `repositoryUrl` and `repositoryRef` then name that checkout. Never persisted.
+   */
+  repositoryScope?: WorkspaceRepositoryScope;
+};
+
+export type WorkspaceRepositoryAccess = 'read-write' | 'read-only';
+
+/** One checkout of a multi-repository workspace, as recorded when the workspace was admitted. */
+export type WorkspaceRepositoryRecord = {
+  id: string;
+  workspaceId: string;
+  alias: string;
+  repositoryUrl: string;
+  repositoryRef: string | null;
+  access: WorkspaceRepositoryAccess;
+  position: number;
+  primary: boolean;
+};
+
+/** A repository add or remove recorded under the caller's idempotency key. */
+export type RepositoryChangeRecord = { ownerId: string; key: string; operation: string; fingerprint: string; resultJson: string };
+export type RepositoryChangeReplay = { operation: string; fingerprint: string; resultJson: string };
+
+/** The workspace generation or status changed before a repository change could commit. */
+export class RepositoryRegistryFenceError extends Error {
+  constructor() {
+    super('workspace lifecycle changed during the repository change');
+    this.name = 'RepositoryRegistryFenceError';
+  }
+}
+
+/** The committed registry no longer admits the change (a concurrent add or remove, or a bound). */
+export class RepositoryRegistryConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RepositoryRegistryConflictError';
+  }
+}
+
+/** The checkout a scoped record view resolves to: `subpath` is relative to the workspace tree root. */
+export type WorkspaceRepositoryScope = {
+  id: string;
+  alias: string;
+  access: WorkspaceRepositoryAccess;
+  subpath: string;
 };
 
 /** Changes a fenced lifecycle write may apply to one workspace row. */
@@ -369,6 +418,18 @@ export type SkillSourceKind = 'built-in' | 'owner' | 'workspace' | 'repository' 
 export type SkillProvider = 'skills-sh' | 'skillx' | 'git' | 'custom';
 export type SkillRevisionOrigin = 'import' | 'refresh' | 'edit' | 'restore' | 'fork';
 export type SkillImportJobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+const SKILL_IMPORT_ACTIVE_STATES: readonly SkillImportJobState[] = ['queued', 'running'];
+
+/**
+ * A job only ever moves queued -> running -> terminal, so its generation is the step it has reached
+ * rather than a stored counter: every transition a cancel must be fenced against bumps it, and a
+ * progress update inside `running` (which a cancel does not need to see) leaves it alone.
+ */
+export function skillImportJobGeneration(state: SkillImportJobState): number {
+  const index = SKILL_IMPORT_ACTIVE_STATES.indexOf(state);
+  return index === -1 ? SKILL_IMPORT_ACTIVE_STATES.length + 1 : index + 1;
+}
 export type SkillImportSourceKind = 'skills-sh' | 'skillx' | 'git';
 export type SkillTier = 'built-in' | 'owner' | 'workspace' | 'repository';
 
@@ -520,6 +581,18 @@ export class StateStore {
       CREATE TABLE IF NOT EXISTS comment_idempotency (owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, fingerprint TEXT, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, idempotency_key));
       CREATE TABLE IF NOT EXISTS finalize_idempotency (owner_id TEXT NOT NULL, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, workspace_id, idempotency_key));
       CREATE TABLE IF NOT EXISTS batch_write_idempotency (owner_id TEXT NOT NULL, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, workspace_id, idempotency_key));
+      CREATE TABLE IF NOT EXISTS workspace_repositories (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        alias TEXT NOT NULL,
+        repository_url TEXT NOT NULL,
+        repository_ref TEXT,
+        access TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        is_primary INTEGER NOT NULL,
+        UNIQUE(workspace_id, alias)
+      );
+      CREATE TABLE IF NOT EXISTS workspace_repository_changes (owner_id TEXT NOT NULL, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, operation TEXT NOT NULL, fingerprint TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, workspace_id, idempotency_key));
     `);
     const commentCols = (this.database.prepare('PRAGMA table_info(comment_idempotency)').all() as { name: string }[]).map((c) => c.name);
     if (!commentCols.includes('fingerprint')) {
@@ -536,6 +609,10 @@ export class StateStore {
       this.database.prepare('INSERT OR IGNORE INTO runtime_meta(key, value) VALUES (?, ?)')
         .run('runner_instance_id', randomBytes(18).toString('hex'));
       this.knowledge = new KnowledgeStore(this.database);
+      // Inert unless agent traces are enabled; created unconditionally so enabling them needs no migration.
+      initializeAgentTraceSchema(this.database);
+      // Inert unless notifications are enabled; created unconditionally so enabling them needs no migration.
+      initializeNotificationSchema(this.database);
     } catch (err) {
       try { this.database.close(); } catch { /* ignore */ }
       throw err;
@@ -588,18 +665,117 @@ export class StateStore {
    * it, so no pre-check can be trusted on its own, and a concurrent limit change
    * cannot be admitted against a stale value.
    */
-  admit(record: WorkspaceRecord, configuredLimit: number): void {
+  admit(record: WorkspaceRecord, configuredLimit: number, repositories: readonly WorkspaceRepositoryRecord[] = []): void {
     this.database.exec('BEGIN IMMEDIATE;');
     try {
       const activeLimit = this.effectiveActiveWorkspaceLimit(configuredLimit);
       const active = this.countOwnerCountedWorkspaces(record.ownerId);
       if (active >= activeLimit) throw new ActiveWorkspaceLimitReachedError(active, activeLimit);
       this.create(record);
+      const insertRepository = this.database.prepare(`INSERT INTO workspace_repositories
+        (id, workspace_id, alias, repository_url, repository_ref, access, position, is_primary) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const repository of repositories) {
+        if (repository.workspaceId !== record.id) throw new Error('workspace repository belongs to another workspace');
+        insertRepository.run(repository.id, record.id, repository.alias, repository.repositoryUrl, repository.repositoryRef, repository.access, repository.position, repository.primary ? 1 : 0);
+      }
       this.database.exec('COMMIT;');
     } catch (error) {
       try { this.database.exec('ROLLBACK;'); } catch { /* ignore rollback error */ }
       throw error;
     }
+  }
+
+  /** The repository registry of a multi-repository workspace in open order; empty for a single-repository workspace. */
+  workspaceRepositories(workspaceId: string): WorkspaceRepositoryRecord[] {
+    const rows = this.database.prepare('SELECT * FROM workspace_repositories WHERE workspace_id = ? ORDER BY position ASC').all(workspaceId) as Record<string, unknown>[];
+    return rows.map((row) => ({
+      id: String(row.id),
+      workspaceId: String(row.workspace_id),
+      alias: String(row.alias),
+      repositoryUrl: String(row.repository_url),
+      repositoryRef: row.repository_ref === null ? null : String(row.repository_ref),
+      access: row.access === 'read-only' ? 'read-only' : 'read-write',
+      position: Number(row.position),
+      primary: Number(row.is_primary) === 1
+    }));
+  }
+
+  /** The recorded result of one repository add or remove, keyed like every other workspace write. */
+  repositoryChangeReplay(ownerId: string, workspaceId: string, key: string): RepositoryChangeReplay | undefined {
+    const row = this.database.prepare('SELECT operation, fingerprint, result_json FROM workspace_repository_changes WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?')
+      .get(ownerId, workspaceId, key) as { operation: string; fingerprint: string; result_json: string } | undefined;
+    return row ? { operation: row.operation, fingerprint: row.fingerprint, resultJson: row.result_json } : undefined;
+  }
+
+  /** Replaces a recorded result, as when the checkout of a removed repository could not be deleted. */
+  updateRepositoryChangeResult(ownerId: string, workspaceId: string, key: string, resultJson: string): void {
+    this.database.prepare('UPDATE workspace_repository_changes SET result_json = ? WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?')
+      .run(resultJson, ownerId, workspaceId, key);
+  }
+
+  /**
+   * Registers one more checkout of a multi-repository workspace and records the caller's replay in the
+   * same transaction. It is fenced on the workspace generation and active status, and rechecks the alias,
+   * URL, and size bounds against the committed registry, so a lost fence or a concurrent change leaves no
+   * row and no replay behind.
+   */
+  addWorkspaceRepository(
+    entry: WorkspaceRepositoryRecord,
+    fence: { generation: number; limit: number; urlKey: (url: string) => string },
+    replay: RepositoryChangeRecord
+  ): void {
+    this.inRepositoryChangeTransaction(entry.workspaceId, fence.generation, (current) => {
+      if (current.length === 0) throw new RepositoryRegistryConflictError('workspace has no repository registry');
+      if (current.length >= fence.limit) throw new RepositoryRegistryConflictError(`a workspace holds at most ${fence.limit} repositories on this instance`);
+      if (current.some((row) => row.alias === entry.alias)) throw new RepositoryRegistryConflictError(`duplicate repository alias: ${entry.alias}`);
+      if (current.some((row) => fence.urlKey(row.repositoryUrl) === fence.urlKey(entry.repositoryUrl))) throw new RepositoryRegistryConflictError('duplicate repository URL');
+      const position = Math.max(...current.map((row) => row.position)) + 1;
+      this.database.prepare(`INSERT INTO workspace_repositories
+        (id, workspace_id, alias, repository_url, repository_ref, access, position, is_primary) VALUES (?, ?, ?, ?, ?, ?, ?, 0)`)
+        .run(entry.id, entry.workspaceId, entry.alias, entry.repositoryUrl, entry.repositoryRef, entry.access, position);
+      this.insertRepositoryChange(entry.workspaceId, replay);
+    });
+  }
+
+  /**
+   * Deletes one checkout's registry row, fenced like `addWorkspaceRepository`. Removing the primary
+   * promotes the next repository in open order, and the workspace row's repository URL and ref follow it,
+   * because workspace-level status and capabilities describe the primary checkout.
+   */
+  removeWorkspaceRepository(workspaceId: string, repositoryId: string, generation: number, replay: RepositoryChangeRecord): void {
+    this.inRepositoryChangeTransaction(workspaceId, generation, (current) => {
+      const target = current.find((row) => row.id === repositoryId);
+      if (!target) throw new RepositoryRegistryConflictError('repository is no longer registered');
+      const remaining = current.filter((row) => row.id !== repositoryId);
+      if (remaining.length === 0) throw new RepositoryRegistryConflictError('the last repository of a workspace cannot be removed');
+      this.database.prepare('DELETE FROM workspace_repositories WHERE workspace_id = ? AND id = ?').run(workspaceId, repositoryId);
+      if (target.primary) {
+        const next = remaining[0]!;
+        this.database.prepare('UPDATE workspace_repositories SET is_primary = 1 WHERE workspace_id = ? AND id = ?').run(workspaceId, next.id);
+        this.database.prepare('UPDATE workspaces SET repository_url = ?, repository_ref = ? WHERE id = ? AND generation = ?')
+          .run(next.repositoryUrl, next.repositoryRef, workspaceId, generation);
+      }
+      this.insertRepositoryChange(workspaceId, replay);
+    });
+  }
+
+  private inRepositoryChangeTransaction(workspaceId: string, generation: number, change: (current: WorkspaceRepositoryRecord[]) => void): void {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const fenced = this.database.prepare("SELECT 1 FROM workspaces WHERE id = ? AND generation = ? AND status = 'ACTIVE'").get(workspaceId, generation);
+      if (!fenced) throw new RepositoryRegistryFenceError();
+      change(this.workspaceRepositories(workspaceId));
+      this.database.exec('COMMIT;');
+    } catch (error) {
+      try { this.database.exec('ROLLBACK;'); } catch { /* ignore rollback error */ }
+      throw error;
+    }
+  }
+
+  private insertRepositoryChange(workspaceId: string, replay: RepositoryChangeRecord): void {
+    this.database.prepare(`INSERT INTO workspace_repository_changes
+      (owner_id, workspace_id, idempotency_key, operation, fingerprint, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(replay.ownerId, workspaceId, replay.key, replay.operation, replay.fingerprint, replay.resultJson, Date.now());
   }
 
   /**
@@ -2967,37 +3143,58 @@ export class StateStore {
     return id;
   }
 
+  /**
+   * Moves a job forward. A worker passes `whileActive` so a write that lost the race with a cancel is
+   * dropped and reported as `false`, instead of tripping the terminal-once trigger on a row it no longer owns.
+   */
   advanceSkillImportJob(input: {
     ownerId: string; id: string; state: SkillImportJobState;
     progressJson?: string; resultJson?: string | null; errorCode?: string | null; skillRevisionId?: string | null;
-  }): void {
+    whileActive?: boolean;
+  }): boolean {
     const now = Date.now();
-    this.database.prepare(`UPDATE skill_import_jobs SET
+    const result = this.database.prepare(`UPDATE skill_import_jobs SET
         state = ?,
         progress_json = COALESCE(?, progress_json),
         result_json = COALESCE(?, result_json),
         error_code = COALESCE(?, error_code),
         skill_revision_id = COALESCE(?, skill_revision_id),
         updated_at = ?
-      WHERE owner_id = ? AND id = ?`)
+      WHERE owner_id = ? AND id = ?${input.whileActive ? " AND state IN ('queued', 'running')" : ''}`)
       .run(input.state, input.progressJson ?? null, input.resultJson ?? null, input.errorCode ?? null,
         input.skillRevisionId ?? null, now, input.ownerId, input.id);
+    return Number(result.changes) > 0;
+  }
+
+  /**
+   * Cancels a job only while it is still at the generation the caller read, in one statement, so a cancel
+   * that raced the worker's own transition cannot land on a state the operator never saw.
+   */
+  cancelSkillImportJob(ownerId: string, id: string, expectedGeneration: number): boolean {
+    const state = SKILL_IMPORT_ACTIVE_STATES[expectedGeneration - 1];
+    if (!state) return false;
+    const result = this.database.prepare(`UPDATE skill_import_jobs SET state = 'cancelled', updated_at = ?
+      WHERE owner_id = ? AND id = ? AND state = ?`)
+      .run(Date.now(), ownerId, id, state);
+    return Number(result.changes) > 0;
   }
 
   getSkillImportJob(ownerId: string, id: string): {
-    id: string; sourceKind: SkillImportSourceKind; sourceRef: string; state: SkillImportJobState;
+    id: string; sourceKind: SkillImportSourceKind; sourceRef: string; state: SkillImportJobState; generation: number;
     progressJson: string; resultJson: string | null; errorCode: string | null;
-    skillRevisionId: string | null; updatedAt: number;
+    skillRevisionId: string | null; createdAt: number; updatedAt: number;
   } | undefined {
     const row = this.database.prepare(`SELECT id, source_kind, source_ref, state, progress_json, result_json,
-      error_code, skill_revision_id, updated_at FROM skill_import_jobs WHERE owner_id = ? AND id = ?`)
+      error_code, skill_revision_id, created_at, updated_at FROM skill_import_jobs WHERE owner_id = ? AND id = ?`)
       .get(ownerId, id) as Record<string, unknown> | undefined;
     if (!row) return undefined;
+    const state = row.state as SkillImportJobState;
     return {
       id: String(row.id), sourceKind: row.source_kind as SkillImportSourceKind, sourceRef: String(row.source_ref),
-      state: row.state as SkillImportJobState, progressJson: String(row.progress_json),
+      state, generation: skillImportJobGeneration(state), progressJson: String(row.progress_json),
       resultJson: (row.result_json as string | null) ?? null, errorCode: (row.error_code as string | null) ?? null,
-      skillRevisionId: (row.skill_revision_id as string | null) ?? null, updatedAt: Number(row.updated_at)
+      skillRevisionId: (row.skill_revision_id as string | null) ?? null,
+      createdAt: Number(row.created_at), updatedAt: Number(row.updated_at)
     };
   }
 

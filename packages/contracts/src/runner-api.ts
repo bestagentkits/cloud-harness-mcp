@@ -4,7 +4,7 @@ import { ToolResultSchema } from './mcp-results.js';
 export const RunnerOperationSchema = z.enum([
   'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close',
   'workspace_lease_renew', 'workspace_recover', 'workspace_context', 'workspace_set_active',
-  'workspace_finalize',
+  'workspace_finalize', 'workspace_repos_list', 'workspace_repo_status', 'workspace_repo_add', 'workspace_repo_remove',
   'files_list', 'files_read', 'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir', 'grep_search',
   'symbols_search', 'symbols_references',
   'exec_run', 'bash', 'shell_open', 'shell_io', 'shell_close',
@@ -26,7 +26,8 @@ export const RunnerOperationSchema = z.enum([
   'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list',
   'model_provider_list', 'model_catalog_search', 'model_connection_verify',
   'model_profile_list', 'model_profile_validate', 'model_profile_create', 'model_profile_update',
-  'model_spend_summary'
+  'model_spend_summary',
+  'agent_traces_list', 'agent_trace_get', 'agent_trace_spans', 'agent_trace_export'
 ]);
 
 export const ExternalPrincipalSchema = z.object({
@@ -139,6 +140,10 @@ export const WorkspaceCapabilityResultSchema = z.object({
   workspaceId: z.string(),
   repository: z.string().nullable(),
   repositoryUrl: z.string(),
+  repositoryId: z.string().optional().describe('The repository of a multi-repository workspace these capabilities describe'),
+  repositoryAlias: z.string().optional(),
+  repositoryAccess: z.enum(['read-write', 'read-only']).optional()
+    .describe('read-only clamps every brokered write capability of this repository to false'),
   capabilities: z.object({
     repository: RepositoryCapabilitiesSchema,
     workspace: WorkspaceCapabilitiesSchema
@@ -280,7 +285,10 @@ export const AgentProxyOperationSchema = z.enum([
   'files_mkdir',
   'grep_search',
   'symbols_search',
-  'symbols_references'
+  'symbols_references',
+  'exec_run',
+  'git_status',
+  'git_diff'
 ]);
 
 export const AgentStatusSchema = z.enum([

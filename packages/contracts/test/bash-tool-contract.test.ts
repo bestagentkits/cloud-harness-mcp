@@ -46,6 +46,7 @@ describe('bash tool contract', () => {
     expect(schema.parse({ command: 'make', target: 'toolbox', async: true })).toMatchObject({ target: 'toolbox', async: true });
     expect(() => schema.parse({ workspaceId, command: 'true', target: 'toolbox' })).toThrow(/workspaceId is not allowed/);
     expect(() => schema.parse({ command: 'true', target: 'toolbox', cwd: 'src' })).toThrow(/cwd is only valid/);
+    expect(() => schema.parse({ command: 'true', target: 'toolbox', repositoryId: 'api' })).toThrow(/repositoryId is not allowed/);
     expect(() => schema.parse({ command: 'true', target: 'host' })).toThrow();
   });
 
@@ -60,7 +61,7 @@ describe('bash tool contract', () => {
   it('has no privileged path and refuses approval fields instead of ignoring them', () => {
     const jsonSchema = z.toJSONSchema(schema, { io: 'input' });
     expect(jsonSchema.type).toBe('object');
-    expect(Object.keys(jsonSchema.properties ?? {}).sort()).toEqual(['async', 'command', 'cwd', 'maxOutputBytes', 'target', 'timeoutMs', 'workspaceId']);
+    expect(Object.keys(jsonSchema.properties ?? {}).sort()).toEqual(['async', 'command', 'cwd', 'maxOutputBytes', 'repositoryId', 'target', 'timeoutMs', 'workspaceId']);
     expect(() => schema.parse({ workspaceId, command: 'id', privileged: true })).toThrow();
     expect(() => schema.parse({ workspaceId, command: 'id', approvalGrantToken: 'grant' })).toThrow();
   });

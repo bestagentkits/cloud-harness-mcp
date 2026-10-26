@@ -15,6 +15,7 @@ import { RunnerClient } from './runner-client.js';
 import { EventDeliveryWorker } from './events/event-delivery-worker.js';
 import { createWebhookSender, type WebhookSender } from './events/webhook-sender.js';
 import { apiLogger } from './logging.js';
+import { createAutomationWebhookIngress } from './automations/webhook-ingress.js';
 
 export type ApiRuntime = {
   app: Express;
@@ -132,6 +133,9 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
       await gatewayNodeHandler(request, response, request.body);
     });
   }
+  // Public, unauthenticated webhook ingress: the runner verifies each delivery's HMAC signature.
+  // It is mounted only when automations are enabled, so the path does not exist otherwise.
+  if (config.automationsEnabled) app.use(createAutomationWebhookIngress(config, runnerClient));
   if (config.authMode === 'cloudflare-access') {
     // Authentication and broad pre-auth DoS protection cover the whole Dashboard,
     // while the tighter per-principal budget is reserved for BFF/API operations.

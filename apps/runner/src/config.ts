@@ -174,6 +174,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     packagesBuildTimeoutMs: process.env.PACKAGES_BUILD_TIMEOUT_MS,
     minFreeBytes: process.env.MIN_FREE_BYTES,
     maxWorkspaceBytes: process.env.MAX_WORKSPACE_BYTES,
+    maxWorkspaceRepositories: process.env.MAX_WORKSPACE_REPOSITORIES,
     maxActiveWorkspacesPerOwner: process.env.MAX_ACTIVE_WORKSPACES_PER_OWNER,
     // An empty value must not coerce to 0, which would select immediate auto-close.
     recoverableGraceSeconds: process.env.WORKSPACE_RECOVERABLE_GRACE_SECONDS || undefined,
@@ -210,6 +211,15 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     } : undefined,
     githubToken,
     cloudflareAccessOAuth: cloudflareAccessOAuth(),
+    automationsEnabled: process.env.AUTOMATIONS_ENABLED,
+    automationsMaxConcurrentWorkflows: process.env.AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS,
+    agentTraces: {
+      enabled: process.env.AGENT_TRACES_ENABLED,
+      retentionDays: process.env.AGENT_TRACE_RETENTION_DAYS,
+      maxSpansPerTrace: process.env.AGENT_TRACE_MAX_SPANS,
+      maxTracesPerPrincipal: process.env.AGENT_TRACE_MAX_PER_PRINCIPAL,
+      previewBytes: process.env.AGENT_TRACE_PREVIEW_BYTES
+    },
     agents: agentConfigurationPresent ? {
       image: process.env.AGENT_IMAGE,
       networkMode: process.env.AGENT_NETWORK_MODE,
@@ -241,7 +251,11 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
         retentionSeconds: process.env.AGENT_RETENTION_SECONDS,
         lookupHorizonSeconds: process.env.AGENT_LOOKUP_HORIZON_SECONDS
       }
-    } : undefined
+    } : undefined,
+    agentPoliciesEnabled: process.env.AGENT_POLICIES_ENABLED,
+    agentCodingEnabled: process.env.AGENT_CODING_ENABLED,
+    agentCodingPackageInstallEnabled: process.env.AGENT_CODING_PACKAGE_INSTALL_ENABLED,
+    notificationsEnabled: process.env.NOTIFICATIONS_ENABLED
   });
   if (packageApprovalUnavailable(config)) {
     console.warn('[runner-config] PACKAGES_APPROVAL_MODE=required has no Dashboard approver in owner-bearer mode: packages_apply is refused until PACKAGES_APPROVAL_MODE=none');

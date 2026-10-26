@@ -107,8 +107,37 @@ export const listMcpServerLogs = (serverId, cursor) => api(`/mcp-servers/${encod
 export const getMcpGatewayEndpoint = () => api('/mcp-gateway');
 export const listGlobalSecrets = () => api('/secrets');
 
+/** Optional list filters become a query string; empty values are dropped rather than sent as blanks. */
+const automationQuery = (params = {}) => {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== null && value !== '') query.set(key, String(value));
+  const text = query.toString();
+  return text ? `?${text}` : '';
+};
+const automationPath = (collection, id, suffix = '') => `/automations/${collection}/${encodeURIComponent(id)}${suffix}`;
+export const listAutomationConnections = () => api('/automations/connections');
+export const createAutomationConnection = (name) => api('/automations/connections', { method: 'POST', body: JSON.stringify({ provider: 'github', name }) });
+export const updateAutomationConnection = (id, payload) => api(automationPath('connections', id), { method: 'PATCH', body: JSON.stringify(payload) });
+export const rotateAutomationConnectionSecret = (id, expectedGeneration) => api(automationPath('connections', id, '/rotate-secret'), { method: 'POST', body: JSON.stringify({ expectedGeneration }) });
+export const deleteAutomationConnection = (id, expectedGeneration) => api(automationPath('connections', id), { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
+export const listAutomationRules = (connectionId) => api(`/automations/rules${automationQuery({ connectionId })}`);
+export const createAutomationRule = (payload) => api('/automations/rules', { method: 'POST', body: JSON.stringify(payload) });
+export const updateAutomationRule = (id, payload) => api(automationPath('rules', id), { method: 'PATCH', body: JSON.stringify(payload) });
+export const deleteAutomationRule = (id, expectedGeneration) => api(automationPath('rules', id), { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
+export const previewAutomationRule = (id, sample) => api(automationPath('rules', id, '/preview'), { method: 'POST', body: JSON.stringify({ sample }) });
+export const listAutomationWorkflows = ({ ruleId, state, limit } = {}) => api(`/automations/workflows${automationQuery({ ruleId, state, limit })}`);
+export const getAutomationWorkflow = (id, { actionsCursor } = {}) => api(`${automationPath('workflows', id)}${automationQuery({ actionsCursor })}`);
+export const cancelAutomationWorkflow = (id, reason) => api(automationPath('workflows', id, '/cancel'), { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) });
+export const listAutomationDeliveries = ({ connectionId, limit } = {}) => api(`/automations/deliveries${automationQuery({ connectionId, limit })}`);
+
 async function problem(response) {
   let body = {};
   try { body = await response.json(); } catch { /* sanitized fallback */ }
-  return Object.assign(new Error(body.message ?? 'The request could not be completed.'), { status: response.status, code: body.error });
+  // `grantRequest` is the single-use grant an action waits on; only its id and expiry are kept.
+  const grantRequest = body.grantRequest && typeof body.grantRequest.grantId === 'string'
+    ? { grantId: body.grantRequest.grantId, expiresAt: body.grantRequest.expiresAt }
+    : undefined;
+  // A reported failure (a skill script that exited non-zero) carries the run's bounded projection.
+  const data = response.status === 422 && body.data && typeof body.data === 'object' ? body.data : undefined;
+  return Object.assign(new Error(body.message ?? 'The request could not be completed.'), { status: response.status, code: body.error, ...(grantRequest ? { grantRequest } : {}), ...(data ? { data } : {}) });
 }

@@ -44,7 +44,8 @@ function fixture() {
   return { base, next, push, remoteRef };
 }
 
-describe('git-transfer-helper push leases', () => {
+// The helper is a POSIX shell script that runs only inside the Linux executor container.
+describe.skipIf(process.platform === 'win32')('git-transfer-helper push leases', () => {
   it('creates a ref only while it is absent, so a second create-only push collides', () => {
     const { base, next, push, remoteRef } = fixture();
     const created = push('refs/heads/main:refs/heads/merge-lock', 'absent');

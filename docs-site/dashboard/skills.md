@@ -92,7 +92,11 @@ because a branch name would be refused after the wizard claimed to accept it.
 Starting an import uses the `POST /skill-imports` route, and the job line reports what the job is
 doing rather than a bare state token: progress while it runs, and for a failure the specific remedy,
 including the `CACHE_MISS` case, which has an exact fix. **Retry** starts the same request again from
-whatever the wizard currently holds. **Cancel** stops a job that is still running.
+whatever the wizard currently holds. **Cancel** stops a job that is still queued or running. It is
+fenced on the job state shown on the job line: if the job moved on (it started, or finished) before
+the cancel arrived, the dashboard reports that the import changed instead of cancelling a state you
+did not see, and the next poll shows where it is now. A cancelled import publishes nothing: a fetch
+already in flight finishes in the background, and the import stops at its next step.
 
 ## Skill sets
 
@@ -129,7 +133,12 @@ instructions but no scripts is refused with `NO_EXECUTABLE_ASSETS` rather than a
 result reports `executionMode` so a caller cannot read a stronger isolation guarantee into a run than
 the run had. That report is load-bearing: skill scripts run in a disposable helper container, that path
 requires an owner privilege grant, and a run without one is refused with `PRIVILEGE_APPROVAL_REQUIRED`
-rather than falling back to executing inside the workspace executor.
+rather than falling back to executing inside the workspace executor. The grant covers the exact run
+that was requested: the skill, script, and digest, plus the source, the timeout, and the script
+arguments when the caller set them. Retry with the identical request and the grant token; a retry that
+changes the arguments, source, or timeout is refused with `FORBIDDEN` and leaves the grant unused.
+From the Dashboard, the workspace cockpit's **Automation** tab asks for that grant when you run a script
+and runs it once you approve; see [Workspaces](/dashboard/workspaces).
 
 Workspace and repository skills live on the mutable working tree, so they remain repository-controlled
 executable content. The owner tier is where to install a skill that must not be re-pointable by a

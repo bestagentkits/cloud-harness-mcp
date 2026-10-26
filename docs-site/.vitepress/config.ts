@@ -128,9 +128,12 @@ export default defineConfig({
         items: [
           { text: 'Overview', link: '/dashboard/' },
           { text: 'Assistant', link: '/dashboard/assistant' },
+          { text: 'Inbox', link: '/dashboard/inbox' },
           { text: 'Workspaces', link: '/dashboard/workspaces' },
           { text: 'Terminal', link: '/dashboard/terminal' },
           { text: 'Agents', link: '/dashboard/agents' },
+          { text: 'Traces', link: '/dashboard/traces' },
+          { text: 'Automations', link: '/dashboard/automations' },
           { text: 'Activity', link: '/dashboard/activity' },
           { text: 'Approvals', link: '/dashboard/approvals' },
           { text: 'Packages', link: '/dashboard/packages' },
@@ -147,6 +150,7 @@ export default defineConfig({
           { text: 'API Access', link: '/dashboard/api-keys' },
           { text: 'Audit Logs', link: '/dashboard/audit' },
           { text: 'Settings', link: '/dashboard/settings' },
+          { text: 'Agent Policies', link: '/dashboard/agent-policies' },
           { text: 'Profile & Themes', link: '/dashboard/profile' }
         ]
       },

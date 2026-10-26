@@ -11,14 +11,25 @@ import { GitHubBindingService, GitHubSetupStateStore } from './github-binding-se
 import { SqliteGitHubInstallationStore } from './github-installation-sqlite-store.js';
 import { MetadataStore } from './metadata-store.js';
 import { McpEventService } from './mcp-event-service.js';
+import { AutomationService, type AutomationOperationResult } from './automation-service.js';
+import { AgentPolicyService } from './agent-governance/policy-service.js';
+import { CodingActionBroker } from './agent-governance/action-broker.js';
+import { DEFAULT_NPM_REGISTRY } from './package-builder.js';
+import { HarnessError, type RunnerResponse } from '@cloud-harness/contracts';
 import { SecretKeyring } from './secret-keyring.js';
 import { createRunnerDecisionPlane } from './decision-plane/runner-decision-plane.js';
+import { ExecutionRiskAdvisor } from './decision-plane/execution-risk-advisor.js';
 import { StateStore } from './state-store.js';
 import { WorkspaceService } from './workspace-service.js';
 import { DockerAgentGatewayControl } from './agent-gateway-control.js';
 import { ModelProfileStateRepository } from './model-profile-state-repository.js';
 import { CloudflareAccessOAuthProvider } from './cloudflare-access-oauth-provider.js';
 import { OAuthGrantSettingsService } from './oauth-grant-settings-service.js';
+import { GithubNotificationAdapter, McpEventNotificationAdapter } from './notifications/notification-adapters.js';
+import { NotificationDispatcher } from './notifications/notification-dispatcher.js';
+import { configureNotifications } from './notifications/notification-emitter.js';
+import { NotificationService } from './notifications/notification-service.js';
+import { NotificationStore } from './notifications/notification-store.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const loaded = loadRunnerConfigWithReadiness();
@@ -46,6 +57,24 @@ const events = new McpEventService({
   audit: (database, principalId, action, subscriptionId, generation, details) => {
     metadata.recordAuditInTransaction(database, principalId, action, 'mcp_event_subscription', subscriptionId, generation, details);
   }
+});
+// Notification inbox: configured before any startup reconciliation can record a terminal transition.
+// Off by default; while off nothing is emitted or sent and only the retention purge runs.
+const notificationStore = new NotificationStore(store.database);
+const notificationDispatcher = new NotificationDispatcher({
+  store: notificationStore,
+  adapters: [new McpEventNotificationAdapter(store.database), new GithubNotificationAdapter(store.database)],
+  log: (record) => logger.warn(record, 'notifications')
+});
+configureNotifications({
+  enabled: config.notificationsEnabled,
+  channels: notificationDispatcher.channels(),
+  onError: (error) => logger.warn({ error: error instanceof Error ? error.name : 'unknown' }, 'notification emission skipped')
+});
+const notifications = new NotificationService({
+  store: notificationStore,
+  enabled: config.notificationsEnabled,
+  resolvePrincipal: (principal) => store.resolvePrincipal(principal)
 });
 const githubInstallations = new SqliteGitHubInstallationStore(store.database);
 const githubBinding = config.githubApp
@@ -79,7 +108,96 @@ const oauthGrantSettings = new OAuthGrantSettingsService(
   config.cloudflareAccessOAuth ? new CloudflareAccessOAuthProvider(config.cloudflareAccessOAuth) : undefined,
   (ownerId, action, details) => metadata.recordAudit(ownerId, action, 'instance', 'oauth_grant_settings', 1, details)
 );
-await service.start();
+for (const failure of await service.start()) {
+  logger.warn(failure, 'workspace executor reconciliation failed during startup');
+}
+const agentPolicies = new AgentPolicyService({
+  database: store.database,
+  enabled: config.agentPoliciesEnabled,
+  resolvePrincipal: (principal) => store.resolvePrincipal(principal),
+  // Project identity is the metadata projects table, never a name or id taken from an event payload.
+  projectState: (principalId, projectId) => (metadata.validateArtifactProvenance(principalId, { projectId }) ? 'active' : 'unknown'),
+  activeProjectIds: (principalId) => metadata.activeProjectIds(principalId),
+  audit: (database, principalId, action, subjectType, subjectId, generation, details) => {
+    metadata.recordAuditInTransaction(database, principalId, action, subjectType, subjectId, generation, details);
+  },
+  // Consulted only when DECISION_PLANE_PURPOSES includes execution-risk, TypeSafe egress is on, the owner has
+  // a TypeSafe credential and the policy enables the advisor; otherwise the policy fallback applies with no call.
+  advisor: new ExecutionRiskAdvisor(decisionPlane)
+});
+// The coding broker is always attached so the brokered-only agent tools stay refused outside a coding
+// workflow; AGENT_CODING_ENABLED is read on every brokered action and is also the kill switch.
+const codingBroker = new CodingActionBroker({
+  database: store.database,
+  enabled: () => config.agentCodingEnabled,
+  policies: agentPolicies,
+  workspaces: service.codingWorkspaceFacts(),
+  traces: service.actionTraces
+});
+service.useCodingBroker(codingBroker);
+/** A runner response as the automation engine sees it; a harness error becomes a failed result. */
+async function automationResult(run: () => Promise<RunnerResponse>): Promise<AutomationOperationResult> {
+  try {
+    const result = await run();
+    return {
+      ok: result.ok, data: result.data, error: result.error ? { code: result.error.code, retryable: result.error.retryable } : undefined,
+      cursor: result.cursor, truncated: result.truncated
+    };
+  } catch (error) {
+    if (error instanceof HarnessError) return { ok: false, error: { code: error.code, retryable: error.retryable } };
+    throw error;
+  }
+}
+const automations = new AutomationService({
+  database: store.database,
+  enabled: config.automationsEnabled,
+  maxConcurrentWorkflows: config.automationsMaxConcurrentWorkflows,
+  resolvePrincipal: (principal) => store.resolvePrincipal(principal),
+  keyring,
+  selfLogin: config.githubApp?.appSlug ? `${config.githubApp.appSlug}[bot]` : undefined,
+  operations: {
+    execute: async (ownerId, operation, input) => await automationResult(async () => await service.execute(ownerId, operation, input))
+  },
+  audit: (database, principalId, action, subjectType, subjectId, generation, details) => {
+    metadata.recordAuditInTransaction(database, principalId, action, subjectType, subjectId, generation, details);
+  },
+  log: (record) => logger.warn(record, 'automation'),
+  coding: codingBroker,
+  codingInstall: {
+    enabled: () => config.agentCodingPackageInstallEnabled,
+    registry: DEFAULT_NPM_REGISTRY,
+    run: async (ownerId, workspaceId, signal) => await service.installCodingDependencies(ownerId, workspaceId, signal)
+  },
+  codingGit: async (ownerId, workspaceId, args, signal) => await service.runCodingGit(ownerId, workspaceId, args, signal),
+  codingPublish: async (ownerId, input, verifier) =>
+    await automationResult(async () => await service.execute(ownerId, 'git_push', input, undefined, { pushVerifier: verifier }))
+});
+automations.start();
+// Agent trace retention: traces past their retention period are removed hourly in bounded,
+// yielding batches, also while traces are disabled. A failure is logged and retried on the next
+// tick, and a tick never overlaps a purge still in progress. Shutdown aborts the purge between
+// batches and waits for it before the database closes.
+const agentTracePurgeAbort = new AbortController();
+let agentTracePurgeRunning: Promise<void> | undefined;
+const purgeAgentTraces = async (): Promise<void> => {
+  if (agentTracePurgeRunning || agentTracePurgeAbort.signal.aborted) return;
+  agentTracePurgeRunning = (async () => {
+    try {
+      const removed = await service.purgeAgentTraces(Date.now(), agentTracePurgeAbort.signal);
+      if (removed > 0) logger.info({ removed }, 'agent traces purged');
+    } catch (error) {
+      logger.warn({ error: error instanceof Error ? error.message : 'unknown' }, 'agent trace purge failed');
+    }
+  })();
+  try {
+    await agentTracePurgeRunning;
+  } finally {
+    agentTracePurgeRunning = undefined;
+  }
+};
+void purgeAgentTraces();
+const agentTracePurge = setInterval(() => { void purgeAgentTraces(); }, 3_600_000);
+agentTracePurge.unref();
 // New installs default to the provider-maximum grant. This never blocks startup and
 // never overwrites a value an operator set explicitly; failures surface in Settings.
 void oauthGrantSettings.reconcileDefault().then(
@@ -89,12 +207,20 @@ void oauthGrantSettings.reconcileDefault().then(
 const server = createServer(createRunnerApp(config, service, controls, apiKeys, {
   settings: oauthGrantSettings,
   resolvePrincipal: (principal) => store.resolvePrincipal(principal)
-}, events));
+}, events, automations, agentPolicies, notifications));
+// Turned off, the loop sends nothing but keeps applying retention to stored notifications.
+if (config.notificationsEnabled) notificationDispatcher.start();
+else notificationDispatcher.start(60_000, { purgeOnly: true });
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));
 
 async function shutdown(signal: string) {
   logger.info({ signal }, 'runner shutting down');
   server.close();
+  clearInterval(agentTracePurge);
+  agentTracePurgeAbort.abort();
+  await agentTracePurgeRunning;
+  await automations.stop();
+  await notificationDispatcher.stop();
   await service.stop();
   metadata.close();
   keyring?.close();

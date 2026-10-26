@@ -141,6 +141,14 @@ a lost response; do not create a second key until the first result is resolved.
 
 ## Tool behavior
 
+- In a multi-repository workspace, `INVALID_INPUT` naming `needs repositoryId`
+  is a Git-bound tool called without a selector, and `FORBIDDEN` with
+  `error.repository` and `is read-only` is a brokered write to a repository
+  opened `read-only`; access is fixed at open. A repository-count
+  `LIMIT_EXCEEDED` on `workspace_open` is `MAX_WORKSPACE_REPOSITORIES`. The
+  selector rules are in
+  [MCP usage](mcp-api.md#multi-repository-workspaces); the user-facing steps
+  are in [`docs-site/troubleshooting.md`](../docs-site/troubleshooting.md).
 - An agent's model request fails with `400 invalid_model_request` naming a
   field or tool type: the Model Gateway refuses requests it cannot bound or
   that would let the provider act on the agent's behalf. These are stored
@@ -201,7 +209,10 @@ a lost response; do not create a second key until the first result is resolved.
   API over a unix socket and are unavailable with any other Docker host.
 - `workspace_open` fails with `DEPENDENCY_EGRESS_UNAVAILABLE` (HTTP 503): the
   effective profile is `dependency-access` — the shipped default — but the Linux
-  host firewall is missing or drifted. Provision it with
+  host firewall is missing or drifted. A foreign rule inserted ahead of a managed
+  jump (such as Tailscale's `-A INPUT -j ts-input`) is repaired automatically on
+  the next attestation and logged as a runner warning, so this error means the
+  managed rules themselves are missing or changed. Provision it with
   `deploy/scripts/setup-dependency-firewall.sh`, confirm egress readiness from
   the dashboard Settings page, then open with a fresh idempotency key: the failed
   open recorded its key with a `FAILED` status, and replaying that key returns the
@@ -279,6 +290,32 @@ recent deliveries.
 | Deliveries `ABANDONED` | The receiver kept failing past the retry window, answered `410` or `413`, or the subscription lapsed or was revoked first. Events are not replayed; fix the receiver and wait for the next transition. |
 | Duplicate deliveries at the receiver | Expected under at-least-once delivery. Deduplicate on `webhook-id`. |
 
+## Webhook automations
+
+The status mapping is owned by
+[`apps/api/src/automations/webhook-ingress.ts`](../apps/api/src/automations/webhook-ingress.ts)
+and the delivery and workflow outcomes by
+[`apps/runner/src/automation-service.ts`](../apps/runner/src/automation-service.ts).
+GitHub's webhook **Recent Deliveries** view shows each response; the Dashboard
+Automations **Deliveries** and **Runs** views show what the runner did with it.
+
+| Symptom | Meaning and next check |
+|---|---|
+| GitHub delivery gets `404` or an nginx page | `AUTOMATIONS_ENABLED` is off on the API, or the managed `/integrations/webhooks/` nginx location is missing. Rerun the nginx upgrade; exit status `12` means an unmanaged route under `/integrations/` must be reconciled by hand. |
+| GitHub delivery gets an Access login page or `302` | Access is protecting the path. Add the path-scoped Bypass application for `/integrations/webhooks/` only ([deployment](deployment.md#webhook-automations-rollout)). |
+| `401 {"error":"unauthorized"}` | Unknown, disabled, or deleted connection, or a signature mismatch; the body is identical on purpose. Check the URL's connection id and that GitHub holds the current secret. After **Rotate secret**, every delivery signed with the old secret fails until GitHub is updated. |
+| `415` | The GitHub webhook content type is `application/x-www-form-urlencoded`. Change it to `application/json`. |
+| `429` with `Retry-After` | The API's ingress window for this connection id or the connection's per-minute delivery rate is exhausted. GitHub does not retry automatically; redeliver from GitHub after the window. |
+| `503 {"error":"unavailable"}` | The runner is unreachable, its `AUTOMATIONS_ENABLED` does not match the API's, or it has no secret keyring. Check `/readyz` and both services' environment. |
+| `202` with `status: "ignored"` | Verified, but not an admitted event (for example `ping`, or an action other than `labeled`), or the body was malformed (listed as quarantined). Only label additions on issues and pull requests start runs. |
+| `202` with `status: "duplicate"` | GitHub redelivered a `X-GitHub-Delivery` id already stored; nothing new runs. |
+| Delivery processed but no run | The delivery outcome names why: no enabled rule for that repository and label, `self_trigger`, `bot_sender`, `actor_not_allowed`, `coalesced` (a run for that rule and issue or pull request is already active), or `cooldown`. Use the rule's **Test event** to check a sample. |
+| Run `EXPIRED` or `CANCELLED` | It could not start within the queue window (instance or rule concurrency full, or workspace opens kept failing), or the rule was disabled or deleted while it waited. The transition code names the cause. |
+| Run `FAILED` | The error code names the step: `WORKSPACE_OPEN_FAILED:*` (for example a private repository without GitHub App access), `AGENT_SPAWN_FAILED:*` (profile or budget), `AGENT_<status>` (the agent's own terminal status), or `WORKSPACE_LOST`. |
+| Coding run `FAILED` | The code names the stop; the run page's **Coding** section lists each action's decision and outcome. `CODING_DISABLED`: `AGENT_CODING_ENABLED` is off (or was turned off mid-run). `ACTION_DENIED:<reason>` or `ACTION_REQUIRES_APPROVAL:<reason>`: the execution policy refused a step; simulate the same action on the Policies page and adjust the policy, since approvals are not granted in this release. `CODING_VERIFY_FAILED`: the verify command did not pass, so nothing was committed; the staged diff is kept as a workspace artifact. `CODING_NO_CHANGES`: the agent changed nothing. `CODING_INSTALL_FAILED:*` or `LOCKFILE_REJECTED`: the lockfile install failed or its lockfile is not registry-pinned with sha512 integrity. `REPOSITORY_AMBIGUOUS`: the workspace holds more than one repository. `BRANCH_EXISTS`: the run's `agent/` branch already existed, locally or on GitHub, so it was not adopted; delete the stale branch and label the issue again. `HEAD_MOVED`: something in the workspace (the agent, its verify command or a process it left running) committed by itself, so the runner did not commit on top; keep the agent from committing and run again. `COMMIT_UNVERIFIED`: the commit to publish is not exactly the runner's own (base as its only parent, the runner's author, committer and message), it could not be read, or its staged copy kept failing before it could be read; check the checkout for Git configuration, replace refs or grafts the repository sets up. `PATHS_UNVERIFIABLE`: before the commit or before the push, the changed paths could not be listed completely (too many, too long, or truncated), so none were published; split the change. `CODING_PUBLISH_FAILED`: a commit, push or pull request failed for another reason, for example a ruleset or hook on GitHub refused the push, or the GitHub App lacks contents or pull request write access; the run page names the failing action and its error code. |
+| Coding run `FAILED` with `EFFECT_UNKNOWN` | A push or pull request may have happened, but GitHub could not be read to confirm it. The harness does not retry. Check the repository for the run's `agent/` branch and pull request before labelling the issue again ([operations](operations.md#webhook-automation-state)). |
+| Run shows **Publish failed** | The comment action kept failing after its retries or failed non-retryably (often a GitHub App without issue write access on that repository). The run state is unaffected and the answer is still on the run page. |
+
 ## Containers and cleanup
 
 Inspect before acting:
@@ -296,6 +333,20 @@ or could not run the check. Earlier releases deleted it after an hour
 regardless. Recover or export the work, then `workspace_close`; the Settings
 panel counts these as retained by auto-close. See
 [expired workspaces and auto-close](operations.md#expired-workspaces-and-auto-close).
+
+An `EXPIRED_RECOVERABLE` workspace whose `error` starts `executor
+reconciliation failed during startup:` lost its executor across a runner
+restart: the retained container would not restart and a replacement could not
+be built. Startup holds only that workspace, logs the runner warning
+`workspace executor reconciliation failed during startup`, and finishes for the
+rest. During the recoverable grace `workspace_recover` rebuilds the executor
+once the cause in the message (for example a full disk or a missing executor
+image) is fixed; after it, auto-close treats the workspace like any expired
+one. A workspace whose checkout is already gone from disk is closed instead.
+The same warning with a reason starting `leftover container` names a workspace
+executor container Docker would not remove; startup skips it and retries at the
+next start. A short-lived helper container that will not go away still stops
+startup, because package cleanup must not run while one may be writing. Inspect it with the `docker ps` filter above before removing it by name.
 
 Prefer `workspace_close`. If manual recovery is unavoidable, match the opaque
 workspace ID in SQLite, the Docker label, and the exact job directory first.

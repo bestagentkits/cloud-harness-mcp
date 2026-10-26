@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ApiKeyIdSchema } from './api-key-api.js';
 import { AgentIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { RunnerPrincipalSelectorSchema } from './runner-api.js';
+import { NotificationCreatedPayloadSchema, NotificationKindSchema } from './notifications-api.js';
 
 /**
  * MCP Events (webhook delivery) contract. The wire protocol follows the MCP Events design
@@ -32,7 +33,10 @@ export const MCP_EVENT_NAMES = [
   'cloudharness.task.completed',
   'cloudharness.task.failed',
   'cloudharness.agent.settled',
-  'cloudharness.agent.failed'
+  'cloudharness.agent.failed',
+  'cloudharness.automation.completed',
+  'cloudharness.automation.failed',
+  'cloudharness.notification.created'
 ] as const;
 export const McpEventNameSchema = z.enum(MCP_EVENT_NAMES);
 
@@ -55,6 +59,15 @@ export const TaskEventArgumentsSchema = z.object({
 export const AgentEventArgumentsSchema = z.object({
   workspaceId: WorkspaceIdSchema.optional().describe('Only agents in this workspace (workspaceId from workspace_open). Omit to watch every workspace you own.'),
   agentId: AgentIdSchema.optional().describe('Only this agent (agentId from agent_spawn).')
+}).strict();
+
+export const AutomationEventArgumentsSchema = z.object({
+  ruleId: z.string().regex(/^arl_[a-f0-9]{32}$/u).optional().describe('Only workflows of this automation rule.'),
+  workflowId: z.string().regex(/^wfl_[a-f0-9]{32}$/u).optional().describe('Only this automation workflow.')
+}).strict();
+
+export const NotificationEventArgumentsSchema = z.object({
+  kind: NotificationKindSchema.optional().describe('Only notifications of this kind, for example automation.failed. Omit to receive every kind.')
 }).strict();
 
 export const TaskCompletedPayloadSchema = z.object({
@@ -91,12 +104,31 @@ export const AgentFailedPayloadSchema = z.object({
   terminalAt: z.string()
 }).strict();
 
+export const AutomationCompletedPayloadSchema = z.object({
+  workflowId: z.string(),
+  ruleId: z.string(),
+  status: z.literal('COMPLETED'),
+  workspaceId: z.string().nullable(),
+  agentId: z.string().nullable(),
+  terminalAt: z.string()
+}).strict();
+
+export const AutomationFailedPayloadSchema = z.object({
+  workflowId: z.string(),
+  ruleId: z.string(),
+  status: z.enum(['FAILED', 'CANCELLED', 'EXPIRED']),
+  workspaceId: z.string().nullable(),
+  agentId: z.string().nullable(),
+  errorCode: z.string().nullable(),
+  terminalAt: z.string()
+}).strict();
+
 export type McpEventName = z.infer<typeof McpEventNameSchema>;
 
 export type McpEventDefinition = {
   name: McpEventName;
   description: string;
-  arguments: typeof TaskEventArgumentsSchema | typeof AgentEventArgumentsSchema;
+  arguments: typeof TaskEventArgumentsSchema | typeof AgentEventArgumentsSchema | typeof AutomationEventArgumentsSchema | typeof NotificationEventArgumentsSchema;
   payload: z.ZodType;
 };
 
@@ -124,6 +156,24 @@ export const MCP_EVENT_DEFINITIONS: readonly McpEventDefinition[] = [
     description: 'A managed agent reached a terminal state other than SUCCEEDED: FAILED, CANCELLED, TIMED_OUT, LIMIT_EXCEEDED, or INTERRUPTED (outcomeUnknown is true when its effects are uncertain).',
     arguments: AgentEventArgumentsSchema,
     payload: AgentFailedPayloadSchema
+  },
+  {
+    name: 'cloudharness.automation.completed',
+    description: 'A webhook-triggered automation workflow finished: its agent reached SUCCEEDED. Any configured GitHub comment is posted afterwards; read the result on the Dashboard Automations page.',
+    arguments: AutomationEventArgumentsSchema,
+    payload: AutomationCompletedPayloadSchema
+  },
+  {
+    name: 'cloudharness.automation.failed',
+    description: 'A webhook-triggered automation workflow ended without success: FAILED (workspace, profile, budget or agent failure), CANCELLED by the owner, or EXPIRED before it could start. errorCode names the cause.',
+    arguments: AutomationEventArgumentsSchema,
+    payload: AutomationFailedPayloadSchema
+  },
+  {
+    name: 'cloudharness.notification.created',
+    description: 'A notification entered your inbox: an automation or agent run finished, a workflow is waiting for a human, or an approval was decided. Carries ids, a short title and a Dashboard link only. Fires only while the operator has notifications enabled and your mcp_event preference for that kind is on.',
+    arguments: NotificationEventArgumentsSchema,
+    payload: NotificationCreatedPayloadSchema
   }
 ];
 

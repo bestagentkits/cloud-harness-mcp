@@ -315,6 +315,15 @@ stop a fast-running process between checks. Operate with disk monitoring and a
 host reserve; use quota-backed dedicated storage before treating this as an
 untrusted service.
 
+`MAX_WORKSPACE_REPOSITORIES` bounds how many repositories one
+[multi-repository workspace](mcp-api.md#multi-repository-workspaces) may hold.
+It may only lower the schema ceiling, and a larger `repositories` set is
+refused with `LIMIT_EXCEEDED` before anything is admitted or cloned. The
+checkouts share one executor and the single `MAX_WORKSPACE_BYTES` ceiling, so
+raise it only with disk headroom. The default and bounds are owned by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts).
+There is no Dashboard override.
+
 `JOBS_ROOT` contains ephemeral workspace directories. `STATE_DB` points to
 SQLite control metadata. `ARTIFACT_ROOT` contains retained, bounded dashboard
 snapshots and spooled task outputs; it must use runner-confined durable storage
@@ -657,18 +666,113 @@ An example file is in the
 
 | Variable | Default | Decision |
 |---|---|---|
-| `DECISION_PLANE_PURPOSES` | empty (off) | Runner flag. A comma-separated subset of `mcp-routing` and `failure-classification`. A listed purpose is evaluated only for owners who stored a TypeSafe integration key. Any other value fails startup. |
+| `DECISION_PLANE_PURPOSES` | empty (off) | Runner flag. A comma-separated subset of `mcp-routing`, `failure-classification` and `execution-risk`. A listed purpose is evaluated only for owners who stored a TypeSafe integration key. Any other value fails startup. |
 | `TYPESAFE_EGRESS` | `on` | Runner flag. `off` stops every TypeSafe call, both skill suggestions and the Decision Plane, even for owners with a stored key. `typesafe_status` then reports `enabled: false`. |
 
 `mcp-routing` reranks MCP gateway `search` results. `failure-classification`
 adds an advisory `data.diagnosis` to GitHub actions that end in the generic
 `GITHUB_ACTION_FAILED`. Both fall back to the deterministic result on any error.
+`execution-risk` lets the agent policy gate ask Jev about an action whose effect
+is `advisor_or_approval`. It also needs the owner to enable the advisor in the
+global agent policy (see [Agent execution policies](security-model.md#agent-execution-policies));
+its threshold, confidence floor and fallback live in that policy, not here. Any
+failure falls back to approval, or to deny when the policy says so. The
+advisor is consulted when an agent action executes, which arrives with the
+coding broker; until then listing the purpose sends nothing.
+Before rolling back to a release that predates `execution-risk`, remove it from
+`DECISION_PLANE_PURPOSES`: older runners reject the value and fail startup.
 The purpose list is owned by
 [`packages/contracts/src/decision-plane.ts`](../packages/contracts/src/decision-plane.ts),
 the call bounds by
 [`apps/runner/src/decision-plane/decision-plane.ts`](../apps/runner/src/decision-plane/decision-plane.ts),
 and the rationale by [ADR 0004](adr/0004-decision-plane.md). Live counters are
 at `GET /api/v1/decision-plane/status`.
+
+## Agent traces
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AGENT_TRACES_ENABLED` | off | Runner only. Records one durable trace per coding-agent run and enables the four `agent_trace*` tools and the Dashboard Traces page. Off, the tools answer `FEATURE_DISABLED` and the page stays hidden. |
+| `AGENT_TRACE_RETENTION_DAYS` | see schema | How long a finished trace is kept before the hourly purge removes it. |
+| `AGENT_TRACE_MAX_SPANS` | see schema | Spans kept per trace; later spans are dropped behind one truncation marker. |
+| `AGENT_TRACE_MAX_PER_PRINCIPAL` | see schema | Traces kept per principal; the oldest finished traces are evicted first. |
+| `AGENT_TRACE_PREVIEW_BYTES` | `0` | Bytes of redacted tool-input preview per tool span. `0` stores digests only; raise it only when a bounded, redacted preview is worth the extra stored data. |
+
+Code defaults and ranges are owned by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts). Traces
+live in the runner's state database; turning the flag off stops recording and
+reading, while the hourly purge keeps removing traces past retention, so the
+retention period holds with the flag off.
+What a trace may contain is described in
+[security model](security-model.md#agent-traces).
+
+## Notifications
+
+| Variable | Default | Decision |
+|---|---|---|
+| `NOTIFICATIONS_ENABLED` | off | Runner only. Writes a notification to the owner's inbox on terminal automation runs and top-level agents, delivers it to the channels the owner's preferences allow (the `cloudharness.notification.created` MCP event and the GitHub comment mirror), and shows the Dashboard Inbox. Off, nothing is written or sent, the inbox list and preference routes answer `FEATURE_DISABLED`, and the Inbox entry stays hidden. |
+
+Notifications live in the runner's state database. Turning the flag off is the
+rollback: emission and delivery stop at once, while the retention purge keeps
+removing old notifications. Retention, the per-principal cap, and the retry
+schedule are owned by
+[`apps/runner/src/notifications/`](../apps/runner/src/notifications/); the
+behaviour is described in [MCP API](mcp-api.md#notification-inbox).
+
+## Webhook automations
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AUTOMATIONS_ENABLED` | off | Read by both services. On the API it mounts the public GitHub webhook route; on the runner it admits deliveries, workflows, and Dashboard management. Set the same value for both. The shared environment file does this; a mismatch leaves the route answering `503` (API on, runner off) or absent (API off). |
+| `AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS` | see schema | Runner only. Instance-wide ceiling on automation workflows holding a workspace at once, above each rule's own `maxConcurrent`. Workflows over the ceiling wait queued and expire if they cannot start in time. |
+
+The feature also needs the runner secret keyring, because connection secrets
+are sealed with it. The GitHub App slug, when configured, is how the runner
+recognizes and ignores the harness's own comments. Code defaults and ranges are
+owned by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts);
+per-rule limits, budgets, and retention by
+[`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
+The public route needs the managed nginx location and, in Access mode, an
+Access bypass for that path only; see
+[deployment](deployment.md#webhook-automations-rollout).
+
+## Agent policies
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AGENT_POLICIES_ENABLED` | off | Runner only. Turns on the owner's execution policies for coding agents: the Dashboard editor, simulation, history and rollback, and the policy store. While off, the runner answers `FEATURE_DISABLED` and the Dashboard shows how to enable it. |
+
+The policy document shape, its bounds and the read-only default that applies
+until the owner saves a global policy are owned by
+[`packages/contracts/src/agent-policy-api.ts`](../packages/contracts/src/agent-policy-api.ts).
+Precedence is owned by
+[`apps/runner/src/agent-governance/gate-evaluator.ts`](../apps/runner/src/agent-governance/gate-evaluator.ts),
+and the rationale by [ADR 0006](adr/0006-policy-governed-coding-agents.md).
+Policies are stored per owner in the runner state database, so they survive
+restarts and are covered by its backups. The coding broker below enforces
+them on every action a coding workflow takes.
+
+## Coding automations
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AGENT_CODING_ENABLED` | off | Runner only. Lets an automation rule with a `coding` action edit, test, commit, push an `agent/` branch and open a pull request, each action decided by the execution policy. Needs `AGENT_POLICIES_ENABLED` and `AUTOMATIONS_ENABLED`; the runner refuses to start otherwise. It is also the kill switch: setting it back to off fails running coding workflows with `CODING_DISABLED` at their next step, before anything else is published. |
+| `AGENT_CODING_PACKAGE_INSTALL_ENABLED` | off | Runner only. Lets a coding workflow install the checkout's npm lockfile once, before the agent starts, in a one-shot `dependency-access` container with lifecycle scripts off. Needs `AGENT_CODING_ENABLED`. Each locked package is still a `package_install` action the policy must allow; with the flag off, a lockfile is ignored and the agent works without installed dependencies. |
+
+Rule fields (`coding.projectId`, `verifyCommand`, `baseBranch`) and receipt
+shapes are owned by
+[`packages/contracts/src/coding-actions.ts`](../packages/contracts/src/coding-actions.ts);
+the pipeline by
+[`apps/runner/src/automation-coding.ts`](../apps/runner/src/automation-coding.ts);
+and the rationale by [ADR 0006](adr/0006-policy-governed-coding-agents.md).
+
+Rollback: set `AGENT_CODING_ENABLED=false` and restart the runner. Running
+coding workflows fail with `CODING_DISABLED` and their workspaces close;
+branches and pull requests already published stay on GitHub for the owner to
+review or delete. Receipts in `coding_actions` stay readable on the run page
+and are purged with their workflow. No table is dropped, so turning the flag on
+again needs no migration.
 
 ## Compose and logging overrides
 

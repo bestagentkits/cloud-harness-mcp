@@ -366,6 +366,13 @@ is refused, the latest version is loaded, and you review it before saving again.
 Before saving, the wizard shows the full permission change: operations added, removed, and
 kept compared with the saved revision (or with nothing, for a new or duplicated profile).
 
+A profile used by [coding automations](/dashboard/automations#coding-runs) also needs the
+three policy-gated operations `exec_run`, `git_status`, and `git_diff`. The wizard does not
+offer them; they are added with the `model_profile_create` or `model_profile_update` MCP
+tools. Editing such a profile in the wizard keeps them and lists them on the review step;
+a duplicate drops them. Only an agent a coding automation starts can use them, and the
+execution policy decides each call.
+
 **Saving is gated.** The wizard refuses to save until:
 
 - the connection for the current key, model, API mode, and upstream is verified, or you tick

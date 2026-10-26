@@ -45,6 +45,20 @@ export const DASHBOARD_PAGES = [
     icon: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>'
   },
   {
+    id: 'inbox',
+    route: '/dashboard/inbox',
+    label: 'Inbox',
+    group: 'home',
+    title: 'Inbox',
+    help: 'Notifications about finished automations and agents, approvals that need you, and where each one was delivered.',
+    palette: true,
+    paletteHint: 'Notifications and delivery preferences',
+    nav: true,
+    // The sidebar entry stays hidden until the server reports that notifications are enabled.
+    feature: 'notifications',
+    icon: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>'
+  },
+  {
     id: 'workspaces',
     route: '/dashboard/workspaces',
     label: 'Workspaces',
@@ -67,6 +81,32 @@ export const DASHBOARD_PAGES = [
     paletteHint: 'Coding agents, hierarchy, usage, and control',
     nav: true,
     icon: '<circle cx="12" cy="8" r="3.2"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/><path d="M4 10H2.5"/><path d="M21.5 10H20"/>'
+  },
+  {
+    id: 'traces',
+    route: '/dashboard/traces',
+    label: 'Traces',
+    group: 'operate',
+    title: 'Traces',
+    help: 'Agent run traces: model and tool calls, latency, tokens, cost, and reconciliation with usage.',
+    palette: true,
+    paletteHint: 'Agent run traces, latency, tokens, and cost',
+    nav: true,
+    // The sidebar entry stays hidden until the server reports that agent traces are enabled.
+    feature: 'agentTraces',
+    icon: '<path d="M3 6h8"/><path d="M7 12h10"/><path d="M11 18h10"/><path d="M3 4v4"/><path d="M7 10v4"/><path d="M11 16v4"/>'
+  },
+  {
+    id: 'automations',
+    route: '/dashboard/automations',
+    label: 'Automations',
+    group: 'operate',
+    title: 'Automations',
+    help: 'Webhook-triggered agent runs: GitHub connections, matching rules, runs, and inbound deliveries.',
+    palette: true,
+    paletteHint: 'Webhook rules, runs, connections, and deliveries',
+    nav: true,
+    icon: '<path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12z"/>'
   },
   {
     id: 'activity',
@@ -249,6 +289,20 @@ export const DASHBOARD_PAGES = [
     paletteHint: 'Instance defaults for workspaces and network egress',
     nav: true,
     icon: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z"/>'
+  },
+  {
+    id: 'agent-policies',
+    // Reached from Settings and from each project; it keeps the Settings entry current.
+    route: '/dashboard/settings/agent-policies',
+    label: 'Agent policies',
+    group: 'admin',
+    title: 'Agent policies',
+    help: 'The global execution policy coding agents run under: allowed actions, hard denies, mandatory approvals, scope, and budgets.',
+    palette: true,
+    paletteHint: 'Execution policy for coding agents, with simulation and history',
+    nav: false,
+    navParent: 'settings',
+    icon: '<path d="M12 3 5 6v5c0 4.5 3 8.3 7 10 4-1.7 7-5.5 7-10V6z"/><path d="m9 12 2 2 4-4"/>'
   },
   {
     id: 'profile',

@@ -3,6 +3,7 @@
 All execution tools can run repository-controlled code with the workspace
 user's permissions. Review the command, working directory, and network mode
 before calling them. Prefer one bounded command over persistent process state.
+With `repositoryId` ([multi-repository workspaces](multi-repository-workspaces.md)), `cwd` is relative to that checkout.
 
 ## One bounded command
 
