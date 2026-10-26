@@ -1652,7 +1652,7 @@ Read one of your automation runs with its state transitions and, once it finishe
 
 **Cancel automation run**
 
-Cancel one of your queued, starting, or running automation runs; the result is the run in its CANCELLED state. Cancelling a finished run changes nothing and returns it as it is. Optional reason is recorded in the audit log. Off unless the operator sets AUTOMATIONS_ENABLED=true; otherwise every automation tool returns UNAVAILABLE.
+Cancel one of your queued, starting, running, or waiting (WAITING_FOR_HUMAN) automation runs; the result is the run in its CANCELLED state, and a waiting run's pending approval expires. Cancelling a finished run changes nothing and returns it as it is. Optional reason is recorded in the audit log. Off unless the operator sets AUTOMATIONS_ENABLED=true; otherwise every automation tool returns UNAVAILABLE.
 
 **Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
 

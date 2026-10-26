@@ -86,7 +86,7 @@ Boundaries:
 - `WAITING_FOR_HUMAN` is a coding run paused at a step its execution policy
   holds for the owner. Only the owner approves or denies it, on the Dashboard;
   no tool decides it. Waiting past the deadline fails the run with
-  `APPROVAL_EXPIRED`, a denial with `APPROVAL_DENIED`.
+  `APPROVAL_EXPIRED`, a denial with `APPROVAL_DENIED`, and a lost workspace or a change that no longer matches the approved one with `APPROVAL_STALE`.
 - Newest first, with the rule, event type, source reference, repository,
   state, workspace and agent ids, error code, publish state, and usage.
 

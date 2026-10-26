@@ -227,12 +227,16 @@ boundary is in the [security model](../security-model.md#coding-automations).
   the policy revisions and the run's pause counter in the existing runner state
   database (`agent_action_approvals`); there is no second store. A decision
   names the digest it was shown, and a guarded state change makes it
-  single-use.
+  single-use. The approval also records the SHA-256 of the change it showed;
+  the resumed run recomputes it before the approved step is dispatched and
+  fails as `APPROVAL_STALE` when it differs, so approving an action never
+  approves content the owner did not see.
 - **Approval never overrides the gate.** On resume the step is decided again;
-  the approval lifts only `REQUIRE_APPROVAL`, only for the same digest, only
-  for a runner step and only while approvals are enabled, and it is consumed
-  on first use. A `DENY` (for example a hard deny added while waiting) still
-  wins, and an advisor answer can escalate but never approve.
+  the approval lifts only `REQUIRE_APPROVAL`, only for the held step itself and
+  the same digest, and only while approvals are enabled. It is consumed when
+  that step is admitted, whether or not the re-gate still needed it. A `DENY`
+  (for example a hard deny added while waiting) still wins, and an advisor
+  answer can escalate but never approve.
 - **Fenced resume.** The resumed step runs under
   `automation:<workflow>:resume:<approval>`, so its receipt is new and a
   restart replays it at most once; the held step keeps its `REJECTED` receipt.

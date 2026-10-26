@@ -40,8 +40,12 @@ Each held action shows:
 
 **Approve** and **Deny** appear only on a pending action that has not expired, and both
 ask for confirmation. Approving posts the digest shown on the row: the run resumes and
-performs exactly that action once. The policy is checked again when the step runs, so a
-deny you added in the meantime still wins, and an approval never lifts a deny. Denying
+performs exactly that action once, on exactly the change shown in the diff artifact. If the
+change in the workspace differs when the step is about to run, the run fails with
+`APPROVAL_STALE` and nothing is committed or published. The policy is checked again when
+the step runs, so a deny you added in the meantime still wins, and an approval never lifts
+a deny. If the run's workspace is closed or recreated while it waits, the run fails with
+`APPROVAL_STALE` straight away instead of at the deadline. Denying
 fails the run with `APPROVAL_DENIED`; the diff artifact stays. A decision is accepted
 once: a second click, or a decision for an action that changed, expired, or belongs to
 another identity, is refused and changes nothing. Both decisions are audited and, when notifications are on, reach

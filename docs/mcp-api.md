@@ -795,8 +795,17 @@ Decisions that are easy to misread:
   `expectedGeneration` from `automation_rules_list`; a moved generation is
   `CONFLICT`, and disabling an already disabled rule still bumps it. Queued runs
   of the rule are cancelled before they start.
+- **Run states.** A run moves `QUEUED` → `STARTING` → `RUNNING` and ends
+  `COMPLETED`, `FAILED`, `CANCELLED`, or `EXPIRED`. A coding run can also wait
+  in `WAITING_FOR_HUMAN` while a step its execution policy holds waits for the
+  owner's decision on the Dashboard; approving returns it to `RUNNING`, and a
+  denial, an expiry, or a lost workspace fails it. No tool decides an approval.
+  The state set is owned by `AutomationWorkflowStateSchema` in
+  [`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
 - **Cancel is idempotent.** Cancelling a finished run returns it unchanged. A
-  running run's cancellation is published to its source like any other end.
+  queued, starting, running, or waiting run can be cancelled; cancelling a
+  waiting run expires its approval. A running run's cancellation is published
+  to its source like any other end.
 - **Off means `UNAVAILABLE`.** With `AUTOMATIONS_ENABLED` off the tools stay
   listed and answer `UNAVAILABLE`, so a client's tool list does not change with
   the flag.
