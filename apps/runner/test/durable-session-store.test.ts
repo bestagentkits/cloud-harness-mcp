@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   deleteDurableSessionFiles,
   DurableSessionStore,
+  MAX_STORAGE_SCAN_LIMIT,
   type DurableStorageBackendLoader
 } from '../src/durable-session-store.js';
 
@@ -266,6 +267,19 @@ describe('DurableSessionStore', () => {
     // Only tasks nobody asked to abort count as unfinished.
     expect(backend.queries.every((query) => query.abortRequested === false)).toBe(true);
     expect(new Set(backend.queries.map((query) => query.status))).toEqual(new Set(['pending', 'running', 'waiting']));
+  });
+
+  it('refuses a scan whose page size is not a bounded positive integer', async () => {
+    const backend = fakeBackend();
+    const store = await createStore({ loader: backend.loader });
+    const claim = await store.claim(LINEAGE, OWNER, 1, 0);
+    expect(await store.handle(claim, request('s-1', 'scanTasks', [{ status: 'pending' }, MAX_STORAGE_SCAN_LIMIT, null])))
+      .toMatchObject({ ok: true });
+    for (const [index, limit] of [MAX_STORAGE_SCAN_LIMIT + 1, 0, -1, 2.5].entries()) {
+      expect(await store.handle(claim, request(`s-bad-${index}`, 'scanTasks', [{ status: 'pending' }, limit, null])))
+        .toMatchObject({ ok: false, error: { code: 'request' } });
+    }
+    expect(backend.queries).toHaveLength(1);
   });
 
   it('keeps the database open through a worker close, so the seal still sees unfinished tasks', async () => {
