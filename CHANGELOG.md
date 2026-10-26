@@ -1,3 +1,10 @@
+## [0.78.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.78.0...v0.78.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **runner): restore ts-input firewall repair on main; feat(github:** add github_repository_create ([#580](https://github.com/bestagentkits/cloud-harness-mcp/issues/580)) ([950f536](https://github.com/bestagentkits/cloud-harness-mcp/commit/950f5369722bcff506003e0c054df0d4a91bdcfa)), closes [#476](https://github.com/bestagentkits/cloud-harness-mcp/issues/476) [#474](https://github.com/bestagentkits/cloud-harness-mcp/issues/474)
+
 # [0.78.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.77.0...v0.78.0) (2026-10-26)
 
 
