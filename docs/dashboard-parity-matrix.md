@@ -152,8 +152,8 @@ neither may happen until each row is ported or explicitly dropped. The
 umbrella is
 [#551](https://github.com/bestagentkits/cloud-harness-mcp/issues/551); every
 row below is **re-host** (no row is dropped: each page owns a runner feature
-with no other UI). `CLASSIC_ONLY_PAGES` in
-[`apps/dashboard/src/app/page-registry.test.ts`](../apps/dashboard/src/app/page-registry.test.ts)
+with no other UI). `LEGACY_ONLY_PAGE_IDS` in
+[`apps/dashboard/src/app/page-registry.ts`](../apps/dashboard/src/app/page-registry.ts)
 names the classic page ids that are exempt from registry parity until their
 port lands; the port removes its entry.
 

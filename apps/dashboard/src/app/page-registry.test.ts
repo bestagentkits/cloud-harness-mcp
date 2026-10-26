@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { QueryClient } from '@tanstack/react-query';
 import { createMemoryHistory, notFound } from '@tanstack/react-router';
 import { describe, expect, it } from 'vitest';
-import { DASHBOARD_PAGES, documentTitle, navGroups, navOwner, PAGE_IDS, pageById, resolveReadPath } from './page-registry';
+import { DASHBOARD_PAGES, documentTitle, LEGACY_ONLY_PAGE_IDS, navGroups, navOwner, PAGE_IDS, pageById, resolveReadPath } from './page-registry';
 import { resolveCurrentPage } from './route-identity';
 import { createAppRouter } from './router';
 
@@ -14,15 +14,6 @@ type LegacyPage = { id: string; label: string; group: string; title: string; nav
 const legacyUrl = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '../../../api/dashboard/dashboard-pages.js')).href;
 const legacy = await import(/* @vite-ignore */ legacyUrl) as { DASHBOARD_PAGES: LegacyPage[] };
 
-// Classic pages with no React page yet, each with the issue that ports it (parity matrix section 2.3).
-// Remove an entry in the change that adds the page to the React registry.
-const CLASSIC_ONLY_PAGES: Record<string, string> = {
-  inbox: '#554',
-  traces: '#555',
-  automations: '#556',
-  'agent-policies': '#558'
-};
-
 describe('page registry', () => {
   it('lists every page id exactly once', () => {
     expect(DASHBOARD_PAGES.map((page) => page.id)).toEqual([...PAGE_IDS]);
@@ -30,7 +21,7 @@ describe('page registry', () => {
 
   it('matches the classic Dashboard registry for every shared page', () => {
     for (const old of legacy.DASHBOARD_PAGES) {
-      if (Object.hasOwn(CLASSIC_ONLY_PAGES, old.id)) continue;
+      if (LEGACY_ONLY_PAGE_IDS.includes(old.id)) continue;
       const page = pageById(old.id as never);
       expect(page, old.id).toBeDefined();
       expect({ label: page.label, title: page.title, group: page.group, nav: page.nav }, old.id).toEqual({
@@ -39,12 +30,11 @@ describe('page registry', () => {
     }
   });
 
-  it('lists only classic pages that the React registry does not have yet', () => {
-    const classic = new Set(legacy.DASHBOARD_PAGES.map((page) => page.id));
-    const react = new Set<string>(PAGE_IDS);
-    for (const id of Object.keys(CLASSIC_ONLY_PAGES)) {
-      expect(classic.has(id), id).toBe(true);
-      expect(react.has(id), id).toBe(false);
+  it('lists only classic pages without a React page as legacy-only', () => {
+    const legacyIds = new Set(legacy.DASHBOARD_PAGES.map((page) => page.id));
+    for (const id of LEGACY_ONLY_PAGE_IDS) {
+      expect(legacyIds.has(id), id).toBe(true);
+      expect((PAGE_IDS as readonly string[]).includes(id), id).toBe(false);
     }
   });
 
