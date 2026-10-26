@@ -1226,7 +1226,19 @@ it. The store and its checks are owned by
   agent reports new messages back the same way. No MCP tool returns session
   content; status reports only counts and flags.
 - The agent's model lease is redacted from every reported message. Nothing
-  else is changed, so the history replays exactly.
+  else is changed, so the history replays exactly. Stored messages therefore
+  keep raw model and tool content, such as file contents the agent read; unlike
+  caller-facing events and logs, they do not pass through the redactor
+  (`redactSecretDeep` in
+  [`apps/agent-runtime/src/session-replay.ts`](../apps/agent-runtime/src/session-replay.ts)
+  is the only scrub). A session is replayed only into a continuation on the
+  same model profile, and its content is never returned through MCP.
+- The rows sit in the runner state database for the configured retention. The
+  pre-deploy backup in
+  [`deploy/scripts/deploy-release.sh`](../deploy/scripts/deploy-release.sh)
+  copies that whole database, so a session can outlive its retention inside a
+  backup set under `/var/lib/cloud-harness/backups`; treat those backups as
+  holding repository content.
 - The runner appends a message only from the running agent of the current
   runner epoch and agent generation, and only at the next sequence number.
   Each log carries a chained SHA-256 digest that the runner and the runtime
