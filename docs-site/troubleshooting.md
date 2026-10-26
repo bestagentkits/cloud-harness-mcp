@@ -396,7 +396,7 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 ---
 
 ### 34. A continued agent reports `EFFECT_UNKNOWN` for a write, delete, or move
-**Cause:** The earlier agent was stopped (cancelled, killed, or interrupted by a runner restart) while that change was in flight, and the runner could not tell from the workspace whether it landed. It did not run the change again, on either engine: a durable agent (`runtime: "pi-durable"`) reruns the interrupted call under its original request ID, and the runner answers it with the same outcome. An interrupted agent is never reported as `SUCCEEDED`. `EFFECT_NOT_APPLIED` instead means the write provably did not land.
+**Cause:** The earlier agent was stopped (cancelled, killed, or interrupted by a runner restart) while that change was in flight, and the runner could not tell from the workspace whether it landed. It did not run the change again: a durable agent (`runtime: "pi-durable"`) reruns the interrupted call under its original request ID, and the runner answers it without running the change. A cancelled durable agent is the exception: its unfinished calls are aborted, not rerun, so a continued agent may issue the change again; check the workspace first. An interrupted agent is never reported as `SUCCEEDED`. `EFFECT_NOT_APPLIED` instead means the write provably did not land.
 
 **Fix:**
 1. Read the affected file or path before repeating the change; the agent receives the same instruction.

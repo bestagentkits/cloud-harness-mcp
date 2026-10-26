@@ -303,8 +303,11 @@ and its evidence are in
   could not establish from the workspace whether it landed. The call was not
   issued again: a persisted continuation receives this outcome, and a durable
   agent reruns the call under its original request ID, which the effect ledger
-  answers with the same outcome. Read the affected path before repeating the
-  change; the agent is told the same. `EFFECT_NOT_APPLIED` means the write provably did not land
+  answers without reaching the executor. A cancelled durable predecessor is the
+  exception: its unfinished calls are aborted, not rerun, so its successor's
+  model gets no outcome for them and may issue the change again under a new
+  request ID. Read the affected path before repeating the change; the agent is
+  told the same. `EFFECT_NOT_APPLIED` means the write provably did not land
   and may be retried with a new call. The rules are in
   [`apps/runner/src/agent-effect-reconciler.ts`](../apps/runner/src/agent-effect-reconciler.ts).
 - An agent killed mid-run reports `INTERRUPTED`, never `SUCCEEDED`, whichever
