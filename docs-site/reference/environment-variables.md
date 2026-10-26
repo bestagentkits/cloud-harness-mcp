@@ -37,6 +37,30 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `AGENT_TRACE_MAX_SPANS` | `2000` | Optional | Spans kept per trace; further spans are dropped behind one truncation marker (16-10000). |
 | `AGENT_TRACE_MAX_PER_PRINCIPAL` | `5000` | Optional | Traces kept per principal; the oldest finished traces are removed first (10-100000). |
 | `AGENT_TRACE_PREVIEW_BYTES` | `0` | Optional | Bytes of redacted tool-input preview stored per tool span; 0 stores digests only (0-512). |
+| `AGENT_GLOBAL_ACTIVE` | `16` | Optional | Subagent runtime limits (runner). Compose already sets AGENT_IMAGE, AGENT_GATEWAY_URL and AGENT_PROFILES_FILE; elsewhere, setting any AGENT_* limit below also requires those, or the runner refuses to start. Active agents at once across the instance (1-1000); workspace <= principal <= global. |
+| `AGENT_PRINCIPAL_ACTIVE` | `8` | Optional | Active agents at once per principal (1-1000). |
+| `AGENT_WORKSPACE_ACTIVE` | `4` | Optional | Active agents at once per workspace (1-100). |
+| `AGENT_PARENT_ACTIVE` | `2` | Optional | Active child agents at once under one parent agent (1-100); cannot exceed AGENT_WORKSPACE_ACTIVE. |
+| `AGENT_WORKSPACE_LIFETIME_RECORDS` | `1000` | Optional | Spawn and message records one workspace may create over its life (1-100000); further ones get 429. |
+| `AGENT_MIN_TTL_SECONDS` | `30` | Optional | Shortest TTL an agent_spawn request may ask for, in seconds (1-3600); cannot exceed the longest. |
+| `AGENT_MAX_TTL_SECONDS` | `3600` | Optional | Longest TTL an agent_spawn request may ask for, in seconds (1-86400). |
+| `AGENT_MAX_PROMPT_BYTES` | `131072` | Optional | Largest agent_spawn prompt, in bytes (1-131072). |
+| `AGENT_MAX_MESSAGE_BYTES` | `65536` | Optional | Largest agent_message body, in bytes (1-65536). |
+| `AGENT_MAX_OUTPUT_BYTES` | `262144` | Optional | Largest output budget one agent may request, in bytes (1-10485760). |
+| `AGENT_MAX_LOG_BYTES` | `4194304` | Optional | Log bytes kept per agent; older log bytes are dropped first (1-67108864). |
+| `AGENT_MAX_LOG_EVENTS` | `10000` | Optional | Log events kept per agent (1-100000). |
+| `AGENT_MAX_LOG_EVENT_BYTES` | `16384` | Optional | Largest single log event, in bytes (1-65536). |
+| `AGENT_GLOBAL_RETAINED_ROWS` | `100000` | Optional | Retained agent rows across the instance (1-10000000). Agent records plus compacted tombstones past a cap refuse new spawns with 429; log events past a cap trim the oldest log of the agent being written. Row caps must satisfy workspace <= principal <= global. |
+| `AGENT_PRINCIPAL_RETAINED_ROWS` | `50000` | Optional | Retained agent rows per principal (1-1000000). |
+| `AGENT_WORKSPACE_RETAINED_ROWS` | `10000` | Optional | Retained agent rows per workspace (1-100000). |
+| `AGENT_GLOBAL_RETAINED_BYTES` | `1073741824` | Optional | Retained agent log bytes across the instance (1-17179869184); a full scope trims the oldest log of the agent being written. Byte caps must satisfy workspace <= principal <= global. |
+| `AGENT_PRINCIPAL_RETAINED_BYTES` | `536870912` | Optional | Retained agent log bytes per principal (1-8589934592). |
+| `AGENT_WORKSPACE_RETAINED_BYTES` | `134217728` | Optional | Retained agent log bytes per workspace (1-1073741824). |
+| `AGENT_CANCELLATION_GRACE_MS` | `10000` | Optional | Grace between TERM and KILL when an agent container is stopped, in milliseconds (1-120000). |
+| `AGENT_CLEANUP_RETRY_LIMIT` | `20` | Optional | Attempts with exponential backoff at a failed agent container cleanup (1-1000). |
+| `AGENT_CLEANUP_RETRY_MAX_DELAY_MS` | `3600000` | Optional | Longest backoff between agent cleanup retries, in milliseconds (1-86400000). |
+| `AGENT_RETENTION_SECONDS` | `604800` | Optional | Seconds a closed workspace keeps full agent records after its last agent ended; then they are compacted to tombstones (1-31536000, default 7 days). Cannot exceed AGENT_LOOKUP_HORIZON_SECONDS. Applied on every maintenance pass, so a shorter value also compacts older closed workspaces. |
+| `AGENT_LOOKUP_HORIZON_SECONDS` | `2592000` | Optional | Seconds after an agent ended that its compacted tombstone still answers agent_status; then it is purged (1-31536000, default 30 days). The expiry is fixed when a tombstone is written, so changing this affects only workspaces compacted afterwards. |
 | `NOTIFICATIONS_ENABLED` | `false` | Optional | Optional notification inbox (runner): Dashboard Inbox, per-channel preferences and the cloudharness.notification.created MCP event. Off by default. Notifications carry ids, short titles and Dashboard links only. |
 | `ACCESS_LEGACY_OWNER_ID` | `owner` | Optional | Exact one-time legacy owner binding for the first Access rollout: |
 | `ACCESS_LEGACY_ISSUER` | `https://your-team.cloudflareaccess.com` | Optional | Optional configuration. |

@@ -31,8 +31,14 @@ To prevent unbounded memory growth and buffer overflow attacks, Cloud Harness MC
 | **Skill Size (Skills over MCP, ZIP import)** | 512 files and 16 MiB per skill | Hard bound |
 | **`skills/list` Page Size** | 100 skills / page | Hard bound |
 | **Skills over MCP Cache Hint** | `ttlMs: 30000`, `cacheScope: private` | Hard bound |
+| **Active Subagents** | 4 per workspace, 8 per principal, 16 per instance | `AGENT_WORKSPACE_ACTIVE`, `AGENT_PRINCIPAL_ACTIVE`, `AGENT_GLOBAL_ACTIVE` |
+| **Subagent Records per Workspace** | 1000 spawns and messages over the workspace's life | `AGENT_WORKSPACE_LIFETIME_RECORDS` |
+| **Subagent Record Retention** | 7 days after a closed workspace's last agent ended, then compacted | `AGENT_RETENTION_SECONDS` |
+| **Compacted Subagent Lookup** | 30 days after the agent ended, then purged | `AGENT_LOOKUP_HORIZON_SECONDS` |
 
 The workspace TTLs, recoverable grace, and active-workspace quota can also be overridden instance-wide in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle), which takes precedence over the runner variable. TTL and grace changes apply only to workspaces opened afterwards.
+
+The subagent limits are runner variables only. The full set, with the retained row and byte caps, is listed in [Environment Variables](/reference/environment-variables).
 
 ## Agent model budgets
 
