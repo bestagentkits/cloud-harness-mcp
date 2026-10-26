@@ -265,10 +265,11 @@ agent keeps its session in a runner-side store shared by its whole
   without an explicit `continueFrom`.
 - Each run gets its own model lease and budget; work resumed from the
   predecessor counts against the continuation's caps. A run whose store
-  outgrows the configured size cap, or whose next write would pass the
-  workspace, owner, or instance session byte budget (the store's size on disk
-  counts toward them), ends as `LIMIT_EXCEEDED`; a durable continuation is
-  refused with `LIMIT_EXCEEDED` while those budgets are already full.
+  outgrows the configured size cap, or whose writes would pass or have passed
+  the workspace, owner, or instance session byte budget (the store's size on
+  disk counts toward them), ends as `LIMIT_EXCEEDED`; a durable continuation
+  is refused with `LIMIT_EXCEEDED` while usage is already over one of those
+  budgets.
 - Closing or expiring the workspace deletes the lineage's store; it is also
   deleted once retention purged every session of its lineage.
 
