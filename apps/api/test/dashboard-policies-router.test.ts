@@ -187,8 +187,8 @@ describe('dashboard agent policy BFF', () => {
       const response = await send(path, { method, headers, body: JSON.stringify(body) });
       expect(response.status, JSON.stringify(body)).toBe(400);
     }
-    // A body scope is overwritten by the path, never trusted.
-    const scoped = await send(`/api/v1/agent-policies/projects/${projectId}`, { method: 'PUT', headers, body: JSON.stringify({ document: projectDocument, expectedVersion: 0, scope: 'global' }) });
+    // A body scope is overwritten by the path, never trusted; a body that repeats the path project is accepted.
+    const scoped = await send(`/api/v1/agent-policies/projects/${projectId}`, { method: 'PUT', headers, body: JSON.stringify({ document: projectDocument, expectedVersion: 0, scope: 'global', projectId }) });
     expect(scoped.status).toBe(200);
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ principal, input: { scope: 'project', projectId } });

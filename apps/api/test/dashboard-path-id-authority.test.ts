@@ -36,6 +36,8 @@ const artifact = id('art', 'a');
 const server = id('mcps', 'a');
 const project = `prj_${'p'.repeat(32)}`;
 const policyRevision = `apr_${'1'.repeat(32)}`;
+const automation = 'automation-a';
+const otherAutomation = 'automation-b';
 
 /** [method, path, body key the path owns, a different value for that key]. */
 const ROUTES: Array<[string, string, string, string]> = [
@@ -92,7 +94,14 @@ const ROUTES: Array<[string, string, string, string]> = [
   ['PUT', `/agent-policies/projects/${project}`, 'projectId', `prj_${'q'.repeat(32)}`],
   ['DELETE', `/agent-policies/projects/${project}`, 'projectId', `prj_${'q'.repeat(32)}`],
   ['POST', `/agent-policies/projects/${project}/validate`, 'projectId', `prj_${'q'.repeat(32)}`],
-  ['POST', `/agent-policies/revisions/${policyRevision}/rollback`, 'revisionId', `apr_${'2'.repeat(32)}`]
+  ['POST', `/agent-policies/revisions/${policyRevision}/rollback`, 'revisionId', `apr_${'2'.repeat(32)}`],
+  ['PATCH', `/automations/connections/${automation}`, 'id', otherAutomation],
+  ['POST', `/automations/connections/${automation}/rotate-secret`, 'id', otherAutomation],
+  ['DELETE', `/automations/connections/${automation}`, 'id', otherAutomation],
+  ['PATCH', `/automations/rules/${automation}`, 'id', otherAutomation],
+  ['DELETE', `/automations/rules/${automation}`, 'id', otherAutomation],
+  ['POST', `/automations/rules/${automation}/preview`, 'id', otherAutomation],
+  ['POST', `/automations/workflows/${automation}/cancel`, 'id', otherAutomation]
 ];
 
 let httpServer: Server;
@@ -107,6 +116,10 @@ beforeEach(async () => {
   };
   const runner: DashboardRunnerClient = {
     call: vi.fn(ok), callInternal: vi.fn(ok),
+    callAutomations: vi.fn(async (request) => {
+      operations.push({ operation: request.operation, input: request.input as Record<string, unknown> });
+      return { ok: false, error: { code: 'INTERNAL', message: 'not used' } };
+    }),
     callAgentPolicies: vi.fn(async (request) => {
       operations.push({ operation: request.operation, input: request.input as Record<string, unknown> });
       return { ok: false, error: { code: 'INTERNAL', message: 'not used' } };
@@ -177,6 +190,13 @@ describe('dashboard BFF path id authority', () => {
     const reply = await send(`/api/v1/workspaces/${ws}/lease-renew`, { method: 'POST', headers, body: JSON.stringify({ workspaceId: ws, extensionSeconds: 600 }) });
     expect(reply.status).toBe(200);
     expect(operations).toEqual([{ operation: 'workspace_lease_renew', input: { workspaceId: ws, extensionSeconds: 600 } }]);
+  });
+
+  it('forwards an automation route when the body repeats the same id', async () => {
+    const headers = await mutationHeaders();
+    const workflow = `wfl_${'a'.repeat(32)}`;
+    await send(`/api/v1/automations/workflows/${workflow}/cancel`, { method: 'POST', headers, body: JSON.stringify({ id: workflow }) });
+    expect(operations).toEqual([{ operation: 'workflow_cancel', input: { id: workflow } }]);
   });
 
   it('forwards the path secret scope when the body carries no ids', async () => {
