@@ -1,3 +1,20 @@
+# [0.66.0-beta.40](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.39...v0.66.0-beta.40) (2026-10-26)
+
+
+### Bug Fixes
+
+* **approvals:** bind approvals to the reviewed change and end stale waits ([59540f6](https://github.com/bestagentkits/cloud-harness-mcp/commit/59540f689d1b69922422abb0dfc9c6d447d8c42b))
+* **dashboard:** show a held verify command token by token ([0eb179f](https://github.com/bestagentkits/cloud-harness-mcp/commit/0eb179f5437e537a3fecbf83405e22db5454f6ea))
+* **runner:** bind approvals to the complete change and check it before committing ([b8234ef](https://github.com/bestagentkits/cloud-harness-mcp/commit/b8234ef96ce904503242639e787d1dd71b204e03))
+* **runner:** compare the approved change with the commit made ([979fe5d](https://github.com/bestagentkits/cloud-harness-mcp/commit/979fe5dfd246dca777a191fd647cf3bf39a7f7b0))
+
+
+### Features
+
+* **dashboard:** decide held agent actions on the Approvals page ([7282e95](https://github.com/bestagentkits/cloud-harness-mcp/commit/7282e958470312847acf6c063acf6cadff14f7cb))
+* **runner:** pause coding workflows for owner approval of runner steps ([09d01c0](https://github.com/bestagentkits/cloud-harness-mcp/commit/09d01c073333ad898e0a1e4274d476516d53b2ed))
+* **runner:** trace advisor consults and prove the governed coding cycle ([0cebb57](https://github.com/bestagentkits/cloud-harness-mcp/commit/0cebb57f1919110c9b8b842d8e2292ab26c0254e))
+
 # [0.66.0-beta.39](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.38...v0.66.0-beta.39) (2026-10-26)
 
 
