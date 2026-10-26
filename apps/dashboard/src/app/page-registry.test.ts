@@ -13,6 +13,7 @@ type LegacyPage = { id: string; label: string; group: string; title: string; nav
 // until cutover; a variable specifier keeps TypeScript from resolving the browser module.
 const legacyUrl = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '../../../api/dashboard/dashboard-pages.js')).href;
 const legacy = await import(/* @vite-ignore */ legacyUrl) as { DASHBOARD_PAGES: LegacyPage[] };
+const CLASSIC_ONLY_PAGES = new Set(['inbox', 'traces', 'automations', 'agent-policies']);
 
 describe('page registry', () => {
   it('lists every page id exactly once', () => {
@@ -20,7 +21,13 @@ describe('page registry', () => {
   });
 
   it('matches the classic Dashboard registry for every shared page', () => {
+    const ported = new Set<string>(PAGE_IDS);
+    // Pages that exist only in the classic Dashboard so far. Each is listed in the parity
+    // matrix (section 12.5) and must leave this list in the change that ports it.
+    expect(legacy.DASHBOARD_PAGES.map((old) => old.id).filter((id) => !ported.has(id)))
+      .toEqual([...CLASSIC_ONLY_PAGES]);
     for (const old of legacy.DASHBOARD_PAGES) {
+      if (CLASSIC_ONLY_PAGES.has(old.id)) continue;
       const page = pageById(old.id as never);
       expect(page, old.id).toBeDefined();
       expect({ label: page.label, title: page.title, group: page.group, nav: page.nav }, old.id).toEqual({
