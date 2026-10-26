@@ -4,7 +4,7 @@ import { AgentProxyOperationSchema } from './runner-api.js';
 import { BUILDABLE_PACKAGE_ECOSYSTEMS, BuildablePackageEcosystemSchema } from './package-schemas.js';
 import { SecretNameSchema } from './secret-policy.js';
 import { ImplementedDecisionPurposeSchema } from './decision-plane.js';
-import { DEFAULT_RECOVERABLE_GRACE_SECONDS } from './workspace-lifecycle.js';
+import { DEFAULT_RECOVERABLE_GRACE_SECONDS, WORKSPACE_LIFECYCLE_BOUNDS } from './workspace-lifecycle.js';
 const token = z.string().min(32).max(512).refine((value) => !value.startsWith('change-me'), 'placeholder secret is forbidden');
 
 const httpsUrl = z.url().refine((value) => {
@@ -256,8 +256,8 @@ export const RunnerConfigSchema = z.object({
   dependencyBridgeSubnet: z.string().default('172.30.240.0/24'),
   dependencyBridgeInterface: z.string().default('chm-egress0'),
   dependencyNetworkName: z.string().default('cloud-harness-dependency-access'),
-  wallTtlSeconds: z.coerce.number().int().min(60).max(86_400).default(900),
-  idleTtlSeconds: z.coerce.number().int().min(30).max(43_200).default(300),
+  wallTtlSeconds: z.coerce.number().int().min(WORKSPACE_LIFECYCLE_BOUNDS.wallTtlSeconds.min).max(WORKSPACE_LIFECYCLE_BOUNDS.wallTtlSeconds.max).default(900),
+  idleTtlSeconds: z.coerce.number().int().min(30).max(WORKSPACE_LIFECYCLE_BOUNDS.idleTtlSeconds.max).default(300),
   maxOutputBytes: z.coerce.number().int().min(1_024).max(10_485_760).default(262_144),
   // Dashboard Terminal PTYs live in runner memory: these bound how many a workspace holds, how much raw
   // output each retains for reconnecting readers, and how long one may sit idle or live at all.
@@ -299,10 +299,10 @@ export const RunnerConfigSchema = z.object({
   maxWorkspaceBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
   // Repositories one multi-repository workspace may hold; they share the workspace's disk ceiling.
   maxWorkspaceRepositories: z.coerce.number().int().min(1).max(MAX_WORKSPACE_REPOSITORIES_LIMIT).default(DEFAULT_MAX_WORKSPACE_REPOSITORIES),
-  maxActiveWorkspacesPerOwner: z.coerce.number().int().min(1).max(64).default(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER),
+  maxActiveWorkspacesPerOwner: z.coerce.number().int().min(WORKSPACE_LIFECYCLE_BOUNDS.maxActiveWorkspacesPerOwner.min).max(WORKSPACE_LIFECYCLE_BOUNDS.maxActiveWorkspacesPerOwner.max).default(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER),
   // An expired workspace stays recoverable this long before the reaper may close it; a Dashboard override
   // replaces it for workspaces opened afterwards. 0 closes clean expired workspaces on the next pass.
-  recoverableGraceSeconds: z.coerce.number().int().min(0).max(86_400).default(DEFAULT_RECOVERABLE_GRACE_SECONDS),
+  recoverableGraceSeconds: z.coerce.number().int().min(WORKSPACE_LIFECYCLE_BOUNDS.recoverableGraceSeconds.min).max(WORKSPACE_LIFECYCLE_BOUNDS.recoverableGraceSeconds.max).default(DEFAULT_RECOVERABLE_GRACE_SECONDS),
   // Which lifecycle values the runner environment set explicitly, so Settings can tell them from defaults.
   lifecycleEnvironmentKeys: z.array(z.enum(['maxActiveWorkspacesPerOwner', 'idleTtlSeconds', 'wallTtlSeconds', 'recoverableGraceSeconds'])).max(4).default([]),
   reaperIntervalSeconds: z.coerce.number().int().min(10).max(3_600).default(30),
