@@ -63,8 +63,15 @@ describe('Automation tab', () => {
   });
 
   it('offers a one-off manual run of an inactive hook', async () => {
-    renderTab(async () => ({ data: { exitCode: 0, output: '' } }));
+    const request = renderTab(async () => ({ data: { exitCode: 0, output: '' } }));
     const button = await screen.findByRole('button', { name: /^Run hook\s*format at Manual$/ });
     expect(button).toBeEnabled();
+    fireEvent.click(button);
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText(/This hook is not active: this is a one-off run/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Run hook' }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith(`/workspaces/${WORKSPACE}/hooks/run`, {
+      method: 'POST', body: { name: 'format', event: 'manual', expectedManifestSha256: MANIFEST_SHA }
+    }));
   });
 });

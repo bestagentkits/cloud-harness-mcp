@@ -216,7 +216,7 @@ function HookPipeline({ workspaceId, hooks, manifestSha256, invalidate }: {
         open={pending !== undefined}
         onOpenChange={(open) => { if (!open) setPending(undefined); }}
         title="Run this hook?"
-        description={pending ? `The hook runs now as a bounded shell command inside the executor, for the “${pending.eventLabel}” stage. A hook manifest changed since this page loaded is refused.` : ''}
+        description={pending ? `The hook runs now as a bounded shell command inside the executor, for the “${pending.eventLabel}” stage.${pending.hook.active ? '' : ' This hook is not active: this is a one-off run that does not activate it.'} A hook manifest changed since this page loaded is refused.` : ''}
         {...(pending ? { target: pending.hook.name } : {})}
         confirmLabel="Run hook"
         pendingLabel="Running…"

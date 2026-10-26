@@ -497,6 +497,12 @@ describe('buildProfileRequest', () => {
     const stored = parseStoredWizard(JSON.parse(JSON.stringify(storedWizard(edit, gated.id))));
     expect(stored && buildProfileRequest({ ...stored.state, profile: gated, takenIds: [] }, openai).request?.body.maxProxyOperations)
       .toEqual(['files_list', 'exec_run', 'git_status', 'git_diff']);
+    // A forged storage entry cannot name the retained set: the parser keeps no profile and only offered operations.
+    const forged = parseStoredWizard({ open: true, mode: 'edit', sourceProfileId: gated.id, state: {
+      operations: ['files_list', 'exec_run'], profile: profile({ activeRevision: revision({ maxProxyOperations: ['exec_run', 'git_push'] }) })
+    } });
+    expect(forged?.state).not.toHaveProperty('profile');
+    expect(forged?.state.operations).toEqual(['files_list']);
     const duplicate = initialWizardState({ mode: 'duplicate', profile: gated, profiles: [gated], credentials });
     expect(retainedOperations(duplicate)).toEqual([]);
     expect(buildProfileRequest(duplicate, openai).request?.body.maxProxyOperations).toEqual(['files_list']);
