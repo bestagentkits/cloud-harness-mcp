@@ -34,3 +34,5 @@ Besides the page, the assistant's agent has its own Cloud Harness MCP connection
 ## Enabling the assistant
 
 The instance owner enables the assistant by connecting the Dashboard to a Dewee gateway and creating the operator agent there. The settings are `DEWEE_GATEWAY_URL`, `DEWEE_GATEWAY_TOKEN` and `DEWEE_WEBCHAT_SECRET` (see [environment variables](/reference/environment-variables)). Until all three are set, every assistant request is refused as disabled.
+
+If the assistant answers every message with "The Dewee gateway request failed." while the gateway is reachable, the agent is most likely not shared with your chat user: share it on the gateway as the [deployment guide](https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/deployment.md#enable-the-dashboard-assistant-dewee) describes. "The agent run failed." points at the agent's model provider, for example an exhausted credit balance, rather than at Cloud Harness.

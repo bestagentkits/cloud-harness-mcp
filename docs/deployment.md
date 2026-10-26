@@ -600,8 +600,20 @@ including the full-scope MCP key, is in the
    sudo /usr/local/sbin/cloud-harness-service-compose up -d --no-deps --force-recreate api
    ```
 
-4. Open the Dashboard, open the Assistant, and ask it to open a page. A
-   `503 dewee_disabled` means one of the three settings is missing.
+4. Share the agent with the operator's chat user. Unless the agent is the
+   tenant default, the gateway answers each chat with `no access to this
+   agent` (the `api` log shows `route: dewee.chat`, `code: UNAUTHORIZED`)
+   until the agent is shared with the user id the Dashboard sends. That id is
+   `webchat-` plus a keyed hash of the operator's Access issuer and subject;
+   `visitorIdFor` in `apps/api/src/dashboard-dewee-router.ts` owns the
+   derivation. Compute it inside the `api` container so the secret never
+   leaves it, then share the agent with that id through the gateway's
+   `POST /v1/agents/<agent-uuid>/shares` with an admin token. Rotating
+   `DEWEE_WEBCHAT_SECRET` changes the id, so share again after a rotation.
+5. Open the Dashboard, open the Assistant, and ask it to open a page. A
+   `503 dewee_disabled` means one of the three settings is missing; a run
+   that fails after the gateway accepts it points at the agent's model
+   provider, not at Cloud Harness.
 
 To disable the assistant, remove the three settings and recreate the `api`
 container the same way. To remove the agent's MCP authority, revoke its key on
