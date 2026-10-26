@@ -21,6 +21,7 @@ import {
   ToolResultSchema,
   WorkspaceCapabilityResultSchema,
   WorkspaceIdSchema,
+  WORKSPACE_LIFECYCLE_BOUNDS,
   WorkspaceNetworkExposureSchema
 } from '../src/index.js';
 const commonApiConfig = {
@@ -117,6 +118,22 @@ describe('contracts', () => {
     expect(RunnerConfigSchema.parse({ ...runner, maxActiveWorkspacesPerOwner: 64 }).maxActiveWorkspacesPerOwner).toBe(64);
     expect(() => RunnerConfigSchema.parse({ ...runner, maxActiveWorkspacesPerOwner: '0' })).toThrow();
     expect(() => RunnerConfigSchema.parse({ ...runner, maxActiveWorkspacesPerOwner: 65 })).toThrow();
+  });
+
+  it('bounds the lifecycle environment settings by the shared lifecycle bounds', () => {
+    const runner = {
+      serviceToken: 'runner-token-that-is-longer-than-32-characters', jobsRoot: '/jobs', stateDb: '/state/state.db',
+      executorImage: 'executor:latest', allowedGitHosts: ['github.com']
+    };
+    for (const name of ['maxActiveWorkspacesPerOwner', 'idleTtlSeconds', 'wallTtlSeconds', 'recoverableGraceSeconds'] as const) {
+      const { max } = WORKSPACE_LIFECYCLE_BOUNDS[name];
+      expect(RunnerConfigSchema.parse({ ...runner, [name]: max })[name]).toBe(max);
+      expect(() => RunnerConfigSchema.parse({ ...runner, [name]: max + 1 })).toThrow();
+    }
+    // The idle floor stays at 30 seconds for existing environments; the Dashboard floor is a minute.
+    expect(RunnerConfigSchema.parse({ ...runner, idleTtlSeconds: 30 }).idleTtlSeconds).toBe(30);
+    expect(RunnerConfigSchema.parse({ ...runner, wallTtlSeconds: WORKSPACE_LIFECYCLE_BOUNDS.wallTtlSeconds.min }).wallTtlSeconds).toBe(60);
+    expect(() => RunnerConfigSchema.parse({ ...runner, wallTtlSeconds: 59 })).toThrow();
   });
 
   it('accepts only complete, unique Access principal relinks', () => {
