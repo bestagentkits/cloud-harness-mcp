@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   AgentProxyOperationSchema,
@@ -148,6 +149,18 @@ export type AgentSpawnReservation = {
   now: number;
   expiresAt: number;
   /**
+   * Present when the instance persists agent sessions, so the decision is recorded at spawn. With
+   * `continuedFrom`, the new session starts as a copy of that predecessor's sealed log.
+   */
+  session?: {
+    continuedFrom?: string;
+    /**
+     * Runs inside the spawn transaction with the verified predecessor and the size of its log,
+     * before any spend admission.
+     */
+    admitContinuation?: (predecessor: AgentRecord, log: { bytes: number; messageCount: number }) => void;
+  };
+  /**
    * Runs inside the spawn transaction after the replay, capacity, and TTL checks
    * and before the agent row is written, so a replay never calls it and
    * concurrent spawns are serialised. Throwing refuses the spawn and rolls back
@@ -171,6 +184,62 @@ export type AgentStatusTransition = {
 
 
 export type AgentUsageDelta = Partial<AgentUsage>;
+
+export type AgentSessionState = 'ACTIVE' | 'SEALED' | 'PURGED';
+
+export type AgentSessionRecord = {
+  agentId: string;
+  ownerId: string;
+  workspaceId: string;
+  workspaceGeneration: number;
+  rootAgentId: string;
+  continuedFrom: string | null;
+  messageCount: number;
+  bytes: number;
+  headSha256: string;
+  state: AgentSessionState;
+  continuable: boolean;
+  retainUntil: number | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** The outcome of offering one worker `session_message` record to the store. */
+export type AgentSessionAppendResult =
+  /** Stored as the next message of the log. */
+  | 'APPENDED'
+  /** The writer lost its lifecycle fence (stale epoch or generation, or the agent is not running). */
+  | 'FENCED'
+  /** The agent records no session, or its log already stopped being continuable. */
+  | 'IGNORED'
+  /** The message broke the log (a gap, an invalid role, or the bounds); the log is no longer continuable. */
+  | 'DISCONTINUED';
+
+export type AgentSessionAppend = {
+  ownerId: string;
+  workspaceId: string;
+  agentId: string;
+  generation: number;
+  runnerEpoch: number;
+  seq: number;
+  message: unknown;
+  now: number;
+};
+
+/** The chain head of an empty session log. */
+export const AGENT_SESSION_GENESIS_SHA256 = '0'.repeat(64);
+const SESSION_ROLES = new Set(['user', 'assistant', 'toolResult']);
+/** Every terminal status leaves a sealed log continuable; only an incomplete or oversized log is not. */
+const CONTINUABLE_TERMINAL_STATUSES: readonly AgentStatus[] = ['SUCCEEDED', 'FAILED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED', 'CANCELLED'];
+
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/** Each message extends the chain: head(n) = sha256(head(n-1) + sha256(message JSON)). */
+export function chainAgentSessionHead(previousHead: string, messageSha256: string): string {
+  return sha256Hex(`${previousHead}${messageSha256}`);
+}
 
 export type CleanupRetryRecord = {
   ownerId: string;
@@ -350,6 +419,42 @@ function cleanupRetryFromRow(row: CleanupRetryRow): CleanupRetryRecord {
     attempts: row.attempts,
     nextAttemptAt: row.next_attempt_at,
     lastError: row.last_error,
+    updatedAt: row.updated_at
+  };
+}
+
+type SessionRow = {
+  agent_id: string;
+  owner_id: string;
+  workspace_id: string;
+  workspace_generation: number;
+  root_agent_id: string;
+  continued_from: string | null;
+  message_count: number;
+  bytes: number;
+  head_sha256: string;
+  state: AgentSessionState;
+  continuable: number;
+  retain_until: number | null;
+  created_at: number;
+  updated_at: number;
+};
+
+function sessionFromRow(row: SessionRow): AgentSessionRecord {
+  return {
+    agentId: row.agent_id,
+    ownerId: row.owner_id,
+    workspaceId: row.workspace_id,
+    workspaceGeneration: row.workspace_generation,
+    rootAgentId: row.root_agent_id,
+    continuedFrom: row.continued_from,
+    messageCount: row.message_count,
+    bytes: row.bytes,
+    headSha256: row.head_sha256,
+    state: row.state,
+    continuable: row.continuable === 1,
+    retainUntil: row.retain_until,
+    createdAt: row.created_at,
     updatedAt: row.updated_at
   };
 }
@@ -576,6 +681,25 @@ export class AgentStateRepository {
       if (new Set(proxyOperations).size !== proxyOperations.length) {
         throw new HarnessError('INVALID_INPUT', 'agent proxy operations must be unique');
       }
+      // Rechecked inside the spawn transaction, so two concurrent continuations cannot both win.
+      const predecessor = input.session?.continuedFrom === undefined
+        ? undefined
+        : this.requireContinuable(input.ownerId, input.workspaceId, input.workspaceGeneration, input.session.continuedFrom);
+      if (predecessor) {
+        // A corrupted log is refused here rather than copied into the new agent's session.
+        const log = this.loadSessionLog(predecessor.predecessor.id, predecessor.predecessor.generation);
+        input.session?.admitContinuation?.(predecessor.predecessor, { bytes: log.bytes, messageCount: log.messages.length });
+        // The successor starts with a full copy of the log, so the copy counts against the aggregate budgets.
+        const exceeded = this.exceededSessionBudget(input.ownerId, input.workspaceId, log.bytes);
+        if (exceeded) {
+          throw new HarnessError(
+            'LIMIT_EXCEEDED',
+            `persisted agent sessions would exceed the ${exceeded} session byte budget; start a fresh agent, or wait until retention or a workspace close frees stored sessions`,
+            429,
+            false
+          );
+        }
+      }
       input.admit?.();
 
       this.database.prepare(`INSERT INTO agents
@@ -600,6 +724,7 @@ export class AgentStateRepository {
       this.database.prepare(`UPDATE agent_workspace_admission SET lifetime_records=lifetime_records+1, updated_at=?
         WHERE owner_id=? AND workspace_id=? AND workspace_generation=? AND spawn_open=1`)
         .run(input.now, input.ownerId, input.workspaceId, input.workspaceGeneration);
+      if (input.session) this.insertSession(input, predecessor);
       const created = this.database.prepare('SELECT * FROM agents WHERE owner_id=? AND workspace_id=? AND id=?')
         .get(input.ownerId, input.workspaceId, input.id) as AgentRow;
       return { replayed: false, record: agentFromRow(created) };
@@ -645,6 +770,7 @@ export class AgentStateRepository {
       // A terminal record and its MCP event commit together; the outbox keys the event by agent id.
       ? withEventSavepoint(this.database, () => {
         if (Number(update().changes) !== 1) return false;
+        this.sealSession(input.agentId, input.status, input.now);
         emitAgentTerminalEvent(this.database, input.ownerId, input.workspaceId, input.agentId, input.now);
         return true;
       })
@@ -1070,6 +1196,7 @@ export class AgentStateRepository {
       this.database.prepare('DELETE FROM agent_usage WHERE owner_id=? AND workspace_id=?').run(ownerId, workspaceId);
       this.database.prepare('DELETE FROM agent_messages WHERE owner_id=? AND workspace_id=?').run(ownerId, workspaceId);
       this.database.prepare('DELETE FROM agent_cleanup_retries WHERE owner_id=? AND workspace_id=?').run(ownerId, workspaceId);
+      this.deleteSessionRows(ownerId, workspaceId);
       this.database.prepare('DELETE FROM agents WHERE owner_id=? AND workspace_id=?').run(ownerId, workspaceId);
       this.database.prepare('DELETE FROM agent_workspace_admission WHERE owner_id=? AND workspace_id=? AND workspace_generation=?')
         .run(ownerId, workspaceId, workspaceGeneration);
@@ -1138,6 +1265,201 @@ export class AgentStateRepository {
       }
     }
     return { workspaces: candidates.length, compactedAgents, purgedTombstones };
+  }
+
+  findSession(agentId: string): AgentSessionRecord | undefined {
+    const row = this.database.prepare('SELECT * FROM agent_sessions WHERE agent_id=?').get(agentId) as SessionRow | undefined;
+    return row ? sessionFromRow(row) : undefined;
+  }
+
+  /** The agent that continued this one, if any; the schema allows at most one. */
+  findSuccessor(agentId: string): string | undefined {
+    const row = this.database.prepare('SELECT agent_id FROM agent_sessions WHERE continued_from=?').get(agentId) as { agent_id: string } | undefined;
+    return row?.agent_id;
+  }
+
+  /**
+   * Checks that an agent may be continued by a new one: it belongs to this owner, workspace, and
+   * workspace generation, it is terminal, its session is sealed and continuable, and nothing has
+   * continued it yet. Spawn admission calls it again inside its transaction.
+   */
+  requireContinuable(ownerId: string, workspaceId: string, workspaceGeneration: number, agentId: string): { predecessor: AgentRecord; session: AgentSessionRecord } {
+    const predecessor = this.findAgent(ownerId, workspaceId, agentId);
+    if (!predecessor) throw new HarnessError('NOT_FOUND', 'the agent to continue was not found in this workspace', 404, false);
+    if (predecessor.workspaceGeneration !== workspaceGeneration) {
+      throw new HarnessError('STALE_GENERATION', 'the agent to continue belongs to an earlier generation of this workspace', 409, false);
+    }
+    if (!TERMINAL_STATUSES.includes(predecessor.status)) {
+      throw new HarnessError('CONFLICT', 'the agent to continue has not ended; wait for a terminal status or cancel it first', 409, true);
+    }
+    const session = this.findSession(agentId);
+    if (!session || session.ownerId !== ownerId || session.workspaceId !== workspaceId) {
+      throw new HarnessError('CONFLICT', 'the agent to continue has no persisted session; it was spawned while session persistence was off', 409, false);
+    }
+    if (session.state === 'PURGED') {
+      throw new HarnessError('EXPIRED', 'the persisted session of the agent to continue was purged by retention', 410, false);
+    }
+    if (session.state !== 'SEALED' || !session.continuable) {
+      throw new HarnessError('CONFLICT', 'the persisted session of the agent to continue is not continuable: its log is incomplete or exceeded the session bounds', 409, false);
+    }
+    const successor = this.findSuccessor(agentId);
+    if (successor) throw new HarnessError('CONFLICT', `the agent was already continued by ${successor}; continue that agent instead`, 409, false);
+    return { predecessor, session };
+  }
+
+  /**
+   * Reads an agent's session log and verifies it against its stored count, bytes, per-message
+   * digests, and chained head before anything is sent to a runtime.
+   */
+  loadSessionLog(agentId: string, generation: number): { messages: unknown[]; headSha256: string; bytes: number } {
+    const session = this.findSession(agentId);
+    if (!session || session.state === 'PURGED') throw new HarnessError('NOT_FOUND', 'agent session was not found', 404, false);
+    const rows = this.database.prepare(`SELECT seq, message_json, bytes, sha256 FROM agent_session_messages
+      WHERE agent_id=? AND agent_generation=? ORDER BY seq ASC`)
+      .all(agentId, generation) as Array<{ seq: number; message_json: string; bytes: number; sha256: string }>;
+    let head = AGENT_SESSION_GENESIS_SHA256;
+    let bytes = 0;
+    const messages: unknown[] = [];
+    const corrupt = () => new HarnessError('INTERNAL_ERROR', 'agent session log failed integrity verification', 500, false);
+    if (rows.length !== session.messageCount) throw corrupt();
+    for (const [index, row] of rows.entries()) {
+      const digest = sha256Hex(row.message_json);
+      if (row.seq !== index || row.sha256 !== digest || row.bytes !== Buffer.byteLength(row.message_json, 'utf8')) throw corrupt();
+      head = chainAgentSessionHead(head, digest);
+      bytes += row.bytes;
+      messages.push(JSON.parse(row.message_json));
+    }
+    if (head !== session.headSha256 || bytes !== session.bytes) throw corrupt();
+    return { messages, headSha256: head, bytes };
+  }
+
+  /**
+   * Appends one runtime message to an agent's session log. Only a running agent of the current
+   * runner epoch and generation may write, and only the next sequence number is accepted. A gap,
+   * an invalid message, or exceeding the bounds stops the log and marks it not continuable; the
+   * run itself continues.
+   */
+  appendSessionMessage(input: AgentSessionAppend): AgentSessionAppendResult {
+    const role = typeof input.message === 'object' && input.message !== null && !Array.isArray(input.message)
+      ? (input.message as { role?: unknown }).role
+      : undefined;
+    const valid = typeof role === 'string' && SESSION_ROLES.has(role) && Number.isSafeInteger(input.seq) && input.seq >= 0;
+    const json = valid ? JSON.stringify(input.message) : '';
+    const bytes = Buffer.byteLength(json, 'utf8');
+    return immediate(this.database, () => {
+      if (this.instanceId && this.currentEpoch(this.instanceId) !== input.runnerEpoch) return 'FENCED';
+      const agent = this.database.prepare(`SELECT status, generation, runner_epoch FROM agents
+        WHERE owner_id=? AND workspace_id=? AND id=?`)
+        .get(input.ownerId, input.workspaceId, input.agentId) as { status: AgentStatus; generation: number; runner_epoch: number } | undefined;
+      if (!agent || agent.status !== 'RUNNING' || agent.generation !== input.generation || agent.runner_epoch !== input.runnerEpoch) return 'FENCED';
+      const session = this.database.prepare('SELECT * FROM agent_sessions WHERE agent_id=? AND owner_id=? AND workspace_id=?')
+        .get(input.agentId, input.ownerId, input.workspaceId) as SessionRow | undefined;
+      if (!session || session.state !== 'ACTIVE' || session.continuable !== 1) return 'IGNORED';
+      if (!valid || input.seq !== session.message_count
+        || session.message_count + 1 > this.limits.maxSessionMessages
+        || session.bytes + bytes > this.limits.maxSessionBytes
+        || this.exceededSessionBudget(input.ownerId, input.workspaceId, bytes)) {
+        this.database.prepare('UPDATE agent_sessions SET continuable=0, updated_at=? WHERE agent_id=?').run(input.now, input.agentId);
+        return 'DISCONTINUED';
+      }
+      const digest = sha256Hex(json);
+      this.database.prepare(`INSERT INTO agent_session_messages
+        (agent_id, agent_generation, seq, role, message_json, bytes, sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(input.agentId, input.generation, input.seq, role, json, bytes, digest, input.now);
+      this.database.prepare(`UPDATE agent_sessions SET message_count=message_count+1, bytes=bytes+?, head_sha256=?, updated_at=?
+        WHERE agent_id=?`)
+        .run(bytes, chainAgentSessionHead(session.head_sha256, digest), input.now, input.agentId);
+      return 'APPENDED';
+    });
+  }
+
+  /**
+   * Names the aggregate session byte budget that `addedBytes` more stored messages would exceed, if
+   * any. Every stored log counts, including a discontinued one, until retention or workspace close
+   * deletes it; a purged session holds no bytes.
+   */
+  private exceededSessionBudget(ownerId: string, workspaceId: string, addedBytes: number): 'workspace' | 'principal' | 'instance' | undefined {
+    const usage = this.database.prepare(`SELECT
+      (SELECT COALESCE(SUM(bytes), 0) FROM agent_sessions WHERE owner_id=? AND workspace_id=?) AS workspace_bytes,
+      (SELECT COALESCE(SUM(bytes), 0) FROM agent_sessions WHERE owner_id=?) AS principal_bytes,
+      (SELECT COALESCE(SUM(bytes), 0) FROM agent_sessions) AS global_bytes`)
+      .get(ownerId, workspaceId, ownerId) as { workspace_bytes: number; principal_bytes: number; global_bytes: number };
+    if (usage.workspace_bytes + addedBytes > this.limits.workspaceSessionBytes) return 'workspace';
+    if (usage.principal_bytes + addedBytes > this.limits.principalSessionBytes) return 'principal';
+    if (usage.global_bytes + addedBytes > this.limits.globalSessionBytes) return 'instance';
+    return undefined;
+  }
+
+  /** Stops an active log after a failure to record it, so a partial history is never continued. */
+  discontinueSession(agentId: string, now: number): void {
+    this.database.prepare(`UPDATE agent_sessions SET continuable=0, updated_at=? WHERE agent_id=? AND state='ACTIVE'`).run(now, agentId);
+  }
+
+  /** Purges the logs of sealed sessions past their retention; the session row stays as PURGED. */
+  purgeExpiredSessions(now: number, limit = 100): number {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new HarnessError('INVALID_INPUT', 'session purge page size is out of bounds');
+    }
+    // The reaper calls this every tick, so the common case takes no write lock.
+    const due = this.database.prepare(`SELECT 1 FROM agent_sessions
+      WHERE state='SEALED' AND retain_until IS NOT NULL AND retain_until<=? LIMIT 1`).get(now);
+    if (!due) return 0;
+    return immediate(this.database, () => {
+      const rows = this.database.prepare(`SELECT agent_id FROM agent_sessions
+        WHERE state='SEALED' AND retain_until IS NOT NULL AND retain_until<=? ORDER BY retain_until ASC LIMIT ?`)
+        .all(now, limit) as Array<{ agent_id: string }>;
+      for (const row of rows) {
+        this.database.prepare('DELETE FROM agent_session_messages WHERE agent_id=?').run(row.agent_id);
+        this.database.prepare(`UPDATE agent_sessions SET state='PURGED', continuable=0, message_count=0, bytes=0, updated_at=?
+          WHERE agent_id=?`).run(now, row.agent_id);
+      }
+      return rows.length;
+    });
+  }
+
+  /** Deletes every session row of a workspace, used when the workspace closes or expires. */
+  deleteWorkspaceSessions(ownerId: string, workspaceId: string): number {
+    return immediate(this.database, () => this.deleteSessionRows(ownerId, workspaceId));
+  }
+
+  private deleteSessionRows(ownerId: string, workspaceId: string): number {
+    this.database.prepare(`DELETE FROM agent_session_messages WHERE agent_id IN (
+      SELECT agent_id FROM agent_sessions WHERE owner_id=? AND workspace_id=?)`).run(ownerId, workspaceId);
+    return Number(this.database.prepare('DELETE FROM agent_sessions WHERE owner_id=? AND workspace_id=?').run(ownerId, workspaceId).changes);
+  }
+
+  private insertSession(input: AgentSpawnReservation, continuation: { predecessor: AgentRecord; session: AgentSessionRecord } | undefined): void {
+    const source = continuation?.session;
+    try {
+      this.database.prepare(`INSERT INTO agent_sessions
+        (agent_id, owner_id, workspace_id, workspace_generation, root_agent_id, continued_from, message_count, bytes,
+         head_sha256, state, continuable, retain_until, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 1, NULL, ?, ?)`)
+        .run(
+          input.id, input.ownerId, input.workspaceId, input.workspaceGeneration, source?.rootAgentId ?? input.id,
+          source?.agentId ?? null, source?.messageCount ?? 0, source?.bytes ?? 0, source?.headSha256 ?? AGENT_SESSION_GENESIS_SHA256,
+          input.now, input.now
+        );
+    } catch (error) {
+      if (error instanceof Error && /UNIQUE constraint failed/i.test(error.message)) {
+        throw new HarnessError('CONFLICT', 'the agent was already continued by another agent', 409, false);
+      }
+      throw error;
+    }
+    if (!continuation) return;
+    // The new log starts as a copy of the predecessor's, so each session is self-contained.
+    this.database.prepare(`INSERT INTO agent_session_messages
+      (agent_id, agent_generation, seq, role, message_json, bytes, sha256, created_at)
+      SELECT ?, 1, seq, role, message_json, bytes, sha256, created_at FROM agent_session_messages
+      WHERE agent_id=? AND agent_generation=? ORDER BY seq ASC`)
+      .run(input.id, continuation.predecessor.id, continuation.predecessor.generation);
+  }
+
+  private sealSession(agentId: string, status: AgentStatus, now: number): void {
+    this.database.prepare(`UPDATE agent_sessions SET state='SEALED',
+      continuable=CASE WHEN ?=1 THEN continuable ELSE 0 END, retain_until=?, updated_at=?
+      WHERE agent_id=? AND state='ACTIVE'`)
+      .run(CONTINUABLE_TERMINAL_STATUSES.includes(status) ? 1 : 0, now + this.limits.sessionRetentionMs, now, agentId);
   }
 
   private usageRow(ownerId: string, workspaceId: string, agentId: string, generation: number): UsageRow {

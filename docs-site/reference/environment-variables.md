@@ -99,6 +99,13 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `PACKAGES_BUILD_TIMEOUT_MS` | `600000` | Optional | Wall-clock limit for one plan or apply builder container. |
 | `DECISION_PLANE_PURPOSES` | `—` | Optional | Decision Plane (runner): advisory semantic decisions, sent only when the owner has a TypeSafe integration key. Comma-separated subset of mcp-routing,failure-classification; empty keeps it off. |
 | `TYPESAFE_EGRESS` | `on` | Optional | Instance-wide TypeSafe egress switch (runner): off stops skill suggestions and the Decision Plane even when an owner has stored a key. Per owner, deleting the key does the same. |
+| `AGENT_SESSION_PERSISTENCE_ENABLED` | `false` | Optional | Managed agent session persistence (runner): agents spawned while it is on record their Pi session in the runner state store, and agent_spawn.continueFrom continues an ended agent's session in a new agent on the same model profile. Off, spawns behave as before and continueFrom is refused with NOT_SUPPORTED. |
+| `AGENT_MAX_SESSION_MESSAGES` | `2000` | Optional | Most messages one persisted session may hold; past it the run continues but is no longer continuable. |
+| `AGENT_MAX_SESSION_BYTES` | `7340032` | Optional | Most message bytes one persisted session may hold (at most 7864320, to fit the 8 MiB agent start record). |
+| `AGENT_SESSION_RETENTION_MS` | `604800000` | Optional | How long a sealed session stays continuable after its agent ends (7 days); workspace close deletes it sooner. |
+| `AGENT_WORKSPACE_SESSION_BYTES` | `67108864` | Optional | Most bytes all stored sessions of one workspace may hold together; a continuation copies its predecessor's log. |
+| `AGENT_PRINCIPAL_SESSION_BYTES` | `536870912` | Optional | Most bytes all stored sessions of one owner may hold together. |
+| `AGENT_GLOBAL_SESSION_BYTES` | `1073741824` | Optional | Most bytes all stored sessions of the instance may hold together (workspace <= principal <= global). |
 | `GITHUB_APP_ID` | `—` | Optional | Optional GitHub App repository access; required fields depend on AUTH_MODE: |
 | `GITHUB_APP_INSTALLATION_ID` | `—` | Optional | Required in owner-bearer mode; omit in Access mode, where each principal binds an installation: |
 | `GITHUB_APP_SLUG` | `—` | Optional | Required in Access mode for the installation redirect: |

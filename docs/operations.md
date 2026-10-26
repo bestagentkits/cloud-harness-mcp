@@ -365,6 +365,18 @@ runner rebuilds from providers, so the bounded `downgradeStateSchemaToV13` in
 [`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts)
 drops the table without a data-loss guard; the next search refetches.
 
+## Agent session state schema rollback
+
+Persisted agent sessions add runner state schema v15: the `agent_sessions` and
+`agent_session_messages` tables. A pre-v15 runner refuses a v15 state database,
+so release rollback relies on the pre-deploy recovery set as for v13. The
+bounded `downgradeStateSchemaToV14` in
+[`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts)
+drops only those two tables, and refuses while any session row exists unless
+data loss is explicitly allowed. A lossy downgrade discards every persisted
+conversation: the affected agents can no longer be continued with
+`continueFrom`, while their records, logs, and usage stay intact.
+
 ## Revision pricing columns rollback
 
 Revision cache prices, long-prompt tiers, and price provenance are columns added in place

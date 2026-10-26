@@ -47,6 +47,9 @@ A bounded, vendor-neutral overview of allowlisted instruction files (such as `AG
 ### Repository Guidance Bootstrap
 Agents started with `agent_spawn` receive the workspace's applicable instruction files automatically, in a delimited `untrusted-executor` block ahead of the caller's verbatim task. `repositoryContext` picks the guidance family (`codex` when omitted, `claude`, `cursor`, `aider`, `all`, or `none` to send the task alone). `workspace_open` returns a content-free `repositoryContext` summary, and `workspace_context` marks each instruction file `activeForClient` with an `inactiveReason` using the same selection, so external clients see what a managed agent would receive. Client configuration such as `.aider.conf.yml` is listed but never injected.
 
+### Persisted Agent Sessions
+When the operator sets `AGENT_SESSION_PERSISTENCE_ENABLED=true` (off by default), the runner keeps each new agent's conversation in its own state store, never in the agent container. Once an agent ends and `agent_status` reports `session.continuable`, `agent_spawn` with `continueFrom` starts a *new* agent (its own ID, container, lease, and budget) on the same model profile that first replays that conversation and then receives the new `prompt`. A run is never resumed in place (`run.resumable` is always `false`), each agent can be continued once, and closing the workspace or the retention window deletes the stored sessions. See [`agent_spawn`](/reference/tools#agent-spawn) and the [environment variables](/reference/environment-variables).
+
 ### Scoped Memories
 Persistent notes stored in SQLite `StateStore` v5 isolated by `principal_id` across 3 scopes:
 - `owner`: Principal-wide notes persistent across all workspaces.

@@ -7,6 +7,8 @@ import {
   AgentProxyOperationSchema,
   AgentStatusDataSchema,
   ApiConfigSchema,
+  DEFAULT_RUNNER_AGENT_LIMITS,
+  RunnerAgentLimitsSchema,
   ContextManifestItemSchema,
   ContextManifestSchema,
   DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
@@ -37,6 +39,17 @@ describe('contracts', () => {
 
   it('rejects placeholder secrets', () => {
     expect(() => ApiConfigSchema.parse({ ...commonApiConfig, bearerToken: 'change-me-at-least-32-random-characters' })).toThrow();
+  });
+
+  it('bounds the aggregate bytes of persisted agent sessions per workspace, principal, and instance', () => {
+    expect(DEFAULT_RUNNER_AGENT_LIMITS).toMatchObject({
+      workspaceSessionBytes: 67_108_864, principalSessionBytes: 536_870_912, globalSessionBytes: 1_073_741_824
+    });
+    expect(() => RunnerAgentLimitsSchema.parse({ workspaceSessionBytes: 600_000_000 })).toThrow(/workspace <= principal <= global/);
+    expect(() => RunnerAgentLimitsSchema.parse({ principalSessionBytes: 2_000_000_000 })).toThrow(/workspace <= principal <= global/);
+    expect(() => RunnerAgentLimitsSchema.parse({ workspaceSessionBytes: 0 })).toThrow();
+    expect(() => RunnerAgentLimitsSchema.parse({ workspaceSessionBytes: 1_048_576 })).toThrow(/workspace session budget/);
+    expect(RunnerAgentLimitsSchema.parse({ maxSessionBytes: 1024, workspaceSessionBytes: '1024' }).workspaceSessionBytes).toBe(1024);
   });
 
   it('defaults to owner bearer mode and rejects mixed or partial Access configuration', () => {
@@ -892,6 +905,13 @@ describe('contracts', () => {
       proxyOperations: ['files_read'],
       ownerId: 'public-identity-is-forbidden'
     })).toThrow();
+    // profileId may be omitted only by a continuation, which inherits its predecessor's profile.
+    expect(() => TOOL_SCHEMA_BY_NAME.agent_spawn.parse({
+      workspaceId, prompt: 'p', idempotencyKey: 'spawn-key-1234', proxyOperations: ['files_read']
+    })).toThrow(/profileId is required/);
+    expect(TOOL_SCHEMA_BY_NAME.agent_spawn.parse({
+      workspaceId, prompt: 'p', idempotencyKey: 'spawn-key-1234', proxyOperations: ['files_read'], continueFrom: agentId
+    })).not.toHaveProperty('profileId');
     expect(() => TOOL_SCHEMA_BY_NAME.agent_status.parse({ workspaceId, agentId })).not.toThrow();
     expect(() => TOOL_SCHEMA_BY_NAME.agent_status.parse({ workspaceId, idempotencyKey: 'spawn-key-1234' })).not.toThrow();
     expect(() => TOOL_SCHEMA_BY_NAME.agent_status.parse({ workspaceId, agentId, idempotencyKey: 'spawn-key-1234' })).toThrow();

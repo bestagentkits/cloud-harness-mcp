@@ -37,6 +37,7 @@ import {
 } from './model-spend-ledger.js';
 import {
   AgentProtocolChannel,
+  MAX_PROTOCOL_RECORD_BYTES,
   MAX_TOOL_RESULT_RECORD_BYTES,
   MAX_TOOL_RESULT_TEXT_BYTES,
   type AgentInputRecord,
@@ -69,6 +70,17 @@ const AGENT_OPERATIONS: Readonly<Partial<Record<RunnerOperation, true>>> = {
 const terminalStatuses = new Set<AgentStatus>(AGENT_TERMINAL_STATUSES);
 /** Mirrors the agent runtime's `start` record prompt bound (`apps/agent-runtime/src/protocol-schemas.ts`). */
 const AGENT_START_PROMPT_MAX_BYTES = 256 * 1024;
+/** Room kept in a start record for every field other than the prompt and the replayed session. */
+const START_RECORD_FIXED_RESERVE_BYTES = 16 * 1024;
+
+/**
+ * Bytes left in a start record after the replayed session (each stored message's JSON plus its
+ * array separator) and the JSON-encoded prompt. Negative means the record cannot be sent.
+ */
+function startRecordHeadroom(log: { bytes: number; messageCount: number }, prompt: string): number {
+  return MAX_PROTOCOL_RECORD_BYTES - START_RECORD_FIXED_RESERVE_BYTES
+    - log.bytes - log.messageCount - Buffer.byteLength(JSON.stringify(prompt), 'utf8');
+}
 type TerminalAgentStatus = 'CANCELLED' | 'TIMED_OUT' | 'LIMIT_EXCEEDED' | 'INTERRUPTED' | 'FAILED' | 'SUCCEEDED';
 
 export type AgentToolExecutor = (input: {
@@ -229,7 +241,8 @@ export class AgentManager {
 
   private async stopWorkspaceForShutdown(workspace: WorkspaceRecord): Promise<void> {
     this.repository.closeWorkspaceAdmission(workspace.ownerId, workspace.id, this.now());
-    await this.stopWorkspace(workspace.ownerId, workspace.id, 'runner stopping');
+    // A runner restart keeps the workspace, so its persisted sessions stay continuable.
+    await this.cancelWorkspaceAgents(workspace.ownerId, workspace.id, 'runner stopping');
   }
 
   async dispatch(
@@ -267,7 +280,13 @@ export class AgentManager {
     return this.repository.listActiveAgents(ownerId, workspaceId).some((agent) => agent.expiresAt > now);
   }
 
+  /** Stops every agent of a closing or expiring workspace, then deletes its persisted sessions. */
   async stopWorkspace(ownerId: string, workspaceId: string, reason: string, generation?: number): Promise<void> {
+    await this.cancelWorkspaceAgents(ownerId, workspaceId, reason, generation);
+    this.repository.deleteWorkspaceSessions(ownerId, workspaceId);
+  }
+
+  private async cancelWorkspaceAgents(ownerId: string, workspaceId: string, reason: string, generation?: number): Promise<void> {
     this.repository.closeWorkspaceAdmission(ownerId, workspaceId, this.now(), generation);
     const active = this.repository.listActiveAgents(ownerId, workspaceId, generation);
     const seen = new Set<string>();
@@ -297,7 +316,13 @@ export class AgentManager {
     if (workspace.networkProfile !== 'network-none') {
       throw new HarnessError('CONFLICT', 'agents require a network-disabled workspace; open a separate workspace with networkProfile "network-none"', 409, false);
     }
-    const profile = this.profile(input.profileId as string, ownerId);
+    const continueFrom = input.continueFrom as string | undefined;
+    if (continueFrom !== undefined && !this.config.sessionPersistenceEnabled) {
+      throw new HarnessError('NOT_SUPPORTED', 'continueFrom needs agent session persistence, which is off on this instance', 400, false);
+    }
+    const profile = continueFrom === undefined
+      ? this.profile(input.profileId as string, ownerId)
+      : this.continuationProfile(ownerId, workspace.id, continueFrom, input.profileId as string | undefined);
     const dashboardManaged = this.modelProfiles !== undefined
       && (profile.id.startsWith('rev_') || this.config.profiles.every((p) => p.id !== profile.id));
     if (dashboardManaged) await this.ensureGatewaySynced();
@@ -345,6 +370,28 @@ export class AgentManager {
       runtimeEpoch: this.epoch,
       now,
       expiresAt: Math.min(workspace.expiresAt, now + budget.ttlSeconds * 1_000),
+      ...(this.config.sessionPersistenceEnabled ? {
+        session: continueFrom === undefined ? {} : {
+          continuedFrom: continueFrom,
+          admitContinuation: (predecessor: AgentRecord, log: { bytes: number; messageCount: number }) => {
+            try {
+              this.profile(predecessor.profileId, ownerId);
+            } catch {
+              throw new HarnessError('CONFLICT', 'the model profile of the agent to continue is no longer enabled', 409, false);
+            }
+            // The replayed log and the prompt travel in one start record, so a continuation that
+            // cannot fit is refused here instead of failing at launch.
+            if (startRecordHeadroom(log, prompt) < 0) {
+              throw new HarnessError(
+                'LIMIT_EXCEEDED',
+                'the continued session and prompt exceed the agent start record limit; shorten the prompt or start a fresh agent',
+                413,
+                false
+              );
+            }
+          }
+        }
+      } : {}),
       // The run's whole cost cap is reserved against every applicable spend policy. The gateway
       // still enforces the cap itself; a policy only bounds how many caps may be outstanding.
       admit: () => {
@@ -378,7 +425,12 @@ export class AgentManager {
    * composer's absolute bound. What was injected, skipped, or truncated is recorded as a bounded
    * `repository_context` log event that carries paths and digests but never document content.
    */
-  private async bootstrapPrompt(record: AgentRecord, prompt: string, repositoryContext: AgentRepositoryContext): Promise<string> {
+  private async bootstrapPrompt(
+    record: AgentRecord,
+    prompt: string,
+    repositoryContext: AgentRepositoryContext,
+    session?: { bytes: number; messages: unknown[] }
+  ): Promise<string> {
     if (repositoryContext === 'none' || !this.dependencies.repositoryGuidance) return prompt;
     let resolved: Awaited<ReturnType<AgentRepositoryGuidance>>;
     try {
@@ -399,9 +451,12 @@ export class AgentManager {
       // The gateway reserves one input token per request-body byte and every model turn re-sends the
       // first message, so guidance and task together take at most a quarter of the input budget,
       // and never pass the runtime's start-record prompt bound once the block framing is added.
+      // A replayed session shares the start record, so guidance also gets only the room it leaves,
+      // divided by the worst-case JSON escaping expansion.
       budgetBytes: Math.max(0, Math.min(
         Math.floor(record.budget.maxInputTokens / 4) - promptBytes,
-        AGENT_START_PROMPT_MAX_BYTES - promptBytes - 1_024
+        AGENT_START_PROMPT_MAX_BYTES - promptBytes - 1_024,
+        session ? Math.floor(startRecordHeadroom({ bytes: session.bytes, messageCount: session.messages.length }, prompt) / 6) : Infinity
       ))
     });
     const event = { ...composed.report, snapshotReused: resolved.reused };
@@ -444,9 +499,14 @@ export class AgentManager {
       // A cancel that landed while this launch waited owns the cleanup; it waits for this launch,
       // so stop before any lease or container exists.
       if (!this.stillSpawning(record)) return;
+      // A persisting agent always receives its log, empty for a fresh one, and it is verified
+      // before any lease exists so a corrupted log costs nothing.
+      const sessionLog = this.repository.findSession(record.id)
+        ? this.repository.loadSessionLog(record.id, record.generation)
+        : undefined;
       // Guidance is composed before any lease or container exists, so an agent never starts its
       // first turn without the repository's applicable guidance, and a failed scan costs nothing.
-      const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext);
+      const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext, sessionLog);
       if (!this.stillSpawning(record)) return;
       // From here the lease may exist in the gateway, so an unsettled row is charged its whole cap.
       leaseMayExist = true;
@@ -506,7 +566,7 @@ export class AgentManager {
       const deadlineMs = Math.max(1_000, running.expiresAt - this.now());
       context.deadline = setTimeout(() => { void this.cancelOne(running, 'agent TTL expired', 'TIMED_OUT'); }, deadlineMs);
       context.deadline.unref();
-      await channel.send(this.startRecord(running, initialPrompt, profile, lease));
+      await channel.send(this.startRecord(running, initialPrompt, profile, lease, sessionLog));
       void runtime.exited.then(({ code }) => {
         if (!context.terminalSeen) void this.interrupt(running, `agent runtime exited before terminal record (${code ?? 'signal'})`);
       }).catch((error: unknown) => { void this.interrupt(running, error instanceof Error ? error.message : 'agent runtime failed'); });
@@ -657,6 +717,10 @@ export class AgentManager {
       this.reconcileUsage(context, output.usage);
       return;
     }
+    if (output.type === 'session_message') {
+      this.persistSessionMessage(context, output.seq, output.message);
+      return;
+    }
     if (output.type === 'tool_cancel') {
       const pending = context.proxy.get(output.requestId);
       if (pending) {
@@ -672,6 +736,32 @@ export class AgentManager {
     context.terminalSeen = true;
     this.reconcileUsage(context, output.usage);
     await this.finishTerminal(context, output.state, output.error ?? null);
+  }
+
+  /**
+   * Persisting a message never fails the run: a fenced writer is ignored, and a gap, an invalid
+   * message, an exceeded bound, or a store failure only leaves the session not continuable.
+   */
+  private persistSessionMessage(context: RuntimeContext, seq: number, message: unknown): void {
+    const record = context.record;
+    try {
+      this.repository.appendSessionMessage({
+        ownerId: record.ownerId,
+        workspaceId: record.workspaceId,
+        agentId: record.id,
+        generation: record.generation,
+        runnerEpoch: this.epoch,
+        seq,
+        message,
+        now: this.now()
+      });
+    } catch {
+      try {
+        this.repository.discontinueSession(record.id, this.now());
+      } catch {
+        // The session stays as it is; the run matters more than its persisted history.
+      }
+    }
   }
 
   private async proxyTool(context: RuntimeContext, output: Extract<AgentOutputRecord, { type: 'tool_request' }>): Promise<void> {
@@ -930,6 +1020,11 @@ export class AgentManager {
       }
     }
     this.repository.maintainClosedWorkspaces(now);
+    try {
+      this.repository.purgeExpiredSessions(now);
+    } catch {
+      // A busy store only delays retention to the next tick; it must not skip the spend sweep.
+    }
     if (now - this.lastSpendSweepAt >= SPEND_SWEEP_INTERVAL_MS) void this.sweepSpend(SPEND_SWEEP_MIN_AGE_MS);
   }
 
@@ -1040,6 +1135,26 @@ export class AgentManager {
   // Cache prices resolve through the same defaults the gateway snapshot uses, so the
   // agent's self-reported cost never treats cached usage as free. The agent reports
   // base-tier prices only; the gateway charges long-prompt tiers.
+  /**
+   * A continuation runs on its predecessor's profile: the replayed transcript was produced by that
+   * model, and replaying it into another provider or model is not supported. An omitted profileId
+   * inherits it; a profileId that resolves to anything else is refused.
+   */
+  private continuationProfile(ownerId: string, workspaceId: string, continueFrom: string, requested: string | undefined): PricedAgentModelProfile {
+    const predecessor = this.repository.findAgent(ownerId, workspaceId, continueFrom);
+    if (!predecessor) throw new HarnessError('NOT_FOUND', 'the agent to continue was not found in this workspace', 404, false);
+    let inherited: PricedAgentModelProfile;
+    try {
+      inherited = this.profile(predecessor.profileId, ownerId);
+    } catch {
+      throw new HarnessError('CONFLICT', 'the model profile of the agent to continue is no longer enabled', 409, false);
+    }
+    if (requested !== undefined && this.profile(requested, ownerId).id !== inherited.id) {
+      throw new HarnessError('INVALID_INPUT', 'a continuation runs on the model profile of the agent it continues; omit profileId or pass that profile');
+    }
+    return inherited;
+  }
+
   private profile(id: string, ownerId?: string): PricedAgentModelProfile {
     if (ownerId && this.modelProfiles) {
       const activeProfiles = this.modelProfiles.listProfiles(ownerId);
@@ -1098,7 +1213,25 @@ export class AgentManager {
       budget: record.budget,
       usage: this.repository.usage(record.ownerId, record.workspaceId, record.id, record.generation),
       terminalReason: record.terminalReason,
-      outcomeUnknown: record.outcomeUnknown
+      outcomeUnknown: record.outcomeUnknown,
+      ...this.sessionStatus(record)
+    };
+  }
+
+  /** Session fields appear only for an agent spawned with session persistence. */
+  private sessionStatus(record: AgentRecord) {
+    const session = this.repository.findSession(record.id);
+    if (!session) return {};
+    return {
+      session: {
+        persisted: session.state !== 'PURGED',
+        continuable: session.state === 'SEALED' && session.continuable,
+        messages: session.messageCount,
+        bytes: session.bytes
+      },
+      // A Pi run is never resumed in place; a sealed session is continued by a new agent.
+      run: { resumable: false },
+      continuedFrom: session.continuedFrom
     };
   }
 
@@ -1122,7 +1255,13 @@ export class AgentManager {
     };
   }
 
-  private startRecord(record: AgentRecord, prompt: string, profile: PricedAgentModelProfile, lease: string): AgentInputRecord {
+  private startRecord(
+    record: AgentRecord,
+    prompt: string,
+    profile: PricedAgentModelProfile,
+    lease: string,
+    session?: { messages: unknown[]; headSha256: string }
+  ): AgentInputRecord {
     const contextWindow = Math.min(2_000_000, profile.maxInputTokens + profile.maxOutputTokens);
     return {
       type: 'start', requestId: randomUUID(), agentId: record.id, prompt, tools: record.proxyOperations,
@@ -1143,7 +1282,9 @@ export class AgentManager {
         maxOutputBytes: record.budget.maxOutputBytes,
         maxEventBytes: this.config.limits.maxLogEventBytes,
         maxToolResultBytes: MAX_TOOL_RESULT_RECORD_BYTES
-      }
+      },
+      // Appended last and only for a persisting agent, so every other start record is unchanged.
+      ...(session ? { session: { messages: session.messages, headSha256: session.headSha256 } } : {})
     };
   }
 }
