@@ -18,15 +18,18 @@ const ZERO_USAGE: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, to
 function safeTokenCount(value: number): number {
   return Number.isFinite(value) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(value))) : 0;
 }
+/**
+ * True only for a harness limit: a Model Gateway budget refusal or request bound, matched by the
+ * gateway's own error codes. Provider throttling and provider size errors are provider failures,
+ * so status numbers and generic "limit exceeded" wording never count.
+ */
 function isLimitExceeded(error: unknown): boolean {
   let current = error;
   for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth += 1) {
     const record = current as Record<string, unknown>;
-    const status = record.status ?? record.statusCode;
-    if (status === 429 || status === 413) return true;
     const code = typeof record.code === 'string' ? record.code : '';
     const message = typeof record.message === 'string' ? record.message : '';
-    if (/\b(?:413|429)\b|model_(?:budget_exhausted|bound_exceeded)|(?:budget|quota|token|cost|output|rate)[\s_-]*(?:limit|exhaust|exceed)/i.test(`${code} ${message}`)) return true;
+    if (/\bbudget_exceeded\b|\bmodel[\s_](?:budget[\s_]exhausted|bound[\s_]exceeded)\b/i.test(`${code} ${message}`)) return true;
     current = record.cause;
   }
   return false;
