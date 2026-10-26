@@ -244,9 +244,9 @@ fixtures.
 ## Branches and promotion
 
 `dev` is the integration branch: feature and fix pull requests target it, and
-each successful push CI run there publishes a beta release. `main` is the
-production branch: every successful push CI run there publishes a stable release
-and deploys production (see [`docs/deployment.md`](deployment.md)). Two rules
+a successful push CI run there publishes a beta release when it carries a
+releasable commit. `main` is the production branch: a successful push CI run
+there publishes the stable release and deploys production (see [`docs/deployment.md`](deployment.md)). Two rules
 keep a fix from being stranded on one side, as happened before
 [#541](https://github.com/bestagentkits/cloud-harness-mcp/issues/541):
 

@@ -787,7 +787,7 @@ registry placeholders and the classic hand-off dialog for these tabs are gone.
 | Terminal | cockpit Terminal tab, route `/dashboard/terminals`, sections 4.12 and 7 | done (P4b, #484) | `features/terminal/` (lazy xterm chunk); `e2e/terminal.spec.ts`, `terminal-protocol.test.ts`. The PTY session survives route changes inside the shell |
 | Files | cockpit route `?path=`, `?file=`; D2; section 4.2 file rows | done (P4b, #484) | `features/workspace-cockpit/tabs/files-tab.tsx`, `files-model.ts`; `e2e/workspace-tabs.spec.ts` (deep link, `expectedSha256` fence, 409 keeps the edit, delete confirm). R11 fixed: one conflict dialog owned by React state |
 | Git | cockpit route `?staged=`; section 4.2 git and worktree rows | done (P4b, #484) | `tabs/git-tab.tsx`, `git-model.ts`; checkout, merge, rebase and worktree remove confirm; fetch, pull and branch do not |
-| Automation | section 4.2 skills and hooks rows | done (P4b, #484) | `tabs/automation-tab.tsx`, `automation-model.ts`. Skill run sends `{script, expectedContentSha256}`; hook run sends `{name, event, expectedManifestSha256}` (or the hook's `expectedSha256`), which `hooks_run` requires; legacy sent only `{event}`, which the schema refuses. The Dashboard cannot complete the skill privilege grant yet (#511) |
+| Automation | section 4.2 skills and hooks rows | done (P4b, #484) | `tabs/automation-tab.tsx`, `automation-model.ts`. Skill run sends `{script, expectedContentSha256}`; hook run sends `{name, event, expectedManifestSha256}` (or the hook's `expectedSha256`), which `hooks_run` requires; legacy once sent only `{event}`, which the schema refuses. The legacy cockpit now approves and runs a skill script through its privilege grant (#511) and runs one named hook against the manifest digest; the React tab cannot complete the skill privilege grant yet ([#551](https://github.com/bestagentkits/cloud-harness-mcp/issues/551)) |
 | Deploy | section 4.2 deployments rows; deploy wizard | done (P4b, #484) | `tabs/deploy-tab.tsx`: choose a target, review, confirm. The target and step survive a reload (`ch-dashboard-restore:deploy:<id>`); run output is component state only |
 | Workspace artifacts | cockpit Artifacts tab | done (P4b, #484) | `tabs/artifacts-tab.tsx`, read-only with native download links under `/dashboard/api/v1/artifacts/` |
 | Task graph | `GET /workspaces/:id/tasks/graph` | done (P4b, #484) | `task-graph.tsx`, lazy above the Runtime task list; one read, no poller, re-read by Refresh |
@@ -824,3 +824,20 @@ embeds the Dewee assistant on the P5a BFF.
 
 No page context exposes runner `mcpt_` ids, so the BFF's public-id list is
 unchanged.
+
+### 12.5 Legacy-only features from `dev`
+
+Merging `main` into `dev`
+([#541](https://github.com/bestagentkits/cloud-harness-mcp/issues/541)) joined
+features that `dev` built in the legacy shell with the React app from `main`.
+The legacy shell still serves all of them; the React app does not yet, so each
+blocks the cutover.
+
+| Area | Legacy owner | BFF routes | React gap |
+| --- | --- | --- | --- |
+| Inbox | `/dashboard/inbox`, `dashboard-inbox.js` | `/inbox`, `/inbox/status`, `/inbox/read`, `/notification-preferences` (`dashboard-inbox-router.ts`) | No route in `DASHBOARD_REACT_ROUTES`; [#551](https://github.com/bestagentkits/cloud-harness-mcp/issues/551) |
+| Traces | `/dashboard/traces[/:id]` | `/traces`, `/traces/status`, `/traces/:id` with `/spans` and `/export` (`dashboard-traces-router.ts`) | No route; [#551](https://github.com/bestagentkits/cloud-harness-mcp/issues/551) |
+| Automations | `/dashboard/automations/**`, the target of notification deep links | `/automations/*` (control router) | No route; [#551](https://github.com/bestagentkits/cloud-harness-mcp/issues/551) |
+| Agent policies | `/dashboard/settings/agent-policies`, `/dashboard/projects/:id/agent-policies` | `/agent-policies/*` (`dashboard-policies-router.ts`) | Reaches the shell by prefix, then renders not-found; [#551](https://github.com/bestagentkits/cloud-harness-mcp/issues/551) |
+| Multi-repository workspaces | repository selector in the cockpit Files, Git and Terminal tabs | `repositoryId` query on files, git and worktree reads; `/workspaces/:id/repositories` | React calls never send `repositoryId`; [#551](https://github.com/bestagentkits/cloud-harness-mcp/issues/551) |
+| Partial file reads | `isWholeFileRead` makes a windowed read read-only | `eof`, `bytesReturned`, `totalBytes` on `/files/content` | React can save a 64 KiB window as the whole file; [#550](https://github.com/bestagentkits/cloud-harness-mcp/issues/550) |

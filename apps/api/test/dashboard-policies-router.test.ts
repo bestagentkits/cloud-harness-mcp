@@ -187,8 +187,12 @@ describe('dashboard agent policy BFF', () => {
       const response = await send(path, { method, headers, body: JSON.stringify(body) });
       expect(response.status, JSON.stringify(body)).toBe(400);
     }
-    // A body scope is overwritten by the path, never trusted.
-    const scoped = await send(`/api/v1/agent-policies/projects/${projectId}`, { method: 'PUT', headers, body: JSON.stringify({ document: projectDocument, expectedVersion: 0, scope: 'global' }) });
+    // A body scope that differs from the path is refused; one that repeats it is accepted.
+    const redirected = await send(`/api/v1/agent-policies/projects/${projectId}`, { method: 'PUT', headers, body: JSON.stringify({ document: projectDocument, expectedVersion: 0, scope: 'global' }) });
+    expect(redirected.status).toBe(400);
+    expect(redirected.json).toEqual({ error: 'path_id_mismatch', message: 'The request body names a different scope than the URL.' });
+    expect(requests).toHaveLength(0);
+    const scoped = await send(`/api/v1/agent-policies/projects/${projectId}`, { method: 'PUT', headers, body: JSON.stringify({ document: projectDocument, expectedVersion: 0, scope: 'project' }) });
     expect(scoped.status).toBe(200);
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ principal, input: { scope: 'project', projectId } });
