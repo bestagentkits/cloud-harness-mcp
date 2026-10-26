@@ -54,6 +54,19 @@ describe('unanswered tool calls of a transcript', () => {
     expect(danglingToolCalls([null, 'text', { role: 'assistant', content: 'plain' }])).toEqual([]);
   });
 
+  it('skips the calls of an errored or aborted reply, which the runtime never closes, but still counts them for request IDs', () => {
+    for (const stopReason of ['error', 'aborted']) {
+      const dropped = { ...assistant(['x', 'files_write']), stopReason };
+      const calls = danglingToolCalls([user, dropped, user, assistant(['x', 'files_write'])]);
+      // The live call is the only unanswered one, so its outcome is not lost to a duplicate ID.
+      expect(calls).toEqual([{ toolCallId: 'x', name: 'files_write', arguments: { path: 'x' }, requestId: effectRequestId('x', 1) }]);
+      expect(danglingToolCalls([user, dropped])).toEqual([]);
+    }
+    for (const stopReason of ['length', 'toolUse', 'stop']) {
+      expect(danglingToolCalls([user, { ...assistant(['y', 'files_write']), stopReason }]).map((call) => call.toolCallId)).toEqual(['y']);
+    }
+  });
+
   it('indexes a repeated call ID by the earlier tool call blocks that carry it', () => {
     const calls = danglingToolCalls([user, assistant(['x', 'files_write']), result('x'), user, assistant(['x', 'files_write']), user, assistant(['x', 'files_mkdir'])]);
     expect(calls.map((call) => call.requestId)).toEqual([effectRequestId('x', 1), effectRequestId('x', 2)]);

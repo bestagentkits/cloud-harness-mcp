@@ -263,13 +263,27 @@ export function transcriptToolCalls(messages: readonly unknown[]): Array<Transcr
 }
 
 /**
+ * Whether Pi drops an assistant reply from the provider context: one that stopped with `error` or
+ * `aborted`. Its calls never ran and the runtime never closes them on replay, matching
+ * `toolCalls` in apps/agent-runtime/src/session-replay.ts.
+ */
+function droppedReply(message: unknown): boolean {
+  if (typeof message !== 'object' || message === null) return false;
+  const { stopReason } = message as { stopReason?: unknown };
+  return stopReason === 'error' || stopReason === 'aborted';
+}
+
+/**
  * Finds the tool calls a transcript left without a result, in transcript order: a call is
  * answered by a tool result for its ID that follows its assistant message before the next
- * non-result message, which is how the runtime pairs them when it replays the transcript.
+ * non-result message, which is how the runtime pairs them when it replays the transcript. Calls of
+ * a reply Pi drops are not unanswered calls: the runtime closes none of them, so an outcome for one
+ * would never reach the model. They still count toward the request ID use index of their call ID.
  */
 export function danglingToolCalls(messages: readonly unknown[]): DanglingToolCall[] {
   const byMessage = new Map<number, TranscriptToolCall[]>();
   for (const { message, ...call } of transcriptToolCalls(messages)) {
+    if (droppedReply(messages[message])) continue;
     byMessage.set(message, [...(byMessage.get(message) ?? []), call]);
   }
   const dangling: DanglingToolCall[] = [];
