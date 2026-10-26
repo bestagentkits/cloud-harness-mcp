@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const MANIFESTS = [
+export const MANIFESTS = [
   'package.json',
   'apps/api/package.json',
   'apps/runner/package.json',
@@ -12,7 +12,7 @@ const MANIFESTS = [
   'apps/model-gateway/package.json',
   'apps/dashboard/package.json'
 ];
-const PLUGIN_MANIFESTS = [
+export const PLUGIN_MANIFESTS = [
   'plugins/cloud-harness/.claude-plugin/plugin.json',
   'plugins/cloud-harness/.codex-plugin/plugin.json'
 ];
