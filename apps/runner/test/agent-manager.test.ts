@@ -406,6 +406,48 @@ describe('AgentManager', () => {
     store.close();
   });
 
+  it('keeps backing off cleanup retries once the retry limit is reached', async () => {
+    let now = Date.now();
+    const config = RunnerAgentsConfigSchema.parse({
+      ...agentsConfig,
+      limits: { ...agentsConfig.limits, cleanupRetryLimit: 2, cleanupRetryMaxDelayMs: 60_000 }
+    });
+    const { manager, record, launcher, repository, store } = setup('network-none', config, () => now);
+    const reap = () => (manager as unknown as { reap(): Promise<void> }).reap();
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+    const agentId = await waitForRunning(manager, record);
+    launcher.failCleanup = true;
+    await expect(manager.dispatch(record.ownerId, record, 'agent_cancel', { workspaceId: record.id, agentId })).rejects.toThrow('injected cleanup failure');
+    expect(repository.cleanupRetry(record.ownerId, record.id, agentId, 1)).toMatchObject({ attempts: 1, nextAttemptAt: now + 1_000 });
+
+    now += 1_000;
+    await reap();
+    expect(repository.cleanupRetry(record.ownerId, record.id, agentId, 1)).toMatchObject({ attempts: 2, nextAttemptAt: now + 2_000 });
+
+    for (let pass = 0; pass < 3; pass += 1) {
+      now += 60_000;
+      const cleanups = launcher.cleanups.length;
+      await reap();
+      expect(launcher.cleanups).toHaveLength(cleanups + 1);
+      expect(repository.cleanupRetry(record.ownerId, record.id, agentId, 1)).toMatchObject({
+        attempts: 2, nextAttemptAt: now + 60_000, lastError: expect.stringContaining('injected cleanup failure')
+      });
+      // A pass before the row is due again must not retry cleanup.
+      now += 1_000;
+      await reap();
+      expect(launcher.cleanups).toHaveLength(cleanups + 1);
+      now -= 1_000;
+    }
+    expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('CANCELLING');
+
+    launcher.failCleanup = false;
+    now += 60_000;
+    await reap();
+    expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('CANCELLED');
+    expect(repository.cleanupRetry(record.ownerId, record.id, agentId, 1)).toBeUndefined();
+    store.close();
+  });
+
   it('removes launched resources when lease issue fails', async () => {
     const { manager, record, launcher, gateway, repository, store } = setup();
     gateway.failIssue = true;
