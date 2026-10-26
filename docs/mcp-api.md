@@ -312,6 +312,9 @@ the ledger and its fences are in
   run: a mutation that reached the executor gets `EFFECT_UNKNOWN`, and one
   that did not keeps the generic interruption. A call that never reached the executor, a read, or a tool call ID left
   unanswered more than once in the transcript keeps the generic interruption.
+  A reply that stopped with `error` or `aborted` never ran its calls and is
+  left out of the model's context on replay, so its calls are neither closed
+  nor settled.
   At most 64 outcomes are carried, each bounded in size; a larger stored result
   is summarized.
 - Only the agent of the current runner epoch and agent generation can record an
