@@ -100,7 +100,9 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    that is a new agent with the earlier conversation and model profile (omit
    `profileId`), never a resumed run. Only an agent on the owner's opt-in
    durable engine (`runtime: "pi-durable"`) can report `run.resumable: true`;
-   its continuation resumes that unfinished work.
+   its continuation resumes that unfinished work. Leave `runtime` unset unless
+   the owner asked for the durable engine. Both are off by default: on
+   `NOT_SUPPORTED`, spawn a fresh agent and brief it in the prompt instead.
    `model_spend_summary` shows the
    headroom; no MCP tool changes policies, only the owner can, through the
    dashboard. A profile you save with `model_profile_create` stays disabled
