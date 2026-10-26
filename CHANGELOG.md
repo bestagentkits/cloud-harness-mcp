@@ -1,3 +1,10 @@
+## [0.76.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.76.0...v0.76.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **dashboard:** recover the assistant's CSRF session after an API restart ([#536](https://github.com/bestagentkits/cloud-harness-mcp/issues/536)) ([c24fd6b](https://github.com/bestagentkits/cloud-harness-mcp/commit/c24fd6b6a0debfafa73db48971a5db6a1c53068a))
+
 # [0.76.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.75.0...v0.76.0) (2026-10-21)
 
 
