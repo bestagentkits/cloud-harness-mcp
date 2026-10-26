@@ -310,8 +310,8 @@ the ledger and its fences are in
   its request ID (a provider reused the ID, or a coercion the comparison does
   not model) never gets that payload's result and is never reported as not
   run: a mutation that reached the executor gets `EFFECT_UNKNOWN`, and one
-  that did not keeps the generic interruption. A call that never reached the executor, a read, or a tool call ID left
-  unanswered more than once in the transcript keeps the generic interruption.
+  that did not keeps the generic interruption. A call that never reached the executor, a read whose result is not
+  retained, or a tool call ID left unanswered more than once in the transcript keeps the generic interruption.
   A reply that stopped with `error` or `aborted` never ran its calls and is
   left out of the model's context on replay, so its calls are neither closed
   nor settled.
