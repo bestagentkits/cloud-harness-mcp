@@ -1,5 +1,6 @@
 import type { DeweeChatElement, JsonSchema } from 'dewee-webchat';
 import { toJSONSchema, type ZodType } from 'zod';
+import { UnauthorizedError } from '@/lib/api-client';
 
 /**
  * Host-side adapters that keep the pinned `dewee-webchat` widget inside the Dashboard's
@@ -42,7 +43,8 @@ async function isSessionEndedAnswer(response: Response): Promise<boolean> {
  * answered `401 session_ended` while the API client still holds the old CSRF token. As in
  * the API client, the token is dropped, the session bootstrapped once and the request sent
  * once more with the new header: the session verifier rejects before any handler runs, so
- * the retry cannot repeat a write. A refused bootstrap or a second 401 ends the session.
+ * the retry cannot repeat a write. A refused bootstrap or a second `session_ended` ends the
+ * session.
  */
 async function retryWithFreshSession(base: typeof fetch, session: WidgetSession, input: RequestInfo | URL, init: RequestInit | undefined, ended: Response): Promise<Response> {
   const signal = init?.signal ?? undefined;
@@ -55,14 +57,16 @@ async function retryWithFreshSession(base: typeof fetch, session: WidgetSession,
     fresh = await session.csrfHeaders(signal);
   } catch (error) {
     if (signal?.aborted) throw error;
-    // The bootstrap itself is refused once the Access assertion has ended.
-    session.onSessionEnded?.();
+    // Only a refused bootstrap (401) means the Access assertion ended; a rate limit, server
+    // or network failure leaves the session usable, so the widget just sees the first answer.
+    if (error instanceof UnauthorizedError) session.onSessionEnded?.();
     return ended;
   }
   const headers = new Headers(init?.headers);
   for (const [name, value] of Object.entries(fresh)) headers.set(name, value);
   const retried = await base(input, { ...init, headers, credentials: 'same-origin' });
-  if (retried.status === 401) session.onSessionEnded?.();
+  // Any other 401 (a stale visitor token after a secret rotation) is the widget's to recover.
+  if (retried.status === 401 && await isSessionEndedAnswer(retried)) session.onSessionEnded?.();
   return retried;
 }
 

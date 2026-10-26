@@ -49,20 +49,23 @@ describe('widget host setup', () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
     /** The BFF: `/session` mints numbered tokens, writes need the current one. */
-    function harness(options: { refuseBootstrap?: boolean; alwaysEnded?: boolean } = {}) {
+    function harness(options: { refuseBootstrap?: number; alwaysEnded?: boolean; visitorExpired?: boolean } = {}) {
       let issued = 0;
       let current = '';
       const writes: string[] = [];
       const server = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.endsWith('/dashboard/api/v1/session')) {
-          if (options.refuseBootstrap && issued > 0) return json(401, { error: 'session_ended' });
+          // A later bootstrap answers `refuseBootstrap`: 401 once Access ended, else 429/5xx.
+          if (options.refuseBootstrap && issued > 0) return json(options.refuseBootstrap, options.refuseBootstrap === 401 ? { error: 'session_ended' } : { error: 'unavailable' });
           current = `token-${++issued}`;
           return json(200, { csrfToken: current });
         }
         const token = new Headers(init?.headers).get('x-csrf-token') ?? '';
         writes.push(token);
         if (options.alwaysEnded || token !== current) return json(401, { error: 'session_ended' });
+        // The dewee router's own answer to a visitor token signed with a rotated secret.
+        if (options.visitorExpired && issued > 1) return json(401, { error: { message: 'Missing or expired visitor session.', code: 'unauthorized' } });
         return json(200, { ok: true });
       });
       const client = createApiClient(server as unknown as typeof fetch);
@@ -99,7 +102,7 @@ describe('widget host setup', () => {
     });
 
     it('hands back the 401 when the bootstrap is refused because Access ended', async () => {
-      const bff = harness({ refuseBootstrap: true });
+      const bff = harness({ refuseBootstrap: 401 });
       expect((await bff.send()).status).toBe(200);
       bff.restart();
       const response = await bff.send();
@@ -108,6 +111,39 @@ describe('widget host setup', () => {
       expect(bff.writes).toEqual(['token-1', 'token-1']);
       expect(bff.bootstraps()).toBe(2);
       expect(bff.onSessionEnded).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the session when the bootstrap fails for another reason', async () => {
+      const bff = harness({ refuseBootstrap: 503 });
+      expect((await bff.send()).status).toBe(200);
+      bff.restart();
+      const response = await bff.send();
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: 'session_ended' });
+      expect(bff.writes).toEqual(['token-1', 'token-1']);
+      expect(bff.onSessionEnded).not.toHaveBeenCalled();
+    });
+
+    it('passes a retried visitor-token 401 to the widget without ending the session', async () => {
+      const bff = harness({ visitorExpired: true });
+      expect((await bff.send()).status).toBe(200);
+      bff.restart();
+      const response = await bff.send();
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: { message: 'Missing or expired visitor session.', code: 'unauthorized' } });
+      expect(bff.writes).toEqual(['token-1', 'token-1', 'token-2']);
+      expect(bff.onSessionEnded).not.toHaveBeenCalled();
+    });
+
+    it('shares one bootstrap between concurrent writes that sent the same stale token', async () => {
+      const bff = harness();
+      expect((await bff.send()).status).toBe(200);
+      bff.restart();
+      const [first, second] = await Promise.all([bff.send(), bff.send()]);
+      expect([first.status, second.status]).toEqual([200, 200]);
+      expect(bff.bootstraps()).toBe(2);
+      expect(bff.writes).toEqual(['token-1', 'token-1', 'token-1', 'token-2', 'token-2']);
+      expect(bff.onSessionEnded).not.toHaveBeenCalled();
     });
 
     it('leaves reads and other 401 answers to the widget', async () => {
