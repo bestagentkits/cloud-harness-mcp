@@ -686,7 +686,7 @@ Session persistence is an opt-in:
 | `AGENT_SESSION_RETENTION_MS` | `604800000` (7 days) | How long a sealed session stays continuable after its agent ends. The runner then purges its messages. Closing or expiring the workspace deletes its sessions sooner. |
 | `AGENT_WORKSPACE_SESSION_BYTES` | `67108864` (64 MiB) | The most message bytes all stored sessions of one workspace may hold together. A continuation copies its predecessor's whole log, so without an aggregate bound each continuation grows the store by up to one full session. A message that would pass the budget leaves its session not continuable (the run continues), and a continuation whose copy would pass it is refused with `LIMIT_EXCEEDED`. Every stored log counts, including one that stopped being continuable, until retention purges it or the workspace closes. |
 | `AGENT_PRINCIPAL_SESSION_BYTES` | `536870912` (512 MiB) | The same budget across every workspace of one owner. |
-| `AGENT_GLOBAL_SESSION_BYTES` | `1073741824` (1 GiB) | The same budget across the instance. The three must satisfy workspace ≤ principal ≤ global. |
+| `AGENT_GLOBAL_SESSION_BYTES` | `1073741824` (1 GiB) | The same budget across the instance. The three must satisfy workspace ≤ principal ≤ global, and `AGENT_MAX_SESSION_BYTES` may not exceed the workspace budget. |
 
 The [security model](security-model.md#persisted-agent-sessions) describes
 what the session store holds and who can read it. The

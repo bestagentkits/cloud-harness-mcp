@@ -688,17 +688,17 @@ export class AgentStateRepository {
       if (predecessor) {
         // A corrupted log is refused here rather than copied into the new agent's session.
         const log = this.loadSessionLog(predecessor.predecessor.id, predecessor.predecessor.generation);
+        input.session?.admitContinuation?.(predecessor.predecessor, { bytes: log.bytes, messageCount: log.messages.length });
         // The successor starts with a full copy of the log, so the copy counts against the aggregate budgets.
         const exceeded = this.exceededSessionBudget(input.ownerId, input.workspaceId, log.bytes);
         if (exceeded) {
           throw new HarnessError(
             'LIMIT_EXCEEDED',
-            `persisted agent sessions would exceed the ${exceeded} session byte budget; start a fresh agent or close workspaces to free it`,
+            `persisted agent sessions would exceed the ${exceeded} session byte budget; start a fresh agent, or wait until retention or a workspace close frees stored sessions`,
             429,
             false
           );
         }
-        input.session?.admitContinuation?.(predecessor.predecessor, { bytes: log.bytes, messageCount: log.messages.length });
       }
       input.admit?.();
 

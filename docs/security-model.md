@@ -1235,7 +1235,9 @@ it. The store and its checks are owned by
   and bytes are bounded per session, and the stored bytes of all sessions are
   bounded per workspace, owner, and instance. A continuation copies its
   predecessor's whole log, so the copy counts against those budgets at
-  admission.
+  admission. In Access mode one owner can use up the instance budget before
+  reaching its own, which then stops recording for other owners' new
+  messages; size `AGENT_GLOBAL_SESSION_BYTES` for the expected owners.
 - Continuation is never automatic. It needs an explicit spawn by the same
   owner in the same workspace generation, passes normal spawn admission and
   budgets, and gets a fresh container and lease. Each session has at most one

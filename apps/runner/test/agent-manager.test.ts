@@ -1325,8 +1325,10 @@ describe('AgentManager persisted sessions', () => {
     await manager.stop();
   });
 
-  const sessionBudgetConfig = (limits: Record<string, number>) =>
-    RunnerAgentsConfigSchema.parse({ ...persistingConfig, limits: { ...persistingConfig.limits, ...limits } });
+  // One session may not be allowed more than the smallest budget, so the per-session bound follows it.
+  const sessionBudgetConfig = (limits: Record<string, number>) => RunnerAgentsConfigSchema.parse({
+    ...persistingConfig, limits: { ...persistingConfig.limits, maxSessionBytes: Math.min(...Object.values(limits)), ...limits }
+  });
   const messageBytes = (...messages: unknown[]) => messages.reduce<number>((total, message) => total + Buffer.byteLength(JSON.stringify(message), 'utf8'), 0);
 
   it('keeps the run going but stops recording when the workspace session byte budget would be exceeded', async () => {
@@ -1381,6 +1383,47 @@ describe('AgentManager persisted sessions', () => {
       message: userMessage('task'), now: Date.now()
     })).toBe('DISCONTINUED');
     expect(repository.findSession(secondId)).toMatchObject({ messageCount: 0, bytes: 0, continuable: false });
+    await manager.stop();
+  });
+
+  it('counts every principal against the instance session byte budget', async () => {
+    const bytes = messageBytes(userMessage('task'));
+    const context = setup('network-none', sessionBudgetConfig({ workspaceSessionBytes: bytes, principalSessionBytes: bytes, globalSessionBytes: bytes * 2 - 1 }));
+    const { manager, record, repository, store } = context;
+    const firstId = await spawnRunning(context, 'instance-key-1');
+    expect(repository.appendSessionMessage({
+      ownerId: record.ownerId, workspaceId: record.id, agentId: firstId, generation: 1, runnerEpoch: 1, seq: 0,
+      message: userMessage('task'), now: Date.now()
+    })).toBe('APPENDED');
+    const otherOwner = store.resolvePrincipal({ kind: 'owner', ownerId: 'other-owner' });
+    const other = { ...workspace('network-none', otherOwner), id: `ws_${'u'.repeat(24)}`, idempotencyKey: 'workspace-key-3' };
+    store.create(other);
+    const response = await manager.dispatch(other.ownerId, other, 'agent_spawn', spawnInput(other, { idempotencyKey: 'instance-key-2' }));
+    const secondId = (response.data as { agentId: string }).agentId;
+    await vi.waitFor(() => expect(repository.findAgent(other.ownerId, other.id, secondId)?.status).toBe('RUNNING'));
+    expect(repository.appendSessionMessage({
+      ownerId: other.ownerId, workspaceId: other.id, agentId: secondId, generation: 1, runnerEpoch: 1, seq: 0,
+      message: userMessage('task'), now: Date.now()
+    })).toBe('DISCONTINUED');
+    await manager.stop();
+  });
+
+  it('frees the session byte budget once retention purges the stored logs', async () => {
+    const logBytes = messageBytes(userMessage('inspect the repository'), assistantCall);
+    const context = setup('network-none', sessionBudgetConfig({ workspaceSessionBytes: logBytes * 2 - 1 }));
+    const { manager, record, repository } = context;
+    const firstId = await sealedPredecessor(context);
+    const secondId = await spawnRunning(context, 'second-key');
+    const append = () => repository.appendSessionMessage({
+      ownerId: record.ownerId, workspaceId: record.id, agentId: secondId, generation: 1, runnerEpoch: 1, seq: 0,
+      message: userMessage('x'.repeat(logBytes)), now: Date.now()
+    });
+    // A sealed log keeps counting until it is purged.
+    expect(repository.purgeExpiredSessions(Date.now())).toBe(0);
+    expect(repository.findSession(firstId)).toMatchObject({ state: 'SEALED', bytes: logBytes });
+    expect(repository.purgeExpiredSessions(Date.now() + persistingConfig.limits.sessionRetentionMs + 1)).toBe(1);
+    expect(repository.findSession(firstId)).toMatchObject({ state: 'PURGED', bytes: 0 });
+    expect(append()).toBe('APPENDED');
     await manager.stop();
   });
 

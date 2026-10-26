@@ -48,7 +48,8 @@ describe('contracts', () => {
     expect(() => RunnerAgentLimitsSchema.parse({ workspaceSessionBytes: 600_000_000 })).toThrow(/workspace <= principal <= global/);
     expect(() => RunnerAgentLimitsSchema.parse({ principalSessionBytes: 2_000_000_000 })).toThrow(/workspace <= principal <= global/);
     expect(() => RunnerAgentLimitsSchema.parse({ workspaceSessionBytes: 0 })).toThrow();
-    expect(RunnerAgentLimitsSchema.parse({ workspaceSessionBytes: '1024' }).workspaceSessionBytes).toBe(1024);
+    expect(() => RunnerAgentLimitsSchema.parse({ workspaceSessionBytes: 1_048_576 })).toThrow(/workspace session budget/);
+    expect(RunnerAgentLimitsSchema.parse({ maxSessionBytes: 1024, workspaceSessionBytes: '1024' }).workspaceSessionBytes).toBe(1024);
   });
 
   it('defaults to owner bearer mode and rejects mixed or partial Access configuration', () => {

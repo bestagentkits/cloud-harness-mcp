@@ -139,6 +139,9 @@ export const RunnerAgentLimitsSchema = z.object({
   if (limits.workspaceSessionBytes > limits.principalSessionBytes || limits.principalSessionBytes > limits.globalSessionBytes) {
     context.addIssue({ code: 'custom', path: ['workspaceSessionBytes'], message: 'session byte limits must satisfy workspace <= principal <= global' });
   }
+  if (limits.maxSessionBytes > limits.workspaceSessionBytes) {
+    context.addIssue({ code: 'custom', path: ['maxSessionBytes'], message: 'one session cannot be allowed more bytes than its workspace session budget' });
+  }
   if (limits.retentionSeconds > limits.lookupHorizonSeconds) {
     context.addIssue({ code: 'custom', path: ['retentionSeconds'], message: 'retention cannot exceed lookup horizon' });
   }

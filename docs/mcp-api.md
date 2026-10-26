@@ -224,9 +224,10 @@ then given the new `prompt`.
   `LIMIT_EXCEEDED` when the replayed log and the new prompt together cannot
   fit one agent start record (the earlier agent stays continuable with a
   shorter prompt) or when copying the log would exceed the workspace, owner,
-  or instance session byte budget (the message names which; closing
-  workspaces or retention frees it); and `EXPIRED` once retention purged the
-  log. Normal spawn
+  or instance session byte budget (the message names which; it is not
+  retryable as is, since stored sessions are freed only when retention purges
+  them or their workspace closes, so start a fresh agent instead); and
+  `EXPIRED` once retention purged the log. Normal spawn
   admission and budget checks also apply. When the log leaves little room,
   repository guidance is shortened to fit.
 - Repository guidance is composed into the new prompt as for any spawn. Pass
