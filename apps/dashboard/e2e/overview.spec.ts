@@ -100,6 +100,16 @@ test('the expiring tile opens the workspace list filtered to the hour', async ({
   expect(problems).toEqual([]);
 });
 
+test('an attention item opens its workspace rather than a not-found page', async ({ page }) => {
+  const problems = watchConsole(page);
+  await openOverview(page, { [`/workspaces/${WORKSPACE_ID}`]: answer(200, { data: { workspaceId: WORKSPACE_ID, status: 'FAILED', repositoryUrl: 'https://github.com/example/repo' } }) });
+  await page.getByRole('region', { name: 'Needs attention' }).getByRole('link', { name: 'Lease expires soon' }).click();
+  await expectPage(page, 'workspace');
+  await expect(page).toHaveURL(new RegExp(`/dashboard/workspaces/${WORKSPACE_ID}$`));
+  await expect(page.getByText('Page not found')).toHaveCount(0);
+  expect(problems).toEqual([]);
+});
+
 test('charts have an accessible table fallback by caption and render under the CSP', async ({ page }) => {
   const problems = watchConsole(page);
   await openOverview(page);

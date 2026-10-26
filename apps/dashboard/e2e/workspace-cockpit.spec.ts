@@ -70,6 +70,16 @@ test('summary: header, attention and repository context, reading each endpoint o
   expect(problems).toEqual([]);
 });
 
+test('the classic /summary deep link lands on the bare workspace URL', async ({ page }) => {
+  const problems = watchConsole(page);
+  await stubReads(page, READS);
+  await page.goto(`/dashboard${base}/summary`);
+  await expect(page).toHaveURL(new RegExp(`/dashboard${base}$`));
+  await expectPage(page, 'workspace');
+  await expect(page.getByText('Page not found')).toHaveCount(0);
+  expect(problems).toEqual([]);
+});
+
 test('renew lease posts once with the CSRF header and reports a capped renewal', async ({ page }) => {
   const renew = mutation(page, `${base}/lease-renew`, { data: { ...activeWorkspace, leaseCapped: true } });
   await stubReads(page, { ...READS, [`${base}/lease-renew`]: renew.handler });

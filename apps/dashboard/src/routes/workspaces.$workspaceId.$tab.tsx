@@ -1,4 +1,4 @@
-import { createFileRoute, notFound } from '@tanstack/react-router';
+import { createFileRoute, notFound, redirect } from '@tanstack/react-router';
 import { RESOURCE_ID_PATTERNS, WORKSPACE_TABS, type WorkspaceTab } from '@/app/page-registry';
 import { validateCockpitSearch } from '@/features/workspace-cockpit/cockpit-tab-registry';
 import { WorkspaceCockpit } from '@/features/workspace-cockpit/workspace-cockpit';
@@ -13,7 +13,11 @@ function isTab(value: string): value is Exclude<WorkspaceTab, 'summary'> {
 export const Route = createFileRoute('/workspaces/$workspaceId/$tab')({
   staticData: { pageId: 'workspace' },
   beforeLoad: ({ params }) => {
-    if (!RESOURCE_ID_PATTERNS.workspaceId.test(params.workspaceId) || !isTab(params.tab)) throw notFound();
+    if (!RESOURCE_ID_PATTERNS.workspaceId.test(params.workspaceId)) throw notFound();
+    // The classic Dashboard and the overview projection link the summary as `/summary`;
+    // keep those links working by replacing them with the bare workspace URL.
+    if (params.tab === 'summary') throw redirect({ to: '/workspaces/$workspaceId', params: { workspaceId: params.workspaceId }, replace: true });
+    if (!isTab(params.tab)) throw notFound();
   },
   // Each tab declares its own params in the cockpit tab registry; this merges them.
   validateSearch: validateCockpitSearch,
