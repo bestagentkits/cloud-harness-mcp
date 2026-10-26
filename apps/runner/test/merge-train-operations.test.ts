@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { RunnerConfig } from '@cloud-harness/contracts';
+import { HarnessError, type RunnerConfig } from '@cloud-harness/contracts';
 import { InMemoryGitHubInstallationStore } from '../src/github-installation-store.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
@@ -127,6 +127,49 @@ describe('merge-train GitHub actions', () => {
     const audits = metadata.listAudit(principalId).filter((event) => event.action === 'github_action.commit_status_create');
     expect(audits).toHaveLength(1);
     expect(audits[0]!.details).toMatchObject({ sha: LOCAL_HEAD, statusContext: 'merge-train', success: true });
+  });
+
+  it('creates a check run with checks:write in the bound repository and replays it by idempotency key', async () => {
+    const { service, metadata, workspaceId, principalId, principalSelector } = fixture();
+    scopedToken('checks', 'write');
+    docker.ghResult = ok('{"id":4242,"name":"Cloud Harness: Review","status":"in_progress","conclusion":null}');
+    const input = {
+      workspaceId, action: 'check_run_create', sha: LOCAL_HEAD, name: 'Cloud Harness: Review', externalId: 'wfl_1',
+      title: 'Agent running', summary: 'The agent has started.', idempotencyKey: 'check-run-create-1'
+    };
+    expect(await service.execute(principalSelector, 'github_action', input)).toMatchObject({ ok: true, data: { output: expect.stringContaining('4242') } });
+    expect(broker.mintPrincipalRepositoryScopedToken).toHaveBeenCalledWith(expect.objectContaining({ permissionScope: 'checks', requiredPermission: 'write' }));
+    expect(helperArgs('/opt/harness/gh-helper.sh', 'check_run_create')).toEqual(['check_run_create', LOCAL_HEAD, 'Cloud Harness: Review', 'in_progress', '', 'wfl_1', 'Agent running', 'The agent has started.']);
+    const helper = docker.runDocker.mock.calls.map(([args]) => args as string[]).find((args) => args.includes('check_run_create'))!;
+    expect(helper).toContain('GH_REPO=bestagentkits/cloud-harness-mcp');
+    expect(helper.join(' ')).not.toContain('checks-write-token');
+
+    docker.runDocker.mockClear();
+    expect((await service.execute(principalSelector, 'github_action', input)).ok).toBe(true);
+    expect(helperArgs('/opt/harness/gh-helper.sh', 'check_run_create')).toBeUndefined();
+    const audits = metadata.listAudit(principalId).filter((event) => event.action === 'github_action.check_run_create');
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.details).toMatchObject({ sha: LOCAL_HEAD, success: true });
+  });
+
+  it('completes a check run with checks:write and maps every field', async () => {
+    const { service, metadata, workspaceId, principalId, principalSelector } = fixture();
+    scopedToken('checks', 'write');
+    await service.execute(principalSelector, 'github_action', {
+      workspaceId, action: 'check_run_update', checkRunId: 4242, status: 'completed', conclusion: 'timed_out', title: 'Agent timed out', summary: 'Ran out of time.'
+    });
+    expect(broker.mintPrincipalRepositoryScopedToken).toHaveBeenCalledWith(expect.objectContaining({ permissionScope: 'checks', requiredPermission: 'write' }));
+    expect(helperArgs('/opt/harness/gh-helper.sh', 'check_run_update')).toEqual(['check_run_update', '4242', 'completed', 'timed_out', 'Agent timed out', 'Ran out of time.']);
+    expect(metadata.listAudit(principalId).find((event) => event.action === 'github_action.check_run_update')?.details)
+      .toMatchObject({ checkRunId: 4242, conclusion: 'timed_out', success: true });
+  });
+
+  it('refuses a check run write the App installation cannot grant without running the helper', async () => {
+    const { service, workspaceId, principalSelector } = fixture();
+    broker.mintPrincipalRepositoryScopedToken.mockRejectedValueOnce(new HarnessError('FORBIDDEN', 'cannot grant', 403, false, { reason: 'permission_not_granted' }));
+    await expect(service.execute(principalSelector, 'github_action', { workspaceId, action: 'check_run_update', checkRunId: 1, status: 'completed', conclusion: 'success' }))
+      .rejects.toMatchObject({ code: 'GITHUB_PERMISSION_MISSING', retryable: false });
+    expect(helperArgs('/opt/harness/gh-helper.sh', 'check_run_update')).toBeUndefined();
   });
 
   it('dispatches a workflow with actions:write and passes inputs as one JSON argument', async () => {

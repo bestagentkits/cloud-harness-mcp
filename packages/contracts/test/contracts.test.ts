@@ -255,6 +255,41 @@ describe('contracts', () => {
     expect(() => read.parse({ workspaceId, action: 'commit_status_create', sha, state: 'success', context: 'x' })).toThrow();
   });
 
+  it('validates check run writes: a full SHA, single-line names, a completing conclusion and bounded output', () => {
+    const workspaceId = `ws_${'a'.repeat(24)}`;
+    const sha = 'b'.repeat(40);
+    const action = TOOL_SCHEMA_BY_NAME.github_action;
+    const create = { workspaceId, action: 'check_run_create', sha, name: 'Cloud Harness: Review' };
+    expect(GITHUB_WRITE_ACTIONS).toEqual(expect.arrayContaining(['check_run_create', 'check_run_update']));
+    expect(action.parse({ ...create, title: 'Agent running', summary: 'Started.', idempotencyKey: 'check-key-1' }))
+      .toMatchObject({ status: 'in_progress', title: 'Agent running' });
+    expect(action.parse({ ...create, status: 'completed', conclusion: 'timed_out' })).toMatchObject({ conclusion: 'timed_out' });
+    expect(action.parse({ ...create, repositoryId: 'docs' })).toMatchObject({ repositoryId: 'docs' });
+    expect(() => action.parse({ ...create, sha: 'main' })).toThrow();
+    expect(() => action.parse({ ...create, sha: sha.slice(1) })).toThrow();
+    expect(() => action.parse({ ...create, name: 'a\nb' })).toThrow();
+    expect(() => action.parse({ ...create, name: 'n'.repeat(256) })).toThrow();
+    expect(() => action.parse({ ...create, status: 'completed' })).toThrow();
+    expect(() => action.parse({ ...create, conclusion: 'success' })).toThrow();
+    expect(() => action.parse({ ...create, status: 'completed', conclusion: 'action_required' })).toThrow();
+    expect(() => action.parse({ ...create, title: 'Only a title' })).toThrow();
+    expect(() => action.parse({ ...create, title: 't\nt', summary: 's' })).toThrow();
+    expect(action.parse({ ...create, title: 't', summary: 's'.repeat(65_535) })).toMatchObject({ title: 't' });
+    expect(() => action.parse({ ...create, title: 't', summary: 's'.repeat(65_536) })).toThrow();
+    // Characters within GitHub's limit can still exceed the byte bound the helper argument needs.
+    expect(() => action.parse({ ...create, title: 't', summary: 'é'.repeat(40_000) })).toThrow();
+
+    const update = { workspaceId, action: 'check_run_update', checkRunId: 42 };
+    expect(action.parse({ ...update, status: 'completed', conclusion: 'cancelled', title: 'Agent cancelled', summary: 'Cancelled.' }))
+      .toMatchObject({ checkRunId: 42, conclusion: 'cancelled' });
+    expect(action.parse({ ...update, conclusion: 'success' })).toMatchObject({ conclusion: 'success' });
+    expect(() => action.parse(update)).toThrow();
+    expect(() => action.parse({ ...update, checkRunId: 0, conclusion: 'success' })).toThrow();
+    expect(() => action.parse({ ...update, status: 'in_progress', conclusion: 'success' })).toThrow();
+    expect(() => action.parse({ ...update, status: 'completed' })).toThrow();
+    expect(() => TOOL_SCHEMA_BY_NAME.github_read.parse({ ...update, conclusion: 'success' })).toThrow();
+  });
+
 
   it('rejects workspace-root file mutations and validates dependency handles', () => {
     const workspaceId = `ws_${'a'.repeat(24)}`;

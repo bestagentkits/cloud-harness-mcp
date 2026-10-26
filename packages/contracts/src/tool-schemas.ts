@@ -197,7 +197,7 @@ export const GITHUB_WRITE_ACTIONS = [
   'pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_review_thread_resolve', 'pr_review_thread_unresolve',
   'pr_reviewers_request', 'pr_reviewers_remove', 'pr_ready', 'pr_convert_to_draft',
   'pr_merge', 'pr_auto_merge_enable', 'pr_auto_merge_disable',
-  'commit_status_create', 'workflow_dispatch', 'workflow_run_rerun_failed'
+  'commit_status_create', 'check_run_create', 'check_run_update', 'workflow_dispatch', 'workflow_run_rerun_failed'
 ] as const;
 
 const reviewBody = z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes');
@@ -221,6 +221,32 @@ const commitStatusState = z.enum(['error', 'failure', 'pending', 'success']);
 const commitStatusContext = z.string().min(1).max(255).refine((val) => !val.includes('\0') && !val.includes('\n'), 'context cannot contain null bytes or newlines');
 const commitStatusDescription = z.string().max(140).refine((val) => !val.includes('\0'), 'description cannot contain null bytes');
 const commitStatusTargetUrl = z.url({ protocol: /^https$/ }).max(2_048);
+const singleLine = (max: number, field: string) => z.string().min(1).max(max)
+  .refine((val) => !val.includes('\0') && !val.includes('\n') && !val.includes('\r'), `${field} cannot contain null bytes or newlines`);
+const checkRunName = singleLine(255, 'name');
+const checkRunStatus = z.enum(['queued', 'in_progress', 'completed']);
+// `action_required` needs a details URL and `stale` is set by GitHub only, so neither is accepted.
+const checkRunConclusion = z.enum(['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out']);
+const checkRunId = z.number().int().positive();
+// GitHub caps a check run summary at 65,535 characters. Bounding the UTF-8 bytes as well keeps the
+// helper argument well inside the per-argument size limit of a command line.
+const checkRunSummary = z.string().min(1).max(65_535)
+  .refine((val) => !val.includes('\0'), 'summary cannot contain null bytes')
+  .refine((val) => new TextEncoder().encode(val).length <= 65_535, 'summary must be at most 65,535 UTF-8 bytes');
+const checkRunOutput = { title: singleLine(255, 'title').optional(), summary: checkRunSummary.optional() };
+const checkRunOutputComplete = (input: { title?: string | undefined; summary?: string | undefined }, context: z.RefinementCtx) => {
+  if ((input.title === undefined) !== (input.summary === undefined)) {
+    context.addIssue({ code: 'custom', path: [input.title === undefined ? 'title' : 'summary'], message: 'title and summary are set together' });
+  }
+};
+const checkRunConclusionRequired = (input: { status?: string | undefined; conclusion?: string | undefined }, context: z.RefinementCtx) => {
+  if (input.status === 'completed' && input.conclusion === undefined) {
+    context.addIssue({ code: 'custom', path: ['conclusion'], message: 'conclusion is required when status is completed' });
+  }
+  if (input.conclusion !== undefined && input.status !== undefined && input.status !== 'completed') {
+    context.addIssue({ code: 'custom', path: ['status'], message: 'a conclusion completes the check run, so status must be completed' });
+  }
+};
 const workflowRunStatus = z.enum([
   'queued', 'in_progress', 'completed', 'requested', 'waiting', 'pending',
   'success', 'failure', 'cancelled', 'skipped', 'timed_out', 'action_required', 'neutral', 'stale'
@@ -521,6 +547,36 @@ const githubActionUnion = z.discriminatedUnion('action', [
   z.object({
     ...workspace,
     ...repository,
+    action: z.literal('check_run_create'),
+    sha: gitObjectId,
+    name: checkRunName,
+    status: checkRunStatus.default('in_progress'),
+    conclusion: checkRunConclusion.optional(),
+    externalId: singleLine(100, 'externalId').optional(),
+    ...checkRunOutput,
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    checkRunConclusionRequired(input, context);
+    checkRunOutputComplete(input, context);
+  }),
+  z.object({
+    ...workspace,
+    ...repository,
+    action: z.literal('check_run_update'),
+    checkRunId,
+    status: checkRunStatus.optional(),
+    conclusion: checkRunConclusion.optional(),
+    ...checkRunOutput
+  }).superRefine((input, context) => {
+    if (input.status === undefined && input.conclusion === undefined && input.title === undefined) {
+      context.addIssue({ code: 'custom', path: ['status'], message: 'at least one of status, conclusion, or title and summary is required' });
+    }
+    checkRunConclusionRequired(input, context);
+    checkRunOutputComplete(input, context);
+  }),
+  z.object({
+    ...workspace,
+    ...repository,
     action: z.literal('workflow_dispatch'),
     workflow: workflowRef,
     ref: workflowDispatchRef,
@@ -678,7 +734,8 @@ const githubActionInput = z.object({
   draft: z.boolean().optional(),
   labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
   assignees: z.array(z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/, 'invalid GitHub username')).max(10).optional(),
-  name: z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label name cannot contain null bytes').optional(),
+  // Label names are bounded to 100 by their action schema; check run names may reach 255.
+  name: z.string().min(1).max(255).refine((val) => !val.includes('\0'), 'name cannot contain null bytes').optional(),
   color: z.string().regex(/^[0-9A-Fa-f]{6}$/).optional(),
   description: z.string().max(200).optional(),
   label: z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas').optional(),
@@ -712,6 +769,10 @@ const githubActionInput = z.object({
   branch: githubRevision.optional(),
   status: workflowRunStatus.optional(),
   runId: workflowRunId.optional(),
+  checkRunId: checkRunId.optional(),
+  conclusion: checkRunConclusion.optional(),
+  externalId: z.string().min(1).max(100).optional(),
+  summary: checkRunSummary.optional(),
   context: commitStatusContext.optional(),
   targetUrl: commitStatusTargetUrl.optional(),
   inputs: workflowInputs.optional(),
@@ -1445,7 +1506,7 @@ const descriptions: Record<RunnerOperation, string> = {
   artifacts_read: 'Read a bounded base64 byte chunk from a principal-owned retained artifact with hash and EOF verification.',
   artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection. With repositoryId the path resolves inside that checkout; without it the path is relative to the workspace root.',
   artifacts_delete: 'Delete a principal-owned retained artifact snapshot before its retention expiry.',
-  github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, comment on, review (native COMMENT/APPROVE/REQUEST_CHANGES reviews, inline file/line comments, review-thread reply/resolve/unresolve), assign reviewers, toggle draft/ready, merge, and auto-merge pull requests; create commit statuses on a SHA (commit_status_create: state, context, description, targetUrl); dispatch a workflow on a ref with inputs (workflow_dispatch) and re-run only the failed jobs of a run (workflow_run_rerun_failed), in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, pullRequestCreate, pullRequestReview, pullRequestMerge, commitStatusCreate, workflowDispatch, and workflowRunRerun; workspace_capabilities.githubActions is the authoritative action list. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_reviews, pr_review_threads, pr_create, pr_update, pr_comment, pr_review, pr_review_comment, pr_review_reply, pr_review_thread_resolve, pr_review_thread_unresolve, pr_reviewers_request, pr_reviewers_remove, pr_ready, pr_convert_to_draft, pr_merge, pr_auto_merge_enable, pr_auto_merge_disable, commit_status_create, workflow_dispatch, workflow_run_rerun_failed, commit_list, compare, release_list, tag_list, ref_get, commit_status_get, check_runs_list, workflow_runs_list, workflow_run_view. Writes that can duplicate a side effect accept an idempotencyKey. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Atomic ref creation, compare-and-swap, and delete-if-match go through git_push leases, not this tool. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
+  github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, comment on, review (native COMMENT/APPROVE/REQUEST_CHANGES reviews, inline file/line comments, review-thread reply/resolve/unresolve), assign reviewers, toggle draft/ready, merge, and auto-merge pull requests; create commit statuses on a SHA (commit_status_create: state, context, description, targetUrl); create and update check runs on a SHA (check_run_create: sha, name, status, conclusion, title, summary; check_run_update: checkRunId); dispatch a workflow on a ref with inputs (workflow_dispatch) and re-run only the failed jobs of a run (workflow_run_rerun_failed), in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, pullRequestCreate, pullRequestReview, pullRequestMerge, commitStatusCreate, workflowDispatch, and workflowRunRerun; workspace_capabilities.githubActions is the authoritative action list. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_reviews, pr_review_threads, pr_create, pr_update, pr_comment, pr_review, pr_review_comment, pr_review_reply, pr_review_thread_resolve, pr_review_thread_unresolve, pr_reviewers_request, pr_reviewers_remove, pr_ready, pr_convert_to_draft, pr_merge, pr_auto_merge_enable, pr_auto_merge_disable, commit_status_create, check_run_create, check_run_update, workflow_dispatch, workflow_run_rerun_failed, commit_list, compare, release_list, tag_list, ref_get, commit_status_get, check_runs_list, workflow_runs_list, workflow_run_view. Writes that can duplicate a side effect accept an idempotencyKey. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Atomic ref creation, compare-and-swap, and delete-if-match go through git_push leases, not this tool. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
   github_read: 'Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, pr_reviews (every review with its state and the latest state per reviewer, including CHANGES_REQUESTED), pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list, ref_get (current OID of refs/heads/... or refs/tags/..., or exists: false), commit_status_get (combined status and every status context for a SHA or ref), check_runs_list (check runs for a SHA or ref), workflow_runs_list (Actions runs filtered by workflow, headSha, branch, event, status), and workflow_run_view (one run with its jobs and conclusions). Maps to operations.pullRequestList, pullRequestView, pullRequestReviewList, issueList, issueView, commitList, compare, releaseList, tagList, refGet, commitStatusRead, checkRunList, and workflowRunRead. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
   secrets_list: 'List available global and environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.',
   agent_spawn: 'Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.',

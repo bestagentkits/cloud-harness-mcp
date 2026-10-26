@@ -685,11 +685,11 @@ behaviour is described in [MCP API](mcp-api.md#notification-inbox).
 
 | Variable | Default | Decision |
 |---|---|---|
-| `AUTOMATIONS_ENABLED` | off | Read by both services. On the API it mounts the public GitHub webhook route; on the runner it admits deliveries, workflows, and Dashboard management. Set the same value for both. The shared environment file does this; a mismatch leaves the route answering `503` (API on, runner off) or absent (API off). |
+| `AUTOMATIONS_ENABLED` | off | Read by both services. On the API it mounts the public webhook route for every provider and lets the `automation_*` MCP tools reach the runner (they stay listed and answer `UNAVAILABLE` while it is off); on the runner it admits deliveries, workflows, and Dashboard and MCP management. Set the same value for both. The shared environment file does this; a mismatch leaves the route answering `503` (API on, runner off) or absent (API off). |
 | `AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS` | see schema | Runner only. Instance-wide ceiling on automation workflows holding a workspace at once, above each rule's own `maxConcurrent`. Workflows over the ceiling wait queued and expire if they cannot start in time. |
 
 The feature also needs the runner secret keyring, because connection secrets
-are sealed with it. The GitHub App slug, when configured, is how the runner
+and Linear or Jira outbound credentials are sealed with it. The GitHub App slug, when configured, is how the runner
 recognizes and ignores the harness's own comments. Code defaults and ranges are
 owned by
 [`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts);
