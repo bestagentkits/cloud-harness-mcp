@@ -5,6 +5,17 @@ Design system for the Cloud Harness operator dashboard. This document owns the
 owns the **what** (every token and rule). The static UI contract is enforced by
 [`apps/api/test/dashboard-ui-contract.test.ts`](../apps/api/test/dashboard-ui-contract.test.ts).
 
+> **Two shells during the migration (Issue #458).**
+> [ADR 0005](adr/0005-dashboard-react-rewrite.md) moves the Dashboard to React +
+> TypeScript in `apps/dashboard`. Until cutover, the legacy shell in
+> `apps/api/dashboard/` keeps the rules below that are marked **legacy shell**,
+> and its contract tests keep running. The React app keeps the direction,
+> colour, typography, motion and security rules in this document, but it may
+> use a framework, self-hosted Geist fonts and non-secret browser storage as
+> ADR 0005 allows. Page-by-page ownership is tracked in the
+> [parity matrix](dashboard-parity-matrix.md). Security rules apply to both
+> shells without exception.
+
 ## Direction
 
 The dashboard is an **ops ledger**: an instrument **spine** (top bar and rail,
@@ -46,8 +57,10 @@ copies the HUD's grammar. Constraints that shape what is possible:
 
 - **No grid or glow backdrop.** The UI contract test rejects `gradient(`. Depth
   comes from a three-step surface ramp, hairlines, and one inset highlight.
-- **No web fonts.** The CSP has no `font-src`, so the native `--font-sans` and
-  `--font-mono` stacks carry everything.
+- **Fonts.** The legacy shell has no `font-src`, so the native `--font-sans`
+  and `--font-mono` stacks carry everything there. The React app may self-host
+  Geist Sans and Geist Mono (OFL) under `font-src 'self'`; remote font hosts
+  stay forbidden.
 - **Light-theme accent and semantic values are darker than the marketing hexes**,
   because the marketing light accents fail AA as pill and button text. The
   numbers are asserted by the contrast test.
@@ -55,6 +68,26 @@ copies the HUD's grammar. Constraints that shape what is possible:
   `-soft` / `-line` split under Color.
 
 ## Hard constraints (do not violate)
+
+These hold for **both shells**:
+
+- **Strict CSP, same origin.** No `unsafe-inline`, no `unsafe-eval`, no CDN,
+  no remote fonts, images or scripts, and no inline `style=` attributes in
+  markup. Styles set through the CSSOM (React, Radix, Motion, the xterm
+  adapter) are fine. A library that injects `<style>` elements at runtime must
+  be avoided or covered by the per-response nonce that ADR 0005 describes,
+  with a test.
+- **No secret in the browser beyond the moment it is shown.** Secrets, API
+  keys, OAuth codes and tokens, terminal output, owner IDs, runner tokens and
+  Access assertions never enter `localStorage`, `sessionStorage`, IndexedDB, a
+  persisted query cache, telemetry, logs or error text. See
+  [Security in the UI](#security-in-the-ui).
+- **The BFF is the authority.** A UI affordance never grants a capability. The
+  browser calls only `/dashboard/api/v1` with the session cookie and CSRF
+  header, and imports no server module.
+
+These hold for the **legacy shell** (`apps/api/dashboard/`) until it is
+removed:
 
 - **No web fonts, no external assets, no inline styles.** The dashboard document
   is served under a strict CSP set by `dashboardSecurity` in
@@ -78,7 +111,41 @@ copies the HUD's grammar. Constraints that shape what is possible:
 - **DOM is a contract.** Preserve the landmarks, single `<h1>`, dialogs, nav
   labels, and required CSS tokens/rules the contract test asserts.
 
-## Typography (native stack)
+For the **React app** (`apps/dashboard/`), the frontend rules are:
+
+- **Stack and budget.** Use the stack and the dependency allowlist in
+  [ADR 0005](adr/0005-dashboard-react-rewrite.md#complexity-budget). Adding a
+  runtime dependency outside that list needs a stated use case in the PR, and
+  the bundle budget is enforced in CI. The shell's entry chunk carries only
+  what the first paint needs: dialogs, the mobile drawer, toasts and the
+  Radix tooltip surface load on first use, and a tooltip trigger never
+  re-mounts when its layer arrives
+  ([`tooltip.tsx`](../apps/dashboard/src/components/ui/tooltip.tsx)).
+- **Tokens, not one-off styles.** Colours, spacing, radii, motion and type come
+  from semantic CSS variables shared with Tailwind. Keep the OKLCH, opaque
+  `-line` and AA contrast rules from this document; port the contrast checks,
+  do not drop them.
+- **One route identity.** URL, active nav, breadcrumb, title, page action and
+  content derive from the current route. Route B renders its shell with a
+  skeleton or cached data immediately; it never shows A's content under B's
+  header.
+- **Server state in TanStack Query, local state in the form.** Abort obsolete
+  reads, never cancel a mutation because of navigation, and keep one owner
+  per poller.
+- **Terminal outlives routes.** A PTY session is not tied to a route
+  component's lifetime; only explicit close, expiry or runner state ends it.
+- **Browser storage only for non-secret preferences and UI restore** (text
+  size, density, wizard step, tabs, scroll, non-secret drafts). URL state comes
+  first for filters, selection and pagination.
+- **Behavioural tests.** Test what the operator can do and see (roles,
+  accessible names, network effects), not markup strings.
+
+## Typography
+
+The legacy shell uses the native stack below. The React app uses self-hosted
+Geist Sans for `--font-sans` and Geist Mono for `--font-mono`, with the native
+stacks as fallbacks; every rule below about which face carries what still
+applies.
 
 - `--font-sans` system UI stack for body, headings, **and figures**. Metric values
   are sans at 650 weight with tight tracking and `tabular-nums`: a large figure
@@ -147,8 +214,10 @@ companion; and a forced `light` or `dark` always wins, because the media query i
 scoped to `:root:not([data-theme])`. The control is deliberately **not**
 `aria-pressed` — that attribute describes two states and this control has three,
 so the accessible name states the current state and the next action instead.
-Client storage is forbidden, so the choice persists **server-side, not in the
-browser**: `PUT /api/v1/preferences` (CSRF-guarded) sets an HttpOnly
+In the legacy shell client storage is forbidden, so the choice persists
+**server-side, not in the browser**. The React app keeps this cookie as the
+theme's source of truth, because first-paint injection is what prevents a
+theme flash; it may mirror the value locally. `PUT /api/v1/preferences` (CSRF-guarded) sets an HttpOnly
 `ch-dashboard-theme` cookie, and the shell handler injects `html[data-theme]` on
 first paint so a forced theme never flashes. The client only reads that DOM
 attribute. Owners: the cycle state machine in `dashboard.js` and the injection in
@@ -165,7 +234,7 @@ the raw marketing light hexes, because those fail AA as pill and button text.
 ### Operator display name
 
 The Profile page edits a cosmetic **display name** shown in the top-bar chip.
-Client storage is forbidden, so it follows the theme's server-side pattern: the
+It follows the theme's server-side pattern (in both shells): the
 same CSRF-guarded `PUT /api/v1/preferences` writes an HttpOnly
 `ch-dashboard-display-name` cookie and `GET /api/v1/profile` returns it as
 `preferences.displayName`. The value is a presentation-only override: it never
@@ -627,11 +696,21 @@ wired, so the visible one is never the only working one. Owners:
 Never render runner tokens, owner IDs, container names, workspace paths,
 provider credentials, or secret values. Secret references are write-only. API
 keys are shown once and never persisted in the DOM or storage. Escape every
-attacker-influenceable value.
+attacker-influenceable value (in React, never pass such a value to
+`dangerouslySetInnerHTML`).
+
+A one-time reveal lives in component state only. It is cleared on navigation,
+on dismiss and when the session ends, and the dialog that shows it needs an
+explicit acknowledgement instead of closing on an outside click. Forms that
+take secret values never save drafts. Dewee page actions and agent reads get
+only the redacted projections the page already shows, and a sensitive or
+destructive mutation needs an explicit operator click.
 
 ## Changing the design
 
-Edit `dashboard.css` (and the dashboard JS/render only when structure must
+For the React app, edit the tokens and components under `apps/dashboard/src/`
+and run the Dashboard lint, typecheck, unit and Playwright suites plus
+`npm run verify`. For the legacy shell, edit `dashboard.css` (and the dashboard JS/render only when structure must
 change). Keep the contract tokens and rules the UI test asserts, run
 `npx vitest run dashboard`, then `npm run verify`, and re-check both light and
 dark themes plus 375px in a browser before shipping.

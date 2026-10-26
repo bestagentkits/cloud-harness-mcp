@@ -5,6 +5,7 @@ import type { FetchLike } from '@modelcontextprotocol/client';
 import { WorkspaceIdSchema, type ApiConfig } from '@cloud-harness/contracts';
 import { accessAssertionAuth, apiKeyGatewayAuth, bearerAuth, type AuthenticatedRequest, type VerifierOverrides } from './auth.js';
 import { createDashboardAssetsRouter } from './dashboard-assets.js';
+import { createDashboardReactRouter, loadDashboardReactBundle } from './dashboard-react-assets.js';
 import { createDashboardRouter } from './dashboard-router.js';
 import { bindWorkspace, createCloudHarnessServerFactory, createWorkspaceBoundServerFactory } from './mcp-server.js';
 import { createMcpGateway } from './mcp-gateway/index.js';
@@ -35,6 +36,8 @@ export type ApiAppOverrides = {
   gatewayFetchImpl?: FetchLike;
   accessVerifier?: VerifierOverrides;
   webhookSender?: WebhookSender;
+  /** Built React Dashboard directory; defaults to `apps/dashboard/dist`. */
+  dashboardReactDirectory?: string;
 };
 
 export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {}): ApiRuntime {
@@ -138,9 +141,10 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
     // while the tighter per-principal budget is reserved for BFF/API operations.
     // Static shell/assets are browser transport overhead and must not consume the
     // same 120-request/minute budget as user-initiated control-plane requests.
-    app.use('/dashboard', requestSecurity(config), preAuthRequestLimits(), accessAssertionAuth(config));
+    app.use('/dashboard', requestSecurity(config), preAuthRequestLimits(), accessAssertionAuth(config, verifierOverrides));
     app.use('/dashboard/api/v1', principalRequestLimits());
     app.use('/dashboard', createDashboardRouter(config, runnerClient, gateway.service));
+    app.use('/dashboard', createDashboardReactRouter(config, loadDashboardReactBundle(overrides.dashboardReactDirectory)));
     app.use('/dashboard', createDashboardAssetsRouter());
   }
   return {

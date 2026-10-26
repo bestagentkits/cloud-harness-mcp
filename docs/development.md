@@ -31,6 +31,77 @@ npm test
 npm run build
 ```
 
+### Dashboard app
+
+The React dashboard lives in the `@cloud-harness/dashboard` workspace
+([`apps/dashboard/package.json`](../apps/dashboard/package.json) owns its
+scripts). Root `build`, `typecheck`, `lint`, and `test` already include it. While
+iterating:
+
+```bash
+npm run dev -w @cloud-harness/dashboard
+npm run test -w @cloud-harness/dashboard
+```
+
+The Vite dev server proxies `/dashboard/api` to `DASHBOARD_DEV_API_ORIGIN`. The
+Playwright suites in [`apps/dashboard/e2e/`](../apps/dashboard/e2e/) build the
+API and dashboard, serve them through the real Express app with an offline
+Access verifier, and answer runner-backed reads with `page.route` stubs (the
+test server's runner is unreachable on purpose). They cover render, theme, CSP
+and axe, the navigation transaction (A→B, A→B→C, repeated clicks, slow and
+out-of-order answers, failed reads, reload, Back/Forward, a mutation that
+navigation must not cancel), the 401/403/409/429/5xx states, keyboard-only use,
+reduced motion and what may reach browser storage. Install the browser once:
+
+```bash
+npx -w @cloud-harness/dashboard playwright install chromium
+npm run test:e2e:dashboard
+```
+
+Every navigation test runs an identity monitor
+([`e2e/support.ts`](../apps/dashboard/e2e/support.ts)) that samples the document
+title, the page heading, the page frame and the current sidebar entry on each
+animation frame and DOM mutation, and fails on any sample where they disagree.
+The navigation p95 test is a warm-chunk measurement: it clicks through fifteen
+sidebar pages twice after hover prefetch has loaded their route chunks. Each
+sample runs from the click event's `timeStamp` to the first animation frame
+where the page frame, the sidebar entry, the `<h1>` and `document.title` all
+show the target. The test prints the median and p95 and fails if p95 reaches
+100 ms. A second test repeats the tour in a fresh page without hover, so every
+route chunk loads on the click; it prints the same cold-chunk figures but has no
+gate, and serves as the baseline for later performance work. Both measure the
+shell commit, not the time for page data to arrive.
+
+The `visual` Playwright project
+([`e2e/visual.spec.ts`](../apps/dashboard/e2e/visual.spec.ts)) compares
+full-page screenshots of the migrated pages in light and dark at three widths.
+Font rendering differs by OS, so it runs only on Linux, like CI. After an
+intended visual change, regenerate the baselines in the Playwright image whose
+version matches `@playwright/test`. Run it from a separate clone, because
+`npm ci` there installs Linux builds of native packages into `node_modules`:
+
+```bash
+docker run --rm --ipc=host -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.64.1-noble bash -lc 'npm ci && npm run pretest:e2e:dashboard && cd apps/dashboard && npx playwright test --project=visual --update-snapshots=all'
+```
+
+Review the changed images under `apps/dashboard/e2e/visual.spec.ts-snapshots/`
+before committing them.
+
+The dashboard `build` script ends with
+[`apps/dashboard/scripts/verify-build-output.mjs`](../apps/dashboard/scripts/verify-build-output.mjs),
+so CI fails a build that breaks the shell contract or the gzip budget read from
+the Vite manifest (initial JS, each route chunk under `src/routes/`, each other
+lazy chunk, a larger allowance for an explicit allowlist of heavy lazy
+libraries such as the terminal, and CSS), or that
+ships fonts without their `OFL.txt` licence. The limits live in
+[`build-output-check.mjs`](../apps/dashboard/scripts/build-output-check.mjs);
+the API serves the same manifest through
+[`apps/api/src/dashboard-react-assets.ts`](../apps/api/src/dashboard-react-assets.ts).
+
+The root `package.json` `overrides` pin a single React 19 copy across the
+workspace, because the docs site's VitePress dependencies would otherwise pull a
+second React and break hooks in the dashboard. `npm run docs:build` still runs
+in CI and tolerates the resulting peer warning.
 ### Windows hosts
 
 The runner ships only as a Linux container, and local stdio mode is POSIX-only
@@ -129,6 +200,20 @@ docker ps -a --filter label=cloud-harness.managed=true \
 Remove only an explicitly verified test container. Never use a broad container
 cleanup command on a shared Docker host.
 
+## Agent runtime benchmark
+
+`npm run bench:agent-runtime` drives the real agent worker and Pi session
+in-process against a scripted model and an in-memory proxy tool executor, and
+prints p50/p95 timings, protocol bytes, tool effects and context size for five
+use cases. It needs no Docker, network or credentials, so it also runs inside
+`npm test`. `AGENT_RUNTIME_BENCHMARK_REPS` sets the repetitions (default 20) and
+`AGENT_RUNTIME_BENCHMARK_OUT` writes the JSON report. The live mode is opt-in
+(`RUN_AGENT_RUNTIME_BENCHMARK=live` plus a gateway URL and lease) and never
+runs by default. The scenarios, fixtures and result shape are owned by
+[`test/benchmarks/agent-runtime.bench.test.ts`](../test/benchmarks/agent-runtime.bench.test.ts);
+the decision it supports is
+[ADR 0005](adr/0005-agent-session-persistence.md).
+
 ## Local service development
 
 Copy [`.env.example`](../.env.example) to `.env` and replace its placeholder
@@ -176,6 +261,32 @@ automated release, create and protect `dev`, and either seed the intended
 `v0.2.0` baseline tag or accept `1.0.0` as the first generated version. Branch
 rules must allow the repository's `GITHUB_TOKEN` to write these generated
 release commits.
+
+### Promoting `dev` to `main`
+
+Only `main` deploys production, so a fix that stays on `dev` is released as a
+beta and never reaches users. Promote `dev` regularly, and before marking any
+issue `shipped`:
+
+1. Branch from `origin/main`, then merge `origin/dev` into it with a merge
+   commit. Never squash or rebase a promotion: the merge records every `dev`
+   commit as reachable from `main`, which is how the next promotion and the
+   check below know what is already there.
+2. Resolve conflicts in the generated release metadata (versions in the
+   release assets listed in [`.releaserc.json`](../.releaserc.json), and
+   [`CHANGELOG.md`](../CHANGELOG.md)) to `main`'s side, keep `main`'s
+   `package-lock.json` unless dependencies changed, and resolve source
+   conflicts on their merits. Then run `npm run verify`.
+3. Open the pull request against `main`. Merging it is a production deploy and
+   needs owner authorization.
+
+After a promotion, this lists the `dev` changes still missing from `main`; it
+should print nothing:
+
+```bash
+git fetch origin main dev
+git log origin/main..origin/dev --no-merges --oneline | grep -v 'chore(release)'
+```
 
 semantic-release records each prerelease tag's channel in a per-tag git note
 and pushes the tag before the note. A prerelease tag whose note never reached

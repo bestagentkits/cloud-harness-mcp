@@ -153,8 +153,11 @@ sites.
 ## Cloudflare Access rollout
 
 Access mode is an explicit operator rollout after the code is merged and the
-origin is healthy. It requires a hostname in an owner-controlled
-Cloudflare-managed zone and the matching Zero Trust organization; the current
+origin is healthy. Why Access is the client-facing OAuth authorization server
+and what the origin still verifies is explained in the
+[security model](security-model.md#inbound-mcp-oauth-cloudflare-access-is-the-authorization-server); this section covers only the
+operator-owned Cloudflare configuration. Access mode requires a hostname in an
+owner-controlled Cloudflare-managed zone and the matching Zero Trust organization; the current
 `sslip.io` hostname may not satisfy that prerequisite.
 
 Use a compatibility deployment before changing authentication configuration.
@@ -591,6 +594,60 @@ evidence until that run and its deploy succeed. If the request job fails, run
 the same command by hand while the version commit is still the head of `main`;
 the command tests whatever `main` points at.
 
+## Enable the Dashboard assistant (Dewee)
+
+The React Dashboard's assistant needs a Dewee gateway, an operator agent on
+it, and three `api` settings. The settings and their rules are in
+[configuration](configuration.md#dashboard-webchat-dewee); the trust model,
+including the full-scope MCP key, is in the
+[security model](security-model.md#dashboard-webchat-dewee).
+
+1. On the gateway, create the agent named by `DEWEE_AGENT_ID` (default
+   `cloud-harness-operator`) with the operator system prompt. Give it a Cloud
+   Harness MCP server that points at the static-client lane (`/mcp` on the
+   API-key Worker host from [API-key gateway rollout](#api-key-gateway-rollout),
+   for example `https://api.harness.zuey.me/mcp`; the Access-protected
+   Dashboard host refuses API keys) and
+   authenticates with a managed API key created for the agent on the API
+   Access page, sent as an `Authorization: Bearer <key>` header. Set it in the
+   server's headers (for example `mcp update <server> --headers-file -` with
+   the header JSON on stdin), not only in the gateway's `api_key` field: the
+   gateway's tool discovery ignores that field, so the server lists 0 tools
+   ([nextlevelbuilder/dewee#1678](https://github.com/nextlevelbuilder/dewee/issues/1678)).
+   Pass the key through that non-echoing input, never on a command line, and
+   confirm the server lists its tools after a reload.
+2. As root, add to `/etc/cloud-harness-mcp/runtime.env` without printing the
+   file: `DEWEE_GATEWAY_URL` (the gateway's `https` origin),
+   `DEWEE_GATEWAY_TOKEN` (the gateway's server-side token) and
+   `DEWEE_WEBCHAT_SECRET` (a new random value of at least 32 characters).
+   Add `DEWEE_AGENT_ID`, `DEWEE_TENANT_ID` or `DEWEE_CHAT_TIMEOUT_MS` only to
+   override a default.
+3. Recreate only the `api` container from the release checkout:
+
+   ```bash
+   cd /opt/cloud-harness-mcp/repo
+   sudo /usr/local/sbin/cloud-harness-service-compose up -d --no-deps --force-recreate api
+   ```
+
+4. Share the agent with the operator's chat user. Unless the agent is the
+   tenant default, the gateway answers each chat with `no access to this
+   agent` (the `api` log shows `route: dewee.chat`, `code: UNAUTHORIZED`)
+   until the agent is shared with the user id the Dashboard sends. That id is
+   `webchat-` plus a keyed hash of the operator's Access issuer and subject;
+   `visitorIdFor` in `apps/api/src/dashboard-dewee-router.ts` owns the
+   derivation. Compute it inside the `api` container so the secret never
+   leaves it, then share the agent with that id through the gateway's
+   `POST /v1/agents/<agent-uuid>/shares` with an admin token. Rotating
+   `DEWEE_WEBCHAT_SECRET` changes the id, so share again after a rotation.
+5. Open the Dashboard, open the Assistant, and ask it to open a page. A
+   `503 dewee_disabled` means one of the three settings is missing; a run
+   that fails after the gateway accepts it points at the agent's model
+   provider, not at Cloud Harness.
+
+To disable the assistant, remove the three settings and recreate the `api`
+container the same way. To remove the agent's MCP authority, revoke its key on
+the API Access page; disabling the assistant does not revoke it.
+
 ## Rollback or disable the route
 
 For a compatible previous commit:
@@ -612,6 +669,27 @@ This leaves the project configuration, state, artifact store, backups, and any d
 certificate available for investigation. Remove them only after resolving
 their exact ownership and retention requirements. See
 [operations](operations.md) for backup and cleanup.
+
+To roll back the React dashboard without a release rollback, set
+`CLOUD_HARNESS_DASHBOARD_UI=legacy` (or remove the key) in the API runtime
+environment file, then recreate only the `api` container from the release
+checkout:
+
+```bash
+cd /opt/cloud-harness-mcp/repo
+sudo /usr/local/sbin/cloud-harness-service-compose up -d --no-deps --force-recreate api
+```
+
+The wrapper runs `docker compose` with the same production compose files and
+environment file as `cloud-harness-mcp.service`; on a host without the
+installed wrapper use `sudo bash deploy/scripts/service-compose.sh` with the
+same arguments. Recreating the container is required because
+`docker compose restart` does not re-read `env_file`. Do not restart
+`cloud-harness-mcp.service` for this: it recreates the whole stack, and the
+runner restart ends live terminals and managed agents. The runner, ingress, and
+state are untouched by the `api`-only recreate. A browser pinned by the canary
+cookie returns to legacy by opening `/dashboard?ui=legacy`. See
+[configuration](configuration.md#dashboard-ui-rollout).
 
 For an API-key-gateway rollback, disable the Worker custom route first, set
 `API_KEY_AUTH_ENABLED=false`, confirm the hidden origin route returns 404, and

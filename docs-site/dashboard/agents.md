@@ -48,3 +48,8 @@ draws the newest run's span waterfall; see [Traces](./traces.md).
 
 Status, workspace, parent agent, profile, and attention state. Filters are reflected in
 the URL, so a filtered view can be shared or reloaded.
+
+In the new dashboard, an agent's log does not follow new output until you turn on
+**Follow**. While Follow is on and the agent is still running, the page reads new log
+lines and the agent's status every few seconds; it stops when the agent finishes or you
+leave the page.

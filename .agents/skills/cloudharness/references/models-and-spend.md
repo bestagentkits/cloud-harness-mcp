@@ -58,10 +58,12 @@ To change a profile: `model_profile_list` → `model_profile_validate` with
 - When saving, use an entry's `providerModelId` as `model` and its
   `pricing.provenance.sourceModelId` as `catalogPriceRef.sourceModelId`, so the
   profile pins catalog-verified prices.
-- A provider without a price source, such as `opencode-go`, lists its models
-  with `null` prices. Save such a profile with override prices the owner
-  confirms and no `catalogPriceRef`; a later update that changes its model or
-  credential then needs the owner (`price_unverified_for_new_route`).
+- `opencode-go` prices come from models.dev and read as `provider` prices
+  with `estimate` confidence; save them like any catalog price. A model with
+  `null` prices (one models.dev does not list, a `custom` provider, or a
+  catalog whose price source is unavailable) is saved with override prices the
+  owner confirms and no `catalogPriceRef`; a later update that changes its
+  model or credential then needs the owner (`price_unverified_for_new_route`).
 
 <!-- cloudharness-example:model_catalog_search
 {"provider":"openrouter","query":"sonnet","capability":"tools","limit":10}

@@ -5,7 +5,8 @@
 The current operator deployment has two Streamable HTTP endpoints:
 
 - `https://harness.zuey.me/mcp` for Cloudflare Access Managed OAuth through
-  GitHub or Google; and
+  GitHub or Google, where Access is the OAuth authorization server
+  ([how the lane works](security-model.md#inbound-mcp-oauth-cloudflare-access-is-the-authorization-server)); and
 - `https://api.harness.zuey.me/mcp` for static-header clients using a
   dashboard-managed API key as `Authorization: Bearer <key>`.
 

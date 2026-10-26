@@ -7,6 +7,8 @@ import { dashboardSecurity, requireJson, SKILL_ARCHIVE_PATH } from './dashboard-
 import { createDashboardSessions } from './dashboard-session.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
 import { registerDashboardControlRoutes } from './dashboard-control-router.js';
+import { registerDashboardDeweeRoutes } from './dashboard-dewee-router.js';
+import { PathIdMismatchError, withPathIds } from './dashboard-path-ids.js';
 import { registerDashboardGatewayRoutes } from './dashboard-gateway-router.js';
 import { registerDashboardTerminalRoutes } from './dashboard-terminal-router.js';
 import { registerDashboardTraceRoutes } from './dashboard-traces-router.js';
@@ -133,6 +135,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   registerDashboardControlRoutes(router, runner, principal, config, gateway);
   if (gateway) registerDashboardGatewayRoutes(router, gateway, principal, config);
   registerDashboardTerminalRoutes(router, runner, principal, config.requestTimeoutMs);
+  registerDashboardDeweeRoutes(router, config, principal);
   registerDashboardTraceRoutes(router, runner, principal);
 
   router.get('/api/v1/profile', (request: DashboardRequest, response) => {
@@ -392,11 +395,10 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
 
   const automationMutation = (operation: 'skills_run' | 'hooks_run' | 'hooks_activate' | 'hooks_deactivate' | 'deployments_run') => {
     return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
-      await call(runner, request, response, next, operation, {
+      await call(runner, request, response, next, operation, withPathIds(request.body, {
         workspaceId: workspaceId.parse(request.params.workspaceId),
-        ...(request.body && typeof request.body === 'object' ? request.body : {}),
         ...(operation === 'skills_run' && typeof request.params.name === 'string' ? { name: request.params.name } : {})
-      });
+      }));
     };
   };
 
@@ -435,10 +437,9 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
 
   const gitMutation = (operation: 'git_fetch' | 'git_pull' | 'git_checkout' | 'git_branch' | 'git_merge' | 'git_rebase' | 'worktrees_create' | 'worktrees_remove') => {
     return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
-      await call(runner, request, response, next, operation, {
-        workspaceId: workspaceId.parse(request.params.workspaceId),
-        ...(request.body && typeof request.body === 'object' ? request.body : {})
-      });
+      await call(runner, request, response, next, operation, withPathIds(request.body, {
+        workspaceId: workspaceId.parse(request.params.workspaceId)
+      }));
     };
   };
 
@@ -450,11 +451,10 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   router.post('/api/v1/workspaces/:workspaceId/git/rebase', gitMutation('git_rebase'));
   router.post('/api/v1/workspaces/:workspaceId/worktrees', gitMutation('worktrees_create'));
   router.delete('/api/v1/workspaces/:workspaceId/worktrees/:name', async (request: DashboardRequest, response, next) => {
-    await call(runner, request, response, next, 'worktrees_remove', {
+    await call(runner, request, response, next, 'worktrees_remove', withPathIds(request.body, {
       workspaceId: workspaceId.parse(request.params.workspaceId),
-      name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/).parse(request.params.name),
-      ...(request.body && typeof request.body === 'object' ? request.body : {})
-    });
+      name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/).parse(request.params.name)
+    }));
   });
 
   // Agent Control Center. Agent operations are workspace-scoped in the runner, so a
@@ -547,17 +547,15 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   });
 
   router.post('/api/v1/agents/:agentId/messages', async (request: DashboardRequest, response, next) => {
-    await call(runner, request, response, next, 'agent_message', {
-      agentId: agentId.parse(request.params.agentId),
-      ...(request.body && typeof request.body === 'object' ? request.body : {})
-    });
+    await call(runner, request, response, next, 'agent_message', withPathIds(request.body, {
+      agentId: agentId.parse(request.params.agentId)
+    }));
   });
 
   router.post('/api/v1/agents/:agentId/cancel', async (request: DashboardRequest, response, next) => {
-    await call(runner, request, response, next, 'agent_cancel', {
-      agentId: agentId.parse(request.params.agentId),
-      ...(request.body && typeof request.body === 'object' ? request.body : {})
-    });
+    await call(runner, request, response, next, 'agent_cancel', withPathIds(request.body, {
+      agentId: agentId.parse(request.params.agentId)
+    }));
   });
 
   // Runtime operations. The graph route is registered before the task detail route
@@ -582,10 +580,9 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   });
 
   router.post('/api/v1/workspaces/:workspaceId/sessions', async (request: DashboardRequest, response, next) => {
-    await call(runner, request, response, next, 'sessions_open', {
-      workspaceId: workspaceId.parse(request.params.workspaceId),
-      ...(request.body && typeof request.body === 'object' ? request.body : {})
-    });
+    await call(runner, request, response, next, 'sessions_open', withPathIds(request.body, {
+      workspaceId: workspaceId.parse(request.params.workspaceId)
+    }));
   });
 
   // A read-only, bounded view: the browser never supplies stdin, so this cannot
@@ -687,24 +684,21 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   });
 
   router.post('/api/v1/workspaces/:workspaceId/lease-renew', async (request: DashboardRequest, response, next) => {
-    await call(runner, request, response, next, 'workspace_lease_renew', {
-      workspaceId: workspaceId.parse(request.params.workspaceId),
-      ...(request.body && typeof request.body === 'object' ? request.body : {})
-    });
+    await call(runner, request, response, next, 'workspace_lease_renew', withPathIds(request.body, {
+      workspaceId: workspaceId.parse(request.params.workspaceId)
+    }));
   });
 
   router.post('/api/v1/workspaces/:workspaceId/recover', async (request: DashboardRequest, response, next) => {
-    await call(runner, request, response, next, 'workspace_recover', {
-      workspaceId: workspaceId.parse(request.params.workspaceId),
-      ...(request.body && typeof request.body === 'object' ? request.body : {})
-    });
+    await call(runner, request, response, next, 'workspace_recover', withPathIds(request.body, {
+      workspaceId: workspaceId.parse(request.params.workspaceId)
+    }));
   });
 
   router.post('/api/v1/workspaces/:workspaceId/finalize', async (request: DashboardRequest, response, next) => {
-    await call(runner, request, response, next, 'workspace_finalize', {
-      workspaceId: workspaceId.parse(request.params.workspaceId),
-      ...(request.body && typeof request.body === 'object' ? request.body : {})
-    });
+    await call(runner, request, response, next, 'workspace_finalize', withPathIds(request.body, {
+      workspaceId: workspaceId.parse(request.params.workspaceId)
+    }));
   });
 
   router.use((error: unknown, _request: DashboardRequest, response: Response, _next: NextFunction) => {
@@ -712,6 +706,10 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
     if (error instanceof z.ZodError) {
       const firstIssue = error.issues[0]?.message ?? 'The request could not be processed.';
       response.status(400).json({ error: 'invalid_request', message: firstIssue });
+      return;
+    }
+    if (error instanceof PathIdMismatchError) {
+      response.status(400).json({ error: 'path_id_mismatch', message: error.message });
       return;
     }
     const bodyError = error as { type?: string };
@@ -722,7 +720,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
 
   function mutation(operation: 'files_write' | 'files_apply_patch' | 'files_delete' | 'files_move' | 'files_mkdir') {
     return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
-      await call(runner, request, response, next, operation, { workspaceId: workspaceId.parse(request.params.workspaceId), ...(request.body as object) });
+      await call(runner, request, response, next, operation, withPathIds(request.body, { workspaceId: workspaceId.parse(request.params.workspaceId) }));
     };
   }
 }

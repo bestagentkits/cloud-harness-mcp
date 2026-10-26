@@ -1,0 +1,53 @@
+{
+  "opencode-go": {
+    "id": "opencode-go",
+    "name": "OpenCode Go",
+    "api": "https://opencode.ai/inference/go/openai/v1",
+    "models": {
+      "glm-5.1": {
+        "id": "glm-5.1",
+        "name": "GLM-5.1",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": { "input": ["text"], "output": ["text"] },
+        "limit": { "context": 204800, "output": 131072 },
+        "cost": { "input": 0.6, "output": 2.2, "cache_read": 0.11 }
+      },
+      "qwen3.7-plus": {
+        "id": "qwen3.7-plus",
+        "name": "Qwen3.7 Plus",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": { "input": ["text", "image"], "output": ["text"] },
+        "limit": { "context": 1000000, "output": 65536 },
+        "cost": {
+          "input": 0.4,
+          "output": 1.6,
+          "cache_read": 0.04,
+          "cache_write": 0.5,
+          "tiers": [{ "input": 1.2, "output": 4.8, "cache_read": 0.12, "cache_write": 1.5, "tier": { "type": "context", "size": 256000 } }],
+          "context_over_200k": { "input": 1.2, "output": 4.8, "cache_read": 0.12, "cache_write": 1.5 }
+        }
+      },
+      "gemini-audio": {
+        "id": "gemini-audio",
+        "name": "Gemini Audio",
+        "tool_call": false,
+        "limit": { "context": 1048576, "output": 65536 },
+        "cost": { "input": 4, "output": 20, "cache_read": 0.2, "input_audio": 4 }
+      },
+      "unpriced-preview": {
+        "id": "unpriced-preview",
+        "name": "Unpriced Preview",
+        "limit": { "context": 128000, "output": 8192 }
+      },
+      "broken": { "name": "No ID" }
+    }
+  },
+  "openai": {
+    "id": "openai",
+    "models": {
+      "gpt-5": { "id": "gpt-5", "cost": { "input": 1.25, "output": 10 } }
+    }
+  }
+}

@@ -8,7 +8,8 @@ const MANIFESTS = [
   'apps/runner/package.json',
   'packages/contracts/package.json',
   'apps/agent-runtime/package.json',
-  'apps/model-gateway/package.json'
+  'apps/model-gateway/package.json',
+  'apps/dashboard/package.json'
 ];
 const PLUGIN_MANIFESTS = [
   'plugins/cloud-harness/.claude-plugin/plugin.json',
