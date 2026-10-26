@@ -88,10 +88,14 @@ for you; it is never a deny.
 Jev is consulted when a coding automation run executes an **Advisor or
 approval** action. With all three settings in place, each such action sends
 TypeSafe one summary: the action class, whether the command runs `git push`,
-counts of the paths touched by kind (tests, dependency manifests, CI files,
-hidden files), the kind of program, its argument count and a short digest,
-whether a host or package is requested, the number of changed lines, and
-whether tests passed. **Simulate an action** never calls Jev.
+whether a branch is named, counts of the paths touched by kind (tests,
+dependency manifests, CI files, hidden files), the kind of program, its
+argument count and a short digest, whether a network host is requested, the
+package ecosystem when a package changes (one of eight known names, otherwise
+`other`), the number of changed lines, and whether tests passed. The digest is
+an unsalted, truncated SHA-256 of the command, so it is the same every time and
+someone who guesses a short command could confirm it. **Simulate an action**
+never calls Jev.
 :::
 
 **When the advisor cannot answer** decides what happens on a timeout, rate

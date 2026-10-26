@@ -109,9 +109,11 @@ every call; that path is checked offline.
 above: it advises only, and a failure is a deterministic fallback, never a
 pass. It is consulted only when a coding run's broker executes an
 `advisor_or_approval` action that passed every deterministic check; the
-provider then receives a redacted summary of counts, flags, a command category
-and a digest, never paths, arguments, names or agent text. Two things differ
-from the first two purposes:
+provider then receives the redacted typed summary listed in the
+[security model](../security-model.md#decision-plane) (counts, flags, a command
+category, the package ecosystem from a fixed list, and an unsalted truncated
+SHA-256 digest of the argv), never paths, arguments, names or agent text. Two
+things differ from the first two purposes:
 
 - **A third opt-in.** Besides the purpose list and the owner's key, the global
   agent policy must enable the advisor. The policy also holds the risk

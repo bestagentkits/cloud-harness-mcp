@@ -193,6 +193,7 @@ describe('governed coding cycle: issue to approved pull request', { timeout: 30_
       expect(spans.find((span) => span.spanId === receipt.spanId)?.kind, receipt.step).toBe('action');
     }
     const ids = new Set(spans.map((span) => span.spanId));
+    expect(spans.some((span) => span.kind === 'action' && span.parentSpanId !== null)).toBe(true);
     for (const span of spans) if (span.parentSpanId !== null) expect(ids.has(span.parentSpanId), span.name).toBe(true);
 
     // The failure notification links to the run, the issue and the trace; there is no pull request to link.

@@ -186,8 +186,8 @@ function recordFailure(error: unknown): void {
 }
 
 type AutomationNotificationRow = {
-  id: string; owner_id: string; state: string; repository: string; resource_number: number; resource_url: string | null;
-  agent_id: string | null; error_code: string | null; terminal_at: number | null;
+  id: string; owner_id: string; connection_id: string; provider: string | null; state: string; repository: string;
+  resource_number: number; resource_url: string | null; agent_id: string | null; error_code: string | null; terminal_at: number | null;
   /** Coding columns; null for read-only workflows. */
   pr_number: number | null; pr_url: string | null; trace_id: string | null;
 };
@@ -208,15 +208,39 @@ function codingPullRequestLink(repository: string, prNumber: number | null, prUr
 }
 
 /**
- * The trace of the run's agent, when one was recorded for this owner: the coding run's pinned trace,
- * else the newest trace of the run's agent.
+ * Providers whose resource URL is pinned to the provider's own host when the delivery is normalized:
+ * GitHub checks it against the repository, Linear requires `https://linear.app/`, and Jira builds it
+ * from the connection's site. A custom webhook's URL is sender-chosen, so it is never linked.
  */
-function automationTraceLink(database: DatabaseSync, ownerId: string, traceId: string | null, agentId: string | null): string | undefined {
+const HOST_PINNED_SOURCE_PROVIDERS: ReadonlySet<string> = new Set(['github', 'linear', 'jira']);
+
+/** The run's source page, only when its connection's provider pins the URL's host. */
+function automationSourceLink(database: DatabaseSync, row: AutomationNotificationRow): string | undefined {
+  if (!row.resource_url || !tableExists(database, 'automation_connections')) return undefined;
+  const connection = database.prepare('SELECT provider FROM automation_connections WHERE id = ? AND owner_id = ?')
+    .get(row.connection_id, row.owner_id) as { provider: string } | undefined;
+  if (!connection || !HOST_PINNED_SOURCE_PROVIDERS.has(connection.provider)) return undefined;
+  // A workflow records its provider too; a disagreement is never resolved in favour of a link.
+  if (row.provider !== null && row.provider !== connection.provider) return undefined;
+  return row.resource_url;
+}
+
+/**
+ * The trace of the run's agent, when one was recorded for this owner: the coding run's pinned trace,
+ * else the newest trace recorded for this workflow, else the newest trace of the run's agent.
+ */
+function automationTraceLink(database: DatabaseSync, row: AutomationNotificationRow): string | undefined {
   if (!tableExists(database, 'agent_traces')) return undefined;
+  const ownerId = row.owner_id;
   let found: { trace_id: string } | undefined;
-  if (traceId !== null) {
-    found = database.prepare('SELECT trace_id FROM agent_traces WHERE trace_id = ? AND principal_id = ?').get(traceId, ownerId) as { trace_id: string } | undefined;
+  if (row.trace_id !== null) {
+    found = database.prepare('SELECT trace_id FROM agent_traces WHERE trace_id = ? AND principal_id = ?').get(row.trace_id, ownerId) as { trace_id: string } | undefined;
   }
+  if (!found) {
+    found = database.prepare('SELECT trace_id FROM agent_traces WHERE workflow_id = ? AND principal_id = ? ORDER BY started_at DESC, generation DESC LIMIT 1')
+      .get(row.id, ownerId) as { trace_id: string } | undefined;
+  }
+  const agentId = row.agent_id;
   if (!found && agentId !== null) {
     found = database.prepare('SELECT trace_id FROM agent_traces WHERE agent_id = ? AND principal_id = ? ORDER BY generation DESC LIMIT 1')
       .get(agentId, ownerId) as { trace_id: string } | undefined;
@@ -225,16 +249,17 @@ function automationTraceLink(database: DatabaseSync, ownerId: string, traceId: s
 }
 
 /**
- * Deep links of an automation run beside its run page: the issue or pull request that started it, the
- * agent's trace and, for a coding run, the pull request it opened. Each is present only when the run
- * has it, and `write` re-validates every one against the contract.
+ * Deep links of an automation run beside its run page: the issue or pull request that started it (from
+ * a host-pinned provider only), the agent's trace and, for a coding run, the pull request it opened.
+ * Each is present only when the run has it, and `write` re-validates every one against the contract.
  */
 function automationRelatedLinks(database: DatabaseSync, row: AutomationNotificationRow): NotificationRelatedLinks {
   const links: NotificationRelatedLinks = {};
-  if (row.resource_url) links.source = row.resource_url;
+  const source = automationSourceLink(database, row);
+  if (source) links.source = source;
   const pullRequest = codingPullRequestLink(row.repository, row.pr_number, row.pr_url);
   if (pullRequest) links.pullRequest = pullRequest;
-  const trace = automationTraceLink(database, row.owner_id, row.trace_id, row.agent_id);
+  const trace = automationTraceLink(database, row);
   if (trace) links.trace = trace;
   return links;
 }
@@ -244,8 +269,8 @@ export function emitAutomationTerminalNotification(database: DatabaseSync, workf
   if (!runtime.enabled) return;
   let row: AutomationNotificationRow | undefined;
   try {
-    row = database.prepare(`SELECT id, owner_id, state, repository, resource_number, resource_url, agent_id, error_code, terminal_at,
-      pr_number, pr_url, trace_id
+    row = database.prepare(`SELECT id, owner_id, connection_id, provider, state, repository, resource_number, resource_url, agent_id, error_code,
+      terminal_at, pr_number, pr_url, trace_id
       FROM automation_workflows WHERE id = ?`).get(workflowId) as AutomationNotificationRow | undefined;
   } catch (error) {
     recordFailure(error);

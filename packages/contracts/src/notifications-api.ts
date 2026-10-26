@@ -58,6 +58,8 @@ export const NotificationLinkSchema = z.string().max(NOTIFICATION_LIMITS.maxLink
  * credential or a token parameter.
  */
 export const NotificationExternalLinkSchema = z.string().max(NOTIFICATION_LIMITS.maxLinkChars)
+  // The pattern publishes the https rule in the JSON schema; the refinement holds the full check.
+  .regex(/^https:\/\/[^\s?#@]+$/u, 'link must be an https URL without credentials, query or fragment')
   .refine((value) => {
     try {
       const url = new URL(value);

@@ -22,7 +22,9 @@ A notification holds a short title (for example
 link to the run, agent or approvals page. A finished automation run also links,
 when the run has them, to the **Source** issue or pull request, the agent's
 **Trace**, and the **Pull request** a coding run opened; the title still opens the
-run page. A notification never holds prompts, agent output, issue text, or
+run page. A source link appears only for GitHub, Linear and Jira runs, never for a
+custom webhook. A trace link stops working once the trace's retention period has
+removed it. A notification never holds prompts, agent output, issue text, or
 credentials, and titles are shortened and redacted.
 
 ## Reading the list

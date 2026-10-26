@@ -666,6 +666,10 @@ Decisions that are easy to misread:
   `NOTIFICATIONS_ENABLED=true` and the principal's MCP Events preference for
   that kind is on. Turning the flag off (the rollback) stops new events;
   existing subscriptions stay listed and simply receive nothing.
+- **Payloads only grow.** An event payload may gain optional fields in a later
+  release without a new event name, so a consumer must ignore fields it does
+  not know rather than reject the payload. The optional `links` object of
+  `cloudharness.notification.created` is such an addition.
 - **Payloads are notifications, not results.** They carry identifiers, status,
   exit or error codes, and timestamps only, never command text, output,
   prompts, or messages. Read the result with `tasks_status` or `agent_status`
@@ -739,11 +743,13 @@ The `link` of an automation notification is always its Dashboard run page. An
 automation's terminal notification may add a `links` object with only the
 entries the run has: `source`, the issue or pull request page that started it;
 `trace`, the Dashboard page of its agent's trace; and `pullRequest`, the pull
-request a coding run opened. `source` and `pullRequest` are URLs the runner
-validated or received from GitHub itself, and a pull request URL is linked only
-when it is that number's page in the run's repository. Every external link must
-be a canonical `https` URL with no user info, query or fragment, so a link
-never carries a credential; the field is absent when there is nothing to add.
+request a coding run opened. `source` is linked only for GitHub, Linear and
+Jira, whose normalizers pin the URL's host; a custom webhook's URL is never
+linked. `pullRequest` is linked only when the URL the runner received from
+GitHub is exactly that number's page in the rule's repository. Every external
+link must be a canonical `https` URL with no user info, query or fragment, so a
+link never carries a credential or points at a host the sender chose; the
+field is absent when there is nothing to add.
 
 The inbox copy is
 always recorded; the owner chooses per kind whether it is also delivered as the

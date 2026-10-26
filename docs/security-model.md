@@ -1127,7 +1127,9 @@ the owner has stored a TypeSafe integration key.
   `failure-classification`: the action name, exit code, network profile, and a
   tail of the stderr and stdout. For `execution-risk`: a typed summary of the
   action (its class, counts of touched, test, manifest, CI and hidden paths, a
-  command category with its argument count and a short digest, whether the
+  command category with its argument count and a short digest (the first 16 hex
+  characters of an unsalted SHA-256 of the argv, so it is deterministic and a
+  guessed low-entropy command can be confirmed against it), whether the
   command runs `git push`, whether a branch or network host is named, the
   package ecosystem from a fixed list (anything else is `other`), diff size
   and test result). Paths, arguments, branch, repository and package names and the
@@ -1200,13 +1202,9 @@ there a saved policy changes simulation results only.
   The coding broker makes the execution-time call (`AgentPolicyService.decide`)
   for a coding run's actions (a lockfile install runs only on a plain `ALLOW`
   and never consults the advisor), so with the three opt-ins each qualifying
-  action sends TypeSafe one redacted, runner-computed summary: the judged
-  class, a `git push` flag, path counts by kind, the command's program
-  category, argument count and a truncated SHA-256 digest, host and package
-  flags (with the package ecosystem), the diff's changed-line count and
-  whether tests passed. No path, argument, branch, repository name, or agent or
-  issue text is sent; when redaction cannot complete nothing is sent and the
-  fallback applies.
+  action sends TypeSafe the redacted, runner-computed `execution-risk` summary
+  listed under [what leaves the runner](#decision-plane); when redaction cannot
+  complete nothing is sent and the fallback applies.
 - **Platform invariants have two outcomes.** Credential and Docker access,
   network escalation, paths outside the workspace and privilege escalation
   deny before any policy is read. A command is an argv run through execve,
@@ -1361,10 +1359,26 @@ the owner; the harness opens no egress to a trace collector.
 Notifications are off unless the operator sets `NOTIFICATIONS_ENABLED`. A
 notification stores identifiers, its kind, a title bounded to 160 characters
 and passed through the trace redaction (token- and key-shaped strings are
-replaced, control and format characters removed), and a relative `/dashboard`
-link; never prompts, agent output, issue bodies, or credentials. The contract
-refuses any other link, and the Dashboard follows a link only when it is such a
-path, so a notification cannot become an off-site redirect. Inbox reads and
+replaced, control and format characters removed), a primary relative
+`/dashboard` link, and optional related `links`; never prompts, agent output,
+issue bodies, or credentials. The primary link and the `trace` link must be
+relative `/dashboard` paths without dot segments. A finished automation may add
+two external links, and nothing else can:
+
+- `pullRequest`, only when the URL the runner recorded from GitHub's answer to
+  its own pull request call is exactly
+  `https://github.com/<rule repository>/pull/<number>`.
+- `source`, the page of the issue or pull request that started the run, only
+  for providers that pin that URL's host when the delivery is normalized:
+  GitHub (checked against the repository), Linear (`https://linear.app/`) and
+  Jira (built from the connection's site). A custom webhook's URL is chosen by
+  its sender, so it is never linked, and a workflow whose recorded provider
+  disagrees with its connection gets no source link.
+
+Both are re-checked by the contract and again by the Dashboard: a canonical
+`https` URL with no user info, query or fragment, at most 300 characters. A
+webhook sender, an agent or an issue author therefore cannot steer a
+notification to an arbitrary host or put a credential in a link. Inbox reads and
 writes are scoped to the session principal, and marking another principal's
 notification is reported as not found and changes nothing. Delivery adds no
 egress: the MCP Events channel uses the existing webhook sender and its callback

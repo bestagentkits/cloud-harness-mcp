@@ -605,13 +605,13 @@ its threshold, confidence floor and fallback live in that policy, not here. Any
 failure falls back to approval, or to deny when the policy says so. The coding
 broker (`AGENT_CODING_ENABLED`) consults the advisor when a coding run executes
 an `advisor_or_approval` action that passed every deterministic check, so with
-all three opt-ins each such action sends TypeSafe one redacted summary computed
-by the runner: the judged action class, whether the command runs `git push`,
-path counts by kind, the command's program category, argument count and a
-truncated SHA-256 digest, whether a host or package is requested, the diff's
-changed-line count and whether tests passed. Paths, arguments, branch and
-repository names, and agent or issue text are not sent. The summary is built by
-[`apps/runner/src/decision-plane/execution-risk-advisor.ts`](../apps/runner/src/decision-plane/execution-risk-advisor.ts).
+all three opt-ins each such action sends TypeSafe one redacted, runner-computed
+summary. Its fields are listed under
+[what leaves the runner](security-model.md#decision-plane) and built by
+[`apps/runner/src/decision-plane/execution-risk-advisor.ts`](../apps/runner/src/decision-plane/execution-risk-advisor.ts);
+paths, arguments, branch and repository names, and agent or issue text are not
+sent, and the command digest is an unsalted truncated SHA-256, so a guessed
+low-entropy command can be confirmed against it.
 Before rolling back to a release that predates `execution-risk`, remove it from
 `DECISION_PLANE_PURPOSES`: older runners reject the value and fail startup.
 The purpose list is owned by
