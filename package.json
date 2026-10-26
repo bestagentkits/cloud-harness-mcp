@@ -1,6 +1,6 @@
 {
   "name": "cloud-harness-mcp",
-  "version": "0.66.0-beta.38",
+  "version": "0.76.2",
   "private": true,
   "type": "module",
   "bin": {
@@ -15,22 +15,24 @@
     "docs-site"
   ],
   "scripts": {
-    "build": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/agent-runtime && npm run build -w @cloud-harness/model-gateway && npm run build -w @cloud-harness/api && npm run build -w @cloud-harness/runner && npm run build -w @cloud-harness/api-key-gateway",
+    "build": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/agent-runtime && npm run build -w @cloud-harness/model-gateway && npm run build -w @cloud-harness/api && npm run build -w @cloud-harness/runner && npm run build -w @cloud-harness/api-key-gateway && npm run build -w @cloud-harness/dashboard",
     "clean": "npm run clean --workspaces --if-present",
     "dev:api": "npm run dev -w @cloud-harness/api",
     "dev:runner": "npm run dev -w @cloud-harness/runner",
     "lint": "eslint .",
-    "typecheck": "npm run build -w @cloud-harness/contracts && npm run typecheck -w @cloud-harness/agent-runtime && npm run typecheck -w @cloud-harness/model-gateway && npm run typecheck -w @cloud-harness/api && npm run typecheck -w @cloud-harness/runner && npm run typecheck -w @cloud-harness/api-key-gateway",
+    "typecheck": "npm run build -w @cloud-harness/contracts && npm run typecheck -w @cloud-harness/agent-runtime && npm run typecheck -w @cloud-harness/model-gateway && npm run typecheck -w @cloud-harness/api && npm run typecheck -w @cloud-harness/runner && npm run typecheck -w @cloud-harness/api-key-gateway && npm run typecheck -w @cloud-harness/dashboard",
     "pretest": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api",
-    "test": "vitest run --exclude '**/*.docker.test.ts' --no-file-parallelism",
+    "test": "vitest run --exclude '**/*.docker.test.ts' --no-file-parallelism && npm run test -w @cloud-harness/dashboard",
     "pretest:unit": "npm run build -w @cloud-harness/contracts",
-    "test:unit": "vitest run packages apps --exclude '**/*.docker.test.ts'",
+    "test:unit": "vitest run packages apps --exclude '**/*.docker.test.ts' && npm run test -w @cloud-harness/dashboard",
     "pretest:integration": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api",
     "test:integration": "vitest run test/integration --exclude '**/*.docker.test.ts'",
     "pretest:docker": "npm run build -w @cloud-harness/contracts",
     "test:docker": "vitest run test/integration/docker-sandbox.docker.test.ts test/integration/dependency-egress.docker.test.ts test/integration/git-transfer-helper.docker.test.ts test/integration/gh-helper.docker.test.ts test/integration/agent-isolation.docker.test.ts apps/runner/test/cli-compatibility-airgap.docker.test.ts test/integration/skills-compatibility.docker.test.ts test/integration/terminal-pty.docker.test.ts test/integration/bash-toolbox.docker.test.ts test/integration/package-builder.docker.test.ts test/integration/packages-lifecycle.docker.test.ts test/integration/install-executor.docker.test.ts test/integration/coding-publish.docker.test.ts --testTimeout=180000",
     "pretest:e2e": "npm run build -w @cloud-harness/contracts",
     "test:e2e": "vitest run test/e2e --testTimeout=120000",
+    "pretest:e2e:dashboard": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api && npm run build -w @cloud-harness/dashboard",
+    "test:e2e:dashboard": "npm run test:e2e -w @cloud-harness/dashboard",
     "pages:check": "node scripts/verify-pages-artifact.mjs",
     "pages:preflight": "npm run pages:check && node scripts/verify-pages-project.mjs && npm run pages:links",
     "pages:deploy": "npm run pages:preflight && wrangler pages deploy site --project-name cloud-harness-mcp --branch main && npm run pages:smoke",
@@ -54,6 +56,7 @@
     "verify:compose": "node scripts/verify-compose-boundaries.mjs",
     "verify": "npm run plugin:check && npm run lint && npm run typecheck && npm test && npm run build",
     "verify:typesafe": "node scripts/verify-typesafe.mjs",
+    "bench:agent-runtime": "vitest run --reporter=verbose test/benchmarks/agent-runtime.bench.test.ts",
     "bench:decision-plane": "npm run build -w @cloud-harness/contracts && RUN_DECISION_PLANE_BENCHMARK=true vitest run test/benchmarks/decision-plane.bench.test.ts"
   },
   "devDependencies": {
@@ -68,6 +71,7 @@
     "@types/express": "5.0.6",
     "@types/node": "24.13.3",
     "eslint": "9.39.5",
+    "eslint-plugin-react-hooks": "7.1.1",
     "conventional-changelog-conventionalcommits": "10.3.0",
     "semantic-release": "25.0.9",
     "typescript": "5.9.3",
@@ -75,5 +79,10 @@
     "vitest": "4.1.10",
     "wrangler": "4.123.0",
     "yaml": "2.9.0"
+  },
+  "overrides": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "@types/react": "19.3.0"
   }
 }

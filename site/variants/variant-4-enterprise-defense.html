@@ -633,7 +633,7 @@
                 Layer 1: Credential-Free Ingress Proxy
               </h3>
               <p style="color: var(--text-slate); font-size: 0.95rem; line-height: 1.6; margin-bottom: 1.5rem;">
-                The only Internet-exposed service is an Nginx ingress bound to loopback. It verifies Cloudflare Access SSO assertion tokens or gateway headers before proxying requests to the stateless API.
+                The only Internet-exposed service is a credential-free ingress bound to loopback. Cloudflare Access validates the client's OAuth token at the edge, and the stateless API verifies the signed assertion Access forwards; dashboard API keys use a separate lane.
               </p>
               <ul style="list-style: none; display: flex; flex-direction: column; gap: 0.6rem; font-size: 0.9rem;">
                 <li><span style="color: var(--blue-accent);">✔</span> Holds zero credentials, certificates, or repository secrets</li>
@@ -787,7 +787,7 @@
                 Layer 1: Credential-Free Ingress Proxy
               </h3>
               <p style="color: var(--text-slate); font-size: 0.95rem; line-height: 1.6; margin-bottom: 1.5rem;">
-                The only Internet-exposed service is an Nginx ingress bound to loopback. It verifies Cloudflare Access SSO assertion tokens or gateway headers before proxying requests to the stateless API.
+                The only Internet-exposed service is a credential-free ingress bound to loopback. Cloudflare Access validates the client's OAuth token at the edge, and the stateless API verifies the signed assertion Access forwards; dashboard API keys use a separate lane.
               </p>
               <ul style="list-style: none; display: flex; flex-direction: column; gap: 0.6rem; font-size: 0.9rem;">
                 <li><span style="color: var(--blue-accent);">✔</span> Holds zero credentials, certificates, or repository secrets</li>

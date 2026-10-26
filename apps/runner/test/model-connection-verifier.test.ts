@@ -499,7 +499,9 @@ describe('model connection verifier', () => {
     const cred = ctx.credential('opencode-go');
     const result = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'kimi-k2.5', checks: { tools: true } });
     expect(result.outcome).toBe('verified');
+    // The key is checked against the model list; the public list itself is read without it.
     expect(ctx.requests.map((request) => request.url)).toEqual([
+      'https://opencode.ai/inference/go/v1/models',
       'https://opencode.ai/inference/go/v1/models',
       'https://opencode.ai/inference/go/openai/v1/chat/completions',
       'https://opencode.ai/inference/go/openai/v1/chat/completions'
@@ -508,10 +510,11 @@ describe('model connection verifier', () => {
     expect(first[0]).toMatch(/^[0-9a-f-]{36}$/u);
     expect(new Set(first).size).toBe(1);
     expect(ctx.requests[0]?.headers).toEqual({ authorization: `Bearer ${SECRET}`, 'x-opencode-session': first[0] });
+    expect(ctx.requests[1]?.headers).toEqual({ 'x-opencode-session': first[0] });
 
     await ctx.verifier.verify(ctx.p1, { credentialId: cred.id });
-    expect(ctx.requests[3]?.headers?.['x-opencode-session']).toMatch(/^[0-9a-f-]{36}$/u);
-    expect(ctx.requests[3]?.headers?.['x-opencode-session']).not.toBe(first[0]);
+    expect(ctx.requests[4]?.headers?.['x-opencode-session']).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(ctx.requests[4]?.headers?.['x-opencode-session']).not.toBe(first[0]);
   });
 
   it('checks a custom provider through inference only and refuses a private upstream', async () => {

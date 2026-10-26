@@ -192,4 +192,3 @@ describe('workspace close check', () => {
     expect((await closeCheck()).data).toEqual({ uncommittedPaths: 0, stashes: 0, unpushedCommits: 1 });
   });
 });
-

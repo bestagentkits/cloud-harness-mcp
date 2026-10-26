@@ -1,0 +1,70 @@
+{
+  "workspace": {
+    "README.md": "# Sample service\n\nA small service used by the agent runtime benchmark.\n",
+    "src/greeting.ts": "export function greeting(name: string): string {\n  return 'Hello ' + name;\n}\n",
+    "src/index.ts": "import { greeting } from './greeting.js';\n\nconsole.log(greeting('world'));\n",
+    "test/greeting.test.ts": "import { greeting } from '../src/greeting.js';\n\nconsole.assert(greeting('a') === 'Hello a');\n"
+  },
+  "scenarios": {
+    "pr-review": {
+      "title": "Short pull request review",
+      "prompt": "Review the change to src/greeting.ts and report any problems.",
+      "tools": ["files_list", "files_read", "grep_search"],
+      "model": [
+        { "toolCalls": [{ "name": "files_list", "args": { "path": "src" } }] },
+        { "toolCalls": [{ "name": "files_read", "args": { "path": "src/greeting.ts" } }, { "name": "grep_search", "args": { "pattern": "greeting" } }] },
+        { "text": "The greeting helper concatenates strings without validation; consider a template literal and a test for the empty name." }
+      ]
+    },
+    "multi-step-task": {
+      "title": "Multi-step repository task",
+      "prompt": "Make greeting() punctuate its output and update the entry point.",
+      "tools": ["files_list", "files_read", "files_write", "files_apply_patch", "grep_search", "files_mkdir"],
+      "model": [
+        { "toolCalls": [{ "name": "grep_search", "args": { "pattern": "greeting" } }] },
+        { "toolCalls": [{ "name": "files_read", "args": { "path": "src/greeting.ts" } }] },
+        { "toolCalls": [{ "name": "files_apply_patch", "args": { "path": "src/greeting.ts", "oldText": "return 'Hello ' + name;", "newText": "return `Hello ${name}!`;" } }] },
+        { "toolCalls": [{ "name": "files_write", "args": { "path": "src/index.ts", "content": "import { greeting } from './greeting.js';\n\nconsole.log(greeting('team'));\n" } }] },
+        { "toolCalls": [{ "name": "files_read", "args": { "path": "src/index.ts" } }] },
+        { "text": "Updated greeting() and the entry point." }
+      ]
+    },
+    "restart-followup": {
+      "title": "Follow-up after a process restart",
+      "prompt": "Summarise what src/greeting.ts exports.",
+      "followUpPrompt": "Now add a one-line note about it to the README.",
+      "tools": ["files_read", "files_write"],
+      "model": [
+        { "toolCalls": [{ "name": "files_read", "args": { "path": "src/greeting.ts" } }] },
+        { "text": "It exports a single greeting(name) function." }
+      ],
+      "followUpModel": [
+        { "toolCalls": [{ "name": "files_write", "args": { "path": "README.md", "content": "# Sample service\n\nExports greeting(name).\n" } }] },
+        { "text": "README updated." }
+      ]
+    },
+    "killed-run-with-effects": {
+      "title": "Run killed after read and write effects",
+      "prompt": "Rename the greeting helper and record the change in CHANGELOG.md.",
+      "tools": ["files_read", "files_write", "files_apply_patch"],
+      "killAtToolRequest": 3,
+      "model": [
+        { "toolCalls": [{ "name": "files_read", "args": { "path": "src/greeting.ts" } }] },
+        { "toolCalls": [{ "name": "files_write", "args": { "path": "CHANGELOG.md", "content": "- greeting() now punctuates its output\n" } }] },
+        { "toolCalls": [{ "name": "files_apply_patch", "args": { "path": "src/greeting.ts", "oldText": "return 'Hello ' + name;", "newText": "return `Hello ${name}!`;" } }] },
+        { "text": "Renamed and recorded." }
+      ]
+    },
+    "parent-child-cleanup": {
+      "title": "Parent and child agents cancelled together",
+      "prompt": "Investigate the failing greeting test.",
+      "children": 2,
+      "tools": ["files_read"],
+      "cancelAtToolRequest": 1,
+      "model": [
+        { "toolCalls": [{ "name": "files_read", "args": { "path": "test/greeting.test.ts" } }] },
+        { "text": "unreachable: the run is cancelled before this step" }
+      ]
+    }
+  }
+}

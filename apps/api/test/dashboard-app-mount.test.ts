@@ -198,9 +198,9 @@ describe('dashboard application mount', () => {
 
   it('reserves the principal request budget for Dashboard API operations', () => {
     const appSource = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8');
-    expect(appSource).toContain("app.use('/dashboard', requestSecurity(config), preAuthRequestLimits(), accessAssertionAuth(config));");
+    expect(appSource).toContain("app.use('/dashboard', requestSecurity(config), preAuthRequestLimits(), accessAssertionAuth(config, verifierOverrides));");
     expect(appSource).toContain("app.use('/dashboard/api/v1', principalRequestLimits());");
-    expect(appSource).not.toContain('accessAssertionAuth(config), principalRequestLimits()');
+    expect(appSource).not.toMatch(/accessAssertionAuth\(config[^)]*\), principalRequestLimits\(\)/);
   });
 
   it('does not expose dashboard routes in owner-bearer mode', async () => {
