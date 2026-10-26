@@ -480,7 +480,7 @@ export class DurableSessionStore {
         return failure(id, 'limit', 'durable session exceeds its size limit');
       }
     }
-    const response = this.#run(id, state, storageMethod, args, lineage).then(async (result) => {
+    const response = this.#run(id, state, storageMethod, args).then(async (result) => {
       if (storageMethod !== 'commit' || !result.ok) return result;
       if (!state.sidecarsPrivate) {
         // SQLite may create the write-ahead log and shared-memory files only at the first write.
@@ -533,14 +533,17 @@ export class DurableSessionStore {
     }
   }
 
-  async #run(id: string, state: ClaimState, method: AgentStorageMethod, args: unknown[], lineage: LineageState): Promise<AgentStorageResponseRecord> {
+  async #run(id: string, state: ClaimState, method: AgentStorageMethod, args: unknown[]): Promise<AgentStorageResponseRecord> {
+    // The runner owns the database's lifetime: a worker's close is acknowledged but never closes it,
+    // so sealing the run can still read its unfinished tasks. Seal, release, delete, and shutdown
+    // close it.
+    if (method === 'close') return { type: 'storage_response', id, ok: true };
     try {
       const target = state.storage[method];
       if (typeof target !== 'function') return failure(id, 'failed', 'storage method is unavailable');
       // mintId is the one Storage method without a context argument.
       const callArgs = method === 'mintId' ? args : [...args, RUNNER_CONTEXT];
       const result: unknown = await (target as (...values: unknown[]) => Promise<unknown>).apply(state.storage, callArgs);
-      if (method === 'close' && lineage.storage === state.storage) lineage.storage = undefined;
       if (result !== undefined) {
         const bytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
         if (bytes > this.#maxResponseBytes - RESPONSE_ENVELOPE_BYTES) return failure(id, 'limit', 'storage response exceeds the byte limit');

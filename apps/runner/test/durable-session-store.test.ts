@@ -49,6 +49,8 @@ function fakeBackend(commitBytes = 0) {
   state.loader = {
     isRequestError: () => false,
     async open(path: string) {
+      // Like the SQLite storage, a closed backend refuses every later call.
+      let open = true;
       return {
         async mintId() { minted += 1; return minted; },
         async commit() {
@@ -61,10 +63,11 @@ function fakeBackend(commitBytes = 0) {
           return { id: state.documentReads, body: 'd'.repeat(1_048_576) };
         },
         async scanTasks(query: { status: string; abortRequested: boolean }) {
+          if (!open) throw new Error('SqliteStorage is closed');
           state.queries.push(query);
           return { items: state.live.has(query.status) ? [{ id: 1 }] : [], next: undefined };
         },
-        async close() { state.closed += 1; }
+        async close() { open = false; state.closed += 1; }
       } as never;
     }
   };
@@ -263,6 +266,18 @@ describe('DurableSessionStore', () => {
     // Only tasks nobody asked to abort count as unfinished.
     expect(backend.queries.every((query) => query.abortRequested === false)).toBe(true);
     expect(new Set(backend.queries.map((query) => query.status))).toEqual(new Set(['pending', 'running', 'waiting']));
+  });
+
+  it('keeps the database open through a worker close, so the seal still sees unfinished tasks', async () => {
+    const backend = fakeBackend();
+    const store = await createStore({ loader: backend.loader });
+    const claim = await store.claim(LINEAGE, OWNER, 1, 0);
+    backend.live.add('pending');
+    expect(await store.handle(claim, request('close-1', 'close'))).toEqual({ type: 'storage_response', id: 'close-1', ok: true });
+    expect(backend.closed).toBe(0);
+    expect(await store.seal(claim)).toEqual({ pendingTasks: true });
+    // The runner closes the database once, when the run's claim ends.
+    expect(backend.closed).toBe(1);
   });
 
   it('reports no unfinished tasks for a superseded claim, an absent database, or a disabled store', async () => {
