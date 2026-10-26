@@ -1112,8 +1112,12 @@ const handlers = {
   },
   async files_apply_patch(input) {
     const target = await safePath(input.path);
-    const current = await readFile(target, 'utf8');
-    if (input.expectedSha256 && sha256(current) !== input.expectedSha256) return fail('CONFLICT', 'file changed since it was read');
+    // Fence on the raw bytes, the digest files_read reports. A binary file never round-trips through
+    // a string, so it is refused rather than rewritten as lossy UTF-8.
+    const bytes = await readFile(target);
+    if (input.expectedSha256 && sha256(bytes) !== input.expectedSha256) return fail('CONFLICT', 'file changed since it was read');
+    if (isBinaryContent(bytes)) return fail('INVALID_INPUT', 'files_apply_patch edits UTF-8 text files only; this file is binary');
+    const current = bytes.toString('utf8');
     const first = current.indexOf(input.oldText);
     if (first < 0) return fail('CONFLICT', 'oldText was not found');
     if (current.indexOf(input.oldText, first + Math.max(1, input.oldText.length)) >= 0) return fail('CONFLICT', 'oldText is not unique');

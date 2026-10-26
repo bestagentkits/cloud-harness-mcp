@@ -760,7 +760,10 @@ and the failure-injection suite
 
 - `files_apply_patch` is not a unified-diff parser. It performs one exact
   `oldText` to `newText` replacement and rejects a missing or non-unique
-  `oldText`. Supply `expectedSha256` when a concurrent edit must be detected.
+  `oldText`. Supply `expectedSha256` when a concurrent edit must be detected;
+  it is compared with the raw file digest, the same one `files_read` reports. A
+  file `files_read` would report as `binary` is refused with `INVALID_INPUT`
+  rather than rewritten as lossy UTF-8.
 - `files_write` replaces a file atomically inside the workspace. Its
   `expectedSha256` option requires the target to exist and match.
 - `files_read` returns the `sha256` of the whole file even when `content` is one

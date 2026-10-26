@@ -87,6 +87,9 @@ Replace one unique exact text occurrence in a file.
 - Optional: `expectedSha256`, exactly 64 characters.
 - `oldText` must occur exactly once. Missing, repeated, or stale content returns
   `CONFLICT`; this input is not a unified diff.
+- `expectedSha256` is the raw file digest `files_read` returns. A binary file
+  (`files_read` reports `binary: true`) returns `INVALID_INPUT` and is left
+  unchanged.
 - Returns the path and final SHA-256.
 
 <!-- cloudharness-example:files_apply_patch
