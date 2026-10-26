@@ -659,7 +659,9 @@ Decisions that are easy to misread:
   notification enters the principal's inbox (see
   [notification inbox](#notification-inbox)), with an optional `kind` filter.
   Its payload is the notification id, kind, subject type and id, a bounded,
-  redacted title, a relative Dashboard link, and the creation time. It is
+  redacted title, a relative Dashboard link, the optional related `links`
+  described under [notification inbox](#notification-inbox), and the creation
+  time. It is
   feature-flagged: it fires only while the operator sets
   `NOTIFICATIONS_ENABLED=true` and the principal's MCP Events preference for
   that kind is on. Turning the flag off (the rollback) stops new events;
@@ -731,7 +733,19 @@ the owner's inbox in the same savepoint as the transition. With
 `AGENT_APPROVALS_ENABLED=true`, a coding run that starts waiting for an owner
 approval writes `workflow.waiting_for_human`, and the approval's decision or
 expiry writes `approval.decided`. A notification is deduplicated per principal, subject, and
-transition, so a replayed transition never notifies twice. The inbox copy is
+transition, so a replayed transition never notifies twice.
+
+The `link` of an automation notification is always its Dashboard run page. An
+automation's terminal notification may add a `links` object with only the
+entries the run has: `source`, the issue or pull request page that started it;
+`trace`, the Dashboard page of its agent's trace; and `pullRequest`, the pull
+request a coding run opened. `source` and `pullRequest` are URLs the runner
+validated or received from GitHub itself, and a pull request URL is linked only
+when it is that number's page in the run's repository. Every external link must
+be a canonical `https` URL with no user info, query or fragment, so a link
+never carries a credential; the field is absent when there is nothing to add.
+
+The inbox copy is
 always recorded; the owner chooses per kind whether it is also delivered as the
 `cloudharness.notification.created` MCP event and whether the GitHub column
 mirrors the automation's own result comment. The harness adds no new egress:

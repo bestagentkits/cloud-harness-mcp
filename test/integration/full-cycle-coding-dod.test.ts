@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   AGENT_TRACE_RESULT_SCHEMAS,
   AgentApprovalSummarySchema,
+  NotificationCreatedPayloadSchema,
   type GlobalExecutionPolicy,
   type TraceSpan
 } from '@cloud-harness/contracts';
 import { ExecutionRiskAdvisor } from '../../apps/runner/src/decision-plane/execution-risk-advisor.js';
+import { NotificationStore } from '../../apps/runner/src/notifications/notification-store.js';
 import { CODING_GLOBAL_POLICY, VERIFY_COMMAND } from '../../apps/runner/test/support/coding-policy.js';
 import { FakeJevProvider, fakeJevPlane } from '../../apps/runner/test/support/fake-jev-provider.js';
 import { disableNotifications, enableNotifications } from '../../apps/runner/test/support/notification-fixtures.js';
@@ -94,6 +96,19 @@ describe('governed coding cycle: issue to approved pull request', { timeout: 30_
     expect(kinds).toEqual(expect.arrayContaining(['workflow.waiting_for_human', 'approval.decided', 'automation.completed']));
     expect(kinds.filter((kind) => kind === 'workflow.waiting_for_human')).toHaveLength(1);
     expect(kinds.filter((kind) => kind === 'approval.decided')).toHaveLength(1);
+    // The completion notification links to the run first, and beside it to the issue, the agent's trace
+    // and the pull request the runner opened, in both the MCP event payload and the inbox list.
+    const expectedLinks = {
+      source: `https://github.com/acme/widgets/issues/${workflow.resourceNumber}`,
+      trace: `/dashboard/traces/${workflow.coding!.traceId}`,
+      pullRequest: harness.github.pulls[0]!.url
+    };
+    const completed = harness.store.database.prepare("SELECT payload_json FROM notifications WHERE kind = 'automation.completed'").get() as { payload_json: string };
+    expect(NotificationCreatedPayloadSchema.parse(JSON.parse(completed.payload_json))).toMatchObject({
+      link: `/dashboard/automations/runs/${workflowId}`, links: expectedLinks
+    });
+    const inbox = new NotificationStore(harness.store.database, () => harness.clock.now).list(harness.ownerId, { limit: 10, unreadOnly: false });
+    expect(inbox.notifications.find((entry) => entry.kind === 'automation.completed')).toMatchObject({ links: expectedLinks });
 
     // After the workspace is closed, the trace reads back through the trace operations' result contracts.
     const row = harness.row(workflowId);
@@ -140,5 +155,52 @@ describe('governed coding cycle: issue to approved pull request', { timeout: 30_
     expect(detail.reconciliation.ledger).toMatchObject({ inputTokens: detail.reconciliation.spans.inputTokens, outputTokens: detail.reconciliation.spans.outputTokens });
     expect(detail.modelCalls).toBe(models.length);
     expect(detail.spanCount).toBe(spans.length);
+  });
+
+  it('keeps a failed run\'s receipts joined to their action spans after the workspace is closed', async () => {
+    const harness = await createCodingHarness();
+    harnesses.push(harness);
+    expect(harness.deliver().response.outcome).toBe('accepted');
+    await harness.tick();
+    const workflowId = harness.workflows()[0]!.id;
+    // Only one of the two bugs is fixed, so the rule's verify command fails.
+    await harness.runAgent(workflowId, [
+      { operation: 'files_write', input: { path: 'src/math.mjs', content: FIXED_SOURCES['src/math.mjs'] } }
+    ]);
+    for (let pass = 0; pass < 8 && harness.row(workflowId).workspace_closed !== 1; pass += 1) await harness.tick();
+
+    const { workflow, actions } = harness.workflow(workflowId);
+    expect(workflow).toMatchObject({ state: 'FAILED', errorCode: 'CODING_VERIFY_FAILED' });
+    expect(harness.github.pushes).toHaveLength(0);
+    expect(harness.github.pulls).toHaveLength(0);
+    const row = harness.row(workflowId);
+    expect(row.workspace_closed).toBe(1);
+    expect(harness.store.byId(String(row.workspace_id))?.status).toBe('CLOSED');
+
+    const traceId = workflow.coding!.traceId!;
+    const detail = AGENT_TRACE_RESULT_SCHEMAS.agent_trace_get.parse(harness.traces.get(harness.ownerId, traceId, harness.clock.now)).trace;
+    expect(detail).toMatchObject({ workflowId, state: 'COMPLETED' });
+    const spans: TraceSpan[] = AGENT_TRACE_RESULT_SCHEMAS.agent_trace_spans
+      .parse(harness.traces.spans(harness.ownerId, { traceId, limit: 500 }, harness.clock.now)).spans;
+
+    // The agent's write, the rejected verify and the kept diff each have a receipt on the trace's action span.
+    const step = (name: string) => actions.find((receipt) => receipt.step === name);
+    expect(step('files_write')).toMatchObject({ origin: 'agent', state: 'APPLIED' });
+    expect(step('verify')).toMatchObject({ origin: 'runner', state: 'REJECTED', outcome: { errorCode: 'CODING_VERIFY_FAILED' } });
+    expect(step('diff_artifact')).toMatchObject({ origin: 'runner', state: 'APPLIED' });
+    for (const receipt of actions) {
+      expect(receipt.traceId, receipt.step).toBe(traceId);
+      expect(spans.find((span) => span.spanId === receipt.spanId)?.kind, receipt.step).toBe('action');
+    }
+    const ids = new Set(spans.map((span) => span.spanId));
+    for (const span of spans) if (span.parentSpanId !== null) expect(ids.has(span.parentSpanId), span.name).toBe(true);
+
+    // The failure notification links to the run, the issue and the trace; there is no pull request to link.
+    const failed = harness.store.database.prepare("SELECT payload_json FROM notifications WHERE kind = 'automation.failed'").get() as { payload_json: string };
+    expect(NotificationCreatedPayloadSchema.parse(JSON.parse(failed.payload_json))).toMatchObject({
+      link: `/dashboard/automations/runs/${workflowId}`,
+      links: { source: `https://github.com/acme/widgets/issues/${workflow.resourceNumber}`, trace: `/dashboard/traces/${traceId}` }
+    });
+    expect(JSON.parse(failed.payload_json).links.pullRequest).toBeUndefined();
   });
 });

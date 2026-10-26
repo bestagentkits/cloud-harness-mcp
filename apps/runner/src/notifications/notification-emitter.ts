@@ -2,8 +2,11 @@ import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   NOTIFICATION_LIMITS,
+  NotificationExternalLinkSchema,
   NotificationLinkSchema,
+  TraceIdSchema,
   type NotificationKind,
+  type NotificationRelatedLinks,
   type NotificationSubjectType
 } from '@cloud-harness/contracts';
 import { recordEvent, withEventSavepoint } from '../event-outbox.js';
@@ -69,6 +72,8 @@ export type NotificationEmission = {
   transition: string;
   title: string;
   link: string | null;
+  /** Deep links beside `link`; each one is re-validated and dropped when it does not fit the contract. */
+  links?: NotificationRelatedLinks;
   occurredAt?: number;
   /** The automation workflow whose `publish_state` the github channel mirrors. */
   githubWorkflowId?: string;
@@ -104,6 +109,16 @@ function githubMirrorApplies(database: DatabaseSync, workflowId: string | undefi
   return row !== undefined && row.publish_state !== 'NONE';
 }
 
+/** Keeps each deep link that fits the contract; undefined when none does. */
+export function relatedLinks(input: NotificationRelatedLinks | undefined): NotificationRelatedLinks | undefined {
+  if (!input) return undefined;
+  const links: NotificationRelatedLinks = {};
+  if (input.source !== undefined && NotificationExternalLinkSchema.safeParse(input.source).success) links.source = input.source;
+  if (input.trace !== undefined && NotificationLinkSchema.safeParse(input.trace).success) links.trace = input.trace;
+  if (input.pullRequest !== undefined && NotificationExternalLinkSchema.safeParse(input.pullRequest).success) links.pullRequest = input.pullRequest;
+  return Object.keys(links).length > 0 ? links : undefined;
+}
+
 function write(database: DatabaseSync, input: NotificationEmission, now: number): string | null {
   if (!SUBJECT_ID.test(input.subjectId)) throw new Error('notification subject id is invalid');
   if (!TRANSITION.test(input.transition)) throw new Error('notification transition is invalid');
@@ -111,6 +126,7 @@ function write(database: DatabaseSync, input: NotificationEmission, now: number)
   const notificationId = notificationIdFor(dedupeKey);
   const createdAt = input.occurredAt ?? now;
   const link = input.link !== null && NotificationLinkSchema.safeParse(input.link).success ? input.link : null;
+  const links = relatedLinks(input.links);
   const payload = {
     notificationId,
     kind: input.kind,
@@ -118,6 +134,7 @@ function write(database: DatabaseSync, input: NotificationEmission, now: number)
     subjectId: input.subjectId,
     title: boundedNotificationTitle(input.title),
     link,
+    ...(links ? { links } : {}),
     createdAt: new Date(createdAt).toISOString()
   };
   const inserted = insertNotification(database, {
@@ -169,17 +186,57 @@ function recordFailure(error: unknown): void {
 }
 
 type AutomationNotificationRow = {
-  id: string; owner_id: string; state: string; repository: string; resource_number: number;
-  error_code: string | null; terminal_at: number | null;
+  id: string; owner_id: string; state: string; repository: string; resource_number: number; resource_url: string | null;
+  agent_id: string | null; error_code: string | null; terminal_at: number | null;
+  /** Coding columns; null for read-only workflows. */
+  pr_number: number | null; pr_url: string | null; trace_id: string | null;
 };
 
-/**
- * The Dashboard deep link of an automation run. Coding runs finish through automation workflows, so
- * this is the one place a coding run's notification gains its run view; the coding broker's PR URL and
- * trace id belong here once that broker lands on this branch's base.
- */
+/** The Dashboard deep link of an automation run: the primary link of every automation notification. */
 export function automationNotificationLink(workflowId: string): string {
   return `/dashboard/automations/runs/${workflowId}`;
+}
+
+/**
+ * The pull request a coding run opened, only when the stored URL is exactly the GitHub page of that
+ * number in the run's own repository. The URL comes from GitHub's answer to the runner, so nothing an
+ * agent wrote can redirect the link.
+ */
+function codingPullRequestLink(repository: string, prNumber: number | null, prUrl: string | null): string | undefined {
+  if (prUrl === null || prNumber === null || !Number.isSafeInteger(prNumber) || prNumber < 1) return undefined;
+  return prUrl.toLowerCase() === `https://github.com/${repository}/pull/${prNumber}`.toLowerCase() ? prUrl : undefined;
+}
+
+/**
+ * The trace of the run's agent, when one was recorded for this owner: the coding run's pinned trace,
+ * else the newest trace of the run's agent.
+ */
+function automationTraceLink(database: DatabaseSync, ownerId: string, traceId: string | null, agentId: string | null): string | undefined {
+  if (!tableExists(database, 'agent_traces')) return undefined;
+  let found: { trace_id: string } | undefined;
+  if (traceId !== null) {
+    found = database.prepare('SELECT trace_id FROM agent_traces WHERE trace_id = ? AND principal_id = ?').get(traceId, ownerId) as { trace_id: string } | undefined;
+  }
+  if (!found && agentId !== null) {
+    found = database.prepare('SELECT trace_id FROM agent_traces WHERE agent_id = ? AND principal_id = ? ORDER BY generation DESC LIMIT 1')
+      .get(agentId, ownerId) as { trace_id: string } | undefined;
+  }
+  return found && TraceIdSchema.safeParse(found.trace_id).success ? `/dashboard/traces/${found.trace_id}` : undefined;
+}
+
+/**
+ * Deep links of an automation run beside its run page: the issue or pull request that started it, the
+ * agent's trace and, for a coding run, the pull request it opened. Each is present only when the run
+ * has it, and `write` re-validates every one against the contract.
+ */
+function automationRelatedLinks(database: DatabaseSync, row: AutomationNotificationRow): NotificationRelatedLinks {
+  const links: NotificationRelatedLinks = {};
+  if (row.resource_url) links.source = row.resource_url;
+  const pullRequest = codingPullRequestLink(row.repository, row.pr_number, row.pr_url);
+  if (pullRequest) links.pullRequest = pullRequest;
+  const trace = automationTraceLink(database, row.owner_id, row.trace_id, row.agent_id);
+  if (trace) links.trace = trace;
+  return links;
 }
 
 /** Called by the automation terminal event emitter inside the terminal transition's savepoint. */
@@ -187,17 +244,25 @@ export function emitAutomationTerminalNotification(database: DatabaseSync, workf
   if (!runtime.enabled) return;
   let row: AutomationNotificationRow | undefined;
   try {
-    row = database.prepare(`SELECT id, owner_id, state, repository, resource_number, error_code, terminal_at
+    row = database.prepare(`SELECT id, owner_id, state, repository, resource_number, resource_url, agent_id, error_code, terminal_at,
+      pr_number, pr_url, trace_id
       FROM automation_workflows WHERE id = ?`).get(workflowId) as AutomationNotificationRow | undefined;
   } catch (error) {
     recordFailure(error);
     return;
   }
   if (!row) return;
+  let links: NotificationRelatedLinks = {};
+  try {
+    links = automationRelatedLinks(database, row);
+  } catch (error) {
+    // The deep links are extras: the notification still goes out with its run link, and the error is logged.
+    try { runtime.onError(error); } catch { /* a logger failure must not abort the transition */ }
+  }
   const resource = `${row.repository}#${row.resource_number}`;
   const base = {
     principalId: row.owner_id, subjectType: 'automation_workflow' as const, subjectId: row.id, transition: 'terminal',
-    link: automationNotificationLink(row.id), occurredAt: row.terminal_at ?? now, githubWorkflowId: row.id
+    link: automationNotificationLink(row.id), links, occurredAt: row.terminal_at ?? now, githubWorkflowId: row.id
   };
   if (row.state === 'COMPLETED') {
     emitNotification(database, { ...base, kind: 'automation.completed', title: `Automation completed: ${resource}` }, now);

@@ -4,8 +4,11 @@
  *
  * Every value rendered here comes from the strict notification projection of the dashboard API and
  * is escaped. A notification link is followed only when it is a relative `/dashboard` path; anything
- * else renders as plain text. The inbox itself cannot be turned off; preferences choose the extra
- * channels (MCP Events and the GitHub comment mirror) per notification kind.
+ * else renders as plain text. The related links of an automation run (its source issue, trace and pull
+ * request) render only when the source and pull request are canonical https URLs without credentials,
+ * query or fragment, and the trace is a relative `/dashboard` path. The inbox itself cannot be turned
+ * off; preferences choose the extra channels (MCP Events and the GitHub comment mirror) per
+ * notification kind.
  */
 import { api } from './dashboard-api.js';
 import { escapeHtml as escape } from './dashboard-render.js';
@@ -38,6 +41,35 @@ export function notificationKindLabel(kind) {
 export function safeNotificationLink(link) {
   if (typeof link !== 'string' || link.length > 300 || !SAFE_LINK.test(link)) return null;
   return link.split('/').some((segment) => segment === '.' || segment === '..') ? null : link;
+}
+
+/** An off-site link the inbox may open: a canonical https URL with no user info, query or fragment. */
+export function safeExternalNotificationLink(link) {
+  if (typeof link !== 'string' || link.length > 300) return null;
+  try {
+    const url = new URL(link);
+    return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash && url.href === link ? link : null;
+  } catch {
+    return null;
+  }
+}
+
+const RELATED_LINKS = [
+  ['source', 'Source', safeExternalNotificationLink],
+  ['trace', 'Trace', safeNotificationLink],
+  ['pullRequest', 'Pull request', safeExternalNotificationLink]
+];
+
+/** The run's other deep links beside the primary one; off-site links open in a new tab. */
+function relatedLinks(notification) {
+  const links = notification.links && typeof notification.links === 'object' ? notification.links : {};
+  const items = RELATED_LINKS.flatMap(([key, label, safe]) => {
+    const href = safe(links[key]);
+    if (!href) return [];
+    const external = safe === safeExternalNotificationLink;
+    return [`<li><a href="${escape(href)}"${external ? ' target="_blank" rel="noopener noreferrer"' : ''}>${escape(label)}</a></li>`];
+  });
+  return items.length ? `<ul class="inbox-links" aria-label="Related links">${items.join('')}</ul>` : '';
 }
 
 /** The inbox list API path. */
@@ -75,7 +107,7 @@ function notificationRow(notification) {
     ? `<button type="button" data-mark-read="${escape(id)}">Mark read</button>`
     : '';
   return `<tr class="inbox-row${unread ? ' unread' : ''}"><th scope="row">`
-    + `${unread ? '<span class="inbox-unread">Unread</span> ' : ''}${title}<small>${escape(notificationKindLabel(notification.kind))}</small></th>`
+    + `${unread ? '<span class="inbox-unread">Unread</span> ' : ''}${title}<small>${escape(notificationKindLabel(notification.kind))}</small>${relatedLinks(notification)}</th>`
     + `<td>${time(notification.createdAt)}</td>`
     + `<td><ul class="inbox-deliveries" aria-label="Delivery">${(notification.deliveries ?? []).map(deliveryPill).join('')}</ul></td>`
     + `<td><div class="row-actions">${action}</div></td></tr>`;

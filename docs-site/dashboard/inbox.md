@@ -1,6 +1,6 @@
 ---
 title: Inbox
-description: Notifications about finished automations and agents, where each one was delivered, and your delivery preferences.
+description: Notifications about finished automations and agents, runs waiting for your approval and decided approvals, where each one was delivered, and your delivery preferences.
 ---
 
 # Inbox
@@ -8,7 +8,10 @@ description: Notifications about finished automations and agents, where each one
 `/dashboard/inbox` collects a notification each time one of your
 [webhook automation](./automations.md) runs finishes, and each time one of your
 top-level agents finishes. Child agents and agents an automation started do not
-notify on their own; their run's notification covers them. The **Inbox** entry
+notify on their own; their run's notification covers them. When owner approvals
+are on (`AGENT_APPROVALS_ENABLED=true`), it also collects one when a coding run
+starts [waiting for your approval](./approvals.md) (**Waiting for you**) and one
+when that approval is approved, denied or expires (**Approval decided**). The **Inbox** entry
 appears in the sidebar only when the operator has enabled notifications
 (`NOTIFICATIONS_ENABLED=true`, see
 [environment variables](../reference/environment-variables.md)), and its badge
@@ -16,7 +19,10 @@ shows the unread count while something is unread.
 
 A notification holds a short title (for example
 `Automation failed: acme/widgets#7 (AGENT_SPAWN_FAILED:NOT_FOUND)`), its kind, and a
-link to the run or agent page. It never holds prompts, agent output, issue text, or
+link to the run, agent or approvals page. A finished automation run also links,
+when the run has them, to the **Source** issue or pull request, the agent's
+**Trace**, and the **Pull request** a coding run opened; the title still opens the
+run page. A notification never holds prompts, agent output, issue text, or
 credentials, and titles are shortened and redacted.
 
 ## Reading the list

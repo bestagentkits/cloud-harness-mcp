@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import {
   CONFIGURABLE_NOTIFICATION_CHANNELS,
   NOTIFICATION_KINDS,
+  NotificationRelatedLinksSchema,
   type NotificationDelivery,
   type NotificationDeliveryState,
   type NotificationKind,
@@ -267,7 +268,8 @@ export class NotificationStore {
     const last = page.at(-1);
     return {
       notifications: page.map((row) => {
-        const payload = JSON.parse(row.payload_json) as { link?: unknown };
+        const payload = JSON.parse(row.payload_json) as { link?: unknown; links?: unknown };
+        const links = payload.links === undefined ? undefined : NotificationRelatedLinksSchema.safeParse(payload.links);
         return {
           notificationId: row.notification_id,
           kind: row.kind,
@@ -275,6 +277,7 @@ export class NotificationStore {
           subjectId: row.subject_id,
           title: row.title,
           link: typeof payload.link === 'string' ? payload.link : null,
+          ...(links?.success ? { links: links.data } : {}),
           createdAt: iso(row.created_at),
           readAt: row.read_at === null ? null : iso(row.read_at),
           deliveries: deliveries.get(row.notification_id) ?? []
