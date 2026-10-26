@@ -1,3 +1,11 @@
+# [0.66.0-beta.38](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.37...v0.66.0-beta.38) (2026-10-26)
+
+
+### Bug Fixes
+
+* **model-gateway:** end an over-cap stream with an in-band bound error ([#542](https://github.com/bestagentkits/cloud-harness-mcp/issues/542)) ([b568a9c](https://github.com/bestagentkits/cloud-harness-mcp/commit/b568a9c898c25e74ee53c06a3c4ecaed953437c4)), closes [#439](https://github.com/bestagentkits/cloud-harness-mcp/issues/439) [#447](https://github.com/bestagentkits/cloud-harness-mcp/issues/447) [#447](https://github.com/bestagentkits/cloud-harness-mcp/issues/447)
+* **model-gateway:** settle every early stream exit before cutting it off ([#564](https://github.com/bestagentkits/cloud-harness-mcp/issues/564)) ([43c35c2](https://github.com/bestagentkits/cloud-harness-mcp/commit/43c35c2c6c0fb6355d9a4a40cdcd141a4525cc45)), closes [#439](https://github.com/bestagentkits/cloud-harness-mcp/issues/439) [#447](https://github.com/bestagentkits/cloud-harness-mcp/issues/447) [#447](https://github.com/bestagentkits/cloud-harness-mcp/issues/447) [#543](https://github.com/bestagentkits/cloud-harness-mcp/issues/543)
+
 # [0.66.0-beta.37](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.36...v0.66.0-beta.37) (2026-10-26)
 
 
