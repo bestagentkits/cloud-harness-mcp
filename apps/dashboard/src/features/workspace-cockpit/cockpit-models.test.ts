@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { deploymentsOf, groupHooksByLifecycle, hookRunBody, hooksOf, parseDeployDraft, runResultOf, SCRIPT_PATTERN, skillsOf } from './automation-model';
-import { fileOf, joinPath, listingOf, parentPath, pathCrumbs, patchCopyText } from './files-model';
+import { fileOf, joinPath, listingOf, parentPath, partialReadNotice, pathCrumbs, patchCopyText } from './files-model';
 import { gitActionBody, gitCommitsOf, gitStatusOf, worktreesOf } from './git-model';
 import { NODE_WIDTH, taskGraphLayout, taskGraphOf } from './task-graph-model';
 
@@ -14,8 +14,24 @@ describe('files model', () => {
   });
 
   it('reads a file only with its path, content and digest', () => {
-    expect(fileOf({ path: 'a', content: 'x', sha256: SHA, bytes: 1 })).toEqual({ path: 'a', content: 'x', sha256: SHA, bytes: 1 });
+    expect(fileOf({ path: 'a', content: 'x', sha256: SHA, bytesReturned: 1, totalBytes: 1, eof: true })).toEqual({ path: 'a', content: 'x', sha256: SHA, whole: true, bytesReturned: 1, totalBytes: 1 });
     expect(fileOf({ path: 'a', content: 'x' })).toBeUndefined();
+  });
+
+  it('treats a read as whole only when the runner reports eof', () => {
+    // The digest covers the whole file, so a window saved back would pass the fence and truncate it.
+    const read = (extra: Record<string, unknown>) => {
+      const file = fileOf({ path: 'a', content: 'x', sha256: SHA, ...extra });
+      if (!file) throw new Error('expected a file');
+      return file;
+    };
+    const partial = read({ bytesReturned: 65_536, totalBytes: 200_000, eof: false });
+    expect(partial.whole).toBe(false);
+    expect(read({}).whole).toBe(false);
+    expect(read({ eof: 'true' }).whole).toBe(false);
+    expect(partialReadNotice(partial)).toMatch(/^Showing the first 64 KB of 195 KB\. Saving the whole file is turned off/);
+    expect(partialReadNotice(read({}))).toMatch(/^The runner did not confirm this is the whole file\./);
+    expect(partialReadNotice(read({ eof: true }))).toBeUndefined();
   });
 
   it('joins, climbs and breaks paths the way the classic tab does', () => {

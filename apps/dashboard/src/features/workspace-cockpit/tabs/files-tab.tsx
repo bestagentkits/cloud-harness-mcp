@@ -3,6 +3,7 @@ import { Link, useNavigate } from '@tanstack/react-router';
 import { FileIcon, FolderIcon, FolderOpenIcon } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
 import { Section } from '@/components/data/section';
+import { Callout } from '@/features/shared/callout';
 import { AsyncStatus } from '@/components/feedback/async-status';
 import { EmptyState } from '@/components/feedback/empty-state';
 import { Button } from '@/components/ui/button';
@@ -16,7 +17,7 @@ import { type BffEnvelope, bffPath, bffQuery } from '@/lib/bff-query';
 import { mutationErrorText, useBffMutation } from '@/lib/bff-mutation';
 import { formatBytes } from '@/lib/format';
 import type { CockpitTabProps } from '../cockpit-tab-registry';
-import { type FileContent, fileOf, joinPath, listingOf, parentPath, pathCrumbs, patchCopyText, WORKSPACE_ROOT } from '../files-model';
+import { type FileContent, fileOf, joinPath, listingOf, parentPath, partialReadNotice, pathCrumbs, patchCopyText, WORKSPACE_ROOT } from '../files-model';
 import { FileConflictDialog } from './file-conflict-dialog';
 
 /**
@@ -24,6 +25,8 @@ import { FileConflictDialog } from './file-conflict-dialog';
  * Every write carries the version the operator opened (`expectedSha256`), so a save, patch
  * or delete against a file that changed meanwhile is refused with a 409 and opens the
  * conflict dialog (D2) instead of overwriting; the operator's text stays in the editor.
+ * A partial read (no `eof`) is read-only: its digest covers the whole file, so saving the
+ * window would pass the fence and truncate the file. Patch and delete act on the whole file.
  */
 export default function FilesTab({ workspaceId, search }: CockpitTabProps) {
   const folder = search.path ?? WORKSPACE_ROOT;
@@ -213,6 +216,10 @@ function FileView({ workspaceId, path }: { workspaceId: string; path: string }) 
   function submitSave(event: FormEvent) {
     event.preventDefault();
     if (!base) return;
+    if (!base.whole) {
+      toast({ title: 'The file was not saved', description: 'Only part of this file was loaded, so it cannot be saved as a whole. Use the text patch instead.', variant: 'destructive' });
+      return;
+    }
     const localContent = draft;
     save.mutateAsync({ content: localContent, expectedSha256: base.sha256 }).then(reloadLatest, failed('The file was not saved', localContent));
   }
@@ -230,24 +237,28 @@ function FileView({ workspaceId, path }: { workspaceId: string; path: string }) 
       </AsyncStatus>
     );
   }
-  const dirty = draft !== base.content;
+  const notice = partialReadNotice(base);
+  const dirty = base.whole && draft !== base.content;
   const busy = save.isPending || patch.isPending || remove.isPending;
   return (
     <>
       <Section
         title={base.path}
         id="file"
-        description={<>Version <span className="font-mono break-all">{base.sha256}</span>{base.bytes !== undefined ? ` · ${formatBytes(base.bytes)}` : ''}</>}
+        description={<>Version <span className="font-mono break-all">{base.sha256}</span>{base.totalBytes !== undefined ? ` · ${formatBytes(base.totalBytes)}` : ''}</>}
         actions={<Button size="sm" variant="destructive" disabled={busy} onClick={() => setDeleting(true)}>Delete file</Button>}
       >
         <form className="grid gap-3" onSubmit={submitSave}>
-          <Field label="File content" description={dirty ? 'Unsaved changes.' : 'No unsaved changes.'}>
-            <Textarea spellCheck={false} className="min-h-80 font-mono text-xs" value={draft} onChange={(event) => setDraft(event.target.value)} />
+          {notice ? <Callout tone="warning" title="Only part of this file is loaded">{notice}</Callout> : null}
+          <Field label={base.whole ? 'File content' : 'File content (read-only, partial)'} description={notice ? undefined : dirty ? 'Unsaved changes.' : 'No unsaved changes.'}>
+            <Textarea spellCheck={false} readOnly={!base.whole} className="min-h-80 font-mono text-xs" value={draft} onChange={(event) => setDraft(event.target.value)} />
           </Field>
-          <div className="flex flex-wrap gap-2">
-            <Button type="submit" size="sm" disabled={busy || !dirty} aria-busy={save.isPending || undefined}>{save.isPending ? 'Saving…' : 'Save file'}</Button>
-            <Button type="button" size="sm" variant="outline" disabled={busy || !dirty} onClick={() => setDraft(base.content)}>Discard changes</Button>
-          </div>
+          {base.whole ? (
+            <div className="flex flex-wrap gap-2">
+              <Button type="submit" size="sm" disabled={busy || !dirty} aria-busy={save.isPending || undefined}>{save.isPending ? 'Saving…' : 'Save file'}</Button>
+              <Button type="button" size="sm" variant="outline" disabled={busy || !dirty} onClick={() => setDraft(base.content)}>Discard changes</Button>
+            </div>
+          ) : null}
         </form>
       </Section>
       <Section title="Replace text" description="Replaces one exact occurrence in the version you opened.">
