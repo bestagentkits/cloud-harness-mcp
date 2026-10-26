@@ -42,8 +42,9 @@ Each held action shows:
 ask for confirmation. Approving posts the digest shown on the row: the run resumes and
 performs exactly that action once, on exactly the change shown in the diff artifact. A diff
 larger than 1 MiB is shown cut short, and says so, with its file count but without line
-counts; the approval still covers the whole change. If the change in the workspace differs when the step is about to run, the run fails with
-`APPROVAL_STALE` and nothing is committed or published. The policy is checked again when
+counts; the approval still covers the whole change. If the change in the workspace differs
+when the step runs, or a pre-commit hook adds to it, the run fails with `APPROVAL_STALE` and
+nothing is published; at most a local commit is left in the workspace. The policy is checked again when
 the step runs, so a deny you added in the meantime still wins, and an approval never lifts
 a deny. If the run's workspace is closed or recreated while it waits, the run fails with
 `APPROVAL_STALE` straight away instead of at the deadline. Denying
