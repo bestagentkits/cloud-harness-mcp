@@ -11,3 +11,6 @@ coverage/
 .cloud-harness-state/
 deploy/.generated/
 .cloud-harness-test-fixtures/
+
+# Live Jev check report (docs/development.md)
+jev-live.json
