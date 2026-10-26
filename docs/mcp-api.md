@@ -752,8 +752,10 @@ ChatGPT subscription (see
     (`created: false`, `replayed: true`) with no second GitHub call; the same
     key with different input fails with `CONFLICT`. A definitive GitHub refusal
     is not recorded, so the key can be retried after the cause is fixed. A
-    request whose outcome is unknown stays pending: a retry with the same key
-    that then finds the name taken reports `UNKNOWN_REMOTE_STATE`, not success.
+    request whose outcome is unknown stays pending, and so does its key after
+    any later refusal: a retry with the same key that then finds the name taken
+    reports `UNKNOWN_REMOTE_STATE`, not success, and corrected input needs a new
+    key because changed input under that key returns `CONFLICT`.
   - Discovery: `workspace_capabilities.githubRepositoryCreate`
     (`GitHubRepositoryCreateCapabilitySchema`) reports `available`, the
     `organizations` with their verified `administration` level, and a `reason`

@@ -30,7 +30,9 @@ installation live, so it is safe to call; the result also refreshes discovery.
 The same holds when `available` is false with a `reason` saying the configured
 installation is verified live on use: an operator-configured installation with
 no dashboard connection is only checked by the call itself, so call it rather
-than giving up. Any other `available: false` means the call will be refused.
+than giving up. A stored record can also be stale, for example after the owner
+granted the permission or unsuspended the App, so a refusal from the call is
+the authoritative answer, not the discovery block.
 
 <!-- cloudharness-example:workspace_capabilities
 {}

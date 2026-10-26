@@ -419,8 +419,11 @@ ahead of a managed jump, the runner moves that existing managed jump back to the
 head of its chain through the same network-guard image, in one atomic
 `iptables-restore --noflush` transaction that deletes and re-inserts the jump by
 rule spec, and attests the fresh ruleset again. It never adds, edits, or
-removes any other rule. Moving the managed `INPUT` and bridge `DOCKER-USER`
-jumps cannot widen access, because they match only `chm-egress0` and reject.
+removes any other rule. Moving the managed `INPUT` jump cannot widen access,
+because its chain only rejects. Moving the bridge `DOCKER-USER` jump cannot
+widen bridge access beyond the attested egress policy, though it lets that
+policy's public DNS and TCP 80/443 accepts run before a foreign rule that
+would have dropped them.
 Moving Docker's unconditional `FORWARD -j DOCKER-USER` jump, however, also puts
 any operator rule kept in `DOCKER-USER` ahead of the foreign chain for
 non-bridge traffic, so keep host-wide accept rules out of `DOCKER-USER` on a

@@ -291,7 +291,8 @@ export class HostFirewallAttestor {
    * jump. Returns the jumps to move to the head of their chain when the ruleset
    * attests with exactly those moves, otherwise undefined. Moving a managed
    * jump earlier only puts the managed deny/egress policy in front of the
-   * foreign rule; it never widens what the bridge can reach.
+   * foreign rule; the bridge can never reach more than the attested egress
+   * policy allows.
    */
   public planOrderingRepair(iptablesText: string): FirewallOrderingRepair[] | undefined {
     const lines = iptablesText.split('\n').map((l) => l.trim().replace(/\s+/g, ' ')).filter((l) => l.length > 0 && !l.startsWith('#'));
