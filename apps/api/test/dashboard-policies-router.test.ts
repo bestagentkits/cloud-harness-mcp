@@ -212,7 +212,12 @@ describe('dashboard agent policy BFF', () => {
 
     const repeated = await send(`/api/v1/agent-policies/revisions/${revisionId}/rollback`, { method: 'POST', headers, body: JSON.stringify({ expectedVersion: 4, revisionId }) });
     expect(repeated.status).toBe(200);
-    expect(requests).toEqual([{ version: 1, principal, operation: 'policy_rollback', input: { revisionId, expectedVersion: 4, confirmWeakening: false } }]);
+    const sameProject = await send(`/api/v1/agent-policies/projects/${projectId}`, { method: 'PUT', headers, body: JSON.stringify({ document: projectDocument, expectedVersion: 2, projectId }) });
+    expect(sameProject.status).toBe(200);
+    expect(requests).toEqual([
+      { version: 1, principal, operation: 'policy_rollback', input: { revisionId, expectedVersion: 4, confirmWeakening: false } },
+      { version: 1, principal, operation: 'policy_put', input: { scope: 'project', projectId, document: projectDocument, expectedVersion: 2, confirmWeakening: false } }
+    ]);
   });
 
   it('rejects malformed identifiers and queries before reaching the runner', async () => {

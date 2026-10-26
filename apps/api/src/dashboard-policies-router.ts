@@ -36,8 +36,9 @@ const historyQuery = (request: DashboardRequest) => defined({ beforeVersion: que
 /**
  * Owner Dashboard routes for agent execution policies (`/api/v1/agent-policies`). The session decides
  * the principal; the route decides scope and project from the path, after the body, so a body field
- * cannot redirect a write, and a body that repeats a path id with a different value is refused. Every request is validated against the full runner schema before it is
- * forwarded, and mutations pass the Dashboard Origin and CSRF checks like every other write.
+ * cannot redirect a write, and a body that repeats a path id with a different value is refused.
+ * Every request is validated against the full runner schema before it is forwarded, and mutations
+ * pass the Dashboard Origin and CSRF checks like every other write.
  */
 export function registerAgentPolicyRoutes(
   router: Router,
