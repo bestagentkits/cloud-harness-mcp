@@ -527,6 +527,13 @@ At startup and hourly, a purge removes traces past retention, even with traces
 disabled, in bounded batches of one transaction each that yield to the event
 loop between batches; shutdown stops it between batches and waits for it before
 the database closes. The per-principal quota evicts in the same bounded batches.
+Neither removes a trace whose automation workflow has not ended: a coding
+workflow can wait for an approval longer than the retention and still records
+its approval and action spans into the trace of its finished agent run. A
+runner-recorded span moves the trace's retention to count from that span, and an
+approval request holds the trace a full retention past its decision deadline.
+Like a `RUNNING` trace, a workflow that never ends stops holding its trace seven
+days after the retention deadline.
 The owners are
 [`apps/runner/src/agent-trace-schema.ts`](../apps/runner/src/agent-trace-schema.ts),
 [`apps/runner/src/agent-trace-recorder.ts`](../apps/runner/src/agent-trace-recorder.ts),

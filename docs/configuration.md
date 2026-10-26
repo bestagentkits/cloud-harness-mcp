@@ -655,9 +655,9 @@ tombstones already written keep the expiry they were written with.
 | Variable | Default | Decision |
 |---|---|---|
 | `AGENT_TRACES_ENABLED` | off | Runner only. Records one durable trace per coding-agent run and enables the four `agent_trace*` tools and the Dashboard Traces page. Off, the tools answer `FEATURE_DISABLED` and the page stays hidden. |
-| `AGENT_TRACE_RETENTION_DAYS` | see schema | How long a finished trace is kept before the hourly purge removes it. |
+| `AGENT_TRACE_RETENTION_DAYS` | see schema | How long a finished trace is kept, counted from its latest span, before the hourly purge removes it. A trace whose automation workflow has not ended, for example one waiting for an approval, is kept regardless. |
 | `AGENT_TRACE_MAX_SPANS` | see schema | Spans kept per trace; later spans are dropped behind one truncation marker. |
-| `AGENT_TRACE_MAX_PER_PRINCIPAL` | see schema | Traces kept per principal; the oldest finished traces are evicted first. |
+| `AGENT_TRACE_MAX_PER_PRINCIPAL` | see schema | Traces kept per principal; the oldest finished traces are evicted first, never one whose automation workflow has not ended. |
 | `AGENT_TRACE_PREVIEW_BYTES` | `0` | Bytes of redacted tool-input preview per tool span. `0` stores digests only; raise it only when a bounded, redacted preview is worth the extra stored data. |
 
 Code defaults and ranges are owned by
