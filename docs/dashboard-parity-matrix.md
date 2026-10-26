@@ -507,13 +507,13 @@ P4c. "UI caller" is the legacy caller; none of these has a React caller yet.
 | POST | `/agent-policies/revisions/:revisionId/rollback` | policies router | `expectedVersion`, `confirmWeakening` + `weakeningDigest` | rollback, confirm | `agent-policies` | #558, #547 |
 | GET / POST | `/automations/connections` | control router | POST: one-time reveal of the signing secret | connections tab | `automations` | #556 |
 | PATCH / DELETE | `/automations/connections/:id` | control router | **gen** (PATCH and DELETE) | connections tab | `automations` | #556, #571 |
-| POST | `/automations/connections/:id/rotate-secret` | control router | **gen**; one-time reveal | connections tab | `automations` | #556 |
+| POST | `/automations/connections/:id/rotate-secret` | control router | **gen**; one-time reveal | connections tab | `automations` | #556, #571 |
 | GET / POST | `/automations/rules` | control router | `connectionId` filter | rules tab | `automations` | #556 |
 | PATCH / DELETE | `/automations/rules/:id` | control router | **gen** (PATCH and DELETE) | rules tab | `automations` | #556, #571 |
-| POST | `/automations/rules/:id/preview` | control router | `{sample}` | rule preview | `automations` | #556 |
-| GET | `/workspaces/:id/repositories` | router | `status` | repository selector, Summary explorer | `workspace-cockpit` | #559 |
+| POST | `/automations/rules/:id/preview` | control router | `{sample}` | rule preview | `automations` | #556, #571 |
 | GET | `/automations/workflows[/:id]`, `/automations/deliveries` | control router | `ruleId`, `state`, `limit`, `actionsCursor`, `connectionId` | runs, run detail, deliveries | `automations` | #556 |
-| POST | `/automations/workflows/:id/cancel` | control router | optional `reason` | run detail | `automations` | #556 |
+| POST | `/automations/workflows/:id/cancel` | control router | optional `reason` | run detail | `automations` | #556, #571 |
+| GET | `/workspaces/:id/repositories` | router | `status` | repository selector, Summary explorer | `workspace-cockpit` | #559 |
 
 ## 5. Keyboard shortcuts
 
@@ -548,9 +548,9 @@ named owners. In React each poller has exactly one owner (a query
 | T7 | `createPaletteIndexLoader` | max-age cache, invalidated on announce and `pagehide` | — | query `staleTime` with the same invalidation | P2 |
 | T8–T10 | combobox search, knowledge preview, skills search | debounces | — | keep the values from the owners | P3/P4 |
 | T11–T13 | toast removal, update cue, copy chip revert | one-shot timeouts | — | keep (Motion only for dialogs and toasts) | P2 |
+| T15 | `refreshApprovalsBadge` | no timer; only on Overview, Activity and Approvals loads | stale badge (R13) | invalidate after approve/reject and on window focus | P3 |
 | T16 | trace list poll in `createTracesView` (`dashboard-traces.js`) | bounded chain while any row is `RUNNING`; rows only, KPI strip fixed; stops on "Load more" | — | query `refetchInterval` while a row is running, stop on unmount | P4c (#555) |
 | T17 | trace detail poll in `createTracesView` | bounded chain while the trace is `RUNNING` | — | same, stop on terminal state | P4c (#555) |
-| T15 | `refreshApprovalsBadge` | no timer; only on Overview, Activity and Approvals loads | stale badge (R13) | invalidate after approve/reject and on window focus | P3 |
 
 Navigation read baseline. `apps/dashboard/e2e/navigation-budget.spec.ts` tours
 Overview → Workspaces → Agents → Agent detail (Follow on) → Activity → Skills

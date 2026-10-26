@@ -115,7 +115,7 @@ beforeEach(async () => {
     callInternal: vi.fn(ok),
     callAutomations: vi.fn(async (request) => {
       operations.push({ operation: request.operation, input: request.input as Record<string, unknown> });
-      return { ok: true, data: { connection: null } } as never;
+      return { ok: true, data: request.operation === 'connection_delete' ? { deleted: true } : {} } as never;
     })
   };
   const app = express();
@@ -187,7 +187,8 @@ describe('dashboard BFF path id authority', () => {
 
   it('forwards the path automation id when the body repeats it', async () => {
     const headers = await mutationHeaders();
-    await send(`/api/v1/automations/connections/${connection}`, { method: 'DELETE', headers, body: JSON.stringify({ id: connection, expectedGeneration: 3 }) });
+    const reply = await send(`/api/v1/automations/connections/${connection}`, { method: 'DELETE', headers, body: JSON.stringify({ id: connection, expectedGeneration: 3 }) });
+    expect(reply.status).toBe(200);
     expect(operations).toEqual([{ operation: 'connection_delete', input: { id: connection, expectedGeneration: 3 } }]);
   });
 

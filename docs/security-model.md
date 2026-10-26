@@ -1072,8 +1072,9 @@ because the in-memory cache is not reachable from the page.
 
 A Dashboard BFF mutation acts on the resource its URL names. When a JSON body
 repeats a path id (`workspaceId`, `environmentId`, `name`, `skillId`, the
-automation connection, rule or workflow `id`, and so on) with a different value, the request is refused with
-`400 path_id_mismatch` before the runner is called. A body that repeats the
+automation connection, rule or workflow `id`, and so on) with a different
+value, the request is refused with `400 path_id_mismatch` before the runner is
+called. A body that repeats the
 same value is accepted, and the path value is always the one forwarded. This
 keeps page actions built by the Dewee agent, and any other client, from aiming
 a route at a different resource than the one it called. The owner is
