@@ -1140,7 +1140,7 @@ const schemas = {
       .describe('Repository guidance profile placed before the task; omitted uses codex, none sends the task alone.'),
     // Optional, and without a default, so omitting it keeps the idempotency payload unchanged.
     continueFrom: AgentIdSchema.optional()
-      .describe('A terminal agent of this workspace whose persisted session the new agent continues; needs session persistence on the instance. The new agent gets a new id, container, lease, and budget.'),
+      .describe('A terminal agent of this workspace whose session the new agent continues; a pi-coding agent needs session persistence on the instance, a pi-durable agent needs the durable runtime enabled. The new agent gets a new id, container, lease, and budget.'),
     // Optional, and without a default, so omitting it keeps the idempotency payload unchanged.
     runtime: AgentRuntimeKindSchema.optional()
       .describe('Agent engine. Omitted means pi-coding, or the engine of the agent named by continueFrom; a continuation refuses a different engine. pi-durable is refused unless the instance enables it.')
