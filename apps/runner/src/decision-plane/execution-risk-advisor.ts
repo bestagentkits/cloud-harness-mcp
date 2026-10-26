@@ -173,7 +173,7 @@ export class ExecutionRiskAdvisor implements DecisionAdvisor {
     try {
       const availability = this.availability(request.principalId);
       if (!availability.available) return fallback(availability.reason);
-      // CI and dependency changes always go to a human, decided here with no egress.
+      // CI and dependency changes are never sent; the policy fallback applies, as for any unanswered action.
       if (touchesSensitivePaths(request.descriptor.paths)) return fallback('sensitive_paths');
       // A summary that cannot be built (an unknown subject class) is not sent; the policy fallback applies.
       let summary: string;

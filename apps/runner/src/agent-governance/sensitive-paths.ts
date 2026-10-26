@@ -18,23 +18,32 @@ export const DEPENDENCY_MANIFESTS: ReadonlySet<string> = new Set([
   'requirements.txt', 'constraints.txt', 'pyproject.toml', 'setup.py', 'setup.cfg', 'poetry.lock', 'uv.lock', 'pipfile', 'pipfile.lock', '.pypirc',
   'cargo.toml', 'cargo.lock', 'go.mod', 'go.sum', 'go.work', 'go.work.sum', 'gemfile', 'gemfile.lock', 'composer.json', 'composer.lock',
   'pom.xml', 'build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts', 'gradle.lockfile', 'libs.versions.toml',
-  'deno.json', 'deno.jsonc', 'deno.lock', 'packages.lock.json', 'directory.packages.props', 'nuget.config'
+  'deno.json', 'deno.jsonc', 'deno.lock', 'packages.lock.json', 'directory.packages.props', 'nuget.config',
+  'requirements.in', '.pnpmfile.cjs', 'bunfig.toml', 'gradle-wrapper.properties', 'directory.build.props', 'directory.build.targets',
+  'package.swift', 'package.resolved', 'podfile', 'podfile.lock', 'pubspec.yaml', 'pubspec.lock', 'mix.exs', 'mix.lock'
 ]);
 
 /** Root entries that hold CI or workflow definitions, lower-case. They run later with the repository's CI secrets. */
 const CI_ROOT_ENTRIES: ReadonlySet<string> = new Set([
   '.github', '.gitlab-ci.yml', '.gitlab', '.circleci', 'azure-pipelines.yml', '.travis.yml', 'jenkinsfile', 'bitbucket-pipelines.yml',
-  '.buildkite', '.drone.yml', '.gitea', '.forgejo', '.woodpecker', '.woodpecker.yml'
+  '.buildkite', '.drone.yml', '.gitea', '.forgejo', '.woodpecker', '.woodpecker.yml', '.woodpecker.yaml', '.gitlab-ci.yaml', '.azure-pipelines'
 ]);
 
 /** Lower-case path segments; empty and `.` segments carry no meaning, so `./.github/x` classifies like `.github/x`. */
 export const pathSegments = (path: string): string[] =>
   path.split('/').filter((segment) => segment !== '' && segment !== '.').map((segment) => segment.toLowerCase());
 
-/** A dependency manifest, lockfile or registry configuration at any depth: a supply-chain change. */
+/**
+ * A dependency manifest, lockfile or registry configuration at any depth: a supply-chain change. The
+ * root `.yarn/` directory (vendored releases and plugins) and Cargo's `.cargo/config` run or redirect
+ * what an install fetches, so they count too.
+ */
 export function isDependencyManifest(parts: readonly string[]): boolean {
   const name = parts.at(-1) ?? '';
-  return DEPENDENCY_MANIFESTS.has(name) || /^requirements[-_.].*\.txt$/u.test(name) || /\.(?:cs|fs|vb)proj$/u.test(name);
+  return DEPENDENCY_MANIFESTS.has(name)
+    || /^requirements[-_.].*\.txt$/u.test(name) || (parts.at(-2) === 'requirements' && name.endsWith('.txt'))
+    || /\.(?:cs|fs|vb)proj$/u.test(name) || name.endsWith('.gemspec')
+    || parts[0] === '.yarn' || (parts.at(-2) === '.cargo' && (name === 'config' || name === 'config.toml'));
 }
 
 /** A CI or workflow definition at the repository root. */

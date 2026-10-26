@@ -443,7 +443,15 @@ describe('execution-risk advisor: CI and dependency changes are never put to the
     ['a .NET project file', ['src/App/App.csproj']],
     ['an Azure Pipelines config', ['azure-pipelines.yml']],
     ['a Jenkinsfile', ['Jenkinsfile']],
-    ['a Gitea workflow', ['.gitea/workflows/ci.yml']]
+    ['a Gitea workflow', ['.gitea/workflows/ci.yml']],
+    ['a pnpm install hook', ['.pnpmfile.cjs']],
+    ['a vendored Yarn release', ['.yarn/releases/yarn-4.1.0.cjs']],
+    ['a Gradle wrapper pin', ['gradle/wrapper/gradle-wrapper.properties']],
+    ['a requirements directory file', ['requirements/dev.txt']],
+    ['a gemspec', ['widgets.gemspec']],
+    ['a Cargo registry config', ['.cargo/config.toml']],
+    ['an MSBuild props file', ['Directory.Build.props']],
+    ['a YAML-suffixed GitLab CI file', ['.gitlab-ci.yaml']]
   ] as const)('escalates %s with zero egress and REQUIRE_APPROVAL', async (_label, paths) => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     const { decide, provider, traces } = setup({ steps: reassuring });
@@ -484,7 +492,7 @@ describe('execution-risk advisor: CI and dependency changes are never put to the
   it.each([
     ['a plain source edit', ['src/cart.ts']],
     ['a workflow-like name outside the root CI directories', ['docs/.github-notes.md', 'src/github/workflows.ts']],
-    ['a file that only resembles a manifest', ['src/package.json.ts', 'docs/requirements.md']]
+    ['a file that only resembles a manifest', ['src/package.json.ts', 'docs/requirements.md', 'src/yarn/index.ts', 'docs/requirements/notes.md']]
   ] as const)('still consults the provider for %s', async (_label, paths) => {
     const { decide, provider } = setup({ steps: reassuring });
     const decision = await decide(action({ actionClass: 'edit', paths: [...paths] }));
