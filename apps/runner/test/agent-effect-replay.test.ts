@@ -6,7 +6,7 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { AgentProxyOperationSchema, RunnerAgentsConfigSchema, type RunnerResponse } from '@cloud-harness/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { effectPayloadHash } from '../src/agent-effect-reconciler.js';
+import { effectPayloadHash, effectRequestId } from '../src/agent-effect-reconciler.js';
 import { AgentManager, type AgentToolExecutor } from '../src/agent-manager.js';
 import type { AgentGatewayControl, AgentLeaseGrant, AgentLeaseRevocation } from '../src/agent-gateway-control.js';
 import type { AgentLaunchSpec, AgentLauncher, AgentRuntimeProcess } from '../src/agent-launcher.js';
@@ -608,6 +608,21 @@ describe('outcomes of unanswered tool calls in a continued transcript', () => {
     expect(await startOutcomes(second.launcher, 0)).toEqual([{ toolCallId: 'toolu_w', outcome: 'APPLIED', isError: false, text: original.text }]);
     expect(fs.executions('files_write')).toBe(1);
     expect(fs.applied).toEqual(['files_write']);
+  });
+
+  it('settles a call whose provider gave it an empty tool call ID under the request ID the runtime derived', async () => {
+    const context = setup();
+    const { first, fs } = context;
+    const input = { path: 'out.txt', content: 'v1' };
+    const requestId = effectRequestId('', 0);
+    const agentId = await spawnRunning(context, first, 'outcome-empty-id');
+    await recordToolCall(context, first, 0, agentId, requestId, [{ id: '', name: 'files_write', arguments: input }]);
+    const original = await request(first.launcher, 0, requestId, 'files_write', input);
+    const second = await crashAndRestart(context, agentId);
+    await continueAgent(context, second, agentId, 'outcome-empty-id-continue');
+    // The runtime closes the call by its empty ID, so the outcome keeps it.
+    expect(await startOutcomes(second.launcher, 0)).toEqual([{ toolCallId: '', outcome: 'APPLIED', isError: false, text: original.text }]);
+    expect(fs.executions('files_write')).toBe(1);
   });
 
   it('reconciles a write whose result was lost before the continuation starts and closes the call as applied', async () => {

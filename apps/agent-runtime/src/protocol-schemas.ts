@@ -62,7 +62,8 @@ const SessionMessageSchema = z.unknown().refine(isSessionMessage, 'session messa
 export const MAX_TOOL_OUTCOMES = 64;
 const MAX_TOOL_OUTCOME_TEXT_BYTES = 64 * 1024;
 const ToolOutcomeSchema = z.object({
-  toolCallId: z.string().min(1).max(1_024),
+  // Empty is valid: some providers omit tool call IDs, and replay closes such a call by that ID.
+  toolCallId: z.string().max(1_024),
   outcome: z.enum(['APPLIED', 'REJECTED', 'NOT_APPLIED', 'UNKNOWN']),
   isError: z.boolean(),
   text: z.string().min(1).refine((text) => Buffer.byteLength(text, 'utf8') <= MAX_TOOL_OUTCOME_TEXT_BYTES, 'tool outcome text is too large')

@@ -121,6 +121,9 @@ describe('persisted session replay planning', () => {
     const outcome = { toolCallId: 'call-1', outcome: 'APPLIED', isError: false, text: '{"ok":true}' };
     expect(StartRecordSchema.parse({ ...plain, session: { ...session, toolOutcomes: [outcome] } }).session?.toolOutcomes).toEqual([outcome]);
     expect(() => StartRecordSchema.parse({ ...plain, session: { ...session, toolOutcomes: [outcome, outcome] } })).toThrow();
+    const unnamed = { ...outcome, toolCallId: '' };
+    expect(StartRecordSchema.parse({ ...plain, session: { ...session, toolOutcomes: [unnamed] } }).session?.toolOutcomes).toEqual([unnamed]);
+    expect(() => StartRecordSchema.parse({ ...plain, session: { ...session, toolOutcomes: [{ ...outcome, toolCallId: 'x'.repeat(1_025) }] } })).toThrow();
     expect(() => StartRecordSchema.parse({ ...plain, session: { ...session, toolOutcomes: [{ ...outcome, outcome: 'NONE' }] } })).toThrow();
     expect(() => StartRecordSchema.parse({ ...plain, session: { ...session, toolOutcomes: [{ ...outcome, text: 'x'.repeat(64 * 1024 + 1) }] } })).toThrow();
     const many = Array.from({ length: 65 }, (_, index) => ({ ...outcome, toolCallId: `call-${index}` }));
