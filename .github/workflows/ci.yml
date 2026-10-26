@@ -25,9 +25,13 @@ jobs:
           cache: npm
       - run: npm ci
       # `bash -n a.sh b.sh` parses only a.sh (the rest become its arguments), so check each
-      # tracked script on its own; a new script is covered without editing this list.
+      # tracked script on its own; a new `*.sh` or `bin/` script is covered without editing
+      # this step. `shell: bash` adds pipefail, and the count guard fails an empty match.
       - name: Syntax-check shell scripts
-        run: git ls-files -z '*.sh' | xargs -0 -n1 bash -n
+        shell: bash
+        run: |
+          test "$(git ls-files '*.sh' 'bin/*' | wc -l)" -gt 0
+          git ls-files -z '*.sh' 'bin/*' | xargs -0 -n1 bash -n
       - run: npm run verify:compose
       - run: npm run verify
       - name: Verify documentation and reference integrity

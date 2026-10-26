@@ -143,9 +143,9 @@ current:
      failure as a regression.
    - Compose or network-boundary changes: `npm run verify:compose` and
      `npm run verify`.
-   - Shell changes: run the syntax check owned by `.github/workflows/ci.yml`
-     (`git ls-files -z '*.sh' | xargs -0 -n1 bash -n`). It checks every tracked
-     script one at a time; `bash -n a.sh b.sh` would parse only `a.sh`.
+   - Shell changes: run the syntax-check step owned by `.github/workflows/ci.yml`.
+     It parses each tracked `*.sh` and `bin/` script separately, because
+     `bash -n a.sh b.sh` would parse only `a.sh`.
    - Docker/executor changes: build with
      `docker compose --profile images build executor-image api runner`, then run
      `npm run test:docker` and `npm run test:e2e` when Docker and network access
