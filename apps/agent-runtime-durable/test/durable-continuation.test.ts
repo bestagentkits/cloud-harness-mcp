@@ -475,6 +475,27 @@ describe('durable agent runtime through the runner', () => {
     expect(existsSync(lineageFile(context, agentId))).toBe(false);
   }, 60_000);
 
+  it('retries deleting a purged lineage\'s session store after a failed removal', async () => {
+    let now = Date.now();
+    const context = setup();
+    const runner = context.runner({ responses: [[fauxAssistantMessage('answer')]], now: () => now });
+    const agentId = await spawn(context, runner, 'retention-retry-root', { runtime: 'pi-durable' });
+    expect(await settled(context, runner, agentId)).toBe('SUCCEEDED');
+    const reap = async () => await (runner.manager as unknown as { reap(): Promise<void> }).reap();
+    const removal = vi.spyOn(runner.sessions, 'delete').mockRejectedValueOnce(new Error('EBUSY'));
+    now += agentsConfig().limits.sessionRetentionMs + 1;
+    await reap();
+    expect(removal).toHaveBeenCalledTimes(1);
+    expect(existsSync(lineageFile(context, agentId))).toBe(true);
+    expect(runner.sessions.lineageBytes(agentId)).toBeGreaterThan(0);
+    // The session is already purged, so only the retry of its leftover store removes it.
+    await reap();
+    expect(existsSync(lineageFile(context, agentId))).toBe(false);
+    expect(runner.sessions.totalBytes()).toBe(0);
+    await reap();
+    expect(removal).toHaveBeenCalledTimes(2);
+  }, 60_000);
+
   it('refuses the durable engine while it is off, and refuses to switch engines on a continuation', async () => {
     const context = setup();
     const { record } = context;

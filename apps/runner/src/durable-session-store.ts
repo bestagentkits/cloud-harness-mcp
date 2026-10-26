@@ -466,6 +466,11 @@ export class DurableSessionStore {
     return this.#lineageSizes.get(lineageRootId) ?? 0;
   }
 
+  /** The lineages that have a database on disk, as last measured. */
+  lineages(): string[] {
+    return [...this.#lineageSizes.keys()];
+  }
+
   /** The last measured on-disk size of every lineage database, including one no agent record names any more. */
   totalBytes(): number {
     let total = 0;
