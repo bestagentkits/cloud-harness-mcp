@@ -1,3 +1,10 @@
+# [0.79.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.78.1...v0.79.0) (2026-10-26)
+
+
+### Features
+
+* **agent:** opt-in Pi Durable runtime behind a flag with runner-hosted storage ([#448](https://github.com/bestagentkits/cloud-harness-mcp/issues/448)) ([1ce7731](https://github.com/bestagentkits/cloud-harness-mcp/commit/1ce77314aedb4065f2749ad64af523e33deb08d1)), closes [#582](https://github.com/bestagentkits/cloud-harness-mcp/issues/582) [#588](https://github.com/bestagentkits/cloud-harness-mcp/issues/588) [#592](https://github.com/bestagentkits/cloud-harness-mcp/issues/592) [#589](https://github.com/bestagentkits/cloud-harness-mcp/issues/589)
+
 ## [0.78.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.78.0...v0.78.1) (2026-10-26)
 
 
