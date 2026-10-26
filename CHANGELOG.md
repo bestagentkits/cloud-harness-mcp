@@ -1,3 +1,15 @@
+# [0.77.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.76.2...v0.77.0) (2026-10-26)
+
+
+### Bug Fixes
+
+* **dashboard:** wait for chat.abort before closing the Dewee gateway socket ([#535](https://github.com/bestagentkits/cloud-harness-mcp/issues/535)) ([c78162d](https://github.com/bestagentkits/cloud-harness-mcp/commit/c78162d115cb3d84423cfb48198ae5c2c07eff09)), closes [#533](https://github.com/bestagentkits/cloud-harness-mcp/issues/533)
+
+
+### Features
+
+* **agents:** persist agent sessions in the runner and continue them in a fresh container ([#423](https://github.com/bestagentkits/cloud-harness-mcp/issues/423)) ([4e98ea1](https://github.com/bestagentkits/cloud-harness-mcp/commit/4e98ea15249a0a302be1b7c5f9f7e978a2b44ad4)), closes [#545](https://github.com/bestagentkits/cloud-harness-mcp/issues/545)
+
 ## [0.76.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.76.1...v0.76.2) (2026-10-26)
 
 
