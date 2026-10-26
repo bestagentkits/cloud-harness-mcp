@@ -115,7 +115,7 @@ use case to be considered served.
 | Criterion | 1. Keep Pi | 2. Persistent sessions | 3. Pi Durable (opt-in) |
 | --- | --- | --- | --- |
 | Completed-session continuation (use case 3) | No | Yes, new agent with stored transcript | Yes, through its own journal |
-| Mid-run crash recovery (use case 4) | No | No resumption; the interrupted call is closed with its settled outcome | Resumes pending tasks; the interrupted call is re-issued, and the ledger refuses a duplicate effect |
+| Mid-run crash recovery (use case 4) | No | No resumption; the interrupted call is closed with its settled outcome | Resumes pending tasks; the interrupted call is settled as failed and the model may re-issue it under a new request ID, which the effect ledger does not match ([#589](https://github.com/bestagentkits/cloud-harness-mcp/issues/589)) |
 | Change to default behaviour | None | None when the flag is off | None when the flag is off |
 | New third-party code in the trusted runner | None | None | pi-durable storage code, only when enabled |
 | Upstream stability | Pinned, current | Pinned, current | Experimental upstream, breaking minors |
@@ -190,9 +190,16 @@ Every persisted and durable run left 0 session rows, 0 effect rows and 0
 lineage databases after cleanup. In scenario 4, every interrupted run ended
 `INTERRUPTED` and none was reported as success. A persisted continuation
 received the interrupted call's settled outcome and did not issue it again. A
-durable continuation re-issued the interrupted call once, because the engine
-resumes its pending task; the effect ledger answered it without a second write.
-That re-issue is counted as a repeated invocation, not a duplicate effect.
+durable continuation reached the executor with the interrupted call a second
+time (1 repeated invocation). The engine settles the interrupted call as failed,
+and the model issues it again under a new `durable-task-<id>` request ID, so the
+effect ledger sees a new request and does not match it to the earlier effect.
+The second write was refused only because `files_apply_patch` no longer found
+its `oldText` and returned `CONFLICT`. The 0 duplicates therefore hold only for
+a tool that guards itself; a non-idempotent call (`files_write`,
+`files_delete`, `files_move`) in flight at the kill could be applied twice. The
+engine fix is tracked in
+[#589](https://github.com/bestagentkits/cloud-harness-mcp/issues/589).
 
 Token counts are left out of the table because the faux providers of Pi 0.84
 and Pi 1.3 estimate tokens differently; the context each model request carried
@@ -248,7 +255,9 @@ Findings:
 - Duplicate effects cannot be counted exactly from outside the runner, because
   the restart repeats the whole task prompt and the model may legitimately write
   the same file again. The effect ledger answers a repeated request ID with its
-  receipt, as the offline runs prove.
+  receipt, which covers a persisted continuation. A durable restart re-issues
+  under a new request ID, which the ledger does not match (see the offline
+  results and [#589](https://github.com/bestagentkits/cloud-harness-mcp/issues/589)).
 - One durable restart wrote 65 times in 64 seconds until the gateway's model
   budget stopped it, as designed. The cause is the model, not the engine or the
   runner. A follow-up diagnosis drove the real worker and runner offline,
@@ -269,10 +278,17 @@ Findings:
 
 ### Evaluation against the criteria
 
-1. **Safety.** Both persisting options meet it: offline over 20 repetitions,
-   0 duplicate effects and 0 leftovers; offline and live, no interrupted run
-   reported as success. `pi-coding` alone repeats the completed write when the
-   caller replays the task.
+1. **Safety.** Persistent sessions meet it: offline over 20 repetitions, 0
+   duplicate effects, 0 repeated invocations and 0 leftovers. The durable engine
+   meets it only for idempotent or self-guarded tools: it also had 0 duplicate
+   effects and 0 leftovers, but its resumed run invoked the interrupted write a
+   second time under a new request ID that the effect ledger does not match,
+   and only the patch's `oldText` guard refused it. A non-idempotent write,
+   delete or move in flight at a kill could be applied twice until
+   [#589](https://github.com/bestagentkits/cloud-harness-mcp/issues/589) is
+   fixed. Offline and live, no interrupted run of either option was reported as
+   success. `pi-coding` alone repeats the completed write when the caller
+   replays the task.
 2. **Default path unchanged.** Met. With the flags off the spawn path, start
    record and protocol are those of the baseline, and the offline `pi-coding`
    rows are produced by the unchanged worker.
@@ -292,7 +308,7 @@ Findings:
 6. **Cost of ownership.** Persistence adds no third-party code. The durable
    engine adds an experimental upstream package, a second Pi model layer in an
    opt-in image, a runner-side storage protocol and a per-lineage database,
-   for a resume that the effect ledger must still fence.
+   for a resume that the effect ledger does not yet fence (#589).
 
 ## Consequences
 
