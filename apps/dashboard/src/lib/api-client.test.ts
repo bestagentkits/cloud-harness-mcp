@@ -167,6 +167,15 @@ describe('createApiClient', () => {
     expect(error).toMatchObject({ status, code: 'code_x', message: 'Readable.' });
   });
 
+  it('keeps the result a 422 reports, and only a 422', async () => {
+    const data = { exitCode: 2, executionMode: 'helper-container', output: 'boom' };
+    const { impl } = fakeFetch(json(422, { error: 'execution_failed', message: 'Failed.', data }), json(400, { error: 'invalid_input', message: 'Bad.', data }), json(422, { error: 'x', data: [1] }));
+    const client = createApiClient(impl);
+    expect(await client.get('/x').catch((caught: unknown) => caught)).toMatchObject({ status: 422, code: 'execution_failed', data });
+    expect((await client.get('/x').catch((caught: unknown) => caught) as ApiError).data).toBeUndefined();
+    expect((await client.get('/x').catch((caught: unknown) => caught) as ApiError).data).toBeUndefined();
+  });
+
   it('reads Retry-After on 429 and falls back to a generic message for non-JSON bodies', async () => {
     const { impl } = fakeFetch(new Response('busy', { status: 429, headers: { 'retry-after': '7' } }));
     const error = await createApiClient(impl).get('/x').catch((caught: unknown) => caught);

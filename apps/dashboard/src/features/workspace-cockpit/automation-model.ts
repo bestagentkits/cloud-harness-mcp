@@ -4,12 +4,14 @@
  * carries the digest it was shown (`packages/contracts/src/tool-schemas.ts` `skills_run`,
  * `hooks_run`), so a skill or hook changed after the page loaded is refused, not run.
  */
+import { ApiError } from '@/lib/api-client';
 import { arr, text } from '@/lib/format';
 
-export type WorkspaceSkill = { name: string; tier?: string; description?: string; sha256?: string };
+/** `contentSha256` is the skill bundle digest `skills_run` verifies (`expectedContentSha256`). */
+export type WorkspaceSkill = { name: string; tier?: string; description?: string; contentSha256?: string };
 export type WorkspaceHook = { name: string; events: string[]; active: boolean; description?: string; sha256?: string };
 export type DeploymentTarget = { name: string; cwd: string; lastResult: string; duration: string; failure: string };
-export type RunResult = { exitCode?: number; durationMs?: number; output: string; status?: string };
+export type RunResult = { exitCode?: number; durationMs?: number; output: string; status?: string; executionMode?: string; signal?: string };
 
 /** The lifecycle events hooks can run on, in pipeline order (`HookEventSchema`). */
 export const HOOK_LIFECYCLE = [
@@ -30,8 +32,8 @@ export function skillsOf(data: unknown): WorkspaceSkill[] {
   return arr((data as Record<string, unknown> | undefined)?.skills)
     .filter((skill) => text(skill.name) !== '')
     .map((skill) => {
-      const tier = optional(skill.tier); const description = optional(skill.description); const sha256 = digest(skill.sha256);
-      return { name: text(skill.name), ...(tier ? { tier } : {}), ...(description ? { description } : {}), ...(sha256 ? { sha256 } : {}) };
+      const tier = optional(skill.tier); const description = optional(skill.description); const contentSha256 = digest(skill.contentSha256);
+      return { name: text(skill.name), ...(tier ? { tier } : {}), ...(description ? { description } : {}), ...(contentSha256 ? { contentSha256 } : {}) };
     });
 }
 
@@ -89,11 +91,23 @@ export function deploymentsOf(data: unknown): DeploymentTarget[] {
 
 export function runResultOf(data: unknown): RunResult {
   const record = (data ?? {}) as Record<string, unknown>;
-  const status = optional(record.status);
+  const status = optional(record.status); const executionMode = optional(record.executionMode);
+  const signal = typeof record.signal === 'string' && /^SIG[A-Z0-9]+$/.test(record.signal) ? record.signal : undefined;
   return {
     ...(typeof record.exitCode === 'number' ? { exitCode: record.exitCode } : {}),
     ...(typeof record.durationMs === 'number' ? { durationMs: record.durationMs } : {}),
     ...(status ? { status } : {}),
+    ...(executionMode ? { executionMode } : {}),
+    ...(signal ? { signal } : {}),
     output: text(record.output)
   };
+}
+
+/**
+ * The result a failed skill run still reports: a script that ran and exited non-zero is a 422
+ * `execution_failed` carrying the run's projection, so the operator sees its exit code and
+ * output. Any other error has no run to show.
+ */
+export function skillRunFailure(error: unknown): RunResult | undefined {
+  return error instanceof ApiError && error.code === 'execution_failed' && error.data ? runResultOf(error.data) : undefined;
 }

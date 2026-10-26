@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { deploymentsOf, groupHooksByLifecycle, hookRunBody, hooksOf, parseDeployDraft, runResultOf, SCRIPT_PATTERN, skillsOf } from './automation-model';
+import { ApiError, ConflictError } from '@/lib/api-client';
+import { deploymentsOf, groupHooksByLifecycle, hookRunBody, hooksOf, parseDeployDraft, runResultOf, SCRIPT_PATTERN, skillRunFailure, skillsOf } from './automation-model';
 import { fileOf, joinPath, listingOf, parentPath, partialReadNotice, pathCrumbs, patchCopyText } from './files-model';
 import { gitActionBody, gitCommitsOf, gitStatusOf, worktreesOf } from './git-model';
 import { NODE_WIDTH, taskGraphLayout, taskGraphOf } from './task-graph-model';
@@ -65,7 +66,9 @@ describe('git model', () => {
 
 describe('automation model', () => {
   it('keeps only well-formed digests on skills and hooks', () => {
-    expect(skillsOf({ skills: [{ name: 'lint', sha256: SHA }, { name: 'raw', sha256: 'nope' }, { name: '' }] })).toEqual([{ name: 'lint', sha256: SHA }, { name: 'raw' }]);
+    // A skill run is fenced by the bundle digest the list reports as `contentSha256`.
+    expect(skillsOf({ skills: [{ name: 'lint', contentSha256: SHA }, { name: 'raw', contentSha256: 'nope' }, { name: 'old', sha256: SHA }, { name: '' }] }))
+      .toEqual([{ name: 'lint', contentSha256: SHA }, { name: 'raw' }, { name: 'old' }]);
     expect(hooksOf({ hooks: [{ path: 'h.sh', event: 'manual', active: false }], manifestSha256: SHA })).toEqual({ hooks: [{ name: 'h.sh', events: ['manual'], active: false }], manifestSha256: SHA });
   });
 
@@ -94,6 +97,17 @@ describe('automation model', () => {
       { name: 'stage', cwd: '', lastResult: 'ok', duration: 'Not reported', failure: 'None reported' }
     ]);
     expect(runResultOf({ exitCode: 0, durationMs: 5, output: 'done' })).toEqual({ exitCode: 0, durationMs: 5, output: 'done' });
+    expect(runResultOf({ exitCode: 1, executionMode: 'helper-container', signal: 'SIGTERM', output: '' }))
+      .toEqual({ exitCode: 1, executionMode: 'helper-container', signal: 'SIGTERM', output: '' });
+    expect(runResultOf({ signal: 'kill -9' })).toEqual({ output: '' });
+  });
+
+  it('shows a failed skill run only for an execution failure that carries its result', () => {
+    const data = { exitCode: 3, executionMode: 'helper-container', output: 'boom' };
+    expect(skillRunFailure(new ApiError(422, 'Failed.', 'execution_failed', data))).toEqual({ exitCode: 3, executionMode: 'helper-container', output: 'boom' });
+    expect(skillRunFailure(new ApiError(422, 'Failed.', 'execution_failed'))).toBeUndefined();
+    expect(skillRunFailure(new ApiError(400, 'Bad.', 'invalid_input', data))).toBeUndefined();
+    expect(skillRunFailure(new ConflictError(409, 'Changed.', 'conflict'))).toBeUndefined();
   });
 
   it('restores only a well-formed deploy target name', () => {

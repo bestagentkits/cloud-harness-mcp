@@ -18,6 +18,7 @@ import {
   PERMISSION_PRESETS,
   pricingSaveKind,
   profilePricing,
+  retainedOperations,
   providerApiModes,
   resetUntouchedPricing,
   selectProvider,
@@ -483,6 +484,24 @@ describe('buildProfileRequest', () => {
     expect(request?.kind === 'update' ? request.profileId : undefined).toBe('gpt-main');
     expect(request?.body).toMatchObject({ expectedGeneration: 7, model: 'gpt-4.1', displayName: 'GPT main' });
     expect(request?.body).not.toHaveProperty('profileId');
+  });
+
+  it('keeps policy-gated operations an edit does not offer, and only on an edit', () => {
+    const gated = profile({ activeRevision: revision({ maxProxyOperations: ['files_list', 'exec_run', 'git_status', 'git_diff'] }) });
+    const edit = initialWizardState({ mode: 'edit', profile: gated, profiles: [gated], credentials });
+    expect(retainedOperations(edit)).toEqual(['exec_run', 'git_status', 'git_diff']);
+    expect(edit.operations).toEqual(['files_list']);
+    expect(buildProfileRequest({ ...edit, operations: ['files_list', 'files_read'] }, openai).request?.body.maxProxyOperations)
+      .toEqual(['files_list', 'files_read', 'exec_run', 'git_status', 'git_diff']);
+    // A restored draft has no saved profile of its own; the live one supplies the retained set.
+    const stored = parseStoredWizard(JSON.parse(JSON.stringify(storedWizard(edit, gated.id))));
+    expect(stored && buildProfileRequest({ ...stored.state, profile: gated, takenIds: [] }, openai).request?.body.maxProxyOperations)
+      .toEqual(['files_list', 'exec_run', 'git_status', 'git_diff']);
+    const duplicate = initialWizardState({ mode: 'duplicate', profile: gated, profiles: [gated], credentials });
+    expect(retainedOperations(duplicate)).toEqual([]);
+    expect(buildProfileRequest(duplicate, openai).request?.body.maxProxyOperations).toEqual(['files_list']);
+    // The offered set still needs one operation: a retained one does not stand in for it.
+    expect(buildProfileRequest({ ...edit, operations: [] }, openai).errors.operations).toBe('Allow at least one operation.');
   });
 
   it('keys each validation error to the field that caused it and returns no request', () => {

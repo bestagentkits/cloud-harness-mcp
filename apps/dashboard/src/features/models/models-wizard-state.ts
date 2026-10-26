@@ -84,6 +84,20 @@ export function normalizeOperations(operations: readonly string[] | null | undef
   return PROXY_OPERATIONS.filter((operation) => chosen.has(operation));
 }
 
+/**
+ * Operations a saved profile allows that this wizard does not offer: the policy-gated coding
+ * operations, granted only through the MCP profile tools. An edit keeps them rather than
+ * silently dropping them; the runner validates the saved set either way. They are read from
+ * the live saved profile, never from restored wizard state.
+ */
+export function retainedOperations(state: Pick<WizardState, 'mode' | 'profile'>): string[] {
+  if (state.mode !== 'edit') return [];
+  const offered = new Set<string>(PROXY_OPERATIONS);
+  const saved = state.profile?.activeRevision?.maxProxyOperations;
+  return [...new Set(Array.isArray(saved) ? saved : [])]
+    .filter((operation) => typeof operation === 'string' && /^[a-z_]{1,40}$/.test(operation) && !offered.has(operation));
+}
+
 export function permissionPresetFor(operations: readonly string[]): 'read' | 'code' | 'custom' {
   const key = normalizeOperations(operations).join(',');
   for (const [id, preset] of Object.entries(PERMISSION_PRESETS)) if (normalizeOperations(preset.operations).join(',') === key) return id as 'read' | 'code';
@@ -237,8 +251,9 @@ export function buildProfileRequest(state: WizardState, provider: ModelProvider 
   if (maxInputTokens === null) errors.maxInputTokens = 'Enter a whole number of tokens above zero.';
   if (maxOutputTokens === null) errors.maxOutputTokens = 'Enter a whole number of tokens above zero.';
   if (maxCostMicros === null || maxCostMicros <= 0) errors.maxCost = 'Enter a cost limit above zero.';
-  const maxProxyOperations = normalizeOperations(state.operations);
-  if (!maxProxyOperations.length) errors.operations = 'Allow at least one operation.';
+  const offeredOperations = normalizeOperations(state.operations);
+  if (!offeredOperations.length) errors.operations = 'Allow at least one operation.';
+  const maxProxyOperations = [...offeredOperations, ...retainedOperations(state)];
   if (Object.keys(errors).length) return { errors };
   const body = {
     displayName,
