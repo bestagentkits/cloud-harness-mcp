@@ -238,20 +238,20 @@ describe('React Dashboard rollout flag', () => {
     const canary = await get(origin, '/dashboard?ui=react&tab=recent');
     expect(canary.status).toBe(302);
     expect(canary.headers.get('location')).toBe('/dashboard?tab=recent');
-    expect(canary.headers.get('set-cookie')).toBe('ch-dashboard-ui=react; Path=/dashboard; HttpOnly; Secure; SameSite=Strict');
+    expect(canary.headers.get('set-cookie')).toBe('ch-dashboard-ui=react; Path=/dashboard; HttpOnly; Secure; SameSite=Lax');
 
     const pinned = await get(origin, '/dashboard', { cookie: 'ch-dashboard-ui=react' });
     expectReactShell(pinned, await pinned.text());
 
     const optOut = await get(origin, '/dashboard?ui=legacy');
     expect(optOut.headers.get('location')).toBe('/dashboard');
-    expect(optOut.headers.get('set-cookie')).toBe('ch-dashboard-ui=legacy; Path=/dashboard; HttpOnly; Secure; SameSite=Strict');
+    expect(optOut.headers.get('set-cookie')).toBe('ch-dashboard-ui=legacy; Path=/dashboard; HttpOnly; Secure; SameSite=Lax');
 
     // Any Dashboard path takes the canary and comes back to itself, minus `ui`.
     const deep = await get(origin, '/dashboard/workspaces/ws-1?ui=react&view=logs');
     expect(deep.status).toBe(302);
     expect(deep.headers.get('location')).toBe('/dashboard/workspaces/ws-1?view=logs');
-    expect(deep.headers.get('set-cookie')).toBe('ch-dashboard-ui=react; Path=/dashboard; HttpOnly; Secure; SameSite=Strict');
+    expect(deep.headers.get('set-cookie')).toBe('ch-dashboard-ui=react; Path=/dashboard; HttpOnly; Secure; SameSite=Lax');
     // BFF and asset paths never take it.
     const bff = await get(origin, '/dashboard/api/v1/session?ui=react', { accept: 'application/json', 'sec-fetch-dest': 'empty' });
     expect(bff.status).not.toBe(302);

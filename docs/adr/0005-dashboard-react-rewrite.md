@@ -150,7 +150,7 @@ exactly these changes, each tested:
   for `/dashboard` HTML navigations. The default stays `legacy` until the
   cutover is approved.
 - A per-session canary `/dashboard?ui=react` (or `?ui=legacy`) sets an
-  HTTP-only, `Secure`, `SameSite=Strict`, path `/dashboard` cookie that
+  HTTP-only, `Secure`, `SameSite=Lax`, path `/dashboard` cookie that
   overrides the instance flag for that browser. The value is validated on
   every read. It changes only which static shell is served, never what the
   BFF allows.
