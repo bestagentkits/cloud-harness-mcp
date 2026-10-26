@@ -293,11 +293,15 @@ and its evidence are in
   agent image with it, or turn the runner flag off; the message is produced by
   [`apps/agent-runtime/src/engine-selection.ts`](../apps/agent-runtime/src/engine-selection.ts).
 - A durable agent ends `LIMIT_EXCEEDED` with `durable agent session exceeded
-  its size limit`: its lineage's session database grew past
-  `AGENT_DURABLE_MAX_LINEAGE_BYTES`. The runner refuses further commits to it,
+  its size limit or a session byte budget`: its lineage's session database grew
+  past `AGENT_DURABLE_MAX_LINEAGE_BYTES`, or the stored sessions it counts
+  toward reached `AGENT_GLOBAL_SESSION_BYTES`, `AGENT_PRINCIPAL_SESSION_BYTES`,
+  or `AGENT_WORKSPACE_SESSION_BYTES`; durable lineage databases count toward
+  those budgets like persisted logs. The runner refuses further commits to it,
   so continuing the same lineage hits the same cap. Start a new root agent
-  (without `continueFrom`), or ask the operator to raise the cap within its
-  bounds ([configuration](configuration.md#managed-agents)).
+  (without `continueFrom`), free budget by closing workspaces whose sessions are
+  no longer needed, or ask the operator to raise the cap within its bounds
+  ([configuration](configuration.md#managed-agents)).
 - A continuation's model sees a tool result with `EFFECT_UNKNOWN`: the earlier
   run was stopped while a write, delete, or move was in flight, and the runner
   could not establish from the workspace whether it landed. The call was not
