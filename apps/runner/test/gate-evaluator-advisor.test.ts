@@ -103,7 +103,9 @@ describe('advisor combination with the real gate evaluator', () => {
         const unsure = answer !== null && answer.effect === 'no_change' && answer.fallbackReason === null && (answer.confidence ?? 0) < ADVISOR.minConfidence;
         const cleared = answer !== null && answer.effect === 'no_change' && answer.fallbackReason === null && !unsure;
         const fellBack = answer === null || answer.fallbackReason !== null || unsure;
-        const expected = cleared ? 'ALLOW' : fellBack && policy.advisor?.fallback === 'deny' ? 'DENY' : 'REQUIRE_APPROVAL';
+        // A sensitive-path escalation is a hand-off to a human, so the deny fallback never applies to it.
+        const sensitive = answer !== null && answer.fallbackReason === 'sensitive_paths';
+        const expected = cleared ? 'ALLOW' : fellBack && !sensitive && policy.advisor?.fallback === 'deny' ? 'DENY' : 'REQUIRE_APPROVAL';
         if (unsure) expect(combined.advisor.fallbackReason).toBe('low_confidence');
         expect(combined.decision, `iteration ${iteration}`).toBe(expected);
         continue;

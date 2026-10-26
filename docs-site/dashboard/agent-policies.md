@@ -84,6 +84,15 @@ Otherwise it waits for you, or is denied if the fallback is **Deny** and Jev
 could not give a confident answer. A confident "this is risky" always waits
 for you; it is never a deny.
 
+An action that touches a CI or workflow file (`.github/`, `.gitlab-ci.yml`,
+`.circleci/` at the repository root) or a dependency manifest or lockfile
+(such as `package.json`, `package-lock.json`, `poetry.lock` or `go.mod`, at any
+depth) is never left to Jev. Nothing is sent to TypeSafe, and the action always
+waits for your approval, even when the fallback is **Deny**. The decision shows
+**Jev not consulted (CI or dependency files always need approval)**. A CI
+change runs later with the repository's CI secrets and a dependency change is a
+supply-chain change, so neither rests on a model's answer.
+
 ::: info Asked at execution time, by the coding broker
 Jev is consulted when an agent action runs, and the coding broker is what runs
 agent actions. Until that broker ships, no action is executed under a policy,

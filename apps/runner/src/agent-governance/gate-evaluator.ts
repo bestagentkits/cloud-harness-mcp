@@ -443,7 +443,7 @@ function advisorRecord(decision: GateDecision, answer: AdvisorAnswer | null): Ad
  * - A pending discretionary decision (`ADVISOR_REQUIRED`) becomes ALLOW only on a valid, confident
  *   `no_change`. Any other answer, no answer, a fallback or a malformed answer leaves it at
  *   REQUIRE_APPROVAL (`ADVISOR_ESCALATED`), or DENY (`ADVISOR_FALLBACK_DENY`) on a fallback when the
- *   policy's advisor fallback is `deny`.
+ *   policy's advisor fallback is `deny`. A `sensitive_paths` escalation is always REQUIRE_APPROVAL.
  * - Every other decision is monotonic: `final = max(decision, advisor)` over ALLOW < REQUIRE_APPROVAL < DENY,
  *   so a hard deny, a scope deny, a mandatory approval or a rule approval is never lowered.
  */
@@ -468,6 +468,11 @@ export function combineAdvisor(decision: GateDecision, answer: AdvisorAnswer | n
         reasons: [{ code: 'ADVISOR_NO_CHANGE' as const, source: 'advisor' as const, detail: 'the advisor cleared the discretionary action' }, ...decision.reasons].slice(0, 50),
         matchedRules: ['advisor', ...decision.matchedRules].slice(0, 50)
       };
+    }
+    // `sensitive_paths` is a deliberate hand-off to a human, not an advisor failure, so the deny fallback
+    // does not apply: the owner can still approve a CI or dependency change.
+    if (advisor.fallbackReason === 'sensitive_paths') {
+      return escalate('the action touches a CI or workflow file or a dependency manifest or lockfile; approval is required');
     }
     if (advisor.fallbackReason !== null && decision.advisor.fallback === 'deny') {
       return {
