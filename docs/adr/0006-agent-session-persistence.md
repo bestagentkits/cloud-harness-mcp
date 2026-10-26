@@ -153,8 +153,9 @@ them.
 ### Offline
 
 `npm run bench:agent-runtime` with `AGENT_RUNTIME_BENCHMARK_REPS=20`, 20
-repetitions per scenario and runtime, Node v24.11.0 on a Windows 11 developer
-machine. Every runtime runs the same scripted model steps, prompts, tool grants
+repetitions per scenario and runtime, Node v24.19.0 on an Apple silicon
+macOS developer machine, re-run after the durable engine began rerunning
+interrupted calls under their first request ID. Every runtime runs the same scripted model steps, prompts, tool grants
 and limits from `test/fixtures/agent-runtime/scenarios.json`.
 
 - `pi-coding` is the shipped worker with an in-memory proxy executor and no
@@ -170,21 +171,21 @@ runner rows written and their bytes.
 
 | Scenario | Runtime | Wall p50 / p95 | First record p50 / p95 | Protocol bytes | Storage rows / bytes | RSS delta p50 / p95 | Outcome |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 PR review | pi-coding | 5.42 / 10.81 | 2.19 / 3.31 | 3145 | 0 / 0 | 80 / 1584 | succeeded |
-| 1 PR review | persisted | 118.11 / 198.59 | 10.95 / 15.33 | 6540 | 11 / 4043 | 1100 / 2656 | succeeded |
-| 1 PR review | durable | 89.50 / 128.84 | 12.30 / 20.14 | 33651 | 30 / 21357 | 1716 / 9240 | succeeded |
-| 2 Multi-step task | pi-coding | 5.76 / 8.43 | 1.63 / 2.03 | 4588 | 0 / 0 | 64 / 496 | 2 effects |
-| 2 Multi-step task | persisted | 131.35 / 169.18 | 10.33 / 28.32 | 10300 | 18 / 6604 | 656 / 2176 | 2 effects |
-| 2 Multi-step task | durable | 330.60 / 535.96 | 38.62 / 135.42 | 58276 | 57 / 38112 | 2472 / 5384 | 2 effects |
-| 3 Restart follow-up | pi-coding | 6.26 / 7.18 | 1.52 / 1.84 | 3205 | 0 / 0 | 84 / 4124 | context lost |
-| 3 Restart follow-up | persisted | 121.48 / 184.59 | 9.41 / 11.30 | 6183 | 16 / 4547 | 1072 / 3804 | continued, all 5 earlier messages |
-| 3 Restart follow-up | durable | 277.54 / 494.79 | 40.65 / 63.63 | 37909 | 33 / 20706 | 1676 / 3856 | continued, all 5 earlier messages |
-| 4 Killed run | pi-coding | 9.14 / 11.41 | 1.60 / 1.90 | 5287 | 0 / 0 | 128 / 4596 | replayed from start, 1 duplicate effect |
-| 4 Killed run | persisted | 112.30 / 180.58 | 10.03 / 15.60 | 6728 | 20 / 6075 | 1028 / 6436 | interrupted, 1 unknown effect, continued, 0 duplicates |
-| 4 Killed run | durable | 447.35 / 773.73 | 40.37 / 85.25 | 58339 | 55 / 34490 | 3280 / 5652 | interrupted, 1 unknown effect, continued, 0 duplicates |
-| 5 Parent-child cleanup | pi-coding | 19.76 / 30.60 | 3.70 / 4.13 | 1995 | 0 / 0 | 384 / 13008 | 3 of 3 cancelled |
-| 5 Parent-child cleanup | persisted | 153.38 / 807.60 | 18.04 / 30.74 | 3642 | 12 / 1611 | 2532 / 19876 | 3 of 3 cancelled |
-| 5 Parent-child cleanup | durable | 340.84 / 526.74 | 17.21 / 80.92 | 46961 | 42 / 27269 | 5116 / 7668 | 3 of 3 cancelled |
+| 1 PR review | pi-coding | 2.93 / 6.45 | 1.25 / 1.88 | 3145 | 0 / 0 | 96 / 2208 | succeeded |
+| 1 PR review | persisted | 19.95 / 24.99 | 3.02 / 3.81 | 6540 | 11 / 4043 | 176 / 2480 | succeeded |
+| 1 PR review | durable | 49.83 / 57.00 | 11.12 / 11.81 | 33651 | 30 / 21357 | 96 / 304 | succeeded |
+| 2 Multi-step task | pi-coding | 3.15 / 4.71 | 0.95 / 1.12 | 4588 | 0 / 0 | 64 / 1456 | 2 effects |
+| 2 Multi-step task | persisted | 27.37 / 36.32 | 2.93 / 3.30 | 10300 | 18 / 6604 | 128 / 688 | 2 effects |
+| 2 Multi-step task | durable | 77.37 / 96.42 | 11.32 / 11.92 | 58272 | 57 / 38108 | 80 / 160 | 2 effects |
+| 3 Restart follow-up | pi-coding | 3.13 / 5.81 | 0.86 / 1.04 | 3134 | 0 / 0 | 80 / 3840 | context lost |
+| 3 Restart follow-up | persisted | 24.10 / 30.93 | 3.01 / 3.52 | 6183 | 16 / 4547 | 0 / 48 | continued, first request held all 4 earlier messages |
+| 3 Restart follow-up | durable | 64.26 / 71.73 | 10.55 / 11.76 | 37907 | 33 / 20704 | 16 / 80 | continued, first request held all 4 earlier messages |
+| 4 Killed run | pi-coding | 4.85 / 7.28 | 0.96 / 1.12 | 5287 | 0 / 0 | 112 / 4256 | replayed from start, 1 duplicate effect |
+| 4 Killed run | persisted | 27.23 / 29.60 | 2.94 / 3.28 | 6728 | 20 / 6075 | 16 / 96 | interrupted, 1 unknown effect, continued, 0 duplicates, 0 repeated invocations |
+| 4 Killed run | durable | 76.89 / 79.81 | 11.05 / 11.65 | 49453 | 45 / 28484 | 48 / 176 | interrupted, 1 unknown effect, continued, 0 duplicates, 0 repeated invocations |
+| 5 Parent-child cleanup | pi-coding | 10.67 / 16.17 | 2.17 / 2.57 | 1995 | 0 / 0 | 384 / 14416 | 3 of 3 cancelled |
+| 5 Parent-child cleanup | persisted | 63.96 / 75.55 | 7.99 / 9.39 | 3642 | 12 / 1611 | 0 / 368 | 3 of 3 cancelled |
+| 5 Parent-child cleanup | durable | 165.92 / 182.08 | 11.45 / 13.08 | 46961 | 42 / 27269 | 256 / 1440 | 3 of 3 cancelled |
 
 Every persisted and durable run left 0 session rows, 0 effect rows and 0
 lineage databases after cleanup. In scenario 4, every interrupted run ended
@@ -296,10 +297,14 @@ Findings:
    inside the noise of real model latency, but by the pre-stated rule neither
    may become the default without an owner exception. Persistence adds 1.4-5.7 KB
    of protocol per scenario; the durable engine adds 30-54 KB.
-5. **Memory.** Offline RSS deltas exceed the 25% budget for both options, again
-   measured against a baseline without a runner; the durable engine's p95 is the
-   highest on scenarios 1 and 2. Stored sessions stayed far below the session
-   and lineage caps.
+5. **Memory.** In this run the p95 RSS delta of both options stays within the
+   25% budget of the baseline on every scenario. An earlier run on a Windows
+   machine exceeded it for both, so the in-process RSS delta, which garbage
+   collection timing dominates, is not conclusive either way. Stored sessions
+   stayed far below the session and lineage caps, and durable lineage databases
+   count toward the same aggregate session byte budgets
+   (`AGENT_GLOBAL_SESSION_BYTES`, `AGENT_PRINCIPAL_SESSION_BYTES`,
+   `AGENT_WORKSPACE_SESSION_BYTES`) as persisted logs.
 6. **Cost of ownership.** Persistence adds no third-party code. The durable
    engine adds an experimental upstream package, a second Pi model layer in an
    opt-in image, a runner-side storage protocol and a per-lineage database,
