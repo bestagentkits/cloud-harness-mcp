@@ -633,7 +633,7 @@ so the image, the gateway URL and exactly one of `AGENT_PROFILES_JSON` or
 | `AGENT_GLOBAL_RETAINED_ROWS`, `AGENT_PRINCIPAL_RETAINED_ROWS`, `AGENT_WORKSPACE_RETAINED_ROWS` | see schema | Rows kept per scope. Agent records plus compacted tombstones count toward spawn admission, and log events toward the log cap. Must satisfy workspace ≤ principal ≤ global. |
 | `AGENT_GLOBAL_RETAINED_BYTES`, `AGENT_PRINCIPAL_RETAINED_BYTES`, `AGENT_WORKSPACE_RETAINED_BYTES` | see schema | Log bytes kept per scope; a full scope trims the oldest log of the agent being written. Must satisfy workspace ≤ principal ≤ global. |
 | `AGENT_CANCELLATION_GRACE_MS` | see schema | Grace between TERM and KILL when an agent container is stopped. |
-| `AGENT_CLEANUP_RETRY_LIMIT`, `AGENT_CLEANUP_RETRY_MAX_DELAY_MS` | see schema | Attempts with exponential backoff, and the longest backoff, for a failed agent container cleanup. An agent stays `CANCELLING` until its cleanup succeeds. |
+| `AGENT_CLEANUP_RETRY_LIMIT`, `AGENT_CLEANUP_RETRY_MAX_DELAY_MS` | see schema | Attempts with exponential backoff, and the longest backoff, for a failed agent container cleanup. After the limit, cleanup keeps retrying every `AGENT_CLEANUP_RETRY_MAX_DELAY_MS`. An agent stays `CANCELLING` until its cleanup succeeds. |
 | `AGENT_RETENTION_SECONDS` | 7 days | How long a closed workspace keeps full agent records (logs, messages, usage) after its last agent ended. Then the runner compacts them to tombstones. Cannot exceed `AGENT_LOOKUP_HORIZON_SECONDS`. |
 | `AGENT_LOOKUP_HORIZON_SECONDS` | 30 days | How long after an agent ended its tombstone still answers `agent_status` with `compacted: true`. Then the tombstone is purged. The expiry is stored when the tombstone is written, so a new value applies only to workspaces compacted afterwards. |
 
@@ -685,11 +685,11 @@ behaviour is described in [MCP API](mcp-api.md#notification-inbox).
 
 | Variable | Default | Decision |
 |---|---|---|
-| `AUTOMATIONS_ENABLED` | off | Read by both services. On the API it mounts the public GitHub webhook route; on the runner it admits deliveries, workflows, and Dashboard management. Set the same value for both. The shared environment file does this; a mismatch leaves the route answering `503` (API on, runner off) or absent (API off). |
+| `AUTOMATIONS_ENABLED` | off | Read by both services. On the API it mounts the public webhook route for every provider and lets the `automation_*` MCP tools reach the runner (they stay listed and answer `UNAVAILABLE` while it is off); on the runner it admits deliveries, workflows, and Dashboard and MCP management. Set the same value for both. The shared environment file does this; a mismatch leaves the route answering `503` (API on, runner off) or absent (API off). |
 | `AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS` | see schema | Runner only. Instance-wide ceiling on automation workflows holding a workspace at once, above each rule's own `maxConcurrent`. Workflows over the ceiling wait queued and expire if they cannot start in time. |
 
 The feature also needs the runner secret keyring, because connection secrets
-are sealed with it. The GitHub App slug, when configured, is how the runner
+and Linear or Jira outbound credentials are sealed with it. The GitHub App slug, when configured, is how the runner
 recognizes and ignores the harness's own comments. Code defaults and ranges are
 owned by
 [`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts);

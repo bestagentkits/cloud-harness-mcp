@@ -27,7 +27,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `API_KEY_GATEWAY_ACCESS_AUDIENCE` | `—` | Optional | Optional configuration. |
 | `API_KEY_GATEWAY_SERVICE_SUBJECT` | `cf-service:base64url-cloudflare-service-token-client-id` | Optional | Optional configuration. |
 | `API_KEY_GATEWAY_PUBLIC_URL` | `https://api.harness.zuey.me/mcp` | Optional | Optional configuration. |
-| `AUTOMATIONS_ENABLED` | `false` | Optional | Optional webhook-triggered automations. Set the same value for the API (public ingress at /integrations/webhooks/github/{connectionId}) and the runner (workflow admission). |
+| `AUTOMATIONS_ENABLED` | `false` | Optional | Optional webhook-triggered automations. Set the same value for the API (public ingress at /integrations/webhooks/{provider}/{connectionId}) and the runner (workflow admission). |
 | `AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS` | `2` | Optional | Instance-wide ceiling on automation workflows holding a workspace at once (runner). |
 | `AGENT_POLICIES_ENABLED` | `false` | Optional | Optional owner-authored agent execution policies (runner): Dashboard Settings > Agent policies, project policies and the gate simulation. Off by default; the Dashboard shows a notice while off. |
 | `AGENT_CODING_ENABLED` | `false` | Optional | Optional policy-brokered coding automations (runner): a rule with a coding action may edit, test, commit, push an agent/ branch and open a pull request. Needs AGENT_POLICIES_ENABLED and AUTOMATIONS_ENABLED. Off by default; setting it back to false stops running coding workflows. |
@@ -59,7 +59,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `AGENT_PRINCIPAL_RETAINED_BYTES` | `536870912` | Optional | Retained agent log bytes per principal (1-8589934592). |
 | `AGENT_WORKSPACE_RETAINED_BYTES` | `134217728` | Optional | Retained agent log bytes per workspace (1-1073741824). |
 | `AGENT_CANCELLATION_GRACE_MS` | `10000` | Optional | Grace between TERM and KILL when an agent container is stopped, in milliseconds (1-120000). |
-| `AGENT_CLEANUP_RETRY_LIMIT` | `20` | Optional | Attempts with exponential backoff at a failed agent container cleanup (1-1000). |
+| `AGENT_CLEANUP_RETRY_LIMIT` | `20` | Optional | Attempts with exponential backoff at a failed agent container cleanup (1-1000). After that, cleanup keeps retrying every AGENT_CLEANUP_RETRY_MAX_DELAY_MS. |
 | `AGENT_CLEANUP_RETRY_MAX_DELAY_MS` | `3600000` | Optional | Longest backoff between agent cleanup retries, in milliseconds (1-86400000). |
 | `AGENT_RETENTION_SECONDS` | `604800` | Optional | Seconds a closed workspace keeps full agent records after its last agent ended; then they are compacted to tombstones (1-31536000, default 7 days). Cannot exceed AGENT_LOOKUP_HORIZON_SECONDS. Applied on every maintenance pass, so a shorter value also compacts older closed workspaces. |
 | `AGENT_LOOKUP_HORIZON_SECONDS` | `2592000` | Optional | Seconds after an agent ended that its compacted tombstone still answers agent_status; then it is purged (1-31536000, default 30 days). The expiry is fixed when a tombstone is written, so changing this affects only workspaces compacted afterwards. |

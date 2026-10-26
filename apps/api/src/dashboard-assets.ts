@@ -117,6 +117,7 @@ export const DASHBOARD_SHELL_PATHS: string[] = [
   '/automations/rules',
   '/automations/connections',
   '/automations/deliveries',
+  '/automations/metrics',
   '/automations/runs/:workflowId',
   '/settings',
   '/settings/agent-policies',

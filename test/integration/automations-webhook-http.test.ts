@@ -4,7 +4,8 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { ApiConfig, RunnerConfig } from '@cloud-harness/contracts';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { AUTOMATION_TOOL_SPECS, ToolResultSchema, type ApiConfig, type RunnerConfig, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { createApiApp, type ApiRuntime } from '../../apps/api/src/app.js';
 import { createRunnerApp } from '../../apps/runner/src/app.js';
 import { AutomationService } from '../../apps/runner/src/automation-service.js';
@@ -19,7 +20,9 @@ import type { WorkspaceService } from '../../apps/runner/src/workspace-service.j
  */
 
 const runnerToken = 'runner-token-that-is-longer-than-32-characters';
+const bearer = 'integration-bearer-token-longer-than-32-characters';
 const REPO = 'acme/widgets';
+const stranger: RunnerPrincipalSelector = { kind: 'external', issuer: 'https://issuer.example.com', subject: 'stranger' };
 
 let directory: string;
 let store: StateStore;
@@ -52,7 +55,7 @@ beforeAll(async () => {
   const runnerAddress = runner.address();
   if (!runnerAddress || typeof runnerAddress === 'string') throw new Error('runner failed');
   const config: ApiConfig = {
-    host: '127.0.0.1', port: 0, ownerId: 'owner', bearerToken: 'integration-bearer-token-longer-than-32-characters',
+    host: '127.0.0.1', port: 0, ownerId: 'owner', bearerToken: bearer,
     runnerUrl: `http://127.0.0.1:${runnerAddress.port}`, runnerToken,
     publicHosts: ['127.0.0.1'], allowedOrigins: [], requestTimeoutMs: 5_000, maxBodyBytes: 262_144,
     mcpGatewayTimeoutMs: 30_000, mcpGatewayMaxResponseBytes: 262_144, mcpGatewayMaxToolsPerServer: 500,
@@ -123,6 +126,35 @@ describe('automation webhook ingress over HTTP', () => {
     expect(await response.json()).toEqual({ status: 'ignored' });
   });
 
+  it('never reaches a management operation, whatever the body, query, header, or path names', async () => {
+    const rulesBefore = store.database.prepare('SELECT COUNT(*) AS count FROM automation_rules').get();
+    const management = JSON.stringify({
+      version: 1, principal: { kind: 'owner', ownerId: 'owner' }, operation: 'rule_create',
+      input: { connectionId, name: 'smuggled', enabled: true, match: { repository: REPO, events: ['issues'], label: 'claude' }, action: { profileId: 'p', instructions: 'x' } }
+    });
+    // Even a sender holding the connection secret only ever submits a delivery.
+    const signed = await fetch(`${base}/integrations/webhooks/github/${connectionId}?operation=rules_list`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json', 'x-github-event': 'issues', 'x-github-delivery': 'http-management',
+        'x-hub-signature-256': sign(management), 'x-cloudharness-operation': 'rules_list'
+      },
+      body: management
+    });
+    expect(signed.status).toBe(202);
+    expect(await signed.json()).toEqual({ status: 'ignored' });
+    const delivery = store.database.prepare('SELECT state, label FROM automation_deliveries WHERE provider_delivery_id = ?').get('http-management');
+    expect(delivery).toEqual({ state: 'IGNORED', label: null });
+
+    for (const path of ['rules_list', 'rule_create', `rules_list/${connectionId}`, `github/${connectionId}/rules`]) {
+      const response = await fetch(`${base}/integrations/webhooks/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: management });
+      expect([401, 404], path).toContain(response.status);
+    }
+    const read = await fetch(`${base}/integrations/webhooks/github/${connectionId}`);
+    expect(read.status).toBe(404);
+    expect(store.database.prepare('SELECT COUNT(*) AS count FROM automation_rules').get()).toEqual(rulesBefore);
+  });
+
   it('keeps the runner channel behind the service token', async () => {
     const address = runner.address();
     if (!address || typeof address === 'string') throw new Error('runner failed');
@@ -130,5 +162,70 @@ describe('automation webhook ingress over HTTP', () => {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ version: 1, operation: 'connections_list', input: {} })
     });
     expect(response.status).toBe(401);
+  });
+});
+
+describe('automation management over MCP HTTP', () => {
+  let client: Client;
+  let strangerRuleId: string;
+
+  beforeAll(async () => {
+    const strangerConnection = automations.execute({ version: 1, principal: stranger, operation: 'connection_create', input: { provider: 'github', name: 'theirs' } });
+    if (!strangerConnection.ok) throw new Error('stranger connection setup failed');
+    const strangerRule = automations.execute({
+      version: 1, principal: stranger, operation: 'rule_create',
+      input: {
+        connectionId: (strangerConnection.data as { connection: { id: string } }).connection.id, name: 'Theirs', enabled: true,
+        match: { repository: REPO, events: ['issues'], label: 'claude' }, action: { profileId: 'reviewer', instructions: 'Theirs.' }
+      }
+    });
+    if (!strangerRule.ok) throw new Error('stranger rule setup failed');
+    strangerRuleId = (strangerRule.data as { rule: { id: string } }).rule.id;
+    client = new Client({ name: 'automation-tools-http-test', version: '1.0.0' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${bearer}` } } }));
+  });
+
+  afterAll(async () => {
+    await client?.close();
+  });
+
+  async function call(name: string, args: Record<string, unknown>) {
+    const result = await client.callTool({ name, arguments: args });
+    expect(JSON.stringify(result), name).not.toContain(secret);
+    return ToolResultSchema.parse(result.structuredContent);
+  }
+
+  it('lists the automation tools on the authenticated endpoint', async () => {
+    const names = (await client.listTools()).tools.map((tool) => tool.name);
+    for (const spec of AUTOMATION_TOOL_SPECS) expect(names).toContain(spec.name);
+  });
+
+  it('creates a disabled rule, lists it, and disables it again under its generation', async () => {
+    const created = await call('automation_rule_create', {
+      connectionId, name: 'Triage', match: { repository: REPO, events: ['issues'], label: 'triage' }, action: { profileId: 'reviewer', instructions: 'Summarize.' }
+    });
+    expect(created).toMatchObject({ ok: true, data: { rule: { enabled: false, generation: 1 } } });
+    const ruleId = (created.data as { rule: { id: string } }).rule.id;
+    const stored = store.database.prepare('SELECT enabled FROM automation_rules WHERE id = ?').get(ruleId);
+    expect(stored).toEqual({ enabled: 0 });
+
+    const listed = await call('automation_rules_list', {});
+    const ids = (listed.data as { rules: { id: string }[] }).rules.map((rule) => rule.id);
+    expect(ids).toContain(ruleId);
+    expect(ids).not.toContain(strangerRuleId);
+
+    // The owner enabled it on the Dashboard; the MCP caller can still switch it off.
+    automations.execute({ version: 1, principal: { kind: 'owner', ownerId: 'owner' }, operation: 'rule_update', input: { id: ruleId, expectedGeneration: 1, enabled: true } });
+    expect(await call('automation_rule_disable', { ruleId, expectedGeneration: 1 })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(await call('automation_rule_disable', { ruleId, expectedGeneration: 2 })).toMatchObject({ ok: true, data: { rule: { id: ruleId, enabled: false, generation: 3 } } });
+  });
+
+  it('fences rules and runs to the session principal', async () => {
+    expect(await call('automation_rule_disable', { ruleId: strangerRuleId, expectedGeneration: 1 })).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
+    expect(store.database.prepare('SELECT enabled, generation FROM automation_rules WHERE id = ?').get(strangerRuleId)).toEqual({ enabled: 1, generation: 1 });
+    const unknownRun = `wfl_${'0'.repeat(32)}`;
+    expect(await call('automation_run_get', { runId: unknownRun })).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
+    expect(await call('automation_run_cancel', { runId: unknownRun })).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
+    expect(await call('automation_runs_list', { ruleId: strangerRuleId })).toMatchObject({ ok: true, truncated: false, data: { runs: [] } });
   });
 });

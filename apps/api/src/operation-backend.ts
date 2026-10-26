@@ -1,5 +1,6 @@
 import type { RunnerOperation, RunnerResponse } from '@cloud-harness/contracts';
 import type { EventsBackend } from './events/events-extension.js';
+import type { AutomationsBackend } from './automations/automation-tools.js';
 
 /** Read-only runner operations behind the Skills over MCP extension. */
 export type SkillsExtensionOperation = 'skills_ext_list' | 'skills_ext_get' | 'skills_ext_read';
@@ -21,6 +22,8 @@ export interface OperationBackend {
   ): Promise<RunnerResponse>;
   /** MCP Events for the backend's bound principal; backends without it do not advertise `events`. */
   readonly events?: EventsBackend | undefined;
+  /** Owner automation management for the backend's bound principal; backends without it list no automation tools. */
+  readonly automations?: AutomationsBackend | undefined;
   getInstructions?(): string;
   close?(): Promise<void>;
 }

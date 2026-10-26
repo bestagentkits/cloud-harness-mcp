@@ -59,7 +59,10 @@ import {
   listAutomationWorkflows,
   getAutomationWorkflow,
   cancelAutomationWorkflow,
-  listAutomationDeliveries
+  listAutomationDeliveries,
+  replayAutomationDelivery,
+  getAutomationHealth,
+  getAutomationMetrics
 } from './dashboard-api.js';
 import {
   escapeHtml,
@@ -87,8 +90,9 @@ import {
   REPOSITORY_SCOPED_TABS, filesHref, isWholeFileRead, renderRepositoryExplorer, renderRepositoryRequired, renderRepositorySelector, selectedRepository, workspaceTabHref,
   WORKSPACE_LIFECYCLE_FIELDS, isWorkspaceLifecycleView, lifecycleDurationLabel, workspaceLifecycleDisplayValue, workspaceLifecycleFieldBounds,
   AUTOMATION_GITHUB_EVENTS, AUTOMATION_PROXY_OPERATIONS, AUTOMATION_SENDER_TYPES, AUTOMATION_WORKFLOW_STATES,
-  automationBlockedState, automationSectionForPath, renderAutomationBlocked, renderAutomationConnections, renderAutomationDeliveries,
-  renderAutomationLoading, renderAutomationPreviewDialog, renderAutomationPreviewResult, renderAutomationRuleDialog, renderAutomationRules,
+  AUTOMATION_DELIVERY_STATES, AUTOMATION_PUBLISH_STATES, AUTOMATION_PROVIDERS, AUTOMATION_PROVIDER_EVENT_TYPES, AUTOMATION_STATE_TRIGGERS, AUTOMATION_METRICS_WINDOWS,
+  automationBlockedState, automationMatchProvider, automationResourceText, automationSectionForPath, renderAutomationBlocked, renderAutomationConnections, renderAutomationDeliveries,
+  renderAutomationCredentialsDialog, renderAutomationLoading, renderAutomationMetrics, renderAutomationPreviewDialog, renderAutomationPreviewResult, renderAutomationRuleDialog, renderAutomationRuleMatchFields, renderAutomationRules,
   renderAutomationRunDetail, renderAutomationRuns, renderAutomationSecretPanel, renderAutomationTabs
 } from './dashboard-render.js';
 import { mountTerminalPane } from './dashboard-terminal.js';
@@ -228,25 +232,65 @@ const automationInteger = (raw, min, max) => {
 };
 const automationField = (values, name) => String(values.get(name) ?? '');
 
+const AUTOMATION_PROVIDER_ACTOR = /^[^\s\0]{1,254}$/;
+/** Linear state and Jira status names follow the label rule: one line, up to 100 characters. */
+const automationStateValid = automationLabelValid;
+const AUTOMATION_PROVIDER_IDS = AUTOMATION_PROVIDERS.map(([id]) => id);
+
+/** The rule's match for one provider's form fields, mirroring that provider's match schema. */
+function automationRuleMatch(values, provider, errors) {
+  const label = automationField(values, 'label').trim();
+  const actors = automationField(values, 'actorAllowlist').split(/[\s,]+/).filter(Boolean);
+  const actorFilters = () => ({ ignoreBots: values.has('ignoreBots'), ...(actors.length ? { actorAllowlist: actors } : {}) });
+  if (provider === 'github') {
+    const repository = automationField(values, 'repository').trim();
+    if (!automationRepositoryValid(repository)) errors.repository = 'Enter the repository as owner/name, without .git.';
+    const knownEvents = AUTOMATION_GITHUB_EVENTS.map(([id]) => id);
+    const events = [...new Set(values.getAll('events').map(String))].filter((event) => knownEvents.includes(event));
+    if (!events.length) errors.events = 'Choose at least one event.';
+    if (!automationLabelValid(label)) errors.label = 'Enter the label name, up to 100 characters on one line.';
+    if (actors.length > 50 || actors.some((login) => !AUTOMATION_LOGIN.test(login))) errors.actorAllowlist = 'List up to 50 GitHub logins separated by commas.';
+    return { repository, events, label, ...actorFilters() };
+  }
+  if (provider === 'custom') {
+    const event = automationField(values, 'event').trim();
+    if (!/^[A-Za-z0-9._:-]{1,64}$/.test(event)) errors.event = 'Enter an event name of letters, digits and . _ : - (up to 64).';
+    if (label && !automationLabelValid(label)) errors.label = 'Enter the label name, up to 100 characters on one line.';
+    return { provider, event, ...(label ? { label } : {}) };
+  }
+  const jira = provider === 'jira';
+  const stateTrigger = AUTOMATION_STATE_TRIGGERS[provider][0];
+  const trigger = automationField(values, 'trigger') === stateTrigger ? stateTrigger : 'label_added';
+  const target = automationField(values, 'toState').trim();
+  if (trigger === 'label_added' && !automationLabelValid(label)) errors.label = 'Enter the label name, up to 100 characters on one line.';
+  if (trigger !== 'label_added' && target && !automationStateValid(target)) errors.toState = 'Enter a state name, up to 100 characters on one line.';
+  if (actors.length > 50 || actors.some((actor) => !AUTOMATION_PROVIDER_ACTOR.test(actor))) errors.actorAllowlist = 'List up to 50 actors separated by commas.';
+  const condition = trigger === 'label_added' ? { label } : (target ? { [jira ? 'toStatus' : 'toState']: target } : {});
+  if (jira) {
+    const projectKey = automationField(values, 'projectKey').trim();
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,19}$/.test(projectKey)) errors.projectKey = 'Enter the Jira project key, such as ENG.';
+    return { provider, projectKey, trigger, ...condition, ...actorFilters() };
+  }
+  const teamKey = automationField(values, 'teamKey').trim();
+  if (teamKey && !/^[A-Za-z0-9_]{1,16}$/.test(teamKey)) errors.teamKey = 'Enter the Linear team key, such as ENG, or leave it empty.';
+  return { provider, ...(teamKey ? { teamKey } : {}), trigger, ...condition, ...actorFilters() };
+}
+
 /**
  * The rule create body for a form's values (`FormData` or anything with `get`, `getAll`
  * and `has`), or the field errors that block it. Keys of `errors` are form field names.
+ * `provider` is the rule's connection provider; it selects the match fields read.
  */
-export function automationRuleInput(values) {
+export function automationRuleInput(values, provider = 'github') {
   const errors = {};
   const name = automationField(values, 'name').trim();
   if (!name || name.length > 100) errors.name = 'Enter a rule name of 1 to 100 characters.';
   const connectionId = automationField(values, 'connectionId');
   if (!AUTOMATION_CONNECTION_ID.test(connectionId)) errors.connectionId = 'Choose a connection.';
-  const repository = automationField(values, 'repository').trim();
-  if (!automationRepositoryValid(repository)) errors.repository = 'Enter the repository as owner/name, without .git.';
-  const knownEvents = AUTOMATION_GITHUB_EVENTS.map(([id]) => id);
-  const events = [...new Set(values.getAll('events').map(String))].filter((event) => knownEvents.includes(event));
-  if (!events.length) errors.events = 'Choose at least one event.';
-  const label = automationField(values, 'label').trim();
-  if (!automationLabelValid(label)) errors.label = 'Enter the label name, up to 100 characters on one line.';
-  const actors = automationField(values, 'actorAllowlist').split(/[\s,]+/).filter(Boolean);
-  if (actors.length > 50 || actors.some((login) => !AUTOMATION_LOGIN.test(login))) errors.actorAllowlist = 'List up to 50 GitHub logins separated by commas.';
+  if (!AUTOMATION_PROVIDER_IDS.includes(provider)) errors.connectionId = 'Choose a connection.';
+  const match = AUTOMATION_PROVIDER_IDS.includes(provider) ? automationRuleMatch(values, provider, errors) : undefined;
+  const checkoutRepository = provider === 'github' ? '' : automationField(values, 'checkoutRepository').trim();
+  if (provider !== 'github' && !automationRepositoryValid(checkoutRepository)) errors.checkoutRepository = 'Enter the GitHub repository to check out as owner/name, without .git.';
   const ref = automationField(values, 'ref').trim();
   if (ref && (ref.length > 200 || !/^[A-Za-z0-9._/-]+$/.test(ref) || ref.startsWith('-') || ref.includes('..'))) errors.ref = 'Enter a branch or tag name, or leave it empty for the default branch.';
   const profileId = automationField(values, 'profileId');
@@ -277,8 +321,9 @@ export function automationRuleInput(values) {
       connectionId,
       name,
       enabled: values.has('enabled'),
-      match: { repository, events, label, ignoreBots: values.has('ignoreBots'), ...(actors.length ? { actorAllowlist: actors } : {}) },
+      match,
       action: {
+        ...(checkoutRepository ? { repository: checkoutRepository } : {}),
         ...(ref ? { ref } : {}),
         profileId,
         instructions,
@@ -317,21 +362,108 @@ export function automationRuleUpdateInput(rule, body) {
   return { expectedGeneration: Number(rule.generation), name: body.name, enabled: body.enabled, match: body.match, action: body.action };
 }
 
-/** The sample delivery a "Test event" form describes, or the field errors that block it. */
-export function automationPreviewSample(values) {
+/**
+ * The sample delivery a "Test event" form describes, or the field errors that block it. GitHub
+ * keeps its original sample shape; the other providers send the normalized sample.
+ */
+export function automationPreviewSample(values, provider = 'github') {
   const errors = {};
-  const event = automationField(values, 'event');
-  if (!AUTOMATION_GITHUB_EVENTS.some(([id]) => id === event)) errors.event = 'Choose an event.';
-  const repository = automationField(values, 'repository').trim();
-  if (!automationRepositoryValid(repository)) errors.repository = 'Enter the repository as owner/name, without .git.';
   const label = automationField(values, 'label').trim();
-  if (!automationLabelValid(label)) errors.label = 'Enter the label name, up to 100 characters on one line.';
-  const senderLogin = automationField(values, 'senderLogin').trim();
-  if (!AUTOMATION_LOGIN.test(senderLogin)) errors.senderLogin = 'Enter a GitHub login.';
-  const senderType = automationField(values, 'senderType') || 'User';
-  if (!AUTOMATION_SENDER_TYPES.includes(senderType)) errors.senderType = 'Choose a sender type.';
+  if (provider === 'github') {
+    const event = automationField(values, 'event');
+    if (!AUTOMATION_GITHUB_EVENTS.some(([id]) => id === event)) errors.event = 'Choose an event.';
+    const repository = automationField(values, 'repository').trim();
+    if (!automationRepositoryValid(repository)) errors.repository = 'Enter the repository as owner/name, without .git.';
+    if (!automationLabelValid(label)) errors.label = 'Enter the label name, up to 100 characters on one line.';
+    const senderLogin = automationField(values, 'senderLogin').trim();
+    if (!AUTOMATION_LOGIN.test(senderLogin)) errors.senderLogin = 'Enter a GitHub login.';
+    const senderType = automationField(values, 'senderType') || 'User';
+    if (!AUTOMATION_SENDER_TYPES.includes(senderType)) errors.senderType = 'Choose a sender type.';
+    if (Object.keys(errors).length) return { errors };
+    return { errors: {}, sample: { event, repository, label, senderLogin, senderType } };
+  }
+  const eventType = automationField(values, 'eventType');
+  if (!(AUTOMATION_PROVIDER_EVENT_TYPES[provider] ?? []).includes(eventType)) errors.eventType = 'Choose an event type.';
+  const scope = automationField(values, 'scope').trim();
+  if (!scope || scope.length > 200) errors.scope = 'Enter the team key, project key or event name, up to 200 characters.';
+  if (label && !automationLabelValid(label)) errors.label = 'Enter the label name, up to 100 characters on one line.';
+  const fromState = automationField(values, 'fromState').trim();
+  if (fromState && !automationStateValid(fromState)) errors.fromState = 'Enter a state name, up to 100 characters on one line.';
+  const toState = automationField(values, 'toState').trim();
+  if (toState && !automationStateValid(toState)) errors.toState = 'Enter a state name, up to 100 characters on one line.';
+  const login = automationField(values, 'actorLogin').trim();
+  if (!AUTOMATION_PROVIDER_ACTOR.test(login)) errors.actorLogin = 'Enter the actor id, email or login, without spaces.';
   if (Object.keys(errors).length) return { errors };
-  return { errors: {}, sample: { event, repository, label, senderLogin, senderType } };
+  return {
+    errors: {},
+    sample: {
+      provider, eventType, scope,
+      ...(label ? { label } : {}), ...(fromState ? { fromState } : {}), ...(toState ? { toState } : {}),
+      actor: { login, isBot: values.has('actorIsBot') }
+    }
+  };
+}
+
+const AUTOMATION_OUTBOUND_CREDENTIAL = /^[\x21-\x7E]{8,1024}$/;
+
+/**
+ * The connection create body for the New connection form, mirroring
+ * `AutomationConnectionCreateInputSchema`. Credentials are sent once and never read back.
+ */
+export function automationConnectionInput(values) {
+  const errors = {};
+  const name = automationField(values, 'name').trim();
+  if (!name || name.length > 100) errors.name = 'Enter a connection name of 1 to 100 characters.';
+  const provider = automationField(values, 'provider') || 'github';
+  if (!AUTOMATION_PROVIDER_IDS.includes(provider)) errors.provider = 'Choose a provider.';
+  const credential = (field) => {
+    const value = automationField(values, field).trim();
+    if (value && !AUTOMATION_OUTBOUND_CREDENTIAL.test(value)) errors[field] = 'Enter the credential as 8 to 1024 printable characters without spaces.';
+    return value;
+  };
+  let extra = {};
+  if (provider === 'linear') {
+    const apiKey = credential('apiKey');
+    extra = apiKey ? { apiKey } : {};
+  } else if (provider === 'jira') {
+    const baseUrl = automationField(values, 'baseUrl').trim();
+    let origin = '';
+    try {
+      const url = new URL(baseUrl);
+      if (url.protocol === 'https:' && !url.username && !url.password && !url.port && url.pathname === '/' && !url.search && !url.hash) origin = url.origin;
+    } catch { /* reported below */ }
+    if (!origin) errors.baseUrl = 'Enter the Jira site as an https origin, such as https://example.atlassian.net.';
+    const email = automationField(values, 'email').trim();
+    if (email && (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) errors.email = 'Enter the Jira account email.';
+    const apiToken = credential('apiToken');
+    if (Boolean(email) !== Boolean(apiToken)) errors.apiToken = 'Set the account email and API token together, or leave both empty.';
+    extra = { baseUrl: origin, ...(email ? { email } : {}), ...(apiToken ? { apiToken } : {}) };
+  }
+  if (Object.keys(errors).length) return { errors };
+  return { errors: {}, body: { provider, name, ...extra } };
+}
+
+/**
+ * The `connection_update` fields for the Outbound credentials form, mirroring
+ * `AutomationConnectionUpdateInputSchema`: a Linear key, or a Jira email and token set together.
+ * The caller adds the generation it loaded.
+ */
+export function automationCredentialsInput(values, provider) {
+  const errors = {};
+  const credential = (field) => {
+    const value = automationField(values, field).trim();
+    if (!AUTOMATION_OUTBOUND_CREDENTIAL.test(value)) errors[field] = 'Enter the credential as 8 to 1024 printable characters without spaces.';
+    return value;
+  };
+  if (provider === 'linear') {
+    const apiKey = credential('apiKey');
+    return Object.keys(errors).length ? { errors } : { errors: {}, body: { apiKey } };
+  }
+  if (provider !== 'jira') return { errors: { provider: 'Only Linear and Jira connections have an outbound credential.' } };
+  const email = automationField(values, 'email').trim();
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = 'Enter the Jira account email.';
+  const apiToken = credential('apiToken');
+  return Object.keys(errors).length ? { errors } : { errors: {}, body: { email, apiToken } };
 }
 
 /**
@@ -3237,6 +3369,7 @@ export function initializeDashboard() {
       else if (section === 'rules') await loadAutomationRules();
       else if (section === 'connections') await loadAutomationConnections();
       else if (section === 'deliveries') await loadAutomationDeliveries();
+      else if (section === 'metrics') await loadAutomationMetrics();
       else await loadAutomationRuns();
     } catch (error) {
       const state = automationBlockedState(error);
@@ -3272,9 +3405,11 @@ export function initializeDashboard() {
     const parameters = new URLSearchParams(location.search);
     const requestedState = parameters.get('state') ?? '';
     const requestedRule = parameters.get('ruleId') ?? '';
+    const requestedPublish = parameters.get('publishState') ?? '';
     const filters = {
       state: AUTOMATION_WORKFLOW_STATES.includes(requestedState) ? requestedState : '',
-      ruleId: /^arl_[a-f0-9]{32}$/.test(requestedRule) ? requestedRule : ''
+      ruleId: /^arl_[a-f0-9]{32}$/.test(requestedRule) ? requestedRule : '',
+      publishState: AUTOMATION_PUBLISH_STATES.includes(requestedPublish) ? requestedPublish : ''
     };
     const [workflowsResult, rulesResult] = await Promise.all([listAutomationWorkflows({ ...filters, limit: 100 }), listAutomationRules()]);
     insertRendered(content, renderAutomationRuns({ workflows: automationArray(workflowsResult.data?.workflows), rules: automationArray(rulesResult.data?.rules), filters }));
@@ -3292,7 +3427,7 @@ export function initializeDashboard() {
     if (!workflow) throw Object.assign(new Error('This automation run was not found.'), { status: 404 });
     const rule = automationArray(rulesResult?.data?.rules).find((entry) => entry.id === workflow.ruleId);
     const shown = [...earlier.actions, ...automationArray(actions)];
-    setTitle(`${workflow.repository}#${workflow.resourceNumber}`, 'Automation run: state, transitions, and the agent result.');
+    setTitle(automationResourceText(workflow), 'Automation run: state, transitions, and the agent result.');
     insertRendered(content, renderAutomationRunDetail({ workflow, result, transitions, ruleName: rule?.name, actions: shown, actionsCursor }));
     content.querySelector('[data-automation-older-actions]')?.addEventListener('click', (event) => {
       event.currentTarget.disabled = true;
@@ -3306,7 +3441,7 @@ export function initializeDashboard() {
     content.querySelector('[data-automation-cancel]')?.addEventListener('click', (event) => confirmAction({
       title: 'Cancel this run?',
       description: 'The run stops and ends as cancelled. A cancelled run is not retried.',
-      target: `${workflow.repository}#${workflow.resourceNumber} · ${workflow.id}`,
+      target: `${automationResourceText(workflow)} · ${workflow.id}`,
       label: 'Cancel run',
       pendingLabel: 'Cancelling…',
       action: async () => {
@@ -3376,12 +3511,22 @@ export function initializeDashboard() {
   function openAutomationRuleDialog(rule, invoker) {
     const dialog = openAutomationDialog(renderAutomationRuleDialog({ rule, ...automationPage }), invoker);
     const form = dialog?.querySelector('#automation-rule-form');
+    const matchHost = form?.querySelector('#automation-rule-match');
+    const connectionSelect = form?.querySelector('#automation-rule-connection');
+    // The connection fixes the provider: a new rule's match fields follow the chosen connection.
+    if (!rule) connectionSelect?.addEventListener('change', () => {
+      const provider = connectionSelect.selectedOptions[0]?.dataset.provider ?? 'github';
+      if (!matchHost || matchHost.dataset.provider === provider) return;
+      matchHost.dataset.provider = provider;
+      insertRendered(matchHost, renderAutomationRuleMatchFields(provider));
+    });
     form?.addEventListener('submit', (event) => {
       event.preventDefault();
       const values = new FormData(form);
       // A disabled select is not submitted, so an edit supplies the rule's own connection.
       if (rule) values.set('connectionId', rule.connectionId);
-      const { errors, body } = automationRuleInput(values);
+      const provider = rule ? automationMatchProvider(rule.match) : (matchHost?.dataset.provider ?? 'github');
+      const { errors, body } = automationRuleInput(values, provider);
       if (reportAutomationFieldErrors(form, errors)) return;
       const action = rule ? () => updateAutomationRule(rule.id, automationRuleUpdateInput(rule, body)) : () => createAutomationRule(body);
       void submitForm(form, 'Saving…', action, async () => {
@@ -3392,11 +3537,12 @@ export function initializeDashboard() {
     });
   }
   function openAutomationPreviewDialog(rule, invoker) {
-    const dialog = openAutomationDialog(renderAutomationPreviewDialog(rule), invoker);
+    const provider = automationMatchProvider(rule.match);
+    const dialog = openAutomationDialog(renderAutomationPreviewDialog(rule, provider), invoker);
     const form = dialog?.querySelector('#automation-preview-form');
     form?.addEventListener('submit', (event) => {
       event.preventDefault();
-      const { errors, sample } = automationPreviewSample(new FormData(form));
+      const { errors, sample } = automationPreviewSample(new FormData(form), provider);
       if (reportAutomationFieldErrors(form, errors)) return;
       const resultRegion = form.querySelector('#automation-preview-result');
       insertRendered(resultRegion, '');
@@ -3411,10 +3557,12 @@ export function initializeDashboard() {
    * dismissal, copy chips) ran in `performLoad`, so a re-render wires its own.
    */
   async function loadAutomationConnections(reveal, rerender = Boolean(reveal)) {
-    const result = await listAutomationConnections();
+    // Health only annotates the cards: a failed health read must not hide the connections.
+    const [result, healthResult] = await Promise.all([listAutomationConnections(), getAutomationHealth().catch(() => undefined)]);
     const connections = automationArray(result.data?.connections);
+    const health = Array.isArray(healthResult?.data?.health) ? healthResult.data.health : null;
     const panel = reveal ? renderAutomationSecretPanel({ connection: reveal.connection, origin: location.origin, rotated: reveal.rotated }) : '';
-    insertRendered(content, `${panel}${renderAutomationConnections({ connections, origin: location.origin })}`);
+    insertRendered(content, `${panel}${renderAutomationConnections({ connections, origin: location.origin, health })}`);
     setPageActions(renderPrimaryAction({ id: 'open-automation-connection', label: 'New connection', dialogId: 'automation-connection-dialog' }));
     if (rerender) { bindDialogDismissal(content); bindCopyAffordances(content); }
     if (reveal) {
@@ -3438,13 +3586,25 @@ export function initializeDashboard() {
       globalThis.setTimeout(() => panelElement.focus({ preventScroll: false }), 0);
     }
     const form = content.querySelector('#automation-connection-form');
+    const providerSelect = form?.querySelector('#automation-connection-provider');
+    // Only the chosen provider's fieldset is shown and enabled, so hidden fields never submit.
+    const showProviderFields = () => {
+      for (const fieldset of form.querySelectorAll('[data-automation-provider-fields]')) {
+        const active = fieldset.dataset.automationProviderFields === providerSelect.value;
+        fieldset.hidden = !active;
+        fieldset.disabled = !active;
+      }
+    };
+    if (providerSelect) { providerSelect.addEventListener('change', showProviderFields); showProviderFields(); }
     form?.addEventListener('submit', (event) => {
       event.preventDefault();
-      const name = String(new FormData(form).get('name') ?? '').trim();
-      if (reportAutomationFieldErrors(form, !name || name.length > 100 ? { name: 'Enter a connection name of 1 to 100 characters.' } : {})) return;
+      const { errors, body } = automationConnectionInput(new FormData(form));
+      if (reportAutomationFieldErrors(form, errors)) return;
+      // Credentials are write-only: they leave the form as soon as they are sent.
+      resetWriteOnlyFields(form);
       let created;
       void submitForm(form, 'Creating…', async () => {
-        created = (await createAutomationConnection(name)).data;
+        created = (await createAutomationConnection(body)).data;
         if (!created?.connection || typeof created.secret !== 'string' || !created.secret) {
           throw new Error('The connection was created but its signing secret was unavailable. Rotate the secret to get a new one.');
         }
@@ -3468,7 +3628,7 @@ export function initializeDashboard() {
     });
     for (const button of content.querySelectorAll('[data-automation-connection-rotate]')) button.addEventListener('click', (event) => confirmAction({
       title: 'Rotate signing secret?',
-      description: 'The current secret stops verifying deliveries immediately. The new secret is shown once; update the GitHub webhook with it.',
+      description: 'The current secret stops verifying deliveries immediately. The new secret is shown once; update the provider\'s webhook with it.',
       target: button.dataset.connectionName ?? button.dataset.automationConnectionRotate,
       label: 'Rotate secret',
       pendingLabel: 'Rotating…',
@@ -3477,6 +3637,37 @@ export function initializeDashboard() {
         if (!rotated?.connection || typeof rotated.secret !== 'string' || !rotated.secret) throw new Error('The new signing secret was unavailable. Rotate the secret again.');
         await loadAutomationConnections({ connection: rotated.connection, secret: rotated.secret, rotated: true });
         announce('Signing secret rotated. Copy the new secret now; it is shown once.');
+      }
+    }, event.currentTarget));
+    for (const button of content.querySelectorAll('[data-automation-credentials-edit]')) button.addEventListener('click', (event) => {
+      const provider = button.dataset.provider;
+      const id = button.dataset.automationCredentialsEdit;
+      const generation = Number(button.dataset.generation);
+      const dialog = openAutomationDialog(renderAutomationCredentialsDialog({ provider, name: button.dataset.connectionName }), event.currentTarget);
+      const credentialsForm = dialog?.querySelector('#automation-credentials-form');
+      credentialsForm?.addEventListener('submit', (submitEvent) => {
+        submitEvent.preventDefault();
+        const { errors, body } = automationCredentialsInput(new FormData(credentialsForm), provider);
+        if (reportAutomationFieldErrors(credentialsForm, errors)) return;
+        // Credentials are write-only: they leave the form as soon as they are sent.
+        resetWriteOnlyFields(credentialsForm);
+        void submitForm(credentialsForm, 'Saving…', () => updateAutomationConnection(id, { expectedGeneration: generation, ...body }), async () => {
+          dialog.close();
+          announce('Outbound credentials saved. They are not shown again.');
+          await loadAutomationConnections(undefined, true);
+        });
+      });
+    });
+    for (const button of content.querySelectorAll('[data-automation-credentials-clear]')) button.addEventListener('click', (event) => confirmAction({
+      title: 'Clear outbound credentials?',
+      description: 'The stored credential is removed. Runs keep completing but stop posting their answer back until a new credential is saved.',
+      target: button.dataset.connectionName ?? button.dataset.automationCredentialsClear,
+      label: 'Clear credentials',
+      pendingLabel: 'Clearing…',
+      action: async () => {
+        await updateAutomationConnection(button.dataset.automationCredentialsClear, { expectedGeneration: Number(button.dataset.generation), clearOutbound: true });
+        announce('Outbound credentials cleared.');
+        await loadAutomationConnections(undefined, true);
       }
     }, event.currentTarget));
     for (const button of content.querySelectorAll('[data-automation-connection-delete]')) button.addEventListener('click', (event) => confirmAction({
@@ -3493,11 +3684,47 @@ export function initializeDashboard() {
     }, event.currentTarget));
   }
   async function loadAutomationDeliveries() {
-    const requested = new URLSearchParams(location.search).get('connectionId') ?? '';
-    const filters = { connectionId: /^whc_[a-f0-9]{32}$/.test(requested) ? requested : '' };
+    const parameters = new URLSearchParams(location.search);
+    const requested = parameters.get('connectionId') ?? '';
+    const requestedState = parameters.get('state') ?? '';
+    const filters = {
+      connectionId: /^whc_[a-f0-9]{32}$/.test(requested) ? requested : '',
+      state: AUTOMATION_DELIVERY_STATES.includes(requestedState) ? requestedState : ''
+    };
     const [deliveriesResult, connectionsResult] = await Promise.all([listAutomationDeliveries({ ...filters, limit: 100 }), listAutomationConnections()]);
     insertRendered(content, renderAutomationDeliveries({ deliveries: automationArray(deliveriesResult.data?.deliveries), connections: automationArray(connectionsResult.data?.connections), filters }));
     bindAutomationFilter('#automation-deliveries-filter', '/dashboard/automations/deliveries');
+    for (const button of content.querySelectorAll('[data-automation-delivery-replay]')) button.addEventListener('click', (event) => confirmAction({
+      title: 'Replay this delivery?',
+      description: 'Its stored event is matched against the enabled rules as they are now, and any match starts a run. Rules that already ran for this delivery, rules in cooldown and resources with an active run are skipped.',
+      target: button.dataset.automationDeliveryReplay,
+      label: 'Replay delivery',
+      pendingLabel: 'Replaying…',
+      action: async () => {
+        const replayed = (await replayAutomationDelivery(button.dataset.automationDeliveryReplay, button.dataset.state)).data;
+        const count = automationArray(replayed?.workflowIds).length;
+        announce(count ? `Delivery replayed. ${count} run${count === 1 ? '' : 's'} started.` : `Delivery replayed. No run started (${replayed?.outcome ?? 'no match'}).`);
+        await load();
+      }
+    }, event.currentTarget));
+  }
+  async function loadAutomationMetrics() {
+    const requested = Number(new URLSearchParams(location.search).get('windowDays'));
+    const windowDays = AUTOMATION_METRICS_WINDOWS.includes(requested) ? requested : 7;
+    let metrics;
+    let error;
+    try {
+      metrics = (await getAutomationMetrics(windowDays)).data;
+    } catch (caught) {
+      // Disabled and denied states own the whole page; any other failure stays in place.
+      if (automationBlockedState(caught)) throw caught;
+      error = caught;
+    }
+    insertRendered(content, renderAutomationMetrics({ metrics, windowDays, error }));
+    setPageActions(renderSecondaryAction({ id: 'refresh-automation-metrics', label: 'Refresh' }));
+    document.querySelector('#refresh-automation-metrics')?.addEventListener('click', () => { void load().then(() => announce('Automation metrics refreshed.')); });
+    content.querySelector('[data-automation-retry]')?.addEventListener('click', () => { void load(); });
+    bindAutomationFilter('#automation-metrics-filter', '/dashboard/automations/metrics');
   }
   let currentMcpServers = [];
   let currentMcpServer;

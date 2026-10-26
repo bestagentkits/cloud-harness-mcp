@@ -50,6 +50,16 @@ describe('GitHub Error Classifier', () => {
     expect(error.retryable).toBe(true);
   });
 
+  it('classifies a check run refused to a token that is not a GitHub App as a permission gap, without retry', () => {
+    const error = classifyGitHubFailure(
+      'gh: You must authenticate via a GitHub App. (HTTP 403)',
+      '',
+      'check_run_create'
+    );
+    expect(error.code).toBe('GITHUB_PERMISSION_MISSING');
+    expect(error.retryable).toBe(false);
+  });
+
   it('classifies missing GitHub App permissions as GITHUB_PERMISSION_MISSING', () => {
     const error1 = classifyGitHubFailure(
       'GraphQL: Resource not accessible by integration (createPullRequest)',

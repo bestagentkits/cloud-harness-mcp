@@ -45,6 +45,12 @@ const delivery = {
   repository: 'example/project', resourceNumber: 7, label: 'triage', state: 'PROCESSED', outcome: 'accepted', workflowsCreated: 1, receivedAt: at
 };
 const secret = 'whsec-canary-secret-value';
+const counts = { RECEIVED: 0, PROCESSED: 3, IGNORED: 1, QUARANTINED: 1 };
+const health = { connectionId, provider: 'github', enabled: true, outboundConfigured: false, lastDeliveryAt: at, lastQuarantine: { at, reason: 'malformed_json' }, last24h: counts, last7d: counts };
+const metrics = {
+  workflows: 4, active: 1, completed: 2, failed: 1, cancelled: 0, expired: 0, successRate: 2 / 3,
+  costMicros: 4_500, inputTokens: 1_000, outputTokens: 200, latencyP50Ms: 60_000, latencyP95Ms: 90_000
+};
 
 const dataFor: Record<string, unknown> = {
   connections_list: { connections: [connection] },
@@ -60,7 +66,10 @@ const dataFor: Record<string, unknown> = {
   workflows_list: { workflows: [workflow] },
   workflow_get: { workflow, result: null, transitions: [{ fromState: null, toState: 'QUEUED', actor: 'system', code: null, at }], actions: [], actionsCursor: null },
   workflow_cancel: { workflow: { ...workflow, state: 'CANCELLED' } },
-  deliveries_list: { deliveries: [delivery] }
+  deliveries_list: { deliveries: [delivery] },
+  delivery_replay: { delivery: { ...delivery, outcome: 'replayed:workflows_created', workflowsCreated: 2, replayable: true }, outcome: 'workflows_created', workflowIds: [workflowId] },
+  connection_health: { health: [health] },
+  automation_metrics: { windowDays: 7, since: at, providers: [{ provider: 'github', ...metrics }], rules: [{ ruleId, name: 'Triage', provider: 'github', deleted: false, ...metrics }] }
 };
 
 type Reply = { status: number; headers: Record<string, string | string[] | undefined>; json: any };
@@ -137,7 +146,13 @@ describe('dashboard automations BFF', () => {
       [`/api/v1/automations/workflows/${workflowId}`, 'workflow_get', { id: workflowId }],
       [`/api/v1/automations/workflows/${workflowId}?actionsCursor=MTc2MDoxMg`, 'workflow_get', { id: workflowId, actionsCursor: 'MTc2MDoxMg' }],
       ['/api/v1/automations/deliveries?limit=5', 'deliveries_list', { limit: 5 }],
-      [`/api/v1/automations/deliveries?connectionId=${connectionId}`, 'deliveries_list', { connectionId, limit: 50 }]
+      [`/api/v1/automations/deliveries?connectionId=${connectionId}`, 'deliveries_list', { connectionId, limit: 50 }],
+      ['/api/v1/automations/deliveries?state=QUARANTINED', 'deliveries_list', { state: 'QUARANTINED', limit: 50 }],
+      ['/api/v1/automations/workflows?publishState=FAILED', 'workflows_list', { publishState: 'FAILED', limit: 50 }],
+      ['/api/v1/automations/health', 'connection_health', {}],
+      [`/api/v1/automations/health?connectionId=${connectionId}`, 'connection_health', { connectionId }],
+      ['/api/v1/automations/metrics', 'automation_metrics', { windowDays: 7 }],
+      ['/api/v1/automations/metrics?windowDays=30', 'automation_metrics', { windowDays: 30 }]
     ];
     for (const [path, operation, input] of cases) {
       const response = await send(path);
@@ -157,7 +172,8 @@ describe('dashboard automations BFF', () => {
       ['PATCH', `/api/v1/automations/rules/${ruleId}`, 'rule_update', { expectedGeneration: 1, enabled: true }, { id: ruleId, expectedGeneration: 1, enabled: true }],
       ['DELETE', `/api/v1/automations/rules/${ruleId}`, 'rule_delete', { expectedGeneration: 1 }, { id: ruleId, expectedGeneration: 1 }],
       ['POST', `/api/v1/automations/rules/${ruleId}/preview`, 'rule_preview', { sample }, { id: ruleId, sample: { ...sample, senderType: 'User' } }],
-      ['POST', `/api/v1/automations/workflows/${workflowId}/cancel`, 'workflow_cancel', { reason: 'not needed' }, { id: workflowId, reason: 'not needed' }]
+      ['POST', `/api/v1/automations/workflows/${workflowId}/cancel`, 'workflow_cancel', { reason: 'not needed' }, { id: workflowId, reason: 'not needed' }],
+      ['POST', `/api/v1/automations/deliveries/${deliveryId}/replay`, 'delivery_replay', { expectedState: 'PROCESSED' }, { id: deliveryId, expectedState: 'PROCESSED' }]
     ];
     for (const [method, path, operation, body, input] of cases) {
       const response = await send(path, { method, headers, body: JSON.stringify(body) });
@@ -172,6 +188,34 @@ describe('dashboard automations BFF', () => {
     expect(forwarded.operation).toBe('rule_create');
     // Schema defaults are applied before the runner sees the rule, so the runner receives a complete input.
     expect(forwarded.input).toMatchObject({ connectionId, enabled: false, match: { ignoreBots: true }, action: { publishComment: false, maxConcurrent: 1 } });
+  });
+
+  it('passes outbound credential updates through and never echoes them', async () => {
+    const headers = await mutationHeaders();
+    const path = `/api/v1/automations/connections/${connectionId}`;
+    const updates: Array<Record<string, unknown>> = [
+      { expectedGeneration: 3, apiKey: 'lin_api_credential_1' },
+      { expectedGeneration: 3, email: 'ops@acme.test', apiToken: 'atl-credential-2' },
+      { expectedGeneration: 3, clearOutbound: true }
+    ];
+    for (const body of updates) {
+      const response = await send(path, { method: 'PATCH', headers, body: JSON.stringify(body) });
+      expect(response.status, JSON.stringify(Object.keys(body))).toBe(200);
+      expect(requests.at(-1)).toEqual({ version: 1, principal, operation: 'connection_update', input: { id: connectionId, ...body } });
+      expect(JSON.stringify(response.json)).not.toMatch(/credential/u);
+    }
+    const refused: Array<Record<string, unknown>> = [
+      { expectedGeneration: 3, email: 'ops@acme.test' },
+      { expectedGeneration: 3, apiToken: 'atl-credential-2' },
+      { expectedGeneration: 3, apiKey: 'lin_api_credential_1', clearOutbound: true },
+      { expectedGeneration: 3, apiKey: 'short' }
+    ];
+    for (const body of refused) {
+      const before = requests.length;
+      const response = await send(path, { method: 'PATCH', headers, body: JSON.stringify(body) });
+      expect(response.status, JSON.stringify(Object.keys(body))).toBe(400);
+      expect(requests.length).toBe(before);
+    }
   });
 
   it('returns the signing secret only with no-store caching', async () => {
@@ -195,6 +239,8 @@ describe('dashboard automations BFF', () => {
     expect(noOrigin.status).toBe(403);
     const notJson = await send('/api/v1/automations/connections', { method: 'POST', headers: { ...headers, 'content-type': 'text/plain' }, body });
     expect(notJson.status).toBe(415);
+    const replay = await send(`/api/v1/automations/deliveries/${deliveryId}/replay`, { method: 'POST', headers: { ...headers, 'x-csrf-token': 'wrong' }, body: '{}' });
+    expect(replay.status).toBe(403);
     expect(requests).toHaveLength(0);
   });
 
@@ -206,7 +252,13 @@ describe('dashboard automations BFF', () => {
       '/api/v1/automations/workflows?limit=0',
       '/api/v1/automations/workflows?state=PAUSED',
       `/api/v1/automations/rules?connectionId=${connectionId}&connectionId=${connectionId}`,
-      '/api/v1/automations/deliveries?limit=500'
+      '/api/v1/automations/deliveries?limit=500',
+      '/api/v1/automations/deliveries?state=LOST',
+      '/api/v1/automations/workflows?publishState=SENT',
+      '/api/v1/automations/health?connectionId=whc_bad',
+      '/api/v1/automations/metrics?windowDays=0',
+      '/api/v1/automations/metrics?windowDays=31',
+      '/api/v1/automations/metrics?windowDays=week'
     ];
     for (const path of reads) {
       const response = await send(path);
@@ -220,7 +272,9 @@ describe('dashboard automations BFF', () => {
       ['DELETE', `/api/v1/automations/connections/${connectionId}`, {}],
       ['POST', '/api/v1/automations/rules', { ...ruleInput, match: { ...ruleInput.match, repository: 'bad owner/project' } }],
       ['POST', `/api/v1/automations/rules/${ruleId}/preview`, { sample: { ...sample, event: 'push' } }],
-      ['POST', `/api/v1/automations/workflows/${workflowId}/cancel`, { reason: 'x'.repeat(501) }]
+      ['POST', `/api/v1/automations/workflows/${workflowId}/cancel`, { reason: 'x'.repeat(501) }],
+      ['POST', '/api/v1/automations/deliveries/dlv_bad/replay', {}],
+      ['POST', `/api/v1/automations/deliveries/${deliveryId}/replay`, { expectedState: 'LOST' }]
     ];
     for (const [method, path, body] of writes) {
       const response = await send(path, { method, headers, body: JSON.stringify(body) });

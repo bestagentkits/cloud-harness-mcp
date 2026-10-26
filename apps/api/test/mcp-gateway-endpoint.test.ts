@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
+  AUTOMATION_TOOL_SPECS,
   TOOL_SPECS,
   type ApiConfig,
   type McpGatewayResolvedCredentials,
@@ -776,7 +777,7 @@ describe('/mcp regression guard', () => {
         })
       );
       const listed = await client.listTools();
-      expect(listed.tools).toHaveLength(TOOL_SPECS.length);
+      expect(listed.tools).toHaveLength(TOOL_SPECS.length + AUTOMATION_TOOL_SPECS.length);
       expect(state.calls.filter((call) => call.operation.startsWith('mcp_gateway'))).toHaveLength(0);
     } finally {
       await client.close().catch(() => undefined);

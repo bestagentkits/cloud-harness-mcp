@@ -373,7 +373,7 @@ case "$action" in
     require_number "$limit" "Check run limit"
     cmd=(gh api -X GET "repos/{owner}/{repo}/commits/${sha}/check-runs" -f "per_page=$limit" -f "filter=latest")
     if [ -n "$check_name" ]; then cmd+=(-f "check_name=$check_name"); fi
-    exec "${cmd[@]}" --jq '{ totalCount: .total_count, checkRuns: [.check_runs[] | { id, name, status, conclusion, headSha: .head_sha, startedAt: .started_at, completedAt: .completed_at, detailsUrl: .details_url, url: .html_url, app: .app.slug }] }'
+    exec "${cmd[@]}" --jq '{ totalCount: .total_count, checkRuns: [.check_runs[] | { id, name, status, conclusion, headSha: .head_sha, startedAt: .started_at, completedAt: .completed_at, detailsUrl: .details_url, url: .html_url, app: .app.slug, externalId: .external_id }] }'
     ;;
   workflow_runs_list)
     limit="${1:-20}"
@@ -434,6 +434,50 @@ case "$action" in
     if [ -n "$description" ]; then cmd+=(-f "description=$description"); fi
     if [ -n "$target_url" ]; then cmd+=(-f "target_url=$target_url"); fi
     "${cmd[@]}" | jq --arg sha "$sha" '{ id, sha: $sha, state, context, description, targetUrl: .target_url, creator: .creator.login, createdAt: .created_at }'
+    ;;
+  check_run_create|check_run_update)
+    if [ "$action" = "check_run_create" ]; then
+      sha="${1:-}"; name="${2:-}"; status="${3:-}"; conclusion="${4:-}"; external_id="${5:-}"; title="${6:-}"; summary="${7:-}"
+      if ! [[ $sha =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+        echo "Check run SHA must be a full lowercase commit ID" >&2
+        exit 1
+      fi
+      if [ -z "$name" ]; then
+        echo "Check run name required" >&2
+        exit 1
+      fi
+    else
+      check_run_id="${1:-}"; status="${2:-}"; conclusion="${3:-}"; title="${4:-}"; summary="${5:-}"
+      require_number "$check_run_id" "Check run ID"
+    fi
+    case "$status" in
+      ''|queued|in_progress|completed) ;;
+      *) echo "Check run status must be queued, in_progress, or completed" >&2; exit 1 ;;
+    esac
+    case "$conclusion" in
+      ''|success|failure|neutral|cancelled|skipped|timed_out) ;;
+      *) echo "Check run conclusion must be success, failure, neutral, cancelled, skipped, or timed_out" >&2; exit 1 ;;
+    esac
+    if { [ -n "$title" ] && [ -z "$summary" ]; } || { [ -z "$title" ] && [ -n "$summary" ]; }; then
+      echo "Check run title and summary are set together" >&2
+      exit 1
+    fi
+    # The body is built with jq so the untrusted summary is never interpolated into JSON or a path.
+    payload=$(jq -n --arg sha "${sha:-}" --arg name "${name:-}" --arg status "$status" --arg conclusion "$conclusion" \
+      --arg externalId "${external_id:-}" --arg title "$title" --arg summary "$summary" '
+      ({} + (if $sha != "" then { head_sha: $sha } else {} end)
+          + (if $name != "" then { name: $name } else {} end)
+          + (if $status != "" then { status: $status } else {} end)
+          + (if $conclusion != "" then { conclusion: $conclusion } else {} end)
+          + (if $externalId != "" then { external_id: $externalId } else {} end)
+          + (if $title != "" then { output: { title: $title, summary: $summary } } else {} end))')
+    if [ "$action" = "check_run_create" ]; then
+      method=POST; path="repos/{owner}/{repo}/check-runs"
+    else
+      method=PATCH; path="repos/{owner}/{repo}/check-runs/$check_run_id"
+    fi
+    printf '%s' "$payload" | gh api -X "$method" "$path" --input - \
+      --jq '{ id, name, status, conclusion, headSha: .head_sha, externalId: .external_id, startedAt: .started_at, completedAt: .completed_at, url: .html_url }'
     ;;
   workflow_dispatch)
     workflow="${1:-}"

@@ -1,5 +1,6 @@
 import { McpServer, type AuthInfo, type CallToolResult, type McpRequestContext } from '@modelcontextprotocol/server';
 import {
+  AUTOMATION_TOOL_SPECS,
   ApiKeyIdSchema,
   TOOL_SPECS,
   ToolResultSchema,
@@ -8,6 +9,7 @@ import {
   type RunnerPrincipalSelector,
   type RunnerResponse,
   type ToolResult,
+  type ToolSpec,
   type WorkspaceId
 } from '@cloud-harness/contracts';
 import { principalFromAuthInfo } from './auth.js';
@@ -17,9 +19,16 @@ import { formatToolResultText } from './mcp-response-text.js';
 import { registerSkillsExtension, supportsSkillsExtension } from './skills-extension.js';
 import { registerEventsExtension, type EventsBackend } from './events/events-extension.js';
 import type { WebhookSender } from './events/webhook-sender.js';
+import { callAutomationTool, type AutomationsBackend } from './automations/automation-tools.js';
 
 /** MCP Events wiring; absent (no `events` capability) unless the API runs its delivery egress. */
 export type EventsOptions = { sender: WebhookSender };
+/**
+ * Automation management tools; absent (no automation tools) on backends without the runner's
+ * automations channel. When the instance has automations off the tools stay listed and answer
+ * UNAVAILABLE.
+ */
+export type AutomationsOptions = { enabled: boolean };
 
 export function resultToMcp(result: ToolResult): CallToolResult {
   return {
@@ -39,8 +48,17 @@ export class RunnerOperationBackend implements OperationBackend {
     private readonly client: RunnerClient,
     private readonly principal?: RunnerPrincipalSelector,
     private readonly skillsWorkspaceId?: WorkspaceId,
-    eventsOptions?: EventsOptions & { apiKeyId?: string | undefined }
+    eventsOptions?: EventsOptions & { apiKeyId?: string | undefined },
+    automationsOptions?: AutomationsOptions & { scopes: readonly string[] }
   ) {
+    if (automationsOptions) {
+      this.automations = {
+        principal: this.principal,
+        scopes: automationsOptions.scopes,
+        enabled: automationsOptions.enabled,
+        callAutomations: async (request, signal) => await client.callAutomations(request, signal)
+      };
+    }
     if (eventsOptions) {
       const principal = this.principal;
       this.events = {
@@ -56,6 +74,7 @@ export class RunnerOperationBackend implements OperationBackend {
   }
 
   readonly events?: EventsBackend;
+  readonly automations?: AutomationsBackend;
 
   async call(operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     if (!this.principal) return unauthenticated();
@@ -101,33 +120,45 @@ export function createCloudHarnessServer(
   }
 
   const server = new McpServer(
-    { name: 'cloud-harness-mcp', version: '0.66.0-beta.38' },
+    { name: 'cloud-harness-mcp', version: '0.66.0-beta.39' },
     { instructions }
   );
 
   for (const spec of TOOL_SPECS) {
-    server.registerTool(
-      spec.name,
-      {
-        title: spec.title,
-        description: spec.description,
-        inputSchema: spec.inputSchema,
-        outputSchema: ToolResultSchema,
-        annotations: {
-          readOnlyHint: spec.readOnly,
-          destructiveHint: spec.destructive,
-          idempotentHint: spec.idempotent,
-          openWorldHint: spec.openWorld
-        }
-      },
-      async (input, context) => {
-        return resultToMcp(await backend.call(spec.name, input as Record<string, unknown>, context.mcpReq.signal));
-      }
-    );
+    registerSpecTool(server, spec, async (input, signal) => await backend.call(spec.name, input, signal));
+  }
+  const automations = backend.automations;
+  if (automations) {
+    for (const spec of AUTOMATION_TOOL_SPECS) {
+      registerSpecTool(server, spec, async (input, signal) => await callAutomationTool(automations, spec, input, signal));
+    }
   }
   if (supportsSkillsExtension(backend)) registerSkillsExtension(server, backend);
   if (backend.events) registerEventsExtension(server, backend.events);
   return server;
+}
+
+function registerSpecTool(
+  server: McpServer,
+  spec: Omit<ToolSpec, 'name'> & { name: string },
+  call: (input: Record<string, unknown>, signal: AbortSignal) => Promise<ToolResult>
+): void {
+  server.registerTool(
+    spec.name,
+    {
+      title: spec.title,
+      description: spec.description,
+      inputSchema: spec.inputSchema,
+      outputSchema: ToolResultSchema,
+      annotations: {
+        readOnlyHint: spec.readOnly,
+        destructiveHint: spec.destructive,
+        idempotentHint: spec.idempotent,
+        openWorldHint: spec.openWorld
+      }
+    },
+    async (input, context) => resultToMcp(await call(input as Record<string, unknown>, context.mcpReq.signal))
+  );
 }
 
 /** Managed API key behind the request, set only by the API-key authentication lane. */
@@ -137,9 +168,14 @@ function eventsFor(authInfo: AuthInfo | undefined, events: EventsOptions | undef
   return apiKeyId.success ? { ...events, apiKeyId: apiKeyId.data } : events;
 }
 
-export function createCloudHarnessServerFactory(client: RunnerClient, events?: EventsOptions): (context: McpRequestContext) => McpServer {
+/** Scopes come only from the server-side authentication context, never from tool input. */
+function automationsFor(authInfo: AuthInfo | undefined, automations: AutomationsOptions | undefined): (AutomationsOptions & { scopes: readonly string[] }) | undefined {
+  return automations ? { ...automations, scopes: authInfo?.scopes ?? [] } : undefined;
+}
+
+export function createCloudHarnessServerFactory(client: RunnerClient, events?: EventsOptions, automations?: AutomationsOptions): (context: McpRequestContext) => McpServer {
   return (context) => createCloudHarnessServer(new RunnerOperationBackend(
-    client, principalFromAuthInfo(context.authInfo), undefined, eventsFor(context.authInfo, events)
+    client, principalFromAuthInfo(context.authInfo), undefined, eventsFor(context.authInfo, events), automationsFor(context.authInfo, automations)
   ));
 }
 
@@ -159,12 +195,12 @@ export function bindWorkspace(authInfo: AuthInfo, workspaceId: WorkspaceId): Aut
  * named by the endpoint path. A request without a valid binding fails closed instead of falling
  * back to the unbound skill set.
  */
-export function createWorkspaceBoundServerFactory(client: RunnerClient, events?: EventsOptions): (context: McpRequestContext) => McpServer {
+export function createWorkspaceBoundServerFactory(client: RunnerClient, events?: EventsOptions, automations?: AutomationsOptions): (context: McpRequestContext) => McpServer {
   return (context) => {
     const workspaceId = WorkspaceIdSchema.safeParse(context.authInfo?.extra?.[WORKSPACE_BINDING_KEY]);
     if (!workspaceId.success) throw new Error('Workspace binding unavailable');
     return createCloudHarnessServer(new RunnerOperationBackend(
-      client, principalFromAuthInfo(context.authInfo), workspaceId.data, eventsFor(context.authInfo, events)
+      client, principalFromAuthInfo(context.authInfo), workspaceId.data, eventsFor(context.authInfo, events), automationsFor(context.authInfo, automations)
     ));
   };
 }

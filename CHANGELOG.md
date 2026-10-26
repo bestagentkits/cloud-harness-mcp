@@ -1,3 +1,41 @@
+# [0.66.0-beta.39](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.38...v0.66.0-beta.39) (2026-10-26)
+
+
+### Bug Fixes
+
+* **automations:** accept Jira webhook retries inside Atlassian's retry window ([174d0a2](https://github.com/bestagentkits/cloud-harness-mcp/commit/174d0a21ff425c7d19fe9bbcc92119577bd6789b))
+* **automations:** count the usage of runs that end without completing ([a7f1175](https://github.com/bestagentkits/cloud-harness-mcp/commit/a7f117564c16d8d4752ae3885d73c48aaadb2794))
+* **automations:** dedupe custom deliveries on the signed timestamp and body ([008fa76](https://github.com/bestagentkits/cloud-harness-mcp/commit/008fa76476cad05c173880ddb1d1d0437028732b))
+* **automations:** fence free-form provider text out of the trusted prompt ([35c5be2](https://github.com/bestagentkits/cloud-harness-mcp/commit/35c5be288b7342473291ec47d1cd9de8c1f14fb6))
+* **automations:** ignore Jira updates that carry no changelog ([672fcd9](https://github.com/bestagentkits/cloud-harness-mcp/commit/672fcd931fa10148e1b499ff6d9f13d673738db3))
+* **automations:** match actor allowlists only on stable provider ids ([08f2bb9](https://github.com/bestagentkits/cloud-harness-mcp/commit/08f2bb925ee4afd9585747cbc63a4bc9faa2b7c2))
+* **automations:** never create a second check run when the first id is unreadable ([2ac0faf](https://github.com/bestagentkits/cloud-harness-mcp/commit/2ac0faf90cdb6839852cc89c0b1b359f9a64a4c9))
+* **automations:** pin the Jira publisher to the validated address ([2f100ec](https://github.com/bestagentkits/cloud-harness-mcp/commit/2f100ec004d25d509d3c7977a5c76087f91c8273))
+* **automations:** publish the final state whenever a started run ends ([81bd309](https://github.com/bestagentkits/cloud-harness-mcp/commit/81bd3094d75e1e5e0122c1bf24e80eb6376e04ba))
+* **automations:** rebuild the connections table until it admits every provider ([2ab3575](https://github.com/bestagentkits/cloud-harness-mcp/commit/2ab3575a5f7d1361ff55bf41ff8624a92dbaecd8))
+* **automations:** record and describe the trigger each rule matched ([aa849cd](https://github.com/bestagentkits/cloud-harness-mcp/commit/aa849cde76975db5b8b9a843e304bbadc49a490d))
+* **automations:** refuse publishing rules on connections without outbound credentials ([9d25de0](https://github.com/bestagentkits/cloud-harness-mcp/commit/9d25de0772e17af30cbae38e7fc87067d9639c1c))
+* **automations:** refuse tab characters in automation labels ([bbc8a62](https://github.com/bestagentkits/cloud-harness-mcp/commit/bbc8a62abc39aff1d5f3169f937223b7f281eddf))
+* **automations:** release a failing workspace close and find untracked check runs ([#450](https://github.com/bestagentkits/cloud-harness-mcp/issues/450)) ([7b14315](https://github.com/bestagentkits/cloud-harness-mcp/commit/7b143153dfb2c2a9f9f72ad03827f7c19994fa33)), closes [#445](https://github.com/bestagentkits/cloud-harness-mcp/issues/445) [#523](https://github.com/bestagentkits/cloud-harness-mcp/issues/523)
+* **automations:** remove a deleted connection's deliveries and runs ([b7cc6f7](https://github.com/bestagentkits/cloud-harness-mcp/commit/b7cc6f79efeca0fe6230f29875a267a00d68bd43))
+* **contracts:** add the missing space in an automation tool description ([277b624](https://github.com/bestagentkits/cloud-harness-mcp/commit/277b624718316159a2922f1e426f5172fee85376))
+* **dashboard:** give working Linear and Jira webhook setup hints ([d6f9747](https://github.com/bestagentkits/cloud-harness-mcp/commit/d6f9747993aa6db11b3fcf7d5907ac7a8b5ce39a))
+* **runner:** keep agent cleanup retries backed off after the retry limit ([#595](https://github.com/bestagentkits/cloud-harness-mcp/issues/595)) ([a733fa7](https://github.com/bestagentkits/cloud-harness-mcp/commit/a733fa751640275fb18ddba70136b5c57753e093)), closes [#590](https://github.com/bestagentkits/cloud-harness-mcp/issues/590)
+
+
+### Features
+
+* **automations:** add delivery replay, connection health and metrics operations ([8e072e0](https://github.com/bestagentkits/cloud-harness-mcp/commit/8e072e0650172d224e06a4bb5535df4d79c8bb67))
+* **automations:** add signed custom webhook connections ([af6d9be](https://github.com/bestagentkits/cloud-harness-mcp/commit/af6d9be6ae919023879b31e91a7aad50a6e8b33e))
+* **automations:** add the Jira webhook provider ([4b64f46](https://github.com/bestagentkits/cloud-harness-mcp/commit/4b64f46b575db5fbe50a82d6f07eb26a42ceb33a))
+* **automations:** add the Linear webhook provider ([7e169a3](https://github.com/bestagentkits/cloud-harness-mcp/commit/7e169a33876cf374cbb95d0721cfe3d198cfdb40))
+* **automations:** edit one progress comment and report GitHub check runs ([f1c677b](https://github.com/bestagentkits/cloud-harness-mcp/commit/f1c677b4d17d43f017e8a77bbb2e6d0e93cccc7a))
+* **automations:** fire every label and state rule from one update ([adf0714](https://github.com/bestagentkits/cloud-harness-mcp/commit/adf07147d2a3051a6a15a9992ad60494c34a22b6))
+* **automations:** make the webhook pipeline provider-neutral ([2775461](https://github.com/bestagentkits/cloud-harness-mcp/commit/2775461bb1f8108820954e7e15353c9ad49d7016))
+* **dashboard:** manage automations for every provider with replay, health and metrics ([b0e2c09](https://github.com/bestagentkits/cloud-harness-mcp/commit/b0e2c0981716282bfa5ad88ed1dfb0b347be6c09))
+* **dashboard:** update or clear automation outbound credentials ([29cf224](https://github.com/bestagentkits/cloud-harness-mcp/commit/29cf224bdbfa212a21e3c30ec9ff9d86dcb1faa6))
+* **mcp:** manage automation rules and runs from MCP ([4e89244](https://github.com/bestagentkits/cloud-harness-mcp/commit/4e892443b25c5cbd4c8d6105530d873b9dbe0ab7))
+
 # [0.66.0-beta.38](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.37...v0.66.0-beta.38) (2026-10-26)
 
 

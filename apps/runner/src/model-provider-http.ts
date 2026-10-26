@@ -13,7 +13,7 @@ import { getModelProvider, listModelProviders, type ModelProviderKind } from '@c
 
 export interface ProviderHttpRequest {
   url: string;
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'PUT';
   headers?: Record<string, string>;
   body?: string;
   timeoutMs: number;

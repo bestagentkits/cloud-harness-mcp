@@ -7,7 +7,7 @@ import express from 'express';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { Client, ProtocolError, StreamableHTTPClientTransport, type FetchLike } from '@modelcontextprotocol/client';
-import { MCP_EVENT_NAMES, TOOL_SPECS, type ApiConfig } from '@cloud-harness/contracts';
+import { AUTOMATION_TOOL_SPECS, MCP_EVENT_NAMES, TOOL_SPECS, type ApiConfig } from '@cloud-harness/contracts';
 import { createApiApp, type ApiRuntime } from '../../apps/api/src/app.js';
 import { EventDeliveryWorker } from '../../apps/api/src/events/event-delivery-worker.js';
 import { createWebhookSender } from '../../apps/api/src/events/webhook-sender.js';
@@ -210,11 +210,11 @@ describe('MCP Events over streamable HTTP', () => {
     const client = await connect('modern', bodies);
     const discover = bodies.map((body) => (body as { result?: Record<string, unknown> }).result).find((result) => result && 'capabilities' in result);
     expect((discover!.capabilities as Record<string, unknown>).events).toEqual({});
-    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(TOOL_SPECS.map((spec) => spec.name));
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([...TOOL_SPECS, ...AUTOMATION_TOOL_SPECS].map((spec) => spec.name));
     await client.close();
 
     const legacy = await connect('legacy');
-    expect((await legacy.listTools()).tools.map((tool) => tool.name)).toEqual(TOOL_SPECS.map((spec) => spec.name));
+    expect((await legacy.listTools()).tools.map((tool) => tool.name)).toEqual([...TOOL_SPECS, ...AUTOMATION_TOOL_SPECS].map((spec) => spec.name));
     expect((await legacy.callTool({ name: 'workspace_list', arguments: {} })).isError).toBeFalsy();
     await legacy.close();
   });
