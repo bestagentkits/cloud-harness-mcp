@@ -1,4 +1,4 @@
-# ADR 0005: Multi-Repository Workspaces
+# ADR 0007: Multi-Repository Workspaces
 
 - **Status:** Accepted
 - **Date:** 2026-10-17

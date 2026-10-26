@@ -252,7 +252,7 @@ and the behaviour is exercised by
 and
 [`packages/contracts/test/multi-repository-contracts.test.ts`](../packages/contracts/test/multi-repository-contracts.test.ts).
 The design record is
-[ADR 0005](adr/0005-multi-repository-workspaces.md).
+[ADR 0007](adr/0007-multi-repository-workspaces.md).
 
 ## Coding-agent operations
 

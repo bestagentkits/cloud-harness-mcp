@@ -31,11 +31,17 @@ Owner files:
 | `dashboard-pages.js` | `apps/api/dashboard/dashboard-pages.js` (page registry) |
 | `dashboard-api.js` | `apps/api/dashboard/dashboard-api.js` (fetch wrapper and helpers) |
 | `dashboard-terminal.js` | `apps/api/dashboard/dashboard-terminal.js` (terminal client and pane) |
+| `dashboard-inbox.js` | `apps/api/dashboard/dashboard-inbox.js` (inbox and notification preferences) |
+| `dashboard-policies.js` | `apps/api/dashboard/dashboard-policies.js` (agent policy editor) |
+| `dashboard-traces.js` | `apps/api/dashboard/dashboard-traces.js` (agent traces) |
 | `index.html` | `apps/api/dashboard/index.html` (shell and static dialogs) |
 | router | `apps/api/src/dashboard-router.ts` |
 | control router | `apps/api/src/dashboard-control-router.ts` |
 | gateway router | `apps/api/src/dashboard-gateway-router.ts` |
 | terminal router | `apps/api/src/dashboard-terminal-router.ts` |
+| inbox router | `apps/api/src/dashboard-inbox-router.ts` |
+| policies router | `apps/api/src/dashboard-policies-router.ts` |
+| traces router | `apps/api/src/dashboard-traces-router.ts` |
 | assets | `apps/api/src/dashboard-assets.ts` |
 | security | `apps/api/src/dashboard-security.ts` |
 | session | `apps/api/src/dashboard-session.ts` |
@@ -102,6 +108,26 @@ are never answered by the fallback.
 | `/dashboard/api-keys` | api-keys / `loadApiKeys` | `api-keys` | P4 | none | `/api-keys` | One-time reveal (D3) | `dashboard-ui-behavior` (b) |
 | `/dashboard/settings` | settings / `loadSettings` | `settings` | P3 (lifecycle, network, OAuth session), P4 (TypeSafe credential) | none | `/settings`, `/settings/oauth` (`fetchOAuthSettings`), `/typesafe/status` and `/integration-credentials` (`fetchTypesafeSettings`) | `settings_*` responses pass through unmapped (F7); TypeSafe key write-only | `dashboard-lifecycle-settings` (b), `dashboard-oauth-settings` (b), `dashboard-typesafe` (a+b), `dashboard-router` (a) |
 | `/dashboard/profile` | profile / `loadProfile` | `profile` | P3 | none | `/profile` | Display name via server cookie | `dashboard-ui-behavior` (b) |
+| `/dashboard/inbox` | inbox / `loadInbox` | `inbox` (not created; in `LEGACY_ONLY_PAGE_IDS`) | **legacy-only**; P3 follow-up, blocks P6 | list filters read from `location.search` in `dashboard-inbox.js` | `/inbox`, `/inbox/status`, `/notification-preferences` | Delivery links are checked before render (`dashboard-inbox.js`) | `dashboard-inbox-ui` (b), `dashboard-inbox-router` (a) |
+| `/dashboard/traces[/:trace_id]` | traces / `loadTraces`, `loadTraceDetail` | `traces` (not created; in `LEGACY_ONLY_PAGE_IDS`) | **legacy-only**; P3 follow-up, blocks P6 | list filters read from `location.search` in `dashboard-traces.js` | `/traces`, `/traces/status`, `/traces/:id`, `/traces/:id/spans`; export is a native link to `/traces/:id/export` | Rail entry hidden until `/traces/status` reports traces enabled | `dashboard-traces-ui` (b), `dashboard-traces-router` (a) |
+| `/dashboard/automations[/rules\|/connections\|/deliveries\|/runs/:workflow_id]` | automations / `loadAutomations` | `automations` (not created; in `LEGACY_ONLY_PAGE_IDS`) | **legacy-only**; P4 follow-up, blocks P6 | section in the path | `/automations/workflows`, `/automations/workflows/:id`, `/automations/rules`, `/automations/connections`, `/automations/deliveries` | Webhook secret is a one-time reveal on connection create and rotate (`bindAutomationSecretReveal` in `dashboard.js`) | `dashboard-automations-ui` (b), `dashboard-automations-router` (a) |
+| `/dashboard/settings/agent-policies`, `/dashboard/projects/:prj_id/agent-policies` | agent-policies / `loadAgentPolicies` | `agent-policies` (not created; in `LEGACY_ONLY_PAGE_IDS`) | **legacy-only**; P4 follow-up, blocks P6 | none | `/agent-policies`, `/agent-policies/{global,projects/:id}`, `…/history` | Writes fence on `expectedVersion` and confirm a weakening digest | `dashboard-policies-ui` (b), `dashboard-policies-router` (a) |
+
+The four rows marked **legacy-only** were added on `dev` after the audit
+above and merged with the React rewrite
+([#548](https://github.com/bestagentkits/cloud-harness-mcp/issues/548)). React
+has no route for them yet. Their page ids are listed in `LEGACY_ONLY_PAGE_IDS`
+in [`apps/dashboard/src/app/page-registry.ts`](../apps/dashboard/src/app/page-registry.ts)
+(enforced by `page-registry.test.ts`) and their shell paths in
+`DASHBOARD_LEGACY_ONLY_PATHS` in
+[`apps/api/src/dashboard-react-assets.ts`](../apps/api/src/dashboard-react-assets.ts),
+so a React-pinned navigation gets the legacy shell instead of the React 404;
+`apps/api/test/dashboard-react-shell.test.ts` fails when a shell path is
+neither a React route nor on that list. The two agent-policies paths sit under
+the React `/projects` and `/settings` prefixes, so they need the list entry
+even though the prefix matches. P6 cannot remove the legacy shell while
+either list is non-empty: port each page (and drop its entries from both
+lists) or record a drop decision here.
 
 The command palette (`PALETTE_SOURCE_REQUESTS` in `dashboard.js`) also reads
 `/workspaces`, `/projects`, `/secrets`, `/api-keys`, `/provider-credentials`,
@@ -243,10 +269,21 @@ calls the route (collected in [4.13](#413-routes-without-a-legacy-ui-caller)).
 | POST | `/workspaces/:id/hooks/{activate,deactivate}` | router | `manifestSha256` | yes | **none** | `workspace-automation` | P4 (decide) |
 | POST | `/workspaces/:id/deployments/run` | router | bounded `timeoutMs` | yes | deploy tab, confirm | `workspace-deploy` | P4 |
 | GET | `/workspaces/:id/artifacts`, `/activity` | router | — | cockpit tabs | `workspace-cockpit` | P3 |
+| GET | `/workspaces/:id/repositories` | router | `status` | — | cockpit repository selector and explorer | `workspace-cockpit` | **legacy-only**; P4 follow-up, blocks P6 |
 
 F3: the workspace artifacts and activity projections read a global first page
 and then filter by workspace, so they can truncate silently. React must not
 claim "nothing here" as an absolute.
+
+Multi-repository workspaces ([ADR 0007](adr/0007-multi-repository-workspaces.md))
+were added on `dev` after the audit. The legacy cockpit reads
+`/workspaces/:id/repositories` for its repository selector and sends the
+selected `repositoryId` as a query parameter on the file, git and worktree
+reads and in the body of their writes, the terminal open and finalize. The
+React cockpit never sends `repositoryId`: its Files tab acts on the workspace
+tree root, and its Git tab gets `INVALID_INPUT` in a multi-repository
+workspace, where Git tools require the selector. Until React adds the
+selector, multi-repository work stays on the legacy cockpit.
 
 ### 4.3 Agents
 
@@ -446,6 +483,31 @@ P4 decisions (#484):
 | `GET /decision-plane/status` | defer (#494) | No P4 page owns decision-plane health |
 | `DELETE /github/installations/:installationId` | drop | Duplicate of `POST /github/disconnect`, which the page uses |
 | `GET /event-subscriptions`, `POST /event-subscriptions/:id/revoke` | defer (#494) | Needs a design for MCP Events on the API access page |
+
+### 4.14 Legacy-only routes
+
+These routes were added on `dev` after the audit for the **legacy-only** pages
+in [section 2](#2-routes-and-pages) and have no React caller yet
+([#548](https://github.com/bestagentkits/cloud-harness-mcp/issues/548)). The
+executable schemas are in `packages/contracts/src/notifications-api.ts`,
+`agent-traces-api.ts`, `agent-policy-api.ts` and `automations-api.ts`.
+
+| Method | Path | Owner | Fence | UI caller | Feature | Phase | Note |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| GET | `/inbox`, `/inbox/status` | inbox router | cursor, limit, `unread` | inbox page, rail badge | `inbox` | **legacy-only**; P3 follow-up | |
+| POST | `/inbox/read` | inbox router | strict `{notificationIds}` | inbox page | `inbox` | **legacy-only**; P3 follow-up | |
+| GET / PUT | `/notification-preferences` | inbox router | strict schema | inbox preferences | `inbox` | **legacy-only**; P3 follow-up | |
+| GET | `/traces`, `/traces/status`, `/traces/:id`, `/traces/:id/spans` | traces router | cursor, filters | traces pages, rail visibility | `traces` | **legacy-only**; P3 follow-up | |
+| GET | `/traces/:id/export` | traces router | `format` | native download link | `traces` | **legacy-only**; P3 follow-up | |
+| GET | `/agent-policies`, `/agent-policies/{global,projects/:id}`, `…/history`, `/agent-policies/revisions/:id`, `/agent-policies/diff` | policies router | — | policy editor | `agent-policies` | **legacy-only**; P4 follow-up | |
+| PUT / DELETE | `/agent-policies/{global,projects/:id}` | policies router | `expectedVersion`, weakening confirm plus digest | policy editor, confirm | `agent-policies` | **legacy-only**; P4 follow-up | DELETE is project scope only |
+| POST | `/agent-policies/{global,projects/:id}/validate`, `/agent-policies/simulate` | policies router | — | policy editor | `agent-policies` | **legacy-only**; P4 follow-up | Validate returns the weakening digest the save confirms |
+| POST | `/agent-policies/revisions/:id/rollback` | policies router | `expectedVersion`, confirm | policy history | `agent-policies` | **legacy-only**; P4 follow-up | |
+| GET | `/automations/workflows[/:id]`, `/automations/rules`, `/automations/connections`, `/automations/deliveries` | control router | cursor, filters | automations pages | `automations` | **legacy-only**; P4 follow-up | 503 when automations are off |
+| POST | `/automations/connections`, `/automations/connections/:id/rotate-secret` | control router | rotate: **gen** | automations connections | `automations` | **legacy-only**; P4 follow-up | **One-time webhook secret** in the response |
+| PATCH / DELETE | `/automations/connections/:id`, `/automations/rules/:id` | control router | **gen**, delete confirms | automations pages | `automations` | **legacy-only**; P4 follow-up | |
+| POST | `/automations/rules`, `/automations/rules/:id/preview`, `/automations/workflows/:id/cancel` | control router | schema parse | automations pages | `automations` | **legacy-only**; P4 follow-up | |
+| GET | `/workspaces/:id/repositories` | router | `status` | cockpit repository selector | `workspace-cockpit` | **legacy-only**; P4 follow-up | See the multi-repository note in [4.2](#42-workspaces-files-git-runtime-automation) |
 
 ## 5. Keyboard shortcuts
 
@@ -713,7 +775,7 @@ Touch points:
 | P3 | P3 rows in sections 2, 3, 4, 6, 9; section 4.13 decisions for P3 routes | owner |
 | P4 | P4 rows in sections 2, 3, 4, 6, 7, 8, 9; section 4.13 decisions for P4 routes | owner plus security review |
 | P5 | Dewee (see ADR 0005); F1 fixed before or within P5 | owner plus security review |
-| P6 | delete the legacy shell, the fake-DOM harnesses, replaced (b)/(c) suites and this matrix | owner |
+| P6 | delete the legacy shell, the fake-DOM harnesses, replaced (b)/(c) suites and this matrix; requires `DASHBOARD_LEGACY_ONLY_PATHS` and `LEGACY_ONLY_PAGE_IDS` to be empty and every section 4.14 route to have a React caller or a drop decision | owner |
 
 ### 12.1 P3 status
 

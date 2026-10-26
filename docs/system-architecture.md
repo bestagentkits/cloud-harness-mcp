@@ -402,7 +402,7 @@ capability helper receives unchanged, so per-repository behaviour needs no
 second code path. A single-repository workspace has no registry rows and gets a
 synthesized deterministic entry. The resolver lives in
 [`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts);
-the reasoning is in [ADR 0005](adr/0005-multi-repository-workspaces.md).
+the reasoning is in [ADR 0007](adr/0007-multi-repository-workspaces.md).
 
 The skill registry is a separate concern that shares that store. Sources, revisions, sets, and import
 jobs are written through [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts), while

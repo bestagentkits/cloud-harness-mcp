@@ -33,6 +33,30 @@ export const DASHBOARD_REACT_ROUTES: readonly string[] = [
   '/skills', '/integrations', '/mcp-servers', '/knowledge', '/artifacts', '/api-keys', '/settings', '/profile'
 ];
 
+/**
+ * Legacy shell pages the React app does not serve yet, as `DASHBOARD_SHELL_PATHS` entries
+ * (exact patterns; `:name` matches one segment). A React-pinned navigation to one of them
+ * falls through to the legacy shell instead of the React 404, so the page is not lost
+ * before it is ported. Each entry is tracked, with its target phase, in
+ * `docs/dashboard-parity-matrix.md`; remove it when its React route ships. These are the
+ * shell paths of the pages named by `LEGACY_ONLY_PAGE_IDS` in
+ * `apps/dashboard/src/app/page-registry.ts` (the API cannot import the React app, so the
+ * two lists change together).
+ * `apps/api/test/dashboard-react-shell.test.ts` requires every shell path to be a
+ * React route or listed here.
+ */
+export const DASHBOARD_LEGACY_ONLY_PATHS: readonly string[] = [
+  '/traces', '/traces/:traceId', '/inbox', '/projects/:projectId/agent-policies', '/settings/agent-policies',
+  '/automations', '/automations/rules', '/automations/connections', '/automations/deliveries', '/automations/runs/:workflowId'
+];
+
+const LEGACY_ONLY_PATTERNS = DASHBOARD_LEGACY_ONLY_PATHS.map((path) => new RegExp(`^${path.replace(/:[A-Za-z]+/g, '[^/]+')}/?$`));
+
+/** True when `path` (relative to `/dashboard`) is a page only the legacy shell serves. */
+function isDashboardLegacyOnlyPath(path: string): boolean {
+  return LEGACY_ONLY_PATTERNS.some((pattern) => pattern.test(path));
+}
+
 export type DashboardReactBundle = {
   /** `index.html` with the nonce placeholder still in place. */
   indexHtml: string;
@@ -225,6 +249,9 @@ export function createDashboardReactRouter(config: ApiConfig, loaded: DashboardR
     const publicName = path.lastIndexOf('/') === 0 ? path.slice(1) : '';
     if (bundle.publicFiles.has(publicName)) { response.sendFile(publicName, revalidate); return; }
     if (isExcludedFromFallback(path)) { next(); return; }
+    // A page React has not ported yet keeps working in the legacy shell, exactly as it is
+    // served when the UI is `legacy`.
+    if (isDashboardLegacyOnlyPath(path)) { next(); return; }
     // The React app owns every other GET under /dashboard: legacy page paths must not
     // render the legacy shell inside a React session.
     if (!isDocumentNavigation(request)) { response.status(404).end(); return; }

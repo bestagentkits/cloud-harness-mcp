@@ -721,7 +721,7 @@ and [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-servic
 the reserved prefixes by
 [`packages/contracts/src/secret-policy.ts`](../packages/contracts/src/secret-policy.ts).
 The decision record is
-[ADR 0005](adr/0005-multi-repository-workspaces.md).
+[ADR 0007](adr/0007-multi-repository-workspaces.md).
 
 ### Brokered GitHub actions
 

@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApiConfig } from '@cloud-harness/contracts';
 import { createApiApp, type ApiRuntime } from '../src/app.js';
+import { DASHBOARD_SHELL_PATHS } from '../src/dashboard-assets.js';
+import { DASHBOARD_LEGACY_ONLY_PATHS } from '../src/dashboard-react-assets.js';
 import { DASHBOARD_CONTENT_SECURITY_POLICY } from '../src/dashboard-security.js';
 import { apiLogger } from '../src/logging.js';
 import type { RunnerClient } from '../src/runner-client.js';
@@ -352,6 +354,28 @@ describe('React SPA fallback boundaries', () => {
     const redirect = await get(origin, '/dashboard/overview');
     expect(redirect.status).toBe(302);
     expect(redirect.headers.get('location')).toBe('/dashboard');
+  });
+
+  it('serves every legacy shell page as a React route or, when listed as legacy-only, as the legacy shell', async () => {
+    for (const path of DASHBOARD_LEGACY_ONLY_PATHS) expect(DASHBOARD_SHELL_PATHS, `stale legacy-only entry ${path}`).toContain(path);
+    const origin = await start({ dashboardUi: 'react' });
+    for (const shellPath of DASHBOARD_SHELL_PATHS) {
+      const path = `/dashboard${shellPath.replace(/:[A-Za-z]+/g, 'id_1')}`;
+      const response = await get(origin, path);
+      const body = await response.text();
+      if (DASHBOARD_LEGACY_ONLY_PATHS.includes(shellPath)) {
+        // Not ported yet: the page must keep working in the legacy shell, never the React 404.
+        expect(response.status, path).toBe(200);
+        expect(body, path).not.toContain('React shell fixture');
+        expect(response.headers.get('content-security-policy'), path).toBe(DASHBOARD_CONTENT_SECURITY_POLICY);
+      } else {
+        // A shell page that is neither a React route nor listed would render the React 404 here.
+        expectReactShell(response, body);
+      }
+    }
+    // Only the listed shapes fall through: a near miss still gets the React 404.
+    const nearMiss = await get(origin, '/dashboard/automations/unknown');
+    expectReactShell(nearMiss, await nearMiss.text(), 404);
   });
 
   it('answers only document navigations that accept HTML', async () => {
