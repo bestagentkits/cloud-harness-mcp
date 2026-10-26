@@ -81,6 +81,21 @@ describe('persisted session replay planning', () => {
     }
   });
 
+  it('still repairs the dangling tool calls of a reply that stopped on length or toolUse', () => {
+    // Only `error` and `aborted` replies are dropped from the provider context; the others keep
+    // their calls, so an unanswered one needs the synthetic interrupted result.
+    for (const stopReason of ['length', 'toolUse']) {
+      const truncated = { ...assistantCall('call-1'), stopReason };
+      const repair = {
+        role: 'toolResult', toolCallId: 'call-1', toolName: 'files_read',
+        content: [{ type: 'text', text: INTERRUPTED_TOOL_RESULT_TEXT }], isError: true, timestamp: 42
+      };
+      const plan = planSessionReplay([user('task'), truncated], 42);
+      expect(plan.trailingRepairs).toEqual([repair]);
+      expect(plan.replay).toEqual([user('task'), truncated, repair]);
+    }
+  });
+
   it('redacts only the lease and keeps every other byte of the message', () => {
     const message = { role: 'assistant', z: 1, a: [`key ${LEASE} here`, { [LEASE]: 'value', token: 'kept' }] };
     const redacted = redactSecretDeep(message, LEASE);
