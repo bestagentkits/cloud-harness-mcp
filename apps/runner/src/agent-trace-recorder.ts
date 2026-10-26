@@ -42,8 +42,19 @@ export type TraceActionEvent = {
   commitSha?: string | undefined;
   prNumber?: number | undefined;
   inputDigest?: string | undefined;
+  /** The advisor consult behind the decision, recorded as a `decision` span under the action span. */
+  advisor?: TraceAdvisorConsult | undefined;
   startedAt: number;
   endedAt: number;
+};
+
+/** What a consulted advisor answered: its Decision Plane id and scalar verdict, never the request or rationale. */
+export type TraceAdvisorConsult = {
+  decisionId: string | null;
+  effect: string | null;
+  risk: number | null;
+  confidence: number | null;
+  fallbackReason: string | null;
 };
 
 /** The part of the recorder the coding broker drives. */
@@ -727,8 +738,26 @@ export class AgentTraceRecorder implements AgentTraceHooks, AgentActionTraceSink
         attributes, inputDigest: event.inputDigest ?? null, errorClass: state === 'ERROR' ? 'tool' : null
       });
       placed = { traceId, spanId };
+      if (event.advisor) this.advisorConsult(traceId, spanId, start, Math.max(start, event.endedAt), event.advisor);
     });
     return placed;
+  }
+
+  /** A `decision` span under the action span it decided; skipped when the trace is full. */
+  private advisorConsult(traceId: string, actionSpanId: string, startedAt: number, endedAt: number, consult: TraceAdvisorConsult): void {
+    const slot = this.slot(traceId, startedAt, undefined);
+    if (!slot) return;
+    const fallback = consult.fallbackReason !== null;
+    this.store.writeSpan({
+      traceId, spanSeq: slot.seq, spanId: spanIdFor(traceId, slot.seq), parentSpanId: actionSpanId, kind: 'decision', name: 'decision.execution_risk',
+      state: fallback ? 'ERROR' : 'OK', startedAt, endedAt, ttftMs: null,
+      promptTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costMicros: null,
+      attributes: {
+        decision_id: consult.decisionId, advisor_effect: consult.effect, risk: consult.risk,
+        confidence: consult.confidence, fallback_reason: consult.fallbackReason
+      },
+      inputDigest: null, errorClass: fallback ? 'other' : null
+    });
   }
 
   /**

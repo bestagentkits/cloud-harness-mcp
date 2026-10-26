@@ -17,6 +17,7 @@ import {
 } from '@cloud-harness/contracts';
 import { CodingActionBroker, type AgentToolRequest } from '../../apps/runner/src/agent-governance/action-broker.js';
 import { CODING_GIT_SUBCOMMANDS, parseTransferInspection, type CodingGitRunner } from '../../apps/runner/src/agent-governance/coding-git.js';
+import type { DecisionAdvisor } from '../../apps/runner/src/agent-governance/ports.js';
 import type { CodingPublishPort } from '../../apps/runner/src/automation-coding.js';
 import { AgentManager } from '../../apps/runner/src/agent-manager.js';
 import { AgentStateRepository } from '../../apps/runner/src/agent-state-repository.js';
@@ -339,6 +340,8 @@ export type CodingHarnessOptions = {
   approvals?: boolean;
   /** AGENT_APPROVAL_TTL_MINUTES in seconds (default one hour). */
   approvalTtlSeconds?: number;
+  /** The policy service's execution-risk advisor (none by default: the policy fallback applies). */
+  advisor?: DecisionAdvisor;
 };
 
 export type CodingHarness = Awaited<ReturnType<typeof createCodingHarness>>;
@@ -351,7 +354,7 @@ export async function createCodingHarness(options: CodingHarnessOptions = {}) {
   const ownerId = store.resolvePrincipal(owner);
   const clock = { now: Date.now() };
   const now = () => clock.now;
-  const policies = createPolicyService(store.database, (selector) => store.resolvePrincipal(selector), owner);
+  const policies = createPolicyService(store.database, (selector) => store.resolvePrincipal(selector), owner, undefined, options.advisor);
   policies.saveGlobal(options.policy ?? CODING_GLOBAL_POLICY);
   let codingEnabled = true;
   let approvalsEnabled = options.approvals ?? false;

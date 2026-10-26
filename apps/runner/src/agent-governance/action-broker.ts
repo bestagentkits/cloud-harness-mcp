@@ -508,6 +508,7 @@ export class CodingActionBroker implements ActionBroker {
     const agentId = record.agentId ?? binding.agentId;
     const generation = record.agentGeneration ?? binding.agentGeneration;
     if (!this.traces || agentId === null || generation === null) return;
+    const consult = this.actions.advisorConsult(record.actionId);
     const placed = this.traces.action({ agentId, generation }, {
       actionId: record.actionId, step: record.step, actionClass: record.descriptor.actionClass, decision: record.decision,
       reasonCode: record.reasonCode, state: record.state, requestId,
@@ -515,6 +516,9 @@ export class CodingActionBroker implements ActionBroker {
       ...(record.outcome.commitSha ? { commitSha: record.outcome.commitSha } : {}),
       ...(record.outcome.prNumber ? { prNumber: record.outcome.prNumber } : {}),
       inputDigest: traceInputDigest(record.descriptor),
+      ...(consult ? {
+        advisor: { decisionId: consult.decisionId, effect: consult.effect, risk: consult.risk, confidence: consult.confidence, fallbackReason: consult.fallbackReason }
+      } : {}),
       startedAt, endedAt
     });
     if (placed) this.actions.attachTrace(record.actionId, placed.traceId, placed.spanId);

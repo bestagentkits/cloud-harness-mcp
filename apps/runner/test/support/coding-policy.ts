@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { GlobalExecutionPolicy, RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { AgentPolicyService } from '../../src/agent-governance/policy-service.js';
+import type { DecisionAdvisor } from '../../src/agent-governance/ports.js';
 import { initializeAutomationSchema } from '../../src/automation-schema.js';
 
 /**
@@ -46,7 +47,8 @@ export function createPolicyService(
   database: DatabaseSync,
   resolvePrincipal: (selector: RunnerPrincipalSelector) => string,
   owner: RunnerPrincipalSelector,
-  projects: ReadonlySet<string> = new Set([CODING_PROJECT])
+  projects: ReadonlySet<string> = new Set([CODING_PROJECT]),
+  advisor?: DecisionAdvisor
 ): PolicyServiceSetup {
   const service = new AgentPolicyService({
     database,
@@ -54,7 +56,8 @@ export function createPolicyService(
     resolvePrincipal,
     projectState: (_principalId, projectId) => (projects.has(projectId) ? 'active' : 'unknown'),
     activeProjectIds: () => new Set(projects),
-    audit: () => undefined
+    audit: () => undefined,
+    advisor
   });
   const data = <T>(operation: string, input: Record<string, unknown>): T => {
     const response = service.execute({ version: 1, principal: owner, operation, input });
