@@ -917,8 +917,8 @@ for all of them.
 | Agent policies | routes `/dashboard/settings/agent-policies`, `/dashboard/projects/:prj_id/agent-policies`, section 4.14 policy rows | open | [#558](https://github.com/bestagentkits/cloud-harness-mcp/issues/558) |
 | Repository scope | cockpit `?repository=`, section 4.14 repository rows | open | [#559](https://github.com/bestagentkits/cloud-harness-mcp/issues/559) |
 | Skill run privilege grant | cockpit Automation, section 4.14 skill run row | open | [#565](https://github.com/bestagentkits/cloud-harness-mcp/issues/565) |
-| Files editor partial read | cockpit Files: `files_read` returns a 64 KiB window but hashes the whole file, so the editor must stay read-only unless `eof` (#525) | open | [#550](https://github.com/bestagentkits/cloud-harness-mcp/issues/550) |
-| Cockpit and Models fixes made on `dev` | Models wizard retained operations, skill `contentSha256`, failed skill run result (#515), finalize `repositoryId`, hook manual run | open | [#575](https://github.com/bestagentkits/cloud-harness-mcp/issues/575) |
+| Files editor partial read | cockpit Files: `files_read` returns a 64 KiB window but hashes the whole file, so the editor stays read-only unless `eof` (#525); `files-tab.test.tsx` | done | [#550](https://github.com/bestagentkits/cloud-harness-mcp/issues/550) |
+| Cockpit and Models fixes made on `dev` | Done: Models wizard retained operations, skill `contentSha256`, failed skill run result (#515), manual run of an inactive hook (`automation-tab.test.tsx`, `models-wizard-state.test.ts`). Open: finalize `repositoryId`, which needs the repository scope from #559 | partial | [#575](https://github.com/bestagentkits/cloud-harness-mcp/issues/575) |
 
 `apps/api/test/dashboard-pages.test.ts` fails when a legacy page id has no
 row in section 2, so a new legacy page cannot skip this matrix again.
