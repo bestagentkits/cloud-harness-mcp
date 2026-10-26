@@ -84,9 +84,10 @@ import {
   renderWorkspaceUnavailableTab, workspaceHasAction, workspaceTabAvailable,
   renderAgentsIndex, renderAgentDetail,
   renderRuntimePanel, renderGitPanel,
-  renderAutomationPanel, renderDeployPanel,
+  renderAutomationPanel, renderDeployPanel, renderSkillRunResult, skillRunApprovalPrompt,
   renderActivityCenter, renderApprovals, grantIsActionable, planIsActionable, renderPackages,
   renderTerminalPanel, renderTerminalsIndex,
+  REPOSITORY_SCOPED_TABS, filesHref, isWholeFileRead, renderRepositoryExplorer, renderRepositoryRequired, renderRepositorySelector, selectedRepository, workspaceTabHref,
   WORKSPACE_LIFECYCLE_FIELDS, isWorkspaceLifecycleView, lifecycleDurationLabel, workspaceLifecycleDisplayValue, workspaceLifecycleFieldBounds,
   AUTOMATION_GITHUB_EVENTS, AUTOMATION_PROXY_OPERATIONS, AUTOMATION_SENDER_TYPES, AUTOMATION_WORKFLOW_STATES,
   AUTOMATION_DELIVERY_STATES, AUTOMATION_PUBLISH_STATES, AUTOMATION_PROVIDERS, AUTOMATION_PROVIDER_EVENT_TYPES, AUTOMATION_STATE_TRIGGERS, AUTOMATION_METRICS_WINDOWS,
@@ -165,7 +166,8 @@ export function createAsyncDialogController({ dialog, cancelButton, actionButton
     options = next; invoker = source; actionButton.textContent = options.label; status.textContent = '';
     dialog.showModal(); cancelButton.focus();
   }
-  function cancel() { if (!submitting && dialog.open) { dialog.close(); restore(); } }
+  // `onCancel` lets an action release what it reserved when the owner declines it.
+  function cancel() { if (!submitting && dialog.open) { dialog.close(); restore(); options?.onCancel?.(); } }
   async function submit() {
     if (submitting || !dialog.open) return;
     submitting = true; dialog.setAttribute('aria-busy', 'true'); cancelButton.disabled = true; actionButton.disabled = true;
@@ -180,6 +182,21 @@ export function createAsyncDialogController({ dialog, cancelButton, actionButton
   dialog.addEventListener('cancel', (event) => { event.preventDefault(); cancel(); });
   cancelButton.addEventListener('click', cancel); actionButton.addEventListener('click', () => void submit());
   return { open, cancel, submit, get submitting() { return submitting; } };
+}
+
+/**
+ * The grant a skill run is waiting on, or undefined for any other failure. The runner mints a
+ * single-use grant bound to the skill, script and digest; the page keeps its id only in the
+ * closure that approves and retries it, never in storage or the URL.
+ */
+export function skillApprovalRequest(error) {
+  const grant = error?.code === 'privilege_approval_required' ? error.grantRequest : undefined;
+  return typeof grant?.grantId === 'string' && grant.grantId ? grant : undefined;
+}
+
+/** A skill script that ran and exited non-zero: its bounded result, or undefined for any other error. */
+export function skillRunFailure(error) {
+  return error?.code === 'execution_failed' && error.data && typeof error.data === 'object' ? error.data : undefined;
 }
 
 export function conflictRecovery(localContent, actions) {
@@ -571,11 +588,11 @@ export function createApiKeyRevealController({ dialog, secretField, copyButton, 
   return { open, copy, dismiss, clear: () => dismiss(false) };
 }
 
-export async function submitPatchEdit({ workspaceId, file, oldText, newText, request, onSaved, onConflict, onError }) {
+export async function submitPatchEdit({ workspaceId, file, oldText, newText, request, onSaved, onConflict, onError, repositoryId = '' }) {
   try {
     await request(`/workspaces/${encodeURIComponent(workspaceId)}/files/content`, {
       method: 'PATCH',
-      body: JSON.stringify({ path: file.path, oldText, newText, expectedSha256: file.sha256 })
+      body: JSON.stringify({ path: file.path, oldText, newText, expectedSha256: file.sha256, ...(repositoryId ? { repositoryId } : {}) })
     });
     await onSaved();
   } catch (error) {
@@ -587,14 +604,25 @@ export async function submitPatchEdit({ workspaceId, file, oldText, newText, req
   }
 }
 
-export async function submitPatchForm({ form, workspaceId, file, request, onSaved, onConflict, onError }) {
+export async function submitPatchForm({ form, workspaceId, file, request, onSaved, onConflict, onError, repositoryId = '' }) {
   const values = new FormData(form);
   const oldText = String(values.get('oldText') ?? ''); const newText = String(values.get('newText') ?? '');
   const conflictInvoker = form.querySelector('#old-text');
   await submitPatchEdit({
-    workspaceId, file, oldText, newText, request, onSaved,
+    workspaceId, file, oldText, newText, request, onSaved, repositoryId,
     onConflict: (changes) => onConflict(changes, conflictInvoker), onError
   });
+}
+
+/** A dashboard API path with the repository a multi-repository read is scoped to, if any. */
+export function withRepository(path, repository = '') {
+  if (!repository) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}repositoryId=${encodeURIComponent(repository)}`;
+}
+
+/** A mutation body for the selected checkout of a multi-repository workspace; unchanged without one. */
+export function inRepository(body, repository = '') {
+  return repository ? { ...body, repositoryId: repository } : body;
 }
 
 export async function renderWorkspaceDrawer({ trigger, detail, content, fetchWorkspace, modal }) {
@@ -4097,30 +4125,40 @@ export function initializeDashboard() {
       ? await api(`/workspaces/${encodeURIComponent(id)}/context`).catch(() => undefined)
       : undefined;
     setTitle(repositoryName(item.repositoryUrl), 'Workspace cockpit: summary, agents, runtime, terminal, files, git, automation, deploy, artifacts, and activity.');
-    const body = await cockpitTabBody(id, tab, item, contextResult?.data, io);
+    const scope = REPOSITORY_SCOPED_TABS.has(tab) && workspaceTabAvailable(item, tab) ? await repositoryScope(id) : { repositories: [], repository: '' };
+    const body = await cockpitTabBody(id, tab, item, contextResult?.data, io, scope);
     // A tab body may need to bind controls once it is in the document, so the Files tab
     // returns its markup plus that hook instead of reaching into the DOM early.
     const markup = typeof body === 'string' ? body : body.markup;
-    const finalizeDialog = workspaceHasAction(item, 'workspace_finalize') ? renderFinalizeDialog() : '';
-    insertRendered(content, `${renderWorkspaceCockpitHeader(item)}${renderWorkspaceTabs(id, tab)}${markup}${finalizeDialog}`);
-    bindCockpitActions(item);
+    const finalizeDialog = workspaceHasAction(item, 'workspace_finalize') ? renderFinalizeDialog(item, scope.repository) : '';
+    // The selector exists only for a multi-repository workspace, so a single-repository cockpit
+    // renders exactly as it always has.
+    const selector = scope.repositories.length
+      ? renderRepositorySelector({ repositories: scope.repositories, selected: scope.repository, allowRoot: tab !== 'git' })
+      : '';
+    insertRendered(content, `${renderWorkspaceCockpitHeader(item)}${renderWorkspaceTabs(id, tab, scope.repository)}${selector}${markup}${finalizeDialog}`);
+    bindCockpitActions(item, scope.repository);
+    if (selector) bindRepositoryScope(id, tab);
     if (typeof body !== 'string' && body.afterRender) body.afterRender();
     if (workspaceTabAvailable(item, tab) && tab === 'runtime') bindRuntimeControls(id);
-    if (workspaceTabAvailable(item, tab) && tab === 'git') bindGitControls(id);
+    if (workspaceTabAvailable(item, tab) && tab === 'git' && (scope.repository || !scope.repositories.length)) bindGitControls(id, scope.repository);
     if (workspaceTabAvailable(item, tab) && tab === 'automation') bindAutomationControls(id);
     if (workspaceTabAvailable(item, tab) && tab === 'deploy') bindDeployControls(id);
   }
   /** Which body a cockpit tab renders, kept out of the loader so the switch stays readable. */
-  async function cockpitTabBody(workspaceId, tab, workspace, context, io) {
-    if (tab === 'summary') return renderWorkspaceSummary({ workspace, context });
+  async function cockpitTabBody(workspaceId, tab, workspace, context, io, scope) {
+    if (tab === 'summary') return summaryPanel(workspaceId, workspace, context);
     if (tab === 'agents') return renderWorkspaceAgents(workspaceId);
     if (!workspaceTabAvailable(workspace, tab)) return renderWorkspaceUnavailableTab(workspace, tab);
     if (tab === 'runtime') return runtimePanel(workspaceId, io);
-    if (tab === 'terminal') return terminalPanel(workspaceId);
-    if (tab === 'files') return filesPanel(workspaceId);
+    if (tab === 'terminal') return terminalPanel(workspaceId, scope.repository);
+    if (tab === 'files') return filesPanel(workspaceId, scope.repository);
+    // Git has no workspace-root state in a multi-repository workspace, and the runner would refuse
+    // the reads, so nothing is fetched until the operator chooses a repository.
+    if (tab === 'git' && scope.repositories.length && !scope.repository) return renderRepositoryRequired(scope.repositories);
     // The diff toggle is a URL parameter, so a staged/unstaged view is shareable and
     // the back button behaves.
-    if (tab === 'git') return gitPanel(workspaceId, new URLSearchParams(location.search).get('staged') === 'true');
+    if (tab === 'git') return gitPanel(workspaceId, new URLSearchParams(location.search).get('staged') === 'true', scope.repository);
     if (tab === 'automation') return automationPanel(workspaceId);
     if (tab === 'deploy') return deployPanel(workspaceId);
     if (tab === 'artifacts') return artifactsPanel(workspaceId);
@@ -4129,15 +4167,44 @@ export function initializeDashboard() {
   }
   /** The Files tab inside the cockpit: the same adapters the standalone page used, now
    * rendered under the cockpit header and tab row instead of a two-link context nav. */
-  async function filesPanel(workspaceId) {
+  async function filesPanel(workspaceId, repository = '') {
     const parameters = new URLSearchParams(location.search);
     const path = parameters.get('path') ?? '.';
     if (parameters.get('file') === '1') {
-      const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/files/content?path=${encodeURIComponent(path)}`);
-      return { markup: renderFile(workspaceId, result.data), afterRender: () => bindFileEditor(workspaceId, result.data) };
+      const result = await api(withRepository(`/workspaces/${encodeURIComponent(workspaceId)}/files/content?path=${encodeURIComponent(path)}`, repository));
+      return { markup: renderFile(workspaceId, result.data, { repository }), afterRender: () => bindFileEditor(workspaceId, result.data, repository) };
     }
-    const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/files?path=${encodeURIComponent(path)}`);
-    return { markup: renderFileList(workspaceId, result.data), afterRender: () => bindFileOperations(workspaceId) };
+    const result = await api(withRepository(`/workspaces/${encodeURIComponent(workspaceId)}/files?path=${encodeURIComponent(path)}`, repository));
+    return { markup: renderFileList(workspaceId, result.data, { repository }), afterRender: () => bindFileOperations(workspaceId, repository) };
+  }
+  /**
+   * The repositories of a multi-repository workspace and the one the URL selects. The registry read
+   * is metadata only (`status=false`); a single-repository workspace, or a failed read, yields no
+   * repositories, so its tabs keep their workspace-root behaviour.
+   */
+  async function repositoryScope(workspaceId) {
+    const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/repositories?status=false`).catch(() => undefined);
+    const repositories = result?.data?.multiRepository === true && Array.isArray(result.data.repositories) ? result.data.repositories : [];
+    const requested = new URLSearchParams(location.search).get('repository') ?? '';
+    return { repositories, repository: selectedRepository(repositories, requested)?.alias ?? '' };
+  }
+  /** Changing the repository starts that tab over at the chosen checkout's root. */
+  function bindRepositoryScope(workspaceId, tab) {
+    const form = document.querySelector('#repository-scope-form');
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      navigateTo(workspaceTabHref(workspaceId, tab, String(new FormData(form).get('repository') ?? '')));
+    });
+  }
+  /** Summary, plus the repository explorer when the workspace holds several checkouts. */
+  async function summaryPanel(workspaceId, workspace, context) {
+    const summary = renderWorkspaceSummary({ workspace, context });
+    // The per-checkout status runs in the executor, so it is requested only while the workspace is active.
+    const live = workspace?.status === 'ACTIVE';
+    const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/repositories?status=${live ? 'true' : 'false'}`).catch(() => undefined);
+    const data = result?.data;
+    if (data?.multiRepository !== true || !Array.isArray(data.repositories)) return summary;
+    return `${summary}${renderRepositoryExplorer({ workspaceId, repositories: data.repositories, statusAvailable: data.statusAvailable === true })}`;
   }
   /**
    * The Terminal tab. Running terminals of this workspace are offered for re-attach (their retained
@@ -4149,7 +4216,7 @@ export function initializeDashboard() {
     activeTerminalPane?.dispose();
     activeTerminalPane = undefined;
   }
-  async function terminalPanel(workspaceId) {
+  async function terminalPanel(workspaceId, repository = '') {
     const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/terminals`).catch(() => undefined);
     const terminals = Array.isArray(result?.data?.terminals) ? result.data.terminals : [];
     return {
@@ -4158,7 +4225,7 @@ export function initializeDashboard() {
         const root = content.querySelector('#terminal-panel');
         if (!root) return;
         disposeTerminalPane();
-        activeTerminalPane = mountTerminalPane({ root, workspaceId, api, announce, onError: showError, terminals });
+        activeTerminalPane = mountTerminalPane({ root, workspaceId, api, announce, onError: showError, terminals, repositoryId: repository });
       }
     };
   }
@@ -4205,7 +4272,7 @@ export function initializeDashboard() {
       api(`/workspaces/${scoped}/skills`).catch(() => undefined),
       api(`/workspaces/${scoped}/hooks`).catch(() => undefined)
     ]);
-    return renderAutomationPanel({ skills: skillsResult?.data?.skills ?? [], hooks: hooksResult?.data?.hooks ?? [] });
+    return renderAutomationPanel({ skills: skillsResult?.data?.skills ?? [], hooks: hooksResult?.data?.hooks ?? [], manifestSha256: hooksResult?.data?.manifestSha256 ?? '' });
   }
   /** Deployment targets defined by the repository. */
   async function deployPanel(workspaceId) {
@@ -4218,19 +4285,72 @@ export function initializeDashboard() {
     const hookForm = document.querySelector('#hook-run-form');
     hookForm?.addEventListener('submit', (event) => {
       event.preventDefault();
-      const values = new FormData(hookForm);
-      void submitForm(hookForm, 'Running…', async () => {
-        await api(`/workspaces/${scoped}/hooks/run`, { method: 'POST', body: requestBody({ event: values.get('event') }) });
-      }, async () => { announce('Hooks finished.'); navigateTo(`/dashboard/workspaces/${scoped}/automation`); });
+      const name = String(new FormData(hookForm).get('name') ?? '');
+      const expectedManifestSha256 = hookForm.dataset.manifestSha256 ?? '';
+      // A hook is repository-controlled code, so a manual run confirms first, like a deployment.
+      confirmAction({
+        title: 'Run this hook?',
+        description: 'The hook runs once in this workspace, only if the hook manifest still matches the digest shown.',
+        target: `${name} @ ${expectedManifestSha256.slice(0, 16)}`,
+        label: 'Run hook', pendingLabel: 'Running…',
+        action: async () => {
+          await api(`/workspaces/${scoped}/hooks/run`, { method: 'POST', body: requestBody({ name, expectedManifestSha256 }) });
+          announce('Hook finished.');
+          navigateTo(`/dashboard/workspaces/${scoped}/automation`);
+        }
+      }, hookForm.querySelector('button[type="submit"]'));
     });
+    // A skill run executes in a disposable helper container behind an owner privilege grant. The
+    // first request returns the grant the runner minted for this exact skill, script and digest;
+    // the owner confirms it, the page approves it and runs once more with it.
     const skillForm = document.querySelector('#skill-run-form');
     skillForm?.addEventListener('submit', (event) => {
       event.preventDefault();
       const values = new FormData(skillForm);
       const name = String(values.get('name') ?? '');
-      void submitForm(skillForm, 'Running…', async () => {
-        await api(`/workspaces/${scoped}/skills/${encodeURIComponent(name)}/run`, { method: 'POST', body: requestBody({ script: values.get('script') }) });
-      }, async () => { announce('Skill script finished.'); navigateTo(`/dashboard/workspaces/${scoped}/automation`); });
+      const script = String(values.get('script') ?? '');
+      const contentSha256 = skillForm.querySelector('#skill-run-name')?.selectedOptions?.[0]?.dataset.contentSha256 ?? '';
+      const runSkill = (approvalGrantToken) => api(`/workspaces/${scoped}/skills/${encodeURIComponent(name)}/run`, {
+        method: 'POST',
+        body: requestBody({ script, expectedContentSha256: contentSha256, ...(approvalGrantToken ? { approvalGrantToken } : {}) })
+      });
+      // The run's output stays on the page, so the tab is not reloaded over it.
+      const showResult = (run, failed) => {
+        const region = document.querySelector('#skill-run-result');
+        insertRendered(region, renderSkillRunResult(run, { failed }));
+        announce(failed ? 'Skill script exited with an error.' : 'Skill script finished.');
+      };
+      const runAndShow = async (approvalGrantToken) => {
+        try {
+          const result = await runSkill(approvalGrantToken);
+          showResult({ ...result?.data, truncated: result?.truncated }, false);
+        } catch (error) {
+          const failure = skillRunFailure(error);
+          if (!failure) throw error;
+          showResult(failure, true);
+        }
+      };
+      let grant;
+      void submitForm(skillForm, 'Requesting approval…', async () => {
+        grant = undefined;
+        // A new attempt clears the last result, so it is never read as this run's outcome.
+        document.querySelector('#skill-run-result')?.replaceChildren();
+        try { await runAndShow(); }
+        catch (error) { grant = skillApprovalRequest(error); if (!grant) throw error; }
+      }, async () => {
+        if (!grant) return;
+        const { grantId, expiresAt } = grant;
+        confirmAction({
+          ...skillRunApprovalPrompt({ name, script, contentSha256, expiresAt }),
+          label: 'Approve and run', pendingLabel: 'Running…',
+          action: async () => {
+            await api(`/privilege-grants/${encodeURIComponent(grantId)}/approve`, { method: 'POST', body: requestBody({}) });
+            await runAndShow(grantId);
+          },
+          // A declined run rejects its grant, so it does not linger on the Approvals page.
+          onCancel: () => { void api(`/privilege-grants/${encodeURIComponent(grantId)}/reject`, { method: 'POST', body: requestBody({}) }).catch(() => undefined); }
+        }, skillForm.querySelector('button[type="submit"]'));
+      });
     });
   }
   /** Deployments are external-effect operations, so each run confirms first. */
@@ -4251,13 +4371,13 @@ export function initializeDashboard() {
     });
   }
   /** Git status, a bounded diff, recent commits and worktrees in one pass. */
-  async function gitPanel(workspaceId, staged = false) {
+  async function gitPanel(workspaceId, staged = false, repository = '') {
     const scoped = encodeURIComponent(workspaceId);
     const [statusResult, diffResult, logResult, worktreeResult] = await Promise.all([
-      api(`/workspaces/${scoped}/git/status`),
-      api(`/workspaces/${scoped}/git/diff?staged=${staged ? 'true' : 'false'}`).catch(() => undefined),
-      api(`/workspaces/${scoped}/git/log?limit=20`).catch(() => undefined),
-      api(`/workspaces/${scoped}/worktrees`).catch(() => undefined)
+      api(withRepository(`/workspaces/${scoped}/git/status`, repository)),
+      api(withRepository(`/workspaces/${scoped}/git/diff?staged=${staged ? 'true' : 'false'}`, repository)).catch(() => undefined),
+      api(withRepository(`/workspaces/${scoped}/git/log?limit=20`, repository)).catch(() => undefined),
+      api(withRepository(`/workspaces/${scoped}/worktrees`, repository)).catch(() => undefined)
     ]);
     return renderGitPanel({
       status: statusResult.data ?? {},
@@ -4270,11 +4390,15 @@ export function initializeDashboard() {
    * Git controls. Finalize is the happy path; everything here is either a read-only
    * toggle or an advanced operation that confirms or reports a conflict in place.
    */
-  function bindGitControls(workspaceId) {
+  function bindGitControls(workspaceId, repository = '') {
     const scoped = encodeURIComponent(workspaceId);
+    // Every Git operation targets the selected checkout; in a single-repository workspace there is
+    // none, and the bodies are exactly the workspace-level ones.
+    const target = (body) => inRepository(body, repository);
+    const gitTab = workspaceTabHref(workspaceId, 'git', repository);
     document.querySelector('.git-diff-toggle')?.addEventListener('click', (event) => {
       const next = event.currentTarget.dataset.staged !== 'true';
-      navigateTo(`/dashboard/workspaces/${scoped}/git?staged=${next ? 'true' : 'false'}`);
+      navigateTo(`${gitTab}${gitTab.includes('?') ? '&' : '?'}staged=${next ? 'true' : 'false'}`);
     });
     for (const button of document.querySelectorAll('.remove-worktree')) button.addEventListener('click', (event) => {
       const name = button.dataset.worktreeName ?? '';
@@ -4282,9 +4406,9 @@ export function initializeDashboard() {
         title: 'Remove this worktree?', description: 'The managed worktree is removed; its branch stays in the repository.',
         target: name, label: 'Remove worktree', pendingLabel: 'Removing…',
         action: async () => {
-          await api(`/workspaces/${scoped}/worktrees/${encodeURIComponent(name)}`, { method: 'DELETE', body: requestBody({}) });
+          await api(`/workspaces/${scoped}/worktrees/${encodeURIComponent(name)}`, { method: 'DELETE', body: requestBody(target({})) });
           announce('Worktree removed.');
-          navigateTo(`/dashboard/workspaces/${scoped}/git`);
+          navigateTo(gitTab);
         }
       }, event.currentTarget);
     });
@@ -4293,8 +4417,8 @@ export function initializeDashboard() {
       event.preventDefault();
       const values = new FormData(createForm);
       void submitForm(createForm, 'Creating…', async () => {
-        await api(`/workspaces/${scoped}/worktrees`, { method: 'POST', body: requestBody({ name: values.get('name'), ref: values.get('ref') }) });
-      }, async () => { announce('Worktree created.'); navigateTo(`/dashboard/workspaces/${scoped}/git`); });
+        await api(`/workspaces/${scoped}/worktrees`, { method: 'POST', body: requestBody(target({ name: values.get('name'), ref: values.get('ref') })) });
+      }, async () => { announce('Worktree created.'); navigateTo(gitTab); });
     });
     const advanced = document.querySelector('#git-advanced-form');
     advanced?.addEventListener('submit', (event) => {
@@ -4309,8 +4433,8 @@ export function initializeDashboard() {
               : action === 'merge' ? { ref: argument }
                 : { action: 'start', upstream: argument };
       void submitForm(advanced, 'Running…', async () => {
-        await api(`/workspaces/${scoped}/git/${action}`, { method: 'POST', body: requestBody(body) });
-      }, async () => { announce(`Git ${action} completed.`); navigateTo(`/dashboard/workspaces/${scoped}/git`); });
+        await api(`/workspaces/${scoped}/git/${action}`, { method: 'POST', body: requestBody(target(body)) });
+      }, async () => { announce(`Git ${action} completed.`); navigateTo(gitTab); });
     });
   }
   /** The workspace Agents tab reuses the global renderer with a scoped list. */
@@ -4319,7 +4443,7 @@ export function initializeDashboard() {
     return renderAgentsIndex({ agents: result.data?.agents ?? [], filters: { workspaceId } });
   }
   /** Renew, recover, finalize, and close, each with pending state and live feedback. */
-  function bindCockpitActions(item) {
+  function bindCockpitActions(item, repository = '') {
     const id = item.workspaceId;
     document.querySelector('#renew-workspace-lease')?.addEventListener('click', (event) => void cockpitAction(event.currentTarget, 'Renewing…', () => api(`/workspaces/${encodeURIComponent(id)}/lease-renew`, { method: 'POST', body: requestBody({}) }), (result) => result?.data?.leaseCapped === true
       ? 'Lease renewed only until the maximum workspace lifetime; the workspace still expires then.'
@@ -4332,7 +4456,8 @@ export function initializeDashboard() {
       void submitForm(form, 'Finalizing…', async () => {
         await api(`/workspaces/${encodeURIComponent(id)}/finalize`, {
           method: 'POST',
-          body: requestBody({ all: true, push: values.get('push') === 'on', commitMessage: values.get('commitMessage') })
+          // A multi-repository workspace finalizes the checkout chosen in the dialog.
+          body: requestBody(inRepository({ all: true, push: values.get('push') === 'on', commitMessage: values.get('commitMessage') }, values.get('repositoryId') || repository))
         });
       }, async () => {
         document.querySelector('#finalize-workspace-dialog')?.close();
@@ -4648,27 +4773,29 @@ export function initializeDashboard() {
     conflictDialog.addEventListener('cancel', (event) => { event.preventDefault(); recovery.cancel(); }, { once: true });
     copyStatus.textContent = ''; conflictDialog.showModal(); conflictDialog.querySelector('#cancel-conflict').focus();
   }
-  function bindFileEditor(id, file) {
+  function bindFileEditor(id, file, repository = '') {
     const editor = document.querySelector('#file-editor');
     editor.addEventListener('submit', async (event) => {
-      event.preventDefault(); const form = new FormData(event.currentTarget); const localContent = String(form.get('content') ?? '');
-      try { await api(`/workspaces/${encodeURIComponent(id)}/files/content`, { method: 'PUT', body: requestBody({ path: file.path, content: localContent, expectedSha256: form.get('sha') }) }); announce('File saved.'); await loadFiles(id); }
+      event.preventDefault();
+      if (!isWholeFileRead(file)) { showError(new Error('Only part of this file was loaded, so it cannot be saved as a whole. Use the text patch instead.')); return; }
+      const form = new FormData(event.currentTarget); const localContent = String(form.get('content') ?? '');
+      try { await api(`/workspaces/${encodeURIComponent(id)}/files/content`, { method: 'PUT', body: requestBody(inRepository({ path: file.path, content: localContent, expectedSha256: form.get('sha') }, repository)) }); announce('File saved.'); await loadFiles(id); }
       catch (error) { if (error.status === 409) openFileConflict(id, localContent, editor.querySelector('textarea')); else showError(error); }
     });
     document.querySelector('#patch-form').addEventListener('submit', async (event) => {
       event.preventDefault(); const patchForm = event.currentTarget;
       await submitPatchForm({
-        form: patchForm, workspaceId: id, file, request: api,
+        form: patchForm, workspaceId: id, file, request: api, repositoryId: repository,
         onSaved: async () => { announce('Text patch applied.'); await loadFiles(id); },
         onConflict: ({ copyText }, invoker) => openFileConflict(id, copyText, invoker),
         onError: showError
       });
     });
-    document.querySelector('#delete-file').addEventListener('click', (event) => confirmAction({ title: 'Delete file?', description: `Delete ${file.path} from this workspace?`, target: file.path, label: 'Delete file', pendingLabel: 'Deleting…', action: async () => { await api(`/workspaces/${encodeURIComponent(id)}/files/content`, { method: 'DELETE', body: requestBody({ path: file.path, recursive: false, expectedSha256: file.sha256 }) }); navigateTo(`/dashboard/workspaces/${encodeURIComponent(id)}/files?path=.`); } }, event.currentTarget));
+    document.querySelector('#delete-file').addEventListener('click', (event) => confirmAction({ title: 'Delete file?', description: `Delete ${file.path} from this workspace?`, target: file.path, label: 'Delete file', pendingLabel: 'Deleting…', action: async () => { await api(`/workspaces/${encodeURIComponent(id)}/files/content`, { method: 'DELETE', body: requestBody(inRepository({ path: file.path, recursive: false, expectedSha256: file.sha256 }, repository)) }); navigateTo(filesHref(id, '.', { repository })); } }, event.currentTarget));
   }
-  function bindFileOperations(id) {
-    document.querySelector('#folder-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await api(`/workspaces/${encodeURIComponent(id)}/files/directory`, { method: 'POST', body: requestBody({ path: form.get('path'), recursive: true }) }); announce('Folder created.'); await loadFiles(id); } catch (error) { showError(error); } });
-    document.querySelector('#move-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await api(`/workspaces/${encodeURIComponent(id)}/files/move`, { method: 'POST', body: requestBody({ source: form.get('source'), destination: form.get('destination'), overwrite: false }) }); announce('Path moved.'); await loadFiles(id); } catch (error) { showError(error); } });
+  function bindFileOperations(id, repository = '') {
+    document.querySelector('#folder-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await api(`/workspaces/${encodeURIComponent(id)}/files/directory`, { method: 'POST', body: requestBody(inRepository({ path: form.get('path'), recursive: true }, repository)) }); announce('Folder created.'); await loadFiles(id); } catch (error) { showError(error); } });
+    document.querySelector('#move-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await api(`/workspaces/${encodeURIComponent(id)}/files/move`, { method: 'POST', body: requestBody(inRepository({ source: form.get('source'), destination: form.get('destination'), overwrite: false }, repository)) }); announce('Path moved.'); await loadFiles(id); } catch (error) { showError(error); } });
   }
   function bindClose(item) {
     document.querySelector('#close-workspace')?.addEventListener('click', (event) => confirmAction({ title: 'Close workspace?', description: 'This stops the executor and removes the workspace checkout. This cannot be undone.', target: `${repositoryName(item.repositoryUrl)} ${item.workspaceId}`, label: 'Close workspace', pendingLabel: 'Closing…', action: async () => { await api(`/workspaces/${encodeURIComponent(item.workspaceId)}/close`, { method: 'POST', body: requestBody({ expectedGeneration: item.version }) }); navigateTo('/dashboard'); } }, event.currentTarget));

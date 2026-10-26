@@ -137,5 +137,16 @@ describe('workspace cockpit', () => {
     expect(dialog).toContain('name="push" type="checkbox" checked');
     expect(dialog).toContain('data-dialog-close');
     expect(dialog).toContain('Stages the changes');
+    expect(dialog).not.toContain('name="repositoryId"');
+  });
+
+  it('asks which checkout a multi-repository workspace finalizes', () => {
+    const workspace = { repositories: [{ alias: 'api', path: 'repos/api' }, { alias: 'web', path: 'repos/web' }] };
+    const unscoped = renderFinalizeDialog(workspace);
+    expect(unscoped).toContain('<select id="finalize-repository" name="repositoryId" required>');
+    expect(unscoped).toContain('<option value="" selected disabled>Choose a repository</option>');
+    const scoped = renderFinalizeDialog(workspace, 'web');
+    expect(scoped).toContain('<option value="web" selected>web</option>');
+    expect(scoped).not.toContain('Choose a repository');
   });
 });

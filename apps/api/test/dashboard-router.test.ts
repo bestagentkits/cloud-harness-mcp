@@ -93,6 +93,9 @@ beforeEach(async () => {
         agentId: `agent_${'g'.repeat(24)}`, cursor: '0', nextCursor: '1', retainedBaseCursor: '0', truncated: false, hasMore: false,
         events: [{ cursor: '0', nextCursor: '1', timestamp: '2026-08-17T00:00:30.000Z', type: 'tool.call', content: `hello ${'x'.repeat(5_000)}` }]
       } };
+      if (operation === 'files_read') return { ok: true, message: 'read', truncated: true, data: {
+        path: input.path, content: 'x'.repeat(65_536), sha256: 'c'.repeat(64), bytesReturned: 65_536, totalBytes: 100_000, eof: false
+      } };
       if (operation === 'files_write') return { ok: true, message: 'written', truncated: false, data: { path: input.path, sha256: 'b'.repeat(64) } };
       return { ok: true, message: 'ok', truncated: false, data: {} };
     }),
@@ -263,6 +266,41 @@ describe('dashboard BFF', () => {
     expect(current.json.data).toMatchObject({ state: 'cancelled', generation: 3 });
   });
 
+  it('returns the skill-run grant request and forwards the approved grant on retry', async () => {
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const post = (payload: Record<string, unknown>) => {
+      const body = JSON.stringify(payload);
+      return send(`/api/v1/workspaces/${workspaceId}/skills/demo/run`, { method: 'POST', headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) }, body });
+    };
+    const digest = 'c'.repeat(64);
+    vi.mocked(runner.call).mockImplementationOnce(async (operation, input, selected) => {
+      calls.push({ operation, input, principal: selected });
+      return { ok: false, message: 'approval', truncated: false, error: {
+        code: 'PRIVILEGE_APPROVAL_REQUIRED', message: 'Approval grant required to run skill script demo/run.sh in a disposable helper container', retryable: true,
+        grantRequest: { grantId: 'pvg_0123', workspaceId, commandSha256: 'd'.repeat(64), cwd: '.', expiresAt: '2026-10-21T09:00:00.000Z' }
+      } } as RunnerResponse;
+    });
+    const held = await post({ script: 'run.sh', expectedContentSha256: digest });
+    expect(held.status).toBe(428);
+    expect(held.json).toEqual({
+      error: 'privilege_approval_required',
+      message: 'This action needs your approval before it runs.',
+      grantRequest: { grantId: 'pvg_0123', expiresAt: '2026-10-21T09:00:00.000Z' }
+    });
+    expect(calls.at(-1)).toMatchObject({ operation: 'skills_run', input: { workspaceId, name: 'demo', script: 'run.sh', expectedContentSha256: digest } });
+
+    vi.mocked(runner.call).mockImplementationOnce(async (operation, input, selected) => {
+      calls.push({ operation, input, principal: selected });
+      return { ok: true, message: 'ran', truncated: false, data: { output: 'skill-ok\n', exitCode: 0, executionMode: 'helper-container', signal: null } };
+    });
+    const ran = await post({ script: 'run.sh', expectedContentSha256: digest, approvalGrantToken: 'pvg_0123' });
+    expect(ran.status).toBe(200);
+    expect(ran.json.data).toEqual({ output: 'skill-ok\n', exitCode: 0, executionMode: 'helper-container' });
+    expect(calls.at(-1)?.input).toMatchObject({ workspaceId, name: 'demo', script: 'run.sh', expectedContentSha256: digest, approvalGrantToken: 'pvg_0123' });
+  });
+
   it('accepts a zip upload on the skill archive route without the JSON media-type rule', async () => {
     const session = await send('/api/v1/session');
     const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
@@ -404,6 +442,13 @@ describe('dashboard BFF', () => {
     });
     expect(accepted.status).toBe(200);
     expect(calls.at(-1)).toEqual({ operation: 'files_write', input: { workspaceId, path: 'README.md', content: 'hello' }, principal });
+  });
+
+  it('projects the read window so a partial file is never taken for the whole file', async () => {
+    const response = await send(`/api/v1/workspaces/${workspaceId}/files/content?path=big.txt`);
+    expect(response.status).toBe(200);
+    expect(calls.at(-1)).toMatchObject({ operation: 'files_read', input: { workspaceId, path: 'big.txt', offset: 0, limit: 65_536 } });
+    expect(response.json.data).toMatchObject({ path: 'big.txt', sha256: 'c'.repeat(64), bytesReturned: 65_536, totalBytes: 100_000, eof: false });
   });
 
   it('rejects foreign origin, missing mutation origin, and non-JSON mutations', async () => {

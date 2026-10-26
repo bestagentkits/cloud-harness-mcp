@@ -411,7 +411,7 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 
 **Fix:**
 1. Call `workspace_repos_list` and pass the `alias` or `repositoryId` it returns as `repositoryId`.
-2. To push to a read-only repository, open a new workspace that lists it as `read-write`. Access is fixed when the workspace opens.
+2. To push to a read-only repository, remove it with `workspace_repo_remove` and add it again with `workspace_repo_add` and `access: "read-write"`, or open a new workspace that lists it as `read-write`. An entry's access does not change in place.
 3. Open fewer repositories, or ask the operator to raise `MAX_WORKSPACE_REPOSITORIES` (see [Environment Variables](/reference/environment-variables)).
 4. For a failed clone, fix that repository's URL, ref, or access, then open again with a new idempotency key.
 
@@ -442,3 +442,27 @@ File and command tools without `repositoryId` work on the workspace root, so pat
 2. For a stuck MCP Events delivery, check the subscription on `/dashboard/api/v1/event-subscriptions` and the API delivery worker; the notification follows the event once it is delivered.
 3. For a GitHub comment failure, open the automation run page and follow [troubleshooting 32](/troubleshooting#_32-github-automation-deliveries-fail-or-no-run-starts).
 4. Turn the channel back on under **Delivery preferences**; a stopped delivery is not resent, but later notifications are.
+
+---
+
+### 36. `workspace_repo_add` or `workspace_repo_remove` is refused
+**Cause:** Adding and removing checkouts is guarded so it never overwrites or discards your work.
+- `INVALID_INPUT: ... applies only to a multi-repository workspace` means the workspace was opened with one `repositoryUrl`. Its checkout stays at the root, so it cannot gain siblings.
+- `INVALID_INPUT: duplicate repository alias` or `duplicate repository URL`, or `LIMIT_EXCEEDED: a workspace holds at most N repositories`, are the same rules `workspace_open` applies.
+- `CONFLICT: repos/<alias> already exists in the workspace tree` means something is already at that path. The harness leaves it alone.
+- `repository <alias>: ...` means the clone failed. Only the new checkout was removed, and nothing was registered, so you can retry with the same idempotency key.
+- `CONFLICT: repository <alias> has work that removing it would lose: ...` lists uncommitted or untracked paths, stashes, linked worktrees, or commits on no remote.
+- `CONFLICT: repository <alias> is in use by ...` names the tasks, shells, sessions, terminals, or operations running inside the checkout, or says an agent is running in the workspace. It is retryable.
+- `CONFLICT: a privileged command or Git transfer is writing to the workspace tree` or `another container is using the workspace tree` means a helper that can write to the checkouts is running. Each change pauses the executor and refuses to run beside such a helper. It is retryable. `UNAVAILABLE: executor could not be paused` means the executor could not be frozen, so nothing was changed.
+- A result with `executorResumed: false` (and a message saying the executor could not be resumed) means the add or remove was committed and audited, but the executor stayed paused afterwards. Commands, shells, and file tools fail until it is resumed. Replaying the same idempotency key returns the committed result.
+- `INVALID_INPUT: the last repository of a workspace cannot be removed` means only one checkout is left.
+- `CONFLICT: Idempotency key reused with different repository change parameters` means the key was already used for another change.
+- `EXPIRED` means the workspace was closed, expired, or recovered during the change. Nothing was registered or removed.
+
+**Fix:**
+1. Pick a free alias, check `workspace_repos_list`, or move the existing `repos/<alias>` directory away.
+2. Before removing, commit and push the work (or delete what you do not need), remove linked worktrees with `worktrees_remove`, and drop stashes.
+3. Wait for the named work to finish, or cancel it with `tasks_cancel`, `shell_close`, `sessions_close`, or `agent_cancel`, then retry.
+4. To end the last checkout, close the workspace with `workspace_close`.
+5. Use a new idempotency key for each distinct change.
+6. After `executorResumed: false`, call `workspace_recover` with `mode: "resume"`; it resumes the paused executor (a runner restart does too). A `dependency-access` workspace, or one whose executor cannot be resumed, gets a rebuilt executor from the retained checkouts, so running processes end. A recover sent while a repository change or Git transfer still holds the pause, or while another recover of the same workspace is running, returns a retryable `CONFLICT`; retry it shortly.

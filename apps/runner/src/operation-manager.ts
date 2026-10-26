@@ -64,11 +64,19 @@ export type TrackedOperation = {
   offset: number;
   child?: ChildProcessWithoutNullStreams | undefined;
   container?: string | undefined;
+  /** The directory the operation runs in, relative to the workspace tree root. */
+  cwd?: string | undefined;
   abortController?: AbortController | undefined;
   /** Settles once the operation's own cleanup has finished; cancellation waits for it, up to a bound. Never rejects. */
   completion?: Promise<void> | undefined;
 };
 type RedactionStream = { processChunk(chunk: Buffer): Buffer; flush(): Buffer };
+
+/** Whether a tree-relative working directory is `subpath` or below it. */
+function insideTreePath(cwd: string | undefined, subpath: string): boolean {
+  const normalized = (cwd ?? '.').replaceAll('\\', '/').replace(/^(?:\.\/|\/)+/, '').replace(/\/+$/, '');
+  return normalized === subpath || normalized.startsWith(`${subpath}/`);
+}
 
 export type TerminalLimits = {
   /** Live (running) terminals one workspace may hold. */
@@ -461,6 +469,7 @@ export class OperationManager {
       container,
       createdAt: Date.now(),
       idempotencyKey: mapKey,
+      cwd,
       ...(name ? { name } : {})
     };
     const child = spawnDocker([
@@ -997,6 +1006,7 @@ export class OperationManager {
     kind: string;
     deadlineMs?: number | undefined;
     container?: string | undefined;
+    cwd?: string | undefined;
     abortController?: AbortController | undefined;
   }): TrackedOperation {
     const now = Date.now();
@@ -1022,6 +1032,7 @@ export class OperationManager {
       output: Buffer.alloc(0),
       offset: 0,
       container: op.container,
+      cwd: op.cwd,
       abortController: op.abortController
     };
     this.genericOperations.set(op.id, tracked);
@@ -1101,6 +1112,31 @@ export class OperationManager {
       };
     }
     throw new HarnessError('NOT_FOUND', `operation ${id} not found`, 404, false);
+  }
+
+  /**
+   * Live work running in `subpath` (relative to the workspace tree root) or below it: queued, running, or
+   * blocked tasks and running shells, sessions, terminals, and operations. Each entry names one of them.
+   */
+  checkoutUsers(workspaceId: string, subpath: string, ownerId?: string): string[] {
+    const users: string[] = [];
+    for (const task of this.listTasks(workspaceId, ownerId)) {
+      if ((task.status === 'queued' || task.status === 'running' || task.status === 'blocked') && insideTreePath(task.cwd, subpath)) users.push(`task ${task.id}`);
+    }
+    for (const [label, map] of [['shell', this.shells], ['session', this.sessions]] as const) {
+      for (const record of map.values()) {
+        if (record.workspaceId === workspaceId && record.status === 'running' && insideTreePath(record.cwd, subpath)) users.push(`${label} ${record.id}`);
+      }
+    }
+    for (const terminal of this.terminals.values()) {
+      if (terminal.workspaceId === workspaceId && terminal.status === 'running' && insideTreePath(terminal.cwd, subpath)) users.push(`terminal ${terminal.id}`);
+    }
+    for (const operation of this.genericOperations.values()) {
+      if (operation.workspaceId === workspaceId && (operation.status === 'running' || operation.status === 'queued') && insideTreePath(operation.cwd, subpath)) {
+        users.push(`operation ${operation.id}`);
+      }
+    }
+    return users;
   }
 
   hasRunningOperations(workspaceId: string): boolean {

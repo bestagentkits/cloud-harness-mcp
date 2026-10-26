@@ -156,6 +156,38 @@ describe('declarative hooks and sandbox execution', () => {
     }
   });
 
+  it('applies the manifest timeoutMs unless the caller names one, and rejects a manifest value outside the bounds', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'hooks-timeout-'));
+    try {
+      await mkdir(join(tmp, '.cloud-harness'), { recursive: true });
+      const config = {
+        version: 1,
+        hooks: [
+          { name: 'slow', events: ['manual'], argv: ['node', '-e', 'setTimeout(() => console.log("done"), 1500)'], timeoutMs: 200 },
+          { name: 'unbounded', events: ['manual'], argv: ['node', '-e', 'console.log("ran")'], timeoutMs: 300_001 }
+        ]
+      };
+      await writeFile(join(tmp, '.cloud-harness', 'hooks.json'), JSON.stringify(config, null, 2));
+      const client = new LocalWorkerClient(tmp);
+      const manifestSha = ((await client.call('hooks_list', {})).data as any).manifestSha256;
+
+      const manifestBound = await client.call('hooks_run', { name: 'slow', expectedManifestSha256: manifestSha });
+      expect(manifestBound.ok).toBe(false);
+      expect((manifestBound.data as any).output).not.toContain('done');
+
+      const callerBound = await client.call('hooks_run', { name: 'slow', expectedManifestSha256: manifestSha, timeoutMs: 10_000 });
+      expect(callerBound.ok).toBe(true);
+      expect((callerBound.data as any).output).toContain('done');
+
+      const outOfBounds = await client.call('hooks_run', { name: 'unbounded', expectedManifestSha256: manifestSha });
+      expect(outOfBounds.ok).toBe(false);
+      expect(outOfBounds.error?.code).toBe('INVALID_INPUT');
+      expect(outOfBounds.data).toBeUndefined();
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('returns ok: false when hook process exits with nonzero status', async () => {
     const tmp = await mkdtemp(join(tmpdir(), 'hooks-fail-'));
     try {

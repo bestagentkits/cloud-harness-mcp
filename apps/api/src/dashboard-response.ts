@@ -4,7 +4,17 @@ import type { RunnerResponse } from '@cloud-harness/contracts';
 const statuses: Record<string, number> = {
   AUTHENTICATION_FAILED: 401, FORBIDDEN: 404, INVALID_INPUT: 400, NOT_FOUND: 404,
   CONFLICT: 409, STALE_GENERATION: 409, EXPIRED: 410, LIMIT_EXCEEDED: 429, TIMEOUT: 504,
-  CANCELLED: 409, UNAVAILABLE: 503, DEPENDENCY_EGRESS_UNAVAILABLE: 503, INTERNAL_ERROR: 500
+  CANCELLED: 409, UNAVAILABLE: 503, DEPENDENCY_EGRESS_UNAVAILABLE: 503, INTERNAL_ERROR: 500,
+  PRIVILEGE_APPROVAL_REQUIRED: 428
+};
+
+/**
+ * Operations whose failure is a reported result rather than a service fault: a skill script that
+ * exits non-zero ran as asked, so the owner gets 422 with the same bounded, redacted projection a
+ * successful run returns instead of a 500 that hides why it failed.
+ */
+const reportedFailures: Partial<Record<DashboardResponseOperation, ReadonlySet<string>>> = {
+  skills_run: new Set(['EXECUTION_FAILED'])
 };
 
 const messages: Record<string, string> = {
@@ -20,6 +30,7 @@ const messages: Record<string, string> = {
   CANCELLED: 'The operation was cancelled.',
   UNAVAILABLE: 'The workspace service is temporarily unavailable.',
   DEPENDENCY_EGRESS_UNAVAILABLE: 'Dependency-access network egress is unavailable.',
+  PRIVILEGE_APPROVAL_REQUIRED: 'This action needs your approval before it runs.',
   INTERNAL_ERROR: 'The workspace service could not complete the request.'
 };
 
@@ -35,8 +46,53 @@ function cleanWorkspace(value: unknown): Record<string, unknown> {
     clean.availableActions = item.availableActions.filter((action): action is string => typeof action === 'string').slice(0, 16);
   }
   if (item.status === 'FAILED' && typeof item.error === 'string') clean.error = 'Workspace setup failed. Review runner logs.';
-  if (Array.isArray(item.repositories)) clean.repositories = item.repositories.slice(0, 20).map((entry) => pick(entry, ['repositoryId', 'alias', 'repositoryUrl', 'ref', 'access', 'primary', 'path']));
+  if (Array.isArray(item.repositories)) clean.repositories = item.repositories.slice(0, 20).map((entry) => pick(entry, repositoryKeys));
   return clean;
+}
+
+const repositoryKeys = ['repositoryId', 'alias', 'repositoryUrl', 'ref', 'access', 'primary', 'path'] as const;
+/** The runner bounds a workspace to its configured repository limit; the projection never forwards more. */
+const MAX_PROJECTED_REPOSITORIES = 20;
+
+/**
+ * One checkout's Git posture from `workspace_repo_status`. The tracking line and short status are
+ * parsed with the same `parseGitStatus` the Git tab uses, so "ahead" means the same thing in both
+ * places; unpushed is that ahead count. A checkout whose status could not be read reports only that
+ * fact, because the runner's error text can carry raw worker or Git output.
+ */
+function repositoryStatusProjection(value: unknown): Record<string, unknown> {
+  const entry = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const base = pick(entry, repositoryKeys);
+  if (typeof entry.error === 'string') return { ...base, statusError: true };
+  const text = typeof entry.status === 'string' && entry.status
+    ? entry.status
+    : typeof entry.branch === 'string' ? `## ${entry.branch}` : '';
+  const parsed = parseGitStatus(text) as { branch: string; upstream?: string; ahead: number; behind: number; entries: unknown[] };
+  return {
+    ...base,
+    branch: parsed.branch,
+    ...(parsed.upstream ? { upstream: parsed.upstream } : {}),
+    ahead: parsed.ahead,
+    behind: parsed.behind,
+    dirty: entry.hasUncommitted === true,
+    changedFiles: parsed.entries.length
+  };
+}
+
+/**
+ * The repository explorer: the registry from `workspace_repos_list`, joined by `repositoryId` with
+ * the per-checkout posture from `workspace_repo_status` when that was read. `statusAvailable` says
+ * whether the posture fields can be trusted, so a missing read never renders as a clean checkout.
+ */
+export function buildRepositoryExplorerProjection(listed: DashboardProjection, statuses?: DashboardProjection): DashboardProjection {
+  const repositories = Array.isArray(listed.repositories) ? listed.repositories as Record<string, unknown>[] : [];
+  const reported = Array.isArray(statuses?.repositories) ? statuses.repositories as Record<string, unknown>[] : [];
+  const byId = new Map(reported.map((entry) => [entry.repositoryId, entry]));
+  return {
+    multiRepository: listed.multiRepository === true,
+    statusAvailable: statuses !== undefined,
+    repositories: repositories.map((entry) => ({ ...entry, ...(byId.get(entry.repositoryId) ?? {}) }))
+  };
 }
 
 /**
@@ -174,6 +230,8 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'workspace_lease_renew',
   'workspace_recover',
   'workspace_finalize',
+  'workspace_repos_list',
+  'workspace_repo_status',
   'agent_list',
   'agent_status',
   'agent_logs',
@@ -422,6 +480,13 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'workspace_open' || operation === 'workspace_status' || operation === 'workspace_detail' || operation === 'workspace_close' || operation === 'workspace_lease_renew' || operation === 'workspace_recover') return cleanWorkspace(data);
   if (operation === 'workspace_context') return workspaceContextProjection(data);
   if (operation === 'workspace_finalize') return workspaceFinalizeProjection(data);
+  if (operation === 'workspace_repos_list' || operation === 'workspace_repo_status') {
+    const entries = Array.isArray(data.repositories) ? data.repositories.slice(0, MAX_PROJECTED_REPOSITORIES) : [];
+    return {
+      multiRepository: data.multiRepository === true,
+      repositories: operation === 'workspace_repo_status' ? entries.map(repositoryStatusProjection) : entries.map((entry) => pick(entry, repositoryKeys))
+    };
+  }
   if (operation === 'agent_list') {
     const agents = Array.isArray(data.agents) ? data.agents.map(agentProjection) : [];
     return { agents };
@@ -475,7 +540,14 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
     return { ...pick(data, ['name', 'path', 'head', 'branch', 'ref', 'action']), ...(output !== undefined ? { output } : {}) };
   }
   if (operation === 'skills_list') {
-    const skills = Array.isArray(data.skills) ? data.skills.map((skill) => pick(skill, ['name', 'tier', 'source', 'kind', 'state', 'sha256', 'description', 'shadowed'])) : [];
+    // `contentSha256` is the bundle digest `skills_run` verifies, so the cockpit can name exactly the
+    // revision the owner saw when it asks to run one of its scripts.
+    // A shadowed entry keeps only where it came from and its digest: the runner's entry also names
+    // its root path on the runner host, which the browser has no use for.
+    const skills = Array.isArray(data.skills) ? data.skills.map((skill) => {
+      const shadowed = Array.isArray(skill?.shadowed) ? skill.shadowed.map((entry: unknown) => pick(entry, ['source', 'contentSha256'])) : undefined;
+      return { ...pick(skill, ['name', 'tier', 'source', 'kind', 'state', 'sha256', 'contentSha256', 'description']), ...(shadowed ? { shadowed } : {}) };
+    }) : [];
     return { skills, ...(data.cursor !== undefined ? { cursor: data.cursor } : {}) };
   }
   if (operation === 'skills_read') return pick(data, ['name', 'source', 'content', 'sha256', 'bytes', 'offset', 'truncated']);
@@ -489,7 +561,9 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   }
   if (operation === 'skills_run' || operation === 'hooks_run' || operation === 'hooks_activate' || operation === 'hooks_deactivate' || operation === 'deployments_run') {
     const output = boundedOutput(data.output);
-    return { ...pick(data, ['name', 'event', 'events', 'status', 'exitCode', 'durationMs', 'error', 'manifestSha256']), ...(output !== undefined ? { output } : {}) };
+    // A skill script stopped by its timeout reports the signal, so exit code 1 is not read as its own failure.
+    const signal = operation === 'skills_run' && typeof data.signal === 'string' && /^SIG[A-Z0-9]+$/.test(data.signal) ? { signal: data.signal } : {};
+    return { ...pick(data, ['name', 'event', 'events', 'status', 'exitCode', 'durationMs', 'error', 'manifestSha256', 'executionMode']), ...signal, ...(output !== undefined ? { output } : {}) };
   }
   if (operation === 'toolkits_list' || operation === 'toolkits_preview') return data;
   if (operation === 'files_list') {
@@ -499,7 +573,9 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
     }) : [];
     return { path: data.path, entries };
   }
-  if (operation === 'files_read') return pick(data, ['path', 'content', 'sha256', 'bytes']);
+  // `sha256` covers the whole file while `content` is one window of it, so `eof` and `totalBytes`
+  // must reach the editor: without them a partial read looks like the full file and a save truncates it.
+  if (operation === 'files_read') return pick(data, ['path', 'content', 'sha256', 'bytesReturned', 'totalBytes', 'eof']);
   if (operation === 'files_write') return pick(data, ['path', 'bytes', 'sha256']);
   if (operation === 'files_apply_patch') return pick(data, ['path', 'sha256']);
   if (operation === 'files_delete') return pick(data, ['path', 'type']);
@@ -704,6 +780,17 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
     NOT_FOUND: 'GitHub installation not found.'
   },
   github_disconnect: { NOT_FOUND: 'GitHub installation not found.' },
+  // The runner answers FORBIDDEN both for a missing workspace and for a grant that is no longer
+  // approved (expired, rejected or already used), so the wording names both and the way forward.
+  skills_run: {
+    FORBIDDEN: 'Workspace not found, or the approval expired or was already used. Run the script again to request a new approval.',
+    NOT_FOUND: 'Workspace, skill or script not found. Check the script name and run it again.',
+    NO_EXECUTABLE_ASSETS: 'This skill revision has no scripts to run.',
+    EXECUTION_FAILED: 'The skill script exited with an error.'
+  },
+  // The runner refuses an approval for a grant that is missing, expired or already decided.
+  privilege_grant_approve: { NOT_FOUND: 'The approval expired or was already decided. Run the action again to request a new one.' },
+  privilege_grant_reject: { NOT_FOUND: 'The approval expired or was already decided.' },
   package_plan_approve: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
   package_plan_reject: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
   package_rollback: { FORBIDDEN: packagesDisabled },
@@ -1004,7 +1091,16 @@ export function sendRunnerResponse(response: Response, operation: DashboardRespo
     const message = perOperation ?? (result.error?.message && (descriptiveOperations.has(operation) || code === 'LIMIT_EXCEEDED')
       ? result.error.message
       : (messages[code] ?? messages.INTERNAL_ERROR));
-    response.status(statuses[code] ?? 500).json({ error: code.toLowerCase(), message });
+    // An approval request names the grant the runner minted for exactly this action, so the owner
+    // can approve it and retry with it. Only the grant id and its expiry leave the BFF: the id is a
+    // single-use reference that is useless until the owner approves it, and it is never persisted.
+    const grantRequest = code === 'PRIVILEGE_APPROVAL_REQUIRED' ? pick(result.error?.grantRequest, ['grantId', 'expiresAt']) : undefined;
+    if (reportedFailures[operation]?.has(code)) {
+      const data = result.data && typeof result.data === 'object' ? { data: mapDashboardData(operation, result.data) } : {};
+      response.status(422).json({ error: code.toLowerCase(), message, ...data, truncated: result.truncated });
+      return;
+    }
+    response.status(statuses[code] ?? 500).json({ error: code.toLowerCase(), message, ...(grantRequest?.grantId ? { grantRequest } : {}) });
     return;
   }
   response.json({ data: mapDashboardData(operation, result.data), truncated: result.truncated, ...(result.cursor ? { cursor: result.cursor } : {}) });

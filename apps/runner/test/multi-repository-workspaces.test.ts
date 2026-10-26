@@ -11,7 +11,9 @@ const docker = vi.hoisted(() => ({
   failCloneAlias: undefined as string | undefined,
   runDocker: vi.fn(async (args: string[], options?: { stdin?: string }) => {
     if (args.includes('/opt/harness/clone-helper.sh')) {
-      const jobMount = args[args.indexOf('--volume') + 1]!.split(':')[0]!;
+      // The host side of `<host>:/job` may itself contain a drive colon.
+      const volume = args[args.indexOf('--volume') + 1]!;
+      const jobMount = volume.slice(0, volume.lastIndexOf(':/job'));
       const destination = args[args.indexOf('/opt/harness/clone-helper.sh') + 3]!;
       if (docker.failCloneAlias && destination.endsWith(`/${docker.failCloneAlias}`)) {
         return { stdout: '', stderr: 'fatal: repository not found', exitCode: 128, truncated: false };

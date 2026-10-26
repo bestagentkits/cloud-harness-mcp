@@ -809,12 +809,29 @@ export const COMMAND_MAX_TIMEOUT_MS = 300_000;
 const shellCommand = z.string().min(1).max(32_768).refine((value) => !value.includes('\0'), 'command must not contain NUL bytes');
 
 /** Two repositories entries naming the same remote, modulo case, a trailing slash, or `.git`, are one repository. */
-function normalizedRepositoryUrlKey(value: string): string {
+export function normalizedRepositoryUrlKey(value: string): string {
   try {
     const url = new URL(value);
     return `${url.protocol}//${url.host.toLowerCase()}${url.pathname.replace(/\/+$/, '').replace(/\.git$/i, '').toLowerCase()}`;
   } catch {
     return value;
+  }
+}
+
+/**
+ * `scope: "all"` searches every checkout of the workspace and attributes each result to its repository.
+ * Its continuation cursor names the next repository to search; a search without that scope ignores it,
+ * as it ignored the field before the scope existed.
+ */
+const searchScope = {
+  scope: z.enum(['all']).optional()
+    .describe('all searches every repository checkout and annotates each result with repositoryId and alias; result paths are relative to that checkout. Mutually exclusive with repositoryId.'),
+  cursor: z.string().max(256).optional().describe('Continuation cursor from a scope "all" search; it names the next repository to search.')
+};
+
+function refineSearchScope(input: { repositoryId?: string | undefined; scope?: 'all' | undefined }, context: z.RefinementCtx): void {
+  if (input.scope === 'all' && input.repositoryId !== undefined) {
+    context.addIssue({ code: 'custom', path: ['scope'], message: 'scope "all" and repositoryId are mutually exclusive' });
   }
 }
 
@@ -922,6 +939,12 @@ const schemas = {
   workspace_set_active: z.object({ workspaceId: WorkspaceIdSchema }),
   workspace_repos_list: z.object(workspace),
   workspace_repo_status: z.object({ ...workspace, ...repository }),
+  workspace_repo_add: z.object({ ...workspace, ...WorkspaceRepositoryInputSchema.shape, idempotencyKey: IdempotencyKeySchema }).strict(),
+  workspace_repo_remove: z.object({
+    ...workspace,
+    repositoryId: RepositorySelectorSchema.describe('Repository to remove, by repo_ id or alias.'),
+    idempotencyKey: IdempotencyKeySchema
+  }).strict(),
   workspace_finalize: z.object({
     ...workspace,
     ...repository,
@@ -961,9 +984,9 @@ const schemas = {
   files_delete: z.object({ ...workspace, ...repository, path: entryPath, recursive: z.boolean().default(false), expectedSha256: z.string().length(64).optional() }),
   files_move: z.object({ ...workspace, ...repository, source: entryPath, destination: entryPath, overwrite: z.boolean().default(false) }),
   files_mkdir: z.object({ ...workspace, ...repository, path: entryPath, recursive: z.boolean().default(true) }),
-  grep_search: z.object({ ...workspace, ...repository, pattern: z.string().min(1).max(4_096), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
-  symbols_search: z.object({ ...workspace, ...repository, query: z.string().min(1).max(256), path: relativePath.default('.'), language: z.string().regex(/^[A-Za-z0-9_+#.-]{1,40}$/).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
-  symbols_references: z.object({ ...workspace, ...repository, symbol: z.string().min(1).max(256).refine((value) => !value.includes('\0') && !value.includes('\n')), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
+  grep_search: z.object({ ...workspace, ...repository, ...searchScope, pattern: z.string().min(1).max(4_096), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }).superRefine(refineSearchScope),
+  symbols_search: z.object({ ...workspace, ...repository, ...searchScope, query: z.string().min(1).max(256), path: relativePath.default('.'), language: z.string().regex(/^[A-Za-z0-9_+#.-]{1,40}$/).optional(), maxResults: z.number().int().min(1).max(500).default(100) }).superRefine(refineSearchScope),
+  symbols_references: z.object({ ...workspace, ...repository, ...searchScope, symbol: z.string().min(1).max(256).refine((value) => !value.includes('\0') && !value.includes('\n')), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }).superRefine(refineSearchScope),
   exec_run: z.object({
     ...workspace,
     ...repository,
@@ -1107,14 +1130,15 @@ const schemas = {
   }),
   // The prompt bound is measured in bytes, because the bound exists to limit what leaves the process.
   skill_suggest: SkillSuggestInputSchema,
-  hooks_list: z.object({ ...workspace, event: HookEventSchema.optional(), includeInactive: z.boolean().default(false), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
+  hooks_list: z.object({ ...workspace, event: HookEventSchema.optional(), includeInactive: z.boolean().default(false).describe('Accepted for compatibility and currently ignored: every hook is always listed, each with an `active` flag that reports whether lifecycle events would run it.'), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
   hooks_run: z.object({
     ...workspace,
     name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
     event: HookEventSchema.optional(),
     expectedSha256: z.string().length(64).optional(),
     expectedManifestSha256: z.string().length(64).optional(),
-    timeoutMs: z.number().int().min(100).max(300_000).default(60_000)
+    // No default: an omitted value lets the worker apply the manifest hook's own timeoutMs.
+    timeoutMs: z.number().int().min(100).max(COMMAND_MAX_TIMEOUT_MS).optional()
   }).superRefine((input, context) => {
     if (!input.expectedSha256 && !input.expectedManifestSha256) {
       context.addIssue({ code: 'custom', path: ['expectedManifestSha256'], message: 'expectedManifestSha256 or expectedSha256 is required to prevent TOCTOU execution of modified hooks' });
@@ -1254,6 +1278,7 @@ const schemas = {
   deployments_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
   artifacts_snapshot: z.object({
     ...workspace,
+    ...repository,
     path: relativePath,
     logicalName: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, 'invalid artifact logical name'),
     retentionSeconds: z.number().int().min(60).max(2_592_000).optional()
@@ -1269,6 +1294,7 @@ const schemas = {
   }),
   artifacts_restore: z.object({
     ...workspace,
+    ...repository,
     artifactId: z.string().regex(/^art_[A-Za-z0-9_-]{20,80}$/, 'invalid artifact identifier'),
     path: relativePath,
     overwrite: z.boolean().default(false),
@@ -1343,7 +1369,7 @@ export type ToolSpec = {
 
 const titles: Record<RunnerOperation, string> = {
   workspace_open: 'Open workspace', workspace_list: 'List workspaces', workspace_status: 'Workspace status', workspace_capabilities: 'Workspace capabilities', workspace_close: 'Close workspace',
-  workspace_lease_renew: 'Renew workspace lease', workspace_recover: 'Recover workspace state', workspace_context: 'Workspace context', workspace_set_active: 'Set active workspace', workspace_repos_list: 'List workspace repositories', workspace_repo_status: 'Workspace repository status',
+  workspace_lease_renew: 'Renew workspace lease', workspace_recover: 'Recover workspace state', workspace_context: 'Workspace context', workspace_set_active: 'Set active workspace', workspace_repos_list: 'List workspace repositories', workspace_repo_status: 'Workspace repository status', workspace_repo_add: 'Add workspace repository', workspace_repo_remove: 'Remove workspace repository',
   workspace_finalize: 'Finalize workspace commit and push',
   files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_write_batch: 'Write batch files', files_apply_patch: 'Apply text patch', files_delete: 'Delete file or directory', files_move: 'Move file or directory', files_mkdir: 'Create directory', grep_search: 'Search workspace',
   symbols_search: 'Find symbol definitions', symbols_references: 'Find lexical symbol references',
@@ -1389,6 +1415,8 @@ const descriptions: Record<RunnerOperation, string> = {
   workspace_set_active: 'Set the caller preferred active workspace when multiple workspaces exist.',
   workspace_repos_list: 'List the repositories of a workspace with their stable repo_ ids, aliases, checkout paths below the workspace root, requested refs, and access modes. A single-repository workspace reports its one checkout at the workspace root.',
   workspace_repo_status: 'Summarize each repository checkout of a workspace (its branch tracking line, whether it has uncommitted changes, and the short Git status) without modifying state; pass repositoryId to inspect one repository. A checkout whose status cannot be read reports an error instead.',
+  workspace_repo_add: 'Clone one more repository into a multi-repository workspace at `repos/<alias>/`, with the same URL policy, brokered clone credentials, and per-workspace limit as workspace_open. The repository joins the registry only after its clone succeeds; a failed add removes only the new checkout. A single-repository workspace refuses. Replaying the idempotencyKey returns the first result.',
+  workspace_repo_remove: 'Remove one repository from a multi-repository workspace: delete its registry entry, then its checkout directory. Refused while the checkout has uncommitted or untracked paths, stashes, linked worktrees, or commits on no remote, while a task, shell, session, terminal, or operation runs inside it, or while an agent runs in the workspace. The last repository cannot be removed; removing the primary makes the next repository primary. Replaying the idempotencyKey returns the first result.',
   workspace_finalize: 'Transactionally stage changes, run preflights, commit with default or explicit identity, and push to remote in one call.',
   files_list: 'List one workspace directory with bounded cursor pagination.',
   files_read: 'Read a bounded byte range from a workspace file with its size, SHA-256, and continuation cursor.',
@@ -1398,9 +1426,9 @@ const descriptions: Record<RunnerOperation, string> = {
   files_delete: 'Delete one workspace file or directory, with explicit recursion and optional file hash guard.',
   files_move: 'Move or rename one workspace entry, optionally overwriting an existing file.',
   files_mkdir: 'Create one workspace directory, including missing parents by default.',
-  grep_search: 'Search workspace text with a bounded regular expression and optional path, glob filter, and continuation cursor.',
-  symbols_search: 'Find bounded indexed symbol definitions by case-insensitive substring.',
-  symbols_references: 'Find bounded lexical whole-word occurrences of a symbol in workspace text.',
+  grep_search: 'Search workspace text with a bounded regular expression and optional path and glob filter. scope "all" searches every repository checkout with attributed results and a cross-repository continuation cursor.',
+  symbols_search: 'Find bounded indexed symbol definitions by case-insensitive substring. scope "all" searches every repository checkout with attributed results and a cross-repository continuation cursor.',
+  symbols_references: 'Find bounded lexical whole-word occurrences of a symbol in workspace text. scope "all" searches every repository checkout with attributed results and a cross-repository continuation cursor.',
   exec_run: 'Run one bounded shell command in the workspace and return captured output.',
   packages_plan: 'Resolve one managed toolbox package change into an immutable plan without installing anything and without running package code (uv accepts wheels only; npm lifecycle scripts stay off unless allowed). ecosystem "npm" or "uv" (uv tools get their own managed Python); "apt" is not supported and returns NOT_SUPPORTED because system packages need a reviewed executor image variant. scope "owner" (default) makes the tool available to all your new workspaces and the bash toolbox target; scope "workspace" needs workspaceId and overrides the owner binding there. "instance" scope does not exist. If resolution is still running after about 20 seconds, the result is { resolutionId, state: "RESOLVING" } instead: poll packages_status with that resolutionId (and waitMs) until it is READY with the plan or FAILED. The plan lists the exact version, source, integrity, dependency count, size, binaries, conflicts, affected workspaces, and planDigest. approval "required" means an operator approves the plan in the Dashboard first; "unavailable" means this instance cannot approve plans. Use for durable CLI tools; use npm install or uv in a workspace for project dependencies. Off unless the operator sets PACKAGES_ENABLED=true.',
   packages_apply: 'Build an approved plan (planId with the exact planDigest from packages_plan) into an immutable release in an isolated builder, verify its file tree, and launch-check every binary without network. Returns an applyId immediately; poll packages_status with applyId. Replaying the same plan returns the same apply. A release is installed only when the apply reaches SUCCEEDED. Existing workspaces keep their mounted releases until they are recreated; new workspaces and the bash toolbox target use the new release.',
@@ -1473,10 +1501,10 @@ const descriptions: Record<RunnerOperation, string> = {
   knowledge_graph: 'Traverse and query the bounded neighborhood knowledge graph for a root node.',
   deployments_list: 'List repository-defined deployment targets without running them.',
   deployments_run: 'Execute one named repository-defined deployment target with external-effect risk.',
-  artifacts_snapshot: 'Preserve one workspace file as a principal-owned, TTL-retained artifact snapshot.',
+  artifacts_snapshot: 'Preserve one workspace file as a principal-owned, TTL-retained artifact snapshot. With repositoryId the path resolves inside that checkout and the artifact records the repository as provenance.',
   artifacts_list: 'List principal-owned retained artifact snapshots with bounded pagination.',
   artifacts_read: 'Read a bounded base64 byte chunk from a principal-owned retained artifact with hash and EOF verification.',
-  artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection.',
+  artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection. With repositoryId the path resolves inside that checkout; without it the path is relative to the workspace root.',
   artifacts_delete: 'Delete a principal-owned retained artifact snapshot before its retention expiry.',
   github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, comment on, review (native COMMENT/APPROVE/REQUEST_CHANGES reviews, inline file/line comments, review-thread reply/resolve/unresolve), assign reviewers, toggle draft/ready, merge, and auto-merge pull requests; create commit statuses on a SHA (commit_status_create: state, context, description, targetUrl); create and update check runs on a SHA (check_run_create: sha, name, status, conclusion, title, summary; check_run_update: checkRunId); dispatch a workflow on a ref with inputs (workflow_dispatch) and re-run only the failed jobs of a run (workflow_run_rerun_failed), in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, pullRequestCreate, pullRequestReview, pullRequestMerge, commitStatusCreate, workflowDispatch, and workflowRunRerun; workspace_capabilities.githubActions is the authoritative action list. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_reviews, pr_review_threads, pr_create, pr_update, pr_comment, pr_review, pr_review_comment, pr_review_reply, pr_review_thread_resolve, pr_review_thread_unresolve, pr_reviewers_request, pr_reviewers_remove, pr_ready, pr_convert_to_draft, pr_merge, pr_auto_merge_enable, pr_auto_merge_disable, commit_status_create, check_run_create, check_run_update, workflow_dispatch, workflow_run_rerun_failed, commit_list, compare, release_list, tag_list, ref_get, commit_status_get, check_runs_list, workflow_runs_list, workflow_run_view. Writes that can duplicate a side effect accept an idempotencyKey. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Atomic ref creation, compare-and-swap, and delete-if-match go through git_push leases, not this tool. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
   github_read: 'Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, pr_reviews (every review with its state and the latest state per reviewer, including CHANGES_REQUESTED), pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list, ref_get (current OID of refs/heads/... or refs/tags/..., or exists: false), commit_status_get (combined status and every status context for a SHA or ref), check_runs_list (check runs for a SHA or ref), workflow_runs_list (Actions runs filtered by workflow, headSha, branch, event, status), and workflow_run_view (one run with its jobs and conclusions). Maps to operations.pullRequestList, pullRequestView, pullRequestReviewList, issueList, issueView, commitList, compare, releaseList, tagList, refGet, commitStatusRead, checkRunList, and workflowRunRead. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
@@ -1508,7 +1536,7 @@ const readOnly = new Set<RunnerOperation>([
   'agent_traces_list', 'agent_trace_get', 'agent_trace_spans', 'agent_trace_export'
 ]);
 const destructive = new Set<RunnerOperation>([
-  'workspace_close', 'workspace_recover', 'workspace_finalize',
+  'workspace_close', 'workspace_recover', 'workspace_finalize', 'workspace_repo_remove',
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move',
   'exec_run', 'bash', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close',
   'tasks_run', 'tasks_cancel', 'operation_cancel',
@@ -1521,7 +1549,7 @@ const destructive = new Set<RunnerOperation>([
   'model_profile_update'
 ]);
 const idempotent = new Set<RunnerOperation>([
-  'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize', 'workspace_repos_list', 'workspace_repo_status',
+  'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize', 'workspace_repos_list', 'workspace_repo_status', 'workspace_repo_add', 'workspace_repo_remove',
   'files_list', 'files_read', 'files_write', 'files_write_batch', 'files_apply_patch', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references',
   'shell_open', 'shell_close', 'sessions_list', 'sessions_open', 'sessions_close',
   'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph',
@@ -1538,7 +1566,7 @@ const idempotent = new Set<RunnerOperation>([
   'agent_traces_list', 'agent_trace_get', 'agent_trace_spans', 'agent_trace_export'
 ]);
 const openWorld = new Set<RunnerOperation>([
-  'workspace_open', 'workspace_finalize', 'exec_run', 'bash', 'shell_io', 'sessions_io', 'tasks_run',
+  'workspace_open', 'workspace_repo_add', 'workspace_finalize', 'exec_run', 'bash', 'shell_io', 'sessions_io', 'tasks_run',
   'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action', 'github_read',
   'packages_plan', 'packages_apply',
   'agent_spawn', 'agent_message',

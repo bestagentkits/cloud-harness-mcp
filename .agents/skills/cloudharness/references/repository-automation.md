@@ -56,8 +56,8 @@ responsible for supplying their own binary.
   letters, digits, `.`, `_`, or `-`.
 - Optional: `args` defaults to `[]`, permits at most 50 values of at most 2,048
   characters each; `timeoutMs` defaults to 60,000 and permits 100–300,000.
-- Executes a packaged skill script. Arguments are data, not authorization.
-  Review code, effects, working directory assumptions, and network needs first.
+- Executes a packaged skill script; arguments are data, not authorization. Review code,
+  effects, cwd and network needs first. A grant binds the whole request ([retry](../SKILL.md#effective-workflow)).
 
 <!-- cloudharness-tool:skill_suggest -->
 ### `skill_suggest`
@@ -82,15 +82,15 @@ may change with the checked-out ref.
 ### `hooks_list`
 
 - Required: `workspaceId`.
-- Returns configured hook names without executing them. Re-list after changing
-  refs or pulling repository updates.
+- Returns every configured hook (none runs) with the current `manifestSha256`; re-list after changing refs or pulling updates. `includeInactive` is ignored.
+- `active: true` only when an unexpired activation for one of the hook's events pins that exact digest; after a manifest change, re-activate.
 
 <!-- cloudharness-tool:hooks_run -->
 ### `hooks_run`
 
 - Required: `workspaceId`, `name` matching 1–120 ASCII letters, digits, `.`,
   `_`, or `-`.
-- `timeoutMs` defaults to 60,000 and permits 100–300,000.
+- `timeoutMs` permits 100–300,000; omit it to use the hook's own, else 60,000.
 - Executes the hook's shell command. It can modify files, Git state, processes,
   or external systems when network access is available.
 <!-- cloudharness-tool:hooks_activate -->
