@@ -551,6 +551,26 @@ describe('model gateway security boundary', () => {
   });
 
   it.each([
+    ['the response byte limit', 413, { maxResponseBytes: 256 }, () => `data: ${'x'.repeat(512)}\n\n`],
+    ['the stream line limit', 413, { maxStreamLineBytes: 128 }, () => `data: ${'x'.repeat(256)}\n\n`],
+    ['a credential disclosure', 502, {}, async () => `data: {"leak":"${(await readFile(credentialFile, 'utf8')).trim()}"}\n\n`]
+  ] as const)('fails a stream cut off at %s even when the body ends in the same write', async (_label, status, limits, body) => {
+    const payload = await body();
+    const provider = await fakeProvider((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(payload);
+    });
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const running = await gateway(profile(provider.upstream, limits), undefined, logger);
+    const grant = activate(running.runtime, issue());
+    await expect(fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers(grant), body: '{"messages":[]}'
+    }).then((response) => response.text())).rejects.toThrow();
+    await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ status }), 'model request failed'));
+    expect(logger.info).not.toHaveBeenCalledWith(expect.anything(), 'model request completed');
+  });
+
+  it.each([
     ['a terminated usage line', 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}\n\ndata: [DONE]\n\n', true],
     ['a final unterminated usage line', 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}', true],
     ['a body that ends in the same write as the usage line', 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}\n\ndata: [DONE]\n\n', false]

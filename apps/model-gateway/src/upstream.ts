@@ -194,13 +194,19 @@ export async function startUpstreamRequest(options: {
         }
         downstream.end(Buffer.concat([released, OUTPUT_BOUND_EVENT]));
       };
+      // Settles before cutting both sides off, so an 'end' from the same read cannot report success.
+      const abortStream = (reason: string): void => {
+        abortReason = reason;
+        settled = true;
+        upstream?.destroy(new Error(reason));
+        downstream.destroy();
+        reject(failure(reason));
+      };
       response.on('data', (chunk: Buffer) => {
         if (settled) return;
         responseBytes += chunk.byteLength;
         if (responseBytes > profile.limits.maxResponseBytes) {
-          abortReason = 'response byte limit exceeded';
-          upstream?.destroy(new Error(abortReason));
-          downstream.destroy();
+          abortStream('response byte limit exceeded');
           return;
         }
         pendingLine += chunk.toString('utf8');
@@ -212,9 +218,7 @@ export async function startUpstreamRequest(options: {
           const line = pendingLine.slice(0, newline).replace(/\r$/u, '');
           pendingLine = pendingLine.slice(newline + 1);
           if (Buffer.byteLength(line) > profile.limits.maxStreamLineBytes) {
-            abortReason = 'stream line limit exceeded';
-            upstream?.destroy(new Error(abortReason));
-            downstream.destroy();
+            abortStream('stream line limit exceeded');
             return;
           }
           const lineResult = extractUsageFromLine(line, profile);
@@ -235,16 +239,12 @@ export async function startUpstreamRequest(options: {
           newline = pendingLine.indexOf('\n');
         }
         if (Buffer.byteLength(pendingLine) > profile.limits.maxStreamLineBytes) {
-          abortReason = 'stream line limit exceeded';
-          upstream?.destroy(new Error(abortReason));
-          downstream.destroy();
+          abortStream('stream line limit exceeded');
           return;
         }
         outboundPending = Buffer.concat([outboundPending, chunk]);
         if (outboundPending.indexOf(credentialBytes) >= 0) {
-          abortReason = 'provider attempted credential disclosure';
-          upstream?.destroy(new Error(abortReason));
-          downstream.destroy();
+          abortStream('provider attempted credential disclosure');
           return;
         }
         const retainedBytes = credentialBytes.byteLength - 1;
