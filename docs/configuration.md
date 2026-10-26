@@ -687,6 +687,7 @@ Session persistence is an opt-in:
 | `AGENT_WORKSPACE_SESSION_BYTES` | `67108864` (64 MiB) | The most message bytes all stored sessions of one workspace may hold together. A continuation copies its predecessor's whole log, so without an aggregate bound each continuation grows the store by up to one full session. A message that would pass the budget leaves its session not continuable (the run continues), and a continuation whose copy would pass it is refused with `LIMIT_EXCEEDED`. Every stored log counts, including one that stopped being continuable, until retention purges it or the workspace closes. |
 | `AGENT_PRINCIPAL_SESSION_BYTES` | `536870912` (512 MiB) | The same budget across every workspace of one owner. |
 | `AGENT_GLOBAL_SESSION_BYTES` | `1073741824` (1 GiB) | The same budget across the instance. The three must satisfy workspace ≤ principal ≤ global, and `AGENT_MAX_SESSION_BYTES` may not exceed the workspace budget. |
+| `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` | `33554432` (32 MiB) | The most tool-result bytes (receipts) one agent lineage keeps for replay. Only an agent spawned with session persistence stores result text at all; past the cap, and for every other agent, the effect ledger keeps the payload and result hashes only, and a repeated call behaves as if its receipt had expired. |
 
 The [security model](security-model.md#persisted-agent-sessions) describes
 what the session store holds and who can read it. The

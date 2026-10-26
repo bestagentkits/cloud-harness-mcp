@@ -8,11 +8,15 @@ import {
   type AgentMessageDeliveryState,
   type AgentMessageMode,
   type AgentProxyOperation,
+  type AgentProxyReplayClass,
   type AgentStatus,
   type AgentUsage,
   type RunnerAgentLimits
 } from '@cloud-harness/contracts';
 import { emitAgentTerminalEvent, withEventSavepoint } from './event-outbox.js';
+import type { EffectPreEntry } from './agent-effect-reconciler.js';
+
+const EFFECT_PRE_ENTRIES: ReadonlySet<string> = new Set<EffectPreEntry>(['file', 'directory', 'absent']);
 
 const ACTIVE_STATUSES: AgentStatus[] = ['SPAWNING', 'RUNNING', 'CANCELLING'];
 const TERMINAL_STATUSES: AgentStatus[] = ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED'];
@@ -90,16 +94,49 @@ export type AgentEffectState = 'INTENT' | 'DISPATCHED' | 'APPLIED' | 'REJECTED' 
 export type AgentEffectRecord = {
   ownerId: string;
   workspaceId: string;
+  /** The agent that first reserved the effect; a continuation may later reconcile it. */
   agentId: string;
   agentGeneration: number;
   runnerEpoch: number;
+  /** The lineage root: the first agent of a chain of continuations, or the agent itself. */
+  rootAgentId: string;
   requestId: string;
   kind: string;
   payloadHash: string;
   state: AgentEffectState;
+  replayClass: AgentProxyReplayClass | null;
+  preImageSha256: string | null;
+  intendedSha256: string | null;
+  /** What a delete's or mkdir's path, or a move's source, was just before dispatch, when observed. */
+  preEntry: EffectPreEntry | null;
+  /** The exact tool-result text the model received, while the receipt is retained. */
+  resultJson: string | null;
+  resultSha256: string | null;
+  /** The stored result was synthesized from observed workspace state after an unknown outcome. */
+  reconciled: boolean;
+  executorGeneration: number | null;
+  workspaceGeneration: number | null;
+  retainUntil: number | null;
   createdAt: number;
   updatedAt: number;
 };
+
+/** Identifies the agent writing effect state; every write checks that it is still the live owner. */
+export type AgentEffectFence = {
+  ownerId: string;
+  workspaceId: string;
+  agentId: string;
+  agentGeneration: number;
+  runnerEpoch: number;
+};
+
+/** The key of an effect within an agent lineage. */
+export type AgentEffectKey = { rootAgentId: string; requestId: string; kind: string };
+
+/** Mirrors the agent protocol tool-result text bound; a receipt never holds more than the model received. */
+export const MAX_AGENT_EFFECT_RECEIPT_BYTES = 2 * 1024 * 1024;
+const EFFECT_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 export type AgentLogEvent = {
   cursor: string;
@@ -457,6 +494,64 @@ function sessionFromRow(row: SessionRow): AgentSessionRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
+}
+
+type EffectRow = {
+  owner_id: string;
+  workspace_id: string;
+  agent_id: string;
+  agent_generation: number;
+  runner_epoch: number;
+  root_agent_id: string | null;
+  request_id: string;
+  kind: string;
+  payload_hash: string;
+  state: AgentEffectState;
+  replay_class: AgentProxyReplayClass | null;
+  pre_image_sha256: string | null;
+  intended_sha256: string | null;
+  pre_entry: EffectPreEntry | null;
+  result_json: string | null;
+  result_sha256: string | null;
+  result_reconciled: number;
+  executor_generation: number | null;
+  workspace_generation: number | null;
+  retain_until: number | null;
+  created_at: number;
+  updated_at: number;
+};
+
+function effectFromRow(row: EffectRow): AgentEffectRecord {
+  return {
+    ownerId: row.owner_id,
+    workspaceId: row.workspace_id,
+    agentId: row.agent_id,
+    agentGeneration: row.agent_generation,
+    runnerEpoch: row.runner_epoch,
+    rootAgentId: row.root_agent_id ?? row.agent_id,
+    requestId: row.request_id,
+    kind: row.kind,
+    payloadHash: row.payload_hash,
+    state: row.state,
+    replayClass: row.replay_class,
+    preImageSha256: row.pre_image_sha256,
+    intendedSha256: row.intended_sha256,
+    preEntry: row.pre_entry ?? null,
+    resultJson: row.result_json,
+    resultSha256: row.result_sha256,
+    reconciled: row.result_reconciled === 1,
+    executorGeneration: row.executor_generation,
+    workspaceGeneration: row.workspace_generation,
+    retainUntil: row.retain_until,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function optionalSha256(value: string | null | undefined, name: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (!SHA256_HEX.test(value)) throw new HarnessError('INVALID_INPUT', `${name} must be a lowercase SHA-256 digest`);
+  return value;
 }
 
 function immediate<T>(database: DatabaseSync, action: () => T): T {
@@ -903,7 +998,21 @@ export class AgentStateRepository {
   }
 
 
-  addUsage(ownerId: string, workspaceId: string, agentId: string, generation: number, delta: AgentUsageDelta): AgentUsage {
+  /**
+   * Adds usage to an agent. With `fence`, usage from a stale writer (an earlier runner epoch or
+   * generation, or a predecessor that was continued) is ignored rather than counted.
+   */
+  addUsage(
+    ownerId: string,
+    workspaceId: string,
+    agentId: string,
+    generation: number,
+    delta: AgentUsageDelta,
+    fence?: { runnerEpoch: number }
+  ): AgentUsage {
+    if (fence && this.isEffectWriterFenced({ ownerId, workspaceId, agentId, agentGeneration: generation, runnerEpoch: fence.runnerEpoch })) {
+      return this.usage(ownerId, workspaceId, agentId, generation);
+    }
     const values: AgentUsage = {
       inputTokens: delta.inputTokens ?? 0,
       outputTokens: delta.outputTokens ?? 0,
@@ -923,6 +1032,12 @@ export class AgentStateRepository {
     return this.usage(ownerId, workspaceId, agentId, generation);
   }
 
+  /**
+   * Reserves an effect by its lineage key `(root agent, request ID, kind)`, so a continuation that
+   * repeats a predecessor's request finds the predecessor's effect. A repeated request with a
+   * different payload is a conflict. With `fenced`, only the live owner of the lineage may reserve:
+   * a running agent of the current runner epoch and generation that has not been continued.
+   */
   reserveEffect(input: {
     ownerId: string;
     workspaceId: string;
@@ -933,56 +1048,185 @@ export class AgentStateRepository {
     kind: string;
     payloadHash: string;
     now: number;
+    replayClass?: AgentProxyReplayClass;
+    preImageSha256?: string | null;
+    intendedSha256?: string | null;
+    fenced?: boolean;
   }): { replayed: boolean; effect: AgentEffectRecord } {
+    if (!EFFECT_REQUEST_ID.test(input.requestId)) throw new HarnessError('INVALID_INPUT', 'invalid effect request ID');
+    const preImageSha256 = optionalSha256(input.preImageSha256, 'pre-image digest');
+    const intendedSha256 = optionalSha256(input.intendedSha256, 'intended post-image digest');
     return immediate(this.database, () => {
-      const existing = this.database.prepare(`SELECT * FROM agent_effects
-        WHERE agent_id=? AND agent_generation=? AND request_id=? AND kind=?`)
-        .get(input.agentId, input.agentGeneration, input.requestId, input.kind) as {
-          owner_id: string; workspace_id: string; agent_id: string; agent_generation: number; runner_epoch: number;
-          request_id: string; kind: string; payload_hash: string; state: AgentEffectState; created_at: number; updated_at: number;
-        } | undefined;
+      if (input.fenced && this.isEffectWriterFenced(input, ['RUNNING'])) {
+        throw new HarnessError('EXPIRED', 'agent tool execution lost its lifecycle fence', 410, false);
+      }
+      const rootAgentId = this.lineageRoot(input.agentId);
+      const existing = this.findEffectRow({ rootAgentId, requestId: input.requestId, kind: input.kind });
       if (existing) {
-        if (existing.payload_hash !== input.payloadHash) {
+        if (existing.owner_id !== input.ownerId || existing.workspace_id !== input.workspaceId || existing.payload_hash !== input.payloadHash) {
           throw new HarnessError('CONFLICT', 'effect request ID was used with a different payload', 409, false);
         }
-        return {
-          replayed: true,
-          effect: {
-            ownerId: existing.owner_id,
-            workspaceId: existing.workspace_id,
-            agentId: existing.agent_id,
-            agentGeneration: existing.agent_generation,
-            runnerEpoch: existing.runner_epoch,
-            requestId: existing.request_id,
-            kind: existing.kind,
-            payloadHash: existing.payload_hash,
-            state: existing.state,
-            createdAt: existing.created_at,
-            updatedAt: existing.updated_at
-          }
-        };
+        return { replayed: true, effect: effectFromRow(existing) };
       }
+      const agent = this.database.prepare('SELECT workspace_generation FROM agents WHERE owner_id=? AND workspace_id=? AND id=?')
+        .get(input.ownerId, input.workspaceId, input.agentId) as { workspace_generation: number } | undefined;
       this.database.prepare(`INSERT INTO agent_effects
-        (owner_id, workspace_id, agent_id, agent_generation, runner_epoch, request_id, kind, payload_hash, state, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INTENT', ?, ?)`)
-        .run(input.ownerId, input.workspaceId, input.agentId, input.agentGeneration, input.runnerEpoch, input.requestId, input.kind, input.payloadHash, input.now, input.now);
-      return {
-        replayed: false,
-        effect: {
-          ownerId: input.ownerId,
-          workspaceId: input.workspaceId,
-          agentId: input.agentId,
-          agentGeneration: input.agentGeneration,
-          runnerEpoch: input.runnerEpoch,
-          requestId: input.requestId,
-          kind: input.kind,
-          payloadHash: input.payloadHash,
-          state: 'INTENT',
-          createdAt: input.now,
-          updatedAt: input.now
-        }
-      };
+        (owner_id, workspace_id, agent_id, agent_generation, runner_epoch, request_id, kind, payload_hash, state, created_at, updated_at,
+         root_agent_id, replay_class, pre_image_sha256, intended_sha256, workspace_generation)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INTENT', ?, ?, ?, ?, ?, ?, ?)`)
+        .run(
+          input.ownerId, input.workspaceId, input.agentId, input.agentGeneration, input.runnerEpoch, input.requestId, input.kind,
+          input.payloadHash, input.now, input.now, rootAgentId, input.replayClass ?? null, preImageSha256, intendedSha256,
+          agent?.workspace_generation ?? null
+        );
+      return { replayed: false, effect: effectFromRow(this.findEffectRow({ rootAgentId, requestId: input.requestId, kind: input.kind })!) };
     });
+  }
+
+  /** The lineage root of an agent: the root recorded in its persisted session, or the agent itself. */
+  lineageRoot(agentId: string): string {
+    const row = this.database.prepare('SELECT root_agent_id FROM agent_sessions WHERE agent_id=?').get(agentId) as { root_agent_id: string } | undefined;
+    return row?.root_agent_id ?? agentId;
+  }
+
+  findEffect(key: AgentEffectKey): AgentEffectRecord | undefined {
+    const row = this.findEffectRow(key);
+    return row ? effectFromRow(row) : undefined;
+  }
+
+  /**
+   * Moves an effect to DISPATCHED immediately before it reaches the executor, recording the images
+   * captured at dispatch. Only the live owner of the lineage may dispatch, and only from one of the
+   * expected states; a read-safe effect of unknown outcome is dispatched again this way.
+   */
+  dispatchEffect(input: AgentEffectKey & {
+    fence: AgentEffectFence;
+    expectedStates: AgentEffectState[];
+    preImageSha256?: string | null;
+    intendedSha256?: string | null;
+    preEntry?: EffectPreEntry | null;
+    now: number;
+  }): boolean {
+    const preImageSha256 = optionalSha256(input.preImageSha256, 'pre-image digest');
+    const intendedSha256 = optionalSha256(input.intendedSha256, 'intended post-image digest');
+    const preEntry = input.preEntry ?? null;
+    if (preEntry !== null && !EFFECT_PRE_ENTRIES.has(preEntry)) throw new HarnessError('INVALID_INPUT', 'invalid effect pre-entry');
+    if (input.expectedStates.length === 0) throw new HarnessError('INVALID_INPUT', 'expected effect state set cannot be empty');
+    return immediate(this.database, () => {
+      if (this.isEffectWriterFenced(input.fence, ['RUNNING'])) return false;
+      const placeholders = input.expectedStates.map(() => '?').join(',');
+      // The pre-entry is that of this dispatch: an earlier dispatch's observation is not carried over.
+      const result = this.database.prepare(`UPDATE agent_effects SET state='DISPATCHED', runner_epoch=?, updated_at=?,
+          pre_image_sha256=COALESCE(?, pre_image_sha256), intended_sha256=COALESCE(?, intended_sha256), pre_entry=?
+        WHERE root_agent_id=? AND request_id=? AND kind=? AND owner_id=? AND workspace_id=? AND state IN (${placeholders})`)
+        .run(input.fence.runnerEpoch, input.now, preImageSha256, intendedSha256, preEntry,
+          input.rootAgentId, input.requestId, input.kind, input.fence.ownerId, input.fence.workspaceId, ...input.expectedStates);
+      return Number(result.changes) === 1;
+    });
+  }
+
+  /**
+   * Records an effect's outcome and, when given, its receipt (the exact result text the model
+   * received) in one transaction. Only a writer that still holds the fence may complete it: a
+   * stale runner epoch or generation, an ended agent, or a continued predecessor changes nothing.
+   * Returns false when the write was fenced or the effect was not in an expected state.
+   */
+  completeEffect(input: AgentEffectKey & {
+    fence: AgentEffectFence;
+    expectedStates: AgentEffectState[];
+    state: 'APPLIED' | 'REJECTED' | 'UNKNOWN';
+    receipt?: { text: string; reconciled?: boolean };
+    now: number;
+  }): boolean {
+    if (input.expectedStates.length === 0) throw new HarnessError('INVALID_INPUT', 'expected effect state set cannot be empty');
+    const text = input.receipt?.text;
+    if (text !== undefined && (text.length === 0 || Buffer.byteLength(text, 'utf8') > MAX_AGENT_EFFECT_RECEIPT_BYTES)) {
+      throw new HarnessError('LIMIT_EXCEEDED', 'agent effect receipt exceeds the tool result bound', 413, false);
+    }
+    if (text !== undefined && input.state === 'UNKNOWN') throw new HarnessError('INVALID_INPUT', 'an unknown effect has no receipt');
+    return immediate(this.database, () => {
+      if (this.isEffectWriterFenced(input.fence, ['RUNNING', 'CANCELLING'])) return false;
+      const placeholders = input.expectedStates.map(() => '?').join(',');
+      const textBytes = text === undefined ? 0 : Buffer.byteLength(text, 'utf8');
+      const stored = text !== undefined && this.retainsReceiptText(input.fence.agentId, input.rootAgentId, textBytes)
+        ? text
+        : null;
+      const result = this.database.prepare(`UPDATE agent_effects SET state=?, updated_at=?,
+          result_json=?, result_bytes=?, result_sha256=?, result_reconciled=?, executor_generation=?, retain_until=?
+        WHERE root_agent_id=? AND request_id=? AND kind=? AND owner_id=? AND workspace_id=? AND state IN (${placeholders})`)
+        .run(
+          input.state, input.now,
+          stored, stored === null ? null : textBytes, text === undefined ? null : sha256Hex(text), input.receipt?.reconciled ? 1 : 0,
+          text === undefined ? null : input.fence.runnerEpoch,
+          stored === null ? null : input.now + this.limits.sessionRetentionMs,
+          input.rootAgentId, input.requestId, input.kind, input.fence.ownerId, input.fence.workspaceId, ...input.expectedStates
+        );
+      return Number(result.changes) === 1;
+    });
+  }
+
+  /**
+   * Whether the agent records a session, and so can be continued. Only a continuation consumes
+   * stored receipt text or a recorded pre-dispatch observation, so an agent without one pays for
+   * neither.
+   */
+  recordsSession(agentId: string): boolean {
+    return this.database.prepare('SELECT 1 FROM agent_sessions WHERE agent_id=?').get(agentId) !== undefined;
+  }
+
+  /**
+   * Whether a receipt's result text is stored, or only its hash. Only a continuation can replay a
+   * stored result to the model, so only an agent that records a session stores text, and its
+   * lineage stops at the configured byte cap; past it a repeat behaves as after retention. The cap
+   * sums the recorded text sizes through an index, never the text itself.
+   */
+  private retainsReceiptText(agentId: string, rootAgentId: string, bytes: number): boolean {
+    if (!this.recordsSession(agentId)) return false;
+    const held = this.database.prepare(`SELECT COALESCE(SUM(result_bytes), 0) AS bytes FROM agent_effects
+      WHERE root_agent_id=? AND result_bytes IS NOT NULL`).get(rootAgentId) as { bytes: number };
+    return Number(held.bytes) + bytes <= this.limits.maxReceiptBytesPerLineage;
+  }
+
+  /** Clears receipt content past its retention; the effect state stays, so a repeat is never re-issued. */
+  purgeExpiredReceipts(now: number, limit = 100): number {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new HarnessError('INVALID_INPUT', 'receipt purge page size is out of bounds');
+    }
+    // The reaper calls this every tick, so the common case takes no write lock.
+    const due = this.database.prepare(`SELECT 1 FROM agent_effects
+      WHERE result_json IS NOT NULL AND retain_until IS NOT NULL AND retain_until<=? LIMIT 1`).get(now);
+    if (!due) return 0;
+    return immediate(this.database, () => Number(this.database.prepare(`UPDATE agent_effects
+      SET result_json=NULL, result_bytes=NULL, result_sha256=NULL, retain_until=NULL
+      WHERE rowid IN (SELECT rowid FROM agent_effects
+        WHERE result_json IS NOT NULL AND retain_until IS NOT NULL AND retain_until<=? ORDER BY retain_until ASC LIMIT ?)`)
+      .run(now, limit).changes));
+  }
+
+  /**
+   * Whether a writer has lost the right to change an agent's effects, usage, or session: the runner
+   * epoch moved on, the agent's generation or epoch differs, its status is not one of `statuses`,
+   * its workspace is no longer the active generation, or the agent was continued by a successor.
+   */
+  private isEffectWriterFenced(fence: AgentEffectFence, statuses?: readonly AgentStatus[]): boolean {
+    if (this.instanceId && this.currentEpoch(this.instanceId) !== fence.runnerEpoch) return true;
+    // Without a status set only the writer's identity is checked: an ended agent may still report
+    // its final usage, but an earlier epoch or generation, or a continued predecessor, may not.
+    const agent = (statuses
+      ? this.database.prepare(`SELECT agents.status, agents.generation, agents.runner_epoch FROM agents
+        JOIN workspaces ON workspaces.id=agents.workspace_id AND workspaces.owner_id=agents.owner_id
+        WHERE agents.owner_id=? AND agents.workspace_id=? AND agents.id=?
+          AND workspaces.status='ACTIVE' AND workspaces.generation=agents.workspace_generation`)
+      : this.database.prepare(`SELECT status, generation, runner_epoch FROM agents WHERE owner_id=? AND workspace_id=? AND id=?`))
+      .get(fence.ownerId, fence.workspaceId, fence.agentId) as { status: AgentStatus; generation: number; runner_epoch: number | null } | undefined;
+    if (!agent || agent.generation !== fence.agentGeneration || agent.runner_epoch !== fence.runnerEpoch) return true;
+    if (statuses && !statuses.includes(agent.status)) return true;
+    return this.findSuccessor(fence.agentId) !== undefined;
+  }
+
+  private findEffectRow(key: AgentEffectKey): EffectRow | undefined {
+    return this.database.prepare('SELECT * FROM agent_effects WHERE root_agent_id=? AND request_id=? AND kind=?')
+      .get(key.rootAgentId, key.requestId, key.kind) as EffectRow | undefined;
   }
 
   transitionEffect(input: {
@@ -1352,6 +1596,7 @@ export class AgentStateRepository {
         WHERE owner_id=? AND workspace_id=? AND id=?`)
         .get(input.ownerId, input.workspaceId, input.agentId) as { status: AgentStatus; generation: number; runner_epoch: number } | undefined;
       if (!agent || agent.status !== 'RUNNING' || agent.generation !== input.generation || agent.runner_epoch !== input.runnerEpoch) return 'FENCED';
+      if (this.findSuccessor(input.agentId) !== undefined) return 'FENCED';
       const session = this.database.prepare('SELECT * FROM agent_sessions WHERE agent_id=? AND owner_id=? AND workspace_id=?')
         .get(input.agentId, input.ownerId, input.workspaceId) as SessionRow | undefined;
       if (!session || session.state !== 'ACTIVE' || session.continuable !== 1) return 'IGNORED';
@@ -1417,12 +1662,16 @@ export class AgentStateRepository {
     });
   }
 
-  /** Deletes every session row of a workspace, used when the workspace closes or expires. */
+  /**
+   * Deletes every session row and effect receipt of a workspace, used when the workspace closes or
+   * expires and when its agent records are compacted.
+   */
   deleteWorkspaceSessions(ownerId: string, workspaceId: string): number {
     return immediate(this.database, () => this.deleteSessionRows(ownerId, workspaceId));
   }
 
   private deleteSessionRows(ownerId: string, workspaceId: string): number {
+    this.database.prepare('DELETE FROM agent_effects WHERE owner_id=? AND workspace_id=?').run(ownerId, workspaceId);
     this.database.prepare(`DELETE FROM agent_session_messages WHERE agent_id IN (
       SELECT agent_id FROM agent_sessions WHERE owner_id=? AND workspace_id=?)`).run(ownerId, workspaceId);
     return Number(this.database.prepare('DELETE FROM agent_sessions WHERE owner_id=? AND workspace_id=?').run(ownerId, workspaceId).changes);

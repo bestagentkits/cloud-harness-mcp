@@ -119,7 +119,9 @@ export const RunnerAgentLimitsSchema = z.object({
   // copies its predecessor's whole log, so without these the store grows with each continuation.
   globalSessionBytes: positiveBoundedInteger(17_179_869_184, 1_073_741_824),
   principalSessionBytes: positiveBoundedInteger(8_589_934_592, 536_870_912),
-  workspaceSessionBytes: positiveBoundedInteger(1_073_741_824, 67_108_864)
+  workspaceSessionBytes: positiveBoundedInteger(1_073_741_824, 67_108_864),
+  // Stored tool-result bytes (receipts) one agent lineage may hold; past it only hashes are kept.
+  maxReceiptBytesPerLineage: positiveBoundedInteger(1_073_741_824, 33_554_432)
 }).strict().superRefine((limits, context) => {
   if (limits.minTtlSeconds > limits.maxTtlSeconds) {
     context.addIssue({ code: 'custom', path: ['minTtlSeconds'], message: 'minimum agent TTL cannot exceed maximum agent TTL' });

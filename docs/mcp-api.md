@@ -212,8 +212,11 @@ then given the new `prompt`.
   including `CANCELLED` and `INTERRUPTED`. It is not continuable when its log
   is incomplete, exceeded the configured message or byte bounds, or would
   have pushed the stored sessions of its workspace, owner, or instance past
-  their aggregate byte budget; the run itself is not affected. A tool call the earlier run never answered is closed
-  with an error result before the new prompt.
+  their aggregate byte budget; the run itself is not affected. A tool call the
+  earlier run never answered is closed before the new prompt with the outcome
+  the runner settled for it (see
+  [Agent tool receipts and replay](#agent-tool-receipts-and-replay)), or with a
+  generic interruption error when it has none.
 - `continueFrom` is refused before any agent exists with `NOT_SUPPORTED` when
   persistence is off; `NOT_FOUND` for an agent outside this owner and
   workspace; `STALE_GENERATION` for an earlier workspace generation;
@@ -235,6 +238,91 @@ then given the new `prompt`.
   holds.
 - Closing or expiring the workspace deletes its persisted sessions; sealed
   sessions are otherwise purged after the configured retention.
+
+#### Agent tool receipts and replay
+
+An agent's proxied workspace tool calls are not MCP tools, but the runner keeps
+an effect ledger for them so that a call delivered twice never acts twice. The
+agent runtime names each proxy request after the model's tool call ID, and the
+runner keys the ledger by that request ID, the operation, and the agent's
+lineage (an agent and every `continueFrom` successor of it), so a continuation
+repeating an earlier call finds the earlier outcome. Each operation's replay
+class is `AGENT_PROXY_REPLAY_CLASS` in
+[`packages/contracts/src/runner-api.ts`](../packages/contracts/src/runner-api.ts);
+the ledger and its fences are in
+[`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts) and
+[`apps/runner/src/agent-effect-reconciler.ts`](../apps/runner/src/agent-effect-reconciler.ts).
+
+- A tool call's request ID is derived from its tool call ID and the number of
+  earlier tool call blocks in the session transcript that carry the same ID,
+  whether or not Pi executed them, so a provider that repeats or omits IDs
+  still gets one request ID per call, and a replay of the transcript derives
+  the same IDs.
+- A first call's result is unchanged. The runner records the call before it
+  reaches the executor and records its outcome, with the result's hash, before
+  sending the result. An agent spawned with session persistence also stores the
+  exact result text (its receipt) until its lineage holds
+  `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` bytes; any other result is kept as a
+  hash only and replays as if its receipt had been purged.
+- A repeated call whose result text is stored returns those bytes exactly,
+  applied or rejected, and runs nothing.
+- A repeated read-safe call whose receipt was purged runs again, and its result
+  carries `replayed: "re-executed"`. A repeated read whose earlier outcome was
+  lost runs again unmarked, since the model never saw a result.
+- A mutation is never issued again by the runner. A repeated mutation whose
+  receipt was purged returns `EFFECT_RECEIPT_UNAVAILABLE`. One whose outcome was
+  lost (a crash or restart mid-call) is reconciled from workspace state: a
+  conditional write is applied when its target holds the content recorded at
+  dispatch, and a patch when its target holds the content the patch produces
+  from the file read just before dispatch. A delete, mkdir, or move is applied
+  only when the workspace changed from the state observed just before dispatch.
+  The runner reads a patch, delete, mkdir, or move target before dispatch only
+  for an agent that records a session (the only kind a continuation
+  reconciles); without that observation the outcome stays unknown. A delete
+  whose path existed is gone, an mkdir whose path was absent is a directory, a
+  move whose source existed left it for an existing destination. An end state that would also
+  hold had the call failed (deleting a path that never existed, creating a
+  directory that already existed) is not taken as applied. An applied outcome
+  returns a result with `reconciled: true`; a write whose target still holds
+  its earlier content, or an mkdir whose directory is absent, returns
+  `EFFECT_NOT_APPLIED` (retryable with a new tool call); any other state
+  returns `EFFECT_UNKNOWN` and the owner should inspect the affected paths
+  before the work is repeated.
+- `EFFECT_NOT_APPLIED` is only as strong as the executor being quiesced. After
+  a runner crash, an executor process that was still running the call can
+  land the mutation after reconciliation observed the workspace, so a call
+  reported not applied may still appear later. Read the target before
+  re-issuing a mutation whose earlier attempt was interrupted by a crash.
+- The same request ID with a different payload returns `CONFLICT` without
+  running, whatever the recorded outcome.
+- Before a continuation's first turn, the runner settles every tool call the
+  earlier transcript left unanswered, because the model would otherwise issue
+  the same intent again under a new tool call ID that the ledger cannot match.
+  It looks each call up in the lineage's ledger, reconciles a mutation whose
+  outcome was lost as above, and the runtime closes the call with the result:
+  an applied or rejected call gets its stored result, a mutation that did not
+  land gets `EFFECT_NOT_APPLIED`, and an undecidable one gets `EFFECT_UNKNOWN`,
+  which tells the model the effect may have landed and to read the target
+  before any retry. The transcript keeps the model's raw arguments while the
+  runtime dispatched them after dropping optional nulls and coercing string
+  numbers and booleans, so the two are compared in a form those steps do not
+  change. A call whose arguments still differ from the payload recorded for
+  its request ID (a provider reused the ID, or a coercion the comparison does
+  not model) never gets that payload's result and is never reported as not
+  run: a mutation that reached the executor gets `EFFECT_UNKNOWN`, and one
+  that did not keeps the generic interruption. A call that never reached the executor, a read whose result is not
+  retained, or a tool call ID left unanswered more than once in the transcript keeps the generic interruption.
+  A reply that stopped with `error` or `aborted` never ran its calls and is
+  left out of the model's context on replay, so its calls are neither closed
+  nor settled.
+  At most 64 outcomes are carried, each bounded in size; a larger stored result
+  is summarized.
+- Only the agent of the current runner epoch and agent generation can record an
+  outcome, add usage, or append session messages; recording an outcome also
+  needs the active workspace generation, and an agent that a successor
+  continued can do none of these.
+  Receipts are kept for the session retention and deleted with the workspace's
+  sessions.
 
 ### Model setup and spend
 

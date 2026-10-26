@@ -45,31 +45,40 @@ function toolCalls(message: SessionMessage): Array<{ id: string; name: string }>
   return calls;
 }
 
-function interruptedResult(call: { id: string; name: string }, timestamp: number): SessionMessage {
+/** What the runner established about an unanswered tool call: the result text that closes it. */
+export type ToolCallOutcome = { text: string; isError: boolean };
+
+function closingResult(call: { id: string; name: string }, timestamp: number, outcome: ToolCallOutcome | undefined): SessionMessage {
   return {
     role: 'toolResult',
     toolCallId: call.id,
     toolName: call.name,
-    content: [{ type: 'text', text: INTERRUPTED_TOOL_RESULT_TEXT }],
-    isError: true,
+    content: [{ type: 'text', text: outcome?.text ?? INTERRUPTED_TOOL_RESULT_TEXT }],
+    isError: outcome?.isError ?? true,
     timestamp
   };
 }
 
 /**
  * Prepares a persisted log for replay. A tool call that never received its result would make the
- * model provider reject the conversation, so each one is closed with an error result. Calls left
- * open at the end of the log come back as `trailingRepairs`; the caller persists those so the new
- * log stays exactly what the model sees. Gaps inside the log are repaired for replay only.
+ * model provider reject the conversation, so each one is closed: with the outcome the runner
+ * settled for it when there is one (an applied write's original result, for example), otherwise
+ * with a generic interruption error. Calls left open at the end of the log come back as
+ * `trailingRepairs`; the caller persists those so the new log stays exactly what the model sees.
+ * Gaps inside the log are repaired for replay only.
  */
-export function planSessionReplay(messages: readonly SessionMessage[], now = Date.now()): {
+export function planSessionReplay(
+  messages: readonly SessionMessage[],
+  now = Date.now(),
+  outcomes: ReadonlyMap<string, ToolCallOutcome> = new Map()
+): {
   replay: SessionMessage[];
   trailingRepairs: SessionMessage[];
 } {
   const replay: SessionMessage[] = [];
   let pending = new Map<string, { id: string; name: string }>();
   const closePending = (): SessionMessage[] => {
-    const repairs = [...pending.values()].map((call) => interruptedResult(call, now));
+    const repairs = [...pending.values()].map((call) => closingResult(call, now, outcomes.get(call.id)));
     pending = new Map();
     return repairs;
   };
