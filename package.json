@@ -15,12 +15,12 @@
     "docs-site"
   ],
   "scripts": {
-    "build": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/agent-runtime && npm run build -w @cloud-harness/model-gateway && npm run build -w @cloud-harness/api && npm run build -w @cloud-harness/runner && npm run build -w @cloud-harness/api-key-gateway && npm run build -w @cloud-harness/dashboard",
+    "build": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/agent-runtime-durable && npm run build -w @cloud-harness/agent-runtime && npm run build -w @cloud-harness/model-gateway && npm run build -w @cloud-harness/api && npm run build -w @cloud-harness/runner && npm run build -w @cloud-harness/api-key-gateway && npm run build -w @cloud-harness/dashboard",
     "clean": "npm run clean --workspaces --if-present",
     "dev:api": "npm run dev -w @cloud-harness/api",
     "dev:runner": "npm run dev -w @cloud-harness/runner",
     "lint": "eslint .",
-    "typecheck": "npm run build -w @cloud-harness/contracts && npm run typecheck -w @cloud-harness/agent-runtime && npm run typecheck -w @cloud-harness/model-gateway && npm run typecheck -w @cloud-harness/api && npm run typecheck -w @cloud-harness/runner && npm run typecheck -w @cloud-harness/api-key-gateway && npm run typecheck -w @cloud-harness/dashboard",
+    "typecheck": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/agent-runtime-durable && npm run typecheck -w @cloud-harness/agent-runtime && npm run typecheck -w @cloud-harness/model-gateway && npm run typecheck -w @cloud-harness/api && npm run typecheck -w @cloud-harness/runner && npm run typecheck -w @cloud-harness/api-key-gateway && npm run typecheck -w @cloud-harness/dashboard",
     "pretest": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api",
     "test": "vitest run --exclude '**/*.docker.test.ts' --no-file-parallelism && npm run test -w @cloud-harness/dashboard",
     "pretest:unit": "npm run build -w @cloud-harness/contracts",

@@ -59,11 +59,11 @@ describe('state schema v15', () => {
   it('adds the session tables idempotently', () => {
     const { store } = open();
     try {
-      expect(schemaVersion(store.database)).toBe(16);
+      expect(schemaVersion(store.database)).toBe(17);
       expect(hasTable(store.database, 'agent_sessions')).toBe(true);
       expect(hasTable(store.database, 'agent_session_messages')).toBe(true);
       migratePrincipalSchema(store.database);
-      expect(schemaVersion(store.database)).toBe(16);
+      expect(schemaVersion(store.database)).toBe(17);
     } finally {
       store.close();
     }
@@ -90,7 +90,7 @@ describe('state schema v15', () => {
     const { store, path } = open();
     persistAgent(store);
     expect(() => downgradeStateSchemaToV14(store.database)).toThrow();
-    expect(schemaVersion(store.database)).toBe(16);
+    expect(schemaVersion(store.database)).toBe(17);
     downgradeStateSchemaToV14(store.database, true);
     expect(schemaVersion(store.database)).toBe(14);
     expect(hasTable(store.database, 'agent_sessions')).toBe(false);
@@ -99,7 +99,7 @@ describe('state schema v15', () => {
 
     const reopened = new StateStore(path);
     try {
-      expect(schemaVersion(reopened.database)).toBe(16);
+      expect(schemaVersion(reopened.database)).toBe(17);
       expect(hasTable(reopened.database, 'agent_sessions')).toBe(true);
       downgradeStateSchemaToV13(reopened.database);
       expect(schemaVersion(reopened.database)).toBe(13);

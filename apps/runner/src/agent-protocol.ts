@@ -61,6 +61,37 @@ export const AgentOutputRecordSchema = z.discriminatedUnion('type', [
 ]);
 
 export type AgentOutputRecord = z.infer<typeof AgentOutputRecordSchema>;
+
+/**
+ * Durable-runtime session storage RPC. A worker running the durable engine asks the runner, which
+ * owns the session database, to run one Storage method. These records travel on the same stdio
+ * channel but are routed to the session store, never to the run's event log, so they are kept out
+ * of `AgentOutputRecordSchema`. The method list must stay aligned with the worker's protocol.
+ */
+export const AGENT_STORAGE_METHODS = [
+  'commit', 'mintId', 'conversation', 'scanConversations', 'entry', 'findLatestHeadMarker',
+  'scanEntries', 'task', 'scanTasks', 'submission', 'scanSubmissions', 'submissionByRequest',
+  'findDocument', 'document', 'scanDocuments', 'close'
+] as const;
+export type AgentStorageMethod = typeof AGENT_STORAGE_METHODS[number];
+export const AGENT_STORAGE_ERROR_CODES = ['request', 'closed', 'fenced', 'limit', 'rate_limited', 'unavailable', 'failed'] as const;
+export type AgentStorageErrorCode = typeof AGENT_STORAGE_ERROR_CODES[number];
+export const MAX_STORAGE_ARGS = 4;
+
+export const AgentStorageRequestRecordSchema = z.object({
+  type: z.literal('storage_request'),
+  id: requestId,
+  method: z.enum(AGENT_STORAGE_METHODS),
+  args: z.array(z.unknown()).max(MAX_STORAGE_ARGS)
+}).strict();
+export type AgentStorageRequestRecord = z.infer<typeof AgentStorageRequestRecordSchema>;
+export type AgentStorageResponseRecord = {
+  type: 'storage_response'; id: string; ok: true; result?: unknown;
+} | {
+  type: 'storage_response'; id: string; ok: false;
+  error: { code: AgentStorageErrorCode; message: string; retryable: boolean };
+};
+
 export type AgentStartRecord = {
   type: 'start';
   requestId: string;
@@ -80,18 +111,26 @@ export type AgentStartRecord = {
   limits: { deadlineMs: number; maxEvents: number; maxOutputBytes: number; maxEventBytes: number; maxToolResultBytes: number };
   /** Present only when the agent persists its session; the history to replay before the prompt. */
   session?: { messages: unknown[]; headSha256: string; toolOutcomes?: AgentToolOutcome[] };
+  /** The agent engine; absent selects the default coding runtime. */
+  runtime?: 'pi-coding' | 'pi-durable';
+  /**
+   * Durable engine only, for a continuation: `continue` resumes the unfinished tasks of the
+   * lineage's session store, `abort` cancels them first (the predecessor was cancelled).
+   */
+  durableResume?: 'continue' | 'abort';
 };
 export type AgentInputRecord = AgentStartRecord | {
   type: 'message'; requestId: string; behavior: 'steer' | 'followUp'; text: string;
 } | { type: 'cancel'; requestId: string; reason?: string } | {
   type: 'tool_result'; requestId: string; final: true; isError: boolean;
   content: Array<{ type: 'text'; text: string }>; details?: unknown;
-} | { type: 'tool_cancel'; requestId: string; reason?: string };
+} | { type: 'tool_cancel'; requestId: string; reason?: string } | AgentStorageResponseRecord;
 
 export class AgentProtocolChannel {
   private pending = Buffer.alloc(0);
   private writeChain = Promise.resolve();
   private readChain = Promise.resolve();
+  private storageChain = Promise.resolve();
   private closed = false;
 
   constructor(
@@ -100,7 +139,13 @@ export class AgentProtocolChannel {
     stderr: Readable,
     private readonly onRecord: (record: AgentOutputRecord) => Promise<void>,
     private readonly onStderr: (content: string) => Promise<void>,
-    private readonly onError: (error: Error) => void
+    private readonly onError: (error: Error) => void,
+    /**
+     * Receives durable-runtime storage requests, in order, on a chain of their own: a long tool
+     * call on the record chain must not hold up the session store the run is committing to.
+     * Without it a storage request fails the channel like any unknown record.
+     */
+    private readonly onStorage?: (request: AgentStorageRequestRecord) => Promise<void>
   ) {
     output.on('data', (chunk: Buffer) => this.feed(chunk));
     output.once('end', () => {
@@ -142,7 +187,7 @@ export class AgentProtocolChannel {
   }
 
   async drain(): Promise<void> {
-    await Promise.allSettled([this.writeChain, this.readChain]);
+    await Promise.allSettled([this.writeChain, this.readChain, this.storageChain]);
   }
   async drainWrites(): Promise<void> {
     await Promise.allSettled([this.writeChain]);
@@ -177,7 +222,14 @@ export class AgentProtocolChannel {
         return;
       }
       try {
-        const record = AgentOutputRecordSchema.parse(JSON.parse(line.toString('utf8')));
+        const parsed: unknown = JSON.parse(line.toString('utf8'));
+        const onStorage = this.onStorage;
+        if (onStorage && typeof parsed === 'object' && parsed !== null && (parsed as { type?: unknown }).type === 'storage_request') {
+          const request = AgentStorageRequestRecordSchema.parse(parsed);
+          this.storageChain = this.storageChain.then(() => onStorage(request)).catch((error: unknown) => this.fail(asError(error)));
+          continue;
+        }
+        const record = AgentOutputRecordSchema.parse(parsed);
         this.readChain = this.readChain.then(() => this.onRecord(record)).catch((error: unknown) => this.fail(asError(error)));
       } catch (error) {
         this.fail(asError(error));

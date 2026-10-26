@@ -98,7 +98,9 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    finish rather than retrying unchanged. To follow up on an ended agent, spawn
    with `continueFrom` when its `agent_status` reports `session.continuable`;
    that is a new agent with the earlier conversation and model profile (omit
-   `profileId`), never a resumed run.
+   `profileId`), never a resumed run. Only an agent on the owner's opt-in
+   durable engine (`runtime: "pi-durable"`) can report `run.resumable: true`;
+   its continuation resumes that unfinished work.
    `model_spend_summary` shows the
    headroom; no MCP tool changes policies, only the owner can, through the
    dashboard. A profile you save with `model_profile_create` stays disabled

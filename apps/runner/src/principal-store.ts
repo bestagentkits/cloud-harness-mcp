@@ -1237,7 +1237,44 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
     });
     version = 16;
   }
-  if (version !== 16) throw new Error(`unsupported state schema version ${version}`);
+  if (version === 16) {
+    transaction(database, () => {
+      database.exec(`
+        -- The agent engine an agent runs on. Every agent before this version ran the coding
+        -- runtime; a continuation keeps its predecessor's engine.
+        ALTER TABLE agents ADD COLUMN runtime TEXT NOT NULL DEFAULT 'pi-coding' CHECK(runtime IN ('pi-coding', 'pi-durable'));
+        -- Set when a durable agent's session store still held unfinished tasks as the agent ended,
+        -- so a continuation would resume them. Never set for the coding runtime.
+        ALTER TABLE agent_sessions ADD COLUMN run_resumable INTEGER NOT NULL DEFAULT 0 CHECK(run_resumable IN (0, 1));
+      `);
+      database.exec('UPDATE schema_meta SET version = 17;');
+    });
+    version = 17;
+  }
+  if (version !== 17) throw new Error(`unsupported state schema version ${version}`);
+}
+
+/**
+ * Durable agents keep their session in a runner-side store keyed by lineage; dropping the runtime
+ * column would let a continuation of one run on the coding runtime, so it needs explicit consent
+ * while any durable agent exists.
+ */
+export function downgradeStateSchemaToV16(database: DatabaseSync, allowDataLoss = false): void {
+  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version !== 17) throw new Error(`state schema must be version 17 before downgrade, got ${version}`);
+  if (!allowDataLoss) {
+    const durable = (database.prepare("SELECT count(*) as count FROM agents WHERE runtime='pi-durable'").get() as { count: number }).count;
+    if (durable > 0) {
+      throw new Error('cannot downgrade state schema to v16: durable-runtime agents exist (allowDataLoss required)');
+    }
+  }
+  transaction(database, () => {
+    database.exec(`
+      ALTER TABLE agent_sessions DROP COLUMN run_resumable;
+      ALTER TABLE agents DROP COLUMN runtime;
+      UPDATE schema_meta SET version = 16;
+    `);
+  });
 }
 
 /**
@@ -1247,14 +1284,15 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
  * carry no result to lose and do not block it.
  */
 export function downgradeStateSchemaToV15(database: DatabaseSync, allowDataLoss = false): void {
-  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version !== 16) throw new Error(`state schema must be version 16 before downgrade, got ${version}`);
-  if (!allowDataLoss) {
-    const receipts = (database.prepare('SELECT count(*) as count FROM agent_effects WHERE result_json IS NOT NULL').get() as { count: number }).count;
-    if (receipts > 0) {
-      throw new Error('cannot downgrade state schema to v15: agent effect receipts exist (allowDataLoss required)');
-    }
+  let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  // The receipt check runs before stepping down from the head, so a refused downgrade leaves it untouched.
+  if (version === 17) {
+    if (!allowDataLoss) assertNoReceipts(database);
+    downgradeStateSchemaToV16(database, allowDataLoss);
+    version = 16;
   }
+  if (version !== 16) throw new Error(`state schema must be version 16 before downgrade, got ${version}`);
+  if (!allowDataLoss) assertNoReceipts(database);
   transaction(database, () => {
     database.exec(`
       DROP INDEX IF EXISTS agent_effects_receipt_bytes;
@@ -1278,6 +1316,13 @@ export function downgradeStateSchemaToV15(database: DatabaseSync, allowDataLoss 
   });
 }
 
+function assertNoReceipts(database: DatabaseSync): void {
+  const receipts = (database.prepare('SELECT count(*) as count FROM agent_effects WHERE result_json IS NOT NULL').get() as { count: number }).count;
+  if (receipts > 0) {
+    throw new Error('cannot downgrade state schema to v15: agent effect receipts exist (allowDataLoss required)');
+  }
+}
+
 function assertNoPersistedSessions(database: DatabaseSync): void {
   const sessions = (database.prepare('SELECT count(*) as count FROM agent_sessions').get() as { count: number }).count;
   if (sessions > 0) {
@@ -1293,7 +1338,7 @@ export function downgradeStateSchemaToV14(database: DatabaseSync, allowDataLoss 
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
   // The head schema moves on, so a downgrade from it steps through the newer helpers first. The
   // session check runs before that step, so a refused downgrade leaves the head schema untouched.
-  if (version === 16) {
+  if (version === 17 || version === 16) {
     if (!allowDataLoss) assertNoPersistedSessions(database);
     downgradeStateSchemaToV15(database, allowDataLoss);
     version = 15;
@@ -1316,7 +1361,7 @@ export function downgradeStateSchemaToV14(database: DatabaseSync, allowDataLoss 
 export function downgradeStateSchemaToV13(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
   // The head schema moves on, so a downgrade from it steps through the newer helpers first.
-  if (version === 16 || version === 15) {
+  if (version === 17 || version === 16 || version === 15) {
     downgradeStateSchemaToV14(database, allowDataLoss);
     version = 14;
   }
@@ -1333,7 +1378,7 @@ export function downgradeStateSchemaToV13(database: DatabaseSync, allowDataLoss 
 export function downgradeStateSchemaToV12(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
   // The head schema moves on, so a downgrade from it steps through the newer helpers first.
-  if (version === 16 || version === 15 || version === 14) {
+  if (version === 17 || version === 16 || version === 15 || version === 14) {
     downgradeStateSchemaToV13(database, allowDataLoss);
     version = 13;
   }
@@ -1358,7 +1403,7 @@ export function downgradeStateSchemaToV12(database: DatabaseSync, allowDataLoss 
 
 export function downgradeStateSchemaToV11(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version === 16 || version === 15 || version === 14 || version === 13) {
+  if (version === 17 || version === 16 || version === 15 || version === 14 || version === 13) {
     downgradeStateSchemaToV12(database, allowDataLoss);
     version = 12;
   }
@@ -1397,7 +1442,7 @@ export function downgradeStateSchemaToV11(database: DatabaseSync, allowDataLoss 
 export function downgradeStateSchemaToV10(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
   // The head schema moves on, so a downgrade from it steps through the newer helpers first.
-  if (version === 16 || version === 15 || version === 14 || version === 13) {
+  if (version === 17 || version === 16 || version === 15 || version === 14 || version === 13) {
     downgradeStateSchemaToV12(database, allowDataLoss);
     version = 12;
   }
@@ -1438,7 +1483,7 @@ export function downgradeStateSchemaToV10(database: DatabaseSync, allowDataLoss 
 export function downgradeStateSchemaToV9(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
   // The head schema moves on, so a downgrade from it steps through the newer helpers first.
-  if (version === 16 || version === 15 || version === 14 || version === 13) {
+  if (version === 17 || version === 16 || version === 15 || version === 14 || version === 13) {
     downgradeStateSchemaToV12(database, allowDataLoss);
     version = 12;
   }
@@ -1484,7 +1529,7 @@ export function downgradeStateSchemaToV9(database: DatabaseSync, allowDataLoss =
 export function downgradeStateSchemaToV8(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
   // The head schema moves on, so a downgrade from it steps through the newer helpers first.
-  if (version === 16 || version === 15 || version === 14 || version === 13) {
+  if (version === 17 || version === 16 || version === 15 || version === 14 || version === 13) {
     downgradeStateSchemaToV12(database, allowDataLoss);
     version = 12;
   }
@@ -1522,7 +1567,7 @@ export function downgradeStateSchemaToV8(database: DatabaseSync, allowDataLoss =
 export function downgradeStateSchemaToV7(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
   // The head schema moves on, so a downgrade from it steps through the newer helpers first.
-  if (version === 16 || version === 15 || version === 14 || version === 13) {
+  if (version === 17 || version === 16 || version === 15 || version === 14 || version === 13) {
     downgradeStateSchemaToV12(database, allowDataLoss);
     version = 12;
   }
@@ -1559,7 +1604,7 @@ export function downgradeStateSchemaToV7(database: DatabaseSync, allowDataLoss =
 export function downgradeStateSchemaToV6(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
   // The head schema moves on, so a downgrade from it steps through the newer helpers first.
-  if (version === 16 || version === 15 || version === 14 || version === 13) {
+  if (version === 17 || version === 16 || version === 15 || version === 14 || version === 13) {
     downgradeStateSchemaToV12(database, allowDataLoss);
     version = 12;
   }
@@ -1600,7 +1645,7 @@ export function downgradeStateSchemaToV6(database: DatabaseSync, allowDataLoss =
 export function downgradeStateSchemaToV5(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
   // The head schema moves on, so a downgrade from it steps through the newer helpers first.
-  if (version === 16 || version === 15 || version === 14 || version === 13) {
+  if (version === 17 || version === 16 || version === 15 || version === 14 || version === 13) {
     downgradeStateSchemaToV12(database, allowDataLoss);
     version = 12;
   }
@@ -1685,7 +1730,7 @@ export function downgradeStateSchemaToV5(database: DatabaseSync, allowDataLoss =
 export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
   // The head schema moves on, so a downgrade from it steps through the newer helpers first.
-  if (version === 16 || version === 15 || version === 14 || version === 13) {
+  if (version === 17 || version === 16 || version === 15 || version === 14 || version === 13) {
     downgradeStateSchemaToV12(database, allowDataLoss);
     version = 12;
   }
@@ -1739,7 +1784,7 @@ export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss =
 export function downgradeStateSchemaToV3(database: DatabaseSync): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
   // The head schema moves on, so a downgrade from it steps through the newer helpers first.
-  if (version === 16 || version === 15 || version === 14 || version === 13) {
+  if (version === 17 || version === 16 || version === 15 || version === 14 || version === 13) {
     downgradeStateSchemaToV12(database, true);
     version = 12;
   }
