@@ -458,7 +458,7 @@ Enable a flag on one instance before any other, in this order:
 
 The live benchmark run recorded in the ADR exercised steps 2 to 4 on a local
 Compose stack. A production canary is an owner decision and follows the
-[real-provider canary runbook](#owner-authorized-real-provider-canary-runbook).
+[real-provider canary runbook](#owner-authorized-real-provider-canary-runbook-subagents).
 
 ### Kill switch and rollback
 
