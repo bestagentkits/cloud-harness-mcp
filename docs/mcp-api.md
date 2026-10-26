@@ -391,7 +391,11 @@ event-to-span mapping by
 - **Coding automations.** The trace of an agent a coding automation started
   carries the run's `workflowId` (filterable in `agent_traces_list`), and each
   brokered action adds an `action` span with its decision, reason code and
-  receipt state. The runner verifies, commits, pushes and opens the pull
+  receipt state; when the gate consulted the execution-risk advisor, a
+  `decision` span under it names the Decision Plane id, the advisor's effect,
+  risk and confidence. A held step that waits for the owner adds an `approval`
+  span when it is requested and another when it is approved, denied or
+  expires. The runner verifies, commits, pushes and opens the pull
   request after the agent ends, so those spans are appended to a trace that is
   already terminal; a finished trace's span list can still grow. The receipts
   themselves are on the Dashboard Automations run page, read through the
@@ -723,9 +727,10 @@ ChatGPT subscription (see
 When the operator sets `NOTIFICATIONS_ENABLED=true`, terminal automation runs
 and terminal top-level agents (not child agents, and not agents an automation
 started, which notify through their workflow) each write one notification to
-the owner's inbox in the same savepoint as the transition. The
-`workflow.waiting_for_human` and `approval.decided` kinds are defined for the
-approval flow and are written only once that flow emits them. A notification is deduplicated per principal, subject, and
+the owner's inbox in the same savepoint as the transition. With
+`AGENT_APPROVALS_ENABLED=true`, a coding run that starts waiting for an owner
+approval writes `workflow.waiting_for_human`, and the approval's decision or
+expiry writes `approval.decided`. A notification is deduplicated per principal, subject, and
 transition, so a replayed transition never notifies twice. The inbox copy is
 always recorded; the owner chooses per kind whether it is also delivered as the
 `cloudharness.notification.created` MCP event and whether the GitHub column

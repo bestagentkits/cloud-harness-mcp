@@ -1,17 +1,56 @@
 ---
 title: Approvals
-description: The inbox for privilege grants and managed package plans.
+description: The inbox for held coding agent actions, privilege grants and managed package plans.
 ---
 
 # Approvals
 
-`/dashboard/approvals` is the inbox for two kinds of request that wait for your
+`/dashboard/approvals` is the inbox for three kinds of request that wait for your
 decision:
 
+- **Agent actions**: a step of a [coding automation](/dashboard/automations) that the
+  [execution policy](/dashboard/agent-policies) holds for your approval.
 - **Privilege grants**: requests to run a command in a workspace that needs your explicit
   approval before the runner will execute it.
 - **Package plans**: requests to install or update a [managed toolbox package](/dashboard/packages).
 
+## Agent actions
+
+The **Agent actions** section comes first. It lists the coding runs that are paused as
+**Waiting for approval** because the execution policy answered *require approval* for a
+step the runner takes after the agent has finished: running the verify command, checking
+the changed paths, committing, pushing the `agent/` branch, or opening the pull request.
+The section explains itself when agent approvals are off: operators enable them with
+`AGENT_APPROVALS_ENABLED=true` on the runner. While they are off, such a step fails the run
+with `ACTION_DENIED:APPROVALS_DISABLED` instead of waiting.
+
+Each held action shows:
+
+- the step, a link to its run, and its status: **Pending**, **Approved, resuming**,
+  **Denied**, **Approved and used**, or **Expired**;
+- the action itself: its class, repository, branch, command or paths;
+- why it waits: the policy's reasons and, when the execution-risk advisor was consulted,
+  its answer (escalate or no change), risk, confidence and decision id;
+- the change it would publish: files changed, lines added and removed, and the diff
+  artifact kept for review;
+- when it was requested and when it expires, and the **action digest**, shortened. Focus
+  it, or hover it, to read the full value.
+
+### Deciding an agent action
+
+**Approve** and **Deny** appear only on a pending action that has not expired, and both
+ask for confirmation. Approving posts the digest shown on the row: the run resumes and
+performs exactly that action once. The policy is checked again when the step runs, so a
+deny you added in the meantime still wins, and an approval never lifts a deny. Denying
+fails the run with `APPROVAL_DENIED`; the diff artifact stays. A decision is accepted
+once: a second click, or a decision for an action that changed, expired, or belongs to
+another identity, is refused and changes nothing. Both decisions are audited and, when notifications are on, reach
+your [inbox](/dashboard/inbox).
+
+An undecided action expires at the earliest of `AGENT_APPROVAL_TTL_MINUTES` (60 by
+default), the policy's approval time limit, and the workspace lease, and the run fails with
+`APPROVAL_EXPIRED`. Only the runner's own steps wait here; an agent's own tool call that
+needs approval is refused at once.
 ## What a request shows
 
 Each request lists its status, the requested command, the workspace it targets, the
@@ -30,8 +69,8 @@ discards the request and the command stays blocked. Both decisions are audited, 
 ask for confirmation first because neither can be undone. Decided, used, and expired
 requests stay listed for a while without actions, so you can see what happened.
 
-The rail shows a count next to **Approvals** only while an unexpired grant or package plan
-is pending, so the absence of a badge means there is nothing to decide rather than nothing
+The rail shows a count next to **Approvals** only while an unexpired agent action, grant or
+package plan is pending, so the absence of a badge means there is nothing to decide rather than nothing
 to look at.
 
 ::: tip Where requests come from

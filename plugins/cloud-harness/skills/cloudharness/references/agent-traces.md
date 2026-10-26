@@ -43,6 +43,11 @@ model profiles, and to explain a failed, cancelled, or timed-out run. Use
   and publishes after the agent ends, so `action` spans can be appended to a
   trace that is already finished; read the spans again rather than treating a
   finished trace as frozen.
+- When the execution policy consulted the advisor for an action, a `decision`
+  span (child of that `action` span) carries the advisor's effect, risk,
+  confidence, and decision id. When a runner step waits for the owner, `approval`
+  spans record the request and the owner's decision; the run resumes only after
+  the owner approves on the Dashboard (no MCP tool decides an approval).
 - `reconciliationStatus` compares model-call span sums with the agent usage
   ledger: tokens must match exactly; cost may differ by one micro-dollar per
   model call of rounding. `unreconciled` lists its reasons on the trace.
@@ -82,7 +87,7 @@ cost provenance, coverage, and the reconciliation detail.
 
 Page through one trace's spans in recording order (span sequence, not start
 time): `agent_run`, `model_call`, `tool_call`, `budget`, `gateway`, and, for a
-coding automation, `action`. Tool
+coding automation, `action`, `decision`, and `approval`. Tool
 calls carry the operation name, outcome, and an input digest, plus a redacted
 preview only when the operator enabled one. A failed model call's `errorClass`
 `budget` is a gateway budget refusal (raise the agent's budget, up to the model

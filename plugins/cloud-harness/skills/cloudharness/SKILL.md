@@ -80,7 +80,9 @@ terminal-state notifications: `cloudharness.task.completed`,
 `cloudharness.agent.failed`, and, for owner-configured webhook automations,
 `cloudharness.automation.completed` and `cloudharness.automation.failed`
 (filter by `ruleId` or `workflowId`; no MCP tool manages automations, so read
-their results on the Dashboard), plus `cloudharness.notification.created` when
+their results on the Dashboard; a coding run whose policy holds a step for the
+owner waits in `WAITING_FOR_HUMAN` until the owner approves or denies it there,
+and no tool approves on the owner's behalf), plus `cloudharness.notification.created` when
 the operator enabled the notification inbox (filter by `kind`; the payload is a
 notification id, kind, subject id, short title, and Dashboard link; no MCP tool
 reads the inbox). These are client-side protocol subscriptions, not

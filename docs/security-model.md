@@ -339,9 +339,10 @@ runner publishes":
   same evaluator the Dashboard simulation uses. The revisions the run started
   under are pinned, so a policy edit or rollback stops it, and each call
   re-checks revocation (workflow state and workspace generation), the run's
-  budget and the kill switch. Only `ALLOW` runs. `REQUIRE_APPROVAL` fails closed
-  with `ACTION_REQUIRES_APPROVAL`, because this release grants no approvals. A
-  refused call never reaches the workspace. Editing a lockfile or package
+  budget and the kill switch. Only `ALLOW` runs. For an agent tool call,
+  `REQUIRE_APPROVAL` fails closed with `ACTION_REQUIRES_APPROVAL`; only the
+  runner's own steps can wait for an owner approval (below). A refused call
+  never reaches the workspace. Editing a lockfile or package
   manifest is a `package_install` action, not an `edit`.
 - **The agent never publishes.** It stays on `network-none` with no Git or
   GitHub credential and is told not to commit. After it ends, the runner runs
@@ -410,6 +411,32 @@ runner publishes":
   span. A receipt stores the action's argv and paths as decided, unredacted,
   and the owner's Dashboard run page shows them; a verify command or path
   should therefore never carry a secret.
+- **An approval lifts one held runner step, once.** With
+  `AGENT_APPROVALS_ENABLED`, a runner step (verify, path checks, commit, push,
+  opening the pull request) that the gate answers with `REQUIRE_APPROVAL`
+  pauses the run as `WAITING_FOR_HUMAN` instead of failing it. The agent has
+  already ended, the workspace is kept and its lease renewed for the wait, and
+  the change is snapshotted as a diff artifact. One PENDING approval records
+  the exact descriptor, its digest, the gate decision with the advisor's
+  Decision Plane id, the policy revisions and the run's pause counter. Only the
+  owning principal can decide it, through the Dashboard's Origin- and
+  CSRF-checked route, and the decision must name the digest it was shown;
+  exactly one approve or deny moves it out of PENDING. A changed digest, a
+  later pause or a recreated workspace makes it `APPROVAL_STALE`; past its
+  deadline (the smallest of `AGENT_APPROVAL_TTL_MINUTES`, the policy's approval
+  TTL and the workspace lease) it expires and the run fails. On approval the
+  run resumes and the step runs under a fresh idempotency key
+  (`automation:<workflow>:resume:<approval>`), so a restart replays it at most
+  once. The gate decides the step again when it runs: the approval lifts only
+  `REQUIRE_APPROVAL` for that exact digest while approvals are enabled, never a
+  `DENY` such as a hard deny added since, and it is consumed on first use.
+  Neither Jev nor any advisor answer can grant an approval; the advisor can
+  only escalate. With the flag off, a held step fails as
+  `ACTION_DENIED:APPROVALS_DISABLED` and the sweeper fails runs still waiting.
+  Waiting time does not count against the run-time budget, and a waiting run
+  still holds its concurrency slot and workspace
+  ([`apps/runner/src/agent-governance/approval-service.ts`](../apps/runner/src/agent-governance/approval-service.ts),
+  [`test/integration/hitl-approval-resume.test.ts`](../test/integration/hitl-approval-resume.test.ts)).
 - **Installs are lockfile-only and separate.** With
   `AGENT_CODING_PACKAGE_INSTALL_ENABLED`, a checkout's npm lockfile is admitted
   only if every entry is a registry tarball with a sha512 integrity from an
