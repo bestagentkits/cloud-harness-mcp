@@ -1,4 +1,6 @@
 import {
+  AgentApprovalsRunnerRequestSchema,
+  AgentApprovalsRunnerResponseSchema,
   AgentPoliciesRunnerRequestSchema,
   AgentPoliciesRunnerResponseSchema,
   AutomationsRunnerRequestSchema,
@@ -20,6 +22,8 @@ import {
   type ApiKeyAuthenticationResponse,
   type ApiKeyManagementOperation,
   type ApiKeyManagementResponse,
+  type AgentApprovalsRunnerRequest,
+  type AgentApprovalsRunnerResponse,
   type AgentPoliciesRunnerRequest,
   type AgentPoliciesRunnerResponse,
   type AutomationsRunnerRequest,
@@ -87,6 +91,13 @@ export class RunnerClient {
   /** Owner-scoped agent execution policies and the gate simulation; principal scoping travels in the request. */
   async callAgentPolicies(request: AgentPoliciesRunnerRequest, signal?: AbortSignal): Promise<AgentPoliciesRunnerResponse> {
     return await this.requestJson('/v1/internal/agent-policies', AgentPoliciesRunnerRequestSchema.parse(request), AgentPoliciesRunnerResponseSchema, () => ({
+      ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' }
+    }), signal);
+  }
+
+  /** Owner approvals of held coding workflow steps; principal scoping travels in the request. */
+  async callAgentApprovals(request: AgentApprovalsRunnerRequest, signal?: AbortSignal): Promise<AgentApprovalsRunnerResponse> {
+    return await this.requestJson('/v1/internal/agent-approvals', AgentApprovalsRunnerRequestSchema.parse(request), AgentApprovalsRunnerResponseSchema, () => ({
       ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' }
     }), signal);
   }
