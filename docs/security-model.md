@@ -1191,9 +1191,10 @@ changes simulation results only.
   rate limit, invalid answer, low confidence, redaction failure) applies the
   policy's fallback: approval by default, or deny. An action whose paths touch
   a root CI/workflow file or a dependency manifest or lockfile is never sent
-  to Jev: the advisor escalates it locally (`sensitive_paths`) and it always
-  needs approval, even under a `deny` fallback, because a CI change runs with
-  repository secrets and a dependency change is a supply-chain change. The
+  to Jev: the advisor escalates it locally (`sensitive_paths`) and the policy's
+  fallback applies, because a CI change runs with repository secrets and a
+  dependency change is a supply-chain change, so a model's answer never clears
+  it. The
   decision records the Jev decision id, risk and confidence, or the fallback
   reason. No answer
   lowers a deny or a required approval, including

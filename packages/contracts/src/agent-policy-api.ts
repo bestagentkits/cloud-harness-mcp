@@ -62,9 +62,9 @@ export const AdvisorEffectSchema = z.enum(['no_change', 'escalate']);
 /**
  * Why the advisor gave no usable answer. Every reason is conservative: the discretionary action is held
  * for approval (or denied, when the policy's `fallback` says so). `disabled` and `unconfigured` are
- * known before any call, so they never send anything. `sensitive_paths` is not a failure: the action
- * touches a CI/workflow file or a dependency manifest or lockfile, so the advisor sends nothing and the
- * action always waits for a human (REQUIRE_APPROVAL, never the `deny` fallback).
+ * known before any call, so they never send anything. `sensitive_paths` means the action touches a
+ * CI/workflow file or a dependency manifest or lockfile, so the advisor sends nothing and the action
+ * takes the fallback like any unanswered one: approval by default, or deny.
  */
 export const ADVISOR_FALLBACK_REASONS = [
   'disabled', 'unconfigured', 'timeout', 'rate_limited', 'invalid_answer', 'low_confidence', 'redaction_failed', 'unavailable', 'sensitive_paths'

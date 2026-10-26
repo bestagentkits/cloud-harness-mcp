@@ -12,6 +12,7 @@ import {
 } from '@cloud-harness/contracts';
 import type { AdvisorAnswer, GateSubject } from '../agent-governance/gate-evaluator.js';
 import { AGENT_GOVERNANCE_PORTS_VERSION, type AdvisorAvailability, type AdvisorFacts, type DecisionAdvisor } from '../agent-governance/ports.js';
+import { isCiConfiguration, isDependencyManifest, pathSegments, touchesSensitivePaths } from '../agent-governance/sensitive-paths.js';
 import type { DecisionPlane } from './decision-plane.js';
 
 /**
@@ -23,7 +24,8 @@ import type { DecisionPlane } from './decision-plane.js';
  * is a typed risk score and two flags; the policy's thresholds turn it into `no_change` or `escalate`,
  * and every failure is an `escalate` with a fallback reason. An action touching a CI/workflow file or a
  * dependency manifest or lockfile is escalated (`sensitive_paths`) before anything is sent: those are
- * execution-surface and supply-chain changes no model answer may clear. The advisor never authorizes
+ * execution-surface and supply-chain changes no model answer may clear, so they take the policy's
+ * advisor fallback like any other unanswered action. The advisor never authorizes
  * anything: the gate only consults it for a discretionary action that would otherwise need approval.
  */
 
@@ -46,12 +48,6 @@ const PROGRAM_CATEGORIES: Readonly<Record<string, string>> = Object.freeze({
   cat: 'read_only', ls: 'read_only', grep: 'read_only', rg: 'read_only', find: 'read_only', head: 'read_only', tail: 'read_only', echo: 'read_only'
 });
 
-const MANIFEST_FILES = new Set([
-  'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb', 'requirements.txt', 'pyproject.toml',
-  'poetry.lock', 'uv.lock', 'pipfile', 'pipfile.lock', 'cargo.toml', 'cargo.lock', 'go.mod', 'go.sum', 'gemfile', 'gemfile.lock', 'composer.json',
-  'composer.lock', 'pom.xml', 'build.gradle', 'build.gradle.kts'
-]);
-
 /** Package ecosystems the summary may name. The descriptor's ecosystem is agent-chosen text, so anything else is `other`. */
 const PACKAGE_ECOSYSTEMS: ReadonlySet<string> = new Set(['npm', 'pypi', 'cargo', 'go', 'maven', 'nuget', 'rubygems', 'composer']);
 const packageEcosystem = (ecosystem: string): string => (PACKAGE_ECOSYSTEMS.has(ecosystem) ? ecosystem : 'other');
@@ -61,24 +57,7 @@ const programCategory = (program: string | undefined): string => {
   return Object.hasOwn(PROGRAM_CATEGORIES, name) ? PROGRAM_CATEGORIES[name] as string : 'other';
 };
 
-// Empty and `.` segments carry no meaning, so `./.github/x`, `.//.github/x` and `src/./package.json` classify like their plain forms.
-const segments = (path: string) => path.split('/').filter((segment) => segment !== '' && segment !== '.').map((segment) => segment.toLowerCase());
-const count = (paths: readonly string[], test: (parts: string[]) => boolean) => paths.filter((path) => test(segments(path))).length;
-/** A dependency manifest or lockfile at any depth: a supply-chain change. */
-const isDependencyManifest = (parts: readonly string[]) => MANIFEST_FILES.has(parts.at(-1) ?? '');
-/** A CI or workflow file at the repository root: it runs later with the repository's CI secrets. */
-const isCiConfiguration = (parts: readonly string[]) => parts[0] === '.github' || parts[0] === '.gitlab-ci.yml' || parts[0] === '.circleci';
-
-/**
- * True when the action touches a CI/workflow file or a dependency manifest or lockfile. Such a change is
- * never left to a model's judgment: the advisor escalates it to a human without consulting anything.
- */
-export function touchesSensitivePaths(descriptor: Pick<AgentActionDescriptor, 'paths'>): boolean {
-  return (descriptor.paths ?? []).some((path) => {
-    const parts = segments(path);
-    return isDependencyManifest(parts) || isCiConfiguration(parts);
-  });
-}
+const count = (paths: readonly string[], test: (parts: string[]) => boolean) => paths.filter((path) => test(pathSegments(path))).length;
 const bounded = (value: number) => Math.min(Math.max(Math.trunc(value), 0), 10_000_000);
 
 /**
@@ -195,7 +174,7 @@ export class ExecutionRiskAdvisor implements DecisionAdvisor {
       const availability = this.availability(request.principalId);
       if (!availability.available) return fallback(availability.reason);
       // CI and dependency changes always go to a human, decided here with no egress.
-      if (touchesSensitivePaths(request.descriptor)) return fallback('sensitive_paths');
+      if (touchesSensitivePaths(request.descriptor.paths)) return fallback('sensitive_paths');
       // A summary that cannot be built (an unknown subject class) is not sent; the policy fallback applies.
       let summary: string;
       try {

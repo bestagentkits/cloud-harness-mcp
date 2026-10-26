@@ -155,10 +155,8 @@ describe('agent policy renderers', () => {
     expect(consulted).toContain('dec_123');
     expect(advised({ effect: 'escalate', decisionId: 'dec_9', fallbackReason: 'rate_limited', fallback: 'deny' })).toContain('Jev not consulted (rate limited), falls back to Deny');
     expect(advised({ fallbackReason: 'unconfigured', fallback: 'require_approval' })).toContain('Jev not consulted (no TypeSafe key)');
-    // A CI or dependency change always waits for a human, so the deny fallback is not shown for it.
-    const sensitive = advised({ effect: 'escalate', fallbackReason: 'sensitive_paths', fallback: 'deny' });
-    expect(sensitive).toContain('Jev not consulted (CI or dependency files always need approval)');
-    expect(sensitive).not.toContain('falls back to');
+    // A CI or dependency change is never sent to Jev, and the policy fallback then applies as usual.
+    expect(advised({ effect: 'escalate', fallbackReason: 'sensitive_paths', fallback: 'deny' })).toContain('Jev not consulted (CI or dependency files are never sent to Jev), falls back to Deny');
     expect(advised({})).toContain('Required before the action runs');
     expect(renderPolicyDecision(decision('ALLOW'))).toContain('<dt>Advisor</dt><dd>Not required</dd>');
   });

@@ -24,18 +24,10 @@ import { traceInputDigest } from '../agent-trace-recorder.js';
 import { CodingActionStore, type CodingActionRecord } from './action-store.js';
 import type { AgentPolicyService } from './policy-service.js';
 import { AGENT_GOVERNANCE_PORTS_VERSION, type ActionBroker } from './ports.js';
+import { PACKAGE_MANIFESTS } from './sensitive-paths.js';
 
 /** Token shape the policy command scope uses; anything else is shell syntax the gate cannot analyze. */
 const PLAIN_COMMAND = /^[A-Za-z0-9._:@/=+-]+(?: [A-Za-z0-9._:@/=+-]+)*$/u;
-
-/**
- * Dependency manifests and lockfiles. Changing one changes what an install would fetch, so an edit that
- * touches one is a `package_install` action, which the default policy denies.
- */
-const PACKAGE_MANIFESTS = new Set([
-  'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'pnpm-workspace.yaml',
-  '.npmrc', '.yarnrc', '.yarnrc.yml', 'bun.lock', 'bun.lockb'
-]);
 
 const EDIT_OPERATIONS = new Set<AgentProxyOperation>(['files_write', 'files_apply_patch', 'files_move', 'files_mkdir', 'files_delete']);
 const BROKERED_ONLY = new Set<AgentProxyOperation>(BROKERED_ONLY_PROXY_OPERATIONS);

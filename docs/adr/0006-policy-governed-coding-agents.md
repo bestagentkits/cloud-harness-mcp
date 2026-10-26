@@ -104,9 +104,9 @@ outcome into `DENY`. An action that touches a CI/workflow file or a dependency
 manifest or lockfile is never put to the model: measured against the real Jev
 model, those changes were rated low risk, yet a CI change runs later with the
 repository's secrets and a dependency change is a supply-chain change. The
-advisor escalates them locally with no egress (`sensitive_paths`), and the gate
-holds them at `REQUIRE_APPROVAL` whatever the fallback mode, since the owner can
-still approve them. The decision records the advisor's decision id, risk and
+advisor escalates them locally with no egress (`sensitive_paths`), and the
+fallback mode applies as for any unanswered action, so `deny` still wins over
+approval. The decision records the advisor's decision id, risk and
 confidence, and carries the policy's confidence floor so `combineAdvisor`
 enforces it whatever advisor answered. The advisor receives the evaluator's
 subject (the class whose rule produced the pending decision, and whether the

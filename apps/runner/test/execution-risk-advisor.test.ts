@@ -15,7 +15,8 @@ import { AgentPolicyError, AgentPolicyService } from '../src/agent-governance/po
 import type { GateSubject } from '../src/agent-governance/gate-evaluator.js';
 import type { AdvisorFacts } from '../src/agent-governance/ports.js';
 import { DECISION_RATE_LIMIT_PER_MINUTE } from '../src/decision-plane/decision-plane.js';
-import { ExecutionRiskAdvisor, advisorFallbackReason, executionRiskState, touchesSensitivePaths } from '../src/decision-plane/execution-risk-advisor.js';
+import { touchesSensitivePaths } from '../src/agent-governance/sensitive-paths.js';
+import { ExecutionRiskAdvisor, advisorFallbackReason, executionRiskState } from '../src/decision-plane/execution-risk-advisor.js';
 import { JevDecisionProvider } from '../src/decision-plane/jev-provider.js';
 import { createRunnerDecisionPlane } from '../src/decision-plane/runner-decision-plane.js';
 import { FakeJevProvider, fakeJevPlane, type FakeJevStep } from './support/fake-jev-provider.js';
@@ -421,7 +422,7 @@ describe('execution-risk golden fixtures', () => {
   });
 });
 
-describe('execution-risk advisor: CI and dependency changes always go to a human', () => {
+describe('execution-risk advisor: CI and dependency changes are never put to the model', () => {
   // A maximally reassuring answer, which the advisor must never get the chance to read.
   const reassuring: FakeJevStep = { kind: 'risk', risk: 0, confidence: 1, uncertainSideEffects: 0, humanRequired: 0 };
 
@@ -435,7 +436,14 @@ describe('execution-risk advisor: CI and dependency changes always go to a human
     ['a manifest in a subdirectory', ['sub/package.json']],
     ['a lockfile among source edits', ['src/a.ts', 'services/api/poetry.lock']],
     ['a Go module file with odd casing and dot segments', ['.//./tools/GO.MOD']],
-    ['a workflow behind dot segments', ['.//./.github/workflows/ci.yml']]
+    ['a workflow behind dot segments', ['.//./.github/workflows/ci.yml']],
+    ['an npm registry config', ['.npmrc']],
+    ['a Bun lockfile', ['bun.lock']],
+    ['a pinned Python requirements file', ['requirements-dev.txt']],
+    ['a .NET project file', ['src/App/App.csproj']],
+    ['an Azure Pipelines config', ['azure-pipelines.yml']],
+    ['a Jenkinsfile', ['Jenkinsfile']],
+    ['a Gitea workflow', ['.gitea/workflows/ci.yml']]
   ] as const)('escalates %s with zero egress and REQUIRE_APPROVAL', async (_label, paths) => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     const { decide, provider, traces } = setup({ steps: reassuring });
@@ -450,11 +458,20 @@ describe('execution-risk advisor: CI and dependency changes always go to a human
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('holds a sensitive change for approval even when the policy fallback is deny', async () => {
+  it('applies the policy deny fallback to a sensitive change, like any unanswered action', async () => {
     const { decide, provider } = setup({ steps: reassuring, global: policy({ ...ADVISOR, fallback: 'deny' }) });
     const decision = await decide(action({ actionClass: 'edit', paths: ['.github/workflows/ci.yml'] }));
-    expect(decision).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_ESCALATED', advisor: { fallbackReason: 'sensitive_paths', fallback: 'deny' } });
+    expect(decision).toMatchObject({ decision: 'DENY', reasonCode: 'ADVISOR_FALLBACK_DENY', advisor: { fallbackReason: 'sensitive_paths', fallback: 'deny' } });
     expect(provider.calls).toBe(0);
+  });
+
+  it('leaves a sensitive change to the owner when the policy turns the advisor off, and sends nothing', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const { decide, provider } = setup({ steps: reassuring, global: policy({ ...ADVISOR, enabled: false, fallback: 'deny' }) });
+    const decision = await decide(action({ actionClass: 'edit', paths: ['package.json'] }));
+    expect(decision).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_UNAVAILABLE', advisor: { consulted: false } });
+    expect(provider.calls).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('escalates every discretionary class that names a sensitive path, not only edits', async () => {
@@ -480,9 +497,9 @@ describe('execution-risk advisor: CI and dependency changes always go to a human
     const state = executionRiskState(action({ actionClass: 'edit', paths }), plain({ actionClass: 'edit' }));
     expect(state).toContain('dependency manifests or lockfiles touched: 2');
     expect(state).toContain('CI or workflow files touched: 2');
-    for (const path of paths.slice(0, 4)) expect(touchesSensitivePaths({ paths: [path] }), path).toBe(true);
-    expect(touchesSensitivePaths({ paths: ['src/a.ts'] })).toBe(false);
-    expect(touchesSensitivePaths({})).toBe(false);
+    for (const path of paths.slice(0, 4)) expect(touchesSensitivePaths([path]), path).toBe(true);
+    expect(touchesSensitivePaths(['src/a.ts'])).toBe(false);
+    expect(touchesSensitivePaths(undefined)).toBe(false);
   });
 });
 
