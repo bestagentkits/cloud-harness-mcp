@@ -4,6 +4,7 @@ import { chmod, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat,
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
+import { TextDecoder } from 'node:util';
 
 function getWorkspaceRoot() {
   const raw = process.env.HARNESS_WORKSPACE_ROOT || process.env.CH_WORKSPACE_ROOT || '/workspace';
@@ -867,6 +868,20 @@ async function hookEntries() {
 }
 
 
+const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
+
+/**
+ * Whether a file cannot round-trip through `files_read` text: a NUL byte or any invalid UTF-8
+ * sequence. `content` is decoded lossily (U+FFFD) while `sha256` covers the raw bytes, so writing
+ * such content back would pass the `expectedSha256` fence and corrupt the file. Judged on the whole
+ * file, never on the returned window, so a multi-byte character split at a window edge does not
+ * make a text file look binary.
+ */
+function isBinaryContent(buffer) {
+  if (buffer.includes(0)) return true;
+  try { strictUtf8.decode(buffer); return false; } catch { return true; }
+}
+
 const handlers = {
   async workspace_context(input) {
     const manifest = await scanWorkspaceContext(input);
@@ -903,6 +918,7 @@ const handlers = {
     const totalBytes = value.length;
     const fileSha = sha256(value);
     const fileTag = fileSha.slice(0, 16);
+    const binary = isBinaryContent(value);
 
     let offset = input.offset ?? 0;
     if (input.cursor !== undefined) {
@@ -925,7 +941,8 @@ const handlers = {
         sha256: fileSha,
         bytesReturned: end,
         totalBytes,
-        eof: !isTruncated
+        eof: !isTruncated,
+        binary
       }, isTruncated ? { truncated: true, cursor: `${end}:${fileTag}` } : { truncated: false });
     }
 
@@ -938,7 +955,8 @@ const handlers = {
       sha256: fileSha,
       bytesReturned: end - offset,
       totalBytes,
-      eof: !isTruncated
+      eof: !isTruncated,
+      binary
     }, isTruncated ? { truncated: true, cursor: `${end}:${fileTag}` } : { truncated: false });
   },
   async files_write(input) {

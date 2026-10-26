@@ -57,6 +57,22 @@ describe('Files tab open file', () => {
     expect(screen.queryByRole('button', { name: 'Save file' })).toBeNull();
   });
 
+  it('makes a binary read read-only with no save, while patch and delete stay available', async () => {
+    const request = renderFile({ bytesReturned: 16, totalBytes: 16, eof: true, binary: true });
+    const editor = await screen.findByLabelText('File content (read-only, binary)');
+    expect(editor).toHaveAttribute('readonly');
+    expect(screen.getByRole('status')).toHaveTextContent('This file is binary or not valid UTF-8 text');
+    expect(screen.queryByRole('button', { name: 'Save file' })).toBeNull();
+
+    const form = editor.closest('form');
+    if (!form) throw new Error('expected the editor form');
+    fireEvent.submit(form);
+    expect(writes(request, 'PUT')).toEqual([]);
+
+    expect(screen.getByRole('button', { name: 'Apply text patch' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete file' })).toBeEnabled();
+  });
+
   it('saves a whole-file read against the version it opened', async () => {
     const request = renderFile({ bytesReturned: 16, totalBytes: 16, eof: true });
     const editor = await screen.findByLabelText('File content');

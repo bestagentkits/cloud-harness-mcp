@@ -575,7 +575,8 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   }
   // `sha256` covers the whole file while `content` is one window of it, so `eof` and `totalBytes`
   // must reach the editor: without them a partial read looks like the full file and a save truncates it.
-  if (operation === 'files_read') return pick(data, ['path', 'content', 'sha256', 'bytesReturned', 'totalBytes', 'eof']);
+  // `binary` says `content` is a lossy decoding of the raw bytes `sha256` covers, so saving it corrupts the file.
+  if (operation === 'files_read') return pick(data, ['path', 'content', 'sha256', 'bytesReturned', 'totalBytes', 'eof', 'binary']);
   if (operation === 'files_write') return pick(data, ['path', 'bytes', 'sha256']);
   if (operation === 'files_apply_patch') return pick(data, ['path', 'sha256']);
   if (operation === 'files_delete') return pick(data, ['path', 'type']);

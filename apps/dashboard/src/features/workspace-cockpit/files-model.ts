@@ -10,8 +10,10 @@ export type FileListing = { path: string; entries: FileEntry[] };
 /**
  * One `files_read` result. `sha256` always covers the whole file while `content` may be only the
  * first window of it, so `whole` (the runner's `eof === true`) gates every whole-file save.
+ * `binary` (a NUL byte or invalid UTF-8) means `content` is a lossy decoding of the bytes `sha256`
+ * covers, so a save would pass the fence and corrupt the file; it gates the save too.
  */
-export type FileContent = { path: string; content: string; sha256: string; whole: boolean; bytesReturned?: number; totalBytes?: number };
+export type FileContent = { path: string; content: string; sha256: string; whole: boolean; binary: boolean; bytesReturned?: number; totalBytes?: number };
 
 export const WORKSPACE_ROOT = '.';
 
@@ -36,9 +38,23 @@ export function fileOf(data: unknown): FileContent | undefined {
     sha256: record.sha256,
     // Anything but an explicit `eof: true` is a partial read: saving it would truncate the file.
     whole: record.eof === true,
+    // Only an explicit `binary: true` blocks the save. An older runner omits the field, and failing
+    // closed on it would make every file read-only, so a missing field keeps the prior behaviour.
+    binary: record.binary === true,
     ...(bytesReturned !== undefined ? { bytesReturned } : {}),
     ...(totalBytes !== undefined ? { totalBytes } : {})
   };
+}
+
+/** Whether the editor may save `content` back as the whole file. */
+export function isSavable(file: FileContent): boolean {
+  return file.whole && !file.binary;
+}
+
+/** Why a binary read cannot be saved (the legacy notice), or nothing for a text file. */
+export function binaryReadNotice(file: FileContent): string | undefined {
+  if (!file.binary) return undefined;
+  return 'This file is binary or not valid UTF-8 text, so the editor shows a lossy preview. Saving it is turned off so the file is not corrupted.';
 }
 
 /** Why a partial read cannot be saved whole (the legacy notice), or nothing for a whole file. */

@@ -417,6 +417,22 @@ describe('repository explorer and scope controls', () => {
     expect(renderFile(workspaceId, { path: 'big.txt', content: 'x', sha256: 'a' })).toContain('The runner did not confirm this is the whole file.');
   });
 
+  it('turns save off when the runner reports a binary file, even when the read is whole', () => {
+    const binary = renderFile(workspaceId, { path: 'logo.png', content: '\uFFFDPNG', sha256: 'a', bytesReturned: 4, totalBytes: 4, eof: true, binary: true });
+    expect(binary).not.toContain('Save file');
+    expect(binary).toContain('(read-only, binary)');
+    expect(binary).toContain('readonly aria-describedby="file-binary-notice"');
+    expect(binary).toContain('id="file-binary-notice"');
+    expect(binary).toContain('id="patch-form"');
+    expect(binary).toContain('id="delete-file"');
+    // An older runner omits `binary`; only an explicit `true` blocks the save.
+    for (const extra of [{}, { binary: false }]) {
+      const text = renderFile(workspaceId, { path: 'README.md', content: 'hi', sha256: 'a', bytesReturned: 2, totalBytes: 2, eof: true, ...extra });
+      expect(text).toContain('<button type="submit">Save file</button>');
+      expect(text).not.toContain('file-binary-notice');
+    }
+  });
+
   it('keeps single-repository tab, file and terminal markup byte-identical', () => {
     const tabs = renderWorkspaceTabs(workspaceId, 'git');
     expect(tabs).not.toContain('repository=');

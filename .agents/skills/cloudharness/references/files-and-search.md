@@ -27,8 +27,12 @@ Read a byte range from one file.
 - Input: `workspaceId`, `path`; `offset` defaults to 0; `limit` defaults to
   65,536 bytes and permits 1–1,048,576. `readAll: true` returns up to
   1,048,576 bytes in one call.
-- Returns text `content`, `bytesReturned`, the file's `totalBytes`, `eof`, and
-  the lowercase `sha256` of the whole file, not of the returned window.
+- Returns text `content`, `bytesReturned`, the file's `totalBytes`, `eof`,
+  `binary`, and the lowercase `sha256` of the whole file, not of the returned
+  window.
+- `binary: true` means the file holds a NUL byte or invalid UTF-8, so `content`
+  is a lossy decoding (U+FFFD). Never write it back with `files_write`: the hash
+  still matches and the file is corrupted.
 - When truncated (`eof` is false), use the returned byte-offset cursor with the
   next call's `offset`. Text characters can occupy multiple bytes, so do not
   derive the next offset from the displayed character count.

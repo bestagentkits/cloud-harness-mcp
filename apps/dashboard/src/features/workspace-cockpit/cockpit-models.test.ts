@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError, ConflictError } from '@/lib/api-client';
 import { deploymentsOf, groupHooksByLifecycle, hookRunBody, hooksOf, parseDeployDraft, runResultOf, SCRIPT_PATTERN, skillRunFailure, skillsOf } from './automation-model';
-import { fileOf, joinPath, listingOf, parentPath, partialReadNotice, pathCrumbs, patchCopyText } from './files-model';
+import { binaryReadNotice, fileOf, isSavable, joinPath, listingOf, parentPath, partialReadNotice, pathCrumbs, patchCopyText } from './files-model';
 import { gitActionBody, gitCommitsOf, gitStatusOf, worktreesOf } from './git-model';
 import { NODE_WIDTH, taskGraphLayout, taskGraphOf } from './task-graph-model';
 
@@ -15,7 +15,7 @@ describe('files model', () => {
   });
 
   it('reads a file only with its path, content and digest', () => {
-    expect(fileOf({ path: 'a', content: 'x', sha256: SHA, bytesReturned: 1, totalBytes: 1, eof: true })).toEqual({ path: 'a', content: 'x', sha256: SHA, whole: true, bytesReturned: 1, totalBytes: 1 });
+    expect(fileOf({ path: 'a', content: 'x', sha256: SHA, bytesReturned: 1, totalBytes: 1, eof: true })).toEqual({ path: 'a', content: 'x', sha256: SHA, whole: true, binary: false, bytesReturned: 1, totalBytes: 1 });
     expect(fileOf({ path: 'a', content: 'x' })).toBeUndefined();
   });
 
@@ -33,6 +33,23 @@ describe('files model', () => {
     expect(partialReadNotice(partial)).toMatch(/^Showing the first 64 KB of 195 KB\. Saving the whole file is turned off/);
     expect(partialReadNotice(read({}))).toMatch(/^The runner did not confirm this is the whole file\./);
     expect(partialReadNotice(read({ eof: true }))).toBeUndefined();
+  });
+
+  it('blocks a save only when the runner reports the file as binary', () => {
+    // A binary file's content is a lossy decoding, so a save would pass the fence and corrupt it.
+    const read = (extra: Record<string, unknown>) => {
+      const file = fileOf({ path: 'a', content: 'x', sha256: SHA, eof: true, ...extra });
+      if (!file) throw new Error('expected a file');
+      return file;
+    };
+    expect(isSavable(read({ binary: true }))).toBe(false);
+    expect(binaryReadNotice(read({ binary: true }))).toMatch(/^This file is binary or not valid UTF-8 text/);
+    // An older runner omits the field: the prior eof-only behaviour stays.
+    for (const extra of [{}, { binary: false }, { binary: 'true' }]) {
+      expect(isSavable(read(extra))).toBe(true);
+      expect(binaryReadNotice(read(extra))).toBeUndefined();
+    }
+    expect(isSavable(read({ eof: false }))).toBe(false);
   });
 
   it('joins, climbs and breaks paths the way the classic tab does', () => {
