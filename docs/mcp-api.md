@@ -659,11 +659,17 @@ Decisions that are easy to misread:
   notification enters the principal's inbox (see
   [notification inbox](#notification-inbox)), with an optional `kind` filter.
   Its payload is the notification id, kind, subject type and id, a bounded,
-  redacted title, a relative Dashboard link, and the creation time. It is
+  redacted title, a relative Dashboard link, the optional related `links`
+  described under [notification inbox](#notification-inbox), and the creation
+  time. It is
   feature-flagged: it fires only while the operator sets
   `NOTIFICATIONS_ENABLED=true` and the principal's MCP Events preference for
   that kind is on. Turning the flag off (the rollback) stops new events;
   existing subscriptions stay listed and simply receive nothing.
+- **Payloads only grow.** An event payload may gain optional fields in a later
+  release without a new event name, so a consumer must ignore fields it does
+  not know rather than reject the payload. The optional `links` object of
+  `cloudharness.notification.created` is such an addition.
 - **Payloads are notifications, not results.** They carry identifiers, status,
   exit or error codes, and timestamps only, never command text, output,
   prompts, or messages. Read the result with `tasks_status` or `agent_status`
@@ -731,7 +737,21 @@ the owner's inbox in the same savepoint as the transition. With
 `AGENT_APPROVALS_ENABLED=true`, a coding run that starts waiting for an owner
 approval writes `workflow.waiting_for_human`, and the approval's decision or
 expiry writes `approval.decided`. A notification is deduplicated per principal, subject, and
-transition, so a replayed transition never notifies twice. The inbox copy is
+transition, so a replayed transition never notifies twice.
+
+The `link` of an automation notification is always its Dashboard run page. An
+automation's terminal notification may add a `links` object with only the
+entries the run has: `source`, the issue or pull request page that started it;
+`trace`, the Dashboard page of its agent's trace; and `pullRequest`, the pull
+request a coding run opened. `source` is linked only for GitHub, Linear and
+Jira, whose normalizers pin the URL's host; a custom webhook's URL is never
+linked. `pullRequest` is linked only when the URL the runner received from
+GitHub is exactly that number's page in the rule's repository. Every external
+link must be a canonical `https` URL with no user info, query or fragment, so a
+link never carries a credential or points at a host the sender chose; the
+field is absent when there is nothing to add.
+
+The inbox copy is
 always recorded; the owner chooses per kind whether it is also delivered as the
 `cloudharness.notification.created` MCP event and whether the GitHub column
 mirrors the automation's own result comment. The harness adds no new egress:

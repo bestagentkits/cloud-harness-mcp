@@ -35,9 +35,9 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `AGENT_APPROVALS_ENABLED` | `false` | Optional | Owner approval of held coding steps (runner): a step the policy requires approval for waits as WAITING_FOR_HUMAN for one Dashboard decision. Off by default: such a step fails as ACTION_DENIED:APPROVALS_DISABLED, and turning it off fails runs that are still waiting. |
 | `AGENT_APPROVAL_TTL_MINUTES` | `60` | Optional | Longest wait for a decision, in minutes (1-10080); the policy's approval TTL and the workspace lease can shorten it. |
 | `AGENT_TRACES_ENABLED` | `false` | Optional | Optional durable agent run traces (runner). Off by default. Traces store timings, tokens, cost, outcomes and digests, never prompts, model output or raw tool arguments. |
-| `AGENT_TRACE_RETENTION_DAYS` | `14` | Optional | Days a finished trace is kept before the retention purge removes it (1-90). |
+| `AGENT_TRACE_RETENTION_DAYS` | `14` | Optional | Days a finished trace is kept, counted from its latest span, before the retention purge removes it (1-90). A trace whose automation workflow is still waiting for an approval is kept, and stays readable, until the workflow ends. |
 | `AGENT_TRACE_MAX_SPANS` | `2000` | Optional | Spans kept per trace; further spans are dropped behind one truncation marker (16-10000). |
-| `AGENT_TRACE_MAX_PER_PRINCIPAL` | `5000` | Optional | Traces kept per principal; the oldest finished traces are removed first (10-100000). |
+| `AGENT_TRACE_MAX_PER_PRINCIPAL` | `5000` | Optional | Traces kept per principal; the oldest finished traces are removed first, never one whose automation workflow has not ended (10-100000). |
 | `AGENT_TRACE_PREVIEW_BYTES` | `0` | Optional | Bytes of redacted tool-input preview stored per tool span; 0 stores digests only (0-512). |
 | `AGENT_GLOBAL_ACTIVE` | `16` | Optional | Subagent runtime limits (runner). Compose already sets AGENT_IMAGE, AGENT_GATEWAY_URL and AGENT_PROFILES_FILE; elsewhere, setting any AGENT_* limit below also requires those, or the runner refuses to start. Active agents at once across the instance (1-1000); workspace <= principal <= global. |
 | `AGENT_PRINCIPAL_ACTIVE` | `8` | Optional | Active agents at once per principal (1-1000). |
@@ -63,7 +63,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `AGENT_CLEANUP_RETRY_MAX_DELAY_MS` | `3600000` | Optional | Longest backoff between agent cleanup retries, in milliseconds (1-86400000). |
 | `AGENT_RETENTION_SECONDS` | `604800` | Optional | Seconds a closed workspace keeps full agent records after its last agent ended; then they are compacted to tombstones (1-31536000, default 7 days). Cannot exceed AGENT_LOOKUP_HORIZON_SECONDS. Applied on every maintenance pass, so a shorter value also compacts older closed workspaces. |
 | `AGENT_LOOKUP_HORIZON_SECONDS` | `2592000` | Optional | Seconds after an agent ended that its compacted tombstone still answers agent_status; then it is purged (1-31536000, default 30 days). The expiry is fixed when a tombstone is written, so changing this affects only workspaces compacted afterwards. |
-| `NOTIFICATIONS_ENABLED` | `false` | Optional | Optional notification inbox (runner): Dashboard Inbox, per-channel preferences and the cloudharness.notification.created MCP event. Off by default. Notifications carry ids, short titles and Dashboard links only. |
+| `NOTIFICATIONS_ENABLED` | `false` | Optional | Optional notification inbox (runner): Dashboard Inbox, per-channel preferences and the cloudharness.notification.created MCP event. Off by default. Notifications carry ids, short titles and links only: Dashboard pages, plus a finished run's GitHub, Linear or Jira source page and the pull request a coding run opened (never a custom webhook's URL). |
 | `ACCESS_LEGACY_OWNER_ID` | `owner` | Optional | Exact one-time legacy owner binding for the first Access rollout: |
 | `ACCESS_LEGACY_ISSUER` | `https://your-team.cloudflareaccess.com` | Optional | Optional configuration. |
 | `ACCESS_LEGACY_SUBJECT` | `—` | Optional | Optional configuration. |

@@ -74,7 +74,7 @@ read.
 
 `PURE_GATE_EVALUATOR`, a frozen instance of the `GateEvaluator` port, wraps
 that function. The Dashboard simulation and the execution entry point
-(`AgentPolicyService.evaluate`, which the coding broker will call) both use it,
+(`AgentPolicyService.decide`, which the coding broker calls) both use it,
 with the same resolver and the same advisor-availability setting, so a preview
 cannot drift from the decision execution starts from. The only difference is
 the advisor's answer, which exists only at execution time: a simulation shows
@@ -155,9 +155,9 @@ editor. No MCP tool is added.
 
 - Every governed action has one auditable decision with the revisions it used.
 - The owner can test a draft against real actions before saving it.
-- This release ships the policy store, the evaluator and the simulation; it
-  does not enforce anything on a running agent. Enforcement arrives with the
-  coding broker and reuses this resolver and evaluator unchanged.
+- The policy store, the evaluator and the simulation shipped first; the coding
+  broker added enforcement later and reuses this resolver and evaluator
+  unchanged (see the implementation notes below).
 - Command analysis for platform invariants is static and has two outcomes. A
   container runtime or privilege tool in program position denies, because a
   platform deny cannot be approved. The gate analyses argv only and never parses

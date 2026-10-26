@@ -1127,7 +1127,9 @@ the owner has stored a TypeSafe integration key.
   `failure-classification`: the action name, exit code, network profile, and a
   tail of the stderr and stdout. For `execution-risk`: a typed summary of the
   action (its class, counts of touched, test, manifest, CI and hidden paths, a
-  command category with its argument count and a short digest, whether the
+  command category with its argument count and a short digest (the first 16 hex
+  characters of an unsalted SHA-256 of the argv, so it is deterministic and a
+  guessed low-entropy command can be confirmed against it), whether the
   command runs `git push`, whether a branch or network host is named, the
   package ecosystem from a fixed list (anything else is `other`), diff size
   and test result). Paths, arguments, branch, repository and package names and the
@@ -1155,11 +1157,12 @@ the owner has stored a TypeSafe integration key.
 
 Coding-agent execution policies are owner-authored
 ([ADR 0006](adr/0006-policy-governed-coding-agents.md)) and sit behind
-`AGENT_POLICIES_ENABLED`. This release ships the policy store, the gate
-evaluator and the Dashboard simulation. It does not yet enforce anything on a
-running agent: action enforcement arrives with the coding broker, which calls
-the same evaluator through the `GateEvaluator` port. Until then a saved policy
-changes simulation results only.
+`AGENT_POLICIES_ENABLED`. The policy store, the gate evaluator and the
+Dashboard simulation sit behind that flag. Enforcement is the coding broker
+(`AGENT_CODING_ENABLED`, see [Coding automations](#coding-automations)), which
+calls the same evaluator through the `GateEvaluator` port for every action of
+a coding run. Agents outside a coding run are not governed by a policy, so
+there a saved policy changes simulation results only.
 
 - **One authority.** Only the owner writes policy, through owner-authenticated
   Dashboard routes with the usual Origin and CSRF checks. The principal comes
@@ -1172,7 +1175,7 @@ changes simulation results only.
   field. A project can choose a class's effect only where the owner marked the
   class delegable. A policy for a project that no longer exists denies every
   action bound to it, and its effective-policy preview is empty.
-- **One pure gate.** The simulation and the future broker use one frozen
+- **One pure gate.** The simulation and the coding broker use one frozen
   evaluator instance and the same resolved snapshot and advisor availability,
   so a simulation returns what execution will start from. The one difference
   is the advisor: a discretionary action shows as pending (`ADVISOR_REQUIRED`,
@@ -1202,9 +1205,12 @@ changes simulation results only.
   floor, so no advisor implementation can clear an action with a `no_change`
   below it. Jev is told the class the gate judged (`publish_branch` for a
   declared class whose command runs `git push`), never only the declared one.
-  The execution-time call (`AgentPolicyService.decide`) is consulted by the
-  coding broker, which ships later; until then nothing calls Jev for an agent
-  action.
+  The coding broker makes the execution-time call (`AgentPolicyService.decide`)
+  for a coding run's actions (a lockfile install runs only on a plain `ALLOW`
+  and never consults the advisor), so with the three opt-ins each qualifying
+  action sends TypeSafe the redacted, runner-computed `execution-risk` summary
+  listed under [what leaves the runner](#decision-plane); when redaction cannot
+  complete nothing is sent and the fallback applies.
 - **Platform invariants have two outcomes.** Credential and Docker access,
   network escalation, paths outside the workspace and privilege escalation
   deny before any policy is read. A command is an argv run through execve,
@@ -1359,10 +1365,26 @@ the owner; the harness opens no egress to a trace collector.
 Notifications are off unless the operator sets `NOTIFICATIONS_ENABLED`. A
 notification stores identifiers, its kind, a title bounded to 160 characters
 and passed through the trace redaction (token- and key-shaped strings are
-replaced, control and format characters removed), and a relative `/dashboard`
-link; never prompts, agent output, issue bodies, or credentials. The contract
-refuses any other link, and the Dashboard follows a link only when it is such a
-path, so a notification cannot become an off-site redirect. Inbox reads and
+replaced, control and format characters removed), a primary relative
+`/dashboard` link, and optional related `links`; never prompts, agent output,
+issue bodies, or credentials. The primary link and the `trace` link must be
+relative `/dashboard` paths without dot segments. A finished automation may add
+two external links, and nothing else can:
+
+- `pullRequest`, only when the URL the runner recorded from GitHub's answer to
+  its own pull request call is exactly
+  `https://github.com/<rule repository>/pull/<number>`.
+- `source`, the page of the issue or pull request that started the run, only
+  for providers that pin that URL's host when the delivery is normalized:
+  GitHub (checked against the repository), Linear (`https://linear.app/`) and
+  Jira (built from the connection's site). A custom webhook's URL is chosen by
+  its sender, so it is never linked, and a workflow whose recorded provider
+  disagrees with its connection gets no source link.
+
+Both are re-checked by the contract and again by the Dashboard: a canonical
+`https` URL with no user info, query or fragment, at most 300 characters. A
+webhook sender, an agent or an issue author therefore cannot steer a
+notification to an arbitrary host or put a credential in a link. Inbox reads and
 writes are scoped to the session principal, and marking another principal's
 notification is reported as not found and changes nothing. Delivery adds no
 egress: the MCP Events channel uses the existing webhook sender and its callback

@@ -4,8 +4,9 @@ import { RunnerPrincipalSelectorSchema } from './runner-api.js';
 /**
  * Notification inbox contract. A notification is one logical record per (principal, subject,
  * transition), written in the same savepoint as the transition that caused it. It carries
- * identifiers, a bounded redacted title and a relative Dashboard link only: never prompts, output,
- * command text or credentials. Delivery to each channel is tracked separately.
+ * identifiers, a bounded redacted title, a relative Dashboard link and, when the subject has them,
+ * deep links the runner stored or validated itself: never prompts, output, command text or
+ * credentials. Delivery to each channel is tracked separately.
  */
 
 export const NOTIFICATION_KINDS = [
@@ -50,6 +51,34 @@ export const NotificationIdSchema = z.string().regex(/^ntf_[a-f0-9]{32}$/u);
 export const NotificationLinkSchema = z.string().max(NOTIFICATION_LIMITS.maxLinkChars)
   .regex(/^\/dashboard(?:\/[A-Za-z0-9._~-]+)*\/?$/u, 'link must be a relative /dashboard path')
   .refine((link) => !link.split('/').some((segment) => segment === '.' || segment === '..'), 'link must not contain dot segments');
+
+/**
+ * An off-site link the runner stored or validated itself (such as a GitHub issue or pull request page).
+ * It must be a canonical https URL with no user info, query or fragment, so it can never carry a
+ * credential or a token parameter.
+ */
+export const NotificationExternalLinkSchema = z.string().max(NOTIFICATION_LIMITS.maxLinkChars)
+  // The pattern publishes the https rule in the JSON schema; the refinement holds the full check.
+  .regex(/^https:\/\/[^\s?#@]+$/u, 'link must be an https URL without credentials, query or fragment')
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      return url.protocol === 'https:' && url.username === '' && url.password === '' && url.search === '' && url.hash === '' && url.href === value;
+    } catch {
+      return false;
+    }
+  }, 'link must be a canonical https URL without credentials, query or fragment');
+
+/**
+ * Deep links beside the primary `link`, present only when the subject has them: the issue or pull
+ * request that started an automation run (`source`), the trace of its agent (`trace`, a relative
+ * Dashboard path) and the pull request a coding run opened (`pullRequest`).
+ */
+export const NotificationRelatedLinksSchema = z.object({
+  source: NotificationExternalLinkSchema.optional(),
+  trace: NotificationLinkSchema.optional(),
+  pullRequest: NotificationExternalLinkSchema.optional()
+}).strict();
 const ErrorClassSchema = z.string().regex(/^[a-z0-9_]{1,40}$/u);
 const instant = z.string();
 
@@ -68,6 +97,7 @@ export const NotificationSummarySchema = z.object({
   subjectId: z.string().min(1).max(NOTIFICATION_LIMITS.maxSubjectIdChars),
   title: z.string().min(1).max(NOTIFICATION_LIMITS.maxTitleChars),
   link: NotificationLinkSchema.nullable(),
+  links: NotificationRelatedLinksSchema.optional(),
   createdAt: instant,
   readAt: instant.nullable(),
   deliveries: z.array(NotificationDeliverySchema).max(8)
@@ -87,6 +117,7 @@ export const NotificationCreatedPayloadSchema = z.object({
   subjectId: z.string().min(1).max(NOTIFICATION_LIMITS.maxSubjectIdChars),
   title: z.string().max(NOTIFICATION_LIMITS.maxTitleChars),
   link: NotificationLinkSchema.nullable(),
+  links: NotificationRelatedLinksSchema.optional(),
   createdAt: instant
 }).strict();
 
@@ -156,6 +187,7 @@ export type ConfigurableNotificationChannel = z.infer<typeof ConfigurableNotific
 export type NotificationDeliveryState = z.infer<typeof NotificationDeliveryStateSchema>;
 export type NotificationSubjectType = z.infer<typeof NotificationSubjectTypeSchema>;
 export type NotificationDelivery = z.infer<typeof NotificationDeliverySchema>;
+export type NotificationRelatedLinks = z.infer<typeof NotificationRelatedLinksSchema>;
 export type NotificationSummary = z.infer<typeof NotificationSummarySchema>;
 export type NotificationPreference = z.infer<typeof NotificationPreferenceSchema>;
 export type NotificationCreatedPayload = z.infer<typeof NotificationCreatedPayloadSchema>;

@@ -3,7 +3,9 @@ import {
   CONFIGURABLE_NOTIFICATION_CHANNELS,
   NOTIFICATION_KINDS,
   NotificationCreatedPayloadSchema,
+  NotificationExternalLinkSchema,
   NotificationLinkSchema,
+  NotificationRelatedLinksSchema,
   NotificationSummarySchema,
   NotificationsRunnerDataSchemas,
   NotificationsRunnerRequestSchema,
@@ -83,6 +85,29 @@ describe('notifications contract', () => {
     }
     expect(NotificationCreatedPayloadSchema.safeParse({ ...payload, subjectId: '' }).success).toBe(false);
     expect(NotificationCreatedPayloadSchema.safeParse({ ...payload, subjectId: 'x'.repeat(101) }).success).toBe(false);
+  });
+
+  it('accepts related links only as credential-free https pages and relative Dashboard paths', () => {
+    const payload = {
+      notificationId: ID, kind: 'automation.completed', subjectType: 'automation_workflow', subjectId: 'wfl_1', title: 'Automation completed',
+      link: '/dashboard/automations/runs/wfl_1', createdAt: '2026-10-20T00:00:00.000Z'
+    };
+    const links = {
+      source: 'https://github.com/acme/widgets/issues/7',
+      trace: '/dashboard/traces/trc_abcdefghijklmnopqrstuvwxyz',
+      pullRequest: 'https://github.com/acme/widgets/pull/12'
+    };
+    expect(NotificationCreatedPayloadSchema.safeParse({ ...payload, links }).success).toBe(true);
+    expect(NotificationCreatedPayloadSchema.safeParse({ ...payload, links: {} }).success).toBe(true);
+    expect(NotificationSummarySchema.safeParse({ ...payload, links, readAt: null, deliveries: [] }).success).toBe(true);
+    for (const value of [
+      'http://github.com/a/b/pull/1', 'https://user:token@github.com/a/b/pull/1', 'https://github.com/a/b/pull/1?token=x',
+      'https://github.com/a/b/pull/1#frag', 'https://GITHUB.com/a/b/pull/1', 'javascript:alert(1)', `https://github.com/${'a'.repeat(300)}`
+    ]) {
+      expect(NotificationExternalLinkSchema.safeParse(value).success, value).toBe(false);
+    }
+    expect(NotificationRelatedLinksSchema.safeParse({ trace: 'https://evil.example.com/' }).success).toBe(false);
+    expect(NotificationRelatedLinksSchema.safeParse({ other: '/dashboard' }).success).toBe(false);
   });
 
   it('defaults NOTIFICATIONS_ENABLED to off', () => {
