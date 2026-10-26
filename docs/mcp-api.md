@@ -714,6 +714,59 @@ ChatGPT subscription (see
   retention window; retries within 24 hours replay the cached result or reject
   payload mismatches with `CONFLICT`, after which the key expires and the request
   executes anew.
+- `github_repository_create` creates a repository owned by a GitHub
+  organization. It is not bound to a workspace (it takes no `workspaceId`), and
+  `workspace_open` never creates a repository: a clone `404` may mean the
+  repository is private or inaccessible. The input schema is
+  `GitHubRepositoryCreateInputSchema` in
+  [`packages/contracts/src/github-repository-schemas.ts`](../packages/contracts/src/github-repository-schemas.ts):
+  `owner`, `name`, `visibility` (`public` | `private`, required, no default),
+  optional `description`, `autoInit`, `gitignoreTemplate`, `licenseTemplate`,
+  and a required `idempotencyKey`. Owner and name follow GitHub naming rules
+  and are refused rather than rewritten. There is no `defaultBranch` input,
+  because GitHub's create API cannot set one; the result reports GitHub's
+  `defaultBranch`, and for an empty repository the first pushed branch becomes
+  the default. A template creates an initial commit, so it cannot be combined
+  with `autoInit: false`. The result `data` (`GitHubRepositoryCreateResultSchema`)
+  is `fullName`, the immutable numeric `repositoryId`, `htmlUrl`, `visibility`,
+  `defaultBranch`, `created`, and `replayed`.
+  - Authority: only the principal's GitHub App installation on that
+    organization, verified live before a token is minted. The installation must
+    be an organization account and grant `administration: write` (GitHub App
+    repository permission **Administration: Read and write**); write access to
+    existing repositories does not count. The token is narrowed to
+    `administration: write` and never leaves the runner. No `GH_TOKEN` or
+    `GITHUB_TOKEN` fallback is used. The executable owner is
+    [`apps/runner/src/github-repository-creator.ts`](../apps/runner/src/github-repository-creator.ts).
+  - Errors: `GITHUB_REPOSITORY_EXISTS` for a taken name (never success);
+    `GITHUB_PERMISSION_MISSING` with `requiredCapability:
+    github.administration:write` when the permission is missing (no create
+    request is sent) or the organization policy refuses; `NOT_FOUND` when no
+    installation for that organization is connected or it was removed;
+    `NOT_SUPPORTED` for a personal account, a harness without a GitHub App, or
+    local mode; `GITHUB_RATE_LIMITED` with `retryAfterMs` for primary and
+    secondary limits; `UNKNOWN_REMOTE_STATE` when the outcome could not be
+    recorded.
+  - Idempotency: the outcome is stored in the runner state database without
+    expiry. The same key and input replay the recorded result
+    (`created: false`, `replayed: true`) with no second GitHub call; the same
+    key with different input fails with `CONFLICT`. A definitive GitHub refusal
+    is not recorded, so the key can be retried after the cause is fixed. A
+    request whose outcome is unknown stays pending: a retry with the same key
+    that then finds the name taken reports `UNKNOWN_REMOTE_STATE`, not success.
+  - Discovery: `workspace_capabilities.githubRepositoryCreate`
+    (`GitHubRepositoryCreateCapabilitySchema`) reports `available`, the
+    `organizations` with their verified `administration` level, and a `reason`
+    when unavailable, without minting a token. Called without a `workspaceId`
+    while no workspace is active, `workspace_capabilities` returns only
+    `{ workspaceId: null, repository: null, githubRepositoryCreate }`
+    (`PrincipalCapabilityResultSchema`) instead of `NOT_FOUND`; an explicit
+    unknown `workspaceId` still returns `NOT_FOUND`. An installation verified
+    before this field existed reports `administration: null` until it is
+    re-verified; the create call always verifies live and refreshes it.
+  - Every attempt is audited as `github.repository_create` without tokens. The
+    tool is annotated destructive and not idempotent, so clients ask for
+    approval. The harness never deletes a repository it created.
 - Output pagination for tools such as `files_read`, `git_diff`, and `git_log` uses
   snapshot-bound continuation cursors. The cursor is bound to content hashes or commit
   signatures; if underlying files, index, or repository state change between calls,
@@ -928,7 +981,7 @@ When running Cloud Harness MCP over local stdio (`--transport stdio --workspace 
 1. **Pre-opened workspace:** The workspace is configured at process startup. Calling `workspace_open` returns `INVALID_INPUT` explaining that the workspace is already selected.
 2. **Lifecycle operations:** `workspace_list` lists the active local workspace. `workspace_status` and `workspace_capabilities` return structured repository and workspace capabilities (`mode: 'local'`, `gitNetwork`, `gitPush`, `sandboxed: false`, granular operations and permissions). `workspace_close` terminates owned child processes but **never deletes the local folder**.
 3. **Subprocess execution:** `exec_run`, `shell_*`, `sessions_*`, and `tasks_*` execute on the local host with the current user's permissions. Output is bounded by ring buffers and paginated with monotonic cursors.
-4. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action`, `exec_run.privileged=true`, and `bash` with `target: "toolbox"` return structured unsupported errors; `bash` with `target: "workspace"` behaves like `exec_run`.
+4. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action`, `github_repository_create` (`NOT_SUPPORTED`), `exec_run.privileged=true`, and `bash` with `target: "toolbox"` return structured unsupported errors; `bash` with `target: "workspace"` behaves like `exec_run`.
 5. **Filesystem operations:** File reading, writing, patching, deletion, and searching apply within the canonical workspace root. Traversal escapes are rejected.
 
 ### Local multi-workspace mode
@@ -999,7 +1052,9 @@ starting work. `capabilities.repository.issuesRead`/`issuesWrite` and
 `pullRequestsRead`/`pullRequestsWrite` are derived from the permissions the
 verified installation actually grants, not merely from an App being configured,
 and `capabilities.workspace.defaultNetworkProfile` reports the effective profile
-that `workspace_open` applies when it omits `networkProfile`. Unauthorized repository operations fail with `REPOSITORY_OPERATION_NOT_AUTHORIZED`
+that `workspace_open` applies when it omits `networkProfile`.
+`githubRepositoryCreate` reports principal-level repository-creation
+availability (see `github_repository_create` above). Unauthorized repository operations fail with `REPOSITORY_OPERATION_NOT_AUTHORIZED`
 identifying the missing capability. The broker and leak boundary are owned by
 [`apps/runner/src/github-app-broker.ts`](../apps/runner/src/github-app-broker.ts),
 [`apps/runner/test/git-transfer-leak.test.ts`](../apps/runner/test/git-transfer-leak.test.ts),

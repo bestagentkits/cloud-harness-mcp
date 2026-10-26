@@ -494,6 +494,30 @@ The merge-train actions follow the same model with their own GitHub permission: 
 
 The read-only `commit_list`, `compare`, `release_list`, `tag_list`, and `ref_get` actions mint a `contents: read`-scoped token directly (no `pull_requests`/`issues` scope needed) and are reachable through either `github_action` or the non-destructive `github_read` tool, which shares this broker and helper so read-only calls do not carry `github_action`'s tool-level destructive annotation.
 
+Repository creation (`github_repository_create`) is a separate, workspace-free
+tool, because the repository does not exist yet and `workspace_open` must never
+create one as a side effect of a clone failure. It creates organization-owned
+repositories only, through the requesting principal's own GitHub App
+installation on that organization (in `cloudflare-access` mode, never the
+operator-configured installation; in `owner-bearer` mode, the configured
+installation only after GitHub confirms it belongs to the requested
+organization). Before minting anything, the runner verifies the installation
+live with the App JWT: it must belong to the requested organization, be an
+`Organization` account, be unsuspended, and grant `administration: write`.
+Write access to an existing repository never counts. Only then does it mint an
+installation token narrowed to `administration: write` with no repository
+restriction, used in-process for one `POST /orgs/{org}/repos` call; it never
+reaches a container, a result, an error, or the audit record. No operator or
+principal fallback credential (`GH_TOKEN`, `GITHUB_TOKEN`) is ever used for
+creation. Personal accounts are refused (`NOT_SUPPORTED`) because installation
+tokens cannot create user-owned repositories. The harness never deletes a
+repository it created. Each attempt is audited as `github.repository_create`
+(principal, owner/name, visibility, repository ID, installation ID, success,
+error code). The executable owner is
+[`apps/runner/src/github-repository-creator.ts`](../apps/runner/src/github-repository-creator.ts),
+with evidence in
+[`apps/runner/test/github-repository-creator.test.ts`](../apps/runner/test/github-repository-creator.test.ts).
+
 All write mutations and token authorization denials emit auditable events (`github_action.<action>`) into `audit_events` recording principal, repository, target entity numbers, success status, and structured error codes without storing token secrets or unbounded request payloads. Helper execution failures are classified into structured, typed error codes (`GITHUB_RATE_LIMITED` with retryAfterMs, `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`, and the review/merge codes documented in `docs/mcp-api.md`) to provide deterministic machine-readable recovery semantics for autonomous agents.
 
 ### Three-zone storage and toolchain isolation

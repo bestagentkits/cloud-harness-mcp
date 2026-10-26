@@ -4,8 +4,19 @@ export type GitHubInstallationStatus = 'active' | 'suspended' | 'uninstalled';
 export type GitHubContentsPermission = 'read' | 'write';
 export type GitHubPermissionLevel = 'none' | 'read' | 'write';
 export type GitHubRepositoryGrantStatus = 'granted' | 'removed';
+export type GitHubAccountType = 'Organization' | 'User';
 
-export type GitHubInstallationRecord = {
+/**
+ * Installation facts that gate repository creation. They are absent on records verified before
+ * the runner tracked them, which reads as "not yet verified" rather than as a denial.
+ */
+export type GitHubInstallationOrganizationFacts = {
+  /** Installation permission `administration`, which GitHub requires to create repositories. */
+  administration?: GitHubPermissionLevel | undefined;
+  accountType?: GitHubAccountType | undefined;
+};
+
+export type GitHubInstallationRecord = GitHubInstallationOrganizationFacts & {
   principalId: string;
   appId: string;
   installationId: string;
@@ -33,7 +44,7 @@ export type GitHubRepositoryGrantRecord = {
   checkedAt: number;
 };
 
-export type VerifiedGitHubInstallation = {
+export type VerifiedGitHubInstallation = GitHubInstallationOrganizationFacts & {
   appId: string | number;
   installationId: string | number;
   accountId: string | number;
@@ -73,6 +84,14 @@ export interface GitHubInstallationStore {
   listInstallations(principalId: string): GitHubInstallationRecord[];
   getRepositoryGrant(principalId: string, owner: string, repository: string): GitHubRepositoryGrantRecord | undefined;
   listRepositoryGrants(principalId: string, installationId?: string | number): GitHubRepositoryGrantRecord[];
+}
+
+/** Copies only the organization facts that are known, so unverified records keep their shape. */
+export function organizationFacts(source: GitHubInstallationOrganizationFacts): GitHubInstallationOrganizationFacts {
+  return {
+    ...(source.administration !== undefined ? { administration: source.administration } : {}),
+    ...(source.accountType !== undefined ? { accountType: source.accountType } : {})
+  };
 }
 
 const repositoryKey = (principalId: string, owner: string, repository: string) =>
@@ -120,6 +139,7 @@ export class InMemoryGitHubInstallationStore implements GitHubInstallationStore 
       accountLogin: current.accountLogin,
       issues: current.issues,
       pullRequests: current.pullRequests,
+      ...organizationFacts(current),
       status: 'uninstalled',
       repositories: []
     }, checkedAt, audit);
@@ -188,6 +208,7 @@ export class InMemoryGitHubInstallationStore implements GitHubInstallationStore 
       accountLogin: verified.accountLogin,
       issues: verified.issues,
       pullRequests: verified.pullRequests,
+      ...organizationFacts(verified),
       status: verified.status,
       generation: (previous?.generation ?? 0) + 1,
       createdAt: previous?.createdAt ?? checkedAt,

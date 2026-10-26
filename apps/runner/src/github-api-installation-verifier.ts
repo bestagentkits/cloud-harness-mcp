@@ -6,8 +6,8 @@ import type { GitHubPermissionLevel, VerifiedGitHubInstallation } from './github
 
 type InstallationPayload = {
   id?: number; app_id?: number; suspended_at?: string | null;
-  account?: { id?: number; login?: string };
-  permissions?: { contents?: string; issues?: string; pull_requests?: string; [key: string]: string | undefined };
+  account?: { id?: number; login?: string; type?: string };
+  permissions?: { contents?: string; issues?: string; pull_requests?: string; administration?: string; [key: string]: string | undefined };
 };
 type RepositoriesPayload = {
   total_count?: number;
@@ -89,6 +89,8 @@ export class GitHubApiInstallationVerifier implements GitHubInstallationVerifier
       accountLogin: installation.account.login,
       issues: permissionLevel(installation.permissions?.issues),
       pullRequests: permissionLevel(installation.permissions?.pull_requests),
+      administration: permissionLevel(installation.permissions?.administration),
+      ...(installation.account.type === 'Organization' || installation.account.type === 'User' ? { accountType: installation.account.type } : {}),
       status: installation.suspended_at ? 'suspended' : 'active',
       repositories: repositories.map((repository) => {
         const permissions = repository.permissions;
@@ -183,7 +185,7 @@ export class GitHubApiInstallationVerifier implements GitHubInstallationVerifier
   }
 }
 
-function permissionLevel(granted: string | undefined): GitHubPermissionLevel {
+export function permissionLevel(granted: string | undefined): GitHubPermissionLevel {
   return granted === 'write' || granted === 'read' ? granted : 'none';
 }
 
