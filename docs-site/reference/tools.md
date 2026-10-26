@@ -1699,7 +1699,7 @@ Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container
 | `maxOutputTokens` | `integer` | No | range: 1–2000000, default: `32000` |
 | `maxCostMicros` | `integer` | No | range: 0–1000000000, default: `10000000` |
 | `repositoryContext` | `"codex"` \| `"claude"` \| `"cursor"` \| `"aider"` \| `"all"` \| `"none"` | No | Repository guidance profile placed before the task; omitted uses codex, none sends the task alone. |
-| `continueFrom` | `string` | No | A terminal agent of this workspace whose persisted session the new agent continues; needs session persistence on the instance. The new agent gets a new id, container, lease, and budget. (pattern: `^agent_[A-Za-z0-9_-]{20,80}$`) |
+| `continueFrom` | `string` | No | A terminal agent of this workspace whose session the new agent continues; a pi-coding agent needs session persistence on the instance, a pi-durable agent needs the durable runtime enabled. The new agent gets a new id, container, lease, and budget. (pattern: `^agent_[A-Za-z0-9_-]{20,80}$`) |
 | `runtime` | `"pi-coding"` \| `"pi-durable"` | No | Agent engine. Omitted means pi-coding, or the engine of the agent named by continueFrom; a continuation refuses a different engine. pi-durable is refused unless the instance enables it. |
 
 ### `agent_status`
