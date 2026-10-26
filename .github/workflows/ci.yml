@@ -24,7 +24,10 @@ jobs:
           node-version: 24.11.0
           cache: npm
       - run: npm ci
-      - run: bash -n worker/clone-helper.sh worker/task-runner.sh worker/shell-runner.sh worker/worker-runner.sh worker/gh-helper.sh deploy/scripts/bootstrap-vps.sh deploy/scripts/deploy-release.sh deploy/scripts/release-runtime.sh deploy/scripts/rollback-release.sh deploy/scripts/deploy-ssh-wrapper.sh deploy/scripts/upgrade-nginx-dashboard.sh deploy/scripts/setup-dependency-firewall.sh
+      # `bash -n a.sh b.sh` parses only a.sh (the rest become its arguments), so check each
+      # tracked script on its own; a new script is covered without editing this list.
+      - name: Syntax-check shell scripts
+        run: git ls-files -z '*.sh' | xargs -0 -n1 bash -n
       - run: npm run verify:compose
       - run: npm run verify
       - name: Verify documentation and reference integrity
