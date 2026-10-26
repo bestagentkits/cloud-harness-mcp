@@ -47,6 +47,8 @@ export interface GatewayRuntime {
 }
 
 function errorResponse(response: ServerResponse, status: number, code: string, message = code.replaceAll('_', ' '), type?: string): void {
+  // A stream the upstream already ended with its own in-band error stays as sent.
+  if (response.writableEnded) return;
   if (response.headersSent || response.destroyed) {
     response.destroy();
     return;

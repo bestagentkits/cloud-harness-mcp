@@ -48,6 +48,23 @@ async function resolveAddress(profile: GatewayProfile): Promise<{ address: strin
 }
 
 /**
+ * Ends a stream that crossed the output token cap with the gateway's own bound error, which
+ * both provider SDKs raise as an error carrying `model_bound_exceeded`. The leading blank
+ * lines close the event in flight so the error is its own event.
+ */
+const OUTPUT_BOUND_EVENT = Buffer.from(`\n\nevent: error\ndata: ${JSON.stringify({
+  type: 'error',
+  error: { code: 'model_bound_exceeded', type: 'model_bound_exceeded', message: 'model_bound_exceeded: model output bound exceeded' }
+})}\n\n`);
+
+function endsWithPrefixOf(bytes: Buffer, secret: Buffer): boolean {
+  for (let length = Math.min(bytes.byteLength, secret.byteLength - 1); length > 0; length -= 1) {
+    if (bytes.subarray(bytes.byteLength - length).equals(secret.subarray(0, length))) return true;
+  }
+  return false;
+}
+
+/**
  * Reads usage from one stream line. `malformed` marks a line that carries a
  * usage object the normaliser rejects.
  */
@@ -168,6 +185,15 @@ export async function startUpstreamRequest(options: {
         'x-content-type-options': 'nosniff',
         'x-model-gateway-request-id': requestId
       });
+      // Releases the checked bytes and the bound error event; a stream that is not SSE, or
+      // whose released bytes could disclose any part of the credential, is cut off instead.
+      const endWithOutputBound = (released: Buffer): void => {
+        if (contentType !== 'text/event-stream' || released.indexOf(credentialBytes) >= 0 || endsWithPrefixOf(released, credentialBytes)) {
+          downstream.destroy();
+          return;
+        }
+        downstream.end(Buffer.concat([released, OUTPUT_BOUND_EVENT]));
+      };
       response.on('data', (chunk: Buffer) => {
         if (settled) return;
         responseBytes += chunk.byteLength;
@@ -179,7 +205,10 @@ export async function startUpstreamRequest(options: {
         }
         pendingLine += chunk.toString('utf8');
         let newline = pendingLine.indexOf('\n');
+        let chunkLineEnd = 0;
         while (newline >= 0) {
+          // Every line ends at a newline byte in this chunk; a newline is never part of a UTF-8 sequence.
+          chunkLineEnd = chunk.indexOf(0x0a, chunkLineEnd) + 1;
           const line = pendingLine.slice(0, newline).replace(/\r$/u, '');
           pendingLine = pendingLine.slice(newline + 1);
           if (Buffer.byteLength(line) > profile.limits.maxStreamLineBytes) {
@@ -194,8 +223,12 @@ export async function startUpstreamRequest(options: {
           if (lineUsage && lineUsage.outputTokens > maxOutputTokens) {
             exceededUsage = lineUsage;
             abortReason = 'provider output token limit exceeded';
+            // Settle now: the upstream body may already have ended in this same read, and its
+            // 'end' handler must not end the downstream a second time.
+            settled = true;
             upstream?.destroy(new Error(abortReason));
-            downstream.destroy();
+            endWithOutputBound(Buffer.concat([outboundPending, chunk.subarray(0, chunkLineEnd)]));
+            reject(failure(abortReason));
             return;
           }
           recordUsage(lineResult);
@@ -232,7 +265,7 @@ export async function startUpstreamRequest(options: {
             exceededUsage = finalUsage;
             abortReason = 'provider output token limit exceeded';
             settled = true;
-            downstream.destroy();
+            endWithOutputBound(outboundPending);
             reject(failure(abortReason));
             return;
           }
