@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { QueryClient } from '@tanstack/react-query';
 import { createMemoryHistory, notFound } from '@tanstack/react-router';
 import { describe, expect, it } from 'vitest';
-import { DASHBOARD_PAGES, documentTitle, navGroups, navOwner, PAGE_IDS, pageById, resolveReadPath } from './page-registry';
+import { DASHBOARD_PAGES, documentTitle, LEGACY_ONLY_PAGE_IDS, navGroups, navOwner, PAGE_IDS, pageById, resolveReadPath } from './page-registry';
 import { resolveCurrentPage } from './route-identity';
 import { createAppRouter } from './router';
 
@@ -21,11 +21,20 @@ describe('page registry', () => {
 
   it('matches the classic Dashboard registry for every shared page', () => {
     for (const old of legacy.DASHBOARD_PAGES) {
+      if (LEGACY_ONLY_PAGE_IDS.includes(old.id)) continue;
       const page = pageById(old.id as never);
       expect(page, old.id).toBeDefined();
       expect({ label: page.label, title: page.title, group: page.group, nav: page.nav }, old.id).toEqual({
         label: old.label, title: old.title, group: old.group, nav: old.nav !== false
       });
+    }
+  });
+
+  it('lists only classic pages without a React page as legacy-only', () => {
+    const legacyIds = new Set(legacy.DASHBOARD_PAGES.map((page) => page.id));
+    for (const id of LEGACY_ONLY_PAGE_IDS) {
+      expect(legacyIds.has(id), id).toBe(true);
+      expect((PAGE_IDS as readonly string[]).includes(id), id).toBe(false);
     }
   });
 
