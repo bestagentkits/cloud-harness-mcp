@@ -44,7 +44,7 @@ A rebuilt dashboard is rolling out behind the `CLOUD_HARNESS_DASHBOARD_UI` setti
 
 In the new dashboard:
 
-- **Pages keep their addresses.** Every page and deep link of the classic dashboard has the same `/dashboard/...` address, filters stay in the URL, and reload, Back and Forward return you to the same view. Pages whose controls have not moved yet link to the classic dashboard.
+- **Pages keep their addresses.** Every page and deep link of the classic dashboard has the same `/dashboard/...` address, filters stay in the URL, and reload, Back and Forward return you to the same view. Pages whose controls have not moved yet link to the classic dashboard. Inbox, Traces, Automations and Agent policies have no page in the new dashboard yet: their addresses show a not-found page with an **Open classic Dashboard** link, so use the classic dashboard (`?ui=legacy`) for them until they move.
 - **Command palette:** press `Ctrl+K` or `Cmd+K`, or click **Search**, to jump to a page, a recently opened workspace, the current page's main action, a theme, or the assistant. The shortcut is ignored while you type in a terminal.
 - **[Assistant](/dashboard/assistant):** the **Assistant** button opens an embedded operator agent that can open pages, read what you see and prepare changes. Every change it prepares waits for your confirmation in a dialog that shows the exact request.
 - **Shortcuts:** `[` collapses or expands the sidebar, and `/` moves focus to the workspace search box.

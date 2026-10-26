@@ -48,11 +48,10 @@ Owner files:
 | response | `apps/api/src/dashboard-response.ts` |
 
 Phases: P1 scaffold, build and canary; P2 router shell and shared primitives;
-P3 core pages; P4 sensitive and complex flows; P5 CX/AX and Dewee; P4c the
-pages `dev` added after the audit
-([section 2.3](#23-pages-added-on-dev-after-the-audit)), which must land
-before P6; P6
-cutover and legacy removal (see the
+P3 core pages; P4 sensitive and complex flows; P4c the pages `dev` added
+after the audit ([section 2.3](#23-pages-added-on-dev-after-the-audit)),
+which can run in parallel with P5 but must land before P6; P5 CX/AX and
+Dewee; P6 cutover and legacy removal (see the
 [child issue drafts](../plans/261020-1224-dashboard-2-react-dewee/child-issues/)).
 
 Test classes: **(a)** BFF or security contract, keep unchanged; **(b)**
@@ -144,30 +143,30 @@ server redirects stay.
 
 The audit above read `main`. `dev` meanwhile built these pages in the legacy
 shell only; they reached the React line when `main` and `dev` were reconciled
-for [#541](https://github.com/bestagentkits/cloud-harness-mcp/issues/541)
-([#548](https://github.com/bestagentkits/cloud-harness-mcp/issues/548)).
-None of them has a React route yet. A React session that opens one gets the
+for [#541](https://github.com/bestagentkits/cloud-harness-mcp/issues/541).
+None of them has a React page yet. A React session that opens one gets the
 not-found page with an "Open classic Dashboard" link (`?ui=legacy`), so
-nothing is lost while the canary is opt-in, but the P6 cutover
-([#486](https://github.com/bestagentkits/cloud-harness-mcp/issues/486)) is
-blocked until each row is ported or explicitly dropped. The umbrella is
+nothing is lost while the default shell is `legacy`, but switching the
+default to `react` or deleting the legacy shell (P6) would drop them, so
+neither may happen until each row is ported or explicitly dropped. The
+umbrella is
 [#551](https://github.com/bestagentkits/cloud-harness-mcp/issues/551); every
 row below is **re-host** (no row is dropped: each page owns a runner feature
 with no other UI).
 
 | Legacy route | Page key / loader | Feature | Phase | Deep-link params (keep as search params) | BFF reads (legacy loader) | Security note | Tests to port | Follow-up |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `/dashboard/inbox` | inbox / `createInboxView` in `dashboard-inbox.js` | `inbox` | P4c | `unread`, `cursor` | `/inbox`, `/notification-preferences`; the nav entry and unread badge read `/inbox/status` on every shell load (`inboxStatus` in `dashboard.js`) | Feature-gated nav (`feature: 'notifications'`); notification links are relative Dashboard paths only (`safeNotificationLink`) | `dashboard-inbox-router` (a), `dashboard-inbox-ui` (b) | [#554](https://github.com/bestagentkits/cloud-harness-mcp/issues/554) |
+| `/dashboard/inbox` | inbox / `createInboxView` in `dashboard-inbox.js` | `inbox` | P4c | `unread` (the page URL uses `unread=1`; the BFF query is `unread=true`); "Load more" keeps its cursor in memory only | `/inbox`, `/notification-preferences`; the nav entry and unread badge read `/inbox/status` on every shell load (`inboxStatus` in `dashboard-inbox.js`, called by `dashboard.js`) | Feature-gated nav (`feature: 'notifications'`); notification links are relative Dashboard paths only (`safeNotificationLink`) | `dashboard-inbox-router` (a), `dashboard-inbox-ui` (b) | [#554](https://github.com/bestagentkits/cloud-harness-mcp/issues/554) |
 | `/dashboard/traces[/:trc_id]`; agent detail Traces panel | traces / `createTracesView` (`loadList`, `loadDetail`, `loadAgentPanel`) in `dashboard-traces.js` | `traces` | P4c | `state`, `profileId`, `agentId`, `workspaceId`, `window` | `/traces`, `/traces/:id`, `/traces/:id/spans`; nav entry reads `/traces/status`; export is a native link to `/traces/:id/export?format=` | Feature-gated nav (`feature: 'agentTraces'`); export is an attachment, never rendered inline; the window bound is fixed per filter set so the cursor stays valid | `dashboard-traces-router` (a), `dashboard-traces-ui` (b) | [#555](https://github.com/bestagentkits/cloud-harness-mcp/issues/555) |
-| `/dashboard/automations[/rules\|/connections\|/deliveries\|/runs/:wfl_id]` | automations / `loadAutomations` in `dashboard.js`; helpers in `dashboard-api.js` | `automations` | P4c | tab is the path; run id in the path | `/automations/connections`, `/automations/rules`, `/automations/workflows[/:id]`, `/automations/deliveries` | Connection signing secret is a one-time reveal (`bindAutomationSecretReveal`, section 8 rules apply). Runner notifications link to `/dashboard/automations/runs/:id` (`notification-emitter.ts`) | `dashboard-automations-router` (a), `dashboard-automation-bff` (a), `dashboard-automations-ui` (b), `dashboard-automation` (b) | [#556](https://github.com/bestagentkits/cloud-harness-mcp/issues/556) |
+| `/dashboard/automations[/rules\|/connections\|/deliveries\|/runs/:wfl_id]` | automations / `loadAutomations` in `dashboard.js`; helpers in `dashboard-api.js` | `automations` | P4c | tab and run id are path segments; runs list `state`, `ruleId`; deliveries `connectionId` | `/automations/connections`, `/automations/rules`, `/automations/workflows[/:id]`, `/automations/deliveries` | The connection signing secret is a one-time reveal on create and on rotate (`bindAutomationSecretReveal`, see section 8). Runner notifications link to `/dashboard/automations/runs/:id` (`notification-emitter.ts`) | `dashboard-automations-router` (a), `dashboard-automations-ui` (b) | [#556](https://github.com/bestagentkits/cloud-harness-mcp/issues/556) |
 | `/dashboard/settings/agent-policies`, `/dashboard/projects/:prj_id/agent-policies` | agent-policies / `loadAgentPolicies` in `dashboard.js`, editor in `dashboard-policies.js` | `agent-policies` | P4c | none | `/agent-policies`, `/agent-policies/{global,projects/:id}`, `…/history`, `/agent-policies/revisions/:id`, `/agent-policies/diff` | Writes fenced by `expectedVersion`; a weakening save, delete or rollback needs `confirmWeakening` with the `weakeningDigest` that validate returned, so the confirm shows the exact weakening list; the prefixes are already React routes, so React renders the client-side not-found page today. Path-id rule for these handlers: [#547](https://github.com/bestagentkits/cloud-harness-mcp/issues/547) | `dashboard-policies-router` (a), `dashboard-policies-ui` (b) | [#558](https://github.com/bestagentkits/cloud-harness-mcp/issues/558) |
-| `/dashboard/workspaces/:ws_id/{files,git}` in a multi-repository workspace | cockpit repository selector in `dashboard.js` | `workspace-cockpit` | P4c | repository (new search param) | files, git and worktree reads with `repositoryId` | React never sends `repositoryId`: required-mode calls fail with 400 and root-scoped reads show the tree root | `dashboard-multi-repository` (a/b), `dashboard-cockpit` (a/b) | [#559](https://github.com/bestagentkits/cloud-harness-mcp/issues/559) |
+| `/dashboard/workspaces/:ws_id/{terminal,files,git}` and the Summary repository explorer, in a multi-repository workspace | cockpit repository selector in `dashboard.js` (`REPOSITORY_SCOPED_TABS` in `dashboard-render.js`) | `workspace-cockpit` | P4c | `repository` (existing legacy search param) | `/workspaces/:id/repositories?status=`; `repositoryId` on file and git reads and writes (PUT, PATCH, DELETE, directory, move, git mutations, worktrees), finalize and terminal open | React never reads `/repositories` or sends `repositoryId`: required-mode calls fail with 400 and root-scoped reads show the tree root | `dashboard-multi-repository` (a/b), `dashboard-cockpit` (a/b) | [#559](https://github.com/bestagentkits/cloud-harness-mcp/issues/559) |
 
 `DASHBOARD_REACT_ROUTES` in `dashboard-react-assets.ts` lacks `/inbox`,
 `/traces` and `/automations`; each port adds its prefix with its route, and
 `apps/dashboard/src/app/server-route-allowlist.test.ts` keeps the two lists
 in step. The BFF rows for these pages are in
-[4.14](#414-inbox-traces-agent-policies-and-automations).
+[4.14](#414-inbox-traces-agent-policies-automations-and-repositories).
 
 ## 3. Dialogs
 
@@ -485,7 +484,7 @@ P4 decisions (#484):
 | `DELETE /github/installations/:installationId` | drop | Duplicate of `POST /github/disconnect`, which the page uses |
 | `GET /event-subscriptions`, `POST /event-subscriptions/:id/revoke` | defer (#494) | Needs a design for MCP Events on the API access page |
 
-### 4.14 Inbox, traces, agent policies and automations
+### 4.14 Inbox, traces, agent policies, automations and repositories
 
 Pages from [section 2.3](#23-pages-added-on-dev-after-the-audit), all phase
 P4c. "UI caller" is the legacy caller; none of these has a React caller yet.
@@ -496,7 +495,8 @@ P4c. "UI caller" is the legacy caller; none of these has a React caller yet.
 | GET | `/inbox` | inbox router | `cursor`, `limit`, `unread` | inbox page | `inbox` | #554 |
 | POST | `/inbox/read` | inbox router | `{all, through}` or `{notificationIds}` | mark all read, mark one read | `inbox` | #554 |
 | GET / PUT | `/notification-preferences` | inbox router | strict body `{preferences}` | inbox preferences form | `inbox` | #554 |
-| GET | `/traces`, `/traces/status` | traces router | `cursor`, `limit`, `since`, `includeSummary`, filters | traces list, nav, agent panel | `traces` | #555 |
+| GET | `/traces` | traces router | `cursor`, `limit`, `since`, `includeSummary`, filters | traces list, agent panel | `traces` | #555 |
+| GET | `/traces/status` | traces router | — (fixed one-row read) | shell nav | `traces` | #555 |
 | GET | `/traces/:traceId`, `/traces/:traceId/spans` | traces router | trace id pattern, span cursor | trace detail, agent panel | `traces` | #555 |
 | GET | `/traces/:traceId/export` | traces router | fixed `format` enum | native download link | `traces` | #555 |
 | GET | `/agent-policies` | policies router | — | policy page | `agent-policies` | #558 |
@@ -505,12 +505,13 @@ P4c. "UI caller" is the legacy caller; none of these has a React caller yet.
 | POST | `/agent-policies/{global,projects/:projectId}/validate`, `/agent-policies/simulate` | policies router | — | validate, simulate | `agent-policies` | #558 |
 | GET | `/agent-policies/{global,projects/:projectId}/history`, `/agent-policies/revisions/:revisionId`, `/agent-policies/diff` | policies router | `beforeVersion`, `from`, `to` | history, revision, diff | `agent-policies` | #558 |
 | POST | `/agent-policies/revisions/:revisionId/rollback` | policies router | `expectedVersion`, `confirmWeakening` + `weakeningDigest` | rollback, confirm | `agent-policies` | #558, #547 |
-| GET / POST | `/automations/connections` | control router | — | connections tab | `automations` | #556 |
-| PATCH / DELETE | `/automations/connections/:id` | control router | DELETE: **gen** | connections tab | `automations` | #556 |
+| GET / POST | `/automations/connections` | control router | POST: one-time reveal of the signing secret | connections tab | `automations` | #556 |
+| PATCH / DELETE | `/automations/connections/:id` | control router | **gen** (PATCH and DELETE) | connections tab | `automations` | #556, #571 |
 | POST | `/automations/connections/:id/rotate-secret` | control router | **gen**; one-time reveal | connections tab | `automations` | #556 |
 | GET / POST | `/automations/rules` | control router | `connectionId` filter | rules tab | `automations` | #556 |
-| PATCH / DELETE | `/automations/rules/:id` | control router | DELETE: **gen** | rules tab | `automations` | #556 |
+| PATCH / DELETE | `/automations/rules/:id` | control router | **gen** (PATCH and DELETE) | rules tab | `automations` | #556, #571 |
 | POST | `/automations/rules/:id/preview` | control router | `{sample}` | rule preview | `automations` | #556 |
+| GET | `/workspaces/:id/repositories` | router | `status` | repository selector, Summary explorer | `workspace-cockpit` | #559 |
 | GET | `/automations/workflows[/:id]`, `/automations/deliveries` | control router | `ruleId`, `state`, `limit`, `actionsCursor`, `connectionId` | runs, run detail, deliveries | `automations` | #556 |
 | POST | `/automations/workflows/:id/cancel` | control router | optional `reason` | run detail | `automations` | #556 |
 
@@ -547,6 +548,8 @@ named owners. In React each poller has exactly one owner (a query
 | T7 | `createPaletteIndexLoader` | max-age cache, invalidated on announce and `pagehide` | — | query `staleTime` with the same invalidation | P2 |
 | T8–T10 | combobox search, knowledge preview, skills search | debounces | — | keep the values from the owners | P3/P4 |
 | T11–T13 | toast removal, update cue, copy chip revert | one-shot timeouts | — | keep (Motion only for dialogs and toasts) | P2 |
+| T16 | trace list poll in `createTracesView` (`dashboard-traces.js`) | bounded chain while any row is `RUNNING`; rows only, KPI strip fixed; stops on "Load more" | — | query `refetchInterval` while a row is running, stop on unmount | P4c (#555) |
+| T17 | trace detail poll in `createTracesView` | bounded chain while the trace is `RUNNING` | — | same, stop on terminal state | P4c (#555) |
 | T15 | `refreshApprovalsBadge` | no timer; only on Overview, Activity and Approvals loads | stale badge (R13) | invalidate after approve/reject and on window focus | P3 |
 
 Navigation read baseline. `apps/dashboard/e2e/navigation-budget.spec.ts` tours
@@ -595,6 +598,7 @@ Owner: `createTerminalSession` and `mountTerminalPane` in
 | --- | --- | --- | --- |
 | API key plaintext (`data.apiKey`) | D3 read-only input and the reveal controller variable | dismiss, Esc, any link click (capture), `pagehide`, copy failure | component state only; never in the query cache, devtools dumps, console or screenshots; cleared on navigation, dismiss and session end |
 | Provider keys, secret values, integration credentials | password inputs or textareas in forms | cleared on close; removed from the DOM before the request | form state reset on close; no drafts; no storage |
+| Automation connection signing secret | reveal panel from `POST /automations/connections` and `…/rotate-secret` (`bindAutomationSecretReveal` in `dashboard.js`) | dismiss | same as the API key: component state only, cleared on dismiss, navigation and session end (P4c, #556) |
 | Bulk `.env` text | D4 textarea | cleared on every close | same |
 | CSRF token | module variable in `dashboard-api.js` | dropped on 401 | memory only |
 | GitHub setup `state`, OAuth `authorizationUrl` | JSON response, then navigation | not stored | not stored; native navigation |
@@ -680,6 +684,11 @@ tests; nothing is removed without a replacement.
 | `dashboard-typesafe` | P4 | Its (a) part stays |
 | `dashboard-git` | P4 | Git parsers (a) stay |
 | `dashboard-cockpit` | P3 | |
+| `dashboard-inbox-ui` | P4c (#554) | |
+| `dashboard-traces-ui` | P4c (#555) | |
+| `dashboard-automations-ui` | P4c (#556) | |
+| `dashboard-policies-ui` | P4c (#558) | |
+| `dashboard-multi-repository` | P4c (#559) | Its projection (a) part stays |
 
 Fake-DOM harnesses: `apps/api/test/dashboard-test-dom.ts` (used by several
 legacy suites) and `apps/api/test/dashboard-tree-dom.ts` (imported by
@@ -693,6 +702,8 @@ are removed with the legacy suites in P6, not earlier.
 `dashboard-privilege-grants`, `dashboard-response-totality`,
 `dashboard-github-error-message`, `dashboard-audit-gaps`,
 `dashboard-skills-mapper`, `dashboard-overview` (projection part),
+`dashboard-inbox-router`, `dashboard-traces-router`,
+`dashboard-policies-router`, `dashboard-automations-router`,
 `access-auth`, `mcp-oauth`, `knowledge-api`, `runner-client-internal` (all in
 `apps/api/test/`), `apps/api-key-gateway/test/gateway.test.ts`,
 `test/upgrade-nginx-routes.test.ts`, the dashboard integration suites in
