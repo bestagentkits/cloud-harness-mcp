@@ -192,6 +192,14 @@ describe('dashboard agent policy BFF', () => {
     expect(scoped.status).toBe(200);
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ principal, input: { scope: 'project', projectId } });
+    // A body id that repeats the path id is accepted; a different one is refused before the runner.
+    const repeated = await send(`/api/v1/agent-policies/revisions/${revisionId}/rollback`, { method: 'POST', headers, body: JSON.stringify({ revisionId, expectedVersion: 4 }) });
+    expect(repeated.status).toBe(200);
+    expect(requests[1]).toMatchObject({ operation: 'policy_rollback', input: { revisionId, expectedVersion: 4 } });
+    const redirected = await send(`/api/v1/agent-policies/projects/${projectId}`, { method: 'PUT', headers, body: JSON.stringify({ document: projectDocument, expectedVersion: 0, projectId: `prj_${'q'.repeat(32)}` }) });
+    expect(redirected.status).toBe(400);
+    expect(redirected.json).toEqual({ error: 'path_id_mismatch', message: 'The request body names a different projectId than the URL.' });
+    expect(requests).toHaveLength(2);
   });
 
   it('rejects malformed identifiers and queries before reaching the runner', async () => {
