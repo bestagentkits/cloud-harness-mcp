@@ -553,6 +553,7 @@ describe('model gateway security boundary', () => {
   it.each([
     ['the response byte limit', 413, { maxResponseBytes: 256 }, () => `data: ${'x'.repeat(512)}\n\n`],
     ['the stream line limit', 413, { maxStreamLineBytes: 128 }, () => `data: ${'x'.repeat(256)}\n\n`],
+    ['an unterminated stream line', 413, { maxStreamLineBytes: 128 }, () => 'x'.repeat(256)],
     ['a credential disclosure', 502, {}, async () => `data: {"leak":"${(await readFile(credentialFile, 'utf8')).trim()}"}\n\n`]
   ] as const)('fails a stream cut off at %s even when the body ends in the same write', async (_label, status, limits, body) => {
     const payload = await body();
