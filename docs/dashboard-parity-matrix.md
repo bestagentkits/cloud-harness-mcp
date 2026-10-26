@@ -122,10 +122,10 @@ in [`apps/dashboard/src/app/page-registry.ts`](../apps/dashboard/src/app/page-re
 `DASHBOARD_LEGACY_ONLY_PATHS` in
 [`apps/api/src/dashboard-react-assets.ts`](../apps/api/src/dashboard-react-assets.ts),
 so a React-pinned navigation gets the legacy shell instead of the React 404;
-`apps/api/test/dashboard-react-shell.test.ts` fails when a shell path is
-neither a React route nor on that list. The two agent-policies paths sit under
-the React `/projects` and `/settings` prefixes, so they need the list entry
-even though the prefix matches. P6 cannot remove the legacy shell while
+`apps/api/test/dashboard-react-shell.test.ts` pins that list and fails when a
+shell path outside the React prefix routes is neither a React route nor on it.
+The two agent-policies paths sit under the React `/projects` and `/settings`
+prefixes, so only the pinned list catches a dropped entry for them. P6 cannot remove the legacy shell while
 either list is non-empty: port each page (and drop its entries from both
 lists) or record a drop decision here.
 

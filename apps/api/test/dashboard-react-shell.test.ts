@@ -358,6 +358,13 @@ describe('React SPA fallback boundaries', () => {
 
   it('serves every legacy shell page as a React route or, when listed as legacy-only, as the legacy shell', async () => {
     for (const path of DASHBOARD_LEGACY_ONLY_PATHS) expect(DASHBOARD_SHELL_PATHS, `stale legacy-only entry ${path}`).toContain(path);
+    // The agent-policies pages sit under React's `/settings` and `/projects` prefix routes, so
+    // the loop below would render them as React pages without complaint if they were dropped
+    // from the list. Pin the list: it changes only when a page is ported (or a new one added).
+    expect([...DASHBOARD_LEGACY_ONLY_PATHS].sort()).toEqual([
+      '/automations', '/automations/connections', '/automations/deliveries', '/automations/rules', '/automations/runs/:workflowId',
+      '/inbox', '/projects/:projectId/agent-policies', '/settings/agent-policies', '/traces', '/traces/:traceId'
+    ]);
     const origin = await start({ dashboardUi: 'react' });
     for (const shellPath of DASHBOARD_SHELL_PATHS) {
       const path = `/dashboard${shellPath.replace(/:[A-Za-z]+/g, 'id_1')}`;
