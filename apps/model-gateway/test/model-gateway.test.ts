@@ -551,15 +551,23 @@ describe('model gateway security boundary', () => {
   });
 
   it.each([
-    ['a terminated usage line', 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}\n\ndata: [DONE]\n\n'],
-    ['a final unterminated usage line', 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}']
-  ])('ends a stream past the output token cap with an in-band bound error (%s)', async (_label, tail) => {
+    ['a terminated usage line', 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}\n\ndata: [DONE]\n\n', true],
+    ['a final unterminated usage line', 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}', true],
+    ['a body that ends in the same write as the usage line', 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}\n\ndata: [DONE]\n\n', false]
+  ])('ends a stream past the output token cap with an in-band bound error (%s)', async (_label, tail, split) => {
+    const head = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: {"choices":[{"delta":';
+    const rest = `{"content":"!"}}]}\n\n${tail}`;
     const provider = await fakeProvider((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
-      response.write('data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: {"choices":[{"delta":');
-      setTimeout(() => response.end(`{"content":"!"}}]}\n\n${tail}`), 10);
+      if (!split) {
+        response.end(`${head}${rest}`);
+        return;
+      }
+      response.write(head);
+      setTimeout(() => response.end(rest), 10);
     });
-    const running = await gateway(profile(provider.upstream));
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const running = await gateway(profile(provider.upstream), undefined, logger);
     const grant = activate(running.runtime, issue());
     const response = await fetch(`${running.baseUrl}/v1/chat/completions`, {
       method: 'POST', headers: headers(grant), body: '{"messages":[],"max_tokens":20}'
@@ -576,8 +584,22 @@ describe('model gateway security boundary', () => {
     expect(eventLine).toBe('event: error');
     expect(JSON.parse(dataLine!.slice('data: '.length))).toEqual({
       type: 'error',
-      error: { code: 'model_bound_exceeded', type: 'model_bound_exceeded', message: 'model_bound_exceeded: model output token limit exceeded' }
+      error: { code: 'model_bound_exceeded', type: 'model_bound_exceeded', message: 'model_bound_exceeded: model output bound exceeded' }
     });
+    await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ status: 413 }), 'model request failed'));
+  });
+
+  it('cuts off a non-SSE response past the output token cap', async () => {
+    const provider = await fakeProvider((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.write('{"partial":true}\n');
+      setTimeout(() => response.end('{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}\n'), 10);
+    });
+    const running = await gateway(profile(provider.upstream));
+    const grant = activate(running.runtime, issue());
+    await expect(fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers(grant), body: '{"messages":[],"max_tokens":20}'
+    }).then((response) => response.text())).rejects.toThrow();
   });
 
   it('aborts and drains upstream on explicit cancel, disconnect, and lease revocation', async () => {

@@ -54,7 +54,7 @@ async function resolveAddress(profile: GatewayProfile): Promise<{ address: strin
  */
 const OUTPUT_BOUND_EVENT = Buffer.from(`\n\nevent: error\ndata: ${JSON.stringify({
   type: 'error',
-  error: { code: 'model_bound_exceeded', type: 'model_bound_exceeded', message: 'model_bound_exceeded: model output token limit exceeded' }
+  error: { code: 'model_bound_exceeded', type: 'model_bound_exceeded', message: 'model_bound_exceeded: model output bound exceeded' }
 })}\n\n`);
 
 function endsWithPrefixOf(bytes: Buffer, secret: Buffer): boolean {
@@ -223,8 +223,12 @@ export async function startUpstreamRequest(options: {
           if (lineUsage && lineUsage.outputTokens > maxOutputTokens) {
             exceededUsage = lineUsage;
             abortReason = 'provider output token limit exceeded';
+            // Settle now: the upstream body may already have ended in this same read, and its
+            // 'end' handler must not end the downstream a second time.
+            settled = true;
             upstream?.destroy(new Error(abortReason));
             endWithOutputBound(Buffer.concat([outboundPending, chunk.subarray(0, chunkLineEnd)]));
+            reject(failure(abortReason));
             return;
           }
           recordUsage(lineResult);
