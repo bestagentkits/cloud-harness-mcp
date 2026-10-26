@@ -200,13 +200,15 @@ export function createDashboardReactRouter(config: ApiConfig, loaded: DashboardR
     // Canary: `?ui=react|legacy` on any Dashboard page pins this browser to one UI, then
     // redirects to the same path without the parameter so the choice is not bookmarked or
     // shared. The target is `/dashboard` plus the request's own path and remaining query;
-    // no request value can leave the Dashboard. BFF, OAuth and asset paths ignore it.
+    // no request value can leave the Dashboard. BFF, OAuth and asset paths ignore it. The
+    // pin is `SameSite=Lax` so it survives the cross-site Access sign-in redirect and links
+    // from other sites; it only selects a shell and grants no authority.
     const requested = request.query.ui;
     if (typeof requested === 'string' && UI_MODES.has(requested) && !isExcludedFromFallback(path)) {
       const query = new URLSearchParams(request.originalUrl.slice(request.originalUrl.indexOf('?') + 1));
       query.delete('ui');
       const rest = query.toString();
-      response.append('Set-Cookie', `${DASHBOARD_UI_COOKIE}=${requested}; Path=/dashboard; HttpOnly; Secure; SameSite=Strict`);
+      response.append('Set-Cookie', `${DASHBOARD_UI_COOKIE}=${requested}; Path=/dashboard; HttpOnly; Secure; SameSite=Lax`);
       response.redirect(302, `/dashboard${path === '/' ? '' : path}${rest ? `?${rest}` : ''}`);
       return;
     }

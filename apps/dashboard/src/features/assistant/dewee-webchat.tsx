@@ -7,6 +7,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { API_BASE_PATH, apiClient } from '@/lib/api-client';
 import { usePageActionsVersion } from '@/lib/page-actions';
 import { usePreferences } from '@/lib/preferences';
+import { markSessionEnded } from '@/lib/session-state';
 import { createAssistantController, type PendingRequest } from './assistant-controller';
 import { adoptWidgetStyles, createWidgetFetch, DEWEE_ENDPOINT, scrubWidgetSession } from './widget-host-setup';
 
@@ -49,7 +50,7 @@ export default function DeweeAssistant({ openSignal }: { openSignal: number }) {
       allowAgentSwitch: false,
       showReasoning: false,
       headers: () => apiClient.csrfHeaders(),
-      fetch: createWidgetFetch(),
+      fetch: createWidgetFetch(undefined, { csrfHeaders: apiClient.csrfHeaders, clearSession: apiClient.clearSession, onSessionEnded: markSessionEnded }),
       getPageContext: () => controller.pageContext(),
       confirm: (action, args) => controller.confirm(action.name, action.callId, args)
     });

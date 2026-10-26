@@ -1,5 +1,6 @@
 import type { DeweeChatElement, JsonSchema } from 'dewee-webchat';
 import { toJSONSchema, type ZodType } from 'zod';
+import { UnauthorizedError } from '@/lib/api-client';
 
 /**
  * Host-side adapters that keep the pinned `dewee-webchat` widget inside the Dashboard's
@@ -23,14 +24,65 @@ export function scrubWidgetSession(): void {
   try { globalThis.localStorage?.removeItem(WIDGET_SESSION_STORAGE_KEY); } catch { /* storage unavailable */ }
 }
 
+/** The slice of the Dashboard API client the widget fetch uses to renew its CSRF session. */
+export type WidgetSession = {
+  csrfHeaders: (signal?: AbortSignal) => Promise<Record<string, string>>;
+  clearSession: () => void;
+  /** Called when a fresh session cannot recover the request (the Access assertion ended). */
+  onSessionEnded?: () => void;
+};
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+async function isSessionEndedAnswer(response: Response): Promise<boolean> {
+  try { return (await response.clone().json() as { error?: unknown }).error === 'session_ended'; } catch { return false; }
+}
+
+/**
+ * Dashboard sessions live in API memory, so after an API restart the widget's next write is
+ * answered `401 session_ended` while the API client still holds the old CSRF token. As in
+ * the API client, the token is dropped, the session bootstrapped once and the request sent
+ * once more with the new header: the session verifier rejects before any handler runs, so
+ * the retry cannot repeat a write. A refused bootstrap or a second `session_ended` ends the
+ * session.
+ */
+async function retryWithFreshSession(base: typeof fetch, session: WidgetSession, input: RequestInfo | URL, init: RequestInit | undefined, ended: Response): Promise<Response> {
+  const signal = init?.signal ?? undefined;
+  const sent = new Headers(init?.headers).get('x-csrf-token') ?? '';
+  let fresh: Record<string, string>;
+  try {
+    // Drop the token only if it is still the one this request sent: a concurrent request
+    // may already have bootstrapped a fresh session, and a stale 401 must not discard it.
+    if ((await session.csrfHeaders(signal))['x-csrf-token'] === sent) session.clearSession();
+    fresh = await session.csrfHeaders(signal);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    // Only a refused bootstrap (401) means the Access assertion ended; a rate limit, server
+    // or network failure leaves the session usable, so the widget just sees the first answer.
+    if (error instanceof UnauthorizedError) session.onSessionEnded?.();
+    return ended;
+  }
+  const headers = new Headers(init?.headers);
+  for (const [name, value] of Object.entries(fresh)) headers.set(name, value);
+  const retried = await base(input, { ...init, headers, credentials: 'same-origin' });
+  // Any other 401 (a stale visitor token after a secret rotation) is the widget's to recover.
+  if (retried.status === 401 && await isSessionEndedAnswer(retried)) session.onSessionEnded?.();
+  return retried;
+}
+
 /**
  * Same-origin fetch for every widget request. The widget saves a new session token right
  * after it parses the session response, in the same microtask chain, so wrapping `json()`
- * and scrubbing on the next task removes the entry deterministically.
+ * and scrubbing on the next task removes the entry deterministically. With `session`, a
+ * write answered `401 session_ended` is retried once under a fresh CSRF session.
  */
-export function createWidgetFetch(base: typeof fetch = (...args) => globalThis.fetch(...args)): typeof fetch {
+export function createWidgetFetch(base: typeof fetch = (...args) => globalThis.fetch(...args), session?: WidgetSession): typeof fetch {
   return async (input, init) => {
-    const response = await base(input, { ...init, credentials: 'same-origin' });
+    let response = await base(input, { ...init, credentials: 'same-origin' });
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (session && response.status === 401 && !SAFE_METHODS.has(method) && await isSessionEndedAnswer(response)) {
+      response = await retryWithFreshSession(base, session, input, init, response);
+    }
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     if (/\/dewee\/session(?:\?|$)/.test(url)) {
       const json = response.json.bind(response);

@@ -53,7 +53,7 @@ and be rolled back by recreating only the `api` container
 ([deployment](deployment.md#rollback-or-disable-the-route)); with `legacy` and no canary cookie the API
 answers byte-for-byte as before. Appending `?ui=react` or `?ui=legacy` to any
 Dashboard page pins one browser to that UI through an `HttpOnly`, `Secure`,
-`SameSite=Strict` cookie and redirects back to the same page without the
+`SameSite=Lax` cookie and redirects back to the same page without the
 parameter, so an operator can canary the React app without changing the
 instance.
 
