@@ -1155,11 +1155,12 @@ the owner has stored a TypeSafe integration key.
 
 Coding-agent execution policies are owner-authored
 ([ADR 0006](adr/0006-policy-governed-coding-agents.md)) and sit behind
-`AGENT_POLICIES_ENABLED`. This release ships the policy store, the gate
-evaluator and the Dashboard simulation. It does not yet enforce anything on a
-running agent: action enforcement arrives with the coding broker, which calls
-the same evaluator through the `GateEvaluator` port. Until then a saved policy
-changes simulation results only.
+`AGENT_POLICIES_ENABLED`. The policy store, the gate evaluator and the
+Dashboard simulation sit behind that flag. Enforcement is the coding broker
+(`AGENT_CODING_ENABLED`, see [Coding automations](#coding-automations)), which
+calls the same evaluator through the `GateEvaluator` port for every action of
+a coding run. Agents outside a coding run are not governed by a policy, so
+there a saved policy changes simulation results only.
 
 - **One authority.** Only the owner writes policy, through owner-authenticated
   Dashboard routes with the usual Origin and CSRF checks. The principal comes
@@ -1172,7 +1173,7 @@ changes simulation results only.
   field. A project can choose a class's effect only where the owner marked the
   class delegable. A policy for a project that no longer exists denies every
   action bound to it, and its effective-policy preview is empty.
-- **One pure gate.** The simulation and the future broker use one frozen
+- **One pure gate.** The simulation and the coding broker use one frozen
   evaluator instance and the same resolved snapshot and advisor availability,
   so a simulation returns what execution will start from. The one difference
   is the advisor: a discretionary action shows as pending (`ADVISOR_REQUIRED`,
@@ -1196,9 +1197,16 @@ changes simulation results only.
   floor, so no advisor implementation can clear an action with a `no_change`
   below it. Jev is told the class the gate judged (`publish_branch` for a
   declared class whose command runs `git push`), never only the declared one.
-  The execution-time call (`AgentPolicyService.decide`) is consulted by the
-  coding broker, which ships later; until then nothing calls Jev for an agent
-  action.
+  The coding broker makes the execution-time call (`AgentPolicyService.decide`)
+  for a coding run's actions (a lockfile install runs only on a plain `ALLOW`
+  and never consults the advisor), so with the three opt-ins each qualifying
+  action sends TypeSafe one redacted, runner-computed summary: the judged
+  class, a `git push` flag, path counts by kind, the command's program
+  category, argument count and a truncated SHA-256 digest, host and package
+  flags (with the package ecosystem), the diff's changed-line count and
+  whether tests passed. No path, argument, branch, repository name, or agent or
+  issue text is sent; when redaction cannot complete nothing is sent and the
+  fallback applies.
 - **Platform invariants have two outcomes.** Credential and Docker access,
   network escalation, paths outside the workspace and privilege escalation
   deny before any policy is read. A command is an argv run through execve,
