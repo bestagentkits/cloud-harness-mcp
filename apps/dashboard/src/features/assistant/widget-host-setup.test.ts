@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { createApiClient } from '@/lib/api-client';
 import { createWidgetFetch, fitPageContext, parametersFor, parseArgs, WIDGET_SESSION_STORAGE_KEY, widgetSchema } from './widget-host-setup';
 
 describe('widget host setup', () => {
@@ -42,6 +43,83 @@ describe('widget host setup', () => {
     await vi.runAllTimersAsync();
     expect(localStorage.getItem(WIDGET_SESSION_STORAGE_KEY)).toBeNull();
     vi.useRealTimers();
+  });
+
+  describe('after the API restarts and forgets the dashboard session', () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+    /** The BFF: `/session` mints numbered tokens, writes need the current one. */
+    function harness(options: { refuseBootstrap?: boolean; alwaysEnded?: boolean } = {}) {
+      let issued = 0;
+      let current = '';
+      const writes: string[] = [];
+      const server = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/dashboard/api/v1/session')) {
+          if (options.refuseBootstrap && issued > 0) return json(401, { error: 'session_ended' });
+          current = `token-${++issued}`;
+          return json(200, { csrfToken: current });
+        }
+        const token = new Headers(init?.headers).get('x-csrf-token') ?? '';
+        writes.push(token);
+        if (options.alwaysEnded || token !== current) return json(401, { error: 'session_ended' });
+        return json(200, { ok: true });
+      });
+      const client = createApiClient(server as unknown as typeof fetch);
+      const onSessionEnded = vi.fn();
+      const widgetFetch = createWidgetFetch(server as unknown as typeof fetch, { csrfHeaders: client.csrfHeaders, clearSession: client.clearSession, onSessionEnded });
+      const send = async () => widgetFetch('/dashboard/api/v1/dewee/chat', { method: 'POST', headers: await client.csrfHeaders(), body: '{"message":"hi"}' });
+      const restart = () => { current = 'forgotten'; };
+      const bootstraps = () => server.mock.calls.filter(([input]) => String(input).endsWith('/session')).length;
+      return { send, restart, writes, bootstraps, onSessionEnded, server };
+    }
+
+    it('bootstraps once and retries the write once with the fresh CSRF token', async () => {
+      const bff = harness();
+      expect((await bff.send()).status).toBe(200);
+      bff.restart();
+      const response = await bff.send();
+      expect(response.status).toBe(200);
+      expect(bff.writes).toEqual(['token-1', 'token-1', 'token-2']);
+      expect(bff.bootstraps()).toBe(2);
+      expect((bff.server.mock.calls.at(-1) as unknown[])[1]).toMatchObject({ body: '{"message":"hi"}', credentials: 'same-origin' });
+      expect(bff.onSessionEnded).not.toHaveBeenCalled();
+      // The fresh token is kept for the widget's next request.
+      expect((await bff.send()).status).toBe(200);
+      expect(bff.bootstraps()).toBe(2);
+    });
+
+    it('does not retry a second session_ended answer and ends the session', async () => {
+      const bff = harness({ alwaysEnded: true });
+      const response = await bff.send();
+      expect(response.status).toBe(401);
+      expect(bff.writes).toEqual(['token-1', 'token-2']);
+      expect(bff.bootstraps()).toBe(2);
+      expect(bff.onSessionEnded).toHaveBeenCalledTimes(1);
+    });
+
+    it('hands back the 401 when the bootstrap is refused because Access ended', async () => {
+      const bff = harness({ refuseBootstrap: true });
+      expect((await bff.send()).status).toBe(200);
+      bff.restart();
+      const response = await bff.send();
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: 'session_ended' });
+      expect(bff.writes).toEqual(['token-1', 'token-1']);
+      expect(bff.bootstraps()).toBe(2);
+      expect(bff.onSessionEnded).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves reads and other 401 answers to the widget', async () => {
+      const base = vi.fn(async () => json(401, { error: 'session_ended' }));
+      const session = { csrfHeaders: vi.fn(async () => ({ 'x-csrf-token': 't' })), clearSession: vi.fn(), onSessionEnded: vi.fn() };
+      const widgetFetch = createWidgetFetch(base as unknown as typeof fetch, session);
+      expect((await widgetFetch('/dashboard/api/v1/dewee/history', { method: 'GET' })).status).toBe(401);
+      base.mockImplementationOnce(async () => json(401, { error: { code: 'unauthorized' } }));
+      expect((await widgetFetch('/dashboard/api/v1/dewee/chat', { method: 'POST' })).status).toBe(401);
+      expect(base).toHaveBeenCalledTimes(2);
+      expect(session.csrfHeaders).not.toHaveBeenCalled();
+    });
   });
 
   it('trims page context to the 4 KB cap by dropping items first', () => {

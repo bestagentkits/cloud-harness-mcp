@@ -725,7 +725,8 @@ and applied in
 which serves only files named by the startup-validated Vite manifest, renders
 the HTTP-only theme cookie from a fixed set of values, and answers unknown
 Dashboard navigations with a 404 shell. The `?ui=react|legacy` canary sets the
-`ch-dashboard-ui` cookie (`Path=/dashboard; HttpOnly; Secure; SameSite=Strict`)
+`ch-dashboard-ui` cookie (`Path=/dashboard; HttpOnly; Secure; SameSite=Lax`, so the
+pin survives the cross-site Access sign-in redirect and links from other sites)
 and redirects to the same Dashboard path, never off it. A cross-site GET can
 set that cookie, but it only selects which first-party UI an operator sees after
 Access; it grants no authority and carries no data, so the impact is low and
@@ -773,7 +774,10 @@ legacy shell, with these client-side guarantees:
   skill and hook output stays in component state.
 - **Writes use the unchanged BFF boundary.** Every mutation sends the session
   cookie and the in-memory CSRF token; a `session_ended` 401 bootstraps a new
-  session and retries once, anything else surfaces the sign-in path. Fences
+  session and retries once, anything else surfaces the sign-in path. The
+  embedded assistant's writes take the same path
+  ([`widget-host-setup.ts`](../apps/dashboard/src/features/assistant/widget-host-setup.ts)),
+  so it recovers after an API restart without a reload. Fences
   (`expectedGeneration`, plan digests) are sent exactly as the legacy shell
   sends them, and a 409 reloads the latest version instead of retrying.
 
