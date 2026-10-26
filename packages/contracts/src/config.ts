@@ -257,6 +257,7 @@ export const RunnerConfigSchema = z.object({
   dependencyBridgeInterface: z.string().default('chm-egress0'),
   dependencyNetworkName: z.string().default('cloud-harness-dependency-access'),
   wallTtlSeconds: z.coerce.number().int().min(WORKSPACE_LIFECYCLE_BOUNDS.wallTtlSeconds.min).max(WORKSPACE_LIFECYCLE_BOUNDS.wallTtlSeconds.max).default(900),
+  // The environment keeps its older 30s idle floor, below the Settings floor, so existing deployments still validate.
   idleTtlSeconds: z.coerce.number().int().min(30).max(WORKSPACE_LIFECYCLE_BOUNDS.idleTtlSeconds.max).default(300),
   maxOutputBytes: z.coerce.number().int().min(1_024).max(10_485_760).default(262_144),
   // Dashboard Terminal PTYs live in runner memory: these bound how many a workspace holds, how much raw
