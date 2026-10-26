@@ -11,6 +11,7 @@ import {
   type AgentKitRegistryManifest
 } from '../agentkit-registry.js';
 import { runDocker } from '../docker-engine.js';
+import { prepareHelperWritableDir } from '../toolkit-staging.js';
 import {
   computeFullTreeDigest,
   validateStagingDir,
@@ -214,6 +215,7 @@ export class AgentKitRegistryAdapter {
     const packageDir = join(stagingDir, PACKAGE_DIR);
     const extractDir = join(packageDir, 'extract');
     await mkdir(extractDir, { recursive: true });
+    await prepareHelperWritableDir(extractDir);
     await writeFile(join(packageDir, PACKAGE_FILE), packageBytes);
 
     const listing = await this.runPackageHelper(
@@ -248,7 +250,7 @@ export class AgentKitRegistryAdapter {
 
     await this.runPackageHelper(
       'extraction',
-      'tar -xzf "$1" --no-same-owner --no-same-permissions',
+      'tar -xzf "$1" -C /extract --no-same-owner --no-same-permissions',
       packageDir,
       extractDir,
       options?.signal
@@ -296,7 +298,10 @@ export class AgentKitRegistryAdapter {
     };
     await writeFile(join(stagingDir, 'manifest.json'), JSON.stringify(manifestFile, null, 2), 'utf8');
 
-    validateStagingDir(stagingDir, 1_000, AGENTKIT_PACKAGE_MAX_BYTES);
+    // A licensed kit is a first-party signed artifact that ships many small skill files (engineer 2.19.0
+    // is 107 skills / 1,684 files), so the shared 1,000-file toolkit ceiling cannot hold a complete kit.
+    // The archive-member ceiling and the 64 MiB byte ceiling still bound the staging tree.
+    validateStagingDir(stagingDir, AGENTKIT_EXTRACTED_MAX_FILES, AGENTKIT_PACKAGE_MAX_BYTES);
     const digestInfo = computeFullTreeDigest(stagingDir);
 
     return {

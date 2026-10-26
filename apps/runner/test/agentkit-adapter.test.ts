@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash, generateKeyPairSync, sign as signPayload, type KeyObject } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import {
   AGENTKIT_PACKAGE_MAX_BYTES,
   canonicalAgentKitSignaturePayload,
@@ -482,6 +482,64 @@ describe('AgentKitRegistryAdapter materialization', () => {
       expect(result.manifest.skills.map((skill: { name: string }) => skill.name)).toEqual(['ak-deploy']);
       expect(existsSync(join(stagingDir, '__agentkit_package'))).toBe(false);
       expect(existsSync(join(stagingDir, 'skills', 'ak-security'))).toBe(false);
+    } finally {
+      rmSync(treeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('extracts into the helper mount point, not the read-only container root', async () => {
+    const treeRoot = mkdtempSync(join(tmpdir(), 'ch-agentkit-tree-'));
+    try {
+      mockTarHelper(packageTree(treeRoot, ['ak-deploy']), treeRoot);
+      const manifest = signedManifest({ packageBytes: packageFixture, privateKey, keyId, tier: 'paid' });
+      const fetchImpl = vi.fn(async () => new Response(packageFixture));
+
+      await adapter().materialize(
+        stagingDir,
+        { kitId: KIT_ID, channel: CHANNEL },
+        manifest,
+        { fetchImpl: fetchImpl as unknown as typeof fetch }
+      );
+
+      // The helper runs as UID 10001 inside `--read-only`; a tar without `-C /extract` writes into the
+      // container root and fails with "Cannot mkdir: Read-only file system".
+      const extraction = runDockerMock.mock.calls
+        .map((call) => call[0] as string[])
+        .find((args) => (args[args.indexOf('-c') + 1] ?? '').includes('tar -xzf'));
+      expect(extraction?.[extraction.indexOf('-c') + 1]).toContain('-C /extract');
+      expect(readFileSync(join(stagingDir, 'skills', 'ak-deploy', 'SKILL.md'), 'utf8')).toBe('# ak-deploy');
+    } finally {
+      rmSync(treeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a licensed kit whose projected tree exceeds the generic 1,000-file toolkit ceiling', async () => {
+    const treeRoot = mkdtempSync(join(tmpdir(), 'ch-agentkit-tree-'));
+    try {
+      // The engineer kit ships 107 skills across ~1.7k files, so a complete kit cannot fit the shared
+      // toolkit ceiling that third-party sources are held to.
+      const skills = Array.from({ length: 60 }, (_, index) => `ak-bulk-${index}`);
+      const members = packageTree(treeRoot, skills);
+      for (const skill of skills) {
+        for (let file = 0; file < 18; file += 1) {
+          const relative = join(KIT_ID, 'skills', skill, `reference-${file}.md`);
+          writeFileSync(join(treeRoot, relative), `# ${skill} reference ${file}`);
+          members.push(relative.split(sep).join('/'));
+        }
+      }
+      mockTarHelper(members, treeRoot);
+      const manifest = signedManifest({ packageBytes: packageFixture, privateKey, keyId, tier: 'paid' });
+      const fetchImpl = vi.fn(async () => new Response(packageFixture));
+
+      const result = await adapter().materialize(
+        stagingDir,
+        { kitId: KIT_ID, channel: CHANNEL },
+        manifest,
+        { fetchImpl: fetchImpl as unknown as typeof fetch }
+      );
+
+      expect(result.manifest.skills).toHaveLength(skills.length);
+      expect(result.fileCount).toBeGreaterThan(1_000);
     } finally {
       rmSync(treeRoot, { recursive: true, force: true });
     }
