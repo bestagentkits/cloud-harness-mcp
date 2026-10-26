@@ -28,7 +28,7 @@ type RoutingFixture = {
 type FailureFixture = { cases: Array<{ action: string; stderr: string; stdout?: string; expected: string }> };
 type ExecutionRiskFixture = {
   settings: Pick<PolicyAdvisor, 'riskThreshold' | 'minConfidence'>;
-  cases: Array<{ name: string; action: AgentActionDescriptorInput; facts: AdvisorFacts; operatorExpects: 'no_change' | 'escalate' }>;
+  cases: Array<{ name: string; action: AgentActionDescriptorInput; facts: AdvisorFacts; expected: { fallbackReason: string | null }; operatorExpects: 'no_change' | 'escalate' }>;
 };
 
 const fixture = <T>(name: string): T => JSON.parse(readFileSync(new URL(`../fixtures/decision-plane/${name}`, import.meta.url), 'utf8')) as T;
@@ -113,8 +113,10 @@ describe('decision plane benchmark fixtures', () => {
     const recording: DecisionProvider = { name: 'recording', evaluate: async (request, context) => { sent.push(request); return indifferent.evaluate(request, context); } };
     const advisor = new ExecutionRiskAdvisor(new DecisionPlane({ purposes: ['execution-risk'], providerFor: () => recording }));
     for (const entry of executionRisk.cases) {
-      // An indifferent provider is below the confidence floor, so every case falls back to a human.
-      expect(await adviseCase(advisor, entry), entry.name).toMatchObject({ effect: 'escalate', fallbackReason: 'low_confidence' });
+      // An indifferent provider is below the confidence floor, so every case falls back to a human; a CI or
+      // dependency change is escalated before the provider is asked.
+      const reason = entry.expected.fallbackReason === 'sensitive_paths' ? 'sensitive_paths' : 'low_confidence';
+      expect(await adviseCase(advisor, entry), entry.name).toMatchObject({ effect: 'escalate', fallbackReason: reason });
     }
     const payload = JSON.stringify(sent);
     for (const literal of ['src/cart.ts', 'package-lock.json', 'ci.yml', 'agent/fix-417', 'left-pad', 'acme/widgets', 'commit']) expect(payload).not.toContain(literal);

@@ -15,6 +15,7 @@ import { AgentPolicyError, AgentPolicyService } from '../src/agent-governance/po
 import type { GateSubject } from '../src/agent-governance/gate-evaluator.js';
 import type { AdvisorFacts } from '../src/agent-governance/ports.js';
 import { DECISION_RATE_LIMIT_PER_MINUTE } from '../src/decision-plane/decision-plane.js';
+import { touchesSensitivePaths } from '../src/agent-governance/sensitive-paths.js';
 import { ExecutionRiskAdvisor, advisorFallbackReason, executionRiskState } from '../src/decision-plane/execution-risk-advisor.js';
 import { JevDecisionProvider } from '../src/decision-plane/jev-provider.js';
 import { createRunnerDecisionPlane } from '../src/decision-plane/runner-decision-plane.js';
@@ -410,8 +411,103 @@ describe('execution-risk golden fixtures', () => {
     const answer = await new ExecutionRiskAdvisor(plane).advise({
       principalId: 'owner', descriptor: AgentActionDescriptorSchema.parse(entry.action), subject: plain(AgentActionDescriptorSchema.parse(entry.action)), decision: {} as GateDecision, settings: fixture.settings, facts: entry.facts
     });
+    if (entry.expected.fallbackReason === 'sensitive_paths') {
+      // Decided locally: the scripted answer is never requested, so nothing leaves the runner.
+      expect(answer).toEqual({ effect: 'escalate', decisionId: null, fallbackReason: 'sensitive_paths' });
+      expect(provider.calls).toBe(0);
+      return;
+    }
     expect(answer).toMatchObject({ effect: entry.expected.effect, fallbackReason: entry.expected.fallbackReason, risk: entry.answer.risk, confidence: entry.answer.confidence });
     expect(provider.calls).toBe(1);
+  });
+});
+
+describe('execution-risk advisor: CI and dependency changes are never put to the model', () => {
+  // A maximally reassuring answer, which the advisor must never get the chance to read.
+  const reassuring: FakeJevStep = { kind: 'risk', risk: 0, confidence: 1, uncertainSideEffects: 0, humanRequired: 0 };
+
+  it.each([
+    ['a GitHub workflow', ['.github/workflows/ci.yml']],
+    ['a nested GitHub workflow', ['.github/workflows/release/x.yml']],
+    ['a GitHub action definition', ['./.github/actions/setup/action.yml']],
+    ['a GitLab CI file', ['.gitlab-ci.yml']],
+    ['a CircleCI config', ['.circleci/config.yml']],
+    ['an npm manifest and lockfile', ['package.json', 'package-lock.json']],
+    ['a manifest in a subdirectory', ['sub/package.json']],
+    ['a lockfile among source edits', ['src/a.ts', 'services/api/poetry.lock']],
+    ['a Go module file with odd casing and dot segments', ['.//./tools/GO.MOD']],
+    ['a workflow behind dot segments', ['.//./.github/workflows/ci.yml']],
+    ['an npm registry config', ['.npmrc']],
+    ['a Bun lockfile', ['bun.lock']],
+    ['a pinned Python requirements file', ['requirements-dev.txt']],
+    ['a .NET project file', ['src/App/App.csproj']],
+    ['an Azure Pipelines config', ['azure-pipelines.yml']],
+    ['a Jenkinsfile', ['Jenkinsfile']],
+    ['a Gitea workflow', ['.gitea/workflows/ci.yml']],
+    ['a pnpm install hook', ['.pnpmfile.cjs']],
+    ['a vendored Yarn release', ['.yarn/releases/yarn-4.1.0.cjs']],
+    ['a Gradle wrapper pin', ['gradle/wrapper/gradle-wrapper.properties']],
+    ['a requirements directory file', ['requirements/dev.txt']],
+    ['a gemspec', ['widgets.gemspec']],
+    ['a Cargo registry config', ['.cargo/config.toml']],
+    ['an MSBuild props file', ['Directory.Build.props']],
+    ['a YAML-suffixed GitLab CI file', ['.gitlab-ci.yaml']]
+  ] as const)('escalates %s with zero egress and REQUIRE_APPROVAL', async (_label, paths) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const { decide, provider, traces } = setup({ steps: reassuring });
+    const decision = await decide(action({ actionClass: 'edit', paths: [...paths] }));
+    expect(decision).toMatchObject({
+      decision: 'REQUIRE_APPROVAL',
+      reasonCode: 'ADVISOR_ESCALATED',
+      advisor: { required: true, consulted: false, effect: 'escalate', decisionId: null, risk: null, confidence: null, fallbackReason: 'sensitive_paths' }
+    });
+    expect(provider.calls).toBe(0);
+    expect(traces).toHaveLength(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('applies the policy deny fallback to a sensitive change, like any unanswered action', async () => {
+    const { decide, provider } = setup({ steps: reassuring, global: policy({ ...ADVISOR, fallback: 'deny' }) });
+    const decision = await decide(action({ actionClass: 'edit', paths: ['.github/workflows/ci.yml'] }));
+    expect(decision).toMatchObject({ decision: 'DENY', reasonCode: 'ADVISOR_FALLBACK_DENY', advisor: { fallbackReason: 'sensitive_paths', fallback: 'deny' } });
+    expect(provider.calls).toBe(0);
+  });
+
+  it('leaves a sensitive change to the owner when the policy turns the advisor off, and sends nothing', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const { decide, provider } = setup({ steps: reassuring, global: policy({ ...ADVISOR, enabled: false, fallback: 'deny' }) });
+    const decision = await decide(action({ actionClass: 'edit', paths: ['package.json'] }));
+    expect(decision).toMatchObject({ decision: 'REQUIRE_APPROVAL', reasonCode: 'ADVISOR_UNAVAILABLE', advisor: { consulted: false } });
+    expect(provider.calls).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('escalates every discretionary class that names a sensitive path, not only edits', async () => {
+    const { decide, provider } = setup({ steps: reassuring });
+    const decision = await decide(action({ actionClass: 'vcs_local', paths: ['yarn.lock'], command: ['git', 'add', 'yarn.lock'] }));
+    expect(decision).toMatchObject({ decision: 'REQUIRE_APPROVAL', advisor: { fallbackReason: 'sensitive_paths' } });
+    expect(provider.calls).toBe(0);
+  });
+
+  it.each([
+    ['a plain source edit', ['src/cart.ts']],
+    ['a workflow-like name outside the root CI directories', ['docs/.github-notes.md', 'src/github/workflows.ts']],
+    ['a file that only resembles a manifest', ['src/package.json.ts', 'docs/requirements.md', 'src/yarn/index.ts', 'docs/requirements/notes.md']]
+  ] as const)('still consults the provider for %s', async (_label, paths) => {
+    const { decide, provider } = setup({ steps: reassuring });
+    const decision = await decide(action({ actionClass: 'edit', paths: [...paths] }));
+    expect(decision).toMatchObject({ decision: 'ALLOW', reasonCode: 'ADVISOR_NO_CHANGE', advisor: { consulted: true, fallbackReason: null } });
+    expect(provider.calls).toBe(1);
+  });
+
+  it('classifies with the same rules the summary counts', () => {
+    const paths = ['package.json', 'sub/Cargo.lock', '.github/workflows/ci.yml', '.circleci/config.yml', 'src/a.ts'];
+    const state = executionRiskState(action({ actionClass: 'edit', paths }), plain({ actionClass: 'edit' }));
+    expect(state).toContain('dependency manifests or lockfiles touched: 2');
+    expect(state).toContain('CI or workflow files touched: 2');
+    for (const path of paths.slice(0, 4)) expect(touchesSensitivePaths([path]), path).toBe(true);
+    expect(touchesSensitivePaths(['src/a.ts'])).toBe(false);
+    expect(touchesSensitivePaths(undefined)).toBe(false);
   });
 });
 
