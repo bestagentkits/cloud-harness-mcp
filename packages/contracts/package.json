@@ -1,6 +1,6 @@
 {
   "name": "@cloud-harness/contracts",
-  "version": "0.66.0-beta.41",
+  "version": "0.66.0-beta.42",
   "private": true,
   "type": "module",
   "exports": {

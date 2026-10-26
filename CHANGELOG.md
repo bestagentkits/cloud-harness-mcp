@@ -1,3 +1,12 @@
+# [0.66.0-beta.42](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.41...v0.66.0-beta.42) (2026-10-26)
+
+
+### Bug Fixes
+
+* **policy:** escalate CI workflow and dependency manifest edits without consulting the advisor ([09d7338](https://github.com/bestagentkits/cloud-harness-mcp/commit/09d7338c4f3b571ec0d874627b39b26d5ee18c54)), closes [#606](https://github.com/bestagentkits/cloud-harness-mcp/issues/606)
+* **runner:** cover install hooks and more ecosystems in the sensitive path rules ([dcb4673](https://github.com/bestagentkits/cloud-harness-mcp/commit/dcb4673f8497cb20742d9b897351f4f6b248cd55))
+* **runner:** let sensitive-path escalations follow the policy fallback ([d31f852](https://github.com/bestagentkits/cloud-harness-mcp/commit/d31f85286e6e8df99172a906f583494124b94464))
+
 # [0.66.0-beta.41](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.40...v0.66.0-beta.41) (2026-10-26)
 
 
