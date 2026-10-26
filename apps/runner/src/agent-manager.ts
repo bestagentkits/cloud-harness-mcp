@@ -1428,7 +1428,13 @@ export class AgentManager {
     } catch {
       // A busy store only delays retention to the next tick; it must not skip the spend sweep.
     }
-    // A store left behind by a failed removal is deleted with its workspace.
+    try {
+      // A store whose removal failed on an earlier tick, or before a restart, is still on disk and is
+      // retried here, since its sessions are no longer selected for purging.
+      purgedLineages.push(...this.repository.purgedDurableLineages(this.durableSessions.lineages()));
+    } catch {
+      // A busy store only delays the retry to the next tick.
+    }
     if (purgedLineages.length > 0) await this.durableSessions.deleteLineages(purgedLineages).catch(() => undefined);
     if (now - this.lastSpendSweepAt >= SPEND_SWEEP_INTERVAL_MS) void this.sweepSpend(SPEND_SWEEP_MIN_AGE_MS);
   }
