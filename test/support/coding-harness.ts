@@ -188,7 +188,14 @@ class LocalWorkspaces {
         return ok({ output: head, exitCode: 0 });
       }
       case 'git_status': return ok({ output: git(checkout, ['status', '--short', '--branch', '--untracked-files=all']), exitCode: 0 });
-      case 'git_diff': return ok({ output: git(checkout, ['diff', ...(input.staged === true ? ['--cached'] : [])]), exitCode: 0 });
+      case 'git_diff': {
+        // As the worker answers: one page of the diff, at most 1 MiB with `readAll`, and `eof` false when cut short.
+        const read = spawnSync('git', ['diff', ...(input.staged === true ? ['--cached'] : [])], { cwd: checkout, windowsHide: true, maxBuffer: 64 * 1_048_576 });
+        if (read.status !== 0) return fail('GIT_DIFF_FAILED');
+        const whole = read.stdout;
+        const page = whole.subarray(0, input.readAll === true ? 1_048_576 : Number(input.limit ?? 65_536));
+        return ok({ output: page.toString('utf8'), exitCode: 0, bytesReturned: page.length, totalBytes: whole.length, eof: page.length === whole.length });
+      }
       case 'git_add': {
         git(checkout, ['add', '-A']);
         return ok({});

@@ -33,7 +33,20 @@ export type CodingGitPort = {
   commit(ownerId: string, workspaceId: string, revision: string, base: string, signal: AbortSignal): Promise<CodingGitResult<CodingGitCommit>>;
   /** The unified diff of commit `sha` against `base`, for the owner to review; never used to decide a push. */
   diff(ownerId: string, workspaceId: string, base: string, sha: string, signal: AbortSignal): Promise<CodingGitResult<{ text: string; truncated: boolean }>>;
+  /**
+   * What a change against `base` consists of: the staged index (`sha` null, with the HEAD it sits on) or
+   * commit `sha`. See `CodingGitChange`.
+   */
+  change(ownerId: string, workspaceId: string, base: string, sha: string | null, signal: AbortSignal): Promise<CodingGitResult<CodingGitChange>>;
 };
+
+/**
+ * Git's raw listing of a change, one entry per changed path with both modes and full object ids. An object
+ * id names a file's entire content, so the listing identifies the whole change however large its diff is,
+ * and the staged index and the commit made from it list the same change identically. `head` is the HEAD
+ * the staged index sits on, null for a commit. A truncated listing identifies nothing.
+ */
+export type CodingGitChange = { head: string | null; listing: string; truncated: boolean };
 
 /**
  * Decides a push from the staged transfer clone, after it is staged and before anything is sent. The
@@ -60,7 +73,7 @@ export type PushVerifier = {
 const NO_ALTERNATE_REFS = 'core.alternateRefsCommand=true';
 
 /** The only Git subcommands the inspection port runs; the workspace service refuses anything else. */
-export const CODING_GIT_SUBCOMMANDS = new Set(['rev-parse', 'status', 'cat-file', 'diff-tree']);
+export const CODING_GIT_SUBCOMMANDS = new Set(['rev-parse', 'status', 'cat-file', 'diff-tree', 'diff-index']);
 
 /**
  * Environment of a checkout inspection: no system or global configuration, replace objects or grafts,
@@ -213,6 +226,23 @@ export function createCodingGitPort(run: CodingGitRunner): CodingGitPort {
         // cannot run a program while the diff is read.
         const patch = await git(ownerId, workspaceId, ['diff-tree', '-r', '-p', '--no-renames', '--no-color', '--no-ext-diff', '--no-textconv', base, sha, '--'], signal);
         return { ok: true, data: { text: patch.stdout, truncated: patch.truncated } };
+      } catch (error) {
+        return failure(error);
+      }
+    },
+    async change(ownerId, workspaceId, base, sha, signal) {
+      if (!SHA.test(base) || (sha !== null && !SHA.test(sha))) return { ok: false, code: 'GIT_INSPECT_FAILED', retryable: false };
+      try {
+        // Raw listings with full object ids: no diff driver, text conversion or abbreviation applies, and
+        // submodule changes are never hidden by the checkout's configuration.
+        const options = ['-r', '-z', '--no-renames', '--no-abbrev', '--ignore-submodules=none'];
+        if (sha !== null) {
+          const listed = await git(ownerId, workspaceId, ['diff-tree', ...options, '--no-commit-id', base, sha, '--'], signal);
+          return { ok: true, data: { head: null, listing: listed.stdout, truncated: listed.truncated } };
+        }
+        const head = await resolve(ownerId, workspaceId, 'HEAD', signal);
+        const listed = await git(ownerId, workspaceId, ['diff-index', '--cached', ...options, base, '--'], signal);
+        return { ok: true, data: { head, listing: listed.stdout, truncated: listed.truncated } };
       } catch (error) {
         return failure(error);
       }

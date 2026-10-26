@@ -250,15 +250,31 @@ export class AgentApprovalService {
   /**
    * The id of an approval that lets exactly the held runner step (its original step key) with this
    * descriptor digest run although the gate required approval; null when there is none or approvals
-   * are off. No other step of the workflow can use it. The first use marks an approved approval
+   * are off. No other step of the workflow can use it, except the push's repeat of an approved commit
+   * path check (see `approvedCommitPathCheck`). The first use marks an approved approval
    * CONSUMED; a replay of the same step after a restart still finds it.
    */
   approvedFor(principalId: string, workflowId: string, stepKey: string, digest: string): string | null {
     if (!this.enabled) return null;
-    const record = this.store.approvedForDigest(principalId, workflowId, stepKey, digest);
+    const record = this.store.approvedForDigest(principalId, workflowId, stepKey, digest)
+      ?? this.approvedCommitPathCheck(principalId, workflowId, stepKey, digest);
     if (!record) return null;
     if (record.state === 'APPROVED') this.store.consume(record.approvalId, this.now());
     return record.approvalId;
+  }
+
+  /**
+   * The push gates the paths of the commit again, chunk by chunk (`automation:<workflow>:push:paths:<n>`),
+   * and cannot wait for the owner. The approval of the commit's own check of the same chunk
+   * (`automation:<workflow>:commit:paths:<n>`) covers that check when its descriptor digest is identical:
+   * the same paths of the same workflow, decided again. No other step can use it.
+   */
+  private approvedCommitPathCheck(principalId: string, workflowId: string, stepKey: string, digest: string): AgentApprovalRecord | undefined {
+    const prefix = `automation:${workflowId}:push:paths:`;
+    if (!stepKey.startsWith(prefix)) return undefined;
+    const chunk = stepKey.slice(prefix.length);
+    if (!/^(?:0|[1-9]\d*)$/u.test(chunk)) return undefined;
+    return this.store.approvedForDigest(principalId, workflowId, `automation:${workflowId}:commit:paths:${chunk}`, digest);
   }
 
   /**

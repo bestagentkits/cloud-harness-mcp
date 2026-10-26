@@ -227,14 +227,19 @@ boundary is in the [security model](../security-model.md#coding-automations).
   the policy revisions and the run's pause counter in the existing runner state
   database (`agent_action_approvals`); there is no second store. A decision
   names the digest it was shown, and a guarded state change makes it
-  single-use. The approval also records the SHA-256 of the change it showed;
-  the resumed run recomputes it before the approved step is dispatched and
-  fails as `APPROVAL_STALE` when it differs, so approving an action never
-  approves content the owner did not see.
+  single-use. The approval also binds the change it showed: the SHA-256 of
+  Git's raw listing of it, whose full object ids name every changed file's
+  whole content, so a diff too large to show in full is still bound
+  completely. The resumed run recomputes it before the approved step is
+  dispatched, and an approved commit again right before it commits, and fails
+  as `APPROVAL_STALE` when it differs, so approving an action never approves
+  content the owner did not see.
 - **Approval never overrides the gate.** On resume the step is decided again;
   the approval lifts only `REQUIRE_APPROVAL`, only for the held step itself and
   the same digest, and only while approvals are enabled. It is consumed when
-  that step is admitted, whether or not the re-gate still needed it. A `DENY`
+  that step is admitted, whether or not the re-gate still needed it. The push
+  repeats the commit's path checks and cannot wait, so an approved commit path
+  check also covers the push's check of the same paths with the same digest. A `DENY`
   (for example a hard deny added while waiting) still wins, and an advisor
   answer can escalate but never approve.
 - **Fenced resume.** The resumed step runs under

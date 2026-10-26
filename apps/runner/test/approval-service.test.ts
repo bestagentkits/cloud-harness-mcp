@@ -38,7 +38,7 @@ afterEach(() => {
   for (const database of databases.splice(0)) database.close();
 });
 
-function setup(options: { enabled?: boolean; workspaceGeneration?: number | null } = {}) {
+function setup(options: { enabled?: boolean; workspaceGeneration?: number | null; stepKey?: string } = {}) {
   const database = new DatabaseSync(':memory:');
   databases.push(database);
   initializeNotificationSchema(database);
@@ -74,7 +74,7 @@ function setup(options: { enabled?: boolean; workspaceGeneration?: number | null
   const actions = new CodingActionStore(database, () => clock.now);
   const decision: GateDecision = policies.service.evaluate(OWNER, CODING_PROJECT, AgentActionDescriptorSchema.parse(PUSH), { usage: {} });
   const record = actions.record({
-    principalId: OWNER, workflowId: WORKFLOW, workspaceId: WORKSPACE, agentId: 'agent_1', agentGeneration: 1, idempotencyKey: STEP_KEY,
+    principalId: OWNER, workflowId: WORKFLOW, workspaceId: WORKSPACE, agentId: 'agent_1', agentGeneration: 1, idempotencyKey: options.stepKey ?? STEP_KEY,
     origin: 'runner', step: 'push', descriptor: AgentActionDescriptorSchema.parse(PUSH), projectId: CODING_PROJECT, decision, state: 'REJECTED'
   }).record;
   const request = (generation = 1) => service.request({
@@ -209,6 +209,24 @@ describe('agent approval service', () => {
     context.service.consume(OWNER, WORKFLOW, STEP_KEY);
     expect(context.service.store.get(approval.approvalId)).toMatchObject({ state: 'CONSUMED', consumedAt: context.clock.now });
     expect(context.service.latestApproved(OWNER, WORKFLOW)).toMatchObject({ approvalId: approval.approvalId, contentDigest: CONTENT });
+  });
+
+  it("lets the push's repeat of an approved commit path check use that approval, and nothing else", () => {
+    const commitPaths = `automation:${WORKFLOW}:commit:paths:0`;
+    const context = setup({ stepKey: commitPaths });
+    const approval = context.request()!;
+    expect(approval.stepKey).toBe(commitPaths);
+    expect(context.decide(approval.approvalId, 'approve').ok).toBe(true);
+    const digest = context.decision.inputFingerprint;
+    for (const key of [`automation:${WORKFLOW}:push:paths:1`, `automation:${WORKFLOW}:push:paths:00`, `automation:${WORKFLOW}:push:paths:`,
+      `automation:${WORKFLOW}:push`, `automation:wfl_${'f'.repeat(32)}:push:paths:0`, `automation:${WORKFLOW}:pr:paths:0`]) {
+      expect(context.service.approvedFor(OWNER, WORKFLOW, key, digest), key).toBeNull();
+    }
+    expect(context.service.approvedFor(OWNER, WORKFLOW, `automation:${WORKFLOW}:push:paths:0`, 'f'.repeat(64))).toBeNull();
+    expect(context.service.store.get(approval.approvalId)?.state).toBe('APPROVED');
+    expect(context.service.approvedFor(OWNER, WORKFLOW, commitPaths, digest)).toBe(approval.approvalId);
+    expect(context.service.store.get(approval.approvalId)?.state).toBe('CONSUMED');
+    expect(context.service.approvedFor(OWNER, WORKFLOW, `automation:${WORKFLOW}:push:paths:0`, digest)).toBe(approval.approvalId);
   });
 
   it('retires an unused approval whose change no longer matches, audited', () => {

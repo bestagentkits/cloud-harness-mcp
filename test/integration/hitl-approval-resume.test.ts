@@ -2,7 +2,9 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AgentApprovalSummarySchema, type AgentApprovalSummary, type GlobalExecutionPolicy } from '@cloud-harness/contracts';
+import { ExecutionRiskAdvisor } from '../../apps/runner/src/decision-plane/execution-risk-advisor.js';
 import { CODING_GLOBAL_POLICY, VERIFY_COMMAND } from '../../apps/runner/test/support/coding-policy.js';
+import { FakeJevProvider, fakeJevPlane, LOW_RISK_STEP } from '../../apps/runner/test/support/fake-jev-provider.js';
 import { disableNotifications, enableNotifications } from '../../apps/runner/test/support/notification-fixtures.js';
 import { createCodingHarness, FIXED_SOURCES, type CodingHarness } from '../support/coding-harness.js';
 import { git } from '../support/fake-github-backend.js';
@@ -29,6 +31,14 @@ const COMMIT_NEEDS_APPROVAL: GlobalExecutionPolicy = {
   ...CODING_GLOBAL_POLICY,
   defaults: { ...CODING_GLOBAL_POLICY.defaults, vcs_local: { effect: 'require_approval', delegable: false } }
 };
+/** Edits left to the advisor, which may clear or escalate them. */
+const ADVISED_EDIT_POLICY: GlobalExecutionPolicy = {
+  ...CODING_GLOBAL_POLICY,
+  defaults: { ...CODING_GLOBAL_POLICY.defaults, edit: { effect: 'advisor_or_approval', delegable: true } },
+  advisor: { enabled: true, riskThreshold: 0.5, minConfidence: 0.7, fallback: 'require_approval' }
+};
+const ESCALATE = { kind: 'risk', risk: 0.82, confidence: 0.91, uncertainSideEffects: 0.2, humanRequired: 0.3 } as const;
+const TYPESAFE_KEY = 'ts_live_0123456789abcdefghijklmnopqrstuv';
 const DIFF_FILE = '.cloud-harness-coding.diff';
 
 const FIX_BOTH = [
@@ -376,6 +386,92 @@ describe('coding automation: owner approval of a held step', { timeout: 30_000 }
     expect(harness.workflow(workflowId).workflow.state).toBe('CANCELLED');
     expect(approval(harness, held.approvalId).state).toBe('EXPIRED');
     expect(decide(harness, held, 'approve')).toMatchObject({ ok: false, error: { code: 'APPROVAL_EXPIRED' } });
+    zeroPublishEffects(harness);
+  });
+
+  it('completes with one push and one pull request when the owner approves a held path check that the push checks again', async () => {
+    const jev = new FakeJevProvider(LOW_RISK_STEP);
+    const { plane } = fakeJevPlane({ provider: jev, secretsFor: () => ({ TYPESAFE_API_KEY: TYPESAFE_KEY }) });
+    const harness = await setup({ policy: ADVISED_EDIT_POLICY, advisor: new ExecutionRiskAdvisor(plane) });
+    harness.deliver();
+    await harness.tick();
+    const workflowId = harness.workflows()[0]!.id;
+    await harness.runAgent(workflowId, FIX_BOTH);
+    // The advisor cleared the agent's edits and escalates every later check of the same paths.
+    jev.script(ESCALATE);
+    for (let pass = 0; pass < 8 && harness.row(workflowId).state !== 'WAITING_FOR_HUMAN'; pass += 1) await harness.tick();
+    const held = pending(harness);
+    expect(held).toMatchObject({ step: 'path_check', descriptor: { actionClass: 'edit', paths: ['src/greeting.mjs', 'src/math.mjs'] } });
+    zeroPublishEffects(harness);
+
+    expect(decide(harness, held, 'approve').ok).toBe(true);
+    for (let pass = 0; pass < 8 && harness.row(workflowId).state === 'RUNNING'; pass += 1) await harness.tick();
+    const { workflow } = harness.workflow(workflowId);
+    expect(workflow).toMatchObject({ state: 'COMPLETED', errorCode: null });
+    expect(harness.github.pushes).toEqual([{ branch: workflow.coding!.branch, oid: workflow.coding!.commitSha }]);
+    expect(harness.github.pulls).toHaveLength(1);
+    expect(approval(harness, held.approvalId)).toMatchObject({ state: 'CONSUMED' });
+    // The push's own check of the commit's paths was escalated too, and ran on the commit check's approval.
+    expect(receiptKeys(harness, workflowId, 'path_check')).toContainEqual({ idempotency_key: `automation:${workflowId}:push:paths:0`, state: 'APPLIED', decision: 'REQUIRE_APPROVAL' });
+  });
+
+  it('binds the complete change, not the first MiB of its diff the owner is shown', async () => {
+    const harness = await setup({ policy: COMMIT_NEEDS_APPROVAL });
+    harness.deliver();
+    await harness.tick();
+    const workflowId = harness.workflows()[0]!.id;
+    await harness.runAgent(workflowId, FIX_BOTH);
+    const checkout = harness.workspaces.checkout(String(harness.row(workflowId).workspace_id));
+    const lines = Array.from({ length: 24_000 }, (_, index) => `line ${String(index).padStart(6, '0')} ${'x'.repeat(80)}\n`);
+    writeFileSync(join(checkout, 'src/large.txt'), lines.join(''));
+    for (let pass = 0; pass < 8 && harness.row(workflowId).state !== 'WAITING_FOR_HUMAN'; pass += 1) await harness.tick();
+    const held = pending(harness);
+    expect(held.step).toBe('commit');
+    const shown = harness.workspaces.artifacts.get(String(held.diff.artifactId))!.content;
+    expect(shown).toContain('The diff was cut short at its size limit');
+    expect(shown).not.toContain('line 023999');
+
+    expect(decide(harness, held, 'approve').ok).toBe(true);
+    // A line far past the first MiB of the diff changes; the size stays the same.
+    lines[23_999] = `line 023999 ${'y'.repeat(80)}\n`;
+    writeFileSync(join(checkout, 'src/large.txt'), lines.join(''));
+    await harness.tick(5);
+
+    expect(harness.workflow(workflowId).workflow).toMatchObject({ state: 'FAILED', errorCode: 'APPROVAL_STALE' });
+    expect(harness.count('git_commit')).toBe(0);
+    expect(approval(harness, held.approvalId).state).toBe('EXPIRED');
+    zeroPublishEffects(harness);
+  });
+
+  it('checks the approved change again when a commit is retried after a failed branch checkout', async () => {
+    const harness = await setup({ policy: COMMIT_NEEDS_APPROVAL });
+    const { workflowId, approval: held } = await waiting(harness);
+    expect(decide(harness, held, 'approve').ok).toBe(true);
+    const checkout = harness.workspaces.checkout(String(harness.row(workflowId).workspace_id));
+    const run = harness.workspaces.run.bind(harness.workspaces);
+    let failedCheckouts = 0;
+    harness.workspaces.run = async (workspaceId, operation, input) => {
+      if (operation === 'git_checkout' && failedCheckouts === 0) {
+        failedCheckouts += 1;
+        // The checkout changes after the approved commit was checked and before it is retried.
+        writeFileSync(join(checkout, 'src/math.mjs'), `${FIXED_SOURCES['src/math.mjs']}\nexport const injected = true;\n`);
+        return { ok: false, error: { code: 'UNAVAILABLE', retryable: true } } as Awaited<ReturnType<typeof run>>;
+      }
+      return await run(workspaceId, operation, input);
+    };
+    for (let pass = 0; pass < 6 && harness.row(workflowId).state === 'RUNNING'; pass += 1) {
+      await harness.tick();
+      harness.clock.now += 10_000;
+    }
+
+    expect(failedCheckouts).toBe(1);
+    expect(harness.workflow(workflowId).workflow).toMatchObject({ state: 'FAILED', errorCode: 'APPROVAL_STALE' });
+    expect(harness.count('git_commit')).toBe(0);
+    expect(git(checkout, ['rev-parse', 'HEAD']).trim()).toBe(harness.row(workflowId).base_oid);
+    expect(receiptKeys(harness, workflowId, 'commit')).toContainEqual({ idempotency_key: `automation:${workflowId}:resume:${held.approvalId}`, state: 'REJECTED', decision: 'REQUIRE_APPROVAL' });
+    expect(harness.audits.filter((entry) => entry.action === 'agent.approval.stale')).toEqual([
+      expect.objectContaining({ subjectId: held.approvalId, details: expect.objectContaining({ reason: 'CONTENT_CHANGED' }) })
+    ]);
     zeroPublishEffects(harness);
   });
 });

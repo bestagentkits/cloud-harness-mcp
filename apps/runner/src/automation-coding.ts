@@ -103,7 +103,10 @@ export type CodingApprovalPort = {
   ttlSeconds(): number;
   /** The key a runner step runs under: its own, or the resume key of an approval of it. */
   stepKey(ownerId: string, workflowId: string, key: string): string;
-  /** An approval of exactly this held step (its own key) covering exactly this input fingerprint, or null. */
+  /**
+   * An approval of exactly this held step (its own key) covering exactly this input fingerprint, or null.
+   * The push's repeat of a commit path check is covered by the approval of that check.
+   */
   approvedFor(ownerId: string, workflowId: string, stepKey: string, digest: string): string | null;
   /** Marks the approval of a step admitted under its resume key CONSUMED, whether or not the gate still needed it. */
   consume(ownerId: string, workflowId: string, stepKey: string): void;
@@ -164,10 +167,25 @@ export function diffStats(text: string): { files: number; additions: number; del
   return { files, additions, deletions };
 }
 
-/** SHA-256 of the change an approval is bound to. */
-export function contentDigest(text: string): string {
-  return createHash('sha256').update(text, 'utf8').digest('hex');
+/** SHA-256 of the change an approval is bound to: Git's raw listing of it (see `CodingGitChange`). */
+export function contentDigest(listing: string): string {
+  return createHash('sha256').update(listing, 'utf8').digest('hex');
 }
+
+/** The note that ends a diff cut short at its size limit; the approval still covers the complete change. */
+const DIFF_CUT_SHORT_NOTE = '\n[The diff was cut short at its size limit. The approval covers the complete change.]\n';
+
+/** The largest diff artifact the runner writes: the most `files_write` accepts. */
+const MAX_SHOWN_DIFF_CHARS = 1_048_576;
+
+/** The diff as the owner is shown it: within the artifact limit, and saying so when it was cut short. */
+function shownDiff(text: string, truncated: boolean): string {
+  if (!truncated && text.length <= MAX_SHOWN_DIFF_CHARS) return text;
+  return `${text.slice(0, MAX_SHOWN_DIFF_CHARS - DIFF_CUT_SHORT_NOTE.length)}${DIFF_CUT_SHORT_NOTE}`;
+}
+
+/** The change an approval binds: the digest of its identity, the HEAD a staged change sits on, and the diff shown. */
+type ChangeRead = { ok: true; digest: string; head: string | null; text: string } | { ok: false; code: string; retryable: boolean };
 
 function leaseField(result: AutomationOperationResult, field: 'expiresAt' | 'hardExpiresAt'): unknown {
   return (result.data as Record<string, unknown> | undefined)?.[field];
@@ -540,6 +558,7 @@ export class CodingWorkflowEngine {
     }
     const staged = await this.host.call(row.owner_id, 'git_add', { workspaceId, all: true });
     if (!staged.ok) return this.stepFailed(row, binding, record, staged, startedAt);
+    if (!(await this.stagedChangeApproved(row, binding, record, workspaceId, base, startedAt))) return;
     const committed = await this.host.call(row.owner_id, 'git_commit', {
       workspaceId,
       message: this.commitMessage(row),
@@ -711,10 +730,10 @@ export class CodingWorkflowEngine {
 
   /**
    * An approval covers the change the owner was shown, not just the action. Until the approved step is
-   * dispatched under its resume key, every pass recomputes the change exactly as the pause did and
-   * compares its digest: anything that changed the checkout or the commit since then fails the workflow
-   * as APPROVAL_STALE before the step can act, with an unused approval retired. False when the step
-   * must not run on this pass.
+   * dispatched under its resume key, every pass recomputes the change's identity exactly as the pause did
+   * and compares it: anything that changed the checkout or the commit since then fails the workflow as
+   * APPROVAL_STALE before the step can act, with an unused approval retired. The commit checks it again
+   * right before it commits (see `stagedChangeApproved`). False when the step must not run on this pass.
    */
   private async approvedChangeHolds(row: CodingWorkflowRow, binding: CodingBinding): Promise<boolean> {
     const approvals = this.host.approvals;
@@ -730,15 +749,47 @@ export class CodingWorkflowEngine {
       this.host.fail(row.id, 'WORKSPACE_LOST');
       return false;
     }
-    const change = await this.changeText(row, workspaceId);
+    const change = await this.readChange(row, workspaceId, { stage: true, diff: false });
     if (!change.ok) {
       if (change.retryable) this.retryLater(row);
       else this.host.fail(row.id, bounded(`CODING_DIFF_FAILED:${change.code}`));
       return false;
     }
-    if (contentDigest(change.text) === approval.contentDigest) return true;
+    if (change.digest === approval.contentDigest) return true;
     approvals.revoke(approval);
     this.host.fail(row.id, 'APPROVAL_STALE');
+    return false;
+  }
+
+  /**
+   * The last check of an approved commit, made after the commit step staged the working tree and right
+   * before it commits, on every attempt: a pass that skipped the earlier checks (a replay after a failed
+   * branch checkout) or a change made since them is caught here. When the newest approval of the workflow
+   * is one of the commit or of its path checks and HEAD is still the base, the staged change must be the
+   * one approved; otherwise the step is refused as APPROVAL_STALE and nothing is committed. With HEAD
+   * already past the base, an earlier attempt's commit is adopted only as this workflow's own (see
+   * `ownCommit`). False when the step must not go on.
+   */
+  private async stagedChangeApproved(row: CodingWorkflowRow, binding: CodingBinding, record: CodingActionRecord, workspaceId: string, base: string, startedAt: number): Promise<boolean> {
+    const approvals = this.host.approvals;
+    if (!approvals?.enabled()) return true;
+    const approval = approvals.latestApproved(binding.principalId, binding.workflowId);
+    const commitKey = `automation:${row.id}:commit`;
+    if (!approval?.contentDigest || (approval.stepKey !== commitKey && !approval.stepKey.startsWith(`${commitKey}:paths:`))) return true;
+    const change = await this.readChange(row, workspaceId, { stage: false, diff: false });
+    if (!change.ok) {
+      const code = bounded(`CODING_DIFF_FAILED:${change.code}`);
+      if (change.retryable) {
+        this.broker.settle(binding, record, 'UNKNOWN', { errorCode: code }, startedAt);
+        this.retryLater(row);
+      } else {
+        this.refused(row, binding, record, code, startedAt);
+      }
+      return false;
+    }
+    if (change.head !== base || change.digest === approval.contentDigest) return true;
+    approvals.revoke(approval);
+    this.refused(row, binding, record, 'APPROVAL_STALE', startedAt);
     return false;
   }
 
@@ -829,7 +880,7 @@ export class CodingWorkflowEngine {
     const expiresAt = await this.approvalDeadline(row, workspaceId, Math.min(approvals.ttlSeconds(), decision.approval.ttlSeconds));
     if (expiresAt === null) return;
     // The approval is bound to this exact change: without it there is nothing to bind, so nothing waits.
-    const change = await this.changeText(row, workspaceId);
+    const change = await this.readChange(row, workspaceId, { stage: true, diff: true });
     if (!change.ok) {
       if (change.retryable) this.retryLater(row);
       else this.host.fail(row.id, bounded(`CODING_DIFF_FAILED:${change.code}`));
@@ -839,7 +890,7 @@ export class CodingWorkflowEngine {
     if (diff === null) return;
     approvals.request({
       principalId: row.owner_id, workflowId: row.id, record: admission.record, decision, generation, diff, expiresAt,
-      contentDigest: contentDigest(change.text), repository: binding.repository,
+      contentDigest: change.digest, repository: binding.repository,
       trace: binding.agentId !== null && binding.agentGeneration !== null ? { agentId: binding.agentId, generation: binding.agentGeneration } : null
     });
   }
@@ -897,20 +948,37 @@ export class CodingWorkflowEngine {
   }
 
   /**
-   * The unified diff of the change: the staged working tree before the commit, the commit against the
-   * base after it. The approval binds its digest, and the resumed step recomputes it the same way.
+   * The change an approval binds, and with `diff` the unified diff the owner is shown of it (empty
+   * otherwise). Before the commit it is the working tree, staged first with `stage`; from the push on it
+   * is the recorded commit against the base. The binding is the digest of Git's raw listing of the change
+   * (see `CodingGitChange`), which names every changed file's complete content however large it is, and
+   * a listing that was cut short binds nothing. The diff only shows the change and may be cut short at its
+   * size limit, which it then says. The listing is read before the diff, so a change made between the two
+   * reads makes the approval stale instead of binding content the owner was not shown.
    */
-  private async changeText(row: CodingWorkflowRow, workspaceId: string): Promise<{ ok: true; text: string } | { ok: false; code: string; retryable: boolean }> {
-    const committed = (row.coding_phase === 'PUSH' || row.coding_phase === 'PR') && row.commit_sha && row.base_oid;
-    if (committed) {
-      if (!this.host.git) return { ok: false, code: 'COMMIT_UNVERIFIED', retryable: false };
-      const diff = await this.host.git.diff(row.owner_id, workspaceId, row.base_oid!, row.commit_sha!, inspectSignal());
-      return diff.ok ? { ok: true, text: diff.data.text } : { ok: false, code: bounded(diff.code), retryable: diff.retryable || RETRYABLE_CODES.has(diff.code) };
+  private async readChange(row: CodingWorkflowRow, workspaceId: string, options: { stage: boolean; diff: boolean }): Promise<ChangeRead> {
+    const git = this.host.git;
+    const base = row.base_oid;
+    if (!git || !base) return { ok: false, code: 'COMMIT_UNVERIFIED', retryable: false };
+    const sha = (row.coding_phase === 'PUSH' || row.coding_phase === 'PR') && row.commit_sha ? row.commit_sha : null;
+    if (sha === null && options.stage) {
+      const staged = await this.host.call(row.owner_id, 'git_add', { workspaceId, all: true });
+      if (!staged.ok) return { ok: false, code: bounded(staged.error?.code ?? 'GIT_ADD_FAILED'), retryable: retryable(staged) };
     }
-    const staged = await this.host.call(row.owner_id, 'git_add', { workspaceId, all: true });
-    if (!staged.ok) return { ok: false, code: bounded(staged.error?.code ?? 'GIT_ADD_FAILED'), retryable: retryable(staged) };
+    const read = await git.change(row.owner_id, workspaceId, base, sha, inspectSignal());
+    if (!read.ok) return { ok: false, code: bounded(read.code), retryable: read.retryable || RETRYABLE_CODES.has(read.code) };
+    if (read.data.truncated) return { ok: false, code: 'CHANGE_UNVERIFIABLE', retryable: false };
+    const identity = { ok: true as const, digest: contentDigest(read.data.listing), head: read.data.head };
+    if (!options.diff) return { ...identity, text: '' };
+    if (sha !== null) {
+      const diff = await git.diff(row.owner_id, workspaceId, base, sha, inspectSignal());
+      if (!diff.ok) return { ok: false, code: bounded(diff.code), retryable: diff.retryable || RETRYABLE_CODES.has(diff.code) };
+      return { ...identity, text: shownDiff(diff.data.text, diff.data.truncated) };
+    }
     const diff = await this.host.call(row.owner_id, 'git_diff', { workspaceId, staged: true, readAll: true });
-    return diff.ok ? { ok: true, text: outputOf(diff) } : { ok: false, code: bounded(diff.error?.code ?? 'GIT_DIFF_FAILED'), retryable: retryable(diff) };
+    if (!diff.ok) return { ok: false, code: bounded(diff.error?.code ?? 'GIT_DIFF_FAILED'), retryable: retryable(diff) };
+    const data = diff.data as { eof?: unknown; truncated?: unknown } | undefined;
+    return { ...identity, text: shownDiff(outputOf(diff), data?.eof === false || data?.truncated === true) };
   }
 
   /**

@@ -495,19 +495,32 @@ runner publishes":
   that exact digest, and only while approvals are enabled, never a `DENY` such
   as a hard deny added since. It becomes CONSUMED when the step is admitted,
   also when the re-gate no longer required it; a replay of that same step
-  after a restart may still use it, no other step can.
+  after a restart may still use it, no other step can. The one exception is
+  the push's repeat of a commit path check: the push gates the commit's paths
+  again chunk by chunk and cannot wait, so the approval of the commit's check
+  of a chunk covers the push's check of the same chunk with the identical
+  digest in the same run.
 - **An approval covers the change the owner reviewed, not just the action.**
-  The pause records the SHA-256 of the change it snapshotted as the diff
-  artifact: the staged working tree before the commit, the recorded commit
-  against the base from the push on. Until the approved step is dispatched,
-  every resumed pass recomputes that change the same way and compares the
-  digest; anything that changed the checkout or the commit while the run
-  waited or after the approval fails the run as `APPROVAL_STALE` before the
-  step acts (nothing is committed, pushed or opened), and an unused approval is
-  retired as EXPIRED with an `agent.approval.stale` audit entry. The check runs
-  on the same pass that dispatches the step, so only a process still running
-  in the executor during that pass could slip a change in; the push verifier
-  still gates every path such a change publishes.
+  The pause binds the complete change: the SHA-256 of Git's raw listing of it,
+  with the mode and full object id of every changed path, read by the runner's
+  own inspection of the checkout (the staged working tree before the commit,
+  the recorded commit against the base from the push on). An object id names
+  a file's whole content, so the binding covers a change of any size, and a
+  listing cut short at the inspection's output cap binds nothing: the run does
+  not wait. The diff artifact only shows the change and is cut short at 1 MiB,
+  which it then says; the listing is read before it, so a change made in
+  between makes the approval stale instead of binding content the owner was
+  not shown. Until the approved step is dispatched, every resumed pass
+  recomputes the binding and compares it; an approved commit is compared once
+  more on every attempt right after it stages the working tree and before it
+  commits, as long as HEAD is still the base, so a retried attempt (for
+  example after a failed branch checkout) is covered too. Anything that changed
+  the checkout or the commit while the run waited or after the approval fails
+  the run as `APPROVAL_STALE` before the step acts (nothing is committed,
+  pushed or opened), and an unused approval is retired as EXPIRED with an
+  `agent.approval.stale` audit entry. Only a process still running in the
+  executor between that last check and the commit could slip a change in; the
+  push verifier still gates every path such a change publishes.
   Neither Jev nor any advisor answer can grant an approval; the advisor can
   only escalate. With the flag off, a held step fails as
   `ACTION_DENIED:APPROVALS_DISABLED` and the sweeper fails runs still waiting.
