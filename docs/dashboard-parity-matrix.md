@@ -52,7 +52,7 @@ P3 core pages; P4 sensitive and complex flows; P5 CX/AX and Dewee; P6
 cutover and legacy removal (see the
 [child issue drafts](../plans/261020-1224-dashboard-2-react-dewee/child-issues/)).
 P4c ports the legacy pages that were built on `dev` after this audit and
-joined the React line in the #541 merge (see [section 12.5](#125-p4c-dev-only-legacy-pages)).
+joined the React line when #549 merged `dev` and `main` for #541 (see [section 12.5](#125-p4c-dev-only-legacy-pages)).
 
 Test classes: **(a)** BFF or security contract, keep unchanged; **(b)**
 frontend behaviour through a fake DOM, port to Playwright; **(c)**
@@ -92,11 +92,11 @@ are never answered by the fallback.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `/dashboard` | overview / `loadOverview` | `overview` | P3 | none | `/profile`, `/server`, `/overview`, `/metrics?window=24h`, `/reliability`; approvals badge reads `/privilege-grants` and `/package-plans` | Fan-out route (F5) | `dashboard-overview` (a), `dashboard-analytics` (b), `dashboard-agent-series` (b) |
 | `/dashboard/workspaces` | workspaces / `loadIndex` | `workspaces` | P3 | `q`, `status`, `expiring` | `/workspaces` | Fix R1: the filter must stay on this route | `dashboard-ui-behavior` (b) |
-| `/dashboard/workspaces/:ws_id[/tab]` | cockpit / `loadWorkspace` | `workspace-cockpit` | P3 (summary, agents, runtime, automation, deploy, artifacts, activity), P4 (terminal, files, git), P4c (repository scope #563, skill grant #565) | `path`, `file` (files), `staged` (git), `repository` (files, git, terminal) | `/workspaces/:id`, `/context`, `/agents`, `/runtime`, `/tasks/graph`, `/skills`, `/hooks`, `/deployments`, `/artifacts`, `/activity`, `/files`, `/files/content`, `/git/status`, `/git/diff`, `/git/log`, `/worktrees`, `/terminals`, `/repositories` (all under `/workspaces/:id`) | Tabs and id pattern: `pathMatch` regexes in `performLoad`; multi-repository reads and writes carry `repositoryId` (`withRepository`, `inRepository` in `dashboard.js`) | `dashboard-cockpit` (a/b), `dashboard-runtime` (b), `dashboard-automation` (b), `dashboard-git` (a+b), `dashboard-multi-repository` (a+b), `dashboard-skill-run-approval` (b) |
-| `/dashboard/agents[/:agent_id]` | agents / `loadAgents` | `agents` | P3 | `status`, `workspaceId`, `profileId`, `parentAgentId`, `attention` | `/agents`, `/agents/:id`, `/agents/:id/logs`; the detail's Traces panel (P4c, #560) reads `/traces?agentId=` | Fan-out without `workspaceId` (F5) | `dashboard-agents` (b) |
-| `/dashboard/inbox` | inbox / `loadInbox` | `inbox` | P4c (#557) | `unread=1` | `/inbox?limit=…`, `/notification-preferences`; the shell reads `/inbox/status` once per document for the nav entry and unread badge | Nav entry hidden until notifications are available; a notification link is followed only when it is a relative `/dashboard` path (`safeNotificationLink`) | `dashboard-inbox-ui` (b), `dashboard-inbox-router` (a) |
-| `/dashboard/traces[/:trc_id]` | traces / `loadTraces`, `loadTraceDetail` | `traces` | P4c (#560) | `state`, `profileId`, `agentId`, `workspaceId`, `window` | `/traces`, `/traces/:id`, `/traces/:id/spans`; the shell reads `/traces/status` once per document for the nav entry; export is a native download of `/traces/:id/export?format=` | Nav entry hidden until traces are enabled; unobserved figures read "unknown", never 0; waterfall uses SVG geometry, no inline style | `dashboard-traces-ui` (b), `dashboard-traces-router` (a), `agent-traces-http` (a, integration) |
-| `/dashboard/automations[/rules\|/connections\|/deliveries\|/runs/:wfl_id]` | automations / `loadAutomations` | `automations` | P4c (#561) | `ruleId`, `state` (runs), `connectionId` (deliveries) | `/automations/workflows`, `/automations/workflows/:id` (`actionsCursor`), `/automations/rules`, `/automations/connections`, `/automations/deliveries` | Connection signing secret is a one-time reveal (section 8); the runner's notification links point at `/dashboard/automations/runs/:id`; a disabled or unavailable runner renders a blocked state | `dashboard-automations-ui` (b), `dashboard-automations-router` (a), `dashboard-automation-bff` (a), `automations-webhook-http` (a, integration) |
+| `/dashboard/workspaces/:ws_id[/tab]` | cockpit / `loadWorkspace` | `workspace-cockpit` | P3 (summary, agents, runtime, automation, deploy, artifacts, activity), P4 (terminal, files, git), P4c (repository scope #559, skill grant #565) | `path`, `file` (files), `staged` (git), `repository` (files, git, terminal) | `/workspaces/:id`, `/context`, `/agents`, `/runtime`, `/tasks/graph`, `/skills`, `/hooks`, `/deployments`, `/artifacts`, `/activity`, `/files`, `/files/content`, `/git/status`, `/git/diff`, `/git/log`, `/worktrees`, `/terminals`, `/repositories` (all under `/workspaces/:id`) | Tabs and id pattern: `pathMatch` regexes in `performLoad`; multi-repository reads and writes carry `repositoryId` (`withRepository`, `inRepository` in `dashboard.js`) | `dashboard-cockpit` (a/b), `dashboard-runtime` (b), `dashboard-automation` (b), `dashboard-git` (a+b), `dashboard-multi-repository` (a+b), `dashboard-skill-run-approval` (b) |
+| `/dashboard/agents[/:agent_id]` | agents / `loadAgents` | `agents` | P3 | `status`, `workspaceId`, `profileId`, `parentAgentId`, `attention` | `/agents`, `/agents/:id`, `/agents/:id/logs`; the detail's Traces panel (P4c, #555) reads `/traces?agentId=` | Fan-out without `workspaceId` (F5) | `dashboard-agents` (b) |
+| `/dashboard/inbox` | inbox / `loadInbox` | `inbox` | P4c (#554) | `unread=1` | `/inbox?limit=…`, `/notification-preferences`; the shell reads `/inbox/status` once per document for the nav entry and unread badge | Nav entry hidden until notifications are available; a notification link is followed only when it is a relative `/dashboard` path (`safeNotificationLink`) | `dashboard-inbox-ui` (b), `dashboard-inbox-router` (a) |
+| `/dashboard/traces[/:trc_id]` | traces / `loadTraces`, `loadTraceDetail` | `traces` | P4c (#555) | `state`, `profileId`, `agentId`, `workspaceId`, `window` | `/traces`, `/traces/:id`, `/traces/:id/spans`; the shell reads `/traces/status` once per document for the nav entry; export is a native download of `/traces/:id/export?format=` | Nav entry hidden until traces are enabled; unobserved figures read "unknown", never 0; waterfall uses SVG geometry, no inline style | `dashboard-traces-ui` (b), `dashboard-traces-router` (a), `agent-traces-http` (a, integration) |
+| `/dashboard/automations[/rules\|/connections\|/deliveries\|/runs/:wfl_id]` | automations / `loadAutomations` | `automations` | P4c (#556) | `ruleId`, `state` (runs), `connectionId` (deliveries) | `/automations/workflows`, `/automations/workflows/:id` (`actionsCursor`), `/automations/rules`, `/automations/connections`, `/automations/deliveries` | Connection signing secret is a one-time reveal (section 8); the runner's notification links point at `/dashboard/automations/runs/:id`; a disabled or unavailable runner renders a blocked state | `dashboard-automations-ui` (b), `dashboard-automations-router` (a), `dashboard-automation-bff` (a), `automations-webhook-http` (a, integration) |
 | `/dashboard/activity` | activity / `loadActivity` | `activity` | P3 | `filter` | `/activity`; approvals badge reads `/privilege-grants` and `/package-plans` | Fan-out | `dashboard-activity` (b) |
 | `/dashboard/approvals` | approvals / `loadApprovals` | `approvals` | P3 (read), P4 (approve/reject) | none | `/privilege-grants`, `/package-plans` | Badge refreshes only on page loads (R13); React uses query invalidation | `dashboard-activity` (b), `dashboard-privilege-grants` (a) |
 | `/dashboard/packages` | packages / `loadPackages` | `packages` | P4 | none | `/packages` | Approve sends the `planDigest` shown | `dashboard-packages` (a) |
@@ -111,7 +111,7 @@ are never answered by the fallback.
 | `/dashboard/knowledge[/:kn_id]` | knowledge / `loadKnowledge` | `knowledge` | P3 | `kind`, `scope`, `projectId`, `q`, `cursor` | `/knowledge`, `/knowledge/:id`, `/knowledge-graph`, `POST /knowledge/search`; create dialog reads `/projects` | Markdown escaped; no `style=`, no `<style>` | `knowledge-dashboard-ui` (c), `knowledge-api` (a) |
 | `/dashboard/artifacts` | artifacts / `loadArtifacts` | `artifacts` | P4 | `cursor` | `/artifacts?limit=…`; download is a native link to `/artifacts/:id/download` | Download stays under `/dashboard/api/v1/artifacts/` | `dashboard-ui-contract` (c) |
 | `/dashboard/api-keys` | api-keys / `loadApiKeys` | `api-keys` | P4 | none | `/api-keys` | One-time reveal (D3) | `dashboard-ui-behavior` (b) |
-| `/dashboard/settings/agent-policies`, `/dashboard/projects/:prj_id/agent-policies` | agent-policies / `loadAgentPolicies` | `agent-policies` | P4c (#562) | none | `/agent-policies`, `/agent-policies/{global,projects/:id}`, `…/history` (`beforeVersion`), `/agent-policies/revisions/:id`, `/agent-policies/diff`; the project route also reads `/projects` | Not in nav (`navParent: settings`); every preview is the runner's answer; saves send `expectedVersion` and confirm a weakening change with its `weakeningDigest` | `dashboard-policies-ui` (b), `dashboard-policies-router` (a) |
+| `/dashboard/settings/agent-policies`, `/dashboard/projects/:prj_id/agent-policies` | agent-policies / `loadAgentPolicies` | `agent-policies` | P4c (#558) | none | `/agent-policies`, `/agent-policies/{global,projects/:id}`, `…/history` (`beforeVersion`), `/agent-policies/revisions/:id`, `/agent-policies/diff`; the project route also reads `/projects` | Not in nav (`navParent: settings`); every preview is the runner's answer; saves send `expectedVersion` and confirm a weakening change with its `weakeningDigest` | `dashboard-policies-ui` (b), `dashboard-policies-router` (a) |
 | `/dashboard/settings` | settings / `loadSettings` | `settings` | P3 (lifecycle, network, OAuth session), P4 (TypeSafe credential) | none | `/settings`, `/settings/oauth` (`fetchOAuthSettings`), `/typesafe/status` and `/integration-credentials` (`fetchTypesafeSettings`) | `settings_*` responses pass through unmapped (F7); TypeSafe key write-only | `dashboard-lifecycle-settings` (b), `dashboard-oauth-settings` (b), `dashboard-typesafe` (a+b), `dashboard-router` (a) |
 | `/dashboard/profile` | profile / `loadProfile` | `profile` | P3 | none | `/profile` | Display name via server cookie | `dashboard-ui-behavior` (b) |
 
@@ -120,9 +120,11 @@ The P4c rows exist only in the legacy shell. In React mode `/inbox`,
 (`apps/api/src/dashboard-react-assets.ts`), so the server answers with the
 not-found shell and status 404. The agent-policies paths match the `/settings`
 and `/projects` prefixes, get the shell, and render the client-side not-found
-page. Until each row is done they are reachable only through the legacy shell
-(`CLOUD_HARNESS_DASHBOARD_UI=legacy` or `?ui=legacy`), and P6 cannot remove
-the legacy shell.
+page. That page's "Open classic Dashboard" link (`classic-dashboard-link.tsx`)
+keeps the path and query and adds `?ui=legacy`. Until each row is done they are
+reachable only through the legacy shell
+(`CLOUD_HARNESS_DASHBOARD_UI=legacy` or `?ui=legacy`), and the legacy shell
+cannot be removed ([#576](https://github.com/bestagentkits/cloud-harness-mcp/issues/576)).
 
 The command palette (`PALETTE_SOURCE_REQUESTS` in `dashboard.js`) also reads
 `/workspaces`, `/projects`, `/secrets`, `/api-keys`, `/provider-credentials`,
@@ -353,7 +355,7 @@ descriptions with empty values and revokes its object URL immediately.
 | POST | `/toolkits/preview` | router | — | — | **none** | `workspaces` | P4 (decide) |
 | POST | `/skill-imports` | control router | **gen0** | — | import form | `skills` | P3 |
 | GET | `/skill-imports/:jobId` | control router | — | — | import poller (T1) | `skills` | P3 |
-| POST | `/skill-imports/:jobId/cancel` | control router | **gen** (legacy hard-codes 1: R9) | yes | import form | `skills` | P3 |
+| POST | `/skill-imports/:jobId/cancel` | control router | **gen** (R9: legacy hard-coded 1 until the `dev` merge) | yes | import form | `skills` | P3 |
 | POST | `/skill-archives` | control router, `requireArchiveMediaType` in security | **gen0** fixed on the server; zip size limit in the control router | — | upload dialog | `skills` | P3 |
 
 ### 4.8 Artifacts and knowledge
@@ -472,31 +474,37 @@ P4 decisions (#484):
 
 These routes were added on `dev` after the audit. Each one passes the
 principal's runner call through its own operation schema; none returns a
-secret except the automation connection create and rotate responses.
+secret except the automation connection create and rotate responses. Fence
+legend as in section 4. In the Override column, **drop** marks a handler that
+spreads the body first and then sets the path id: the path id wins, but a
+conflicting body id is dropped silently instead of being refused with
+`400 path_id_mismatch`. #547 and #566 move these handlers to `withPathIds`.
 
-| Method | Path | Owner | Fence | UI caller | Feature | Phase | Note |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| GET | `/inbox/status`, `/inbox` | inbox router | — | shell nav badge, inbox page | `inbox` | P4c (#557) | |
-| POST | `/inbox/read` | inbox router | schema parse | inbox page | `inbox` | P4c (#557) | |
-| GET / PUT | `/notification-preferences` | inbox router | schema parse | inbox page | `inbox` | P4c (#557) | The inbox channel cannot be turned off |
-| GET | `/traces/status` | traces router | — | shell nav entry | `traces` | P4c (#560) | A disabled feature answers `enabled: false`, not an error |
-| GET | `/traces`, `/traces/:traceId`, `/traces/:traceId/spans` | traces router | strict query | traces page, agent detail panel | `traces` | P4c (#560) | Unknown query parameters are refused |
-| GET | `/traces/:traceId/export` | traces router | strict query | native download link | `traces` | P4c (#560) | Sent as an attachment with its own media type, never inline |
-| GET / POST | `/automations/connections` | control router | schema parse | automations page | `automations` | P4c (#561) | POST returns the signing secret once (section 8) |
-| PATCH / DELETE | `/automations/connections/:id` | control router | schema parse, DELETE confirm | automations page | `automations` | P4c (#561) | |
-| POST | `/automations/connections/:id/rotate-secret` | control router | confirm | automations page | `automations` | P4c (#561) | Returns the new signing secret once |
-| GET / POST | `/automations/rules` | control router | schema parse | automations page | `automations` | P4c (#561) | |
-| PATCH / DELETE | `/automations/rules/:id` | control router | schema parse, DELETE confirm | automations page | `automations` | P4c (#561) | |
-| POST | `/automations/rules/:id/preview` | control router | schema parse | rule preview dialog | `automations` | P4c (#561) | Dry run, no side effect |
-| GET | `/automations/workflows`, `/automations/workflows/:id`, `/automations/deliveries` | control router | schema parse | automations page | `automations` | P4c (#561) | |
-| POST | `/automations/workflows/:id/cancel` | control router | confirm | run detail | `automations` | P4c (#561) | |
-| GET | `/agent-policies`, `/agent-policies/{global,projects/:projectId}`, `…/history`, `/agent-policies/revisions/:revisionId`, `/agent-policies/diff` | policies router | — | agent policies page | `agent-policies` | P4c (#562) | |
-| PUT / DELETE | `/agent-policies/global`, `/agent-policies/projects/:projectId` | policies router | `expectedVersion`; weakening confirm with `weakeningDigest`; DELETE confirm | agent policies page | `agent-policies` | P4c (#562) | The path id wins over a body id but a conflicting one is dropped, not refused; #547 moves these routes to the path-id rule |
-| POST | `…/validate`, `/agent-policies/simulate` | policies router | schema parse | agent policies page | `agent-policies` | P4c (#562) | The runner's answer only; nothing is decided in the browser |
-| POST | `/agent-policies/revisions/:revisionId/rollback` | policies router | confirm | agent policies page | `agent-policies` | P4c (#562) | |
-| GET | `/workspaces/:id/repositories` | router | `status` is `true` or `false` | cockpit summary, repository selector | `workspace-cockpit` | P4c (#563) | A failed status read degrades to the registry |
-| any | `repositoryId` on `/workspaces/:id/files*`, `/git/*`, `/worktrees*`, `POST /terminals` | router, terminal router | `RepositorySelectorSchema`; terminal refuses an unknown repository | cockpit Files, Git, Terminal | `workspace-cockpit` | P4c (#563) | Query on reads, body on writes |
-| POST | `/workspaces/:id/skills/:name/run` with `approvalGrantToken`, then `/privilege-grants/:id/{approve,reject}` | router, control router | grant bound to the run | cockpit Automation | `workspace-cockpit` | P4c (#565) | Legacy completes the skill privilege grant (#511); the React Automation tab does not yet |
+| Method | Path | Owner | Fence / idem | Override | UI caller | Feature | Phase | Note |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| GET | `/inbox/status`, `/inbox` | inbox router | — | — | shell nav badge, inbox page | `inbox` | P4c (#554) | |
+| POST | `/inbox/read` | inbox router | schema parse | — | inbox page | `inbox` | P4c (#554) | |
+| GET / PUT | `/notification-preferences` | inbox router | schema parse | — | inbox page | `inbox` | P4c (#554) | The inbox channel cannot be turned off |
+| GET | `/traces/status` | traces router | — | — | shell nav entry | `traces` | P4c (#555) | A disabled feature answers `enabled: false`, not an error |
+| GET | `/traces`, `/traces/:traceId/spans` | traces router | strict query | — | traces page, agent detail panel | `traces` | P4c (#555) | Unknown query parameters are refused |
+| GET | `/traces/:traceId` | traces router | trace id schema | — | traces page, agent detail panel | `traces` | P4c (#555) | Reads only the path id; the query is ignored |
+| GET | `/traces/:traceId/export` | traces router | strict query | — | native download link | `traces` | P4c (#555) | Sent as an attachment with its own media type, never inline |
+| GET / POST | `/automations/connections` | control router | schema parse | — | automations page | `automations` | P4c (#556) | POST returns the signing secret once (section 8) |
+| PATCH / DELETE | `/automations/connections/:id` | control router | **gen**; DELETE confirm | **drop** | automations page | `automations` | P4c (#556) | |
+| POST | `/automations/connections/:id/rotate-secret` | control router | **gen**; confirm | **drop** | automations page | `automations` | P4c (#556) | Returns the new signing secret once |
+| GET / POST | `/automations/rules` | control router | schema parse | — | automations page | `automations` | P4c (#556) | |
+| PATCH / DELETE | `/automations/rules/:id` | control router | **gen**; DELETE confirm | **drop** | automations page | `automations` | P4c (#556) | |
+| POST | `/automations/rules/:id/preview` | control router | schema parse | **drop** | rule preview dialog | `automations` | P4c (#556) | Dry run, no side effect |
+| GET | `/automations/workflows`, `/automations/workflows/:id`, `/automations/deliveries` | control router | schema parse | — | automations page | `automations` | P4c (#556) | |
+| POST | `/automations/workflows/:id/cancel` | control router | confirm | **drop** | run detail | `automations` | P4c (#556) | |
+| GET | `/agent-policies`, `/agent-policies/{global,projects/:projectId}`, `…/history`, `/agent-policies/revisions/:revisionId`, `/agent-policies/diff` | policies router | — | — | agent policies page | `agent-policies` | P4c (#558) | |
+| PUT | `/agent-policies/global`, `/agent-policies/projects/:projectId` | policies router | `expectedVersion`; weakening confirm with `weakeningDigest` | **drop** | agent policies page | `agent-policies` | P4c (#558) | |
+| DELETE | `/agent-policies/projects/:projectId` | policies router | `expectedVersion` > 0; `weakeningDigest`; confirm | **drop** | agent policies page | `agent-policies` | P4c (#558) | The global policy has no DELETE route |
+| POST | `…/validate`, `/agent-policies/simulate` | policies router | schema parse | **drop** (validate) | agent policies page | `agent-policies` | P4c (#558) | The runner's answer only; nothing is decided in the browser |
+| POST | `/agent-policies/revisions/:revisionId/rollback` | policies router | `expectedVersion`; `weakeningDigest`; confirm | **drop** | agent policies page | `agent-policies` | P4c (#558) | |
+| GET | `/workspaces/:id/repositories` | router | `status` is `true` or `false` | — | cockpit summary, repository selector | `workspace-cockpit` | P4c (#559) | A failed status read degrades to the registry |
+| any | `repositoryId` on `/workspaces/:id/files*`, `/git/*`, `/worktrees*`, `POST /terminals` | router, terminal router | `RepositorySelectorSchema`; terminal refuses an unknown repository | — | cockpit Files, Git, Terminal | `workspace-cockpit` | P4c (#559) | Query on reads, body on writes |
+| POST | `/workspaces/:id/skills/:name/run` with `approvalGrantToken`, then `/privilege-grants/:id/{approve,reject}` | router, control router | grant bound to the run | — | cockpit Automation | `workspace-cockpit` | P4c (#565) | Legacy completes the skill privilege grant (#511); the React Automation tab does not yet |
 
 ## 5. Keyboard shortcuts
 
@@ -532,7 +540,7 @@ named owners. In React each poller has exactly one owner (a query
 | T8–T10 | combobox search, knowledge preview, skills search | debounces | — | keep the values from the owners | P3/P4 |
 | T11–T13 | toast removal, update cue, copy chip revert | one-shot timeouts | — | keep (Motion only for dialogs and toasts) | P2 |
 | T15 | `refreshApprovalsBadge` | no timer; only on Overview, Activity and Approvals loads | stale badge (R13) | invalidate after approve/reject and on window focus | P3 |
-| T16 | `createTracesView` (trace list, detail, agent panel) | the shell's one polling controller, only while a shown trace is `RUNNING`; a failed read stops it | — | query `refetchInterval` while running, stop on a terminal state and unmount | P4c |
+| T16 | `createTracesView` (trace list and detail; the agent panel reads once and does not poll) | the shell's one polling controller, only while a shown trace is `RUNNING`; a failed read stops it | — | query `refetchInterval` while running, stop on a terminal state and unmount | P4c |
 | T17 | `inboxStatus` / `updateInboxBadge` | no timer; read once per document and updated by the inbox page | — | one query shared by the nav badge and the page, invalidated after mark-read | P4c |
 
 Navigation read baseline. `apps/dashboard/e2e/navigation-budget.spec.ts` tours
@@ -585,7 +593,7 @@ Owner: `createTerminalSession` and `mountTerminalPane` in
 | CSRF token | module variable in `dashboard-api.js` | dropped on 401 | memory only |
 | GitHub setup `state`, OAuth `authorizationUrl` | JSON response, then navigation | not stored | not stored; native navigation |
 | `?oauth=`, `?state=&installation_id=` | URL | `replaceState` after handling | remove the search params after handling |
-| Automation connection signing secret | create and rotate responses, read-only field (`bindAutomationSecretReveal`) | cleared on dismiss | component state only, same clear paths as the API key (D3) (P4c, #561) |
+| Automation connection signing secret | create and rotate responses, read-only field (`bindAutomationSecretReveal`) | cleared on dismiss | component state only, same clear paths as the API key (D3) (P4c, #556) |
 | Clipboard | API key copy, knowledge draft copy, file conflict copy, `data-copy` chips, automation secret and webhook URL | — | keep, with a screen-reader announcement |
 
 `localStorage` (allowed by the ADR) holds only non-secret preferences. Wizard
@@ -639,7 +647,7 @@ CSP or XSS guard (`not.toContain('<script>')`, `not.toMatch(/\sstyle=/)`,
 | `apps/api/test/dashboard-app-mount.test.ts` (asset URL substrings) | HTML contains versioned asset URLs | asset URLs are versioned | HTTP test: take asset URLs from the shell (manifest mode too), GET returns 200 with `private, immutable` | P1 |
 | `dashboard-app-mount.test.ts` (`app.ts` source match) | source text of middleware order | API budget is reserved for `/dashboard/api/v1` | HTTP test: exhaust the budget on `/dashboard/api/v1` → 429 while pre-auth paths are unaffected | P1 |
 | `apps/api/test/knowledge-dashboard-ui.test.ts` (markdown strings) | exact tag strings | markdown renders safely | keep one escaping assertion and the no-style check as a security test; replace string equality with DOM parsing and text/role checks | P3 |
-| `apps/api/test/dashboard-input-patterns.test.ts` | every legacy `pattern` attribute compiles under the `v` flag | a field never silently loses its validation | render each React form that sets `pattern` and assert the browser enforces it (`validity.patternMismatch`) | P4c |
+| `apps/api/test/dashboard-input-patterns.test.ts` | every legacy `pattern` attribute compiles under the `v` flag | a field never silently loses its validation | render each React form that sets `pattern` and assert the browser enforces it (`validity.patternMismatch`) | P4 |
 | `apps/api/test/mcp-servers-dashboard-ui.test.ts` (card markup) | `<code class="mono">`, `data-copy` URL | gateway card and copy chip | copy button writes the endpoint; text visible; keep `expectCspSafe` | P4 |
 
 `dashboard-app-mount` as a whole stays: its HTTP and version cases are class
@@ -778,7 +786,7 @@ Touch points:
 | P4 | P4 rows in sections 2, 3, 4, 6, 7, 8, 9; section 4.13 decisions for P4 routes | owner plus security review |
 | P5 | Dewee (see ADR 0005); F1 fixed before or within P5 | owner plus security review |
 | P4c | P4c rows in sections 2, 4.14, 6, 8 and 9 (#551) | owner plus security review |
-| P6 | delete the legacy shell, the fake-DOM harnesses, replaced (b)/(c) suites and this matrix; needs P4c done | owner |
+| P6 | delete the legacy shell, the fake-DOM harnesses, replaced (b)/(c) suites and this matrix ([#576](https://github.com/bestagentkits/cloud-harness-mcp/issues/576)); needs P4c done | owner |
 
 ### 12.1 P3 status
 
@@ -801,7 +809,7 @@ an endpoint twice on load or polls at rest, and
 | Audit | done | `cursor` paging as a search param. |
 | Projects, environments | done | Every write sends its generation; a 409 shows "This changed elsewhere" and refetches. Environment secrets stay a link to `/secrets` (P4a), so the detail drops the legacy per-environment secret reads. |
 | Knowledge | done | R10 fixed, D8 conflict review re-hosted with base, server and draft panes. Non-secret drafts survive a reload in `sessionStorage` (ADR 0005). Workspace-scope create gains the `workspaceId` field the runner requires. |
-| Skills | done | R7, R15 and R16 fixed. R9 is unchanged: the BFF import-job projection carries no `generation`, so cancel still sends 1 (the page reads a generation if the projection ever adds one); tracked in #497. Tabs and filters are search params. Adding a revision now sends the skill's real generation instead of 0. Bulk Enable added (same endpoint, reversible). The registry's primary action is "Upload skill"; "New skill" is a section button. |
+| Skills | done | R7, R15 and R16 fixed. R9 is fixed by the `dev` merge (#549): the BFF import-job projection now carries `generation`, and `cancelGeneration` sends it (#497). Tabs and filters are search params. Adding a revision now sends the skill's real generation instead of 0. Bulk Enable added (same endpoint, reversible). The registry's primary action is "Upload skill"; "New skill" is a section button. |
 | Profile | done | Shares the shell's profile read; no extra request. |
 | Settings | done | Lifecycle, network profile, readiness check and OAuth sessions are live. TypeSafe shows status only; the key write stays on the classic page (P4). |
 
@@ -893,19 +901,23 @@ unchanged.
 ### 12.5 P4c: dev-only legacy pages
 
 `dev` built these surfaces in the legacy shell while `main` built the React
-app. They were not in this matrix until the #541 merge joined the two lines
+app. They were not in this matrix until #549 merged the two lines for #541
 (#548). Umbrella issue: [#551](https://github.com/bestagentkits/cloud-harness-mcp/issues/551).
-No row is dropped: each one has a port issue, and P6 (#486) waits for all of
-them.
+No row is dropped: each one has a port issue. P6 (#486) shipped the React
+shell before these rows existed, so removing the legacy shell
+([#576](https://github.com/bestagentkits/cloud-harness-mcp/issues/576)) waits
+for all of them.
 
 | Area | Rows | Status | Port issue |
 | --- | --- | --- | --- |
-| Inbox and notification preferences | route `/dashboard/inbox`, section 4.14 inbox rows, T17 | open | [#557](https://github.com/bestagentkits/cloud-harness-mcp/issues/557) |
-| Traces | route `/dashboard/traces[/:trc_id]`, the agent detail Traces panel, section 4.14 trace rows, T16 | open | [#560](https://github.com/bestagentkits/cloud-harness-mcp/issues/560) |
-| Automations | route `/dashboard/automations[/…]`, section 4.14 automation rows, section 8 signing secret row | open | [#561](https://github.com/bestagentkits/cloud-harness-mcp/issues/561) |
-| Agent policies | routes `/dashboard/settings/agent-policies`, `/dashboard/projects/:prj_id/agent-policies`, section 4.14 policy rows | open | [#562](https://github.com/bestagentkits/cloud-harness-mcp/issues/562) |
-| Repository scope | cockpit `?repository=`, section 4.14 repository rows | open | [#563](https://github.com/bestagentkits/cloud-harness-mcp/issues/563) |
+| Inbox and notification preferences | route `/dashboard/inbox`, section 4.14 inbox rows, T17 | open | [#554](https://github.com/bestagentkits/cloud-harness-mcp/issues/554) |
+| Traces | route `/dashboard/traces[/:trc_id]`, the agent detail Traces panel, section 4.14 trace rows, T16 | open | [#555](https://github.com/bestagentkits/cloud-harness-mcp/issues/555) |
+| Automations | route `/dashboard/automations[/…]`, section 4.14 automation rows, section 8 signing secret row | open | [#556](https://github.com/bestagentkits/cloud-harness-mcp/issues/556) |
+| Agent policies | routes `/dashboard/settings/agent-policies`, `/dashboard/projects/:prj_id/agent-policies`, section 4.14 policy rows | open | [#558](https://github.com/bestagentkits/cloud-harness-mcp/issues/558) |
+| Repository scope | cockpit `?repository=`, section 4.14 repository rows | open | [#559](https://github.com/bestagentkits/cloud-harness-mcp/issues/559) |
 | Skill run privilege grant | cockpit Automation, section 4.14 skill run row | open | [#565](https://github.com/bestagentkits/cloud-harness-mcp/issues/565) |
+| Files editor partial read | cockpit Files: `files_read` returns a 64 KiB window but hashes the whole file, so the editor must stay read-only unless `eof` (#525) | open | [#550](https://github.com/bestagentkits/cloud-harness-mcp/issues/550) |
+| Cockpit and Models fixes made on `dev` | Models wizard retained operations, skill `contentSha256`, failed skill run result (#515), finalize `repositoryId`, hook manual run | open | [#575](https://github.com/bestagentkits/cloud-harness-mcp/issues/575) |
 
 `apps/api/test/dashboard-pages.test.ts` fails when a legacy page id has no
 row in section 2, so a new legacy page cannot skip this matrix again.
