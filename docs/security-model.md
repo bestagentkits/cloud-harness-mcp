@@ -1288,7 +1288,9 @@ and [`apps/runner/src/agent-runtime-adapter.ts`](../apps/runner/src/agent-runtim
 - The store is bounded on disk by `AGENT_DURABLE_MAX_LINEAGE_BYTES`, and its
   size counts toward the same workspace, owner, and instance session byte
   budgets as persisted logs, measured at runner start and around every commit;
-  a run whose commit would pass either ends as `LIMIT_EXCEEDED`. Closing or expiring the workspace deletes
+  a run whose commit would pass either, or leaves usage over a budget, ends as
+  `LIMIT_EXCEEDED`. A budget can be overshot by at most one commit's growth per
+  concurrently writing lineage. Closing or expiring the workspace deletes
   its lineage databases, and the reaper deletes a lineage's database once
   retention has purged every session of it.
 

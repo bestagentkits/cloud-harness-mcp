@@ -360,8 +360,8 @@ describe('DurableSessionStore', () => {
     };
     const first = request('r-1', 'commit', [[]]);
     expect(await store.handle(claim, first, budget)).toMatchObject({ ok: true });
-    // The budget is offered the commit's encoded size.
-    expect(offered).toEqual([Buffer.byteLength(JSON.stringify(first), 'utf8')]);
+    // The budget is offered the commit's encoded size, then rechecked once the commit is on disk.
+    expect(offered).toEqual([Buffer.byteLength(JSON.stringify(first), 'utf8'), 0]);
     full = true;
     expect(await store.handle(claim, request('r-2', 'commit', [[]]), budget)).toMatchObject({
       ok: false, error: { code: 'limit', message: 'durable session would exceed the workspace agent session byte budget', retryable: false }
@@ -372,6 +372,17 @@ describe('DurableSessionStore', () => {
     expect(backend.commits).toBe(1);
     // Reads stay available, so the run can still end cleanly.
     expect(await store.handle(claim, request('r-4', 'mintId'), budget)).toMatchObject({ ok: true });
+  });
+
+  it('ends the run once a committed write leaves usage over an aggregate session budget', async () => {
+    const backend = fakeBackend(100);
+    const store = await createStore({ loader: backend.loader });
+    const claim = await store.claim(LINEAGE, OWNER, 1, 0);
+    const budget = (addedBytes: number) => addedBytes === 0 ? 'instance' as const : undefined;
+    expect(await store.handle(claim, request('r-1', 'commit', [[]]), budget)).toMatchObject({ ok: true });
+    expect(store.limitExceeded(claim)).toBe(true);
+    expect(await store.handle(claim, request('r-2', 'commit', [[]]), budget)).toMatchObject({ ok: false, error: { code: 'limit' } });
+    expect(backend.commits).toBe(1);
   });
 
   it('measures lineage databases on disk for the aggregate budgets, through commits, restart, and delete', async () => {

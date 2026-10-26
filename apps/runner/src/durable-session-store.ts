@@ -360,7 +360,11 @@ export class DurableSessionStore {
           throw new HarnessError('CONFLICT', 'durable session is owned by a newer agent run', 409, false);
         }
       }
-      if (!lineage.storage) lineage.storage = await this.#openDatabase(paths.database);
+      if (!lineage.storage) {
+        lineage.storage = await this.#openDatabase(paths.database);
+        // Opening creates the schema, which counts toward the budgets before the first commit.
+        await this.#measureLineage(lineageRootId);
+      }
       if (!stored || compareMarks(requested, stored) !== 0 || stored.agentId !== agentId) {
         await writePrivateFile(paths.owner, JSON.stringify(requested));
       }
@@ -429,6 +433,8 @@ export class DurableSessionStore {
         return { pendingTasks: false };
       } finally {
         await storage?.close(RUNNER_CONTEXT).catch(() => undefined);
+        // Closing checkpoints a write-ahead log a crashed run left, so the size the budgets count shrinks.
+        await this.#measureLineage(lineageRootId).catch(() => undefined);
       }
     });
   }
@@ -543,7 +549,10 @@ export class DurableSessionStore {
         await this.#restrictSidecars(claim.lineageRootId);
         state.sidecarsPrivate = true;
       }
-      if (await this.#measureLineage(claim.lineageRootId) > this.#maxLineageBytes) state.limitExceeded = true;
+      // Measured outside the lineage lock, so a lineage deleted meanwhile is not recorded again.
+      if (await this.#measureLineage(claim.lineageRootId, () => lineage.active === state) > this.#maxLineageBytes) state.limitExceeded = true;
+      // A commit can grow the database by more than its request; once a budget is passed, the run ends.
+      if (budget?.(0)) state.limitExceeded = true;
       return result;
     });
     if (remembers) this.#remember(state, id, storageMethod, response);
@@ -661,8 +670,9 @@ export class DurableSessionStore {
   }
 
   /** Records and returns the lineage database's current size on disk; an absent database is forgotten. */
-  async #measureLineage(lineageRootId: string): Promise<number> {
+  async #measureLineage(lineageRootId: string, current: () => boolean = () => true): Promise<number> {
     const bytes = await this.#databaseBytes(lineageRootId);
+    if (!current()) return bytes;
     if (bytes > 0) this.#lineageSizes.set(lineageRootId, bytes);
     else this.#lineageSizes.delete(lineageRootId);
     return bytes;
