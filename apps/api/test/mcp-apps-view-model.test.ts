@@ -13,6 +13,7 @@ import {
   parentPath,
   parseGitStatus,
   parseToolResult,
+  selectRepository,
   sortEntries,
   summarizeTasks,
   workspaceState
@@ -49,6 +50,17 @@ describe('workspace explorer view model', () => {
     expect(workspaceState(undefined)).toBe('unavailable');
     expect(['active', 'expiring'].every(isReadable)).toBe(true);
     expect(['expired', 'closed', 'failed', 'unavailable'].some(isReadable)).toBe(false);
+  });
+
+  it('selects a repository only for multi-repository workspaces, defaulting to the primary', () => {
+    const repositories = [{ repositoryId: 'repo_aaaaaaaaaaaaaaaaaaaa', alias: 'web' }, { repositoryId: 'repo_bbbbbbbbbbbbbbbbbbbb', alias: 'api', primary: true }];
+    expect(selectRepository([{ alias: 'primary', primary: true }], undefined)).toBeUndefined();
+    expect(selectRepository(undefined, 'api')).toBeUndefined();
+    expect(selectRepository(repositories, undefined)).toBe('api');
+    expect(selectRepository(repositories, 'web')).toBe('web');
+    expect(selectRepository(repositories, 'repo_aaaaaaaaaaaaaaaaaaaa')).toBe('repo_aaaaaaaaaaaaaaaaaaaa');
+    expect(selectRepository(repositories, 'gone')).toBe('api');
+    expect(selectRepository([{ alias: 'a' }, { alias: 'b' }], undefined)).toBe('a');
   });
 
   it('keeps paths workspace-relative', () => {

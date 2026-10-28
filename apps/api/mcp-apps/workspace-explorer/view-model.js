@@ -72,6 +72,18 @@ export function isReadable(state) {
   return state === 'active' || state === 'expiring';
 }
 
+/**
+ * The repository selector to use for a workspace record. A multi-repository workspace requires
+ * one for Git tools, so an unset or stale selection falls back to the primary repository's alias.
+ * Single-repository workspaces need none.
+ */
+export function selectRepository(repositories, selected) {
+  const entries = Array.isArray(repositories) ? repositories.filter((entry) => typeof entry?.alias === 'string') : [];
+  if (entries.length <= 1) return undefined;
+  if (typeof selected === 'string' && entries.some((entry) => entry.alias === selected || entry.repositoryId === selected)) return selected;
+  return (entries.find((entry) => entry.primary === true) ?? entries[0]).alias;
+}
+
 /** Workspace-relative path helpers. Paths stay relative; the server rejects anything else. */
 export function joinPath(directory, name) {
   return !directory || directory === '.' ? name : `${directory}/${name}`;

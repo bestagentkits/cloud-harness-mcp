@@ -18,6 +18,7 @@ import {
   parentPath,
   parseGitStatus,
   parseToolResult,
+  selectRepository,
   sortEntries,
   summarizeTasks,
   workspaceState
@@ -151,6 +152,9 @@ app.onteardown = async () => {
 function setWorkspace(record) {
   state.workspace = record && typeof record === 'object' ? record : undefined;
   if (typeof state.workspace?.workspaceId === 'string') state.workspaceId = state.workspace.workspaceId;
+  const repositoryId = selectRepository(state.workspace?.repositories, state.repositoryId);
+  if (repositoryId !== state.repositoryId) resetViews();
+  state.repositoryId = repositoryId;
   render();
 }
 
@@ -184,17 +188,15 @@ function header() {
 }
 
 function repositorySelect(repositories) {
-  const select = el('select', { class: 'select', 'aria-label': 'Repository' }, [
-    el('option', { value: '', text: 'primary repository' }),
-    ...repositories
-      .filter((repo) => typeof repo?.alias === 'string' || typeof repo?.repositoryId === 'string')
-      .map((repo) => {
-        const value = typeof repo.alias === 'string' ? repo.alias : repo.repositoryId;
-        return el('option', { value, text: value, selected: value === state.repositoryId });
-      })
-  ]);
+  const select = el('select', { class: 'select', 'aria-label': 'Repository' }, repositories
+    .filter((repo) => typeof repo?.alias === 'string')
+    .map((repo) => el('option', {
+      value: repo.alias,
+      text: repo.primary === true ? `${repo.alias} (primary)` : repo.alias,
+      selected: repo.alias === state.repositoryId || repo.repositoryId === state.repositoryId
+    })));
   select.addEventListener('change', () => {
-    state.repositoryId = select.value || undefined;
+    state.repositoryId = select.value;
     resetViews();
     render();
   });
