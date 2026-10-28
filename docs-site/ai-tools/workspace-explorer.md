@@ -42,10 +42,13 @@ has the feature off); it still receives the same workspace summary as
   `files_read`, `git_status`, `git_diff`, `tasks_list`, `tasks_status`, and
   `tasks_graph`. It cannot run commands, edit files, push, or start or cancel
   tasks: ask the model for those.
+- In a multi-repository workspace, a picker chooses the repository the Files
+  and Git views read; it starts on the primary repository.
 - It shows **one workspace**: the one it was opened for. Every read uses your
   own authorization for that workspace, exactly as if the model had called the
   tool.
-- What you browse in the panel stays in the panel; it is not sent to the model.
+- The panel never sends what you browse to the model; whether the host keeps a
+  record of the panel's reads is up to the host.
 - Large content is bounded: previews stop at 256 KiB, diffs at 512 KiB or
   8,000 lines, and task output at 256 KiB, with a note when a view stops early.
   Ask the model to read the rest with `files_read` or `git_diff` paging.

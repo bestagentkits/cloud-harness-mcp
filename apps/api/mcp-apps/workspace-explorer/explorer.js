@@ -94,6 +94,38 @@ export function leaseTone(record) {
   return { label: 'active', tone: 'ok', expired: false };
 }
 
+const C_ESCAPES = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, '\\': 92 };
+
+/** Decodes a Git C-quoted path (`"caf\\303\\251.txt"`) into the path Git expects back. */
+export function unquoteGitPath(value) {
+  if (!(value.length >= 2 && value.startsWith('"') && value.endsWith('"'))) return value;
+  const bytes = [];
+  const body = value.slice(1, -1);
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index];
+    if (char !== '\\') {
+      bytes.push(...new TextEncoder().encode(char));
+      continue;
+    }
+    const next = body[index + 1] ?? '';
+    if (/^[0-7]{3}$/u.test(body.slice(index + 1, index + 4))) {
+      bytes.push(Number.parseInt(body.slice(index + 1, index + 4), 8));
+      index += 3;
+    } else {
+      bytes.push(C_ESCAPES[next] ?? next.charCodeAt(0));
+      index += 1;
+    }
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
+}
+
+/** The repository a multi-repository workspace view starts on: the primary one, else the first. */
+export function defaultRepositoryId(record) {
+  const repositories = Array.isArray(record?.repositories) ? record.repositories.filter((entry) => typeof entry?.repositoryId === 'string') : [];
+  if (repositories.length < 2) return undefined;
+  return (repositories.find((entry) => entry.primary) ?? repositories[0]).repositoryId;
+}
+
 /** Parses `git status --short --branch` output into a branch line and changed paths. */
 export function parseGitStatus(output) {
   const lines = String(output ?? '').split('\n').filter((line) => line.length > 0);
@@ -106,10 +138,13 @@ export function parseGitStatus(output) {
     }
     const code = line.slice(0, 2);
     let path = line.slice(3);
-    const arrow = path.indexOf(' -> ');
-    if (arrow !== -1) path = path.slice(arrow + 4);
-    if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1);
-    entries.push({ code, path, staged: code[0] !== ' ' && code[0] !== '?', unstaged: code[1] !== ' ' });
+    // Only renames and copies carry `from -> to`; a plain path may contain the same text.
+    if (code[0] === 'R' || code[0] === 'C' || code[1] === 'R' || code[1] === 'C') {
+      const arrow = path.lastIndexOf(' -> ');
+      if (arrow !== -1) path = path.slice(arrow + 4);
+    }
+    path = unquoteGitPath(path);
+    entries.push({ code, path, staged: code[0] !== ' ' && code[0] !== '?', unstaged: code[1] !== ' ', untracked: code === '??' });
   }
   return { branch, entries };
 }
@@ -251,6 +286,8 @@ function start(doc, win) {
     workspaceId: undefined,
     repositoryId: undefined,
     expired: false,
+    denied: false,
+    unavailable: false,
     tab: 'files',
     loaded: { files: false, git: false, tasks: false },
     preview: null,
@@ -258,7 +295,7 @@ function start(doc, win) {
     task: null,
     tasksCursor: undefined,
     watchTimer: undefined,
-    tokens: { preview: 0, diff: 0, task: 0 }
+    tokens: { files: 0, git: 0, tasks: 0, preview: 0, diff: 0, task: 0 }
   };
 
   if (win.parent === win) {
@@ -311,7 +348,9 @@ function start(doc, win) {
     const failure = describeFailure(result);
     if (failure.kind === 'expired') markExpired(failure.detail);
     else if (failure.kind === 'forbidden') {
+      state.denied = true;
       stopWatch();
+      $('tasks-watch').checked = false;
       notice(`${failure.title}: ${failure.detail}`);
     }
     return failure;
@@ -319,6 +358,7 @@ function start(doc, win) {
 
   async function guarded(name, args) {
     if (state.expired) return { ok: false, message: 'Workspace is not active', error: { code: 'EXPIRED', message: 'Workspace is not active', retryable: false } };
+    if (state.denied) return { ok: false, message: 'Access was denied', error: { code: 'FORBIDDEN', message: 'Access was denied', retryable: false } };
     try {
       return await read(name, args);
     } catch (error) {
@@ -342,10 +382,12 @@ function start(doc, win) {
     const select = $('repo-select');
     select.replaceChildren();
     if (repositories.length > 1) {
+      // Git reads need a repository in a multi-repository workspace, so the view always has one selected.
+      if (!repositories.some((entry) => entry.repositoryId === state.repositoryId)) state.repositoryId = defaultRepositoryId(record);
       for (const entry of repositories) {
         const option = el('option', '', `${entry.alias ?? entry.repositoryId}${entry.primary ? ' (primary)' : ''}`);
         option.value = entry.repositoryId;
-        if (entry.primary) option.selected = true;
+        option.selected = entry.repositoryId === state.repositoryId;
         select.append(option);
       }
       $('repo-select-label').hidden = false;
@@ -356,7 +398,10 @@ function start(doc, win) {
 
   // ----- Files -----
   async function loadDirectory(path, container, cursor) {
+    const generation = state.tokens.files;
     const result = await guarded('files_list', withRepository({ path, limit: LIMITS.listPage, ...(cursor ? { cursor } : {}) }));
+    // A refresh or repository switch started since this read: its tree replaced this container.
+    if (generation !== state.tokens.files) return;
     if (!result.ok) {
       const failure = fail(result);
       container.append(el('li', 'hint', `${failure.title}: ${failure.detail}`));
@@ -419,10 +464,11 @@ function start(doc, win) {
   }
 
   async function loadFiles() {
+    state.tokens.files += 1;
+    state.loaded.files = true;
     const tree = $('file-tree');
     tree.replaceChildren();
     await loadDirectory('.', tree);
-    state.loaded.files = true;
   }
 
   async function previewFile(path, cursor) {
@@ -465,10 +511,12 @@ function start(doc, win) {
 
   // ----- Git -----
   async function loadGit() {
+    const token = ++state.tokens.git;
+    state.loaded.git = true;
     const list = $('git-status-list');
     list.replaceChildren();
     const result = await guarded('git_status', withRepository());
-    state.loaded.git = true;
+    if (token !== state.tokens.git) return;
     if (!result.ok) {
       const failure = fail(result);
       $('git-branch').textContent = `${failure.title}: ${failure.detail}`;
@@ -489,12 +537,23 @@ function start(doc, win) {
       const button = el('button', 'entry');
       button.type = 'button';
       button.append(el('span', 'kind', entry.code), el('span', 'name', entry.path));
-      button.addEventListener('click', () => selectDiff(button, entry.path));
+      button.addEventListener('click', () => (entry.untracked ? showUntracked(button, entry.path) : selectDiff(button, entry.path)));
       item.append(button);
       list.append(item);
     }
     if (parsed.entries.length > 0) selectDiff(allButton, undefined);
     if (result.truncated) list.append(el('li', 'hint', 'Status output was truncated by the server.'));
+  }
+
+  function showUntracked(button, path) {
+    for (const current of $('git-status-list').querySelectorAll('[aria-current="true"]')) current.removeAttribute('aria-current');
+    button.setAttribute('aria-current', 'true');
+    state.tokens.diff += 1;
+    state.diff = { path, staged: false, bytes: 0, lines: 0 };
+    $('diff').replaceChildren();
+    $('diff-more').hidden = true;
+    $('diff-title').textContent = visibleText(`Diff · ${path}`);
+    $('diff-meta').textContent = 'Untracked file: Git has no diff for it yet. Open it in Files to read it.';
   }
 
   function selectDiff(button, path) {
@@ -561,12 +620,14 @@ function start(doc, win) {
   }
 
   async function loadTasks(append = false) {
+    const token = ++state.tokens.tasks;
+    state.loaded.tasks = true;
     const list = $('task-list');
     const [listed, graph] = await Promise.all([
       guarded('tasks_list', { limit: LIMITS.taskPage, ...(append && state.tasksCursor ? { cursor: state.tasksCursor } : {}) }),
       append ? Promise.resolve(undefined) : guarded('tasks_graph', {})
     ]);
-    state.loaded.tasks = true;
+    if (token !== state.tokens.tasks) return undefined;
     if (!append) list.replaceChildren();
     if (!listed.ok) {
       const failure = fail(listed);
@@ -641,13 +702,14 @@ function start(doc, win) {
 
   function scheduleWatch() {
     stopWatch();
-    if (!$('tasks-watch').checked || state.expired) return;
+    if (!$('tasks-watch').checked || state.expired || state.denied) return;
     state.watchTimer = setTimeout(async () => {
       state.watchTimer = undefined;
       if (doc.visibilityState !== 'hidden' && state.tab === 'tasks') {
         const tasks = await loadTasks();
         if (state.task && !isTerminalTask(state.task.status)) await loadTask(state.task.id, state.task.cursor);
-        if (tasks.length > 0 && tasks.every((task) => isTerminalTask(task.status)) && (!state.task || isTerminalTask(state.task.status))) {
+        // Nothing left to watch: every task settled, the list is empty, or it could not be read.
+        if (tasks && tasks.every((task) => isTerminalTask(task.status)) && (!state.task || isTerminalTask(state.task.status))) {
           $('tasks-watch').checked = false;
           return;
         }
@@ -668,7 +730,7 @@ function start(doc, win) {
       $(`panel-${tab}`).hidden = !selected;
       if (selected && focus) button.focus();
     }
-    if (state.workspaceId && !state.expired) {
+    if (state.workspaceId && !state.expired && !state.denied && !state.unavailable) {
       if (name === 'files' && !state.loaded.files) void loadFiles();
       if (name === 'git' && !state.loaded.git) void loadGit();
       if (name === 'tasks' && !state.loaded.tasks) void loadTasks();
@@ -696,6 +758,12 @@ function start(doc, win) {
   $('repo-select').addEventListener('change', (event) => {
     state.repositoryId = event.target.value || undefined;
     state.loaded = { files: false, git: false, tasks: state.loaded.tasks };
+    // Reads still in flight belong to the previous repository; their results are discarded.
+    for (const view of ['files', 'git', 'preview', 'diff']) state.tokens[view] += 1;
+    $('file-tree').replaceChildren();
+    $('git-status-list').replaceChildren();
+    $('preview-more').hidden = true;
+    $('diff-more').hidden = true;
     $('preview').textContent = '';
     $('diff').replaceChildren();
     selectTab(state.tab);
@@ -730,6 +798,7 @@ function start(doc, win) {
     }
     if (!result.ok) {
       const failure = describeFailure(result);
+      state.unavailable = true;
       if (failure.kind === 'expired' || failure.kind === 'missing') markExpired(failure.detail);
       else notice(`${failure.title}: ${failure.detail}`);
       $('workspace-meta').textContent = 'Workspace unavailable';

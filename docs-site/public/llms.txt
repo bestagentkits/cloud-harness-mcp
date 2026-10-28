@@ -22,6 +22,7 @@
 - [Gemini CLI](https://docs.harness.agentkit.best/ai-tools/gemini.md): CLI setup.
 - [Google Antigravity](https://docs.harness.agentkit.best/ai-tools/antigravity.md): IDE configuration.
 - [Grok / xAI](https://docs.harness.agentkit.best/ai-tools/grok.md): Responses API MCP integration.
+- [Workspace Explorer](https://docs.harness.agentkit.best/ai-tools/workspace-explorer.md): Read-only MCP Apps view of files, Git diff, and tasks.
 
 ## Operator Dashboard
 - [Dashboard Overview](https://docs.harness.agentkit.best/dashboard/index.md): The Mission Control operator dashboard.

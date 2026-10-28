@@ -188,12 +188,27 @@ describe('explorer view model', () => {
     expect(view.parseGitStatus('## main...origin/main [ahead 1]\nM  src/a.ts\n?? new.txt\nR  old.ts -> renamed.ts\n M "with space.ts"\n')).toEqual({
       branch: 'main...origin/main [ahead 1]',
       entries: [
-        { code: 'M ', path: 'src/a.ts', staged: true, unstaged: false },
-        { code: '??', path: 'new.txt', staged: false, unstaged: true },
-        { code: 'R ', path: 'renamed.ts', staged: true, unstaged: false },
-        { code: ' M', path: 'with space.ts', staged: false, unstaged: true }
+        { code: 'M ', path: 'src/a.ts', staged: true, unstaged: false, untracked: false },
+        { code: '??', path: 'new.txt', staged: false, unstaged: true, untracked: true },
+        { code: 'R ', path: 'renamed.ts', staged: true, unstaged: false, untracked: false },
+        { code: ' M', path: 'with space.ts', staged: false, unstaged: true, untracked: false }
       ]
     });
+  });
+
+  it('decodes C-quoted paths and splits only renames and copies on the arrow', () => {
+    const { entries } = view.parseGitStatus(' M "caf\\303\\251 \\"x\\".txt"\n M a -> b.txt\nRM "old" -> "n\\303\\251w"\n');
+    expect(entries.map((entry: { path: string }) => entry.path)).toEqual(['café "x".txt', 'a -> b.txt', 'néw']);
+    expect(view.unquoteGitPath('plain.txt')).toBe('plain.txt');
+    expect(view.unquoteGitPath('"tab\\there"')).toBe('tab\there');
+  });
+
+  it('starts a multi-repository workspace on its primary repository so Git reads carry a repositoryId', () => {
+    const repositories = [{ repositoryId: 'repo_a', alias: 'a' }, { repositoryId: 'repo_b', alias: 'b', primary: true }];
+    expect(view.defaultRepositoryId({ repositories })).toBe('repo_b');
+    expect(view.defaultRepositoryId({ repositories: repositories.map(({ repositoryId, alias }) => ({ repositoryId, alias })) })).toBe('repo_a');
+    expect(view.defaultRepositoryId({ repositories: [repositories[1]] })).toBeUndefined();
+    expect(view.defaultRepositoryId({})).toBeUndefined();
   });
 
   it('classifies diff lines and bounds how many are rendered', () => {

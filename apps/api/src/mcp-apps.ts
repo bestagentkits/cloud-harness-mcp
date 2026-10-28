@@ -19,8 +19,11 @@ import { MCP_APP_RESOURCE_MIME_TYPE, WORKSPACE_EXPLORER_UI_URI } from '@cloud-ha
 const ASSET_DIRECTORY = new URL('../mcp-apps/workspace-explorer/', import.meta.url);
 
 function inline(template: string, marker: string, body: string, closingTag: string): string {
-  // Inlined bodies must not end their own element early; the build fails rather than ship broken markup.
-  if (body.toLowerCase().includes(closingTag)) throw new Error(`MCP App asset contains ${closingTag}`);
+  // Inlined bodies must not end their own element early or switch the parser into an escaped
+  // script state; the build fails rather than ship broken markup.
+  for (const sequence of [closingTag, '<!--']) {
+    if (body.toLowerCase().includes(sequence)) throw new Error(`MCP App asset contains ${sequence}`);
+  }
   if (!template.includes(marker)) throw new Error(`MCP App template lacks ${marker}`);
   return template.replace(marker, () => body);
 }

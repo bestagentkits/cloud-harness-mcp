@@ -881,8 +881,7 @@ host renders in its own sandboxed iframe. It adds no authority:
   MCP session.
 - **Existing authorization decides.** Every read is an ordinary `tools/call`
   that the host forwards to this server, so principal, workspace ownership,
-  workspace-bound endpoint, and lease checks apply exactly as they do to the
-  model. The view is pinned to the opener's `workspaceId` and passes it on
+  and lease checks apply exactly as they do to the model. The view is pinned to the opener's `workspaceId` and passes it on
   every call, overriding anything else.
 - **Read-only allowlist.** The view calls only read-only, non-destructive,
   closed-world tools (`workspace_status`, `files_list`, `files_read`,
@@ -893,7 +892,9 @@ host renders in its own sandboxed iframe. It adds no authority:
 - **Repository content is hostile.** File, diff, branch, and task text is set
   as text, never as markup; bidirectional and control characters are shown as
   escapes; and every view is bounded by bytes or lines so a large diff cannot
-  exhaust the host. Nothing the view reads is sent into the model's context.
+  exhaust the host. The view never sends what it reads to the model
+  (`ui/message` and `ui/update-model-context` are unused); whether a host
+  records app-initiated tool results is the host's choice.
 
 ### Privileged execution and operator approval grants
 

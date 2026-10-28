@@ -58,6 +58,8 @@ export default tseslint.config(
         clearTimeout: 'readonly',
         document: 'readonly',
         setTimeout: 'readonly',
+        TextDecoder: 'readonly',
+        TextEncoder: 'readonly',
         window: 'readonly'
       }
     }

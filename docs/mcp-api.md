@@ -650,9 +650,11 @@ Decisions that are easy to misread:
   bridge (`tools/call`) and only calls `workspace_status`, `files_list`,
   `files_read`, `git_status`, `git_diff`, `tasks_list`, `tasks_status`, and
   `tasks_graph`, each forced to the `workspaceId` the opener was called with. A
-  later notification cannot rebind it. Each call is authorized as an ordinary
-  tool call for the same principal, so the workspace-bound endpoint, ownership,
-  and lease checks still decide. The view never calls a tool that executes,
+  later notification cannot rebind it. In a multi-repository workspace the view
+  passes the selected `repositoryId`, starting on the primary repository, so
+  the Git reads that require one always have it. Each call is authorized as an ordinary
+  tool call for the same principal, so the same ownership and lease checks
+  decide. The view never calls a tool that executes,
   writes, pushes, or changes tasks, and never calls back into the model
   (`ui/message`, `ui/update-model-context`, or `ui/open-link`).
 - **Bounded rendering.** Previews page `files_read` up to 256 KiB, diffs page
