@@ -292,8 +292,14 @@ claude plugin marketplace add bestagentkits/cloud-harness-mcp
 claude plugin install cloud-harness@bestagentkits
 ```
 
-The package is skills-only, so register the authenticated MCP connection under
-**Claude Code** below after installation. See Anthropic's
+The package bundles the skill, an MCP server entry that asks for your endpoint
+URL, and a `UserPromptSubmit` hook that sends each prompt to the endpoint's
+`skill_suggest` tool ([`plugins/cloud-harness/README.md`](plugins/cloud-harness/README.md)).
+It stores no credential: an OAuth endpoint signs in on first use, and an
+owner-bearer or API-key endpoint still needs the authenticated connection under
+**Claude Code** below. For an OAuth endpoint without the prompt hook, install
+the narrower `cloud-harness-workspaces` plugin instead
+([`docs/claude-directory.md`](docs/claude-directory.md)). See Anthropic's
 [plugin marketplace guide](https://code.claude.com/docs/en/plugin-marketplaces)
 for update and uninstall commands.
 

@@ -2,7 +2,7 @@
   "mcpServers": {
     "cloud-harness": {
       "type": "http",
-      "url": "${userConfig.mcpUrl}"
+      "url": "${user_config.mcpUrl}"
     }
   }
 }

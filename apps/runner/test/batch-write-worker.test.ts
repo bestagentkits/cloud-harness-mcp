@@ -1,11 +1,18 @@
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { executeWorkerRequest, sha256 } from '../../../worker/harness-worker.mjs';
+import { symlinksSupported } from './platform-support.js';
 
 const temporaryDirectories: string[] = [];
+
+function makeOutsideDirectory() {
+  const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-batch-outside-'));
+  temporaryDirectories.push(directory);
+  return directory;
+}
 
 afterEach(() => {
   delete process.env.CH_WORKSPACE_ROOT;
@@ -195,6 +202,59 @@ describe('Issue #88: files_write_batch worker execution', () => {
     // Verify that neither valid1.txt nor valid2.txt exists on disk
     expect(existsSync(join(root, 'valid1.txt'))).toBe(false);
     expect(existsSync(join(root, 'valid2.txt'))).toBe(false);
+  });
+
+  it.skipIf(!symlinksSupported)('refuses to write through a workspace file symlink whose target is outside the workspace', async () => {
+    const root = setupWorkspace();
+    const outside = makeOutsideDirectory();
+    const victim = join(outside, 'victim.txt');
+    writeFileSync(victim, 'outside original', 'utf8');
+    symlinkSync(victim, join(root, 'link.txt'));
+
+    const batch = await executeWorkerRequest('files_write_batch', {
+      files: [{ path: 'link.txt', content: 'overwritten' }]
+    });
+    expect(batch.ok).toBe(false);
+    expect(batch.error?.code).toBe('INVALID_INPUT');
+
+    const single = await executeWorkerRequest('files_write', { path: 'link.txt', content: 'overwritten' });
+    expect(single.ok).toBe(false);
+    expect(single.error?.code).toBe('INVALID_INPUT');
+
+    expect(readFileSync(victim, 'utf8')).toBe('outside original');
+  });
+
+  it.skipIf(!symlinksSupported)('refuses to create files beneath a workspace directory symlink that points outside the workspace', async () => {
+    const root = setupWorkspace();
+    const outside = makeOutsideDirectory();
+    symlinkSync(outside, join(root, 'linked-dir'), 'dir');
+
+    const batch = await executeWorkerRequest('files_write_batch', {
+      files: [{ path: 'linked-dir/escaped.txt', content: 'escaped' }],
+      createParents: true
+    });
+    expect(batch.ok).toBe(false);
+    expect(batch.error?.code).toBe('INVALID_INPUT');
+
+    const single = await executeWorkerRequest('files_write', { path: 'linked-dir/escaped.txt', content: 'escaped' });
+    expect(single.ok).toBe(false);
+    expect(single.error?.code).toBe('INVALID_INPUT');
+
+    expect(existsSync(join(outside, 'escaped.txt'))).toBe(false);
+  });
+
+  it.skipIf(!symlinksSupported)('never creates the outside target of a dangling workspace symlink', async () => {
+    const root = setupWorkspace();
+    const outside = makeOutsideDirectory();
+    const missingVictim = join(outside, 'not-yet.txt');
+    symlinkSync(missingVictim, join(root, 'dangling.txt'));
+
+    await executeWorkerRequest('files_write_batch', {
+      files: [{ path: 'dangling.txt', content: 'payload' }]
+    });
+    await executeWorkerRequest('files_write', { path: 'dangling.txt', content: 'payload' });
+
+    expect(existsSync(missingVictim)).toBe(false);
   });
 
   it('Issue #94: workspace_recover captures unpushed commits, staged changes, and untracked files', async () => {

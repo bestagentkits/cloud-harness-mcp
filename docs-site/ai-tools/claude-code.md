@@ -7,6 +7,12 @@ description: Registering Cloud Harness MCP in Claude Code CLI with local authori
 
 Claude Code CLI natively connects to remote Streamable HTTP MCP servers.
 
+::: tip Signing in with OAuth instead of a key?
+If your endpoint uses the Managed OAuth lane, install the
+[Claude Code plugin](./claude-directory-plugin.md). It asks for your endpoint
+URL and stores no key.
+:::
+
 ## Quick Setup
 
 Export your dashboard-managed API key in your shell:
