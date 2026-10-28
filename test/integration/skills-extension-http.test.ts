@@ -4,7 +4,7 @@ import express from 'express';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { Client, ProtocolError, SdkHttpError, StreamableHTTPClientTransport, type FetchLike } from '@modelcontextprotocol/client';
-import { AUTOMATION_TOOL_SPECS, SKILLS_EXTENSION_ID, TOOL_SPECS, type ApiConfig } from '@cloud-harness/contracts';
+import { AUTOMATION_TOOL_SPECS, MCP_APP_TOOL_NAMES, SKILLS_EXTENSION_ID, TOOL_SPECS, WORKSPACE_EXPLORER_RESOURCE_URI, type ApiConfig } from '@cloud-harness/contracts';
 import { createApiApp, type ApiRuntime } from '../../apps/api/src/app.js';
 
 const token = 'integration-bearer-token-longer-than-32-characters';
@@ -232,12 +232,12 @@ describe('Skills over MCP extension over streamable HTTP', () => {
     await client.close();
   });
 
-  it('answers resources/list and resources/templates/list empty with cache fields, without reaching the runner', async () => {
+  it('lists only the static app resource and no templates, with cache fields, without reaching the runner', async () => {
     runnerCalls.length = 0;
     const bodies: unknown[] = [];
     const client = await connect('modern', bodies);
-    expect((await client.listResources()).resources).toEqual([]);
-    expect(wireResult(bodies, (result) => Array.isArray(result.resources))).toMatchObject({ resources: [], ttlMs: 30_000, cacheScope: 'private' });
+    expect((await client.listResources()).resources.map((resource) => resource.uri)).toEqual([WORKSPACE_EXPLORER_RESOURCE_URI]);
+    expect(wireResult(bodies, (result) => Array.isArray(result.resources))).toMatchObject({ resources: [{ uri: WORKSPACE_EXPLORER_RESOURCE_URI }], ttlMs: 30_000, cacheScope: 'private' });
     expect((await client.listResourceTemplates()).resourceTemplates).toEqual([]);
     expect(wireResult(bodies, (result) => Array.isArray(result.resourceTemplates))).toMatchObject({ resourceTemplates: [], ttlMs: 30_000, cacheScope: 'private' });
     expect(runnerCalls).toEqual([]);
@@ -246,10 +246,10 @@ describe('Skills over MCP extension over streamable HTTP', () => {
 
   it('keeps legacy clients working', async () => {
     const legacy = await connect('legacy');
-    expect((await legacy.listTools()).tools).toHaveLength([...TOOL_SPECS, ...AUTOMATION_TOOL_SPECS].length);
+    expect((await legacy.listTools()).tools).toHaveLength([...TOOL_SPECS, ...AUTOMATION_TOOL_SPECS, ...MCP_APP_TOOL_NAMES].length);
     const result = await legacy.callTool({ name: 'workspace_list', arguments: {} });
     expect(result.isError).toBe(false);
-    expect((await legacy.listResources()).resources).toEqual([]);
+    expect((await legacy.listResources()).resources.map((resource) => resource.uri)).toEqual([WORKSPACE_EXPLORER_RESOURCE_URI]);
     expect((await legacy.listResourceTemplates()).resourceTemplates).toEqual([]);
     await legacy.close();
   });

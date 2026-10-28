@@ -1,4 +1,4 @@
-import { McpServer, type AuthInfo, type CallToolResult, type McpRequestContext } from '@modelcontextprotocol/server';
+import { McpServer, type AuthInfo, type McpRequestContext } from '@modelcontextprotocol/server';
 import {
   AUTOMATION_TOOL_SPECS,
   ApiKeyIdSchema,
@@ -15,8 +15,10 @@ import {
 import { principalFromAuthInfo } from './auth.js';
 import { RunnerClient } from './runner-client.js';
 import type { OperationBackend, SkillsExtensionOperation } from './operation-backend.js';
-import { formatToolResultText } from './mcp-response-text.js';
+import { resultToMcp } from './mcp-response-text.js';
 import { registerSkillsExtension, supportsSkillsExtension } from './skills-extension.js';
+import { installResourceHandlers } from './mcp-resources.js';
+import { WORKSPACE_EXPLORER_RESOURCE, registerWorkspaceExplorer } from './mcp-apps/workspace-explorer.js';
 import { registerEventsExtension, type EventsBackend } from './events/events-extension.js';
 import type { WebhookSender } from './events/webhook-sender.js';
 import { callAutomationTool, type AutomationsBackend } from './automations/automation-tools.js';
@@ -30,13 +32,7 @@ export type EventsOptions = { sender: WebhookSender };
  */
 export type AutomationsOptions = { enabled: boolean };
 
-export function resultToMcp(result: ToolResult): CallToolResult {
-  return {
-    content: [{ type: 'text', text: formatToolResultText(result) }],
-    structuredContent: result,
-    isError: !result.ok
-  };
-}
+export { resultToMcp };
 
 export class RunnerOperationBackend implements OperationBackend {
   /**
@@ -133,7 +129,9 @@ export function createCloudHarnessServer(
       registerSpecTool(server, spec, async (input, signal) => await callAutomationTool(automations, spec, input, signal));
     }
   }
-  if (supportsSkillsExtension(backend)) registerSkillsExtension(server, backend);
+  registerWorkspaceExplorer(server, backend);
+  const readSkill = supportsSkillsExtension(backend) ? registerSkillsExtension(server, backend) : undefined;
+  installResourceHandlers(server, [WORKSPACE_EXPLORER_RESOURCE], readSkill);
   if (backend.events) registerEventsExtension(server, backend.events);
   return server;
 }

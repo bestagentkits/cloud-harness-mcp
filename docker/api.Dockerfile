@@ -7,6 +7,8 @@ COPY packages/contracts/package.json packages/contracts/tsconfig.json ./packages
 RUN npm ci
 COPY apps/api/src ./apps/api/src
 COPY apps/api/dashboard ./apps/api/dashboard
+COPY apps/api/mcp-apps ./apps/api/mcp-apps
+COPY apps/api/scripts ./apps/api/scripts
 COPY packages/contracts/src ./packages/contracts/src
 RUN npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api && npm prune --omit=dev
 

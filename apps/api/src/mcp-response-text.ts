@@ -1,3 +1,4 @@
+import type { CallToolResult } from '@modelcontextprotocol/server';
 import type { ToolResult } from '@cloud-harness/contracts';
 
 const BLOB_KEYS: Record<string, true> = { content: true, output: true };
@@ -139,4 +140,12 @@ export function formatToolResultText(result: ToolResult): string {
     sections.push(`[next cursor: ${result.cursor}]`);
   }
   return sections.join('\n\n');
+}
+
+export function resultToMcp(result: ToolResult): CallToolResult {
+  return {
+    content: [{ type: 'text', text: formatToolResultText(result) }],
+    structuredContent: result,
+    isError: !result.ok
+  };
 }

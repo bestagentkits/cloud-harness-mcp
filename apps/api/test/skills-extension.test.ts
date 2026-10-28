@@ -5,8 +5,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   SKILLS_EXTENSION_ID,
+  MCP_APP_TOOL_NAMES,
   SKILLS_EXTENSION_MAX_BYTES,
   TOOL_SPECS,
+  WORKSPACE_EXPLORER_RESOURCE_URI,
   WorkspaceIdSchema,
   type RunnerPrincipalSelector,
   type RunnerResponse,
@@ -114,7 +116,7 @@ describe('Skills over MCP extension', () => {
     const { client: runner } = fakeRunner();
     const client = await connect(runner);
     const tools = (await client.listTools()).tools;
-    expect(tools.map((tool) => tool.name)).toEqual(TOOL_SPECS.map((spec) => spec.name));
+    expect(tools.map((tool) => tool.name)).toEqual([...TOOL_SPECS.map((spec) => spec.name), ...MCP_APP_TOOL_NAMES]);
     expect(tools.some((tool) => tool.name.startsWith('skills/'))).toBe(false);
   });
 
@@ -190,15 +192,15 @@ describe('Skills over MCP extension', () => {
     }
   });
 
-  it('answers resources/list and resources/templates/list empty without calling the runner', async () => {
+  it('lists only the static app resource and no templates, without calling the runner', async () => {
     const { client: runner, internalCalls, toolCalls } = fakeRunner();
     const client = await connect(runner);
     const resources = await client.request({ method: 'resources/list', params: {} }, z.looseObject({ resources: z.array(z.unknown()), ttlMs: z.number(), cacheScope: z.string() }));
-    expect(resources).toMatchObject({ resources: [], ttlMs: 30_000, cacheScope: 'private' });
+    expect(resources).toMatchObject({ resources: [{ uri: WORKSPACE_EXPLORER_RESOURCE_URI }], ttlMs: 30_000, cacheScope: 'private' });
     expect(resources.nextCursor).toBeUndefined();
     const templates = await client.request({ method: 'resources/templates/list', params: {} }, z.looseObject({ resourceTemplates: z.array(z.unknown()), ttlMs: z.number(), cacheScope: z.string() }));
     expect(templates).toMatchObject({ resourceTemplates: [], ttlMs: 30_000, cacheScope: 'private' });
-    expect((await client.listResources()).resources).toEqual([]);
+    expect((await client.listResources()).resources.map((resource) => resource.uri)).toEqual([WORKSPACE_EXPLORER_RESOURCE_URI]);
     expect((await client.listResourceTemplates()).resourceTemplates).toEqual([]);
     expect(internalCalls).toEqual([]);
     expect(toolCalls).toEqual([]);
@@ -287,9 +289,11 @@ describe('Skills over MCP extension', () => {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     closers.push(async () => { await client.close(); await server.close(); });
     expect(client.getServerCapabilities()?.extensions?.[SKILLS_EXTENSION_ID]).toBeUndefined();
-    expect(client.getServerCapabilities()?.resources).toBeUndefined();
+    // The MCP Apps view is still a resource; skill URIs are not.
+    expect(client.getServerCapabilities()?.resources).toEqual({});
     await expectProtocolError(client.request({ method: 'skills/list', params: {} }, ListResult), -32601);
-    await expectProtocolError(client.request({ method: 'resources/list', params: {} }, z.unknown()), -32601);
+    expect((await client.listResources()).resources.map((resource) => resource.uri)).toEqual([WORKSPACE_EXPLORER_RESOURCE_URI]);
+    await expectProtocolError(client.readResource({ uri: skillUri }), -32602);
   });
 });
 

@@ -1,11 +1,4 @@
-import {
-  ProtocolError,
-  ProtocolErrorCode,
-  type ListResourcesResult,
-  type ListResourceTemplatesResult,
-  type McpServer,
-  type ReadResourceResult
-} from '@modelcontextprotocol/server';
+import { ProtocolError, ProtocolErrorCode, type McpServer } from '@modelcontextprotocol/server';
 import {
   SKILLS_EXTENSION_ID,
   SKILLS_EXTENSION_LIST_MAX_LIMIT,
@@ -19,6 +12,7 @@ import {
 } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import type { OperationBackend, SkillsExtensionOperation } from './operation-backend.js';
+import { RESOURCE_CACHE_HINT as CACHE_HINT, type ResourceReader } from './mcp-resources.js';
 
 /**
  * Skills over MCP extension adapter. The runner owns skill resolution,
@@ -28,8 +22,6 @@ import type { OperationBackend, SkillsExtensionOperation } from './operation-bac
  * operations reachable from here are the three read-only `skills_ext_*` calls.
  */
 
-/** Per-principal data: only the requesting client may cache it, briefly. */
-const CACHE_HINT = { ttlMs: 30_000, cacheScope: 'private' } as const;
 /** Serialized bound for skill listings and entries, which carry metadata only. */
 const MAX_METADATA_BYTES = 20 * 1024 * 1024;
 
@@ -110,14 +102,13 @@ async function invoke<T>(
 }
 
 /**
- * Advertises the skills extension (plus the `resources` capability its
- * `resources/read` reuse requires) and installs its request handlers. Must run
- * before the server connects. `resources/list` and `resources/templates/list`
- * answer empty so the advertised capability is complete;
+ * Advertises the skills extension and installs its `skills/*` request handlers. Must run before
+ * the server connects. Returns the `resources/read` reader for skill URIs, which the caller hands
+ * to `installResourceHandlers` together with the `resources` capability it requires;
  * `resources/directory/read` stays unimplemented.
  */
-export function registerSkillsExtension(server: McpServer, backend: SkillsBackend): void {
-  server.server.registerCapabilities({ resources: {}, extensions: { [SKILLS_EXTENSION_ID]: {} } });
+export function registerSkillsExtension(server: McpServer, backend: SkillsBackend): ResourceReader {
+  server.server.registerCapabilities({ extensions: { [SKILLS_EXTENSION_ID]: {} } });
 
   server.server.setRequestHandler('skills/list', { params: ListParamsSchema, result: ListResultSchema }, async (params, ctx) => {
     const input: Record<string, unknown> = { limit: SKILLS_EXTENSION_LIST_MAX_LIMIT };
@@ -131,16 +122,12 @@ export function registerSkillsExtension(server: McpServer, backend: SkillsBacken
     return { skill: data.skill, resultType: 'complete' as const, ...CACHE_HINT };
   });
 
-  server.server.setRequestHandler('resources/read', async (request, ctx): Promise<ReadResourceResult> => {
-    const uri = SkillUriSchema.safeParse(request.params.uri);
+  return async (requestUri, ctx) => {
+    const uri = SkillUriSchema.safeParse(requestUri);
     if (!uri.success) throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'Invalid resource URI');
     const { data } = await invoke(backend, 'skills_ext_read', { uri: uri.data }, SkillsExtReadDataSchema, readWithinFileLimit, ctx.mcpReq.signal);
     const contents = data.contents.map(({ uri: contentUri, mimeType, text, blob }) =>
       text !== undefined ? { uri: contentUri, mimeType, text } : { uri: contentUri, mimeType, blob: blob ?? '' });
     return { contents, ...CACHE_HINT };
-  });
-
-  // Skills are discovered through skills/list, not resources/list; these answer generic resource clients.
-  server.server.setRequestHandler('resources/list', (): ListResourcesResult => ({ resources: [], ...CACHE_HINT }));
-  server.server.setRequestHandler('resources/templates/list', (): ListResourceTemplatesResult => ({ resourceTemplates: [], ...CACHE_HINT }));
+  };
 }

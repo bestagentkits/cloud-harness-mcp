@@ -13,7 +13,7 @@ export default tseslint.config(
     }
   },
   {
-    files: ['worker/**/*.mjs', 'scripts/**/*.mjs', 'deploy/**/*.mjs'],
+    files: ['worker/**/*.mjs', 'scripts/**/*.mjs', 'deploy/**/*.mjs', 'apps/api/scripts/**/*.mjs'],
     languageOptions: {
       globals: {
         Buffer: 'readonly',
@@ -48,6 +48,16 @@ export default tseslint.config(
       'no-restricted-globals': ['error',
         { name: 'escape', message: 'Use escapeHtml from dashboard-render.js for markup.' },
         { name: 'unescape', message: 'Use decodeURIComponent.' }]
+    }
+  },
+  {
+    files: ['apps/api/mcp-apps/**/*.js'],
+    languageOptions: {
+      globals: {
+        clearTimeout: 'readonly',
+        document: 'readonly',
+        setTimeout: 'readonly'
+      }
     }
   }
 );
