@@ -8,6 +8,8 @@ import {
   RunnerOperationSchema,
   TOOL_SCHEMA_BY_NAME,
   TOOL_SPECS,
+  WORKSPACE_EXPLORER_TOOL,
+  WorkspaceShowUiInputSchema,
   type AutomationToolName
 } from '../src/index.js';
 
@@ -51,7 +53,7 @@ describe('cloudharness skill contract', () => {
     const registeredOperations = TOOL_SPECS.map((spec) => spec.name);
 
     expect(new Set(toolNames).size).toBe(toolNames.length);
-    expect(sorted(toolNames)).toEqual(sorted([...schemaOperations, ...automationToolNames]));
+    expect(sorted(toolNames)).toEqual(sorted([...schemaOperations, ...automationToolNames, WORKSPACE_EXPLORER_TOOL]));
     expect(sorted(registeredOperations)).toEqual(sorted(schemaOperations));
   });
 
@@ -77,6 +79,10 @@ describe('cloudharness skill contract', () => {
     for (const { operation, input } of examples) {
       if (isAutomationTool(operation)) {
         expect(() => AUTOMATION_TOOL_SCHEMA_BY_NAME[operation].parse(input), operation).not.toThrow();
+        continue;
+      }
+      if (operation === WORKSPACE_EXPLORER_TOOL) {
+        expect(() => WorkspaceShowUiInputSchema.parse(input), operation).not.toThrow();
         continue;
       }
       const parsedOperation = RunnerOperationSchema.parse(operation);

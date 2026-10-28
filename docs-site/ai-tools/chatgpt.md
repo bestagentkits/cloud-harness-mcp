@@ -82,6 +82,13 @@ Good to know:
 - ChatGPT's subscriptions use Managed OAuth, so they lapse after at most 24 hours unless ChatGPT refreshes them. The dashboard API (`/dashboard/api/v1/event-subscriptions`) lists your subscriptions and can revoke one, which stops its delivery, but ChatGPT can subscribe again while the connector stays authorized; to stop it for good, revoke the subscription and disconnect the connector.
 - Live delivery to ChatGPT has not yet been verified end to end; Cloud Harness's own tests use a mock receiver.
 
+## Workspace explorer
+
+ChatGPT renders the read-only [workspace explorer](/ai-tools/workspace-explorer)
+when the model calls `workspace_show_ui`: a file tree and preview, Git status
+and diff, and task states for one workspace, using your connector's own
+authorization.
+
 ---
 
 ## 4. Troubleshooting

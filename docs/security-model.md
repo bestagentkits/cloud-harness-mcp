@@ -870,6 +870,31 @@ rejects a single skill over the served per-skill bounds with a per-item
 `LIMIT_EXCEEDED` result instead of publishing it partially. The executable
 owner is [`apps/runner/src/skill-archive.ts`](../apps/runner/src/skill-archive.ts).
 
+### MCP Apps workspace explorer
+
+The [workspace explorer](mcp-api.md#mcp-apps-workspace-explorer) is a view the
+host renders in its own sandboxed iframe. It adds no authority:
+
+- **No data in the resource.** The UI resource is static markup shared by every
+  caller and declares no network, resource, or frame origins. It never holds a
+  token, credential, or secret; the host bridge carries the caller's existing
+  MCP session.
+- **Existing authorization decides.** Every read is an ordinary `tools/call`
+  that the host forwards to this server, so principal, workspace ownership,
+  workspace-bound endpoint, and lease checks apply exactly as they do to the
+  model. The view is pinned to the opener's `workspaceId` and passes it on
+  every call, overriding anything else.
+- **Read-only allowlist.** The view calls only read-only, non-destructive,
+  closed-world tools (`workspace_status`, `files_list`, `files_read`,
+  `git_status`, `git_diff`, `tasks_list`, `tasks_status`, `tasks_graph`). It has
+  no terminal, exec, write, push, or task-control path, and it does not call
+  `/mcp-gateway`. A host that lets the view call other tools still subjects
+  them to the same server-side authorization.
+- **Repository content is hostile.** File, diff, branch, and task text is set
+  as text, never as markup; bidirectional and control characters are shown as
+  escapes; and every view is bounded by bytes or lines so a large diff cannot
+  exhaust the host. Nothing the view reads is sent into the model's context.
+
 ### Privileged execution and operator approval grants
 
 Standard executors strictly preserve `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`, and user `10001:10001`. Sudo/root execution is treated as an explicit owner-approved threat model weakening (similar to `networkMode: bridge`).

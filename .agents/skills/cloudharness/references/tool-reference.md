@@ -12,6 +12,7 @@ See [workspace lifecycle and results](workspace-lifecycle-and-results.md).
 `workspace_close` `workspace_lease_renew` `workspace_recover`
 `workspace_context` `workspace_set_active` `workspace_repos_list`
 `workspace_repo_status` `workspace_repo_add` `workspace_repo_remove`
+`workspace_show_ui` (see [MCP Apps explorer](#mcp-apps-explorer))
 
 Several repositories in one workspace: see
 [multi-repository workspaces](multi-repository-workspaces.md).
@@ -130,3 +131,25 @@ Clients may show approval UI from these MCP annotations:
 - `openWorldHint`: the tool may contact or affect a system outside the executor.
 
 Annotations are hints, not authorization. Inspect every operation and input.
+
+## MCP Apps explorer
+
+<!-- cloudharness-tool:workspace_show_ui -->
+### `workspace_show_ui`
+
+Open the read-only workspace explorer in hosts that render MCP Apps (ChatGPT,
+Claude, and other `io.modelcontextprotocol/ui` clients).
+
+- Required: `workspaceId`. Returns the same record as `workspace_status`, so a
+  text-only client still gets a usable summary; an expired lease is an error.
+- The host renders `ui://cloud-harness/workspace-explorer-v1.html`, which reads
+  only through `workspace_status`, `files_list`, `files_read`, `git_status`,
+  `git_diff`, `tasks_list`, `tasks_status`, and `tasks_graph`, always bound to
+  this `workspaceId`. It cannot run commands, write, push, or change tasks.
+- Use it when a person wants to browse the tree, review a diff, or watch task
+  states; keep using the tools directly for anything you need in your context.
+- Read-only and safe to repeat.
+
+<!-- cloudharness-example:workspace_show_ui
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa"}
+-->

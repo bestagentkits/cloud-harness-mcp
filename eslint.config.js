@@ -49,5 +49,17 @@ export default tseslint.config(
         { name: 'escape', message: 'Use escapeHtml from dashboard-render.js for markup.' },
         { name: 'unescape', message: 'Use decodeURIComponent.' }]
     }
+  },
+  {
+    // MCP Apps views run in a host iframe; the host window and document are passed in explicitly.
+    files: ['apps/api/mcp-apps/**/*.js'],
+    languageOptions: {
+      globals: {
+        clearTimeout: 'readonly',
+        document: 'readonly',
+        setTimeout: 'readonly',
+        window: 'readonly'
+      }
+    }
   }
 );

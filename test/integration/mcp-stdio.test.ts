@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { TOOL_SPECS } from '@cloud-harness/contracts';
+import { TOOL_SPECS, WORKSPACE_EXPLORER_TOOL_SPEC } from '@cloud-harness/contracts';
 
 const apiBinaryPath = resolve(process.cwd(), 'apps/api/dist/index.js');
 
@@ -64,7 +64,7 @@ describe('MCP stdio real binary interoperability', () => {
 
     // List tools
     const tools = await client.listTools();
-    expect(tools.tools).toHaveLength(TOOL_SPECS.length);
+    expect(tools.tools).toHaveLength([...TOOL_SPECS, WORKSPACE_EXPLORER_TOOL_SPEC].length);
 
     const closeTool = tools.tools.find((t) => t.name === 'workspace_close');
     expect(closeTool?.annotations?.destructiveHint).toBe(true);
@@ -159,7 +159,7 @@ describe('MCP stdio real binary interoperability', () => {
     await client.connect(transport);
 
     const tools = await client.listTools();
-    expect(tools.tools).toHaveLength(TOOL_SPECS.length);
+    expect(tools.tools).toHaveLength([...TOOL_SPECS, WORKSPACE_EXPLORER_TOOL_SPEC].length);
 
     const listResult = await client.callTool({ name: 'workspace_list', arguments: {} });
     expect(listResult.isError).toBe(false);

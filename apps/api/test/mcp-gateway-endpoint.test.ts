@@ -4,6 +4,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import {
   AUTOMATION_TOOL_SPECS,
   TOOL_SPECS,
+  WORKSPACE_EXPLORER_TOOL_SPEC,
   type ApiConfig,
   type McpGatewayResolvedCredentials,
   type McpGatewayServerView,
@@ -777,7 +778,7 @@ describe('/mcp regression guard', () => {
         })
       );
       const listed = await client.listTools();
-      expect(listed.tools).toHaveLength(TOOL_SPECS.length + AUTOMATION_TOOL_SPECS.length);
+      expect(listed.tools).toHaveLength([...TOOL_SPECS, ...AUTOMATION_TOOL_SPECS, WORKSPACE_EXPLORER_TOOL_SPEC].length);
       expect(state.calls.filter((call) => call.operation.startsWith('mcp_gateway'))).toHaveLength(0);
     } finally {
       await client.close().catch(() => undefined);

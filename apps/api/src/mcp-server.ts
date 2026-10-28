@@ -3,6 +3,8 @@ import {
   AUTOMATION_TOOL_SPECS,
   ApiKeyIdSchema,
   TOOL_SPECS,
+  WORKSPACE_EXPLORER_TOOL_SPEC,
+  WORKSPACE_EXPLORER_UI_URI,
   ToolResultSchema,
   WorkspaceIdSchema,
   type RunnerOperation,
@@ -20,6 +22,7 @@ import { registerSkillsExtension, supportsSkillsExtension } from './skills-exten
 import { registerEventsExtension, type EventsBackend } from './events/events-extension.js';
 import type { WebhookSender } from './events/webhook-sender.js';
 import { callAutomationTool, type AutomationsBackend } from './automations/automation-tools.js';
+import { registerResourceHandlers, uiToolMeta } from './mcp-apps.js';
 
 /** MCP Events wiring; absent (no `events` capability) unless the API runs its delivery egress. */
 export type EventsOptions = { sender: WebhookSender };
@@ -133,7 +136,11 @@ export function createCloudHarnessServer(
       registerSpecTool(server, spec, async (input, signal) => await callAutomationTool(automations, spec, input, signal));
     }
   }
+  // MCP Apps opener: answers exactly like workspace_status, so text-only clients get the same summary.
+  registerSpecTool(server, WORKSPACE_EXPLORER_TOOL_SPEC, async (input, signal) =>
+    await backend.call('workspace_status', { workspaceId: input.workspaceId }, signal), uiToolMeta(WORKSPACE_EXPLORER_UI_URI));
   if (supportsSkillsExtension(backend)) registerSkillsExtension(server, backend);
+  else registerResourceHandlers(server);
   if (backend.events) registerEventsExtension(server, backend.events);
   return server;
 }
@@ -141,7 +148,8 @@ export function createCloudHarnessServer(
 function registerSpecTool(
   server: McpServer,
   spec: Omit<ToolSpec, 'name'> & { name: string },
-  call: (input: Record<string, unknown>, signal: AbortSignal) => Promise<ToolResult>
+  call: (input: Record<string, unknown>, signal: AbortSignal) => Promise<ToolResult>,
+  meta?: Record<string, unknown>
 ): void {
   server.registerTool(
     spec.name,
@@ -155,7 +163,8 @@ function registerSpecTool(
         destructiveHint: spec.destructive,
         idempotentHint: spec.idempotent,
         openWorldHint: spec.openWorld
-      }
+      },
+      ...(meta ? { _meta: meta } : {})
     },
     async (input, context) => resultToMcp(await call(input as Record<string, unknown>, context.mcpReq.signal))
   );

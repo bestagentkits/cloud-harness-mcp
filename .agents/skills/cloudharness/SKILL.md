@@ -17,6 +17,7 @@ network isolation.
 | --- | --- |
 | Install the skill, connect a client, use the MCP gateway surface, or understand trust boundaries | [Installation and security](references/installation-and-security.md) |
 | Choose a tool and locate its detailed contract | [Tool reference index](references/tool-reference.md) |
+| Show a person a read-only explorer (files, Git diff, task states) in an MCP Apps host | [MCP Apps explorer](references/tool-reference.md#mcp-apps-explorer) |
 | Open, recover, inspect, or close a workspace; interpret results/errors | [Workspace lifecycle and results](references/workspace-lifecycle-and-results.md) |
 | Work across several repositories in one workspace, choose `repositoryId`, or handle a `read-only` repository | [Multi-repository workspaces](references/multi-repository-workspaces.md) |
 | List, read, write, patch, move, delete, grep, or search symbols | [Files and search](references/files-and-search.md) |

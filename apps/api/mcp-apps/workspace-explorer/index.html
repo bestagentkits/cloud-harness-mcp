@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Cloud Harness workspace explorer</title>
+<style>/*__CH_STYLE__*/</style>
+</head>
+<body>
+<main id="explorer" class="explorer" aria-busy="true">
+  <header class="explorer-header">
+    <div class="explorer-title">
+      <h1>Workspace explorer</h1>
+      <span class="badge" id="lease-badge" hidden></span>
+    </div>
+    <p class="explorer-meta" id="workspace-meta">Waiting for the host…</p>
+    <label class="repo-select" id="repo-select-label" hidden>Repository
+      <select id="repo-select"></select>
+    </label>
+  </header>
+  <div class="notice" id="notice" role="alert" hidden></div>
+  <nav class="tabs" role="tablist" aria-label="Explorer views">
+    <button type="button" role="tab" id="tab-files" aria-controls="panel-files" aria-selected="true">Files</button>
+    <button type="button" role="tab" id="tab-git" aria-controls="panel-git" aria-selected="false" tabindex="-1">Git</button>
+    <button type="button" role="tab" id="tab-tasks" aria-controls="panel-tasks" aria-selected="false" tabindex="-1">Tasks</button>
+  </nav>
+  <section class="panel" role="tabpanel" id="panel-files" aria-labelledby="tab-files">
+    <div class="split">
+      <div class="pane tree-pane">
+        <div class="pane-head"><h2>Tree</h2><button type="button" class="link" id="files-refresh">Refresh</button></div>
+        <ul class="tree" id="file-tree" role="tree" aria-label="Workspace files"></ul>
+      </div>
+      <div class="pane preview-pane">
+        <div class="pane-head"><h2 id="preview-title">Preview</h2></div>
+        <p class="hint" id="preview-meta">Select a file to preview it.</p>
+        <pre class="code" id="preview" tabindex="0" aria-labelledby="preview-title"></pre>
+        <button type="button" class="link" id="preview-more" hidden>Load more</button>
+      </div>
+    </div>
+  </section>
+  <section class="panel" role="tabpanel" id="panel-git" aria-labelledby="tab-git" hidden>
+    <div class="split">
+      <div class="pane">
+        <div class="pane-head"><h2>Status</h2><button type="button" class="link" id="git-refresh">Refresh</button></div>
+        <p class="hint" id="git-branch"></p>
+        <ul class="list" id="git-status-list" aria-label="Changed paths"></ul>
+      </div>
+      <div class="pane">
+        <div class="pane-head">
+          <h2 id="diff-title">Diff</h2>
+          <label class="toggle"><input type="checkbox" id="diff-staged"> Staged</label>
+        </div>
+        <p class="hint" id="diff-meta"></p>
+        <pre class="code diff" id="diff" tabindex="0" aria-labelledby="diff-title"></pre>
+        <button type="button" class="link" id="diff-more" hidden>Load more</button>
+      </div>
+    </div>
+  </section>
+  <section class="panel" role="tabpanel" id="panel-tasks" aria-labelledby="tab-tasks" hidden>
+    <div class="split">
+      <div class="pane">
+        <div class="pane-head">
+          <h2>Tasks</h2>
+          <span class="pane-actions">
+            <label class="toggle"><input type="checkbox" id="tasks-watch"> Watch</label>
+            <button type="button" class="link" id="tasks-refresh">Refresh</button>
+          </span>
+        </div>
+        <ul class="list" id="task-list" aria-label="Managed tasks" aria-live="polite"></ul>
+        <button type="button" class="link" id="tasks-more" hidden>Load more</button>
+      </div>
+      <div class="pane">
+        <div class="pane-head"><h2 id="task-title">Task output</h2></div>
+        <p class="hint" id="task-meta">Select a task to see its state and output.</p>
+        <pre class="code" id="task-output" tabindex="0" aria-labelledby="task-title"></pre>
+        <button type="button" class="link" id="task-more" hidden>Load more</button>
+      </div>
+    </div>
+  </section>
+  <footer class="explorer-footer">Read-only. Every view is fetched with your own workspace authorization.</footer>
+</main>
+<script type="module">/*__CH_SCRIPT__*/</script>
+</body>
+</html>

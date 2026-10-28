@@ -253,8 +253,11 @@ Third-party agent toolkits are acquired and normalized via disposable clone help
 ## Composition roots and transports
 
 Cloud Harness MCP supports four distinct composition roots. The coding-harness
-roots share the public `TOOL_SPECS` and result envelopes; the
-gateway root owns its own constant five-tool contract.
+roots share the public `TOOL_SPECS` and result envelopes, plus the read-only
+[MCP Apps workspace explorer](mcp-api.md#mcp-apps-workspace-explorer) opener
+and its static UI resource, which the API serves itself and which reaches the
+runner only through those same tools; the gateway root owns its own constant
+five-tool contract.
 
 1. **Streamable HTTP mode (default):**
    `cloud-harness-mcp --transport http` (or default without flags).

@@ -119,7 +119,8 @@ export default defineConfig({
           { text: 'Codex', link: '/ai-tools/codex' },
           { text: 'Gemini CLI', link: '/ai-tools/gemini' },
           { text: 'Google Antigravity', link: '/ai-tools/antigravity' },
-          { text: 'Grok / xAI', link: '/ai-tools/grok' }
+          { text: 'Grok / xAI', link: '/ai-tools/grok' },
+          { text: 'Workspace Explorer (MCP Apps)', link: '/ai-tools/workspace-explorer' }
         ]
       },
       {

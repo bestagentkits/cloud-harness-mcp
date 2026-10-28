@@ -1,0 +1,136 @@
+:root {
+  color-scheme: light dark;
+  --ch-bg: var(--color-background-primary, #ffffff);
+  --ch-bg-muted: var(--color-background-secondary, #f4f5f7);
+  --ch-text: var(--color-text-primary, #16181d);
+  --ch-text-muted: var(--color-text-secondary, #555b66);
+  --ch-border: var(--color-border-primary, #d9dce1);
+  --ch-accent: var(--color-text-info, #1f5fbf);
+  --ch-add: #116329;
+  --ch-add-bg: #e6f4ea;
+  --ch-del: #a40e26;
+  --ch-del-bg: #fdecee;
+  --ch-warn-bg: #fff4d6;
+  --ch-warn-text: #6b4e00;
+  --ch-danger-bg: #fdecee;
+  --ch-danger-text: #8a1022;
+  --ch-radius: var(--border-radius-md, 8px);
+  --ch-font: var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif);
+  --ch-mono: var(--font-mono, ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace);
+}
+
+:root[data-theme="dark"] {
+  --ch-bg: var(--color-background-primary, #17191e);
+  --ch-bg-muted: var(--color-background-secondary, #22252b);
+  --ch-text: var(--color-text-primary, #eceef2);
+  --ch-text-muted: var(--color-text-secondary, #a3a9b4);
+  --ch-border: var(--color-border-primary, #373b43);
+  --ch-accent: var(--color-text-info, #7aaef5);
+  --ch-add: #7ee2a0;
+  --ch-add-bg: #12301d;
+  --ch-del: #ff9aa8;
+  --ch-del-bg: #3a1820;
+  --ch-warn-bg: #3a3014;
+  --ch-warn-text: #f3d98a;
+  --ch-danger-bg: #3a1820;
+  --ch-danger-text: #ffb3be;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ch-bg: var(--color-background-primary, #17191e);
+    --ch-bg-muted: var(--color-background-secondary, #22252b);
+    --ch-text: var(--color-text-primary, #eceef2);
+    --ch-text-muted: var(--color-text-secondary, #a3a9b4);
+    --ch-border: var(--color-border-primary, #373b43);
+    --ch-accent: var(--color-text-info, #7aaef5);
+    --ch-add: #7ee2a0;
+    --ch-add-bg: #12301d;
+    --ch-del: #ff9aa8;
+    --ch-del-bg: #3a1820;
+    --ch-warn-bg: #3a3014;
+    --ch-warn-text: #f3d98a;
+    --ch-danger-bg: #3a1820;
+    --ch-danger-text: #ffb3be;
+  }
+}
+
+* { box-sizing: border-box; }
+/* Component display rules must not reveal elements the view has hidden. */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  background: var(--ch-bg);
+  color: var(--ch-text);
+  font: 14px/1.45 var(--ch-font);
+}
+
+.explorer { padding: 12px 16px 8px; max-width: 100%; }
+.explorer-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
+.explorer-title { display: flex; align-items: center; gap: 8px; }
+h1 { font-size: 16px; margin: 0; }
+h2 { font-size: 13px; margin: 0; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ch-text-muted); }
+.explorer-meta, .hint { color: var(--ch-text-muted); margin: 0; overflow-wrap: anywhere; }
+.hint { font-size: 12px; margin: 4px 0; }
+
+.badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--ch-border); color: var(--ch-text-muted); }
+.badge[data-tone="warn"] { background: var(--ch-warn-bg); color: var(--ch-warn-text); border-color: transparent; }
+.badge[data-tone="danger"] { background: var(--ch-danger-bg); color: var(--ch-danger-text); border-color: transparent; }
+.badge[data-tone="ok"] { color: var(--ch-add); }
+
+.repo-select { font-size: 12px; color: var(--ch-text-muted); display: flex; gap: 6px; align-items: center; }
+select { font: inherit; color: inherit; background: var(--ch-bg); border: 1px solid var(--ch-border); border-radius: 6px; padding: 2px 6px; max-width: 60vw; }
+
+.notice { margin: 8px 0; padding: 8px 12px; border-radius: var(--ch-radius); background: var(--ch-danger-bg); color: var(--ch-danger-text); overflow-wrap: anywhere; }
+.notice[data-tone="warn"] { background: var(--ch-warn-bg); color: var(--ch-warn-text); }
+
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--ch-border); margin: 10px 0 8px; }
+.tabs button { font: inherit; color: var(--ch-text-muted); background: none; border: 0; border-bottom: 2px solid transparent; padding: 6px 10px; cursor: pointer; min-height: 32px; }
+.tabs button[aria-selected="true"] { color: var(--ch-text); border-bottom-color: var(--ch-accent); font-weight: 600; }
+
+button:focus-visible, select:focus-visible, input:focus-visible, pre:focus-visible, .tree [role="treeitem"]:focus-visible {
+  outline: 2px solid var(--ch-accent);
+  outline-offset: 2px;
+}
+
+.split { display: grid; grid-template-columns: minmax(180px, 2fr) minmax(0, 5fr); gap: 12px; }
+@media (max-width: 640px) { .split { grid-template-columns: minmax(0, 1fr); } }
+.pane { min-width: 0; }
+.pane-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; }
+.pane-actions { display: flex; gap: 12px; align-items: center; }
+.toggle { font-size: 12px; color: var(--ch-text-muted); display: inline-flex; gap: 4px; align-items: center; }
+
+.link { font: inherit; font-size: 12px; background: none; border: 0; color: var(--ch-accent); cursor: pointer; padding: 4px 2px; }
+.link:disabled { color: var(--ch-text-muted); cursor: default; }
+
+.tree, .tree ul, .list { list-style: none; margin: 0; padding: 0; }
+.tree ul { padding-left: 14px; }
+.tree, .list { max-height: 420px; overflow: auto; border: 1px solid var(--ch-border); border-radius: var(--ch-radius); padding: 4px; }
+.tree:empty, .list:empty { display: none; }
+.tree [role="treeitem"] > .entry, .list .entry {
+  display: flex; width: 100%; gap: 6px; align-items: baseline; text-align: left;
+  font: inherit; color: inherit; background: none; border: 0; border-radius: 4px; padding: 3px 6px; cursor: pointer;
+}
+.entry:hover, .entry[aria-current="true"] { background: var(--ch-bg-muted); }
+.entry .name { overflow-wrap: anywhere; }
+.entry .kind { color: var(--ch-text-muted); font-family: var(--ch-mono); font-size: 12px; flex: none; min-width: 1.5em; }
+.entry .state { margin-left: auto; flex: none; }
+
+.code {
+  margin: 4px 0 0; padding: 8px 10px; max-height: 420px; overflow: auto;
+  background: var(--ch-bg-muted); border-radius: var(--ch-radius);
+  font: 12px/1.5 var(--ch-mono); white-space: pre; tab-size: 4;
+}
+.code:empty { display: none; }
+.diff .line { display: block; padding: 0 4px; }
+.diff .add { background: var(--ch-add-bg); color: var(--ch-add); }
+.diff .del { background: var(--ch-del-bg); color: var(--ch-del); }
+.diff .hunk { color: var(--ch-accent); }
+.diff .meta { color: var(--ch-text-muted); font-weight: 600; }
+
+.explorer-footer { margin-top: 10px; font-size: 11px; color: var(--ch-text-muted); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .entry { transition: background-color 120ms ease; }
+}

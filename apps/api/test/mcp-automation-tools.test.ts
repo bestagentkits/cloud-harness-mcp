@@ -3,6 +3,7 @@ import { InMemoryTransport, type AuthInfo, type McpServer } from '@modelcontextp
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   AUTOMATION_TOOL_SPECS,
+  WORKSPACE_EXPLORER_TOOL_SPEC,
   TOOL_SPECS,
   ToolResultSchema,
   type AutomationRuleSummary,
@@ -118,7 +119,7 @@ describe('automation management tools over MCP', () => {
     const { client: runner } = fakeRunner();
     const client = await connectRemote(runner);
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name)).toEqual([...TOOL_SPECS, ...AUTOMATION_TOOL_SPECS].map((spec) => spec.name));
+    expect(tools.map((tool) => tool.name)).toEqual([...TOOL_SPECS, ...AUTOMATION_TOOL_SPECS, WORKSPACE_EXPLORER_TOOL_SPEC].map((spec) => spec.name));
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
     expect(byName.get('automation_rules_list')?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
     expect(byName.get('automation_rule_disable')?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });

@@ -574,8 +574,9 @@ Decisions that are easy to misread:
   differing content are a conflict served under neither, as a launch would
   refuse it.
 - **Methods.** `skills/list`, `skills/get`, and `resources/read`. Skills are
-  discovered only through `skills/list`: `resources/list` and
-  `resources/templates/list` answer empty so the declared `resources`
+  discovered only through `skills/list`: `resources/list` lists only the MCP
+  Apps UI resource (see [MCP Apps workspace explorer](#mcp-apps-workspace-explorer))
+  and `resources/templates/list` answers empty, so the declared `resources`
   capability is complete. The optional `resources/directory/read` is not
   implemented, so `directoryRead` is not declared.
 - **Addressing.** `skill://cloud-harness/<tier>/<name>/<file>` for `built-in`
@@ -619,6 +620,54 @@ Executable owners:
 [`packages/contracts/src/skills-extension.ts`](../packages/contracts/src/skills-extension.ts),
 and
 [`test/integration/skills-extension-http.test.ts`](../test/integration/skills-extension-http.test.ts).
+
+## MCP Apps workspace explorer
+
+Every endpoint that serves the workspace tools (`/mcp`,
+`/mcp/workspaces/<workspaceId>`, the managed API-key lane, and local stdio)
+also serves one [MCP Apps](https://modelcontextprotocol.io/extensions/apps)
+(`io.modelcontextprotocol/ui`) view: a read-only workspace explorer with a file
+tree and bounded preview, Git status and diff, and task states. `/mcp-gateway`
+keeps its five-tool surface and does not serve it.
+
+Decisions that are easy to misread:
+
+- **Separate opener tool.** `workspace_show_ui` (`workspaceId` only) is the one
+  tool whose `_meta.ui.resourceUri` (and the legacy flat `ui/resourceUri` key)
+  names `ui://cloud-harness/workspace-explorer-v1.html`, with visibility
+  `model` and `app`. The existing tools carry no `_meta`, so their listing is
+  unchanged. The opener answers exactly like `workspace_status`, which is the
+  text fallback: a client that does not render MCP Apps gets the same record,
+  and an expired or closed workspace is the same error.
+- **Static, versioned resource.** The resource is one self-contained
+  `text/html;profile=mcp-app` document, the same for every caller, built at
+  startup from `apps/api/mcp-apps/workspace-explorer/`. It declares empty
+  `connectDomains`, `resourceDomains`, and `frameDomains`, loads nothing
+  remote, and carries no data, tokens, or credentials. A breaking change to the
+  view ships under a new `-vN` URI rather than changing this one. `resources/read`
+  returns it with `ttlMs: 300000` and `cacheScope: "public"`.
+- **Reads go back through the tools.** The view fetches through the host
+  bridge (`tools/call`) and only calls `workspace_status`, `files_list`,
+  `files_read`, `git_status`, `git_diff`, `tasks_list`, `tasks_status`, and
+  `tasks_graph`, each forced to the `workspaceId` the opener was called with. A
+  later notification cannot rebind it. Each call is authorized as an ordinary
+  tool call for the same principal, so the workspace-bound endpoint, ownership,
+  and lease checks still decide. The view never calls a tool that executes,
+  writes, pushes, or changes tasks, and never calls back into the model
+  (`ui/message`, `ui/update-model-context`, or `ui/open-link`).
+- **Bounded rendering.** Previews page `files_read` up to 256 KiB, diffs page
+  `git_diff` up to 512 KiB and 8,000 rendered lines, and task output stops at
+  256 KiB; each view says when it stopped early. Repository content is drawn as
+  text only, with bidirectional and control characters made visible.
+- **Expiry.** An `EXPIRED`, `EXPIRED_RECOVERABLE`, closed, or missing workspace
+  switches the view to an explicit expired state and stops task watching;
+  recovering or reopening the workspace is a tool call the model makes.
+
+Executable owners:
+[`apps/api/src/mcp-apps.ts`](../apps/api/src/mcp-apps.ts),
+[`apps/api/mcp-apps/workspace-explorer/`](../apps/api/mcp-apps/workspace-explorer/),
+[`packages/contracts/src/mcp-apps.ts`](../packages/contracts/src/mcp-apps.ts),
+and [`apps/api/test/mcp-apps.test.ts`](../apps/api/test/mcp-apps.test.ts).
 
 ## MCP Events (webhook delivery)
 

@@ -74,3 +74,10 @@ To operate directly on a local project directory without remote cloud hosting, c
 ```
 
 To serve several local folders from one server, replace `--workspace <path>` with `--workspace-config <absolute-path>`; see [Several local workspaces from one server](/connect#several-local-workspaces-from-one-server).
+
+## Workspace explorer
+
+Claude renders the read-only [workspace explorer](/ai-tools/workspace-explorer)
+when the model calls `workspace_show_ui`, over any of the options above that
+reach `/mcp` or local stdio: a file tree and preview, Git status and diff, and
+task states for one workspace.

@@ -2,10 +2,10 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import { AUTOMATION_TOOL_SPECS, TOOL_SPECS as WORKSPACE_TOOL_SPECS } from '../packages/contracts/dist/index.js';
+import { AUTOMATION_TOOL_SPECS, TOOL_SPECS as WORKSPACE_TOOL_SPECS, WORKSPACE_EXPLORER_TOOL_SPEC } from '../packages/contracts/dist/index.js';
 
-// The remote endpoints list the automation tools next to the workspace tools.
-const TOOL_SPECS = [...WORKSPACE_TOOL_SPECS, ...AUTOMATION_TOOL_SPECS];
+// The remote endpoints list the automation tools and the MCP Apps opener next to the workspace tools.
+const TOOL_SPECS = [...WORKSPACE_TOOL_SPECS, ...AUTOMATION_TOOL_SPECS, WORKSPACE_EXPLORER_TOOL_SPEC];
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -74,6 +74,11 @@ const CATEGORIES = [
     title: 'Automations',
     description: 'List and create webhook automation rules (created disabled; the owner enables them on the Dashboard), disable rules, and list, read, and cancel automation runs. Remote endpoints only, off unless the operator enables automations. Connections and their secrets stay on the Dashboard.',
     names: AUTOMATION_TOOL_SPECS.map((spec) => spec.name)
+  },
+  {
+    title: 'MCP Apps',
+    description: 'Open the read-only workspace explorer UI (file tree and preview, Git status and diff, task states) in hosts that render MCP Apps. Text-only clients receive the same summary as workspace_status.',
+    names: [WORKSPACE_EXPLORER_TOOL_SPEC.name]
   }
 ];
 
@@ -353,6 +358,7 @@ const llmsTxt = `# Cloud Harness MCP Documentation
 - [Gemini CLI](https://docs.harness.agentkit.best/ai-tools/gemini.md): CLI setup.
 - [Google Antigravity](https://docs.harness.agentkit.best/ai-tools/antigravity.md): IDE configuration.
 - [Grok / xAI](https://docs.harness.agentkit.best/ai-tools/grok.md): Responses API MCP integration.
+- [Workspace Explorer](https://docs.harness.agentkit.best/ai-tools/workspace-explorer.md): Read-only MCP Apps view of files, Git diff, and tasks.
 
 ## Operator Dashboard
 - [Dashboard Overview](https://docs.harness.agentkit.best/dashboard/index.md): The Mission Control operator dashboard.

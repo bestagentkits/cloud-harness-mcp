@@ -7,6 +7,7 @@ COPY packages/contracts/package.json packages/contracts/tsconfig.json ./packages
 RUN npm ci
 COPY apps/api/src ./apps/api/src
 COPY apps/api/dashboard ./apps/api/dashboard
+COPY apps/api/mcp-apps ./apps/api/mcp-apps
 COPY packages/contracts/src ./packages/contracts/src
 RUN npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api && npm prune --omit=dev
 
@@ -20,8 +21,9 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build --chmod=0444 /app/apps/api/package.json ./apps/api/package.json
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/api/dashboard ./apps/api/dashboard
-RUN find /app/apps/api/dashboard -type d -exec chmod 0555 {} + \
-  && find /app/apps/api/dashboard -type f -exec chmod 0444 {} +
+COPY --from=build /app/apps/api/mcp-apps ./apps/api/mcp-apps
+RUN find /app/apps/api/dashboard /app/apps/api/mcp-apps -type d -exec chmod 0555 {} + \
+  && find /app/apps/api/dashboard /app/apps/api/mcp-apps -type f -exec chmod 0444 {} +
 COPY --from=build --chmod=0444 /app/packages/contracts/package.json ./packages/contracts/package.json
 COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY --chown=node:node --chmod=0555 scripts/deploy-canary.mjs ./scripts/deploy-canary.mjs
