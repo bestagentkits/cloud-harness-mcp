@@ -666,7 +666,9 @@ enforcement targets Linux with the Docker iptables backend; the host firewall
 is a trusted operator-owned control outside the executor's authority.
 
 Repository opening accepts only credential-free HTTPS URLs on configured
-hosts and rejects private/link-local resolutions. The clone helper disables
+hosts and rejects a host if any resolved address is private, loopback, or
+link-local, including the same address written as IPv4-mapped IPv6
+(`::ffff:10.0.0.5`). The clone helper disables
 hooks, recursive submodules, tag downloads, redirects, and LFS smudging.
 Repository code is never evaluated by the runner during clone.
 
