@@ -214,6 +214,11 @@ describe('model gateway security boundary', () => {
     expect(() => assertProductionHostname('api.openai.com')).not.toThrow();
   });
 
+  it('refuses only the special-purpose /24s inside 192.0.0.0/16 and 198.51.0.0/16', () => {
+    for (const address of ['192.0.0.1', '192.0.2.1', '198.51.100.1']) expect(isUnsafeAddress(address), address).toBe(true);
+    for (const address of ['192.0.78.9', '192.0.32.10', '198.51.0.1']) expect(isUnsafeAddress(address), address).toBe(false);
+  });
+
   it('refuses IPv6 prefixes that embed or tunnel an IPv4 address in every text form', () => {
     for (const address of [
       '64:ff9b::a9fe:a9fe', '64:ff9b:0:0:0:0:a9fe:a9fe', '64:FF9B::169.254.169.254', '0064:ff9b:0000::0a00:0001',
