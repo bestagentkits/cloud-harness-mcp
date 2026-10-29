@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RunnerConfigSchema, type RunnerOperation, type RunnerResponse } from '@cloud-harness/contracts';
@@ -103,6 +103,19 @@ describe('WorkspaceService agent dispatch', () => {
     gate.resolve();
     await expect(closing).resolves.toMatchObject({ data: { status: 'CLOSED' } });
     expect(store.byId(record.id)?.status).toBe('CLOSED');
+    store.close();
+  });
+
+  it('keeps the workspace out of CLOSED when agent cleanup fails, and closes it on the retried close', async () => {
+    const { config, store, record } = setup();
+    const stopWorkspace = vi.fn(async () => undefined).mockRejectedValueOnce(new Error('durable session files could not be deleted'));
+    const manager = injectedManager({ stopWorkspace } as Partial<AgentManager>);
+    const service = new WorkspaceService(config, store, { manager });
+    await expect(service.execute(record.ownerId, 'workspace_close', { workspaceId: record.id })).rejects.toThrow('could not be deleted');
+    expect(store.byId(record.id)?.status).toBe('EXPIRED_RECOVERABLE');
+    expect(existsSync(record.workspacePath)).toBe(true);
+    await expect(service.execute(record.ownerId, 'workspace_close', { workspaceId: record.id })).resolves.toMatchObject({ data: { status: 'CLOSED' } });
+    expect(stopWorkspace).toHaveBeenCalledTimes(2);
     store.close();
   });
 });

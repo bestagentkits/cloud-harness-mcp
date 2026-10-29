@@ -1339,9 +1339,18 @@ and [`apps/runner/src/agent-runtime-adapter.ts`](../apps/runner/src/agent-runtim
   budgets as persisted logs, measured at runner start and around every commit;
   a run whose commit would pass either, or leaves usage over a budget, ends as
   `LIMIT_EXCEEDED`. A budget can be overshot by at most one commit's growth per
-  concurrently writing lineage. Closing or expiring the workspace deletes
-  its lineage databases, and the reaper deletes a lineage's database once
-  retention has purged every session of it.
+  concurrently writing lineage. A store still over the size cap when its run
+  ends leaves the session not continuable. The runner decides this at the end
+  of the run, after closing the store checkpointed its write-ahead log, and
+  against the cap configured then. A passed aggregate budget does not, because
+  it frees up once other stores are deleted. Closing or expiring the workspace deletes its lineage databases,
+  including owner marks a crash left half-written, and the reaper deletes a
+  lineage's database once retention has purged every session of it. A
+  lineage's session rows are deleted only after its files: a failed removal
+  fails the close, which leaves the workspace `EXPIRED_RECOVERABLE` rather
+  than `CLOSED`, and the retried close removes the files. A failed removal
+  after a retention purge leaves the purged rows, so the workspace close
+  still finds the lineage.
 
 Accepted risk: the runner depends on the upstream pi-durable package to read
 and write these databases. It is pinned in the lockfile, imported only while

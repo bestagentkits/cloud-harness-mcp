@@ -488,6 +488,40 @@ describe('durable agent runtime through the runner', () => {
     const runner = context.runner({ maxLineageBytes: 1, responses: [[fauxAssistantMessage('never committed')]] });
     const agentId = await spawn(context, runner, 'cap-root', { runtime: 'pi-durable' });
     expect(await settled(context, runner, agentId)).toBe('LIMIT_EXCEEDED');
+    // The store stays over its cap, so a continuation could never commit: the session is not continuable.
+    expect(await status(context, runner, agentId)).toMatchObject({ session: { continuable: false } });
+    await expect(spawn(context, runner, 'cap-continue', { continueFrom: agentId })).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(runner.launcher.launches).toHaveLength(1);
+  }, 60_000);
+
+  it('keeps a capped run continuable when its store is under the cap once closed', async () => {
+    const context = setup();
+    const runner = context.runner({ maxLineageBytes: 1, responses: [[fauxAssistantMessage('never committed')]] });
+    // What a write-ahead log that inflated the mid-run size and was checkpointed away on close does.
+    const seal = runner.sessions.seal.bind(runner.sessions);
+    vi.spyOn(runner.sessions, 'seal').mockImplementation(async (claim) => ({ ...await seal(claim), overCap: false }));
+    const agentId = await spawn(context, runner, 'cap-shrinks-root', { runtime: 'pi-durable' });
+    expect(await settled(context, runner, agentId)).toBe('LIMIT_EXCEEDED');
+    expect(await status(context, runner, agentId)).toMatchObject({ session: { continuable: true } });
+  }, 60_000);
+
+  it('never reports unfinished work as resumable once the session stopped being continuable', async () => {
+    const context = setup();
+    const first = context.runner({
+      responses: [[
+        fauxAssistantMessage(fauxToolCall('files_write', { path: 'out.txt', content: 'new content' }, { id: 'call-write' }), { stopReason: 'toolUse' }),
+        fauxAssistantMessage('never reached')
+      ]]
+    });
+    context.fs.stallAfter('files_write');
+    const agentId = await spawn(context, first, 'discontinued-root', { runtime: 'pi-durable' });
+    await vi.waitFor(() => expect(context.fs.applied).toEqual(['files_write']), { timeout: 20_000, interval: 25 });
+    first.launcher.kill(0);
+    await first.sessions.close();
+    // The restarted runner's cap is below the store's size, so reconciling the run discontinues it.
+    const second = context.runner({ maxLineageBytes: 1 });
+    await second.manager.start();
+    expect(await status(context, second, agentId)).toMatchObject({ session: { continuable: false }, run: { resumable: false } });
   }, 60_000);
 
   it('counts a lineage\'s session store toward the aggregate session budgets until its workspace closes', async () => {
@@ -522,6 +556,8 @@ describe('durable agent runtime through the runner', () => {
     const blockedId = await spawn(context, second, 'budget-blocked', { runtime: 'pi-durable' });
     expect(await settled(context, second, blockedId)).toBe('LIMIT_EXCEEDED');
     expect(agent(context, second, blockedId)?.terminalReason).toMatch(/size limit/);
+    // A passed aggregate budget frees up once other stores go, so the blocked session stays continuable.
+    expect(await status(context, second, blockedId)).toMatchObject({ session: { continuable: true } });
     // The full workspace refuses a continuation at admission, and the predecessor stays continuable.
     expect(second.sessions.lineageBytes(blockedId)).toBeGreaterThan(0);
     await expect(spawn(context, second, 'budget-continue', { continueFrom: agentId })).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED', retryable: false });
@@ -540,6 +576,38 @@ describe('durable agent runtime through the runner', () => {
     const agentId = await spawn(context, runner, 'close-root', { runtime: 'pi-durable' });
     expect(await settled(context, runner, agentId)).toBe('SUCCEEDED');
     expect(existsSync(lineageFile(context, agentId))).toBe(true);
+    await runner.manager.stopWorkspace(context.record.ownerId, context.record.id, 'workspace closed');
+    expect(existsSync(lineageFile(context, agentId))).toBe(false);
+  }, 60_000);
+
+  it('keeps a lineage\'s rows while its session store cannot be deleted, so the retried close removes it', async () => {
+    const context = setup();
+    const runner = context.runner({ responses: [[fauxAssistantMessage('answer')]] });
+    const agentId = await spawn(context, runner, 'close-retry-root', { runtime: 'pi-durable' });
+    expect(await settled(context, runner, agentId)).toBe('SUCCEEDED');
+    const failure = Object.assign(new Error('device busy'), { code: 'EBUSY' });
+    const remove = vi.spyOn(runner.sessions, 'delete').mockRejectedValueOnce(failure);
+    await expect(runner.manager.stopWorkspace(context.record.ownerId, context.record.id, 'workspace closed')).rejects.toBe(failure);
+    expect(existsSync(lineageFile(context, agentId))).toBe(true);
+    expect(runner.repository.durableLineageRoots(context.record.ownerId, context.record.id)).toEqual([agentId]);
+    await runner.manager.stopWorkspace(context.record.ownerId, context.record.id, 'workspace closed');
+    expect(remove).toHaveBeenCalledTimes(2);
+    expect(existsSync(lineageFile(context, agentId))).toBe(false);
+    expect(runner.repository.durableLineageRoots(context.record.ownerId, context.record.id)).toEqual([]);
+  }, 60_000);
+
+  it('deletes a store left behind by a failed retention purge when its workspace closes', async () => {
+    let now = Date.now();
+    const context = setup();
+    const runner = context.runner({ responses: [[fauxAssistantMessage('answer')]], now: () => now });
+    const agentId = await spawn(context, runner, 'purge-retry-root', { runtime: 'pi-durable' });
+    expect(await settled(context, runner, agentId)).toBe('SUCCEEDED');
+    vi.spyOn(runner.sessions, 'delete').mockRejectedValueOnce(Object.assign(new Error('device busy'), { code: 'EBUSY' }));
+    now += agentsConfig().limits.sessionRetentionMs + 1;
+    await (runner.manager as unknown as { reap(): Promise<void> }).reap();
+    expect(existsSync(lineageFile(context, agentId))).toBe(true);
+    // The purged session row still names the lineage, so closing the workspace finds and removes it.
+    expect(runner.repository.durableLineageRoots(context.record.ownerId, context.record.id)).toEqual([agentId]);
     await runner.manager.stopWorkspace(context.record.ownerId, context.record.id, 'workspace closed');
     expect(existsSync(lineageFile(context, agentId))).toBe(false);
   }, 60_000);

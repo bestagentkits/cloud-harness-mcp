@@ -67,6 +67,12 @@ export interface DurableSessionStoreOptions {
   readonly now?: () => number;
 }
 
+/** What ending a lineage's claim found: unfinished tasks to resume, and a database still over its size cap. */
+export interface DurableSessionSeal {
+  readonly pendingTasks: boolean;
+  readonly overCap: boolean;
+}
+
 /** Exclusive right to use one lineage's database, held by one agent run until superseded or released. */
 export interface DurableSessionClaim {
   readonly lineageRootId: string;
@@ -219,6 +225,9 @@ function deactivate(lineage: LineageState): void {
   lineage.active = undefined;
 }
 
+/** The suffix writePrivateFile gives its temporary file: `.<pid>.<milliseconds>.tmp`. */
+const TEMPORARY_SUFFIX = /^\.\d{1,10}\.\d{1,16}\.tmp$/;
+
 /** Writes `content` to `path` through a private temporary file, so readers see the old or the new file only. */
 async function writePrivateFile(path: string, content: string): Promise<void> {
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
@@ -253,17 +262,38 @@ async function readOwnerMark(path: string): Promise<OwnerMark | undefined> {
 }
 
 /**
- * Removes one lineage's session files. Safe to call when they are absent, and independent of the
- * storage backend, so workspace cleanup can call it without loading durable support.
+ * The temporary owner-mark files of one lineage that a runner stopped between writing and renaming.
+ * Only names this store writes match, so nothing else in the state directory is touched.
+ */
+async function orphanedOwnerFiles(stateDir: string, lineageRootId: string): Promise<string[]> {
+  const prefix = `${lineageRootId}.owner.json`;
+  let names: string[];
+  try {
+    names = await readdir(stateDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  return names
+    .filter((name) => name.startsWith(prefix) && TEMPORARY_SUFFIX.test(name.slice(prefix.length)))
+    .map((name) => join(stateDir, name));
+}
+
+/**
+ * Removes one lineage's session files, including owner marks left half-written by a crash. Safe to
+ * call when they are absent, and independent of the storage backend, so workspace cleanup can call
+ * it without loading durable support.
  */
 export async function deleteDurableSessionFiles(stateDir: string, lineageRootId: string): Promise<void> {
   const paths = sessionPaths(stateDir, lineageRootId);
+  const temporaryOwners = await orphanedOwnerFiles(stateDir, lineageRootId);
   await Promise.all([
     rm(paths.database, { force: true }),
     rm(`${paths.database}-wal`, { force: true }),
     rm(`${paths.database}-shm`, { force: true }),
     rm(`${paths.database}-journal`, { force: true }),
-    rm(paths.owner, { force: true })
+    rm(paths.owner, { force: true }),
+    ...temporaryOwners.map((path) => rm(path, { force: true }))
   ]);
 }
 
@@ -390,52 +420,62 @@ export class DurableSessionStore {
 
   /**
    * Ends a claim and reports whether its database still holds unfinished tasks, which a
-   * continuation would resume. A claim that is no longer current reports none and changes nothing.
+   * continuation would resume, and whether it stays over the size cap once closed, so that no
+   * continuation could commit to it. A mid-run measurement can include a write-ahead log that
+   * closing checkpoints away, so only this one decides. A claim that is no longer current reports
+   * neither and changes nothing.
    */
-  async seal(claim: DurableSessionClaim): Promise<{ pendingTasks: boolean }> {
+  async seal(claim: DurableSessionClaim): Promise<DurableSessionSeal> {
     return await this.#withLock(claim.lineageRootId, async () => {
       const lineage = this.#lineages.get(claim.lineageRootId);
-      if (!lineage || lineage.active !== claim) return { pendingTasks: false };
+      const state = lineage?.active;
+      if (!lineage || !state || state !== claim) return { pendingTasks: false, overCap: false };
+      // Requests run outside the lineage lock. A commit already handed to the backend lands before
+      // the database closes, so the measurement below counts it; one that starts later finds the
+      // database closed and fails without writing.
+      await state.lastCommit?.response.catch(() => undefined);
       let pendingTasks = false;
       try {
-        pendingTasks = await hasLiveTasks(lineage.active.storage);
+        pendingTasks = await hasLiveTasks(state.storage);
       } catch {
         // An unreadable store is reported as holding nothing to resume.
       }
       deactivate(lineage);
-      await this.#closeLineage(claim.lineageRootId, lineage);
-      return { pendingTasks };
+      const bytes = await this.#closeLineage(claim.lineageRootId, lineage);
+      return { pendingTasks, overCap: bytes !== undefined && bytes > this.#maxLineageBytes };
     });
   }
 
   /**
-   * Reports whether an unclaimed lineage's database holds unfinished tasks, for an agent whose run
-   * ended without a live claim (for example after a runner restart). A claimed lineage, a disabled
-   * store, an absent database, or a read failure all report none.
+   * Reports, as seal does, whether an unclaimed lineage's database holds unfinished tasks and
+   * stays over the size cap, for an agent whose run ended without a live claim (for example after
+   * a runner restart). A claimed lineage, a disabled store, an absent database, or a read failure
+   * all report neither.
    */
-  async inspectPending(lineageRootId: string): Promise<{ pendingTasks: boolean }> {
+  async inspectPending(lineageRootId: string): Promise<DurableSessionSeal> {
     const stateDir = this.#stateDir;
-    if (!this.#enabled || stateDir === undefined) return { pendingTasks: false };
+    if (!this.#enabled || stateDir === undefined) return { pendingTasks: false, overCap: false };
     assertLineageId(lineageRootId);
     return await this.#withLock(lineageRootId, async () => {
-      if (this.#lineages.get(lineageRootId)?.active) return { pendingTasks: false };
+      if (this.#lineages.get(lineageRootId)?.active) return { pendingTasks: false, overCap: false };
       const paths = sessionPaths(stateDir, lineageRootId);
       try {
         await stat(paths.database);
       } catch {
-        return { pendingTasks: false };
+        return { pendingTasks: false, overCap: false };
       }
       let storage: StorageBackend | undefined;
+      let pendingTasks = false;
       try {
         storage = await this.#openDatabase(paths.database);
-        return { pendingTasks: await hasLiveTasks(storage) };
+        pendingTasks = await hasLiveTasks(storage);
       } catch {
-        return { pendingTasks: false };
-      } finally {
-        await storage?.close(RUNNER_CONTEXT).catch(() => undefined);
-        // Closing checkpoints a write-ahead log a crashed run left, so the size the budgets count shrinks.
-        await this.#measureLineage(lineageRootId).catch(() => undefined);
+        // An unreadable store is reported as holding nothing to resume.
       }
+      await storage?.close(RUNNER_CONTEXT).catch(() => undefined);
+      // Closing checkpoints a write-ahead log a crashed run left, so the size the budgets count shrinks.
+      const bytes = await this.#measureLineage(lineageRootId).catch(() => undefined);
+      return { pendingTasks, overCap: bytes !== undefined && bytes > this.#maxLineageBytes };
     });
   }
 
@@ -644,7 +684,8 @@ export class DurableSessionStore {
     return lineage;
   }
 
-  async #closeLineage(lineageRootId: string, lineage: LineageState): Promise<void> {
+  /** Closes the lineage's database and returns its size on disk afterwards, or undefined when it cannot be measured. */
+  async #closeLineage(lineageRootId: string, lineage: LineageState): Promise<number | undefined> {
     const storage = lineage.storage;
     lineage.storage = undefined;
     this.#lineages.delete(lineageRootId);
@@ -656,7 +697,7 @@ export class DurableSessionStore {
       }
     }
     // Closing checkpoints the write-ahead log, which changes the size the budgets count.
-    await this.#measureLineage(lineageRootId).catch(() => undefined);
+    return await this.#measureLineage(lineageRootId).catch(() => undefined);
   }
 
   async #openDatabase(path: string): Promise<StorageBackend> {
