@@ -197,7 +197,10 @@ the executor never sees it a second time (0 repeated invocations). Before
 [#589](https://github.com/bestagentkits/cloud-harness-mcp/issues/589) was fixed,
 the engine settled that call as failed and the model issued it again under a
 new request ID that the ledger did not match; only the patch's `oldText` guard
-refused the second write.
+refused the second write. A further scenario, not in the table, kills the run
+with an unguarded `files_write` in flight and asserts the same outcome for both
+persisting options: interrupted, 1 unknown effect, continued, 0 duplicates and
+0 repeated invocations.
 
 Token counts are left out of the table because the faux providers of Pi 0.84
 and Pi 1.3 estimate tokens differently; the context each model request carried
