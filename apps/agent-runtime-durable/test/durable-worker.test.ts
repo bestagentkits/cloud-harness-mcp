@@ -43,6 +43,8 @@ function line(record: unknown): unknown {
 interface Run {
   readonly worker: DurableWorker;
   readonly records: Array<Record<string, unknown>>;
+  /** Storage requests sent to the runner so far. */
+  readonly storageRequests: () => number;
   readonly terminal: Promise<{ state: TerminalState; usage: Usage; error?: string | undefined }>;
 }
 
@@ -58,7 +60,8 @@ afterEach(async () => {
 async function run(
   start: DurableStartRecord,
   responses: Parameters<ReturnType<typeof fauxProvider>['setResponses']>[0],
-  onToolRequest: (record: Record<string, unknown>, deliver: (input: DurableInputRecord) => void) => void
+  onToolRequest: (record: Record<string, unknown>, deliver: (input: DurableInputRecord) => void) => void,
+  tuning: { tokensPerSecond?: number; partialIntervalMs?: number } = {}
 ): Promise<Run> {
   const stateDir = await mkdtemp(join(tmpdir(), 'durable-worker-'));
   const store = new DurableSessionStore({ stateDir, enabled: true });
@@ -67,11 +70,12 @@ async function run(
     await rm(stateDir, { recursive: true, force: true });
   });
   const claim = await store.claim(LINEAGE, start.agentId, 1, 0);
-  const faux = fauxProvider({ provider: 'faux', models: [{ id: 'faux-model' }] });
+  const faux = fauxProvider({ provider: 'faux', models: [{ id: 'faux-model' }], tokensPerSecond: tuning.tokensPerSecond });
   faux.setResponses(responses);
   const models = createModels();
   models.setProvider(faux.provider);
   const records: Array<Record<string, unknown>> = [];
+  let storageRequests = 0;
   const terminal = Promise.withResolvers<{ state: TerminalState; usage: Usage; error?: string | undefined }>();
   const deliver = (input: DurableInputRecord) => {
     const parsed = InputRecordSchema.parse(line(input));
@@ -89,14 +93,15 @@ async function run(
     },
     sendStorage: async (record) => {
       const request = AgentStorageRequestRecordSchema.parse(OutputRecordSchema.parse(line(record)));
+      storageRequests += 1;
       void store.handle(claim, request).then((response) => deliver(response));
     },
     terminal: async (state, usage, error) => {
       OutputRecordSchema.parse(line({ type: 'terminal', state, usage, error }));
       terminal.resolve({ state, usage, error });
     }
-  }, start, { models, model: { provider: 'faux', modelId: 'faux-model' }, storage: { requestTimeoutMs: 5_000 } });
-  return { worker, records, terminal: terminal.promise };
+  }, start, { models, model: { provider: 'faux', modelId: 'faux-model' }, storage: { requestTimeoutMs: 5_000 }, partialIntervalMs: tuning.partialIntervalMs });
+  return { worker, records, storageRequests: () => storageRequests, terminal: terminal.promise };
 }
 
 describe('durable worker', () => {
@@ -157,5 +162,19 @@ describe('durable worker', () => {
     const result = await terminal;
     expect(result.state).toBe('FAILED');
     expect(result.error).toContain('cannot replay');
+  });
+
+  it('commits a slow stream\'s partial message only once the partial interval elapses', async () => {
+    // About 1.2 s of streaming at 10 tokens per second, past the default 500 ms interval.
+    const reply = 'The README describes a remote coding harness and its deployment.';
+    const commits = async (tuning: { tokensPerSecond?: number; partialIntervalMs?: number }) => {
+      const { worker, storageRequests, terminal } = await run(startRecord(), [fauxAssistantMessage(reply)], () => undefined, tuning);
+      expect((await terminal).state).toBe('SUCCEEDED');
+      await worker.completion;
+      return storageRequests();
+    };
+    const fast = await commits({});
+    expect(await commits({ tokensPerSecond: 10 })).toBeGreaterThan(fast);
+    expect(await commits({ tokensPerSecond: 10, partialIntervalMs: 60_000 })).toBe(fast);
   });
 });
