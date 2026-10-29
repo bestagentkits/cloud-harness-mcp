@@ -19,7 +19,7 @@ import { SkillExtensionService, parseSkillFrontmatter } from '../src/skill-exten
 import { StateStore } from '../src/state-store.js';
 import { ToolkitCacheManager } from '../src/toolkit-cache-manager.js';
 import type { WorkspaceService } from '../src/workspace-service.js';
-import { symlinksSupported } from './platform-support.js';
+import { isWindows, symlinksSupported } from './platform-support.js';
 import { makeZip } from './skill-zip-fixture.js';
 
 const roots: string[] = [];
@@ -423,7 +423,8 @@ describe('skills extension serving bounds', () => {
     await expect(get('skill://cloud-harness/built-in/dup/SKILL.md')).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
-  it('does not serve a skill holding a file name that is not UTF-8', async () => {
+  // NTFS stores file names as UTF-16, so Windows cannot create a name whose bytes are not UTF-8.
+  it.skipIf(isWindows)('does not serve a skill holding a file name that is not UTF-8', async () => {
     const { builtin, list, read } = setup();
     const dir = builtin('raw', { 'SKILL.md': document('raw') });
     writeFileSync(Buffer.concat([Buffer.from(`${dir}/`), Buffer.from([0xff, 0xfe, 0x2e, 0x6d, 0x64])]), 'x');
@@ -483,7 +484,9 @@ describe('skills extension owner bundles', () => {
     } while (cursor);
     expect(names).toHaveLength(total);
     expect(names.at(-1)).toBe('s-500');
-  });
+    // Hashing 501 skill directories takes about 3 s on Linux and longer on Windows file systems, where the
+    // default 5 s bound would measure the host rather than the paging.
+  }, isWindows ? 30_000 : undefined);
 });
 
 describe('skills extension manifest cache', () => {

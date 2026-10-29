@@ -122,9 +122,29 @@ async function safeRecursiveCreatePath(input) {
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
+/**
+ * Stops a command and everything it started by signalling its process group. Windows has no process
+ * groups, so there only the direct child is stopped.
+ */
+function terminate(child, signal) {
+  try {
+    if (process.platform === 'win32') child.kill(signal);
+    else process.kill(-child.pid, signal);
+  } catch { /* process already exited */ }
+}
+
 async function command(program, args, { cwd = getWorkspaceRoot(), env = process.env, stdin, timeoutMs = 60_000, maxBytes = MAX_INTERNAL_OUTPUT, includeStderr = true } = {}) {
   return await new Promise((resolvePromise) => {
-    const child = spawn(program, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+    let child;
+    try {
+      child = spawn(program, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+    } catch (error) {
+      // Windows refuses a file that is not a program with an error Node throws rather than emits, which is
+      // an execution failure like any other. Elsewhere a synchronous throw stays a caller error.
+      if (process.platform !== 'win32' || typeof error?.errno !== 'number') throw error;
+      resolvePromise({ output: error.message, exitCode: 1, truncated: false });
+      return;
+    }
     if (process.env.CH_OPERATION_PID_FILE) {
       writeFileSync(process.env.CH_OPERATION_PID_FILE, `${process.pid}\n${child.pid}\n`, { mode: 0o600 });
     }
@@ -134,16 +154,14 @@ async function command(program, args, { cwd = getWorkspaceRoot(), env = process.
       const remaining = Math.max(0, maxBytes - output.length);
       if (chunk.length > remaining) truncated = true;
       if (remaining > 0) output = Buffer.concat([output, chunk.subarray(0, remaining)]);
-      if (truncated) {
-        try { process.kill(-child.pid, 'SIGTERM'); } catch { /* process already exited */ }
-      }
+      if (truncated) terminate(child, 'SIGTERM');
     };
     child.stdout.on('data', append);
     if (includeStderr) child.stderr.on('data', append);
     else child.stderr.resume();
     const timer = setTimeout(() => {
-      try { process.kill(-child.pid, 'SIGTERM'); } catch { /* process already exited */ }
-      setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* process already exited */ } }, 1_000).unref();
+      terminate(child, 'SIGTERM');
+      setTimeout(() => terminate(child, 'SIGKILL'), 1_000).unref();
     }, timeoutMs);
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
@@ -1705,7 +1723,8 @@ const handlers = {
         .filter((worktree) => !worktree.prunable)
         .map((worktree) => relative(mainPath, worktree.path))
         .filter((path) => path && !path.startsWith('..') && !isAbsolute(path))
-        .map((path) => `:(exclude,literal)${path}`);
+        // A literal pathspec takes `/` only, and `relative` joins with `\` on Windows.
+        .map((path) => `:(exclude,literal)${path.split(sep).join('/')}`);
       const statusRes = await git([...statusArgs, '--', '.', ...worktreeExclusions], quiet);
       if (statusRes.exitCode !== 0 || statusRes.truncated) return fail('INTERNAL_ERROR', 'git status failed');
       const worktreeStatuses = [];
