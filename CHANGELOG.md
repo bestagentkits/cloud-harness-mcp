@@ -1,3 +1,10 @@
+# [0.66.0-beta.44](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.43...v0.66.0-beta.44) (2026-10-29)
+
+
+### Bug Fixes
+
+* **test:** make runner, api and model-gateway suites pass on Windows hosts ([#623](https://github.com/bestagentkits/cloud-harness-mcp/issues/623)) ([efd460e](https://github.com/bestagentkits/cloud-harness-mcp/commit/efd460e4e0334e70d873cc80c58ae99da32365c0)), closes [#622](https://github.com/bestagentkits/cloud-harness-mcp/issues/622)
+
 # [0.66.0-beta.43](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.42...v0.66.0-beta.43) (2026-10-29)
 
 
