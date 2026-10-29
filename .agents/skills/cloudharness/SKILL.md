@@ -128,7 +128,11 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    `toolkits: [{ kind: 'agentkit', kitId: 'engineer', channel: 'stable' }]`; they
    require operator-pinned registry key material and a stored licence token, are
    always `owner`-scoped, and fail closed with an actionable error when either is
-   missing. Never pass a credential in a tool argument.
+   missing. Never pass a credential in a tool argument. To reproduce a machine's
+   installed kit skills, pass its `agentkit.skill-lock/v1` document in
+   `kitLocks` instead of hand-written `agentkit` selections; the instance must
+   enable it, and a lock with non-kit entries is refused rather than installed
+   in part.
 2. **Open and set active context.** Call `workspace_open` with a fresh
    idempotency key. Preserve the returned opaque `workspaceId` exactly. A
    principal may hold several concurrent workspaces, bounded by the instance's

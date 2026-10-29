@@ -120,11 +120,12 @@ Clone an approved repository and start its bounded executor.
   content-free `repositoryContext` summary (digest, discovered guidance paths,
   client targets, sizes, truncation, warnings). It is best-effort: its absence
   is not an error and does not mean the repository has no guidance.
-- `toolkits` accepts `{ kind: 'preset' | 'git' | 'agentkit' }` selections.
-  Licensed AgentKit kits (`kind: 'agentkit'`, e.g. `kitId: 'engineer'`) stay
-  `owner`-scoped, need an operator-pinned registry signing key plus a stored
-  licence token, and report `verification: 'registry-signed'` with a
-  `warnings` entry when a pre-release channel was mounted.
+- `toolkits` accepts `preset`/`git`/`agentkit` selections; licensed AgentKit
+  kits stay `owner`-scoped, need a pinned registry key and licence token, and
+  report `verification: 'registry-signed'` (pre-release adds a `warnings` entry).
+- `kitLocks` (at most two, needs `ENABLE_KIT_LOCK_INSTALL`) pins the kits of an
+  `agentkit.skill-lock/v1` lock as `kit-lock-<kitId>`: unusable locks return
+  `INVALID_INPUT`, missing locked skills `NOT_FOUND`; personal locks are refused.
 - Side effects: clone, state record, workspace directory, executor creation;
   may contact the approved repository host through the trusted clone broker.
 - Recovery: after a lost response, retry with the same key. A different key is

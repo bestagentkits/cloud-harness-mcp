@@ -195,6 +195,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     agentkitRegistryCredentialSecret: process.env.AGENTKIT_REGISTRY_CREDENTIAL_SECRET,
     agentkitRegistryKeyId: process.env.AGENTKIT_REGISTRY_KEY_ID,
     agentkitRegistryPublicKey: process.env.AGENTKIT_REGISTRY_PUBLIC_KEY,
+    enableKitLockInstall: process.env.ENABLE_KIT_LOCK_INSTALL,
     provisioningNetwork: process.env.PROVISIONING_NETWORK,
     secretKeyring,
     legacyPrincipalMapping: legacyOwnerId || legacyIssuer || legacySubject ? {

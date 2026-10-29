@@ -81,6 +81,12 @@ of the Managed OAuth lane that authenticates the client to Cloud Harness.
    stored licence token, verifies the package digest, and mounts the kit skills
    read-only under `owner` scope only (licensed content is never written into a
    repository).
+   `kitLocks` installs the kit-owned skills an `agentkit.skill-lock/v1` lock
+   records, at the locked kit versions, when the operator enables
+   `ENABLE_KIT_LOCK_INSTALL`. A lock installs whole or is refused with
+   `INVALID_INPUT`; a locked skill the kit version lacks fails with `NOT_FOUND`.
+   SkillX personal kit locks are validated but refused until agentkit.best
+   sign-in exists ([ADR 0008](adr/0008-agentkit-best-identity-kits-and-vault.md)).
 2. Subsequent tool calls may omit `workspaceId`. The runner resolves it in this
    order: an explicit `workspaceId`; the sole `ACTIVE` or `CREATING` workspace; a
    sole recoverable record when nothing is active; otherwise the caller's

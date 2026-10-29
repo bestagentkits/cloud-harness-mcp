@@ -101,6 +101,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `AGENTKIT_REGISTRY_CREDENTIAL_SECRET` | `AGENTKIT_REGISTRY_TOKEN` | Optional | The secret name that holds this principal's AgentKit licence token. The token must start with ak_dev_ or ak_cli_ and MUST be created with purpose=provisioning, never runtime: runtime secrets are injected into executor environments. It is resolved from the dashboard secret store; without it the agentkit toolkit kind fails closed. |
 | `AGENTKIT_REGISTRY_KEY_ID` | `agentkit-registry-2026` | Optional | Ed25519 registry signing key id. Required before the agentkit toolkit kind is available. |
 | `AGENTKIT_REGISTRY_PUBLIC_KEY` | `<PEM or base64 SPKI DER>` | Optional | Ed25519 registry signing public key (PEM or base64 SPKI DER). Required before the agentkit toolkit kind is available; an unverified manifest is refused. |
+| `ENABLE_KIT_LOCK_INSTALL` | `false` | Optional | Let workspace_open install kit skills from an AgentKit skill lock (kitLocks). Uses the agentkit registry settings above; off by default. |
 | `EXECUTOR_IMAGE` | `cloud-harness-executor:local` | **Required** | Required configuration. |
 | `NETWORK_GUARD_IMAGE` | `cloud-harness-network-guard:local` | **Required** | Required configuration. |
 | `ALLOWED_GIT_HOSTS` | `github.com` | **Required** | Required configuration. |

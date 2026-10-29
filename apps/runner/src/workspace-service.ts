@@ -88,6 +88,7 @@ import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { ToolkitCacheManager } from './toolkit-cache-manager.js';
 import { ToolkitService } from './toolkit-service.js';
+import { assertKitLockSatisfied, planKitLockToolkits } from './kit-lock-planner.js';
 import { resolveWorkspaceSkills, type SkillCandidate } from './skill-resolver.js';
 import { NetworkProfileManager } from './network-profile-manager.js';
 import { SecretSnapshotRedactor } from './output-redactor.js';
@@ -1468,7 +1469,16 @@ export class WorkspaceService {
   }
 
   async open(ownerId: string, input: Record<string, unknown>): Promise<RunnerResponse> {
-    const parsed = TOOL_SCHEMA_BY_NAME.workspace_open.parse(input);
+    const request = TOOL_SCHEMA_BY_NAME.workspace_open.parse(input);
+    // Lock-derived kits join the explicit toolkits before fingerprinting, so a replay with a different
+    // lock is a different request and every later step sees one toolkit list.
+    const kitLockPlan = planKitLockToolkits(request.kitLocks, {
+      enabled: this.config.enableKitLockInstall,
+      explicitToolkits: request.toolkits
+    });
+    const parsed = kitLockPlan.toolkits.length > 0
+      ? { ...request, toolkits: [...request.toolkits, ...kitLockPlan.toolkits] }
+      : request;
     const requestFingerprint = computeWorkspaceOpenFingerprint(parsed);
     const prior = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
     if (prior) {
@@ -1558,6 +1568,7 @@ export class WorkspaceService {
         }
       }
       const { lockItems, bundlePaths } = await this.toolkitService.resolveToolkits(ownerId, parsed.toolkits);
+      assertKitLockSatisfied(kitLockPlan.expectations, bundlePaths);
       const ownerBundles = bundlePaths.filter(b => b.scope === 'owner');
       const workspaceBundles = bundlePaths.filter(b => b.scope === 'workspace');
 

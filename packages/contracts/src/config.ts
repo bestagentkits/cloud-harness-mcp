@@ -331,6 +331,9 @@ export const RunnerConfigSchema = z.object({
   agentkitRegistryCredentialSecret: SecretNameSchema.default('AGENTKIT_REGISTRY_TOKEN'),
   agentkitRegistryKeyId: z.string().min(1).max(120).optional(),
   agentkitRegistryPublicKey: z.string().min(1).max(8_192).optional(),
+  // Lets `workspace_open` expand `kitLocks` into pinned `agentkit` toolkit selections. Off until an
+  // operator opts in, so a lockfile never widens what an instance installs by default.
+  enableKitLockInstall: enabled.default(false),
   provisioningNetwork: z.string().min(1).default('cloud-harness-mcp_provisioning'),
   secretKeyring: SecretKeyringConfigSchema.optional(),
   legacyPrincipalMapping: z.object({

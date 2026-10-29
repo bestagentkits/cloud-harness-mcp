@@ -363,6 +363,14 @@ inspection and extraction run with `--network none`. Only the small signed
 manifest is fetched through the network on a cache hit — the package itself is
 served from the toolkit CAS identified by its artifact digest.
 
+`ENABLE_KIT_LOCK_INSTALL` (default `false`) lets `workspace_open` accept
+`kitLocks` and expand an `agentkit.skill-lock/v1` lock into pinned `agentkit`
+selections. It adds no credential or registry path of its own: the kits still
+need the settings above. The mapping rules are owned by
+[`apps/runner/src/kit-lock-planner.ts`](../apps/runner/src/kit-lock-planner.ts),
+and the design is recorded in
+[ADR 0008](adr/0008-agentkit-best-identity-kits-and-vault.md).
+
 ## Dashboard secrets
 
 Dashboard secret values are write-only. The browser receives reference
