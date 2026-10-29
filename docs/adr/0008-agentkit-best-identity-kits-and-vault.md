@@ -1,9 +1,10 @@
 # ADR 0008: agentkit.best Sign-in, Lockfile Kit Install, and Vault Secret Grants
 
 - **Status:** Accepted for lockfile kit install (shipped behind
-  `ENABLE_KIT_LOCK_INSTALL`, off by default). Proposed for agentkit.best
-  sign-in, personal kit install, and vault secret injection: they wait on the
-  AgentKit Identity wave and the shared device relay.
+  `ENABLE_KIT_LOCK_INSTALL`, off by default) and for the agentkit.best
+  sign-in lane (shipped behind `AGENTKIT_AUTH_ENABLED`, off by default).
+  Proposed for personal kit install and vault secret injection: they wait on
+  the agentkit.best token exchange and the shared device relay.
 - **Date:** 2026-10-29
 - **Related Issues:** bestagentkits/agentkit#2848 (ecosystem linking epic).
   Keeps the single-owner trust model of
@@ -54,21 +55,26 @@ with a portable policy.
 agentkit.best becomes a fourth inbound lane. The other three are unchanged, and
 an instance that does not configure it behaves exactly as before.
 
-- **Route.** The lane serves MCP on a hostname that the Cloudflare Access
-  application does not cover, so Access discovery on `/mcp` stays untouched. The
-  hostname publishes RFC 9728 protected resource metadata naming
-  `https://agentkit.best` as its only authorization server.
+- **Route.** The lane serves `/mcp` on its own hostname, the host of
+  `AGENTKIT_AUTH_RESOURCE`, which the Cloudflare Access application must not
+  cover. The API picks the lane by Host: that hostname accepts only
+  agentkit.best tokens, every other hostname keeps the instance's own lane,
+  and the MCP gateway is not served there. The hostname publishes RFC 9728
+  protected resource metadata naming `https://agentkit.best` as its only
+  authorization server, and a 401 points to it.
 - **Token check.** The API verifies the bearer locally against the agentkit.best
   JWKS: `alg` ES256, `typ` `at+jwt`, `iss` `https://agentkit.best`, `aud`
-  exactly the configured resource, `exp - iat` no longer than the registered
-  access-token lifetime, and `scope` containing `cloud-harness:workspace`. JWKS
+  exactly the configured resource, `exp - iat` at most two minutes (the
+  registered lifetime is 60 seconds), and `scope` containing `cloud-harness:workspace`. JWKS
   fetching follows the Access verifier's fixed-URL, no-redirect, bounded-cache
-  rules.
+  rules, through the shared JWKS key cache.
 - **Principal.** Identity is `(https://agentkit.best, sub)`, the same
-  issuer-plus-subject model as Access. An operator binds an agentkit.best
-  subject to the owner principal explicitly. There is no first-login or
-  same-email linking, so signing in with agentkit.best never creates a new
-  principal on a single-owner instance.
+  issuer-plus-subject model as Access. agentkit.best lets any signed-in
+  account through (eligibility `account`), so the operator lists the accepted
+  subjects in `AGENTKIT_AUTH_SUBJECTS`; every other valid token gets 403.
+  A listed subject is its own principal with its own workspaces. There is no
+  email linking, and an instance without the lane, or a user who never signs
+  in with agentkit.best, works exactly as before.
 - **Revocation.** The resource asks for 60-second access tokens with a sliding
   30-day grant. Revoking the grant in Connected Apps stops refresh, so an old
   token fails within 60 seconds without an introspection call.
@@ -76,8 +82,15 @@ an instance that does not configure it behaves exactly as before.
   resources. It exchanges the caller's harness token (RFC 8693) for a
   short-lived delegated token for one downstream resource at a time, as the
   confidential client `cloud-harness`. The exchange runs in the runner, which
-  already holds every outbound credential; the API forwards only the verified
-  subject.
+  already holds every outbound credential, so the API forwards the verified
+  subject token to the runner over the control network for that one call and
+  never stores it. Not built yet: it needs the exchange on agentkit.best.
+
+Executable owners:
+[`apps/api/src/agentkit-jwt-verifier.ts`](../../apps/api/src/agentkit-jwt-verifier.ts),
+[`apps/api/src/auth.ts`](../../apps/api/src/auth.ts) (`agentkitBearerAuth`),
+[`apps/api/src/jwks-key-cache.ts`](../../apps/api/src/jwks-key-cache.ts),
+and `apps/api/test/agentkit-auth.test.ts`.
 
 ### 2. Kit install from a lockfile
 
@@ -174,7 +187,8 @@ self-hosted instances keep their own auth until per-instance resources exist.
 
 - **Resource** `https://harness.agentkit.best/mcp`, label "Cloud Harness":
   scope `cloud-harness:workspace`, `defaultScopes` that same scope, access
-  token 60 seconds, grant 30 days sliding, eligibility `customer`. Consent copy
+  token 60 seconds, grant 30 days sliding, eligibility `account` (any
+  signed-in account; the harness itself restricts subjects). Consent copy
   must say the scope can open workspaces and run code in them for the account.
 - **Confidential client** `cloud-harness`, allowed to use the token exchange
   with a harness-resource subject token, for these targets only, each issued

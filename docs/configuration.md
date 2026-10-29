@@ -81,6 +81,28 @@ The secret-free route and proxy contract are owned by
 and
 [`apps/api-key-gateway/src/gateway.ts`](../apps/api-key-gateway/src/gateway.ts).
 
+### agentkit.best sign-in
+
+`AGENTKIT_AUTH_ENABLED=true` adds agentkit.best as an extra sign-in lane in
+either `AUTH_MODE`; the existing lane keeps working unchanged. It needs:
+
+- `AGENTKIT_AUTH_RESOURCE`, the resource registered on agentkit.best
+  (`https://harness.agentkit.best/mcp` for the first-party instance). Its host
+  must be in `API_PUBLIC_HOSTS`, must differ from the API-key gateway host, and
+  must not be covered by the Cloudflare Access application. The API serves
+  only the agentkit.best lane on that host.
+- `AGENTKIT_AUTH_SUBJECTS`, a comma-separated list of the agentkit.best account
+  IDs (`sub`) this instance accepts. agentkit.best lets any account sign in, so
+  a valid token for an unlisted subject gets `403`.
+- `AGENTKIT_AUTH_ISSUER` defaults to `https://agentkit.best`; change it only for
+  a staging authorization server.
+
+Route the hostname to the ingress like the main hostname (the tunnel ingress is
+path-agnostic). Validation rules are owned by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts); the
+design and trust model are in
+[ADR 0008](adr/0008-agentkit-best-identity-kits-and-vault.md).
+
 ### Managed OAuth session settings
 
 The optional `CLOUDFLARE_ACCESS_*` API integration lets Dashboard Settings read
