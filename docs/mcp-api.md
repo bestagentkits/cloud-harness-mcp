@@ -254,8 +254,11 @@ agent keeps its session in a runner-side store shared by its whole
   `INVALID_INPUT`.
 - `agent_status` and `agent_list` add `runtime: "pi-durable"` for a durable
   agent, alongside the session fields above. `run.resumable` is `true` only
-  when the ended run left unfinished work in the store, for example a run
-  interrupted by a runner restart; it is never `true` for a cancelled run.
+  when the ended run left unfinished work in the store, for example a run cut
+  off by a runner crash; it is never `true` for a cancelled run, and a runner
+  that stops gracefully cancels its agents. A tool call whose executor request
+  fails while the run is still live is answered at once: a read with the
+  failure, a mutation with `EFFECT_UNKNOWN`, because it may have landed first.
 - A continuation resumes that unfinished work before the new `prompt`. A tool
   call that may have changed the workspace when the run stopped is not run
   again: the model sees it as interrupted rather than with the settled outcome

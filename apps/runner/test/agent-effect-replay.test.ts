@@ -540,6 +540,28 @@ describe('agent effect receipts and replay', () => {
     expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_after', kind: 'files_read' })).toBeUndefined();
   });
 
+  it('reports a mutation whose dispatch failed as unknown, so the model inspects before any retry', async () => {
+    const context = setup();
+    const { first, fs } = context;
+    fs.files.set('a.txt', 'a');
+    const agentId = await spawnRunning(context, first, 'dispatch-fail-key');
+    fs.interrupt('files_write', 'after').reject(new Error('runner stopping'));
+    first.launcher.emit(0, { type: 'tool_request', requestId: 'toolu_lost', toolCallId: 'toolu_lost', operation: 'files_write', input: { path: 'a.txt', content: 'b' } });
+    await vi.waitFor(() => expect(toolResults(first.launcher, 0, 'toolu_lost')).toHaveLength(1));
+    const [result] = toolResults(first.launcher, 0, 'toolu_lost');
+    expect(result!.isError).toBe(true);
+    expect(JSON.parse(result!.text)).toMatchObject({ ok: false, error: { code: 'EFFECT_UNKNOWN' } });
+    expect(result!.text).toContain('runner stopping');
+    expect(fs.files.get('a.txt')).toBe('b');
+    expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_lost', kind: 'files_write' })).toMatchObject({ state: 'UNKNOWN' });
+
+    // A read that fails has no outcome to settle and stays a plain failure.
+    fs.interrupt('files_read', 'before').reject(new Error('runner stopping'));
+    first.launcher.emit(0, { type: 'tool_request', requestId: 'toolu_read', toolCallId: 'toolu_read', operation: 'files_read', input: { path: 'a.txt' } });
+    await vi.waitFor(() => expect(toolResults(first.launcher, 0, 'toolu_read')).toHaveLength(1));
+    expect(JSON.parse(toolResults(first.launcher, 0, 'toolu_read')[0]!.text)).toMatchObject({ ok: false, message: 'runner stopping' });
+  });
+
   it('executes nothing for an agent past its TTL or in a closed workspace, and refuses to continue into a closed workspace', async () => {
     let now = Date.now();
     const context = setup(() => now);
