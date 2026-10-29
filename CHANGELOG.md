@@ -1,3 +1,10 @@
+# [0.66.0-beta.45](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.44...v0.66.0-beta.45) (2026-10-29)
+
+
+### Features
+
+* **runner:** install AgentKit kits from a skill lockfile at workspace_open ([70572de](https://github.com/bestagentkits/cloud-harness-mcp/commit/70572dec540e6901d4ab7f2502b4c8a6dac154e6))
+
 # [0.66.0-beta.44](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.43...v0.66.0-beta.44) (2026-10-29)
 
 
