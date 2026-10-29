@@ -12,8 +12,10 @@ const MANIFESTS = [
 ];
 const PLUGIN_MANIFESTS = [
   'plugins/cloud-harness/.claude-plugin/plugin.json',
-  'plugins/cloud-harness/.codex-plugin/plugin.json'
+  'plugins/cloud-harness/.codex-plugin/plugin.json',
+  'plugins/cloud-harness-workspaces/.claude-plugin/plugin.json'
 ];
+const MARKETPLACE_PLUGINS = ['cloud-harness', 'cloud-harness-workspaces'];
 const NUMERIC_IDENTIFIER = '(?:0|[1-9]\\d*)';
 const PRERELEASE_IDENTIFIER = `(?:${NUMERIC_IDENTIFIER}|(?:\\d*[A-Za-z-][0-9A-Za-z-]*))`;
 const VERSION_PATTERN = new RegExp(`^${NUMERIC_IDENTIFIER}\\.${NUMERIC_IDENTIFIER}\\.${NUMERIC_IDENTIFIER}(?:-${PRERELEASE_IDENTIFIER}(?:\\.${PRERELEASE_IDENTIFIER})*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$`);
@@ -52,9 +54,11 @@ export function updateReleaseVersion(version, root = process.cwd()) {
 
   const marketplacePath = resolve(root, '.claude-plugin/marketplace.json');
   const marketplace = readJson(marketplacePath);
-  const pluginEntry = marketplace.plugins?.find((plugin) => plugin.name === 'cloud-harness');
-  if (!pluginEntry) throw new Error('Could not locate the Cloud Harness marketplace entry.');
-  pluginEntry.version = version;
+  for (const name of MARKETPLACE_PLUGINS) {
+    const pluginEntry = marketplace.plugins?.find((plugin) => plugin.name === name);
+    if (!pluginEntry) throw new Error(`Could not locate the ${name} marketplace entry.`);
+    pluginEntry.version = version;
+  }
   writeJson(marketplacePath, marketplace);
 
   const lockfilePath = resolve(root, 'package-lock.json');

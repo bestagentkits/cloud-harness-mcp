@@ -10,6 +10,8 @@
   "homepage": "https://cloud-harness-mcp.pages.dev",
   "repository": "https://github.com/bestagentkits/cloud-harness-mcp",
   "license": "MIT",
+  "privacyPolicyUrl": "https://cloud-harness-mcp.pages.dev/privacy.html",
+  "supportUrl": "https://cloud-harness-mcp.pages.dev/support.html",
   "keywords": [
     "cloud-harness",
     "mcp",
@@ -21,9 +23,9 @@
     "mcpUrl": {
       "type": "string",
       "title": "Cloud Harness MCP URL",
-      "description": "The operator's existing Cloud Harness MCP endpoint. The plugin reuses its authentication and stores no credential of its own."
+      "description": "The operator's existing Cloud Harness MCP endpoint. The plugin reuses its authentication and stores no credential of its own.",
+      "required": true
     }
   },
-  "mcpServers": "./.mcp.json",
-  "hooks": "./hooks/hooks.json"
+  "mcpServers": "./.mcp.json"
 }

@@ -28,6 +28,7 @@ instead of copying behavior, defaults, command inventories, or configuration.
 | Deployment and recovery | [`docs/deployment.md`](docs/deployment.md), [`docs/operations.md`](docs/operations.md), [`docs/troubleshooting.md`](docs/troubleshooting.md) | `deploy/`, `compose.production.yaml`, `scripts/verify-production.mjs`, `scripts/deploy-canary.mjs` |
 | Operator dashboard UI | [`docs/design-guidelines.md`](docs/design-guidelines.md) | `apps/api/dashboard/`, `apps/api/src/dashboard-router.ts`, `apps/api/src/dashboard-assets.ts`, `apps/api/test/dashboard-ui-contract.test.ts` |
 | Official user docs & guides | `docs-site/` | `docs-site/`, `scripts/build-docs-reference.mjs`, `npm run docs:build` |
+| Claude directory plugin | [`docs/claude-directory.md`](docs/claude-directory.md), [`docs/adr/0007-claude-directory-distribution.md`](docs/adr/0007-claude-directory-distribution.md) | `plugins/cloud-harness-workspaces/`, `packages/contracts/test/claude-directory-plugin.test.ts`, `apps/api/test/mcp-tool-annotations.test.ts`, `claude plugin validate --strict` |
 | Agent skill & MCP tool guidance | [`.agents/skills/cloudharness/SKILL.md`](.agents/skills/cloudharness/SKILL.md) | `.agents/skills/cloudharness/`, `plugins/cloud-harness/`, `packages/contracts/test/cloudharness-skill-contract.test.ts`, `npm run plugin:sync` |
 
 ## Safety-critical invariants
