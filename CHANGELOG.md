@@ -1,3 +1,10 @@
+## [0.79.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.79.1...v0.79.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* **runner:** clean half-written durable owner marks and stop continuing a lineage left over its cap ([#585](https://github.com/bestagentkits/cloud-harness-mcp/issues/585)) ([ccf8f28](https://github.com/bestagentkits/cloud-harness-mcp/commit/ccf8f28114db327bc827eca606805a26d06d6863)), closes [#584](https://github.com/bestagentkits/cloud-harness-mcp/issues/584)
+
 ## [0.79.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.79.0...v0.79.1) (2026-10-29)
 
 
