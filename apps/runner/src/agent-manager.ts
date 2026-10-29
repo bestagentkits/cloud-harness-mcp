@@ -719,19 +719,10 @@ export class AgentManager {
   /**
    * Runs one durable-runtime storage request against the run's claim. A store over its size cap or
    * an aggregate session byte budget ends the run as LIMIT_EXCEEDED; the cancel is not awaited, because finishing the run may need
-   * further storage requests on this same chain. A store over its size cap also leaves the session
-   * not continuable, since a continuation would fail at its first commit to the same store.
+   * further storage requests on this same chain.
    */
   private async onStorage(context: RuntimeContext, request: AgentStorageRequestRecord): Promise<void> {
-    const { response, limitExceeded, sizeCapExceeded } = await context.session.handleStorage(request);
-    // The session is discontinued before the worker hears back, while it is surely still active.
-    if (sizeCapExceeded) {
-      try {
-        this.repository.discontinueSession(context.record.id, this.now());
-      } catch {
-        // A continuation then fails at its first commit instead; the run still ends.
-      }
-    }
+    const { response, limitExceeded } = await context.session.handleStorage(request);
     if (!context.channel.isClosed) await context.channel.send(response);
     if (limitExceeded) void this.cancelOne(context.record, 'durable agent session exceeded its size limit or a session byte budget', 'LIMIT_EXCEEDED').catch(() => undefined);
   }
@@ -1356,17 +1347,33 @@ export class AgentManager {
    * Releases a durable run's session store and reports whether it still holds unfinished work. A
    * cancelled run is never resumable: a continuation cancels its leftover tasks instead. A failure
    * to read the store only reports nothing to resume; it never keeps the agent from ending.
+   *
+   * A store still over its size cap once closed leaves the session not continuable, since a
+   * continuation would fail at its first commit to it. This is decided here, against the cap
+   * configured now and the size after the close checkpointed the write-ahead log, rather than
+   * when a mid-run commit saw the cap passed. It runs before the terminal transition seals the
+   * session row, while the row is still active, and only after the runtime is gone and its
+   * message chain drained, so no storage request of the run is still in flight.
    */
   private async sealRun(record: AgentRecord, runtime: RuntimeContext | undefined, terminal: TerminalAgentStatus): Promise<boolean> {
     if (record.runtime !== 'pi-durable') return false;
+    let sealed: { resumable: boolean; overCap: boolean };
     try {
-      const sealed = runtime
+      sealed = runtime
         ? await runtime.session.seal()
         : await this.adapters[record.runtime].inspect(this.repository.lineageRoot(record.id));
-      return sealed.resumable && terminal !== 'CANCELLED';
     } catch {
       return false;
     }
+    if (sealed.overCap) {
+      try {
+        this.repository.discontinueSession(record.id, this.now());
+      } catch (error) {
+        // A continuation then fails at its first commit instead; the run still ends.
+        reportDurableWarning('durable session over its size cap could not be marked not continuable', record.id, error);
+      }
+    }
+    return sealed.resumable && terminal !== 'CANCELLED';
   }
 
   private async finishTerminal(context: RuntimeContext, state: AgentStatus, reason: string | null): Promise<void> {
@@ -1803,6 +1810,10 @@ function boundedOutcomeText(operation: AgentProxyOperation, state: 'APPLIED' | '
 
 function redactLease(text: string, lease: string): string {
   return lease.length >= 16 && text.includes(lease) ? text.split(lease).join('[REDACTED]') : text;
+}
+
+function reportDurableWarning(msg: string, agentId: string, error: unknown): void {
+  process.stderr.write(`${JSON.stringify({ level: 'warn', time: Date.now(), msg, agentId, error: safeError(error).slice(0, 500) })}\n`);
 }
 
 function reportSpendSweepFailure(stage: 'list' | 'settle' | 'prune', error: unknown): void {

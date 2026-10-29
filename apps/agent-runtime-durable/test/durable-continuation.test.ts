@@ -494,6 +494,17 @@ describe('durable agent runtime through the runner', () => {
     expect(runner.launcher.launches).toHaveLength(1);
   }, 60_000);
 
+  it('keeps a capped run continuable when its store is under the cap once closed', async () => {
+    const context = setup();
+    const runner = context.runner({ maxLineageBytes: 1, responses: [[fauxAssistantMessage('never committed')]] });
+    // What a write-ahead log that inflated the mid-run size and was checkpointed away on close does.
+    const seal = runner.sessions.seal.bind(runner.sessions);
+    vi.spyOn(runner.sessions, 'seal').mockImplementation(async (claim) => ({ ...await seal(claim), overCap: false }));
+    const agentId = await spawn(context, runner, 'cap-shrinks-root', { runtime: 'pi-durable' });
+    expect(await settled(context, runner, agentId)).toBe('LIMIT_EXCEEDED');
+    expect(await status(context, runner, agentId)).toMatchObject({ session: { continuable: true } });
+  }, 60_000);
+
   it('never reports unfinished work as resumable once the session stopped being continuable', async () => {
     const context = setup();
     const first = context.runner({
@@ -505,11 +516,10 @@ describe('durable agent runtime through the runner', () => {
     context.fs.stallAfter('files_write');
     const agentId = await spawn(context, first, 'discontinued-root', { runtime: 'pi-durable' });
     await vi.waitFor(() => expect(context.fs.applied).toEqual(['files_write']), { timeout: 20_000, interval: 25 });
-    // What a store outgrowing its cap does mid-run: the session stops being continuable.
-    first.repository.discontinueSession(agentId, Date.now());
     first.launcher.kill(0);
     await first.sessions.close();
-    const second = context.runner();
+    // The restarted runner's cap is below the store's size, so reconciling the run discontinues it.
+    const second = context.runner({ maxLineageBytes: 1 });
     await second.manager.start();
     expect(await status(context, second, agentId)).toMatchObject({ session: { continuable: false }, run: { resumable: false } });
   }, 60_000);

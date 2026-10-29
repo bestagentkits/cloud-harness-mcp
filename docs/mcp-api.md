@@ -257,11 +257,15 @@ agent keeps its session in a runner-side store shared by its whole
   when the ended run left unfinished work in the store, for example a run cut
   off by a runner crash; it is never `true` for a cancelled run, and a runner
   that stops gracefully cancels its agents.
-- A durable run whose store outgrew `AGENT_DURABLE_MAX_LINEAGE_BYTES` (it
-  normally ends `LIMIT_EXCEEDED`) reports `session.continuable: false` and
-  `run.resumable: false`, and a `continueFrom` of it is `CONFLICT`: the store
-  stays over its cap, so no continuation could commit to it. A run ended by an
-  aggregate session byte budget stays continuable once the budget frees up.
+- A durable run whose store is still over `AGENT_DURABLE_MAX_LINEAGE_BYTES`
+  when the run ends (it normally ends `LIMIT_EXCEEDED`) reports
+  `session.continuable: false` and `run.resumable: false`, and a
+  `continueFrom` of it is `CONFLICT`, since no continuation could commit to
+  it. The runner decides this at the end of the run, against the closed store
+  and the cap configured then; a mid-run measurement that passed the cap only
+  because of the write-ahead log does not count. A run ended by an aggregate
+  session byte budget stays continuable; its continuation succeeds once the
+  budget frees up.
 - A continuation resumes that unfinished work before the new `prompt`. A tool
   call the run left in flight is asked of the runner again under its original
   request ID, so the effect ledger below settles it: the model gets the stored

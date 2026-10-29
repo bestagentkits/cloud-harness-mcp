@@ -35,9 +35,11 @@ async function createStore(options: Partial<ConstructorParameters<typeof Durable
 
 /**
  * A storage backend that reports the task statuses in `live` and grows its database file by
- * `commitBytes` per commit, so size and pending-work checks run without the real engine.
+ * `commitBytes` per commit, so size and pending-work checks run without the real engine. With
+ * `walBytes`, each commit also grows the write-ahead log, which closing truncates as SQLite's
+ * checkpoint does; with `commitGate`, a commit waits for it before writing.
  */
-function fakeBackend(commitBytes = 0) {
+function fakeBackend(commitBytes = 0, options: { walBytes?: number; commitGate?: Promise<void> } = {}) {
   const state = {
     live: new Set<string>(),
     queries: [] as Array<{ status: string; abortRequested: boolean }>,
@@ -55,8 +57,11 @@ function fakeBackend(commitBytes = 0) {
       return {
         async mintId() { minted += 1; return minted; },
         async commit() {
+          await options.commitGate;
+          if (!open) throw new Error('SqliteStorage is closed');
           state.commits += 1;
           await appendFile(path, Buffer.alloc(commitBytes));
+          if (options.walBytes) await appendFile(`${path}-wal`, Buffer.alloc(options.walBytes));
           return state.commits;
         },
         async document() {
@@ -68,7 +73,11 @@ function fakeBackend(commitBytes = 0) {
           state.queries.push(query);
           return { items: state.live.has(query.status) ? [{ id: 1 }] : [], next: undefined };
         },
-        async close() { open = false; state.closed += 1; }
+        async close() {
+          open = false;
+          state.closed += 1;
+          if (options.walBytes) await writeFile(`${path}-wal`, '');
+        }
       } as never;
     }
   };
@@ -278,13 +287,13 @@ describe('DurableSessionStore', () => {
     const store = await createStore({ loader: backend.loader });
     const claim = await store.claim(LINEAGE, OWNER, 1, 0);
     backend.live.add('running');
-    expect(await store.seal(claim)).toEqual({ pendingTasks: true });
+    expect(await store.seal(claim)).toEqual({ pendingTasks: true, overCap: false });
     // A sealed claim is released: it is fenced and the database is closed.
     expect(await store.handle(claim, request('r-1', 'mintId'))).toMatchObject({ ok: false, error: { code: 'fenced' } });
     expect(backend.closed).toBe(1);
-    expect(await store.inspectPending(LINEAGE)).toEqual({ pendingTasks: true });
+    expect(await store.inspectPending(LINEAGE)).toEqual({ pendingTasks: true, overCap: false });
     backend.live.clear();
-    expect(await store.inspectPending(LINEAGE)).toEqual({ pendingTasks: false });
+    expect(await store.inspectPending(LINEAGE)).toEqual({ pendingTasks: false, overCap: false });
     // Only tasks nobody asked to abort count as unfinished.
     expect(backend.queries.every((query) => query.abortRequested === false)).toBe(true);
     expect(new Set(backend.queries.map((query) => query.status))).toEqual(new Set(['pending', 'running', 'waiting']));
@@ -310,7 +319,7 @@ describe('DurableSessionStore', () => {
     backend.live.add('pending');
     expect(await store.handle(claim, request('close-1', 'close'))).toEqual({ type: 'storage_response', id: 'close-1', ok: true });
     expect(backend.closed).toBe(0);
-    expect(await store.seal(claim)).toEqual({ pendingTasks: true });
+    expect(await store.seal(claim)).toEqual({ pendingTasks: true, overCap: false });
     // The runner closes the database once, when the run's claim ends.
     expect(backend.closed).toBe(1);
   });
@@ -321,10 +330,10 @@ describe('DurableSessionStore', () => {
     const first = await store.claim(LINEAGE, OWNER, 1, 0);
     await store.claim(LINEAGE, SUCCESSOR, 1, 1);
     backend.live.add('pending');
-    expect(await store.seal(first)).toEqual({ pendingTasks: false });
-    expect(await store.inspectPending(OWNER)).toEqual({ pendingTasks: false });
+    expect(await store.seal(first)).toEqual({ pendingTasks: false, overCap: false });
+    expect(await store.inspectPending(OWNER)).toEqual({ pendingTasks: false, overCap: false });
     const disabled = await createStore({ enabled: false, loader: backend.loader });
-    expect(await disabled.inspectPending(LINEAGE)).toEqual({ pendingTasks: false });
+    expect(await disabled.inspectPending(LINEAGE)).toEqual({ pendingTasks: false, overCap: false });
   });
 
   it('refuses commits once the lineage database outgrows its cap, and keeps reads working', async () => {
@@ -333,14 +342,59 @@ describe('DurableSessionStore', () => {
     const claim = await store.claim(LINEAGE, OWNER, 1, 0);
     expect(await store.handle(claim, request('r-1', 'commit', [[]]))).toMatchObject({ ok: true });
     expect(store.limitExceeded(claim)).toBe(false);
-    expect(store.sizeCapExceeded(claim)).toBe(false);
     // This commit lands, but leaves the database over the cap.
     expect(await store.handle(claim, request('r-2', 'commit', [[]]))).toMatchObject({ ok: true });
     expect(store.limitExceeded(claim)).toBe(true);
-    expect(store.sizeCapExceeded(claim)).toBe(true);
     expect(await store.handle(claim, request('r-3', 'commit', [[]]))).toMatchObject({ ok: false, error: { code: 'limit', retryable: false } });
     expect(backend.commits).toBe(2);
     expect(await store.handle(claim, request('r-4', 'mintId'))).toMatchObject({ ok: true });
+  });
+
+  it('reports a store over its cap only by its size once closed, not by a mid-run write-ahead log', async () => {
+    const backend = fakeBackend(400, { walBytes: 400 });
+    const store = await createStore({ loader: backend.loader, maxLineageBytes: 1_000 });
+    const claim = await store.claim(LINEAGE, OWNER, 1, 0);
+    expect(await store.handle(claim, request('r-1', 'commit', [[]]))).toMatchObject({ ok: true });
+    // 400 bytes of database and 400 of log: under the cap.
+    expect(store.limitExceeded(claim)).toBe(false);
+    // 800 and 800 mid-run passes the cap and ends the run, but the closed database holds only 800.
+    expect(await store.handle(claim, request('r-2', 'commit', [[]]))).toMatchObject({ ok: true });
+    expect(store.limitExceeded(claim)).toBe(true);
+    expect(await store.seal(claim)).toEqual({ pendingTasks: false, overCap: false });
+    expect(store.lineageBytes(LINEAGE)).toBe(800);
+  });
+
+  it('reports a store still over its cap once closed, on seal and on inspection after a restart', async () => {
+    const backend = fakeBackend(600, { walBytes: 400 });
+    const dir = await stateDir();
+    const store = new DurableSessionStore({ stateDir: dir, enabled: true, loader: backend.loader, maxLineageBytes: 1_000 });
+    stores.push(store);
+    const claim = await store.claim(LINEAGE, OWNER, 1, 0);
+    await store.handle(claim, request('r-1', 'commit', [[]]));
+    await store.handle(claim, request('r-2', 'commit', [[]]));
+    expect(await store.seal(claim)).toEqual({ pendingTasks: false, overCap: true });
+    // The decision follows the cap configured when the run ends.
+    const larger = new DurableSessionStore({ stateDir: dir, enabled: true, loader: backend.loader, maxLineageBytes: 2_000 });
+    stores.push(larger);
+    expect(await larger.inspectPending(LINEAGE)).toEqual({ pendingTasks: false, overCap: false });
+    const smaller = new DurableSessionStore({ stateDir: dir, enabled: true, loader: backend.loader, maxLineageBytes: 1_000 });
+    stores.push(smaller);
+    expect(await smaller.inspectPending(LINEAGE)).toEqual({ pendingTasks: false, overCap: true });
+  });
+
+  it('lets a commit already in flight land before the seal measures the closed store', async () => {
+    const gate = Promise.withResolvers<void>();
+    const backend = fakeBackend(1_500, { commitGate: gate.promise });
+    const store = await createStore({ loader: backend.loader, maxLineageBytes: 1_000 });
+    const claim = await store.claim(LINEAGE, OWNER, 1, 0);
+    const commit = store.handle(claim, request('r-1', 'commit', [[]]));
+    // The commit has passed its pre-check and waits in the backend when the seal starts.
+    await vi.waitFor(() => expect(remembered(claim).lastCommit).toBe(true));
+    const sealed = store.seal(claim);
+    gate.resolve();
+    expect(await commit).toMatchObject({ ok: true });
+    expect(await sealed).toEqual({ pendingTasks: false, overCap: true });
+    expect(backend.commits).toBe(1);
   });
 
   it('refuses the first commit of a lineage already over its cap, as after a restart', async () => {
@@ -355,7 +409,6 @@ describe('DurableSessionStore', () => {
     const resumed = await after.claim(LINEAGE, SUCCESSOR, 2, 1);
     expect(await after.handle(resumed, request('r-2', 'commit', [[]]))).toMatchObject({ ok: false, error: { code: 'limit' } });
     expect(after.limitExceeded(resumed)).toBe(true);
-    expect(after.sizeCapExceeded(resumed)).toBe(true);
     expect(backend.commits).toBe(1);
   });
 
@@ -391,8 +444,6 @@ describe('DurableSessionStore', () => {
       ok: false, error: { code: 'limit', message: 'durable session would exceed the workspace agent session byte budget', retryable: false }
     });
     expect(store.limitExceeded(claim)).toBe(true);
-    // A passed budget frees up once other stores are deleted, so it is not the lasting size cap.
-    expect(store.sizeCapExceeded(claim)).toBe(false);
     full = false;
     expect(await store.handle(claim, request('r-3', 'commit', [[]]), budget)).toMatchObject({ ok: false, error: { code: 'limit' } });
     expect(backend.commits).toBe(1);
@@ -407,7 +458,6 @@ describe('DurableSessionStore', () => {
     const budget = (addedBytes: number) => addedBytes === 0 ? 'instance' as const : undefined;
     expect(await store.handle(claim, request('r-1', 'commit', [[]]), budget)).toMatchObject({ ok: true });
     expect(store.limitExceeded(claim)).toBe(true);
-    expect(store.sizeCapExceeded(claim)).toBe(false);
     expect(await store.handle(claim, request('r-2', 'commit', [[]]), budget)).toMatchObject({ ok: false, error: { code: 'limit' } });
     expect(backend.commits).toBe(1);
   });

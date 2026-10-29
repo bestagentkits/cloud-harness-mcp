@@ -30,12 +30,20 @@ export interface AgentRuntimeSession {
   /**
    * Runs one session-storage request of the run. `limitExceeded` reports that the run's session
    * store is over its size cap or an aggregate session budget, so the run must end as LIMIT_EXCEEDED.
-   * `sizeCapExceeded` reports the size cap alone: the store stays over it, so the session can never
-   * be continued, whereas a passed aggregate budget frees up once other stores are deleted.
    */
-  handleStorage(request: AgentStorageRequestRecord): Promise<{ response: AgentStorageResponseRecord; limitExceeded: boolean; sizeCapExceeded: boolean }>;
-  /** Ends the run's hold on its session state and reports whether a continuation would resume work. */
-  seal(): Promise<{ resumable: boolean }>;
+  handleStorage(request: AgentStorageRequestRecord): Promise<{ response: AgentStorageResponseRecord; limitExceeded: boolean }>;
+  /** Ends the run's hold on its session state; see AgentRuntimeSealResult. */
+  seal(): Promise<AgentRuntimeSealResult>;
+}
+
+/**
+ * How a run left its session state: `resumable` when a continuation would resume unfinished work,
+ * `overCap` when the store stays over its size cap after closing, so no continuation could commit
+ * to it. A passed aggregate budget is not reported here: it frees up once other stores go.
+ */
+export interface AgentRuntimeSealResult {
+  readonly resumable: boolean;
+  readonly overCap: boolean;
 }
 
 export interface AgentRuntimeAdapter {
@@ -43,7 +51,7 @@ export interface AgentRuntimeAdapter {
   /** Prepares one run before any lease or container exists. */
   open(run: AgentRunDescriptor): Promise<AgentRuntimeSession>;
   /** For a run that ended with no open session, for example after a runner restart: whether a continuation would resume work. */
-  inspect(lineageRootId: string): Promise<{ resumable: boolean }>;
+  inspect(lineageRootId: string): Promise<AgentRuntimeSealResult>;
 }
 
 /** The default engine: its session is the runner's message log, replayed through the start record. */
@@ -59,14 +67,13 @@ export const piCodingAdapter: AgentRuntimeAdapter = {
         // The coding runtime has no runner-side store; its channel never routes storage requests here.
         return {
           response: { type: 'storage_response', id: request.id, ok: false, error: { code: 'unavailable', message: 'this agent runtime has no session store', retryable: false } },
-          limitExceeded: false,
-          sizeCapExceeded: false
+          limitExceeded: false
         };
       },
-      seal: async () => ({ resumable: false })
+      seal: async () => ({ resumable: false, overCap: false })
     };
   },
-  inspect: async () => ({ resumable: false })
+  inspect: async () => ({ resumable: false, overCap: false })
 };
 
 /**
@@ -86,17 +93,17 @@ export function piDurableAdapter(store: DurableSessionStore): AgentRuntimeAdapte
         startRecord: (base) => ({ ...base, runtime: 'pi-durable', ...(resume ? { durableResume: resume } : {}) }),
         async handleStorage(request) {
           const response = await store.handle(claim, request, run.sessionBudget);
-          return { response, limitExceeded: store.limitExceeded(claim), sizeCapExceeded: store.sizeCapExceeded(claim) };
+          return { response, limitExceeded: store.limitExceeded(claim) };
         },
         async seal() {
-          const { pendingTasks } = await store.seal(claim);
-          return { resumable: pendingTasks };
+          const { pendingTasks, overCap } = await store.seal(claim);
+          return { resumable: pendingTasks, overCap };
         }
       };
     },
     async inspect(lineageRootId) {
-      const { pendingTasks } = await store.inspectPending(lineageRootId);
-      return { resumable: pendingTasks };
+      const { pendingTasks, overCap } = await store.inspectPending(lineageRootId);
+      return { resumable: pendingTasks, overCap };
     }
   };
 }
