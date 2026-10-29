@@ -45,6 +45,7 @@ Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding 
 | `environmentId` | `string` | No | pattern: `^env_[A-Za-z0-9_-]{20,80}$` |
 | `confirmEnvironmentInjection` | `true` | No | — |
 | `toolkits` | any[] | No | default: `[]` |
+| `kitLocks` | any[] | No | AgentKit skill locks (agentkit.skill-lock/v1) whose kit-owned skills the workspace installs at the locked kit versions, alongside toolkits. Requires ENABLE_KIT_LOCK_INSTALL on the instance. SkillX personal kit locks (skillx.personal-kit-lock/v1) are validated but refused until agentkit.best sign-in is available. |
 | `skillSets` | object[] | No | default: `[]` |
 | `skillOverrides` | `object` | No | default: `{}` |
 | `allowToolkitWorkspaceChanges` | `true` | No | — |

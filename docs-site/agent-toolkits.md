@@ -119,6 +119,43 @@ token must never be readable by repository code. Without a usable secret,
 also reports a warning in the toolkit lock so pre-release content is visible in
 the result.
 
+### Installing kits from a lockfile
+
+When the operator sets `ENABLE_KIT_LOCK_INSTALL=true`, `workspace_open` accepts
+`kitLocks`: up to two AgentKit skill lock documents (`agentkit.skill-lock/v1`).
+Each kit the lock names becomes a pinned `agentkit` selection with the locked
+kit version and only the locked skills:
+
+```json
+{
+  "repositoryUrl": "https://github.com/my-org/my-project.git",
+  "idempotencyKey": "unique-session-key-005",
+  "kitLocks": [
+    {
+      "schema": "agentkit.skill-lock/v1",
+      "scope": "global",
+      "generation": 7,
+      "packages": [
+        {
+          "identity": "@agentkit/plan",
+          "version": "2.7.0",
+          "treeDigest": "sha256:…",
+          "aliases": ["ak-plan"],
+          "sources": [{ "owner": "kit:engineer", "provider": "kit", "kit": "engineer", "kitVersion": "2.7.0", "origin": "remote-signed" }]
+        }
+      ]
+    }
+  ]
+}
+```
+
+A lock installs whole or not at all. Entries from SkillX, Git or local sources,
+two versions of one kit, or a kit also listed in `toolkits` are refused with
+`INVALID_INPUT`; a locked skill that the kit version no longer ships fails with
+`NOT_FOUND`. The licence token and registry key rules above still apply. SkillX
+personal kit locks (`skillx.personal-kit-lock/v1`) are accepted by the schema
+but refused until signing in with agentkit.best is supported.
+
 ### Discoverability
 
 `GET /api/v1/toolkits` (the dashboard's `toolkits_list` operation) returns the

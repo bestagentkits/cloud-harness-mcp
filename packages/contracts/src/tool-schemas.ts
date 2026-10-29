@@ -3,6 +3,7 @@ import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, Oper
 import { AgentProxyOperationSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
 import { SkillSuggestInputSchema } from './typesafe-schemas.js';
 import { MAX_WORKSPACE_REPOSITORIES_LIMIT } from './config.js';
+import { KitLockSchema } from './kit-lock.js';
 import {
   ModelConnectionVerifyToolInputSchema,
   ModelProfileCreateToolInputSchema,
@@ -853,6 +854,8 @@ const schemas = {
     environmentId: EnvironmentIdSchema.optional(),
     confirmEnvironmentInjection: z.literal(true).optional(),
     toolkits: z.array(ToolkitSelectionSchema).max(8).default([]),
+    kitLocks: z.array(KitLockSchema).max(2).optional()
+      .describe('AgentKit skill locks (agentkit.skill-lock/v1) whose kit-owned skills the workspace installs at the locked kit versions, alongside toolkits. Requires ENABLE_KIT_LOCK_INSTALL on the instance. SkillX personal kit locks (skillx.personal-kit-lock/v1) are validated but refused until agentkit.best sign-in is available.'),
     skillSets: z.array(SkillSetSelectionSchema).max(16).default([]),
     skillOverrides: SkillOverrideMapSchema.default({}),
     allowToolkitWorkspaceChanges: z.literal(true).optional()
