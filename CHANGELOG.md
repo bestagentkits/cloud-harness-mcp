@@ -1,3 +1,10 @@
+## [0.79.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.79.0...v0.79.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **agents:** report a mutation whose executor call failed as EFFECT_UNKNOWN ([#593](https://github.com/bestagentkits/cloud-harness-mcp/issues/593)) ([a785299](https://github.com/bestagentkits/cloud-harness-mcp/commit/a785299ef0a08e2cae2327445371ab984b2fa0f2)), closes [#594](https://github.com/bestagentkits/cloud-harness-mcp/issues/594)
+
 # [0.79.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.78.1...v0.79.0) (2026-10-26)
 
 
