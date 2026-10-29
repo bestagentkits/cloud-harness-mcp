@@ -67,13 +67,13 @@ export interface DurableSessionStoreOptions {
   readonly now?: () => number;
 }
 
-/** Exclusive right to use one lineage's database, held by one agent run until superseded or released. */
 /** What ending a lineage's claim found: unfinished tasks to resume, and a database still over its size cap. */
 export interface DurableSessionSeal {
   readonly pendingTasks: boolean;
   readonly overCap: boolean;
 }
 
+/** Exclusive right to use one lineage's database, held by one agent run until superseded or released. */
 export interface DurableSessionClaim {
   readonly lineageRootId: string;
   readonly agentId: string;
