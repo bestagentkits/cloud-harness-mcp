@@ -17,7 +17,7 @@ import {
 } from './workspace-repositories.js';
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { chmod, chown, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, statfs, writeFile } from 'node:fs/promises';
-import { join, relative, resolve, sep } from 'node:path';
+import { join, posix, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
   BROKERED_ONLY_PROXY_OPERATIONS,
@@ -219,9 +219,10 @@ export function builtinSkillsMountArgs(builtinSkillsRoot: string | undefined): s
  * whereas the helper resolves the scoped path inside its own mount namespace.
  */
 export function gitTransferVolumes(mode: 'fetch' | 'import' | 'stage-push' | 'inspect' | 'push', workspacePath: string, transferName: string): string[] {
-  const transfer = ['--volume', `${join(workspacePath, transferName)}:/job/${transferName}:${mode === 'import' || mode === 'inspect' ? 'ro' : 'rw'}`];
+  // Docker bind sources are Linux host paths, so they are joined with `/` whatever the platform.
+  const transfer = ['--volume', `${posix.join(workspacePath, transferName)}:/job/${transferName}:${mode === 'import' || mode === 'inspect' ? 'ro' : 'rw'}`];
   if (mode === 'fetch' || mode === 'inspect' || mode === 'push') return transfer;
-  return ['--volume', `${join(workspacePath, 'repo')}:/job/repo:${mode === 'import' ? 'rw' : 'ro'}`, ...transfer];
+  return ['--volume', `${posix.join(workspacePath, 'repo')}:/job/repo:${mode === 'import' ? 'rw' : 'ro'}`, ...transfer];
 }
 
 /**

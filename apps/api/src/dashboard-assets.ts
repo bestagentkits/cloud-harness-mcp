@@ -1,8 +1,8 @@
 import { accessSync, constants, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Router, type Request } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { serverVersion } from './version.js';
 
 const directory = fileURLToPath(new URL('../dashboard/', import.meta.url));
@@ -39,6 +39,14 @@ export const DASHBOARD_VENDOR_ASSETS: ReadonlyMap<string, string> = new Map([
   ['xterm-addon-fit.mjs', join(xtermFitDirectory, 'lib', 'addon-fit.mjs')]
 ]);
 for (const path of DASHBOARD_VENDOR_ASSETS.values()) accessSync(path, constants.R_OK);
+
+/**
+ * Sends one vendor file rooted at its own directory. `send` refuses an absolute path with any segment that
+ * starts with a dot, so a checkout under a dotted directory (such as a `.worktrees` worktree) would 404.
+ */
+function sendVendorFile(response: Response, path: string, headers: Record<string, string>) {
+  response.sendFile(basename(path), { root: dirname(path), headers });
+}
 
 /**
  * The server version, immutable asset namespace and the three theme variants are
@@ -171,7 +179,7 @@ export function createDashboardAssetsRouter(): Router {
   router.get('/assets/:version/:asset', (request, response) => {
     if (request.params.version !== serverVersion) { response.sendStatus(404); return; }
     const vendor = DASHBOARD_VENDOR_ASSETS.get(request.params.asset);
-    if (vendor) { response.sendFile(vendor, { headers: immutableOptions.headers }); return; }
+    if (vendor) { sendVendorFile(response, vendor, immutableOptions.headers); return; }
     if (!DASHBOARD_ASSETS.has(request.params.asset)) { response.sendStatus(404); return; }
     response.sendFile(request.params.asset, immutableOptions);
   });
@@ -190,7 +198,7 @@ export function createDashboardAssetsRouter(): Router {
   router.get('/assets/dashboard-inbox.js', (_request, response) => response.sendFile('dashboard-inbox.js', legacyOptions));
   router.get('/assets/dashboard-action-approvals.js', (_request, response) => response.sendFile('dashboard-action-approvals.js', legacyOptions));
   for (const [name, path] of DASHBOARD_VENDOR_ASSETS) {
-    router.get(`/assets/${name}`, (_request, response) => response.sendFile(path, { headers: legacyOptions.headers }));
+    router.get(`/assets/${name}`, (_request, response) => sendVendorFile(response, path, legacyOptions.headers));
   }
   // Each redirect is registered with a literal destination rather than by looping
   // over the exported table: no request value can reach the destination path (the

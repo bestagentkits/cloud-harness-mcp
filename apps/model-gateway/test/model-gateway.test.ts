@@ -12,7 +12,16 @@ import { createLeaseGrant, LeaseRegistry } from '../src/lease-registry.js';
 import { createGatewayRuntime, type GatewayRuntime } from '../src/gateway.js';
 import { reserveBudget } from '../src/budget.js';
 import { startUpstreamRequest } from '../src/upstream.js';
+import { symlinksSupported } from '../../runner/test/platform-support.js';
 import type { BudgetReservation, GatewayConfig, GatewayLogger, GatewayProfile, LeaseIssueInput, Usage } from '../src/types.js';
+
+/**
+ * The fake provider's TLS certificate comes from `openssl`, which Windows hosts rarely have on PATH, so
+ * the tests that start a fake provider skip there without it. Linux always runs them.
+ */
+const tlsFixturesUnavailable = process.platform === 'win32'
+  && spawnSync('openssl', ['version'], { stdio: 'ignore' }).status !== 0;
+const itWithTls = it.skipIf(tlsFixturesUnavailable);
 
 let fixtureDirectory = '';
 let credentialFile = '';
@@ -162,6 +171,7 @@ beforeAll(async () => {
   certificateFile = join(fixtureDirectory, 'server-cert.pem');
   privateKeyFile = join(fixtureDirectory, 'server-key.pem');
   await writeFile(credentialFile, `${randomBytes(32).toString('base64url')}\n`, { mode: 0o600 });
+  if (tlsFixturesUnavailable) return;
   const generated = spawnSync('openssl', [
     'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '1',
     '-subj', '/CN=fake-provider',
@@ -194,7 +204,7 @@ describe('model gateway security boundary', () => {
     expect(() => registry.consume(lease, grant.agentId, grant.profileId)).toThrow('revoked or expired');
   });
 
-  it('rejects secret-file path escapes', async () => {
+  it.skipIf(!symlinksSupported)('rejects secret-file path escapes', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'model-gateway-secret-'));
     try {
       const target = join(directory, 'credential');
@@ -235,7 +245,8 @@ describe('model gateway security boundary', () => {
     }
   });
 
-  it('checks a bracketed IPv6 upstream literal before connecting', async () => {
+  // The upstream request loads the fake provider's CA file before it resolves the address.
+  itWithTls('checks a bracketed IPv6 upstream literal before connecting', async () => {
     const configured: GatewayProfile = {
       ...profile(new URL('https://[64:ff9b::a9fe:a9fe]/v1/chat/completions')),
       credentialSecret: 'test-only-secret-value',
@@ -300,7 +311,7 @@ describe('model gateway security boundary', () => {
     expect(reservation.costMicros).toBeLessThanOrEqual(1_000);
   });
 
-  it('rejects hostile routing headers without consuming the lease', async () => {
+  itWithTls('rejects hostile routing headers without consuming the lease', async () => {
     const provider = await fakeProvider((_request, response) => response.end());
     const running = await gateway(profile(provider.upstream));
     const grant = activate(running.runtime, issue());
@@ -311,7 +322,7 @@ describe('model gateway security boundary', () => {
     expect(running.runtime.leases.consume(grant.lease, grant.agentId, grant.profileId)).toBeDefined();
   });
 
-  it('has no caller-selected path or upstream URL', async () => {
+  itWithTls('has no caller-selected path or upstream URL', async () => {
     let providerRequests = 0;
     const provider = await fakeProvider((_request, response) => {
       providerRequests += 1;
@@ -330,7 +341,7 @@ describe('model gateway security boundary', () => {
     expect(providerRequests).toBe(0);
   });
 
-  it('sends max_completion_tokens upstream for an OpenAI dynamic profile', async () => {
+  itWithTls('sends max_completion_tokens upstream for an OpenAI dynamic profile', async () => {
     let received: Record<string, unknown> = {};
     const provider = await fakeProvider((request, response) => {
       const chunks: Buffer[] = [];
@@ -375,7 +386,7 @@ describe('model gateway security boundary', () => {
     expect(received).not.toHaveProperty('max_tokens');
   });
 
-  it('forwards the configured provider session header with the calling agent id', async () => {
+  itWithTls('forwards the configured provider session header with the calling agent id', async () => {
     let receivedSession = '';
     let receivedUserAgent = '';
     const provider = await fakeProvider((_request, response) => {
@@ -409,7 +420,7 @@ describe('model gateway security boundary', () => {
     expect(unconfiguredSession).toBeUndefined();
   });
 
-  it('sends a provider session header from the snapshot before the instance-wide one', async () => {
+  itWithTls('sends a provider session header from the snapshot before the instance-wide one', async () => {
     const received: Array<Record<string, string | string[] | undefined>> = [];
     const provider = await fakeProvider((request, response) => {
       received.push({ ...request.headers });
@@ -456,7 +467,7 @@ describe('model gateway security boundary', () => {
     expect(received[3]).not.toHaveProperty('x-opencode-session');
   });
 
-  it('applies the same session header precedence on the Responses path', async () => {
+  itWithTls('applies the same session header precedence on the Responses path', async () => {
     const received: Array<Record<string, string | string[] | undefined>> = [];
     const provider = await fakeProvider((request, response) => {
       received.push({ ...request.headers });
@@ -500,7 +511,7 @@ describe('model gateway security boundary', () => {
       .rejects.toThrow('MODEL_GATEWAY_SESSION_HEADER must be a lowercase header name');
   });
 
-  it('streams bounded output, reconciles usage, and never discloses provider credentials or headers', async () => {
+  itWithTls('streams bounded output, reconciles usage, and never discloses provider credentials or headers', async () => {
     const credential = (await readFile(credentialFile, 'utf8')).trim();
     let receivedAuthorization = '';
     let providerCalls = 0;
@@ -540,7 +551,7 @@ describe('model gateway security boundary', () => {
     expect(logOutput).not.toContain('messages');
   });
 
-  it('aborts and drains upstream when bounded streaming output is exceeded', async () => {
+  itWithTls('aborts and drains upstream when bounded streaming output is exceeded', async () => {
     let upstreamClosed = false;
     const provider = await fakeProvider((_request, response) => {
       response.on('close', () => { upstreamClosed = true; });
@@ -555,7 +566,7 @@ describe('model gateway security boundary', () => {
     await vi.waitFor(() => expect(upstreamClosed).toBe(true));
   });
 
-  it.each([
+  itWithTls.each([
     ['the response byte limit', 413, { maxResponseBytes: 256 }, () => `data: ${'x'.repeat(512)}\n\n`],
     ['the stream line limit', 413, { maxStreamLineBytes: 128 }, () => `data: ${'x'.repeat(256)}\n\n`],
     ['an unterminated stream line', 413, { maxStreamLineBytes: 128 }, () => 'x'.repeat(256)],
@@ -576,7 +587,7 @@ describe('model gateway security boundary', () => {
     expect(logger.info).not.toHaveBeenCalledWith(expect.anything(), 'model request completed');
   });
 
-  it.each([
+  itWithTls.each([
     ['a terminated usage line', 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}\n\ndata: [DONE]\n\n', true],
     ['a final unterminated usage line', 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}', true],
     ['a body that ends in the same write as the usage line', 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5000}}\n\ndata: [DONE]\n\n', false]
@@ -615,7 +626,7 @@ describe('model gateway security boundary', () => {
     await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ status: 413 }), 'model request failed'));
   });
 
-  it('cuts off a non-SSE response past the output token cap', async () => {
+  itWithTls('cuts off a non-SSE response past the output token cap', async () => {
     const provider = await fakeProvider((_request, response) => {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.write('{"partial":true}\n');
@@ -628,7 +639,7 @@ describe('model gateway security boundary', () => {
     }).then((response) => response.text())).rejects.toThrow();
   });
 
-  it('aborts and drains upstream on explicit cancel, disconnect, and lease revocation', async () => {
+  itWithTls('aborts and drains upstream on explicit cancel, disconnect, and lease revocation', async () => {
     let closeCount = 0;
     let providerRequests = 0;
     const provider = await fakeProvider((_request, response) => {
@@ -680,7 +691,7 @@ describe('model gateway security boundary', () => {
 describe('model gateway usage accounting', () => {
   const chatBody = '{"messages":[],"max_tokens":20}';
 
-  it('charges cached usage from a final SSE chunk split across TCP writes', async () => {
+  itWithTls('charges cached usage from a final SSE chunk split across TCP writes', async () => {
     const usageChunk = `data: ${JSON.stringify({
       choices: [],
       usage: { prompt_tokens: 30, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 10, cache_write_tokens: 4 } }
@@ -713,7 +724,7 @@ describe('model gateway usage accounting', () => {
     }]));
   });
 
-  it('charges Responses usage nested under response.usage in response.completed', async () => {
+  itWithTls('charges Responses usage nested under response.usage in response.completed', async () => {
     const provider = await fakeProvider((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.write(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_1', usage: null } })}\n\n`);
@@ -739,7 +750,7 @@ describe('model gateway usage accounting', () => {
     expect(recording.reserved[0]?.costMicros).toBeGreaterThan(85);
   });
 
-  it('charges the reservation when the stream ends without usage', async () => {
+  itWithTls('charges the reservation when the stream ends without usage', async () => {
     const provider = await fakeProvider((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.end('data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n');
@@ -758,7 +769,7 @@ describe('model gateway usage accounting', () => {
     }]));
   });
 
-  it('charges the reservation when a malformed usage line follows a valid one', async () => {
+  itWithTls('charges the reservation when a malformed usage line follows a valid one', async () => {
     const provider = await fakeProvider((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.write('data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":1}}\n\n');
@@ -777,7 +788,7 @@ describe('model gateway usage accounting', () => {
     })]));
   });
 
-  it('refuses provider-hosted tools with a message naming the tool type', async () => {
+  itWithTls('refuses provider-hosted tools with a message naming the tool type', async () => {
     let providerRequests = 0;
     const provider = await fakeProvider((_request, response) => {
       providerRequests += 1;
@@ -794,7 +805,7 @@ describe('model gateway usage accounting', () => {
     expect(providerRequests).toBe(0);
   });
 
-  it.each([0, 1.5, '100'])('refuses max_tokens %j as an invalid request naming the field', async (maxTokens) => {
+  itWithTls.each([0, 1.5, '100'])('refuses max_tokens %j as an invalid request naming the field', async (maxTokens) => {
     let providerRequests = 0;
     const provider = await fakeProvider((_request, response) => {
       providerRequests += 1;
@@ -810,7 +821,7 @@ describe('model gateway usage accounting', () => {
     expect(providerRequests).toBe(0);
   });
 
-  it.each([
+  itWithTls.each([
     ['input token', { maxInputTokens: 1 }],
     ['input cost', { maxCostMicros: 1 }],
     ['output cost', { maxCostMicros: 70 }]
@@ -834,7 +845,7 @@ describe('model gateway usage accounting', () => {
     expect(providerRequests).toBe(0);
   });
 
-  it('never reserves more than the lease cap across concurrent requests', async () => {
+  itWithTls('never reserves more than the lease cap across concurrent requests', async () => {
     const pending: Array<() => void> = [];
     const provider = await fakeProvider((_request, response) => {
       pending.push(() => {
@@ -861,7 +872,7 @@ describe('model gateway usage accounting', () => {
     }
   });
 
-  it('returns a settlement on revoke that counts a cancelled in-flight request at its reservation', async () => {
+  itWithTls('returns a settlement on revoke that counts a cancelled in-flight request at its reservation', async () => {
     let providerRequests = 0;
     const provider = await fakeProvider((_request, response) => {
       providerRequests += 1;
@@ -904,7 +915,7 @@ describe('model gateway usage accounting', () => {
       .resolves.toMatchObject({ ok: true, revoked: false, settlement: revoked.settlement });
   });
 
-  it('returns the settlement of an expired lease on revoke', async () => {
+  itWithTls('returns the settlement of an expired lease on revoke', async () => {
     const provider = await fakeProvider((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.end('data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}\n\n');
@@ -926,7 +937,7 @@ describe('model gateway usage accounting', () => {
     });
   });
 
-  it('refuses stateful Responses fields with a message naming the field', async () => {
+  itWithTls('refuses stateful Responses fields with a message naming the field', async () => {
     let providerRequests = 0;
     const provider = await fakeProvider((_request, response) => {
       providerRequests += 1;

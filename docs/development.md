@@ -46,13 +46,15 @@ regression unless it appears below as unexplained.
 | `apps/runner/test/package-builder.test.ts`: release tree verification and the three apply builds that verify a release | Symlinks, POSIX mode and execute bits, setuid and sticky bits, and FIFOs |
 | `apps/runner/test/tree-digest.test.ts`: nested tree and multi-MiB file | Symlinks and POSIX mode bits |
 | `apps/runner/test/worker-close-check.test.ts`: newline worktree path | Windows file names cannot contain a newline |
+| `apps/runner/test/skill-extension-service.test.ts`: file name that is not UTF-8 | NTFS stores file names as UTF-16, so such a name cannot be created |
 | `apps/api/test/local/multi-local-workspace-backend.test.ts`: two `pwd` tests | The local backend runs commands through `cmd.exe` |
 | `test/integration/mcp-local-multi-workspace.test.ts` (whole file) | The server refuses local mode on win32 unless `HARNESS_ALLOW_WIN32_STDIO=1` |
 | `test/integration/dynamic-model-profiles.test.ts`: four TLS tests | They need `openssl` on PATH or pre-generated fixtures |
+| `apps/model-gateway/test/model-gateway.test.ts`: the tests that start a fake TLS provider | They need `openssl` on PATH to generate the provider certificate |
 | `test/deploy-release-runtime.test.ts`, `test/upgrade-nginx-routes.test.ts`, `apps/runner/test/terminal-session-scripts.test.ts`, `test/git-transfer-helper-lease.test.ts`, `test/gh-helper-*.test.ts` | POSIX shell scripts |
 | `test/production-deploy-classify.test.ts`: the eight tests that run the release tip check and release CI request scripts | They run workflow scripts through `bash` with a POSIX `PATH` |
 
-The remaining symlink fixtures in the runner tests skip only when `symlink`
+The remaining symlink fixtures in the runner and model gateway tests skip only when `symlink`
 fails, so they run on a Windows host with Developer Mode or elevation. The
 guards live in
 [`apps/runner/test/platform-support.ts`](../apps/runner/test/platform-support.ts).
