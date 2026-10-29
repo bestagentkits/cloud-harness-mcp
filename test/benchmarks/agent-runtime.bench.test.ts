@@ -3,7 +3,7 @@
  *
  * The offline suite always runs. It drives the real AgentWorker, the real proxy tool broker and a
  * real Pi session in-process against a scripted pi-ai faux model, and measures each registered
- * runtime on five use cases with identical scripts, limits and tool grants:
+ * runtime on six scenarios with identical scripts, limits and tool grants:
  * - `pi-coding`: the shipped runtime; the benchmark answers proxy tools in place of the runner.
  * - `pi-coding+persisted`: the same worker with session persistence behind the real runner
  *   (`AgentManager`, `AgentStateRepository`, effect ledger) and an in-process launcher.
@@ -90,6 +90,33 @@ function singleRunFacts(outcome: TaskOutcome, workspace: FakeWorkspace): Facts {
   };
 }
 
+/** Kills the run at the scenario's tool request, then has the owner start the same task again. */
+async function killedRun(runtime: RuntimeUnderTest, id: string): Promise<ScenarioObservation> {
+  const scenario = spec(id);
+  const workspace = new FakeWorkspace(fixture.workspace);
+  const killed = await runtime.run(taskFor(scenario, workspace, { interrupt: { atToolRequest: scenario.killAtToolRequest!, mode: 'kill' } }));
+  const effectsAtKill = workspace.effects.length;
+  // Requests still pending at termination are cancelled, so this counts requests in flight.
+  const inFlightAtKill = killed.toolCancels;
+  // The owner starts the same task again; the runtime may only use the handle from the killed run.
+  const restarted = await runtime.run(taskFor(scenario, workspace, { continueFrom: killed.handle }));
+  return await observation(runtime, [killed, restarted], workspace, {
+    killedState: killed.state,
+    reportedSuccess: killed.state === 'SUCCEEDED',
+    effectsAtKill,
+    inFlightAtKill,
+    effectsUnknownAfterKill: killed.effectsUnknown ?? null,
+    restartContinued: restarted.continued,
+    restartState: restarted.state,
+    totalEffects: workspace.effects.length,
+    // Zero tolerance: a logical mutation (same operation and input) applied more than once.
+    duplicateEffects: workspace.duplicateEffects,
+    // Executor invocations of a logical mutation beyond the first, whether or not they applied.
+    repeatedInvocations: workspace.repeatedInvocations,
+    restartOutcome: restarted.continued ? 'CONTINUED' : 'REPLAYED_FROM_START'
+  });
+}
+
 const SCENARIOS: Scenario[] = [
   {
     id: 'pr-review',
@@ -137,35 +164,8 @@ const SCENARIOS: Scenario[] = [
       });
     }
   },
-  {
-    id: 'killed-run-with-effects',
-    useCase: 'deliberately killed run with read and write effects',
-    async run(runtime) {
-      const scenario = spec('killed-run-with-effects');
-      const workspace = new FakeWorkspace(fixture.workspace);
-      const killed = await runtime.run(taskFor(scenario, workspace, { interrupt: { atToolRequest: scenario.killAtToolRequest!, mode: 'kill' } }));
-      const effectsAtKill = workspace.effects.length;
-      // Requests still pending at termination are cancelled, so this counts requests in flight.
-      const inFlightAtKill = killed.toolCancels;
-      // The owner starts the same task again; the runtime may only use the handle from the killed run.
-      const restarted = await runtime.run(taskFor(scenario, workspace, { continueFrom: killed.handle }));
-      return await observation(runtime, [killed, restarted], workspace, {
-        killedState: killed.state,
-        reportedSuccess: killed.state === 'SUCCEEDED',
-        effectsAtKill,
-        inFlightAtKill,
-        effectsUnknownAfterKill: killed.effectsUnknown ?? null,
-        restartContinued: restarted.continued,
-        restartState: restarted.state,
-        totalEffects: workspace.effects.length,
-        // Zero tolerance: a logical mutation (same operation and input) applied more than once.
-        duplicateEffects: workspace.duplicateEffects,
-        // Executor invocations of a logical mutation beyond the first, whether or not they applied.
-        repeatedInvocations: workspace.repeatedInvocations,
-        restartOutcome: restarted.continued ? 'CONTINUED' : 'REPLAYED_FROM_START'
-      });
-    }
-  },
+  { id: 'killed-run-with-effects', useCase: 'deliberately killed run with read and write effects', run: runtime => killedRun(runtime, 'killed-run-with-effects') },
+  { id: 'killed-mid-write', useCase: 'run killed with a whole-file write in flight', run: runtime => killedRun(runtime, 'killed-mid-write') },
   {
     id: 'parent-child-cleanup',
     useCase: 'parent-child cleanup',
@@ -284,7 +284,7 @@ function summarize(report: AgentRuntimeBenchmarkReport): string {
  * --------------------------------------------------------------------------------------------- */
 
 describe('agent runtime benchmark (offline, scripted faux model)', () => {
-  it('measures every registered runtime on the five use cases', async () => {
+  it('measures every registered runtime on the six scenarios', async () => {
     const baseline = await measureRuntime(piCodingBaseline);
     const byId = (report: RuntimeReport) => Object.fromEntries(report.scenarios.map((row) => [row.scenario, row.facts]));
 
@@ -318,6 +318,10 @@ describe('agent runtime benchmark (offline, scripted faux model)', () => {
       killedState: 'INTERRUPTED', reportedSuccess: false, inFlightAtKill: 1, effectsUnknownAfterKill: 1,
       restartContinued: true, restartOutcome: 'CONTINUED', duplicateEffects: 0, repeatedInvocations: 0, leftoverSessionRows: 0, leftoverEffectRows: 0
     });
+    expect(kept['killed-mid-write']).toMatchObject({
+      killedState: 'INTERRUPTED', reportedSuccess: false, effectsAtKill: 1, totalEffects: 1, inFlightAtKill: 1, effectsUnknownAfterKill: 1,
+      restartContinued: true, restartOutcome: 'CONTINUED', duplicateEffects: 0, repeatedInvocations: 0, leftoverSessionRows: 0, leftoverEffectRows: 0
+    });
     expect(kept['parent-child-cleanup']).toMatchObject({ agents: 3, cancelled: 3, toolCancelsEmitted: 3, toolEffects: 0, leftoverSessionRows: 0, leftoverEffectRows: 0 });
 
     const durable = await measureRuntime(piDurable);
@@ -336,6 +340,12 @@ describe('agent runtime benchmark (offline, scripted faux model)', () => {
     // answers it as a repeat and the executor never sees it a second time.
     expect(engine['killed-run-with-effects']).toMatchObject({
       killedState: 'INTERRUPTED', reportedSuccess: false, inFlightAtKill: 1, effectsUnknownAfterKill: 1,
+      restartContinued: true, restartOutcome: 'CONTINUED', duplicateEffects: 0, repeatedInvocations: 0,
+      leftoverSessionRows: 0, leftoverEffectRows: 0
+    });
+    // A whole-file write has no guard of its own: only the ledger keeps it from being applied twice.
+    expect(engine['killed-mid-write']).toMatchObject({
+      killedState: 'INTERRUPTED', reportedSuccess: false, effectsAtKill: 1, totalEffects: 1, inFlightAtKill: 1, effectsUnknownAfterKill: 1,
       restartContinued: true, restartOutcome: 'CONTINUED', duplicateEffects: 0, repeatedInvocations: 0,
       leftoverSessionRows: 0, leftoverEffectRows: 0
     });

@@ -55,6 +55,17 @@
         { "text": "Renamed and recorded." }
       ]
     },
+    "killed-mid-write": {
+      "title": "Run killed with a whole-file write in flight",
+      "prompt": "Record the greeting change in CHANGELOG.md.",
+      "tools": ["files_read", "files_write"],
+      "killAtToolRequest": 2,
+      "model": [
+        { "toolCalls": [{ "name": "files_read", "args": { "path": "src/greeting.ts" } }] },
+        { "toolCalls": [{ "name": "files_write", "args": { "path": "CHANGELOG.md", "content": "- greeting() now punctuates its output\n" } }] },
+        { "text": "Recorded." }
+      ]
+    },
     "parent-child-cleanup": {
       "title": "Parent and child agents cancelled together",
       "prompt": "Investigate the failing greeting test.",

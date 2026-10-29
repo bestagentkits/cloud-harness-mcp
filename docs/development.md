@@ -180,7 +180,7 @@ cleanup command on a shared Docker host.
 `npm run bench:agent-runtime` drives the real agent worker and Pi session
 in-process against a scripted model and an in-memory proxy tool executor, and
 prints p50/p95 timings, protocol bytes, tokens, tool effects, context size and
-session storage for five use cases. It measures the shipped one-shot runtime, the
+session storage for six scenarios. It measures the shipped one-shot runtime, the
 same worker with session persistence, and the opt-in durable engine, the last two
 behind the real runner state, continuation, effect-receipt and durable session
 store code. It needs no Docker, network or credentials, so it also
