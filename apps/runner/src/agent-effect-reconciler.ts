@@ -315,8 +315,8 @@ export function effectErrorText(code: AgentEffectErrorCode, message: string, ret
  */
 export function unknownEffectText(operation: AgentProxyOperation, reason: string): string {
   return effectErrorText('EFFECT_UNKNOWN',
-    `${operation} was interrupted and its outcome could not be determined: ${reason}. It was not issued again and may have `
-    + 'taken effect. Inspect the target with a read before any retry, and ask the owner if its state is still unclear.', false);
+    `${operation} did not complete with a known outcome: ${reason}. The runner will not issue it again on its own, and it may `
+    + 'have taken effect. Inspect the target with a read before any retry, and ask the owner if its state is still unclear.', false);
 }
 
 /** The result the model receives when an effect's success was established by observing the workspace. */

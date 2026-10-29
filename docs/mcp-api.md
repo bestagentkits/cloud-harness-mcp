@@ -256,9 +256,7 @@ agent keeps its session in a runner-side store shared by its whole
   agent, alongside the session fields above. `run.resumable` is `true` only
   when the ended run left unfinished work in the store, for example a run cut
   off by a runner crash; it is never `true` for a cancelled run, and a runner
-  that stops gracefully cancels its agents. A tool call whose executor request
-  fails while the run is still live is answered at once: a read with the
-  failure, a mutation with `EFFECT_UNKNOWN`, because it may have landed first.
+  that stops gracefully cancels its agents.
 - A continuation resumes that unfinished work before the new `prompt`. A tool
   call the run left in flight is asked of the runner again under its original
   request ID, so the effect ledger below settles it: the model gets the stored
@@ -296,9 +294,14 @@ the ledger and its fences are in
   whether or not Pi executed them, so a provider that repeats or omits IDs
   still gets one request ID per call, and a replay of the transcript derives
   the same IDs.
-- A first call's result is unchanged. The runner records the call before it
-  reaches the executor and records its outcome, with the result's hash, before
-  sending the result. An agent spawned with session persistence or on the
+- A first call's result is the executor's result. The runner records the call
+  before it reaches the executor and records its outcome, with the result's
+  hash, before sending the result. When the executor request itself fails, for
+  example because a cancel or a graceful runner stop aborted it, a read gets
+  the failure, but a mutation gets `EFFECT_UNKNOWN` and is recorded as unknown,
+  because it may have landed before the failure. A durable run cancelled at
+  that point can end before its engine stores that answer, so its transcript
+  shows the call as aborted instead. An agent spawned with session persistence or on the
   durable engine also stores the exact result text (its receipt) until its lineage holds
   `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` bytes; any other result is kept as a
   hash only and replays as if its receipt had been purged.

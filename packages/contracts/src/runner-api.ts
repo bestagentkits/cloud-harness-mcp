@@ -319,9 +319,10 @@ export const AGENT_PROXY_REPLAY_CLASS = {
 } as const satisfies Record<z.infer<typeof AgentProxyOperationSchema>, AgentProxyReplayClass>;
 
 /**
- * Error codes an agent's model can receive for a repeated proxy request whose original outcome
- * cannot be returned. They appear only in agent tool results, never in MCP tool results.
- * - `EFFECT_UNKNOWN`: the earlier mutation may or may not have been applied; the owner must inspect.
+ * Error codes an agent's model can receive for a proxy request whose outcome cannot be returned:
+ * a repeated request, or a mutation whose executor request failed after it was dispatched. They
+ * appear only in agent tool results, never in MCP tool results.
+ * - `EFFECT_UNKNOWN`: the mutation may or may not have been applied; the owner must inspect.
  * - `EFFECT_NOT_APPLIED`: the earlier mutation provably did not happen; a new tool call may retry it.
  * - `EFFECT_RECEIPT_UNAVAILABLE`: the mutation completed but its original result is no longer retained.
  */
