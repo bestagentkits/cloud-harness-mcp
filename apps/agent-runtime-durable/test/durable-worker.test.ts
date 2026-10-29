@@ -165,7 +165,7 @@ describe('durable worker', () => {
   });
 
   it('commits a slow stream\'s partial message only once the partial interval elapses', async () => {
-    // About 1.2 s of streaming at 10 tokens per second, past the default 500 ms interval.
+    // 16 tokens at 20 tokens per second stream for at least 800 ms, past the default 500 ms interval.
     const reply = 'The README describes a remote coding harness and its deployment.';
     const commits = async (tuning: { tokensPerSecond?: number; partialIntervalMs?: number }) => {
       const { worker, storageRequests, terminal } = await run(startRecord(), [fauxAssistantMessage(reply)], () => undefined, tuning);
@@ -174,7 +174,7 @@ describe('durable worker', () => {
       return storageRequests();
     };
     const fast = await commits({});
-    expect(await commits({ tokensPerSecond: 10 })).toBeGreaterThan(fast);
-    expect(await commits({ tokensPerSecond: 10, partialIntervalMs: 60_000 })).toBe(fast);
-  });
+    expect(await commits({ tokensPerSecond: 20 })).toBeGreaterThan(fast);
+    expect(await commits({ tokensPerSecond: 20, partialIntervalMs: 60_000 })).toBe(fast);
+  }, 20_000);
 });
