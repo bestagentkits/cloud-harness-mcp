@@ -1330,6 +1330,10 @@ and [`apps/runner/src/agent-runtime-adapter.ts`](../apps/runner/src/agent-runtim
   The flag is read at runner start: turning it off takes a runner restart,
   which stops running agents as any restart does (none resumes on its own),
   and afterwards new durable spawns and continuations are refused.
+- Resumed work reruns an interrupted tool call under its original request ID,
+  so the runner's effect ledger, not the engine, decides whether a mutation
+  already landed. Settling it as interrupted instead would lead the model to
+  issue it again under a new request ID that the ledger cannot match.
 - The store is bounded on disk by `AGENT_DURABLE_MAX_LINEAGE_BYTES`, and its
   size counts toward the same workspace, owner, and instance session byte
   budgets as persisted logs, measured at runner start and around every commit;

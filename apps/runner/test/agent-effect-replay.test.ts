@@ -540,6 +540,57 @@ describe('agent effect receipts and replay', () => {
     expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_after', kind: 'files_read' })).toBeUndefined();
   });
 
+  it('reports a mutation whose dispatch failed as unknown, so the model inspects before any retry', async () => {
+    const context = setup();
+    const { first, fs } = context;
+    fs.files.set('a.txt', 'a');
+    const agentId = await spawnRunning(context, first, 'dispatch-fail-key');
+    fs.interrupt('files_write', 'after').reject(new Error('runner stopping'));
+    first.launcher.emit(0, { type: 'tool_request', requestId: 'toolu_lost', toolCallId: 'toolu_lost', operation: 'files_write', input: { path: 'a.txt', content: 'b' } });
+    await vi.waitFor(() => expect(toolResults(first.launcher, 0, 'toolu_lost')).toHaveLength(1));
+    const [result] = toolResults(first.launcher, 0, 'toolu_lost');
+    expect(result!.isError).toBe(true);
+    expect(JSON.parse(result!.text)).toMatchObject({ ok: false, error: { code: 'EFFECT_UNKNOWN' } });
+    expect(result!.text).toContain('runner stopping');
+    expect(fs.files.get('a.txt')).toBe('b');
+    expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_lost', kind: 'files_write' })).toMatchObject({ state: 'UNKNOWN' });
+
+    // A read that fails has no outcome to settle and stays a plain failure.
+    fs.interrupt('files_read', 'before').reject(new Error('runner stopping'));
+    first.launcher.emit(0, { type: 'tool_request', requestId: 'toolu_read', toolCallId: 'toolu_read', operation: 'files_read', input: { path: 'a.txt' } });
+    await vi.waitFor(() => expect(toolResults(first.launcher, 0, 'toolu_read')).toHaveLength(1));
+    expect(JSON.parse(toolResults(first.launcher, 0, 'toolu_read')[0]!.text)).toMatchObject({ ok: false, message: 'runner stopping' });
+  });
+
+  it('tells the model a write in flight at a graceful runner stop may have landed, and a continuation never writes it again', async () => {
+    const context = setup();
+    const { first, fs } = context;
+    const input = { path: 'out.txt', content: 'v1' };
+    const agentId = await spawnRunning(context, first, 'graceful-stop-key');
+    await recordToolCall(context, first, 0, agentId, 'toolu_stop', [{ name: 'files_write', arguments: input }]);
+    fs.interrupt('files_write', 'after');
+    first.launcher.emit(0, { type: 'tool_request', requestId: 'toolu_stop', toolCallId: 'toolu_stop', operation: 'files_write', input });
+    await vi.waitFor(() => expect(fs.files.get('out.txt')).toBe('v1'));
+    await first.manager.stop();
+
+    // The stop aborts the call after its effect; the runtime is told it may have landed.
+    const [result] = toolResults(first.launcher, 0, 'toolu_stop');
+    expect(result!.isError).toBe(true);
+    expect(JSON.parse(result!.text)).toMatchObject({ ok: false, error: { code: 'EFFECT_UNKNOWN' } });
+    expect(JSON.parse(result!.text).message).toContain('Inspect the target with a read before any retry');
+    expect(first.repository.findAgent(context.record.ownerId, context.record.id, agentId)?.status).toBe('CANCELLED');
+    expect(first.repository.findEffect({ rootAgentId: agentId, requestId: 'toolu_stop', kind: 'files_write' })).toMatchObject({ state: 'UNKNOWN' });
+
+    // A continuation settles the call from the ledger instead of issuing it again.
+    const second = context.runner(true);
+    await second.manager.start();
+    await continueAgent(context, second, agentId, 'graceful-stop-continue');
+    const outcomes = await startOutcomes(second.launcher, 0);
+    expect(outcomes).toEqual([{ toolCallId: 'toolu_stop', outcome: 'APPLIED', isError: false, text: expect.any(String) }]);
+    expect(fs.executions('files_write')).toBe(1);
+    expect(fs.applied).toEqual(['files_write']);
+  });
+
   it('executes nothing for an agent past its TTL or in a closed workspace, and refuses to continue into a closed workspace', async () => {
     let now = Date.now();
     const context = setup(() => now);

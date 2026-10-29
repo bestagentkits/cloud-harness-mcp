@@ -1038,7 +1038,10 @@ export class AgentManager {
       // The executor may have applied the effect before failing, so its outcome is unknown.
       this.repository.completeEffect({ ...key, fence, expectedStates: ['DISPATCHED'], state: 'UNKNOWN', now: this.now() });
       if (!context.channel.isClosed) {
-        await context.channel.send(toolError(output.requestId, error instanceof Error ? error.message : 'proxy tool execution failed'));
+        const message = error instanceof Error ? error.message : 'proxy tool execution failed';
+        // A plain failure would read as "not applied" and invite a retry of a mutation that may have landed.
+        if (AGENT_PROXY_REPLAY_CLASS[output.operation] === 'read-safe') await context.channel.send(toolError(output.requestId, message));
+        else await this.sendToolText(context, output.requestId, redactLease(unknownEffectText(output.operation, message), context.lease), true);
       }
       return;
     }

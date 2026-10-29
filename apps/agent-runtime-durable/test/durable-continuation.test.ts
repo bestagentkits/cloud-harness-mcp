@@ -168,8 +168,15 @@ class FakeWorkspace {
       this.files.set(path, toolInput.content as string);
       this.applied.push(operation);
       result = ok('File written', { path, sha256: sha256(toolInput.content as string) });
+    } else if (operation === 'files_delete') {
+      this.files.delete(path);
+      this.applied.push(operation);
+      result = ok('Deleted', { path });
+    } else if (!this.files.has(path)) {
+      const message = `ENOENT: no such file or directory, open '${path}'`;
+      result = { ok: false, message, error: { code: 'NOT_FOUND', message, retryable: false }, truncated: false };
     } else {
-      const content = this.files.get(path) ?? '';
+      const content = this.files.get(path)!;
       result = ok(`Read ${content.length} bytes`, { path, content, sha256: sha256(content), bytesReturned: content.length, totalBytes: content.length, eof: true });
     }
     // Stalls after the effect, as a runner that dies before the result reaches the agent.
@@ -355,23 +362,27 @@ describe('durable agent runtime through the runner', () => {
     expect(bytes.includes(Buffer.from('bearer_'))).toBe(false);
   }, 60_000);
 
-  it('settles a write interrupted at the kill under its own request ID, so a model that would retry it never writes twice', async () => {
+  it.each([
+    { operation: 'files_write', args: { path: 'out.txt', content: 'new content' }, after: 'new content' },
+    { operation: 'files_delete', args: { path: 'out.txt' }, after: undefined }
+  ])('settles a $operation interrupted at the kill under its own request ID, so a model that would retry it never applies it twice', async ({ operation, args, after }) => {
     const context = setup();
     const { fs } = context;
+    fs.files.set('out.txt', 'old content');
     const first = context.runner({
       responses: [[
-        fauxAssistantMessage(fauxToolCall('files_write', { path: 'out.txt', content: 'new content' }, { id: 'call-write' }), { stopReason: 'toolUse' }),
+        fauxAssistantMessage(fauxToolCall(operation, args, { id: 'call-mutation' }), { stopReason: 'toolUse' }),
         fauxAssistantMessage('done before the crash')
       ]]
     });
-    fs.stallAfter('files_write');
-    const agentId = await spawn(context, first, 'durable-retry', { runtime: 'pi-durable' });
-    await vi.waitFor(() => expect(fs.applied).toEqual(['files_write']), { timeout: 20_000, interval: 25 });
-    const [writeRequest] = toolRequests(first.launcher.launches[0], 'files_write');
+    fs.stallAfter(operation);
+    const agentId = await spawn(context, first, `durable-retry-${operation}`, { runtime: 'pi-durable' });
+    await vi.waitFor(() => expect(fs.applied).toEqual([operation]), { timeout: 20_000, interval: 25 });
+    const [mutationRequest] = toolRequests(first.launcher.launches[0], operation);
     first.launcher.kill(0);
     await first.sessions.close();
 
-    // Like the benchmark's model, this one issues the write again whenever its result is an error.
+    // Like the benchmark's model, this one issues the mutation again whenever its result is an error.
     const seen: Array<{ isError: boolean; text: string }> = [];
     const retryOnError: FauxResponseStep = (modelContext) => {
       const last = modelContext.messages.at(-1);
@@ -379,25 +390,26 @@ describe('durable agent runtime through the runner', () => {
       const text = last.content.map((item) => item.type === 'text' ? item.text : '').join('');
       seen.push({ isError: last.isError, text });
       return last.isError
-        ? fauxAssistantMessage(fauxToolCall('files_write', { path: 'out.txt', content: 'new content' }, { id: `call-retry-${seen.length}` }), { stopReason: 'toolUse' })
-        : fauxAssistantMessage('the write landed');
+        ? fauxAssistantMessage(fauxToolCall(operation, args, { id: `call-retry-${seen.length}` }), { stopReason: 'toolUse' })
+        : fauxAssistantMessage('the mutation landed');
     };
     const second = context.runner({ responses: [[retryOnError, retryOnError, retryOnError]] });
     await second.manager.start();
-    const successorId = await spawn(context, second, 'durable-retry-continue', { continueFrom: agentId, prompt: 'finish up' });
+    const successorId = await spawn(context, second, `durable-retry-continue-${operation}`, { continueFrom: agentId, prompt: 'finish up' });
     expect(await settled(context, second, successorId)).toBe('SUCCEEDED');
 
     // The resumed call asks the runner under the request ID it was first issued with, and the
     // ledger settles it from the workspace instead of the executor applying it a second time.
-    const resumed = toolRequests(second.launcher.launches[0], 'files_write');
-    expect(resumed.map((request) => request.requestId)).toEqual([writeRequest!.requestId]);
-    expect(fs.applied).toEqual(['files_write']);
-    expect(fs.executions('files_write')).toBe(1);
+    const resumed = toolRequests(second.launcher.launches[0], operation);
+    expect(resumed.map((request) => request.requestId)).toEqual([mutationRequest!.requestId]);
+    expect(fs.applied).toEqual([operation]);
+    expect(fs.executions(operation)).toBe(1);
+    expect(fs.files.get('out.txt')).toBe(after);
     expect(seen).toHaveLength(1);
     expect(seen[0]!.isError).toBe(false);
     expect(JSON.parse(seen[0]!.text)).toMatchObject({ ok: true, reconciled: true, data: { path: 'out.txt' } });
-    expect(second.repository.findEffect({ rootAgentId: agentId, requestId: writeRequest!.requestId as string, kind: 'files_write' }))
-      .toMatchObject({ state: 'APPLIED' });
+    expect(second.repository.findEffect({ rootAgentId: agentId, requestId: mutationRequest!.requestId as string, kind: operation }))
+      .toMatchObject({ state: 'APPLIED', reconciled: true });
   }, 60_000);
 
   it('lets only one of two racing continuations claim the lineage', async () => {

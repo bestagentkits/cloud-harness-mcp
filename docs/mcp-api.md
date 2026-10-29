@@ -254,15 +254,17 @@ agent keeps its session in a runner-side store shared by its whole
   `INVALID_INPUT`.
 - `agent_status` and `agent_list` add `runtime: "pi-durable"` for a durable
   agent, alongside the session fields above. `run.resumable` is `true` only
-  when the ended run left unfinished work in the store, for example a run
-  interrupted by a runner restart; it is never `true` for a cancelled run.
+  when the ended run left unfinished work in the store, for example a run cut
+  off by a runner crash; it is never `true` for a cancelled run, and a runner
+  that stops gracefully cancels its agents.
 - A continuation resumes that unfinished work before the new `prompt`. A tool
-  call that may have changed the workspace when the run stopped is not run
-  again: the model sees it as interrupted rather than with the settled outcome
-  a coding continuation receives, and the effect ledger below still holds its
-  outcome. A continuation of a cancelled agent cancels the
-  unfinished work instead and runs only the new prompt. Nothing resumes
-  without an explicit `continueFrom`.
+  call the run left in flight is asked of the runner again under its original
+  request ID, so the effect ledger below settles it: the model gets the stored
+  or reconciled result, `EFFECT_NOT_APPLIED`, or `EFFECT_UNKNOWN`, a call that
+  never reached the executor runs now, and the runner never issues a
+  dispatched mutation again. A continuation of a
+  cancelled agent cancels the unfinished work instead and runs only the new
+  prompt. Nothing resumes without an explicit `continueFrom`.
 - Each run gets its own model lease and budget; work resumed from the
   predecessor counts against the continuation's caps. A run whose store
   outgrows the configured size cap, or whose writes would pass or have passed
@@ -292,9 +294,14 @@ the ledger and its fences are in
   whether or not Pi executed them, so a provider that repeats or omits IDs
   still gets one request ID per call, and a replay of the transcript derives
   the same IDs.
-- A first call's result is unchanged. The runner records the call before it
-  reaches the executor and records its outcome, with the result's hash, before
-  sending the result. An agent spawned with session persistence or on the
+- A first call's result is the executor's result. The runner records the call
+  before it reaches the executor and records its outcome, with the result's
+  hash, before sending the result. When the executor request itself fails, for
+  example because a cancel or a graceful runner stop aborted it, a read gets
+  the failure, but a mutation gets `EFFECT_UNKNOWN` and is recorded as unknown,
+  because it may have landed before the failure. A durable run cancelled at
+  that point can end before its engine stores that answer, so its transcript
+  shows the call as aborted instead. An agent spawned with session persistence or on the
   durable engine also stores the exact result text (its receipt) until its lineage holds
   `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` bytes; any other result is kept as a
   hash only and replays as if its receipt had been purged.
