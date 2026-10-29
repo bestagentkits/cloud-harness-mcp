@@ -260,12 +260,13 @@ agent keeps its session in a runner-side store shared by its whole
   fails while the run is still live is answered at once: a read with the
   failure, a mutation with `EFFECT_UNKNOWN`, because it may have landed first.
 - A continuation resumes that unfinished work before the new `prompt`. A tool
-  call that may have changed the workspace when the run stopped is not run
-  again: the model sees it as interrupted rather than with the settled outcome
-  a coding continuation receives, and the effect ledger below still holds its
-  outcome. A continuation of a cancelled agent cancels the
-  unfinished work instead and runs only the new prompt. Nothing resumes
-  without an explicit `continueFrom`.
+  call the run left in flight is asked of the runner again under its original
+  request ID, so the effect ledger below settles it: the model gets the stored
+  or reconciled result, `EFFECT_NOT_APPLIED`, or `EFFECT_UNKNOWN`, a call that
+  never reached the executor runs now, and the runner never issues a
+  dispatched mutation again. A continuation of a
+  cancelled agent cancels the unfinished work instead and runs only the new
+  prompt. Nothing resumes without an explicit `continueFrom`.
 - Each run gets its own model lease and budget; work resumed from the
   predecessor counts against the continuation's caps. A run whose store
   outgrows the configured size cap, or whose writes would pass or have passed
