@@ -37,6 +37,8 @@ const EXTENSION_NAME = 'cloud-harness-proxy';
 const SHUTDOWN_STEP_MS = 5_000;
 const MAX_PENDING_MESSAGES = 64;
 const MAX_PENDING_MESSAGE_BYTES = 512 * 1024;
+// Every progress commit is a storage round trip to the runner.
+const PROGRESS_INTERVAL_MS = 500;
 
 export interface DurableWorkerOptions {
   /** Model access; defaults to a catalog holding only the gateway provider. Tests pass a faux provider. */
@@ -44,6 +46,12 @@ export interface DurableWorkerOptions {
   /** Model to run; defaults to the start record's model on the gateway provider. */
   readonly model?: ModelRef;
   readonly storage?: RemoteStorageOptions;
+  /**
+   * Minimum time between commits of a streaming response's partial message; defaults to
+   * `PROGRESS_INTERVAL_MS`. How many land depends on how long the stream takes, so a caller that
+   * counts storage rows raises it past any stream to count only the commits every run makes.
+   */
+  readonly partialIntervalMs?: number;
 }
 
 function isLimitExceeded(text: string): boolean {
@@ -235,8 +243,7 @@ class DurableAgentWorker implements DurableWorker {
         stream: { timeoutMs: this.#start.limits.deadlineMs, maxRetries: 0, maxRetryDelayMs: 0 },
         retry: { enabled: false, maxRetries: 0, baseDelayMs: 0 },
         compaction: { enabled: false },
-        // Every progress commit is a storage round trip to the runner.
-        progress: { partialIntervalMs: 500, outputIntervalMs: 500 }
+        progress: { partialIntervalMs: this.#options.partialIntervalMs ?? PROGRESS_INTERVAL_MS, outputIntervalMs: PROGRESS_INTERVAL_MS }
       },
       onReport: () => undefined
     }, context);

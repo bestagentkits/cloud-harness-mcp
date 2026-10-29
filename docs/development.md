@@ -185,7 +185,12 @@ same worker with session persistence, and the opt-in durable engine, the last tw
 behind the real runner state, continuation, effect-receipt and durable session
 store code. It needs no Docker, network or credentials, so it also
 runs inside `npm test`. `AGENT_RUNTIME_BENCHMARK_REPS` sets the repetitions
-(default 20) and `AGENT_RUNTIME_BENCHMARK_OUT` writes the JSON report.
+(default 20; the test timeout grows with them) and `AGENT_RUNTIME_BENCHMARK_OUT`
+writes the JSON report. Every counter except byte and token sizes must match
+across repetitions, so the benchmark keeps wall-clock timing out of them: the
+durable engine's throttled partial-message commits, whose number depends on how
+long a stream takes, are disabled there, and storage rows count only the commits
+every run makes.
 
 The live mode is opt-in (`RUN_AGENT_RUNTIME_BENCHMARK=live`) and never runs by
 default. It spawns real agents through the MCP endpoint of a local Compose stack
