@@ -533,12 +533,12 @@ const terminalSize = (terminal) => (Number.isInteger(terminal?.cols) && Number.i
  * re-attaches a session, so visiting the tab never starts a shell by itself. Running terminals of this
  * workspace are offered for re-attach: output is replayed from the runner's bounded retention.
  */
-export function renderTerminalPanel({ workspaceId = '', terminals = [], now = Date.now() } = {}) {
+export function renderTerminalPanel({ workspaceId = '', terminals = [], now = Date.now(), idPrefix = '' } = {}) {
   const running = terminals.filter((terminal) => terminal?.status === 'running');
   const offers = running.length
     ? `<div id="terminal-reattach" class="terminal-reattach"><h3 id="terminal-reattach-heading">Running terminals</h3><p class="page-note">These shells are still running in this workspace. Re-attach to continue one; recent output is replayed.</p><ul class="record-list" aria-labelledby="terminal-reattach-heading">${running.map((terminal) => `<li><span><span class="mono">${escape(terminal.terminalId)}</span> <small>${escape(terminalSize(terminal))} · started ${escape(terminalAge(terminal.createdAt, now))} ago · idle expiry ${terminalTime(terminal.idleExpiresAt)}</small></span><button class="reattach-terminal" type="button" data-terminal-id="${escape(terminal.terminalId)}">Re-attach</button></li>`).join('')}</ul></div>`
     : '';
-  return `<section id="terminal-panel" class="panel terminal-panel" aria-labelledby="terminal-heading" data-workspace-id="${escape(workspaceId)}">`
+  const markup = `<section id="terminal-panel" class="panel terminal-panel" aria-labelledby="terminal-heading" data-workspace-id="${escape(workspaceId)}">`
     + '<h2 id="terminal-heading">Terminal</h2>'
     + `<p class="page-note">An interactive shell inside this workspace's executor, with the same limits as agent commands. Keys typed in the terminal go to the shell, including Tab and Escape; press <kbd>${escape(TERMINAL_RELEASE_SHORTCUT)}</kbd> to move focus out of the terminal. <a href="/dashboard/terminals">All terminals</a></p>`
     + '<div class="terminal-toolbar">'
@@ -548,6 +548,10 @@ export function renderTerminalPanel({ workspaceId = '', terminals = [], now = Da
     + offers
     + '<div id="terminal-surface" class="terminal-surface" role="group" aria-label="Terminal" hidden></div>'
     + '</section>';
+  if (!idPrefix) return markup;
+  if (!/^[A-Za-z0-9-]+$/.test(idPrefix)) throw new Error('Invalid terminal panel ID prefix');
+  return markup.replaceAll('id="terminal-', 'id="' + idPrefix + 'terminal-')
+    .replaceAll('aria-labelledby="terminal-', 'aria-labelledby="' + idPrefix + 'terminal-');
 }
 
 /**

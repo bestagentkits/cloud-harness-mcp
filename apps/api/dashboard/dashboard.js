@@ -965,6 +965,139 @@ export function initializeDashboard() {
   // The sidebar is registry output; index.html ships an empty container so a page
   // label cannot live in two places.
   insertRendered(document.querySelector('#sidebar-nav'), renderSidebarNavMarkup());
+
+  // The dock is outside route-owned content; hiding/detaching never terminates a shell.
+  // Each tab owns its own terminal pane, even when multiple tabs share one workspace.
+  const dock = document.querySelector('#global-terminal-dock');
+  const dockToggle = document.querySelector('#global-terminal-toggle');
+  const dockSelect = document.querySelector('#global-terminal-workspace');
+  const dockTabs = document.querySelector('#global-terminal-tabs');
+  const dockPanels = document.querySelector('#global-terminal-panes');
+  const dockDetach = document.querySelector('#global-terminal-detach');
+  const dockSessions = new Map();
+  let activeDockTab = '';
+  let nextDockTab = 0;
+  // Explicit signal prevents route navigation from aborting terminal polling and attach.
+  const persistentApi = (path, options = {}) => api(path, {
+    ...options, signal: options.signal ?? new globalThis.AbortController().signal
+  });
+
+  function renderDockTabs() {
+    dockTabs.replaceChildren();
+    for (const [tabId, entry] of dockSessions) {
+      const button = document.createElement('button');
+      button.id = 'global-terminal-tab-' + tabId;
+      button.type = 'button';
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-controls', entry.element.id);
+      button.setAttribute('aria-selected', String(tabId === activeDockTab));
+      button.textContent = entry.label;
+      button.addEventListener('click', () => selectDockTab(tabId));
+      dockTabs.append(button);
+      entry.element.hidden = tabId !== activeDockTab;
+    }
+    dockDetach.disabled = !dockSessions.has(activeDockTab);
+    if (dockSessions.size === 0) {
+      dockPanels.replaceChildren();
+      const note = document.createElement('p');
+      note.textContent = 'Choose an active workspace to open or re-attach a terminal. A dock terminal never runs on the host.';
+      dockPanels.append(note);
+    }
+  }
+
+  function selectDockTab(tabId) {
+    if (!dockSessions.has(tabId)) return;
+    activeDockTab = tabId;
+    renderDockTabs();
+  }
+
+  async function refreshDockWorkspaces() {
+    const previous = dockSelect.value;
+    try {
+      const result = await persistentApi('/workspaces');
+      const workspaces = (result.data?.workspaces ?? []).filter((w) => w.status === 'ACTIVE');
+      dockSelect.replaceChildren(new Option('Select active workspace', ''));
+      for (const workspace of workspaces) {
+        dockSelect.add(new Option(repositoryName(workspace.repositoryUrl) + ' · ' + workspace.workspaceId.slice(0, 12), workspace.workspaceId));
+      }
+      if (workspaces.some((w) => w.workspaceId === previous)) dockSelect.value = previous;
+      else if (workspaces.length) dockSelect.value = workspaces[0].workspaceId;
+    } catch (error) { showError(error); }
+  }
+
+  async function addDockTab(workspaceId) {
+    if (!/^ws_[A-Za-z0-9_-]{20,80}$/.test(workspaceId)) return;
+    const tabId = String(++nextDockTab);
+    const holder = document.createElement('div');
+    holder.id = 'global-terminal-pane-' + tabId;
+    holder.className = 'global-terminal-workspace';
+    holder.setAttribute('role', 'tabpanel');
+    holder.setAttribute('aria-labelledby', 'global-terminal-tab-' + tabId);
+    if (dockSessions.size === 0) dockPanels.replaceChildren(holder);
+    else dockPanels.append(holder);
+    const label = dockSelect.selectedOptions[0]?.textContent ?? workspaceId.slice(0, 12);
+    dockSessions.set(tabId, { element: holder, workspaceId, label, pane: undefined });
+    selectDockTab(tabId);
+    try {
+      const result = await persistentApi('/workspaces/' + encodeURIComponent(workspaceId) + '/terminals');
+      if (!dockSessions.has(tabId)) return; // detached during request
+      const terminals = Array.isArray(result.data?.terminals) ? result.data.terminals : [];
+      const idPrefix = 'dock-' + tabId + '-';
+      insertRendered(holder, renderTerminalPanel({ workspaceId, terminals, idPrefix }));
+      const pane = mountTerminalPane({
+        root: holder.querySelector('#' + idPrefix + 'terminal-panel'),
+        workspaceId, idPrefix, api: persistentApi, announce, onError: showError, terminals
+      });
+      if (!dockSessions.has(tabId)) { pane.dispose(); return; }
+      dockSessions.get(tabId).pane = pane;
+    } catch (error) {
+      if (dockSessions.has(tabId)) {
+        dockSessions.get(tabId).pane?.dispose();
+        dockSessions.delete(tabId);
+        holder.remove();
+        if (activeDockTab === tabId) activeDockTab = dockSessions.keys().next().value ?? '';
+        renderDockTabs();
+      }
+      showError(error);
+    }
+  }
+
+  function hideDock() {
+    dock.hidden = true;
+    dockToggle.setAttribute('aria-expanded', 'false');
+    dockToggle.focus();
+  }
+  function showDock() {
+    dock.hidden = false;
+    dockToggle.setAttribute('aria-expanded', 'true');
+    void refreshDockWorkspaces();
+  }
+  dockToggle.addEventListener('click', () => { if (dock.hidden) showDock(); else hideDock(); });
+  document.querySelector('#global-terminal-dismiss').addEventListener('click', hideDock);
+  document.querySelector('#global-terminal-refresh').addEventListener('click', () => { void refreshDockWorkspaces(); });
+  document.querySelector('#global-terminal-add').addEventListener('click', () => { void addDockTab(dockSelect.value); });
+  dockDetach.addEventListener('click', () => {
+    const entry = dockSessions.get(activeDockTab);
+    if (!entry) return;
+    entry.pane?.dispose();
+    entry.element.remove();
+    dockSessions.delete(activeDockTab);
+    activeDockTab = dockSessions.keys().next().value ?? '';
+    renderDockTabs();
+  });
+  const expandDock = document.querySelector('#global-terminal-fullscreen');
+  expandDock.addEventListener('click', () => {
+    const expanded = dock.classList.toggle('is-expanded');
+    expandDock.setAttribute('aria-pressed', String(expanded));
+    expandDock.textContent = expanded ? 'Restore' : 'Expand';
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.ctrlKey && event.shiftKey && event.code === 'Backquote' &&
+        !event.target?.closest?.('.terminal-surface')) {
+      event.preventDefault();
+      if (dock.hidden) showDock(); else hideDock();
+    }
+  });
   const dialog = document.querySelector('#confirm-dialog'); const menuButton = document.querySelector('#menu-button');
   const revealDialog = document.querySelector('#api-key-reveal-dialog');
   const confirm = createAsyncDialogController({ dialog, cancelButton: dialog.querySelector('[data-cancel]'), actionButton: document.querySelector('#confirm-action'), status: document.querySelector('#confirm-status'), reportError: showError });
