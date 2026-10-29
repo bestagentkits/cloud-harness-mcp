@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { appendFile, mkdtemp, rm, stat } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -252,6 +252,27 @@ describe('DurableSessionStore', () => {
     await expect(deleteDurableSessionFiles(dir, 'not-a-lineage')).rejects.toMatchObject({ code: 'INVALID_INPUT' });
   });
 
+  it('removes owner marks a crash left half-written, and only that lineage\'s', async () => {
+    const dir = await stateDir();
+    await mkdir(dir, { recursive: true });
+    const names = [
+      `${LINEAGE}.owner.json.4242.1767225600000.tmp`,
+      `${LINEAGE}.owner.json.7.1.tmp`,
+      `${SUCCESSOR}.owner.json.4242.1767225600000.tmp`,
+      `${LINEAGE}.owner.json.notes.tmp`,
+      `${LINEAGE}.owner.json.4242.1767225600000.tmp.bak`,
+      'unrelated.tmp'
+    ];
+    for (const name of names) await writeFile(join(dir, name), '{}');
+    await deleteDurableSessionFiles(dir, LINEAGE);
+    expect((await readdir(dir)).sort()).toEqual([
+      `${LINEAGE}.owner.json.4242.1767225600000.tmp.bak`,
+      `${LINEAGE}.owner.json.notes.tmp`,
+      `${SUCCESSOR}.owner.json.4242.1767225600000.tmp`,
+      'unrelated.tmp'
+    ].sort());
+  });
+
   it('reports unfinished tasks when a claim is sealed or an unclaimed lineage is inspected', async () => {
     const backend = fakeBackend();
     const store = await createStore({ loader: backend.loader });
@@ -312,9 +333,11 @@ describe('DurableSessionStore', () => {
     const claim = await store.claim(LINEAGE, OWNER, 1, 0);
     expect(await store.handle(claim, request('r-1', 'commit', [[]]))).toMatchObject({ ok: true });
     expect(store.limitExceeded(claim)).toBe(false);
+    expect(store.sizeCapExceeded(claim)).toBe(false);
     // This commit lands, but leaves the database over the cap.
     expect(await store.handle(claim, request('r-2', 'commit', [[]]))).toMatchObject({ ok: true });
     expect(store.limitExceeded(claim)).toBe(true);
+    expect(store.sizeCapExceeded(claim)).toBe(true);
     expect(await store.handle(claim, request('r-3', 'commit', [[]]))).toMatchObject({ ok: false, error: { code: 'limit', retryable: false } });
     expect(backend.commits).toBe(2);
     expect(await store.handle(claim, request('r-4', 'mintId'))).toMatchObject({ ok: true });
@@ -332,6 +355,7 @@ describe('DurableSessionStore', () => {
     const resumed = await after.claim(LINEAGE, SUCCESSOR, 2, 1);
     expect(await after.handle(resumed, request('r-2', 'commit', [[]]))).toMatchObject({ ok: false, error: { code: 'limit' } });
     expect(after.limitExceeded(resumed)).toBe(true);
+    expect(after.sizeCapExceeded(resumed)).toBe(true);
     expect(backend.commits).toBe(1);
   });
 
@@ -367,6 +391,8 @@ describe('DurableSessionStore', () => {
       ok: false, error: { code: 'limit', message: 'durable session would exceed the workspace agent session byte budget', retryable: false }
     });
     expect(store.limitExceeded(claim)).toBe(true);
+    // A passed budget frees up once other stores are deleted, so it is not the lasting size cap.
+    expect(store.sizeCapExceeded(claim)).toBe(false);
     full = false;
     expect(await store.handle(claim, request('r-3', 'commit', [[]]), budget)).toMatchObject({ ok: false, error: { code: 'limit' } });
     expect(backend.commits).toBe(1);
@@ -381,6 +407,7 @@ describe('DurableSessionStore', () => {
     const budget = (addedBytes: number) => addedBytes === 0 ? 'instance' as const : undefined;
     expect(await store.handle(claim, request('r-1', 'commit', [[]]), budget)).toMatchObject({ ok: true });
     expect(store.limitExceeded(claim)).toBe(true);
+    expect(store.sizeCapExceeded(claim)).toBe(false);
     expect(await store.handle(claim, request('r-2', 'commit', [[]]), budget)).toMatchObject({ ok: false, error: { code: 'limit' } });
     expect(backend.commits).toBe(1);
   });

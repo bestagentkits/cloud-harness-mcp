@@ -104,6 +104,11 @@ interface ClaimState extends DurableSessionClaim {
   lastCommit: { readonly id: string; readonly response: Promise<AgentStorageResponseRecord> } | undefined;
   /** Set once a commit left the database above its size cap or an aggregate budget; every later commit is refused. */
   limitExceeded: boolean;
+  /**
+   * Set once the database was measured above its size cap. Unlike an aggregate budget, which frees
+   * up when other stores go, the cap stays passed, so no continuation could commit to the store.
+   */
+  sizeCapExceeded: boolean;
   /** Set once the database's write-ahead log and shared-memory files were made private after a write. */
   sidecarsPrivate: boolean;
 }
@@ -219,6 +224,9 @@ function deactivate(lineage: LineageState): void {
   lineage.active = undefined;
 }
 
+/** The suffix writePrivateFile gives its temporary file: `.<pid>.<milliseconds>.tmp`. */
+const TEMPORARY_SUFFIX = /^\.\d{1,10}\.\d{1,16}\.tmp$/;
+
 /** Writes `content` to `path` through a private temporary file, so readers see the old or the new file only. */
 async function writePrivateFile(path: string, content: string): Promise<void> {
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
@@ -253,17 +261,38 @@ async function readOwnerMark(path: string): Promise<OwnerMark | undefined> {
 }
 
 /**
- * Removes one lineage's session files. Safe to call when they are absent, and independent of the
- * storage backend, so workspace cleanup can call it without loading durable support.
+ * The temporary owner-mark files of one lineage that a runner stopped between writing and renaming.
+ * Only names this store writes match, so nothing else in the state directory is touched.
+ */
+async function orphanedOwnerFiles(stateDir: string, lineageRootId: string): Promise<string[]> {
+  const prefix = `${lineageRootId}.owner.json`;
+  let names: string[];
+  try {
+    names = await readdir(stateDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  return names
+    .filter((name) => name.startsWith(prefix) && TEMPORARY_SUFFIX.test(name.slice(prefix.length)))
+    .map((name) => join(stateDir, name));
+}
+
+/**
+ * Removes one lineage's session files, including owner marks left half-written by a crash. Safe to
+ * call when they are absent, and independent of the storage backend, so workspace cleanup can call
+ * it without loading durable support.
  */
 export async function deleteDurableSessionFiles(stateDir: string, lineageRootId: string): Promise<void> {
   const paths = sessionPaths(stateDir, lineageRootId);
+  const temporaryOwners = await orphanedOwnerFiles(stateDir, lineageRootId);
   await Promise.all([
     rm(paths.database, { force: true }),
     rm(`${paths.database}-wal`, { force: true }),
     rm(`${paths.database}-shm`, { force: true }),
     rm(`${paths.database}-journal`, { force: true }),
-    rm(paths.owner, { force: true })
+    rm(paths.owner, { force: true }),
+    ...temporaryOwners.map((path) => rm(path, { force: true }))
   ]);
 }
 
@@ -370,7 +399,7 @@ export class DurableSessionStore {
       }
       const claim: ClaimState = {
         lineageRootId, agentId, epoch, generation, storage: lineage.storage,
-        responses: new Map(), rememberedBytes: 0, lastCommit: undefined, limitExceeded: false, sidecarsPrivate: false
+        responses: new Map(), rememberedBytes: 0, lastCommit: undefined, limitExceeded: false, sizeCapExceeded: false, sidecarsPrivate: false
       };
       if (lineage.active) forgetResponses(lineage.active);
       lineage.active = claim;
@@ -483,6 +512,11 @@ export class DurableSessionStore {
     return (claim as Partial<ClaimState>).limitExceeded === true;
   }
 
+  /** Whether this claim measured its lineage's database above the size cap, which no later run can undo. */
+  sizeCapExceeded(claim: DurableSessionClaim): boolean {
+    return (claim as Partial<ClaimState>).sizeCapExceeded === true;
+  }
+
   /** Closes the lineage's database, fences every claim and removes its files. */
   async delete(lineageRootId: string): Promise<void> {
     assertLineageId(lineageRootId);
@@ -537,6 +571,7 @@ export class DurableSessionStore {
     if (!argumentsMatch(storageMethod, args)) return failure(id, 'request', `invalid arguments for storage ${storageMethod}`);
     if (storageMethod === 'commit') {
       if (state.limitExceeded || await this.#measureLineage(claim.lineageRootId) > this.#maxLineageBytes) {
+        if (!state.limitExceeded) state.sizeCapExceeded = true;
         state.limitExceeded = true;
         return failure(id, 'limit', 'durable session exceeds its size limit');
       }
@@ -555,7 +590,10 @@ export class DurableSessionStore {
         state.sidecarsPrivate = true;
       }
       // Measured outside the lineage lock, so a lineage deleted meanwhile is not recorded again.
-      if (await this.#measureLineage(claim.lineageRootId, () => lineage.active === state) > this.#maxLineageBytes) state.limitExceeded = true;
+      if (await this.#measureLineage(claim.lineageRootId, () => lineage.active === state) > this.#maxLineageBytes) {
+        state.limitExceeded = true;
+        state.sizeCapExceeded = true;
+      }
       // A commit can grow the database by more than its request; once a budget is passed, the run ends.
       if (budget?.(0)) state.limitExceeded = true;
       return result;

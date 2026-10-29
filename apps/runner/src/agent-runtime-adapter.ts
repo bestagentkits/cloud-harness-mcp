@@ -30,8 +30,10 @@ export interface AgentRuntimeSession {
   /**
    * Runs one session-storage request of the run. `limitExceeded` reports that the run's session
    * store is over its size cap or an aggregate session budget, so the run must end as LIMIT_EXCEEDED.
+   * `sizeCapExceeded` reports the size cap alone: the store stays over it, so the session can never
+   * be continued, whereas a passed aggregate budget frees up once other stores are deleted.
    */
-  handleStorage(request: AgentStorageRequestRecord): Promise<{ response: AgentStorageResponseRecord; limitExceeded: boolean }>;
+  handleStorage(request: AgentStorageRequestRecord): Promise<{ response: AgentStorageResponseRecord; limitExceeded: boolean; sizeCapExceeded: boolean }>;
   /** Ends the run's hold on its session state and reports whether a continuation would resume work. */
   seal(): Promise<{ resumable: boolean }>;
 }
@@ -57,7 +59,8 @@ export const piCodingAdapter: AgentRuntimeAdapter = {
         // The coding runtime has no runner-side store; its channel never routes storage requests here.
         return {
           response: { type: 'storage_response', id: request.id, ok: false, error: { code: 'unavailable', message: 'this agent runtime has no session store', retryable: false } },
-          limitExceeded: false
+          limitExceeded: false,
+          sizeCapExceeded: false
         };
       },
       seal: async () => ({ resumable: false })
@@ -83,7 +86,7 @@ export function piDurableAdapter(store: DurableSessionStore): AgentRuntimeAdapte
         startRecord: (base) => ({ ...base, runtime: 'pi-durable', ...(resume ? { durableResume: resume } : {}) }),
         async handleStorage(request) {
           const response = await store.handle(claim, request, run.sessionBudget);
-          return { response, limitExceeded: store.limitExceeded(claim) };
+          return { response, limitExceeded: store.limitExceeded(claim), sizeCapExceeded: store.sizeCapExceeded(claim) };
         },
         async seal() {
           const { pendingTasks } = await store.seal(claim);

@@ -387,7 +387,7 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 ---
 
 ### 33. A durable agent ends `LIMIT_EXCEEDED` with `durable agent session exceeded its size limit or a session byte budget`
-**Cause:** A durable agent and every agent that continues it share one session store. It grew past `AGENT_DURABLE_MAX_LINEAGE_BYTES`, or the instance's stored sessions reached one of the `AGENT_*_SESSION_BYTES` budgets, which durable session stores count toward like persisted conversations. The runner ended the run and refuses further writes to that store. Continuing the same agent again hits the same limit.
+**Cause:** A durable agent and every agent that continues it share one session store. It grew past `AGENT_DURABLE_MAX_LINEAGE_BYTES`, or the instance's stored sessions reached one of the `AGENT_*_SESSION_BYTES` budgets, which durable session stores count toward like persisted conversations. The runner ended the run and refuses further writes to that store. Past `AGENT_DURABLE_MAX_LINEAGE_BYTES` the store stays over its cap, so `agent_status` reports `session.continuable: false` and `continueFrom` is refused with `CONFLICT`. Past a session byte budget the agent stays continuable, but a continuation hits the same limit until the budget frees up.
 
 **Fix:**
 1. Start a new agent without `continueFrom`, and give it a summary of the earlier work.

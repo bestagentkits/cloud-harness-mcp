@@ -719,10 +719,19 @@ export class AgentManager {
   /**
    * Runs one durable-runtime storage request against the run's claim. A store over its size cap or
    * an aggregate session byte budget ends the run as LIMIT_EXCEEDED; the cancel is not awaited, because finishing the run may need
-   * further storage requests on this same chain.
+   * further storage requests on this same chain. A store over its size cap also leaves the session
+   * not continuable, since a continuation would fail at its first commit to the same store.
    */
   private async onStorage(context: RuntimeContext, request: AgentStorageRequestRecord): Promise<void> {
-    const { response, limitExceeded } = await context.session.handleStorage(request);
+    const { response, limitExceeded, sizeCapExceeded } = await context.session.handleStorage(request);
+    // The session is discontinued before the worker hears back, while it is surely still active.
+    if (sizeCapExceeded) {
+      try {
+        this.repository.discontinueSession(context.record.id, this.now());
+      } catch {
+        // A continuation then fails at its first commit instead; the run still ends.
+      }
+    }
     if (!context.channel.isClosed) await context.channel.send(response);
     if (limitExceeded) void this.cancelOne(context.record, 'durable agent session exceeded its size limit or a session byte budget', 'LIMIT_EXCEEDED').catch(() => undefined);
   }
@@ -1656,8 +1665,9 @@ export class AgentManager {
         bytes: session.bytes
       },
       // A run is never resumed in place; a sealed session is continued by a new agent. Only a
-      // durable agent can leave unfinished work that the continuation resumes.
-      run: { resumable: record.runtime === 'pi-durable' && session.runResumable },
+      // durable agent can leave unfinished work that the continuation resumes, and only while the
+      // session can still be continued.
+      run: { resumable: record.runtime === 'pi-durable' && session.runResumable && session.continuable },
       continuedFrom: session.continuedFrom
     };
   }
