@@ -3,7 +3,7 @@
  *
  * The offline suite always runs. It drives the real AgentWorker, the real proxy tool broker and a
  * real Pi session in-process against a scripted pi-ai faux model, and measures each registered
- * runtime on six use cases with identical scripts, limits and tool grants:
+ * runtime on six scenarios with identical scripts, limits and tool grants:
  * - `pi-coding`: the shipped runtime; the benchmark answers proxy tools in place of the runner.
  * - `pi-coding+persisted`: the same worker with session persistence behind the real runner
  *   (`AgentManager`, `AgentStateRepository`, effect ledger) and an in-process launcher.
@@ -284,7 +284,7 @@ function summarize(report: AgentRuntimeBenchmarkReport): string {
  * --------------------------------------------------------------------------------------------- */
 
 describe('agent runtime benchmark (offline, scripted faux model)', () => {
-  it('measures every registered runtime on the six use cases', async () => {
+  it('measures every registered runtime on the six scenarios', async () => {
     const baseline = await measureRuntime(piCodingBaseline);
     const byId = (report: RuntimeReport) => Object.fromEntries(report.scenarios.map((row) => [row.scenario, row.facts]));
 
@@ -319,7 +319,7 @@ describe('agent runtime benchmark (offline, scripted faux model)', () => {
       restartContinued: true, restartOutcome: 'CONTINUED', duplicateEffects: 0, repeatedInvocations: 0, leftoverSessionRows: 0, leftoverEffectRows: 0
     });
     expect(kept['killed-mid-write']).toMatchObject({
-      killedState: 'INTERRUPTED', reportedSuccess: false, inFlightAtKill: 1, effectsUnknownAfterKill: 1,
+      killedState: 'INTERRUPTED', reportedSuccess: false, effectsAtKill: 1, totalEffects: 1, inFlightAtKill: 1, effectsUnknownAfterKill: 1,
       restartContinued: true, restartOutcome: 'CONTINUED', duplicateEffects: 0, repeatedInvocations: 0, leftoverSessionRows: 0, leftoverEffectRows: 0
     });
     expect(kept['parent-child-cleanup']).toMatchObject({ agents: 3, cancelled: 3, toolCancelsEmitted: 3, toolEffects: 0, leftoverSessionRows: 0, leftoverEffectRows: 0 });
@@ -345,7 +345,7 @@ describe('agent runtime benchmark (offline, scripted faux model)', () => {
     });
     // A whole-file write has no guard of its own: only the ledger keeps it from being applied twice.
     expect(engine['killed-mid-write']).toMatchObject({
-      killedState: 'INTERRUPTED', reportedSuccess: false, inFlightAtKill: 1, effectsUnknownAfterKill: 1,
+      killedState: 'INTERRUPTED', reportedSuccess: false, effectsAtKill: 1, totalEffects: 1, inFlightAtKill: 1, effectsUnknownAfterKill: 1,
       restartContinued: true, restartOutcome: 'CONTINUED', duplicateEffects: 0, repeatedInvocations: 0,
       leftoverSessionRows: 0, leftoverEffectRows: 0
     });
