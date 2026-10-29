@@ -27,6 +27,9 @@ import { piCodingPersisted } from './agent-runtime/pi-coding-persisted.js';
 import { piDurable } from './agent-runtime/pi-durable.js';
 
 const REPETITIONS = Math.max(1, Number.parseInt(process.env.AGENT_RUNTIME_BENCHMARK_REPS ?? '20', 10) || 20);
+// A default run took about 485 s on a loaded developer machine, close to a fixed 600 s budget, so
+// the budget grows with the repetitions: about twice that run's 24 s each, never below 600 s.
+const OFFLINE_TIMEOUT_MS = Math.max(600_000, REPETITIONS * 45_000);
 
 /* ------------------------------------------------------------------------------------------------
  * Scenarios (runtime-agnostic)
@@ -347,7 +350,7 @@ describe('agent runtime benchmark (offline, scripted faux model)', () => {
       writeFileSync(process.env.AGENT_RUNTIME_BENCHMARK_OUT, `${JSON.stringify(report, null, 2)}\n`);
     }
     console.log(summarize(report));
-  }, 600_000);
+  }, OFFLINE_TIMEOUT_MS);
 });
 
 /* ------------------------------------------------------------------------------------------------
