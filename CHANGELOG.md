@@ -1,3 +1,16 @@
+# [0.66.0-beta.43](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.42...v0.66.0-beta.43) (2026-10-29)
+
+
+### Bug Fixes
+
+* **model-gateway,runner:** refuse only the special-purpose /24s in 192.0/16 and 198.51/16 ([8de2bc4](https://github.com/bestagentkits/cloud-harness-mcp/commit/8de2bc4a5e3259cc1cef509053c5eb46b1365288)), closes [#617](https://github.com/bestagentkits/cloud-harness-mcp/issues/617)
+* **runner:** refuse repository hosts that resolve to IPv4-mapped private addresses ([7b74443](https://github.com/bestagentkits/cloud-harness-mcp/commit/7b74443ea665c60a55f245c249905b5495942238)), closes [#616](https://github.com/bestagentkits/cloud-harness-mcp/issues/616)
+
+
+### Features
+
+* **claude-directory:** add scoped self-hosted Cloud Harness plugin ([1428437](https://github.com/bestagentkits/cloud-harness-mcp/commit/142843738d32a37ef974d11bfba6c10840d7423b)), closes [#613](https://github.com/bestagentkits/cloud-harness-mcp/issues/613)
+
 # [0.66.0-beta.42](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.41...v0.66.0-beta.42) (2026-10-26)
 
 
