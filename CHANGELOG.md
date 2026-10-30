@@ -1,3 +1,10 @@
+# [0.66.0-beta.46](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.45...v0.66.0-beta.46) (2026-10-30)
+
+
+### Features
+
+* **api:** add agentkit.best sign-in lane ([6c82ce7](https://github.com/bestagentkits/cloud-harness-mcp/commit/6c82ce767f5dfd7095b71b79352df5ac59f91f57))
+
 # [0.66.0-beta.45](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.44...v0.66.0-beta.45) (2026-10-29)
 
 
