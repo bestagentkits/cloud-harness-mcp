@@ -200,7 +200,6 @@ Wait for an operation to reach a terminal state with a server timeout.
 {"operationId":"op_aaaaaaaaaaaaaaaaaaaa","timeoutMs":30000}
 -->
 
-
 ## Subagents (Pi coding-agent)
 
 <!-- cloudharness-tool:agent_spawn -->
@@ -208,8 +207,10 @@ Wait for an operation to reach a terminal state with a server timeout.
 
 Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.
 
-- Required: `prompt`, `idempotencyKey`, `profileId`, `proxyOperations`.
-- Optional: `workspaceId`, `parentAgentId`, `ttlSeconds`, `maxOutputBytes`, `maxInputTokens`, `maxOutputTokens`, `maxCostMicros`, `repositoryContext`.
+- Required: `prompt`, `idempotencyKey`, `proxyOperations`, and `profileId` unless `continueFrom` is set.
+- Optional: `workspaceId`, `parentAgentId`, `ttlSeconds`, `maxOutputBytes`, `maxInputTokens`, `maxOutputTokens`, `maxCostMicros`, `repositoryContext`, `continueFrom`, `runtime`.
+- `continueFrom` starts a new agent (own ID, container, budget) that replays an ended agent's conversation before your `prompt`, when its `agent_status` reports `session.continuable`; it never resumes the old run in place. `LIMIT_EXCEEDED` on a continuation means the copied log would not fit the start record or the operator's session byte budget (durable session stores count toward it too); start a fresh agent instead. `runtime: "pi-durable"` runs the agent on the opt-in durable engine (`NOT_SUPPORTED` when the owner has not enabled it; omit `runtime` otherwise). A continuation keeps its predecessor's engine: omit `runtime` (another one is `INVALID_INPUT`). When a durable agent's `agent_status` reports `run.resumable: true` (for example after a runner crash), a `continueFrom` resumes its unfinished work before your `prompt` without redoing edits that may already have landed; a cancelled agent's leftover work is cancelled, not resumed. A durable agent whose session store is still over its cap when the run ends (it normally ends `LIMIT_EXCEEDED`) reports `session.continuable: false` and `run.resumable: false`; start a fresh agent. Nothing resumes without `continueFrom`.
+- A continuation runs on the earlier agent's profile: omit `profileId` (another one is `INVALID_INPUT`). Each agent is continued once (`CONFLICT` names the successor); `NOT_SUPPORTED` means persistence is off, so restate the context in `prompt`. A continuation never repeats earlier workspace edits: a repeated tool call gets the recorded result, and a call the earlier run left unanswered is closed with its settled outcome (applied, rejected, `EFFECT_NOT_APPLIED`, or `EFFECT_UNKNOWN`) instead of a bare interruption. The exception is a cancelled durable agent: its unfinished calls are aborted without an outcome, so check the workspace before continuing it. If the agent reports `EFFECT_UNKNOWN`, inspect the named paths before asking it to redo the work.
 - The agent's first message automatically carries the workspace's applicable
   repository guidance (for example `AGENTS.md`, `REVIEW.md`, `DESIGN.md`) in a
   delimited untrusted block before your verbatim task, so do not paste those
@@ -241,7 +242,6 @@ Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container
 Read the execution state, budgets, and terminal summary of one coding agent.
 
 - Required: exactly one of `agentId` or `idempotencyKey`. Optional: `workspaceId`.
-
 <!-- cloudharness-example:agent_status
 {"agentId":"agent_aaaaaaaaaaaaaaaaaaaa"}
 -->

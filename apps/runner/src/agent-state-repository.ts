@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   AgentProxyOperationSchema,
@@ -7,11 +8,16 @@ import {
   type AgentMessageDeliveryState,
   type AgentMessageMode,
   type AgentProxyOperation,
+  type AgentProxyReplayClass,
+  type AgentRuntimeKind,
   type AgentStatus,
   type AgentUsage,
   type RunnerAgentLimits
 } from '@cloud-harness/contracts';
 import { emitAgentTerminalEvent, withEventSavepoint } from './event-outbox.js';
+import type { EffectPreEntry } from './agent-effect-reconciler.js';
+
+const EFFECT_PRE_ENTRIES: ReadonlySet<string> = new Set<EffectPreEntry>(['file', 'directory', 'absent']);
 
 const ACTIVE_STATUSES: AgentStatus[] = ['SPAWNING', 'RUNNING', 'CANCELLING'];
 const TERMINAL_STATUSES: AgentStatus[] = ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED'];
@@ -26,6 +32,12 @@ const STATUS_TRANSITIONS: Record<AgentStatus, readonly AgentStatus[]> = {
   LIMIT_EXCEEDED: [],
   INTERRUPTED: []
 };
+
+/** The on-disk sizes of the durable runtime's per-lineage session databases, as the runner last measured them. */
+export interface DurableStorageUsage {
+  lineageBytes(lineageRootId: string): number;
+  totalBytes(): number;
+}
 
 export type AgentRecord = {
   id: string;
@@ -55,6 +67,8 @@ export type AgentRecord = {
   terminalReason: string | null;
   cleanupReason: string | null;
   outcomeUnknown: boolean;
+  /** The agent engine; a continuation always keeps its predecessor's. */
+  runtime: AgentRuntimeKind;
 };
 
 export type AgentTombstone = {
@@ -89,16 +103,49 @@ export type AgentEffectState = 'INTENT' | 'DISPATCHED' | 'APPLIED' | 'REJECTED' 
 export type AgentEffectRecord = {
   ownerId: string;
   workspaceId: string;
+  /** The agent that first reserved the effect; a continuation may later reconcile it. */
   agentId: string;
   agentGeneration: number;
   runnerEpoch: number;
+  /** The lineage root: the first agent of a chain of continuations, or the agent itself. */
+  rootAgentId: string;
   requestId: string;
   kind: string;
   payloadHash: string;
   state: AgentEffectState;
+  replayClass: AgentProxyReplayClass | null;
+  preImageSha256: string | null;
+  intendedSha256: string | null;
+  /** What a delete's or mkdir's path, or a move's source, was just before dispatch, when observed. */
+  preEntry: EffectPreEntry | null;
+  /** The exact tool-result text the model received, while the receipt is retained. */
+  resultJson: string | null;
+  resultSha256: string | null;
+  /** The stored result was synthesized from observed workspace state after an unknown outcome. */
+  reconciled: boolean;
+  executorGeneration: number | null;
+  workspaceGeneration: number | null;
+  retainUntil: number | null;
   createdAt: number;
   updatedAt: number;
 };
+
+/** Identifies the agent writing effect state; every write checks that it is still the live owner. */
+export type AgentEffectFence = {
+  ownerId: string;
+  workspaceId: string;
+  agentId: string;
+  agentGeneration: number;
+  runnerEpoch: number;
+};
+
+/** The key of an effect within an agent lineage. */
+export type AgentEffectKey = { rootAgentId: string; requestId: string; kind: string };
+
+/** Mirrors the agent protocol tool-result text bound; a receipt never holds more than the model received. */
+export const MAX_AGENT_EFFECT_RECEIPT_BYTES = 2 * 1024 * 1024;
+const EFFECT_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 export type AgentLogEvent = {
   cursor: string;
@@ -145,8 +192,22 @@ export type AgentSpawnReservation = {
   networkName: string;
   gatewayLeaseId: string;
   runtimeEpoch?: number;
+  /** Omitted records the default coding runtime. */
+  runtime?: AgentRuntimeKind;
   now: number;
   expiresAt: number;
+  /**
+   * Present when the instance persists agent sessions, so the decision is recorded at spawn. With
+   * `continuedFrom`, the new session starts as a copy of that predecessor's sealed log.
+   */
+  session?: {
+    continuedFrom?: string;
+    /**
+     * Runs inside the spawn transaction with the verified predecessor and the size of its log,
+     * before any spend admission.
+     */
+    admitContinuation?: (predecessor: AgentRecord, log: { bytes: number; messageCount: number }) => void;
+  };
   /**
    * Runs inside the spawn transaction after the replay, capacity, and TTL checks
    * and before the agent row is written, so a replay never calls it and
@@ -167,10 +228,70 @@ export type AgentStatusTransition = {
   terminalReason?: string | null;
   cleanupReason?: string | null;
   outcomeUnknown?: boolean;
+  /** For a terminal status: whether the agent's durable session still held unfinished tasks. */
+  runResumable?: boolean;
 };
 
 
 export type AgentUsageDelta = Partial<AgentUsage>;
+
+export type AgentSessionState = 'ACTIVE' | 'SEALED' | 'PURGED';
+
+export type AgentSessionRecord = {
+  agentId: string;
+  ownerId: string;
+  workspaceId: string;
+  workspaceGeneration: number;
+  rootAgentId: string;
+  continuedFrom: string | null;
+  messageCount: number;
+  bytes: number;
+  headSha256: string;
+  state: AgentSessionState;
+  continuable: boolean;
+  retainUntil: number | null;
+  /** A durable agent ended with unfinished tasks that a continuation would resume. */
+  runResumable: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** The outcome of offering one worker `session_message` record to the store. */
+export type AgentSessionAppendResult =
+  /** Stored as the next message of the log. */
+  | 'APPENDED'
+  /** The writer lost its lifecycle fence (stale epoch or generation, or the agent is not running). */
+  | 'FENCED'
+  /** The agent records no session, or its log already stopped being continuable. */
+  | 'IGNORED'
+  /** The message broke the log (a gap, an invalid role, or the bounds); the log is no longer continuable. */
+  | 'DISCONTINUED';
+
+export type AgentSessionAppend = {
+  ownerId: string;
+  workspaceId: string;
+  agentId: string;
+  generation: number;
+  runnerEpoch: number;
+  seq: number;
+  message: unknown;
+  now: number;
+};
+
+/** The chain head of an empty session log. */
+export const AGENT_SESSION_GENESIS_SHA256 = '0'.repeat(64);
+const SESSION_ROLES = new Set(['user', 'assistant', 'toolResult']);
+/** Every terminal status leaves a sealed log continuable; only an incomplete or oversized log is not. */
+const CONTINUABLE_TERMINAL_STATUSES: readonly AgentStatus[] = ['SUCCEEDED', 'FAILED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED', 'CANCELLED'];
+
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/** Each message extends the chain: head(n) = sha256(head(n-1) + sha256(message JSON)). */
+export function chainAgentSessionHead(previousHead: string, messageSha256: string): string {
+  return sha256Hex(`${previousHead}${messageSha256}`);
+}
 
 export type CleanupRetryRecord = {
   ownerId: string;
@@ -221,6 +342,7 @@ type AgentRow = {
   terminal_reason: string | null;
   cleanup_reason: string | null;
   outcome_unknown: number;
+  runtime: AgentRuntimeKind;
 };
 
 type MessageRow = {
@@ -306,7 +428,8 @@ function agentFromRow(row: AgentRow): AgentRecord {
     expiresAt: row.expires_at,
     terminalReason: row.terminal_reason,
     cleanupReason: row.cleanup_reason,
-    outcomeUnknown: row.outcome_unknown === 1
+    outcomeUnknown: row.outcome_unknown === 1,
+    runtime: row.runtime ?? 'pi-coding'
   };
 }
 
@@ -354,6 +477,102 @@ function cleanupRetryFromRow(row: CleanupRetryRow): CleanupRetryRecord {
   };
 }
 
+type SessionRow = {
+  agent_id: string;
+  owner_id: string;
+  workspace_id: string;
+  workspace_generation: number;
+  root_agent_id: string;
+  continued_from: string | null;
+  message_count: number;
+  bytes: number;
+  head_sha256: string;
+  state: AgentSessionState;
+  continuable: number;
+  retain_until: number | null;
+  run_resumable: number;
+  created_at: number;
+  updated_at: number;
+};
+
+function sessionFromRow(row: SessionRow): AgentSessionRecord {
+  return {
+    agentId: row.agent_id,
+    ownerId: row.owner_id,
+    workspaceId: row.workspace_id,
+    workspaceGeneration: row.workspace_generation,
+    rootAgentId: row.root_agent_id,
+    continuedFrom: row.continued_from,
+    messageCount: row.message_count,
+    bytes: row.bytes,
+    headSha256: row.head_sha256,
+    state: row.state,
+    continuable: row.continuable === 1,
+    retainUntil: row.retain_until,
+    runResumable: row.run_resumable === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+type EffectRow = {
+  owner_id: string;
+  workspace_id: string;
+  agent_id: string;
+  agent_generation: number;
+  runner_epoch: number;
+  root_agent_id: string | null;
+  request_id: string;
+  kind: string;
+  payload_hash: string;
+  state: AgentEffectState;
+  replay_class: AgentProxyReplayClass | null;
+  pre_image_sha256: string | null;
+  intended_sha256: string | null;
+  pre_entry: EffectPreEntry | null;
+  result_json: string | null;
+  result_sha256: string | null;
+  result_reconciled: number;
+  executor_generation: number | null;
+  workspace_generation: number | null;
+  retain_until: number | null;
+  created_at: number;
+  updated_at: number;
+};
+
+function effectFromRow(row: EffectRow): AgentEffectRecord {
+  return {
+    ownerId: row.owner_id,
+    workspaceId: row.workspace_id,
+    agentId: row.agent_id,
+    agentGeneration: row.agent_generation,
+    runnerEpoch: row.runner_epoch,
+    rootAgentId: row.root_agent_id ?? row.agent_id,
+    requestId: row.request_id,
+    kind: row.kind,
+    payloadHash: row.payload_hash,
+    state: row.state,
+    replayClass: row.replay_class,
+    preImageSha256: row.pre_image_sha256,
+    intendedSha256: row.intended_sha256,
+    preEntry: row.pre_entry ?? null,
+    resultJson: row.result_json,
+    resultSha256: row.result_sha256,
+    reconciled: row.result_reconciled === 1,
+    executorGeneration: row.executor_generation,
+    workspaceGeneration: row.workspace_generation,
+    retainUntil: row.retain_until,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function optionalSha256(value: string | null | undefined, name: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (!SHA256_HEX.test(value)) throw new HarnessError('INVALID_INPUT', `${name} must be a lowercase SHA-256 digest`);
+  return value;
+}
+
 function immediate<T>(database: DatabaseSync, action: () => T): T {
   database.exec('BEGIN IMMEDIATE');
   try {
@@ -386,11 +605,19 @@ function redactLogContent(content: string): string {
 }
 
 export class AgentStateRepository {
+  /** Sizes of the runner-side durable session stores; without it they count toward no budget. */
+  private durableStorage?: DurableStorageUsage | undefined;
+
   constructor(
     private readonly database: DatabaseSync,
     private readonly limits: RunnerAgentLimits,
     private readonly instanceId?: string
   ) {}
+
+  /** Counts the durable runtime's lineage databases toward the aggregate session byte budgets. */
+  countDurableStorage(usage: DurableStorageUsage): void {
+    this.durableStorage = usage;
+  }
 
   bumpEpoch(instanceId: string, now: number): number {
     return immediate(this.database, () => {
@@ -576,6 +803,28 @@ export class AgentStateRepository {
       if (new Set(proxyOperations).size !== proxyOperations.length) {
         throw new HarnessError('INVALID_INPUT', 'agent proxy operations must be unique');
       }
+      // Rechecked inside the spawn transaction, so two concurrent continuations cannot both win.
+      const predecessor = input.session?.continuedFrom === undefined
+        ? undefined
+        : this.requireContinuable(input.ownerId, input.workspaceId, input.workspaceGeneration, input.session.continuedFrom);
+      if (predecessor) {
+        if (predecessor.predecessor.runtime !== (input.runtime ?? 'pi-coding')) {
+          throw new HarnessError('INVALID_INPUT', 'a continuation runs on the agent engine of the agent it continues; omit runtime or pass that engine');
+        }
+        // A corrupted log is refused here rather than copied into the new agent's session.
+        const log = this.loadSessionLog(predecessor.predecessor.id, predecessor.predecessor.generation);
+        input.session?.admitContinuation?.(predecessor.predecessor, { bytes: log.bytes, messageCount: log.messages.length });
+        // The successor starts with a full copy of the log, so the copy counts against the aggregate budgets.
+        const exceeded = this.exceededSessionBudget(input.ownerId, input.workspaceId, log.bytes);
+        if (exceeded) {
+          throw new HarnessError(
+            'LIMIT_EXCEEDED',
+            `persisted agent sessions would exceed the ${exceeded} session byte budget; start a fresh agent, or wait until retention or a workspace close frees stored sessions`,
+            429,
+            false
+          );
+        }
+      }
       input.admit?.();
 
       this.database.prepare(`INSERT INTO agents
@@ -583,13 +832,14 @@ export class AgentStateRepository {
          idempotency_key, payload_hash, prompt_hash, profile_id, proxy_operations_json,
          max_ttl_seconds, max_output_bytes, max_input_tokens, max_output_tokens, max_cost_micros,
          container_name, network_name, gateway_lease_id, status, generation, runner_epoch, spawn_admission_open, message_admission_open,
-         created_at, started_at, terminal_at, expires_at, terminal_reason, cleanup_reason, outcome_unknown)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SPAWNING', 1, ?, 1, 1, ?, NULL, NULL, ?, NULL, NULL, 0)`)
+         created_at, started_at, terminal_at, expires_at, terminal_reason, cleanup_reason, outcome_unknown, runtime)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SPAWNING', 1, ?, 1, 1, ?, NULL, NULL, ?, NULL, NULL, 0, ?)`)
         .run(
           input.id, input.ownerId, input.workspaceId, input.workspaceGeneration, input.parentAgentId ?? null, parentGeneration,
           input.idempotencyKey, input.payloadHash, input.promptHash, input.profileId, JSON.stringify(proxyOperations),
           input.budget.ttlSeconds, input.budget.maxOutputBytes, input.budget.maxInputTokens, input.budget.maxOutputTokens,
-          input.budget.maxCostMicros, input.containerName, input.networkName, input.gatewayLeaseId, input.runtimeEpoch ?? 1, input.now, input.expiresAt
+          input.budget.maxCostMicros, input.containerName, input.networkName, input.gatewayLeaseId, input.runtimeEpoch ?? 1, input.now, input.expiresAt,
+          input.runtime ?? 'pi-coding'
         );
       this.database.prepare(`INSERT INTO agent_usage
         (owner_id, workspace_id, agent_id, agent_generation) VALUES (?, ?, ?, 1)`)
@@ -600,6 +850,7 @@ export class AgentStateRepository {
       this.database.prepare(`UPDATE agent_workspace_admission SET lifetime_records=lifetime_records+1, updated_at=?
         WHERE owner_id=? AND workspace_id=? AND workspace_generation=? AND spawn_open=1`)
         .run(input.now, input.ownerId, input.workspaceId, input.workspaceGeneration);
+      if (input.session) this.insertSession(input, predecessor);
       const created = this.database.prepare('SELECT * FROM agents WHERE owner_id=? AND workspace_id=? AND id=?')
         .get(input.ownerId, input.workspaceId, input.id) as AgentRow;
       return { replayed: false, record: agentFromRow(created) };
@@ -645,6 +896,7 @@ export class AgentStateRepository {
       // A terminal record and its MCP event commit together; the outbox keys the event by agent id.
       ? withEventSavepoint(this.database, () => {
         if (Number(update().changes) !== 1) return false;
+        this.sealSession(input.agentId, input.status, input.now, input.runResumable === true);
         emitAgentTerminalEvent(this.database, input.ownerId, input.workspaceId, input.agentId, input.now);
         return true;
       })
@@ -777,7 +1029,21 @@ export class AgentStateRepository {
   }
 
 
-  addUsage(ownerId: string, workspaceId: string, agentId: string, generation: number, delta: AgentUsageDelta): AgentUsage {
+  /**
+   * Adds usage to an agent. With `fence`, usage from a stale writer (an earlier runner epoch or
+   * generation, or a predecessor that was continued) is ignored rather than counted.
+   */
+  addUsage(
+    ownerId: string,
+    workspaceId: string,
+    agentId: string,
+    generation: number,
+    delta: AgentUsageDelta,
+    fence?: { runnerEpoch: number }
+  ): AgentUsage {
+    if (fence && this.isEffectWriterFenced({ ownerId, workspaceId, agentId, agentGeneration: generation, runnerEpoch: fence.runnerEpoch })) {
+      return this.usage(ownerId, workspaceId, agentId, generation);
+    }
     const values: AgentUsage = {
       inputTokens: delta.inputTokens ?? 0,
       outputTokens: delta.outputTokens ?? 0,
@@ -797,6 +1063,12 @@ export class AgentStateRepository {
     return this.usage(ownerId, workspaceId, agentId, generation);
   }
 
+  /**
+   * Reserves an effect by its lineage key `(root agent, request ID, kind)`, so a continuation that
+   * repeats a predecessor's request finds the predecessor's effect. A repeated request with a
+   * different payload is a conflict. With `fenced`, only the live owner of the lineage may reserve:
+   * a running agent of the current runner epoch and generation that has not been continued.
+   */
   reserveEffect(input: {
     ownerId: string;
     workspaceId: string;
@@ -807,56 +1079,185 @@ export class AgentStateRepository {
     kind: string;
     payloadHash: string;
     now: number;
+    replayClass?: AgentProxyReplayClass;
+    preImageSha256?: string | null;
+    intendedSha256?: string | null;
+    fenced?: boolean;
   }): { replayed: boolean; effect: AgentEffectRecord } {
+    if (!EFFECT_REQUEST_ID.test(input.requestId)) throw new HarnessError('INVALID_INPUT', 'invalid effect request ID');
+    const preImageSha256 = optionalSha256(input.preImageSha256, 'pre-image digest');
+    const intendedSha256 = optionalSha256(input.intendedSha256, 'intended post-image digest');
     return immediate(this.database, () => {
-      const existing = this.database.prepare(`SELECT * FROM agent_effects
-        WHERE agent_id=? AND agent_generation=? AND request_id=? AND kind=?`)
-        .get(input.agentId, input.agentGeneration, input.requestId, input.kind) as {
-          owner_id: string; workspace_id: string; agent_id: string; agent_generation: number; runner_epoch: number;
-          request_id: string; kind: string; payload_hash: string; state: AgentEffectState; created_at: number; updated_at: number;
-        } | undefined;
+      if (input.fenced && this.isEffectWriterFenced(input, ['RUNNING'])) {
+        throw new HarnessError('EXPIRED', 'agent tool execution lost its lifecycle fence', 410, false);
+      }
+      const rootAgentId = this.lineageRoot(input.agentId);
+      const existing = this.findEffectRow({ rootAgentId, requestId: input.requestId, kind: input.kind });
       if (existing) {
-        if (existing.payload_hash !== input.payloadHash) {
+        if (existing.owner_id !== input.ownerId || existing.workspace_id !== input.workspaceId || existing.payload_hash !== input.payloadHash) {
           throw new HarnessError('CONFLICT', 'effect request ID was used with a different payload', 409, false);
         }
-        return {
-          replayed: true,
-          effect: {
-            ownerId: existing.owner_id,
-            workspaceId: existing.workspace_id,
-            agentId: existing.agent_id,
-            agentGeneration: existing.agent_generation,
-            runnerEpoch: existing.runner_epoch,
-            requestId: existing.request_id,
-            kind: existing.kind,
-            payloadHash: existing.payload_hash,
-            state: existing.state,
-            createdAt: existing.created_at,
-            updatedAt: existing.updated_at
-          }
-        };
+        return { replayed: true, effect: effectFromRow(existing) };
       }
+      const agent = this.database.prepare('SELECT workspace_generation FROM agents WHERE owner_id=? AND workspace_id=? AND id=?')
+        .get(input.ownerId, input.workspaceId, input.agentId) as { workspace_generation: number } | undefined;
       this.database.prepare(`INSERT INTO agent_effects
-        (owner_id, workspace_id, agent_id, agent_generation, runner_epoch, request_id, kind, payload_hash, state, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INTENT', ?, ?)`)
-        .run(input.ownerId, input.workspaceId, input.agentId, input.agentGeneration, input.runnerEpoch, input.requestId, input.kind, input.payloadHash, input.now, input.now);
-      return {
-        replayed: false,
-        effect: {
-          ownerId: input.ownerId,
-          workspaceId: input.workspaceId,
-          agentId: input.agentId,
-          agentGeneration: input.agentGeneration,
-          runnerEpoch: input.runnerEpoch,
-          requestId: input.requestId,
-          kind: input.kind,
-          payloadHash: input.payloadHash,
-          state: 'INTENT',
-          createdAt: input.now,
-          updatedAt: input.now
-        }
-      };
+        (owner_id, workspace_id, agent_id, agent_generation, runner_epoch, request_id, kind, payload_hash, state, created_at, updated_at,
+         root_agent_id, replay_class, pre_image_sha256, intended_sha256, workspace_generation)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INTENT', ?, ?, ?, ?, ?, ?, ?)`)
+        .run(
+          input.ownerId, input.workspaceId, input.agentId, input.agentGeneration, input.runnerEpoch, input.requestId, input.kind,
+          input.payloadHash, input.now, input.now, rootAgentId, input.replayClass ?? null, preImageSha256, intendedSha256,
+          agent?.workspace_generation ?? null
+        );
+      return { replayed: false, effect: effectFromRow(this.findEffectRow({ rootAgentId, requestId: input.requestId, kind: input.kind })!) };
     });
+  }
+
+  /** The lineage root of an agent: the root recorded in its persisted session, or the agent itself. */
+  lineageRoot(agentId: string): string {
+    const row = this.database.prepare('SELECT root_agent_id FROM agent_sessions WHERE agent_id=?').get(agentId) as { root_agent_id: string } | undefined;
+    return row?.root_agent_id ?? agentId;
+  }
+
+  findEffect(key: AgentEffectKey): AgentEffectRecord | undefined {
+    const row = this.findEffectRow(key);
+    return row ? effectFromRow(row) : undefined;
+  }
+
+  /**
+   * Moves an effect to DISPATCHED immediately before it reaches the executor, recording the images
+   * captured at dispatch. Only the live owner of the lineage may dispatch, and only from one of the
+   * expected states; a read-safe effect of unknown outcome is dispatched again this way.
+   */
+  dispatchEffect(input: AgentEffectKey & {
+    fence: AgentEffectFence;
+    expectedStates: AgentEffectState[];
+    preImageSha256?: string | null;
+    intendedSha256?: string | null;
+    preEntry?: EffectPreEntry | null;
+    now: number;
+  }): boolean {
+    const preImageSha256 = optionalSha256(input.preImageSha256, 'pre-image digest');
+    const intendedSha256 = optionalSha256(input.intendedSha256, 'intended post-image digest');
+    const preEntry = input.preEntry ?? null;
+    if (preEntry !== null && !EFFECT_PRE_ENTRIES.has(preEntry)) throw new HarnessError('INVALID_INPUT', 'invalid effect pre-entry');
+    if (input.expectedStates.length === 0) throw new HarnessError('INVALID_INPUT', 'expected effect state set cannot be empty');
+    return immediate(this.database, () => {
+      if (this.isEffectWriterFenced(input.fence, ['RUNNING'])) return false;
+      const placeholders = input.expectedStates.map(() => '?').join(',');
+      // The pre-entry is that of this dispatch: an earlier dispatch's observation is not carried over.
+      const result = this.database.prepare(`UPDATE agent_effects SET state='DISPATCHED', runner_epoch=?, updated_at=?,
+          pre_image_sha256=COALESCE(?, pre_image_sha256), intended_sha256=COALESCE(?, intended_sha256), pre_entry=?
+        WHERE root_agent_id=? AND request_id=? AND kind=? AND owner_id=? AND workspace_id=? AND state IN (${placeholders})`)
+        .run(input.fence.runnerEpoch, input.now, preImageSha256, intendedSha256, preEntry,
+          input.rootAgentId, input.requestId, input.kind, input.fence.ownerId, input.fence.workspaceId, ...input.expectedStates);
+      return Number(result.changes) === 1;
+    });
+  }
+
+  /**
+   * Records an effect's outcome and, when given, its receipt (the exact result text the model
+   * received) in one transaction. Only a writer that still holds the fence may complete it: a
+   * stale runner epoch or generation, an ended agent, or a continued predecessor changes nothing.
+   * Returns false when the write was fenced or the effect was not in an expected state.
+   */
+  completeEffect(input: AgentEffectKey & {
+    fence: AgentEffectFence;
+    expectedStates: AgentEffectState[];
+    state: 'APPLIED' | 'REJECTED' | 'UNKNOWN';
+    receipt?: { text: string; reconciled?: boolean };
+    now: number;
+  }): boolean {
+    if (input.expectedStates.length === 0) throw new HarnessError('INVALID_INPUT', 'expected effect state set cannot be empty');
+    const text = input.receipt?.text;
+    if (text !== undefined && (text.length === 0 || Buffer.byteLength(text, 'utf8') > MAX_AGENT_EFFECT_RECEIPT_BYTES)) {
+      throw new HarnessError('LIMIT_EXCEEDED', 'agent effect receipt exceeds the tool result bound', 413, false);
+    }
+    if (text !== undefined && input.state === 'UNKNOWN') throw new HarnessError('INVALID_INPUT', 'an unknown effect has no receipt');
+    return immediate(this.database, () => {
+      if (this.isEffectWriterFenced(input.fence, ['RUNNING', 'CANCELLING'])) return false;
+      const placeholders = input.expectedStates.map(() => '?').join(',');
+      const textBytes = text === undefined ? 0 : Buffer.byteLength(text, 'utf8');
+      const stored = text !== undefined && this.retainsReceiptText(input.fence.agentId, input.rootAgentId, textBytes)
+        ? text
+        : null;
+      const result = this.database.prepare(`UPDATE agent_effects SET state=?, updated_at=?,
+          result_json=?, result_bytes=?, result_sha256=?, result_reconciled=?, executor_generation=?, retain_until=?
+        WHERE root_agent_id=? AND request_id=? AND kind=? AND owner_id=? AND workspace_id=? AND state IN (${placeholders})`)
+        .run(
+          input.state, input.now,
+          stored, stored === null ? null : textBytes, text === undefined ? null : sha256Hex(text), input.receipt?.reconciled ? 1 : 0,
+          text === undefined ? null : input.fence.runnerEpoch,
+          stored === null ? null : input.now + this.limits.sessionRetentionMs,
+          input.rootAgentId, input.requestId, input.kind, input.fence.ownerId, input.fence.workspaceId, ...input.expectedStates
+        );
+      return Number(result.changes) === 1;
+    });
+  }
+
+  /**
+   * Whether the agent records a session, and so can be continued. Only a continuation consumes
+   * stored receipt text or a recorded pre-dispatch observation, so an agent without one pays for
+   * neither.
+   */
+  recordsSession(agentId: string): boolean {
+    return this.database.prepare('SELECT 1 FROM agent_sessions WHERE agent_id=?').get(agentId) !== undefined;
+  }
+
+  /**
+   * Whether a receipt's result text is stored, or only its hash. Only a continuation can replay a
+   * stored result to the model, so only an agent that records a session stores text, and its
+   * lineage stops at the configured byte cap; past it a repeat behaves as after retention. The cap
+   * sums the recorded text sizes through an index, never the text itself.
+   */
+  private retainsReceiptText(agentId: string, rootAgentId: string, bytes: number): boolean {
+    if (!this.recordsSession(agentId)) return false;
+    const held = this.database.prepare(`SELECT COALESCE(SUM(result_bytes), 0) AS bytes FROM agent_effects
+      WHERE root_agent_id=? AND result_bytes IS NOT NULL`).get(rootAgentId) as { bytes: number };
+    return Number(held.bytes) + bytes <= this.limits.maxReceiptBytesPerLineage;
+  }
+
+  /** Clears receipt content past its retention; the effect state stays, so a repeat is never re-issued. */
+  purgeExpiredReceipts(now: number, limit = 100): number {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new HarnessError('INVALID_INPUT', 'receipt purge page size is out of bounds');
+    }
+    // The reaper calls this every tick, so the common case takes no write lock.
+    const due = this.database.prepare(`SELECT 1 FROM agent_effects
+      WHERE result_json IS NOT NULL AND retain_until IS NOT NULL AND retain_until<=? LIMIT 1`).get(now);
+    if (!due) return 0;
+    return immediate(this.database, () => Number(this.database.prepare(`UPDATE agent_effects
+      SET result_json=NULL, result_bytes=NULL, result_sha256=NULL, retain_until=NULL
+      WHERE rowid IN (SELECT rowid FROM agent_effects
+        WHERE result_json IS NOT NULL AND retain_until IS NOT NULL AND retain_until<=? ORDER BY retain_until ASC LIMIT ?)`)
+      .run(now, limit).changes));
+  }
+
+  /**
+   * Whether a writer has lost the right to change an agent's effects, usage, or session: the runner
+   * epoch moved on, the agent's generation or epoch differs, its status is not one of `statuses`,
+   * its workspace is no longer the active generation, or the agent was continued by a successor.
+   */
+  private isEffectWriterFenced(fence: AgentEffectFence, statuses?: readonly AgentStatus[]): boolean {
+    if (this.instanceId && this.currentEpoch(this.instanceId) !== fence.runnerEpoch) return true;
+    // Without a status set only the writer's identity is checked: an ended agent may still report
+    // its final usage, but an earlier epoch or generation, or a continued predecessor, may not.
+    const agent = (statuses
+      ? this.database.prepare(`SELECT agents.status, agents.generation, agents.runner_epoch FROM agents
+        JOIN workspaces ON workspaces.id=agents.workspace_id AND workspaces.owner_id=agents.owner_id
+        WHERE agents.owner_id=? AND agents.workspace_id=? AND agents.id=?
+          AND workspaces.status='ACTIVE' AND workspaces.generation=agents.workspace_generation`)
+      : this.database.prepare(`SELECT status, generation, runner_epoch FROM agents WHERE owner_id=? AND workspace_id=? AND id=?`))
+      .get(fence.ownerId, fence.workspaceId, fence.agentId) as { status: AgentStatus; generation: number; runner_epoch: number | null } | undefined;
+    if (!agent || agent.generation !== fence.agentGeneration || agent.runner_epoch !== fence.runnerEpoch) return true;
+    if (statuses && !statuses.includes(agent.status)) return true;
+    return this.findSuccessor(fence.agentId) !== undefined;
+  }
+
+  private findEffectRow(key: AgentEffectKey): EffectRow | undefined {
+    return this.database.prepare('SELECT * FROM agent_effects WHERE root_agent_id=? AND request_id=? AND kind=?')
+      .get(key.rootAgentId, key.requestId, key.kind) as EffectRow | undefined;
   }
 
   transitionEffect(input: {
@@ -1070,6 +1471,7 @@ export class AgentStateRepository {
       this.database.prepare('DELETE FROM agent_usage WHERE owner_id=? AND workspace_id=?').run(ownerId, workspaceId);
       this.database.prepare('DELETE FROM agent_messages WHERE owner_id=? AND workspace_id=?').run(ownerId, workspaceId);
       this.database.prepare('DELETE FROM agent_cleanup_retries WHERE owner_id=? AND workspace_id=?').run(ownerId, workspaceId);
+      this.deleteSessionRows(ownerId, workspaceId);
       this.database.prepare('DELETE FROM agents WHERE owner_id=? AND workspace_id=?').run(ownerId, workspaceId);
       this.database.prepare('DELETE FROM agent_workspace_admission WHERE owner_id=? AND workspace_id=? AND workspace_generation=?')
         .run(ownerId, workspaceId, workspaceGeneration);
@@ -1138,6 +1540,284 @@ export class AgentStateRepository {
       }
     }
     return { workspaces: candidates.length, compactedAgents, purgedTombstones };
+  }
+
+  findSession(agentId: string): AgentSessionRecord | undefined {
+    const row = this.database.prepare('SELECT * FROM agent_sessions WHERE agent_id=?').get(agentId) as SessionRow | undefined;
+    return row ? sessionFromRow(row) : undefined;
+  }
+
+  /** The agent that continued this one, if any; the schema allows at most one. */
+  findSuccessor(agentId: string): string | undefined {
+    const row = this.database.prepare('SELECT agent_id FROM agent_sessions WHERE continued_from=?').get(agentId) as { agent_id: string } | undefined;
+    return row?.agent_id;
+  }
+
+  /**
+   * Checks that an agent may be continued by a new one: it belongs to this owner, workspace, and
+   * workspace generation, it is terminal, its session is sealed and continuable, and nothing has
+   * continued it yet. Spawn admission calls it again inside its transaction.
+   */
+  requireContinuable(ownerId: string, workspaceId: string, workspaceGeneration: number, agentId: string): { predecessor: AgentRecord; session: AgentSessionRecord } {
+    const predecessor = this.findAgent(ownerId, workspaceId, agentId);
+    if (!predecessor) throw new HarnessError('NOT_FOUND', 'the agent to continue was not found in this workspace', 404, false);
+    if (predecessor.workspaceGeneration !== workspaceGeneration) {
+      throw new HarnessError('STALE_GENERATION', 'the agent to continue belongs to an earlier generation of this workspace', 409, false);
+    }
+    if (!TERMINAL_STATUSES.includes(predecessor.status)) {
+      throw new HarnessError('CONFLICT', 'the agent to continue has not ended; wait for a terminal status or cancel it first', 409, true);
+    }
+    const session = this.findSession(agentId);
+    if (!session || session.ownerId !== ownerId || session.workspaceId !== workspaceId) {
+      throw new HarnessError('CONFLICT', 'the agent to continue has no persisted session; it was spawned while session persistence was off', 409, false);
+    }
+    if (session.state === 'PURGED') {
+      throw new HarnessError('EXPIRED', 'the persisted session of the agent to continue was purged by retention', 410, false);
+    }
+    if (session.state !== 'SEALED' || !session.continuable) {
+      throw new HarnessError('CONFLICT', 'the persisted session of the agent to continue is not continuable: its log is incomplete or exceeded the session bounds', 409, false);
+    }
+    const successor = this.findSuccessor(agentId);
+    if (successor) throw new HarnessError('CONFLICT', `the agent was already continued by ${successor}; continue that agent instead`, 409, false);
+    return { predecessor, session };
+  }
+
+  /**
+   * Reads an agent's session log and verifies it against its stored count, bytes, per-message
+   * digests, and chained head before anything is sent to a runtime.
+   */
+  loadSessionLog(agentId: string, generation: number): { messages: unknown[]; headSha256: string; bytes: number } {
+    const session = this.findSession(agentId);
+    if (!session || session.state === 'PURGED') throw new HarnessError('NOT_FOUND', 'agent session was not found', 404, false);
+    const rows = this.database.prepare(`SELECT seq, message_json, bytes, sha256 FROM agent_session_messages
+      WHERE agent_id=? AND agent_generation=? ORDER BY seq ASC`)
+      .all(agentId, generation) as Array<{ seq: number; message_json: string; bytes: number; sha256: string }>;
+    let head = AGENT_SESSION_GENESIS_SHA256;
+    let bytes = 0;
+    const messages: unknown[] = [];
+    const corrupt = () => new HarnessError('INTERNAL_ERROR', 'agent session log failed integrity verification', 500, false);
+    if (rows.length !== session.messageCount) throw corrupt();
+    for (const [index, row] of rows.entries()) {
+      const digest = sha256Hex(row.message_json);
+      if (row.seq !== index || row.sha256 !== digest || row.bytes !== Buffer.byteLength(row.message_json, 'utf8')) throw corrupt();
+      head = chainAgentSessionHead(head, digest);
+      bytes += row.bytes;
+      messages.push(JSON.parse(row.message_json));
+    }
+    if (head !== session.headSha256 || bytes !== session.bytes) throw corrupt();
+    return { messages, headSha256: head, bytes };
+  }
+
+  /**
+   * Appends one runtime message to an agent's session log. Only a running agent of the current
+   * runner epoch and generation may write, and only the next sequence number is accepted. A gap,
+   * an invalid message, or exceeding the bounds stops the log and marks it not continuable; the
+   * run itself continues.
+   */
+  appendSessionMessage(input: AgentSessionAppend): AgentSessionAppendResult {
+    const role = typeof input.message === 'object' && input.message !== null && !Array.isArray(input.message)
+      ? (input.message as { role?: unknown }).role
+      : undefined;
+    const valid = typeof role === 'string' && SESSION_ROLES.has(role) && Number.isSafeInteger(input.seq) && input.seq >= 0;
+    const json = valid ? JSON.stringify(input.message) : '';
+    const bytes = Buffer.byteLength(json, 'utf8');
+    return immediate(this.database, () => {
+      if (this.instanceId && this.currentEpoch(this.instanceId) !== input.runnerEpoch) return 'FENCED';
+      const agent = this.database.prepare(`SELECT status, generation, runner_epoch FROM agents
+        WHERE owner_id=? AND workspace_id=? AND id=?`)
+        .get(input.ownerId, input.workspaceId, input.agentId) as { status: AgentStatus; generation: number; runner_epoch: number } | undefined;
+      if (!agent || agent.status !== 'RUNNING' || agent.generation !== input.generation || agent.runner_epoch !== input.runnerEpoch) return 'FENCED';
+      if (this.findSuccessor(input.agentId) !== undefined) return 'FENCED';
+      const session = this.database.prepare('SELECT * FROM agent_sessions WHERE agent_id=? AND owner_id=? AND workspace_id=?')
+        .get(input.agentId, input.ownerId, input.workspaceId) as SessionRow | undefined;
+      if (!session || session.state !== 'ACTIVE' || session.continuable !== 1) return 'IGNORED';
+      if (!valid || input.seq !== session.message_count
+        || session.message_count + 1 > this.limits.maxSessionMessages
+        || session.bytes + bytes > this.limits.maxSessionBytes
+        || this.exceededSessionBudget(input.ownerId, input.workspaceId, bytes)) {
+        this.database.prepare('UPDATE agent_sessions SET continuable=0, updated_at=? WHERE agent_id=?').run(input.now, input.agentId);
+        return 'DISCONTINUED';
+      }
+      const digest = sha256Hex(json);
+      this.database.prepare(`INSERT INTO agent_session_messages
+        (agent_id, agent_generation, seq, role, message_json, bytes, sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(input.agentId, input.generation, input.seq, role, json, bytes, digest, input.now);
+      this.database.prepare(`UPDATE agent_sessions SET message_count=message_count+1, bytes=bytes+?, head_sha256=?, updated_at=?
+        WHERE agent_id=?`)
+        .run(bytes, chainAgentSessionHead(session.head_sha256, digest), input.now, input.agentId);
+      return 'APPENDED';
+    });
+  }
+
+  /**
+   * Names the aggregate session byte budget that `addedBytes` more stored bytes would exceed, if
+   * any. Every stored log counts, including a discontinued one, until retention or workspace close
+   * deletes it; a purged session holds no bytes. Each durable lineage's database counts its size on
+   * disk toward its workspace and owner while an agent record names it, and toward the instance
+   * until its files are deleted.
+   */
+  exceededSessionBudget(ownerId: string, workspaceId: string, addedBytes: number): 'workspace' | 'principal' | 'instance' | undefined {
+    const usage = this.database.prepare(`SELECT
+      (SELECT COALESCE(SUM(bytes), 0) FROM agent_sessions WHERE owner_id=? AND workspace_id=?) AS workspace_bytes,
+      (SELECT COALESCE(SUM(bytes), 0) FROM agent_sessions WHERE owner_id=?) AS principal_bytes,
+      (SELECT COALESCE(SUM(bytes), 0) FROM agent_sessions) AS global_bytes`)
+      .get(ownerId, workspaceId, ownerId) as { workspace_bytes: number; principal_bytes: number; global_bytes: number };
+    const durable = this.durableUsage(ownerId, workspaceId);
+    if (usage.workspace_bytes + durable.workspace + addedBytes > this.limits.workspaceSessionBytes) return 'workspace';
+    if (usage.principal_bytes + durable.principal + addedBytes > this.limits.principalSessionBytes) return 'principal';
+    if (usage.global_bytes + durable.global + addedBytes > this.limits.globalSessionBytes) return 'instance';
+    return undefined;
+  }
+
+  /** On-disk bytes of the durable lineage databases of a workspace, its owner, and the instance. */
+  private durableUsage(ownerId: string, workspaceId: string): { workspace: number; principal: number; global: number } {
+    const storage = this.durableStorage;
+    const global = storage?.totalBytes() ?? 0;
+    if (!storage || global === 0) return { workspace: 0, principal: 0, global };
+    const rows = this.database.prepare(`SELECT DISTINCT agent_sessions.root_agent_id AS root, agent_sessions.workspace_id AS workspace_id
+      FROM agent_sessions JOIN agents ON agents.id=agent_sessions.agent_id
+      WHERE agent_sessions.owner_id=? AND agents.runtime='pi-durable'`)
+      .all(ownerId) as Array<{ root: string; workspace_id: string }>;
+    const counted = new Set<string>();
+    let workspace = 0;
+    let principal = 0;
+    for (const row of rows) {
+      if (counted.has(row.root)) continue;
+      counted.add(row.root);
+      const bytes = storage.lineageBytes(row.root);
+      principal += bytes;
+      if (row.workspace_id === workspaceId) workspace += bytes;
+    }
+    return { workspace, principal, global };
+  }
+
+  /** Stops an active log after a failure to record it, so a partial history is never continued. */
+  discontinueSession(agentId: string, now: number): void {
+    this.database.prepare(`UPDATE agent_sessions SET continuable=0, updated_at=? WHERE agent_id=? AND state='ACTIVE'`).run(now, agentId);
+  }
+
+  /**
+   * Purges the logs of sealed sessions past their retention; the session row stays as PURGED. The
+   * root of every durable lineage left with no unpurged session is added to purgedDurableLineages,
+   * so its runner-side session store can be deleted too.
+   */
+  purgeExpiredSessions(now: number, limit = 100, purgedDurableLineages?: string[]): number {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new HarnessError('INVALID_INPUT', 'session purge page size is out of bounds');
+    }
+    // The reaper calls this every tick, so the common case takes no write lock.
+    const due = this.database.prepare(`SELECT 1 FROM agent_sessions
+      WHERE state='SEALED' AND retain_until IS NOT NULL AND retain_until<=? LIMIT 1`).get(now);
+    if (!due) return 0;
+    return immediate(this.database, () => {
+      const rows = this.database.prepare(`SELECT agent_id FROM agent_sessions
+        WHERE state='SEALED' AND retain_until IS NOT NULL AND retain_until<=? ORDER BY retain_until ASC LIMIT ?`)
+        .all(now, limit) as Array<{ agent_id: string }>;
+      for (const row of rows) {
+        this.database.prepare('DELETE FROM agent_session_messages WHERE agent_id=?').run(row.agent_id);
+        this.database.prepare(`UPDATE agent_sessions SET state='PURGED', continuable=0, message_count=0, bytes=0, run_resumable=0, updated_at=?
+          WHERE agent_id=?`).run(now, row.agent_id);
+      }
+      if (purgedDurableLineages && rows.length > 0) {
+        const placeholders = rows.map(() => '?').join(',');
+        const roots = this.database.prepare(`SELECT DISTINCT purged.root_agent_id AS root FROM agent_sessions purged
+          JOIN agents ON agents.id=purged.agent_id AND agents.runtime='pi-durable'
+          WHERE purged.agent_id IN (${placeholders})
+            AND NOT EXISTS (SELECT 1 FROM agent_sessions live WHERE live.root_agent_id=purged.root_agent_id AND live.state<>'PURGED')`)
+          .all(...rows.map((row) => row.agent_id)) as Array<{ root: string }>;
+        purgedDurableLineages.push(...roots.map((root) => root.root));
+      }
+      return rows.length;
+    });
+  }
+
+  /**
+   * Deletes every session row and effect receipt of a workspace, used when the workspace closes or
+   * expires and when its agent records are compacted.
+   */
+  deleteWorkspaceSessions(ownerId: string, workspaceId: string): number {
+    return immediate(this.database, () => this.deleteSessionRows(ownerId, workspaceId));
+  }
+
+  private deleteSessionRows(ownerId: string, workspaceId: string): number {
+    this.database.prepare('DELETE FROM agent_effects WHERE owner_id=? AND workspace_id=?').run(ownerId, workspaceId);
+    this.database.prepare(`DELETE FROM agent_session_messages WHERE agent_id IN (
+      SELECT agent_id FROM agent_sessions WHERE owner_id=? AND workspace_id=?)`).run(ownerId, workspaceId);
+    return Number(this.database.prepare('DELETE FROM agent_sessions WHERE owner_id=? AND workspace_id=?').run(ownerId, workspaceId).changes);
+  }
+
+  private insertSession(input: AgentSpawnReservation, continuation: { predecessor: AgentRecord; session: AgentSessionRecord } | undefined): void {
+    const source = continuation?.session;
+    try {
+      this.database.prepare(`INSERT INTO agent_sessions
+        (agent_id, owner_id, workspace_id, workspace_generation, root_agent_id, continued_from, message_count, bytes,
+         head_sha256, state, continuable, retain_until, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 1, NULL, ?, ?)`)
+        .run(
+          input.id, input.ownerId, input.workspaceId, input.workspaceGeneration, source?.rootAgentId ?? input.id,
+          source?.agentId ?? null, source?.messageCount ?? 0, source?.bytes ?? 0, source?.headSha256 ?? AGENT_SESSION_GENESIS_SHA256,
+          input.now, input.now
+        );
+    } catch (error) {
+      if (error instanceof Error && /UNIQUE constraint failed/i.test(error.message)) {
+        throw new HarnessError('CONFLICT', 'the agent was already continued by another agent', 409, false);
+      }
+      throw error;
+    }
+    if (!continuation) return;
+    // The new log starts as a copy of the predecessor's, so each session is self-contained.
+    this.database.prepare(`INSERT INTO agent_session_messages
+      (agent_id, agent_generation, seq, role, message_json, bytes, sha256, created_at)
+      SELECT ?, 1, seq, role, message_json, bytes, sha256, created_at FROM agent_session_messages
+      WHERE agent_id=? AND agent_generation=? ORDER BY seq ASC`)
+      .run(input.id, continuation.predecessor.id, continuation.predecessor.generation);
+  }
+
+  private sealSession(agentId: string, status: AgentStatus, now: number, runResumable: boolean): void {
+    this.database.prepare(`UPDATE agent_sessions SET state='SEALED',
+      continuable=CASE WHEN ?=1 THEN continuable ELSE 0 END, retain_until=?, run_resumable=?, updated_at=?
+      WHERE agent_id=? AND state='ACTIVE'`)
+      .run(CONTINUABLE_TERMINAL_STATUSES.includes(status) ? 1 : 0, now + this.limits.sessionRetentionMs, runResumable ? 1 : 0, now, agentId);
+  }
+
+  /**
+   * The position of an agent in its chain of continuations: 0 for a lineage root, 1 for the agent
+   * that continued it, and so on. A durable session claim is ordered by it, so a continuation
+   * always supersedes its predecessor's claim on the lineage's session store.
+   */
+  lineageDepth(agentId: string): number {
+    let depth = 0;
+    let current: string | null = agentId;
+    const seen = new Set<string>();
+    while (current !== null && !seen.has(current)) {
+      seen.add(current);
+      const row = this.database.prepare('SELECT continued_from FROM agent_sessions WHERE agent_id=?').get(current) as { continued_from: string | null } | undefined;
+      current = row?.continued_from ?? null;
+      if (current !== null) depth += 1;
+    }
+    return depth;
+  }
+
+  /**
+   * The given durable lineage roots whose sessions retention has all purged, so their runner-side
+   * session stores may be deleted. A root with no session row is left out.
+   */
+  purgedDurableLineages(lineageRootIds: readonly string[]): string[] {
+    const statement = this.database.prepare(`SELECT 1 FROM agent_sessions purged
+      JOIN agents ON agents.id=purged.agent_id AND agents.runtime='pi-durable'
+      WHERE purged.root_agent_id=?
+        AND NOT EXISTS (SELECT 1 FROM agent_sessions live WHERE live.root_agent_id=purged.root_agent_id AND live.state<>'PURGED')
+      LIMIT 1`);
+    return [...new Set(lineageRootIds)].filter((lineageRootId) => statement.get(lineageRootId) !== undefined);
+  }
+
+  /** The lineage roots of a workspace's durable-runtime agents, whose session stores live in the runner. */
+  durableLineageRoots(ownerId: string, workspaceId: string): string[] {
+    const rows = this.database.prepare(`SELECT DISTINCT agent_sessions.root_agent_id AS root FROM agent_sessions
+      JOIN agents ON agents.id=agent_sessions.agent_id
+      WHERE agent_sessions.owner_id=? AND agent_sessions.workspace_id=? AND agents.runtime='pi-durable'`)
+      .all(ownerId, workspaceId) as Array<{ root: string }>;
+    return rows.map((row) => row.root);
   }
 
   private usageRow(ownerId: string, workspaceId: string, agentId: string, generation: number): UsageRow {

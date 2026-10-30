@@ -57,7 +57,8 @@ export {
   downgradeStateSchemaToV10,
   downgradeStateSchemaToV11,
   downgradeStateSchemaToV12,
-  downgradeStateSchemaToV13
+  downgradeStateSchemaToV13,
+  downgradeStateSchemaToV14
 } from './principal-store.js';
 
 export type MemoryRecord = {
@@ -476,6 +477,12 @@ export type OAuthGrantSettingsRecord = {
   lastSync?: { at: number; ok: boolean; errorCode: string | null } | undefined;
 };
 
+export type RepositoryCreateIdempotencyRecord = {
+  fingerprint: string;
+  status: 'PENDING' | 'SUCCEEDED';
+  resultJson?: string;
+};
+
 export class StateStore {
   readonly database: DatabaseSync;
   readonly knowledge: KnowledgeStore;
@@ -593,6 +600,7 @@ export class StateStore {
         UNIQUE(workspace_id, alias)
       );
       CREATE TABLE IF NOT EXISTS workspace_repository_changes (owner_id TEXT NOT NULL, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, operation TEXT NOT NULL, fingerprint TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, workspace_id, idempotency_key));
+      CREATE TABLE IF NOT EXISTS github_repository_create_idempotency (owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, fingerprint TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('PENDING','SUCCEEDED')), result_json TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(owner_id, idempotency_key));
     `);
     const commentCols = (this.database.prepare('PRAGMA table_info(comment_idempotency)').all() as { name: string }[]).map((c) => c.name);
     if (!commentCols.includes('fingerprint')) {
@@ -1368,6 +1376,40 @@ export class StateStore {
   setCommentIdempotency(ownerId: string, key: string, resultJson: string, fingerprint?: string): void {
     this.database.prepare('INSERT OR REPLACE INTO comment_idempotency(owner_id, idempotency_key, fingerprint, result_json, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(ownerId, key, fingerprint ?? null, resultJson, Date.now());
+  }
+
+  /**
+   * Repository creation is permanent, so its idempotency record never expires. A PENDING row
+   * means an attempt started and never recorded a definitive outcome (for example a runner crash
+   * after GitHub accepted the request).
+   */
+  getRepositoryCreateIdempotency(ownerId: string, key: string): RepositoryCreateIdempotencyRecord | undefined {
+    const row = this.database.prepare('SELECT fingerprint, status, result_json FROM github_repository_create_idempotency WHERE owner_id = ? AND idempotency_key = ?')
+      .get(ownerId, key) as { fingerprint: string; status: 'PENDING' | 'SUCCEEDED'; result_json: string | null } | undefined;
+    if (!row) return undefined;
+    return { fingerprint: row.fingerprint, status: row.status, ...(row.result_json !== null ? { resultJson: row.result_json } : {}) };
+  }
+
+  reserveRepositoryCreateIdempotency(ownerId: string, key: string, fingerprint: string): void {
+    const now = Date.now();
+    this.database.prepare(`INSERT INTO github_repository_create_idempotency(owner_id, idempotency_key, fingerprint, status, result_json, created_at, updated_at)
+      VALUES (?, ?, ?, 'PENDING', NULL, ?, ?)
+      ON CONFLICT(owner_id, idempotency_key) DO UPDATE SET updated_at = excluded.updated_at
+      WHERE github_repository_create_idempotency.status = 'PENDING' AND github_repository_create_idempotency.fingerprint = excluded.fingerprint`)
+      .run(ownerId, key, fingerprint, now, now);
+  }
+
+  completeRepositoryCreateIdempotency(ownerId: string, key: string, fingerprint: string, resultJson: string): void {
+    this.database.prepare(`UPDATE github_repository_create_idempotency SET status = 'SUCCEEDED', result_json = ?, updated_at = ?
+      WHERE owner_id = ? AND idempotency_key = ? AND fingerprint = ? AND status = 'PENDING'`)
+      .run(resultJson, Date.now(), ownerId, key, fingerprint);
+  }
+
+  /** Drops a reservation after GitHub definitively refused the request, so the key can be retried. */
+  releaseRepositoryCreateIdempotency(ownerId: string, key: string, fingerprint: string): void {
+    this.database.prepare(`DELETE FROM github_repository_create_idempotency
+      WHERE owner_id = ? AND idempotency_key = ? AND fingerprint = ? AND status = 'PENDING'`)
+      .run(ownerId, key, fingerprint);
   }
 
   getFinalizeIdempotency(ownerId: string, workspaceId: string, key: string): string | undefined {

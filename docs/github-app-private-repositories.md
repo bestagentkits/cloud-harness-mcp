@@ -57,6 +57,7 @@ choose the narrowest permission level:
 | Create or update check runs (`check_run_create`, `check_run_update`), including the check run a pull request automation reports | **Checks: Read and write** and **Contents: Read-only** |
 | List or view workflow runs; dispatch a workflow or re-run failed jobs (`workflow_runs_list`, `workflow_run_view`, `workflow_dispatch`, `workflow_run_rerun_failed`) | **Actions: Read-only** or **Read and write**, and **Contents: Read-only** |
 | Use a branch as a create-only, compare-and-swap, or delete-if-match lock through `git_push` leases | **Contents: Read and write** |
+| Create organization repositories (`github_repository_create`) | **Administration: Read and write** on the organization installation |
 
 Every other repository, organization, and account permission can stay at **No
 access**. `Contents` is the permission for HTTP Git access and is also required

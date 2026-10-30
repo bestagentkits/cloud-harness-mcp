@@ -4,7 +4,9 @@
 // fraction of a micro rounds up, so a stored price never understates cost.
 
 const DECIMAL = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d{1,4}))?$/u;
-const MICROS_PER_MILLION_EXPONENT = 12;
+// USD per token moves twelve places; USD per million tokens (models.dev) moves six.
+const USD_PER_TOKEN_EXPONENT = 12;
+const USD_PER_MILLION_EXPONENT = 6;
 // A wider exponent cannot describe a real token price and would only make BigInt work large.
 const MAX_EXPONENT = 64;
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
@@ -15,6 +17,15 @@ const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
  * to represent. `"0"` is an explicit free price and returns 0.
  */
 export function usdPerTokenToMicrosPerMillion(value: unknown): number | null {
+  return decimalUsdToMicros(value, USD_PER_TOKEN_EXPONENT);
+}
+
+/** The same conversion for a decimal USD price per one million tokens, as models.dev publishes it. */
+export function usdPerMillionTokensToMicrosPerMillion(value: unknown): number | null {
+  return decimalUsdToMicros(value, USD_PER_MILLION_EXPONENT);
+}
+
+function decimalUsdToMicros(value: unknown, shift: number): number | null {
   let text: string;
   if (typeof value === 'string') text = value.trim();
   else if (typeof value === 'number' && Number.isFinite(value)) text = String(value);
@@ -27,7 +38,7 @@ export function usdPerTokenToMicrosPerMillion(value: unknown): number | null {
   const mantissa = BigInt(`${integerDigits}${fractionDigits}` || '0');
   if (mantissa === 0n) return 0;
   if (sign === '-') return null;
-  const exponent = Number(exponentText) - fractionDigits.length + MICROS_PER_MILLION_EXPONENT;
+  const exponent = Number(exponentText) - fractionDigits.length + shift;
   if (Math.abs(exponent) > MAX_EXPONENT) return exponent > 0 ? null : 1;
   let micros: bigint;
   if (exponent >= 0) {

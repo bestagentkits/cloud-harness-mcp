@@ -31,6 +31,78 @@ npm test
 npm run build
 ```
 
+### Dashboard app
+
+The React dashboard lives in the `@cloud-harness/dashboard` workspace
+([`apps/dashboard/package.json`](../apps/dashboard/package.json) owns its
+scripts). Root `build`, `typecheck`, `lint`, and `test` already include it. While
+iterating:
+
+```bash
+npm run dev -w @cloud-harness/dashboard
+npm run test -w @cloud-harness/dashboard
+```
+
+The Vite dev server proxies `/dashboard/api` to `DASHBOARD_DEV_API_ORIGIN`. The
+Playwright suites in [`apps/dashboard/e2e/`](../apps/dashboard/e2e/) build the
+API and dashboard, serve them through the real Express app with an offline
+Access verifier, and answer runner-backed reads with `page.route` stubs (the
+test server's runner is unreachable on purpose). They cover render, theme, CSP
+and axe, the navigation transaction (A→B, A→B→C, repeated clicks, slow and
+out-of-order answers, failed reads, reload, Back/Forward, a mutation that
+navigation must not cancel), the 401/403/409/429/5xx states, keyboard-only use,
+reduced motion and what may reach browser storage. Install the browser once:
+
+```bash
+npx -w @cloud-harness/dashboard playwright install chromium
+npm run test:e2e:dashboard
+```
+
+Every navigation test runs an identity monitor
+([`e2e/support.ts`](../apps/dashboard/e2e/support.ts)) that samples the document
+title, the page heading, the page frame and the current sidebar entry on each
+animation frame and DOM mutation, and fails on any sample where they disagree.
+The navigation p95 test is a warm-chunk measurement: it clicks through fifteen
+sidebar pages twice after hover prefetch has loaded their route chunks. Each
+sample runs from the click event's `timeStamp` to the first animation frame
+where the page frame, the sidebar entry, the `<h1>` and `document.title` all
+show the target. The test prints the median and p95 and fails if p95 reaches
+100 ms. A second test repeats the tour in a fresh page without hover, so every
+route chunk loads on the click; it prints the same cold-chunk figures but has no
+gate, and serves as the baseline for later performance work. Both measure the
+shell commit, not the time for page data to arrive.
+
+The `visual` Playwright project
+([`e2e/visual.spec.ts`](../apps/dashboard/e2e/visual.spec.ts)) compares
+full-page screenshots of the migrated pages in light and dark at three widths.
+Font rendering differs by OS, so it runs only on Linux, like CI. After an
+intended visual change, regenerate the baselines in the Playwright image whose
+version matches `@playwright/test`. Run it from a separate clone, because
+`npm ci` there installs Linux builds of native packages into `node_modules`:
+
+```bash
+docker run --rm --ipc=host -v "$PWD:/work" -w /work mcr.microsoft.com/playwright:v1.64.1-noble bash -lc 'npm ci && npm run pretest:e2e:dashboard && cd apps/dashboard && npx playwright test --project=visual --update-snapshots=all'
+```
+
+Review the changed images under `apps/dashboard/e2e/visual.spec.ts-snapshots/`
+before committing them.
+
+The dashboard `build` script ends with
+[`apps/dashboard/scripts/verify-build-output.mjs`](../apps/dashboard/scripts/verify-build-output.mjs),
+so CI fails a build that breaks the shell contract or the gzip budget read from
+the Vite manifest (initial JS, each route chunk under `src/routes/`, each other
+lazy chunk, a larger allowance for an explicit allowlist of heavy lazy
+libraries such as the terminal, and CSS), or that
+ships fonts without their `OFL.txt` licence. The limits live in
+[`build-output-check.mjs`](../apps/dashboard/scripts/build-output-check.mjs);
+the API serves the same manifest through
+[`apps/api/src/dashboard-react-assets.ts`](../apps/api/src/dashboard-react-assets.ts).
+
+The root `package.json` `overrides` pin a single React 19 copy across the
+workspace, because the docs site's VitePress dependencies would otherwise pull a
+second React and break hooks in the dashboard. `npm run docs:build` still runs
+in CI and tolerates the resulting peer warning.
+
 ### Windows hosts
 
 The runner ships only as a Linux container, and local stdio mode is POSIX-only
@@ -108,6 +180,13 @@ npm run test:docker
 npm run test:e2e
 ```
 
+The durable agent engine e2e also needs an agent image built with the engine,
+and skips without it:
+
+```bash
+docker build -f docker/agent.Dockerfile --build-arg INCLUDE_DURABLE_RUNTIME=true -t cloud-harness-agent-durable:local .
+```
+
 These tests create real containers and clone a public repository, so Docker
 and network access are prerequisites. They verify the MCP workflow and selected
 container boundaries; the current test files, not a hand-maintained checklist,
@@ -130,6 +209,30 @@ docker ps -a --filter label=cloud-harness.managed=true \
 
 Remove only an explicitly verified test container. Never use a broad container
 cleanup command on a shared Docker host.
+
+## Agent runtime benchmark
+
+`npm run bench:agent-runtime` drives the real agent worker and Pi session
+in-process against a scripted model and an in-memory proxy tool executor, and
+prints p50/p95 timings, protocol bytes, tokens, tool effects, context size and
+session storage for six scenarios. It measures the shipped one-shot runtime, the
+same worker with session persistence, and the opt-in durable engine, the last two
+behind the real runner state, continuation, effect-receipt and durable session
+store code. It needs no Docker, network or credentials, so it also
+runs inside `npm test`. `AGENT_RUNTIME_BENCHMARK_REPS` sets the repetitions
+(default 20) and `AGENT_RUNTIME_BENCHMARK_OUT` writes the JSON report.
+
+The live mode is opt-in (`RUN_AGENT_RUNTIME_BENCHMARK=live`) and never runs by
+default. It spawns real agents through the MCP endpoint of a local Compose stack
+on a real model profile, under a hard cumulative spend cap, and needs the local
+owner bearer and an active profile. The persisted and durable runtimes need the
+stack's session flags, and the durable one an agent image built with the durable
+engine. Its environment is documented and validated
+in [`live-driver.ts`](../test/benchmarks/agent-runtime/live-driver.ts). The
+scenarios, fixtures and result shape are owned by
+[`test/benchmarks/agent-runtime.bench.test.ts`](../test/benchmarks/agent-runtime.bench.test.ts);
+the decision it supports is
+[ADR 0006](adr/0006-agent-session-persistence.md).
 
 ## Live provider checks
 
@@ -181,6 +284,35 @@ tests; keep docs focused on decisions and navigation to executable owners.
 Never add runtime `.env` files, tokens, private keys, deployment identities,
 database contents, private repository URLs, or user data to commits or test
 fixtures.
+
+## Branches and promotion
+
+`dev` is the integration branch: feature and fix pull requests target it, and
+a successful push CI run there publishes a beta release when it carries a
+releasable commit. `main` is the production branch: a successful push CI run
+there publishes the stable release and deploys production (see [`docs/deployment.md`](deployment.md)). Two rules
+keep a fix from being stranded on one side, as happened before
+[#541](https://github.com/bestagentkits/cloud-harness-mcp/issues/541):
+
+- **`dev` stays a superset of `main`.** A change merged straight into `main`
+  (a hotfix, a release commit) is merged back into `dev` the same day with a
+  merge commit, never a rebase. Keep `main`'s version files and `CHANGELOG.md`
+  when they conflict; the next `dev` beta then counts from the latest stable tag.
+- **Promote `dev` to `main` with a pull request.** Open a `dev` → `main` pull
+  request once `dev` is green. Merging it is a production deployment, so only
+  the owner merges it. Use a merge commit so both branches keep one history.
+
+Check both directions before a promotion and before labelling an issue
+`shipped`:
+
+```bash
+git fetch origin dev main
+git rev-list --count origin/dev..origin/main   # must be 0: main has nothing dev lacks
+git log --oneline --no-merges origin/main..origin/dev | grep -v 'chore(release)'   # what the promotion ships
+git merge-base --is-ancestor <fix-sha> origin/main && echo shipped
+```
+
+A fix merged only into `dev` is `done` and `released on @beta`, not `shipped`.
 
 ## Automated releases
 

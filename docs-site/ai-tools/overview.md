@@ -12,10 +12,10 @@ Cloud Harness MCP is compatible with all leading AI agent environments, IDEs, an
 | AI Tool / Client | Connection Mode | Target Endpoint | Configuration Surface |
 |---|---|---|---|
 | **ChatGPT** | Managed OAuth | `https://harness.zuey.me/mcp` | Web Settings → Apps → Create Custom MCP |
-| **Claude Desktop** | Managed OAuth / Gateway | `https://api.harness.zuey.me/mcp` | `claude_desktop_config.json` |
+| **Claude Desktop** | Managed OAuth (recommended) or Static API Key | `https://harness.zuey.me/mcp` (OAuth) or `https://api.harness.zuey.me/mcp` (key) | Connectors UI (OAuth) or `claude_desktop_config.json` (key) |
 | **Claude Code** | Static API Key | `https://api.harness.zuey.me/mcp` | `claude mcp add` / env var |
 | **Cursor IDE** | Static API Key | `https://api.harness.zuey.me/mcp` | Settings → Features → MCP |
-| **OpenAI Codex** | Static API Key | `https://api.harness.zuey.me/mcp` | `~/.codex/config.toml` |
+| **OpenAI Codex** | Managed OAuth (recommended) or Static API Key | `https://harness.zuey.me/mcp` (OAuth) or `https://api.harness.zuey.me/mcp` (key) | `~/.codex/config.toml` |
 | **Gemini CLI** | Static API Key | `https://api.harness.zuey.me/mcp` | Environment header / CLI flags |
 | **Google Antigravity** | Static API Key | `https://api.harness.zuey.me/mcp` | Antigravity MCP Settings |
 | **Grok / xAI** | Static API Key | `https://api.harness.zuey.me/mcp` | Responses API tool definitions |
@@ -57,6 +57,17 @@ estimated spend. Three things stay with you on the Dashboard [Models page](/dash
 `model_profile_update` is marked destructive, and `model_connection_verify` spends a few
 provider tokens, so a client that asks before such tools will prompt for them. The full flow is
 in [Model Providers](/reference/model-providers#api-and-mcp-examples).
+
+## Continuing Subagent Work
+
+By default each `agent_spawn` agent is one-shot: when it ends, its conversation is gone, and a
+follow-up is a new agent that your AI tool briefs again. When the operator turns on session
+persistence, your tool can pass `continueFrom` with an ended agent's ID, and the new agent starts
+with that agent's conversation on the same model profile. An opt-in durable engine
+(`runtime: "pi-durable"`) is available for long tasks that may be interrupted; leave `runtime`
+out otherwise. Both are off unless the operator enables them, and a stopped agent is never
+reported as successful. Field details are in the [tool reference](/reference/tools#agent-spawn),
+and the errors you may see are in [Troubleshooting](/troubleshooting#_32-agent-spawn-returns-not-supported-for-continuefrom-or-runtime-pi-durable).
 
 ---
 

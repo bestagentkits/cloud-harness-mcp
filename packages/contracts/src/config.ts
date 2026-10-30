@@ -26,6 +26,22 @@ const principalRelink = z.object({
   'principal relink source and target must differ'
 );
 
+/**
+ * The Dewee gateway origin the Dashboard webchat proxies to. HTTPS is required; cleartext
+ * http is accepted only for a loopback host (a gateway on the same machine or a test stub),
+ * so the server-side gateway token never crosses a network in the clear.
+ */
+const deweeGatewayUrl = z.url().refine((value) => {
+  try {
+    const url = new URL(value);
+    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    return (url.protocol === 'https:' || (url.protocol === 'http:' && loopback))
+      && !url.username && !url.password && !url.search && !url.hash;
+  } catch {
+    return false;
+  }
+}, 'Dewee gateway URL must be https (or loopback http) without credentials, query or fragment');
+
 const positiveBoundedInteger = (maximum: number, defaultValue: number) =>
   z.coerce.number().int().min(1).max(maximum).default(defaultValue);
 
@@ -41,6 +57,9 @@ export const AgentTracesConfigSchema = z.object({
   previewBytes: z.coerce.number().int().min(0).max(512).default(0)
 }).strict().prefault({});
 export type AgentTracesConfig = z.infer<typeof AgentTracesConfigSchema>;
+/** Upper bounds of a persisted agent session; the agent runtime's `start` schema accepts no more. */
+export const MAX_AGENT_SESSION_MESSAGES = 10_000;
+export const MAX_AGENT_SESSION_BYTES = 7_864_320;
 
 const gatewayUrl = z.url().refine((value) => {
   try {
@@ -102,7 +121,22 @@ export const RunnerAgentLimitsSchema = z.object({
   cleanupRetryLimit: positiveBoundedInteger(1_000, 20),
   cleanupRetryMaxDelayMs: positiveBoundedInteger(86_400_000, 3_600_000),
   retentionSeconds: positiveBoundedInteger(31_536_000, 604_800),
-  lookupHorizonSeconds: positiveBoundedInteger(31_536_000, 2_592_000)
+  lookupHorizonSeconds: positiveBoundedInteger(31_536_000, 2_592_000),
+  // Persisted Pi session bounds. A continuation seeds the whole log through one `start` protocol
+  // record (8 MiB, which also carries a prompt of up to 256 KiB), so the byte bound stays below it.
+  maxSessionMessages: positiveBoundedInteger(MAX_AGENT_SESSION_MESSAGES, 2_000),
+  maxSessionBytes: positiveBoundedInteger(MAX_AGENT_SESSION_BYTES, 7_340_032),
+  sessionRetentionMs: positiveBoundedInteger(31_536_000_000, 604_800_000),
+  // Aggregate bytes of every stored session log, per workspace, principal, and instance. A continuation
+  // copies its predecessor's whole log, so without these the store grows with each continuation.
+  globalSessionBytes: positiveBoundedInteger(17_179_869_184, 1_073_741_824),
+  principalSessionBytes: positiveBoundedInteger(8_589_934_592, 536_870_912),
+  workspaceSessionBytes: positiveBoundedInteger(1_073_741_824, 67_108_864),
+  // On-disk size cap of one durable-runtime lineage's session database. A commit that leaves the
+  // database above it ends the run as LIMIT_EXCEEDED, and the lineage accepts no further commit.
+  maxDurableLineageBytes: z.coerce.number().int().min(1_048_576).max(4_294_967_296).default(268_435_456),
+  // Stored tool-result bytes (receipts) one agent lineage may hold; past it only hashes are kept.
+  maxReceiptBytesPerLineage: positiveBoundedInteger(1_073_741_824, 33_554_432)
 }).strict().superRefine((limits, context) => {
   if (limits.minTtlSeconds > limits.maxTtlSeconds) {
     context.addIssue({ code: 'custom', path: ['minTtlSeconds'], message: 'minimum agent TTL cannot exceed maximum agent TTL' });
@@ -118,6 +152,12 @@ export const RunnerAgentLimitsSchema = z.object({
   }
   if (limits.workspaceRetainedBytes > limits.principalRetainedBytes || limits.principalRetainedBytes > limits.globalRetainedBytes) {
     context.addIssue({ code: 'custom', path: ['workspaceRetainedBytes'], message: 'retained byte limits must satisfy workspace <= principal <= global' });
+  }
+  if (limits.workspaceSessionBytes > limits.principalSessionBytes || limits.principalSessionBytes > limits.globalSessionBytes) {
+    context.addIssue({ code: 'custom', path: ['workspaceSessionBytes'], message: 'session byte limits must satisfy workspace <= principal <= global' });
+  }
+  if (limits.maxSessionBytes > limits.workspaceSessionBytes) {
+    context.addIssue({ code: 'custom', path: ['maxSessionBytes'], message: 'one session cannot be allowed more bytes than its workspace session budget' });
   }
   if (limits.retentionSeconds > limits.lookupHorizonSeconds) {
     context.addIssue({ code: 'custom', path: ['retentionSeconds'], message: 'retention cannot exceed lookup horizon' });
@@ -148,6 +188,15 @@ export const RunnerAgentsConfigSchema = z.object({
     (profiles) => new Set(profiles.map((profile) => profile.id)).size === profiles.length,
     'agent profile IDs must be unique'
   ),
+  // Instance switch for persisted Pi sessions and `agent_spawn.continueFrom`. The decision is made
+  // per agent at spawn: turning it off refuses new continuations and stops recording for agents
+  // spawned afterwards; stored sessions age out through retention.
+  sessionPersistenceEnabled: enabled,
+  // Instance switch for the opt-in pi-durable agent engine, read at runner start. Off refuses new and
+  // continued durable spawns, and nothing resumes on its own; flipping it takes a runner restart,
+  // which stops running agents as any restart does. The runner loads the experimental durable
+  // storage code only while it is on.
+  durableRuntimeEnabled: enabled,
   limits: RunnerAgentLimitsSchema.default(DEFAULT_RUNNER_AGENT_LIMITS)
 }).strict();
 
@@ -181,6 +230,12 @@ export const ApiConfigSchema = z.object({
   runnerToken: token,
   publicHosts: z.array(z.string().min(1)).min(1),
   allowedOrigins: z.array(z.url()).default([]),
+  /**
+   * Which Dashboard UI `/dashboard` serves: the shipped `legacy` shell or the `react`
+   * app from `apps/dashboard`. Unset means `legacy`; a per-browser `?ui=` canary cookie
+   * can still opt into either (see `apps/api/src/dashboard-react-assets.ts`).
+   */
+  dashboardUi: z.enum(['legacy', 'react']).optional(),
   requestTimeoutMs: z.coerce.number().int().min(1_000).max(300_000).default(60_000),
   maxBodyBytes: z.coerce.number().int().min(1_024).max(4_194_304).default(1_048_576),
   mcpGatewayTimeoutMs: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
@@ -197,8 +252,22 @@ export const ApiConfigSchema = z.object({
     const url = new URL(value);
     const loopback = url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
     return (url.protocol === 'https:' || loopback) && url.pathname === '/dashboard/mcp-oauth/callback' && !url.search && !url.hash;
-  }, 'redirect URL must be an https (or loopback http) URL ending in /dashboard/mcp-oauth/callback').optional()
+  }, 'redirect URL must be an https (or loopback http) URL ending in /dashboard/mcp-oauth/callback').optional(),
+  /**
+   * Dashboard webchat (Dewee). The gateway URL, gateway token and webchat signing secret are
+   * all set or all unset; unset disables `/dashboard/api/v1/dewee/*` with a typed 503.
+   */
+  deweeGatewayUrl: deweeGatewayUrl.optional(),
+  deweeGatewayToken: z.string().min(16).max(4_096).refine((value) => !value.startsWith('change-me'), 'placeholder secret is forbidden').optional(),
+  deweeWebchatSecret: token.optional(),
+  deweeTenantId: z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/).optional(),
+  deweeAgentId: z.string().regex(/^[A-Za-z0-9_.:-]{1,64}$/).default('cloud-harness-operator'),
+  deweeChatTimeoutMs: z.coerce.number().int().min(10_000).max(600_000).default(180_000)
 }).superRefine((config, context) => {
+  const deweeValues = [config.deweeGatewayUrl, config.deweeGatewayToken, config.deweeWebchatSecret];
+  if (deweeValues.some((value) => value !== undefined) && deweeValues.some((value) => value === undefined)) {
+    context.addIssue({ code: 'custom', path: ['deweeGatewayUrl'], message: 'Dewee gateway URL, gateway token and webchat secret must all be set or all be unset' });
+  }
   if (config.agentkitAuthEnabled) {
     if (!config.agentkitAuthResource) {
       context.addIssue({ code: 'custom', path: ['agentkitAuthResource'], message: 'agentkit.best resource is required when agentkit.best sign-in is enabled' });

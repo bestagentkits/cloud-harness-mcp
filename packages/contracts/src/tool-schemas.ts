@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
-import { AgentProxyOperationSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
+import { AgentProxyOperationSchema, AgentRuntimeKindSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
 import { SkillSuggestInputSchema } from './typesafe-schemas.js';
 import { MAX_WORKSPACE_REPOSITORIES_LIMIT } from './config.js';
 import { KitLockSchema } from './kit-lock.js';
+import { GitHubRepositoryCreateInputSchema } from './github-repository-schemas.js';
 import {
   ModelConnectionVerifyToolInputSchema,
   ModelProfileCreateToolInputSchema,
@@ -1311,6 +1312,7 @@ const schemas = {
   // own input type is already narrowed by `githubActionInput`, which TypeScript cannot express here.
   github_action: githubActionInput.pipe(githubActionUnion as unknown as z.ZodType<unknown, z.output<typeof githubActionInput>>),
   github_read: githubReadInput.pipe(githubReadUnion as unknown as z.ZodType<unknown, z.output<typeof githubReadInput>>),
+  github_repository_create: GitHubRepositoryCreateInputSchema,
   secrets_list: z.object({
     ...workspace,
     environmentId: EnvironmentIdSchema.optional(),
@@ -1321,7 +1323,9 @@ const schemas = {
     ...workspace,
     prompt: boundedUtf8Text(131_072),
     idempotencyKey: IdempotencyKeySchema,
-    profileId,
+    // Required unless continueFrom is set; a continuation runs on its predecessor's profile.
+    profileId: profileId.optional()
+      .describe('Model profile to run on. Required unless continueFrom is set; a continuation inherits the profile of the agent it continues and refuses a different one.'),
     parentAgentId: AgentIdSchema.optional(),
     proxyOperations: uniqueProxyOperations,
     ttlSeconds: z.number().int().min(30).max(86_400).default(900),
@@ -1333,8 +1337,18 @@ const schemas = {
     // family plus shared REVIEW.md/DESIGN.md). Left without a schema default so omitting it keeps
     // the idempotency payload of existing callers unchanged.
     repositoryContext: z.enum(['codex', 'claude', 'cursor', 'aider', 'all', 'none']).optional()
-      .describe('Repository guidance profile placed before the task; omitted uses codex, none sends the task alone.')
-  }).strict(),
+      .describe('Repository guidance profile placed before the task; omitted uses codex, none sends the task alone.'),
+    // Optional, and without a default, so omitting it keeps the idempotency payload unchanged.
+    continueFrom: AgentIdSchema.optional()
+      .describe('A terminal agent of this workspace whose session the new agent continues; a pi-coding agent needs session persistence on the instance, a pi-durable agent needs the durable runtime enabled. The new agent gets a new id, container, lease, and budget.'),
+    // Optional, and without a default, so omitting it keeps the idempotency payload unchanged.
+    runtime: AgentRuntimeKindSchema.optional()
+      .describe('Agent engine. Omitted means pi-coding, or the engine of the agent named by continueFrom; a continuation refuses a different engine. pi-durable is refused unless the instance enables it.')
+  }).strict().superRefine((input, context) => {
+    if (input.profileId === undefined && input.continueFrom === undefined) {
+      context.addIssue({ code: 'custom', path: ['profileId'], message: 'profileId is required unless continueFrom is set' });
+    }
+  }),
   agent_status: agentLookup,
   agent_logs: z.object({
     ...workspace,
@@ -1397,6 +1411,7 @@ const titles: Record<RunnerOperation, string> = {
   artifacts_snapshot: 'Preserve workspace file snapshot', artifacts_list: 'List retained artifacts', artifacts_read: 'Read retained artifact chunk', artifacts_restore: 'Restore artifact to workspace', artifacts_delete: 'Delete retained artifact',
   github_action: 'Create and manage GitHub issues, pull requests, native PR reviews, review threads, reviewers, merges, commit statuses, and Actions workflow runs',
   github_read: 'Read GitHub pull requests, reviews, review threads, issues, commits, comparisons, releases, tags, refs, commit statuses, check runs, and Actions workflow runs',
+  github_repository_create: 'Create a GitHub organization repository',
   secrets_list: 'List available secrets',
   agent_spawn: 'Spawn coding agent',
   agent_status: 'Read coding agent status',
@@ -1410,7 +1425,7 @@ const descriptions: Record<RunnerOperation, string> = {
   workspace_open: 'Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace. The result hardExpiresAt is a fixed deadline set by the instance maximum workspace lifetime that no renewal or activity extends.',
   workspace_list: 'List owner-visible workspace records with bounded cursor pagination.',
   workspace_status: 'Read the lifecycle state and metadata for one workspace.',
-  workspace_capabilities: 'Inspect workspace and repository authorization capabilities (including issue and pull request operations mapped to github_action) without modifying state or minting tokens.',
+  workspace_capabilities: 'Inspect workspace and repository authorization capabilities (including issue and pull request operations mapped to github_action) without modifying state or minting tokens. githubRepositoryCreate reports whether github_repository_create is available and for which organizations; called without a workspaceId when no workspace is active, it returns only that principal-level block (workspaceId: null).',
   workspace_close: 'Stop a workspace executor and permanently remove all workspace files, including unpushed commits.',
   workspace_lease_renew: 'Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace. Renewal never passes hardExpiresAt; when the requested extension would pass it, the result sets leaseCapped: true with requestedExpiresAt and a leaseWarnings entry.',
   workspace_recover: 'Recover a recoverable expired workspace to active state, or inspect, patch, or export unpushed work.',
@@ -1510,6 +1525,7 @@ const descriptions: Record<RunnerOperation, string> = {
   artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection. With repositoryId the path resolves inside that checkout; without it the path is relative to the workspace root.',
   artifacts_delete: 'Delete a principal-owned retained artifact snapshot before its retention expiry.',
   github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, comment on, review (native COMMENT/APPROVE/REQUEST_CHANGES reviews, inline file/line comments, review-thread reply/resolve/unresolve), assign reviewers, toggle draft/ready, merge, and auto-merge pull requests; create commit statuses on a SHA (commit_status_create: state, context, description, targetUrl); create and update check runs on a SHA (check_run_create: sha, name, status, conclusion, title, summary; check_run_update: checkRunId); dispatch a workflow on a ref with inputs (workflow_dispatch) and re-run only the failed jobs of a run (workflow_run_rerun_failed), in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, pullRequestCreate, pullRequestReview, pullRequestMerge, commitStatusCreate, workflowDispatch, and workflowRunRerun; workspace_capabilities.githubActions is the authoritative action list. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_reviews, pr_review_threads, pr_create, pr_update, pr_comment, pr_review, pr_review_comment, pr_review_reply, pr_review_thread_resolve, pr_review_thread_unresolve, pr_reviewers_request, pr_reviewers_remove, pr_ready, pr_convert_to_draft, pr_merge, pr_auto_merge_enable, pr_auto_merge_disable, commit_status_create, check_run_create, check_run_update, workflow_dispatch, workflow_run_rerun_failed, commit_list, compare, release_list, tag_list, ref_get, commit_status_get, check_runs_list, workflow_runs_list, workflow_run_view. Writes that can duplicate a side effect accept an idempotencyKey. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Atomic ref creation, compare-and-swap, and delete-if-match go through git_push leases, not this tool. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
+  github_repository_create: 'Create a new repository owned by a GitHub organization, through the principal\'s GitHub App installation on that organization. Not bound to a workspace: it takes owner, name, visibility ("public" or "private", required), optional description, autoInit, gitignoreTemplate, licenseTemplate, and a required idempotencyKey. The installation must grant the Administration: write permission; write access to existing repositories does not count. Personal user accounts are not supported. Returns fullName, the immutable numeric repositoryId, htmlUrl, visibility, defaultBranch, created, and replayed. Replaying the same idempotencyKey with the same input returns the recorded result without calling GitHub again; the same key with different input fails with CONFLICT. An existing repository name fails with GITHUB_REPOSITORY_EXISTS, or with UNKNOWN_REMOTE_STATE when an earlier attempt with the same key did not record its outcome, and is never reported as success. Check workspace_capabilities.githubRepositoryCreate first: it lists the organizations where creation is available. Create a repository only when the user explicitly asked for one; the harness never deletes a repository it created.',
   github_read: 'Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, pr_reviews (every review with its state and the latest state per reviewer, including CHANGES_REQUESTED), pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list, ref_get (current OID of refs/heads/... or refs/tags/..., or exists: false), commit_status_get (combined status and every status context for a SHA or ref), check_runs_list (check runs for a SHA or ref), workflow_runs_list (Actions runs filtered by workflow, headSha, branch, event, status), and workflow_run_view (one run with its jobs and conclusions). Maps to operations.pullRequestList, pullRequestView, pullRequestReviewList, issueList, issueView, commitList, compare, releaseList, tagList, refGet, commitStatusRead, checkRunList, and workflowRunRead. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
   secrets_list: 'List available global and environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.',
   agent_spawn: 'Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.',
@@ -1546,7 +1562,7 @@ const destructive = new Set<RunnerOperation>([
   'git_branch', 'git_checkout', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'git_identity_set',
   'worktrees_remove', 'skills_run', 'hooks_run', 'hooks_activate', 'hooks_deactivate', 'memories_write', 'memories_delete',
   'knowledge_create', 'knowledge_update', 'knowledge_delete', 'knowledge_link', 'knowledge_unlink',
-  'deployments_run', 'artifacts_restore', 'artifacts_delete', 'github_action',
+  'deployments_run', 'artifacts_restore', 'artifacts_delete', 'github_action', 'github_repository_create',
   'packages_rollback', 'packages_remove',
   'agent_spawn', 'agent_message', 'agent_cancel',
   'model_profile_update'
@@ -1570,7 +1586,7 @@ const idempotent = new Set<RunnerOperation>([
 ]);
 const openWorld = new Set<RunnerOperation>([
   'workspace_open', 'workspace_repo_add', 'workspace_finalize', 'exec_run', 'bash', 'shell_io', 'sessions_io', 'tasks_run',
-  'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action', 'github_read',
+  'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action', 'github_read', 'github_repository_create',
   'packages_plan', 'packages_apply',
   'agent_spawn', 'agent_message',
   'model_catalog_search', 'model_connection_verify'

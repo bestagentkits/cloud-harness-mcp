@@ -1,0 +1,127 @@
+/*
+ * Semantic design tokens. Components use these names (via the Tailwind theme in
+ * globals.css), never raw colours, so themes, contrast and density change in one place.
+ * `<html>` carries data-theme (light|dark, resolved), data-contrast (standard|high),
+ * data-font-scale (sm|md|lg|xl) and data-density (comfortable|compact); see
+ * src/lib/preferences.ts and public/preferences-boot.js.
+ */
+
+@font-face {
+  font-family: 'Geist';
+  src: url('../assets/fonts/geist-sans-variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('../assets/fonts/geist-mono-variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --font-family-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-family-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  --radius: 0.5rem;
+
+  --background: oklch(0.99 0 0);
+  --foreground: oklch(0.2 0 0);
+  --surface: oklch(1 0 0);
+  --surface-foreground: oklch(0.2 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.2 0 0);
+  --muted: oklch(0.96 0 0);
+  --muted-foreground: oklch(0.45 0 0);
+  --accent: oklch(0.95 0 0);
+  --accent-foreground: oklch(0.2 0 0);
+  --primary: oklch(0.21 0 0);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.95 0 0);
+  --secondary-foreground: oklch(0.21 0 0);
+  --destructive: oklch(0.55 0.21 27);
+  --destructive-foreground: oklch(0.99 0 0);
+  --success: oklch(0.52 0.14 150);
+  --warning: oklch(0.62 0.15 70);
+  --info: oklch(0.52 0.16 250);
+  --border: oklch(0.91 0 0);
+  --input: oklch(0.88 0 0);
+  --ring: oklch(0.52 0.16 250);
+  --overlay: oklch(0 0 0 / 0.45);
+
+  /* Density drives control heights and page rhythm. */
+  --control-height: 2.25rem;
+  --row-height: 2.75rem;
+  --page-gutter: 1.5rem;
+  --stack-gap: 1rem;
+
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 240ms;
+}
+
+:root[data-theme='dark'] {
+  --background: oklch(0.16 0 0);
+  --foreground: oklch(0.95 0 0);
+  --surface: oklch(0.2 0 0);
+  --surface-foreground: oklch(0.95 0 0);
+  --popover: oklch(0.22 0 0);
+  --popover-foreground: oklch(0.95 0 0);
+  --muted: oklch(0.24 0 0);
+  --muted-foreground: oklch(0.72 0 0);
+  --accent: oklch(0.27 0 0);
+  --accent-foreground: oklch(0.95 0 0);
+  --primary: oklch(0.95 0 0);
+  --primary-foreground: oklch(0.18 0 0);
+  --secondary: oklch(0.27 0 0);
+  --secondary-foreground: oklch(0.95 0 0);
+  --destructive: oklch(0.66 0.2 25);
+  --destructive-foreground: oklch(0.16 0 0);
+  --success: oklch(0.72 0.15 150);
+  --warning: oklch(0.8 0.14 80);
+  --info: oklch(0.72 0.14 250);
+  --border: oklch(0.3 0 0);
+  --input: oklch(0.34 0 0);
+  --ring: oklch(0.72 0.14 250);
+  --overlay: oklch(0 0 0 / 0.6);
+}
+
+:root[data-contrast='high'] {
+  --foreground: oklch(0 0 0);
+  --muted-foreground: oklch(0.3 0 0);
+  --border: oklch(0.45 0 0);
+  --input: oklch(0.4 0 0);
+  --ring: oklch(0.4 0.2 260);
+}
+
+:root[data-contrast='high'][data-theme='dark'] {
+  --foreground: oklch(1 0 0);
+  --muted-foreground: oklch(0.88 0 0);
+  --border: oklch(0.7 0 0);
+  --input: oklch(0.75 0 0);
+  --ring: oklch(0.85 0.12 250);
+}
+
+/* Text scale multiplies the root size, so rem-based layout scales with it and native zoom. */
+:root[data-font-scale='sm'] { font-size: 93.75%; }
+:root[data-font-scale='md'] { font-size: 100%; }
+:root[data-font-scale='lg'] { font-size: 112.5%; }
+:root[data-font-scale='xl'] { font-size: 125%; }
+
+:root[data-density='compact'] {
+  --control-height: 2rem;
+  --row-height: 2.25rem;
+  --page-gutter: 1rem;
+  --stack-gap: 0.75rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-base: 0ms;
+    --motion-slow: 0ms;
+  }
+}

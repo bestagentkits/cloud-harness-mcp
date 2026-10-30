@@ -44,9 +44,83 @@ allowed same-origin request and a short-lived CSRF session. The owning request
 paths are [`apps/api/src/auth.ts`](../apps/api/src/auth.ts) and
 [`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts).
 
+### Dashboard UI rollout
+
+`CLOUD_HARNESS_DASHBOARD_UI` selects which dashboard `/dashboard` serves in
+`cloudflare-access` mode: `legacy` (the default when unset) or `react`, the
+rebuilt app in `apps/dashboard`. The flag exists so the React app can ship dark
+and be rolled back by recreating only the `api` container
+([deployment](deployment.md#rollback-or-disable-the-route)); with `legacy` and no canary cookie the API
+answers byte-for-byte as before. Appending `?ui=react` or `?ui=legacy` to any
+Dashboard page pins one browser to that UI through an `HttpOnly`, `Secure`,
+`SameSite=Lax` cookie and redirects back to the same page without the
+parameter, so an operator can canary the React app without changing the
+instance.
+
+Do not set `react` for the whole instance until the React app reaches parity
+(phase P6 of the rollout): deep links the BFF generates and the OAuth callback's
+redirect targets still point at legacy pages the React app does not route yet,
+so they would land on its 404 page. Use the per-browser canary until then.
+
+The React shell keeps the same Host, Origin, Access, and CSRF boundary and adds
+only a per-response style nonce and `font-src 'self'` to its CSP
+([security model](security-model.md#dashboard-20-react-shell)). Both shells
+render the `ch-dashboard-theme` cookie, set by the Dashboard preferences API,
+before first paint; browser storage only mirrors it. The API validates the
+build's Vite manifest at startup and logs one line naming the shell mode and
+the canary state (`enabled`, `disabled` when no build is shipped, or
+`disabled-invalid-manifest`): an invalid build fails startup under `react`,
+and under `legacy` it disables the canary while legacy keeps serving. Only the
+React routes the API allowlists answer 200; other Dashboard navigations get a
+404 rendered by the React not-found page, and the BFF, OAuth callback, assets,
+and MCP routes are never answered by the shell. Owners:
+[`apps/api/src/dashboard-react-assets.ts`](../apps/api/src/dashboard-react-assets.ts)
+and [`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts).
+
 `RUNNER_TOKEN` is independent of either public authentication mode and is used
 only from API to runner. Secret-valued settings accept their documented
 `_FILE` form and must meet schema length/placeholder checks.
+
+### Dashboard webchat (Dewee)
+
+The Dashboard webchat BFF under `/dashboard/api/v1/dewee/` proxies the
+dewee-webchat HTTP contract to a Dewee gateway. It is configured on the `api`
+service only:
+
+- `DEWEE_GATEWAY_URL`: the gateway origin. It must be `https`; cleartext
+  `http` is accepted only for a loopback host.
+- `DEWEE_GATEWAY_TOKEN`: the server-side gateway token.
+- `DEWEE_WEBCHAT_SECRET`: at least 32 characters. It signs the per-operator
+  visitor tokens the widget holds and derives each operator's visitor id.
+  Rotating it orphans existing webchat conversations (see the
+  [security model](security-model.md#dashboard-webchat-dewee)).
+- `DEWEE_AGENT_ID` (default `cloud-harness-operator`): the only agent the
+  widget can reach. It cannot be switched from the browser.
+- `DEWEE_TENANT_ID` (optional): for a multi-tenant gateway.
+- `DEWEE_CHAT_TIMEOUT_MS` (default 180000): bounds one agent run.
+
+Set the URL, token and secret together. A partial set fails API startup, and
+leaving all three unset disables every webchat route with
+`503 dewee_disabled`. Unsetting them and recreating the `api` container is the
+kill switch.
+
+The `api` service has no host mounts, so put the two secrets in the runtime env
+file. The `_FILE` forms work only where a file is actually mounted. Compose
+blanks both secrets on the runner, which shares that env file, and
+`scripts/verify-compose-boundaries.mjs` asserts that no other service names a
+`DEWEE_` setting.
+
+In production the three required settings go in
+`/etc/cloud-harness-mcp/runtime.env`, next to the other `api` settings; the
+[deployment guide](deployment.md#enable-the-dashboard-assistant-dewee) has the
+order. The React Dashboard shows its Assistant button either way; while the
+settings are unset, every request the widget makes answers `503 dewee_disabled`.
+
+The data flow and its risks are in the
+[security model](security-model.md#dashboard-webchat-dewee). The executable
+owners are
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts) and
+[`apps/api/src/dashboard-dewee-router.ts`](../apps/api/src/dashboard-dewee-router.ts).
 
 ### Dashboard-managed API-key gateway
 
@@ -780,6 +854,37 @@ again needs no migration. To stop only the pauses, set
 `AGENT_APPROVALS_ENABLED=false`: waiting runs fail with `APPROVALS_DISABLED` on
 the next sweep, their approvals expire, and later held steps fail instead of
 waiting. Approval records stay readable until their workflow is purged.
+
+## Managed agents
+
+The runner reads the managed-agent settings (`AGENT_*`) in
+[`apps/runner/src/config.ts`](../apps/runner/src/config.ts); their defaults and
+bounds are the `RunnerAgentsConfigSchema` in
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts).
+Session persistence is an opt-in:
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AGENT_SESSION_PERSISTENCE_ENABLED` | `false` | Runner flag. Agents spawned while it is on record their Pi session in the runner state store, and `agent_spawn.continueFrom` can continue a terminal agent's session in a new agent on the same model profile. Off, spawns behave exactly as before and `continueFrom` is refused with `NOT_SUPPORTED`. Turning it off later keeps existing sessions until their retention or workspace close. |
+| `AGENT_MAX_SESSION_MESSAGES` | `2000` | The most messages one persisted session may hold. Past it the run continues, but the session is no longer continuable. |
+| `AGENT_MAX_SESSION_BYTES` | `7340032` (7 MiB) | The most message bytes one persisted session may hold, with the same outcome. Its maximum keeps a full session, the prompt, and the rest of the start record inside the 8 MiB agent protocol record. |
+| `AGENT_SESSION_RETENTION_MS` | `604800000` (7 days) | How long a sealed session stays continuable after its agent ends. The runner then purges its messages. Closing or expiring the workspace deletes its sessions sooner. |
+| `AGENT_WORKSPACE_SESSION_BYTES` | `67108864` (64 MiB) | The most message bytes all stored sessions of one workspace may hold together. A continuation copies its predecessor's whole log, so without an aggregate bound each continuation grows the store by up to one full session. A message that would pass the budget leaves its session not continuable (the run continues), and a continuation whose copy would pass it is refused with `LIMIT_EXCEEDED`. Every stored log counts, including one that stopped being continuable, until retention purges it or the workspace closes. Each durable lineage's session database counts its size on disk, write-ahead log included, until its files are deleted; a durable commit that would pass a budget, judged by its request size, is refused, and one that leaves usage over a budget ends the run as `LIMIT_EXCEEDED`. |
+| `AGENT_PRINCIPAL_SESSION_BYTES` | `536870912` (512 MiB) | The same budget across every workspace of one owner. |
+| `AGENT_GLOBAL_SESSION_BYTES` | `1073741824` (1 GiB) | The same budget across the instance. The three must satisfy workspace ≤ principal ≤ global, and `AGENT_MAX_SESSION_BYTES` may not exceed the workspace budget. |
+| `AGENT_DURABLE_RUNTIME_ENABLED` | `false` | Runner flag for the opt-in durable engine. On, `agent_spawn.runtime: "pi-durable"` runs an agent on pi-durable, whose session store the runner keeps per lineage under `agent-sessions/` beside the state database, and a continuation resumes the lineage's unfinished work. Off, durable spawns and durable continuations are refused with `NOT_SUPPORTED`, and nothing resumes on its own. The runner reads it only at start, so changing it needs a runner restart, which stops running agents like any restart. The runner loads the engine only while it is on. It needs an agent image built with the durable engine; see [operations](operations.md#durable-agent-engine). |
+| `AGENT_DURABLE_MAX_LINEAGE_BYTES` | `268435456` (256 MiB) | The most bytes one durable lineage's session database may hold on disk, write-ahead log included; bounded between 1 MiB and 4 GiB. A commit that leaves it over the cap ends the run as `LIMIT_EXCEEDED` and the runner refuses further commits to it. When the run ends, the runner measures the closed database (its write-ahead log checkpointed) against the cap configured then; still over it, the agent is not continuable. The database also counts toward the `AGENT_*_SESSION_BYTES` budgets, so with the defaults the 64 MiB workspace budget, shared with the workspace's other stored sessions, binds before this cap. |
+| `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` | `33554432` (32 MiB) | The most tool-result bytes (receipts) one agent lineage keeps for replay. Only an agent spawned with session persistence or on the durable engine stores result text at all; past the cap, and for every other agent, the effect ledger keeps the payload and result hashes only, and a repeated call behaves as if its receipt had expired. |
+
+The [security model](security-model.md#persisted-agent-sessions) describes
+what the session store holds and who can read it. The
+[agent tools](mcp-api.md#persisted-sessions-and-continuefrom) describe
+`continueFrom` and the status fields.
+
+The durable engine ships only in an agent image built with the
+`INCLUDE_DURABLE_RUNTIME=true` build argument, so the default image and its size
+are unchanged. Turning `AGENT_DURABLE_RUNTIME_ENABLED` on without that image fails
+each durable run at start with an error that names the build argument.
 
 ## Compose and logging overrides
 

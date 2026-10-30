@@ -12,5 +12,8 @@ coverage/
 deploy/.generated/
 .cloud-harness-test-fixtures/
 
+# Playwright output
+apps/dashboard/test-results/
+apps/dashboard/playwright-report/
 # Live Jev check report (docs/development.md)
 jev-live.json

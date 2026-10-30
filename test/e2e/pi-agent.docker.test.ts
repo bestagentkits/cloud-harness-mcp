@@ -330,7 +330,7 @@ describe.skipIf(Boolean(prerequisiteIssue))('actual Pi agent through MCP and the
   it('rejects agent spawn for a bridge-backed workspace before creating agent resources', async () => {
     const workspaceId = await openWorkspace('pi-agent-bridge-rejection', 'network-none');
     store.database.prepare("UPDATE workspaces SET network_profile='dependency-access' WHERE id=?").run(workspaceId);
-    const before = await agentResourceInventory();
+    expect(await agentResourceInventory(workspaceId)).toEqual({ containers: [], networks: [] });
     const result = await client.callTool({
       name: 'agent_spawn',
       arguments: {
@@ -348,13 +348,7 @@ describe.skipIf(Boolean(prerequisiteIssue))('actual Pi agent through MCP and the
     });
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toMatchObject({ error: { code: 'CONFLICT' } });
-    // An earlier test's agent resources may still be tearing down, so only resources absent from the
-    // before snapshot prove this rejected spawn created something.
-    const after = await agentResourceInventory();
-    expect({
-      containers: after.containers.filter((name) => !before.containers.includes(name)),
-      networks: after.networks.filter((name) => !before.networks.includes(name))
-    }).toEqual({ containers: [], networks: [] });
+    expect(await agentResourceInventory(workspaceId)).toEqual({ containers: [], networks: [] });
     await call('workspace_close', { workspaceId });
     activeWorkspaceIds.delete(workspaceId);
   }, 60_000);
@@ -432,10 +426,13 @@ function fakeProviderRequestCount(): number {
   return dockerLogs(stack.providerContainer).split('\n').filter((line) => line.includes('"event":"fake-provider-request"')).length;
 }
 
-async function agentResourceInventory(): Promise<{ containers: string[]; networks: string[] }> {
+// Scoped to one workspace: other suites run in parallel on the same Docker host, and their agent
+// resources must not appear in this inventory.
+async function agentResourceInventory(workspaceId: string): Promise<{ containers: string[]; networks: string[] }> {
+  const workspaceLabel = `label=cloud-harness.workspace=${workspaceId}`;
   const [containers, networks] = await Promise.all([
-    runDocker(['ps', '-a', '--filter', 'label=cloud-harness.agent-container=true', '--format', '{{.Names}}']),
-    runDocker(['network', 'ls', '--filter', 'label=cloud-harness.agent-network=true', '--format', '{{.Name}}'])
+    runDocker(['ps', '-a', '--filter', 'label=cloud-harness.agent-container=true', '--filter', workspaceLabel, '--format', '{{.Names}}']),
+    runDocker(['network', 'ls', '--filter', 'label=cloud-harness.agent-network=true', '--filter', workspaceLabel, '--format', '{{.Name}}'])
   ]);
   expect(containers.exitCode, containers.stderr).toBe(0);
   expect(networks.exitCode, networks.stderr).toBe(0);

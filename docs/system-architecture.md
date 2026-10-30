@@ -55,11 +55,21 @@ Dashboard Terminal (browser)
   -> runner internal terminal operation (service bearer, not an MCP tool)
   -> Docker Engine API exec with a PTY over the runner's unix socket
   -> interactive shell inside the workspace's existing executor
+
+Dashboard webchat (browser)
+  -> /dashboard/api/v1/dewee BFF on the API (session cookie, Origin, CSRF,
+     per-operator limit; page block built server-side)
+  -> Dewee gateway WebSocket over the API egress network (server-side token)
+  -> Dewee agent and its LLM provider, outside Cloud Harness
 ```
 
 Cloudflare Access is an optional public authentication edge in front of nginx;
-it does not join the Compose control network. GitHub and Google are IdPs of
-that Access application, not direct API integrations.
+it does not join the Compose control network. With Managed OAuth enabled it is
+also the OAuth authorization server MCP clients see, and it forwards a signed
+assertion that the API verifies. GitHub and Google are IdPs of that Access
+application, not direct API integrations. The sequence and credential split are
+explained once in the
+[security model](security-model.md#inbound-mcp-oauth-cloudflare-access-is-the-authorization-server).
 
 The split is deliberate. The ingress proxy owns no secret or application
 logic; it only bridges host loopback to an internal frontend network. The API owns public HTTP, MCP negotiation, request
@@ -117,6 +127,23 @@ Agent tools communicate with the runner via a bounded stdio JSONL protocol for
 the trusted Model Gateway service via per-agent internal Docker networks using
 opaque, short-lived capability leases with pre-reserved token and cost budgets.
 
+The agent container runs one of two engines behind the same protocol, chosen
+per spawn by an engine adapter in
+[`apps/runner/src/agent-runtime-adapter.ts`](../apps/runner/src/agent-runtime-adapter.ts).
+The default coding runtime replays a persisted message log from its start
+record. The opt-in durable engine (pi-durable) keeps its session store in the
+runner instead: each storage call travels to the runner as a bounded request on
+the agent's stdio channel, and
+[`apps/runner/src/durable-session-store.ts`](../apps/runner/src/durable-session-store.ts)
+serves it from one SQLite database per continuation lineage, owned by a single
+run at a time. The container therefore stays stateless, and a continuation of
+an interrupted durable run resumes its unfinished work. The engine is loaded,
+in the runner and in the agent image, only when the operator opts in
+([operations](operations.md#durable-agent-engine)).
+[ADR 0006](adr/0006-agent-session-persistence.md) records why the coding runtime
+stays the default and both session persistence and the durable engine stay
+flag-gated opt-ins, with the measurements behind that decision.
+
 The gateway budget is conservative by design, so it never charges less than
 the provider bills. Each request reserves its worst case before it goes
 upstream. Input is estimated at one token per request byte, plus a fixed
@@ -155,6 +182,17 @@ without a local one. The browser pulls output with long-poll reads over
 ordinary dashboard requests. [ADR 0003](adr/0003-terminal-bash-and-managed-toolbox.md) records
 the decision; the [security model](security-model.md#dashboard-terminal) records
 its boundary.
+
+The Dashboard webchat is a proxy, not an agent runtime. The API BFF in
+[`apps/api/src/dashboard-dewee-router.ts`](../apps/api/src/dashboard-dewee-router.ts)
+implements the dewee-webchat HTTP contract (`config`, `session`, `chat` as
+Server-Sent Events, `history`). It derives the visitor from the dashboard
+principal, prepends the page block, and streams each turn from the Dewee gateway
+WebSocket ([`apps/api/src/dashboard-dewee-gateway.ts`](../apps/api/src/dashboard-dewee-gateway.ts)).
+It aborts the run when the browser disconnects. The runner is not involved. When
+the agent acts on Cloud Harness, it does so over MCP with its own API key, like
+any other client. The [security model](security-model.md#dashboard-webchat-dewee)
+records the data flow and the controls.
 
 Managed toolbox packages split orchestration from building. The `packages_*`
 MCP tools reach the runner like every other tool, but the runner dispatches

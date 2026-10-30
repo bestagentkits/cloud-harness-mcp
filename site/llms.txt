@@ -6,7 +6,7 @@ Cloud Harness MCP is open source (MIT) and self-hosted. It is not a hostile mult
 
 ## Product
 
-- [Home](https://harness.agentkit.best/): Architecture (stateless ingress, policy runner, non-root sandbox), the bounded coding workflow, the MCP tool set, client setup, and installation.
+- [Home](https://harness.agentkit.best/): Product tour video, system architecture (credential-free ingress, API and runner control plane, MCP gateway, model gateway, non-root executor, managed agent containers), the bounded coding workflow, the MCP gateway ("MCP in MCP" with five tools), Cloud Managed Agents (Pi agent live; Claude Code and Codex coming soon) with providers and model profiles, Agent Skills with built-in AgentKit.best kits, the MCP tool set, connecting ChatGPT, Claude, Cursor, and Codex, installation, and the free, MIT-licensed open-source project.
 - [HaaS design](https://harness.agentkit.best/haas.html): Design notes for a hosted, multi-tenant "Harness as a Service" built on microVM isolation. Design stage, not a shipped product.
 - [Support](https://harness.agentkit.best/support.html): Where to get help and report issues.
 

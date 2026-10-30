@@ -128,4 +128,23 @@ describe('GitHub API installation verifier', () => {
     const verified = await new GitHubApiInstallationVerifier(githubApp, request).verifyInstallation('456');
     expect(verified).toMatchObject({ issues: 'none', pullRequests: 'none' });
   });
+
+  it('records the administration level and account type that gate repository creation', async () => {
+    const organization = {
+      id: 456, app_id: 123, suspended_at: null,
+      account: { id: 789, login: 'acme', type: 'Organization' },
+      permissions: { contents: 'write', administration: 'write' }
+    };
+    const request = vi.fn(async (input: URL | RequestInfo) => String(input).includes('/app/installations/')
+      ? Response.json(organization)
+      : Response.json({ total_count: 0, repositories: [] })) as typeof fetch;
+    expect(await new GitHubApiInstallationVerifier(githubApp, request).verifyInstallation('456'))
+      .toMatchObject({ administration: 'write', accountType: 'Organization' });
+
+    const userRequest = vi.fn(async (input: URL | RequestInfo) => String(input).includes('/app/installations/')
+      ? Response.json({ ...organization, account: { id: 1, login: 'octocat', type: 'User' }, permissions: {} })
+      : Response.json({ total_count: 0, repositories: [] })) as typeof fetch;
+    expect(await new GitHubApiInstallationVerifier(githubApp, userRequest).verifyInstallation('456'))
+      .toMatchObject({ administration: 'none', accountType: 'User' });
+  });
 });

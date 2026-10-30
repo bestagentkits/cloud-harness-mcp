@@ -49,3 +49,15 @@ Open a server to reach `/dashboard/mcp-servers/:serverId`, with tabs for:
 
 The breadcrumb returns to the list, and the rail keeps **MCP Servers** current on
 every detail tab.
+
+## In the new dashboard
+
+In the [new dashboard](index.md#new-dashboard-preview), a server's detail tabs (Overview, Tools,
+Permissions, Logs) are part of the address, for example `/dashboard/mcp-servers/<id>?tab=logs`,
+so you can link to or reload a tab. Switching tabs replaces the address rather than adding
+history entries, so Back leaves the server page. Header values are masked, and
+closing the add or edit dialog clears everything you typed. A change that races another
+edit is refused and the list reloads with the latest version; an open edit dialog is
+refilled with that version for you to review before saving again. If the settings save but
+the enabled switch then fails, the dialog says *Saved; enabled state not changed* and saving
+again retries only on top of what was saved.

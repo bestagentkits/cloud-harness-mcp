@@ -136,7 +136,17 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     'AGENT_CLEANUP_RETRY_LIMIT',
     'AGENT_CLEANUP_RETRY_MAX_DELAY_MS',
     'AGENT_RETENTION_SECONDS',
-    'AGENT_LOOKUP_HORIZON_SECONDS'
+    'AGENT_LOOKUP_HORIZON_SECONDS',
+    'AGENT_SESSION_PERSISTENCE_ENABLED',
+    'AGENT_MAX_SESSION_MESSAGES',
+    'AGENT_MAX_SESSION_BYTES',
+    'AGENT_SESSION_RETENTION_MS',
+    'AGENT_GLOBAL_SESSION_BYTES',
+    'AGENT_PRINCIPAL_SESSION_BYTES',
+    'AGENT_WORKSPACE_SESSION_BYTES',
+    'AGENT_DURABLE_RUNTIME_ENABLED',
+    'AGENT_DURABLE_MAX_LINEAGE_BYTES',
+    'AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE'
   ].some((name) => process.env[name] !== undefined);
   const config = RunnerConfigSchema.parse({
     authMode: process.env.AUTH_MODE,
@@ -226,6 +236,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
       networkMode: process.env.AGENT_NETWORK_MODE,
       gatewayUrl: process.env.AGENT_GATEWAY_URL,
       profiles: agentProfiles(process.env.AGENT_PROFILES_JSON, process.env.AGENT_PROFILES_FILE),
+      sessionPersistenceEnabled: process.env.AGENT_SESSION_PERSISTENCE_ENABLED,
+      durableRuntimeEnabled: process.env.AGENT_DURABLE_RUNTIME_ENABLED,
       limits: {
         globalActive: process.env.AGENT_GLOBAL_ACTIVE,
         principalActive: process.env.AGENT_PRINCIPAL_ACTIVE,
@@ -250,7 +262,15 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
         cleanupRetryLimit: process.env.AGENT_CLEANUP_RETRY_LIMIT,
         cleanupRetryMaxDelayMs: process.env.AGENT_CLEANUP_RETRY_MAX_DELAY_MS,
         retentionSeconds: process.env.AGENT_RETENTION_SECONDS,
-        lookupHorizonSeconds: process.env.AGENT_LOOKUP_HORIZON_SECONDS
+        lookupHorizonSeconds: process.env.AGENT_LOOKUP_HORIZON_SECONDS,
+        maxSessionMessages: process.env.AGENT_MAX_SESSION_MESSAGES,
+        maxSessionBytes: process.env.AGENT_MAX_SESSION_BYTES,
+        sessionRetentionMs: process.env.AGENT_SESSION_RETENTION_MS,
+        globalSessionBytes: process.env.AGENT_GLOBAL_SESSION_BYTES,
+        principalSessionBytes: process.env.AGENT_PRINCIPAL_SESSION_BYTES,
+        workspaceSessionBytes: process.env.AGENT_WORKSPACE_SESSION_BYTES,
+        maxDurableLineageBytes: process.env.AGENT_DURABLE_MAX_LINEAGE_BYTES,
+        maxReceiptBytesPerLineage: process.env.AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE
       }
     } : undefined,
     agentPoliciesEnabled: process.env.AGENT_POLICIES_ENABLED,

@@ -6,10 +6,11 @@ import { getModelProvider, listModelProviders, type ModelProviderKind } from '@c
 
 // Outbound HTTPS from the runner to model providers, for catalog discovery and
 // connection verification. Only registry hosts (or the operator's custom
-// upstream) are reachable, the resolved address is checked and pinned for the
-// connection, redirects are never followed, and every request is bounded in
-// time and size. Mirrors the model gateway's upstream policy
-// (apps/model-gateway/src/config.ts), which is deployed separately.
+// upstream) and the public metadata hosts below are reachable, the resolved
+// address is checked and pinned for the connection, redirects are never
+// followed, and every request is bounded in time and size. Mirrors the model
+// gateway's upstream policy (apps/model-gateway/src/config.ts), which is
+// deployed separately.
 
 export interface ProviderHttpRequest {
   url: string;
@@ -124,15 +125,33 @@ const registryHosts: ReadonlyMap<ModelProviderKind, ReadonlySet<string>> = new M
  * for a custom provider the host of the operator's HTTPS upstream.
  */
 export function assertProviderRequestUrl(provider: ModelProviderKind, raw: string, customUpstreamUrl?: string): URL {
-  const url = new URL(raw);
-  if (url.protocol !== 'https:' || url.username || url.password || (url.port !== '' && url.port !== '443')) {
-    throw new ProviderHttpError('forbidden_host', 'provider requests must use credential-free HTTPS on port 443');
-  }
+  const url = credentialFreeHttpsUrl(raw);
   const definition = getModelProvider(provider);
   const allowed = definition.requiresCustomUpstream
     ? customUpstreamUrl !== undefined && new URL(customUpstreamUrl).hostname === url.hostname
     : registryHosts.get(provider)?.has(url.hostname) === true;
   if (!allowed) throw new ProviderHttpError('forbidden_host', 'provider request host is not allowed');
+  assertPublicHostname(url.hostname);
+  return url;
+}
+
+function credentialFreeHttpsUrl(raw: string): URL {
+  const url = new URL(raw);
+  if (url.protocol !== 'https:' || url.username || url.password || (url.port !== '' && url.port !== '443')) {
+    throw new ProviderHttpError('forbidden_host', 'provider requests must use credential-free HTTPS on port 443');
+  }
+  return url;
+}
+
+// Public metadata the catalog reads without any credential. models.dev publishes
+// the per-model prices OpenCode's own client uses, which no OpenCode endpoint
+// exposes. No provider credential is ever sent to these hosts.
+const publicMetadataHosts: ReadonlySet<string> = new Set(['models.dev']);
+
+/** A credential-free HTTPS URL on a public metadata host. */
+export function assertPublicMetadataUrl(raw: string): URL {
+  const url = credentialFreeHttpsUrl(raw);
+  if (!publicMetadataHosts.has(url.hostname)) throw new ProviderHttpError('forbidden_host', 'metadata request host is not allowed');
   assertPublicHostname(url.hostname);
   return url;
 }

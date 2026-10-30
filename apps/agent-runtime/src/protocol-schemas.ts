@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isSessionMessage } from './session-replay.js';
 // Wire limits must remain aligned with apps/runner/src/agent-protocol.ts.
 export const MAX_PROTOCOL_RECORD_BYTES = 8 * 1024 * 1024;
 export const MAX_PROTOCOL_QUEUE_BYTES = 16 * 1024 * 1024;
@@ -54,6 +55,23 @@ function isBoundedJson(value: unknown): boolean {
 
 export const BoundedJsonSchema = z.unknown().refine(isBoundedJson, 'value exceeds JSON shape bounds');
 
+// Aligned with the largest session the runner may be configured to persist.
+export const MAX_SESSION_MESSAGES = 10_000;
+// A persisted message passes through unchanged, so its exact JSON (and digest) survives the round
+// trip; its size is bounded by the protocol record limit instead of the shape bounds above.
+const SessionMessageSchema = z.unknown().refine(isSessionMessage, 'session message must be a user, assistant, or toolResult message');
+
+// Aligned with the runner's tool outcome bounds in apps/runner/src/agent-protocol.ts.
+export const MAX_TOOL_OUTCOMES = 64;
+const MAX_TOOL_OUTCOME_TEXT_BYTES = 64 * 1024;
+const ToolOutcomeSchema = z.object({
+  // Empty is valid: some providers omit tool call IDs, and replay closes such a call by that ID.
+  toolCallId: z.string().max(1_024),
+  outcome: z.enum(['APPLIED', 'REJECTED', 'NOT_APPLIED', 'UNKNOWN']),
+  isError: z.boolean(),
+  text: z.string().min(1).refine((text) => Buffer.byteLength(text, 'utf8') <= MAX_TOOL_OUTCOME_TEXT_BYTES, 'tool outcome text is too large')
+}).strict();
+
 const CostSchema = z.object({
   input: z.number().finite().nonnegative().max(1_000_000),
   output: z.number().finite().nonnegative().max(1_000_000),
@@ -87,8 +105,48 @@ export const StartRecordSchema = z.object({
     maxOutputBytes: z.number().int().min(1_024).max(10_485_760),
     maxEventBytes: z.number().int().min(256).max(64 * 1024),
     maxToolResultBytes: z.number().int().min(256).max(MAX_PROTOCOL_RECORD_BYTES)
-  }).strict()
+  }).strict(),
+  // Present only for an agent that persists its session: the verified history to replay first.
+  session: z.object({
+    messages: z.array(SessionMessageSchema).max(MAX_SESSION_MESSAGES),
+    headSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    // What became of tool calls the history left unanswered, as the runner settled them; a call
+    // without an entry is closed with the generic interruption.
+    toolOutcomes: z.array(ToolOutcomeSchema).max(MAX_TOOL_OUTCOMES)
+      .refine((outcomes) => new Set(outcomes.map((item) => item.toolCallId)).size === outcomes.length, 'duplicate tool outcome')
+      .optional()
+  }).strict().optional(),
+  // The agent engine; absent selects the default coding runtime.
+  runtime: z.enum(['pi-coding', 'pi-durable']).optional(),
+  // Durable engine only, for a continuation: resume the lineage's unfinished tasks or cancel them first.
+  durableResume: z.enum(['continue', 'abort']).optional()
 }).strict();
+
+// Durable-runtime session storage RPC, aligned with apps/runner/src/agent-protocol.ts. Payloads are
+// the session's own records, bounded by the record size limit rather than the JSON shape bounds.
+export const STORAGE_METHODS = [
+  'commit', 'mintId', 'conversation', 'scanConversations', 'entry', 'findLatestHeadMarker',
+  'scanEntries', 'task', 'scanTasks', 'submission', 'scanSubmissions', 'submissionByRequest',
+  'findDocument', 'document', 'scanDocuments', 'close'
+] as const;
+export const STORAGE_ERROR_CODES = ['request', 'closed', 'fenced', 'limit', 'rate_limited', 'unavailable', 'failed'] as const;
+
+export const StorageRequestRecordSchema = z.object({
+  type: z.literal('storage_request'),
+  id: RequestIdSchema,
+  method: z.enum(STORAGE_METHODS),
+  args: z.array(z.unknown()).max(4)
+}).strict();
+
+export const StorageResponseRecordSchema = z.discriminatedUnion('ok', [
+  z.object({ type: z.literal('storage_response'), id: RequestIdSchema, ok: z.literal(true), result: z.unknown().optional() }).strict(),
+  z.object({
+    type: z.literal('storage_response'),
+    id: RequestIdSchema,
+    ok: z.literal(false),
+    error: z.object({ code: z.enum(STORAGE_ERROR_CODES), message: z.string().max(4_096), retryable: z.boolean() }).strict()
+  }).strict()
+]);
 
 export const ToolResultRecordSchema = z.object({
   type: z.literal('tool_result'),
@@ -123,7 +181,8 @@ export const InputRecordSchema = z.discriminatedUnion('type', [
   ToolResultRecordSchema,
   ToolCancelRecordSchema,
   MessageRecordSchema,
-  CancelRecordSchema
+  CancelRecordSchema,
+  StorageResponseRecordSchema
 ]);
 
 /** How a model turn ended, from the assistant message's stop reason. */
@@ -191,11 +250,19 @@ export const TerminalRecordSchema = z.object({
   error: z.string().max(4_096).optional()
 }).strict();
 
+export const SessionMessageRecordSchema = z.object({
+  type: z.literal('session_message'),
+  seq: SafeCountSchema,
+  message: SessionMessageSchema
+}).strict();
+
 export const OutputRecordSchema = z.discriminatedUnion('type', [
   EventRecordSchema,
   ToolRequestRecordSchema,
   ToolCancelRecordSchema,
   UsageRecordSchema,
+  SessionMessageRecordSchema,
+  StorageRequestRecordSchema,
   TerminalRecordSchema
 ]);
 
@@ -209,3 +276,6 @@ export type TerminalState = z.infer<typeof TerminalStateSchema>;
 export type OutputRecord = z.infer<typeof OutputRecordSchema>;
 
 export type MessageRecord = z.infer<typeof MessageRecordSchema>;
+export type SessionMessageRecord = z.infer<typeof SessionMessageRecordSchema>;
+export type StorageRequestRecord = z.infer<typeof StorageRequestRecordSchema>;
+export type StorageResponseRecord = z.infer<typeof StorageResponseRecordSchema>;

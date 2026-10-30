@@ -2,11 +2,13 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { ModelProviderKind } from '@cloud-harness/contracts';
 import { CatalogSourceError } from '../src/model-catalog/catalog-source.js';
+import { fetchModelsDevModels, modelsDevProviderFor, normalizeModelsDevModels } from '../src/model-catalog/models-dev-catalog.js';
 import { fetchOpenRouterModels, normalizeOpenRouterModels } from '../src/model-catalog/openrouter-catalog.js';
 import { PROVIDER_CATALOG_BUDGET_MS, fetchProviderModels, type ProviderCatalogCredential } from '../src/model-catalog/provider-catalog.js';
 import { ProviderHttpError, type ProviderHttpClient, type ProviderHttpRequest, type ProviderHttpResponse } from '../src/model-provider-http.js';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/openrouter-models-sample.json', import.meta.url), 'utf8')) as unknown;
+const modelsDevFixture = JSON.parse(readFileSync(new URL('./fixtures/models-dev-sample.json', import.meta.url), 'utf8')) as unknown;
 const SECRET = 'sk-test-catalog-secret-0123456789';
 const BEARER: ProviderCatalogCredential = { secret: SECRET, authMode: 'bearer' };
 const X_API_KEY: ProviderCatalogCredential = { secret: SECRET, authMode: 'x-api-key' };
@@ -159,6 +161,82 @@ describe('OpenRouter catalog normalization', () => {
   });
 });
 
+describe('models.dev catalog normalization', () => {
+  it('prices only providers that models.dev prices', () => {
+    expect(modelsDevProviderFor('opencode-go')).toBe('opencode-go');
+    expect(modelsDevProviderFor('openai')).toBeUndefined();
+    expect(modelsDevProviderFor('custom')).toBeUndefined();
+  });
+
+  it('maps one provider to prefixed IDs, micros per million, limits, tiers, and confirmed capabilities', () => {
+    const models = normalizeModelsDevModels(modelsDevFixture, 'opencode-go');
+    expect(models.map((model) => model.id)).toEqual([
+      'opencode-go/glm-5.1', 'opencode-go/qwen3.7-plus', 'opencode-go/gemini-audio', 'opencode-go/unpriced-preview'
+    ]);
+    const [glm, qwen, audio, unpriced] = models;
+    expect(glm).toEqual({
+      id: 'opencode-go/glm-5.1',
+      name: 'GLM-5.1',
+      contextLength: 204_800,
+      maxCompletionTokens: 131_072,
+      prices: { input: 600_000, output: 2_200_000, cacheRead: 110_000, cacheWrite: null },
+      tiers: [],
+      hasConditionalPricing: false,
+      capabilities: { tools: 'reported', reasoning: 'reported', vision: 'unknown' },
+      expiresAt: null
+    });
+    expect(qwen?.prices).toEqual({ input: 400_000, output: 1_600_000, cacheRead: 40_000, cacheWrite: 500_000 });
+    expect(qwen?.tiers).toEqual([{
+      minPromptTokens: 256_000, inputMicrosPerMillionTokens: 1_200_000, outputMicrosPerMillionTokens: 4_800_000,
+      cacheReadMicrosPerMillionTokens: 120_000, cacheWriteMicrosPerMillionTokens: 1_500_000
+    }]);
+    expect(qwen?.hasConditionalPricing).toBe(false);
+    expect(qwen?.capabilities.vision).toBe('reported');
+    // An audio input price is a condition the catalog cannot express; a false flag is never read as unsupported.
+    expect(audio?.hasConditionalPricing).toBe(true);
+    expect(audio?.capabilities.tools).toBe('unknown');
+    expect(unpriced?.prices).toEqual({ input: null, output: null, cacheRead: null, cacheWrite: null });
+  });
+
+  it('drops every tier and marks the price conditional when a tier cannot be used', () => {
+    const payload = (cost: Record<string, unknown>) => ({ 'opencode-go': { models: { m: { id: 'm', cost: { input: 1, output: 2, ...cost } } } } });
+    const tier = (size: unknown, type = 'context') => ({ input: 2, output: 4, tier: { type, size } });
+    for (const cost of [
+      { tiers: [tier(200_000, 'time_of_day')] },
+      { tiers: [tier(0)] },
+      { tiers: [tier(300_000), tier(200_000)] },
+      { tiers: [{ output: 4, tier: { type: 'context', size: 200_000 } }] },
+      { context_over_200k: { input: 2, output: 4 } }
+    ]) {
+      const [model] = normalizeModelsDevModels(payload(cost), 'opencode-go');
+      expect(model?.tiers).toEqual([]);
+      expect(model?.hasConditionalPricing).toBe(true);
+    }
+  });
+
+  it('fails the catalog when the provider is missing', () => {
+    expect(() => normalizeModelsDevModels({ openai: { models: {} } }, 'opencode-go')).toThrow(CatalogSourceError);
+    expect(() => normalizeModelsDevModels([], 'opencode-go')).toThrow(CatalogSourceError);
+  });
+
+  it('fetches the public registry from models.dev without any credential, bounded in time and size', async () => {
+    const { client, calls } = fakeHttp(() => json(modelsDevFixture));
+    expect(await fetchModelsDevModels(client, 'opencode-go')).toHaveLength(4);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ url: 'https://models.dev/api.json', method: 'GET', timeoutMs: 15_000, maxResponseBytes: 16 * 1024 * 1024 });
+    expect(calls[0]?.headers).toBeUndefined();
+  });
+
+  it('classifies models.dev failures', async () => {
+    const fetchWith = (handler: Parameters<typeof fakeHttp>[0]) => fetchModelsDevModels(fakeHttp(handler).client, 'opencode-go');
+    expect(await categoryOf(fetchWith(() => json({}, 503)))).toBe('upstream_error');
+    expect(await categoryOf(fetchWith(() => json({}, 429)))).toBe('rate_limited');
+    expect(await categoryOf(fetchWith(() => ({ status: 200, headers: {}, body: '{', truncated: true })))).toBe('invalid_response');
+    expect(await categoryOf(fetchWith(() => json({ other: {} })))).toBe('invalid_response');
+    expect(await categoryOf(fetchWith(() => { throw new ProviderHttpError('timeout', 'slow'); }))).toBe('timeout');
+  });
+});
+
 describe('provider model listing', () => {
   it.each<[ModelProviderKind, string]>([
     ['openai', 'https://api.openai.com/v1/models'],
@@ -173,10 +251,17 @@ describe('provider model listing', () => {
     expect(calls[0]?.method).toBe('GET');
   });
 
-  it('sends the OpenCode Go session header with a fresh id on each listing, and no such header elsewhere', async () => {
-    const { client, calls } = fakeHttp(() => json({ data: [{ id: 'kimi-k2.5' }] }));
-    expect(await fetchProviderModels(client, 'opencode-go', BEARER)).toEqual([
-      { id: 'kimi-k2.5', displayName: null, contextWindow: null, maxOutputTokens: null }
+  it('lists the public OpenCode Go models without a key, with a fresh session id each time, and no such header elsewhere', async () => {
+    const { client, calls } = fakeHttp(() => json({
+      object: 'list',
+      data: [
+        { id: 'kimi-k2.5', object: 'model', created: 1_792_256_284, owned_by: 'opencode' },
+        { id: 'glm-5.1', object: 'model', created: 1_792_256_284, owned_by: 'opencode' }
+      ]
+    }));
+    expect(await fetchProviderModels(client, 'opencode-go', undefined)).toEqual([
+      { id: 'kimi-k2.5', displayName: null, contextWindow: null, maxOutputTokens: null },
+      { id: 'glm-5.1', displayName: null, contextWindow: null, maxOutputTokens: null }
     ]);
     await fetchProviderModels(client, 'opencode-go', BEARER);
     await fetchProviderModels(client, 'openai', BEARER);
@@ -187,8 +272,16 @@ describe('provider model listing', () => {
     expect(first).toMatch(/^[0-9a-f-]{36}$/u);
     expect(second).toMatch(/^[0-9a-f-]{36}$/u);
     expect(second).not.toBe(first);
-    expect(calls[0]?.headers).toEqual({ authorization: `Bearer ${SECRET}`, 'x-opencode-session': first });
+    // The key is never sent to the public list, even when one is supplied.
+    expect(calls[0]?.headers).toEqual({ 'x-opencode-session': first });
+    expect(calls[1]?.headers).toEqual({ 'x-opencode-session': second });
     expect(calls[2]?.headers).toEqual({ authorization: `Bearer ${SECRET}` });
+  });
+
+  it('refuses to list a keyed endpoint without a credential', async () => {
+    const { client, calls } = fakeHttp(() => json({ data: [] }));
+    expect(await categoryOf(fetchProviderModels(client, 'openai', undefined))).toBe('credential_unavailable');
+    expect(calls).toHaveLength(0);
   });
 
   it('strips the Gemini models/ prefix so the chat endpoint receives a bare ID', async () => {

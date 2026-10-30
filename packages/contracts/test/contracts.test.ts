@@ -4,9 +4,14 @@ import {
   AgentIdSchema,
   GITHUB_READ_ACTIONS,
   GITHUB_WRITE_ACTIONS,
+  AGENT_PROXY_REPLAY_CLASS,
+  AgentEffectErrorCodeSchema,
   AgentProxyOperationSchema,
+  AgentProxyReplayClassSchema,
   AgentStatusDataSchema,
   ApiConfigSchema,
+  DEFAULT_RUNNER_AGENT_LIMITS,
+  RunnerAgentLimitsSchema,
   ContextManifestItemSchema,
   ContextManifestSchema,
   DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
@@ -40,6 +45,17 @@ describe('contracts', () => {
     expect(() => ApiConfigSchema.parse({ ...commonApiConfig, bearerToken: 'change-me-at-least-32-random-characters' })).toThrow();
   });
 
+  it('bounds the aggregate bytes of persisted agent sessions per workspace, principal, and instance', () => {
+    expect(DEFAULT_RUNNER_AGENT_LIMITS).toMatchObject({
+      workspaceSessionBytes: 67_108_864, principalSessionBytes: 536_870_912, globalSessionBytes: 1_073_741_824
+    });
+    expect(() => RunnerAgentLimitsSchema.parse({ workspaceSessionBytes: 600_000_000 })).toThrow(/workspace <= principal <= global/);
+    expect(() => RunnerAgentLimitsSchema.parse({ principalSessionBytes: 2_000_000_000 })).toThrow(/workspace <= principal <= global/);
+    expect(() => RunnerAgentLimitsSchema.parse({ workspaceSessionBytes: 0 })).toThrow();
+    expect(() => RunnerAgentLimitsSchema.parse({ workspaceSessionBytes: 1_048_576 })).toThrow(/workspace session budget/);
+    expect(RunnerAgentLimitsSchema.parse({ maxSessionBytes: 1024, workspaceSessionBytes: '1024' }).workspaceSessionBytes).toBe(1024);
+  });
+
   it('defaults to owner bearer mode and rejects mixed or partial Access configuration', () => {
     const owner = ApiConfigSchema.parse({ ...commonApiConfig, bearerToken: 'owner-token-that-is-long-enough-123456' });
     expect(owner.authMode ?? 'owner-bearer').toBe('owner-bearer');
@@ -50,6 +66,27 @@ describe('contracts', () => {
       accessIssuer: 'https://team.cloudflareaccess.com'
     })).toThrow();
     expect(() => ApiConfigSchema.parse({ ...commonApiConfig, authMode: 'cloudflare-access', accessIssuer: 'https://team.cloudflareaccess.com' })).toThrow();
+  });
+
+  it('requires the Dashboard webchat settings together and keeps its gateway URL safe', () => {
+    const owner = { ...commonApiConfig, bearerToken: 'owner-token-that-is-long-enough-123456' };
+    const dewee = { deweeGatewayUrl: 'https://dewee.example.com', deweeGatewayToken: 'gateway-token-0123456789', deweeWebchatSecret: 'webchat-secret-that-is-long-enough-1234' };
+    const disabled = ApiConfigSchema.parse(owner);
+    expect(disabled.deweeGatewayUrl).toBeUndefined();
+    expect(disabled.deweeAgentId).toBe('cloud-harness-operator');
+    expect(ApiConfigSchema.parse({ ...owner, ...dewee }).deweeChatTimeoutMs).toBe(180_000);
+    expect(ApiConfigSchema.parse({ ...owner, ...dewee, deweeGatewayUrl: 'http://127.0.0.1:8080' }).deweeGatewayUrl).toBe('http://127.0.0.1:8080');
+    for (const missing of ['deweeGatewayUrl', 'deweeGatewayToken', 'deweeWebchatSecret'] as const) {
+      const partial: Record<string, unknown> = { ...owner, ...dewee };
+      delete partial[missing];
+      expect(() => ApiConfigSchema.parse(partial)).toThrow(/all be set or all be unset/);
+    }
+    for (const url of ['http://dewee.example.com', 'https://user:pass@dewee.example.com', 'https://dewee.example.com/?token=x', 'wss://dewee.example.com']) {
+      expect(() => ApiConfigSchema.parse({ ...owner, ...dewee, deweeGatewayUrl: url })).toThrow();
+    }
+    expect(() => ApiConfigSchema.parse({ ...owner, ...dewee, deweeWebchatSecret: 'short' })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...owner, ...dewee, deweeGatewayToken: 'change-me-gateway-token' })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...owner, ...dewee, deweeAgentId: 'bad agent' })).toThrow();
   });
 
   it('accepts a complete Access configuration and requires HTTPS provider URLs', () => {
@@ -888,6 +925,16 @@ describe('contracts', () => {
       'files_move', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references',
       'exec_run', 'git_status', 'git_diff'
     ]);
+    // Every proxy operation has exactly one replay class, and nothing outside the enum is classified.
+    expect(Object.keys(AGENT_PROXY_REPLAY_CLASS).sort()).toEqual([...AgentProxyOperationSchema.options].sort());
+    for (const operation of AgentProxyOperationSchema.options) {
+      expect(AgentProxyReplayClassSchema.options).toContain(AGENT_PROXY_REPLAY_CLASS[operation]);
+    }
+    expect(Object.entries(AGENT_PROXY_REPLAY_CLASS).filter(([, replayClass]) => replayClass === 'read-safe').map(([operation]) => operation).sort())
+      .toEqual(['files_list', 'files_read', 'git_diff', 'git_status', 'grep_search', 'symbols_references', 'symbols_search']);
+    expect(Object.entries(AGENT_PROXY_REPLAY_CLASS).filter(([, replayClass]) => replayClass === 'destructive').map(([operation]) => operation).sort())
+      .toEqual(['exec_run', 'files_delete', 'files_move']);
+    expect(AgentEffectErrorCodeSchema.options).toEqual(['EFFECT_UNKNOWN', 'EFFECT_NOT_APPLIED', 'EFFECT_RECEIPT_UNAVAILABLE']);
     expect(() => TOOL_SCHEMA_BY_NAME.agent_spawn.parse({
       workspaceId,
       prompt: 'p',
@@ -929,6 +976,13 @@ describe('contracts', () => {
       proxyOperations: ['files_read'],
       ownerId: 'public-identity-is-forbidden'
     })).toThrow();
+    // profileId may be omitted only by a continuation, which inherits its predecessor's profile.
+    expect(() => TOOL_SCHEMA_BY_NAME.agent_spawn.parse({
+      workspaceId, prompt: 'p', idempotencyKey: 'spawn-key-1234', proxyOperations: ['files_read']
+    })).toThrow(/profileId is required/);
+    expect(TOOL_SCHEMA_BY_NAME.agent_spawn.parse({
+      workspaceId, prompt: 'p', idempotencyKey: 'spawn-key-1234', proxyOperations: ['files_read'], continueFrom: agentId
+    })).not.toHaveProperty('profileId');
     expect(() => TOOL_SCHEMA_BY_NAME.agent_status.parse({ workspaceId, agentId })).not.toThrow();
     expect(() => TOOL_SCHEMA_BY_NAME.agent_status.parse({ workspaceId, idempotencyKey: 'spawn-key-1234' })).not.toThrow();
     expect(() => TOOL_SCHEMA_BY_NAME.agent_status.parse({ workspaceId, agentId, idempotencyKey: 'spawn-key-1234' })).toThrow();

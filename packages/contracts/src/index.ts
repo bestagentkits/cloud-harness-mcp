@@ -6,6 +6,7 @@ export * from './decision-plane.js';
 export * from './internal-runner-api.js';
 export * from './mcp-results.js';
 export * from './runner-api.js';
+export * from './github-repository-schemas.js';
 export * from './tool-schemas.js';
 export * from './kit-lock.js';
 export * from './secret-policy.js';

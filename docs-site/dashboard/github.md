@@ -84,6 +84,7 @@ Before creating the App in GitHub, choose the minimum required permission level:
 | **Create or update check runs (`check_run_create`, `check_run_update`), including the check run a pull request [automation](/dashboard/automations) reports** | **Checks: Read and write** + **Contents: Read-only** |
 | **Read workflow runs, dispatch workflows, re-run failed jobs** | **Actions: Read-only** or **Read and write** + **Contents: Read-only** |
 | **Use a branch as a merge-train lock (`git_push` leases)** | **Contents: Read and write** |
+| **Create organization repositories (`github_repository_create`)** | **Administration: Read and write** (organization installation only) |
 
 ::: tip Principle of Least Privilege
 Leave every other repository, organization, and user permission set to **No access**.
@@ -245,3 +246,11 @@ GitHub authorization lives on the **Integrations** page. The rail links to
 `/dashboard/integrations/github`; `/dashboard/github` still works and redirects there, so
 existing bookmarks and documentation links keep resolving. MCP server connections have
 their own rail entry, [MCP Servers](/dashboard/mcp-servers).
+
+## Callback in the new dashboard
+
+The [new dashboard](index.md#new-dashboard-preview) completes the GitHub App installation
+itself: when GitHub sends you back to `/dashboard/integrations/github` with `state` and
+`installation_id`, the page links the installation once, removes both values from the
+address, and shows the result. A malformed value is ignored, and a reused or expired one is
+refused by the server.

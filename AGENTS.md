@@ -26,7 +26,8 @@ instead of copying behavior, defaults, command inventories, or configuration.
 | Configuration | [`docs/configuration.md`](docs/configuration.md) | `.env.example`, `packages/contracts/src/config.ts`, `apps/api/src/config.ts`, `apps/runner/src/config.ts`, `compose*.yaml` |
 | Development and verification | [`docs/development.md`](docs/development.md) | `package.json`, `.github/workflows/ci.yml`, tests |
 | Deployment and recovery | [`docs/deployment.md`](docs/deployment.md), [`docs/operations.md`](docs/operations.md), [`docs/troubleshooting.md`](docs/troubleshooting.md) | `deploy/`, `compose.production.yaml`, `scripts/verify-production.mjs`, `scripts/deploy-canary.mjs` |
-| Operator dashboard UI | [`docs/design-guidelines.md`](docs/design-guidelines.md) | `apps/api/dashboard/`, `apps/api/src/dashboard-router.ts`, `apps/api/src/dashboard-assets.ts`, `apps/api/test/dashboard-ui-contract.test.ts` |
+| Operator dashboard UI (legacy shell) | [`docs/design-guidelines.md`](docs/design-guidelines.md) | `apps/api/dashboard/`, `apps/api/src/dashboard-router.ts`, `apps/api/src/dashboard-assets.ts`, `apps/api/test/dashboard-ui-contract.test.ts` |
+| Dashboard 2.0 (React app) | [`docs/adr/0005-dashboard-react-rewrite.md`](docs/adr/0005-dashboard-react-rewrite.md), [`docs/dashboard-parity-matrix.md`](docs/dashboard-parity-matrix.md), [`docs/design-guidelines.md`](docs/design-guidelines.md) | `apps/dashboard/`, `apps/api/src/dashboard-react-assets.ts` (manifest serving), `apps/api/src/dashboard-security.ts` (CSP), `apps/api/src/dashboard-router.ts` (BFF) |
 | Official user docs & guides | `docs-site/` | `docs-site/`, `scripts/build-docs-reference.mjs`, `npm run docs:build` |
 | Claude directory plugin | [`docs/claude-directory.md`](docs/claude-directory.md), [`docs/adr/0007-claude-directory-distribution.md`](docs/adr/0007-claude-directory-distribution.md) | `plugins/cloud-harness-workspaces/`, `packages/contracts/test/claude-directory-plugin.test.ts`, `apps/api/test/mcp-tool-annotations.test.ts`, `claude plugin validate --strict` |
 | Agent skill & MCP tool guidance | [`.agents/skills/cloudharness/SKILL.md`](.agents/skills/cloudharness/SKILL.md) | `.agents/skills/cloudharness/`, `plugins/cloud-harness/`, `packages/contracts/test/cloudharness-skill-contract.test.ts`, `npm run plugin:sync` |
@@ -69,6 +70,24 @@ instead of copying behavior, defaults, command inventories, or configuration.
   container or state recovery as live operations. Follow the owning runbook,
   resolve exact targets first, and do not perform them from an ordinary code
   task without explicit authorization.
+
+## Dashboard frontend rules
+
+[ADR 0005](docs/adr/0005-dashboard-react-rewrite.md) supersedes Issue #220's
+"no framework" decision. Do not re-apply the old frontend-only rules to
+`apps/dashboard`: React, TypeScript, the ADR's dependency allowlist,
+self-hosted Geist fonts under `font-src 'self'`, and browser storage for
+non-secret preferences and UI restore are allowed there. The legacy shell in
+`apps/api/dashboard/` keeps its own rules and contract tests until cutover.
+
+Every security rule still applies to both shells: no `unsafe-inline`, no
+`unsafe-eval`, no CDN or remote assets, no secret, API key, OAuth token,
+terminal output or owner ID in browser storage or persisted caches, the BFF
+session cookie and CSRF header on every mutation, Host/Origin checks, and
+redacted principal-scoped projections. A UI affordance never grants a
+capability. Replace a markup-coupled test with a behavioural test when its
+page moves; never delete coverage. Track page ownership in the
+[parity matrix](docs/dashboard-parity-matrix.md).
 
 ## Deploy failure lessons
 
@@ -117,9 +136,15 @@ current:
   one status label at a time: `in progress` while implementing, `blocked` when
   waiting on an external decision or prerequisite (comment what blocks it),
   `in review` during isolated code review, `done` once the PR is open and green,
-  and `shipped` after it merges to `main`.
-- `main` is the integration branch; merging to it triggers `Deploy production`,
-  so a merge is a live operation that needs owner authorization.
+  and `shipped` only once its commit is on `main`
+  (`git merge-base --is-ancestor <sha> origin/main`); a fix merged into `dev`
+  stays `done` until a promotion carries it to `main`.
+- `dev` is the integration branch (beta releases); `main` is the production
+  branch and merging to it triggers `Deploy production`, so a merge to `main`
+  is a live operation that needs owner authorization. Follow the branch and
+  promotion rules in [`docs/development.md`](docs/development.md#branches-and-promotion):
+  a change merged straight into `main` is merged back into `dev` the same day,
+  so `dev` stays a superset of `main` and a fix can never be stranded on one side.
 - When you find a related or duplicate issue, comment on it with a reference to
   the issue you are working on instead of duplicating work. File an unrelated
   defect you discover as its own issue rather than widening the current PR.
@@ -188,9 +213,10 @@ current on the issue you are working on and assign its owner:
 
 - `in progress` while implementing, `blocked` while waiting on a dependency or
   decision (say what in a comment), `in review` while an isolated reviewer
-  checks the change, `done` once the PR is open, and `shipped` once it is
-  merged. Replace the previous state label rather than stacking them. The
-  `released` label is applied by the release automation, not by hand.
+  checks the change, `done` once the PR is open, and `shipped` once its
+  commit is on `main` (a merge into `dev` alone is not `shipped`). Replace
+  the previous state label rather than stacking them. The `released` label
+  is applied by the release automation, not by hand.
 - Before starting, check for an existing `in progress` owner or a duplicate
   issue. Comment on related or duplicate issues with a reference instead of
   doing the work twice.

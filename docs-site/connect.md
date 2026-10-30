@@ -22,15 +22,17 @@ Cloud Harness MCP provides two distinct connection lanes over **Streamable HTTP 
          • Codex App (Loopback OAuth)          • Non-interactive CLI scripts
 ```
 
+The two lanes are non-interchangeable: an API key is rejected on the Managed OAuth URL, and an OAuth token is rejected on the API-key URL. On the Managed OAuth lane, Cloudflare Access is the OAuth authorization server and GitHub or Google only sign you in to Access; see [Security & Threat Model](/security-model#public-authentication-cloudflare-access-managed-oauth).
+
 ## Protocol Lane Comparison
 
 | Feature | Managed OAuth Lane | Static API Key Lane |
 |---|---|---|
 | **Public URL** | `https://harness.zuey.me/mcp` | `https://api.harness.zuey.me/mcp` |
 | **[MCP Gateway](/mcp-gateway) URL** | `https://harness.zuey.me/mcp-gateway` | `https://api.harness.zuey.me/mcp-gateway` |
-| **Authentication** | Cloudflare Access OAuth | Dashboard-managed API Key |
-| **Header** | Access JWT Cookie / Bearer | `Authorization: Bearer <api-key>` |
-| **Target Clients** | ChatGPT, Web App Connectors | Cursor, Claude Code, Codex, Antigravity |
+| **Authentication** | Cloudflare Access Managed OAuth (Access is the authorization server) | Dashboard-managed API Key |
+| **Header** | Opaque OAuth bearer issued by Access | `Authorization: Bearer <api-key>` |
+| **Target Clients** | ChatGPT, Claude Desktop and hosted Claude connectors, Codex App | Cursor, Claude Code, Codex CLI, Antigravity, scripts |
 | **Key Expiry** | OAuth grant duration ([Settings](/dashboard/settings#mcp-oauth-sessions)) | 1–3,650 days (configurable, approximately 10 years) |
 | **Max Keys per Identity** | N/A | 10 active keys |
 

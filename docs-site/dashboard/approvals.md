@@ -120,3 +120,10 @@ The approval mode decides whether you see decisions at all:
 - `PACKAGES_APPROVAL_MODE=required` (the default): every plan waits here.
 - `PACKAGES_APPROVAL_MODE=none`: plans are approved by policy when they are created. They
   are listed for the record.
+
+## In the new dashboard
+
+In the [new dashboard](index.md#new-dashboard-preview), approving or rejecting reloads both
+lists right away, so a decision made in another tab or by an expiry shows up on the next
+action instead of leaving a stale count. The sidebar does not show a pending count yet, so
+check this page for waiting requests.

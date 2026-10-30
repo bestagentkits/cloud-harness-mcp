@@ -822,7 +822,7 @@
           claude mcp add cloud-harness \<br/>
           &nbsp;&nbsp;--transport http \<br/>
           &nbsp;&nbsp;https://api.harness.zuey.me/mcp \<br/>
-          &nbsp;&nbsp;--header "Authorization: Bearer YOUR_OPERATOR_KEY"
+          &nbsp;&nbsp;--header "Authorization: Bearer YOUR_API_KEY"
         </div>
       </section>
 
@@ -946,7 +946,7 @@
             claude mcp add cloud-harness \\<br/>
             &nbsp;&nbsp;--transport http \\<br/>
             &nbsp;&nbsp;https://api.harness.zuey.me/mcp \\<br/>
-            &nbsp;&nbsp;--header "Authorization: Bearer YOUR_OPERATOR_KEY"
+            &nbsp;&nbsp;--header "Authorization: Bearer YOUR_API_KEY"
           `;
         } else if (client === 'cursor') {
           box.innerHTML = `
@@ -955,7 +955,7 @@
             &nbsp;&nbsp;"mcpServers": {<br/>
             &nbsp;&nbsp;&nbsp;&nbsp;"cloud-harness": {<br/>
             &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"url": "https://api.harness.zuey.me/mcp",<br/>
-            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"headers": { "Authorization": "Bearer YOUR_OPERATOR_KEY" }<br/>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"headers": { "Authorization": "Bearer YOUR_API_KEY" }<br/>
             &nbsp;&nbsp;&nbsp;&nbsp;}<br/>
             &nbsp;&nbsp;}<br/>
             }
@@ -972,7 +972,7 @@
             <span style="color: #64748b;"># Add to ~/.codex/config.toml</span><br/>
             [mcp_servers.cloud_harness]<br/>
             url = "https://api.harness.zuey.me/mcp"<br/>
-            headers = { Authorization = "Bearer YOUR_OPERATOR_KEY" }
+            headers = { Authorization = "Bearer YOUR_API_KEY" }
           `;
         }
       }

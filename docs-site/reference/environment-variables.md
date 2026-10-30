@@ -73,6 +73,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `ACCESS_PRINCIPAL_RELINKS` | `[]` | Optional | Optional audited subject-rotation mappings, supplied as strict JSON: |
 | `API_PUBLIC_HOSTS` | `localhost,127.0.0.1,cloud-harness-mcp.46-250-239-227.sslip.io` | **Required** | Required configuration. |
 | `API_ALLOWED_ORIGINS` | `https://cloud-harness-mcp.46-250-239-227.sslip.io` | **Required** | Required configuration. |
+| `CLOUD_HARNESS_DASHBOARD_UI` | `legacy` | Optional | Dashboard UI served at /dashboard: legacy (default) or react. Rollback: set legacy and restart the api service. A browser can opt in or out with /dashboard?ui=react\|legacy. |
 | `API_PORT` | `3000` | **Required** | Required configuration. |
 | `RUNNER_PORT` | `3001` | **Required** | Required configuration. |
 | `RUNNER_URL` | `http://runner:3001` | **Required** | Required configuration. |
@@ -87,6 +88,12 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `MCP_GATEWAY_ALLOW_INSECURE_HTTP` | `false` | Optional | Optional configuration. |
 | `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` | `https://dashboard.example.com/dashboard/mcp-oauth/callback` | Optional | Downstream MCP OAuth (Cloud Harness authenticating TO a third-party MCP server; unrelated to the Cloudflare Access login that authenticates clients TO Cloud Harness). The redirect URL must be the dashboard origin plus /dashboard/mcp-oauth/callback; OAuth Connect is unavailable until it is set. The client metadata URL is optional: a public https URL serving this client's metadata document, used as client_id when the authorization server supports Client ID Metadata Documents. Without it, dynamic registration or a manually registered client is used. |
 | `MCP_DOWNSTREAM_OAUTH_CLIENT_METADATA_URL` | `https://public.example.com/oauth/client/cloud-harness` | Optional | Optional configuration. |
+| `DEWEE_GATEWAY_URL` | `https://dewee-gateway.example.com` | Optional | Dashboard webchat (Dewee). The api proxies /dashboard/api/v1/dewee/* to this gateway with the server-side token; the browser never sees the token or the signing secret. Set the URL, token and secret together, or leave all three unset to disable the webchat (typed 503). Kill switch: unset them and restart the api service. The api has no host mounts, so set the two secrets inline in the runtime env file (the _FILE variants work only where a file is mounted). The runner blanks them in Compose; ingress and executors never receive them. |
+| `DEWEE_GATEWAY_TOKEN` | `—` | Optional | Server-side Dewee gateway token, sent only in the gateway connect frame. |
+| `DEWEE_WEBCHAT_SECRET` | `—` | Optional | At least 32 random characters; signs the per-operator webchat visitor tokens. |
+| `DEWEE_AGENT_ID` | `cloud-harness-operator` | Optional | The only Dewee agent the Dashboard webchat can reach. |
+| `DEWEE_TENANT_ID` | `—` | Optional | Optional tenant id or slug for a multi-tenant Dewee gateway. |
+| `DEWEE_CHAT_TIMEOUT_MS` | `180000` | Optional | Upper bound for one webchat agent run, in milliseconds (10000-600000). |
 | `MODEL_GATEWAY_SESSION_HEADER` | `x-opencode-session` | Optional | Model gateway provider override. When set, the gateway sends this one upstream header, filled with the calling agent id, to OpenAI-compatible providers that require a conversation identifier (for example x-opencode-session for a Custom route to OpenCode). A registry provider's own session header, such as OpenCode Go's, takes precedence. Unset sends no such header. The value must be a lowercase header name the gateway does not set itself. |
 | `JOBS_ROOT` | `/var/lib/cloud-harness/jobs` | **Required** | Required configuration. |
 | `STATE_DB` | `/var/lib/cloud-harness/state/cloud-harness.db` | **Required** | Required configuration. |
@@ -134,6 +141,16 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `PACKAGES_BUILD_TIMEOUT_MS` | `600000` | Optional | Wall-clock limit for one plan or apply builder container. |
 | `DECISION_PLANE_PURPOSES` | `—` | Optional | Decision Plane (runner): advisory semantic decisions, sent only when the owner has a TypeSafe integration key. Comma-separated subset of mcp-routing,failure-classification,execution-risk; empty keeps it off. |
 | `TYPESAFE_EGRESS` | `on` | Optional | Instance-wide TypeSafe egress switch (runner): off stops skill suggestions and the Decision Plane even when an owner has stored a key. Per owner, deleting the key does the same. |
+| `AGENT_SESSION_PERSISTENCE_ENABLED` | `false` | Optional | Managed agent session persistence (runner): agents spawned while it is on record their Pi session in the runner state store, and agent_spawn.continueFrom continues an ended agent's session in a new agent on the same model profile. Off, spawns behave as before and continueFrom is refused with NOT_SUPPORTED. |
+| `AGENT_MAX_SESSION_MESSAGES` | `2000` | Optional | Most messages one persisted session may hold; past it the run continues but is no longer continuable. |
+| `AGENT_MAX_SESSION_BYTES` | `7340032` | Optional | Most message bytes one persisted session may hold (at most 7864320, to fit the 8 MiB agent start record). |
+| `AGENT_SESSION_RETENTION_MS` | `604800000` | Optional | How long a sealed session stays continuable after its agent ends (7 days); workspace close deletes it sooner. |
+| `AGENT_WORKSPACE_SESSION_BYTES` | `67108864` | Optional | Most bytes all stored sessions of one workspace may hold together; a continuation copies its predecessor's log, and durable lineage databases count their size on disk too. |
+| `AGENT_PRINCIPAL_SESSION_BYTES` | `536870912` | Optional | Most bytes all stored sessions of one owner may hold together. |
+| `AGENT_GLOBAL_SESSION_BYTES` | `1073741824` | Optional | Most bytes all stored sessions of the instance may hold together (workspace <= principal <= global). |
+| `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` | `33554432` | Optional | Most stored tool-result bytes (receipts) one agent lineage may keep for replay (32 MiB); past it only hashes are kept. |
+| `AGENT_DURABLE_RUNTIME_ENABLED` | `false` | Optional | Opt-in durable agent engine (runner): agent_spawn.runtime "pi-durable" runs the agent on the pi-durable engine, whose session store lives in the runner state directory, so a continuation resumes unfinished work. Needs an agent image built with the INCLUDE_DURABLE_RUNTIME=true build argument; see docs/operations.md. Read at runner start; changing it needs a runner restart, which stops running agents like any restart. Off, durable spawns and continuations are refused with NOT_SUPPORTED and nothing resumes on its own. |
+| `AGENT_DURABLE_MAX_LINEAGE_BYTES` | `268435456` | Optional | Most bytes one durable lineage's session database may hold (256 MiB); past it, or past an AGENT_*_SESSION_BYTES budget, the run ends LIMIT_EXCEEDED; a store still past the cap when the run ends also leaves the agent not continuable. |
 | `GITHUB_APP_ID` | `—` | Optional | Optional GitHub App repository access; required fields depend on AUTH_MODE: |
 | `GITHUB_APP_INSTALLATION_ID` | `—` | Optional | Required in owner-bearer mode; omit in Access mode, where each principal binds an installation: |
 | `GITHUB_APP_SLUG` | `—` | Optional | Required in Access mode for the installation redirect: |

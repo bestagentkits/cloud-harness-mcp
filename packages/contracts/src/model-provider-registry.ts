@@ -10,7 +10,8 @@ export type ModelCatalogStrategy = 'provider-models' | 'openrouter' | 'none';
 export interface ModelProviderModelsEndpoint {
   url: string;
   // `bearer` sends `Authorization: Bearer`, `anthropic` sends `x-api-key` and
-  // `anthropic-version` as Anthropic's native models endpoint requires.
+  // `anthropic-version` as Anthropic's native models endpoint requires. `none`
+  // marks a public list the catalog fetches without any credential.
   auth: 'bearer' | 'anthropic' | 'none';
 }
 
@@ -152,9 +153,12 @@ const definitions: readonly ModelProviderDefinition[] = [
       'chat-completions': 'https://opencode.ai/inference/go/openai/v1/chat/completions',
       responses: 'https://opencode.ai/inference/go/openai/v1/responses'
     },
-    modelsEndpoint: { url: 'https://opencode.ai/inference/go/v1/models', auth: 'bearer' },
+    // The Go model list is public and answers any bearer it cannot verify with 401,
+    // so it is fetched without the key; the connection check sends the key there.
+    modelsEndpoint: { url: 'https://opencode.ai/inference/go/v1/models', auth: 'none' },
     catalogStrategy: 'provider-models',
-    // OpenRouter does not price the subscription, so there is no price fallback.
+    // OpenRouter does not list OpenCode Go. The runner catalog prices it from
+    // models.dev instead (apps/runner/src/model-catalog/models-dev-catalog.ts).
     openRouterVendor: null,
     requiresCustomUpstream: false,
     // The subscription meters cache writes against the plan allowance; assume a premium.

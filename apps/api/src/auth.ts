@@ -56,7 +56,8 @@ function logAssertionRejection(request: AuthenticatedRequest, reason: AccessDiag
 
 // An entry only counts as an HTML request when text/html is acceptable (q > 0); explicit
 // exclusions such as "application/json,text/html;q=0" stay JSON.
-function acceptsHtml(accept: string): boolean {
+/** True when an Accept header admits `text/html` with a non-zero quality. */
+export function acceptsHtml(accept: string): boolean {
   return accept.split(',').some((entry) => {
     const [type, ...parameters] = entry.split(';').map((part) => part.trim().toLowerCase());
     if (type !== 'text/html') return false;

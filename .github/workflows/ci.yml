@@ -16,7 +16,7 @@ concurrency:
 jobs:
   quality:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -34,12 +34,38 @@ jobs:
           git ls-files -z '*.sh' 'bin/*' | xargs -0 -n1 bash -n
       - run: npm run verify:compose
       - run: npm run verify
+      # `verify` already built the API and the React Dashboard; the suites drive that build
+      # through the real Express app in Chromium (shell, navigation transaction, error
+      # states, axe, CSP, browser storage, navigation p95). Screenshots run in
+      # `dashboard-visual`, inside the image their baselines were recorded in.
+      - run: npx -w @cloud-harness/dashboard playwright install --with-deps chromium
+      - run: npm run test:e2e -w @cloud-harness/dashboard -- --project=chromium
       - name: Verify documentation and reference integrity
         run: |
           npm run docs:reference
           npm run docs:check
           npm run docs:build
           npm run docs:artifact
+  # The light/dark screenshots at 1280, 768 and 375 px. Fonts and Chromium come from the
+  # pinned Playwright image, the same one the Linux baselines in
+  # apps/dashboard/e2e/visual.spec.ts-snapshots are recorded in, so a diff is the UI's.
+  dashboard-visual:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --user 1001 --ipc=host
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.11.0
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w @cloud-harness/contracts
+      - run: npm run build -w @cloud-harness/api
+      - run: npm run build -w @cloud-harness/dashboard
+      - run: npm run test:e2e -w @cloud-harness/dashboard -- --project=visual
   docker-integration:
     needs: quality
     runs-on: ubuntu-24.04
@@ -53,8 +79,10 @@ jobs:
       - run: npm ci
       - run: node scripts/generate-model-gateway-test-fixtures.mjs
       - run: docker compose --profile images build executor-image agent-image api runner model-gateway network-guard-image
+      - name: Build the agent image with the opt-in durable engine
+        run: docker build -f docker/agent.Dockerfile --build-arg INCLUDE_DURABLE_RUNTIME=true -t cloud-harness-agent-durable:local .
       - name: Verify non-root API runtime dependencies
-        run: docker run --rm --entrypoint node cloud-harness-api:local -e "const fs=require('node:fs'); for (const file of ['/app/package.json','/app/apps/api/package.json','/app/apps/api/dashboard/index.html','/app/packages/contracts/package.json','/app/scripts/deploy-canary.mjs','/app/deploy/ingress-proxy.mjs']) fs.accessSync(file, fs.constants.R_OK); import('@cloud-harness/contracts')"
+        run: docker run --rm --entrypoint node cloud-harness-api:local -e "const fs=require('node:fs'); for (const file of ['/app/package.json','/app/apps/api/package.json','/app/apps/api/dashboard/index.html','/app/apps/dashboard/dist/index.html','/app/packages/contracts/package.json','/app/scripts/deploy-canary.mjs','/app/deploy/ingress-proxy.mjs']) fs.accessSync(file, fs.constants.R_OK); import('@cloud-harness/contracts')"
       - run: CLOUD_HARNESS_REQUIRE_DOCKER_TESTS=1 npm run test:docker
       - run: CLOUD_HARNESS_REQUIRE_DOCKER_TESTS=1 npm run test:e2e
       - name: Assert managed-container cleanup
