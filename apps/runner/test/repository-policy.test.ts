@@ -1,7 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { LookupAddress, LookupAllOptions } from 'node:dns';
+import type * as DnsPromises from 'node:dns/promises';
 import type { RunnerConfig } from '@cloud-harness/contracts';
 import { mintRepositoryToken } from '../src/github-app-broker.js';
 import { validateRepositoryUrl } from '../src/repository-policy.js';
+
+// Hostnames resolve through the real resolver unless a test sets an answer, so DNS-dependent cases are deterministic.
+const dns = vi.hoisted(() => ({ answer: undefined as LookupAddress[] | undefined }));
+vi.mock('node:dns/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof DnsPromises>();
+  return {
+    ...actual,
+    lookup: async (hostname: string, options: LookupAllOptions) => dns.answer ?? actual.lookup(hostname, options)
+  };
+});
 
 const baseConfig: RunnerConfig = {
   host: '127.0.0.1',
@@ -21,6 +33,38 @@ const baseConfig: RunnerConfig = {
 };
 
 describe('repository URL policy', () => {
+  afterEach(() => {
+    dns.answer = undefined;
+  });
+
+  it.each([
+    ['a private IPv4 address', [{ address: '10.0.0.5', family: 4 }]],
+    ['the IPv4 loopback address', [{ address: '127.0.0.1', family: 4 }]],
+    ['the cloud metadata link-local address', [{ address: '169.254.169.254', family: 4 }]],
+    ['the IPv6 loopback address', [{ address: '::1', family: 6 }]],
+    ['an IPv4-mapped private address', [{ address: '::ffff:10.0.0.5', family: 6 }]],
+    ['an IPv4-mapped loopback address in hex form', [{ address: '::ffff:7f00:1', family: 6 }]],
+    ['an IPv4-mapped metadata address', [{ address: '::ffff:169.254.169.254', family: 6 }]],
+    ['a fully written IPv4-mapped private address', [{ address: '0:0:0:0:0:ffff:c0a8:0101', family: 6 }]],
+    ['a public address alongside a private one', [{ address: '140.82.112.3', family: 4 }, { address: '10.0.0.5', family: 4 }]]
+  ])('refuses an allowlisted host that DNS resolves to %s', async (_label, answer) => {
+    dns.answer = answer;
+
+    await expect(validateRepositoryUrl('https://github.com/owner/repo.git', ['github.com'])).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it.each([
+    ['all public', [{ address: '140.82.112.3', family: 4 }]],
+    ['an IPv4-mapped public address', [{ address: '::ffff:140.82.112.3', family: 6 }]],
+    ['a DNS64-synthesized public address', [{ address: '64:ff9b::8c52:7003', family: 6 }]]
+  ])('accepts an allowlisted host whose resolved addresses are %s', async (_label, answer) => {
+    dns.answer = answer;
+
+    const url = await validateRepositoryUrl('https://github.com/owner/repo.git', ['github.com']);
+
+    expect(url.href).toBe('https://github.com/owner/repo.git');
+  });
+
   it('rejects local, credentialed, non-HTTPS, and non-allowlisted repositories', async () => {
     await expect(validateRepositoryUrl('file:///etc/passwd', ['github.com'])).rejects.toThrow();
     await expect(validateRepositoryUrl('https://token@github.com/owner/repo.git', ['github.com'])).rejects.toThrow();

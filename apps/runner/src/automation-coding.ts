@@ -3,6 +3,7 @@ import {
   AGENT_POLICY_LIMITS,
   CODING_LIMITS,
   type AgentActionDescriptorInput,
+  type AgentApprovalDiff,
   type CodingActionOutcome,
   type CodingActionStep,
   type CodingErrorCode,
@@ -18,6 +19,8 @@ import {
   type CodingBinding
 } from './agent-governance/action-broker.js';
 import type { CodingActionRecord } from './agent-governance/action-store.js';
+import { resumeKey, type ApprovalRequest } from './agent-governance/approval-service.js';
+import type { AgentApprovalRecord } from './agent-governance/approval-store.js';
 import type { CodingGitCommit, CodingGitPort, PushVerifier } from './agent-governance/coding-git.js';
 import { ExecutionBackendError, WorkspaceExecutionBackend } from './agent-governance/workspace-execution-backend.js';
 import { admitNpmLockfile, INSTALL_TIMEOUT_MS, MAX_LOCKFILE_BYTES, NPM_LOCKFILE, type InstallResult } from './agent-governance/install-executor.js';
@@ -69,6 +72,8 @@ export type CodingWorkflowRow = {
   commit_sha: string | null;
   /** Push attempts that ended before the transfer clone could be inspected. */
   push_unverified_attempts?: number | null;
+  /** How many times the workflow paused for an owner decision. */
+  approval_generation?: number | null;
 };
 
 /** What the automation engine lends the coding engine: owner-scoped operations and guarded workflow updates. */
@@ -86,6 +91,31 @@ export type CodingEngineHost = {
   git?: CodingGitPort | undefined;
   /** `git_push` decided by a verifier on the staged transfer clone. Without it nothing is pushed (COMMIT_UNVERIFIED). */
   publish?: CodingPublishPort | undefined;
+  /** Owner approvals of held runner steps. Without it a step the gate holds for approval fails as APPROVALS_DISABLED. */
+  approvals?: CodingApprovalPort | undefined;
+};
+
+/** Owner approvals as the engine sees them (see `AgentApprovalService`). */
+export type CodingApprovalPort = {
+  /** AGENT_APPROVALS_ENABLED, read on every use. */
+  enabled(): boolean;
+  /** The longest a workflow waits for a decision, in seconds. */
+  ttlSeconds(): number;
+  /** The key a runner step runs under: its own, or the resume key of an approval of it. */
+  stepKey(ownerId: string, workflowId: string, key: string): string;
+  /**
+   * An approval of exactly this held step (its own key) covering exactly this input fingerprint, or null.
+   * The push's repeat of a commit path check is covered by the approval of that check.
+   */
+  approvedFor(ownerId: string, workflowId: string, stepKey: string, digest: string): string | null;
+  /** Marks the approval of a step admitted under its resume key CONSUMED, whether or not the gate still needed it. */
+  consume(ownerId: string, workflowId: string, stepKey: string): void;
+  /** The newest approval of the workflow the owner granted, used or not. */
+  latestApproved(ownerId: string, workflowId: string): AgentApprovalRecord | undefined;
+  /** Retires an approval whose change no longer matches what would run, audited. */
+  revoke(record: AgentApprovalRecord): void;
+  /** Records the pending approval and pauses the workflow; null when it already left RUNNING. */
+  request(input: ApprovalRequest): { approvalId: string } | null;
 };
 
 /** A `git_push` whose staged commit the verifier decides before anything is sent (see `PushVerifier`). */
@@ -117,6 +147,66 @@ export function refusalCode(admission: { decision: GateDecision | null; refusal?
   const decision = admission.decision;
   if (decision === null) return 'CODING_DISABLED';
   return bounded(`${decision.decision === 'REQUIRE_APPROVAL' ? 'ACTION_REQUIRES_APPROVAL' : 'ACTION_DENIED'}:${decision.reasonCode}`);
+}
+
+/** A runner step the gate held for an owner decision (not refused outright). */
+function heldForApproval(admission: BrokeredAdmission): boolean {
+  return admission.refusal === null && admission.decision?.decision === 'REQUIRE_APPROVAL';
+}
+
+/** Files, added and removed lines of a unified diff, for the owner's summary. */
+export function diffStats(text: string): { files: number; additions: number; deletions: number } {
+  let files = 0;
+  let additions = 0;
+  let deletions = 0;
+  for (const line of text.split('\n')) {
+    if (line.startsWith('diff --git ')) files += 1;
+    else if (line.startsWith('+') && !line.startsWith('+++')) additions += 1;
+    else if (line.startsWith('-') && !line.startsWith('---')) deletions += 1;
+  }
+  return { files, additions, deletions };
+}
+
+/** SHA-256 of the change an approval is bound to: Git's raw listing of it (see `CodingGitChange`). */
+export function contentDigest(listing: string): string {
+  return createHash('sha256').update(listing, 'utf8').digest('hex');
+}
+
+/** The note that ends a diff cut short at its size limit; the approval still covers the complete change. */
+const DIFF_CUT_SHORT_NOTE = '\n[The diff was cut short at its size limit. The approval covers the complete change.]\n';
+
+/** The largest diff artifact the runner writes: the most `files_write` accepts. */
+const MAX_SHOWN_DIFF_CHARS = 1_048_576;
+
+/** The diff as the owner is shown it: within the artifact limit, and saying so when it was cut short. */
+function shownDiff(text: string, cut: boolean): string {
+  if (!cut) return text;
+  return `${text.slice(0, MAX_SHOWN_DIFF_CHARS - DIFF_CUT_SHORT_NOTE.length)}${DIFF_CUT_SHORT_NOTE}`;
+}
+
+/** Files, added and removed lines of a change; the line counts are null when its diff was cut short. */
+type ChangeStats = { files: number; additions: number | null; deletions: number | null };
+
+/**
+ * The change an approval binds: the digest of its identity, the HEAD a staged change sits on, and the
+ * diff shown with its counts.
+ */
+type ChangeRead = { ok: true; digest: string; head: string | null; text: string; stats: ChangeStats } | { ok: false; code: string; retryable: boolean };
+
+/** Entries of a NUL-separated raw listing (`:<modes> <ids> <status>`, then the path), one per changed file. */
+function listedFiles(listing: string): number {
+  return listing.split('\0').filter((field, index) => index % 2 === 0 && field.startsWith(':')).length;
+}
+
+function leaseField(result: AutomationOperationResult, field: 'expiresAt' | 'hardExpiresAt'): unknown {
+  return (result.data as Record<string, unknown> | undefined)?.[field];
+}
+
+/** Epoch milliseconds of an ISO timestamp; null when it is not one. */
+function instant(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 /**
@@ -335,6 +425,7 @@ export class CodingWorkflowEngine {
       this.host.fail(row.id, 'CODING_RULE_INVALID');
       return;
     }
+    if (!(await this.approvedChangeHolds(row, binding))) return;
     switch (row.coding_phase) {
       case 'VERIFY': return await this.verify(row, binding);
       case 'COMMIT': return await this.commit(row, binding);
@@ -426,7 +517,9 @@ export class CodingWorkflowEngine {
     }
     const branch = row.branch ?? codingBranch(row.resource_number, row.id);
     if (!row.branch && !this.host.update(row.id, { branch })) return;
-    const key = `automation:${row.id}:commit`;
+    const stepKey = `automation:${row.id}:commit`;
+    // A commit the owner approved runs under its resume key; its first receipt holds the refusal.
+    const key = this.runKey(binding, stepKey);
     const descriptor: AgentActionDescriptorInput = { version: 1, actionClass: 'vcs_local', repository: binding.repository, branch };
     const earlier = this.broker.actions.byKey(row.owner_id, row.id, key);
     if (!earlier || earlier.state === 'INTENT') {
@@ -446,9 +539,9 @@ export class CodingWorkflowEngine {
         this.host.fail(row.id, 'CODING_NO_CHANGES');
         return;
       }
-      if (!(await this.checkPaths(row, binding, key, branch, status.data.paths))) return;
+      if (!(await this.checkPaths(row, binding, stepKey, branch, status.data.paths))) return;
     }
-    const admission = await this.gate(row, binding, 'commit', key, descriptor);
+    const admission = await this.gate(row, binding, 'commit', stepKey, descriptor);
     if (!admission) return;
     const { record } = admission;
     if (record.state === 'APPLIED' && record.outcome.commitSha) return this.phase(row, 'PUSH', { commit_sha: record.outcome.commitSha });
@@ -476,13 +569,14 @@ export class CodingWorkflowEngine {
     }
     const staged = await this.host.call(row.owner_id, 'git_add', { workspaceId, all: true });
     if (!staged.ok) return this.stepFailed(row, binding, record, staged, startedAt);
+    if (!(await this.commitChangeApproved(row, binding, record, workspaceId, base, null, startedAt))) return;
     const committed = await this.host.call(row.owner_id, 'git_commit', {
       workspaceId,
       message: this.commitMessage(row),
       authorName: CODING_COMMIT_AUTHOR.name,
       authorEmail: CODING_COMMIT_AUTHOR.email,
       expectedHeadOid: base,
-      idempotencyKey: key
+      idempotencyKey: record.idempotencyKey
     });
     // The commit tool answers without the commit id, and a replay may find HEAD already past the base
     // (an earlier attempt committed and only its answer was lost). Either way the commit is read back
@@ -505,6 +599,9 @@ export class CodingWorkflowEngine {
       this.host.fail(row.id, own.code);
       return;
     }
+    // The commit made (or adopted) is compared with the approved change too: a pre_commit lifecycle hook
+    // runs between the last staged check and the commit, and can stage more.
+    if (!(await this.commitChangeApproved(row, binding, record, workspaceId, base, own.sha, startedAt))) return;
     this.broker.settle(binding, record, 'APPLIED', { commitSha: own.sha, branch }, startedAt);
     this.phase(row, 'PUSH', { commit_sha: own.sha });
   }
@@ -541,7 +638,7 @@ export class CodingWorkflowEngine {
     // is decided on the staged transfer clone the push sends from, before every attempt that sends.
     const decided: { inspected: boolean; stagingFailed: boolean; refusal: string | null } = { inspected: false, stagingFailed: false, refusal: null };
     const pushed = await publish(row.owner_id, {
-      workspaceId, refspec: `${commitSha}:refs/heads/${branch}`, forceWithLease: true, expectedAbsent: true, idempotencyKey: key
+      workspaceId, refspec: `${commitSha}:refs/heads/${branch}`, forceWithLease: true, expectedAbsent: true, idempotencyKey: record.idempotencyKey
     }, {
       sha: commitSha,
       base,
@@ -645,39 +742,299 @@ export class CodingWorkflowEngine {
 
   // ---------------------------------------------------------------- helpers
 
-  /** Records and decides a step; on a refusal the workflow fails and nothing is dispatched. */
+  /**
+   * An approval covers the change the owner was shown, not just the action. Until the approved step is
+   * dispatched under its resume key, every pass recomputes the change's identity exactly as the pause did
+   * and compares it: anything that changed the checkout or the commit since then fails the workflow as
+   * APPROVAL_STALE before the step can act, with an unused approval retired. The commit checks it again
+   * right before it commits and on the commit it made (see `commitChangeApproved`). False when the step
+   * must not run on this pass.
+   */
+  private async approvedChangeHolds(row: CodingWorkflowRow, binding: CodingBinding): Promise<boolean> {
+    const approvals = this.host.approvals;
+    if (!approvals?.enabled()) return true;
+    const approval = approvals.latestApproved(binding.principalId, binding.workflowId);
+    if (!approval?.contentDigest) return true;
+    // Once the approved step was dispatched it acted on the change checked before that dispatch; a replay
+    // (its own commit may already be HEAD) is decided by the step's receipt, not by the change again.
+    const resumed = this.broker.actions.byKey(row.owner_id, row.id, resumeKey(row.id, approval.approvalId));
+    if (resumed && resumed.state !== 'INTENT') return true;
+    const workspaceId = binding.workspaceId;
+    if (!workspaceId) {
+      this.host.fail(row.id, 'WORKSPACE_LOST');
+      return false;
+    }
+    const change = await this.readChange(row, workspaceId, { stage: true, diff: false });
+    if (!change.ok) {
+      if (change.retryable) this.retryLater(row);
+      else this.host.fail(row.id, bounded(`CODING_DIFF_FAILED:${change.code}`));
+      return false;
+    }
+    if (change.digest === approval.contentDigest) return true;
+    approvals.revoke(approval);
+    this.host.fail(row.id, 'APPROVAL_STALE');
+    return false;
+  }
+
+  /**
+   * The checks of an approved commit, on every attempt, when the newest approval of the workflow is one of
+   * the commit or of its path checks. With `commit` null it runs after the step staged the working tree
+   * and right before it commits: a pass that skipped the earlier checks (a replay after a failed branch
+   * checkout) or a change made since them is caught here, as long as HEAD is still the base (an earlier
+   * attempt's commit is adopted only as this workflow's own, see `ownCommit`, and checked as below). With
+   * `commit` it runs on the commit made or adopted, before it is recorded: whatever the commit's
+   * pre_commit lifecycle hooks staged is caught here, and nothing is pushed. A change that is not the one
+   * approved refuses the step as APPROVAL_STALE. False when the step must not go on.
+   */
+  private async commitChangeApproved(
+    row: CodingWorkflowRow, binding: CodingBinding, record: CodingActionRecord, workspaceId: string, base: string, commit: string | null, startedAt: number
+  ): Promise<boolean> {
+    const approvals = this.host.approvals;
+    if (!approvals?.enabled()) return true;
+    const approval = approvals.latestApproved(binding.principalId, binding.workflowId);
+    const commitKey = `automation:${row.id}:commit`;
+    if (!approval?.contentDigest || (approval.stepKey !== commitKey && !approval.stepKey.startsWith(`${commitKey}:paths:`))) return true;
+    const change = await this.readChange(row, workspaceId, { stage: false, diff: false, ...(commit ? { commit } : {}) });
+    if (!change.ok) {
+      const code = bounded(`CODING_DIFF_FAILED:${change.code}`);
+      if (change.retryable) {
+        this.broker.settle(binding, record, 'UNKNOWN', { errorCode: code }, startedAt);
+        this.retryLater(row);
+      } else {
+        this.refused(row, binding, record, code, startedAt);
+      }
+      return false;
+    }
+    if ((commit === null && change.head !== base) || change.digest === approval.contentDigest) return true;
+    approvals.revoke(approval);
+    this.refused(row, binding, record, 'APPROVAL_STALE', startedAt);
+    return false;
+  }
+
+  /** The key a runner step runs under: its own, or the resume key of an owner approval of it. */
+  private runKey(binding: CodingBinding, key: string): string {
+    return this.host.approvals?.stepKey(binding.principalId, binding.workflowId, key) ?? key;
+  }
+
+  /** A runner step for the broker, under its run key and with the owner approvals that can lift a REQUIRE_APPROVAL. */
+  private runnerStep(binding: CodingBinding, step: CodingActionStep, key: string, descriptor: AgentActionDescriptorInput): BrokeredStep {
+    const approvals = this.host.approvals;
+    return {
+      binding, origin: 'runner', step, idempotencyKey: this.runKey(binding, key), descriptor, signal: gateSignal(),
+      ...(approvals ? { approvedFor: (digest: string) => approvals.approvedFor(binding.principalId, binding.workflowId, key, digest) } : {})
+    };
+  }
+
+  /**
+   * Records and decides a step; nothing is dispatched unless it is allowed. A step the gate holds for
+   * approval pauses the workflow for the owner; any other refusal fails it.
+   */
   private async gate(row: CodingWorkflowRow, binding: CodingBinding, step: CodingActionStep, idempotencyKey: string, descriptor: AgentActionDescriptorInput): Promise<BrokeredAdmission | null> {
-    const admission = await this.broker.begin({ binding, origin: 'runner', step, idempotencyKey, descriptor, signal: gateSignal() });
-    if (admission.allowed) return admission;
+    const admission = await this.broker.begin(this.runnerStep(binding, step, idempotencyKey, descriptor));
+    if (admission.allowed) {
+      this.host.approvals?.consume(binding.principalId, binding.workflowId, idempotencyKey);
+      return admission;
+    }
+    if (heldForApproval(admission)) {
+      await this.hold(row, binding, admission);
+      return null;
+    }
     this.broker.traceRefusal(binding, admission.record);
     this.host.fail(row.id, refusalCode(admission));
     return null;
   }
 
-  /** Gates changed paths as edits, in chunks of the gate's per-action limit; false when one is refused. */
+  /** Gates changed paths as edits, in chunks of the gate's per-action limit; false when one is refused or held for approval. */
   private async checkPaths(row: CodingWorkflowRow, binding: CodingBinding, keyPrefix: string, branch: string, paths: readonly string[]): Promise<boolean> {
-    const refusal = await this.gatePaths(binding, keyPrefix, branch, paths);
-    if (refusal === null) return true;
-    this.host.fail(row.id, refusal);
+    const checked = await this.gatePaths(binding, keyPrefix, branch, paths);
+    if (checked === null) return true;
+    if (typeof checked === 'string') this.host.fail(row.id, checked);
+    else await this.hold(row, binding, checked);
     return false;
   }
 
-  /** Gates changed paths as edits, in chunks of the gate's per-action limit; the refusal code of the first refused chunk. */
-  private async gatePaths(binding: CodingBinding, keyPrefix: string, branch: string, paths: readonly string[]): Promise<string | null> {
+  /**
+   * Gates changed paths as edits, in chunks of the gate's per-action limit: null when every chunk is
+   * allowed, the refusal code of the first refused chunk, or the admission of a chunk held for approval.
+   */
+  private async gatePaths(binding: CodingBinding, keyPrefix: string, branch: string, paths: readonly string[]): Promise<string | BrokeredAdmission | null> {
     const size = AGENT_POLICY_LIMITS.maxPathsPerAction;
     for (let index = 0; index * size < paths.length; index += 1) {
       const chunk = paths.slice(index * size, (index + 1) * size);
-      const check = await this.broker.begin({
-        binding, origin: 'runner', step: 'path_check', idempotencyKey: `${keyPrefix}:paths:${index}`,
-        descriptor: { version: 1, actionClass: editActionClass(chunk), repository: binding.repository, branch, paths: chunk }, signal: gateSignal()
-      });
+      const key = `${keyPrefix}:paths:${index}`;
+      const check = await this.broker.begin(this.runnerStep(binding, 'path_check', key,
+        { version: 1, actionClass: editActionClass(chunk), repository: binding.repository, branch, paths: chunk }));
       if (!check.allowed) {
+        if (heldForApproval(check)) return check;
         this.broker.traceRefusal(binding, check.record);
         return refusalCode(check);
       }
+      this.host.approvals?.consume(binding.principalId, binding.workflowId, key);
       if (check.record.state === 'INTENT') this.broker.settle(binding, check.record, 'APPLIED', { branch }, this.host.now());
     }
     return null;
+  }
+
+  /**
+   * Pauses the workflow on a runner step the gate holds for approval. With approvals off the step fails
+   * as APPROVALS_DISABLED. Otherwise the change is kept as a diff artifact for the owner to review, the
+   * workspace lease is renewed for the wait, and the workflow waits as WAITING_FOR_HUMAN with one pending
+   * approval for exactly this step's input. Nothing of the step runs until the owner approves it.
+   */
+  private async hold(row: CodingWorkflowRow, binding: CodingBinding, admission: BrokeredAdmission): Promise<void> {
+    this.broker.traceRefusal(binding, admission.record);
+    const approvals = this.host.approvals;
+    const decision = admission.decision;
+    if (!approvals?.enabled() || decision === null) {
+      this.host.fail(row.id, 'ACTION_DENIED:APPROVALS_DISABLED');
+      return;
+    }
+    const workspaceId = binding.workspaceId;
+    if (!workspaceId) {
+      this.host.fail(row.id, 'WORKSPACE_LOST');
+      return;
+    }
+    const generation = (row.approval_generation ?? 0) + 1;
+    const expiresAt = await this.approvalDeadline(row, workspaceId, Math.min(approvals.ttlSeconds(), decision.approval.ttlSeconds));
+    if (expiresAt === null) return;
+    // The approval is bound to this exact change: without it there is nothing to bind, so nothing waits.
+    const change = await this.readChange(row, workspaceId, { stage: true, diff: true });
+    if (!change.ok) {
+      if (change.retryable) this.retryLater(row);
+      else this.host.fail(row.id, bounded(`CODING_DIFF_FAILED:${change.code}`));
+      return;
+    }
+    const diff = await this.approvalDiff(row, binding, workspaceId, generation, change.text, change.stats);
+    if (diff === null) return;
+    approvals.request({
+      principalId: row.owner_id, workflowId: row.id, record: admission.record, decision, generation, diff, expiresAt,
+      contentDigest: change.digest, repository: binding.repository,
+      trace: binding.agentId !== null && binding.agentGeneration !== null ? { agentId: binding.agentId, generation: binding.agentGeneration } : null
+    });
+  }
+
+  /**
+   * The change the owner is asked to approve, kept as an artifact. Before the commit it is the staged
+   * working tree; from the push on it is the recorded commit against the base. The file the artifact is
+   * snapshotted from is removed again before the workflow waits, so it can never be committed; when that
+   * fails the workflow does not wait (null): it retries a transient failure and fails otherwise.
+   */
+  private async approvalDiff(row: CodingWorkflowRow, binding: CodingBinding, workspaceId: string, generation: number, text: string, counts: ChangeStats): Promise<AgentApprovalDiff | null> {
+    const none: AgentApprovalDiff = { artifactId: null, files: null, additions: null, deletions: null };
+    const stats = text.length > 0 ? counts : {};
+    const admission = await this.broker.begin({
+      binding, origin: 'runner', step: 'diff_artifact', idempotencyKey: `automation:${row.id}:approval-diff:${generation}`,
+      descriptor: { version: 1, actionClass: 'read', repository: binding.repository }, signal: gateSignal()
+    });
+    if (!admission.allowed) {
+      // The artifact only shows the owner the change; the approval is still bound to its digest.
+      this.broker.traceRefusal(binding, admission.record);
+      return { ...none, ...stats };
+    }
+    const { record } = admission;
+    if (record.state === 'APPLIED') return { ...none, ...stats, artifactId: record.outcome.artifactId ?? null };
+    if (record.state !== 'INTENT' && record.state !== 'DISPATCHED' && record.state !== 'UNKNOWN') return { ...none, ...stats };
+    const startedAt = this.host.now();
+    if (!this.broker.dispatched(record)) return { ...none, ...stats };
+    if (text.length === 0) {
+      this.broker.settle(binding, record, 'REJECTED', { errorCode: 'CODING_NO_CHANGES' }, startedAt);
+      return none;
+    }
+    const written = await this.host.call(row.owner_id, 'files_write', { workspaceId, path: DIFF_FILE, content: text });
+    let artifactId: string | null = null;
+    if (written.ok) {
+      const snapshot = await this.host.call(row.owner_id, 'artifacts_snapshot', { workspaceId, path: DIFF_FILE, logicalName: `coding-${row.id}-approval-${generation}.diff` });
+      const id = (snapshot.data as { artifactId?: unknown } | undefined)?.artifactId;
+      if (snapshot.ok && typeof id === 'string') artifactId = id.slice(0, 200);
+    }
+    // Removed whether or not it was written completely: a partial write still leaves the file behind.
+    const removed = await this.host.call(row.owner_id, 'files_delete', { workspaceId, path: DIFF_FILE });
+    if (!removed.ok && removed.error?.code !== 'NOT_FOUND') {
+      const code = bounded(`CODING_DIFF_CLEANUP_FAILED:${removed.error?.code ?? 'UNKNOWN'}`);
+      if (retryable(removed)) {
+        this.broker.settle(binding, record, 'UNKNOWN', { errorCode: code }, startedAt);
+        this.retryLater(row);
+      } else {
+        this.broker.settle(binding, record, 'REJECTED', { errorCode: code }, startedAt);
+        this.host.fail(row.id, 'CODING_DIFF_CLEANUP_FAILED');
+      }
+      return null;
+    }
+    this.broker.settle(binding, record, artifactId ? 'APPLIED' : 'REJECTED',
+      artifactId ? { artifactId } : { errorCode: bounded(written.ok ? 'ARTIFACT_FAILED' : written.error?.code ?? 'FILES_WRITE_FAILED') }, startedAt);
+    return { artifactId, ...counts };
+  }
+
+  /**
+   * The change an approval binds, and with `diff` the unified diff the owner is shown of it (empty
+   * otherwise). Before the commit it is the working tree, staged first with `stage`; from the push on it
+   * is the recorded commit against the base. The binding is the digest of Git's raw listing of the change
+   * (see `CodingGitChange`), which names every changed file's complete content however large it is, and
+   * a listing that was cut short binds nothing. The diff only shows the change and may be cut short at its
+   * size limit, which it then says. The listing is read before the diff, so a change made between the two
+   * reads makes the approval stale instead of binding content the owner was not shown.
+   */
+  private async readChange(row: CodingWorkflowRow, workspaceId: string, options: { stage: boolean; diff: boolean; commit?: string }): Promise<ChangeRead> {
+    const git = this.host.git;
+    const base = row.base_oid;
+    if (!git || !base) return { ok: false, code: 'COMMIT_UNVERIFIED', retryable: false };
+    const sha = options.commit ?? ((row.coding_phase === 'PUSH' || row.coding_phase === 'PR') && row.commit_sha ? row.commit_sha : null);
+    if (sha === null && options.stage) {
+      const staged = await this.host.call(row.owner_id, 'git_add', { workspaceId, all: true });
+      if (!staged.ok) return { ok: false, code: bounded(staged.error?.code ?? 'GIT_ADD_FAILED'), retryable: retryable(staged) };
+    }
+    const read = await git.change(row.owner_id, workspaceId, base, sha, inspectSignal());
+    if (!read.ok) return { ok: false, code: bounded(read.code), retryable: read.retryable || RETRYABLE_CODES.has(read.code) };
+    if (read.data.truncated) return { ok: false, code: 'CHANGE_UNVERIFIABLE', retryable: false };
+    const files = listedFiles(read.data.listing);
+    const identity = { ok: true as const, digest: contentDigest(read.data.listing), head: read.data.head };
+    // The file count comes from the complete listing; the line counts only from a diff that was not cut short.
+    const shown = (text: string, truncated: boolean) => {
+      const cut = truncated || text.length > MAX_SHOWN_DIFF_CHARS;
+      const lines = cut ? { additions: null, deletions: null } : diffStats(text);
+      return { ...identity, text: shownDiff(text, cut), stats: { files, additions: lines.additions, deletions: lines.deletions } };
+    };
+    if (!options.diff) return { ...identity, text: '', stats: { files, additions: null, deletions: null } };
+    if (sha !== null) {
+      const diff = await git.diff(row.owner_id, workspaceId, base, sha, inspectSignal());
+      if (!diff.ok) return { ok: false, code: bounded(diff.code), retryable: diff.retryable || RETRYABLE_CODES.has(diff.code) };
+      return shown(diff.data.text, diff.data.truncated);
+    }
+    const diff = await this.host.call(row.owner_id, 'git_diff', { workspaceId, staged: true, readAll: true });
+    if (!diff.ok) return { ok: false, code: bounded(diff.error?.code ?? 'GIT_DIFF_FAILED'), retryable: retryable(diff) };
+    const data = diff.data as { eof?: unknown; truncated?: unknown } | undefined;
+    return shown(outputOf(diff), data?.eof === false || data?.truncated === true);
+  }
+
+  /**
+   * When the approval stops being decidable: the shorter of the instance and policy approval TTLs, and
+   * never past the workspace lease, which is renewed for the wait first and can never pass the
+   * workspace's hard deadline. A workflow only waits with both lease bounds known: when neither the
+   * renewal nor the workspace status reports them, the step is retried later (a transient failure) or
+   * the workflow fails, and null is returned.
+   */
+  private async approvalDeadline(row: CodingWorkflowRow, workspaceId: string, ttlSeconds: number): Promise<number | null> {
+    const now = this.host.now();
+    const extensionSeconds = Math.min(86_400, Math.max(60, ttlSeconds + 300));
+    const bounds = (result: AutomationOperationResult) => {
+      const expiresAt = result.ok ? instant(leaseField(result, 'expiresAt')) : null;
+      const hardExpiresAt = result.ok ? instant(leaseField(result, 'hardExpiresAt')) : null;
+      return expiresAt !== null && hardExpiresAt !== null ? Math.min(expiresAt, hardExpiresAt) : null;
+    };
+    const renewed = await this.host.call(row.owner_id, 'workspace_lease_renew', { workspaceId, extensionSeconds });
+    let lease = bounds(renewed);
+    let status: AutomationOperationResult | undefined;
+    if (lease === null) {
+      status = await this.host.call(row.owner_id, 'workspace_status', { workspaceId });
+      lease = bounds(status);
+    }
+    if (lease === null) {
+      if (status?.error?.code === 'NOT_FOUND') this.host.fail(row.id, 'WORKSPACE_LOST');
+      else if (status?.ok === false && !retryable(status) && !retryable(renewed)) this.host.fail(row.id, 'APPROVAL_LEASE_UNKNOWN');
+      else this.retryLater(row);
+      return null;
+    }
+    return Math.min(now + ttlSeconds * 1_000, lease);
   }
 
   private commitMessage(row: CodingWorkflowRow): string {
@@ -719,7 +1076,11 @@ export class CodingWorkflowEngine {
     if (!commit || !base || commit.sha !== commitSha) return 'COMMIT_UNVERIFIED';
     const refusal = this.ownCommitRefusal(row, base, commit);
     if (refusal) return refusal;
-    return await this.gatePaths(binding, keyPrefix, branch, commit.paths);
+    const checked = await this.gatePaths(binding, keyPrefix, branch, commit.paths);
+    if (checked === null || typeof checked === 'string') return checked;
+    // The push cannot wait inside the transfer: a path the commit's approval did not cover is refused.
+    this.broker.traceRefusal(binding, checked.record);
+    return this.host.approvals?.enabled() ? refusalCode(checked) : 'ACTION_DENIED:APPROVALS_DISABLED';
   }
 
   /** A dispatched step the runner refused itself: recorded with the code, and the workflow fails with it. */

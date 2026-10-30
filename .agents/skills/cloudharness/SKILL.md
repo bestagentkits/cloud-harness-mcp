@@ -24,6 +24,7 @@ network isolation.
 | Install, update, roll back, or uninstall a durable CLI tool for every workspace | [Managed packages](references/managed-packages.md) |
 | Inspect or change Git state, transfer origin refs, or use worktrees | [Git and worktrees](references/git-and-worktrees.md) |
 | Run an automated merge train: branch locks, commit statuses, check runs, review state, workflow dispatch and re-runs | [GitHub merge train](references/github-merge-train.md) |
+| Review or draft webhook automation rules (GitHub, Linear, Jira, custom), disable a rule, or read and cancel automation runs | [Webhook automations](references/webhook-automations.md) |
 | Read/run repository skills, hooks, knowledge (memories & journals), or deployments | [Repository automation](references/repository-automation.md) |
 | Snapshot, list, read, restore, or delete retained artifacts | [Retained artifacts](references/artifacts.md) |
 | Choose a subagent model, check a connection, save an agent model profile, or read estimated model spend | [Models and spend](references/models-and-spend.md) |
@@ -79,11 +80,17 @@ terminal-state notifications: `cloudharness.task.completed`,
 `cloudharness.task.failed`, `cloudharness.agent.settled`,
 `cloudharness.agent.failed`, and, for owner-configured webhook automations,
 `cloudharness.automation.completed` and `cloudharness.automation.failed`
-(filter by `ruleId` or `workflowId`; no MCP tool manages automations, so read
-their results on the Dashboard), plus `cloudharness.notification.created` when
-the operator enabled the notification inbox (filter by `kind`; the payload is a
-notification id, kind, subject id, short title, and Dashboard link; no MCP tool
-reads the inbox). These are client-side protocol subscriptions, not
+(filter by `ruleId` or `workflowId`; read the result with `automation_run_get`,
+see [Webhook automations](references/webhook-automations.md); a coding run whose
+policy holds a step for the owner waits in `WAITING_FOR_HUMAN` until the owner
+approves or denies it on the Dashboard, and no tool approves on the owner's
+behalf), plus
+`cloudharness.notification.created` when the operator enabled the notification
+inbox (filter by `kind`; the payload is a notification id, kind, subject id,
+short title, and Dashboard link; a finished automation adds optional `links` to
+its source issue, agent trace, and the pull request a coding run opened; no MCP
+tool reads the inbox). These are
+client-side protocol subscriptions, not
 tools: only the host client subscribes, with its own HTTPS callback and secret,
 so never try to create one through a tool call or a workspace command. An event
 carries ids, status, codes, and timestamps only, so after one arrives call
@@ -121,7 +128,11 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    `toolkits: [{ kind: 'agentkit', kitId: 'engineer', channel: 'stable' }]`; they
    require operator-pinned registry key material and a stored licence token, are
    always `owner`-scoped, and fail closed with an actionable error when either is
-   missing. Never pass a credential in a tool argument.
+   missing. Never pass a credential in a tool argument. To reproduce a machine's
+   installed kit skills, pass its `agentkit.skill-lock/v1` document in
+   `kitLocks` instead of hand-written `agentkit` selections; the instance must
+   enable it, and a lock with non-kit entries is refused rather than installed
+   in part.
 2. **Open and set active context.** Call `workspace_open` with a fresh
    idempotency key. Preserve the returned opaque `workspaceId` exactly. A
    principal may hold several concurrent workspaces, bounded by the instance's
@@ -237,6 +248,7 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
 | Durable repository note | `memories_*` | never store credentials or personal data |
 | Retain build output / snapshot | `artifacts_snapshot` | unmetered workspace disk retention |
 | Model for a subagent | `model_profile_list`, then `model_profile_validate` before a save | `model_profile_create` (owner activates it) |
+| Webhook automation rules and runs | `automation_rules_list`, `automation_runs_list`, `automation_run_get` | `automation_rule_create` (owner enables it), `automation_rule_disable`, `automation_run_cancel` |
 
 ## Mandatory safety rules
 

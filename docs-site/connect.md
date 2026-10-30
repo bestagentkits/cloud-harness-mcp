@@ -49,6 +49,18 @@ owner-bearer instance); the Static API Key lane forwards only `/mcp` and
 `/mcp-gateway`, so it cannot reach it. The endpoint stops serving skills once the workspace is closed or its
 lease expires.
 
+### Signing in with agentkit.best
+
+An instance can also accept agentkit.best accounts on a separate hostname
+(`https://harness.agentkit.best/mcp` for the first-party instance). Add that URL
+as a remote MCP server; the client discovers agentkit.best from the server's
+protected resource metadata and opens the agentkit.best consent page for the
+`cloud-harness:workspace` scope. Only the agentkit.best accounts the operator
+listed can connect, and each gets its own workspaces. The MCP gateway is not
+served on that hostname. Revoke access any time under Account → Connected apps
+on agentkit.best. Operators enable the lane with the `AGENTKIT_AUTH_*` settings
+in the [environment reference](/reference/environment-variables).
+
 
 ---
 

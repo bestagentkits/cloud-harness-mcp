@@ -833,7 +833,8 @@ export function grantIsActionable(grant, now = Date.now()) {
   const expiresAt = Date.parse(String(grant?.expiresAt ?? ''));
   return Number.isNaN(expiresAt) || expiresAt > now;
 }
-export function renderApprovals({ grants = [], plans = [], packages = { enabled: false }, now = Date.now() } = {}) {
+/** `agentActions` is the Agent actions section, already rendered by its own module, shown first. */
+export function renderApprovals({ grants = [], plans = [], packages = { enabled: false }, agentActions = '', now = Date.now() } = {}) {
   const rows = grants.length
     ? grants.map((grant) => {
       const id = String(grant.id ?? '');
@@ -846,7 +847,7 @@ export function renderApprovals({ grants = [], plans = [], packages = { enabled:
     : '<li class="empty"><h3>No approvals are waiting.</h3><p>Privilege requests appear here while they are pending. Decided and expired requests stay listed briefly, without actions.</p></li>';
   return `${renderResourcePage({
     note: '<div class="page-note"><strong>Privilege grants.</strong> Approving lets one command run in a workspace under your identity. Both decisions are audited.</div>',
-    body: `<section aria-labelledby="approvals-heading"><h2 id="approvals-heading">Privilege requests</h2><ul class="record-list approval-list">${rows}</ul></section>${renderPackagePlans({ plans, enabled: packages.enabled === true, approvalMode: packages.approvalMode, now })}`
+    body: `${agentActions}<section aria-labelledby="approvals-heading"><h2 id="approvals-heading">Privilege requests</h2><ul class="record-list approval-list">${rows}</ul></section>${renderPackagePlans({ plans, enabled: packages.enabled === true, approvalMode: packages.approvalMode, now })}`
   })}`;
 }
 
@@ -2665,9 +2666,27 @@ export const AUTOMATION_SECTIONS = [
   { id: 'runs', label: 'Runs', route: '/dashboard/automations' },
   { id: 'rules', label: 'Rules', route: '/dashboard/automations/rules' },
   { id: 'connections', label: 'Connections', route: '/dashboard/automations/connections' },
-  { id: 'deliveries', label: 'Deliveries', route: '/dashboard/automations/deliveries' }
+  { id: 'deliveries', label: 'Deliveries', route: '/dashboard/automations/deliveries' },
+  { id: 'metrics', label: 'Metrics', route: '/dashboard/automations/metrics' }
 ];
-export const AUTOMATION_WORKFLOW_STATES = ['QUEUED', 'STARTING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED'];
+export const AUTOMATION_WORKFLOW_STATES = ['QUEUED', 'STARTING', 'RUNNING', 'WAITING_FOR_HUMAN', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED'];
+export const AUTOMATION_DELIVERY_STATES = ['RECEIVED', 'PROCESSED', 'IGNORED', 'QUARANTINED'];
+export const AUTOMATION_PUBLISH_STATES = ['NONE', 'PENDING', 'DELIVERED', 'FAILED'];
+/** Mirrors `AutomationProviderSchema`; the connection fixes a rule's provider. */
+export const AUTOMATION_PROVIDERS = [['github', 'GitHub'], ['linear', 'Linear'], ['jira', 'Jira'], ['custom', 'Custom webhook']];
+/** Mirrors `AutomationEventTypeSchema`, grouped by provider, for the Test event form. */
+export const AUTOMATION_PROVIDER_EVENT_TYPES = {
+  github: ['github.issue.label_added', 'github.pull_request.label_added'],
+  linear: ['linear.issue.label_added', 'linear.issue.state_changed'],
+  jira: ['jira.issue.label_added', 'jira.issue.status_changed'],
+  custom: ['custom.event']
+};
+/** The state trigger each provider's match uses beside `label_added`. */
+export const AUTOMATION_STATE_TRIGGERS = { linear: ['state_changed', 'Moved to a workflow state'], jira: ['status_changed', 'Moved to a status'] };
+export const AUTOMATION_METRICS_WINDOWS = [1, 7, 30];
+export const automationProviderLabel = (provider) => AUTOMATION_PROVIDERS.find(([id]) => id === provider)?.[1] ?? String(provider ?? 'Unknown');
+/** A rule's provider: GitHub matches stored before the provider tag carry none. */
+export const automationMatchProvider = (match) => (typeof match?.provider === 'string' ? match.provider : 'github');
 const AUTOMATION_TERMINAL_STATES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED']);
 /** Mirrors `AgentProxyOperationSchema`; the first five are the contract's read-only default. */
 // Mirrors the contract's read-only automation operation set; the runner rejects anything else.
@@ -2679,7 +2698,8 @@ export const AUTOMATION_RULE_DEFAULTS = { ttlSeconds: 900, maxInputTokens: 200_0
 export const AUTOMATIONS_DISABLED_COPY = 'Automations are disabled on this instance (set AUTOMATIONS_ENABLED=true on api and runner).';
 
 const AUTOMATION_WORKFLOW_STATE = {
-  QUEUED: ['Queued', 'queued'], STARTING: ['Starting', 'creating'], RUNNING: ['Running', 'running'], COMPLETED: ['Completed', 'succeeded'],
+  QUEUED: ['Queued', 'queued'], STARTING: ['Starting', 'creating'], RUNNING: ['Running', 'running'],
+  WAITING_FOR_HUMAN: ['Waiting for approval', 'pending'], COMPLETED: ['Completed', 'succeeded'],
   FAILED: ['Failed', 'failed'], CANCELLED: ['Cancelled', ''], EXPIRED: ['Expired', 'expired']
 };
 const AUTOMATION_DELIVERY_STATE = { RECEIVED: ['Received', 'info'], PROCESSED: ['Processed', 'succeeded'], IGNORED: ['Ignored', ''], QUARANTINED: ['Quarantined', 'failed'] };
@@ -2752,8 +2772,20 @@ export function automationWebhookUrl(origin, webhookPath) {
   try { return new URL(path, String(origin ?? '')).toString(); } catch { return path; }
 }
 
+/**
+ * The source a run or delivery is about: `owner/name#12` for GitHub, and the provider
+ * reference with the checked-out repository (`ENG-12 · acme/widgets`) for the others.
+ */
+export function automationResourceText(item) {
+  const repository = item?.repository || '';
+  const ref = item?.resourceRef || (item?.resourceNumber ? `#${item.resourceNumber}` : '');
+  if (!ref) return repository || 'Unknown resource';
+  if (ref.startsWith('#')) return `${repository || 'Unknown repository'}${ref}`;
+  return repository ? `${ref} · ${repository}` : ref;
+}
+
 function automationResource(workflow) {
-  const text = `${workflow?.repository ?? 'Unknown repository'}#${workflow?.resourceNumber ?? '?'}`;
+  const text = automationResourceText(workflow);
   const href = automationResourceHref(workflow?.resourceUrl);
   return href ? `<a class="mono" href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(text)}</a>` : `<span class="mono">${escape(text)}</span>`;
 }
@@ -2797,10 +2829,11 @@ export function renderAutomationRuns({ workflows = [], rules = [], filters = {} 
         <td>${time(workflow.createdAt)}<small>Updated ${time(workflow.updatedAt)}</small></td>
       </tr>`).join('') : '<tr><td colspan="10">No automation runs yet.</td></tr>';
   const cards = list.length ? list.map((workflow) => `<li><h3>${automationResource(workflow)}</h3><dl><dt>Run</dt><dd>${runLink(workflow)}</dd><dt>State</dt><dd>${statePill(workflow)}</dd><dt>Label</dt><dd class="mono wrap">${escape(workflow.label)}</dd><dt>Rule</dt><dd>${ruleName(workflow)}</dd><dt>Workspace</dt><dd>${automationWorkspaceLinks(workflow)}</dd><dt>Error</dt><dd class="mono wrap">${automationText(workflow.errorCode)}</dd><dt>Publish</dt><dd>${automationPill(AUTOMATION_PUBLISH_STATE, workflow.publishState)}</dd><dt>Usage</dt><dd>${automationUsage(workflow.usage)}</dd><dt>Created</dt><dd>${time(workflow.createdAt)}</dd></dl></li>`).join('')
-    : '<li class="empty"><h3>No automation runs yet.</h3><p>A run starts when a labeled GitHub delivery matches an enabled rule.</p></li>';
+    : '<li class="empty"><h3>No automation runs yet.</h3><p>A run starts when a delivery matches an enabled rule.</p></li>';
+  const publishOptions = AUTOMATION_PUBLISH_STATES.map((state) => `<option value="${state}"${filters.publishState === state ? ' selected' : ''}>${escape(AUTOMATION_PUBLISH_STATE[state][0])}</option>`).join('');
   return renderResourcePage({
-    filters: `<form id="automation-runs-filter" aria-label="Filter runs"><label for="automation-runs-state">State</label><select id="automation-runs-state" name="state"><option value="">All states</option>${stateOptions}</select><label for="automation-runs-rule">Rule</label><select id="automation-runs-rule" name="ruleId"><option value="">All rules</option>${ruleOptions}</select><button type="submit">Apply filters</button></form>`,
-    body: `<section class="automation-runs" aria-labelledby="automation-runs-heading"><div class="record-heading"><div><h2 id="automation-runs-heading">Runs</h2><p>Each run opens one workspace and runs one agent for a matching labeled issue or pull request.</p></div></div><div class="desktop-table"><table><caption>${escape(list.length)} automation runs</caption><thead><tr><th>Run</th><th>State</th><th>Resource</th><th>Label</th><th>Rule</th><th>Workspace / agent</th><th>Error</th><th>Publish</th><th>Usage</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`
+    filters: `<form id="automation-runs-filter" aria-label="Filter runs"><label for="automation-runs-state">State</label><select id="automation-runs-state" name="state"><option value="">All states</option>${stateOptions}</select><label for="automation-runs-rule">Rule</label><select id="automation-runs-rule" name="ruleId"><option value="">All rules</option>${ruleOptions}</select><label for="automation-runs-publish">Publish</label><select id="automation-runs-publish" name="publishState"><option value="">Any publish state</option>${publishOptions}</select><button type="submit">Apply filters</button></form>`,
+    body: `<section class="automation-runs" aria-labelledby="automation-runs-heading"><div class="record-heading"><div><h2 id="automation-runs-heading">Runs</h2><p>Each run opens one workspace and runs one agent for a delivery that matched a rule. Filter by Failed or Publish failed to triage runs that need attention.</p></div></div><div class="desktop-table"><table><caption>${escape(list.length)} automation runs</caption><thead><tr><th>Run</th><th>State</th><th>Resource</th><th>Label</th><th>Rule</th><th>Workspace / agent</th><th>Error</th><th>Publish</th><th>Usage</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`
   });
 }
 
@@ -2882,6 +2915,7 @@ export function renderAutomationRunDetail({ workflow, result = null, transitions
         <dt>Agent status</dt><dd class="mono">${automationText(workflow.agentStatus, 'Not started')}</dd>
         <dt>Trace</dt><dd>${/^agent_[A-Za-z0-9_-]{20,80}$/.test(String(workflow.agentId ?? '')) ? `<a href="/dashboard/traces?agentId=${encodeURIComponent(workflow.agentId)}">View trace</a>` : 'Not started'}</dd>
         <dt>Error</dt><dd class="mono wrap">${automationText(workflow.errorCode, 'None')}</dd>
+        ${workflow.state === 'WAITING_FOR_HUMAN' ? '<dt>Approval</dt><dd>Waiting for your decision. <a href="/dashboard/approvals">Review it on the Approvals page</a>.</dd>' : ''}
         <dt>Publish</dt><dd>${automationPill(AUTOMATION_PUBLISH_STATE, workflow.publishState)}</dd>
         <dt>Usage</dt><dd>${automationUsage(workflow.usage)}</dd>
         <dt>Created</dt><dd>${time(workflow.createdAt)}</dd>
@@ -2903,6 +2937,25 @@ export function renderAutomationRunDetail({ workflow, result = null, transitions
 
 const automationEventsText = (events) => automationList(events).map((event) => (AUTOMATION_GITHUB_EVENTS.find(([id]) => id === event)?.[1] ?? event)).join(', ');
 
+/** One rule's trigger in a sentence, for every provider's match shape. */
+export function automationMatchSummary(rule) {
+  const match = rule?.match ?? {};
+  const provider = automationMatchProvider(match);
+  const filters = `${match.ignoreBots === false ? ' · bots allowed' : ''}${automationList(match.actorAllowlist).length ? ` · ${escape(match.actorAllowlist.length)} allowed actors` : ''}`;
+  const labelText = match.label ? `label <span class="mono">${escape(match.label)}</span>` : '';
+  if (provider === 'github') {
+    return `<span class="mono wrap">${escape(match.repository)}</span><small>${escape(automationEventsText(match.events))} · ${labelText}${filters}</small>`;
+  }
+  const checkout = rule?.action?.repository ? ` · checks out <span class="mono">${escape(rule.action.repository)}</span>` : '';
+  if (provider === 'custom') {
+    return `<span class="mono wrap">${escape(match.event)}</span><small>Custom event${labelText ? ` · ${labelText}` : ''}${checkout}</small>`;
+  }
+  const scope = provider === 'jira' ? match.projectKey : match.teamKey;
+  const target = provider === 'jira' ? match.toStatus : match.toState;
+  const trigger = match.trigger === 'label_added' ? labelText : `moved to ${target ? `<span class="mono">${escape(target)}</span>` : 'any state'}`;
+  return `<span class="mono wrap">${escape(automationProviderLabel(provider))} ${escape(scope ?? 'any team')}</span><small>${trigger}${filters}${checkout}</small>`;
+}
+
 function automationRuleActions(rule) {
   const id = escape(rule.id);
   const generation = escape(rule.generation);
@@ -2919,7 +2972,7 @@ export function renderAutomationRules({ rules = [], connections = [], profiles =
   const connectionNames = new Map(automationList(connections).map((connection) => [connection.id, connection.name]));
   const profileNames = new Map(automationList(profiles).map((profile) => [profile.id, profile.displayName]));
   const enabledPill = (rule) => `<span class="status${rule.enabled ? ' enabled' : ''}">${rule.enabled ? 'Enabled' : 'Disabled'}</span>`;
-  const match = (rule) => `<span class="mono wrap">${escape(rule.match?.repository)}</span><small>${escape(automationEventsText(rule.match?.events))} · label <span class="mono">${escape(rule.match?.label)}</span>${rule.match?.ignoreBots === false ? ' · bots allowed' : ''}${automationList(rule.match?.actorAllowlist).length ? ` · ${escape(rule.match.actorAllowlist.length)} allowed actors` : ''}</small>`;
+  const match = (rule) => automationMatchSummary(rule);
   const agent = (rule) => `${escape(profileNames.get(rule.action?.profileId) ?? rule.action?.profileId)}<small>${rule.action?.publishComment ? 'Posts a comment' : 'No comment'} · ${rule.action?.coding ? 'Coding: opens a pull request' : `${escape(automationList(rule.action?.proxyOperations).length)} operations`}</small>`;
   const connection = (rule) => escape(connectionNames.get(rule.connectionId) ?? rule.connectionId);
   const rows = list.length ? list.map((rule) => `<tr>
@@ -2932,36 +2985,82 @@ export function renderAutomationRules({ rules = [], connections = [], profiles =
         <td>${automationRuleActions(rule)}</td>
       </tr>`).join('') : '<tr><td colspan="7">No rules yet.</td></tr>';
   const cards = list.length ? list.map((rule) => `<li><h3>${escape(rule.name)}</h3><dl><dt>Connection</dt><dd>${connection(rule)}</dd><dt>Match</dt><dd>${match(rule)}</dd><dt>Agent</dt><dd>${agent(rule)}</dd><dt>Status</dt><dd>${enabledPill(rule)}</dd></dl>${automationRuleActions(rule)}</li>`).join('')
-    : '<li class="empty"><h3>No rules yet.</h3><p>A rule says which labeled issue or pull request starts an agent, and what that agent is told to do.</p></li>';
+    : '<li class="empty"><h3>No rules yet.</h3><p>A rule says which event starts an agent, and what that agent is told to do.</p></li>';
   const note = automationList(connections).length
     ? ''
-    : '<div class="page-note"><strong>Create a connection first.</strong> Rules listen to a GitHub webhook connection. <a href="/dashboard/automations/connections">Open Connections</a> to create one.</div>';
+    : '<div class="page-note"><strong>Create a connection first.</strong> Rules listen to a webhook connection (GitHub, Linear, Jira or a custom sender). <a href="/dashboard/automations/connections">Open Connections</a> to create one.</div>';
   const profileNote = automationList(profiles).length
     ? ''
     : '<p class="warning" role="status">No model profiles are available. Add one on <a href="/dashboard/models">Models &amp; Budgets</a> before saving a rule.</p>';
   return `${renderResourcePage({
     note: `${note}${profileNote}`,
-    body: `<section class="automation-rules" aria-labelledby="automation-rules-heading"><div class="record-heading"><div><h2 id="automation-rules-heading">Rules</h2><p>Rules match exactly: one repository, one added label, and the chosen events. New rules start disabled until you enable them.</p></div></div><div class="desktop-table"><table><caption>${escape(list.length)} automation rules</caption><thead><tr><th>Name</th><th>Connection</th><th>Match</th><th>Agent</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`
+    body: `<section class="automation-rules" aria-labelledby="automation-rules-heading"><div class="record-heading"><div><h2 id="automation-rules-heading">Rules</h2><p>Rules match exactly on their connection's provider: a GitHub repository and label, a Linear team or Jira project label or state change, or a custom event name. New rules start disabled until you enable them.</p></div></div><div class="desktop-table"><table><caption>${escape(list.length)} automation rules</caption><thead><tr><th>Name</th><th>Connection</th><th>Match</th><th>Agent</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`
   })}<div id="automation-dialog-host"></div>`;
 }
 
 const automationChecked = (value) => (value ? ' checked' : '');
 const automationNumberField = ({ id, name, label, value, min, max, step = 1, help }) => `<label for="${id}">${escape(label)}<input id="${id}" name="${name}" type="number" inputmode="${step === 1 ? 'numeric' : 'decimal'}" min="${min}" max="${max}" step="${step}" value="${escape(value)}" required></label>${help ? `<p class="field-help">${escape(help)}</p>` : ''}`;
+const automationTextField = ({ id, name, label, value, required = false, maxlength = 100, placeholder = '', help }) => `<label for="${id}">${escape(label)}<input id="${id}" name="${name}"${required ? ' required' : ''} maxlength="${maxlength}" autocomplete="off" spellcheck="false"${placeholder ? ` placeholder="${escape(placeholder)}"` : ''} value="${escape(value ?? '')}"></label>${help ? `<p class="field-help">${help}</p>` : ''}`;
+const automationProviderOf = (connections, connectionId) => automationList(connections).find((connection) => connection.id === connectionId)?.provider ?? 'github';
+
+/** The bot and actor filters every provider except custom shares. */
+function automationActorFields(match, provider) {
+  const github = provider === 'github';
+  const bots = github ? "Ignore bot senders (this harness's own GitHub App is always ignored when its slug is configured)" : 'Ignore bot and integration actors';
+  return `<label class="checkbox-label"><input type="checkbox" name="ignoreBots"${automationChecked(match.ignoreBots !== false)}><span>${escape(bots)}</span></label>
+      ${automationTextField({ id: 'automation-rule-actors', name: 'actorAllowlist', label: 'Allowed actors (optional)', value: automationList(match.actorAllowlist).join(', '), maxlength: 13000, placeholder: github ? 'octocat, hubot' : provider === 'jira' ? 'account id' : 'user id or email',
+    help: github ? 'Comma-separated GitHub logins. Leave empty to let anyone who can label trigger the rule.' : `Comma-separated ${provider === 'jira' ? 'Jira account ids' : 'Linear user ids or emails'}; display names never match. Leave empty to let anyone trigger the rule.` })}`;
+}
+
+/**
+ * The provider-specific "When" fields of a rule, plus the checkout repository every non-GitHub
+ * rule must pin. The dialog swaps this block when a new rule's connection changes provider.
+ */
+export function renderAutomationRuleMatchFields(provider = 'github', match = {}, action = {}) {
+  if (provider === 'github') {
+    const events = automationList(match.events).length ? match.events : ['issues'];
+    const eventBoxes = AUTOMATION_GITHUB_EVENTS.map(([id, label]) => `<label class="checkbox-label"><input type="checkbox" name="events" value="${id}"${automationChecked(events.includes(id))}><span>${escape(label)} <code class="mono">${id}</code></span></label>`).join('');
+    return `<label for="automation-rule-repository">Repository<input id="automation-rule-repository" name="repository" required maxlength="140" autocomplete="off" spellcheck="false" placeholder="owner/name" value="${escape(match.repository ?? '')}"></label>
+      <p class="field-help">Exact GitHub <code>owner/name</code>, without <code>.git</code>.</p>
+      <div role="group" aria-label="Events">${eventBoxes}</div>
+      <label for="automation-rule-label">Added label<input id="automation-rule-label" name="label" required maxlength="100" autocomplete="off" value="${escape(match.label ?? '')}"></label>
+      ${automationActorFields(match, provider)}`;
+  }
+  const checkout = automationTextField({ id: 'automation-rule-checkout', name: 'checkoutRepository', label: 'Repository to check out', value: action.repository, required: true, maxlength: 140, placeholder: 'owner/name',
+    help: `The GitHub <code>owner/name</code> the workspace opens. ${escape(automationProviderLabel(provider))} events never choose a repository.` });
+  if (provider === 'custom') {
+    return `${automationTextField({ id: 'automation-rule-event', name: 'event', label: 'Event name', value: match.event, required: true, maxlength: 64, placeholder: 'deploy.finished', help: 'Exact <code>event</code> field of the signed payload: letters, digits and <code>. _ : -</code>.' })}
+      ${automationTextField({ id: 'automation-rule-label', name: 'label', label: 'Label (optional)', value: match.label, help: 'When set, the event must also carry this label.' })}
+      ${checkout}`;
+  }
+  const [stateTrigger, stateLabel] = AUTOMATION_STATE_TRIGGERS[provider] ?? ['state_changed', 'Moved to a state'];
+  const jira = provider === 'jira';
+  const trigger = match.trigger === stateTrigger ? stateTrigger : 'label_added';
+  const triggerOptions = [['label_added', 'Label added'], [stateTrigger, stateLabel]].map(([id, label]) => `<option value="${id}"${trigger === id ? ' selected' : ''}>${escape(label)}</option>`).join('');
+  const scope = jira
+    ? automationTextField({ id: 'automation-rule-scope', name: 'projectKey', label: 'Project key', value: match.projectKey, required: true, maxlength: 20, placeholder: 'ENG', help: 'The <code>ENG</code> of <code>ENG-123</code>.' })
+    : automationTextField({ id: 'automation-rule-scope', name: 'teamKey', label: 'Team key (optional)', value: match.teamKey, maxlength: 16, placeholder: 'ENG', help: 'The <code>ENG</code> of <code>ENG-123</code>. Leave empty to match every team the webhook covers.' });
+  return `${scope}
+      <label for="automation-rule-trigger">Trigger<select id="automation-rule-trigger" name="trigger">${triggerOptions}</select></label>
+      ${automationTextField({ id: 'automation-rule-label', name: 'label', label: 'Added label', value: match.label, help: 'Used when the trigger is Label added.' })}
+      ${automationTextField({ id: 'automation-rule-to-state', name: 'toState', label: jira ? 'Status (optional)' : 'Workflow state (optional)', value: jira ? match.toStatus : match.toState, help: `Used when the trigger is ${escape(stateLabel)}. Leave empty to match any ${jira ? 'status' : 'state'}.` })}
+      ${automationActorFields(match, provider)}
+      ${checkout}`;
+}
 
 /** The create/edit form for one rule. An edit cannot move a rule to another connection, so that field is fixed. */
 export function renderAutomationRuleDialog({ rule, connections = [], profiles = [] } = {}) {
   const editing = Boolean(rule);
   const match = rule?.match ?? {};
   const action = rule?.action ?? {};
+  const provider = editing ? automationMatchProvider(match) : automationProviderOf(connections, automationList(connections)[0]?.id);
   const budget = { ...AUTOMATION_RULE_DEFAULTS, ...(action.budget ?? {}) };
-  const events = automationList(match.events).length ? match.events : ['issues'];
   const operations = automationList(action.proxyOperations).length ? action.proxyOperations : AUTOMATION_DEFAULT_PROXY_OPERATIONS;
-  const connectionOptions = automationList(connections).map((connection) => `<option value="${escape(connection.id)}"${rule?.connectionId === connection.id ? ' selected' : ''}>${escape(connection.name)}${connection.enabled ? '' : ' (disabled)'}</option>`).join('');
+  const connectionOptions = automationList(connections).map((connection) => `<option value="${escape(connection.id)}" data-provider="${escape(connection.provider ?? 'github')}"${rule?.connectionId === connection.id ? ' selected' : ''}>${escape(connection.name)} · ${escape(automationProviderLabel(connection.provider ?? 'github'))}${connection.enabled ? '' : ' (disabled)'}</option>`).join('');
   const profileList = automationList(profiles);
   const missingProfile = action.profileId && !profileList.some((profile) => profile.id === action.profileId)
     ? `<option value="${escape(action.profileId)}" selected>${escape(action.profileId)} (not found)</option>` : '';
   const profileOptions = profileList.map((profile) => `<option value="${escape(profile.id)}"${action.profileId === profile.id ? ' selected' : ''}>${escape(profile.displayName)} (${escape(profile.id)})${profile.status && profile.status !== 'ACTIVE' ? ` - ${escape(String(profile.status).toLowerCase())}` : ''}</option>`).join('');
-  const eventBoxes = AUTOMATION_GITHUB_EVENTS.map(([id, label]) => `<label class="checkbox-label"><input type="checkbox" name="events" value="${id}"${automationChecked(events.includes(id))}><span>${escape(label)} <code class="mono">${id}</code></span></label>`).join('');
   const operationBoxes = AUTOMATION_PROXY_OPERATIONS.map((operation) => `<label class="checkbox-label"><input type="checkbox" name="proxyOperations" value="${operation}"${automationChecked(operations.includes(operation))}><span><code class="mono">${operation}</code></span></label>`).join('');
   const costUsd = Number.isFinite(budget.maxCostMicros) ? String(budget.maxCostMicros / 1_000_000) : '2';
   const body = `
@@ -2971,21 +3070,16 @@ export function renderAutomationRuleDialog({ rule, connections = [], profiles = 
     <label for="automation-rule-connection">Connection<select id="automation-rule-connection" name="connectionId" required${editing ? ' disabled' : ''}>${connectionOptions}</select></label>
     ${editing ? '<p class="field-help">A rule stays on the connection it was created for.</p>' : ''}
     <fieldset class="automation-fieldset"><legend>When</legend>
-      <label for="automation-rule-repository">Repository<input id="automation-rule-repository" name="repository" required maxlength="140" autocomplete="off" spellcheck="false" placeholder="owner/name" value="${escape(match.repository ?? '')}"></label>
-      <p class="field-help">Exact GitHub <code>owner/name</code>, without <code>.git</code>.</p>
-      <div role="group" aria-label="Events">${eventBoxes}</div>
-      <label for="automation-rule-label">Added label<input id="automation-rule-label" name="label" required maxlength="100" autocomplete="off" value="${escape(match.label ?? '')}"></label>
-      <label class="checkbox-label"><input type="checkbox" name="ignoreBots"${automationChecked(match.ignoreBots !== false)}><span>Ignore bot senders (this harness's own GitHub App is always ignored when its slug is configured)</span></label>
-      <label for="automation-rule-actors">Allowed actors (optional)<input id="automation-rule-actors" name="actorAllowlist" autocomplete="off" spellcheck="false" placeholder="octocat, hubot" value="${escape(automationList(match.actorAllowlist).join(', '))}"></label>
-      <p class="field-help">Comma-separated GitHub logins. Leave empty to let anyone who can label trigger the rule.</p>
+      <div id="automation-rule-match" class="automation-match" data-provider="${escape(provider)}">${renderAutomationRuleMatchFields(provider, match, action)}</div>
     </fieldset>
     <fieldset class="automation-fieldset"><legend>Then</legend>
       <label for="automation-rule-ref">Branch or tag (optional)<input id="automation-rule-ref" name="ref" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Default branch" value="${escape(action.ref ?? '')}"></label>
       <label for="automation-rule-profile">Model profile<select id="automation-rule-profile" name="profileId" required>${missingProfile}${profileOptions}</select></label>
       <label for="automation-rule-instructions">Instructions<textarea id="automation-rule-instructions" name="instructions" required maxlength="16000" spellcheck="true">${escape(action.instructions ?? '')}</textarea></label>
-      <p class="field-help">The agent also receives the issue or pull request title and body as untrusted context.</p>
+      <p class="field-help">The agent also receives the source issue, pull request or ticket title and body as untrusted context.</p>
       <div role="group" aria-label="Allowed operations">${operationBoxes}</div>
-      <label class="checkbox-label"><input type="checkbox" name="publishComment"${automationChecked(action.publishComment === true)}><span>Post the agent's answer as one comment on the issue or pull request</span></label>
+      <label class="checkbox-label"><input type="checkbox" name="publishComment"${automationChecked(action.publishComment === true)}><span>Post the agent's answer as one comment on the source issue, pull request or ticket</span></label>
+      <p class="field-help">Linear and Jira comments need the connection's outbound credential.</p>
     </fieldset>
     <fieldset class="automation-fieldset"><legend>Coding (optional)</legend>
       <p class="field-help">Fill all three to let the agent change code. The project's execution policy decides every action, the allowed operations above are replaced by the coding tool set, and the runner opens a pull request on an <code>agent/</code> branch after the verify command passes. It never merges. Needs <code>AGENT_CODING_ENABLED=true</code> on the runner.</p>
@@ -2999,34 +3093,62 @@ export function renderAutomationRuleDialog({ rule, connections = [], profiles = 
       ${automationNumberField({ id: 'automation-rule-input-tokens', name: 'maxInputTokens', label: 'Max input tokens', value: budget.maxInputTokens, min: 1, max: 2000000 })}
       ${automationNumberField({ id: 'automation-rule-output-tokens', name: 'maxOutputTokens', label: 'Max output tokens', value: budget.maxOutputTokens, min: 1, max: 2000000 })}
       ${automationNumberField({ id: 'automation-rule-cost', name: 'maxCostUsd', label: 'Max cost (USD)', value: costUsd, min: 0, max: 100, step: 0.000001 })}
-      ${automationNumberField({ id: 'automation-rule-cooldown', name: 'cooldownSeconds', label: 'Cooldown (seconds)', value: action.cooldownSeconds ?? AUTOMATION_RULE_DEFAULTS.cooldownSeconds, min: 0, max: 86400, help: 'A repeat trigger on the same issue or pull request is ignored for this long after a run ends.' })}
+      ${automationNumberField({ id: 'automation-rule-cooldown', name: 'cooldownSeconds', label: 'Cooldown (seconds)', value: action.cooldownSeconds ?? AUTOMATION_RULE_DEFAULTS.cooldownSeconds, min: 0, max: 86400, help: 'A repeat trigger on the same resource is ignored for this long after a run ends.' })}
       ${automationNumberField({ id: 'automation-rule-concurrency', name: 'maxConcurrent', label: 'Max concurrent runs', value: action.maxConcurrent ?? AUTOMATION_RULE_DEFAULTS.maxConcurrent, min: 1, max: 5 })}
     </fieldset>
     <label class="checkbox-label"><input type="checkbox" name="enabled"${automationChecked(rule?.enabled === true)}><span>Enabled</span></label>`;
   return renderFormDialog({
     id: 'automation-rule-dialog', title: editing ? 'Edit rule' : 'New rule',
-    description: 'A matching labeled delivery opens a workspace and runs one agent with these instructions.',
+    description: 'A matching delivery opens a workspace and runs one agent with these instructions.',
     formId: 'automation-rule-form', submitId: 'automation-rule-submit', submitLabel: editing ? 'Save rule' : 'Create rule', body
   });
 }
 
-/** A sample delivery checked against one saved rule without starting anything. */
-export function renderAutomationPreviewDialog(rule) {
+/** The sample's scope prefilled from the rule: team or project key, or the custom event name. */
+const automationPreviewScope = (provider, match) => (provider === 'jira' ? match.projectKey : provider === 'custom' ? match.event : match.teamKey) ?? '';
+
+/**
+ * A sample delivery checked against one saved rule without starting anything. GitHub keeps its
+ * original sample; every other provider sends the normalized sample the runner matches on.
+ */
+export function renderAutomationPreviewDialog(rule, provider = automationMatchProvider(rule?.match)) {
   const match = rule?.match ?? {};
-  const firstEvent = automationList(match.events)[0] ?? 'issues';
-  const eventOptions = AUTOMATION_GITHUB_EVENTS.map(([id, label]) => `<option value="${id}"${id === firstEvent ? ' selected' : ''}>${escape(label)}</option>`).join('');
-  const senderOptions = AUTOMATION_SENDER_TYPES.map((type) => `<option value="${type}">${type}</option>`).join('');
-  return renderFormDialog({
-    id: 'automation-preview-dialog', title: 'Test event',
-    description: `Check whether a sample delivery would match "${rule?.name ?? 'this rule'}". Nothing is started.`,
-    formId: 'automation-preview-form', submitId: 'automation-preview-submit', submitLabel: 'Test event',
-    body: `<input type="hidden" name="ruleId" value="${escape(rule?.id ?? '')}">
+  const intro = { id: 'automation-preview-dialog', title: 'Test event', description: `Check whether a sample delivery would match "${rule?.name ?? 'this rule'}". Nothing is started.`, formId: 'automation-preview-form', submitId: 'automation-preview-submit', submitLabel: 'Test event' };
+  const head = `<input type="hidden" name="ruleId" value="${escape(rule?.id ?? '')}"><input type="hidden" name="provider" value="${escape(provider)}">`;
+  const result = '<div id="automation-preview-result" class="automation-preview-result" aria-live="polite"></div>';
+  if (provider === 'github') {
+    const firstEvent = automationList(match.events)[0] ?? 'issues';
+    const eventOptions = AUTOMATION_GITHUB_EVENTS.map(([id, label]) => `<option value="${id}"${id === firstEvent ? ' selected' : ''}>${escape(label)}</option>`).join('');
+    const senderOptions = AUTOMATION_SENDER_TYPES.map((type) => `<option value="${type}">${type}</option>`).join('');
+    return renderFormDialog({
+      ...intro,
+      body: `${head}
       <label for="automation-preview-event">Event<select id="automation-preview-event" name="event">${eventOptions}</select></label>
       <label for="automation-preview-repository">Repository<input id="automation-preview-repository" name="repository" required autocomplete="off" spellcheck="false" value="${escape(match.repository ?? '')}"></label>
       <label for="automation-preview-label">Added label<input id="automation-preview-label" name="label" required maxlength="100" autocomplete="off" value="${escape(match.label ?? '')}"></label>
       <label for="automation-preview-sender">Sender login<input id="automation-preview-sender" name="senderLogin" required maxlength="45" autocomplete="off" spellcheck="false" placeholder="octocat"></label>
       <label for="automation-preview-sender-type">Sender type<select id="automation-preview-sender-type" name="senderType">${senderOptions}</select></label>
-      <div id="automation-preview-result" class="automation-preview-result" aria-live="polite"></div>`
+      ${result}`
+    });
+  }
+  const stateTrigger = AUTOMATION_STATE_TRIGGERS[provider]?.[0];
+  const eventTypes = AUTOMATION_PROVIDER_EVENT_TYPES[provider] ?? [];
+  const selected = stateTrigger && match.trigger === stateTrigger ? eventTypes.find((type) => type.endsWith(stateTrigger)) : eventTypes[0];
+  const eventOptions = eventTypes.map((type) => `<option value="${escape(type)}"${type === selected ? ' selected' : ''}>${escape(type)}</option>`).join('');
+  const stateFields = stateTrigger ? `
+      ${automationTextField({ id: 'automation-preview-from-state', name: 'fromState', label: 'From state (optional)', value: '' })}
+      ${automationTextField({ id: 'automation-preview-to-state', name: 'toState', label: 'To state (optional)', value: provider === 'jira' ? match.toStatus : match.toState, help: 'Used by state and status events.' })}` : '';
+  const scopeLabel = provider === 'jira' ? 'Project key' : provider === 'custom' ? 'Event name' : 'Team key';
+  return renderFormDialog({
+    ...intro,
+    body: `${head}
+      <label for="automation-preview-event-type">Event type<select id="automation-preview-event-type" name="eventType">${eventOptions}</select></label>
+      ${automationTextField({ id: 'automation-preview-scope', name: 'scope', label: scopeLabel, value: automationPreviewScope(provider, match) || (provider === 'linear' ? 'ENG' : ''), required: true, maxlength: 200 })}
+      ${automationTextField({ id: 'automation-preview-label', name: 'label', label: provider === 'custom' ? 'Label (optional)' : 'Added label (optional)', value: match.label })}
+      ${stateFields}
+      ${automationTextField({ id: 'automation-preview-actor', name: 'actorLogin', label: 'Actor', value: '', required: true, maxlength: 254, placeholder: 'user id or email' })}
+      <label class="checkbox-label"><input type="checkbox" name="actorIsBot"><span>The actor is a bot or integration</span></label>
+      ${result}`
   });
 }
 
@@ -3035,29 +3157,119 @@ export function renderAutomationPreviewResult(preview) {
   return `<p><span class="status${matched ? ' succeeded' : ' failed'}">${matched ? 'Would match' : 'Would not match'}</span> <span class="wrap">${escape(preview?.reason ?? '')}</span></p>`;
 }
 
-function automationConnectionCard(connection, origin) {
+const automationCountsText = (counts) => (counts
+  ? AUTOMATION_DELIVERY_STATES.map((state) => `${escape(countOf(counts[state] ?? 0))} ${escape(AUTOMATION_DELIVERY_STATE[state][0].toLowerCase())}`).join(' · ')
+  : 'Not reported');
+
+/** Health facts for one connection, or one line saying health could not be read. */
+function automationHealthFacts(health, available) {
+  if (!available) return '<dt>Health</dt><dd>Not available right now</dd>';
+  if (!health) return '';
+  const quarantine = health.lastQuarantine
+    ? `<span class="mono wrap">${escape(health.lastQuarantine.reason)}</span><small>${time(health.lastQuarantine.at)}</small>`
+    : 'None';
+  return `<dt>Last 24 hours</dt><dd>${automationCountsText(health.last24h)}</dd><dt>Last 7 days</dt><dd>${automationCountsText(health.last7d)}</dd><dt>Last quarantine</dt><dd>${quarantine}</dd>`;
+}
+
+/** Whether results can be posted back: GitHub uses the harness App, the others a stored credential. */
+function automationOutboundText(connection) {
+  if (connection.provider === 'github') return 'Uses the GitHub App when one is installed';
+  if (connection.provider === 'custom') return 'Not supported';
+  return connection.outboundConfigured ? '<span class="status enabled">Configured</span>' : '<span class="status">Not configured</span>';
+}
+
+/** Linear and Jira keep a stored outbound credential; Clear is offered only while one is set. */
+function automationCredentialActions(connection, id, generation) {
+  if (connection.provider !== 'linear' && connection.provider !== 'jira') return '';
+  const name = escape(connection.name);
+  const clear = connection.outboundConfigured
+    ? `<button class="danger" type="button" data-automation-credentials-clear="${id}" data-generation="${generation}" data-connection-name="${name}">Clear credentials</button>`
+    : '';
+  return `
+        <button type="button" data-automation-credentials-edit="${id}" data-provider="${escape(connection.provider)}" data-generation="${generation}" data-connection-name="${name}">Outbound credentials</button>${clear}`;
+}
+
+/**
+ * Replaces a connection's stored outbound credential. The inputs are write-only: no value attribute,
+ * so nothing stored is ever rendered, and the loader clears them as soon as the form is sent.
+ */
+export function renderAutomationCredentialsDialog(connection) {
+  const jira = connection?.provider === 'jira';
+  const fields = jira
+    ? `<label for="automation-credentials-email">Account email<input id="automation-credentials-email" name="email" type="email" required maxlength="254" autocomplete="off" spellcheck="false"></label>
+      ${automationSecretField({ id: 'automation-credentials-token', name: 'apiToken', label: 'API token', help: 'Replaces the stored credential. Stored sealed in the runner and never shown again.' })}`
+    : automationSecretField({ id: 'automation-credentials-key', name: 'apiKey', label: 'API key', help: 'Replaces the stored credential. Stored sealed in the runner and never shown again.' });
+  return renderFormDialog({
+    id: 'automation-credentials-dialog', title: 'Outbound credentials',
+    description: `Used only to post the agent's answer back as a comment on ${connection?.name ?? 'this connection'}'s ${jira ? 'Jira site' : 'Linear workspace'}.`,
+    formId: 'automation-credentials-form', submitId: 'automation-credentials-submit', submitLabel: 'Save credentials',
+    body: fields
+  });
+}
+
+function automationConnectionCard(connection, origin, health, healthAvailable) {
   const id = escape(connection.id);
   const generation = escape(connection.generation);
   const url = automationWebhookUrl(origin, connection.webhookPath);
-  return `<li class="panel automation-connection"><div class="record-heading"><div><h3>${escape(connection.name)}</h3><p><span class="status${connection.enabled ? ' enabled' : ''}">${connection.enabled ? 'Enabled' : 'Disabled'}</span> <span class="mono">${escape(connection.provider)}</span></p></div><div class="row-actions">
+  const baseUrl = connection.config?.baseUrl ? `<dt>Jira site</dt><dd class="mono wrap">${escape(connection.config.baseUrl)}</dd>` : '';
+  return `<li class="panel automation-connection"><div class="record-heading"><div><h3>${escape(connection.name)}</h3><p><span class="status${connection.enabled ? ' enabled' : ''}">${connection.enabled ? 'Enabled' : 'Disabled'}</span> <span>${escape(automationProviderLabel(connection.provider))}</span></p></div><div class="row-actions">
         <button type="button" data-automation-connection-toggle="${id}" data-next-enabled="${connection.enabled ? 'false' : 'true'}" data-generation="${generation}">${connection.enabled ? 'Disable' : 'Enable'}</button>
-        <button type="button" data-automation-connection-rotate="${id}" data-generation="${generation}" data-connection-name="${escape(connection.name)}">Rotate secret</button>
+        <button type="button" data-automation-connection-rotate="${id}" data-generation="${generation}" data-connection-name="${escape(connection.name)}">Rotate secret</button>${automationCredentialActions(connection, id, generation)}
         <button class="danger" type="button" data-automation-connection-delete="${id}" data-generation="${generation}" data-connection-name="${escape(connection.name)}">Delete</button>
-      </div></div><dl class="facts"><dt>Webhook URL</dt><dd>${renderCopyChip({ value: url, label: 'Webhook URL' })}</dd><dt>Connection ID</dt><dd class="mono wrap">${id}</dd><dt>Secret rotated</dt><dd>${optionalTime(connection.secretRotatedAt)}</dd><dt>Last delivery</dt><dd>${optionalTime(connection.lastDeliveryAt)}</dd><dt>Created</dt><dd>${optionalTime(connection.createdAt)}</dd></dl></li>`;
+      </div></div><dl class="facts"><dt>Provider</dt><dd class="mono">${escape(connection.provider)}</dd><dt>Webhook URL</dt><dd>${renderCopyChip({ value: url, label: 'Webhook URL' })}</dd><dt>Webhook path</dt><dd class="mono wrap">${escape(connection.webhookPath)}</dd>${baseUrl}<dt>Post back</dt><dd>${automationOutboundText(connection)}</dd><dt>Connection ID</dt><dd class="mono wrap">${id}</dd><dt>Secret rotated</dt><dd>${optionalTime(connection.secretRotatedAt)}</dd><dt>Last delivery</dt><dd>${optionalTime(health?.lastDeliveryAt ?? connection.lastDeliveryAt)}</dd>${automationHealthFacts(health, healthAvailable)}<dt>Created</dt><dd>${optionalTime(connection.createdAt)}</dd></dl></li>`;
 }
 
-export function renderAutomationConnections({ connections = [], origin = '' } = {}) {
-  const list = automationList(connections);
-  const items = list.length ? list.map((connection) => automationConnectionCard(connection, origin)).join('')
-    : '<li class="empty"><h3>No connections yet.</h3><p>Create a GitHub webhook connection to get a payload URL and a signing secret for your repository webhook.</p></li>';
-  return `${renderResourcePage({
-    body: `<section aria-labelledby="automation-connections-heading"><div class="record-heading"><div><h2 id="automation-connections-heading">Connections</h2><p>Each connection is one GitHub webhook endpoint with its own signing secret. Deliveries with a bad signature are refused.</p></div></div><ul class="record-list automation-connection-list">${items}</ul></section>`
-  })}${renderFormDialog({
+/** A write-only credential input: a password field with no value attribute, cleared after submit. */
+const automationSecretField = ({ id, name, label, help }) => `<label for="${id}">${escape(label)}<input id="${id}" name="${name}" type="password" minlength="8" maxlength="1024" autocomplete="new-password" spellcheck="false" data-write-only></label><p class="field-help">${escape(help)}</p>`;
+
+/** The create form: provider fields sit in disabled, hidden fieldsets so only the chosen provider's fields submit. */
+function renderAutomationConnectionDialog() {
+  const providerOptions = AUTOMATION_PROVIDERS.map(([id, label]) => `<option value="${id}"${id === 'github' ? ' selected' : ''}>${escape(label)}</option>`).join('');
+  const body = `<label for="automation-connection-name">Connection name<input id="automation-connection-name" name="name" required maxlength="100" autocomplete="off" placeholder="acme GitHub"></label>
+    <label for="automation-connection-provider">Provider<select id="automation-connection-provider" name="provider" required>${providerOptions}</select></label>
+    <fieldset class="automation-fieldset" data-automation-provider-fields="linear" hidden disabled><legend>Linear</legend>
+      ${automationSecretField({ id: 'automation-connection-linear-key', name: 'apiKey', label: 'API key (optional)', help: 'Only used to post the agent\'s answer back as a comment. Stored sealed in the runner and never shown again.' })}
+    </fieldset>
+    <fieldset class="automation-fieldset" data-automation-provider-fields="jira" hidden disabled><legend>Jira</legend>
+      <label for="automation-connection-jira-site">Site URL<input id="automation-connection-jira-site" name="baseUrl" type="url" required maxlength="300" autocomplete="off" spellcheck="false" placeholder="https://example.atlassian.net"></label>
+      <label for="automation-connection-jira-email">Account email (optional)<input id="automation-connection-jira-email" name="email" type="email" maxlength="254" autocomplete="off" spellcheck="false"></label>
+      ${automationSecretField({ id: 'automation-connection-jira-token', name: 'apiToken', label: 'API token (optional)', help: 'Set with the account email to post answers back as comments. Stored sealed in the runner and never shown again.' })}
+    </fieldset>`;
+  return renderFormDialog({
     id: 'automation-connection-dialog', title: 'New connection',
     description: 'The signing secret is shown once after the connection is created and cannot be recovered.',
-    formId: 'automation-connection-form', submitId: 'automation-connection-submit', submitLabel: 'Create connection',
-    body: '<label for="automation-connection-name">Connection name<input id="automation-connection-name" name="name" required maxlength="100" autocomplete="off" placeholder="acme GitHub"></label>'
-  })}`;
+    formId: 'automation-connection-form', submitId: 'automation-connection-submit', submitLabel: 'Create connection', body
+  });
+}
+
+/**
+ * `health` is the `connection_health` list, or `null` when it could not be read; the page still
+ * renders every connection either way.
+ */
+export function renderAutomationConnections({ connections = [], origin = '', health = [] } = {}) {
+  const list = automationList(connections);
+  const healthAvailable = health !== null;
+  const byId = new Map(automationList(health).map((entry) => [entry.connectionId, entry]));
+  const items = list.length ? list.map((connection) => automationConnectionCard(connection, origin, byId.get(connection.id), healthAvailable)).join('')
+    : '<li class="empty"><h3>No connections yet.</h3><p>Create a webhook connection to get a payload URL and a signing secret for GitHub, Linear, Jira or your own sender.</p></li>';
+  return `${renderResourcePage({
+    body: `<section aria-labelledby="automation-connections-heading"><div class="record-heading"><div><h2 id="automation-connections-heading">Connections</h2><p>Each connection is one webhook endpoint for one provider, with its own signing secret. Deliveries with a bad signature are refused and not recorded.</p></div></div><ul class="record-list automation-connection-list">${items}</ul></section>`
+  })}${renderAutomationConnectionDialog()}<div id="automation-dialog-host"></div>`;
+}
+
+/** Where to paste the URL and secret, per provider. */
+function automationSecretInstructions(connection) {
+  const name = `<strong>${escape(connection?.name ?? 'this connection')}</strong>`;
+  switch (connection?.provider) {
+    case 'linear':
+      return `<p>In Linear, a webhook made on the settings page signs with Linear's own secret, so create the webhook for ${name} through Linear's GraphQL API instead: as a workspace admin, call <code>webhookCreate</code> with this URL as <code>url</code>, this secret as <code>secret</code>, <code>resourceTypes: ["Issue"]</code>, and a <code>teamId</code> or <code>allPublicTeams: true</code>. After a rotation, set the new secret with <code>webhookUpdate</code>. Linear posts <code>application/json</code>.</p>`;
+    case 'jira':
+      return `<p>In Jira, as an admin, open <strong>Settings → System → WebHooks → Create a WebHook</strong> for ${name}, paste this URL and this secret into its <strong>Secret</strong> field, and select the <strong>Issue updated</strong> event. Jira posts <code>application/json</code>.</p>`;
+    case 'custom':
+      return `<p>Your sender posts <code>application/json</code> to this URL for ${name} with the <code>x-cloudharness-delivery</code>, <code>x-cloudharness-timestamp</code> and <code>x-cloudharness-signature</code> headers, signed with this secret.</p>`;
+    default:
+      return `<p>In GitHub, open the repository's <strong>Settings → Webhooks → Add webhook</strong> for ${name}. Use content type <code>application/json</code> and select the <strong>Issues</strong> and/or <strong>Pull requests</strong> events.</p>`;
+  }
 }
 
 /**
@@ -3067,10 +3279,11 @@ export function renderAutomationConnections({ connections = [], origin = '' } = 
  */
 export function renderAutomationSecretPanel({ connection, origin = '', rotated = false } = {}) {
   const url = automationWebhookUrl(origin, connection?.webhookPath);
+  const provider = automationProviderLabel(connection?.provider ?? 'github');
   return `<section id="automation-secret-panel" class="panel automation-secret-panel" aria-labelledby="automation-secret-heading" tabindex="-1">
       <h2 id="automation-secret-heading">${rotated ? 'Copy the new signing secret now' : 'Copy the webhook secret now'}</h2>
-      <p class="warning"><strong>This secret is shown once.</strong> It cannot be recovered after you dismiss this panel or leave the page. ${rotated ? 'The previous secret no longer verifies deliveries, so update the GitHub webhook now.' : 'Rotate the secret if you lose it.'}</p>
-      <p>In GitHub, open the repository's <strong>Settings → Webhooks → Add webhook</strong> for <strong>${escape(connection?.name ?? 'this connection')}</strong>. Use content type <code>application/json</code> and select the <strong>Issues</strong> and/or <strong>Pull requests</strong> events.</p>
+      <p class="warning"><strong>This secret is shown once.</strong> It cannot be recovered after you dismiss this panel or leave the page. ${rotated ? `The previous secret no longer verifies deliveries, so update the ${escape(provider)} webhook now.` : 'Rotate the secret if you lose it.'}</p>
+      ${automationSecretInstructions(connection)}
       <label for="automation-webhook-url">Payload URL</label>
       <div class="automation-copy-row"><input id="automation-webhook-url" class="mono" readonly value="${escape(url)}"><button type="button" id="copy-automation-webhook-url">Copy URL</button></div>
       <label for="automation-webhook-secret">Secret</label>
@@ -3080,12 +3293,18 @@ export function renderAutomationSecretPanel({ connection, origin = '', rotated =
     </section>`;
 }
 
+const automationDeliveryReplay = (delivery) => (delivery.replayable
+  ? `<button type="button" data-automation-delivery-replay="${escape(delivery.id)}" data-state="${escape(delivery.state)}">Replay</button>`
+  : '');
+
 export function renderAutomationDeliveries({ deliveries = [], connections = [], filters = {} } = {}) {
   const list = automationList(deliveries);
   const connectionNames = new Map(automationList(connections).map((connection) => [connection.id, connection.name]));
   const connectionOptions = automationList(connections).map((connection) => `<option value="${escape(connection.id)}"${filters.connectionId === connection.id ? ' selected' : ''}>${escape(connection.name)}</option>`).join('');
-  const resource = (delivery) => (delivery.repository ? `<span class="mono wrap">${escape(delivery.repository)}${delivery.resourceNumber ? `#${escape(delivery.resourceNumber)}` : ''}</span>` : '—');
+  const stateOptions = AUTOMATION_DELIVERY_STATES.map((state) => `<option value="${state}"${filters.state === state ? ' selected' : ''}>${escape(state === 'QUARANTINED' ? 'Quarantined (dead letter)' : AUTOMATION_DELIVERY_STATE[state][0])}</option>`).join('');
+  const resource = (delivery) => (delivery.repository || delivery.resourceRef ? `<span class="mono wrap">${escape(automationResourceText(delivery))}</span>` : '—');
   const event = (delivery) => `<span class="mono">${escape(delivery.providerEvent)}</span>${delivery.eventType ? `<small class="mono">${escape(delivery.eventType)}</small>` : ''}`;
+  const empty = filters.state ? 'No deliveries in this state.' : 'No deliveries received yet.';
   const rows = list.length ? list.map((delivery) => `<tr>
         <th scope="row">${time(delivery.receivedAt)}</th>
         <td class="wrap">${escape(connectionNames.get(delivery.connectionId) ?? delivery.connectionId)}</td>
@@ -3096,11 +3315,53 @@ export function renderAutomationDeliveries({ deliveries = [], connections = [], 
         <td class="mono wrap">${automationText(delivery.outcome)}</td>
         <td class="mono">${escape(countOf(delivery.workflowsCreated))}</td>
         <td class="mono wrap">${escape(delivery.providerDeliveryId)}</td>
-      </tr>`).join('') : '<tr><td colspan="9">No deliveries received yet.</td></tr>';
-  const cards = list.length ? list.map((delivery) => `<li><h3>${time(delivery.receivedAt)}</h3><dl><dt>Event</dt><dd>${event(delivery)}</dd><dt>Resource</dt><dd>${resource(delivery)}</dd><dt>Label</dt><dd class="mono wrap">${automationText(delivery.label)}</dd><dt>State</dt><dd>${automationPill(AUTOMATION_DELIVERY_STATE, delivery.state)}</dd><dt>Outcome</dt><dd class="mono wrap">${automationText(delivery.outcome)}</dd><dt>Runs</dt><dd class="mono">${escape(countOf(delivery.workflowsCreated))}</dd></dl></li>`).join('')
-    : '<li class="empty"><h3>No deliveries received yet.</h3><p>Deliveries appear once GitHub posts to a connection\'s webhook URL with a valid signature.</p></li>';
+        <td>${automationDeliveryReplay(delivery)}</td>
+      </tr>`).join('') : `<tr><td colspan="10">${empty}</td></tr>`;
+  const cards = list.length ? list.map((delivery) => `<li><h3>${time(delivery.receivedAt)}</h3><dl><dt>Event</dt><dd>${event(delivery)}</dd><dt>Resource</dt><dd>${resource(delivery)}</dd><dt>Label</dt><dd class="mono wrap">${automationText(delivery.label)}</dd><dt>State</dt><dd>${automationPill(AUTOMATION_DELIVERY_STATE, delivery.state)}</dd><dt>Outcome</dt><dd class="mono wrap">${automationText(delivery.outcome)}</dd><dt>Runs</dt><dd class="mono">${escape(countOf(delivery.workflowsCreated))}</dd></dl>${delivery.replayable ? `<div class="row-actions">${automationDeliveryReplay(delivery)}</div>` : ''}</li>`).join('')
+    : `<li class="empty"><h3>${empty}</h3><p>Deliveries appear once a provider posts to a connection's webhook URL with a valid signature.</p></li>`;
   return renderResourcePage({
-    filters: `<form id="automation-deliveries-filter" aria-label="Filter deliveries"><label for="automation-deliveries-connection">Connection</label><select id="automation-deliveries-connection" name="connectionId"><option value="">All connections</option>${connectionOptions}</select><button type="submit">Apply filter</button></form>`,
-    body: `<section aria-labelledby="automation-deliveries-heading"><div class="record-heading"><div><h2 id="automation-deliveries-heading">Recent deliveries</h2><p>Signed inbound webhooks, newest first. Deliveries are kept for 30 days.</p></div></div><div class="desktop-table"><table><caption>${escape(list.length)} deliveries</caption><thead><tr><th>Received</th><th>Connection</th><th>Event</th><th>Resource</th><th>Label</th><th>State</th><th>Outcome</th><th>Runs</th><th>Delivery ID</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`
+    filters: `<form id="automation-deliveries-filter" aria-label="Filter deliveries"><label for="automation-deliveries-connection">Connection</label><select id="automation-deliveries-connection" name="connectionId"><option value="">All connections</option>${connectionOptions}</select><label for="automation-deliveries-state">State</label><select id="automation-deliveries-state" name="state"><option value="">All states</option>${stateOptions}</select><button type="submit">Apply filter</button></form>`,
+    body: `<section aria-labelledby="automation-deliveries-heading"><div class="record-heading"><div><h2 id="automation-deliveries-heading">Recent deliveries</h2><p>Signed inbound webhooks, newest first. Deliveries are kept for 30 days. Quarantined deliveries verified but could not be read. Replay matches a stored event against the rules as they are now; a rule that already ran for that delivery is skipped.</p></div></div><div class="desktop-table"><table><caption>${escape(list.length)} deliveries</caption><thead><tr><th>Received</th><th>Connection</th><th>Event</th><th>Resource</th><th>Label</th><th>State</th><th>Outcome</th><th>Runs</th><th>Delivery ID</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`
   });
+}
+
+const automationRate = (value) => (Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : 'No finished runs');
+const automationLatency = (value) => {
+  if (!Number.isFinite(value)) return '—';
+  return value < 1_000 ? `${value} ms` : value < 120_000 ? `${(value / 1_000).toFixed(1)} s` : `${(value / 60_000).toFixed(1)} min`;
+};
+const automationOutcomes = (entry) => `${escape(countOf(entry.completed))} completed · ${escape(countOf(entry.failed))} failed · ${escape(countOf(entry.cancelled + entry.expired))} cancelled or expired${entry.active ? ` · ${escape(countOf(entry.active))} active` : ''}`;
+const automationTokens = (entry) => `${escape(countOf(entry.inputTokens))} in · ${escape(countOf(entry.outputTokens))} out`;
+const automationLatencyText = (entry) => `p50 ${escape(automationLatency(entry.latencyP50Ms))} · p95 ${escape(automationLatency(entry.latencyP95Ms))}`;
+
+function automationMetricsTable({ id, title, caption, entries, nameOf }) {
+  const rows = entries.map((entry) => `<tr>
+        <th scope="row">${nameOf(entry)}</th>
+        <td class="mono">${escape(countOf(entry.workflows))}</td>
+        <td>${automationOutcomes(entry)}</td>
+        <td class="mono">${escape(automationRate(entry.successRate))}</td>
+        <td class="mono">${escape(costOf(entry.costMicros))}</td>
+        <td class="mono nowrap">${automationTokens(entry)}</td>
+        <td class="mono nowrap">${automationLatencyText(entry)}</td>
+      </tr>`).join('');
+  const cards = entries.map((entry) => `<li><h3>${nameOf(entry)}</h3><dl><dt>Runs</dt><dd class="mono">${escape(countOf(entry.workflows))}</dd><dt>Outcomes</dt><dd>${automationOutcomes(entry)}</dd><dt>Success rate</dt><dd class="mono">${escape(automationRate(entry.successRate))}</dd><dt>Cost</dt><dd class="mono">${escape(costOf(entry.costMicros))}</dd><dt>Tokens</dt><dd class="mono">${automationTokens(entry)}</dd><dt>Latency</dt><dd class="mono">${automationLatencyText(entry)}</dd></dl></li>`).join('');
+  return `<section class="panel" aria-labelledby="${id}"><h2 id="${id}">${escape(title)}</h2><div class="desktop-table"><table><caption>${escape(caption)}</caption><thead><tr><th>${escape(title === 'By provider' ? 'Provider' : 'Rule')}</th><th>Runs</th><th>Outcomes</th><th>Success rate</th><th>Cost</th><th>Tokens</th><th>Latency</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`;
+}
+
+/**
+ * Outcomes, cost and latency of runs created in the chosen window, per provider and per rule.
+ * `error` renders the read failure in place, keeping the window picker usable.
+ */
+export function renderAutomationMetrics({ metrics, windowDays = 7, error } = {}) {
+  const windowOptions = AUTOMATION_METRICS_WINDOWS.map((days) => `<option value="${days}"${Number(windowDays) === days ? ' selected' : ''}>${days === 1 ? 'Last 24 hours' : `Last ${days} days`}</option>`).join('');
+  const filters = `<form id="automation-metrics-filter" aria-label="Metrics window"><label for="automation-metrics-window">Window</label><select id="automation-metrics-window" name="windowDays">${windowOptions}</select><button type="submit">Apply</button></form>`;
+  const providers = automationList(metrics?.providers);
+  const rules = automationList(metrics?.rules);
+  const intro = `<div class="record-heading"><div><h2 id="automation-metrics-heading">Metrics</h2><p>Runs created${metrics?.since ? ` since ${time(metrics.since)}` : ' in the window'}. Success rate counts completed runs among finished ones; latency is the time from a run's creation to its end, for completed runs only.</p></div></div>`;
+  const body = error
+    ? `<div class="empty" role="alert"><h3>Metrics could not be loaded.</h3><p>${escape(error.message ?? 'The request could not be completed.')}</p><button type="button" data-automation-retry>Try again</button></div>`
+    : providers.length
+    ? `${automationMetricsTable({ id: 'automation-metrics-providers', title: 'By provider', caption: `${providers.length} providers`, entries: providers, nameOf: (entry) => escape(automationProviderLabel(entry.provider)) })}${automationMetricsTable({ id: 'automation-metrics-rules', title: 'By rule', caption: `${rules.length} rules, busiest first`, entries: rules, nameOf: (entry) => `${escape(entry.name)}<small>${escape(automationProviderLabel(entry.provider))}${entry.deleted ? ' · deleted' : ''}</small>` })}`
+    : '<div class="empty" role="status"><h3>No runs in this window.</h3><p>Metrics appear once a delivery matches an enabled rule and starts a run.</p></div>';
+  return renderResourcePage({ filters, body: `<section class="automation-metrics" aria-labelledby="automation-metrics-heading">${intro}${body}</section>` });
 }

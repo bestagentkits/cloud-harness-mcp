@@ -45,7 +45,7 @@ import {
 } from './agent-protocol.js';
 import { DockerAgentLauncher, type AgentLaunchSpec, type AgentLauncher, type AgentRuntimeProcess } from './agent-launcher.js';
 import type { StateStore, WorkspaceRecord } from './state-store.js';
-import type { AgentTraceHooks } from './agent-trace-recorder.js';
+import { truncateUtf8, type AgentTraceHooks } from './agent-trace-recorder.js';
 
 /** A profile whose cache prices are resolved to the concrete prices the agent reports. */
 type PricedAgentModelProfile = AgentModelProfile & {
@@ -905,12 +905,17 @@ export class AgentManager {
       this.cleanupTargets.delete(record.id);
     } catch (error) {
       const existing = this.repository.cleanupRetry(record.ownerId, record.workspaceId, record.id, record.generation);
-      const attempts = (existing?.attempts ?? 0) + 1;
-      const delay = Math.min(this.config.limits.cleanupRetryMaxDelayMs, 1_000 * (2 ** Math.min(attempts - 1, 20)));
+      const { cleanupRetryLimit, cleanupRetryMaxDelayMs } = this.config.limits;
+      // Past the limit the backoff stops growing, not the retries: the container may still exist.
+      const exhausted = (existing?.attempts ?? 0) >= cleanupRetryLimit;
+      const attempts = Math.min((existing?.attempts ?? 0) + 1, cleanupRetryLimit);
+      const delay = exhausted
+        ? cleanupRetryMaxDelayMs
+        : Math.min(cleanupRetryMaxDelayMs, 1_000 * (2 ** Math.min(attempts - 1, 20)));
       this.repository.scheduleCleanupRetry({
         ownerId: record.ownerId, workspaceId: record.workspaceId, agentId: record.id, agentGeneration: record.generation,
         attempts, nextAttemptAt: this.now() + delay,
-        lastError: safeError(error).slice(0, 2_000), updatedAt: this.now()
+        lastError: truncateUtf8(safeError(error), 2_000), updatedAt: this.now()
       });
       throw error;
     }

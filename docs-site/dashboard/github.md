@@ -81,6 +81,7 @@ Before creating the App in GitHub, choose the minimum required permission level:
 | **List/compare commits, releases, and tags through `github_read`/`github_action`** | **Contents: Read-only** |
 | **Read or post commit statuses (`commit_status_get`, `commit_status_create`)** | **Commit statuses: Read-only** or **Read and write** + **Contents: Read-only** |
 | **List check runs for a commit (`check_runs_list`)** | **Checks: Read-only** + **Contents: Read-only** |
+| **Create or update check runs (`check_run_create`, `check_run_update`), including the check run a pull request [automation](/dashboard/automations) reports** | **Checks: Read and write** + **Contents: Read-only** |
 | **Read workflow runs, dispatch workflows, re-run failed jobs** | **Actions: Read-only** or **Read and write** + **Contents: Read-only** |
 | **Use a branch as a merge-train lock (`git_push` leases)** | **Contents: Read and write** |
 
@@ -110,12 +111,11 @@ issue and pull-request permissions cannot mint an action-scoped token.
      `/dashboard/github` still works; that path redirects here and keeps the setup
      callback parameters.
 4. **Webhook:**
-   - Uncheck **Active** under the Webhook section (Cloud Harness does not require webhooks).
+   - Uncheck **Active** under the Webhook section (Cloud Harness does not require webhooks). [Automations](/dashboard/automations) use a separate repository or organisation webhook pointed at their connection, not the App's webhook.
 5. **Repository permissions:**
    - Set **Contents** to **Read and write** (or Read-only).
    - (Optional) Set **Workflows** to **Read and write** if your agents need to edit GitHub Actions.
-   - (Optional) Set **Commit statuses**, **Checks**, or **Actions** when an automated routine posts statuses, reads check runs, or dispatches and re-runs workflows.
-6. **Where can this GitHub App be installed?:**
+   - (Optional) Set **Commit statuses**, **Checks**, or **Actions** when an automated routine posts statuses, reads or writes check runs, or dispatches and re-runs workflows.6. **Where can this GitHub App be installed?:**
    - Select **Only on this account**.
 7. Click **Create GitHub App**.
 

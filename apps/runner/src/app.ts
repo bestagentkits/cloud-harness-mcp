@@ -15,6 +15,7 @@ import type { AgentPolicyService } from './agent-governance/policy-service.js';
 import { registerAgentPolicyRoutes } from './agent-governance/policy-router.js';
 import type { NotificationService } from './notifications/notification-service.js';
 import { registerNotificationRoutes } from './notifications/notification-router.js';
+import { registerAgentApprovalRoutes } from './agent-governance/approval-router.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info', redact: ['req.headers.authorization', 'authorization', '*.token', '*.content', '*.command'] });
 
@@ -114,6 +115,8 @@ export function createRunnerApp(config: RunnerConfig, service: WorkspaceService,
   registerAgentPolicyRoutes(app, serviceAuth(config.serviceToken), agentPolicies, logger);
   // Notification inbox and channel preferences for the owner Dashboard.
   registerNotificationRoutes(app, serviceAuth(config.serviceToken), notifications, logger);
+  // Owner approvals of coding steps held for approval; owned by the automation engine.
+  registerAgentApprovalRoutes(app, serviceAuth(config.serviceToken), automations?.approvals, logger);
   return app;
 }
 

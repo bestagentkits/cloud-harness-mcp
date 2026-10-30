@@ -82,6 +82,12 @@ of the Managed OAuth lane that authenticates the client to Cloud Harness.
    stored licence token, verifies the package digest, and mounts the kit skills
    read-only under `owner` scope only (licensed content is never written into a
    repository).
+   `kitLocks` installs the kit-owned skills an `agentkit.skill-lock/v1` lock
+   records, at the locked kit versions, when the operator enables
+   `ENABLE_KIT_LOCK_INSTALL`. A lock installs whole or is refused with
+   `INVALID_INPUT`; a locked skill the kit version lacks fails with `NOT_FOUND`.
+   SkillX personal kit locks are validated but refused until agentkit.best
+   sign-in exists ([ADR 0008](adr/0008-agentkit-best-identity-kits-and-vault.md)).
 2. Subsequent tool calls may omit `workspaceId`. The runner resolves it in this
    order: an explicit `workspaceId`; the sole `ACTIVE` or `CREATING` workspace; a
    sole recoverable record when nothing is active; otherwise the caller's
@@ -323,7 +329,8 @@ workspace lifetime-record cap is full, new spawn/message reservations are
 rejected. After closure and full-state retention, `agent_status` returns a
 bounded `compacted: true` outcome record containing the terminal status,
 generation, compaction time, and expiry. These tombstones preserve status
-and key-collision evidence through the configured lookup horizon; the SQLite
+and key-collision evidence through the configured lookup horizon (see
+[agent runtime limits and retention](configuration.md#agent-runtime-limits-and-retention)); the SQLite
 schema and retention policy are owned by
 [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts) and
 [`apps/runner/src/agent-state-repository.ts`](../apps/runner/src/agent-state-repository.ts).
@@ -391,7 +398,11 @@ event-to-span mapping by
 - **Coding automations.** The trace of an agent a coding automation started
   carries the run's `workflowId` (filterable in `agent_traces_list`), and each
   brokered action adds an `action` span with its decision, reason code and
-  receipt state. The runner verifies, commits, pushes and opens the pull
+  receipt state; when the gate consulted the execution-risk advisor, a
+  `decision` span under it names the Decision Plane id, the advisor's effect,
+  risk and confidence. A held step that waits for the owner adds an `approval`
+  span when it is requested and another when it is approved, denied or
+  expires. The runner verifies, commits, pushes and opens the pull
   request after the agent ends, so those spans are appended to a trace that is
   already terminal; a finished trace's span list can still grow. The receipts
   themselves are on the Dashboard Automations run page, read through the
@@ -655,11 +666,17 @@ Decisions that are easy to misread:
   notification enters the principal's inbox (see
   [notification inbox](#notification-inbox)), with an optional `kind` filter.
   Its payload is the notification id, kind, subject type and id, a bounded,
-  redacted title, a relative Dashboard link, and the creation time. It is
+  redacted title, a relative Dashboard link, the optional related `links`
+  described under [notification inbox](#notification-inbox), and the creation
+  time. It is
   feature-flagged: it fires only while the operator sets
   `NOTIFICATIONS_ENABLED=true` and the principal's MCP Events preference for
   that kind is on. Turning the flag off (the rollback) stops new events;
   existing subscriptions stay listed and simply receive nothing.
+- **Payloads only grow.** An event payload may gain optional fields in a later
+  release without a new event name, so a consumer must ignore fields it does
+  not know rather than reject the payload. The optional `links` object of
+  `cloudharness.notification.created` is such an addition.
 - **Payloads are notifications, not results.** They carry identifiers, status,
   exit or error codes, and timestamps only, never command text, output,
   prompts, or messages. Read the result with `tasks_status` or `agent_status`
@@ -723,10 +740,25 @@ ChatGPT subscription (see
 When the operator sets `NOTIFICATIONS_ENABLED=true`, terminal automation runs
 and terminal top-level agents (not child agents, and not agents an automation
 started, which notify through their workflow) each write one notification to
-the owner's inbox in the same savepoint as the transition. The
-`workflow.waiting_for_human` and `approval.decided` kinds are defined for the
-approval flow and are written only once that flow emits them. A notification is deduplicated per principal, subject, and
-transition, so a replayed transition never notifies twice. The inbox copy is
+the owner's inbox in the same savepoint as the transition. With
+`AGENT_APPROVALS_ENABLED=true`, a coding run that starts waiting for an owner
+approval writes `workflow.waiting_for_human`, and the approval's decision or
+expiry writes `approval.decided`. A notification is deduplicated per principal, subject, and
+transition, so a replayed transition never notifies twice.
+
+The `link` of an automation notification is always its Dashboard run page. An
+automation's terminal notification may add a `links` object with only the
+entries the run has: `source`, the issue or pull request page that started it;
+`trace`, the Dashboard page of its agent's trace; and `pullRequest`, the pull
+request a coding run opened. `source` is linked only for GitHub, Linear and
+Jira, whose normalizers pin the URL's host; a custom webhook's URL is never
+linked. `pullRequest` is linked only when the URL the runner received from
+GitHub is exactly that number's page in the rule's repository. Every external
+link must be a canonical `https` URL with no user info, query or fragment, so a
+link never carries a credential or points at a host the sender chose; the
+field is absent when there is nothing to add.
+
+The inbox copy is
 always recorded; the owner chooses per kind whether it is also delivered as the
 `cloudharness.notification.created` MCP event and whether the GitHub column
 mirrors the automation's own result comment. The harness adds no new egress:
@@ -755,6 +787,64 @@ Executable owners:
 [`apps/api/src/dashboard-inbox-router.ts`](../apps/api/src/dashboard-inbox-router.ts),
 and the failure-injection suite
 [`test/integration/notifications-failure-injection.test.ts`](../test/integration/notifications-failure-injection.test.ts).
+
+## Automation management tools
+
+The remote Streamable HTTP endpoints (`/mcp`, `/mcp/workspaces/<workspaceId>`,
+and the managed API-key lane) list six tools beside the workspace tools for
+owner management of [webhook automations](security-model.md#webhook-automation-ingress):
+`automation_rules_list`, `automation_rule_create`, `automation_rule_disable`,
+`automation_runs_list`, `automation_run_get`, and `automation_run_cancel`. Local
+stdio and local HTTP backends do not list them. Their names, inputs,
+annotations, and required scopes are owned by `AUTOMATION_TOOL_SPECS` in
+[`packages/contracts/src/automation-tool-schemas.ts`](../packages/contracts/src/automation-tool-schemas.ts);
+the result shaping and error mapping by
+[`apps/api/src/automations/automation-tools.ts`](../apps/api/src/automations/automation-tools.ts).
+
+Decisions that are easy to misread:
+
+- **One channel operation per tool, never ingest.** Each tool calls exactly one
+  owner-scoped operation of the runner's automations channel with the session
+  principal; no input names an owner, and `webhook_ingest` is not reachable.
+  The public webhook ingress, in turn, never reaches these operations.
+- **Scopes come from the session.** Read tools need `workspace:read` and
+  mutating tools `workspace:write`, checked against the authenticated
+  session's scopes before the runner is called; a missing scope is `FORBIDDEN`.
+  Every current authentication lane grants both (`apps/api/src/auth.ts`), so
+  the check matters for any narrower credential added later. Another
+  principal's rule or run is `NOT_FOUND`.
+- **Created rules are disabled.** `automation_rule_create` always saves the rule
+  disabled whatever the input, so a model can draft a rule but only the owner,
+  on the Dashboard, can let deliveries start runs. There is no MCP tool to
+  enable a rule, delete one, or touch connections, secrets, or outbound
+  credentials.
+- **Disable is generation-fenced.** `automation_rule_disable` needs the
+  `expectedGeneration` from `automation_rules_list`; a moved generation is
+  `CONFLICT`, and disabling an already disabled rule still bumps it. Queued runs
+  of the rule are cancelled before they start.
+- **Run states.** A run moves `QUEUED` → `STARTING` → `RUNNING` and ends
+  `COMPLETED`, `FAILED`, `CANCELLED`, or `EXPIRED`. A coding run can also wait
+  in `WAITING_FOR_HUMAN` while a step its execution policy holds waits for the
+  owner's decision on the Dashboard; approving returns it to `RUNNING`, and a
+  denial, an expiry, or a lost workspace fails it. No tool decides an approval.
+  The state set is owned by `AutomationWorkflowStateSchema` in
+  [`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
+- **Cancel is idempotent.** Cancelling a finished run returns it unchanged. A
+  queued, starting, running, or waiting run can be cancelled; cancelling a
+  waiting run expires its approval. A running run's cancellation is published
+  to its source like any other end.
+- **Off means `UNAVAILABLE`.** With `AUTOMATIONS_ENABLED` off the tools stay
+  listed and answer `UNAVAILABLE`, so a client's tool list does not change with
+  the flag.
+- **Bounded lists.** List results stop at the requested limit or the serialized
+  size bound in `AUTOMATION_TOOL_LIMITS` and set `truncated` when items were
+  dropped. `automation_run_get` returns the agent answer as bounded, untrusted
+  model output.
+
+Tests:
+[`apps/api/test/mcp-automation-tools.test.ts`](../apps/api/test/mcp-automation-tools.test.ts)
+and
+[`packages/contracts/test/automation-tool-contract.test.ts`](../packages/contracts/test/automation-tool-contract.test.ts).
 
 ## Semantics that are easy to misread
 
@@ -934,8 +1024,8 @@ and the failure-injection suite
   `pr_auto_merge_disable`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`,
   `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`,
   `issue_update`, `issue_publish`, `commit_list`, `compare`, `release_list`, `tag_list`,
-  `commit_status_create`, `workflow_dispatch`, `workflow_run_rerun_failed`, and the
-  `github_read` actions) through an
+  `commit_status_create`, `check_run_create`, `check_run_update`, `workflow_dispatch`,
+  `workflow_run_rerun_failed`, and the `github_read` actions) through an
   ephemeral helper container using short-lived tokens
   minted from the configured GitHub App. `pr_create` supports draft PRs and labels; `pr_update` supports
   updating title, body, base branch, and closing or reopening PRs; `pr_comment` adds comments with
@@ -957,8 +1047,13 @@ and the failure-injection suite
   `githubActions`. The schemas in `packages/contracts/src/tool-schemas.ts` own the inputs.
   The merge-train actions let an automated routine coordinate without running CI itself:
   `commit_status_create` posts a commit status (`state`, `context`, optional `description`
-  and https `targetUrl`) on a full commit SHA; `commit_status_get` returns the combined
-  status and `check_runs_list` the latest check runs for a SHA; `pr_reviews` returns
+  and https `targetUrl`) on a full commit SHA; `check_run_create` creates a check run on a
+  full commit SHA (`name`, `status`, a `conclusion` only with `status: completed`, and
+  `title` with `summary` set together; it accepts an `idempotencyKey`) and
+  `check_run_update` moves an existing `checkRunId` forward, both needing the App's
+  `checks` write permission; `commit_status_get` returns the combined
+  status and `check_runs_list` the latest check runs for a SHA, each with the
+  `externalId` it was created with (`null` when it has none); `pr_reviews` returns
   every review plus each reviewer's latest verdict (`latestByReviewer`,
   `changesRequestedBy`, `approvedBy`; a later `COMMENTED` review does not clear an
   earlier verdict); `ref_get` reads a fully qualified ref and reports `exists: false`

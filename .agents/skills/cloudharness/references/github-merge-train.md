@@ -57,7 +57,8 @@ All on `github_read` (no approval prompts):
   `limit` (default 100). Returns the combined `state` and each context's
   latest status.
 - `check_runs_list`: required `sha`; optional `checkName`, `limit` (default
-  100). Returns the latest check runs with `status` and `conclusion`.
+  100). Returns the latest check runs with `status`, `conclusion`, and the
+  `externalId` set at creation.
 - `workflow_runs_list`: optional `workflow` (numeric ID or file name such as
   `ci.yml`), `headSha`, `branch`, `event`, `status`, `limit` (default 20,
   max 100).
@@ -70,12 +71,24 @@ All on `github_read` (no approval prompts):
 
 ## Writes
 
-On `github_action`; each accepts an `idempotencyKey` that replays the cached
-result for 24 hours and rejects a changed payload with `CONFLICT`.
+On `github_action`; each except `check_run_update` accepts an `idempotencyKey`
+that replays the cached result for 24 hours and rejects a changed payload with
+`CONFLICT`.
 
 - `commit_status_create`: required `sha` (full lowercase commit ID), `state`
   (`error` | `failure` | `pending` | `success`), `context` (max 255); optional
   `description` (max 140), `targetUrl` (https). Needs Commit statuses write.
+- `check_run_create`: required `sha` (full lowercase commit ID), `name` (max
+  255, single line); optional `status` (`queued` | `in_progress` default |
+  `completed`), `conclusion` (`success` | `failure` | `neutral` | `cancelled`
+  | `skipped` | `timed_out`; only with `status: completed`, which requires
+  one), `externalId`, and `title` with `summary` (set together; summary at
+  most 65,535 UTF-8 bytes). Returns the check run `id`; keep it. Needs Checks
+  write; without it the call fails `GITHUB_PERMISSION_MISSING` or `FORBIDDEN`.
+- `check_run_update`: required `checkRunId` and at least one of `status`,
+  `conclusion`, or `title` with `summary`, under the same rules. Not
+  idempotency-keyed: re-read with `check_runs_list` before retrying an unknown
+  outcome. Needs Checks write.
 - `workflow_dispatch`: required `workflow` (numeric ID or file name), `ref`
   (branch or tag, not a SHA); optional `inputs` (string map, max 25 entries,
   65,535 bytes serialized). The
@@ -89,6 +102,10 @@ result for 24 hours and rejects a changed payload with `CONFLICT`.
 
 <!-- cloudharness-example:github_action
 {"workspaceId":"ws_abcdefghijklmnopqrstuvwxyz012345","action":"commit_status_create","sha":"0123456789abcdef0123456789abcdef01234567","state":"pending","context":"merge-train","description":"Queued at position 2","idempotencyKey":"train-7-status-pending"}
+-->
+
+<!-- cloudharness-example:github_action
+{"workspaceId":"ws_abcdefghijklmnopqrstuvwxyz012345","action":"check_run_create","sha":"0123456789abcdef0123456789abcdef01234567","name":"merge-train","status":"in_progress","title":"Queued","summary":"Position 2 in the merge train.","idempotencyKey":"train-7-check-start"}
 -->
 
 ## Train loop

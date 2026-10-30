@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { NotificationCreatedPayloadSchema } from '@cloud-harness/contracts';
+import { traceIdFor } from '../src/agent-trace-store.js';
 import { withEventSavepoint } from '../src/event-outbox.js';
 import {
   boundedNotificationTitle,
@@ -10,7 +11,8 @@ import {
   emitNotification,
   emitWaitingForHumanNotification,
   notificationEmitFailures,
-  notificationIdFor
+  notificationIdFor,
+  relatedLinks
 } from '../src/notifications/notification-emitter.js';
 import {
   T0, deliveries, disableNotifications, enableNotifications, insertSubscription, insertWorkflow, notificationRows,
@@ -43,6 +45,20 @@ function insertAgentRow(database: DatabaseSync, ownerId: string, agentId: string
   } finally {
     database.exec('PRAGMA foreign_keys = ON');
   }
+}
+
+/** A trace row carrying only what the emitter reads. */
+function insertTrace(database: DatabaseSync, principalId: string, traceId: string, agentId: string, generation = 1, workflowId: string | null = null): void {
+  database.prepare(`INSERT INTO agent_traces (trace_id, principal_id, workspace_id, agent_id, generation, workflow_id, state, started_at,
+      cost_provenance, coverage, expires_at) VALUES (?, ?, 'wks_test', ?, ?, ?, 'COMPLETED', ?, 'unknown', 'full', ?)`)
+    .run(traceId, principalId, agentId, generation, workflowId, T0 + generation, T0 + 86_400_000);
+}
+
+/** An automation connection row carrying only what the emitter reads: its owner and provider. */
+function insertConnection(database: DatabaseSync, ownerId: string, id: string, provider: string): void {
+  database.prepare(`INSERT INTO automation_connections (id, owner_id, provider, name, enabled, generation, secret_generation, secret_json,
+      secret_rotated_at, created_at, updated_at) VALUES (?, ?, ?, 'test', 1, 1, 1, '{}', ?, ?, ?)`)
+    .run(id, ownerId, provider, T0, T0, T0);
 }
 
 describe('notification emitter', () => {
@@ -255,5 +271,117 @@ describe('notification emitter', () => {
       principalId: ownerId, kind: 'agent.failed', subjectType: 'agent', subjectId: '../../etc', transition: 'terminal', title: 'x', link: null
     }, T0)).toBeNull();
     expect(notificationRows(database)).toHaveLength(0);
+  });
+
+  it('adds the source issue, the agent trace and the coding pull request beside the run link', () => {
+    const { database, ownerId } = open();
+    enableNotifications();
+    insertConnection(database, ownerId, 'con_x', 'github');
+    const workflowId = insertWorkflow(database, { ownerId, agentId: AGENT });
+    const traceId = traceIdFor(AGENT, 1);
+    insertTrace(database, ownerId, traceId, AGENT);
+    database.prepare('UPDATE automation_workflows SET project_id = ?, pr_number = 12, pr_url = ?, trace_id = ? WHERE id = ?')
+      .run('prj_x', 'https://github.com/acme/widgets/pull/12', traceId, workflowId);
+    setWorkflowState(database, workflowId, 'COMPLETED');
+    emitAutomationTerminalNotification(database, workflowId, T0);
+    const payload = NotificationCreatedPayloadSchema.parse(JSON.parse(notificationRows(database)[0]!.payload_json));
+    expect(payload.link).toBe(`/dashboard/automations/runs/${workflowId}`);
+    expect(payload.links).toEqual({
+      source: 'https://github.com/acme/widgets/issues/7',
+      trace: `/dashboard/traces/${traceId}`,
+      pullRequest: 'https://github.com/acme/widgets/pull/12'
+    });
+  });
+
+  it('falls back to the newest trace of the run agent and links only what the run has', () => {
+    const { database, ownerId, otherId } = open();
+    enableNotifications();
+    insertConnection(database, ownerId, 'con_x', 'github');
+    const workflowId = insertWorkflow(database, { ownerId, agentId: AGENT });
+    insertTrace(database, ownerId, traceIdFor(AGENT, 1), AGENT, 1);
+    insertTrace(database, ownerId, traceIdFor(AGENT, 2), AGENT, 2);
+    setWorkflowState(database, workflowId, 'FAILED', 'AGENT_FAILED');
+    emitAutomationTerminalNotification(database, workflowId, T0);
+    expect(JSON.parse(notificationRows(database)[0]!.payload_json).links).toEqual({
+      source: 'https://github.com/acme/widgets/issues/7', trace: `/dashboard/traces/${traceIdFor(AGENT, 2)}`
+    });
+    // Another owner's trace of the same agent id is never linked.
+    const foreign = `agent_${'c'.repeat(24)}`;
+    const second = insertWorkflow(database, { ownerId, agentId: foreign });
+    insertTrace(database, otherId, traceIdFor(foreign, 1), foreign);
+    setWorkflowState(database, second, 'COMPLETED');
+    emitAutomationTerminalNotification(database, second, T0);
+    const secondId = notificationIdFor(`${ownerId}:automation_workflow:${second}:terminal`);
+    const secondRow = notificationRows(database).find((row) => row.notification_id === secondId);
+    expect(JSON.parse(secondRow!.payload_json).links).toEqual({ source: 'https://github.com/acme/widgets/issues/7' });
+  });
+
+  it('drops a pull request URL that is not the run repository page and a source URL that could carry a credential', () => {
+    const { database, ownerId } = open();
+    enableNotifications();
+    insertConnection(database, ownerId, 'con_x', 'github');
+    const cases = [
+      ['https://github.com/evil/widgets/pull/12', 'https://user:token@github.com/acme/widgets/issues/7'],
+      ['https://github.com/acme/widgets/pull/13', 'https://github.com/acme/widgets/issues/7?token=abc'],
+      ['https://x-access-token:secret@github.com/acme/widgets/pull/12', 'http://github.com/acme/widgets/issues/7']
+    ];
+    for (const [prUrl, resourceUrl] of cases) {
+      const workflowId = insertWorkflow(database, { ownerId });
+      database.prepare('UPDATE automation_workflows SET project_id = ?, pr_number = 12, pr_url = ?, resource_url = ? WHERE id = ?')
+        .run('prj_x', prUrl, resourceUrl, workflowId);
+      setWorkflowState(database, workflowId, 'COMPLETED');
+      emitAutomationTerminalNotification(database, workflowId, T0);
+    }
+    const rows = notificationRows(database);
+    expect(rows).toHaveLength(cases.length);
+    for (const row of rows) {
+      expect(JSON.parse(row.payload_json).links).toBeUndefined();
+      expect(row.payload_json).not.toMatch(/token|secret|evil/u);
+    }
+  });
+
+  it('links the source only for a provider that pins its URL host, never for a custom webhook', () => {
+    const { database, ownerId } = open();
+    enableNotifications();
+    insertConnection(database, ownerId, 'con_x', 'github');
+    insertConnection(database, ownerId, 'con_custom', 'custom');
+    const github = insertWorkflow(database, { ownerId });
+    const custom = insertWorkflow(database, { ownerId });
+    database.prepare("UPDATE automation_workflows SET connection_id = 'con_custom', provider = 'custom', resource_url = ? WHERE id = ?")
+      .run('https://evil.example/phish', custom);
+    // A workflow whose recorded provider disagrees with its connection gets no source link either.
+    const mismatched = insertWorkflow(database, { ownerId });
+    database.prepare("UPDATE automation_workflows SET provider = 'custom' WHERE id = ?").run(mismatched);
+    for (const id of [github, custom, mismatched]) {
+      setWorkflowState(database, id, 'COMPLETED');
+      emitAutomationTerminalNotification(database, id, T0);
+    }
+    const linksOf = (workflowId: string) => {
+      const notificationId = notificationIdFor(`${ownerId}:automation_workflow:${workflowId}:terminal`);
+      return JSON.parse(notificationRows(database).find((row) => row.notification_id === notificationId)!.payload_json).links;
+    };
+    expect(linksOf(github)).toEqual({ source: 'https://github.com/acme/widgets/issues/7' });
+    expect(linksOf(custom)).toBeUndefined();
+    expect(linksOf(mismatched)).toBeUndefined();
+    expect(JSON.stringify(notificationRows(database))).not.toContain('evil.example');
+  });
+
+  it('prefers the newest trace recorded for the workflow over the agent\'s newest trace', () => {
+    const { database, ownerId, otherId } = open();
+    enableNotifications();
+    const workflowId = insertWorkflow(database, { ownerId, agentId: AGENT });
+    insertTrace(database, ownerId, traceIdFor(AGENT, 1), AGENT, 1, workflowId);
+    insertTrace(database, ownerId, traceIdFor(AGENT, 2), AGENT, 2);
+    // Another owner's trace naming the same workflow is ignored.
+    insertTrace(database, otherId, traceIdFor(`agent_${'d'.repeat(24)}`, 1), `agent_${'d'.repeat(24)}`, 1, workflowId);
+    setWorkflowState(database, workflowId, 'COMPLETED');
+    emitAutomationTerminalNotification(database, workflowId, T0);
+    expect(JSON.parse(notificationRows(database)[0]!.payload_json).links).toEqual({ trace: `/dashboard/traces/${traceIdFor(AGENT, 1)}` });
+  });
+
+  it('re-validates every related link it is handed', () => {
+    expect(relatedLinks(undefined)).toBeUndefined();
+    expect(relatedLinks({ source: 'javascript:alert(1)', trace: 'https://evil.example.com/', pullRequest: '//evil.example.com/pull/1' })).toBeUndefined();
+    expect(relatedLinks({ trace: '/dashboard/traces/trc_x', source: 'https://github.com/a/b/issues/1#frag' })).toEqual({ trace: '/dashboard/traces/trc_x' });
   });
 });

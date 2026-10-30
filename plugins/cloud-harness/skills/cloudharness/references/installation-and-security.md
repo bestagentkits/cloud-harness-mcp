@@ -39,6 +39,19 @@ Both plugin packages install the same skill guidance. They deliberately omit
 credentials and a public MCP app registration; configure the private connection
 separately below.
 
+For a self-hosted endpoint that signs in through the Managed OAuth lane, the
+narrower `cloud-harness-workspaces` plugin bundles the server connection too:
+
+```bash
+claude plugin install cloud-harness-workspaces@bestagentkits
+```
+
+It asks for the endpoint URL at install time (`user_config.mcpUrl`, required,
+no default), stores no credential, and sends no header. Installing it grants
+nothing: the endpoint still authenticates every call and enforces workspace
+ownership, privilege grants, approvals, and secret handling. Owner-bearer and
+API-key endpoints keep using the header setup below.
+
 ## MCP endpoint and bearer
 
 An owner-bearer deployment uses an owner-controlled endpoint such as:

@@ -195,6 +195,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     agentkitRegistryCredentialSecret: process.env.AGENTKIT_REGISTRY_CREDENTIAL_SECRET,
     agentkitRegistryKeyId: process.env.AGENTKIT_REGISTRY_KEY_ID,
     agentkitRegistryPublicKey: process.env.AGENTKIT_REGISTRY_PUBLIC_KEY,
+    enableKitLockInstall: process.env.ENABLE_KIT_LOCK_INSTALL,
     provisioningNetwork: process.env.PROVISIONING_NETWORK,
     secretKeyring,
     legacyPrincipalMapping: legacyOwnerId || legacyIssuer || legacySubject ? {
@@ -255,6 +256,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     agentPoliciesEnabled: process.env.AGENT_POLICIES_ENABLED,
     agentCodingEnabled: process.env.AGENT_CODING_ENABLED,
     agentCodingPackageInstallEnabled: process.env.AGENT_CODING_PACKAGE_INSTALL_ENABLED,
+    agentApprovalsEnabled: process.env.AGENT_APPROVALS_ENABLED,
+    agentApprovalTtlMinutes: process.env.AGENT_APPROVAL_TTL_MINUTES,
     notificationsEnabled: process.env.NOTIFICATIONS_ENABLED
   });
   if (packageApprovalUnavailable(config)) {

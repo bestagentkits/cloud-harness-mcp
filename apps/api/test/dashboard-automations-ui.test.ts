@@ -3,15 +3,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   cancelAutomationWorkflow, createAutomationConnection, createAutomationRule, deleteAutomationConnection, deleteAutomationRule,
   listAutomationDeliveries, listAutomationRules, listAutomationWorkflows, previewAutomationRule, rotateAutomationConnectionSecret,
-  updateAutomationConnection, updateAutomationRule
+  updateAutomationConnection, updateAutomationRule, replayAutomationDelivery, getAutomationHealth, getAutomationMetrics
 } from '../dashboard/dashboard-api.js';
 import {
   AUTOMATIONS_DISABLED_COPY, automationBlockedState, automationResourceHref, automationSectionForPath, automationWebhookUrl,
   automationWorkflowIsTerminal, renderAutomationBlocked, renderAutomationConnections, renderAutomationDeliveries,
   renderAutomationPreviewDialog, renderAutomationPreviewResult, renderAutomationRuleDialog, renderAutomationRules, renderAutomationRunDetail,
-  renderAutomationRuns, renderAutomationSecretPanel, renderAutomationTabs
+  renderAutomationRuns, renderAutomationSecretPanel, renderAutomationTabs, renderAutomationRuleMatchFields, renderAutomationMetrics,
+  automationMatchSummary, automationResourceText, renderAutomationCredentialsDialog
 } from '../dashboard/dashboard-render.js';
-import { automationPreviewSample, automationRuleInput, automationRuleUpdateInput, bindAutomationSecretReveal } from '../dashboard/dashboard.js';
+import { automationConnectionInput, automationCredentialsInput, automationPreviewSample, automationRuleInput, automationRuleUpdateInput, bindAutomationSecretReveal } from '../dashboard/dashboard.js';
 import { DASHBOARD_PAGES, navGroups } from '../dashboard/dashboard-pages.js';
 import { FakeElement } from './dashboard-test-dom.js';
 
@@ -92,6 +93,7 @@ describe('automations page registry and routing', () => {
     expect(automationSectionForPath('/dashboard/automations/rules')).toBe('rules');
     expect(automationSectionForPath('/dashboard/automations/connections')).toBe('connections');
     expect(automationSectionForPath('/dashboard/automations/deliveries')).toBe('deliveries');
+    expect(automationSectionForPath('/dashboard/automations/metrics')).toBe('metrics');
     expect(automationSectionForPath(`/dashboard/automations/runs/${workflowId}`)).toBe('runs');
     expect(automationSectionForPath('/dashboard/automations/runs/wfl_nothex')).toBeUndefined();
     expect(automationSectionForPath('/dashboard/automations/other')).toBeUndefined();
@@ -109,6 +111,7 @@ describe('automations page registry and routing', () => {
     expect(tabs).toContain('<a href="/dashboard/automations/rules" aria-current="page">Rules</a>');
     expect(tabs).toContain('href="/dashboard/automations/connections"');
     expect(tabs).toContain('href="/dashboard/automations/deliveries"');
+    expect(tabs).toContain('href="/dashboard/automations/metrics"');
   });
 });
 
@@ -157,7 +160,7 @@ describe('automation runs', () => {
     expect(html).toContain('<option value="FAILED" selected>Failed</option>');
     expect(html).toContain(`<option value="${ruleId}" selected>`);
     expect(html).toContain('<tr><td colspan="10">No automation runs yet.</td></tr>');
-    expect(html).toContain('A run starts when a labeled GitHub delivery matches an enabled rule.');
+    expect(html).toContain('A run starts when a delivery matches an enabled rule.');
   });
 
   it('escapes every provider-derived string and never links a non-https resource URL', () => {
@@ -536,7 +539,7 @@ describe('automation API helpers', () => {
 
   it('creates connections and rules, previews, and cancels through CSRF-protected posts', async () => {
     const calls = stubFetch();
-    await createAutomationConnection('acme GitHub');
+    await createAutomationConnection({ provider: 'github', name: 'acme GitHub' });
     await createAutomationRule({ name: 'x' });
     await previewAutomationRule(ruleId, { event: 'issues' });
     await cancelAutomationWorkflow(workflowId);
@@ -561,10 +564,335 @@ describe('automation API helpers', () => {
     for (const call of calls.filter((entry) => entry.url.includes('/automations/'))) expect(headers(call.init)['x-csrf-token']).toBeUndefined();
   });
 
+  it('replays a delivery through a CSRF-protected post and reads health and metrics without one', async () => {
+    const calls = stubFetch();
+    await createAutomationConnection({ provider: 'jira', name: 'acme Jira', baseUrl: 'https://acme.atlassian.net' });
+    await replayAutomationDelivery(deliveryId, 'QUARANTINED');
+    await replayAutomationDelivery(deliveryId);
+    await getAutomationHealth();
+    await getAutomationHealth(connectionId);
+    await getAutomationMetrics(30);
+    await listAutomationWorkflows({ publishState: 'FAILED' });
+    await listAutomationDeliveries({ state: 'QUARANTINED' });
+    const base = '/dashboard/api/v1/automations';
+    expect(JSON.parse(String(mutation(calls, `${base}/connections`)!.init.body))).toEqual({ provider: 'jira', name: 'acme Jira', baseUrl: 'https://acme.atlassian.net' });
+    const replays = calls.filter((call) => call.url === `${base}/deliveries/${deliveryId}/replay`);
+    expect(replays.map((call) => [call.init.method, JSON.parse(String(call.init.body))])).toEqual([['POST', { expectedState: 'QUARANTINED' }], ['POST', {}]]);
+    for (const call of replays) expect(headers(call.init)['x-csrf-token']).toBe('csrf-token-1');
+    const urls = calls.map((call) => call.url);
+    expect(urls).toContain(`${base}/health`);
+    expect(urls).toContain(`${base}/health?connectionId=${connectionId}`);
+    expect(urls).toContain(`${base}/metrics?windowDays=30`);
+    expect(urls).toContain(`${base}/workflows?publishState=FAILED`);
+    expect(urls).toContain(`${base}/deliveries?state=QUARANTINED`);
+    for (const call of calls.filter((entry) => /\/(health|metrics|workflows|deliveries)\?|\/health$/.test(entry.url))) expect(headers(call.init)['x-csrf-token']).toBeUndefined();
+  });
+
   it('surfaces the BFF status and message so the page can choose its blocked state', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 503, json: async () => ({ error: 'unavailable', message: 'Automations are disabled on this instance.' }) })));
     const error = await listAutomationRules().catch((caught: unknown) => caught as { status: number; message: string });
     expect(error).toMatchObject({ status: 503 });
     expect(automationBlockedState(error)).toBe('disabled');
+  });
+});
+
+const linearConnectionId = id('whc', '1');
+const jiraConnectionId = id('whc', '2');
+const linearConnection = { ...connection, id: linearConnectionId, provider: 'linear', name: 'acme Linear', webhookPath: `/hooks/linear/${linearConnectionId}`, outboundConfigured: true };
+const jiraConnection = {
+  ...connection, id: jiraConnectionId, provider: 'jira', name: 'acme Jira', webhookPath: `/hooks/jira/${jiraConnectionId}`,
+  outboundConfigured: false, config: { baseUrl: 'https://acme.atlassian.net' }
+};
+const linearRule = {
+  ...rule, connectionId: linearConnectionId,
+  match: { provider: 'linear', teamKey: 'ENG', trigger: 'state_changed', toState: 'Ready for agent', ignoreBots: true },
+  action: { ...rule.action, repository: 'acme/widgets' }
+};
+
+/** The rule form for a non-GitHub provider: the common fields plus that provider's match fields. */
+function providerRuleForm(fields: Record<string, string | undefined>) {
+  return ruleForm({ repository: undefined, events: undefined, label: undefined, actorAllowlist: undefined, checkoutRepository: 'acme/widgets', ...fields });
+}
+
+describe('automation rules for every provider', () => {
+  it('renders each provider match form and keeps the GitHub fields unchanged', () => {
+    const github = renderAutomationRuleMatchFields('github', rule.match, rule.action);
+    expect(github).toContain('id="automation-rule-repository" name="repository" required');
+    expect(github).not.toContain('name="checkoutRepository"');
+
+    const linear = renderAutomationRuleMatchFields('linear', linearRule.match, linearRule.action);
+    expect(linear).toContain('id="automation-rule-scope" name="teamKey" maxlength="16"');
+    expect(linear).toContain('<option value="state_changed" selected>Moved to a workflow state</option>');
+    expect(linear).toContain('name="toState" maxlength="100" autocomplete="off" spellcheck="false" value="Ready for agent"');
+    expect(linear).toContain('name="checkoutRepository" required maxlength="140"');
+    expect(linear).toContain('value="acme/widgets"');
+    expect(linear).not.toContain('name="events"');
+
+    const jira = renderAutomationRuleMatchFields('jira', { provider: 'jira', projectKey: 'OPS', trigger: 'status_changed', toStatus: 'Triage' });
+    expect(jira).toContain('name="projectKey" required');
+    expect(jira).toContain('value="OPS"');
+    expect(jira).toContain('<option value="status_changed" selected>Moved to a status</option>');
+    expect(jira).toContain('value="Triage"');
+
+    const custom = renderAutomationRuleMatchFields('custom', { provider: 'custom', event: 'deploy.finished' });
+    expect(custom).toContain('name="event" required maxlength="64"');
+    expect(custom).not.toContain('name="ignoreBots"');
+    expect(custom).toContain('name="checkoutRepository" required');
+    for (const html of [github, linear, jira, custom]) expectCspSafe(html);
+  });
+
+  it('opens a new rule on the first connection provider and an edit on the rule provider', () => {
+    const fresh = renderAutomationRuleDialog({ connections: [linearConnection, connection], profiles });
+    expect(fresh).toContain('<div id="automation-rule-match" class="automation-match" data-provider="linear">');
+    expect(fresh).toContain(`<option value="${linearConnectionId}" data-provider="linear">acme Linear · Linear</option>`);
+    expect(fresh).toContain(`<option value="${connectionId}" data-provider="github">acme GitHub · GitHub</option>`);
+    const edit = renderAutomationRuleDialog({ rule: linearRule, connections: [linearConnection], profiles });
+    expect(edit).toContain('data-provider="linear"');
+    expect(edit).toContain('value="Ready for agent"');
+    expect(renderAutomationRuleDialog({ rule, connections: [connection], profiles })).toContain('<div id="automation-rule-match" class="automation-match" data-provider="github">');
+  });
+
+  it('builds each provider match body and the pinned checkout repository', () => {
+    const linear = automationRuleInput(providerRuleForm({ teamKey: 'ENG', trigger: 'state_changed', toState: 'Ready for agent', label: 'ignored', ignoreBots: 'on', actorAllowlist: 'dev@acme.test' }), 'linear');
+    expect(linear.errors).toEqual({});
+    expect(linear.body?.match).toEqual({ provider: 'linear', teamKey: 'ENG', trigger: 'state_changed', toState: 'Ready for agent', ignoreBots: true, actorAllowlist: ['dev@acme.test'] });
+    expect(linear.body?.action.repository).toBe('acme/widgets');
+
+    const anyState = automationRuleInput(providerRuleForm({ trigger: 'state_changed', ignoreBots: undefined }), 'linear');
+    expect(anyState.body?.match).toEqual({ provider: 'linear', trigger: 'state_changed', ignoreBots: false });
+
+    const jira = automationRuleInput(providerRuleForm({ projectKey: 'OPS', trigger: 'label_added', label: 'agent', toState: 'ignored' }), 'jira');
+    expect(jira.body?.match).toEqual({ provider: 'jira', projectKey: 'OPS', trigger: 'label_added', label: 'agent', ignoreBots: true });
+    const jiraStatus = automationRuleInput(providerRuleForm({ projectKey: 'OPS', trigger: 'status_changed', toState: 'Triage' }), 'jira');
+    expect(jiraStatus.body?.match).toMatchObject({ trigger: 'status_changed', toStatus: 'Triage' });
+    expect(jiraStatus.body?.match).not.toHaveProperty('toState');
+
+    const custom = automationRuleInput(providerRuleForm({ event: 'deploy.finished', ignoreBots: 'on' }), 'custom');
+    expect(custom.body?.match).toEqual({ provider: 'custom', event: 'deploy.finished' });
+
+    const github = automationRuleInput(ruleForm({ checkoutRepository: 'other/repo' }));
+    expect(github.body?.action).not.toHaveProperty('repository');
+  });
+
+  it('reports provider field errors before a round trip', () => {
+    expect(Object.keys(automationRuleInput(providerRuleForm({ trigger: 'label_added', label: '', teamKey: 'not a key', checkoutRepository: 'nope', actorAllowlist: 'has\0nul' }), 'linear').errors).sort())
+      .toEqual(['actorAllowlist', 'checkoutRepository', 'label', 'teamKey']);
+    expect(Object.keys(automationRuleInput(providerRuleForm({ projectKey: '9X', trigger: 'status_changed' }), 'jira').errors)).toEqual(['projectKey']);
+    expect(Object.keys(automationRuleInput(providerRuleForm({ event: 'bad event' }), 'custom').errors)).toEqual(['event']);
+    expect(automationRuleInput(providerRuleForm({}), 'gitlab').errors.connectionId).toBe('Choose a connection.');
+  });
+
+  it('summarizes every provider match in the rules list', () => {
+    expect(automationMatchSummary(linearRule)).toContain('Linear ENG');
+    expect(automationMatchSummary(linearRule)).toContain('moved to <span class="mono">Ready for agent</span>');
+    expect(automationMatchSummary(linearRule)).toContain('checks out <span class="mono">acme/widgets</span>');
+    expect(automationMatchSummary({ match: { provider: 'jira', projectKey: 'OPS', trigger: 'label_added', label: 'agent' } })).toContain('label <span class="mono">agent</span>');
+    expect(automationMatchSummary({ match: { provider: 'custom', event: 'deploy.finished' } })).toContain('deploy.finished');
+    const hostile = automationMatchSummary({ match: { provider: 'linear', trigger: 'state_changed', toState: HOSTILE }, action: { repository: HOSTILE } });
+    expect(hostile).not.toContain(HOSTILE);
+    expect(hostile).toContain(ESCAPED);
+  });
+
+  it('previews a non-GitHub rule with a normalized sample', () => {
+    const html = renderAutomationPreviewDialog(linearRule, 'linear');
+    expect(html).toContain('<input type="hidden" name="provider" value="linear">');
+    expect(html).toContain('<option value="linear.issue.state_changed" selected>linear.issue.state_changed</option>');
+    expect(html).toContain('id="automation-preview-scope" name="scope" required maxlength="200" autocomplete="off" spellcheck="false" value="ENG"');
+    expect(html).toContain('name="actorIsBot"');
+    expect(html).not.toContain('name="senderType"');
+    expect(renderAutomationPreviewDialog({ ...rule, match: { provider: 'custom', event: 'deploy.finished' } }, 'custom')).not.toContain('name="toState"');
+
+    const values = new URLSearchParams({ eventType: 'linear.issue.state_changed', scope: 'ENG', fromState: 'Backlog', toState: 'Ready for agent', actorLogin: 'dev@acme.test', actorIsBot: 'on' });
+    expect(automationPreviewSample(values, 'linear')).toEqual({
+      errors: {},
+      sample: { provider: 'linear', eventType: 'linear.issue.state_changed', scope: 'ENG', fromState: 'Backlog', toState: 'Ready for agent', actor: { login: 'dev@acme.test', isBot: true } }
+    });
+    const invalid = automationPreviewSample(new URLSearchParams({ eventType: 'github.issue.label_added', scope: '', actorLogin: 'a b' }), 'jira');
+    expect(Object.keys(invalid.errors).sort()).toEqual(['actorLogin', 'eventType', 'scope']);
+  });
+});
+
+describe('automation connections for every provider', () => {
+  const origin = 'https://harness.example.com';
+  const counts = (processed: number, quarantined: number) => ({ RECEIVED: 0, PROCESSED: processed, IGNORED: 1, QUARANTINED: quarantined });
+  const health = [{
+    connectionId: linearConnectionId, provider: 'linear', enabled: true, outboundConfigured: true, lastDeliveryAt: '2026-10-03T10:00:00.000Z',
+    lastQuarantine: { at: '2026-10-02T10:00:00.000Z', reason: 'malformed_payload' }, last24h: counts(2, 0), last7d: counts(9, 1)
+  }];
+
+  it('shows provider, webhook path, outbound flag, Jira site and health', () => {
+    const html = renderAutomationConnections({ connections: [connection, linearConnection, jiraConnection], origin, health });
+    expect(html).toContain(`data-copy="https://harness.example.com/hooks/linear/${linearConnectionId}"`);
+    expect(html).toContain(`<dd class="mono wrap">/hooks/jira/${jiraConnectionId}</dd>`);
+    expect(html).toContain('<dt>Jira site</dt><dd class="mono wrap">https://acme.atlassian.net</dd>');
+    expect(html).toContain('<dt>Post back</dt><dd><span class="status enabled">Configured</span></dd>');
+    expect(html).toContain('<dt>Post back</dt><dd><span class="status">Not configured</span></dd>');
+    expect(html).toContain('<dt>Last 24 hours</dt><dd>0 received · 2 processed · 1 ignored · 0 quarantined</dd>');
+    expect(html).toContain('<dt>Last 7 days</dt><dd>0 received · 9 processed · 1 ignored · 1 quarantined</dd>');
+    expect(html).toContain('<span class="mono wrap">malformed_payload</span>');
+    expectCspSafe(html);
+    expect(renderAutomationConnections({ connections: [connection], origin, health: null })).toContain('<dt>Health</dt><dd>Not available right now</dd>');
+  });
+
+  it('offers provider fields in hidden, disabled fieldsets and never renders a credential value', () => {
+    const html = renderAutomationConnections({ connections: [], origin });
+    expect(html).toContain('<select id="automation-connection-provider" name="provider" required><option value="github" selected>GitHub</option><option value="linear">Linear</option><option value="jira">Jira</option><option value="custom">Custom webhook</option></select>');
+    expect(html).toContain('<fieldset class="automation-fieldset" data-automation-provider-fields="linear" hidden disabled>');
+    expect(html).toContain('<fieldset class="automation-fieldset" data-automation-provider-fields="jira" hidden disabled>');
+    for (const name of ['apiKey', 'apiToken']) {
+      const input = html.match(new RegExp(`<input[^>]*name="${name}"[^>]*>`))?.[0] ?? '';
+      expect(input).toContain('type="password"');
+      expect(input).toContain('data-write-only');
+      expect(input).toContain('autocomplete="new-password"');
+      expect(input).not.toContain('value=');
+    }
+    expect(html).toContain('name="baseUrl" type="url" required');
+  });
+
+  it('never echoes a stored credential: summaries only carry the outbound flag', () => {
+    const html = renderAutomationConnections({ connections: [{ ...linearConnection, apiKey: 'lin_api_secret_value' }], origin, health });
+    expect(html).not.toContain('lin_api_secret_value');
+  });
+
+  it('builds the create body per provider and refuses unpaired Jira credentials', () => {
+    expect(automationConnectionInput(new URLSearchParams({ provider: 'github', name: 'acme GitHub', apiKey: 'ignored-key' }))).toEqual({ errors: {}, body: { provider: 'github', name: 'acme GitHub' } });
+    expect(automationConnectionInput(new URLSearchParams({ provider: 'linear', name: 'acme Linear', apiKey: 'lin_api_12345678' })).body)
+      .toEqual({ provider: 'linear', name: 'acme Linear', apiKey: 'lin_api_12345678' });
+    expect(automationConnectionInput(new URLSearchParams({ provider: 'linear', name: 'acme Linear', apiKey: '' })).body).toEqual({ provider: 'linear', name: 'acme Linear' });
+    expect(automationConnectionInput(new URLSearchParams({ provider: 'jira', name: 'acme Jira', baseUrl: 'https://acme.atlassian.net/', email: 'ops@acme.test', apiToken: 'atl-token-123' })).body)
+      .toEqual({ provider: 'jira', name: 'acme Jira', baseUrl: 'https://acme.atlassian.net', email: 'ops@acme.test', apiToken: 'atl-token-123' });
+    expect(automationConnectionInput(new URLSearchParams({ provider: 'custom', name: 'deploys' })).body).toEqual({ provider: 'custom', name: 'deploys' });
+    expect(Object.keys(automationConnectionInput(new URLSearchParams({ provider: 'jira', name: 'x', baseUrl: 'http://acme.atlassian.net/path', email: 'ops@acme.test' })).errors).sort())
+      .toEqual(['apiToken', 'baseUrl']);
+    expect(Object.keys(automationConnectionInput(new URLSearchParams({ provider: 'linear', name: '', apiKey: 'short' })).errors).sort()).toEqual(['apiKey', 'name']);
+    expect(automationConnectionInput(new URLSearchParams({ provider: 'gitlab', name: 'x' })).errors.provider).toBe('Choose a provider.');
+  });
+
+  it('offers outbound credential actions for Linear and Jira only, and Clear only while one is set', () => {
+    const html = renderAutomationConnections({ connections: [connection, linearConnection, jiraConnection], origin, health });
+    expect(html.match(/data-automation-credentials-edit=/g)).toHaveLength(2);
+    expect(html).toContain(`data-automation-credentials-edit="${jiraConnectionId}" data-provider="jira" data-generation="${jiraConnection.generation}"`);
+    expect(html.match(/data-automation-credentials-clear=/g)).toHaveLength(1);
+    expect(html).toContain(`data-automation-credentials-clear="${linearConnectionId}"`);
+    expectCspSafe(html);
+  });
+
+  it('renders write-only credential inputs with no value, even when the connection carries one', () => {
+    for (const [connectionForDialog, names] of [[linearConnection, ['apiKey']], [jiraConnection, ['email', 'apiToken']]] as const) {
+      const html = renderAutomationCredentialsDialog({ ...connectionForDialog, apiKey: 'lin_api_secret_value', apiToken: 'atl_secret_value', email: 'stored@acme.test' });
+      expect(html).not.toMatch(/secret_value|stored@acme\.test/u);
+      for (const name of names) {
+        const input = html.match(new RegExp(`<input[^>]*name="${name}"[^>]*>`))?.[0] ?? '';
+        expect(input).not.toContain('value=');
+      }
+      for (const name of names.filter((field) => field !== 'email')) {
+        const input = html.match(new RegExp(`<input[^>]*name="${name}"[^>]*>`))?.[0] ?? '';
+        expect(input).toContain('type="password"');
+        expect(input).toContain('data-write-only');
+        expect(input).toContain('autocomplete="new-password"');
+      }
+      expectCspSafe(html);
+    }
+  });
+
+  it('builds the credential update fields per provider and refuses incomplete ones', () => {
+    expect(automationCredentialsInput(new URLSearchParams({ apiKey: 'lin_api_12345678' }), 'linear')).toEqual({ errors: {}, body: { apiKey: 'lin_api_12345678' } });
+    expect(automationCredentialsInput(new URLSearchParams({ email: ' ops@acme.test ', apiToken: 'atl-token-123' }), 'jira'))
+      .toEqual({ errors: {}, body: { email: 'ops@acme.test', apiToken: 'atl-token-123' } });
+    expect(Object.keys(automationCredentialsInput(new URLSearchParams({ apiKey: '' }), 'linear').errors)).toEqual(['apiKey']);
+    expect(Object.keys(automationCredentialsInput(new URLSearchParams({ email: 'ops@acme.test' }), 'jira').errors)).toEqual(['apiToken']);
+    expect(Object.keys(automationCredentialsInput(new URLSearchParams({ apiToken: 'atl-token-123' }), 'jira').errors)).toEqual(['email']);
+    expect(automationCredentialsInput(new URLSearchParams({ apiKey: 'lin_api_12345678' }), 'github').body).toBeUndefined();
+  });
+
+  it('explains where to paste the secret for each provider and keeps the secret out of the markup', () => {
+    for (const [provider, text] of [['linear', 'In Linear'], ['jira', 'In Jira'], ['custom', 'x-cloudharness-signature'], ['github', 'In GitHub']]) {
+      const html = renderAutomationSecretPanel({ connection: { ...connection, provider }, origin });
+      expect(html).toContain(text);
+      expect(html).toContain('<code>application/json</code>');
+      expect(html).toContain('<input id="automation-webhook-secret" class="mono" readonly autocomplete="off" spellcheck="false">');
+    }
+    expect(renderAutomationSecretPanel({ connection: linearConnection, origin, rotated: true })).toContain('update the Linear webhook now');
+  });
+});
+
+describe('automation deliveries triage and replay', () => {
+  it('filters by state with dead letter wording and offers Replay only on replayable deliveries', () => {
+    const html = renderAutomationDeliveries({
+      deliveries: [
+        { ...delivery, state: 'QUARANTINED', outcome: 'no_matching_rule', replayable: true },
+        { ...delivery, id: id('dlv', '9'), state: 'QUARANTINED', outcome: 'malformed_payload', replayable: false }
+      ],
+      connections: [connection], filters: { state: 'QUARANTINED' }
+    });
+    expect(html).toContain('<option value="QUARANTINED" selected>Quarantined (dead letter)</option>');
+    expect(html).toContain(`<button type="button" data-automation-delivery-replay="${deliveryId}" data-state="QUARANTINED">Replay</button>`);
+    expect(html).not.toContain(`data-automation-delivery-replay="${id('dlv', '9')}"`);
+    expect(html).toContain('<th>Actions</th>');
+    expectCspSafe(html);
+    expect(renderAutomationDeliveries({ deliveries: [], filters: { state: 'QUARANTINED' } })).toContain('No deliveries in this state.');
+  });
+
+  it('shows a non-GitHub resource reference with its checkout repository', () => {
+    expect(automationResourceText({ resourceRef: 'ENG-12', repository: 'acme/widgets' })).toBe('ENG-12 · acme/widgets');
+    expect(automationResourceText({ repository: 'acme/widgets', resourceNumber: 42 })).toBe('acme/widgets#42');
+    expect(automationResourceText({})).toBe('Unknown resource');
+    const html = renderAutomationDeliveries({ deliveries: [{ ...delivery, repository: null, resourceNumber: null, resourceRef: 'OPS-7' }] });
+    expect(html).toContain('<span class="mono wrap">OPS-7</span>');
+  });
+
+  it('wires Replay through a confirmation that sends the state it saw', () => {
+    const client = readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8');
+    expect(client).toContain("content.querySelectorAll('[data-automation-delivery-replay]')) button.addEventListener('click', (event) => confirmAction({");
+    expect(client).toContain('await replayAutomationDelivery(button.dataset.automationDeliveryReplay, button.dataset.state)');
+    expect(client).toContain('resetWriteOnlyFields(form);');
+  });
+});
+
+describe('automation metrics', () => {
+  const entry = {
+    workflows: 13, active: 1, completed: 10, failed: 1, cancelled: 1, expired: 0, successRate: 10 / 12, costMicros: 15_500,
+    inputTokens: 1200, outputTokens: 300, latencyP50Ms: 5000, latencyP95Ms: 150_000
+  };
+  const metrics = {
+    windowDays: 7, since: '2026-10-12T10:00:00.000Z',
+    providers: [{ provider: 'github', ...entry }],
+    rules: [{ ruleId, name: HOSTILE, provider: 'linear', deleted: true, ...entry, successRate: null, latencyP50Ms: null, latencyP95Ms: null }]
+  };
+
+  it('renders success, cost and latency per provider and per rule', () => {
+    const html = renderAutomationMetrics({ metrics, windowDays: 7 });
+    expect(html).toContain('<option value="7" selected>Last 7 days</option>');
+    expect(html).toContain('<option value="1">Last 24 hours</option>');
+    expect(html).toContain('<caption>1 providers</caption>');
+    expect(html).toContain('<th scope="row">GitHub</th>');
+    expect(html).toContain('83.3%');
+    expect(html).toContain('$0.0155');
+    expect(html).toContain('1200 in · 300 out');
+    expect(html).toContain('p50 5.0 s · p95 2.5 min');
+    expect(html).toContain('10 completed · 1 failed · 1 cancelled or expired · 1 active');
+    expect(html).toContain('No finished runs');
+    expect(html).toContain('p50 — · p95 —');
+    expect(html).toContain('Linear · deleted');
+    expect(html).not.toContain(HOSTILE);
+    expect(html).toContain(ESCAPED);
+    expectCspSafe(html);
+  });
+
+  it('renders empty and error states', () => {
+    expect(renderAutomationMetrics({ metrics: { ...metrics, providers: [], rules: [] }, windowDays: 30 })).toContain('No runs in this window.');
+    const failed = renderAutomationMetrics({ windowDays: 1, error: { message: HOSTILE } });
+    expect(failed).toContain('role="alert"');
+    expect(failed).toContain('Metrics could not be loaded.');
+    expect(failed).toContain('data-automation-retry');
+    expect(failed).toContain('<option value="1" selected>Last 24 hours</option>');
+    expect(failed).not.toContain(HOSTILE);
+  });
+
+  it('loads the metrics section with a loading state and keeps blocked states page-wide', () => {
+    const client = readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8');
+    expect(client).toContain("else if (section === 'metrics') await loadAutomationMetrics();");
+    expect(client).toContain('if (automationBlockedState(caught)) throw caught;');
+    expect(client).toContain('insertRendered(content, renderAutomationLoading());');
   });
 });

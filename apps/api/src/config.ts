@@ -49,6 +49,10 @@ export function loadApiConfig(): ApiConfig {
     deweeTenantId: environment('DEWEE_TENANT_ID') || undefined,
     deweeAgentId: environment('DEWEE_AGENT_ID') || undefined,
     deweeChatTimeoutMs: environment('DEWEE_CHAT_TIMEOUT_MS') || undefined,
-    automationsEnabled: environment('AUTOMATIONS_ENABLED')
+    automationsEnabled: environment('AUTOMATIONS_ENABLED'),
+    agentkitAuthEnabled: environment('AGENTKIT_AUTH_ENABLED'),
+    agentkitAuthIssuer: environment('AGENTKIT_AUTH_ISSUER'),
+    agentkitAuthResource: environment('AGENTKIT_AUTH_RESOURCE'),
+    agentkitAuthSubjects: csv(environment('AGENTKIT_AUTH_SUBJECTS'))
   });
 }

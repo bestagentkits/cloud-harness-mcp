@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { executeWorkerRequest } from '../../../worker/harness-worker.mjs';
 import { isWindows } from './platform-support.js';
@@ -122,7 +123,7 @@ describe('workspace close check', () => {
     const base = join(clone, '..');
     git(join(base, 'origin'), 'tag', 'v1');
     const tagged = join(base, 'tagged');
-    git(base, 'clone', '--quiet', '--branch', 'v1', '--depth', '1', '--no-tags', `file://${join(base, 'origin')}`, tagged);
+    git(base, 'clone', '--quiet', '--branch', 'v1', '--depth', '1', '--no-tags', pathToFileURL(join(base, 'origin')).href, tagged);
     process.env.CH_WORKSPACE_ROOT = tagged;
     expect((await closeCheck()).data).toMatchObject({ unpushedCommits: 1 });
     expect((await closeCheck({ cloneRef: 'v1' })).data).toMatchObject({ unpushedCommits: 0 });

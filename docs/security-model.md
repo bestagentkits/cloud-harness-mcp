@@ -131,6 +131,23 @@ or the credential is refused, and a Custom key can reach only an upstream URL
 already bound to that credential. A key cannot read, create, or rotate a
 provider key, activate a profile, or change a spend policy.
 
+The optional agentkit.best lane adds sign-in without changing the lanes above.
+The API selects it by Host: the host of `AGENTKIT_AUTH_RESOURCE` accepts only
+agentkit.best access tokens on `/mcp`, every other host keeps the instance
+lane, and the MCP gateway is not served on that host. The token is verified
+locally (ES256 `at+jwt`, exact issuer and audience, a lifetime of at most two
+minutes, the `cloud-harness:workspace` scope) against the issuer's JWKS through
+the same bounded key cache as the Access verifier. agentkit.best admits any
+signed-in account, so only the subjects in `AGENTKIT_AUTH_SUBJECTS` pass; each
+becomes its own `(https://agentkit.best, sub)` principal, never linked by email.
+Revoking the grant on agentkit.best stops refresh, so the last token lapses
+within about a minute; removing a subject from the list takes effect on the next
+API start. A listed agentkit.best account holds the same full MCP authority as
+any other principal. The executable owners are
+[`apps/api/src/agentkit-jwt-verifier.ts`](../apps/api/src/agentkit-jwt-verifier.ts)
+and [`apps/api/src/auth.ts`](../apps/api/src/auth.ts); the design is
+[ADR 0008](adr/0008-agentkit-best-identity-kits-and-vault.md).
+
 In owner-bearer mode, rotate `MCP_BEARER_TOKEN` after suspected disclosure and
 restart the API. In Access mode, revoke at Access/IdP and verify the edge no
 longer forwards an accepted assertion. Rotate `RUNNER_TOKEN` independently and
@@ -326,56 +343,115 @@ and [`apps/runner/src/mcp-event-service.ts`](../apps/runner/src/mcp-event-servic
 
 ## Webhook automation ingress
 
-Webhook automations (off unless `AUTOMATIONS_ENABLED`) let a GitHub label on an
-issue or pull request start a budgeted agent run. They add the only public
-route that carries no bearer, Access assertion, or API key, because GitHub
+Webhook automations (off unless `AUTOMATIONS_ENABLED`) let a GitHub, Linear,
+Jira, or owner-signed custom webhook start a budgeted agent run. They add the
+only public route that carries no bearer, Access assertion, or API key,
+`/integrations/webhooks/<provider>/<connectionId>`, because those senders
 cannot authenticate to Cloudflare Access. The decisions that keep that safe:
 
 - **The signature is the authentication.** Each connection has its own secret,
   generated server-side, sealed with the runner keyring (and re-sealed by
-  `secrets:rekey`), and shown once on create or rotate. The runner checks
-  GitHub's HMAC-SHA256 signature in constant time over the exact bytes the API
-  forwarded uninflated and unparsed; nothing is parsed before it verifies.
-  Rotation takes effect immediately with no grace window. An unknown, disabled,
-  or deleted connection and a bad signature return the same `401`, so the route
-  is not an oracle for connection ids.
+  `secrets:rekey`), and shown once on create or rotate. The owner pastes it into
+  the provider, never the reverse, so no provider-chosen secret is ever stored.
+  The runner checks the provider's HMAC-SHA256 signature in constant time over
+  the exact bytes the API forwarded uninflated and unparsed; nothing is parsed
+  before it verifies. Rotation takes effect immediately with no grace window. An
+  unknown, disabled, or deleted connection, a provider segment that does not
+  match the connection, a bad signature, and a stale timestamp all return the
+  same `401`, so the route is not an oracle for connection ids.
+- **Replay is bounded per provider.** GitHub signs only the body, so a captured
+  delivery is caught by delivery-id and body-digest dedupe. Linear, Jira, and
+  custom deliveries must also carry a signed timestamp inside a short window
+  (Linear's documented window on `webhookTimestamp`, Jira's body `timestamp`,
+  and the custom `X-CloudHarness-Timestamp`, which is part of the signed text),
+  so a captured body cannot be replayed once dedupe retention lapses. The
+  windows are owned by each adapter. The cost is that a provider retry sent
+  after the window is refused. Jira's window is wide enough to cover its
+  documented retry schedule, and its retries are deduped on the webhook
+  identifier, which stays the same across them.
+- **Only allowlisted headers cross the boundary.** The ingress forwards the
+  body and the provider's headers named in `AUTOMATION_WEBHOOK_HEADERS`, and the
+  runner schema refuses any other header, so no request metadata reaches
+  matching or prompts.
+- **Ingress and management are separate surfaces.** The public route only
+  ever calls the runner's `webhook_ingest` operation. Rule, run, and connection
+  management is reachable only through the authenticated Dashboard BFF and the
+  `automation_*` MCP tools ([MCP API](mcp-api.md#automation-management-tools)),
+  which take the principal and scopes from the authenticated session. Connections,
+  their secrets, and outbound credentials are not exposed to MCP at all, and a
+  rule created over MCP is always saved disabled so the owner reviews it before
+  any delivery can start a run.
 - **The API only bounds the request.** The ingress is mounted only when
   enabled, checks the host, answers a malformed connection id with the same
   `401`, and keeps a process-local rate window per connection id, so traffic
   aimed at other ids cannot exhaust a real connection's window and a webhook
   burst cannot consume the MCP pre-auth budget. The runner adds
-  per-connection delivery dedupe, by delivery id and by body digest so a
-  captured body replayed under a new delivery id is a duplicate, and a
+  per-connection delivery dedupe, by delivery id and by a digest of the signed
+  content (the body, plus the signed timestamp for custom webhooks) so a
+  captured request replayed under a new delivery id is a duplicate, and a
   per-connection delivery rate.
-- **Event data is untrusted input.** Only label additions on `issues` and
-  `pull_request` are admitted; other events and actions are recorded as ignored
-  and malformed bodies as quarantined. The raw payload is never stored, only
-  its digest and bounded normalized fields, and the title and body are cleared
-  after matching. Rule matching is deterministic and never consults a model.
-  The prompt places event text after the owner's instructions in a fenced
-  untrusted block whose delimiter is stripped from the event text.
-- **Triggers are narrow and opt-in.** A rule matches an exact repository,
-  label, and event set, starts disabled, ignores bot senders by default, and,
-  when `GITHUB_APP_SLUG` is configured, always ignores this harness's own
-  GitHub App. Posted comments do not raise label events, so the harness cannot
-  re-trigger itself either way. An optional actor allowlist narrows it further.
-- **The agent is read-only unless the rule opts into coding.** Each run opens
-  a fresh `network-none` workspace on the rule's ref (the default branch unless
-  set) and spawns an agent whose proxy operations are limited by the rule
-  contract to the read-only set, with the rule's budget. A pull request's head
-  is not checked out. Its only GitHub write is an optional single comment
-  through the brokered `issue_comment` action, with `@` mentions neutralized. A
-  rule with a `coding` action follows [Coding automations](#coding-automations)
-  instead.
+- **Event data is untrusted input.** Each adapter admits only label and state
+  transitions (GitHub label additions; Linear transitions derived from
+  `updatedFrom`; Jira transitions from the changelog); other events are
+  recorded as ignored and unreadable bodies as quarantined. The raw payload is
+  never stored, only its digest and bounded normalized fields, and the title
+  and body are cleared after matching, so a replay re-matches stored fields and
+  its prompt carries no event text. Rule matching is deterministic and never
+  consults a model. The prompt places event text after the owner's instructions
+  in a fenced untrusted block whose delimiter is stripped from the event text.
+- **Events never choose what runs.** A GitHub run checks out the event's
+  repository only when it equals the rule's `match.repository`; every other
+  provider's rule must pin `action.repository` (`automationRuleProblem`). The
+  custom envelope (`AutomationCustomEnvelopeSchema`) is fixed and strict, with no
+  field for a repository, workspace, profile, tool, command, or instruction. The
+  profile, tools, instructions, ref, and budget always come from the rule.
+- **Triggers are narrow and opt-in.** A rule matches an exact scope (repository,
+  Linear team, Jira project, or custom event name) and label or target state,
+  starts disabled, ignores bot senders by default, and, when `GITHUB_APP_SLUG`
+  is configured, always ignores this harness's own GitHub App. Posted comments
+  do not raise label events, so the harness cannot re-trigger itself either
+  way. An optional actor allowlist narrows it further; it is compared only with
+  stable identifiers (GitHub login, Linear user id or email, Jira account id),
+  never with a display name the actor can edit.
+- **The agent is read-only unless a GitHub rule opts into coding.** Each run
+  opens a fresh `network-none` workspace
+  on the rule's ref (the default branch unless set) and spawns an agent whose
+  proxy operations are limited by the rule contract to the read-only set, with
+  the rule's budget. A pull request's head is not checked out. Its only writes
+  are an optional single comment per run, edited from progress to result, with
+  `@` mentions neutralized, and, for GitHub pull requests, one check run through
+  the brokered `check_run_create`/`check_run_update` actions. An installation
+  without the `checks` permission degrades to the comment alone. A GitHub rule
+  with a `coding` action follows [Coding automations](#coding-automations)
+  instead; Linear, Jira, and custom rules cannot carry one
+  (`automationCodingProblem`).
+- **Outbound credentials stay in the runner.** A Linear API key or Jira email
+  and API token is sealed per connection under its own keyring context, is never
+  returned (summaries expose only `outboundConfigured`), and is unsealed only
+  inside the runner's publisher, which sends it to Linear's fixed GraphQL
+  endpoint or to the connection's Jira site. It never reaches a workspace,
+  agent, log, or audit payload.
+- **Jira posting is pinned to a checked public address.** The Jira site is an
+  owner-supplied `https` origin that refuses IP literals, ports, paths, and
+  internal names. At publish time the provider HTTP client resolves it once,
+  refuses private and reserved addresses, connects to the address it checked,
+  and never follows redirects, so DNS rebinding cannot steer the credential to
+  an internal host. Issue links are built from that site, never from a URL in
+  the payload.
 
-Residual risk: anyone who can add a label in a watched repository can spend
-that rule's budget, bounded by cooldown, per-rule and instance concurrency, and
-the per-connection delivery rate; prompt injection through issue text can still
-shape the answer that may be posted. Approval grants, non-GitHub providers, and
-MCP tools for automation management are not supported. The executable owners are
+Residual risk: anyone who can add a label or move an issue in a watched
+repository, team, or project, or who holds a custom connection's secret, can
+spend that rule's budget, bounded by cooldown, per-rule and instance
+concurrency, and the per-connection delivery rate; prompt injection through
+event text can still shape the read-only answer that may be posted. Approvals,
+coding runs outside GitHub, and Linear or Jira OAuth apps are not supported. The
+executable owners are
 [`apps/api/src/automations/webhook-ingress.ts`](../apps/api/src/automations/webhook-ingress.ts),
-[`apps/runner/src/automation-github.ts`](../apps/runner/src/automation-github.ts),
+[`apps/api/src/automations/automation-tools.ts`](../apps/api/src/automations/automation-tools.ts),
+the `apps/runner/src/automation-<provider>.ts` adapters registered in
+[`apps/runner/src/automation-providers.ts`](../apps/runner/src/automation-providers.ts),
 [`apps/runner/src/automation-service.ts`](../apps/runner/src/automation-service.ts),
+[`apps/runner/src/model-provider-http.ts`](../apps/runner/src/model-provider-http.ts),
 and [`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
 
 ## Coding automations
@@ -398,9 +474,10 @@ runner publishes":
   same evaluator the Dashboard simulation uses. The revisions the run started
   under are pinned, so a policy edit or rollback stops it, and each call
   re-checks revocation (workflow state and workspace generation), the run's
-  budget and the kill switch. Only `ALLOW` runs. `REQUIRE_APPROVAL` fails closed
-  with `ACTION_REQUIRES_APPROVAL`, because this release grants no approvals. A
-  refused call never reaches the workspace. Editing a lockfile or package
+  budget and the kill switch. Only `ALLOW` runs. For an agent tool call,
+  `REQUIRE_APPROVAL` fails closed with `ACTION_REQUIRES_APPROVAL`; only the
+  runner's own steps can wait for an owner approval (below). A refused call
+  never reaches the workspace. Editing a lockfile or package
   manifest is a `package_install` action, not an `edit`.
 - **The agent never publishes.** It stays on `network-none` with no Git or
   GitHub credential and is told not to commit. After it ends, the runner runs
@@ -469,6 +546,70 @@ runner publishes":
   span. A receipt stores the action's argv and paths as decided, unredacted,
   and the owner's Dashboard run page shows them; a verify command or path
   should therefore never carry a secret.
+- **An approval lifts one held runner step, once.** With
+  `AGENT_APPROVALS_ENABLED`, a runner step (verify, path checks, commit, push,
+  opening the pull request) that the gate answers with `REQUIRE_APPROVAL`
+  pauses the run as `WAITING_FOR_HUMAN` instead of failing it. The agent has
+  already ended, the workspace is kept and its lease renewed for the wait, and
+  the change is snapshotted as a diff artifact. One PENDING approval records
+  the exact descriptor, its digest, the gate decision with the advisor's
+  Decision Plane id, the policy revisions and the run's pause counter. Only the
+  owning principal can decide it, through the Dashboard's Origin- and
+  CSRF-checked route, and the decision must name the digest it was shown;
+  exactly one approve or deny moves it out of PENDING. A changed digest or a
+  later pause refuses the decision as `APPROVAL_STALE`. A workspace that is gone
+  or was recreated ends the wait at once: the decision or the next sweeper pass
+  expires the approval and fails the run as `APPROVAL_STALE`, notified and
+  audited. Past its deadline (the smallest of `AGENT_APPROVAL_TTL_MINUTES`, the
+  policy's approval TTL and the workspace lease, which must be readable: a run
+  whose lease and hard deadline cannot be read does not wait, and retries the
+  step instead) the approval expires and the run fails. On approval the run
+  resumes and the step runs under a fresh idempotency key
+  (`automation:<workflow>:resume:<approval>`), so a restart replays it at most
+  once. The gate decides the step again when it runs: the approval lifts only
+  `REQUIRE_APPROVAL`, only for the held step itself (its own step key) with
+  that exact digest, and only while approvals are enabled, never a `DENY` such
+  as a hard deny added since. It becomes CONSUMED when the step is admitted,
+  also when the re-gate no longer required it; a replay of that same step
+  after a restart may still use it, no other step can. The one exception is
+  the push's repeat of a commit path check: the push gates the commit's paths
+  again chunk by chunk and cannot wait, so the approval of the commit's check
+  of a chunk covers the push's check of the same chunk with the identical
+  digest in the same run.
+- **An approval covers the change the owner reviewed, not just the action.**
+  The pause binds the complete change: the SHA-256 of Git's raw listing of it,
+  with the mode and full object id of every changed path, read by the runner's
+  own inspection of the checkout (the staged working tree before the commit,
+  the recorded commit against the base from the push on). An object id names
+  a file's whole content, so the binding covers a change of any size, and a
+  listing cut short at the inspection's output cap binds nothing: the run does
+  not wait. The diff artifact only shows the change and is cut short at 1 MiB,
+  which it then says; the listing is read before it, so a change made in
+  between makes the approval stale instead of binding content the owner was
+  not shown. Until the approved step is dispatched, every resumed pass
+  recomputes the binding and compares it; an approved commit is compared once
+  more on every attempt right after it stages the working tree and before it
+  commits, as long as HEAD is still the base, so a retried attempt (for
+  example after a failed branch checkout) is covered too. Anything that changed
+  the checkout or the commit while the run waited or after the approval fails
+  the run as `APPROVAL_STALE` before the step acts (nothing is committed,
+  pushed or opened), and an unused approval is retired as EXPIRED with an
+  `agent.approval.stale` audit entry. The commit itself, made or adopted from
+  an earlier attempt, is compared as well before it is recorded, so content
+  that a `pre_commit` lifecycle hook or a process still running in the
+  executor staged after the last check of the working tree fails the run
+  before anything is pushed (the commit stays local). The push and the pull
+  request then name that commit by its id, so no window remains between the
+  check and what is published. The bound diff artifact is shown cut short
+  above 1 MiB with its line counts omitted; the file count and the binding
+  always cover the whole change.
+  Neither Jev nor any advisor answer can grant an approval; the advisor can
+  only escalate. With the flag off, a held step fails as
+  `ACTION_DENIED:APPROVALS_DISABLED` and the sweeper fails runs still waiting.
+  Waiting time does not count against the run-time budget, and a waiting run
+  still holds its concurrency slot and workspace
+  ([`apps/runner/src/agent-governance/approval-service.ts`](../apps/runner/src/agent-governance/approval-service.ts),
+  [`test/integration/hitl-approval-resume.test.ts`](../test/integration/hitl-approval-resume.test.ts)).
 - **Installs are lockfile-only and separate.** With
   `AGENT_CODING_PACKAGE_INSTALL_ENABLED`, a checkout's npm lockfile is admitted
   only if every entry is a registry tarball with a sha512 integrity from an
@@ -601,7 +742,9 @@ enforcement targets Linux with the Docker iptables backend; the host firewall
 is a trusted operator-owned control outside the executor's authority.
 
 Repository opening accepts only credential-free HTTPS URLs on configured
-hosts and rejects private/link-local resolutions. The clone helper disables
+hosts and rejects a host if any resolved address is private, loopback, or
+link-local, including the same address written as IPv4-mapped IPv6
+(`::ffff:10.0.0.5`). The clone helper disables
 hooks, recursive submodules, tag downloads, redirects, and LFS smudging.
 Repository code is never evaluated by the runner during clone.
 
@@ -1298,7 +1441,9 @@ the owner has stored a TypeSafe integration key.
   `failure-classification`: the action name, exit code, network profile, and a
   tail of the stderr and stdout. For `execution-risk`: a typed summary of the
   action (its class, counts of touched, test, manifest, CI and hidden paths, a
-  command category with its argument count and a short digest, whether the
+  command category with its argument count and a short digest (the first 16 hex
+  characters of an unsalted SHA-256 of the argv, so it is deterministic and a
+  guessed low-entropy command can be confirmed against it), whether the
   command runs `git push`, whether a branch or network host is named, the
   package ecosystem from a fixed list (anything else is `other`), diff size
   and test result). Paths, arguments, branch, repository and package names and the
@@ -1326,11 +1471,12 @@ the owner has stored a TypeSafe integration key.
 
 Coding-agent execution policies are owner-authored
 ([ADR 0006](adr/0006-policy-governed-coding-agents.md)) and sit behind
-`AGENT_POLICIES_ENABLED`. This release ships the policy store, the gate
-evaluator and the Dashboard simulation. It does not yet enforce anything on a
-running agent: action enforcement arrives with the coding broker, which calls
-the same evaluator through the `GateEvaluator` port. Until then a saved policy
-changes simulation results only.
+`AGENT_POLICIES_ENABLED`. The policy store, the gate evaluator and the
+Dashboard simulation sit behind that flag. Enforcement is the coding broker
+(`AGENT_CODING_ENABLED`, see [Coding automations](#coding-automations)), which
+calls the same evaluator through the `GateEvaluator` port for every action of
+a coding run. Agents outside a coding run are not governed by a policy, so
+there a saved policy changes simulation results only.
 
 - **One authority.** Only the owner writes policy, through owner-authenticated
   Dashboard routes with the usual Origin and CSRF checks. The principal comes
@@ -1343,7 +1489,7 @@ changes simulation results only.
   field. A project can choose a class's effect only where the owner marked the
   class delegable. A policy for a project that no longer exists denies every
   action bound to it, and its effective-policy preview is empty.
-- **One pure gate.** The simulation and the future broker use one frozen
+- **One pure gate.** The simulation and the coding broker use one frozen
   evaluator instance and the same resolved snapshot and advisor availability,
   so a simulation returns what execution will start from. The one difference
   is the advisor: a discretionary action shows as pending (`ADVISOR_REQUIRED`,
@@ -1360,16 +1506,25 @@ changes simulation results only.
   confident low-risk answer is the only thing that lets that action run
   without a human. Every other outcome (advisor off or unconfigured, timeout,
   rate limit, invalid answer, low confidence, redaction failure) applies the
-  policy's fallback: approval by default, or deny. The decision records the
-  Jev decision id, risk and confidence, or the fallback reason. No answer
+  policy's fallback: approval by default, or deny. An action whose paths touch
+  a root CI/workflow file or a dependency manifest or lockfile is never sent
+  to Jev: the advisor escalates it locally (`sensitive_paths`) and the policy's
+  fallback applies, because a CI change runs with repository secrets and a
+  dependency change is a supply-chain change, so a model's answer never clears
+  it. The
+  decision records the Jev decision id, risk and confidence, or the fallback
+  reason. No answer
   lowers a deny or a required approval, including
   `PLATFORM_COMMAND_UNANALYZABLE`. The gate itself enforces the confidence
   floor, so no advisor implementation can clear an action with a `no_change`
   below it. Jev is told the class the gate judged (`publish_branch` for a
   declared class whose command runs `git push`), never only the declared one.
-  The execution-time call (`AgentPolicyService.decide`) is consulted by the
-  coding broker, which ships later; until then nothing calls Jev for an agent
-  action.
+  The coding broker makes the execution-time call (`AgentPolicyService.decide`)
+  for a coding run's actions (a lockfile install runs only on a plain `ALLOW`
+  and never consults the advisor), so with the three opt-ins each qualifying
+  action sends TypeSafe the redacted, runner-computed `execution-risk` summary
+  listed under [what leaves the runner](#decision-plane); when redaction cannot
+  complete nothing is sent and the fallback applies.
 - **Platform invariants have two outcomes.** Credential and Docker access,
   network escalation, paths outside the workspace and privilege escalation
   deny before any policy is read. A command is an argv run through execve,
@@ -1524,10 +1679,26 @@ the owner; the harness opens no egress to a trace collector.
 Notifications are off unless the operator sets `NOTIFICATIONS_ENABLED`. A
 notification stores identifiers, its kind, a title bounded to 160 characters
 and passed through the trace redaction (token- and key-shaped strings are
-replaced, control and format characters removed), and a relative `/dashboard`
-link; never prompts, agent output, issue bodies, or credentials. The contract
-refuses any other link, and the Dashboard follows a link only when it is such a
-path, so a notification cannot become an off-site redirect. Inbox reads and
+replaced, control and format characters removed), a primary relative
+`/dashboard` link, and optional related `links`; never prompts, agent output,
+issue bodies, or credentials. The primary link and the `trace` link must be
+relative `/dashboard` paths without dot segments. A finished automation may add
+two external links, and nothing else can:
+
+- `pullRequest`, only when the URL the runner recorded from GitHub's answer to
+  its own pull request call is exactly
+  `https://github.com/<rule repository>/pull/<number>`.
+- `source`, the page of the issue or pull request that started the run, only
+  for providers that pin that URL's host when the delivery is normalized:
+  GitHub (checked against the repository), Linear (`https://linear.app/`) and
+  Jira (built from the connection's site). A custom webhook's URL is chosen by
+  its sender, so it is never linked, and a workflow whose recorded provider
+  disagrees with its connection gets no source link.
+
+Both are re-checked by the contract and again by the Dashboard: a canonical
+`https` URL with no user info, query or fragment, at most 300 characters. A
+webhook sender, an agent or an issue author therefore cannot steer a
+notification to an arbitrary host or put a credential in a link. Inbox reads and
 writes are scoped to the session principal, and marking another principal's
 notification is reported as not found and changes nothing. Delivery adds no
 egress: the MCP Events channel uses the existing webhook sender and its callback

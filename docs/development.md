@@ -118,13 +118,15 @@ regression unless it appears below as unexplained.
 | `apps/runner/test/package-builder.test.ts`: release tree verification and the three apply builds that verify a release | Symlinks, POSIX mode and execute bits, setuid and sticky bits, and FIFOs |
 | `apps/runner/test/tree-digest.test.ts`: nested tree and multi-MiB file | Symlinks and POSIX mode bits |
 | `apps/runner/test/worker-close-check.test.ts`: newline worktree path | Windows file names cannot contain a newline |
+| `apps/runner/test/skill-extension-service.test.ts`: file name that is not UTF-8 | NTFS stores file names as UTF-16, so such a name cannot be created |
 | `apps/api/test/local/multi-local-workspace-backend.test.ts`: two `pwd` tests | The local backend runs commands through `cmd.exe` |
 | `test/integration/mcp-local-multi-workspace.test.ts` (whole file) | The server refuses local mode on win32 unless `HARNESS_ALLOW_WIN32_STDIO=1` |
 | `test/integration/dynamic-model-profiles.test.ts`: four TLS tests | They need `openssl` on PATH or pre-generated fixtures |
+| `apps/model-gateway/test/model-gateway.test.ts`: the tests that start a fake TLS provider | They need `openssl` on PATH to generate the provider certificate |
 | `test/deploy-release-runtime.test.ts`, `test/upgrade-nginx-routes.test.ts`, `apps/runner/test/terminal-session-scripts.test.ts`, `test/git-transfer-helper-lease.test.ts`, `test/gh-helper-*.test.ts` | POSIX shell scripts |
 | `test/production-deploy-classify.test.ts`: the eight tests that run the release tip check and release CI request scripts | They run workflow scripts through `bash` with a POSIX `PATH` |
 
-The remaining symlink fixtures in the runner tests skip only when `symlink`
+The remaining symlink fixtures in the runner and model gateway tests skip only when `symlink`
 fails, so they run on a Windows host with Developer Mode or elevation. The
 guards live in
 [`apps/runner/test/platform-support.ts`](../apps/runner/test/platform-support.ts).
@@ -214,6 +216,31 @@ runs by default. The scenarios, fixtures and result shape are owned by
 [`test/benchmarks/agent-runtime.bench.test.ts`](../test/benchmarks/agent-runtime.bench.test.ts);
 the decision it supports is
 [ADR 0005](adr/0005-agent-session-persistence.md).
+
+## Live provider checks
+
+CI never calls TypeSafe. Two opt-in checks use the owner's TypeSafe key against
+the real endpoint. Neither prints the key, the prompt state or any answer text:
+
+- `npm run verify:typesafe` checks the response shape the parsers depend on
+  ([`scripts/verify-typesafe.mjs`](../scripts/verify-typesafe.mjs)).
+- The live execution-risk suite runs the real Jev provider behind a Decision
+  Plane with the production call timeout and the real policy gate. It asserts
+  only the gate's invariants and the latency budget, because the model's
+  answers vary. With `JEV_LIVE_REPORT` set, it
+  also writes a sanitized summary of the decisions, risks, latency and token
+  counts. Export `TYPESAFE_API_KEY` from your secret store first rather than
+  typing it on the command line:
+
+  ```bash
+  CLOUD_HARNESS_LIVE_JEV=1 JEV_LIVE_REPORT=./jev-live.json \
+    npx vitest run apps/runner/test/execution-risk-advisor.live.test.ts
+  ```
+
+  Without `CLOUD_HARNESS_LIVE_JEV=1` the suite is skipped, so it never runs as
+  part of `npm test`. On PowerShell, set the variables with `$env:NAME = '1'`
+  first. Build `@cloud-harness/contracts` first if it has not been
+  built yet.
 
 ## Local service development
 

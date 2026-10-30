@@ -155,6 +155,28 @@ The secret-free route and proxy contract are owned by
 and
 [`apps/api-key-gateway/src/gateway.ts`](../apps/api-key-gateway/src/gateway.ts).
 
+### agentkit.best sign-in
+
+`AGENTKIT_AUTH_ENABLED=true` adds agentkit.best as an extra sign-in lane in
+either `AUTH_MODE`; the existing lane keeps working unchanged. It needs:
+
+- `AGENTKIT_AUTH_RESOURCE`, the resource registered on agentkit.best
+  (`https://harness.agentkit.best/mcp` for the first-party instance). Its host
+  must be in `API_PUBLIC_HOSTS`, must differ from the API-key gateway host, and
+  must not be covered by the Cloudflare Access application. The API serves
+  only the agentkit.best lane on that host.
+- `AGENTKIT_AUTH_SUBJECTS`, a comma-separated list of the agentkit.best account
+  IDs (`sub`) this instance accepts. agentkit.best lets any account sign in, so
+  a valid token for an unlisted subject gets `403`.
+- `AGENTKIT_AUTH_ISSUER` defaults to `https://agentkit.best`; change it only for
+  a staging authorization server.
+
+Route the hostname to the ingress like the main hostname (the tunnel ingress is
+path-agnostic). Validation rules are owned by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts); the
+design and trust model are in
+[ADR 0008](adr/0008-agentkit-best-identity-kits-and-vault.md).
+
 ### Managed OAuth session settings
 
 The optional `CLOUDFLARE_ACCESS_*` API integration lets Dashboard Settings read
@@ -437,6 +459,14 @@ inspection and extraction run with `--network none`. Only the small signed
 manifest is fetched through the network on a cache hit — the package itself is
 served from the toolkit CAS identified by its artifact digest.
 
+`ENABLE_KIT_LOCK_INSTALL` (default `false`) lets `workspace_open` accept
+`kitLocks` and expand an `agentkit.skill-lock/v1` lock into pinned `agentkit`
+selections. It adds no credential or registry path of its own: the kits still
+need the settings above. The mapping rules are owned by
+[`apps/runner/src/kit-lock-planner.ts`](../apps/runner/src/kit-lock-planner.ts),
+and the design is recorded in
+[ADR 0008](adr/0008-agentkit-best-identity-kits-and-vault.md).
+
 ## Dashboard secrets
 
 Dashboard secret values are write-only. The browser receives reference
@@ -676,9 +706,16 @@ adds an advisory `data.diagnosis` to GitHub actions that end in the generic
 is `advisor_or_approval`. It also needs the owner to enable the advisor in the
 global agent policy (see [Agent execution policies](security-model.md#agent-execution-policies));
 its threshold, confidence floor and fallback live in that policy, not here. Any
-failure falls back to approval, or to deny when the policy says so. The
-advisor is consulted when an agent action executes, which arrives with the
-coding broker; until then listing the purpose sends nothing.
+failure falls back to approval, or to deny when the policy says so. The coding
+broker (`AGENT_CODING_ENABLED`) consults the advisor when a coding run executes
+an `advisor_or_approval` action that passed every deterministic check, so with
+all three opt-ins each such action sends TypeSafe one redacted, runner-computed
+summary. Its fields are listed under
+[what leaves the runner](security-model.md#decision-plane) and built by
+[`apps/runner/src/decision-plane/execution-risk-advisor.ts`](../apps/runner/src/decision-plane/execution-risk-advisor.ts);
+paths, arguments, branch and repository names, and agent or issue text are not
+sent, and the command digest is an unsalted truncated SHA-256, so a guessed
+low-entropy command can be confirmed against it.
 Before rolling back to a release that predates `execution-risk`, remove it from
 `DECISION_PLANE_PURPOSES`: older runners reject the value and fail startup.
 The purpose list is owned by
@@ -688,14 +725,50 @@ the call bounds by
 and the rationale by [ADR 0004](adr/0004-decision-plane.md). Live counters are
 at `GET /api/v1/decision-plane/status`.
 
+## Agent runtime limits and retention
+
+Subagents (`agent_spawn` and the other `agent_*` tools) are configured on the
+runner. Compose sets `AGENT_IMAGE`, `AGENT_GATEWAY_URL` and `AGENT_PROFILES_FILE`
+for it, with the profile file mounted from `AGENT_PROFILES_HOST_FILE`. Outside
+Compose, setting any variable in this section turns the agent configuration on,
+so the image, the gateway URL and exactly one of `AGENT_PROFILES_JSON` or
+`AGENT_PROFILES_FILE` must be set too, or the runner refuses to start.
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AGENT_GLOBAL_ACTIVE`, `AGENT_PRINCIPAL_ACTIVE`, `AGENT_WORKSPACE_ACTIVE`, `AGENT_PARENT_ACTIVE` | see schema | Active agents at once per scope. Must satisfy parent ≤ workspace ≤ principal ≤ global. |
+| `AGENT_WORKSPACE_LIFETIME_RECORDS` | see schema | Spawn and message records one workspace may create over its life. Idempotency records are never evicted to admit new work, so a full workspace refuses further spawns and messages with `LIMIT_EXCEEDED`. |
+| `AGENT_MIN_TTL_SECONDS`, `AGENT_MAX_TTL_SECONDS` | see schema | Range of TTLs a spawn may request; the minimum cannot exceed the maximum. |
+| `AGENT_MAX_PROMPT_BYTES`, `AGENT_MAX_MESSAGE_BYTES`, `AGENT_MAX_OUTPUT_BYTES` | see schema | Largest prompt, message body and per-agent output budget a request may carry. |
+| `AGENT_MAX_LOG_BYTES`, `AGENT_MAX_LOG_EVENTS`, `AGENT_MAX_LOG_EVENT_BYTES` | see schema | Log kept per agent; the oldest events are dropped first, and an `agent_logs` cursor older than the retained base reports `truncated`. |
+| `AGENT_GLOBAL_RETAINED_ROWS`, `AGENT_PRINCIPAL_RETAINED_ROWS`, `AGENT_WORKSPACE_RETAINED_ROWS` | see schema | Rows kept per scope. Agent records plus compacted tombstones count toward spawn admission, and log events toward the log cap. Must satisfy workspace ≤ principal ≤ global. |
+| `AGENT_GLOBAL_RETAINED_BYTES`, `AGENT_PRINCIPAL_RETAINED_BYTES`, `AGENT_WORKSPACE_RETAINED_BYTES` | see schema | Log bytes kept per scope; a full scope trims the oldest log of the agent being written. Must satisfy workspace ≤ principal ≤ global. |
+| `AGENT_CANCELLATION_GRACE_MS` | see schema | Grace between TERM and KILL when an agent container is stopped. |
+| `AGENT_CLEANUP_RETRY_LIMIT`, `AGENT_CLEANUP_RETRY_MAX_DELAY_MS` | see schema | Attempts with exponential backoff, and the longest backoff, for a failed agent container cleanup. After the limit, cleanup keeps retrying every `AGENT_CLEANUP_RETRY_MAX_DELAY_MS`. An agent stays `CANCELLING` until its cleanup succeeds. |
+| `AGENT_RETENTION_SECONDS` | 7 days | How long a closed workspace keeps full agent records (logs, messages, usage) after its last agent ended. Then the runner compacts them to tombstones. Cannot exceed `AGENT_LOOKUP_HORIZON_SECONDS`. |
+| `AGENT_LOOKUP_HORIZON_SECONDS` | 30 days | How long after an agent ended its tombstone still answers `agent_status` with `compacted: true`. Then the tombstone is purged. The expiry is stored when the tombstone is written, so a new value applies only to workspaces compacted afterwards. |
+
+Code defaults and ranges are owned by `RunnerAgentLimitsSchema` in
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts); admission,
+compaction and purge are owned by
+[`apps/runner/src/agent-state-repository.ts`](../apps/runner/src/agent-state-repository.ts).
+The runner compacts and purges at startup and on every reaper pass. Compaction
+needs a closed workspace with no nonterminal agent, so open workspaces and agents
+still `CANCELLING` are never compacted; the purge needs only a closed workspace.
+Compaction and the tombstone purge are the only paths that delete agent rows. A
+rollback or schema downgrade that needs agent state gone has to wait for these
+horizons. A shorter `AGENT_RETENTION_SECONDS` and a runner restart compact older
+closed workspaces sooner, because retention is evaluated on each pass, but
+tombstones already written keep the expiry they were written with.
+
 ## Agent traces
 
 | Variable | Default | Decision |
 |---|---|---|
 | `AGENT_TRACES_ENABLED` | off | Runner only. Records one durable trace per coding-agent run and enables the four `agent_trace*` tools and the Dashboard Traces page. Off, the tools answer `FEATURE_DISABLED` and the page stays hidden. |
-| `AGENT_TRACE_RETENTION_DAYS` | see schema | How long a finished trace is kept before the hourly purge removes it. |
+| `AGENT_TRACE_RETENTION_DAYS` | see schema | How long a finished trace is kept, counted from its latest span, before the hourly purge removes it. A trace whose automation workflow has not ended, for example one waiting for an approval, is kept and stays readable regardless. |
 | `AGENT_TRACE_MAX_SPANS` | see schema | Spans kept per trace; later spans are dropped behind one truncation marker. |
-| `AGENT_TRACE_MAX_PER_PRINCIPAL` | see schema | Traces kept per principal; the oldest finished traces are evicted first. |
+| `AGENT_TRACE_MAX_PER_PRINCIPAL` | see schema | Traces kept per principal; the oldest finished traces are evicted first, never one whose automation workflow has not ended. |
 | `AGENT_TRACE_PREVIEW_BYTES` | `0` | Bytes of redacted tool-input preview per tool span. `0` stores digests only; raise it only when a bounded, redacted preview is worth the extra stored data. |
 
 Code defaults and ranges are owned by
@@ -710,7 +783,7 @@ What a trace may contain is described in
 
 | Variable | Default | Decision |
 |---|---|---|
-| `NOTIFICATIONS_ENABLED` | off | Runner only. Writes a notification to the owner's inbox on terminal automation runs and top-level agents, delivers it to the channels the owner's preferences allow (the `cloudharness.notification.created` MCP event and the GitHub comment mirror), and shows the Dashboard Inbox. Off, nothing is written or sent, the inbox list and preference routes answer `FEATURE_DISABLED`, and the Inbox entry stays hidden. |
+| `NOTIFICATIONS_ENABLED` | off | Runner only. Writes a notification to the owner's inbox on terminal automation runs and top-level agents and, with `AGENT_APPROVALS_ENABLED`, when a coding run starts waiting for an approval (`workflow.waiting_for_human`) and when that approval is decided or expires (`approval.decided`). Delivers it to the channels the owner's preferences allow (the `cloudharness.notification.created` MCP event and the GitHub comment mirror), and shows the Dashboard Inbox. Off, nothing is written or sent, the inbox list and preference routes answer `FEATURE_DISABLED`, and the Inbox entry stays hidden. |
 
 Notifications live in the runner's state database. Turning the flag off is the
 rollback: emission and delivery stop at once, while the retention purge keeps
@@ -723,11 +796,11 @@ behaviour is described in [MCP API](mcp-api.md#notification-inbox).
 
 | Variable | Default | Decision |
 |---|---|---|
-| `AUTOMATIONS_ENABLED` | off | Read by both services. On the API it mounts the public GitHub webhook route; on the runner it admits deliveries, workflows, and Dashboard management. Set the same value for both. The shared environment file does this; a mismatch leaves the route answering `503` (API on, runner off) or absent (API off). |
+| `AUTOMATIONS_ENABLED` | off | Read by both services. On the API it mounts the public webhook route for every provider and lets the `automation_*` MCP tools reach the runner (they stay listed and answer `UNAVAILABLE` while it is off); on the runner it admits deliveries, workflows, and Dashboard and MCP management. Set the same value for both. The shared environment file does this; a mismatch leaves the route answering `503` (API on, runner off) or absent (API off). |
 | `AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS` | see schema | Runner only. Instance-wide ceiling on automation workflows holding a workspace at once, above each rule's own `maxConcurrent`. Workflows over the ceiling wait queued and expire if they cannot start in time. |
 
 The feature also needs the runner secret keyring, because connection secrets
-are sealed with it. The GitHub App slug, when configured, is how the runner
+and Linear or Jira outbound credentials are sealed with it. The GitHub App slug, when configured, is how the runner
 recognizes and ignores the harness's own comments. Code defaults and ranges are
 owned by
 [`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts);
@@ -759,6 +832,8 @@ them on every action a coding workflow takes.
 |---|---|---|
 | `AGENT_CODING_ENABLED` | off | Runner only. Lets an automation rule with a `coding` action edit, test, commit, push an `agent/` branch and open a pull request, each action decided by the execution policy. Needs `AGENT_POLICIES_ENABLED` and `AUTOMATIONS_ENABLED`; the runner refuses to start otherwise. It is also the kill switch: setting it back to off fails running coding workflows with `CODING_DISABLED` at their next step, before anything else is published. |
 | `AGENT_CODING_PACKAGE_INSTALL_ENABLED` | off | Runner only. Lets a coding workflow install the checkout's npm lockfile once, before the agent starts, in a one-shot `dependency-access` container with lifecycle scripts off. Needs `AGENT_CODING_ENABLED`. Each locked package is still a `package_install` action the policy must allow; with the flag off, a lockfile is ignored and the agent works without installed dependencies. |
+| `AGENT_APPROVALS_ENABLED` | off | Runner only. Lets a runner step of a coding workflow (verify, path checks, commit, push, opening the pull request) that the execution policy holds for approval pause the run as `WAITING_FOR_HUMAN` until the owner approves or denies it once on the Dashboard Approvals page. Off: such a step fails as `ACTION_DENIED:APPROVALS_DISABLED`, and the sweeper fails runs still waiting with `APPROVALS_DISABLED`. Agent tool calls are never paused; one that needs approval is refused as before. It has no effect while `AGENT_CODING_ENABLED` is off. |
+| `AGENT_APPROVAL_TTL_MINUTES` | 60 | Runner only, 1 to 10080. The longest a run waits for a decision. The policy's `approval.ttlSeconds` and the workspace lease (renewed for the wait) can only shorten it; an undecided approval then expires and the run fails with `APPROVAL_EXPIRED`. |
 
 Rule fields (`coding.projectId`, `verifyCommand`, `baseBranch`) and receipt
 shapes are owned by
@@ -766,13 +841,19 @@ shapes are owned by
 the pipeline by
 [`apps/runner/src/automation-coding.ts`](../apps/runner/src/automation-coding.ts);
 and the rationale by [ADR 0006](adr/0006-policy-governed-coding-agents.md).
+Approvals are owned by
+[`packages/contracts/src/agent-approvals-api.ts`](../packages/contracts/src/agent-approvals-api.ts)
+and [`apps/runner/src/agent-governance/approval-service.ts`](../apps/runner/src/agent-governance/approval-service.ts).
 
 Rollback: set `AGENT_CODING_ENABLED=false` and restart the runner. Running
 coding workflows fail with `CODING_DISABLED` and their workspaces close;
 branches and pull requests already published stay on GitHub for the owner to
 review or delete. Receipts in `coding_actions` stay readable on the run page
 and are purged with their workflow. No table is dropped, so turning the flag on
-again needs no migration.
+again needs no migration. To stop only the pauses, set
+`AGENT_APPROVALS_ENABLED=false`: waiting runs fail with `APPROVALS_DISABLED` on
+the next sweep, their approvals expire, and later held steps fail instead of
+waiting. Approval records stay readable until their workflow is purged.
 
 ## Compose and logging overrides
 

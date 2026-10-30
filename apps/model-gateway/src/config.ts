@@ -78,8 +78,8 @@ function privateIpv4(address: string): boolean {
   const third = parts[2] ?? -1;
   return first === 0 || first === 10 || first === 127 ||
     (first === 169 && second === 254) || (first === 172 && second >= 16 && second <= 31) ||
-    (first === 192 && (second === 168 || second === 0 || (second === 0 && third === 2))) ||
-    (first === 100 && second >= 64 && second <= 127) || (first === 198 && (second === 18 || second === 19 || second === 51)) ||
+    (first === 192 && (second === 168 || (second === 0 && (third === 0 || third === 2)))) ||
+    (first === 100 && second >= 64 && second <= 127) || (first === 198 && (second === 18 || second === 19 || (second === 51 && third === 100))) ||
     (first === 203 && second === 0 && third === 113) || first >= 224;
 }
 

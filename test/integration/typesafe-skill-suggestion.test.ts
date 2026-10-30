@@ -14,11 +14,13 @@ const pluginRoot = join(repositoryRoot, 'plugins', 'cloud-harness');
 
 describe('plugin prompt-submit surfaces', () => {
   it('registers a UserPromptSubmit handler that calls the suggestion tool with an explicit timeout', () => {
-    const hooks = JSON.parse(readFileSync(join(pluginRoot, 'hooks', 'hooks.json'), 'utf8')) as {
-      UserPromptSubmit?: Array<{ hooks?: Array<{ type?: string; server?: string; tool?: string; timeout?: number }> }>;
+    // A plugin hooks file wraps the event map in a top-level `hooks` key; without it Claude Code
+    // refuses to load the file.
+    const file = JSON.parse(readFileSync(join(pluginRoot, 'hooks', 'hooks.json'), 'utf8')) as {
+      hooks?: { UserPromptSubmit?: Array<{ hooks?: Array<{ type?: string; server?: string; tool?: string; timeout?: number }> }> };
     };
 
-    const handlers = (hooks.UserPromptSubmit ?? []).flatMap((entry) => entry.hooks ?? []);
+    const handlers = (file.hooks?.UserPromptSubmit ?? []).flatMap((entry) => entry.hooks ?? []);
     expect(handlers).toHaveLength(1);
     expect(handlers[0]).toMatchObject({ type: 'mcp_tool', tool: 'skill_suggest' });
     // UserPromptSubmit lowers the default timeout to 30 seconds, so the handler names a short one.
@@ -33,7 +35,7 @@ describe('plugin prompt-submit surfaces', () => {
     };
     const server = manifest.mcpServers?.['cloud-harness'];
     expect(server).toBeDefined();
-    expect(server!.url).toContain('userConfig');
+    expect(server!.url).toBe('${user_config.mcpUrl}');
 
     // The plugin reuses the operator's existing endpoint and authentication; a token or a second
     // credential path in this file would be a new secret surface.

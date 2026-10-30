@@ -49,7 +49,9 @@ Opening a trace shows:
   call of rounding. An unreconciled trace lists its reasons.
 - **Spans** — a waterfall in tree order. Each bar sits on the run's time axis; a span
   that never closed (the run was cancelled, timed out, or interrupted) draws dashed to
-  the end and reads `unknown`.
+  the end and reads `unknown`. A coding run whose policy consulted the advisor shows a
+  `decision` span under the gated action, and a step held for the owner shows
+  `approval` spans for the request and for your decision.
 
 A failed model call shows its error class. `budget` means the model gateway refused
 the call because the agent's token or cost budget could not cover it; unless the run

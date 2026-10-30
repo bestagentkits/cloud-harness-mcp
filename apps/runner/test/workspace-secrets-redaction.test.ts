@@ -139,6 +139,11 @@ describe('Workspace Secrets List and Output Redaction', () => {
     for (const item of data.secrets) {
       expect(item).not.toHaveProperty('value');
     }
+    // No field anywhere in the result, message included, carries a stored value.
+    const serialized = JSON.stringify(listRes);
+    for (const value of ['global_secret_abc123', 'sk_live_verysecret12345', 'db_pass_secret999']) {
+      expect(serialized).not.toContain(value);
+    }
 
     // Test query filter on name and description
     const queryRes = await service.execute(principal, 'secrets_list', {

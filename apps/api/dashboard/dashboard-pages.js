@@ -126,9 +126,9 @@ export const DASHBOARD_PAGES = [
     label: 'Approvals',
     group: 'operate',
     title: 'Approvals',
-    help: 'Pending privilege grants and package plans waiting for your decision.',
+    help: 'Held coding agent actions, pending privilege grants and package plans waiting for your decision.',
     palette: true,
-    paletteHint: 'Pending privilege grants and package plans awaiting a decision',
+    paletteHint: 'Held agent actions, privilege grants and package plans awaiting a decision',
     nav: true,
     icon: '<path d="M9 12l2 2 4-4"/><path d="M12 3l8 4v6c0 4.5-3.2 7.3-8 8-4.8-.7-8-3.5-8-8V7z"/>'
   },

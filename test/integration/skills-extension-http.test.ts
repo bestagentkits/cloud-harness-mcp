@@ -4,7 +4,7 @@ import express from 'express';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { Client, ProtocolError, SdkHttpError, StreamableHTTPClientTransport, type FetchLike } from '@modelcontextprotocol/client';
-import { SKILLS_EXTENSION_ID, TOOL_SPECS, type ApiConfig } from '@cloud-harness/contracts';
+import { AUTOMATION_TOOL_SPECS, SKILLS_EXTENSION_ID, TOOL_SPECS, type ApiConfig } from '@cloud-harness/contracts';
 import { createApiApp, type ApiRuntime } from '../../apps/api/src/app.js';
 
 const token = 'integration-bearer-token-longer-than-32-characters';
@@ -159,7 +159,7 @@ describe('Skills over MCP extension over streamable HTTP', () => {
     expect(JSON.stringify(discover)).not.toContain('directoryRead');
 
     const tools = (await client.listTools()).tools;
-    expect(tools.map((tool) => tool.name)).toEqual(TOOL_SPECS.map((spec) => spec.name));
+    expect(tools.map((tool) => tool.name)).toEqual([...TOOL_SPECS, ...AUTOMATION_TOOL_SPECS].map((spec) => spec.name));
     expect(await protocolErrorCode(client.request({ method: 'resources/directory/read', params: { uri: skillUri } } as never, z.unknown()))).toBe(-32601);
     await client.close();
   });
@@ -246,7 +246,7 @@ describe('Skills over MCP extension over streamable HTTP', () => {
 
   it('keeps legacy clients working', async () => {
     const legacy = await connect('legacy');
-    expect((await legacy.listTools()).tools).toHaveLength(TOOL_SPECS.length);
+    expect((await legacy.listTools()).tools).toHaveLength([...TOOL_SPECS, ...AUTOMATION_TOOL_SPECS].length);
     const result = await legacy.callTool({ name: 'workspace_list', arguments: {} });
     expect(result.isError).toBe(false);
     expect((await legacy.listResources()).resources).toEqual([]);

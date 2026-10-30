@@ -35,7 +35,8 @@ function createReleaseFixture() {
   writeJson(root, 'apps/dashboard/package.json', dashboardManifest);
   writeJson(root, 'plugins/cloud-harness/.claude-plugin/plugin.json', { name: 'cloud-harness', version: '0.2.0' });
   writeJson(root, 'plugins/cloud-harness/.codex-plugin/plugin.json', { name: 'cloud-harness', version: '0.2.0' });
-  writeJson(root, '.claude-plugin/marketplace.json', { plugins: [{ name: 'cloud-harness', version: '0.2.0' }] });
+  writeJson(root, 'plugins/cloud-harness-workspaces/.claude-plugin/plugin.json', { name: 'cloud-harness-workspaces', version: '0.2.0' });
+  writeJson(root, '.claude-plugin/marketplace.json', { plugins: [{ name: 'cloud-harness', version: '0.2.0' }, { name: 'cloud-harness-workspaces', version: '0.2.0' }] });
   writeJson(root, 'package-lock.json', {
     name: rootManifest.name,
     version: rootManifest.version,
@@ -75,7 +76,8 @@ describe('release version update', () => {
     expect(readJson(root, 'package-lock.json')).toMatchObject({ version: '0.3.0-beta.2', packages: { '': { version: '0.3.0-beta.2' } } });
     expect(readJson(root, 'plugins/cloud-harness/.claude-plugin/plugin.json').version).toBe('0.3.0-beta.2');
     expect(readJson(root, 'plugins/cloud-harness/.codex-plugin/plugin.json').version).toBe('0.3.0-beta.2');
-    expect(readJson(root, '.claude-plugin/marketplace.json').plugins[0].version).toBe('0.3.0-beta.2');
+    expect(readJson(root, 'plugins/cloud-harness-workspaces/.claude-plugin/plugin.json').version).toBe('0.3.0-beta.2');
+    expect(readJson(root, '.claude-plugin/marketplace.json').plugins.map((plugin: { version: string }) => plugin.version)).toEqual(['0.3.0-beta.2', '0.3.0-beta.2']);
     expect(readFileSync(join(root, 'apps/api/src/mcp-server.ts'), 'utf8')).toContain("version: '0.3.0-beta.2'");
   });
 

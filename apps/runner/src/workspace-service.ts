@@ -17,7 +17,7 @@ import {
 } from './workspace-repositories.js';
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { chmod, chown, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, statfs, writeFile } from 'node:fs/promises';
-import { join, relative, resolve, sep } from 'node:path';
+import { join, posix, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
   BROKERED_ONLY_PROXY_OPERATIONS,
@@ -88,6 +88,7 @@ import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { ToolkitCacheManager } from './toolkit-cache-manager.js';
 import { ToolkitService } from './toolkit-service.js';
+import { assertKitLockSatisfied, planKitLockToolkits } from './kit-lock-planner.js';
 import { resolveWorkspaceSkills, type SkillCandidate } from './skill-resolver.js';
 import { NetworkProfileManager } from './network-profile-manager.js';
 import { SecretSnapshotRedactor } from './output-redactor.js';
@@ -103,7 +104,7 @@ import {
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
 import { AgentTraceStore, executeAgentTraceOperation } from './agent-trace-store.js';
-import { AgentTraceRecorder, type AgentActionTraceSink } from './agent-trace-recorder.js';
+import { AgentTraceRecorder, type AgentActionTraceSink, type AgentApprovalTraceSink } from './agent-trace-recorder.js';
 import type { CodingActionBroker } from './agent-governance/action-broker.js';
 import { LockfileInstallExecutor, type InstallResult } from './agent-governance/install-executor.js';
 import { CODING_GIT_ARGS, CODING_GIT_ENV, CODING_GIT_SUBCOMMANDS, isCommitSha, parseTransferInspection, type PushVerifier } from './agent-governance/coding-git.js';
@@ -219,9 +220,10 @@ export function builtinSkillsMountArgs(builtinSkillsRoot: string | undefined): s
  * whereas the helper resolves the scoped path inside its own mount namespace.
  */
 export function gitTransferVolumes(mode: 'fetch' | 'import' | 'stage-push' | 'inspect' | 'push', workspacePath: string, transferName: string): string[] {
-  const transfer = ['--volume', `${join(workspacePath, transferName)}:/job/${transferName}:${mode === 'import' || mode === 'inspect' ? 'ro' : 'rw'}`];
+  // Docker bind sources are Linux host paths, so they are joined with `/` whatever the platform.
+  const transfer = ['--volume', `${posix.join(workspacePath, transferName)}:/job/${transferName}:${mode === 'import' || mode === 'inspect' ? 'ro' : 'rw'}`];
   if (mode === 'fetch' || mode === 'inspect' || mode === 'push') return transfer;
-  return ['--volume', `${join(workspacePath, 'repo')}:/job/repo:${mode === 'import' ? 'rw' : 'ro'}`, ...transfer];
+  return ['--volume', `${posix.join(workspacePath, 'repo')}:/job/repo:${mode === 'import' ? 'rw' : 'ro'}`, ...transfer];
 }
 
 /**
@@ -500,7 +502,7 @@ export class WorkspaceService {
   private readonly traceStore: AgentTraceStore | undefined;
   private readonly tracePurger: AgentTraceStore;
   /** Where brokered coding actions write their spans; absent when agent traces are disabled. */
-  readonly actionTraces: AgentActionTraceSink | undefined;
+  readonly actionTraces: (AgentActionTraceSink & AgentApprovalTraceSink) | undefined;
   /** The coding action broker, attached only when coding automations are enabled. */
   private codingBroker: CodingActionBroker | undefined;
   private readonly metadata?: MetadataStore | undefined;
@@ -1468,7 +1470,16 @@ export class WorkspaceService {
   }
 
   async open(ownerId: string, input: Record<string, unknown>): Promise<RunnerResponse> {
-    const parsed = TOOL_SCHEMA_BY_NAME.workspace_open.parse(input);
+    const request = TOOL_SCHEMA_BY_NAME.workspace_open.parse(input);
+    // Lock-derived kits join the explicit toolkits before fingerprinting, so a replay with a different
+    // lock is a different request and every later step sees one toolkit list.
+    const kitLockPlan = planKitLockToolkits(request.kitLocks, {
+      enabled: this.config.enableKitLockInstall,
+      explicitToolkits: request.toolkits
+    });
+    const parsed = kitLockPlan.toolkits.length > 0
+      ? { ...request, toolkits: [...request.toolkits, ...kitLockPlan.toolkits] }
+      : request;
     const requestFingerprint = computeWorkspaceOpenFingerprint(parsed);
     const prior = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
     if (prior) {
@@ -1558,6 +1569,7 @@ export class WorkspaceService {
         }
       }
       const { lockItems, bundlePaths } = await this.toolkitService.resolveToolkits(ownerId, parsed.toolkits);
+      assertKitLockSatisfied(kitLockPlan.expectations, bundlePaths);
       const ownerBundles = bundlePaths.filter(b => b.scope === 'owner');
       const workspaceBundles = bundlePaths.filter(b => b.scope === 'workspace');
 
@@ -5254,6 +5266,22 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           (validated.description as string) ?? '',
           (validated.targetUrl as string) ?? ''
         ]; break;
+        case 'check_run_create': args = [
+          validated.sha as string,
+          validated.name as string,
+          validated.status as string,
+          (validated.conclusion as string) ?? '',
+          (validated.externalId as string) ?? '',
+          (validated.title as string) ?? '',
+          (validated.summary as string) ?? ''
+        ]; break;
+        case 'check_run_update': args = [
+          String(validated.checkRunId),
+          (validated.status as string) ?? '',
+          (validated.conclusion as string) ?? '',
+          (validated.title as string) ?? '',
+          (validated.summary as string) ?? ''
+        ]; break;
         case 'workflow_dispatch': args = [
           String(validated.workflow),
           validated.ref as string,
@@ -5303,7 +5331,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         if (typeof validated.state === 'string') details.state = validated.state;
         if (typeof validated.idempotencyKey === 'string') details.idempotencyKey = validated.idempotencyKey;
         if (typeof validated.name === 'string' && action === 'label_create') details.labelName = validated.name;
-        if (typeof validated.sha === 'string' && action === 'commit_status_create') details.sha = validated.sha;
+        if (typeof validated.sha === 'string' && (action === 'commit_status_create' || action === 'check_run_create')) details.sha = validated.sha;
+        if (typeof validated.checkRunId === 'number') details.checkRunId = validated.checkRunId;
+        if (typeof validated.conclusion === 'string') details.conclusion = validated.conclusion;
         if (typeof validated.context === 'string') details.statusContext = validated.context;
         if (typeof validated.runId === 'number') details.runId = validated.runId;
         if (validated.workflow !== undefined) details.workflow = String(validated.workflow);
@@ -6487,7 +6517,7 @@ const GITHUB_CHECKOUT_FREE_ACTIONS: ReadonlySet<string> = new Set(['pr_merge', '
 const GITHUB_IDEMPOTENT_ACTIONS: ReadonlySet<string> = new Set([
   'pr_comment', 'issue_comment', 'issue_labels_add', 'issue_publish',
   'pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_reviewers_request', 'pr_merge', 'pr_auto_merge_enable',
-  'commit_status_create', 'workflow_dispatch', 'workflow_run_rerun_failed'
+  'commit_status_create', 'check_run_create', 'workflow_dispatch', 'workflow_run_rerun_failed'
 ]);
 
 /** The capability noun each non-contents scope reports in `requiredCapability`, such as `repository.statusesWrite`. */

@@ -115,6 +115,7 @@ export default defineConfig({
           { text: 'ChatGPT', link: '/ai-tools/chatgpt' },
           { text: 'Claude Desktop', link: '/ai-tools/claude' },
           { text: 'Claude Code', link: '/ai-tools/claude-code' },
+          { text: 'Claude Code Plugin', link: '/ai-tools/claude-directory-plugin' },
           { text: 'Cursor', link: '/ai-tools/cursor' },
           { text: 'Codex', link: '/ai-tools/codex' },
           { text: 'Gemini CLI', link: '/ai-tools/gemini' },

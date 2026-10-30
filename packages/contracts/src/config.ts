@@ -182,6 +182,17 @@ export const ApiConfigSchema = z.object({
   apiKeyGatewayAccessAudience: z.string().min(1).max(512).optional(),
   apiKeyGatewayServiceSubject: z.string().regex(/^cf-service:[A-Za-z0-9_-]+$/).max(512).optional(),
   apiKeyGatewayPublicUrl: httpsUrl.optional(),
+  /**
+   * agentkit.best sign-in: `/mcp` requests whose Host is the resource's host are verified as
+   * agentkit.best access tokens instead of the instance's own lane. Only listed subjects pass.
+   */
+  agentkitAuthEnabled: enabled,
+  agentkitAuthIssuer: httpsUrl.default('https://agentkit.best'),
+  agentkitAuthResource: httpsUrl.refine((value) => {
+    const url = new URL(value);
+    return url.pathname === '/mcp' && !url.port && !url.search && !url.hash && !url.username && !url.password;
+  }, 'agentkit.best resource must be an https origin followed by /mcp').optional(),
+  agentkitAuthSubjects: z.array(z.string().min(1).max(512)).max(32).default([]),
   runnerUrl: z.url(),
   runnerToken: token,
   publicHosts: z.array(z.string().min(1)).min(1),
@@ -223,6 +234,24 @@ export const ApiConfigSchema = z.object({
   const deweeValues = [config.deweeGatewayUrl, config.deweeGatewayToken, config.deweeWebchatSecret];
   if (deweeValues.some((value) => value !== undefined) && deweeValues.some((value) => value === undefined)) {
     context.addIssue({ code: 'custom', path: ['deweeGatewayUrl'], message: 'Dewee gateway URL, gateway token and webchat secret must all be set or all be unset' });
+  }
+  if (config.agentkitAuthEnabled) {
+    if (!config.agentkitAuthResource) {
+      context.addIssue({ code: 'custom', path: ['agentkitAuthResource'], message: 'agentkit.best resource is required when agentkit.best sign-in is enabled' });
+    } else {
+      const resourceHost = new URL(config.agentkitAuthResource).hostname.toLowerCase();
+      if (!config.publicHosts.some((host) => host.toLowerCase() === resourceHost)) {
+        context.addIssue({ code: 'custom', path: ['agentkitAuthResource'], message: 'agentkit.best resource host must be listed in the public hosts' });
+      }
+      if (config.apiKeyGatewayPublicUrl && new URL(config.apiKeyGatewayPublicUrl).hostname.toLowerCase() === resourceHost) {
+        context.addIssue({ code: 'custom', path: ['agentkitAuthResource'], message: 'agentkit.best resource host must differ from the API key gateway host' });
+      }
+    }
+    if (config.agentkitAuthSubjects.length === 0) {
+      context.addIssue({ code: 'custom', path: ['agentkitAuthSubjects'], message: 'at least one agentkit.best subject is required when agentkit.best sign-in is enabled' });
+    }
+  } else if (config.agentkitAuthResource !== undefined || config.agentkitAuthSubjects.length > 0) {
+    context.addIssue({ code: 'custom', path: ['agentkitAuthEnabled'], message: 'agentkit.best settings require agentkit.best sign-in to be enabled' });
   }
   const mode = config.authMode ?? 'owner-bearer';
   const accessValues = [config.accessIssuer, config.accessAudience, config.accessJwksUrl];
@@ -367,6 +396,9 @@ export const RunnerConfigSchema = z.object({
   agentkitRegistryCredentialSecret: SecretNameSchema.default('AGENTKIT_REGISTRY_TOKEN'),
   agentkitRegistryKeyId: z.string().min(1).max(120).optional(),
   agentkitRegistryPublicKey: z.string().min(1).max(8_192).optional(),
+  // Lets `workspace_open` expand `kitLocks` into pinned `agentkit` toolkit selections. Off until an
+  // operator opts in, so a lockfile never widens what an instance installs by default.
+  enableKitLockInstall: enabled.default(false),
   provisioningNetwork: z.string().min(1).default('cloud-harness-mcp_provisioning'),
   secretKeyring: SecretKeyringConfigSchema.optional(),
   legacyPrincipalMapping: z.object({
@@ -427,6 +459,14 @@ export const RunnerConfigSchema = z.object({
   agentCodingEnabled: enabled,
   /** Admits the lockfile-only package install executor for coding runs. Off by default; policy still decides. */
   agentCodingPackageInstallEnabled: enabled,
+  /**
+   * Lets a coding workflow wait for an owner decision when a runner step needs approval. Off by default:
+   * such a step then fails as APPROVALS_DISABLED, and workflows already waiting are failed by the sweeper.
+   * It has no effect while AGENT_CODING_ENABLED is off, so the coding kill switch never needs it changed.
+   */
+  agentApprovalsEnabled: enabled,
+  /** Longest time a coding workflow waits for a decision; the policy's approval TTL and the workspace lease can only shorten it. */
+  agentApprovalTtlMinutes: positiveBoundedInteger(10_080, 60),
   /** Records the notification inbox and dispatches its channels. Off by default; the schema is created either way. */
   notificationsEnabled: enabled
 }).superRefine((config, context) => {

@@ -800,6 +800,7 @@ td details.row-edit pre { max-height: 12rem; max-width: 36rem; font-size: var(--
 .inbox-row th small { display: block; margin-block-start: var(--space-1); color: var(--ink-muted); font-weight: 400; }
 .inbox-row.unread th { font-weight: 600; }
 .inbox-unread { font-size: var(--text-11); text-transform: uppercase; letter-spacing: .04em; color: var(--ink-muted); }
+.inbox-links { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-1) 0 0; padding: 0; list-style: none; font-weight: 400; }
 .inbox-deliveries { display: flex; flex-wrap: wrap; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
 .inbox-preferences td { text-align: center; }
 .package-binding > .row-actions { justify-content: flex-start; margin-block: var(--space-3); }
@@ -1366,6 +1367,8 @@ dialog .stack-form { margin-block: 0; max-width: none; }
 /* Rule form sections: a ruled group per clause (when, then, limits), so the long form reads in three steps. */
 .automation-fieldset { min-width: 0; margin: var(--space-2) 0 0; padding: var(--space-3) 0 0; border: 0; border-block-start: 1px solid var(--line); display: grid; gap: var(--space-2); }
 .automation-fieldset legend { padding: 0; color: var(--ink); font-size: var(--text-13); font-weight: 600; }
+.automation-fieldset[hidden] { display: none; }
+.automation-match { display: grid; gap: var(--space-2); }
 .automation-fieldset label:not(.checkbox-label) { display: grid; gap: var(--space-1); }
 .automation-fieldset .field-help, .stack-form .field-help { margin: 0; color: var(--ink-muted); font-size: var(--text-12); }
 .automation-fieldset textarea { min-height: 8rem; }

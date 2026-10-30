@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "cloud-harness-workspaces",
+  "displayName": "Cloud Harness Workspaces",
+  "version": "0.66.0-beta.45",
+  "description": "Work in authorized remote coding workspaces on your own self-hosted Cloud Harness MCP endpoint, with read-first inspection, bounded execution, and explicit cleanup.",
+  "author": {
+    "name": "Best Agent Kits",
+    "url": "https://github.com/bestagentkits"
+  },
+  "homepage": "https://cloud-harness-mcp.pages.dev",
+  "repository": "https://github.com/bestagentkits/cloud-harness-mcp",
+  "license": "MIT",
+  "keywords": [
+    "cloud-harness",
+    "self-hosted",
+    "remote-coding",
+    "developer-tools"
+  ],
+  "icon": "./assets/icon.png",
+  "documentationUrl": "https://docs.harness.agentkit.best/ai-tools/claude-directory-plugin",
+  "supportUrl": "https://cloud-harness-mcp.pages.dev/support.html",
+  "privacyPolicyUrl": "https://cloud-harness-mcp.pages.dev/privacy.html",
+  "termsOfServiceUrl": "https://cloud-harness-mcp.pages.dev/terms.html",
+  "userConfig": {
+    "mcpUrl": {
+      "type": "string",
+      "title": "Cloud Harness MCP URL",
+      "description": "HTTPS URL of the Cloud Harness MCP endpoint you operate, such as https://harness.example.com/mcp. Sign-in happens through the endpoint's OAuth flow; the plugin stores no credential.",
+      "required": true
+    }
+  }
+}

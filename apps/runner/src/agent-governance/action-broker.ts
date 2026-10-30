@@ -24,18 +24,10 @@ import { traceInputDigest } from '../agent-trace-recorder.js';
 import { CodingActionStore, type CodingActionRecord } from './action-store.js';
 import type { AgentPolicyService } from './policy-service.js';
 import { AGENT_GOVERNANCE_PORTS_VERSION, type ActionBroker } from './ports.js';
+import { PACKAGE_MANIFESTS } from './sensitive-paths.js';
 
 /** Token shape the policy command scope uses; anything else is shell syntax the gate cannot analyze. */
 const PLAIN_COMMAND = /^[A-Za-z0-9._:@/=+-]+(?: [A-Za-z0-9._:@/=+-]+)*$/u;
-
-/**
- * Dependency manifests and lockfiles. Changing one changes what an install would fetch, so an edit that
- * touches one is a `package_install` action, which the default policy denies.
- */
-const PACKAGE_MANIFESTS = new Set([
-  'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'pnpm-workspace.yaml',
-  '.npmrc', '.yarnrc', '.yarnrc.yml', 'bun.lock', 'bun.lockb'
-]);
 
 const EDIT_OPERATIONS = new Set<AgentProxyOperation>(['files_write', 'files_apply_patch', 'files_move', 'files_mkdir', 'files_delete']);
 const BROKERED_ONLY = new Set<AgentProxyOperation>(BROKERED_ONLY_PROXY_OPERATIONS);
@@ -57,6 +49,8 @@ export type CodingBinding = {
   agentId: string | null;
   agentGeneration: number | null;
   startedAt: number;
+  /** Time the workflow spent waiting for an owner decision; it does not count against the run's time budget. */
+  pausedMs: number;
   pinned: { globalRevisionId: string | null; projectRevisionId: string | null } | null;
   usage: CodingUsage | null;
 };
@@ -64,7 +58,7 @@ export type CodingBinding = {
 type BindingRow = {
   id: string; owner_id: string; rule_snapshot_json: string; state: string; workspace_id: string | null; project_id: string;
   workspace_generation: number | null; agent_id: string | null; agent_generation: number | null; coding_started_at: number | null;
-  created_at: number; policy_revision_json: string | null; usage_json: string | null;
+  created_at: number; policy_revision_json: string | null; usage_json: string | null; paused_ms: number | null;
 };
 
 export type CodingWorkspaceFacts = {
@@ -111,6 +105,11 @@ export type BrokeredStep = {
   agent?: { agentId: string; generation: number; requestId: string } | undefined;
   /** Aborts an advisor call the gate makes for this step. */
   signal?: AbortSignal | undefined;
+  /**
+   * For a runner step only: the id of an owner approval covering exactly this input fingerprint, or null.
+   * It lifts a REQUIRE_APPROVAL decision to a dispatchable one; it never lifts a DENY.
+   */
+  approvedFor?: ((inputFingerprint: string) => string | null) | undefined;
 };
 
 export type BrokeredAdmission = {
@@ -202,7 +201,7 @@ export class CodingActionBroker implements ActionBroker {
   /** Coding runs of the principal that were admitted and still hold, or are acquiring, a workspace. */
   activeCodingRuns(principalId: string): number {
     const row = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE owner_id = ? AND project_id IS NOT NULL
-      AND state IN ('STARTING', 'RUNNING')`).get(principalId) as { count: number };
+      AND state IN ('STARTING', 'RUNNING', 'WAITING_FOR_HUMAN')`).get(principalId) as { count: number };
     return row.count;
   }
 
@@ -330,8 +329,14 @@ export class CodingActionBroker implements ActionBroker {
       return { record: this.actions.get(recorded.record.actionId) ?? recorded.record, replayed: recorded.replayed, decision: null, allowed: false, refusal: null };
     }
     const decision = await this.decide(step.binding, descriptor, step.usage ?? step.binding.usage, step.signal);
-    const allowed = decision.decision === 'ALLOW';
-    const recorded = this.actions.record({ ...base, decision, state: allowed ? 'INTENT' : 'REJECTED' });
+    // An owner approval lifts only REQUIRE_APPROVAL, only for a runner step, and only for the exact input
+    // it was granted for; the receipt keeps the gate's decision and names the approval.
+    const approvalId = decision.decision === 'REQUIRE_APPROVAL' && step.origin === 'runner' && step.approvedFor
+      ? step.approvedFor(decision.inputFingerprint) : null;
+    const allowed = decision.decision === 'ALLOW' || approvalId !== null;
+    const recorded = this.actions.record({
+      ...base, decision, state: allowed ? 'INTENT' : 'REJECTED', ...(approvalId !== null ? { outcome: { approvalId } } : {})
+    });
     const stored = recorded.record.inputFingerprint;
     if (recorded.replayed && stored !== null && stored !== decision.inputFingerprint) {
       // The key was recorded for different input: never let one receipt stand for two actions.
@@ -472,7 +477,7 @@ export class CodingActionBroker implements ActionBroker {
   private context(binding: CodingBinding, usage: CodingUsage | null): GateContext {
     // Only runs admitted before this one count, so the run admitted first keeps its slot at every action.
     const others = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE owner_id = ? AND id != ?
-      AND project_id IS NOT NULL AND state IN ('STARTING', 'RUNNING')
+      AND project_id IS NOT NULL AND state IN ('STARTING', 'RUNNING', 'WAITING_FOR_HUMAN')
       AND (COALESCE(coding_started_at, created_at) < ? OR (COALESCE(coding_started_at, created_at) = ? AND id < ?))`)
       .get(binding.principalId, binding.workflowId, binding.startedAt, binding.startedAt, binding.workflowId) as { count: number };
     const current = binding.workspaceId === null ? null : this.workspaces.generation(binding.workspaceId);
@@ -480,7 +485,7 @@ export class CodingActionBroker implements ActionBroker {
     return {
       usage: {
         ...(usage ? { costMicros: usage.costMicros, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } : {}),
-        elapsedSeconds: Math.max(0, Math.floor((this.now() - binding.startedAt) / 1_000)),
+        elapsedSeconds: Math.max(0, Math.floor((this.now() - binding.startedAt - binding.pausedMs) / 1_000)),
         concurrentRuns: others.count
       },
       ...(binding.pinned ? { pinned: binding.pinned } : {}),
@@ -495,6 +500,7 @@ export class CodingActionBroker implements ActionBroker {
     const agentId = record.agentId ?? binding.agentId;
     const generation = record.agentGeneration ?? binding.agentGeneration;
     if (!this.traces || agentId === null || generation === null) return;
+    const consult = this.actions.advisorConsult(record.actionId);
     const placed = this.traces.action({ agentId, generation }, {
       actionId: record.actionId, step: record.step, actionClass: record.descriptor.actionClass, decision: record.decision,
       reasonCode: record.reasonCode, state: record.state, requestId,
@@ -502,6 +508,9 @@ export class CodingActionBroker implements ActionBroker {
       ...(record.outcome.commitSha ? { commitSha: record.outcome.commitSha } : {}),
       ...(record.outcome.prNumber ? { prNumber: record.outcome.prNumber } : {}),
       inputDigest: traceInputDigest(record.descriptor),
+      ...(consult ? {
+        advisor: { decisionId: consult.decisionId, effect: consult.effect, risk: consult.risk, confidence: consult.confidence, fallbackReason: consult.fallbackReason }
+      } : {}),
       startedAt, endedAt
     });
     if (placed) this.actions.attachTrace(record.actionId, placed.traceId, placed.spanId);
@@ -527,7 +536,7 @@ export class CodingActionBroker implements ActionBroker {
     return {
       workflowId: row.id, principalId: row.owner_id, repository, projectId: row.project_id, coding: coding.data, state: row.state,
       workspaceId: row.workspace_id, workspaceGeneration: row.workspace_generation, agentId: row.agent_id, agentGeneration: row.agent_generation,
-      startedAt: row.coding_started_at ?? row.created_at, pinned, usage
+      startedAt: row.coding_started_at ?? row.created_at, pausedMs: row.paused_ms ?? 0, pinned, usage
     };
   }
 }

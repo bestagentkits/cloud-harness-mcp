@@ -48,6 +48,11 @@ describe('model provider HTTP policy', () => {
     expect(isUnsafeProviderAddress('2606:4700::1111')).toBe(false);
   });
 
+  it('refuses only the special-purpose /24s inside 192.0.0.0/16 and 198.51.0.0/16', () => {
+    for (const address of ['192.0.0.1', '192.0.2.1', '198.51.100.1']) expect(isUnsafeProviderAddress(address), address).toBe(true);
+    for (const address of ['192.0.78.9', '192.0.32.10', '198.51.0.1']) expect(isUnsafeProviderAddress(address), address).toBe(false);
+  });
+
   it('refuses IPv4-compatible, SIIT and Teredo prefixes and malformed IPv6, matching the gateway', () => {
     for (const address of ['::', '::a00:1', '::808:808', '::ffff:0:a00:1', '::ffff:0:808:808', '2001:0:4136:e378::1', '0:0:0:0:0:ffff:7f00:1', '1:2:3:4:5:6:7:8:9']) {
       expect(isUnsafeProviderAddress(address)).toBe(true);

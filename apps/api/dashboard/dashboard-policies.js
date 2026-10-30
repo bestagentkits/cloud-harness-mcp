@@ -38,7 +38,8 @@ export const POLICY_ADVISOR_DEFAULTS = Object.freeze({ enabled: false, riskThres
 export const POLICY_ADVISOR_FALLBACK_LABELS = Object.freeze({ require_approval: 'Require approval', deny: 'Deny' });
 export const POLICY_ADVISOR_REASON_LABELS = Object.freeze({
   disabled: 'not enabled', unconfigured: 'no TypeSafe key', timeout: 'timed out', rate_limited: 'rate limited',
-  invalid_answer: 'invalid answer', low_confidence: 'low confidence', redaction_failed: 'redaction failed', unavailable: 'unavailable'
+  invalid_answer: 'invalid answer', low_confidence: 'low confidence', redaction_failed: 'redaction failed', unavailable: 'unavailable',
+  sensitive_paths: 'CI or dependency files are never sent to Jev'
 });
 export const POLICY_PLATFORM_EFFECTS = Object.freeze(['credential_access', 'docker_access', 'network_escalation', 'outside_workspace', 'privilege_escalation']);
 const DECISION_STATUS = Object.freeze({ ALLOW: 'active', REQUIRE_APPROVAL: 'pending', DENY: 'failed' });

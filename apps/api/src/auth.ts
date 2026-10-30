@@ -4,6 +4,7 @@ import type { AuthInfo } from '@modelcontextprotocol/server';
 import { RunnerPrincipalSelectorSchema, type ApiConfig, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { AccessJwtVerificationError, CloudflareAccessJwtVerifier, type AccessJwtVerifierOptions } from './access-jwt-verifier.js';
 import { renderAccessDiagnostic, type AccessDiagnosticReason } from './access-diagnostic.js';
+import { AGENTKIT_WORKSPACE_SCOPE, AgentkitJwtVerifier, AgentkitTokenError, type AgentkitJwtVerifierOptions } from './agentkit-jwt-verifier.js';
 import { apiLogger } from './logging.js';
 
 type ApiKeyAuthenticator = {
@@ -187,6 +188,109 @@ export function bearerAuth(config: ApiConfig, verifierOptions: VerifierOverrides
       next();
     } catch (error) {
       rejectAssertion(request, response, verificationReason(error));
+    } finally {
+      activeVerifications -= 1;
+    }
+  };
+}
+
+export type AgentkitVerifierOverrides = Omit<Partial<AgentkitJwtVerifierOptions>, 'issuer' | 'resource'>;
+
+/** The hostname that carries the agentkit.best lane, or undefined when the lane is off. */
+export function agentkitResourceHost(config: ApiConfig): string | undefined {
+  return config.agentkitAuthEnabled && config.agentkitAuthResource
+    ? new URL(config.agentkitAuthResource).hostname.toLowerCase()
+    : undefined;
+}
+
+export function isAgentkitRequest(config: ApiConfig, request: Request): boolean {
+  const host = agentkitResourceHost(config);
+  const rawHost = request.header('host');
+  if (!host || !rawHost) return false;
+  return (rawHost.startsWith('[') ? rawHost.slice(1, rawHost.indexOf(']')) : rawHost.split(':', 1)[0]!).toLowerCase() === host;
+}
+
+function protectedResourceMetadataUrl(config: ApiConfig): string {
+  const resource = new URL(config.agentkitAuthResource!);
+  return `${resource.origin}/.well-known/oauth-protected-resource${resource.pathname}`;
+}
+
+function rejectAgentkit(config: ApiConfig, response: Response, status: 401 | 403, error: 'invalid_token' | 'insufficient_scope' | 'access_denied'): void {
+  const challenge = [`Bearer resource_metadata="${protectedResourceMetadataUrl(config)}"`];
+  if (error !== 'access_denied') challenge.push(`error="${error}"`);
+  if (error === 'insufficient_scope') challenge.push(`scope="${AGENTKIT_WORKSPACE_SCOPE}"`);
+  response.setHeader('WWW-Authenticate', challenge.join(', '));
+  response.status(status).json({ error: status === 401 ? 'authentication_failed' : error });
+}
+
+/**
+ * RFC 9728 protected resource metadata for the agentkit.best lane. MCP clients read it to find
+ * agentkit.best as the authorization server and the scope to request.
+ */
+export function agentkitProtectedResourceMetadata(config: ApiConfig) {
+  return (request: Request, response: Response, next: NextFunction): void => {
+    if (!isAgentkitRequest(config, request)) {
+      next();
+      return;
+    }
+    response.json({
+      resource: config.agentkitAuthResource,
+      authorization_servers: [config.agentkitAuthIssuer],
+      scopes_supported: [AGENTKIT_WORKSPACE_SCOPE],
+      bearer_methods_supported: ['header'],
+      resource_name: 'Cloud Harness'
+    });
+  };
+}
+
+/**
+ * The agentkit.best sign-in lane. A verified token whose subject the operator did not list is
+ * refused: agentkit.best lets any account sign in, and this instance stays single-owner.
+ */
+export function agentkitBearerAuth(config: ApiConfig, verifierOptions: AgentkitVerifierOverrides = {}) {
+  const verifier = config.agentkitAuthEnabled && config.agentkitAuthResource
+    ? new AgentkitJwtVerifier({ issuer: config.agentkitAuthIssuer, resource: config.agentkitAuthResource, ...verifierOptions })
+    : undefined;
+  const subjects = new Set(config.agentkitAuthSubjects);
+  let activeVerifications = 0;
+  return async (request: AuthenticatedRequest, response: Response, next: NextFunction): Promise<void> => {
+    if (!verifier) {
+      response.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const authorization = request.header('authorization') ?? '';
+    const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+    if (!token) {
+      rejectAgentkit(config, response, 401, 'invalid_token');
+      return;
+    }
+    if (activeVerifications >= 32) {
+      response.status(429).json({ error: 'too_many_requests' });
+      return;
+    }
+    activeVerifications += 1;
+    try {
+      const verified = await verifier.verify(token);
+      if (!subjects.has(verified.subject)) {
+        apiLogger.warn({ reason: 'subject_not_allowed' }, 'agentkit.best token rejected');
+        rejectAgentkit(config, response, 403, 'access_denied');
+        return;
+      }
+      const externalPrincipal = { issuer: config.agentkitAuthIssuer, subject: verified.subject };
+      const principal: RunnerPrincipalSelector = { kind: 'external', ...externalPrincipal };
+      request.auth = {
+        token: 'agentkit-best',
+        clientId: `agentkit:${verified.subject}`,
+        scopes,
+        expiresAt: verified.expiresAt,
+        extra: { principal, externalPrincipal }
+      };
+      next();
+    } catch (error) {
+      const reason = error instanceof AgentkitTokenError ? error.reason : 'unexpected_verification_error';
+      apiLogger.warn({ reason }, 'agentkit.best token rejected');
+      if (reason === 'insufficient_scope') rejectAgentkit(config, response, 403, 'insufficient_scope');
+      else rejectAgentkit(config, response, 401, 'invalid_token');
     } finally {
       activeVerifications -= 1;
     }

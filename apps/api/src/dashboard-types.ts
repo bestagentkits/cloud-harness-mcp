@@ -1,6 +1,6 @@
 import type { Request } from 'express';
 import type { AuthInfo } from '@modelcontextprotocol/server';
-import type { AgentPoliciesRunnerRequest, AgentPoliciesRunnerResponse, NotificationsRunnerRequest, NotificationsRunnerResponse } from '@cloud-harness/contracts';
+import type { AgentApprovalsRunnerRequest, AgentApprovalsRunnerResponse, AgentPoliciesRunnerRequest, AgentPoliciesRunnerResponse, NotificationsRunnerRequest, NotificationsRunnerResponse } from '@cloud-harness/contracts';
 import type { ApiKeyManagementOperation, ApiKeyManagementResponse, AutomationsRunnerRequest, AutomationsRunnerResponse, InternalRunnerOperation, McpEventsRunnerRequest, McpEventsRunnerResponse, MetadataRunnerOperation, RunnerOperation, RunnerPrincipalSelector, RunnerResponse } from '@cloud-harness/contracts';
 
 export type DashboardRequest = Request & { auth?: AuthInfo };
@@ -33,4 +33,5 @@ export interface DashboardRunnerClient {
   callAutomations?(request: AutomationsRunnerRequest, signal?: AbortSignal): Promise<AutomationsRunnerResponse>;
   callAgentPolicies?(request: AgentPoliciesRunnerRequest, signal?: AbortSignal): Promise<AgentPoliciesRunnerResponse>;
   callNotifications?(request: NotificationsRunnerRequest, signal?: AbortSignal): Promise<NotificationsRunnerResponse>;
+  callAgentApprovals?(request: AgentApprovalsRunnerRequest, signal?: AbortSignal): Promise<AgentApprovalsRunnerResponse>;
 }

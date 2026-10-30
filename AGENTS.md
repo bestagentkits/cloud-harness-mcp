@@ -29,6 +29,7 @@ instead of copying behavior, defaults, command inventories, or configuration.
 | Operator dashboard UI (legacy shell) | [`docs/design-guidelines.md`](docs/design-guidelines.md) | `apps/api/dashboard/`, `apps/api/src/dashboard-router.ts`, `apps/api/src/dashboard-assets.ts`, `apps/api/test/dashboard-ui-contract.test.ts` |
 | Dashboard 2.0 (React app) | [`docs/adr/0005-dashboard-react-rewrite.md`](docs/adr/0005-dashboard-react-rewrite.md), [`docs/dashboard-parity-matrix.md`](docs/dashboard-parity-matrix.md), [`docs/design-guidelines.md`](docs/design-guidelines.md) | `apps/dashboard/`, `apps/api/src/dashboard-react-assets.ts` (manifest serving), `apps/api/src/dashboard-security.ts` (CSP), `apps/api/src/dashboard-router.ts` (BFF) |
 | Official user docs & guides | `docs-site/` | `docs-site/`, `scripts/build-docs-reference.mjs`, `npm run docs:build` |
+| Claude directory plugin | [`docs/claude-directory.md`](docs/claude-directory.md), [`docs/adr/0007-claude-directory-distribution.md`](docs/adr/0007-claude-directory-distribution.md) | `plugins/cloud-harness-workspaces/`, `packages/contracts/test/claude-directory-plugin.test.ts`, `apps/api/test/mcp-tool-annotations.test.ts`, `claude plugin validate --strict` |
 | Agent skill & MCP tool guidance | [`.agents/skills/cloudharness/SKILL.md`](.agents/skills/cloudharness/SKILL.md) | `.agents/skills/cloudharness/`, `plugins/cloud-harness/`, `packages/contracts/test/cloudharness-skill-contract.test.ts`, `npm run plugin:sync` |
 
 ## Safety-critical invariants
@@ -168,7 +169,9 @@ current:
      failure as a regression.
    - Compose or network-boundary changes: `npm run verify:compose` and
      `npm run verify`.
-   - Shell changes: run the syntax check owned by `.github/workflows/ci.yml`.
+   - Shell changes: run the syntax-check step owned by `.github/workflows/ci.yml`.
+     It parses each tracked `*.sh` and `bin/` script separately, because
+     `bash -n a.sh b.sh` would parse only `a.sh`.
    - Docker/executor changes: build with
      `docker compose --profile images build executor-image api runner`, then run
      `npm run test:docker` and `npm run test:e2e` when Docker and network access

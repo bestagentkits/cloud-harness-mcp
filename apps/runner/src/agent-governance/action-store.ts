@@ -144,6 +144,14 @@ export class CodingActionStore {
     return row ? recordOf(row) : undefined;
   }
 
+  /** The advisor consult stored with the action's gate decision; null when the gate did not consult it. */
+  advisorConsult(actionId: string): GateDecision['advisor'] | null {
+    const row = this.row(actionId);
+    if (!row?.decision_json) return null;
+    const advisor = (JSON.parse(row.decision_json) as Partial<GateDecision>).advisor;
+    return advisor?.consulted ? advisor : null;
+  }
+
   byKey(principalId: string, workflowId: string, idempotencyKey: string): CodingActionRecord | undefined {
     const row = this.database.prepare('SELECT * FROM coding_actions WHERE principal_id = ? AND workflow_id = ? AND idempotency_key = ?')
       .get(principalId, workflowId, idempotencyKey) as ActionRow | undefined;

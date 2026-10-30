@@ -24,7 +24,14 @@ jobs:
           node-version: 24.11.0
           cache: npm
       - run: npm ci
-      - run: bash -n worker/clone-helper.sh worker/task-runner.sh worker/shell-runner.sh worker/worker-runner.sh worker/gh-helper.sh deploy/scripts/bootstrap-vps.sh deploy/scripts/deploy-release.sh deploy/scripts/release-runtime.sh deploy/scripts/rollback-release.sh deploy/scripts/deploy-ssh-wrapper.sh deploy/scripts/upgrade-nginx-dashboard.sh deploy/scripts/setup-dependency-firewall.sh
+      # `bash -n a.sh b.sh` parses only a.sh (the rest become its arguments), so check each
+      # tracked script on its own; a new `*.sh` or `bin/` script is covered without editing
+      # this step. `shell: bash` adds pipefail, and the count guard fails an empty match.
+      - name: Syntax-check shell scripts
+        shell: bash
+        run: |
+          test "$(git ls-files '*.sh' 'bin/*' | wc -l)" -gt 0
+          git ls-files -z '*.sh' 'bin/*' | xargs -0 -n1 bash -n
       - run: npm run verify:compose
       - run: npm run verify
       # `verify` already built the API and the React Dashboard; the suites drive that build

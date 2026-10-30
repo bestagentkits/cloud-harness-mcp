@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentTracesListInputSchema, AgentTracesListResultSchema, AgentTraceSpansResultSchema, HarnessError, TraceDetailSchema } from '@cloud-harness/contracts';
 import { initializeAgentTraceSchema } from '../src/agent-trace-schema.js';
+import { initializeAutomationSchema } from '../src/automation-schema.js';
 import { AgentTraceStore, executeAgentTraceOperation, percentile, spanIdFor, traceIdFor } from '../src/agent-trace-store.js';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
 
@@ -39,13 +40,13 @@ const workspaceId = `ws_${'w'.repeat(24)}`;
 function addTrace(traces: AgentTraceStore, input: {
   principalId?: string; startedAt: number; endedAt?: number | null; profileId?: string; workspace?: string;
   modelCalls?: Array<{ durationMs: number | null; ttftMs: number | null }>; state?: 'COMPLETED' | 'FAILED' | 'RUNNING';
-  costMicros?: number | null;
+  costMicros?: number | null; workflowId?: string;
 }): string {
   const id = agentId();
   const traceId = traceIdFor(id, 1);
   traces.createTrace({
     traceId, principalId: input.principalId ?? 'principal-a', workspaceId: input.workspace ?? workspaceId, agentId: id, generation: 1,
-    runId: null, parentTraceId: null, workflowId: null, profileId: input.profileId ?? 'default', profileRevisionId: null,
+    runId: null, parentTraceId: null, workflowId: input.workflowId ?? null, profileId: input.profileId ?? 'default', profileRevisionId: null,
     startedAt: input.startedAt
   });
   let seq = 1;
@@ -297,6 +298,68 @@ describe('agent trace retention and quota', () => {
     expect(traces.findTrace(newest)).toBeDefined();
     expect(traces.findTrace(other)).toBeDefined();
     expect(list(traces, 'principal-a', { limit: 100 }).traces).toHaveLength(10);
+  });
+});
+
+describe('agent trace retention of unfinished workflows', () => {
+  function workflow(state: { database: StateStore['database'] }, id: string, workflowState: string): void {
+    state.database.prepare(`INSERT INTO automation_workflows(id, owner_id, rule_id, rule_generation, rule_snapshot_json, connection_id,
+        delivery_id, event_type, repository, resource_number, resource_url, resource_key, label, prompt, state, publish_state,
+        next_attempt_at, created_at, updated_at)
+      VALUES (?, 'principal-a', 'rule', 1, '{}', 'conn', ?, 'issues.labeled', 'o/r', 1, 'https://github.com/o/r/issues/1', 'o/r#1', 'l', 'p', ?, 'NONE', 0, 0, 0)`)
+      .run(id, `delivery-${id}`, workflowState);
+  }
+
+  it('evicts no trace on quota or retention while its workflow has not ended, and resumes once it ends', async () => {
+    const { state, traces } = setup({ retentionDays: 1, maxTracesPerPrincipal: 10 });
+    initializeAutomationSchema(state.database);
+    workflow(state, 'wf_waiting', 'WAITING_FOR_HUMAN');
+    workflow(state, 'wf_done', 'COMPLETED');
+    const now = Date.now();
+    const waiting = addTrace(traces, { startedAt: now - 3 * DAY, endedAt: now - 3 * DAY + 1, workflowId: 'wf_waiting' });
+    const done = addTrace(traces, { startedAt: now - 3 * DAY + 2, endedAt: now - 3 * DAY + 3, workflowId: 'wf_done' });
+    expect(await traces.purgeExpired(now)).toBe(1);
+    expect(traces.findTrace(done)).toBeUndefined();
+    expect(traces.findTrace(waiting)).toBeDefined();
+    // Held past its retention date, it stays readable to its owner.
+    expect(traces.get('principal-a', waiting, now).trace.traceId).toBe(waiting);
+    expect(list(traces, 'principal-a', { limit: 10 }, now).traces.map((trace) => trace.traceId)).toEqual([waiting]);
+    expect(traces.spans('principal-a', { traceId: waiting, limit: 1 }, now).traceId).toBe(waiting);
+
+    // The waiting trace is the principal's oldest, yet the quota evicts the next oldest finished one.
+    const ids = Array.from({ length: 10 }, (_, index) => addTrace(traces, { startedAt: now - 1_000 + index }));
+    expect(traces.findTrace(waiting)).toBeDefined();
+    expect(traces.findTrace(ids[0]!)).toBeUndefined();
+    expect(traces.findTrace(ids[1]!)).toBeDefined();
+
+    // Once the workflow ends, ordinary retention applies.
+    state.database.prepare("UPDATE automation_workflows SET state = 'COMPLETED' WHERE id = 'wf_waiting'").run();
+    expect(harnessCode(() => traces.get('principal-a', waiting, now))).toBe('TRACE_EXPIRED');
+    expect(await traces.purgeExpired(now)).toBe(1);
+    expect(traces.findTrace(waiting)).toBeUndefined();
+  });
+
+  it('stops holding a stuck workflow trace after the orphan grace', async () => {
+    const { state, traces } = setup({ retentionDays: 1 });
+    initializeAutomationSchema(state.database);
+    workflow(state, 'wf_stuck', 'WAITING_FOR_HUMAN');
+    const now = Date.now();
+    const stuck = addTrace(traces, { startedAt: now - 3 * DAY, endedAt: now - 3 * DAY, workflowId: 'wf_stuck' });
+    // Retention ended two days ago; the seven-day orphan grace runs out five days from now.
+    expect(await traces.purgeExpired(now + 5 * DAY - 1_000)).toBe(0);
+    expect(await traces.purgeExpired(now + 5 * DAY)).toBe(1);
+    expect(traces.findTrace(stuck)).toBeUndefined();
+  });
+
+  it('never shortens a retention it already holds', () => {
+    const { traces } = setup({ retentionDays: 1 });
+    const now = Date.now();
+    const traceId = addTrace(traces, { startedAt: now - 1_000, state: 'RUNNING' });
+    traces.extendRetention(traceId, now + 9 * DAY);
+    traces.extendRetention(traceId, now + 2 * DAY);
+    expect(traces.findTrace(traceId)?.expiresAt).toBe(now + 9 * DAY);
+    traces.markIncomplete(traceId, now, 'runner_restart');
+    expect(traces.findTrace(traceId)).toMatchObject({ state: 'INCOMPLETE', expiresAt: now + 9 * DAY });
   });
 });
 

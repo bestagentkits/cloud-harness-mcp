@@ -16,7 +16,7 @@ Cloud Harness MCP is intentionally a **private, single-owner remote coding harne
 - The Ingress Proxy is the only service bound to external loopback.
 - The API and Runner never publish host ports directly.
 - The API has no access to the Docker socket or host filesystem mounts.
-- **Webhook automations** (off unless `AUTOMATIONS_ENABLED`) add the one public route without a bearer or Access login, `/integrations/webhooks/github/<connectionId>`, because GitHub cannot sign in. Each delivery must carry a valid HMAC signature for that connection's secret, checked by the runner over the exact received bytes; failures all return the same `401`. A matching rule runs a read-only agent in a fresh no-network workspace, and webhook text reaches it only as fenced untrusted data. See [Automations](/dashboard/automations).
+- **Webhook automations** (off unless `AUTOMATIONS_ENABLED`) add the one public route without a bearer or Access login, `/integrations/webhooks/<provider>/<connectionId>`, because GitHub, Linear, Jira, and custom senders cannot sign in. Each delivery must carry a valid HMAC signature for that connection's secret, checked by the runner over the exact received bytes, and Linear, Jira, and custom deliveries must also be recent; failures all return the same `401`. The route only accepts deliveries: rule and run management is never reachable through it. A matching rule runs a read-only agent in a fresh no-network workspace on a repository the rule names, and webhook text reaches it only as fenced untrusted data. Linear and Jira credentials for posting comments stay sealed in the runner and never reach a workspace. See [Automations](/dashboard/automations).
 
 #### Public authentication: Cloudflare Access Managed OAuth
 
