@@ -166,6 +166,17 @@ export const ApiConfigSchema = z.object({
   apiKeyGatewayAccessAudience: z.string().min(1).max(512).optional(),
   apiKeyGatewayServiceSubject: z.string().regex(/^cf-service:[A-Za-z0-9_-]+$/).max(512).optional(),
   apiKeyGatewayPublicUrl: httpsUrl.optional(),
+  /**
+   * agentkit.best sign-in: `/mcp` requests whose Host is the resource's host are verified as
+   * agentkit.best access tokens instead of the instance's own lane. Only listed subjects pass.
+   */
+  agentkitAuthEnabled: enabled,
+  agentkitAuthIssuer: httpsUrl.default('https://agentkit.best'),
+  agentkitAuthResource: httpsUrl.refine((value) => {
+    const url = new URL(value);
+    return url.pathname === '/mcp' && !url.port && !url.search && !url.hash && !url.username && !url.password;
+  }, 'agentkit.best resource must be an https origin followed by /mcp').optional(),
+  agentkitAuthSubjects: z.array(z.string().min(1).max(512)).max(32).default([]),
   runnerUrl: z.url(),
   runnerToken: token,
   publicHosts: z.array(z.string().min(1)).min(1),
@@ -188,6 +199,24 @@ export const ApiConfigSchema = z.object({
     return (url.protocol === 'https:' || loopback) && url.pathname === '/dashboard/mcp-oauth/callback' && !url.search && !url.hash;
   }, 'redirect URL must be an https (or loopback http) URL ending in /dashboard/mcp-oauth/callback').optional()
 }).superRefine((config, context) => {
+  if (config.agentkitAuthEnabled) {
+    if (!config.agentkitAuthResource) {
+      context.addIssue({ code: 'custom', path: ['agentkitAuthResource'], message: 'agentkit.best resource is required when agentkit.best sign-in is enabled' });
+    } else {
+      const resourceHost = new URL(config.agentkitAuthResource).hostname.toLowerCase();
+      if (!config.publicHosts.some((host) => host.toLowerCase() === resourceHost)) {
+        context.addIssue({ code: 'custom', path: ['agentkitAuthResource'], message: 'agentkit.best resource host must be listed in the public hosts' });
+      }
+      if (config.apiKeyGatewayPublicUrl && new URL(config.apiKeyGatewayPublicUrl).hostname.toLowerCase() === resourceHost) {
+        context.addIssue({ code: 'custom', path: ['agentkitAuthResource'], message: 'agentkit.best resource host must differ from the API key gateway host' });
+      }
+    }
+    if (config.agentkitAuthSubjects.length === 0) {
+      context.addIssue({ code: 'custom', path: ['agentkitAuthSubjects'], message: 'at least one agentkit.best subject is required when agentkit.best sign-in is enabled' });
+    }
+  } else if (config.agentkitAuthResource !== undefined || config.agentkitAuthSubjects.length > 0) {
+    context.addIssue({ code: 'custom', path: ['agentkitAuthEnabled'], message: 'agentkit.best settings require agentkit.best sign-in to be enabled' });
+  }
   const mode = config.authMode ?? 'owner-bearer';
   const accessValues = [config.accessIssuer, config.accessAudience, config.accessJwksUrl];
   const apiKeyValues = [config.apiKeyGatewayAccessAudience, config.apiKeyGatewayServiceSubject, config.apiKeyGatewayPublicUrl];

@@ -131,6 +131,23 @@ or the credential is refused, and a Custom key can reach only an upstream URL
 already bound to that credential. A key cannot read, create, or rotate a
 provider key, activate a profile, or change a spend policy.
 
+The optional agentkit.best lane adds sign-in without changing the lanes above.
+The API selects it by Host: the host of `AGENTKIT_AUTH_RESOURCE` accepts only
+agentkit.best access tokens on `/mcp`, every other host keeps the instance
+lane, and the MCP gateway is not served on that host. The token is verified
+locally (ES256 `at+jwt`, exact issuer and audience, a lifetime of at most two
+minutes, the `cloud-harness:workspace` scope) against the issuer's JWKS through
+the same bounded key cache as the Access verifier. agentkit.best admits any
+signed-in account, so only the subjects in `AGENTKIT_AUTH_SUBJECTS` pass; each
+becomes its own `(https://agentkit.best, sub)` principal, never linked by email.
+Revoking the grant on agentkit.best stops refresh, so the last token lapses
+within about a minute; removing a subject from the list takes effect on the next
+API start. A listed agentkit.best account holds the same full MCP authority as
+any other principal. The executable owners are
+[`apps/api/src/agentkit-jwt-verifier.ts`](../apps/api/src/agentkit-jwt-verifier.ts)
+and [`apps/api/src/auth.ts`](../apps/api/src/auth.ts); the design is
+[ADR 0008](adr/0008-agentkit-best-identity-kits-and-vault.md).
+
 In owner-bearer mode, rotate `MCP_BEARER_TOKEN` after suspected disclosure and
 restart the API. In Access mode, revoke at Access/IdP and verify the edge no
 longer forwards an accepted assertion. Rotate `RUNNER_TOKEN` independently and

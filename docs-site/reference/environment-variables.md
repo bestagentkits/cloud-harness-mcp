@@ -27,6 +27,9 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `API_KEY_GATEWAY_ACCESS_AUDIENCE` | `—` | Optional | Optional configuration. |
 | `API_KEY_GATEWAY_SERVICE_SUBJECT` | `cf-service:base64url-cloudflare-service-token-client-id` | Optional | Optional configuration. |
 | `API_KEY_GATEWAY_PUBLIC_URL` | `https://api.harness.zuey.me/mcp` | Optional | Optional configuration. |
+| `AGENTKIT_AUTH_ENABLED` | `false` | Optional | Worker-only secrets CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET are configured with Wrangler, never here. Optional agentkit.best sign-in lane, in either AUTH_MODE. The resource host must be in API_PUBLIC_HOSTS and must not sit behind the Cloudflare Access application. Subjects are agentkit.best account IDs. |
+| `AGENTKIT_AUTH_RESOURCE` | `https://harness.agentkit.best/mcp` | Optional | Optional configuration. |
+| `AGENTKIT_AUTH_SUBJECTS` | `—` | Optional | Optional configuration. |
 | `AUTOMATIONS_ENABLED` | `false` | Optional | Optional webhook-triggered automations. Set the same value for the API (public ingress at /integrations/webhooks/{provider}/{connectionId}) and the runner (workflow admission). |
 | `AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS` | `2` | Optional | Instance-wide ceiling on automation workflows holding a workspace at once (runner). |
 | `AGENT_POLICIES_ENABLED` | `false` | Optional | Optional owner-authored agent execution policies (runner): Dashboard Settings > Agent policies, project policies and the gate simulation. Off by default; the Dashboard shows a notice while off. |

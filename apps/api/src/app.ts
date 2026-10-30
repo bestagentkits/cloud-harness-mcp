@@ -1,9 +1,12 @@
-import express, { type Express, type Request, type Response } from 'express';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { FetchLike } from '@modelcontextprotocol/client';
 import { WorkspaceIdSchema, type ApiConfig } from '@cloud-harness/contracts';
-import { accessAssertionAuth, apiKeyGatewayAuth, bearerAuth, type AuthenticatedRequest, type VerifierOverrides } from './auth.js';
+import {
+  accessAssertionAuth, agentkitBearerAuth, agentkitProtectedResourceMetadata, apiKeyGatewayAuth, bearerAuth, isAgentkitRequest,
+  type AgentkitVerifierOverrides, type AuthenticatedRequest, type VerifierOverrides
+} from './auth.js';
 import { createDashboardAssetsRouter } from './dashboard-assets.js';
 import { createDashboardRouter } from './dashboard-router.js';
 import { bindWorkspace, createCloudHarnessServerFactory, createWorkspaceBoundServerFactory } from './mcp-server.js';
@@ -34,6 +37,7 @@ export type ApiAppOverrides = {
   runnerClient?: RunnerClient;
   gatewayFetchImpl?: FetchLike;
   accessVerifier?: VerifierOverrides;
+  agentkitVerifier?: AgentkitVerifierOverrides;
   webhookSender?: WebhookSender;
 };
 
@@ -65,7 +69,20 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
     response.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'unavailable' });
   });
   const verifierOverrides = overrides.accessVerifier ?? {};
-  app.use('/mcp', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config, verifierOverrides), principalRequestLimits());
+  const instanceAuth = bearerAuth(config, verifierOverrides);
+  const agentkitAuth = agentkitBearerAuth(config, overrides.agentkitVerifier ?? {});
+  // Requests addressed to the agentkit.best resource host use only the agentkit.best lane; every
+  // other host keeps the instance's own lane, so enabling it never changes existing sign-in.
+  const mcpAuth = (request: AuthenticatedRequest, response: Response, next: NextFunction): void => {
+    if (isAgentkitRequest(config, request)) void agentkitAuth(request, response, next);
+    else void instanceAuth(request, response, next);
+  };
+  if (config.agentkitAuthEnabled) {
+    const metadata = [requestSecurity(config), preAuthRequestLimits(), agentkitProtectedResourceMetadata(config)];
+    app.get('/.well-known/oauth-protected-resource', ...metadata);
+    app.get('/.well-known/oauth-protected-resource/mcp', ...metadata);
+  }
+  app.use('/mcp', requestSecurity(config), preAuthRequestLimits(), mcpAuth, principalRequestLimits());
   app.use('/mcp', express.json({ limit: config.maxBodyBytes, strict: true }));
   app.all('/mcp', async (request: Request, response: Response) => {
     if (request.method === 'POST' && !request.is('application/json')) {
@@ -96,7 +113,12 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
   });
   // Express `app.use('/mcp', ...)` does not match `/mcp-gateway` (the next character
   // must be `/` or end), so the two chains cannot interfere.
-  app.use('/mcp-gateway', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config, verifierOverrides), principalRequestLimits());
+  // The agentkit.best resource is `/mcp` only; its host never reaches the gateway.
+  const gatewayAuth = (request: AuthenticatedRequest, response: Response, next: NextFunction): void => {
+    if (isAgentkitRequest(config, request)) response.status(404).json({ error: 'not_found' });
+    else void instanceAuth(request, response, next);
+  };
+  app.use('/mcp-gateway', requestSecurity(config), preAuthRequestLimits(), gatewayAuth, principalRequestLimits());
   app.use('/mcp-gateway', express.json({ limit: config.maxBodyBytes, strict: true }));
   app.all('/mcp-gateway', async (request: Request, response: Response) => {
     if (request.method === 'POST' && !request.is('application/json')) {

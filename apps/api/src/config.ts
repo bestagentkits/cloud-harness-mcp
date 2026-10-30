@@ -42,6 +42,10 @@ export function loadApiConfig(): ApiConfig {
     apiKeyGatewayAccessAudience: environment('API_KEY_GATEWAY_ACCESS_AUDIENCE'),
     apiKeyGatewayServiceSubject: environment('API_KEY_GATEWAY_SERVICE_SUBJECT'),
     apiKeyGatewayPublicUrl: environment('API_KEY_GATEWAY_PUBLIC_URL'),
-    automationsEnabled: environment('AUTOMATIONS_ENABLED')
+    automationsEnabled: environment('AUTOMATIONS_ENABLED'),
+    agentkitAuthEnabled: environment('AGENTKIT_AUTH_ENABLED'),
+    agentkitAuthIssuer: environment('AGENTKIT_AUTH_ISSUER'),
+    agentkitAuthResource: environment('AGENTKIT_AUTH_RESOURCE'),
+    agentkitAuthSubjects: csv(environment('AGENTKIT_AUTH_SUBJECTS'))
   });
 }
