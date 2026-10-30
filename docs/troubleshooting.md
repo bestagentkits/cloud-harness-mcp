@@ -281,7 +281,7 @@ a lost response; do not create a second key until the first result is resolved.
 
 Session persistence and the durable engine are off by default. The decision
 and its evidence are in
-[ADR 0006](adr/0006-agent-session-persistence.md); the error contract is in
+[ADR 0010](adr/0010-agent-session-persistence.md); the error contract is in
 [agent sessions](mcp-api.md#persisted-sessions-and-continuefrom).
 
 - `agent_spawn` with `continueFrom` fails with `NOT_SUPPORTED` and
