@@ -725,8 +725,16 @@ service (Tailscale's `ts-input`/`ts-forward` jumps, for example) inserted a rule
 ahead of a managed jump, the runner moves that existing managed jump back to the
 head of its chain through the same network-guard image, in one atomic
 `iptables-restore --noflush` transaction that deletes and re-inserts the jump by
-rule spec, and attests the fresh ruleset again. It never adds, widens, or
-removes any other rule; a ruleset that would not attest after that move is left
+rule spec, and attests the fresh ruleset again. It never adds, edits, or
+removes any other rule. Moving the managed `INPUT` jump cannot widen access,
+because its chain only rejects. Moving the bridge `DOCKER-USER` jump cannot
+widen bridge access beyond the attested egress policy, though it lets that
+policy's public DNS and TCP 80/443 accepts run before a foreign rule that
+would have dropped them.
+Moving Docker's unconditional `FORWARD -j DOCKER-USER` jump, however, also puts
+any operator rule kept in `DOCKER-USER` ahead of the foreign chain for
+non-bridge traffic, so keep host-wide accept rules out of `DOCKER-USER` on a
+host that runs such a service; a ruleset that would not attest after that move is left
 untouched, and a jump that vanished since the probe fails the transaction
 unchanged. Because the readiness check and reaper run the same attestation,
 they may perform this repair, and a service that keeps re-asserting its own
@@ -873,6 +881,30 @@ Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `pr_update`,
 The merge-train actions follow the same model with their own GitHub permission: `commit_status_get`/`commit_status_create` mint `statuses: read|write`, `check_runs_list` mints `checks: read`, and `workflow_runs_list`, `workflow_run_view`, `workflow_dispatch`, and `workflow_run_rerun_failed` mint `actions: read|write`, each beside `contents: read`. A dispatch runs workflow code the repository already holds on the named ref; it passes only string inputs and never a harness credential. The helper validates SHAs, refs, workflow identifiers, and run IDs before placing them in a REST path.
 
 The read-only `commit_list`, `compare`, `release_list`, `tag_list`, and `ref_get` actions mint a `contents: read`-scoped token directly (no `pull_requests`/`issues` scope needed) and are reachable through either `github_action` or the non-destructive `github_read` tool, which shares this broker and helper so read-only calls do not carry `github_action`'s tool-level destructive annotation.
+
+Repository creation (`github_repository_create`) is a separate, workspace-free
+tool, because the repository does not exist yet and `workspace_open` must never
+create one as a side effect of a clone failure. It creates organization-owned
+repositories only, through the requesting principal's own GitHub App
+installation on that organization (in `cloudflare-access` mode, never the
+operator-configured installation; in `owner-bearer` mode, the configured
+installation only after GitHub confirms it belongs to the requested
+organization). Before minting anything, the runner verifies the installation
+live with the App JWT: it must belong to the requested organization, be an
+`Organization` account, be unsuspended, and grant `administration: write`.
+Write access to an existing repository never counts. Only then does it mint an
+installation token narrowed to `administration: write` with no repository
+restriction, used in-process for one `POST /orgs/{org}/repos` call; it never
+reaches a container, a result, an error, or the audit record. No operator or
+principal fallback credential (`GH_TOKEN`, `GITHUB_TOKEN`) is ever used for
+creation. Personal accounts are refused (`NOT_SUPPORTED`) because installation
+tokens cannot create user-owned repositories. The harness never deletes a
+repository it created. Each attempt is audited as `github.repository_create`
+(principal, owner/name, visibility, repository ID, installation ID, success,
+error code). The executable owner is
+[`apps/runner/src/github-repository-creator.ts`](../apps/runner/src/github-repository-creator.ts),
+with evidence in
+[`apps/runner/test/github-repository-creator.test.ts`](../apps/runner/test/github-repository-creator.test.ts).
 
 All write mutations and token authorization denials emit auditable events (`github_action.<action>`) into `audit_events` recording principal, repository, target entity numbers, success status, and structured error codes without storing token secrets or unbounded request payloads. Helper execution failures are classified into structured, typed error codes (`GITHUB_RATE_LIMITED` with retryAfterMs, `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`, and the review/merge codes documented in `docs/mcp-api.md`) to provide deterministic machine-readable recovery semantics for autonomous agents.
 
@@ -1837,6 +1869,135 @@ the boundary is explicit; the composer is
   skip reasons, and digests only, never guidance content.
 - A failed scan fails the agent closed instead of starting it silently without
   guidance; `repositoryContext: "none"` is the caller's explicit opt-out.
+
+### Persisted agent sessions
+
+With `AGENT_SESSION_PERSISTENCE_ENABLED`, the runner keeps each agent's Pi
+conversation (prompts, replies, tool calls, and tool results, which can include
+repository content) so `agent_spawn.continueFrom` can start a new agent from
+it. The store and its checks are owned by
+[`apps/runner/src/agent-state-repository.ts`](../apps/runner/src/agent-state-repository.ts):
+
+- Sessions live only in the runner's state database, scoped to the owner,
+  workspace, and workspace generation that created them. The agent gets no
+  mount, database path, or credential for them: the runner sends the history
+  in the agent's start record over the existing protocol channel, and the
+  agent reports new messages back the same way. No MCP tool returns session
+  content; status reports only counts and flags.
+- The agent's model lease is redacted from every reported message. Nothing
+  else is changed, so the history replays exactly. Stored messages therefore
+  keep raw model and tool content, such as file contents the agent read; unlike
+  caller-facing events and logs, they do not pass through the redactor
+  (`redactSecretDeep` in
+  [`apps/agent-runtime/src/session-replay.ts`](../apps/agent-runtime/src/session-replay.ts)
+  is the only scrub). A session is replayed only into a continuation on the
+  same model profile, and its content is never returned through MCP.
+- The rows sit in the runner state database for the configured retention. The
+  pre-deploy backup in
+  [`deploy/scripts/deploy-release.sh`](../deploy/scripts/deploy-release.sh)
+  copies that whole database, so a session can outlive its retention inside a
+  backup set under `/var/lib/cloud-harness/backups`; treat those backups as
+  holding repository content.
+- The runner appends a message only from the running agent of the current
+  runner epoch and agent generation, and only at the next sequence number.
+  Each log carries a chained SHA-256 digest that the runner and the runtime
+  both verify before replay, so a gap, a stale writer, or a corrupted row
+  stops continuation instead of feeding a model altered history. Message count
+  and bytes are bounded per session, and the stored bytes of all sessions are
+  bounded per workspace, owner, and instance. A continuation copies its
+  predecessor's whole log, so the copy counts against those budgets at
+  admission. In Access mode one owner can use up the instance budget before
+  reaching its own, which then stops recording for other owners' new
+  messages; size `AGENT_GLOBAL_SESSION_BYTES` for the expected owners.
+- Continuation is never automatic. It needs an explicit spawn by the same
+  owner in the same workspace generation, passes normal spawn admission and
+  budgets, and gets a fresh container and lease. Each session has at most one
+  successor.
+- Closing or expiring the workspace deletes its sessions, and sealed sessions
+  are purged after their retention.
+
+### Durable agent engine
+
+`AGENT_DURABLE_RUNTIME_ENABLED` lets an agent run on the pi-durable engine
+instead of the default coding runtime. The session store, its claim, and its
+bounds are owned by
+[`apps/runner/src/durable-session-store.ts`](../apps/runner/src/durable-session-store.ts)
+and [`apps/runner/src/agent-runtime-adapter.ts`](../apps/runner/src/agent-runtime-adapter.ts):
+
+- The agent container still holds no session state, mount, or database path.
+  Every storage call is a bounded request on the existing protocol channel to
+  the runner, which keeps one SQLite database per continuation lineage under
+  `agent-sessions/` beside its state database, private to the runner user. Only
+  an allowlist of storage methods with checked argument shapes runs, at a
+  bounded rate and record size.
+- One run owns a lineage's store at a time. The run claims it at launch with
+  the runner epoch and its depth in the lineage, a continuation claims it at a
+  greater position, and a stale or losing run is fenced from every further
+  request, also across a runner restart. Each lineage has at most one successor,
+  so of two racing continuations only one can claim.
+- The model lease is issued per run and is never written to the store; the
+  engine reaches the model through the same gateway, lease, and budget as the
+  default runtime. Usage counts only what the run itself consumed, and resumed
+  work is charged to the continuation's own lease and caps.
+- Continuation is never automatic, as for persisted sessions. A continuation
+  of a cancelled agent cancels its unfinished work instead of resuming it.
+  The flag is read at runner start: turning it off takes a runner restart,
+  which stops running agents as any restart does (none resumes on its own),
+  and afterwards new durable spawns and continuations are refused.
+- Resumed work reruns an interrupted tool call under its original request ID,
+  so the runner's effect ledger, not the engine, decides whether a mutation
+  already landed. Settling it as interrupted instead would lead the model to
+  issue it again under a new request ID that the ledger cannot match.
+- The store is bounded on disk by `AGENT_DURABLE_MAX_LINEAGE_BYTES`, and its
+  size counts toward the same workspace, owner, and instance session byte
+  budgets as persisted logs, measured at runner start and around every commit;
+  a run whose commit would pass either, or leaves usage over a budget, ends as
+  `LIMIT_EXCEEDED`. A budget can be overshot by at most one commit's growth per
+  concurrently writing lineage. A store still over the size cap when its run
+  ends leaves the session not continuable. The runner decides this at the end
+  of the run, after closing the store checkpointed its write-ahead log, and
+  against the cap configured then. A passed aggregate budget does not, because
+  it frees up once other stores are deleted. Closing or expiring the workspace deletes its lineage databases,
+  including owner marks a crash left half-written, and the reaper deletes a
+  lineage's database once retention has purged every session of it. A
+  lineage's session rows are deleted only after its files: a failed removal
+  fails the close, which leaves the workspace `EXPIRED_RECOVERABLE` rather
+  than `CLOSED`, and the retried close removes the files. A failed removal
+  after a retention purge leaves the purged rows, so the workspace close
+  still finds the lineage.
+
+Accepted risk: the runner depends on the upstream pi-durable package to read
+and write these databases. It is pinned in the lockfile, imported only while
+the flag is on, and handed JSON data only; with the flag off it is never
+loaded. The agent image carries the engine only when built with
+`INCLUDE_DURABLE_RUNTIME=true`, so the default image runs no pi-durable code.
+
+### Agent tool effect receipts
+
+The runner records every proxied agent tool call in an owner- and
+workspace-scoped effect ledger in its state database, so a repeated delivery
+returns the original outcome instead of acting twice
+([`docs/mcp-api.md`](mcp-api.md#agent-tool-receipts-and-replay) describes the
+behaviour the model sees):
+
+- A receipt is the exact tool result text the model received, bounded like any
+  tool result. It can hold repository content, including secrets a read
+  returned, so result text is stored only for an agent spawned with session
+  persistence or on the durable engine, the only cases a continuation can
+  replay it, and only up to a
+  per-lineage byte cap. Every other effect keeps its payload and result hashes
+  only. Stored text stays in the runner's state database, is never returned by
+  an MCP tool, and has the agent's model lease redacted before it is stored.
+  Receipt content is cleared after the session retention, and the workspace's
+  receipts are deleted when it closes, expires, or is compacted.
+- The runner never re-issues a mutation on its own. A mutation whose outcome
+  was lost is settled by reading workspace state through the same fenced
+  executor path, never by repeating it, and an undecidable outcome is reported
+  as unknown.
+- A stale writer cannot change an outcome, usage, or session: each write
+  requires the current runner epoch and the agent's generation, and no
+  successor continuing the agent; recording an outcome also requires a running
+  or cancelling agent in the active workspace generation.
 
 ### Scoped SQLite memories with optimistic concurrency
 

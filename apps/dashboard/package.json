@@ -1,6 +1,6 @@
 {
   "name": "@cloud-harness/dashboard",
-  "version": "0.76.2",
+  "version": "0.79.2",
   "private": true,
   "type": "module",
   "scripts": {

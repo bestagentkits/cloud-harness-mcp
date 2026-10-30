@@ -340,6 +340,201 @@ writes. Any active agent from a prior runner epoch is reconciled: its model
 lease is revoked, its container is removed, and its status transitions to
 `INTERRUPTED` with `outcomeUnknown: true`.
 
+#### Persisted sessions and `continueFrom`
+
+When the operator enables agent session persistence (off by default; see
+[configuration](configuration.md#managed-agents)), the runner records each
+completed user, assistant, and tool-result message of a new agent's Pi session
+in its state store. A run is still never resumed in place: `continueFrom`
+starts a *new* agent, with its own ID, container, model lease, and budget,
+whose session is first loaded with the earlier agent's verified history and
+then given the new `prompt`.
+
+- A continuation runs on the earlier agent's model profile, because its history
+  was produced by that model and replaying it into another provider or model
+  is not supported. `profileId` may be omitted on a `continueFrom` spawn and
+  then inherits that profile; a `profileId` that resolves to a different
+  profile is refused with `INVALID_INPUT`. Every other spawn still requires
+  `profileId`.
+- `agent_status` and `agent_list` add `session` (`persisted`, `continuable`,
+  `messages`, `bytes`), `run.resumable` (`false` except for the durable engine below), and
+  `continuedFrom` for an agent spawned with persistence. Agents spawned with
+  persistence off report none of these fields.
+- A session becomes continuable when its agent reaches any terminal status,
+  including `CANCELLED` and `INTERRUPTED`. It is not continuable when its log
+  is incomplete, exceeded the configured message or byte bounds, or would
+  have pushed the stored sessions of its workspace, owner, or instance past
+  their aggregate byte budget; the run itself is not affected. A tool call the
+  earlier run never answered is closed before the new prompt with the outcome
+  the runner settled for it (see
+  [Agent tool receipts and replay](#agent-tool-receipts-and-replay)), or with a
+  generic interruption error when it has none.
+- `continueFrom` is refused before any agent exists with `NOT_SUPPORTED` when
+  persistence is off; `NOT_FOUND` for an agent outside this owner and
+  workspace; `STALE_GENERATION` for an earlier workspace generation;
+  `CONFLICT` (retryable) while the earlier agent is still running; `CONFLICT`
+  when it has no persisted session, its log is not continuable, its model
+  profile is no longer enabled, or another agent already continued it (each
+  session has at most one successor; continue that one instead);
+  `LIMIT_EXCEEDED` when the replayed log and the new prompt together cannot
+  fit one agent start record (the earlier agent stays continuable with a
+  shorter prompt) or when copying the log would exceed the workspace, owner,
+  or instance session byte budget (the message names which; it is not
+  retryable as is, since stored sessions are freed only when retention purges
+  them or their workspace closes, so start a fresh agent instead); and
+  `EXPIRED` once retention purged the log. Normal spawn
+  admission and budget checks also apply. When the log leaves little room,
+  repository guidance is shortened to fit.
+- Repository guidance is composed into the new prompt as for any spawn. Pass
+  `repositoryContext: "none"` to avoid repeating guidance the history already
+  holds.
+- Closing or expiring the workspace deletes its persisted sessions; sealed
+  sessions are otherwise purged after the configured retention.
+
+#### Durable engine (`runtime`)
+
+When the operator enables the durable engine (off by default; see
+[configuration](configuration.md#managed-agents)), `agent_spawn` accepts
+`runtime: "pi-durable"`. The default, `"pi-coding"`, is what every spawn without
+`runtime` runs, and its start, status, and results are unchanged. A durable
+agent keeps its session in a runner-side store shared by its whole
+`continueFrom` lineage, independent of session persistence:
+
+- `runtime` is refused with `NOT_SUPPORTED` while the engine is off, also for a
+  `continueFrom` of a durable agent. A continuation runs on its predecessor's
+  engine: omit `runtime` to inherit it; a different `runtime` is
+  `INVALID_INPUT`.
+- `agent_status` and `agent_list` add `runtime: "pi-durable"` for a durable
+  agent, alongside the session fields above. `run.resumable` is `true` only
+  when the ended run left unfinished work in the store, for example a run cut
+  off by a runner crash; it is never `true` for a cancelled run, and a runner
+  that stops gracefully cancels its agents.
+- A durable run whose store is still over `AGENT_DURABLE_MAX_LINEAGE_BYTES`
+  when the run ends (it normally ends `LIMIT_EXCEEDED`) reports
+  `session.continuable: false` and `run.resumable: false`, and a
+  `continueFrom` of it is `CONFLICT`, since no continuation could commit to
+  it. The runner decides this at the end of the run, against the closed store
+  and the cap configured then; a mid-run measurement that passed the cap only
+  because of the write-ahead log does not count. A run ended by an aggregate
+  session byte budget stays continuable; its continuation succeeds once the
+  budget frees up.
+- A continuation resumes that unfinished work before the new `prompt`. A tool
+  call the run left in flight is asked of the runner again under its original
+  request ID, so the effect ledger below settles it: the model gets the stored
+  or reconciled result, `EFFECT_NOT_APPLIED`, or `EFFECT_UNKNOWN`, a call that
+  never reached the executor runs now, and the runner never issues a
+  dispatched mutation again. A continuation of a
+  cancelled agent cancels the unfinished work instead and runs only the new
+  prompt. Nothing resumes without an explicit `continueFrom`.
+- Each run gets its own model lease and budget; work resumed from the
+  predecessor counts against the continuation's caps. A run whose store
+  outgrows the configured size cap, or whose writes would pass or have passed
+  the workspace, owner, or instance session byte budget (the store's size on
+  disk counts toward them), ends as `LIMIT_EXCEEDED`; a durable continuation
+  is refused with `LIMIT_EXCEEDED` while usage is already over one of those
+  budgets.
+- Closing or expiring the workspace deletes the lineage's store; it is also
+  deleted once retention purged every session of its lineage.
+
+#### Agent tool receipts and replay
+
+An agent's proxied workspace tool calls are not MCP tools, but the runner keeps
+an effect ledger for them so that a call delivered twice never acts twice. The
+agent runtime names each proxy request after the model's tool call ID, and the
+runner keys the ledger by that request ID, the operation, and the agent's
+lineage (an agent and every `continueFrom` successor of it), so a continuation
+repeating an earlier call finds the earlier outcome. Each operation's replay
+class is `AGENT_PROXY_REPLAY_CLASS` in
+[`packages/contracts/src/runner-api.ts`](../packages/contracts/src/runner-api.ts);
+the ledger and its fences are in
+[`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts) and
+[`apps/runner/src/agent-effect-reconciler.ts`](../apps/runner/src/agent-effect-reconciler.ts).
+
+- A tool call's request ID is derived from its tool call ID and the number of
+  earlier tool call blocks in the session transcript that carry the same ID,
+  whether or not Pi executed them, so a provider that repeats or omits IDs
+  still gets one request ID per call, and a replay of the transcript derives
+  the same IDs.
+- A first call's result is the executor's result. The runner records the call
+  before it reaches the executor and records its outcome, with the result's
+  hash, before sending the result. When the executor request itself fails, for
+  example because a cancel or a graceful runner stop aborted it, a read gets
+  the failure, but a mutation gets `EFFECT_UNKNOWN` and is recorded as unknown,
+  because it may have landed before the failure. A durable run cancelled at
+  that point can end before its engine stores that answer, so its transcript
+  shows the call as aborted instead. An agent spawned with session persistence or on the
+  durable engine also stores the exact result text (its receipt) until its lineage holds
+  `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` bytes; any other result is kept as a
+  hash only and replays as if its receipt had been purged.
+- A repeated call whose result text is stored returns those bytes exactly,
+  applied or rejected, and runs nothing.
+- A repeated read-safe call whose receipt was purged runs again, and its result
+  carries `replayed: "re-executed"`. A repeated read whose earlier outcome was
+  lost runs again unmarked, since the model never saw a result.
+- A mutation is never issued again by the runner. A repeated mutation whose
+  receipt was purged returns `EFFECT_RECEIPT_UNAVAILABLE`. One whose outcome was
+  lost (a crash or restart mid-call) is reconciled from workspace state: a
+  conditional write is applied when its target holds the content recorded at
+  dispatch, and a patch when its target holds the content the patch produces
+  from the file read just before dispatch. A delete, mkdir, or move is applied
+  only when the workspace changed from the state observed just before dispatch.
+  The runner reads a patch, delete, mkdir, or move target before dispatch only
+  for an agent that records a session (the only kind a continuation
+  reconciles); without that observation the outcome stays unknown. A delete
+  whose path existed is gone, an mkdir whose path was absent is a directory, a
+  move whose source existed left it for an existing destination. An end state that would also
+  hold had the call failed (deleting a path that never existed, creating a
+  directory that already existed) is not taken as applied. An applied outcome
+  returns a result with `reconciled: true`; a write whose target still holds
+  its earlier content, or an mkdir whose directory is absent, returns
+  `EFFECT_NOT_APPLIED` (retryable with a new tool call); any other state
+  returns `EFFECT_UNKNOWN` and the owner should inspect the affected paths
+  before the work is repeated.
+- `EFFECT_NOT_APPLIED` is only as strong as the executor being quiesced. After
+  a runner crash, an executor process that was still running the call can
+  land the mutation after reconciliation observed the workspace, so a call
+  reported not applied may still appear later. Read the target before
+  re-issuing a mutation whose earlier attempt was interrupted by a crash.
+- The same request ID with a different payload returns `CONFLICT` without
+  running, whatever the recorded outcome.
+- Before a continuation's first turn, the runner settles every tool call the
+  earlier transcript left unanswered, because the model would otherwise issue
+  the same intent again under a new tool call ID that the ledger cannot match.
+  It looks each call up in the lineage's ledger, reconciles a mutation whose
+  outcome was lost as above, and the runtime closes the call with the result:
+  an applied or rejected call gets its stored result, a mutation that did not
+  land gets `EFFECT_NOT_APPLIED`, and an undecidable one gets `EFFECT_UNKNOWN`,
+  which tells the model the effect may have landed and to read the target
+  before any retry. The transcript keeps the model's raw arguments while the
+  runtime dispatched them after dropping optional nulls and coercing string
+  numbers and booleans, so the two are compared in a form those steps do not
+  change. A call whose arguments still differ from the payload recorded for
+  its request ID (a provider reused the ID, or a coercion the comparison does
+  not model) never gets that payload's result and is never reported as not
+  run: a mutation that reached the executor gets `EFFECT_UNKNOWN`, and one
+  that did not keeps the generic interruption. A call that never reached the executor, a read whose result is not
+  retained, or a tool call ID left unanswered more than once in the transcript keeps the generic interruption.
+  A reply that stopped with `error` or `aborted` never ran its calls and is
+  left out of the model's context on replay, so its calls are neither closed
+  nor settled.
+  At most 64 outcomes are carried, each bounded in size; a larger stored result
+  is summarized.
+- The durable engine needs no such transcript step. Its request ID is the
+  durable task ID, which a resume keeps, and it reruns every interrupted tool
+  call, mutations included, under that ID. The ledger then answers the rerun
+  as a repeated call (stored result, reconciled outcome, `EFFECT_NOT_APPLIED`,
+  `EFFECT_UNKNOWN`, or `EFFECT_RECEIPT_UNAVAILABLE` for a purged receipt), and
+  runs a call that never reached the executor for the first time. A call in
+  flight when the run was killed is therefore settled rather than handed to the
+  model as a bare interruption that it would issue again under a new ID. A
+  cancelled predecessor's unfinished calls are aborted, never rerun.
+- Only the agent of the current runner epoch and agent generation can record an
+  outcome, add usage, or append session messages; recording an outcome also
+  needs the active workspace generation, and an agent that a successor
+  continued can do none of these.
+  Receipts are kept for the session retention and deleted with the workspace's
+  sessions.
+
 ### Agent traces
 
 When the operator sets `AGENT_TRACES_ENABLED=true`, every agent run also
@@ -1109,6 +1304,61 @@ and
   retention window; retries within 24 hours replay the cached result or reject
   payload mismatches with `CONFLICT`, after which the key expires and the request
   executes anew.
+- `github_repository_create` creates a repository owned by a GitHub
+  organization. It is not bound to a workspace (it takes no `workspaceId`), and
+  `workspace_open` never creates a repository: a clone `404` may mean the
+  repository is private or inaccessible. The input schema is
+  `GitHubRepositoryCreateInputSchema` in
+  [`packages/contracts/src/github-repository-schemas.ts`](../packages/contracts/src/github-repository-schemas.ts):
+  `owner`, `name`, `visibility` (`public` | `private`, required, no default),
+  optional `description`, `autoInit`, `gitignoreTemplate`, `licenseTemplate`,
+  and a required `idempotencyKey`. Owner and name follow GitHub naming rules
+  and are refused rather than rewritten. There is no `defaultBranch` input,
+  because GitHub's create API cannot set one; the result reports GitHub's
+  `defaultBranch`, and for an empty repository the first pushed branch becomes
+  the default. A template creates an initial commit, so it cannot be combined
+  with `autoInit: false`. The result `data` (`GitHubRepositoryCreateResultSchema`)
+  is `fullName`, the immutable numeric `repositoryId`, `htmlUrl`, `visibility`,
+  `defaultBranch`, `created`, and `replayed`.
+  - Authority: only the principal's GitHub App installation on that
+    organization, verified live before a token is minted. The installation must
+    be an organization account and grant `administration: write` (GitHub App
+    repository permission **Administration: Read and write**); write access to
+    existing repositories does not count. The token is narrowed to
+    `administration: write` and never leaves the runner. No `GH_TOKEN` or
+    `GITHUB_TOKEN` fallback is used. The executable owner is
+    [`apps/runner/src/github-repository-creator.ts`](../apps/runner/src/github-repository-creator.ts).
+  - Errors: `GITHUB_REPOSITORY_EXISTS` for a taken name (never success);
+    `GITHUB_PERMISSION_MISSING` with `requiredCapability:
+    github.administration:write` when the permission is missing (no create
+    request is sent) or the organization policy refuses; `NOT_FOUND` when no
+    installation for that organization is connected or it was removed;
+    `NOT_SUPPORTED` for a personal account, a harness without a GitHub App, or
+    local mode; `GITHUB_RATE_LIMITED` with `retryAfterMs` for primary and
+    secondary limits; `UNKNOWN_REMOTE_STATE` when the outcome could not be
+    recorded.
+  - Idempotency: the outcome is stored in the runner state database without
+    expiry. The same key and input replay the recorded result
+    (`created: false`, `replayed: true`) with no second GitHub call; the same
+    key with different input fails with `CONFLICT`. A definitive GitHub refusal
+    is not recorded, so the key can be retried after the cause is fixed. A
+    request whose outcome is unknown stays pending, and so does its key after
+    any later refusal: a retry with the same key that then finds the name taken
+    reports `UNKNOWN_REMOTE_STATE`, not success, and corrected input needs a new
+    key because changed input under that key returns `CONFLICT`.
+  - Discovery: `workspace_capabilities.githubRepositoryCreate`
+    (`GitHubRepositoryCreateCapabilitySchema`) reports `available`, the
+    `organizations` with their verified `administration` level, and a `reason`
+    when unavailable, without minting a token. Called without a `workspaceId`
+    while no workspace is active, `workspace_capabilities` returns only
+    `{ workspaceId: null, repository: null, githubRepositoryCreate }`
+    (`PrincipalCapabilityResultSchema`) instead of `NOT_FOUND`; an explicit
+    unknown `workspaceId` still returns `NOT_FOUND`. An installation verified
+    before this field existed reports `administration: null` until it is
+    re-verified; the create call always verifies live and refreshes it.
+  - Every attempt is audited as `github.repository_create` without tokens. The
+    tool is annotated destructive and not idempotent, so clients ask for
+    approval. The harness never deletes a repository it created.
 - Output pagination for tools such as `files_read`, `git_diff`, and `git_log` uses
   snapshot-bound continuation cursors. The cursor is bound to content hashes or commit
   signatures; if underlying files, index, or repository state change between calls,
@@ -1330,7 +1580,7 @@ When running Cloud Harness MCP over local stdio (`--transport stdio --workspace 
 2. **Lifecycle operations:** `workspace_list` lists the active local workspace. `workspace_status` and `workspace_capabilities` return structured repository and workspace capabilities (`mode: 'local'`, `gitNetwork`, `gitPush`, `sandboxed: false`, granular operations and permissions). `workspace_close` terminates owned child processes but **never deletes the local folder**.
 3. **Subprocess execution:** `exec_run`, `shell_*`, `sessions_*`, and `tasks_*` execute on the local host with the current user's permissions. Output is bounded by ring buffers and paginated with monotonic cursors.
 4. **Single checkout only:** `repositoryId`, `scope: "all"` on the search tools, `workspace_repos_list`, `workspace_repo_status`, `workspace_repo_add`, and `workspace_repo_remove` return `INVALID_INPUT`, because a local workspace is one directory chosen at startup; [multi-repository workspaces](#multi-repository-workspaces) need the remote runner.
-5. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action`, `exec_run.privileged=true`, and `bash` with `target: "toolbox"` return structured unsupported errors; `bash` with `target: "workspace"` behaves like `exec_run`.
+5. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action`, `github_repository_create` (`NOT_SUPPORTED`), `exec_run.privileged=true`, and `bash` with `target: "toolbox"` return structured unsupported errors; `bash` with `target: "workspace"` behaves like `exec_run`.
 6. **Filesystem operations:** File reading, writing, patching, deletion, and searching apply within the canonical workspace root. Traversal escapes are rejected.
 
 ### Local multi-workspace mode
@@ -1401,7 +1651,9 @@ starting work. `capabilities.repository.issuesRead`/`issuesWrite` and
 `pullRequestsRead`/`pullRequestsWrite` are derived from the permissions the
 verified installation actually grants, not merely from an App being configured,
 and `capabilities.workspace.defaultNetworkProfile` reports the effective profile
-that `workspace_open` applies when it omits `networkProfile`. Unauthorized repository operations fail with `REPOSITORY_OPERATION_NOT_AUTHORIZED`
+that `workspace_open` applies when it omits `networkProfile`.
+`githubRepositoryCreate` reports principal-level repository-creation
+availability (see `github_repository_create` above). Unauthorized repository operations fail with `REPOSITORY_OPERATION_NOT_AUTHORIZED`
 identifying the missing capability. The broker and leak boundary are owned by
 [`apps/runner/src/github-app-broker.ts`](../apps/runner/src/github-app-broker.ts),
 [`apps/runner/test/git-transfer-leak.test.ts`](../apps/runner/test/git-transfer-leak.test.ts),

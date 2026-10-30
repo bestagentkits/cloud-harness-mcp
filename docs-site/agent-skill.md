@@ -46,3 +46,17 @@ github_action pr_merge           { "prNumber": 42, "method": "squash", "matchHea
 ```
 
 Approving or requesting changes on a pull request the acting identity authored is refused by GitHub (`GITHUB_REVIEW_NOT_ALLOWED`). Merge and auto-merge also need **Contents: Read and write** on the GitHub App; see [GitHub App setup](/dashboard/github). Check `workspace_capabilities` (`operations.pullRequestReview`, `pullRequestMerge`, and `githubActions`) to see what the current credential can do.
+
+## Example: Bootstrapping a New Organization Repository
+
+`github_repository_create` creates a repository in a GitHub organization through that organization's GitHub App installation. It is a separate, approval-worthy tool and is never a side effect of `workspace_open`. The installation must grant **Administration: Read and write**; personal accounts are not supported, and the operator-wide `GH_TOKEN` is never used for it. Call `workspace_capabilities` with no arguments first and read `githubRepositoryCreate` to see which organizations qualify.
+
+```text
+workspace_capabilities   {}
+github_repository_create { "owner": "acme", "name": "new-service", "visibility": "private", "autoInit": true, "idempotencyKey": "bootstrap-new-service" }
+workspace_open           { "repositoryUrl": "https://github.com/acme/new-service.git", "ref": "<defaultBranch from the result>", "idempotencyKey": "open-new-service" }
+files_write / git_commit / git_push
+github_action issue_create { "title": "Track bootstrap follow-ups", "idempotencyKey": "bootstrap-issue" }
+```
+
+`visibility` is required and has no default. Retrying with the same `idempotencyKey` and the same input replays the first result (`created: false`, `replayed: true`) without a second GitHub call; a different input under the same key returns `CONFLICT`, and an existing name returns `GITHUB_REPOSITORY_EXISTS`. If a later step fails, the agent reports exactly which steps completed and never deletes the repository automatically. See the [tools reference](/reference/tools#github-repository-create) for the full contract.

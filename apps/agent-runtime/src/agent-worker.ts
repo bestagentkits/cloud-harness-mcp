@@ -13,6 +13,7 @@ import {
   type Usage
 } from './protocol-schemas.js';
 import { createRedactor, type Redactor } from './redaction.js';
+import { isSessionMessage, planSessionReplay, redactSecretDeep, sessionHead } from './session-replay.js';
 
 const ZERO_USAGE: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
 function safeTokenCount(value: number): number {
@@ -34,8 +35,9 @@ function isLimitExceeded(error: unknown): boolean {
   }
   return false;
 }
-function completionFailure(session: AgentSessionLike): { state: TerminalState; error: string } | undefined {
-  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+// Only messages of this run count: a replayed history ends with the previous run's last reply.
+function completionFailure(session: AgentSessionLike, firstMessage: number): { state: TerminalState; error: string } | undefined {
+  for (let index = session.messages.length - 1; index >= firstMessage; index -= 1) {
     const message = session.messages[index];
     if (message?.role !== 'assistant') continue;
     if (message.stopReason === 'length') {
@@ -73,6 +75,10 @@ export class AgentWorker {
   #terminationState: TerminalState | undefined;
   #pendingMessages: MessageRecord[] = [];
   #pendingMessageBytes = 0;
+  // Set only for an agent that persists its session.
+  #sessionSeq: number | undefined;
+  #historyLength = 0;
+  #usageBaseline: Usage | undefined;
 
   constructor(output: BoundedOutput, sessionFactory: AgentSessionFactory, redactor = createRedactor()) {
     this.#output = output;
@@ -135,20 +141,30 @@ export class AgentWorker {
     try {
       const broker = this.#broker;
       if (!broker) throw new Error('proxy tool broker is unavailable');
-      const session = await this.#sessionFactory(start, broker);
+      const replay = start.session ? this.#planReplay(start.session) : undefined;
+      const session = replay
+        ? await this.#sessionFactory(start, broker, replay.replay)
+        : await this.#sessionFactory(start, broker);
       if (this.#finalizing || this.#terminating) {
         await session.abort();
         session.dispose();
         return;
       }
       this.#session = session;
+      if (replay && start.session) {
+        this.#historyLength = session.messages.length;
+        // Pi totals usage over every message it holds, replayed ones included.
+        this.#usageBaseline = usageFromSession(session);
+        this.#sessionSeq = start.session.messages.length;
+        for (const repair of replay.trailingRepairs) this.#emitSessionMessage(repair);
+      }
       this.#unsubscribe = session.subscribe((event) => this.#onSessionEvent(event));
       const prompt = session.prompt(start.prompt, { expandPromptTemplates: false });
       this.#flushPendingMessages();
       await prompt;
       await session.waitForIdle();
       if (!this.#finalizing && !this.#terminating) {
-        const failure = completionFailure(session);
+        const failure = completionFailure(session, this.#historyLength);
         await this.#finish(failure?.state ?? 'SUCCEEDED', failure?.error);
       }
     } catch (error) {
@@ -156,6 +172,24 @@ export class AgentWorker {
         await this.#finish(isLimitExceeded(error) ? 'LIMIT_EXCEEDED' : (this.#terminationState ?? 'FAILED'), this.#redactor.error(error));
       }
     }
+  }
+
+  #planReplay(session: NonNullable<StartRecord['session']>): ReturnType<typeof planSessionReplay> {
+    const messages = session.messages.filter(isSessionMessage);
+    if (messages.length !== session.messages.length || sessionHead(messages) !== session.headSha256) {
+      throw new Error('agent session history failed integrity verification');
+    }
+    const outcomes = new Map((session.toolOutcomes ?? []).map((item) => [item.toolCallId, { text: item.text, isError: item.isError }]));
+    return planSessionReplay(messages, Date.now(), outcomes);
+  }
+
+  #emitSessionMessage(message: unknown): void {
+    if (this.#sessionSeq === undefined || !isSessionMessage(message)) return;
+    const lease = this.#start?.gateway.lease ?? '';
+    const pending = this.#output.emitSession({ type: 'session_message', seq: this.#sessionSeq++, message: redactSecretDeep(message, lease) });
+    void pending?.catch((error: unknown) => {
+      void this.#terminate('INTERRUPTED', this.#redactor.error(error));
+    });
   }
 
   #acceptMessage(record: MessageRecord): void {
@@ -194,6 +228,7 @@ export class AgentWorker {
     const session = this.#session;
     if (!start || !session || this.#finalizing || this.#terminating) return;
     const projected = projectAgentEvent(event, this.#redactor, Math.max(1, Math.floor((start.limits.maxEventBytes - 192) / 6)));
+    if (event.type === 'message_end') this.#emitSessionMessage(event.message);
     if (projected) this.#emit({ type: 'event', sequence: ++this.#sequence, event: projected });
     if (event.type === 'turn_end' || event.type === 'agent_end') {
       this.#emit({ type: 'usage', sequence: ++this.#sequence, usage: this.#safeUsage() });
@@ -245,13 +280,17 @@ export class AgentWorker {
     if (!this.#session) return ZERO_USAGE;
     try {
       const usage = usageFromSession(this.#session);
+      const base = this.#usageBaseline;
+      // A continued run reports only its own usage, not the replayed history's.
+      const own = (value: number, baseline: number | undefined) => baseline === undefined ? value : value - baseline;
+      const cost = own(usage.cost, base?.cost);
       return {
-        input: safeTokenCount(usage.input),
-        output: safeTokenCount(usage.output),
-        cacheRead: safeTokenCount(usage.cacheRead),
-        cacheWrite: safeTokenCount(usage.cacheWrite),
-        total: safeTokenCount(usage.total),
-        cost: Number.isFinite(usage.cost) ? Math.min(1_000_000_000, Math.max(0, usage.cost)) : 0
+        input: safeTokenCount(own(usage.input, base?.input)),
+        output: safeTokenCount(own(usage.output, base?.output)),
+        cacheRead: safeTokenCount(own(usage.cacheRead, base?.cacheRead)),
+        cacheWrite: safeTokenCount(own(usage.cacheWrite, base?.cacheWrite)),
+        total: safeTokenCount(own(usage.total, base?.total)),
+        cost: Number.isFinite(cost) ? Math.min(1_000_000_000, Math.max(0, cost)) : 0
       };
     } catch {
       return ZERO_USAGE;

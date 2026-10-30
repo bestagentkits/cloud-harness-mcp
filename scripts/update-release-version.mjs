@@ -2,16 +2,17 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const MANIFESTS = [
+export const MANIFESTS = [
   'package.json',
   'apps/api/package.json',
   'apps/runner/package.json',
   'packages/contracts/package.json',
   'apps/agent-runtime/package.json',
+  'apps/agent-runtime-durable/package.json',
   'apps/model-gateway/package.json',
   'apps/dashboard/package.json'
 ];
-const PLUGIN_MANIFESTS = [
+export const PLUGIN_MANIFESTS = [
   'plugins/cloud-harness/.claude-plugin/plugin.json',
   'plugins/cloud-harness/.codex-plugin/plugin.json',
   'plugins/cloud-harness-workspaces/.claude-plugin/plugin.json'
@@ -29,10 +30,14 @@ function writeJson(path, value) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+// Workspace packages pin each other exactly, so every internal dependency moves with the release;
+// a stale pin would make npm look the workspace up in the public registry and fail the install.
+const INTERNAL_DEPENDENCIES = ['@cloud-harness/contracts', '@cloud-harness/agent-runtime-durable'];
+
 function updateManifest(manifest, version) {
   manifest.version = version;
-  if (manifest.dependencies?.['@cloud-harness/contracts']) {
-    manifest.dependencies['@cloud-harness/contracts'] = version;
+  for (const name of INTERNAL_DEPENDENCIES) {
+    if (manifest.dependencies?.[name]) manifest.dependencies[name] = version;
   }
 }
 

@@ -4,7 +4,7 @@ import { AgentWorker } from '../src/agent-worker.js';
 import { JsonlWriter } from '../src/jsonl.js';
 import { BoundedOutput } from '../src/output.js';
 import type { AgentSessionLike } from '../src/pi-session.js';
-import { ProxyToolBroker } from '../src/proxy-tools.js';
+import { canonicalToolArguments, ProxyToolBroker, transcriptToolCalls } from '../src/proxy-tools.js';
 import type { OutputRecord } from '../src/protocol-schemas.js';
 import { createRedactor } from '../src/redaction.js';
 import { captureOutput, createStartRecord } from './helpers.js';
@@ -253,5 +253,96 @@ describe('AgentSession worker lifecycle', () => {
       type: 'tool_cancel',
       requestId: request?.type === 'tool_request' ? request.requestId : 'missing'
     }));
+  });
+
+  it('names each proxy request by its tool call ID so a redelivery is recognizable', async () => {
+    const emitted: OutputRecord[] = [];
+    const broker = new ProxyToolBroker((record) => emitted.push(record), createRedactor(), 64 * 1024);
+    const [definition] = broker.createDefinitions(['files_read']);
+    if (!definition) throw new Error('expected proxy tool definition');
+    const execution = definition.execute('toolu_01ABC', { path: 'a.txt' }, undefined, undefined, undefined as never);
+    expect(emitted[0]).toMatchObject({ type: 'tool_request', requestId: 'toolu_01ABC', toolCallId: 'toolu_01ABC' });
+    broker.acceptResult({ type: 'tool_result', requestId: 'toolu_01ABC', final: true, isError: false, content: [{ type: 'text', text: 'ok' }] });
+    await expect(execution).resolves.toMatchObject({ content: [{ type: 'text', text: 'ok' }] });
+  });
+
+  describe('request IDs of repeated or empty tool call IDs', () => {
+    const call = (id: string, name: string, args: Record<string, unknown>) => ({ type: 'toolCall', id, name, arguments: args });
+    const result = (id: string, isError = false) => ({ role: 'toolResult', toolCallId: id, toolName: 'files_read', content: [], isError });
+    // The same vector pins the runner's derivation in apps/runner/test/agent-effect-reconciler.test.ts.
+    const transcript = [
+      { role: 'user', content: [{ type: 'text', text: 'task' }] },
+      { role: 'assistant', content: [
+        call('call_0', 'files_write', { path: 'a.txt', content: '1' }),
+        call('call_0', 'files_read', { path: 'b.txt' }),
+        call('', 'files_read', { path: 'c.txt' })
+      ] },
+      // Pi rejected the first call's arguments without executing it; it is still a recorded call.
+      result('call_0', true), result('call_0'), result(''),
+      { role: 'assistant', content: [
+        call('call_0', 'files_write', { path: 'a.txt', content: '2' }),
+        call('', 'files_read', { path: 'd.txt' }),
+        call('bad id', 'files_read', { path: 'e.txt' })
+      ] }
+    ];
+    const expected = [
+      'call_0', 'call_801178adf4f55d2756ae10d7449b803c', 'call_e3b0c44298fc1c149afbf4c8996fb924',
+      'call_d8d9e880ebc0b0b5b0665a12b803d76f', 'call_b8e3852dae73d75c43557bb87f0afba9', 'call_4b2d2ff66c98b2a1e6f08bdcdf4a04a7'
+    ];
+    const entries = (messages: unknown[]) => ({ sessionManager: { getEntries: () => messages.map((message) => ({ type: 'message', message })) } });
+    const execute = (ctx: unknown, calls: Array<[string, string, Record<string, unknown>]>) => {
+      const emitted: OutputRecord[] = [];
+      const broker = new ProxyToolBroker((record) => emitted.push(record), createRedactor(), 64 * 1024);
+      const definitions = new Map(broker.createDefinitions(['files_read', 'files_write']).map((definition) => [definition.name, definition]));
+      for (const [id, name, args] of calls) {
+        void definitions.get(name)!.execute(id, args, undefined, undefined, ctx as never).catch(() => undefined);
+      }
+      return emitted.flatMap((record) => record.type === 'tool_request' ? [record.requestId] : []);
+    };
+
+    it('derives one request ID per recorded tool call block, executed or not, matching the runner', () => {
+      expect(transcriptToolCalls(transcript).map((item) => item.requestId)).toEqual(expected);
+      for (const id of expected) expect(id).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u);
+    });
+
+    it('proxies each call of the latest assistant message under its transcript-derived request ID', () => {
+      expect(execute(entries(transcript), [
+        ['call_0', 'files_write', { path: 'a.txt', content: '2' }],
+        ['', 'files_read', { path: 'd.txt' }],
+        ['bad id', 'files_read', { path: 'e.txt' }]
+      ])).toEqual(expected.slice(3));
+    });
+
+    it('picks the block a repeated ID was executed for when Pi skipped an earlier block with that ID', () => {
+      // Only the second `call_0` block of the message passed validation and reached the broker.
+      expect(execute(entries(transcript.slice(0, 2)), [['call_0', 'files_read', { path: 'b.txt' }]])).toEqual([expected[1]]);
+    });
+
+    it('picks the executed block by its coerced arguments when Pi skipped an earlier block with that ID', () => {
+      const coerced = [
+        { role: 'user', content: [{ type: 'text', text: 'task' }] },
+        { role: 'assistant', content: [
+          call('call_0', 'files_read', { path: 'x.txt', offset: 'nope' }),
+          call('call_0', 'files_read', { path: 'b.txt', limit: '10', offset: null })
+        ] }
+      ];
+      // Pi dropped the null and coerced the string limit before it executed the second block.
+      expect(execute(entries(coerced), [['call_0', 'files_read', { path: 'b.txt', limit: 10 }]])).toEqual([expected[1]]);
+    });
+
+    it('agrees with the runner on the canonical form of raw and coerced arguments', () => {
+      // The same vector pins canonicalToolArguments in apps/runner/test/agent-effect-reconciler.test.ts.
+      expect(canonicalToolArguments({ path: 'a', recursive: null, limit: '10', overwrite: true, nested: [1, null, { b: false, a: 'x' }] }))
+        .toEqual({ limit: '10', nested: ['1', null, { a: 'x', b: 'false' }], overwrite: 'true', path: 'a' });
+      expect(JSON.stringify(canonicalToolArguments({ path: 'a', limit: 10, recursive: true })))
+        .toBe(JSON.stringify(canonicalToolArguments({ recursive: 'true', path: 'a', limit: '10', expectedSha256: null })));
+    });
+
+    it('falls back to issue order when the session transcript cannot be read', () => {
+      const unreadable = { sessionManager: { getEntries: () => { throw new Error('closed'); } } };
+      const ids = execute(unreadable, [['call_0', 'files_read', { path: 'a.txt' }], ['call_0', 'files_read', { path: 'a.txt' }]]);
+      expect(ids).toEqual(['call_0', 'call_801178adf4f55d2756ae10d7449b803c']);
+      expect(execute(undefined, [['', 'files_read', { path: 'a.txt' }]])).toEqual(['call_e3b0c44298fc1c149afbf4c8996fb924']);
+    });
   });
 });

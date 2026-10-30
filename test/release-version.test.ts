@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { updateReleaseVersion } from '../scripts/update-release-version.mjs';
+import { MANIFESTS, PLUGIN_MANIFESTS, updateReleaseVersion } from '../scripts/update-release-version.mjs';
 
 const directories: string[] = [];
 
@@ -23,7 +23,8 @@ function createReleaseFixture() {
   const contractsManifest = { name: '@cloud-harness/contracts', version: '0.2.0' };
   const apiManifest = { name: '@cloud-harness/api', version: '0.2.0', dependencies: { '@cloud-harness/contracts': '0.2.0' } };
   const runnerManifest = { name: '@cloud-harness/runner', version: '0.2.0', dependencies: { '@cloud-harness/contracts': '0.2.0' } };
-  const agentRuntimeManifest = { name: '@cloud-harness/agent-runtime', version: '0.2.0', dependencies: { '@cloud-harness/contracts': '0.2.0' } };
+  const agentRuntimeManifest = { name: '@cloud-harness/agent-runtime', version: '0.2.0', dependencies: { '@cloud-harness/agent-runtime-durable': '0.2.0', '@cloud-harness/contracts': '0.2.0' } };
+  const agentRuntimeDurableManifest = { name: '@cloud-harness/agent-runtime-durable', version: '0.2.0', dependencies: { '@cloud-harness/contracts': '0.2.0' } };
   const modelGatewayManifest = { name: '@cloud-harness/model-gateway', version: '0.2.0' };
   const dashboardManifest = { name: '@cloud-harness/dashboard', version: '0.2.0' };
   writeJson(root, 'package.json', rootManifest);
@@ -31,6 +32,7 @@ function createReleaseFixture() {
   writeJson(root, 'apps/api/package.json', apiManifest);
   writeJson(root, 'apps/runner/package.json', runnerManifest);
   writeJson(root, 'apps/agent-runtime/package.json', agentRuntimeManifest);
+  writeJson(root, 'apps/agent-runtime-durable/package.json', agentRuntimeDurableManifest);
   writeJson(root, 'apps/model-gateway/package.json', modelGatewayManifest);
   writeJson(root, 'apps/dashboard/package.json', dashboardManifest);
   writeJson(root, 'plugins/cloud-harness/.claude-plugin/plugin.json', { name: 'cloud-harness', version: '0.2.0' });
@@ -47,6 +49,7 @@ function createReleaseFixture() {
       'apps/api': apiManifest,
       'apps/runner': runnerManifest,
       'apps/agent-runtime': agentRuntimeManifest,
+      'apps/agent-runtime-durable': agentRuntimeDurableManifest,
       'apps/model-gateway': modelGatewayManifest,
       'apps/dashboard': dashboardManifest
     }
@@ -69,7 +72,9 @@ describe('release version update', () => {
     expect(readJson(root, 'package.json').version).toBe('0.3.0-beta.2');
     expect(readJson(root, 'apps/api/package.json')).toMatchObject({ version: '0.3.0-beta.2', dependencies: { '@cloud-harness/contracts': '0.3.0-beta.2' } });
     expect(readJson(root, 'apps/runner/package.json')).toMatchObject({ version: '0.3.0-beta.2', dependencies: { '@cloud-harness/contracts': '0.3.0-beta.2' } });
-    expect(readJson(root, 'apps/agent-runtime/package.json')).toMatchObject({ version: '0.3.0-beta.2', dependencies: { '@cloud-harness/contracts': '0.3.0-beta.2' } });
+    expect(readJson(root, 'apps/agent-runtime/package.json')).toMatchObject({ version: '0.3.0-beta.2', dependencies: { '@cloud-harness/agent-runtime-durable': '0.3.0-beta.2', '@cloud-harness/contracts': '0.3.0-beta.2' } });
+    expect(readJson(root, 'apps/agent-runtime-durable/package.json')).toMatchObject({ version: '0.3.0-beta.2', dependencies: { '@cloud-harness/contracts': '0.3.0-beta.2' } });
+    expect(readJson(root, 'package-lock.json').packages['apps/agent-runtime-durable']).toMatchObject({ version: '0.3.0-beta.2', dependencies: { '@cloud-harness/contracts': '0.3.0-beta.2' } });
     expect(readJson(root, 'apps/model-gateway/package.json')).toMatchObject({ version: '0.3.0-beta.2' });
     expect(readJson(root, 'apps/dashboard/package.json')).toMatchObject({ version: '0.3.0-beta.2' });
     expect(readJson(root, 'package-lock.json').packages['apps/dashboard']).toMatchObject({ version: '0.3.0-beta.2' });
@@ -79,6 +84,17 @@ describe('release version update', () => {
     expect(readJson(root, 'plugins/cloud-harness-workspaces/.claude-plugin/plugin.json').version).toBe('0.3.0-beta.2');
     expect(readJson(root, '.claude-plugin/marketplace.json').plugins.map((plugin: { version: string }) => plugin.version)).toEqual(['0.3.0-beta.2', '0.3.0-beta.2']);
     expect(readFileSync(join(root, 'apps/api/src/mcp-server.ts'), 'utf8')).toContain("version: '0.3.0-beta.2'");
+  });
+
+  it('commits every file the version update rewrites with the release', () => {
+    // A rewritten file left out of the release commit keeps its old version, and a stale internal
+    // pin makes npm resolve the unpublished @cloud-harness scope from the public registry.
+    const releaseConfig = JSON.parse(readFileSync(join(import.meta.dirname, '..', '.releaserc.json'), 'utf8')) as { plugins: unknown[] };
+    const gitPlugin = releaseConfig.plugins.find((plugin): plugin is [string, { assets: string[] }] =>
+      Array.isArray(plugin) && plugin[0] === '@semantic-release/git');
+    const assets = new Set(gitPlugin?.[1].assets ?? []);
+    const rewritten = [...MANIFESTS, ...PLUGIN_MANIFESTS, 'package-lock.json', '.claude-plugin/marketplace.json', 'apps/api/src/mcp-server.ts'];
+    for (const path of rewritten) expect(assets.has(path), path).toBe(true);
   });
 
   it('rejects a non-SemVer release version', () => {

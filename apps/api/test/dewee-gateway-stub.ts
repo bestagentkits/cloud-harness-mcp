@@ -49,6 +49,8 @@ export async function startDeweeGatewayStub(expectedToken: string) {
   let closedSockets = 0;
   let mode: StubMode = 'reply';
   let history: unknown[] = [];
+  let abortDelayMs = 0;
+  let abortAcks = 0;
 
   const server: Server = createServer((_request, response) => { response.statusCode = 404; response.end(); });
   server.on('upgrade', (request, socket) => {
@@ -92,7 +94,11 @@ export async function startDeweeGatewayStub(expectedToken: string) {
         } else if (frame.method === 'chat.history') {
           ok({ messages: history });
         } else if (frame.method === 'chat.abort') {
-          ok({});
+          // A real gateway answers after it has cancelled the run; the delay models that, and an
+          // ack counts only when the client is still there to receive it.
+          const acknowledge = () => { if (socket.writable) { ok({}); abortAcks += 1; } };
+          if (abortDelayMs > 0) setTimeout(acknowledge, abortDelayMs).unref();
+          else acknowledge();
         }
       }
     });
@@ -106,6 +112,8 @@ export async function startDeweeGatewayStub(expectedToken: string) {
     requests,
     setMode: (next: StubMode) => { mode = next; },
     setHistory: (messages: unknown[]) => { history = messages; },
+    setAbortDelay: (ms: number) => { abortDelayMs = ms; },
+    abortAcks: () => abortAcks,
     openSockets: () => sockets.size,
     closedSockets: () => closedSockets,
     close: async () => {

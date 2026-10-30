@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { readdir, readFile } from 'node:fs/promises';
-import { applyGuidanceActivity, isModelToolOperation, sanitizeAndAttributeProvenance, type GuidanceProfile, type RunnerOperation, type RunnerResponse } from '@cloud-harness/contracts';
+import { applyGuidanceActivity, isModelToolOperation, sanitizeAndAttributeProvenance, type GitHubRepositoryCreateCapability, type GuidanceProfile, type RunnerOperation, type RunnerResponse } from '@cloud-harness/contracts';
 import type { OperationBackend } from '../operation-backend.js';
 import type { CliOptions } from '../cli-options.js';
 import { LocalPathPolicy } from './local-path-policy.js';
@@ -9,6 +9,18 @@ import { LocalWorkerClient } from './local-worker-client.js';
 import { LocalOperationManager } from './local-operation-manager.js';
 
 const opaqueId = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
+
+const REPOSITORY_CREATE_UNSUPPORTED = 'github_repository_create is unsupported in local mode because it needs the remote runner\'s GitHub App broker; use the remote MCP endpoint';
+
+/** Local mode has no GitHub App broker, so repository creation is never available. */
+const LOCAL_REPOSITORY_CREATE_CAPABILITY: GitHubRepositoryCreateCapability = {
+  tool: 'github_repository_create',
+  available: false,
+  organizations: [],
+  personalAccounts: false,
+  requiredPermission: 'administration:write',
+  reason: REPOSITORY_CREATE_UNSUPPORTED
+};
 
 export class LocalWorkspaceBackend implements OperationBackend {
   public readonly workspaceId: string;
@@ -197,6 +209,14 @@ export class LocalWorkspaceBackend implements OperationBackend {
         truncated: false
       };
     }
+    if (operation === 'github_repository_create') {
+      return {
+        ok: false,
+        message: REPOSITORY_CREATE_UNSUPPORTED,
+        error: { code: 'NOT_SUPPORTED', message: REPOSITORY_CREATE_UNSUPPORTED, retryable: false, operation },
+        truncated: false
+      };
+    }
     if (operation === 'secrets_list') {
       return {
         ok: false,
@@ -222,7 +242,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
       return {
         ok: true,
         message: 'Workspace capabilities retrieved',
-        data: this.getCapabilities(),
+        data: { ...this.getCapabilities(), githubRepositoryCreate: LOCAL_REPOSITORY_CREATE_CAPABILITY },
         truncated: false
       };
     }

@@ -17,7 +17,7 @@ import {
 } from './workspace-repositories.js';
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { chmod, chown, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, statfs, writeFile } from 'node:fs/promises';
-import { join, posix, relative, resolve, sep } from 'node:path';
+import { dirname, join, posix, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
   BROKERED_ONLY_PROXY_OPERATIONS,
@@ -48,6 +48,8 @@ import {
   type RunnerOperation,
   type RunnerResponse,
   type WorkspaceCapabilityResult,
+  type GitHubRepositoryCreateInput,
+  type PrincipalCapabilityResult,
   type ToolkitSelection,
   type WorkspaceLifecycleSettingName,
   type WorkspaceLifecycleSettingsUpdate,
@@ -95,6 +97,7 @@ import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
+import { GitHubRepositoryCreator } from './github-repository-creator.js';
 import { FailureIntelligence } from './decision-plane/failure-intelligence.js';
 import type { DecisionPlane } from './decision-plane/decision-plane.js';
 import {
@@ -108,6 +111,7 @@ import { AgentTraceRecorder, type AgentActionTraceSink, type AgentApprovalTraceS
 import type { CodingActionBroker } from './agent-governance/action-broker.js';
 import { LockfileInstallExecutor, type InstallResult } from './agent-governance/install-executor.js';
 import { CODING_GIT_ARGS, CODING_GIT_ENV, CODING_GIT_SUBCOMMANDS, isCommitSha, parseTransferInspection, type PushVerifier } from './agent-governance/coding-git.js';
+import { DurableSessionStore } from './durable-session-store.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -507,6 +511,8 @@ export class WorkspaceService {
   private codingBroker: CodingActionBroker | undefined;
   private readonly metadata?: MetadataStore | undefined;
   private failureIntelligence?: FailureIntelligence | undefined;
+  /** Workspace-independent organization repository creation through the principal's App installation. */
+  readonly repositoryCreator: GitHubRepositoryCreator;
   constructor(
     private readonly config: RunnerConfig,
     private readonly store: StateStore,
@@ -545,6 +551,14 @@ export class WorkspaceService {
           permitsBrokeredOperations: (ownerId, workspaceId) => this.codingBroker?.permitsBrokeredSpawn(ownerId, workspaceId) === true,
           ...managerDependencies,
           traceRecorder,
+          // Durable-runtime session stores sit beside the state database. The store loads the
+          // experimental storage code only while the durable runtime is enabled; with it off it
+          // still deletes stores left by an earlier run when their workspace closes.
+          durableSessions: managerDependencies.durableSessions ?? new DurableSessionStore({
+            stateDir: join(dirname(config.stateDb), 'agent-sessions'),
+            enabled: config.agents.durableRuntimeEnabled,
+            maxLineageBytes: config.agents.limits.maxDurableLineageBytes
+          }),
           // Every agent tool call passes the coding broker when one is attached; without it the
           // brokered-only operations are refused here as well as at spawn.
           toolExecutor: async (request) => {
@@ -575,6 +589,21 @@ export class WorkspaceService {
       }
     });
     this.operations.redactorProvider = (wsId) => this.getRedactor(wsId);
+    this.repositoryCreator = new GitHubRepositoryCreator({
+      config: this.config,
+      installations: this.githubInstallations,
+      idempotency: this.store,
+      audit: (principalId, subjectId, details) => {
+        try {
+          this.metadata?.recordAudit(principalId, 'github.repository_create', 'github_repository', subjectId, 1, details);
+        } catch { /* outcome audit persistence is best-effort */ }
+      },
+      refreshInstallation: this.githubBinding
+        ? async (principalId, installationId) => {
+            await this.githubBinding!.reconcile(principalId, this.installationReconcileAudit(principalId), installationId);
+          }
+        : undefined
+    });
     // A running terminal is active work: reads, input, and resizes refresh the lease (throttled by the
     // operation manager). `touch` keeps the existing wall-clock cap, so a terminal never outlives it.
     this.operations.onTerminalActivity = (wsId) => {
@@ -1262,7 +1291,19 @@ export class WorkspaceService {
       candidate.status !== 'uninstalled' && candidate.accountLogin.toLowerCase() === repositoryOwner
     );
     if (!installation) return undefined;
-    const audit = this.metadata
+    await this.githubBinding.reconcile(ownerId, this.installationReconcileAudit(ownerId), installation.installationId);
+    return await mintPrincipalRepositoryToken({
+      config: this.config,
+      principalId: ownerId,
+      repositoryUrl,
+      installations: this.githubInstallations,
+      requiredPermission: permission
+    });
+  }
+
+  /** Audit hook for installation records rewritten by a reconcile with GitHub. */
+  private installationReconcileAudit(ownerId: string): ((record: GitHubInstallationRecord) => void) | undefined {
+    return this.metadata
       ? (record: GitHubInstallationRecord) => this.metadata!.recordAuditInTransaction(
           this.store.database,
           ownerId,
@@ -1273,14 +1314,6 @@ export class WorkspaceService {
           { status: record.status }
         )
       : undefined;
-    await this.githubBinding.reconcile(ownerId, audit, installation.installationId);
-    return await mintPrincipalRepositoryToken({
-      config: this.config,
-      principalId: ownerId,
-      repositoryUrl,
-      installations: this.githubInstallations,
-      requiredPermission: permission
-    });
   }
 
   private async provisionMountDirectories(record: WorkspaceRecord): Promise<{ toolsPath: string; cachePath: string; ownerSkillsPath: string }> {
@@ -3871,6 +3904,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const validated = TOOL_SCHEMA_BY_NAME[operation].parse(input) as Record<string, unknown>;
     if (operation === 'workspace_open') return await this.open(ownerId, validated);
     if (operation === 'workspace_list') return this.list(ownerId, validated);
+    // Repository creation is not bound to a workspace: the repository does not exist yet.
+    if (operation === 'github_repository_create') {
+      return await this.repositoryCreator.create(ownerId, validated as GitHubRepositoryCreateInput, signal);
+    }
     if (operation === 'secrets_list') return this.secretsList(ownerId, validated);
     if (operation === 'bash' && validated.target === 'toolbox') return await this.runToolbox(ownerId, validated, signal);
     // Package operations are owner-scoped and never take a workspace mutation lock.
@@ -4070,12 +4107,22 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const workspaceId = validated.workspaceId as string | undefined;
     if (operation === 'workspace_status') return this.status(ownerId, workspaceId);
     if (operation === 'workspace_capabilities') {
-      const rec = this.requireWorkspace(ownerId, workspaceId, false, true);
+      const githubRepositoryCreate = this.repositoryCreator.capability(ownerId);
+      // Without a workspaceId and with no active workspace, only principal-level capabilities exist;
+      // an explicit or ambiguous workspace selection keeps its usual errors.
+      let rec: WorkspaceRecord;
+      try {
+        rec = this.requireWorkspace(ownerId, workspaceId, false, true);
+      } catch (error) {
+        if (workspaceId !== undefined || !(error instanceof HarnessError) || error.code !== 'NOT_FOUND') throw error;
+        const data: PrincipalCapabilityResult = { workspaceId: null, repository: null, githubRepositoryCreate };
+        return { ok: true, message: 'Principal capabilities retrieved (no active workspace)', data, truncated: false };
+      }
       const caps = this.computeWorkspaceCapabilities(this.resolveRepositoryView(rec, validated, 'primary', operation).scoped);
       return {
         ok: true,
         message: 'Workspace capabilities retrieved',
-        data: caps,
+        data: { ...caps, githubRepositoryCreate },
         truncated: false
       };
     }

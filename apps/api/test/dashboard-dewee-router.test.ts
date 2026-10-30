@@ -330,6 +330,52 @@ describe('Dashboard webchat BFF: chat', () => {
     await eventually(() => stub.openSockets() === 0);
   });
 
+  it('keeps the gateway socket open until chat.abort is acknowledged', async () => {
+    const headers = await chatHeaders();
+    stub.setMode('hang');
+    stub.setAbortDelay(200);
+    const { request, reply } = open('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'hi', conversationId: 'conv-ack' }) });
+    reply.catch(() => undefined);
+    await eventually(() => stub.requests.some((entry) => entry.method === 'chat.send'));
+    request.destroy();
+    await eventually(() => stub.requests.some((entry) => entry.method === 'chat.abort'));
+    // The gateway is still cancelling the run: the BFF must not have hung up on it yet.
+    expect(stub.openSockets()).toBe(1);
+    await eventually(() => stub.abortAcks() === 1);
+    await eventually(() => stub.openSockets() === 0);
+    expect(stub.requests.filter((entry) => entry.method === 'chat.abort')).toHaveLength(1);
+    // The aborted chat.send is not reported as a gateway failure.
+    expect(logged.some((line) => line.includes('dewee.chat'))).toBe(false);
+  });
+
+  it('waits for chat.abort when the run times out', async () => {
+    httpServer.closeAllConnections();
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    await listen({ ...baseConfig, deweeGatewayUrl: stub.url, deweeGatewayToken: GATEWAY_TOKEN, deweeWebchatSecret: WEBCHAT_SECRET, deweeChatTimeoutMs: 300 });
+    const headers = await chatHeaders();
+    stub.setMode('hang');
+    stub.setAbortDelay(200);
+    const reply = await send('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'hi' }) });
+    expect(frames(reply.text).at(-1)).toEqual({ type: 'error', message: 'The agent run timed out.', code: 'timeout' });
+    await eventually(() => stub.abortAcks() === 1);
+    await eventually(() => stub.openSockets() === 0);
+    expect(stub.requests.filter((entry) => entry.method === 'chat.abort')).toHaveLength(1);
+  });
+
+  it('closes the gateway socket when chat.abort is never answered', async () => {
+    const headers = await chatHeaders();
+    stub.setMode('hang');
+    stub.setAbortDelay(60_000);
+    const { request, reply } = open('/api/v1/dewee/chat', { method: 'POST', headers, body: JSON.stringify({ message: 'hi' }) });
+    reply.catch(() => undefined);
+    await eventually(() => stub.requests.some((entry) => entry.method === 'chat.send'));
+    request.destroy();
+    await eventually(() => stub.requests.some((entry) => entry.method === 'chat.abort'));
+    // The abort call is bounded, so a silent gateway still gets its socket closed.
+    await eventually(() => stub.openSockets() === 0, 5_000);
+    expect(stub.abortAcks()).toBe(0);
+  }, 10_000);
+
   it('releases the stream slot when the browser leaves before the stream opens', async () => {
     const headers = await chatHeaders();
     stub.setMode('hang');

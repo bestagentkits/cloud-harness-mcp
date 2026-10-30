@@ -116,6 +116,7 @@ bash deploy/scripts/setup-dependency-firewall.sh
 ```
 2. Confirm **Egress readiness** reports `Ready` on the dashboard [Settings](/dashboard/settings) page. If it still reports a rule-order reason that names a foreign chain, inspect `sudo iptables -S INPUT`, `sudo iptables -S FORWARD`, and `sudo iptables -S DOCKER-USER`; on a Tailscale host, `sudo tailscale set --netfilter-mode=nodivert` stops tailscaled from inserting its jumps at the head of those chains, but then you must add the `ts-input` and `ts-forward` jumps yourself, after the managed jumps, or Tailscale's own filtering stops applying.
 3. Open the workspace again with a fresh idempotency key. The failed attempt kept its key with a `FAILED` status, and replaying that key returns the failed record without retrying the attestation.
+Re-running the provisioning script is safe on every redeploy: it keeps exactly one copy of each managed jump at rule 1 and leaves other chains, such as `ts-input`, in place below it.
 To work without egress meanwhile, reset the default to `network-none` on the Settings page or open the workspace with `networkProfile: "network-none"` under a new idempotency key. An omitted profile and an explicit `network-none` are different requests, so reusing the failed open's key with the explicit profile returns `CONFLICT`.
 
 ---
@@ -466,3 +467,29 @@ File and command tools without `repositoryId` work on the workspace root, so pat
 4. To end the last checkout, close the workspace with `workspace_close`.
 5. Use a new idempotency key for each distinct change.
 6. After `executorResumed: false`, call `workspace_recover` with `mode: "resume"`; it resumes the paused executor (a runner restart does too). A `dependency-access` workspace, or one whose executor cannot be resumed, gets a rebuilt executor from the retained checkouts, so running processes end. A recover sent while a repository change or Git transfer still holds the pause, or while another recover of the same workspace is running, returns a retryable `CONFLICT`; retry it shortly.
+
+### 37. `agent_spawn` returns `NOT_SUPPORTED` for `continueFrom` or `runtime: "pi-durable"`
+**Cause:** Continuing an agent and the durable engine are off by default. `continueFrom needs agent session persistence, which is off on this instance` means the operator has not set `AGENT_SESSION_PERSISTENCE_ENABLED` (or, for a durable predecessor, `AGENT_DURABLE_RUNTIME_ENABLED`). `the pi-durable agent runtime is off on this instance` means `AGENT_DURABLE_RUNTIME_ENABLED` is off. Nothing was created.
+
+**Fix:**
+1. Without the flag, spawn a new agent and include what it needs from the earlier one in its prompt. Omit `runtime` to use the default engine.
+2. Otherwise ask the operator to enable the flag; see [Environment Variables](/reference/environment-variables). An agent that ran while persistence was off has no stored session and cannot be continued later (`CONFLICT`).
+3. A durable agent that ends `FAILED` with `the durable agent runtime is not installed in this agent image` needs an agent image built with `INCLUDE_DURABLE_RUNTIME=true`; this is an operator fix.
+
+---
+
+### 38. A durable agent ends `LIMIT_EXCEEDED` with `durable agent session exceeded its size limit or a session byte budget`
+**Cause:** A durable agent and every agent that continues it share one session store. It grew past `AGENT_DURABLE_MAX_LINEAGE_BYTES`, or the instance's stored sessions reached one of the `AGENT_*_SESSION_BYTES` budgets, which durable session stores count toward like persisted conversations. The runner ended the run and refuses further writes to that store. If the store is still over `AGENT_DURABLE_MAX_LINEAGE_BYTES` when the run ends (measured after closing, against the cap configured then), `agent_status` reports `session.continuable: false` and `continueFrom` is refused with `CONFLICT`. Past a session byte budget the agent stays continuable, but a continuation hits the same limit until the budget frees up.
+
+**Fix:**
+1. Start a new agent without `continueFrom`, and give it a summary of the earlier work.
+2. Close workspaces whose agent sessions are no longer needed to free budget, or, if long durable chains are expected, ask the operator to raise the cap within its documented bounds.
+
+---
+
+### 39. An agent reports `EFFECT_UNKNOWN` for a write, delete, or move
+**Cause:** The earlier agent was stopped (cancelled, killed, or interrupted by a runner restart) while that change was in flight, and the runner could not tell from the workspace whether it landed. It did not run the change again: a durable agent (`runtime: "pi-durable"`) reruns the interrupted call under its original request ID, and the runner answers it without running the change. A cancelled durable agent is the exception: its unfinished calls are aborted, not rerun, so a continued agent may issue the change again; check the workspace first. An interrupted agent is never reported as `SUCCEEDED`. A running agent gets the same answer when the runner's request to carry out a change fails partway (for example, the runner is stopping), because the change may have landed before the failure; a failed read stays a plain failure. `EFFECT_NOT_APPLIED` instead means the write provably did not land.
+
+**Fix:**
+1. Read the affected file or path before repeating the change; the agent receives the same instruction.
+2. For `EFFECT_NOT_APPLIED`, the agent may simply issue the change again.

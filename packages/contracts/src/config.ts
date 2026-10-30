@@ -57,6 +57,9 @@ export const AgentTracesConfigSchema = z.object({
   previewBytes: z.coerce.number().int().min(0).max(512).default(0)
 }).strict().prefault({});
 export type AgentTracesConfig = z.infer<typeof AgentTracesConfigSchema>;
+/** Upper bounds of a persisted agent session; the agent runtime's `start` schema accepts no more. */
+export const MAX_AGENT_SESSION_MESSAGES = 10_000;
+export const MAX_AGENT_SESSION_BYTES = 7_864_320;
 
 const gatewayUrl = z.url().refine((value) => {
   try {
@@ -118,7 +121,22 @@ export const RunnerAgentLimitsSchema = z.object({
   cleanupRetryLimit: positiveBoundedInteger(1_000, 20),
   cleanupRetryMaxDelayMs: positiveBoundedInteger(86_400_000, 3_600_000),
   retentionSeconds: positiveBoundedInteger(31_536_000, 604_800),
-  lookupHorizonSeconds: positiveBoundedInteger(31_536_000, 2_592_000)
+  lookupHorizonSeconds: positiveBoundedInteger(31_536_000, 2_592_000),
+  // Persisted Pi session bounds. A continuation seeds the whole log through one `start` protocol
+  // record (8 MiB, which also carries a prompt of up to 256 KiB), so the byte bound stays below it.
+  maxSessionMessages: positiveBoundedInteger(MAX_AGENT_SESSION_MESSAGES, 2_000),
+  maxSessionBytes: positiveBoundedInteger(MAX_AGENT_SESSION_BYTES, 7_340_032),
+  sessionRetentionMs: positiveBoundedInteger(31_536_000_000, 604_800_000),
+  // Aggregate bytes of every stored session log, per workspace, principal, and instance. A continuation
+  // copies its predecessor's whole log, so without these the store grows with each continuation.
+  globalSessionBytes: positiveBoundedInteger(17_179_869_184, 1_073_741_824),
+  principalSessionBytes: positiveBoundedInteger(8_589_934_592, 536_870_912),
+  workspaceSessionBytes: positiveBoundedInteger(1_073_741_824, 67_108_864),
+  // On-disk size cap of one durable-runtime lineage's session database. A commit that leaves the
+  // database above it ends the run as LIMIT_EXCEEDED, and the lineage accepts no further commit.
+  maxDurableLineageBytes: z.coerce.number().int().min(1_048_576).max(4_294_967_296).default(268_435_456),
+  // Stored tool-result bytes (receipts) one agent lineage may hold; past it only hashes are kept.
+  maxReceiptBytesPerLineage: positiveBoundedInteger(1_073_741_824, 33_554_432)
 }).strict().superRefine((limits, context) => {
   if (limits.minTtlSeconds > limits.maxTtlSeconds) {
     context.addIssue({ code: 'custom', path: ['minTtlSeconds'], message: 'minimum agent TTL cannot exceed maximum agent TTL' });
@@ -134,6 +152,12 @@ export const RunnerAgentLimitsSchema = z.object({
   }
   if (limits.workspaceRetainedBytes > limits.principalRetainedBytes || limits.principalRetainedBytes > limits.globalRetainedBytes) {
     context.addIssue({ code: 'custom', path: ['workspaceRetainedBytes'], message: 'retained byte limits must satisfy workspace <= principal <= global' });
+  }
+  if (limits.workspaceSessionBytes > limits.principalSessionBytes || limits.principalSessionBytes > limits.globalSessionBytes) {
+    context.addIssue({ code: 'custom', path: ['workspaceSessionBytes'], message: 'session byte limits must satisfy workspace <= principal <= global' });
+  }
+  if (limits.maxSessionBytes > limits.workspaceSessionBytes) {
+    context.addIssue({ code: 'custom', path: ['maxSessionBytes'], message: 'one session cannot be allowed more bytes than its workspace session budget' });
   }
   if (limits.retentionSeconds > limits.lookupHorizonSeconds) {
     context.addIssue({ code: 'custom', path: ['retentionSeconds'], message: 'retention cannot exceed lookup horizon' });
@@ -164,6 +188,15 @@ export const RunnerAgentsConfigSchema = z.object({
     (profiles) => new Set(profiles.map((profile) => profile.id)).size === profiles.length,
     'agent profile IDs must be unique'
   ),
+  // Instance switch for persisted Pi sessions and `agent_spawn.continueFrom`. The decision is made
+  // per agent at spawn: turning it off refuses new continuations and stops recording for agents
+  // spawned afterwards; stored sessions age out through retention.
+  sessionPersistenceEnabled: enabled,
+  // Instance switch for the opt-in pi-durable agent engine, read at runner start. Off refuses new and
+  // continued durable spawns, and nothing resumes on its own; flipping it takes a runner restart,
+  // which stops running agents as any restart does. The runner loads the experimental durable
+  // storage code only while it is on.
+  durableRuntimeEnabled: enabled,
   limits: RunnerAgentLimitsSchema.default(DEFAULT_RUNNER_AGENT_LIMITS)
 }).strict();
 

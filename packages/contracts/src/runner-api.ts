@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { AgentIdSchema, IdempotencyKeySchema, WorkspaceIdSchema, WorkspaceNetworkExposureSchema } from './identifiers.js';
 import { ToolResultSchema } from './mcp-results.js';
+import { GitHubRepositoryCreateCapabilitySchema } from './github-repository-schemas.js';
 export const RunnerOperationSchema = z.enum([
   'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close',
   'workspace_lease_renew', 'workspace_recover', 'workspace_context', 'workspace_set_active',
@@ -20,7 +21,7 @@ export const RunnerOperationSchema = z.enum([
   'knowledge_create', 'knowledge_read', 'knowledge_update', 'knowledge_delete', 'knowledge_list', 'knowledge_search', 'knowledge_link', 'knowledge_unlink', 'knowledge_graph',
   'deployments_list', 'deployments_run',
   'artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete',
-  'github_action', 'github_read',
+  'github_action', 'github_read', 'github_repository_create',
   'secrets_list',
   'packages_plan', 'packages_apply', 'packages_list', 'packages_status', 'packages_rollback', 'packages_remove',
   'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list',
@@ -154,14 +155,27 @@ export const WorkspaceCapabilityResultSchema = z.object({
     readOnlyTool: z.literal('github_read'),
     readOnly: z.array(z.string()),
     gated: z.array(z.string())
-  }).strict().optional().describe('Which GitHub actions are read-only (callable through github_read without approval) and which stay gated on github_action')
+  }).strict().optional().describe('Which GitHub actions are read-only (callable through github_read without approval) and which stay gated on github_action'),
+  githubRepositoryCreate: GitHubRepositoryCreateCapabilitySchema.optional()
+    .describe('Principal-level availability of github_repository_create; independent of the workspace repository')
 }).passthrough();
+
+/**
+ * workspace_capabilities called without a workspaceId while the principal has no active workspace:
+ * only principal-level capabilities exist, so the workspace fields are null.
+ */
+export const PrincipalCapabilityResultSchema = z.object({
+  workspaceId: z.null(),
+  repository: z.null(),
+  githubRepositoryCreate: GitHubRepositoryCreateCapabilitySchema
+}).strict();
 
 export type RepositoryCapabilities = z.infer<typeof RepositoryCapabilitiesSchema>;
 export type WorkspaceCapabilities = z.infer<typeof WorkspaceCapabilitiesSchema>;
 export type RepositoryPermissions = z.infer<typeof RepositoryPermissionsSchema>;
 export type RepositoryOperations = z.infer<typeof RepositoryOperationsSchema>;
 export type WorkspaceCapabilityResult = z.infer<typeof WorkspaceCapabilityResultSchema>;
+export type PrincipalCapabilityResult = z.infer<typeof PrincipalCapabilityResultSchema>;
 
 export const ProvenanceSourceSchema = z.enum(['built-in', 'owner', 'workspace', 'repository']);
 export const TrustClassSchema = z.enum(['trusted-control-plane', 'owner-controlled', 'untrusted-executor']);
@@ -291,6 +305,42 @@ export const AgentProxyOperationSchema = z.enum([
   'git_diff'
 ]);
 
+/**
+ * How the runner treats a repeated agent proxy request (same lineage, request ID, and operation).
+ * `read-safe` operations have no workspace effect and may run again; `conditional-write`
+ * operations have a provable post-image; `destructive` operations can only be proven by absence.
+ * The runner never re-issues a mutation on its own.
+ */
+export const AgentProxyReplayClassSchema = z.enum(['read-safe', 'conditional-write', 'destructive']);
+export type AgentProxyReplayClass = z.infer<typeof AgentProxyReplayClassSchema>;
+export const AGENT_PROXY_REPLAY_CLASS = {
+  files_list: 'read-safe',
+  files_read: 'read-safe',
+  grep_search: 'read-safe',
+  symbols_search: 'read-safe',
+  symbols_references: 'read-safe',
+  git_status: 'read-safe',
+  git_diff: 'read-safe',
+  files_write: 'conditional-write',
+  files_apply_patch: 'conditional-write',
+  files_mkdir: 'conditional-write',
+  files_delete: 'destructive',
+  files_move: 'destructive',
+  // A command's effect cannot be observed afterwards, so a lost outcome always stays unknown.
+  exec_run: 'destructive'
+} as const satisfies Record<z.infer<typeof AgentProxyOperationSchema>, AgentProxyReplayClass>;
+
+/**
+ * Error codes an agent's model can receive for a proxy request whose outcome cannot be returned:
+ * a repeated request, or a mutation whose executor request failed after it was dispatched. They
+ * appear only in agent tool results, never in MCP tool results.
+ * - `EFFECT_UNKNOWN`: the mutation may or may not have been applied; the owner must inspect.
+ * - `EFFECT_NOT_APPLIED`: the earlier mutation provably did not happen; a new tool call may retry it.
+ * - `EFFECT_RECEIPT_UNAVAILABLE`: the mutation completed but its original result is no longer retained.
+ */
+export const AgentEffectErrorCodeSchema = z.enum(['EFFECT_UNKNOWN', 'EFFECT_NOT_APPLIED', 'EFFECT_RECEIPT_UNAVAILABLE']);
+export type AgentEffectErrorCode = z.infer<typeof AgentEffectErrorCodeSchema>;
+
 export const AgentStatusSchema = z.enum([
   'SPAWNING',
   'RUNNING',
@@ -326,6 +376,33 @@ export const AgentUsageSchema = z.object({
 
 const instant = z.iso.datetime({ offset: true });
 
+/**
+ * A persisted Pi session. `continuable` means a new agent may continue the conversation through
+ * `agent_spawn.continueFrom`; it never means interrupted work was restored.
+ */
+export const AgentSessionStatusSchema = z.object({
+  persisted: z.boolean(),
+  continuable: z.boolean(),
+  messages: z.number().int().nonnegative(),
+  bytes: z.number().int().nonnegative()
+}).strict();
+
+/**
+ * The agent engine. `pi-coding` is the default; `pi-durable` is an opt-in engine whose session
+ * store lives in the runner, so a continuation resumes the work its predecessor left unfinished.
+ */
+export const AgentRuntimeKindSchema = z.enum(['pi-coding', 'pi-durable']);
+export type AgentRuntimeKind = z.infer<typeof AgentRuntimeKindSchema>;
+
+/**
+ * Whether a continuation would resume unfinished work. Always false for the pi-coding runtime; for
+ * pi-durable it is true when the agent ended, other than by cancellation, with unfinished tasks in
+ * its session store. Nothing resumes on its own: the owner continues the agent explicitly.
+ */
+export const AgentRunStatusSchema = z.object({
+  resumable: z.boolean()
+}).strict();
+
 export const AgentLiveStatusDataSchema = z.object({
   agentId: AgentIdSchema,
   workspaceId: WorkspaceIdSchema,
@@ -344,7 +421,13 @@ export const AgentLiveStatusDataSchema = z.object({
   budget: AgentBudgetSchema,
   usage: AgentUsageSchema,
   terminalReason: z.string().max(2_000).nullable(),
-  outcomeUnknown: z.boolean()
+  outcomeUnknown: z.boolean(),
+  // Present only for agents spawned with session persistence on.
+  session: AgentSessionStatusSchema.optional(),
+  run: AgentRunStatusSchema.optional(),
+  continuedFrom: AgentIdSchema.nullable().optional(),
+  // Present only for an agent on a runtime other than the default pi-coding engine.
+  runtime: AgentRuntimeKindSchema.optional()
 }).strict();
 
 export const AgentCompactedStatusDataSchema = z.object({
@@ -412,6 +495,7 @@ export type AgentMessageDeliveryState = z.infer<typeof AgentMessageDeliveryState
 export type AgentBudget = z.infer<typeof AgentBudgetSchema>;
 export type AgentUsage = z.infer<typeof AgentUsageSchema>;
 export type AgentStatusData = z.infer<typeof AgentStatusDataSchema>;
+export type AgentSessionStatus = z.infer<typeof AgentSessionStatusSchema>;
 export type AgentSpawnData = z.infer<typeof AgentSpawnDataSchema>;
 export type AgentLogsData = z.infer<typeof AgentLogsDataSchema>;
 export type AgentMessageData = z.infer<typeof AgentMessageDataSchema>;

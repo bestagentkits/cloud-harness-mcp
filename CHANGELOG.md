@@ -1,3 +1,50 @@
+## [0.79.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.79.1...v0.79.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* **runner:** clean half-written durable owner marks and stop continuing a lineage left over its cap ([#585](https://github.com/bestagentkits/cloud-harness-mcp/issues/585)) ([ccf8f28](https://github.com/bestagentkits/cloud-harness-mcp/commit/ccf8f28114db327bc827eca606805a26d06d6863)), closes [#584](https://github.com/bestagentkits/cloud-harness-mcp/issues/584)
+
+## [0.79.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.79.0...v0.79.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **agents:** report a mutation whose executor call failed as EFFECT_UNKNOWN ([#593](https://github.com/bestagentkits/cloud-harness-mcp/issues/593)) ([a785299](https://github.com/bestagentkits/cloud-harness-mcp/commit/a785299ef0a08e2cae2327445371ab984b2fa0f2)), closes [#594](https://github.com/bestagentkits/cloud-harness-mcp/issues/594)
+
+# [0.79.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.78.1...v0.79.0) (2026-10-26)
+
+
+### Features
+
+* **agent:** opt-in Pi Durable runtime behind a flag with runner-hosted storage ([#448](https://github.com/bestagentkits/cloud-harness-mcp/issues/448)) ([1ce7731](https://github.com/bestagentkits/cloud-harness-mcp/commit/1ce77314aedb4065f2749ad64af523e33deb08d1)), closes [#582](https://github.com/bestagentkits/cloud-harness-mcp/issues/582) [#588](https://github.com/bestagentkits/cloud-harness-mcp/issues/588) [#592](https://github.com/bestagentkits/cloud-harness-mcp/issues/592) [#589](https://github.com/bestagentkits/cloud-harness-mcp/issues/589)
+
+## [0.78.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.78.0...v0.78.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **runner): restore ts-input firewall repair on main; feat(github:** add github_repository_create ([#580](https://github.com/bestagentkits/cloud-harness-mcp/issues/580)) ([950f536](https://github.com/bestagentkits/cloud-harness-mcp/commit/950f5369722bcff506003e0c054df0d4a91bdcfa)), closes [#476](https://github.com/bestagentkits/cloud-harness-mcp/issues/476) [#474](https://github.com/bestagentkits/cloud-harness-mcp/issues/474)
+
+# [0.78.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.77.0...v0.78.0) (2026-10-26)
+
+
+### Features
+
+* **agents:** keep tool receipts and reconcile lost effects instead of replaying mutations ([#430](https://github.com/bestagentkits/cloud-harness-mcp/issues/430)) ([7bfd5a1](https://github.com/bestagentkits/cloud-harness-mcp/commit/7bfd5a147f819db9cc6970df9b6e961c53ca9423))
+
+# [0.77.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.76.2...v0.77.0) (2026-10-26)
+
+
+### Bug Fixes
+
+* **dashboard:** wait for chat.abort before closing the Dewee gateway socket ([#535](https://github.com/bestagentkits/cloud-harness-mcp/issues/535)) ([c78162d](https://github.com/bestagentkits/cloud-harness-mcp/commit/c78162d115cb3d84423cfb48198ae5c2c07eff09)), closes [#533](https://github.com/bestagentkits/cloud-harness-mcp/issues/533)
+
+
+### Features
+
+* **agents:** persist agent sessions in the runner and continue them in a fresh container ([#423](https://github.com/bestagentkits/cloud-harness-mcp/issues/423)) ([4e98ea1](https://github.com/bestagentkits/cloud-harness-mcp/commit/4e98ea15249a0a302be1b7c5f9f7e978a2b44ad4)), closes [#545](https://github.com/bestagentkits/cloud-harness-mcp/issues/545)
+
 ## [0.76.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.76.1...v0.76.2) (2026-10-26)
 
 

@@ -25,6 +25,7 @@ network isolation.
 | Inspect or change Git state, transfer origin refs, or use worktrees | [Git and worktrees](references/git-and-worktrees.md) |
 | Run an automated merge train: branch locks, commit statuses, check runs, review state, workflow dispatch and re-runs | [GitHub merge train](references/github-merge-train.md) |
 | Review or draft webhook automation rules (GitHub, Linear, Jira, custom), disable a rule, or read and cancel automation runs | [Webhook automations](references/webhook-automations.md) |
+| Create a new organization repository and bootstrap it (only when the user explicitly asks) | [GitHub repository bootstrap](references/github-repository-bootstrap.md) |
 | Read/run repository skills, hooks, knowledge (memories & journals), or deployments | [Repository automation](references/repository-automation.md) |
 | Snapshot, list, read, restore, or delete retained artifacts | [Retained artifacts](references/artifacts.md) |
 | Choose a subagent model, check a connection, save an agent model profile, or read estimated model spend | [Models and spend](references/models-and-spend.md) |
@@ -109,7 +110,15 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    open a separate `network-none` workspace for `agent_spawn`. A spawn the
    owner's estimated model spend policy cannot fit fails with non-retryable
    `LIMIT_EXCEEDED`; lower `maxCostMicros` or wait for running agents to
-   finish rather than retrying unchanged. `model_spend_summary` shows the
+   finish rather than retrying unchanged. To follow up on an ended agent, spawn
+   with `continueFrom` when its `agent_status` reports `session.continuable`;
+   that is a new agent with the earlier conversation and model profile (omit
+   `profileId`), never a resumed run. Only an agent on the owner's opt-in
+   durable engine (`runtime: "pi-durable"`) can report `run.resumable: true`;
+   its continuation resumes that unfinished work. Leave `runtime` unset unless
+   the owner asked for the durable engine. Both are off by default: on
+   `NOT_SUPPORTED`, spawn a fresh agent and brief it in the prompt instead.
+   `model_spend_summary` shows the
    headroom; no MCP tool changes policies, only the owner can, through the
    dashboard. A profile you save with `model_profile_create` stays disabled
    until the owner activates it. Workspaces
@@ -243,6 +252,7 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
 | Branch isolation in workspace | `worktrees_*` | manual Git branching |
 | Stage, commit, preflight, push | `workspace_finalize` | sequence of manual `git_*` calls |
 | GitHub PRs / Issues / statuses / workflow runs | `github_read`, then `github_action` for writes | manual external Git/API CLI |
+| New organization repository (user asked for it) | `workspace_capabilities` (`githubRepositoryCreate`), then `github_repository_create` | creating it on github.com by hand |
 | Helper / workflow discovery | native `skills/*` if supported, else `skills_list` then `skills_read` | `skills_run` after review |
 | Automation hooks / deployments | `hooks_list` / `deployments_list` | run only owner-reviewed target |
 | Durable repository note | `memories_*` | never store credentials or personal data |
