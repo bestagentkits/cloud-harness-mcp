@@ -1,4 +1,4 @@
-# ADR 0006: Agent Session Persistence and Opt-in Durable Runtime
+# ADR 0010: Agent Session Persistence and Opt-in Durable Runtime
 
 - **Status:** Accepted
 - **Date:** 2026-10-19

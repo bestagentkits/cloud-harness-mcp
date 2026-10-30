@@ -140,7 +140,7 @@ run at a time. The container therefore stays stateless, and a continuation of
 an interrupted durable run resumes its unfinished work. The engine is loaded,
 in the runner and in the agent image, only when the operator opts in
 ([operations](operations.md#durable-agent-engine)).
-[ADR 0006](adr/0006-agent-session-persistence.md) records why the coding runtime
+[ADR 0010](adr/0010-agent-session-persistence.md) records why the coding runtime
 stays the default and both session persistence and the durable engine stay
 flag-gated opt-ins, with the measurements behind that decision.
 
@@ -433,7 +433,7 @@ capability helper receives unchanged, so per-repository behaviour needs no
 second code path. A single-repository workspace has no registry rows and gets a
 synthesized deterministic entry. The resolver lives in
 [`apps/runner/src/workspace-repositories.ts`](../apps/runner/src/workspace-repositories.ts);
-the reasoning is in [ADR 0005](adr/0005-multi-repository-workspaces.md).
+the reasoning is in [ADR 0009](adr/0009-multi-repository-workspaces.md).
 
 The skill registry is a separate concern that shares that store. Sources, revisions, sets, and import
 jobs are written through [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts), while

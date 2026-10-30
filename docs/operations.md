@@ -505,7 +505,7 @@ cap as `unreconciled`, because the lease may exist.
 ## Agent session persistence and the durable engine
 
 Both are off by default, and `pi-coding` stays the default engine; the reasons
-and measurements are in [ADR 0006](adr/0006-agent-session-persistence.md). The
+and measurements are in [ADR 0010](adr/0010-agent-session-persistence.md). The
 flags are described in [configuration](configuration.md#managed-agents).
 
 ### Canary

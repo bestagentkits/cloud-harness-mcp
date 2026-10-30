@@ -232,7 +232,7 @@ in [`live-driver.ts`](../test/benchmarks/agent-runtime/live-driver.ts). The
 scenarios, fixtures and result shape are owned by
 [`test/benchmarks/agent-runtime.bench.test.ts`](../test/benchmarks/agent-runtime.bench.test.ts);
 the decision it supports is
-[ADR 0006](adr/0006-agent-session-persistence.md).
+[ADR 0010](adr/0010-agent-session-persistence.md).
 
 ## Live provider checks
 
