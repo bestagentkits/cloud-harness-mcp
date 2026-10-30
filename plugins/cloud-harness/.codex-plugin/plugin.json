@@ -1,6 +1,6 @@
 {
   "name": "cloud-harness",
-  "version": "0.79.2",
+  "version": "0.80.0-beta.1",
   "description": "Safe operating guidance for private Cloud Harness MCP coding workspaces.",
   "author": {
     "name": "Best Agent Kits",

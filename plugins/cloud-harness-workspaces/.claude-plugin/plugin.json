@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "cloud-harness-workspaces",
   "displayName": "Cloud Harness Workspaces",
-  "version": "0.79.2",
+  "version": "0.80.0-beta.1",
   "description": "Work in authorized remote coding workspaces on your own self-hosted Cloud Harness MCP endpoint, with read-first inspection, bounded execution, and explicit cleanup.",
   "author": {
     "name": "Best Agent Kits",
