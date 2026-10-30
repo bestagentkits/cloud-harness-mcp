@@ -931,9 +931,9 @@ describe('contracts', () => {
       expect(AgentProxyReplayClassSchema.options).toContain(AGENT_PROXY_REPLAY_CLASS[operation]);
     }
     expect(Object.entries(AGENT_PROXY_REPLAY_CLASS).filter(([, replayClass]) => replayClass === 'read-safe').map(([operation]) => operation).sort())
-      .toEqual(['files_list', 'files_read', 'grep_search', 'symbols_references', 'symbols_search']);
+      .toEqual(['files_list', 'files_read', 'git_diff', 'git_status', 'grep_search', 'symbols_references', 'symbols_search']);
     expect(Object.entries(AGENT_PROXY_REPLAY_CLASS).filter(([, replayClass]) => replayClass === 'destructive').map(([operation]) => operation).sort())
-      .toEqual(['files_delete', 'files_move']);
+      .toEqual(['exec_run', 'files_delete', 'files_move']);
     expect(AgentEffectErrorCodeSchema.options).toEqual(['EFFECT_UNKNOWN', 'EFFECT_NOT_APPLIED', 'EFFECT_RECEIPT_UNAVAILABLE']);
     expect(() => TOOL_SCHEMA_BY_NAME.agent_spawn.parse({
       workspaceId,
