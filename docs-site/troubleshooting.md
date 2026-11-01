@@ -493,3 +493,12 @@ File and command tools without `repositoryId` work on the workspace root, so pat
 **Fix:**
 1. Read the affected file or path before repeating the change; the agent receives the same instruction.
 2. For `EFFECT_NOT_APPLIED`, the agent may simply issue the change again.
+
+---
+
+### 40. `git_merge` or `git_rebase` fails with `Committer identity unknown`
+**Cause:** Git found no usable author or committer identity for an operation that creates a commit. The harness passes the resolved identity (explicit call arguments, then the workspace identity, then the owner default, then `Cloud Harness Agent`) to `git_commit`, `git_merge`, `git_rebase`, `git_pull`, and `workspace_finalize`. When nothing is configured, a merge or rebase keeps an identity the checkout's own Git config provides, and uses `Cloud Harness Agent` only when there is none. The identity is supplied per command, so `git config user.name` inside the workspace stays empty by design; a raw `git merge` or `git commit` run through `exec_run` or `bash` does not receive it.
+
+**Fix:**
+1. Check what the workspace will record with `git_identity_status` and its `workspaceId`; `source` says whether the identity comes from the workspace, the owner, or the default.
+2. If the error still appears, set an identity with `git_identity_set` (add `workspaceId` to scope it to one workspace) and retry the merge or `git_rebase` with `action: "continue"`. A real source conflict is reported without the `git_identity_set` hint.

@@ -2114,6 +2114,31 @@ export class WorkspaceService {
     return { entries: data.entries ?? [], rosterDigest: data.rosterDigest ?? '' };
   }
 
+  /**
+   * The Git identity a workspace records on commits it creates: its own override from
+   * git_identity_set, then the owner's default, then the harness default.
+   */
+  private resolveGitIdentity(ownerId: string, record?: WorkspaceRecord): { name: string; email: string; source: 'workspace' | 'owner' | 'default' } {
+    if (record?.gitAuthorName && record.gitAuthorEmail) return { name: record.gitAuthorName, email: record.gitAuthorEmail, source: 'workspace' };
+    const owner = this.store.getGitIdentity(ownerId);
+    if (owner) return { ...owner, source: 'owner' };
+    return { name: 'Cloud Harness Agent', email: 'agent@cloud-harness.local', source: 'default' };
+  }
+
+  /**
+   * Worker input for a commit-creating Git operation. A configured identity is injected; with none,
+   * the worker keeps its executor-environment and default fallback.
+   */
+  private withGitIdentity(ownerId: string, record: WorkspaceRecord, input: Record<string, unknown>): Record<string, unknown> {
+    const identity = this.resolveGitIdentity(ownerId, record);
+    if (identity.source === 'default') return input;
+    return {
+      ...input,
+      authorName: (input.authorName as string | undefined) || identity.name,
+      authorEmail: (input.authorEmail as string | undefined) || identity.email
+    };
+  }
+
   private requireWorkspace(ownerId: string, workspaceId?: string, active = true, allowRecoverable = false): WorkspaceRecord {
     let record: WorkspaceRecord;
     try {
@@ -4024,17 +4049,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       };
     }
     if (operation === 'git_identity_status') {
-      const identity = this.store.getGitIdentity(ownerId);
-      return {
-        ok: true,
-        message: 'Git identity status',
-        data: identity ? { ...identity, source: 'owner' } : {
-          name: 'Cloud Harness Agent',
-          email: 'agent@cloud-harness.local',
-          source: 'default'
-        },
-        truncated: false
-      };
+      const ws = validated.workspaceId ? this.requireWorkspace(ownerId, validated.workspaceId as string, false, true) : undefined;
+      return { ok: true, message: 'Git identity status', data: this.resolveGitIdentity(ownerId, ws), truncated: false };
     }
     if (operation === 'git_identity_set') {
       const name = validated.name as string;
@@ -4417,10 +4433,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       try {
         branch = await this.currentBranch(record, signal);
       } catch { /* branch resolution optional */ }
-      const gitIdentity = this.store.getGitIdentity(ownerId) ?? {
-        name: record.gitAuthorName || 'Cloud Harness Agent',
-        email: record.gitAuthorEmail || 'agent@cloud-harness.local'
-      };
+      const gitIdentity = this.resolveGitIdentity(ownerId, record);
       const caps = this.computeWorkspaceCapabilities(record);
       let manifest: unknown = undefined;
       try {
@@ -5082,9 +5095,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         // Step 4: Run pre_commit lifecycle hooks, resolve Git author & Commit
         await this.runLifecycleHooks(record, 'pre_commit', signal);
 
-        const storedIdentity = this.store.getGitIdentity(ownerId);
-        const authorName = (validated.authorName as string | undefined) || record.gitAuthorName || storedIdentity?.name || 'Cloud Harness Agent';
-        const authorEmail = (validated.authorEmail as string | undefined) || record.gitAuthorEmail || storedIdentity?.email || 'agent@cloud-harness.local';
+        const identity = this.resolveGitIdentity(ownerId, record);
+        const authorName = (validated.authorName as string | undefined) || identity.name;
+        const authorEmail = (validated.authorEmail as string | undefined) || identity.email;
 
         const commitMsg = validated.commitMessage as string;
         const commitResult = await this.runWorker(record, 'git_commit', {
@@ -5514,12 +5527,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       if (!branch) throw new HarnessError('CONFLICT', 'git_pull requires branch when HEAD is detached', 409, false);
       await this.remoteFetch(record, `refs/heads/${branch}`, signal);
       const result = validated.strategy === 'rebase'
-        ? await this.runWorker(record, 'git_rebase', { workspaceId: record.id, action: 'start', upstream: 'FETCH_HEAD' }, signal)
-        : await this.runWorker(record, 'git_merge', {
+        ? await this.runWorker(record, 'git_rebase', this.withGitIdentity(ownerId, record, { workspaceId: record.id, action: 'start', upstream: 'FETCH_HEAD' }), signal)
+        : await this.runWorker(record, 'git_merge', this.withGitIdentity(ownerId, record, {
             workspaceId: record.id,
             ref: 'FETCH_HEAD',
             fastForward: validated.strategy === 'ff-only' ? 'only' : 'allow'
-          }, signal);
+          }), signal);
       await this.enforceActiveLimits(record);
       return result.ok ? { ...result, message: 'Git pull complete' } : result;
     }
@@ -5594,7 +5607,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       let result: RunnerResponse;
       try {
         await this.runLifecycleHooks(record, 'pre_commit', signal);
-        result = await this.runWorker(record, 'git_commit', validated, signal);
+        result = await this.runWorker(record, 'git_commit', this.withGitIdentity(ownerId, record, validated), signal);
         if (result.ok) {
           await this.runLifecycleHooks(record, 'post_commit', signal);
         }
@@ -5611,6 +5624,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       } else if (idempotencyKey && !result.ok) {
         this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify(result.error ?? { message: result.message }), currentHeadOid);
       }
+      return result;
+    }
+    if (operation === 'git_merge' || operation === 'git_rebase') {
+      const result = await this.runWorker(record, operation, this.withGitIdentity(ownerId, record, validated), signal);
+      await this.enforceActiveLimits(record);
       return result;
     }
     if (prepareSearchInput(operation, validated)) {

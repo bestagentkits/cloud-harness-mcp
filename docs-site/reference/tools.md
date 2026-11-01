@@ -891,7 +891,7 @@ Create an unsigned local Git commit with default or explicit author and message.
 
 **Read Git author identity**
 
-Read the default or configured Git author name and email for the workspace.
+Read the Git identity a workspace records on commits, merges, and rebases, and whether it comes from the workspace, the owner, or the default.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
 
@@ -903,7 +903,7 @@ Read the default or configured Git author name and email for the workspace.
 
 **Set Git author identity**
 
-Configure default Git author name and email for workspace commits.
+Set the Git identity used by git_commit, git_merge, git_rebase, git_pull, and workspace_finalize; with workspaceId it overrides the owner default for that workspace only.
 
 **Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
 

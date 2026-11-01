@@ -67,10 +67,9 @@ Read branch, index, and working-tree status for `workspaceId`.
 <!-- cloudharness-tool:git_identity_status -->
 ### `git_identity_status`
 
-Read configured or default Git author identity for the workspace.
+Read the Git identity a workspace records on the commits it creates.
 
-- Optional: `workspaceId`.
-- Returns author name, email, and source (`workspace`, `principal`, or `default`).
+- Optional: `workspaceId`. Returns `name`, `email`, and `source` (`workspace`, `owner`, or `default`).
 
 <!-- cloudharness-example:git_identity_status
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa"}
@@ -79,10 +78,11 @@ Read configured or default Git author identity for the workspace.
 <!-- cloudharness-tool:git_identity_set -->
 ### `git_identity_set`
 
-Configure default Git author name and email for commits.
+Set the identity used by `git_commit`, `git_merge`, `git_rebase`, `git_pull`, and `workspace_finalize`.
 
-- Required: `name`, `email`. Optional: `workspaceId`.
-- Returns updated Git author identity settings.
+- Required: `name`, `email`. Optional: `workspaceId` scopes it to one workspace;
+  otherwise it is the owner default. Explicit call authors win, then workspace,
+  owner, and `Cloud Harness Agent`. It is never written to Git config; rebases keep original authors.
 
 <!-- cloudharness-example:git_identity_set
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","name":"Agent Developer","email":"agent@example.com"}
