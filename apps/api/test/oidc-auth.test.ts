@@ -155,6 +155,24 @@ describe('OIDC access token verification', () => {
     await expect((await withdraw(false)).result).resolves.toBeDefined();
   });
 
+  it.each([
+    ['an empty key list', () => new Response(JSON.stringify({ keys: [] }), { status: 200 })],
+    ['a server error', () => new Response('unavailable', { status: 500 })],
+    ['a document with one malformed key', () => new Response(JSON.stringify({ keys: [{ kty: 'RSA', kid: 'tose-broken', alg: 'RS256', use: 'sig' }] }), { status: 200 })],
+    ['truncated JSON', () => new Response('{"keys": [', { status: 200 })]
+  ])('keeps the cached key when an evicting refresh returns %s', async (_name, badResponse) => {
+    let now = baseTime;
+    let respond = () => new Response(JSON.stringify({ keys: [signingKey.jwk] }), { status: 200 });
+    const fetcher = vi.fn(async () => respond());
+    const verifier = new JwksJwtVerifier({ issuer, audience: instanceA, jwksUrl, requiredScope, evictMissingKeys: true, fetcher, now: () => now });
+    await expect(verifier.verify(jwt(signingKey, claims()))).resolves.toBeDefined();
+    respond = badResponse;
+    now = baseTime + 301_000;
+    // A refresh that is not a fully valid key document never withdraws keys; the cached key serves its stale window.
+    await expect(verifier.verify(jwt(signingKey, claims({ exp: nowSeconds + 900 })))).resolves.toBeDefined();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it('follows a key rotation by refreshing the cached JWKS on an unknown key id', async () => {
     const rotated = key('tose-next');
     let keys: JsonWebKey[] = [signingKey.jwk];

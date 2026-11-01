@@ -47,6 +47,7 @@ vi.mock('../src/toolbox-runner.js', async (importOriginal) => ({
 import type * as ToolboxRunner from '../src/toolbox-runner.js';
 import { DockerAgentGatewayControl } from '../src/agent-gateway-control.js';
 import { resolveDockerSocketPath } from '../src/docker-pty.js';
+import { PACKAGE_GC_INTERVAL_MS, type PackageService } from '../src/package-service.js';
 import { StateStore } from '../src/state-store.js';
 import { TOOLBOX_STALE_AFTER_MS } from '../src/toolbox-runner.js';
 import { WorkspaceService } from '../src/workspace-service.js';
@@ -169,6 +170,22 @@ describe('Docker on demand reaper', () => {
     expect(docker.removeContainer).toHaveBeenCalledWith(leftover);
     expect(docker.containers.size).toBe(0);
     expect(await runPasses(service, clock, 50)).toBe(0);
+  });
+
+  it('keeps collecting package garbage on idle passes that leave the Docker host alone', async () => {
+    const clock = { now: 1_800_000_000_000 };
+    const service = createService(true, clock, { packagesEnabled: true });
+    await runPasses(service, clock, 1);
+    clock.now += TOOLBOX_STALE_AFTER_MS;
+    await runPasses(service, clock, 1);
+
+    const packages = (service as unknown as { packages: PackageService }).packages;
+    const collectGarbage = vi.spyOn(packages, 'collectGarbage');
+    // More than an hour of idle passes: package GC is due at least once and nothing needs removing.
+    const passes = Math.ceil(PACKAGE_GC_INTERVAL_MS / intervalMs) + 10;
+    expect(await runPasses(service, clock, passes)).toBe(0);
+    expect(collectGarbage).toHaveBeenCalledTimes(passes);
+    await expect(collectGarbage.mock.results.at(-1)?.value).resolves.toBeDefined();
   });
 
   it('retries a failed idle sweep instead of going quiet with it unfinished', async () => {
