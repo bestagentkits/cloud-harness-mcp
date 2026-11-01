@@ -96,6 +96,21 @@ signing key withdrawn from the JWKS stops being accepted at the next successful
 key fetch, at most 5 minutes later, or up to 15 minutes later while the JWKS
 endpoint is failing.
 
+Because a key that a successful fetch no longer lists stops verifying within 5
+minutes, the authorization server rotates signing keys in this order:
+
+1. Publish the new key in the JWKS before signing any token with it. Until a
+   fetch returns it, Cloud Harness rejects tokens carrying the new `kid` and
+   remembers that `kid` as unknown for 30 seconds.
+2. Sign new tokens with the new key.
+3. Keep the retired key published until every token it signed has expired: the
+   access-token lifetime after the last token it signed, plus 5 minutes of
+   margin. Then remove it.
+
+During a rollout every JWKS replica serves the superset of the old and new keys.
+A replica that still serves an older set makes the fetch that reaches it drop
+the keys it lacks.
+
 A request without a valid token receives `401` with
 `WWW-Authenticate: Bearer resource_metadata="<url>"`, plus
 `error="invalid_token"` when a token was presented. The URL is the RFC 9728

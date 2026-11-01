@@ -74,7 +74,10 @@ person at the issuer takes effect only when their issued tokens expire; the
 issuer should keep access tokens to 10 minutes or less and re-check its
 allowlist on refresh. A signing key withdrawn from the JWKS stops being accepted
 at the next successful key fetch (at most 5 minutes), or within 15 minutes while
-the JWKS endpoint fails. The modes cannot be enabled ambiguously.
+the JWKS endpoint fails. The issuer therefore publishes a new key before signing
+with it, keeps a retired key published until every token it signed has expired,
+and serves the same superset from every JWKS replica during a rollout
+([key rotation](configuration.md#oidc-bearer-tokens)). The modes cannot be enabled ambiguously.
 
 Access policies may offer GitHub and Google login, but Cloud Harness keys
 authorization only on Access-normalized `(issuer, subject)`; `oidc` mode keys it
