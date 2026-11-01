@@ -276,6 +276,30 @@ describe('contracts', () => {
     expect(() => push.parse({ workspaceId, forceWithLease: true, expectedRemoteOid: oid, delete: true })).toThrow();
   });
 
+  it('advertises GitHub list limits that the per-action validation accepts', () => {
+    const workspaceId = `ws_${'a'.repeat(24)}`;
+    for (const tool of ['github_read', 'github_action'] as const) {
+      const schema = TOOL_SCHEMA_BY_NAME[tool];
+      const limit = (z.toJSONSchema(schema, { io: 'input' }) as { properties: { limit: { maximum: number; description?: string } } }).properties.limit;
+      expect(limit.maximum).toBe(250);
+      expect(limit.description).toMatch(/compare accepts up to 250/);
+      expect(limit.description).toMatch(/every other list action accepts up to 100/);
+      expect(schema.parse({ workspaceId, action: 'compare', base: 'main', head: 'dev', limit: 250 })).toMatchObject({ limit: 250 });
+      expect(() => schema.parse({ workspaceId, action: 'compare', base: 'main', head: 'dev', limit: 251 })).toThrow();
+      const sha = 'c'.repeat(40);
+      const required: Record<string, Record<string, unknown>> = {
+        issue_list: {}, pr_list: {}, commit_list: {}, release_list: {}, tag_list: {}, workflow_runs_list: {},
+        pr_review_threads: { prNumber: 3 }, commit_status_get: { sha }, check_runs_list: { sha }, workflow_run_view: { runId: 9001 }
+      };
+      for (const [action, extra] of Object.entries(required)) {
+        expect(schema.parse({ workspaceId, action, ...extra, limit: 100 })).toMatchObject({ limit: 100 });
+        for (const tooLarge of [101, 150, 250]) {
+          expect(() => schema.parse({ workspaceId, action, ...extra, limit: tooLarge })).toThrow();
+        }
+      }
+    }
+  });
+
   it('validates the merge-train GitHub actions on their tool surfaces', () => {
     const workspaceId = `ws_${'a'.repeat(24)}`;
     const sha = 'b'.repeat(40);

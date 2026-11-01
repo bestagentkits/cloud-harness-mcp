@@ -515,3 +515,13 @@ File and command tools without `repositoryId` work on the workspace root, so pat
 **Fix:**
 1. Check what the workspace will record with `git_identity_status` and its `workspaceId`; `source` says whether the identity comes from the workspace, the owner, or the default.
 2. If the error still appears, set an identity with `git_identity_set` (add `workspaceId` to scope it to one workspace) and retry the merge or `git_rebase` with `action: "continue"`. A real source conflict is reported without the `git_identity_set` hint.
+
+---
+
+### 42. MCP calls return HTTP `429` `rate_limited` again and again
+**Cause:** Each authenticated client has a per-minute request budget and a cap on requests in flight at once, and requests that have not authenticated yet share one instance-wide budget of the same kind. The JSON body names which one was hit in `scope` (`requests_per_minute` or `concurrent_requests`), and `Retry-After` (seconds) and `retryAfterMs` say how long until it frees: the rest of the current minute for the request budget, about one second for the in-flight cap. A request sent before then is refused again.
+
+**Fix:**
+1. Wait at least `Retry-After` before the next call instead of retrying in a tight loop.
+2. Batch reads (for example `files_write_batch`, or one `github_read` list with a larger `limit`) and avoid running many tool calls in parallel from one client.
+3. If it persists while the client is idle, look for a stuck or duplicated client using the same credential, or for a flood of unauthenticated requests against the shared budget.

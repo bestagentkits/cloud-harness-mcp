@@ -40,13 +40,24 @@ function enforceLimit(window: LimitWindow, response: Response, next: NextFunctio
     window.startedAt = now;
     window.requests = 0;
   }
-  window.requests += 1;
   window.lastSeenAt = now;
-  if (window.requests > maxRequests || window.active >= maxActive) {
-    response.setHeader('Retry-After', '1');
-    response.status(429).json({ error: 'rate_limited' });
+  const overRate = window.requests >= maxRequests;
+  if (overRate || window.active >= maxActive) {
+    // A spent per-minute budget frees only when the window resets, so advertising a fixed one-second
+    // wait would send every compliant client into a burst of retries that all fail until then.
+    const retryAfterMs = overRate ? Math.min(60_000, Math.max(1_000, window.startedAt + 60_000 - now)) : 1_000;
+    response.setHeader('Retry-After', String(Math.ceil(retryAfterMs / 1_000)));
+    response.status(429).json({
+      error: 'rate_limited',
+      scope: overRate ? 'requests_per_minute' : 'concurrent_requests',
+      retryable: true,
+      retryAfterMs
+    });
     return;
   }
+  // Only admitted requests spend the budget, so a client told to retry the concurrency cap in a
+  // second is not then locked out for the rest of the minute by its own refused retries.
+  window.requests += 1;
   window.active += 1;
   let released = false;
   const release = (): void => {

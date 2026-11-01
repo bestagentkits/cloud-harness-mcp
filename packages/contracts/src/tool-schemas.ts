@@ -299,12 +299,20 @@ const workflowInputs = z.record(
 // The dispatch API runs a workflow on a branch or tag, never on a bare commit.
 const workflowDispatchRef = githubRevision.refine((value) => !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value), 'workflow_dispatch ref must be a branch or tag, not a commit SHA');
 
+// The flat tool input advertises the largest per-action maximum, so its description has to name the
+// tighter maximum every other action enforces; otherwise a client reads 250 and is rejected at 101.
+const GITHUB_COMPARE_LIMIT_MAX = 250;
+const GITHUB_LIST_LIMIT_MAX = 100;
+const githubFlatLimit = z.number().int().min(1).max(GITHUB_COMPARE_LIMIT_MAX).optional().describe(
+  `Maximum items to return. compare accepts up to ${GITHUB_COMPARE_LIMIT_MAX} files; every other list action accepts up to ${GITHUB_LIST_LIMIT_MAX}.`
+);
+
 const githubReadActionSchemas = [
   z.object({
     ...workspace,
     ...repository,
     action: z.literal('pr_list'),
-    limit: z.number().int().min(1).max(100).default(20),
+    limit: z.number().int().min(1).max(GITHUB_LIST_LIMIT_MAX).default(20),
     state: z.enum(['open', 'closed', 'all']).default('open')
   }),
   z.object({
@@ -318,7 +326,7 @@ const githubReadActionSchemas = [
     ...repository,
     action: z.literal('pr_review_threads'),
     prNumber: z.number().int().positive(),
-    limit: z.number().int().min(1).max(100).default(50)
+    limit: z.number().int().min(1).max(GITHUB_LIST_LIMIT_MAX).default(50)
   }),
   z.object({
     ...workspace,
@@ -330,7 +338,7 @@ const githubReadActionSchemas = [
     ...workspace,
     ...repository,
     action: z.literal('issue_list'),
-    limit: z.number().int().min(1).max(100).default(20),
+    limit: z.number().int().min(1).max(GITHUB_LIST_LIMIT_MAX).default(20),
     state: z.enum(['open', 'closed', 'all']).default('open')
   }),
   z.object({
@@ -343,7 +351,7 @@ const githubReadActionSchemas = [
     ...workspace,
     ...repository,
     action: z.literal('commit_list'),
-    limit: z.number().int().min(1).max(100).default(30),
+    limit: z.number().int().min(1).max(GITHUB_LIST_LIMIT_MAX).default(30),
     sha: githubRevision.optional(),
     path: githubHistoryPath.optional(),
     since: isoInstant.optional(),
@@ -355,19 +363,19 @@ const githubReadActionSchemas = [
     action: z.literal('compare'),
     base: githubRevision,
     head: githubRevision,
-    limit: z.number().int().min(1).max(250).default(100)
+    limit: z.number().int().min(1).max(GITHUB_COMPARE_LIMIT_MAX).default(100)
   }),
   z.object({
     ...workspace,
     ...repository,
     action: z.literal('release_list'),
-    limit: z.number().int().min(1).max(100).default(20)
+    limit: z.number().int().min(1).max(GITHUB_LIST_LIMIT_MAX).default(20)
   }),
   z.object({
     ...workspace,
     ...repository,
     action: z.literal('tag_list'),
-    limit: z.number().int().min(1).max(100).default(30)
+    limit: z.number().int().min(1).max(GITHUB_LIST_LIMIT_MAX).default(30)
   }),
   z.object({
     ...workspace,
@@ -380,7 +388,7 @@ const githubReadActionSchemas = [
     ...repository,
     action: z.literal('commit_status_get'),
     sha: githubRevision,
-    limit: z.number().int().min(1).max(100).default(100)
+    limit: z.number().int().min(1).max(GITHUB_LIST_LIMIT_MAX).default(100)
   }),
   z.object({
     ...workspace,
@@ -388,7 +396,7 @@ const githubReadActionSchemas = [
     action: z.literal('check_runs_list'),
     sha: githubRevision,
     checkName: z.string().min(1).max(255).refine((val) => !val.includes('\0'), 'checkName cannot contain null bytes').optional(),
-    limit: z.number().int().min(1).max(100).default(100)
+    limit: z.number().int().min(1).max(GITHUB_LIST_LIMIT_MAX).default(100)
   }),
   z.object({
     ...workspace,
@@ -399,14 +407,14 @@ const githubReadActionSchemas = [
     branch: githubRevision.optional(),
     event: workflowEvent.optional(),
     status: workflowRunStatus.optional(),
-    limit: z.number().int().min(1).max(100).default(20)
+    limit: z.number().int().min(1).max(GITHUB_LIST_LIMIT_MAX).default(20)
   }),
   z.object({
     ...workspace,
     ...repository,
     action: z.literal('workflow_run_view'),
     runId: workflowRunId,
-    limit: z.number().int().min(1).max(100).default(100)
+    limit: z.number().int().min(1).max(GITHUB_LIST_LIMIT_MAX).default(100)
   })
 ] as const;
 
@@ -737,7 +745,7 @@ const githubReadInput = z.object({
   ...workspace,
   ...repository,
   action: z.enum(GITHUB_READ_ACTIONS),
-  limit: z.number().int().min(1).max(250).optional(),
+  limit: githubFlatLimit,
   state: z.enum(['open', 'closed', 'all']).optional(),
   prNumber: z.number().int().positive().optional(),
   issueNumber: z.number().int().positive().optional(),
@@ -761,7 +769,7 @@ const githubActionInput = z.object({
   ...workspace,
   ...repository,
   action: z.enum([...GITHUB_READ_ACTIONS, ...GITHUB_WRITE_ACTIONS]),
-  limit: z.number().int().min(1).max(250).optional(),
+  limit: githubFlatLimit,
   state: z.union([z.enum(['open', 'closed', 'all']), commitStatusState]).optional(),
   prNumber: z.number().int().positive().optional(),
   issueNumber: z.number().int().positive().optional(),
@@ -1498,7 +1506,7 @@ const descriptions: Record<RunnerOperation, string> = {
   workspace_capabilities: 'Inspect workspace and repository authorization capabilities (including issue and pull request operations mapped to github_action) without modifying state or minting tokens. githubRepositoryCreate reports whether github_repository_create is available and for which organizations; called without a workspaceId when no workspace is active, it returns only the principal-level blocks (workspaceId: null). workspaceLifetime (defaultLifetimeSeconds, maxWorkspaceLifetimeSeconds, minLifetimeSeconds, defaultIdleTtlSeconds) reports the lifetime the next workspace_open can be granted, with or without a workspace.',
   workspace_close: 'Stop a workspace executor and permanently remove all workspace files, including unpushed commits.',
   workspace_lease_renew: 'Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace. Renewal never passes hardExpiresAt; when the requested extension would pass it, the result sets leaseCapped: true with requestedExpiresAt and a leaseWarnings entry.',
-  workspace_recover: 'Recover a recoverable expired workspace to active state, or inspect, patch, or export unpushed work.',
+  workspace_recover: 'Recover a recoverable expired workspace to active state, or inspect, patch, or export unpushed work. mode: resume reactivates it before its hard lease ends; status and patch only read and change nothing (patch returns the uncommitted and the committed-but-unpushed diffs); export is a publish: it commits every uncommitted change and pushes HEAD to targetBranch (default: the current branch) on the remote, then reports commitSha and pushResult. Use patch when you must not commit or push.',
   workspace_context: 'Read the active workspace ID, branch, lease time, Git identity, and repository overview.',
   workspace_set_active: 'Set the caller preferred active workspace when multiple workspaces exist.',
   workspace_repos_list: 'List the repositories of a workspace with their stable repo_ ids, aliases, checkout paths below the workspace root, requested refs, and access modes. A single-repository workspace reports its one checkout at the workspace root.',

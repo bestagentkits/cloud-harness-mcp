@@ -194,7 +194,7 @@ Explicitly renew the workspace idle lease duration or reactivate a recoverable e
 
 **Recover workspace state**
 
-Recover a recoverable expired workspace to active state, or inspect, patch, or export unpushed work.
+Recover a recoverable expired workspace to active state, or inspect, patch, or export unpushed work. mode: resume reactivates it before its hard lease ends; status and patch only read and change nothing (patch returns the uncommitted and the committed-but-unpushed diffs); export is a publish: it commits every uncommitted change and pushes HEAD to targetBranch (default: the current branch) on the remote, then reports commitSha and pushResult. Use patch when you must not commit or push.
 
 **Attributes:** <span class="badge-destructive">destructive</span>
 
@@ -1095,7 +1095,7 @@ Create GitHub issues (action: "issue_create"), list, view, comment on, update, a
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `action` | `"pr_list"` \| `"pr_view"` \| `"pr_review_threads"` \| `"pr_reviews"` \| `"issue_list"` \| `"issue_view"` \| `"commit_list"` \| `"compare"` \| `"release_list"` \| `"tag_list"` \| `"ref_get"` \| `"commit_status_get"` \| `"check_runs_list"` \| `"workflow_runs_list"` \| `"workflow_run_view"` \| `"pr_create"` \| `"pr_update"` \| `"pr_comment"` \| `"issue_create"` \| `"issue_comment"` \| `"issue_comment_update"` \| `"label_create"` \| `"issue_labels_add"` \| `"issue_labels_remove"` \| `"issue_update"` \| `"issue_publish"` \| `"pr_review"` \| `"pr_review_comment"` \| `"pr_review_reply"` \| `"pr_review_thread_resolve"` \| `"pr_review_thread_unresolve"` \| `"pr_reviewers_request"` \| `"pr_reviewers_remove"` \| `"pr_ready"` \| `"pr_convert_to_draft"` \| `"pr_merge"` \| `"pr_auto_merge_enable"` \| `"pr_auto_merge_disable"` \| `"commit_status_create"` \| `"check_run_create"` \| `"check_run_update"` \| `"workflow_dispatch"` \| `"workflow_run_rerun_failed"` | **Yes** | — |
-| `limit` | `integer` | No | range: 1–250 |
+| `limit` | `integer` | No | Maximum items to return. compare accepts up to 250 files; every other list action accepts up to 100. (range: 1–250) |
 | `state` | string \| string | No | — |
 | `prNumber` | `integer` | No | range: 0–9007199254740991 |
 | `issueNumber` | `integer` | No | range: 0–9007199254740991 |
@@ -1965,7 +1965,7 @@ Read-only GitHub access for the repository bound to an owner-authorized workspac
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `action` | `"pr_list"` \| `"pr_view"` \| `"pr_review_threads"` \| `"pr_reviews"` \| `"issue_list"` \| `"issue_view"` \| `"commit_list"` \| `"compare"` \| `"release_list"` \| `"tag_list"` \| `"ref_get"` \| `"commit_status_get"` \| `"check_runs_list"` \| `"workflow_runs_list"` \| `"workflow_run_view"` | **Yes** | — |
-| `limit` | `integer` | No | range: 1–250 |
+| `limit` | `integer` | No | Maximum items to return. compare accepts up to 250 files; every other list action accepts up to 100. (range: 1–250) |
 | `state` | `"open"` \| `"closed"` \| `"all"` | No | — |
 | `prNumber` | `integer` | No | range: 0–9007199254740991 |
 | `issueNumber` | `integer` | No | range: 0–9007199254740991 |
