@@ -53,6 +53,8 @@ export type ReposFinalizeRun = {
   plan: ReposFinalizePlan;
   /** Runs one ordinary tool call for the same principal; it must apply that tool's full checks. */
   execute: (operation: StepOperation, input: Record<string, unknown>) => Promise<RunnerResponse>;
+  /** Once aborted (a cancelled or timed-out request), no further step starts; the rest are recorded as skipped. */
+  signal?: AbortSignal;
 };
 
 type StepError = { code: ErrorCode; message: string; retryable: boolean };
@@ -114,6 +116,10 @@ export async function runReposFinalize(run: ReposFinalizeRun): Promise<RunnerRes
   let halted = false;
   for (const [position, { entry, input: step }] of plan.steps.entries()) {
     const row = rows[position]!;
+    if (run.signal?.aborted) {
+      skipRemaining(row, update, 'skipped because the request was cancelled or timed out before this step; replay the idempotencyKey to continue');
+      continue;
+    }
     if (halted) {
       skipRemaining(row, update, 'skipped because an earlier repository step failed and continueOnFailure is false');
       continue;
@@ -167,10 +173,12 @@ async function openPullRequest(
     return false;
   }
   const head = finalize.branch;
-  // An earlier attempt may have opened the pull request before its outcome was recorded. GitHub allows one
-  // open pull request per head and base, so an open one found here is that attempt's result.
-  if (row.prAttempts > 0) {
-    const existing = await findOpenPullRequest(run, entry, head, base);
+  // A pull request for exactly this pushed commit may already be open: an earlier attempt opened it before its
+  // outcome was recorded, or the caller replays the same work under a new key. GitHub allows one open pull
+  // request per head and base, so an open, same-repository one whose head is this step's commit is adopted
+  // instead of failing on a duplicate. A pull request whose head points at any other commit is never adopted.
+  if (finalize.commitSha) {
+    const existing = await findOpenPullRequest(run, entry, head, base, finalize.commitSha);
     if (existing) {
       update(position, { prStatus: 'SUCCEEDED', prResultJson: JSON.stringify({ ...existing, head, base, reconciled: true } satisfies PullRequestOutcome) });
       return true;
@@ -195,7 +203,7 @@ async function openPullRequest(
   return response.ok;
 }
 
-async function findOpenPullRequest(run: ReposFinalizeRun, entry: WorkspaceRepositoryRecord, head: string, base: string): Promise<{ number?: number; url?: string } | undefined> {
+async function findOpenPullRequest(run: ReposFinalizeRun, entry: WorkspaceRepositoryRecord, head: string, base: string, commitSha: string): Promise<{ number?: number; url?: string } | undefined> {
   const response = await callStep(() => run.execute('github_read', {
     workspaceId: run.workspaceId, repositoryId: entry.id, action: 'pr_list', state: 'open', limit: 100
   }));
@@ -205,7 +213,7 @@ async function findOpenPullRequest(run: ReposFinalizeRun, entry: WorkspaceReposi
   if (!Array.isArray(listed)) return undefined;
   const match = listed.find((candidate: unknown) => {
     const pr = candidate as Record<string, unknown> | null;
-    return pr !== null && typeof pr === 'object' && pr.headRefName === head && pr.baseRefName === base && pr.isCrossRepository !== true;
+    return pr !== null && typeof pr === 'object' && pr.headRefName === head && pr.baseRefName === base && pr.isCrossRepository === false && pr.headRefOid === commitSha;
   }) as Record<string, unknown> | undefined;
   if (!match) return undefined;
   return {

@@ -504,4 +504,5 @@ File and command tools without `repositoryId` work on the workspace root, so pat
 **Fix:**
 1. Read `data.repositories`: each entry's `finalize.error` or `pullRequest.error` names the cause, using the same codes as `workspace_finalize` and `github_action`.
 2. Fix the cause (for example, pull and rebase a rejected branch, or grant the GitHub App access), then call again with the same idempotency key and the same input. Steps that already succeeded are returned as recorded and are not committed or pushed again.
-3. To change the plan, use a new idempotency key; repositories already pushed then report a clean tree and push nothing new.
+3. To change the plan, use a new idempotency key; repositories already pushed then report a clean tree and push nothing new, and an open pull request whose head is exactly that pushed commit is adopted instead of failing as a duplicate.
+4. If the call returned `TIMEOUT` or was cancelled, nothing recorded was lost: steps that had not started are `SKIPPED`. Replay the same key and input to continue. `CONFLICT` with "in progress" means another coordinated finalize or a `workspace_repo_add`/`workspace_repo_remove` is still running for this workspace; retry after it ends.

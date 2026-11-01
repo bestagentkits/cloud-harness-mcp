@@ -73,7 +73,9 @@ function harness() {
   const commits = new Map<string, number>();
   const failPush = new Set<string>();
   const failPullRequest = new Set<string>();
-  const openPullRequests: Array<{ alias: string; number: number; headRefName: string; baseRefName: string; url: string }> = [];
+  const throwAfterCommit = new Set<string>();
+  const onPullRequest: Array<(alias: string) => void> = [];
+  const openPullRequests: Array<{ alias: string; number: number; headRefName: string; headRefOid: string; baseRefName: string; url: string }> = [];
   const aliasOf = (record: WorkspaceRecord) => record.repositoryScope?.alias ?? 'solo';
   const sha = (alias: string) => `${alias.padEnd(4, 'x')}${String(commits.get(alias) ?? 0).padStart(36, '0')}`;
 
@@ -87,6 +89,10 @@ function harness() {
       dirty.delete(alias);
       events.push(`commit:${alias}`);
       return { ok: true, message: 'committed', data: {}, truncated: false };
+    }
+    if (operation === 'git_log' && throwAfterCommit.has(alias) && commits.has(alias)) {
+      throwAfterCommit.delete(alias);
+      throw new Error(`unexpected worker fault for ${alias}`);
     }
     if (operation === 'git_log') return { ok: true, message: 'log', data: { output: `${sha(alias)}\tcommit` }, truncated: false };
     return { ok: true, message: operation, data: { output: '' }, truncated: false };
@@ -105,7 +111,7 @@ function harness() {
     if (action === 'pr_list') {
       events.push(`pr-list:${alias}`);
       const listed = openPullRequests.filter((pr) => pr.alias === alias)
-        .map(({ number, headRefName, baseRefName, url }) => ({ number, headRefName, baseRefName, url, isCrossRepository: false }));
+        .map(({ number, headRefName, headRefOid, baseRefName, url }) => ({ number, headRefName, headRefOid, baseRefName, url, isCrossRepository: false }));
       return { result: { ok: true, message: 'listed', data: { output: JSON.stringify(listed) }, truncated: false }, credentialSource: 'app' };
     }
     if (action !== 'pr_create') throw new Error(`unexpected GitHub action ${action}`);
@@ -113,13 +119,16 @@ function harness() {
     const number = openPullRequests.length + 10;
     const url = `https://github.com/acme/${alias}/pull/${number}`;
     // A lost response: the pull request exists on GitHub, but the caller only sees a transport failure.
-    openPullRequests.push({ alias, number, headRefName: head!, baseRefName: base!, url });
+    openPullRequests.push({ alias, number, headRefName: head!, headRefOid: sha(alias), baseRefName: base!, url });
     events.push(`pr:${alias}:${head}->${base}:${title}`);
+    for (const listener of onPullRequest) listener(alias);
     if (failPullRequest.has(alias)) throw new HarnessError('UNAVAILABLE', 'GitHub did not answer', 503, true);
     return { result: { ok: true, message: 'GitHub pr_create successful', data: { output: `${url}\n` }, truncated: false }, credentialSource: 'app' };
   });
 
-  return { service, store, events, dirty, commits, failPush, failPullRequest, openPullRequests };
+  /** Effects only: the read-only pull request lookups that precede each pr_create are left out. */
+  const effects = () => events.filter((event) => !event.startsWith('pr-list:'));
+  return { service, store, events, effects, dirty, commits, failPush, throwAfterCommit, failPullRequest, onPullRequest, openPullRequests, sha };
 }
 
 async function openWorkspace(service: WorkspaceService, repositories: Array<Record<string, unknown>>): Promise<string> {
@@ -162,7 +171,7 @@ afterEach(() => {
 
 describe('workspace_repos_finalize', () => {
   it('finalizes every repository in the declared order and opens each pull request after its push', async () => {
-    const { service, events } = harness();
+    const { service, effects } = harness();
     const workspaceId = await openWorkspace(service, threeRepositories);
 
     const result = await service.execute(principal, 'workspace_repos_finalize', plan(workspaceId));
@@ -170,7 +179,7 @@ describe('workspace_repos_finalize', () => {
     expect(result.ok).toBe(true);
     const data = dataOf(result);
     expect(data).toMatchObject({ status: 'succeeded', atomic: false, replayed: false });
-    expect(events).toEqual([
+    expect(effects()).toEqual([
       'commit:api', 'push:api:HEAD:refs/heads/feature/x', 'pr:api:feature/x->develop:API change',
       'commit:web', 'push:web:HEAD:refs/heads/feature/x', 'pr:web:feature/x->main:Web change',
       'commit:docs', 'push:docs:HEAD:refs/heads/feature/x'
@@ -186,7 +195,7 @@ describe('workspace_repos_finalize', () => {
   });
 
   it('reports a failure on the second repository as partial, skips the rest, and never rolls back the first push', async () => {
-    const { service, events, failPush } = harness();
+    const { service, effects, failPush } = harness();
     const workspaceId = await openWorkspace(service, threeRepositories);
     failPush.add('web');
 
@@ -207,14 +216,14 @@ describe('workspace_repos_finalize', () => {
     expect(web!.finalize.commitSha).toMatch(/^webx/);
     expect(docs).toMatchObject({ status: 'SKIPPED', finalize: { status: 'SKIPPED' } });
     // The pull request of the failed repository was never attempted, and the third repository was untouched.
-    expect(events).toEqual([
+    expect(effects()).toEqual([
       'commit:api', 'push:api:HEAD:refs/heads/feature/x', 'pr:api:feature/x->develop:API change',
       'commit:web', 'push-failed:web'
     ]);
   });
 
   it('retries only the failed and skipped steps on replay without committing or pushing the first repository again', async () => {
-    const { service, events, failPush, commits } = harness();
+    const { service, events, effects, failPush, commits } = harness();
     const workspaceId = await openWorkspace(service, threeRepositories);
     failPush.add('web');
     await service.execute(principal, 'workspace_repos_finalize', plan(workspaceId));
@@ -227,7 +236,7 @@ describe('workspace_repos_finalize', () => {
     const data = dataOf(replay);
     expect(data).toMatchObject({ status: 'succeeded', replayed: true });
     // web's commit already exists, so its finalize only pushes; api is not touched at all.
-    expect(events).toEqual([
+    expect(effects()).toEqual([
       'push:web:HEAD:refs/heads/feature/x', 'pr:web:feature/x->main:Web change',
       'commit:docs', 'push:docs:HEAD:refs/heads/feature/x'
     ]);
@@ -391,5 +400,99 @@ describe('workspace_repos_finalize', () => {
     expect(replay).toEqual(first);
     expect(events.filter((event) => event.startsWith('pr:'))).toHaveLength(1);
     await expect(service.execute(principal, 'github_action', { ...request, title: 'Other' })).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+  it('adopts an open pull request for the same pushed commit under a new key instead of failing on a duplicate', async () => {
+    const { service, events, effects, openPullRequests } = harness();
+    const workspaceId = await openWorkspace(service, threeRepositories);
+    const single = (key: string) => ({
+      workspaceId, idempotencyKey: key,
+      repositories: [{ repositoryId: 'api', commitMessage: 'feat(api): add endpoint', branch: 'feature/x', pullRequest: { title: 'API change' } }]
+    });
+    await service.execute(principal, 'workspace_repos_finalize', single('first-key-1'));
+    events.length = 0;
+
+    const fresh = await service.execute(principal, 'workspace_repos_finalize', single('second-key-1'));
+
+    expect(dataOf(fresh).repositories[0]).toMatchObject({ status: 'SUCCEEDED', pullRequest: { status: 'SUCCEEDED', number: 10, reconciled: true } });
+    expect(effects().filter((event) => event.startsWith('pr:'))).toEqual([]);
+    expect(openPullRequests).toHaveLength(1);
+  });
+
+  it('never adopts an open pull request whose head is a different commit', async () => {
+    const { service, effects, openPullRequests } = harness();
+    const workspaceId = await openWorkspace(service, threeRepositories);
+    openPullRequests.push({ alias: 'api', number: 7, headRefName: 'feature/x', headRefOid: 'f'.repeat(40), baseRefName: 'develop', url: 'https://github.com/acme/api/pull/7' });
+
+    const result = await service.execute(principal, 'workspace_repos_finalize', plan(workspaceId));
+
+    expect(effects()).toContain('pr:api:feature/x->develop:API change');
+    expect(dataOf(result).repositories[0]!.pullRequest).not.toHaveProperty('reconciled');
+  });
+
+  it('starts no further step once the request is aborted and records the rest as skipped', async () => {
+    const { service, effects, onPullRequest } = harness();
+    const workspaceId = await openWorkspace(service, threeRepositories);
+    const controller = new AbortController();
+    onPullRequest.push((alias) => { if (alias === 'api') controller.abort(); });
+
+    const result = await service.execute(principal, 'workspace_repos_finalize', plan(workspaceId), controller.signal);
+
+    const data = dataOf(result);
+    expect(data.status).toBe('partial');
+    expect(data.repositories.map((repository) => repository.status)).toEqual(['SUCCEEDED', 'SKIPPED', 'SKIPPED']);
+    expect(data.repositories[1]!.finalize.reason).toContain('replay the idempotencyKey');
+    expect(effects()).toEqual(['commit:api', 'push:api:HEAD:refs/heads/feature/x', 'pr:api:feature/x->develop:API change']);
+
+    const replay = await service.execute(principal, 'workspace_repos_finalize', plan(workspaceId));
+    expect(dataOf(replay)).toMatchObject({ status: 'succeeded', replayed: true });
+  });
+
+  it('reports the recorded status when a replay names a repository removed since the first run', async () => {
+    const { service, store, effects, failPush } = harness();
+    const workspaceId = await openWorkspace(service, threeRepositories);
+    failPush.add('web');
+    await service.execute(principal, 'workspace_repos_finalize', plan(workspaceId));
+    const before = effects().length;
+    store.database.prepare('DELETE FROM workspace_repositories WHERE workspace_id = ? AND alias = ?').run(workspaceId, 'docs');
+
+    const replay = await service.execute(principal, 'workspace_repos_finalize', plan(workspaceId));
+
+    expect(dataOf(replay)).toMatchObject({ status: 'partial', replayed: true });
+    expect(dataOf(replay).repositories.map((repository) => repository.status)).toEqual(['SUCCEEDED', 'FAILED', 'SKIPPED']);
+    expect(effects()).toHaveLength(before);
+    // A key with no recorded run still refuses the unknown repository.
+    await expect(service.execute(principal, 'workspace_repos_finalize', plan(workspaceId, { idempotencyKey: 'never-ran-key-1' })))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  });
+
+  it('keeps coordinated finalize and repository changes of one workspace mutually exclusive', async () => {
+    const { service, effects } = harness();
+    const workspaceId = await openWorkspace(service, threeRepositories);
+    const locks = service as unknown as { reposFinalizes: Set<string>; repositoryChanges: Set<string> };
+
+    locks.repositoryChanges.add(workspaceId);
+    await expect(service.execute(principal, 'workspace_repos_finalize', plan(workspaceId))).rejects.toMatchObject({ code: 'CONFLICT', retryable: true });
+    locks.repositoryChanges.delete(workspaceId);
+
+    locks.reposFinalizes.add(workspaceId);
+    await expect(service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'docs', idempotencyKey: 'remove-docs-1' }))
+      .rejects.toMatchObject({ code: 'CONFLICT', retryable: true });
+    locks.reposFinalizes.delete(workspaceId);
+    expect(effects()).toEqual([]);
+  });
+
+  it('settles a step whose finalize threw an unexpected error so a replay retries it instead of reporting it in flight', async () => {
+    const { service, effects, throwAfterCommit, commits } = harness();
+    const workspaceId = await openWorkspace(service, threeRepositories);
+    throwAfterCommit.add('web');
+
+    const first = await service.execute(principal, 'workspace_repos_finalize', plan(workspaceId));
+    expect(dataOf(first).repositories[1]).toMatchObject({ status: 'FAILED', finalize: { status: 'FAILED' } });
+
+    const replay = await service.execute(principal, 'workspace_repos_finalize', plan(workspaceId));
+
+    expect(dataOf(replay)).toMatchObject({ status: 'succeeded', replayed: true });
+    expect(commits.get('web')).toBe(1);
+    expect(effects()).toContain('push:web:HEAD:refs/heads/feature/x');
   });
 });

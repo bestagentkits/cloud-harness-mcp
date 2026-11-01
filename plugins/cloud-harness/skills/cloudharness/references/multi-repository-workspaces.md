@@ -180,10 +180,14 @@ step per repository, strictly in array order.
   (`number`, `url`, `error`).
 - To retry, call again with the same key and the same input: succeeded steps
   are returned as recorded, and only failed, skipped, or unfinished steps run,
-  through per-step keys that never commit or push twice. A pull request whose
-  creation result was lost is adopted from the open pull request with the same
-  head and base. The same key with different input is `CONFLICT`. A second
-  call for the same workspace while one runs is a retryable `CONFLICT`.
+  through per-step keys that reconcile against the remote instead of pushing
+  again. An open pull request from the same head to the same base whose head
+  commit is exactly the pushed commit is adopted instead of opening a
+  duplicate. The same key with different input is `CONFLICT`.
+- On `TIMEOUT` or cancellation, steps not yet started are `SKIPPED`; replay the
+  same key and input to continue. A second call for the same workspace while
+  one runs, or `workspace_repo_add`/`workspace_repo_remove` during one, is a
+  retryable `CONFLICT`.
 - A single-repository workspace accepts one step naming its only checkout.
 
 <!-- cloudharness-example:workspace_repos_finalize

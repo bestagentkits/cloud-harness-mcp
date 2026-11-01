@@ -279,19 +279,37 @@ The call requires an `idempotencyKey`.
   same input returns recorded successes without re-running them and retries
   only failed, skipped, or unfinished steps; an unfinished step is resolved
   through its derived `workspace_finalize` key, which reconciles against the
-  remote branch instead of pushing again. A retried pull request first adopts
-  an open pull request with the same head and base, because an earlier attempt
-  may have opened it before its result was recorded. Selecting a repository by
-  alias or by `repo_` id is the same input; any other difference under the
-  same key is a non-retryable `CONFLICT`. A second call for the same workspace
-  while one runs is a retryable `CONFLICT`. The run holds the workspace
-  mutation lease, and the recorded steps are removed with the workspace record.
+  remote branch instead of pushing again. Before opening a pull request, a
+  step adopts an open, same-repository pull request from the same head to the
+  same base whose head commit is exactly the step's pushed commit, so a
+  creation result lost by an earlier attempt, or the same work replayed under a
+  new key, never fails on a duplicate. A pull request whose head is any other
+  commit is never adopted. The lookup reads the first 100 open pull requests.
+  Selecting a repository by alias or by `repo_` id is the same input; any other
+  difference under the same key is a non-retryable `CONFLICT`. With
+  `continueOnFailure`, a replay can open a later repository's pull request
+  before an earlier one whose step is retried, so the declared order holds
+  within one run, not across replays.
+- **Cancellation and long runs.** Once the request is cancelled or times out,
+  no further step starts; the steps not yet started are recorded as `SKIPPED`
+  with a reason that says to replay. A step already running finishes or fails
+  on its own. Replay the same key and input to continue: a `TIMEOUT` never
+  means the recorded steps were lost.
+- **Concurrency.** A second call for the same workspace while one runs is a
+  retryable `CONFLICT`, and so is `workspace_repo_add` or
+  `workspace_repo_remove` while a coordinated finalize runs (and the reverse).
+  The run holds the workspace mutation lease. If a repository a recorded run
+  named was removed since, a replay naming the same repositories in the same
+  order returns the recorded status without running anything; a key with no
+  recorded run still refuses the unknown repository. Recorded steps stay in the
+  runner state database with the workspace's other idempotency records.
 - A single-repository workspace accepts one step naming its only checkout,
   which behaves like `workspace_finalize` followed by `pr_create`. Local stdio
   mode refuses the tool.
 
 `github_action` `pr_create` accepts an optional `idempotencyKey`, cached like
-the other idempotent GitHub mutations. The behaviour is owned by
+the other idempotent GitHub mutations: per owner and workspace, so the same
+key in another workspace is a separate request. The behaviour is owned by
 [`apps/runner/src/repos-finalize.ts`](../apps/runner/src/repos-finalize.ts) and
 exercised by
 [`apps/runner/test/repos-finalize.test.ts`](../apps/runner/test/repos-finalize.test.ts).

@@ -15,7 +15,7 @@ import {
   scopedWorkerArgs,
   unknownRepository
 } from './workspace-repositories.js';
-import { resolveReposFinalizePlan, runReposFinalize, type ReposFinalizeInput } from './repos-finalize.js';
+import { reposFinalizeResponse, resolveReposFinalizePlan, runReposFinalize, type ReposFinalizeInput } from './repos-finalize.js';
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { chmod, chown, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { dirname, join, posix, relative, resolve, sep } from 'node:path';
@@ -2975,6 +2975,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (this.repositoryChanges.has(record.id)) {
       throw new HarnessError('CONFLICT', 'another repository change is in progress for this workspace', 409, true);
     }
+    if (this.reposFinalizes.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'a workspace_repos_finalize is in progress for this workspace; retry the repository change after it ends', 409, true);
+    }
     this.repositoryChanges.add(record.id);
     try {
       const change = { ownerId, record, entries, key, fingerprint };
@@ -2993,8 +2996,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   /**
    * Finalizes several checkouts in the declared order. Each step is an ordinary `workspace_finalize` (and
    * `github_action` `pr_create`) call for the same principal with a derived idempotency key, so the
-   * single-repository commit, push, read-only, and capability rules apply unchanged and a replay never
-   * commits or pushes twice. The whole run holds the workspace mutation lease and is serialized per workspace.
+   * single-repository commit, push, read-only, and capability rules apply unchanged and a replay resolves a
+   * recorded step through that step's own idempotency record instead of committing or pushing it again. The whole run holds the workspace mutation lease and is serialized per workspace.
    */
   private async finalizeRepositories(
     principal: PrincipalSelector | string,
@@ -3003,9 +3006,25 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     signal?: AbortSignal
   ): Promise<RunnerResponse> {
     const record = this.touch(this.requireWorkspace(ownerId, validated.workspaceId, true, false));
-    const plan = resolveReposFinalizePlan(this.workspaceRepositoryEntries(record).entries, validated);
     if (this.reposFinalizes.has(record.id)) {
       throw new HarnessError('CONFLICT', 'another workspace_repos_finalize is in progress for this workspace', 409, true);
+    }
+    if (this.repositoryChanges.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'a repository change is in progress for this workspace; retry workspace_repos_finalize after it ends', 409, true);
+    }
+    const recorded = this.store.reposFinalizeSteps(ownerId, record.id, validated.idempotencyKey);
+    let plan: ReturnType<typeof resolveReposFinalizePlan>;
+    try {
+      plan = resolveReposFinalizePlan(this.workspaceRepositoryEntries(record).entries, validated);
+    } catch (error) {
+      // A repository an earlier run with this key recorded may have been removed since. Its steps can no
+      // longer run, so a replay naming the same repositories in the same order reports the recorded status.
+      const sameSteps = recorded.length === validated.repositories.length && validated.repositories.every((step, index) =>
+        step.repositoryId === recorded[index]!.repositoryId || step.repositoryId === recorded[index]!.alias);
+      if (sameSteps && error instanceof HarnessError && error.code === 'INVALID_INPUT') {
+        return reposFinalizeResponse(record.id, recorded, true, validated.continueOnFailure);
+      }
+      throw error;
     }
     this.reposFinalizes.add(record.id);
     try {
@@ -3015,7 +3034,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         workspaceId: record.id,
         input: validated,
         plan,
-        execute: (operation, input) => this.execute(principal, operation, input, signal)
+        execute: (operation, input) => this.execute(principal, operation, input, signal),
+        ...(signal ? { signal } : {})
       }));
     } finally {
       this.reposFinalizes.delete(record.id);
@@ -5306,8 +5326,14 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       try {
         response = await runFinalize();
       } catch (err: unknown) {
-        if (idempotencyKey && err instanceof HarnessError) {
-          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify({ message: err.message, code: err.code }));
+        if (idempotencyKey) {
+          // Any thrown error must settle the claim, or every later attempt with this key reports IN_FLIGHT.
+          // An unexpected error may land after the push, so it is recorded as unknown remote state: the next
+          // attempt probes the remote for the recorded commit before running again.
+          const known = err instanceof HarnessError;
+          const status: GitOperationStatus = known && err.code !== 'UNKNOWN_REMOTE_STATE' ? 'FAILED' : 'UNKNOWN_REMOTE_STATE';
+          const message = err instanceof Error ? err.message : 'finalize failed';
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, status, null, JSON.stringify({ message, code: known ? err.code : 'INTERNAL_ERROR' }));
         }
         throw err;
       }
@@ -5723,8 +5749,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           await this.runLifecycleHooks(record, 'post_commit', signal);
         }
       } catch (err: unknown) {
-        if (idempotencyKey && err instanceof HarnessError) {
-          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify({ message: err.message, code: err.code }), currentHeadOid);
+        if (idempotencyKey) {
+          // Any thrown error must settle the claim, or every later attempt with this key reports IN_FLIGHT.
+          const message = err instanceof Error ? err.message : 'commit failed';
+          const code = err instanceof HarnessError ? err.code : 'INTERNAL_ERROR';
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify({ message, code }), currentHeadOid);
         }
         throw err;
       }
