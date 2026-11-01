@@ -34,6 +34,10 @@ inventory.
   (including the workspace-bound `/mcp/workspaces/<workspaceId>` paths) and
   `/dashboard` at the Access edge. GitHub and Google are Access identity
   providers; Cloud Harness does not integrate their login tokens directly.
+- `oidc` trusts only an RS256 bearer token from one external OAuth
+  authorization server, such as TOSE for instances it hosts. Remove the owner
+  bearer and every Cloudflare Access setting. There is no browser dashboard in
+  this mode; see [OIDC bearer tokens](#oidc-bearer-tokens).
 
 The exact required/forbidden combinations are owned by
 [`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts).
@@ -43,6 +47,53 @@ into a hostile multi-tenant service. Dashboard mutations also require an exact
 allowed same-origin request and a short-lived CSRF session. The owning request
 paths are [`apps/api/src/auth.ts`](../apps/api/src/auth.ts) and
 [`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts).
+
+### OIDC bearer tokens
+
+In `oidc` mode the API accepts `Authorization: Bearer <jwt>` on `/mcp`,
+`/mcp/workspaces/<workspaceId>` and `/mcp-gateway`, and nothing else
+authenticates a request. The authorization server decides who may connect when
+it issues the token; Cloud Harness keeps no allowlist and maps each verified
+token straight to an operator principal.
+
+| Variable | Required | Decision |
+|---|---|---|
+| `OIDC_ISSUER` | yes | HTTPS issuer. A token's `iss` must equal it exactly. |
+| `OIDC_AUDIENCE` | yes | This instance's canonical HTTPS URL, with no path suffix, query, fragment, or trailing slash. A token's `aud` (string or array) must contain it exactly, so a token issued for another instance is refused. |
+| `OIDC_JWKS_URL` | yes | HTTPS JWKS endpoint of the issuer. Keys are cached for 5 minutes, refreshed when an unknown `kid` arrives, and served stale for up to 15 minutes if the endpoint fails. |
+| `OIDC_REQUIRED_SCOPE` | no, `cloudharness:operator` | One RFC 6749 scope token that the space-separated `scope` claim must contain. |
+
+Token claims read by Cloud Harness:
+
+| Claim | Use |
+|---|---|
+| `iss` | Must equal `OIDC_ISSUER`. |
+| `aud` | Must contain `OIDC_AUDIENCE`. |
+| `sub` | Non-empty stable user identifier. The principal is the pair (`OIDC_ISSUER`, `sub`), so workspaces stay owned by the same person across tokens. |
+| `exp` | Required integer; a token is refused from that second on, with no clock-skew allowance. |
+| `nbf` | Optional; honoured when present. |
+| `scope` | Must contain `OIDC_REQUIRED_SCOPE`; a valid token without it receives 403 `insufficient_scope`. |
+| `email`, `name` | Optional display values recorded on the principal; never used for authorization. |
+
+The JOSE header must name `alg: RS256` and a `kid`. JWKS keys are used only when
+they declare `kty: RSA`, `alg: RS256`, `use: sig` and a `kid`. Other claims, such
+as `jti` or issuer-specific workspace hints, are ignored.
+
+A request without a valid token receives `401` with
+`WWW-Authenticate: Bearer resource_metadata="<OIDC_AUDIENCE>/.well-known/oauth-protected-resource"`,
+plus `error="invalid_token"` when a token was presented. The API serves the
+RFC 9728 protected resource metadata at that path, naming `OIDC_AUDIENCE` as the
+`resource` and `OIDC_ISSUER` as the only authorization server, so MCP clients
+can discover where to sign in. The other modes serve no such document.
+
+`/dashboard` returns 404 in this mode. Features that need a dashboard operator
+are therefore unavailable: privileged executor commands, package approvals,
+GitHub App installation links, and dashboard-managed secrets. A workspace can
+still clone public repositories and use the model gateway. The verifier lives in
+[`apps/api/src/access-jwt-verifier.ts`](../apps/api/src/access-jwt-verifier.ts),
+the middleware in [`apps/api/src/auth.ts`](../apps/api/src/auth.ts), and the
+metadata document in
+[`apps/api/src/protected-resource-metadata.ts`](../apps/api/src/protected-resource-metadata.ts).
 
 ### Dashboard UI rollout
 
@@ -709,7 +760,10 @@ the host persistence paths. `LOG_LEVEL` is read by API and runner logging.
 
 `API_HOST`/`RUNNER_HOST`, service ports, and the private `RUNNER_URL` are wired
 by Compose. Avoid publishing the API or runner, or changing the ingress proxy from loopback
-on an Internet-facing host.
+on an Internet-facing host. Outside Compose, for example when the services share
+one pod network, set `API_HOST=127.0.0.1` and `RUNNER_HOST=127.0.0.1` and let
+only the ingress listen on `0.0.0.0` (`INGRESS_HOST`), pointing it at the API
+with `API_UPSTREAM_HOST`/`API_UPSTREAM_PORT`.
 
 `HOST_ARTIFACT_ROOT` selects the host persistence path for `ARTIFACT_ROOT`, in
 the same way the existing job and state host overrides select their mounts.
@@ -717,3 +771,21 @@ Keep the artifact mount, state database, runtime configuration, GitHub App
 key, optional Cloudflare Access API token, and secret keyring in the coherent
 recovery set described in
 [`operations.md`](operations.md#backup-and-restore).
+
+## Remote Docker host
+
+The runner drives Docker only through the `docker` CLI and, for terminals, the
+Engine API socket, so it can use a Docker daemon in a sidecar instead of the
+local one. Set `DOCKER_HOST=unix:///path/to/docker.sock` (for example
+`unix:///var/run/tose-docker/docker.sock`) on the runner. The daemon must see
+the job, artifact, cache and package directories at the same absolute paths as
+the runner, because executors bind-mount them, and it must already hold every
+image the runner starts: containers run with `--pull never`. The runner never
+publishes container ports, so a daemon started with `--iptables=false` is
+supported, but the `dependency-access` network profile still needs the
+network-guard container to manage the daemon host's firewall.
+
+| Variable | Default | Decision |
+|---|---|---|
+| `DOCKER_ON_DEMAND` | `false` | When `true`, the reaper stops listing containers once no workspace is active and no toolbox container is live. It sweeps once when activity ends, once more when a leftover toolbox container could be stale, then stays quiet until a workspace or toolbox call appears. Leave it off on a dedicated host. |
+| `AGENT_GATEWAY_CONTAINER` | unset | Docker container name of the model gateway. When set, the runner execs into it directly instead of discovering it by Compose project labels, which a non-Compose deployment does not have. |

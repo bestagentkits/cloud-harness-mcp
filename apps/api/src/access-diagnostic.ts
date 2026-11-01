@@ -15,6 +15,7 @@ const HINT_BY_REASON: Record<AccessDiagnosticReason, string> = {
   wrong_issuer: 'The assertion issuer differs from CLOUDFLARE_ACCESS_ISSUER. The Zero Trust team domain or the Access application changed.',
   wrong_audience: 'The assertion audience differs from CLOUDFLARE_ACCESS_AUDIENCE. The Access application was recreated after this value was copied, or a different application covers this hostname.',
   wrong_token_type: 'The assertion is not an Access application token (its type claim is not app).',
+  insufficient_scope: 'The token does not carry the scope this instance requires.',
   invalid_subject: 'The assertion carries no usable subject, so it cannot identify a principal.',
   invalid_lifetime: 'The assertion lifetime claims (exp/nbf) are missing or malformed.',
   expired_assertion: 'The assertion has expired. Reload through the Access login, and check the origin clock.',

@@ -22,6 +22,23 @@ export type AccessJwtVerifierOptions = {
   maxJwksBytes?: number;
 };
 
+/**
+ * Claim policy beyond issuer, audience, signature, and lifetime. Cloudflare Access fixes these through
+ * `CloudflareAccessJwtVerifier`; a generic OIDC resource server sets only what its issuer promises.
+ */
+export type JwtClaimPolicy = {
+  /** Required value of the `type` claim. Unset skips the check. */
+  requiredTokenType?: string;
+  /** A scope the space-delimited `scope` claim must contain. Unset skips the check. */
+  requiredScope?: string;
+  /** Accept Cloudflare Access service-token assertions: an empty `sub` identified by `common_name`. */
+  serviceTokenSubjects?: boolean;
+  /** Require an integer `nbf` on user assertions. When false, `nbf` is optional but checked if present. */
+  requireNotBefore?: boolean;
+};
+
+export type JwksJwtVerifierOptions = AccessJwtVerifierOptions & JwtClaimPolicy;
+
 export type VerifiedAccessIdentity = { principal: ExternalPrincipal; expiresAt: number };
 
 export type AccessAssertionFailure =
@@ -34,6 +51,7 @@ export type AccessAssertionFailure =
   | 'wrong_issuer'
   | 'wrong_audience'
   | 'wrong_token_type'
+  | 'insufficient_scope'
   | 'invalid_subject'
   | 'invalid_lifetime'
   | 'expired_assertion'
@@ -43,7 +61,7 @@ export class AccessJwtVerificationError extends Error {
   readonly reason: AccessAssertionFailure;
 
   constructor(reason: AccessAssertionFailure) {
-    super('Cloudflare Access assertion verification failed');
+    super('access assertion verification failed');
     this.name = 'AccessJwtVerificationError';
     this.reason = reason;
   }
@@ -81,7 +99,16 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
   return Buffer.concat(chunks, length).toString('utf8');
 }
 
-export class CloudflareAccessJwtVerifier {
+function hasScope(value: unknown, required: string): boolean {
+  if (typeof value !== 'string' || value.length > 4_096) return false;
+  return value.split(' ').includes(required);
+}
+
+/**
+ * Verifies RS256 JWTs signed by a key from one JWKS endpoint: `kid` is required, keys are cached with
+ * a bounded stale window, and an unknown `kid` refreshes the key set so the issuer can rotate keys.
+ */
+export class JwksJwtVerifier {
   private readonly fetcher: typeof fetch;
   private readonly now: () => number;
   private readonly fetchTimeoutMs: number;
@@ -98,7 +125,7 @@ export class CloudflareAccessJwtVerifier {
   private lastRefreshAttempt = Number.NEGATIVE_INFINITY;
   private lastRefreshFailure: AccessAssertionFailure | undefined;
 
-  constructor(private readonly options: AccessJwtVerifierOptions) {
+  constructor(private readonly options: JwksJwtVerifierOptions) {
     this.fetcher = options.fetcher ?? fetch;
     this.now = options.now ?? Date.now;
     this.fetchTimeoutMs = options.fetchTimeoutMs ?? 3_000;
@@ -132,22 +159,23 @@ export class CloudflareAccessJwtVerifier {
     const nowSeconds = Math.floor(this.now() / 1_000);
     if (payload.iss !== this.options.issuer) fail('wrong_issuer');
     if (!this.hasAudience(payload.aud)) fail('wrong_audience');
-    if (payload.type !== 'app') fail('wrong_token_type');
+    if (this.options.requiredTokenType !== undefined && payload.type !== this.options.requiredTokenType) fail('wrong_token_type');
     const rawSubject = payload.sub;
     if (typeof rawSubject !== 'string') fail('invalid_subject');
-    const serviceName = optionalDisplayValue(payload.common_name, 320);
-    const isService = rawSubject === '';
+    const isService = this.options.serviceTokenSubjects === true && rawSubject === '';
+    const serviceName = isService ? optionalDisplayValue(payload.common_name, 320) : undefined;
     if (isService && !serviceName) fail('invalid_subject');
     if (!isService && (!rawSubject || rawSubject.length > 512 || rawSubject !== rawSubject.trim() || rawSubject.startsWith(SERVICE_SUBJECT_PREFIX))) fail('invalid_subject');
     const subject = isService
       ? `${SERVICE_SUBJECT_PREFIX}${Buffer.from(serviceName!).toString('base64url')}`
       : rawSubject;
     if (!Number.isInteger(payload.exp)) fail('invalid_lifetime');
-    if (!isService && !Number.isInteger(payload.nbf)) fail('invalid_lifetime');
+    if (!isService && this.options.requireNotBefore === true && !Number.isInteger(payload.nbf)) fail('invalid_lifetime');
     if (payload.nbf !== undefined && !Number.isInteger(payload.nbf)) fail('invalid_lifetime');
     const expiresAt = payload.exp as number;
     if (nowSeconds >= expiresAt) fail('expired_assertion');
     if (payload.nbf !== undefined && nowSeconds < (payload.nbf as number)) fail('inactive_assertion');
+    if (this.options.requiredScope !== undefined && !hasScope(payload.scope, this.options.requiredScope)) fail('insufficient_scope');
 
     const email = optionalDisplayValue(payload.email, 320);
     const name = optionalDisplayValue(payload.name, 200);
@@ -241,5 +269,15 @@ export class CloudflareAccessJwtVerifier {
     this.missingKids.delete(kid);
     this.missingKids.set(kid, until);
     while (this.missingKids.size > this.maxNegativeKeys) this.missingKids.delete(this.missingKids.keys().next().value as string);
+  }
+}
+
+/**
+ * Cloudflare Access application assertions: `type` must be `app`, user assertions need `nbf`, and an
+ * empty `sub` with a `common_name` is a service token, namespaced so it cannot collide with a user.
+ */
+export class CloudflareAccessJwtVerifier extends JwksJwtVerifier {
+  constructor(options: AccessJwtVerifierOptions) {
+    super({ ...options, requiredTokenType: 'app', serviceTokenSubjects: true, requireNotBefore: true });
   }
 }

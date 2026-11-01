@@ -60,11 +60,19 @@ The default `owner-bearer` mode authenticates one long-lived replayable owner
 secret and exposes MCP only. The opt-in `cloudflare-access` mode delegates
 login, OAuth discovery/token issuance, and coarse admission to Cloudflare
 Access. The origin derives identity only from the verified forwarded Access
-assertion; the opaque client bearer is not interpreted as identity. The two
-modes cannot be enabled ambiguously.
+assertion; the opaque client bearer is not interpreted as identity. The opt-in
+`oidc` mode is for instances hosted by an external platform such as TOSE: the
+origin verifies an RS256 bearer token against the issuer's JWKS and accepts it
+only when `iss` is the configured issuer, `aud` is exactly this instance's
+canonical URL, and `scope` carries the operator scope. A token minted for a
+sibling instance therefore fails the audience check even though it shares the
+issuer and signing keys. The issuer decides who may connect when it issues the
+token; the origin keeps no allowlist and serves no dashboard. The modes cannot
+be enabled ambiguously.
 
 Access policies may offer GitHub and Google login, but Cloud Harness keys
-authorization only on Access-normalized `(issuer, subject)`. Email and display
+authorization only on Access-normalized `(issuer, subject)`; `oidc` mode keys it
+on the token's `(iss, sub)` in the same way. Email and display
 name are metadata, not linking signals. Subject recovery is an explicit,
 collision-checked operator mapping with a redacted audit record; there is no
 first-login or same-email takeover path. Cloudflare hostname ownership, Zero
@@ -469,7 +477,7 @@ also accepting a `_FILE` form); then
 the requesting principal.
 
 The environment source is honored **only** in `owner-bearer` mode. In
-`cloudflare-access` (multi-principal) mode it is refused entirely, because a
+the multi-principal `cloudflare-access` and `oidc` modes it is refused entirely, because a
 single operator-wide credential must never stand in for a different
 principal's App grant; those deployments use the per-principal secret instead.
 Values that cannot be GitHub credentials (shorter than 20 characters or
@@ -506,7 +514,7 @@ Repository creation (`github_repository_create`) is a separate, workspace-free
 tool, because the repository does not exist yet and `workspace_open` must never
 create one as a side effect of a clone failure. It creates organization-owned
 repositories only, through the requesting principal's own GitHub App
-installation on that organization (in `cloudflare-access` mode, never the
+installation on that organization (in `cloudflare-access` or `oidc` mode, never the
 operator-configured installation; in `owner-bearer` mode, the configured
 installation only after GitHub confirms it belongs to the requested
 organization). Before minting anything, the runner verifies the installation
@@ -606,7 +614,7 @@ Standard executors strictly preserve `--read-only`, `--cap-drop ALL`, `--securit
 
 When `exec_run` is invoked with `privileged: true`:
 
-1. Privileged execution is supported in `cloudflare-access` mode (where the operator dashboard is authenticated via Cloudflare Access) and is disabled in `owner-bearer` mode to prevent self-approval.
+1. Privileged execution is supported in `cloudflare-access` mode (where the operator dashboard is authenticated via Cloudflare Access) and is disabled in `owner-bearer` and `oidc` modes, which have no operator dashboard, to prevent self-approval.
 2. In `cloudflare-access` mode, an unapproved request is rejected with `PRIVILEGE_APPROVAL_REQUIRED` and returns a single-use `grantId` bound to the command and working directory with a 60-second TTL.
 3. The operator must explicitly approve the grant via the authenticated Dashboard BFF API (`POST /api/v1/privilege-grants/:grantId/approve`). MCP clients cannot self-approve.
 4. The caller provides the `approvalGrantToken`. The runner validates the grant and command/cwd hash, atomically consumes it (single-use), and executes the command in an isolated ephemeral container with `try/finally` cleanup. The standard executor container remains permanently hardened and unmodified.
@@ -1199,7 +1207,7 @@ To prevent late-stage workflow failures where an agent completes extensive edits
 - **`workspace_capabilities` and `workspace_status`:** Inspectable at any point without modifying state, minting tokens, or launching containers. Returns structured `capabilities.repository` (`read`, `push`, `issuesRead`, `issuesWrite`, `pullRequestsRead`, `pullRequestsWrite`), `permissions`, and `operations`.
 - **Policy-driven derivation:** Capabilities reflect Cloud Harness security policy:
   - In `owner-bearer` mode, write capabilities require a configured GitHub App installation on GitHub repositories.
-  - In `cloudflare-access` mode, write capabilities are derived from verified GitHub App installation grants bound to the authenticated principal.
+  - In `cloudflare-access` and `oidc` modes, write capabilities are derived from verified GitHub App installation grants bound to the authenticated principal.
   - In local stdio mode, capabilities reflect explicit operator flags (`--git-push`, `--git-network`).
 - **Structured denial error:** Unauthorized operations reject immediately with `REPOSITORY_OPERATION_NOT_AUTHORIZED` (403, non-retryable) indicating the exact `operation`, `repository`, and `requiredCapability` (e.g. `repository.push`, `repository.issuesWrite`, `repository.pullRequestsWrite`).
 

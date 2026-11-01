@@ -19,7 +19,11 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `MCP_BEARER_TOKEN` | `change-me-at-least-32-random-characters` | **Required** | Copy to .env and replace every change-me value. Never commit real secrets. |
 | `RUNNER_TOKEN` | `change-me-independent-runner-token` | **Required** | Required configuration. |
 | `OWNER_ID` | `owner` | **Required** | Required configuration. |
-| `AUTH_MODE` | `owner-bearer` | **Required** | owner-bearer (default) or cloudflare-access. In Access mode, remove MCP_BEARER_TOKEN. |
+| `AUTH_MODE` | `owner-bearer` | **Required** | owner-bearer (default), cloudflare-access or oidc. In Access or oidc mode, remove MCP_BEARER_TOKEN. |
+| `OIDC_ISSUER` | `https://issuer.example.com` | Optional | oidc mode only: the HTTPS issuer every accepted token's iss must equal. |
+| `OIDC_AUDIENCE` | `https://your-instance.example.com` | Optional | oidc mode only: this instance's canonical URL; a token's aud must contain it exactly. |
+| `OIDC_JWKS_URL` | `https://issuer.example.com/.well-known/jwks.json` | Optional | oidc mode only: the issuer's JWKS endpoint for RS256 signing keys. |
+| `OIDC_REQUIRED_SCOPE` | `cloudharness:operator` | Optional | oidc mode only: scope the token's scope claim must contain. |
 | `CLOUDFLARE_ACCESS_ISSUER` | `https://your-team.cloudflareaccess.com` | Optional | Optional configuration. |
 | `CLOUDFLARE_ACCESS_AUDIENCE` | `—` | Optional | Optional configuration. |
 | `CLOUDFLARE_ACCESS_JWKS_URL` | `https://your-team.cloudflareaccess.com/cdn-cgi/access/certs` | Optional | Optional configuration. |
@@ -83,6 +87,8 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `WORKSPACE_IDLE_TTL_SECONDS` | `300` | **Required** | Idle timeout: a workspace without tool activity for this long expires (30..43200, always capped by the wall TTL). |
 | `WORKSPACE_RECOVERABLE_GRACE_SECONDS` | `3600` | Optional | How long an expired workspace stays recoverable before auto-close (0..86400, default 3600). 0 closes clean expired workspaces on the next reaper pass; work that is not pushed is always retained. |
 | `MAX_ACTIVE_WORKSPACES_PER_OWNER` | `3` | **Required** | Concurrent active workspaces allowed per principal. Defaults to 3 when unset; set 1 to restore single-workspace behaviour. Each counted workspace can use up to 1 GiB of container memory, one CPU, and 256 pids, so size host memory for this limit times the expected simultaneous builds. |
+| `DOCKER_ON_DEMAND` | `false` | Optional | Remote Docker host (runner): stop listing containers on the reaper once no workspace or toolbox call is live. |
+| `AGENT_GATEWAY_CONTAINER` | `—` | Optional | Model gateway container name to exec into directly when Compose project labels are unavailable. |
 | `TERMINAL_MAX_PER_WORKSPACE` | `4` | Optional | Dashboard Terminal (runner): live PTYs one workspace may hold; another open is refused with 429. |
 | `TERMINAL_RETAINED_BYTES` | `1048576` | Optional | Raw output bytes retained per terminal for reconnecting readers; older bytes are reported as missed. |
 | `TERMINAL_IDLE_TIMEOUT_MS` | `900000` | Optional | A terminal with no input, resize, or read for this long ends as timed_out. |

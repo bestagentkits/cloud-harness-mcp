@@ -17,6 +17,8 @@ import {
   TOOL_SCHEMA_BY_NAME,
   applyGuidanceActivity,
   buildRepositoryGuidanceSnapshot,
+  hasOperatorDashboard,
+  isMultiPrincipal,
   repositoryGuidanceSummary,
   sanitizeAndAttributeProvenance,
   toolkitSelectionIdentity,
@@ -37,7 +39,7 @@ import {
   TERMINAL_MAX_INPUT_BYTES
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
-import { EXECUTOR_HARDENING_ARGS, EXECUTOR_RESOURCE_CEILINGS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
+import { EXECUTOR_HARDENING_ARGS, EXECUTOR_RESOURCE_CEILINGS, TOOLBOX_STALE_AFTER_MS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
 import { PackageBuilder } from './package-builder.js';
 import { PACKAGE_OPERATIONS, PackageService, databaseWorkspaceDirectory, type PackageOperation } from './package-service.js';
 import { PackageStore } from './package-store.js';
@@ -310,6 +312,14 @@ export class WorkspaceService {
   private reaperRunning = false;
   /** Toolbox containers this runner is running now; the semaphore count and the sweep's exclusion list. */
   private readonly liveToolboxContainers = new Set<string>();
+  /** With DOCKER_ON_DEMAND, when a reaper pass last saw Docker activity; startup reconciliation counts as activity. */
+  private lastDockerActivityAt = Date.now();
+  /**
+   * With DOCKER_ON_DEMAND, the idle Docker sweeps still owed since that activity: a closing sweep on the
+   * first idle pass, and a final one once a toolbox container the activity left behind is old enough
+   * for the stale sweep to remove it.
+   */
+  private idleDockerSweepsOwed = 2;
   readonly toolkitCacheManager: ToolkitCacheManager;
   readonly toolkitService: ToolkitService;
   private packageService?: PackageService | undefined;
@@ -536,10 +546,10 @@ export class WorkspaceService {
   }
 
   async start(): Promise<void> {
-    if ((this.config.authMode ?? 'owner-bearer') === 'cloudflare-access') {
+    if (isMultiPrincipal(this.config.authMode)) {
       const legacyOwners = this.store.legacyWorkspaceOwnerIds();
       if (legacyOwners.length > 0 && !this.config.legacyPrincipalMapping) {
-        throw new Error('cloudflare-access mode requires an exact legacy principal mapping before startup');
+        throw new Error(`${this.config.authMode} mode requires an exact legacy principal mapping before startup`);
       }
       if (this.config.legacyPrincipalMapping) this.store.applyLegacyPrincipalMapping(this.config.legacyPrincipalMapping);
       this.store.applyPrincipalRelinks(this.config.principalRelinks ?? [], (database, result) => {
@@ -903,7 +913,7 @@ export class WorkspaceService {
     return repositoryPath;
   }
   private async refreshRepositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write' = 'read'): Promise<string | undefined> {
-    if ((this.config.authMode ?? 'owner-bearer') !== 'cloudflare-access') return undefined;
+    if (!isMultiPrincipal(this.config.authMode)) return undefined;
     if (!this.githubInstallations || !this.githubBinding || !this.config.githubApp) return undefined;
     if (repositoryUrl.hostname.toLowerCase() !== 'github.com') return undefined;
     const repositoryOwner = repositoryUrl.pathname.replace(/^\/+/, '').split('/')[0]?.toLowerCase();
@@ -1411,9 +1421,9 @@ export class WorkspaceService {
       // Ignore invalid url format fallback
     }
 
-    const authMode = this.config.authMode ?? 'owner-bearer';
+    const multiPrincipal = isMultiPrincipal(this.config.authMode);
     // A fallback credential is a GitHub credential: it never widens capability
-    // for a non-GitHub host, and in cloudflare-access mode the operator-wide
+    // for a non-GitHub host, and in a multi-principal mode the operator-wide
     // environment token is excluded by `envFallbackGitHubToken`.
     const fallbackAvailable = isGitHub && hasGitHubFallbackCredential(this.config, record.ownerId, this.metadata);
     let contentsRead = true;
@@ -1426,7 +1436,7 @@ export class WorkspaceService {
     // recorded per installation, so those operations are advertised on this and GitHub decides per call.
     let githubBrokered = false;
 
-    if (authMode === 'cloudflare-access') {
+    if (multiPrincipal) {
       if (this.githubInstallations && isGitHub && owner && repository) {
         const grant = this.githubInstallations.getRepositoryGrant(record.ownerId, owner, repository);
         if (grant && grant.status === 'granted') {
@@ -1488,7 +1498,8 @@ export class WorkspaceService {
       }
     }
 
-    const privileged = authMode === 'cloudflare-access';
+    // Privileged execution is approved on the operator Dashboard, so only a mode that serves it can offer it.
+    const privileged = hasOperatorDashboard(this.config.authMode);
 
     return {
       workspaceId: record.id,
@@ -2333,8 +2344,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const approvalGrantToken = validated.approvalGrantToken as string | undefined;
 
     if (privileged) {
-      if ((this.config.authMode ?? 'owner-bearer') === 'owner-bearer') {
-        throw new HarnessError('FORBIDDEN', 'Privileged execution requires Cloudflare Access operator dashboard approval and is disabled in owner-bearer mode', 403, false);
+      if (!hasOperatorDashboard(this.config.authMode)) {
+        throw new HarnessError('FORBIDDEN', `Privileged execution requires Cloudflare Access operator dashboard approval and is disabled in ${this.config.authMode ?? 'owner-bearer'} mode`, 403, false);
       }
       const commandSha256 = createHash('sha256').update(command).digest('hex');
       if (!approvalGrantToken) {
@@ -4446,7 +4457,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       principalId: ownerId,
       metadata: this.metadata
     });
-    if ((this.config.authMode ?? 'owner-bearer') !== 'cloudflare-access') {
+    if (!isMultiPrincipal(this.config.authMode)) {
       return await mintRepositoryToken(this.config, repositoryUrl) ?? fallback();
     }
     if (!this.githubInstallations || !this.config.githubApp) return fallback();
@@ -5052,10 +5063,39 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     } catch { /* the change is committed; a failed audit write must not report the save as failed */ }
   }
 
+  /**
+   * Whether this reaper pass may run the sweeps that call Docker even when nothing is running. Without
+   * DOCKER_ON_DEMAND every pass does. With it, a pass sweeps while a workspace is enumerated or a toolbox
+   * container is live; once that activity ends it owes the closing and final sweeps, and after them it
+   * stops calling Docker, so an idle runner never wakes a suspended remote Docker host. Sweeps skipped
+   * meanwhile run on the first pass after activity resumes. The remaining reaper steps call Docker only
+   * for a workspace that needs it (an enumerated one, or a recoverable one whose auto-close is due, at
+   * most hourly while unsaved work defers it), so they need no gate.
+   */
+  private dockerSweepDue(now: number): boolean {
+    if (this.config.dockerOnDemand !== true) return true;
+    if (this.store.active().length > 0 || this.liveToolboxContainers.size > 0) {
+      this.lastDockerActivityAt = now;
+      this.idleDockerSweepsOwed = 2;
+      return true;
+    }
+    if (this.idleDockerSweepsOwed >= 2) return true;
+    return this.idleDockerSweepsOwed === 1 && now - this.lastDockerActivityAt >= TOOLBOX_STALE_AFTER_MS;
+  }
+
+  /** The reaper sweeps that call Docker regardless of workspaces: stale toolbox containers and package GC. */
+  private async sweepDocker(now: number): Promise<void> {
+    if (!this.dockerSweepDue(now)) return;
+    const idle = this.store.active().length === 0 && this.liveToolboxContainers.size === 0;
+    const swept = await reapStaleToolboxContainers(this.instanceId, this.liveToolboxContainers, now).then(() => true, () => false);
+    if (this.config.packagesEnabled === true) await this.packages.collectGarbage(now).catch(() => undefined);
+    // A failed idle sweep stays owed, so the next pass retries it before the runner goes quiet.
+    if (idle && swept && this.idleDockerSweepsOwed > 0) this.idleDockerSweepsOwed -= 1;
+  }
+
   private async reapExpired(): Promise<void> {
     const now = Date.now();
-    await reapStaleToolboxContainers(this.instanceId, this.liveToolboxContainers, now).catch(() => undefined);
-    if (this.config.packagesEnabled === true) await this.packages.collectGarbage(now).catch(() => undefined);
+    await this.sweepDocker(now);
     const hasDependencyWorkspaces = this.store.active().some((r) => r.status === 'ACTIVE' && r.networkProfile === 'dependency-access');
     if (hasDependencyWorkspaces) {
       const attestation = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
