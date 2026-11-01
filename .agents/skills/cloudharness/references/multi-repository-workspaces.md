@@ -144,7 +144,8 @@ A workspace opened with `repositoryUrl` behaves exactly as before.
 ## Finish and recover
 
 - Finalize, push, and open pull requests per repository, each with its own
-  `repositoryId` and idempotency key.
+  `repositoryId` and idempotency key, or in one ordered call with
+  `workspace_repos_finalize` (below).
 - Before `workspace_close`, call `workspace_repo_status` and confirm every
   checkout is clean or pushed.
 - Auto-close defers while any checkout has unsaved work, and also when files
@@ -152,9 +153,47 @@ A workspace opened with `repositoryUrl` behaves exactly as before.
   checkout (an extra clone, a scratch file), because no remote holds them.
   Keep scratch files inside a checkout or remove them.
 
+<!-- cloudharness-tool:workspace_repos_finalize -->
+### `workspace_repos_finalize`
+
+Commit, push, and optionally open a pull request in several checkouts, one
+step per repository, strictly in array order.
+
+- Required: `idempotencyKey`, `repositories` (1 to the instance limit, each
+  repository at most once). Each step takes `repositoryId`, `commitMessage`,
+  and the `workspace_finalize` options `paths`/`all`, `branch` (defaults to the
+  checkout's current branch), and `push` (default `true`), plus an optional
+  `pullRequest` `{ title, body?, base? (default main), draft? }` that needs
+  `push`. Shared options: `authorName`, `authorEmail`, `preflight`,
+  `continueOnFailure` (default `false`).
+- Each step is an ordinary `workspace_finalize`, and its pull request an
+  ordinary `github_action` `pr_create` opened only after that step's push
+  succeeded, so read-only access, capabilities, and errors are the same. An
+  unknown `repositoryId` is `INVALID_INPUT`, and a pushing step on a
+  `read-only` repository is `FORBIDDEN` before any step runs.
+- **Not atomic.** A failed step never undoes earlier pushes or pull requests.
+  Without `continueOnFailure` the later steps are `SKIPPED`; with it they still
+  run. `data.status` is `succeeded`, `partial`, or `failed` (nothing
+  finalized), `data.atomic` is always `false`, and `ok` is `true` only for
+  `succeeded`. Read every `data.repositories[]` entry: its `status`,
+  `finalize` (`commitSha`, `branch`, `pushed`, `error`), and `pullRequest`
+  (`number`, `url`, `error`).
+- To retry, call again with the same key and the same input: succeeded steps
+  are returned as recorded, and only failed, skipped, or unfinished steps run,
+  through per-step keys that never commit or push twice. A pull request whose
+  creation result was lost is adopted from the open pull request with the same
+  head and base. The same key with different input is `CONFLICT`. A second
+  call for the same workspace while one runs is a retryable `CONFLICT`.
+- A single-repository workspace accepts one step naming its only checkout.
+
+<!-- cloudharness-example:workspace_repos_finalize
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","idempotencyKey":"release-api-web-20261101","repositories":[{"repositoryId":"api","commitMessage":"feat(api): add search endpoint","branch":"feature/search","pullRequest":{"title":"Add search endpoint"}},{"repositoryId":"web","commitMessage":"feat(web): use search endpoint","branch":"feature/search","pullRequest":{"title":"Use search endpoint","draft":true}}]}
+-->
+
 ## Local servers
 
 Local stdio and local multi-workspace servers do not support this:
 `repositoryId`, `scope: "all"`, `workspace_repos_list`, `workspace_repo_status`,
-`workspace_repo_add`, and `workspace_repo_remove` return `INVALID_INPUT`. See
+`workspace_repo_add`, `workspace_repo_remove`, and `workspace_repos_finalize`
+return `INVALID_INPUT`. See
 [workspace lifecycle](workspace-lifecycle-and-results.md#local-workspaces).

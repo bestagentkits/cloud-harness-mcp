@@ -121,7 +121,7 @@ duplicating work:
   `UNKNOWN_REMOTE_STATE`). A same-key replay reporting `alreadyFinalized: true`
   is confirmed success.
 - `files_write_batch` and idempotency-enabled `github_action` mutations
-  (`pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`, `pr_review`,
+  (`pr_create`, `pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`, `pr_review`,
   `pr_review_comment`, `pr_review_reply`, `pr_reviewers_request`, `pr_merge`,
   `pr_auto_merge_enable`) replay
   their cached result within their configured retention window (GitHub action
@@ -244,6 +244,57 @@ tree, and `UNAVAILABLE` when the executor cannot be paused.
   `workspace_recover` with `mode: "resume"` (or a runner restart) resumes the
   executor; a `dependency-access` executor is rebuilt by recover instead, so its
   running processes end.
+
+### Coordinated finalize across repositories
+
+`workspace_repos_finalize` commits, pushes, and optionally opens a pull
+request in several checkouts of one workspace, one step per entry of
+`repositories`, strictly in array order. Each step names one repository (at
+most once per call) and carries the `workspace_finalize` options plus an
+optional `pullRequest`; author, preflight, and `continueOnFailure` are shared.
+The call requires an `idempotencyKey`.
+
+- **Reuse, not a second code path.** Each step is an ordinary
+  `workspace_finalize` on that checkout, and its pull request an ordinary
+  `github_action` `pr_create` from the pushed branch, opened only after the
+  push succeeded. Both run with an idempotency key derived from the caller's
+  key and the repository, so read-only access, capabilities, hooks, push
+  reconciliation, and error codes are exactly those of the single tools. An
+  unknown `repositoryId` is `INVALID_INPUT`; a pushing step on a `read-only`
+  repository is refused with `FORBIDDEN` before any step runs.
+- **Not atomic.** A failed step never rolls back earlier commits, pushes, or
+  pull requests. Without `continueOnFailure` the remaining steps are recorded
+  as `SKIPPED` and not attempted; with it they still run, while the failed
+  repository's pull request is skipped. `data.status` is `succeeded` (every
+  step and pull request succeeded), `failed` (no repository was finalized), or
+  `partial`; `data.atomic` is always `false`, and `ok` is `true` only for
+  `succeeded`. A partial or failed result carries the first failing
+  repository's error code and alias. `data.repositories` lists, per step, the
+  `repositoryId`, `alias`, `status`, the `finalize` outcome (`commitSha`,
+  `branch`, `pushed`, `error`), and the `pullRequest` outcome (`number`,
+  `url`, `head`, `base`, `error`).
+- **Durable status and replay.** The runner records the request fingerprint
+  and each step's finalize and pull-request status (`PENDING`, `SUCCEEDED`,
+  `FAILED`, `SKIPPED`) before and after it runs. Replaying the key with the
+  same input returns recorded successes without re-running them and retries
+  only failed, skipped, or unfinished steps; an unfinished step is resolved
+  through its derived `workspace_finalize` key, which reconciles against the
+  remote branch instead of pushing again. A retried pull request first adopts
+  an open pull request with the same head and base, because an earlier attempt
+  may have opened it before its result was recorded. Selecting a repository by
+  alias or by `repo_` id is the same input; any other difference under the
+  same key is a non-retryable `CONFLICT`. A second call for the same workspace
+  while one runs is a retryable `CONFLICT`. The run holds the workspace
+  mutation lease, and the recorded steps are removed with the workspace record.
+- A single-repository workspace accepts one step naming its only checkout,
+  which behaves like `workspace_finalize` followed by `pr_create`. Local stdio
+  mode refuses the tool.
+
+`github_action` `pr_create` accepts an optional `idempotencyKey`, cached like
+the other idempotent GitHub mutations. The behaviour is owned by
+[`apps/runner/src/repos-finalize.ts`](../apps/runner/src/repos-finalize.ts) and
+exercised by
+[`apps/runner/test/repos-finalize.test.ts`](../apps/runner/test/repos-finalize.test.ts).
 
 `grep_search`, `symbols_search`, and `symbols_references` accept
 `scope: "all"`, mutually exclusive with `repositoryId`, to search every

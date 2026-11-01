@@ -495,3 +495,13 @@ File and command tools without `repositoryId` work on the workspace root, so pat
 **Fix:**
 1. Read the affected file or path before repeating the change; the agent receives the same instruction.
 2. For `EFFECT_NOT_APPLIED`, the agent may simply issue the change again.
+
+---
+
+### 40. `workspace_repos_finalize` returns `status: "partial"` or `"failed"`
+**Cause:** At least one repository step failed. The call is not atomic: repositories finalized before the failure keep their commits, pushes, and pull requests, and nothing is rolled back. Without `continueOnFailure`, the steps after the failure are `SKIPPED` and were not attempted. A step's pull request is `SKIPPED` when its push did not succeed. `CONFLICT: Idempotency key reused with different workspace_repos_finalize parameters` means the same key was sent with a different repository list, message, option, or order. `FORBIDDEN` before anything ran means a step pushes to a `read-only` repository.
+
+**Fix:**
+1. Read `data.repositories`: each entry's `finalize.error` or `pullRequest.error` names the cause, using the same codes as `workspace_finalize` and `github_action`.
+2. Fix the cause (for example, pull and rebase a rejected branch, or grant the GitHub App access), then call again with the same idempotency key and the same input. Steps that already succeeded are returned as recorded and are not committed or pushed again.
+3. To change the plan, use a new idempotency key; repositories already pushed then report a clean tree and push nothing new.

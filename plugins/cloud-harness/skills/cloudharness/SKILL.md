@@ -156,8 +156,9 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    instead of `repositoryUrl`; each checkout lives at `repos/<alias>/`, Git and
    GitHub tools then need `repositoryId`, and `read-only` access blocks only
    brokered writes, not file edits. Add or remove a checkout later with
-   `workspace_repo_add`/`workspace_repo_remove`, and search every checkout
-   with `scope: "all"`. Details:
+   `workspace_repo_add`/`workspace_repo_remove`, search every checkout
+   with `scope: "all"`, and publish across checkouts in order with
+   `workspace_repos_finalize` (not atomic: check its `status`). Details:
    [Multi-repository workspaces](references/multi-repository-workspaces.md).
    On a local server (its instructions say "local stdio workspace" or "local
    multi-workspace server"), workspaces are already open and `workspace_open`
