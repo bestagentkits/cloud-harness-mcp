@@ -1,3 +1,10 @@
+# [0.80.0-beta.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0-beta.1...v0.80.0-beta.2) (2026-11-01)
+
+
+### Features
+
+* repository-targeted workspace features and coordinated finalize ([#630](https://github.com/bestagentkits/cloud-harness-mcp/issues/630)) ([1f2d2c3](https://github.com/bestagentkits/cloud-harness-mcp/commit/1f2d2c3d0ddd9cdbb592d8de54ecfd6b035d365b))
+
 # [0.80.0-beta.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.79.2...v0.80.0-beta.1) (2026-10-30)
 
 
