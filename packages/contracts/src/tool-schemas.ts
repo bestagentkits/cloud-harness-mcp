@@ -46,6 +46,35 @@ export const WorkspaceRepositoryInputSchema = z.object({
 }).strict();
 const pagination = { cursor: z.string().max(256).optional(), limit: z.number().int().min(1).max(500).default(100) };
 const gitArgument = z.string().min(1).max(255).refine((value) => !value.startsWith('-') && !value.includes('\0'), 'Git argument cannot start with a dash');
+const finalizePreflight = z.object({ checkDiff: z.boolean().default(true), forbiddenPatterns: z.array(z.string()).optional() });
+const pullRequestTitle = z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes');
+const pullRequestBody = z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes');
+const pullRequestBranch = (name: string) => z.string().min(1).max(256).refine((val) => !val.includes('\0'), `${name} cannot contain null bytes`);
+/** One repository step of `workspace_repos_finalize`: the `workspace_finalize` inputs plus an optional pull request. */
+export const ReposFinalizeStepInputSchema = z.object({
+  repositoryId: RepositorySelectorSchema.describe('Repository of this step, by repo_ id or alias.'),
+  commitMessage: z.string().min(1).max(10_000),
+  paths: z.array(relativePath).max(500).optional(),
+  all: z.boolean().default(true),
+  branch: gitArgument.optional().describe('Branch to push; defaults to the checkout\'s current branch.'),
+  push: z.boolean().default(true),
+  pullRequest: z.object({
+    title: pullRequestTitle,
+    body: pullRequestBody.optional(),
+    base: pullRequestBranch('base').optional().describe('Base branch; defaults to main, as github_action pr_create does.'),
+    draft: z.boolean().default(false)
+  }).strict().optional().describe('Open a pull request from the pushed branch once this step\'s push succeeded.')
+}).strict().superRefine((input, context) => {
+  if (!input.all && (!input.paths || input.paths.length === 0)) {
+    context.addIssue({ code: 'custom', path: ['paths'], message: 'paths are required when all is false' });
+  }
+  if (input.all && input.paths && input.paths.length > 0) {
+    context.addIssue({ code: 'custom', path: ['paths'], message: 'paths must be empty when all is true' });
+  }
+  if (input.pullRequest && !input.push) {
+    context.addIssue({ code: 'custom', path: ['pullRequest'], message: 'pullRequest requires push' });
+  }
+});
 const gitFetchRef = gitArgument.refine((value) => !value.includes(':'), 'Git fetch ref cannot contain a destination');
 const gitObjectId = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/, 'expected remote object ID must be a lowercase SHA-1 or SHA-256 hash');
 const gitRefspec = z.string().min(1).max(512).refine((value) => {
@@ -376,12 +405,13 @@ const githubActionUnion = z.discriminatedUnion('action', [
     ...workspace,
     ...repository,
     action: z.literal('pr_create'),
-    title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
-    body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default(''),
-    head: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'head cannot contain null bytes'),
-    base: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'base cannot contain null bytes').default('main'),
+    title: pullRequestTitle,
+    body: pullRequestBody.default(''),
+    head: pullRequestBranch('head'),
+    base: pullRequestBranch('base').default('main'),
     draft: z.boolean().default(false),
-    labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional()
+    labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
   }),
   z.object({
     ...workspace,
@@ -955,7 +985,7 @@ const schemas = {
     push: z.boolean().default(true),
     authorName: z.string().min(1).max(200).optional(),
     authorEmail: z.email().optional(),
-    preflight: z.object({ checkDiff: z.boolean().default(true), forbiddenPatterns: z.array(z.string()).optional() }).optional(),
+    preflight: finalizePreflight.optional(),
     idempotencyKey: IdempotencyKeySchema.optional()
   }).superRefine((input, context) => {
     if (!input.all && (!input.paths || input.paths.length === 0)) {
@@ -964,6 +994,25 @@ const schemas = {
     if (input.all && input.paths && input.paths.length > 0) {
       context.addIssue({ code: 'custom', path: ['paths'], message: 'paths must be empty when all is true' });
     }
+  }),
+  workspace_repos_finalize: z.object({
+    ...workspace,
+    idempotencyKey: IdempotencyKeySchema.describe('Required. A replay returns recorded steps and retries only the ones that did not succeed.'),
+    repositories: z.array(ReposFinalizeStepInputSchema).min(1).max(MAX_WORKSPACE_REPOSITORIES_LIMIT)
+      .describe('One step per repository, executed strictly in array order.'),
+    authorName: z.string().min(1).max(200).optional(),
+    authorEmail: z.email().optional(),
+    preflight: finalizePreflight.optional(),
+    continueOnFailure: z.boolean().default(false)
+      .describe('Keep running later steps after a step fails. Without it the remaining steps are skipped.')
+  }).strict().superRefine((input, context) => {
+    const seen = new Set<string>();
+    input.repositories.forEach((step, index) => {
+      if (seen.has(step.repositoryId)) {
+        context.addIssue({ code: 'custom', path: ['repositories', index, 'repositoryId'], message: `duplicate repository: ${step.repositoryId}` });
+      }
+      seen.add(step.repositoryId);
+    });
   }),
   files_list: z.object({ ...workspace, ...repository, path: relativePath.default('.'), ...pagination }),
   files_read: z.object({ ...workspace, ...repository, path: relativePath, offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(1_048_576).default(65_536), cursor: z.string().max(256).optional(), readAll: z.boolean().optional() }),
@@ -1393,6 +1442,7 @@ const titles: Record<RunnerOperation, string> = {
   workspace_open: 'Open workspace', workspace_list: 'List workspaces', workspace_status: 'Workspace status', workspace_capabilities: 'Workspace capabilities', workspace_close: 'Close workspace',
   workspace_lease_renew: 'Renew workspace lease', workspace_recover: 'Recover workspace state', workspace_context: 'Workspace context', workspace_set_active: 'Set active workspace', workspace_repos_list: 'List workspace repositories', workspace_repo_status: 'Workspace repository status', workspace_repo_add: 'Add workspace repository', workspace_repo_remove: 'Remove workspace repository',
   workspace_finalize: 'Finalize workspace commit and push',
+  workspace_repos_finalize: 'Finalize several workspace repositories in order',
   files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_write_batch: 'Write batch files', files_apply_patch: 'Apply text patch', files_delete: 'Delete file or directory', files_move: 'Move file or directory', files_mkdir: 'Create directory', grep_search: 'Search workspace',
   symbols_search: 'Find symbol definitions', symbols_references: 'Find lexical symbol references',
   exec_run: 'Run command', bash: 'Run bash command',
@@ -1441,6 +1491,7 @@ const descriptions: Record<RunnerOperation, string> = {
   workspace_repo_add: 'Clone one more repository into a multi-repository workspace at `repos/<alias>/`, with the same URL policy, brokered clone credentials, and per-workspace limit as workspace_open. The repository joins the registry only after its clone succeeds; a failed add removes only the new checkout. A single-repository workspace refuses. Replaying the idempotencyKey returns the first result.',
   workspace_repo_remove: 'Remove one repository from a multi-repository workspace: delete its registry entry, then its checkout directory. Refused while the checkout has uncommitted or untracked paths, stashes, linked worktrees, or commits on no remote, while a task, shell, session, terminal, or operation runs inside it, or while an agent runs in the workspace. The last repository cannot be removed; removing the primary makes the next repository primary. Replaying the idempotencyKey returns the first result.',
   workspace_finalize: 'Transactionally stage changes, run preflights, commit with default or explicit identity, and push to remote in one call.',
+  workspace_repos_finalize: 'Commit, push, and optionally open a pull request in several repositories of one workspace, one step per repository in the declared order, each step running the same path as workspace_finalize and github_action pr_create. Not atomic: a failed step never rolls back earlier pushes; without continueOnFailure the remaining steps are skipped. The result status is succeeded, partial, or failed (ok is false unless every step succeeded) with atomic: false and a per-repository outcome. Replaying the idempotencyKey with the same input returns recorded successes and retries only failed, skipped, or unfinished steps without committing or pushing twice; a different input under the same key is a CONFLICT.',
   files_list: 'List one workspace directory with bounded cursor pagination.',
   files_read: 'Read a bounded byte range from a workspace file with its size, SHA-256, and continuation cursor.',
   files_write: 'Atomically create or replace a workspace file, optionally guarded by its current SHA-256.',
@@ -1560,7 +1611,7 @@ const readOnly = new Set<RunnerOperation>([
   'agent_traces_list', 'agent_trace_get', 'agent_trace_spans', 'agent_trace_export'
 ]);
 const destructive = new Set<RunnerOperation>([
-  'workspace_close', 'workspace_recover', 'workspace_finalize', 'workspace_repo_remove',
+  'workspace_close', 'workspace_recover', 'workspace_finalize', 'workspace_repos_finalize', 'workspace_repo_remove',
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move',
   'exec_run', 'bash', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close',
   'tasks_run', 'tasks_cancel', 'operation_cancel',
@@ -1573,7 +1624,7 @@ const destructive = new Set<RunnerOperation>([
   'model_profile_update'
 ]);
 const idempotent = new Set<RunnerOperation>([
-  'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize', 'workspace_repos_list', 'workspace_repo_status', 'workspace_repo_add', 'workspace_repo_remove',
+  'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize', 'workspace_repos_finalize', 'workspace_repos_list', 'workspace_repo_status', 'workspace_repo_add', 'workspace_repo_remove',
   'files_list', 'files_read', 'files_write', 'files_write_batch', 'files_apply_patch', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references',
   'shell_open', 'shell_close', 'sessions_list', 'sessions_open', 'sessions_close',
   'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph',
@@ -1590,7 +1641,7 @@ const idempotent = new Set<RunnerOperation>([
   'agent_traces_list', 'agent_trace_get', 'agent_trace_spans', 'agent_trace_export'
 ]);
 const openWorld = new Set<RunnerOperation>([
-  'workspace_open', 'workspace_repo_add', 'workspace_finalize', 'exec_run', 'bash', 'shell_io', 'sessions_io', 'tasks_run',
+  'workspace_open', 'workspace_repo_add', 'workspace_finalize', 'workspace_repos_finalize', 'exec_run', 'bash', 'shell_io', 'sessions_io', 'tasks_run',
   'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action', 'github_read', 'github_repository_create',
   'packages_plan', 'packages_apply',
   'agent_spawn', 'agent_message',

@@ -160,7 +160,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
       };
     }
 
-    const multiRepositoryOperations: readonly string[] = ['workspace_repos_list', 'workspace_repo_status', 'workspace_repo_add', 'workspace_repo_remove'];
+    const multiRepositoryOperations: readonly string[] = ['workspace_repos_list', 'workspace_repo_status', 'workspace_repo_add', 'workspace_repo_remove', 'workspace_repos_finalize'];
     // Only the search tools take `scope: "all"`; memories and knowledge have their own unrelated scope.
     const allRepositories = input.scope === 'all';
     if (multiRepositoryOperations.includes(operation) || input.repositoryId !== undefined || allRepositories) {

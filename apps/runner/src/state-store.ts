@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER, DEFAULT_RECOVERABLE_GRACE_SECONDS, RunnerPrincipalSelectorSchema, type ExecutorNetworkProfile } from '@cloud-harness/contracts';
+import { DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER, DEFAULT_RECOVERABLE_GRACE_SECONDS, RunnerPrincipalSelectorSchema, type ExecutorNetworkProfile, type ReposFinalizeStepStatus } from '@cloud-harness/contracts';
 import { emitTaskTerminalEvent, isTerminalTaskStatus, withEventSavepoint } from './event-outbox.js';
 import type { EncryptedSecret } from './secret-keyring.js';
 import {
@@ -204,6 +204,31 @@ export type WorkspaceRepositoryRecord = {
 /** A repository add or remove recorded under the caller's idempotency key. */
 export type RepositoryChangeRecord = { ownerId: string; key: string; operation: string; fingerprint: string; resultJson: string };
 export type RepositoryChangeReplay = { operation: string; fingerprint: string; resultJson: string };
+
+/**
+ * One durable step of a coordinated `workspace_repos_finalize` run: the plan fingerprint it was recorded
+ * under and the finalize and pull-request outcomes. `prStatus` is null when the step requests no pull request.
+ */
+export type ReposFinalizeStepRecord = {
+  position: number;
+  fingerprint: string;
+  repositoryId: string;
+  alias: string;
+  finalizeStatus: ReposFinalizeStepStatus;
+  finalizeResultJson: string | null;
+  finalizeAttempts: number;
+  prStatus: ReposFinalizeStepStatus | null;
+  prResultJson: string | null;
+  prAttempts: number;
+};
+export type ReposFinalizeStepUpdate = {
+  finalizeStatus?: ReposFinalizeStepStatus;
+  finalizeResultJson?: string | null;
+  finalizeAttempted?: boolean;
+  prStatus?: ReposFinalizeStepStatus;
+  prResultJson?: string | null;
+  prAttempted?: boolean;
+};
 
 /** The workspace generation or status changed before a repository change could commit. */
 export class RepositoryRegistryFenceError extends Error {
@@ -620,6 +645,28 @@ export class StateStore {
     this.database.exec('DROP INDEX IF EXISTS one_active_workspace_per_owner;');
     // Added after the principal migration, which rebuilds the workspaces table from a fixed column list.
     this.migrateWorkspaceLifecycleColumns();
+    // Additive. Created after the principal migration so the workspaces(owner_id, id) key it cascades from exists.
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS workspace_repos_finalize_steps (
+        owner_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        fingerprint TEXT NOT NULL,
+        repository_id TEXT NOT NULL,
+        alias TEXT NOT NULL,
+        finalize_status TEXT NOT NULL CHECK(finalize_status IN ('PENDING','SUCCEEDED','FAILED','SKIPPED')),
+        finalize_result_json TEXT,
+        finalize_attempts INTEGER NOT NULL DEFAULT 0,
+        pr_status TEXT CHECK(pr_status IS NULL OR pr_status IN ('PENDING','SUCCEEDED','FAILED','SKIPPED')),
+        pr_result_json TEXT,
+        pr_attempts INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(owner_id, workspace_id, idempotency_key, position),
+        FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE
+      );
+    `);
       this.database.prepare('INSERT OR IGNORE INTO runtime_meta(key, value) VALUES (?, ?)')
         .run('runner_instance_id', randomBytes(18).toString('hex'));
       this.knowledge = new KnowledgeStore(this.database);
@@ -719,6 +766,69 @@ export class StateStore {
     const row = this.database.prepare('SELECT operation, fingerprint, result_json FROM workspace_repository_changes WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?')
       .get(ownerId, workspaceId, key) as { operation: string; fingerprint: string; result_json: string } | undefined;
     return row ? { operation: row.operation, fingerprint: row.fingerprint, resultJson: row.result_json } : undefined;
+  }
+
+  /** The recorded steps of one coordinated finalize run in execution order; empty when the key is new. */
+  reposFinalizeSteps(ownerId: string, workspaceId: string, key: string): ReposFinalizeStepRecord[] {
+    const rows = this.database.prepare(`SELECT * FROM workspace_repos_finalize_steps
+      WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ? ORDER BY position ASC`).all(ownerId, workspaceId, key) as Record<string, unknown>[];
+    return rows.map((row) => ({
+      position: Number(row.position),
+      fingerprint: String(row.fingerprint),
+      repositoryId: String(row.repository_id),
+      alias: String(row.alias),
+      finalizeStatus: String(row.finalize_status) as ReposFinalizeStepStatus,
+      finalizeResultJson: row.finalize_result_json === null ? null : String(row.finalize_result_json),
+      finalizeAttempts: Number(row.finalize_attempts),
+      prStatus: row.pr_status === null ? null : String(row.pr_status) as ReposFinalizeStepStatus,
+      prResultJson: row.pr_result_json === null ? null : String(row.pr_result_json),
+      prAttempts: Number(row.pr_attempts)
+    }));
+  }
+
+  /**
+   * Records the steps of a new coordinated finalize run, all PENDING, in one transaction. When another call
+   * recorded the key first, its steps are returned unchanged so the caller compares fingerprints instead.
+   */
+  createReposFinalizePlan(
+    ownerId: string,
+    workspaceId: string,
+    key: string,
+    fingerprint: string,
+    steps: readonly { repositoryId: string; alias: string; pullRequest: boolean }[]
+  ): ReposFinalizeStepRecord[] {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const existing = this.reposFinalizeSteps(ownerId, workspaceId, key);
+      if (existing.length === 0) {
+        const now = Date.now();
+        const insert = this.database.prepare(`INSERT INTO workspace_repos_finalize_steps
+          (owner_id, workspace_id, idempotency_key, position, fingerprint, repository_id, alias, finalize_status, pr_status, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)`);
+        steps.forEach((step, position) => {
+          insert.run(ownerId, workspaceId, key, position, fingerprint, step.repositoryId, step.alias, step.pullRequest ? 'PENDING' : null, now, now);
+        });
+      }
+      this.database.exec('COMMIT;');
+    } catch (error) {
+      try { this.database.exec('ROLLBACK;'); } catch { /* ignore rollback error */ }
+      throw error;
+    }
+    return this.reposFinalizeSteps(ownerId, workspaceId, key);
+  }
+
+  /** Updates one recorded step; an `...Attempted` flag counts an attempt before its outcome is known. */
+  updateReposFinalizeStep(ownerId: string, workspaceId: string, key: string, position: number, update: ReposFinalizeStepUpdate): void {
+    const assignments: string[] = ['updated_at = ?'];
+    const values: (string | number | null)[] = [Date.now()];
+    if (update.finalizeStatus !== undefined) { assignments.push('finalize_status = ?'); values.push(update.finalizeStatus); }
+    if (update.finalizeResultJson !== undefined) { assignments.push('finalize_result_json = ?'); values.push(update.finalizeResultJson); }
+    if (update.finalizeAttempted) assignments.push('finalize_attempts = finalize_attempts + 1');
+    if (update.prStatus !== undefined) { assignments.push('pr_status = ?'); values.push(update.prStatus); }
+    if (update.prResultJson !== undefined) { assignments.push('pr_result_json = ?'); values.push(update.prResultJson); }
+    if (update.prAttempted) assignments.push('pr_attempts = pr_attempts + 1');
+    this.database.prepare(`UPDATE workspace_repos_finalize_steps SET ${assignments.join(', ')}
+      WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ? AND position = ?`).run(...values, ownerId, workspaceId, key, position);
   }
 
   /** Replaces a recorded result, as when the checkout of a removed repository could not be deleted. */

@@ -15,6 +15,7 @@ import {
   scopedWorkerArgs,
   unknownRepository
 } from './workspace-repositories.js';
+import { resolveReposFinalizePlan, runReposFinalize, type ReposFinalizeInput } from './repos-finalize.js';
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { chmod, chown, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { dirname, join, posix, relative, resolve, sep } from 'node:path';
@@ -542,6 +543,8 @@ export class WorkspaceService {
    * the SQLite state). The registry transaction still fences the rows if that ever changes.
    */
   private readonly repositoryChanges = new Set<string>();
+  /** Workspaces with a coordinated `workspace_repos_finalize` run in flight in this process. */
+  private readonly reposFinalizes = new Set<string>();
   /** Workspaces whose tree is frozen for a host-side check-and-change; no new tree writer may start. */
   private readonly frozenTrees = new Set<string>();
   /** In-flight helper containers that mount a workspace tree read-write, by workspace. */
@@ -2988,6 +2991,38 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   }
 
   /**
+   * Finalizes several checkouts in the declared order. Each step is an ordinary `workspace_finalize` (and
+   * `github_action` `pr_create`) call for the same principal with a derived idempotency key, so the
+   * single-repository commit, push, read-only, and capability rules apply unchanged and a replay never
+   * commits or pushes twice. The whole run holds the workspace mutation lease and is serialized per workspace.
+   */
+  private async finalizeRepositories(
+    principal: PrincipalSelector | string,
+    ownerId: string,
+    validated: ReposFinalizeInput & { workspaceId?: string },
+    signal?: AbortSignal
+  ): Promise<RunnerResponse> {
+    const record = this.touch(this.requireWorkspace(ownerId, validated.workspaceId, true, false));
+    const plan = resolveReposFinalizePlan(this.workspaceRepositoryEntries(record).entries, validated);
+    if (this.reposFinalizes.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'another workspace_repos_finalize is in progress for this workspace', 409, true);
+    }
+    this.reposFinalizes.add(record.id);
+    try {
+      return await this.withMutationLease(record, () => runReposFinalize({
+        store: this.store,
+        ownerId,
+        workspaceId: record.id,
+        input: validated,
+        plan,
+        execute: (operation, input) => this.execute(principal, operation, input, signal)
+      }));
+    } finally {
+      this.reposFinalizes.delete(record.id);
+    }
+  }
+
+  /**
    * Clones the new repository with the same helper as open, then moves it to `repos/<alias>` and registers
    * it in one frozen step. The row is written only after the clone succeeded and the workspace stayed inside
    * its disk bounds; any failure removes only the directory this call created, never one found in its place.
@@ -4469,6 +4504,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'workspace_repo_add' || operation === 'workspace_repo_remove') {
       return await this.changeRepositories(ownerId, operation, validated);
+    }
+    if (operation === 'workspace_repos_finalize') {
+      return await this.finalizeRepositories(principal, ownerId, validated as ReposFinalizeInput & { workspaceId?: string }, signal);
     }
 
     const workspaceRecord = this.touch(this.requireWorkspace(ownerId, workspaceId, true, false));
@@ -6648,7 +6686,7 @@ const GITHUB_CHECKOUT_FREE_ACTIONS: ReadonlySet<string> = new Set(['pr_merge', '
 
 /** Mutations that can duplicate a visible side effect, so an `idempotencyKey` replays the first result. */
 const GITHUB_IDEMPOTENT_ACTIONS: ReadonlySet<string> = new Set([
-  'pr_comment', 'issue_comment', 'issue_labels_add', 'issue_publish',
+  'pr_create', 'pr_comment', 'issue_comment', 'issue_labels_add', 'issue_publish',
   'pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_reviewers_request', 'pr_merge', 'pr_auto_merge_enable',
   'commit_status_create', 'check_run_create', 'workflow_dispatch', 'workflow_run_rerun_failed'
 ]);
