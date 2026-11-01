@@ -818,8 +818,10 @@ For such deployments,
 [`.github/workflows/tose-images.yml`](../.github/workflows/tose-images.yml)
 pushes each stable release's images to Docker Hub as
 `digitop/cloudharness-<image>` and attaches `tose-manifest.json` to the GitHub
-release. It skips prerelease tags, refuses a tag whose commit is not on `main`,
-and never replaces a manifest already attached to a release. Written by
+release. It skips prerelease tags before the protected environment is entered,
+refuses a tag whose commit is not on `main`, waits up to 10 minutes for the
+GitHub release that semantic-release creates after pushing the tag, and never
+replaces a manifest already attached to a release. Written by
 [`scripts/build-tose-manifest.mjs`](../scripts/build-tose-manifest.mjs), it pins
 every image by `@sha256:` digest and lists the local tags the Docker host must
 apply, the model gateway and provisioning proxy containers that run inside it,
