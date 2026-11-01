@@ -180,7 +180,17 @@ executor's `/workspace` is the tree root and each checkout lives at
   single-repository workspace. `agent_spawn` accepts `repositoryId` to place
   that repository's guidance (within the same input-budget bound) before the
   task; without it the agent gets the primary repository's guidance, and its
-  `repository_context` log event names the selected repository.
+  `repository_context` log event names the repository that answered either way.
+  Owner- and workspace-scoped memories do not belong to a checkout, so only a
+  `repository`-scoped memory call falls back to the primary repository. A
+  `skills_run` approval grant names the selected repository's id, so a grant
+  approved for one checkout cannot run a same-named, same-digest script in
+  another, and the helper container is confined to that checkout. Workspace-wide
+  activations recorded before activations were bound to a repository never run
+  in a multi-repository workspace; a selected `hooks_list` reports them under
+  `unboundActivations` with a warning so they can be re-activated per
+  repository. The Dashboard's automation tab lists the primary repository's
+  skills and hooks, names it, and targets its runs at it.
 - **Single-repository workspaces are unchanged.** They accept a selector naming
   their only checkout (`workspace_repos_list` reports its synthesized id and
   alias at path `.`), behave identically with or without it, and keep their

@@ -30,6 +30,8 @@ const docker = vi.hoisted(() => ({
       const result = docker.workerResults.get(`${operation}:${root}`) ?? docker.workerResult;
       return { stdout: JSON.stringify(result), stderr: '', exitCode: 0, truncated: false };
     }
+    // A skills_run helper container prints the one-shot worker's bounded result.
+    if (args.includes('cloud-harness.role=priv-exec')) return { stdout: JSON.stringify(docker.workerResult), stderr: '', exitCode: 0, truncated: false };
     if (args[0] === 'create') return { stdout: 'container-created\n', stderr: '', exitCode: 0, truncated: false };
     return { stdout: '', stderr: '', exitCode: 0, truncated: false };
   }),
@@ -197,13 +199,70 @@ describe('repository-targeted guidance, skills, hooks, and memories', () => {
     expect(store.getActiveHookActivations(ownerId, workspaceId, api!.repositoryId)).toHaveLength(0);
   });
 
-  it('drops a repository binding when that repository is removed', async () => {
+  it('drops a repository binding when that repository is removed, and every binding when the workspace is reaped', async () => {
     const { service, store } = fixture();
     const { workspaceId, repositories: entries } = await openMulti(service);
     await service.execute(principal, 'hooks_activate', { workspaceId, repositoryId: 'web', manifestSha256: MANIFEST, events: ['pre_commit'] });
+    await service.execute(principal, 'hooks_activate', { workspaceId, repositoryId: 'api', manifestSha256: MANIFEST, events: ['pre_commit'] });
     const ownerId = store.byId(workspaceId)!.ownerId;
-    store.reapWorkspaceMemories(ownerId, workspaceId);
+
+    // The removal checks find a clean checkout with no linked worktrees.
+    mkdirSync(join(store.byId(workspaceId)!.workspacePath, 'repo', 'repos', 'web', '.git'), { recursive: true });
+    docker.workerResult = { ok: true, message: 'clean', data: { uncommittedPaths: 0, stashes: 0, unpushedCommits: 0 }, truncated: false };
+    const removed = await service.execute(principal, 'workspace_repo_remove', { workspaceId, repositoryId: 'web', idempotencyKey: 'remove-web-1' });
+    expect(removed.ok).toBe(true);
     expect(store.getActiveHookActivations(ownerId, workspaceId, entries[1]!.repositoryId)).toHaveLength(0);
+    expect(store.getActiveHookActivations(ownerId, workspaceId, entries[0]!.repositoryId)).toHaveLength(1);
+
+    store.reapWorkspaceMemories(ownerId, workspaceId);
+    expect(store.getActiveHookActivations(ownerId, workspaceId, entries[0]!.repositoryId)).toHaveLength(0);
+  });
+
+  it('reports workspace-wide activations that no longer run in a multi-repository workspace', async () => {
+    const { service, store } = fixture();
+    const { workspaceId } = await openMulti(service);
+    docker.workerResults.set('hooks_list:/workspace/repos/web', hooksListing);
+    const ownerId = store.byId(workspaceId)!.ownerId;
+    // An activation recorded before lifecycle hooks were bound to one repository names none.
+    store.activateHook({ principalId: ownerId, workspaceId, event: 'pre_commit', manifestSha256: MANIFEST });
+
+    const listed = await service.execute(principal, 'hooks_list', { workspaceId, repositoryId: 'web' });
+    expect(listed.data).toMatchObject({
+      unboundActivations: [expect.objectContaining({ event: 'pre_commit', manifestSha256: MANIFEST })],
+      warnings: [expect.stringContaining('re-activate them with hooks_activate and a repositoryId')]
+    });
+    expect((listed.data as { hooks: Array<{ active: boolean }> }).hooks[0]!.active).toBe(false);
+    await service.execute(principal, 'git_commit', { workspaceId, repositoryId: 'web', message: 'chore: web' });
+    expect(workerOperations('hooks_run')).toHaveLength(0);
+
+    await service.execute(principal, 'hooks_deactivate', { workspaceId });
+    const cleared = await service.execute(principal, 'hooks_list', { workspaceId, repositoryId: 'web' });
+    expect(cleared.data).not.toHaveProperty('unboundActivations');
+  });
+
+  it('binds a skill-run approval to the repository it was requested for and runs it in that checkout', async () => {
+    const { service, store } = fixture();
+    const { workspaceId, repositories: entries } = await openMulti(service);
+    const ownerId = store.byId(workspaceId)!.ownerId;
+    const request = { workspaceId, name: 'deploy', script: 'run.sh', expectedSha256: MANIFEST };
+
+    const pending = await service.execute(principal, 'skills_run', { ...request, repositoryId: 'web' });
+    expect(pending.ok).toBe(false);
+    expect(pending.error).toMatchObject({ code: 'PRIVILEGE_APPROVAL_REQUIRED', message: expect.stringContaining('from repository web') });
+    const grantId = (pending.error as { grantRequest: { grantId: string } }).grantRequest.grantId;
+    expect(store.getPrivilegeGrant(grantId)?.command).toBe(`skills_run deploy script=run.sh expected=${MANIFEST} repository=${entries[1]!.repositoryId}`);
+    expect(store.approvePrivilegeGrant(ownerId, grantId)).toBe(true);
+
+    await expect(service.execute(principal, 'skills_run', { ...request, repositoryId: 'api', approvalGrantToken: grantId }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(store.getPrivilegeGrant(grantId)?.status).toBe('APPROVED');
+
+    const run = await service.execute(principal, 'skills_run', { ...request, repositoryId: 'web', approvalGrantToken: grantId });
+    expect(run.ok).toBe(true);
+    expect(run.data).toMatchObject({ executionMode: 'helper-container', repositoryAlias: 'web' });
+    const helper = docker.runDocker.mock.calls.find((call) => call[0].includes('cloud-harness.role=priv-exec'));
+    expect(workerRoot(helper)).toBe('/workspace/repos/web');
+    expect(helper![0][helper![0].indexOf('--workdir') + 1]).toBe('/workspace/repos/web');
   });
 
   it('keys repository-scoped memories by the selected repository and defaults to the primary one', async () => {
@@ -234,6 +293,23 @@ describe('repository-targeted guidance, skills, hooks, and memories', () => {
     expect(stillPrimary.data).toMatchObject({ content: 'api rules' });
   });
 
+  it('keeps owner- and workspace-scoped memories off the checkouts, so they need no repository', async () => {
+    const { service, store } = fixture();
+    const { workspaceId } = await openMulti(service);
+    // Without its primary checkout the workspace can still keep owner and workspace notes.
+    rmSync(join(store.byId(workspaceId)!.workspacePath, 'repo', 'repos', 'api'), { recursive: true, force: true });
+
+    for (const scope of ['owner', 'workspace'] as const) {
+      const written = await service.execute(principal, 'memories_write', { workspaceId, scope, name: `${scope}-note`, content: 'kept' });
+      expect(written.data).toMatchObject({ scope, repositoryKey: null });
+      expect(written.data).not.toHaveProperty('repositoryAlias');
+      const listed = await service.execute(principal, 'memories_list', { workspaceId, scope });
+      expect(listed.data).not.toHaveProperty('repositoryAlias');
+    }
+    await expect(service.execute(principal, 'memories_write', { workspaceId, scope: 'repository', name: 'n', content: 'x' }))
+      .rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
   it('keeps single-repository guidance, skills, hooks, and memories unchanged', async () => {
     const { service, store } = fixture();
     const { workspaceId } = await openSingle(service);
@@ -249,6 +325,11 @@ describe('repository-targeted guidance, skills, hooks, and memories', () => {
     await service.execute(principal, 'hooks_activate', { workspaceId, manifestSha256: MANIFEST, events: ['pre_commit'] });
     const ownerId = store.byId(workspaceId)!.ownerId;
     expect(store.getActiveHookActivations(ownerId, workspaceId)).toEqual([expect.not.objectContaining({ repositoryId: expect.anything() })]);
+    expect((await service.execute(principal, 'hooks_list', { workspaceId })).data).not.toHaveProperty('unboundActivations');
+    // A single repository's skill-run approval keeps its original descriptor.
+    const pending = await service.execute(principal, 'skills_run', { workspaceId, name: 'deploy', script: 'run.sh', expectedSha256: MANIFEST });
+    const grantId = (pending.error as { grantRequest: { grantId: string } }).grantRequest.grantId;
+    expect(store.getPrivilegeGrant(grantId)?.command).toBe(`skills_run deploy script=run.sh expected=${MANIFEST}`);
 
     const written = await service.execute(principal, 'memories_write', { workspaceId, scope: 'repository', name: 'notes', content: 'x' });
     expect(written.data).toMatchObject({ repositoryKey: createHash('sha256').update('https://github.com/acme/api.git').digest('hex') });

@@ -4273,7 +4273,10 @@ export function initializeDashboard() {
       api(`/workspaces/${scoped}/skills`).catch(() => undefined),
       api(`/workspaces/${scoped}/hooks`).catch(() => undefined)
     ]);
-    return renderAutomationPanel({ skills: skillsResult?.data?.skills ?? [], hooks: hooksResult?.data?.hooks ?? [], manifestSha256: hooksResult?.data?.manifestSha256 ?? '' });
+    return renderAutomationPanel({
+      skills: skillsResult?.data?.skills ?? [], hooks: hooksResult?.data?.hooks ?? [], manifestSha256: hooksResult?.data?.manifestSha256 ?? '',
+      skillsRepository: skillsResult?.data, hooksRepository: hooksResult?.data
+    });
   }
   /** Deployment targets defined by the repository. */
   async function deployPanel(workspaceId) {
@@ -4295,7 +4298,8 @@ export function initializeDashboard() {
         target: `${name} @ ${expectedManifestSha256.slice(0, 16)}`,
         label: 'Run hook', pendingLabel: 'Running…',
         action: async () => {
-          await api(`/workspaces/${scoped}/hooks/run`, { method: 'POST', body: requestBody({ name, expectedManifestSha256 }) });
+          const repositoryId = hookForm.dataset.repositoryId;
+          await api(`/workspaces/${scoped}/hooks/run`, { method: 'POST', body: requestBody({ name, expectedManifestSha256, ...(repositoryId ? { repositoryId } : {}) }) });
           announce('Hook finished.');
           navigateTo(`/dashboard/workspaces/${scoped}/automation`);
         }
@@ -4313,7 +4317,7 @@ export function initializeDashboard() {
       const contentSha256 = skillForm.querySelector('#skill-run-name')?.selectedOptions?.[0]?.dataset.contentSha256 ?? '';
       const runSkill = (approvalGrantToken) => api(`/workspaces/${scoped}/skills/${encodeURIComponent(name)}/run`, {
         method: 'POST',
-        body: requestBody({ script, expectedContentSha256: contentSha256, ...(approvalGrantToken ? { approvalGrantToken } : {}) })
+        body: requestBody({ script, expectedContentSha256: contentSha256, ...(skillForm.dataset.repositoryId ? { repositoryId: skillForm.dataset.repositoryId } : {}), ...(approvalGrantToken ? { approvalGrantToken } : {}) })
       });
       // The run's output stays on the page, so the tab is not reloaded over it.
       const showResult = (run, failed) => {

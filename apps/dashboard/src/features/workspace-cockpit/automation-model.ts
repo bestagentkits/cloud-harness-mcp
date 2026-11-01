@@ -49,6 +49,19 @@ export function hooksOf(data: unknown): { hooks: WorkspaceHook[]; manifestSha256
   return { hooks, ...(manifestSha256 ? { manifestSha256 } : {}) };
 }
 
+/**
+ * The repository a multi-repository workspace answered a listing from (`repositoryId`), so a run
+ * started from that listing targets the same checkout. A single-repository workspace reports none.
+ */
+export type ListedRepository = { repositoryId: string; repositoryAlias?: string };
+export function listedRepositoryOf(data: unknown): ListedRepository | undefined {
+  const record = (data ?? {}) as Record<string, unknown>;
+  const repositoryId = typeof record.repositoryId === 'string' && /^repo_[A-Za-z0-9_-]{20,80}$/.test(record.repositoryId) ? record.repositoryId : undefined;
+  if (!repositoryId) return undefined;
+  const repositoryAlias = optional(record.repositoryAlias);
+  return { repositoryId, ...(repositoryAlias ? { repositoryAlias } : {}) };
+}
+
 /** Hooks grouped by the lifecycle event that runs them (one hook may sit in several stages). */
 export function groupHooksByLifecycle(hooks: readonly WorkspaceHook[]) {
   return HOOK_LIFECYCLE.map((event) => ({ ...event, hooks: hooks.filter((hook) => hook.events.includes(event.id)) }));
@@ -58,9 +71,10 @@ export function groupHooksByLifecycle(hooks: readonly WorkspaceHook[]) {
  * The `hooks_run` body for one hook at one stage. The contract requires a digest: the
  * manifest digest when the list reported one, else the hook's own. No digest, no run.
  */
-export function hookRunBody(hook: WorkspaceHook, event: string, manifestSha256: string | undefined): Record<string, unknown> | undefined {
-  if (manifestSha256) return { name: hook.name, event, expectedManifestSha256: manifestSha256 };
-  if (hook.sha256) return { name: hook.name, event, expectedSha256: hook.sha256 };
+export function hookRunBody(hook: WorkspaceHook, event: string, manifestSha256: string | undefined, repository?: ListedRepository): Record<string, unknown> | undefined {
+  const target = repository ? { repositoryId: repository.repositoryId } : {};
+  if (manifestSha256) return { name: hook.name, event, expectedManifestSha256: manifestSha256, ...target };
+  if (hook.sha256) return { name: hook.name, event, expectedSha256: hook.sha256, ...target };
   return undefined;
 }
 

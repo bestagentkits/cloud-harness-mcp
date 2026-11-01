@@ -171,7 +171,12 @@ export type AgentRepositoryGuidance = (input: {
   /** The repository of a multi-repository workspace whose guidance is used; absent means the primary one. */
   repositoryId?: string;
   signal?: AbortSignal;
-}) => Promise<{ snapshot: RepositoryGuidanceSnapshot; reused: boolean }>;
+}) => Promise<{
+  snapshot: RepositoryGuidanceSnapshot;
+  reused: boolean;
+  /** The repository that answered, in a multi-repository workspace; absent for one repository. */
+  repositoryId?: string | undefined;
+}>;
 export type AgentRepositoryContext = GuidanceProfile | 'none';
 
 export type AgentManagerDependencies = {
@@ -573,7 +578,8 @@ export class AgentManager {
         session ? Math.floor(startRecordHeadroom({ bytes: session.bytes, messageCount: session.messages.length }, prompt) / 6) : Infinity
       ))
     });
-    const event = { ...composed.report, snapshotReused: resolved.reused, ...(repositoryId ? { repositoryId } : {}) };
+    const answeredBy = resolved.repositoryId ?? repositoryId;
+    const event = { ...composed.report, snapshotReused: resolved.reused, ...(answeredBy ? { repositoryId: answeredBy } : {}) };
     // The report is charged to the caller's output bytes like any log event, so it is kept to a
     // quarter of that budget and is dropped rather than ending the agent when it cannot fit.
     const eventLimit = Math.min(this.config.limits.maxLogEventBytes, Math.floor(record.budget.maxOutputBytes / 4));

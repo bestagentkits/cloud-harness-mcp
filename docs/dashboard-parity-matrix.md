@@ -238,8 +238,8 @@ calls the route (collected in [4.13](#413-routes-without-a-legacy-ui-caller)).
 | GET | `/workspaces/:id/sessions/:sid/io` | router | cursor | — | runtime tab | `workspace-runtime` | P4 |
 | POST | `/workspaces/:id/sessions/:sid/close` | router | — | runtime tab, confirm | `workspace-runtime` | P4 |
 | GET | `/workspaces/:id/skills`, `/hooks`, `/deployments` | router | — | automation and deploy tabs | `workspace-automation` | P3 |
-| POST | `/workspaces/:id/skills/:name/run` | router | **sha** plus privilege grant | yes | automation tab | `workspace-automation` | P4 |
-| POST | `/workspaces/:id/hooks/run` | router | **sha** | yes | automation tab | `workspace-automation` | P4 |
+| POST | `/workspaces/:id/skills/:name/run` | router | **sha** plus privilege grant; `repositoryId` from the listing in a multi-repository workspace | yes | automation tab | `workspace-automation` | P4 |
+| POST | `/workspaces/:id/hooks/run` | router | **sha**; `repositoryId` from the listing in a multi-repository workspace | yes | automation tab | `workspace-automation` | P4 |
 | POST | `/workspaces/:id/hooks/{activate,deactivate}` | router | `manifestSha256` | yes | **none** | `workspace-automation` | P4 (decide) |
 | POST | `/workspaces/:id/deployments/run` | router | bounded `timeoutMs` | yes | deploy tab, confirm | `workspace-deploy` | P4 |
 | GET | `/workspaces/:id/artifacts`, `/activity` | router | — | cockpit tabs | `workspace-cockpit` | P3 |

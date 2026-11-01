@@ -1079,6 +1079,20 @@ describe('agent repository guidance bootstrap', () => {
     await manager.stop();
   });
 
+  it('records the repository that answered when the spawn named none', async () => {
+    const snapshot = buildRepositoryGuidanceSnapshot({ items: [], warnings: [], truncated: false });
+    const primaryId = `repo_${'p'.repeat(24)}`;
+    const { manager, record, repository, launcher } = guidedSetup(async () => ({ snapshot, reused: false, repositoryId: primaryId }));
+    const spawned = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+    const agentId = (spawned.data as { agentId: string }).agentId;
+    await vi.waitFor(() => expect(launcher.inputs).toHaveLength(1));
+    const agent = repository.findAgent(record.ownerId, record.id, agentId)!;
+    const report = JSON.parse(repository.readLogs(record.ownerId, record.id, agentId, agent.generation, '0', 262_144).events
+      .find((event) => event.type === 'repository_context')!.content) as Record<string, unknown>;
+    expect(report.repositoryId).toBe(primaryId);
+    await manager.stop();
+  });
+
   it('records only counts when the injected-document report would exceed the log event bound', async () => {
     const items = Array.from({ length: 60 }, (_, index) => {
       const content = `rule ${index}`;

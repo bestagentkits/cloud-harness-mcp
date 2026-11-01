@@ -715,7 +715,7 @@ export function renderHookPipeline(groups = []) {
  * one hook from the manifest and the manifest digest this page was rendered from, so a manifest
  * that changed since is refused rather than run.
  */
-export function renderHooks(hooks = [], manifestSha256 = '') {
+export function renderHooks(hooks = [], manifestSha256 = '', repository = undefined) {
   const groups = groupHooksByLifecycle(hooks);
   const lists = groups.map((group) => {
     const rows = group.hooks.length
@@ -726,13 +726,26 @@ export function renderHooks(hooks = [], manifestSha256 = '') {
   const runnable = /^[a-f0-9]{64}$/.test(String(manifestSha256)) ? hooks.filter((hook) => /^[A-Za-z0-9._-]{1,120}$/.test(String(hook.name ?? ''))) : [];
   const options = runnable.map((hook) => `<option value="${escape(String(hook.name))}">${escape(String(hook.name))}</option>`).join('');
   const form = runnable.length
-    ? `<form id="hook-run-form" class="stack-form" data-manifest-sha256="${escape(String(manifestSha256))}"><label for="hook-name">Run a hook from the repository manifest</label><select id="hook-name" name="name" required>${options}</select><button type="submit">Run hook</button><p class="form-status" aria-live="polite"></p></form>`
+    ? `<form id="hook-run-form" class="stack-form" data-manifest-sha256="${escape(String(manifestSha256))}"${repositoryDataAttribute(repository)}><label for="hook-name">Run a hook from the repository manifest</label><select id="hook-name" name="name" required>${options}</select><button type="submit">Run hook</button><p class="form-status" aria-live="polite"></p></form>`
     : '<p class="empty-note">No hook can run from this page.</p>';
-  return `<section class="panel" aria-labelledby="hooks-heading"><h2 id="hooks-heading">Hooks</h2>${renderHookPipeline(groups)}${lists}${form}<p class="page-note">Activation and deactivation stay with the runner's manifest contract. Running a hook here is a one-off manual run you confirm first; it does not activate the hook.</p></section>`;
+  return `<section class="panel" aria-labelledby="hooks-heading"><h2 id="hooks-heading">Hooks</h2>${renderListedRepository(repository)}${renderHookPipeline(groups)}${lists}${form}<p class="page-note">Activation and deactivation stay with the runner's manifest contract. Running a hook here is a one-off manual run you confirm first; it does not activate the hook.</p></section>`;
+}
+
+/**
+ * The repository a multi-repository workspace answered a listing from. A run form started from that
+ * listing carries its `repo_` id, so the run targets the same checkout; one repository reports none.
+ */
+const LISTED_REPOSITORY_ID = /^repo_[A-Za-z0-9_-]{20,80}$/;
+function repositoryDataAttribute(repository) {
+  return repository && LISTED_REPOSITORY_ID.test(String(repository.repositoryId ?? '')) ? ` data-repository-id="${escape(String(repository.repositoryId))}"` : '';
+}
+function renderListedRepository(repository) {
+  if (!repository || !LISTED_REPOSITORY_ID.test(String(repository.repositoryId ?? ''))) return '';
+  return `<p class="page-note">From repository <code class="mono">${escape(String(repository.repositoryAlias ?? repository.repositoryId))}</code>; runs started here target that repository.</p>`;
 }
 
 /** The workspace skill set, with a guarded run form for an explicitly named script. */
-export function renderWorkspaceSkills(skills = []) {
+export function renderWorkspaceSkills(skills = [], repository = undefined) {
   const digest = (skill) => String(skill.contentSha256 ?? '');
   const rows = skills.length
     ? `<ul class="record-list">${skills.map((skill) => `<li><strong>${escape(String(skill.name ?? 'skill'))}</strong>${skill.tier ? ` <span class="status">${escape(String(skill.tier))}</span>` : ''}${skill.description ? `<p>${escape(String(skill.description))}</p>` : ''}${digest(skill) ? `<small class="mono wrap">${escape(digest(skill).slice(0, 16))}</small>` : ''}</li>`).join('')}</ul>`
@@ -741,9 +754,9 @@ export function renderWorkspaceSkills(skills = []) {
   const runnable = skills.filter((skill) => skill.name && /^[0-9a-f]{64}$/.test(digest(skill)));
   const options = runnable.map((skill) => `<option value="${escape(String(skill.name))}" data-content-sha256="${escape(digest(skill))}">${escape(String(skill.name))}</option>`).join('');
   const form = runnable.length
-    ? `<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs once in a disposable helper container from the verified skill revision listed here. Nothing runs unless you name it here, and each run asks for your approval first.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><select id="skill-run-name" name="name" required>${options}</select><label for="skill-run-script">Script name</label><input id="skill-run-script" name="script" required maxlength="120" placeholder="run.sh"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form><div id="skill-run-result"></div></details>`
+    ? `<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs once in a disposable helper container from the verified skill revision listed here. Nothing runs unless you name it here, and each run asks for your approval first.</p><form id="skill-run-form" class="stack-form"${repositoryDataAttribute(repository)}><label for="skill-run-name">Skill</label><select id="skill-run-name" name="name" required>${options}</select><label for="skill-run-script">Script name</label><input id="skill-run-script" name="script" required maxlength="120" placeholder="run.sh"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form><div id="skill-run-result"></div></details>`
     : '';
-  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}${form}</section>`;
+  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${renderListedRepository(repository)}${rows}${form}</section>`;
 }
 
 /** A finished skill run: exit code, where it ran, the signal that stopped it (a timeout) and its bounded, redacted output. */
@@ -776,10 +789,10 @@ export function renderDeployPanel(deployments = []) {
 }
 
 /** The cockpit Automation tab: the workspace skill set and its hooks. */
-export function renderAutomationPanel({ skills = [], hooks = [], manifestSha256 = '' } = {}) {
+export function renderAutomationPanel({ skills = [], hooks = [], manifestSha256 = '', skillsRepository, hooksRepository } = {}) {
   return `${renderResourcePage({
     note: '<div class="page-note"><strong>Workspace automation.</strong> Skills resolve from your library and pinned sets; hooks run at lifecycle events inside the executor.</div>',
-    body: `${renderWorkspaceSkills(skills)}${renderHooks(hooks, manifestSha256)}`
+    body: `${renderWorkspaceSkills(skills, skillsRepository)}${renderHooks(hooks, manifestSha256, hooksRepository)}`
   })}`;
 }
 

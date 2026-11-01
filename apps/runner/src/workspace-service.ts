@@ -80,6 +80,7 @@ import {
   type WorkspaceLifecycleOverrides,
   type GitOperationStatus,
   type PrincipalSelector,
+  type HookActivationRecord,
   type StateStore,
   type WorkspaceRecord,
   type WorkspaceRepositoryRecord,
@@ -172,9 +173,11 @@ const SKILL_RUN_DEFAULT_TIMEOUT_MS = 60_000;
  * means "run this skill script at this digest with exactly these inputs", and a retry that changes
  * any of them hashes to a different descriptor and cannot consume the grant. A plain call keeps the
  * original descriptor byte for byte. The arguments come last and are JSON-encoded, so no argument
- * value can imitate another field.
+ * value can imitate another field. In a multi-repository workspace the selected repository's stable
+ * id is part of the descriptor, so a grant approved for one checkout cannot run a same-named,
+ * same-digest script in another; a single-repository workspace passes none and keeps its descriptor.
  */
-export function skillRunGrantDescriptor(input: Record<string, unknown>): string {
+export function skillRunGrantDescriptor(input: Record<string, unknown>, repositoryId?: string): string {
   const name = input.name as string;
   const script = input.script as string;
   const expectedSha = (input.expectedContentSha256 ?? input.expectedSha256) as string;
@@ -183,6 +186,7 @@ export function skillRunGrantDescriptor(input: Record<string, unknown>): string 
   let descriptor = `skills_run ${name} script=${script} expected=${expectedSha}`;
   if (typeof input.source === 'string') descriptor += ` source=${input.source}`;
   if (timeoutMs !== SKILL_RUN_DEFAULT_TIMEOUT_MS) descriptor += ` timeoutMs=${timeoutMs}`;
+  if (repositoryId !== undefined) descriptor += ` repository=${repositoryId}`;
   if (args.length > 0) descriptor += ` args=${JSON.stringify(args)}`;
   return descriptor;
 }
@@ -333,6 +337,9 @@ const REPOSITORY_PRIMARY_DEFAULT = new Set<RunnerOperation>([
   'workspace_context', 'skills_list', 'skills_read', 'hooks_list',
   'memories_list', 'memories_read', 'memories_write', 'memories_search', 'memories_delete'
 ]);
+const MEMORY_OPERATIONS = new Set<RunnerOperation>([
+  'memories_list', 'memories_read', 'memories_write', 'memories_search', 'memories_delete'
+]);
 /** Operations whose result names the repository that answered, in a multi-repository workspace. */
 const REPOSITORY_PROVENANCE_OPERATIONS = new Set<RunnerOperation>([
   ...REPOSITORY_PRIMARY_DEFAULT, 'skills_run', 'hooks_run', 'hooks_activate', 'hooks_deactivate'
@@ -398,6 +405,28 @@ function withRepositoryProvenance(record: WorkspaceRecord, operation: RunnerOper
   const data = response.data;
   if (!data || typeof data !== 'object' || Array.isArray(data)) return response;
   return { ...response, data: { ...data, repositoryId: record.repositoryScope.id, repositoryAlias: record.repositoryScope.alias } };
+}
+
+/**
+ * Workspace-wide activations recorded before lifecycle hooks were bound to one repository never run in a
+ * multi-repository workspace, since they do not name the repository they were approved for. A scoped
+ * `hooks_list` reports them so the owner can re-activate per repository (or deactivate them) instead of a
+ * blocking hook stopping silently.
+ */
+function withUnboundHookActivations(response: RunnerResponse, unbound: readonly HookActivationRecord[]): RunnerResponse {
+  const data = response.data;
+  if (unbound.length === 0 || !response.ok || !data || typeof data !== 'object' || Array.isArray(data)) return response;
+  return {
+    ...response,
+    data: {
+      ...data,
+      unboundActivations: unbound.map((activation) => ({ event: activation.event, manifestSha256: activation.manifestSha256, expiresAt: new Date(activation.expiresAt).toISOString() })),
+      warnings: [
+        ...(Array.isArray((data as { warnings?: unknown }).warnings) ? (data as { warnings: unknown[] }).warnings : []),
+        'workspace-wide hook activations do not run in a multi-repository workspace; re-activate them with hooks_activate and a repositoryId, or clear every activation of this workspace with hooks_deactivate without one'
+      ]
+    }
+  };
 }
 
 /** A scoped mutation's audit row names the repository it targeted, beside the workspace and generation. */
@@ -610,7 +639,8 @@ export class WorkspaceService {
             const view = request.repositoryId
               ? this.resolveRepositoryView(record, { repositoryId: request.repositoryId }, 'optional', 'agent_spawn').scoped
               : this.primaryRecordView(record);
-            return await this.repositoryGuidance(view, request.signal);
+            const guidance = await this.repositoryGuidance(view, request.signal);
+            return view.repositoryScope ? { ...guidance, repositoryId: view.repositoryScope.id } : guidance;
           }
         })
       : undefined);
@@ -2251,7 +2281,7 @@ export class WorkspaceService {
     const script = input.script as string;
     const timeoutMs = (input.timeoutMs as number) || SKILL_RUN_DEFAULT_TIMEOUT_MS;
     const maxOutputBytes = this.config.maxOutputBytes;
-    const grantCommand = skillRunGrantDescriptor(input);
+    const grantCommand = skillRunGrantDescriptor(input, record.repositoryScope?.id);
     const commandSha256 = createHash('sha256').update(grantCommand).digest('hex');
     const approvalGrantToken = input.approvalGrantToken as string | undefined;
 
@@ -2268,7 +2298,7 @@ export class WorkspaceService {
         message: 'Skill execution requires explicit operator approval grant',
         error: {
           code: 'PRIVILEGE_APPROVAL_REQUIRED',
-          message: `Approval grant required to run skill script ${name}/${script} in a disposable helper container`,
+          message: `Approval grant required to run skill script ${name}/${script}${record.repositoryScope ? ` from repository ${record.repositoryScope.alias}` : ''} in a disposable helper container`,
           grantRequest: {
             grantId: grant.id,
             workspaceId: grant.workspaceId,
@@ -2833,7 +2863,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
    * exists), and command tools that take a `cwd` are rebased onto the chosen checkout.
    */
   private scopeRecordForOperation(record: WorkspaceRecord, operation: RunnerOperation, validated: Record<string, unknown>): WorkspaceRecord {
-    const mode = REPOSITORY_SELECTOR_REQUIRED.has(operation) ? 'required' : REPOSITORY_PRIMARY_DEFAULT.has(operation) ? 'primary' : 'optional';
+    // Owner- and workspace-scoped memories do not belong to a checkout, so only a repository-scoped
+    // memory call falls back to the primary repository.
+    const primaryDefault = REPOSITORY_PRIMARY_DEFAULT.has(operation)
+      && (!MEMORY_OPERATIONS.has(operation) || validated.scope === 'repository');
+    const mode = REPOSITORY_SELECTOR_REQUIRED.has(operation) ? 'required' : primaryDefault ? 'primary' : 'optional';
     const { entry, scoped } = this.resolveRepositoryView(record, validated, mode, operation);
     if (!entry) return scoped;
     if (CWD_REBASED_OPERATIONS.has(operation)) {
@@ -2844,10 +2878,6 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   }
 
   /**
-   * The shared selector resolution. `optional` leaves an unselected multi-repository call on the tree root,
-   * `required` refuses it unless only one repository exists, and `primary` falls back to the primary one.
-   */
-  /**
    * The view workspace-level guidance reads: the primary checkout of a multi-repository workspace, so
    * open, its replay, and agent bootstrap all describe the same repository. Unchanged for one repository.
    */
@@ -2857,6 +2887,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return primary ? scopedRecordView(record, primary) : record;
   }
 
+  /**
+   * The shared selector resolution. `optional` leaves an unselected multi-repository call on the tree root,
+   * `required` refuses it unless only one repository exists, and `primary` falls back to the primary one.
+   */
   private resolveRepositoryView(
     record: WorkspaceRecord,
     validated: Record<string, unknown>,
@@ -3665,6 +3699,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         '--user', input.runAs === 'unprivileged' ? '10001:10001' : '0:0',
         ...(input.runAs === 'unprivileged' ? ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true'] : []),
         '--workdir', workdir,
+        // A scoped run confines the one-shot worker (skills_run) to the selected checkout, as a scoped
+        // `docker exec` does; an unscoped record adds nothing.
+        ...(record.repositoryScope ? ['--env', `CH_WORKSPACE_ROOT=${checkoutPath}`] : []),
         '--pids-limit', '256',
         '--memory', '1g', '--memory-swap', '1g', '--cpus', '1',
         '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=128m',
@@ -4924,7 +4961,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         this.store.getActiveHookActivations(ownerId, record.id, record.repositoryScope?.id)
       );
       await this.enforceActiveLimits(record);
-      return result;
+      return record.repositoryScope ? withUnboundHookActivations(result, this.store.getActiveHookActivations(ownerId, record.id)) : result;
     }
     if (operation === 'hooks_deactivate') {
       const events = validated.events as string[] | undefined;
