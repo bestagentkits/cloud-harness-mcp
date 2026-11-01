@@ -59,9 +59,9 @@ token straight to an operator principal.
 | Variable | Required | Decision |
 |---|---|---|
 | `OIDC_ISSUER` | yes | HTTPS issuer. A token's `iss` must equal it exactly. |
-| `OIDC_AUDIENCE` | yes | This instance's canonical HTTPS URL, with no path suffix, query, fragment, or trailing slash. A token's `aud` (string or array) must contain it exactly, so a token issued for another instance is refused. |
-| `OIDC_JWKS_URL` | yes | HTTPS JWKS endpoint of the issuer. Keys are cached for 5 minutes, refreshed when an unknown `kid` arrives, and served stale for up to 15 minutes if the endpoint fails. |
-| `OIDC_REQUIRED_SCOPE` | no, `cloudharness:operator` | One RFC 6749 scope token that the space-separated `scope` claim must contain. |
+| `OIDC_AUDIENCE` | yes | This instance's canonical HTTPS URL, without credentials, query, fragment, or a trailing slash. A path is allowed but not expected; use the bare origin, such as `https://ch.example.com`, not the `/mcp` endpoint. A token's `aud` (string or array) must contain it exactly, so a token issued for another instance is refused. |
+| `OIDC_JWKS_URL` | yes | HTTPS JWKS endpoint of the issuer. A key is used without refetching for 5 minutes after a fetch, and the key set is refetched early when an unknown `kid` arrives. A successful fetch drops every cached key it no longer lists. While the endpoint fails, keys from the last successful fetch stay usable for up to 15 minutes. |
+| `OIDC_REQUIRED_SCOPE` | no, `cloudharness:operator` | One RFC 6749 scope token that the space-separated `scope` claim must contain. Refused when set in another mode. |
 
 Token claims read by Cloud Harness:
 
@@ -75,16 +75,35 @@ Token claims read by Cloud Harness:
 | `scope` | Must contain `OIDC_REQUIRED_SCOPE`; a valid token without it receives 403 `insufficient_scope`. |
 | `email`, `name` | Optional display values recorded on the principal; never used for authorization. |
 
-The JOSE header must name `alg: RS256` and a `kid`. JWKS keys are used only when
-they declare `kty: RSA`, `alg: RS256`, `use: sig` and a `kid`. Other claims, such
-as `jti` or issuer-specific workspace hints, are ignored.
+The JOSE header must name `alg: RS256`, a `kid`, and `typ: at+jwt` (RFC 9068;
+`application/at+jwt` is accepted too, case-insensitively), so an ID token or
+another JWT signed by the same issuer cannot stand in for an access token. JWKS
+keys are used only when they declare `kty: RSA`, `alg: RS256`, `use: sig` and a
+`kid`. Other claims, such as `jti` or issuer-specific workspace hints, are
+ignored.
+
+The authorization server must therefore issue access tokens that carry
+`typ: at+jwt` and an `aud` equal to `OIDC_AUDIENCE` byte for byte. MCP clients
+may send the RFC 8707 `resource` parameter with a trailing slash or with the
+`/mcp` path; the authorization server normalizes it to the canonical URL before
+it sets `aud`, because Cloud Harness refuses both variants.
+
+Revocation is bounded by token lifetime. Cloud Harness does not introspect
+tokens, so removing a person from the authorization server's allowlist takes
+effect only when the tokens already issued to them expire. Keep the access-token
+lifetime at 10 minutes or less and re-check the allowlist on every refresh. A
+signing key withdrawn from the JWKS stops being accepted at the next successful
+key fetch, at most 5 minutes later, or up to 15 minutes later while the JWKS
+endpoint is failing.
 
 A request without a valid token receives `401` with
-`WWW-Authenticate: Bearer resource_metadata="<OIDC_AUDIENCE>/.well-known/oauth-protected-resource"`,
-plus `error="invalid_token"` when a token was presented. The API serves the
-RFC 9728 protected resource metadata at that path, naming `OIDC_AUDIENCE` as the
-`resource` and `OIDC_ISSUER` as the only authorization server, so MCP clients
-can discover where to sign in. The other modes serve no such document.
+`WWW-Authenticate: Bearer resource_metadata="<url>"`, plus
+`error="invalid_token"` when a token was presented. The URL is the RFC 9728
+location for `OIDC_AUDIENCE`: `https://<host>/.well-known/oauth-protected-resource`,
+followed by the audience path if it has one. The API serves the protected
+resource metadata there, naming `OIDC_AUDIENCE` as the `resource` and
+`OIDC_ISSUER` as the only authorization server, so MCP clients can discover
+where to sign in. The other modes serve no such document.
 
 `/dashboard` returns 404 in this mode. Features that need a dashboard operator
 are therefore unavailable: privileged executor commands, package approvals,
@@ -781,21 +800,30 @@ local one. Set `DOCKER_HOST=unix:///path/to/docker.sock` (for example
 the job, artifact, cache and package directories at the same absolute paths as
 the runner, because executors bind-mount them, and it must already hold every
 image the runner starts: containers run with `--pull never`. The runner never
-publishes container ports, so a daemon started with `--iptables=false` is
-supported, but the `dependency-access` network profile still needs the
-network-guard container to manage the daemon host's firewall.
+publishes container ports, so `docker run -p` not working is no loss. A daemon
+started with `--iptables=false` has not been verified, however: Docker enforces
+`--internal` networks (agent and provisioning networks) and the separation
+between bridge networks with iptables rules that such a daemon does not install,
+and the `dependency-access` profile needs the network-guard container to manage
+the daemon host's firewall. Until that is verified, set
+`WORKSPACE_NETWORK_PROFILE=network-none` on such a host so workspaces start
+without a network.
 
 | Variable | Default | Decision |
 |---|---|---|
-| `DOCKER_ON_DEMAND` | `false` | When `true`, the reaper stops listing containers once no workspace is active and no toolbox container is live. It sweeps once when activity ends, once more when a leftover toolbox container could be stale, then stays quiet until a workspace or toolbox call appears. Leave it off on a dedicated host. |
+| `DOCKER_ON_DEMAND` | `false` | When `true`, the reaper stops listing toolbox containers while no workspace is active and no toolbox container is live. After any Docker activity, including a toolbox command or package change that starts and ends between two reaper passes, it runs one closing sweep and one final sweep once a container that activity left behind is old enough to remove (6 minutes). It then makes no Docker calls until the next activity. Hourly package garbage collection still runs and calls Docker only when it has a directory to remove that the runner cannot delete itself. Leave it off on a dedicated host. |
 | `AGENT_GATEWAY_CONTAINER` | unset | Docker container name of the model gateway. When set, the runner execs into it directly instead of discovering it by Compose project labels, which a non-Compose deployment does not have. |
 
 For such deployments,
 [`.github/workflows/tose-images.yml`](../.github/workflows/tose-images.yml)
-pushes each release's images to Docker Hub as `digitop/cloudharness-<image>`
-and attaches `tose-manifest.json` to the GitHub release. Written by
+pushes each stable release's images to Docker Hub as
+`digitop/cloudharness-<image>` and attaches `tose-manifest.json` to the GitHub
+release. It skips prerelease tags, refuses a tag whose commit is not on `main`,
+and never replaces a manifest already attached to a release. Written by
 [`scripts/build-tose-manifest.mjs`](../scripts/build-tose-manifest.mjs), it pins
 every image by `@sha256:` digest and lists the local tags the Docker host must
 apply, the model gateway and provisioning proxy containers that run inside it,
 their networks, and the API, ingress and runner settings for running beside it.
-The workflow needs the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets.
+The workflow runs in the protected `tose-images` environment, which holds the
+`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets. The manifest's runner
+settings set `WORKSPACE_NETWORK_PROFILE=network-none` for the reason above.

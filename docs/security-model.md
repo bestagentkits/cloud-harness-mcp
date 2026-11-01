@@ -67,8 +67,14 @@ only when `iss` is the configured issuer, `aud` is exactly this instance's
 canonical URL, and `scope` carries the operator scope. A token minted for a
 sibling instance therefore fails the audience check even though it shares the
 issuer and signing keys. The issuer decides who may connect when it issues the
-token; the origin keeps no allowlist and serves no dashboard. The modes cannot
-be enabled ambiguously.
+token; the origin keeps no allowlist and serves no dashboard. It also requires
+the RFC 9068 header `typ: at+jwt`, so an ID token from the same issuer is not
+accepted as an access token. Because tokens are not introspected, removing a
+person at the issuer takes effect only when their issued tokens expire; the
+issuer should keep access tokens to 10 minutes or less and re-check its
+allowlist on refresh. A signing key withdrawn from the JWKS stops being accepted
+at the next successful key fetch (at most 5 minutes), or within 15 minutes while
+the JWKS endpoint fails. The modes cannot be enabled ambiguously.
 
 Access policies may offer GitHub and Google login, but Cloud Harness keys
 authorization only on Access-normalized `(issuer, subject)`; `oidc` mode keys it
