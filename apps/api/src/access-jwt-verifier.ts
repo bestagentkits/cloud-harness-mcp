@@ -1,7 +1,7 @@
 import { createPublicKey, verify, type KeyObject } from 'node:crypto';
 import type { ExternalPrincipal } from '@cloud-harness/contracts';
 
-type JwtHeader = { alg?: unknown; kid?: unknown };
+type JwtHeader = { alg?: unknown; kid?: unknown; typ?: unknown };
 type JwtPayload = Record<string, unknown>;
 type CachedKey = { key: KeyObject; freshUntil: number; staleUntil: number };
 const SERVICE_SUBJECT_PREFIX = 'cf-service:';
@@ -23,12 +23,23 @@ export type AccessJwtVerifierOptions = {
 };
 
 /**
- * Claim policy beyond issuer, audience, signature, and lifetime. Cloudflare Access fixes these through
- * `CloudflareAccessJwtVerifier`; a generic OIDC resource server sets only what its issuer promises.
+ * Token and key policy beyond issuer, audience, signature, and lifetime. Cloudflare Access fixes these
+ * through `CloudflareAccessJwtVerifier`; a generic OIDC resource server sets only what its issuer promises.
  */
 export type JwtClaimPolicy = {
   /** Required value of the `type` claim. Unset skips the check. */
   requiredTokenType?: string;
+  /**
+   * Required JOSE header `typ` media type, compared case-insensitively with or without the
+   * `application/` prefix (RFC 7515 section 4.1.9), such as `at+jwt` for RFC 9068 access tokens.
+   * Unset skips the check.
+   */
+  requiredHeaderType?: string;
+  /**
+   * Drop cached keys that a successfully fetched key set no longer lists, so an issuer can withdraw a
+   * key without waiting out the stale window. A failed fetch still leaves the bounded stale keys usable.
+   */
+  evictMissingKeys?: boolean;
   /** A scope the space-delimited `scope` claim must contain. Unset skips the check. */
   requiredScope?: string;
   /** Accept Cloudflare Access service-token assertions: an empty `sub` identified by `common_name`. */
@@ -148,6 +159,7 @@ export class JwksJwtVerifier {
     if (!encodedHeader || !encodedPayload || !encodedSignature || !/^[A-Za-z0-9_-]+$/.test(encodedSignature)) fail('malformed_assertion');
     const header = decodeJsonSegment(encodedHeader) as JwtHeader;
     if (!header || typeof header !== 'object' || header.alg !== 'RS256') fail('unsupported_algorithm');
+    if (this.options.requiredHeaderType !== undefined && !hasMediaType(header.typ, this.options.requiredHeaderType)) fail('wrong_token_type');
     if (typeof header.kid !== 'string' || !header.kid || header.kid.length > 200) fail('malformed_assertion');
     const kid = header.kid;
     const key = await this.keyFor(kid);
@@ -261,7 +273,9 @@ export class JwksJwtVerifier {
       this.keys.set(kid, { key, freshUntil: fetchedAt + this.cacheTtlMs, staleUntil: fetchedAt + this.maxStaleMs });
       this.missingKids.delete(kid);
     }
-    for (const [kid, cached] of this.keys) if (cached.staleUntil < fetchedAt) this.keys.delete(kid);
+    for (const [kid, cached] of this.keys) {
+      if (cached.staleUntil < fetchedAt || (this.options.evictMissingKeys === true && !next.has(kid))) this.keys.delete(kid);
+    }
     while (this.keys.size > this.maxKeys) this.keys.delete(this.keys.keys().next().value as string);
   }
 
@@ -270,6 +284,13 @@ export class JwksJwtVerifier {
     this.missingKids.set(kid, until);
     while (this.missingKids.size > this.maxNegativeKeys) this.missingKids.delete(this.missingKids.keys().next().value as string);
   }
+}
+
+/** RFC 7515 `typ`: a media type compared case-insensitively, where `application/` may be omitted. */
+function hasMediaType(value: unknown, required: string): boolean {
+  if (typeof value !== 'string') return false;
+  const normalize = (type: string) => type.toLowerCase().replace(/^application\//, '');
+  return normalize(value) === normalize(required);
 }
 
 /**

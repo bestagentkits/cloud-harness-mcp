@@ -247,7 +247,8 @@ export const ApiConfigSchema = z.object({
   oidcAudience: canonicalResourceUrl.optional(),
   oidcJwksUrl: httpsUrl.optional(),
   /** `oidc` mode: the scope every accepted token must carry in its space-delimited `scope` claim. */
-  oidcRequiredScope: scopeToken.default('cloudharness:operator'),
+  /** Defaults to `cloudharness:operator` after validation; setting it outside oidc mode is refused. */
+  oidcRequiredScope: scopeToken.optional(),
   apiKeyAuthEnabled: enabled,
   apiKeyGatewayAccessAudience: z.string().min(1).max(512).optional(),
   apiKeyGatewayServiceSubject: z.string().regex(/^cf-service:[A-Za-z0-9_-]+$/).max(512).optional(),
@@ -296,7 +297,7 @@ export const ApiConfigSchema = z.object({
   }
   const mode = config.authMode ?? 'owner-bearer';
   const accessValues = [config.accessIssuer, config.accessAudience, config.accessJwksUrl];
-  const oidcValues = [config.oidcIssuer, config.oidcAudience, config.oidcJwksUrl];
+  const oidcValues = [config.oidcIssuer, config.oidcAudience, config.oidcJwksUrl, config.oidcRequiredScope];
   const apiKeyValues = [config.apiKeyGatewayAccessAudience, config.apiKeyGatewayServiceSubject, config.apiKeyGatewayPublicUrl];
   if (!isCloudflareAccess(mode)) {
     if (accessValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['authMode'], message: `Cloudflare Access settings are forbidden in ${mode} mode` });
@@ -350,7 +351,7 @@ export const ApiConfigSchema = z.object({
   } else if (apiKeyValues.some((value) => value !== undefined)) {
     context.addIssue({ code: 'custom', path: ['apiKeyAuthEnabled'], message: 'API key gateway settings require API key authentication to be enabled' });
   }
-});
+}).transform((config) => ({ ...config, oidcRequiredScope: config.oidcRequiredScope ?? 'cloudharness:operator' }));
 
 export const SecretKeyringConfigSchema = z.object({
   activeVersion: z.number().int().positive(),
@@ -363,10 +364,10 @@ export const RunnerConfigSchema = z.object({
   authMode: AuthModeSchema.optional(),
   serviceToken: token,
   /**
-   * When on, the periodic reaper skips its Docker sweeps (stale toolbox containers, package garbage
-   * collection) while no workspace is enumerated and no toolbox container is live, so an idle runner
-   * never wakes a remote Docker host that is suspended between uses. One closing sweep runs after
-   * activity ends. Off keeps the self-hosted behaviour of sweeping every reaper interval.
+   * When on, the periodic reaper stops listing stale toolbox containers while no workspace is enumerated
+   * and no toolbox container is live, so an idle runner never wakes a remote Docker host that is suspended
+   * between uses. After any Docker activity it still runs a closing sweep and a final one once a leftover
+   * container is old enough to remove. Off keeps the self-hosted behaviour of sweeping every reaper interval.
    */
   dockerOnDemand: enabled,
   /**

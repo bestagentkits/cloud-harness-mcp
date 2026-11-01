@@ -152,12 +152,15 @@ export function accessAssertionAuth(config: ApiConfig, verifierOptions: Verifier
  */
 function oidcBearerAuth(config: ApiConfig, verifierOptions: VerifierOverrides) {
   const resource = config.oidcAudience!;
+  // Test overrides (fetcher, clock, cache timings) go first so they can never relax the token policy.
   const verifier = new JwksJwtVerifier({
+    ...verifierOptions,
     issuer: config.oidcIssuer!,
     audience: resource,
     jwksUrl: config.oidcJwksUrl!,
     requiredScope: config.oidcRequiredScope,
-    ...verifierOptions
+    requiredHeaderType: 'at+jwt',
+    evictMissingKeys: true
   });
   let activeVerifications = 0;
   return async (request: AuthenticatedRequest, response: Response, next: NextFunction): Promise<void> => {

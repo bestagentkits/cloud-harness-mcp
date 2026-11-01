@@ -25,7 +25,8 @@ function key(kid: string): SigningKey {
 
 const signingKey = key('tose-current');
 
-function jwt(signer: SigningKey, claims: Record<string, unknown>, header: Record<string, unknown> = { alg: 'RS256', kid: signer.kid }): string {
+/** Signs a JWT; the default header is the RFC 9068 access-token header the authorization server sets. */
+function jwt(signer: SigningKey, claims: Record<string, unknown>, header: Record<string, unknown> = { alg: 'RS256', kid: signer.kid, typ: 'at+jwt' }): string {
   const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
   const encodedPayload = Buffer.from(JSON.stringify(claims)).toString('base64url');
   const signature = sign('RSA-SHA256', Buffer.from(`${encodedHeader}.${encodedPayload}`), signer.privateKey).toString('base64url');
@@ -119,6 +120,41 @@ describe('OIDC access token verification', () => {
     await expect(verifierFor(instanceA).verify(jwt(signingKey, claims({ sub: '', common_name: 'service' })))).rejects.toMatchObject({ reason: 'invalid_subject' });
   });
 
+  it('rejects a token without an expiry', async () => {
+    await expect(verifierFor(instanceA).verify(jwt(signingKey, claims({ exp: undefined })))).rejects.toMatchObject({ reason: 'invalid_lifetime' });
+  });
+
+  it('requires the access-token header type when the policy names one', async () => {
+    const verifier = new JwksJwtVerifier({ issuer, audience: instanceA, jwksUrl, requiredScope, requiredHeaderType: 'at+jwt', fetcher: fetchJwks([signingKey.jwk]), now: () => baseTime });
+    for (const typ of ['at+jwt', 'application/at+jwt', 'AT+JWT']) {
+      await expect(verifier.verify(jwt(signingKey, claims(), { alg: 'RS256', kid: signingKey.kid, typ }))).resolves.toBeDefined();
+    }
+    for (const typ of [undefined, 'JWT', 'application/jwt', 'at+jwt+extra']) {
+      await expect(verifier.verify(jwt(signingKey, claims(), { alg: 'RS256', kid: signingKey.kid, typ }))).rejects.toMatchObject({ reason: 'wrong_token_type' });
+    }
+  });
+
+  it('drops a key withdrawn from the JWKS at the next successful fetch only when the policy evicts', async () => {
+    const rotated = key('tose-next');
+    const withdraw = async (evictMissingKeys: boolean) => {
+      let keys: JsonWebKey[] = [signingKey.jwk];
+      let now = baseTime;
+      const fetcher = vi.fn(async () => new Response(JSON.stringify({ keys }), { status: 200 }));
+      const verifier = new JwksJwtVerifier({ issuer, audience: instanceA, jwksUrl, requiredScope, evictMissingKeys, fetcher, now: () => now });
+      await expect(verifier.verify(jwt(signingKey, claims()))).resolves.toBeDefined();
+      keys = [rotated.jwk];
+      // Past the 5 minute freshness the next verification refetches the key set, which no longer lists the key.
+      now = baseTime + 301_000;
+      const result = verifier.verify(jwt(signingKey, claims({ exp: nowSeconds + 900 })));
+      return { result, fetcher };
+    };
+    const evicting = await withdraw(true);
+    await expect(evicting.result).rejects.toMatchObject({ reason: 'unknown_key' });
+    expect(evicting.fetcher).toHaveBeenCalledTimes(2);
+    // Without eviction (the Cloudflare Access behaviour) the withdrawn key stays usable for the stale window.
+    await expect((await withdraw(false)).result).resolves.toBeDefined();
+  });
+
   it('follows a key rotation by refreshing the cached JWKS on an unknown key id', async () => {
     const rotated = key('tose-next');
     let keys: JsonWebKey[] = [signingKey.jwk];
@@ -170,6 +206,17 @@ describe('OIDC configuration', () => {
     expect(result.error?.issues.map((issue) => issue.path[0])).toContain(path);
   });
 
+  it('refuses an explicit required scope outside oidc mode but defaults it silently', () => {
+    const owner = {
+      host: '127.0.0.1', bearerToken: 'owner-token-that-is-longer-than-32-characters', runnerUrl: 'http://127.0.0.1:9',
+      runnerToken: 'runner-token-that-is-longer-than-32-characters', publicHosts: ['127.0.0.1']
+    };
+    expect(ApiConfigSchema.parse(owner).oidcRequiredScope).toBe(requiredScope);
+    const result = ApiConfigSchema.safeParse({ ...owner, oidcRequiredScope: requiredScope });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.some((issue) => issue.message === 'OIDC settings are forbidden in owner-bearer mode')).toBe(true);
+  });
+
   it('refuses OIDC settings outside oidc mode', () => {
     const result = ApiConfigSchema.safeParse({
       ...oidcConfig(), authMode: 'owner-bearer', bearerToken: 'owner-token-that-is-longer-than-32-characters'
@@ -213,6 +260,60 @@ describe('OIDC bearer middleware', () => {
       kind: 'external', issuer, subject: 'tose-user-42', email: 'operator@example.test', name: 'Operator'
     });
     expect(authenticated.auth?.scopes).toEqual(['workspace:read', 'workspace:write', 'workspace:execute']);
+  });
+
+  it('evicts a key withdrawn from the JWKS in oidc mode', async () => {
+    const rotated = key('tose-next');
+    let keys: JsonWebKey[] = [signingKey.jwk];
+    let now = baseTime;
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ keys }), { status: 200 }));
+    const middleware = bearerAuth(oidcConfig(), { fetcher, now: () => now });
+    const attempt = async () => {
+      const response = reply();
+      const next = vi.fn() as unknown as NextFunction;
+      await middleware(request({ authorization: `Bearer ${jwt(signingKey, claims({ exp: nowSeconds + 900 }))}` }), response as unknown as ExpressResponse, next);
+      return { response, next };
+    };
+    expect((await attempt()).next).toHaveBeenCalledOnce();
+    keys = [rotated.jwk];
+    now = baseTime + 301_000;
+    const withdrawn = await attempt();
+    expect(withdrawn.next).not.toHaveBeenCalled();
+    expect(withdrawn.response.status).toHaveBeenCalledWith(401);
+  });
+
+  it('refuses a token without the access-token header type in oidc mode', async () => {
+    const middleware = bearerAuth(oidcConfig(), { fetcher: fetchJwks([signingKey.jwk]), now: () => baseTime });
+    const response = reply();
+    const next = vi.fn() as unknown as NextFunction;
+    const idToken = jwt(signingKey, claims(), { alg: 'RS256', kid: signingKey.kid, typ: 'JWT' });
+    await middleware(request({ authorization: `Bearer ${idToken}` }), response as unknown as ExpressResponse, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(response.status).toHaveBeenCalledWith(401);
+  });
+
+  it('answers 429 once 32 verifications are in flight and recovers when they settle', async () => {
+    let releaseJwks: () => void = () => undefined;
+    const jwksReady = new Promise<void>((resolve) => { releaseJwks = resolve; });
+    const fetcher = vi.fn(async () => {
+      await jwksReady;
+      return new Response(JSON.stringify({ keys: [signingKey.jwk] }), { status: 200 });
+    });
+    const middleware = bearerAuth(oidcConfig(), { fetcher, now: () => baseTime });
+    const token = jwt(signingKey, claims());
+    const nexts = Array.from({ length: 32 }, () => vi.fn() as unknown as NextFunction);
+    const pending = nexts.map((next) => middleware(request({ authorization: `Bearer ${token}` }), reply() as unknown as ExpressResponse, next));
+    const overflow = reply();
+    const overflowNext = vi.fn() as unknown as NextFunction;
+    await middleware(request({ authorization: `Bearer ${token}` }), overflow as unknown as ExpressResponse, overflowNext);
+    expect(overflow.status).toHaveBeenCalledWith(429);
+    expect(overflowNext).not.toHaveBeenCalled();
+    releaseJwks();
+    await Promise.all(pending);
+    for (const next of nexts) expect(next).toHaveBeenCalledOnce();
+    const after = vi.fn() as unknown as NextFunction;
+    await middleware(request({ authorization: `Bearer ${token}` }), reply() as unknown as ExpressResponse, after);
+    expect(after).toHaveBeenCalledOnce();
   });
 
   it('ignores a Cloudflare Access assertion header in oidc mode', async () => {
@@ -295,6 +396,39 @@ describe('OIDC HTTP surface', () => {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: '{}'
     });
     expect([401, 403]).not.toContain(gateway.status);
+  });
+
+  it('authenticates the workspace-bound MCP endpoint the same way', async () => {
+    const url = await start(oidcConfig());
+    const bound = (token?: string) => fetch(`${url}/mcp/workspaces/ws_0123456789abcdef01234567`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      body: '{}'
+    });
+    const anonymous = await bound();
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.headers.get('www-authenticate')).toBe(`Bearer resource_metadata="${metadataUrl}"`);
+    const foreign = await bound(jwt(signingKey, claims({ aud: instanceB })));
+    expect(foreign.status).toBe(401);
+    expect(foreign.headers.get('www-authenticate')).toBe(`Bearer error="invalid_token", resource_metadata="${metadataUrl}"`);
+    expect([401, 403]).not.toContain((await bound(jwt(signingKey, claims()))).status);
+  });
+
+  it('rejects a token without an expiry or the access-token header type over HTTP', async () => {
+    const url = await start(oidcConfig());
+    expect((await post(url, jwt(signingKey, claims({ exp: undefined })))).status).toBe(401);
+    expect((await post(url, jwt(signingKey, claims(), { alg: 'RS256', kid: signingKey.kid, typ: 'JWT' }))).status).toBe(401);
+  });
+
+  it('mounts no API-key lane in oidc mode', async () => {
+    const url = await start(oidcConfig());
+    const token = jwt(signingKey, claims());
+    for (const path of ['/mcp-api-key', '/mcp-api-key/gateway']) {
+      const response = await fetch(`${url}${path}`, {
+        method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: '{}'
+      });
+      expect(response.status).toBe(404);
+    }
   });
 
   it('serves no Dashboard in oidc mode', async () => {
