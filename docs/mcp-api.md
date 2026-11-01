@@ -263,7 +263,7 @@ The design record is
 ## Coding-agent operations
 
 The six `agent_*` tools run a bounded Pi coding session against an existing
-`networkMode: "none"` workspace. Their exact input limits and result shapes
+workspace opened with `networkProfile: "network-none"`. Their exact input limits and result shapes
 are the executable `TOOL_SCHEMA_BY_NAME` and `Agent*DataSchema` definitions in
 [`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts)
 and
@@ -1563,7 +1563,9 @@ and
   A hook run's timeout is the caller's `hooks_run` `timeoutMs` when given, otherwise the hook's own
   manifest `timeoutMs`, otherwise 60,000 ms; lifecycle runs always use the manifest value. Both are
   held to 100–300,000 ms, and a manifest value outside that range fails the run with `INVALID_INPUT`.
-  Execution runs exclusively inside the container executor with `networkMode: none` by default.
+  Execution runs exclusively inside the workspace's own executor container, so a hook inherits the
+  workspace's `networkProfile`: `dependency-access` is the shipped default and `network-none` is the
+  isolation opt-out.
 - Knowledge (Memories & Journals) is stored in principal-isolated SQLite `StateStore` (schema v10) supporting `owner`, `project`, and `workspace` scopes for memories, and chronological journals (`engineering-log`, `decision-record`, `session-reflection`). Operations (`knowledge_create`, `knowledge_read`, `knowledge_update`, `knowledge_delete`, `knowledge_list`, `knowledge_search`, `knowledge_link`, `knowledge_unlink`, `knowledge_graph`) provide CAS concurrency (`expectedGeneration`), RRF hybrid search (FTS5 + vector similarity), and bidirectional graph relations with wikilink extraction.
 - Named deployments come from the repository's `.cloud-harness/deployments.json` and execute inside the
   existing executor; they do not receive deployment secrets or host credentials from the harness.

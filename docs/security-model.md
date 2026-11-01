@@ -982,7 +982,7 @@ owner is [`apps/runner/src/skill-archive.ts`](../apps/runner/src/skill-archive.t
 
 ### Privileged execution and operator approval grants
 
-Standard executors strictly preserve `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`, and user `10001:10001`. Sudo/root execution is treated as an explicit owner-approved threat model weakening (similar to `networkMode: bridge`).
+Standard executors strictly preserve `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`, and user `10001:10001`. Sudo/root execution is treated as an explicit owner-approved threat model weakening (as unrestricted executor egress would be; no raw `bridge` profile is selectable).
 
 When `exec_run` is invoked with `privileged: true`:
 
@@ -2012,7 +2012,7 @@ behaviour the model sees):
 - Hooks are defined in `.cloud-harness/hooks.json` supporting declarative JSON format with named lifecycle events (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`).
 - Automatic lifecycle execution requires explicit owner activation (`hooks_activate`) pinned to the exact manifest SHA-256 digest.
 - Modifying the hook script or manifest invalidates activation and blocks execution before process spawn.
-- All hooks execute in unprivileged executor containers with `networkMode: none` by default, no broker credentials, and no Docker socket.
+- All hooks execute in the workspace's own unprivileged executor container, so they inherit its `networkProfile` (`dependency-access` is the shipped default, `network-none` the isolation opt-out), with no broker credentials and no Docker socket.
 
 ### Third-Party Agent Toolkits & Provisioning Network Firewall
 
