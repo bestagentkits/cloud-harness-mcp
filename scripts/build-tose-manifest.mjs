@@ -97,6 +97,9 @@ function services() {
         DOCKER_HOST: 'unix:///var/run/tose-docker/docker.sock',
         AUTH_MODE: 'oidc',
         DOCKER_ON_DEMAND: 'true',
+        // Internal networks and the dependency-access firewall rely on iptables, which the hosted
+        // Docker daemon (--iptables=false) does not provide until that isolation is verified.
+        WORKSPACE_NETWORK_PROFILE: 'network-none',
         AGENT_GATEWAY_CONTAINER: MODEL_GATEWAY_CONTAINER,
         AGENT_GATEWAY_URL: 'http://model-gateway:3210',
         PROVISIONING_NETWORK,

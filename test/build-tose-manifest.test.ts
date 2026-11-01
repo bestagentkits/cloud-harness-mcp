@@ -11,7 +11,7 @@ type Manifest = {
   localTags: Record<string, string>;
   networks: Record<string, { internal: boolean }>;
   systemContainers: Array<{ name: string; image: string; networks: Array<{ name: string }> }>;
-  services: Record<string, { image: string }>;
+  services: Record<string, { image: string; env?: Record<string, string> }>;
 };
 
 const script = resolve(import.meta.dirname, '../scripts/build-tose-manifest.mjs');
@@ -58,6 +58,11 @@ describe('hosted image manifest', () => {
     for (const service of Object.values(manifest.services)) expect(manifest.images).toHaveProperty(service.image);
     expect(manifest.systemContainers.map((container) => container.name)).toEqual(['cloudharness-model-gateway', 'cloudharness-provisioning-proxy']);
     expect(manifest.networks['cloud-harness-mcp_provisioning']?.internal).toBe(true);
+  });
+
+  it('starts hosted workspaces without a network until the Docker host isolates internal networks', () => {
+    const runner = build().services.runner!;
+    expect(runner.env).toMatchObject({ AUTH_MODE: 'oidc', DOCKER_ON_DEMAND: 'true', WORKSPACE_NETWORK_PROFILE: 'network-none' });
   });
 
   it('refuses a missing, malformed or unknown digest so a partial release is never published', () => {
