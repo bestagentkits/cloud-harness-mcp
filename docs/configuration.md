@@ -789,3 +789,13 @@ network-guard container to manage the daemon host's firewall.
 |---|---|---|
 | `DOCKER_ON_DEMAND` | `false` | When `true`, the reaper stops listing containers once no workspace is active and no toolbox container is live. It sweeps once when activity ends, once more when a leftover toolbox container could be stale, then stays quiet until a workspace or toolbox call appears. Leave it off on a dedicated host. |
 | `AGENT_GATEWAY_CONTAINER` | unset | Docker container name of the model gateway. When set, the runner execs into it directly instead of discovering it by Compose project labels, which a non-Compose deployment does not have. |
+
+For such deployments,
+[`.github/workflows/tose-images.yml`](../.github/workflows/tose-images.yml)
+pushes each release's images to Docker Hub as `digitop/cloudharness-<image>`
+and attaches `tose-manifest.json` to the GitHub release. Written by
+[`scripts/build-tose-manifest.mjs`](../scripts/build-tose-manifest.mjs), it pins
+every image by `@sha256:` digest and lists the local tags the Docker host must
+apply, the model gateway and provisioning proxy containers that run inside it,
+their networks, and the API, ingress and runner settings for running beside it.
+The workflow needs the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets.
