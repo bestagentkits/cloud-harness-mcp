@@ -256,7 +256,7 @@ Read-only GitHub access with no approval prompts, sharing `github_action`'s brok
   - `issue_view`: required `issueNumber`.
   - `commit_list`, `compare`, `release_list`, `tag_list`: same inputs as documented under `github_read`.
 - PR mutations:
-  - `pr_create`: required `title`, `head`; optional `body`, `base` (default `main`), `draft` (default false), `labels` array (max 50).
+  - `pr_create`: required `title`, `head`; optional `body`, `base` (default `main`), `draft` (default false), `labels` array (max 50), `idempotencyKey`.
   - `pr_update`: required `prNumber`; optional `title`, `body`, `base`, `state` (`open` | `closed`).
   - `pr_comment`: required `prNumber`, `body`; optional `idempotencyKey`. This is a conversation comment, not a review.
   - `pr_review`: required `prNumber`, `event` (`COMMENT` | `APPROVE` | `REQUEST_CHANGES`); `body` is required except for `APPROVE`; optional `idempotencyKey`. GitHub rejects approving or requesting changes on your own PR (`GITHUB_REVIEW_NOT_ALLOWED`).
@@ -279,7 +279,7 @@ Read-only GitHub access with no approval prompts, sharing `github_action`'s brok
   - `issue_labels_remove`: required `issueNumber`, `label`.
   - `label_create`: required `name`; optional `color` (6-hex), `description`.
   - `issue_publish`: required `issueNumber`; optional `comment`, `addLabels` array (max 50), `removeLabels` array (max 50), `createMissingLabels` (default true), `idempotencyKey`.
-- Idempotency and replay: with `idempotencyKey`, the mutation actions `pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`, `pr_review`, `pr_review_comment`, `pr_review_reply`, `pr_reviewers_request`, `pr_merge`, `pr_auto_merge_enable`, `commit_status_create`, `check_run_create`, `workflow_dispatch`, and `workflow_run_rerun_failed` cache their successful result and replay it on a same-key retry with identical payload within a 24-hour retention window; reusing the key with a different request payload is rejected with `CONFLICT`. After 24 hours the record expires and the request executes anew.
+- Idempotency and replay: with `idempotencyKey`, the mutation actions `pr_create`, `pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`, `pr_review`, `pr_review_comment`, `pr_review_reply`, `pr_reviewers_request`, `pr_merge`, `pr_auto_merge_enable`, `commit_status_create`, `check_run_create`, `workflow_dispatch`, and `workflow_run_rerun_failed` cache their successful result and replay it on a same-key retry with identical payload within a 24-hour retention window; reusing the key with a different request payload is rejected with `CONFLICT`. After 24 hours the record expires and the request executes anew.
 <!-- cloudharness-example:github_action
 {
   "workspaceId": "ws_abcdefghijklmnopqrstuvwxyz012345",

@@ -1308,7 +1308,7 @@ export class DashboardControlService {
               cached: false, latencyMs: 0, outboundCalls: 0, redactionCount: 0
             });
           }
-          const roster = await this.workspaces.skillRoster(parsed.principal, workspaceId);
+          const roster = await this.workspaces.skillRoster(parsed.principal, workspaceId, parsed.input.repositoryId);
           const outcome = await this.suggester(principalId, workspaceId, apiKey).suggest({
             ownerId: principalId,
             workspaceId,

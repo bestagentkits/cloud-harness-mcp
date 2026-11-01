@@ -833,7 +833,13 @@ unchanged and the checkouts share the workspace byte ceiling.
   `read-only`.
 - **No silent fallback.** Git-bound tools refuse an unselected call in a
   multi-repository workspace instead of defaulting to one checkout, so a commit
-  or push cannot land in the wrong repository by omission.
+  or push cannot land in the wrong repository by omission. `skills_run`,
+  `hooks_run`, and `hooks_activate` refuse the same way, so no
+  repository-provided code runs from a repository the caller did not name.
+  Lifecycle hook activations are bound to one repository, so an activation
+  never runs in a sibling checkout whose manifest happens to match. Read-only
+  discovery and memories default to the primary repository and name it in the
+  result; guidance from several repositories is never merged into one context.
 - **Adding and removing checkouts.** `workspace_repo_add` applies the open-time
   policy and clone path, so an added repository gets the same brokered,
   credential-free checkout. Both changes touch the host filesystem only at the

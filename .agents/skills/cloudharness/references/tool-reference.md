@@ -12,6 +12,7 @@ See [workspace lifecycle and results](workspace-lifecycle-and-results.md).
 `workspace_close` `workspace_lease_renew` `workspace_recover`
 `workspace_context` `workspace_set_active` `workspace_repos_list`
 `workspace_repo_status` `workspace_repo_add` `workspace_repo_remove`
+`workspace_repos_finalize`
 
 Several repositories in one workspace: see
 [multi-repository workspaces](multi-repository-workspaces.md).

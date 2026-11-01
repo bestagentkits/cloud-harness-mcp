@@ -1,11 +1,11 @@
 import { z } from 'zod';
 import { AgentIdSchema, IdempotencyKeySchema, WorkspaceIdSchema, WorkspaceNetworkExposureSchema } from './identifiers.js';
-import { ToolResultSchema } from './mcp-results.js';
+import { ErrorCodeSchema, ToolResultSchema } from './mcp-results.js';
 import { GitHubRepositoryCreateCapabilitySchema } from './github-repository-schemas.js';
 export const RunnerOperationSchema = z.enum([
   'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close',
   'workspace_lease_renew', 'workspace_recover', 'workspace_context', 'workspace_set_active',
-  'workspace_finalize', 'workspace_repos_list', 'workspace_repo_status', 'workspace_repo_add', 'workspace_repo_remove',
+  'workspace_finalize', 'workspace_repos_finalize', 'workspace_repos_list', 'workspace_repo_status', 'workspace_repo_add', 'workspace_repo_remove',
   'files_list', 'files_read', 'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir', 'grep_search',
   'symbols_search', 'symbols_references',
   'exec_run', 'bash', 'shell_open', 'shell_io', 'shell_close',
@@ -68,6 +68,48 @@ export type ExternalPrincipal = z.infer<typeof ExternalPrincipalSchema>;
 export type RunnerPrincipalSelector = z.infer<typeof RunnerPrincipalSelectorSchema>;
 export type RunnerRequest = z.infer<typeof RunnerRequestSchema>;
 export type RunnerResponse = z.infer<typeof RunnerResponseSchema>;
+
+/** Durable state of one finalize or pull-request step of `workspace_repos_finalize`. */
+export const ReposFinalizeStepStatusSchema = z.enum(['PENDING', 'SUCCEEDED', 'FAILED', 'SKIPPED']);
+const ReposFinalizeStepErrorSchema = z.object({ code: ErrorCodeSchema, message: z.string().max(2_000), retryable: z.boolean() }).strict();
+/**
+ * The `data` of a `workspace_repos_finalize` result. The flow is never atomic: `status` is `succeeded` only
+ * when every requested step succeeded, `failed` when no repository was finalized, and `partial` otherwise,
+ * and earlier pushes stay in place when a later step fails.
+ */
+export const ReposFinalizeDataSchema = z.object({
+  workspaceId: z.string(),
+  status: z.enum(['succeeded', 'partial', 'failed']),
+  atomic: z.literal(false),
+  replayed: z.boolean(),
+  continueOnFailure: z.boolean(),
+  repositories: z.array(z.object({
+    repositoryId: z.string(),
+    alias: z.string(),
+    status: ReposFinalizeStepStatusSchema,
+    finalize: z.object({
+      status: ReposFinalizeStepStatusSchema,
+      commitSha: z.string().optional(),
+      branch: z.string().optional(),
+      pushed: z.boolean().optional(),
+      alreadyFinalized: z.boolean().optional(),
+      reason: z.string().max(2_000).optional(),
+      error: ReposFinalizeStepErrorSchema.optional()
+    }).strict(),
+    pullRequest: z.object({
+      status: ReposFinalizeStepStatusSchema,
+      number: z.number().int().positive().optional(),
+      url: z.string().optional(),
+      base: z.string(),
+      head: z.string().optional(),
+      reconciled: z.boolean().optional(),
+      reason: z.string().max(2_000).optional(),
+      error: ReposFinalizeStepErrorSchema.optional()
+    }).strict().optional()
+  }).strict())
+}).strict();
+export type ReposFinalizeStepStatus = z.infer<typeof ReposFinalizeStepStatusSchema>;
+export type ReposFinalizeData = z.infer<typeof ReposFinalizeDataSchema>;
 
 export const RepositoryCapabilitiesSchema = z.object({
   read: z.boolean(),

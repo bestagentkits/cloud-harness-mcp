@@ -121,7 +121,7 @@ duplicating work:
   `UNKNOWN_REMOTE_STATE`). A same-key replay reporting `alreadyFinalized: true`
   is confirmed success.
 - `files_write_batch` and idempotency-enabled `github_action` mutations
-  (`pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`, `pr_review`,
+  (`pr_create`, `pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`, `pr_review`,
   `pr_review_comment`, `pr_review_reply`, `pr_reviewers_request`, `pr_merge`,
   `pr_auto_merge_enable`) replay
   their cached result within their configured retention window (GitHub action
@@ -163,6 +163,34 @@ executor's `/workspace` is the tree root and each checkout lives at
   `workspace_capabilities` describes the primary repository unless a selector
   names another. `workspace_recover` `status` and `patch` without a selector
   report every checkout under `data.repositories`.
+- **Guidance, skills, hooks, and memories target one repository.**
+  `workspace_context`, `skills_list`, `skills_read`, `hooks_list`,
+  `skill_suggest`, and the `memories_*` tools answer from the selected checkout,
+  or from the primary one without a selector, and add `repositoryId` and
+  `repositoryAlias` to the result so the caller sees which repository answered.
+  Guidance is never merged across repositories. `skills_run`, `hooks_run`, and
+  `hooks_activate` run or enrol repository-provided code, so they refuse an
+  unselected call like the Git-bound tools. A lifecycle hook activation is
+  bound to the repository it was activated for: a commit or checkout in
+  another repository never runs it, even when that repository's manifest has
+  the same digest. `hooks_deactivate` with a selector clears that repository's
+  activations and without one clears every activation of the workspace;
+  removing a repository drops its activations. The memory `repository` scope is
+  keyed by the selected repository's URL with the same derivation as a
+  single-repository workspace. `agent_spawn` accepts `repositoryId` to place
+  that repository's guidance (within the same input-budget bound) before the
+  task; without it the agent gets the primary repository's guidance, and its
+  `repository_context` log event names the repository that answered either way.
+  Owner- and workspace-scoped memories do not belong to a checkout, so only a
+  `repository`-scoped memory call falls back to the primary repository. A
+  `skills_run` approval grant names the selected repository's id, so a grant
+  approved for one checkout cannot run a same-named, same-digest script in
+  another, and the helper container is confined to that checkout. Workspace-wide
+  activations recorded before activations were bound to a repository never run
+  in a multi-repository workspace; a selected `hooks_list` reports them under
+  `unboundActivations` with a warning so they can be re-activated per
+  repository. The Dashboard's automation tab lists the primary repository's
+  skills and hooks, names it, and targets its runs at it.
 - **Single-repository workspaces are unchanged.** They accept a selector naming
   their only checkout (`workspace_repos_list` reports its synthesized id and
   alias at path `.`), behave identically with or without it, and keep their
@@ -217,6 +245,75 @@ tree, and `UNAVAILABLE` when the executor cannot be paused.
   executor; a `dependency-access` executor is rebuilt by recover instead, so its
   running processes end.
 
+### Coordinated finalize across repositories
+
+`workspace_repos_finalize` commits, pushes, and optionally opens a pull
+request in several checkouts of one workspace, one step per entry of
+`repositories`, strictly in array order. Each step names one repository (at
+most once per call) and carries the `workspace_finalize` options plus an
+optional `pullRequest`; author, preflight, and `continueOnFailure` are shared.
+The call requires an `idempotencyKey`.
+
+- **Reuse, not a second code path.** Each step is an ordinary
+  `workspace_finalize` on that checkout, and its pull request an ordinary
+  `github_action` `pr_create` from the pushed branch, opened only after the
+  push succeeded. Both run with an idempotency key derived from the caller's
+  key and the repository, so read-only access, capabilities, hooks, push
+  reconciliation, and error codes are exactly those of the single tools. An
+  unknown `repositoryId` is `INVALID_INPUT`; a pushing step on a `read-only`
+  repository is refused with `FORBIDDEN` before any step runs.
+- **Not atomic.** A failed step never rolls back earlier commits, pushes, or
+  pull requests. Without `continueOnFailure` the remaining steps are recorded
+  as `SKIPPED` and not attempted; with it they still run, while the failed
+  repository's pull request is skipped. `data.status` is `succeeded` (every
+  step and pull request succeeded), `failed` (no repository was finalized), or
+  `partial`; `data.atomic` is always `false`, and `ok` is `true` only for
+  `succeeded`. A partial or failed result carries the first failing
+  repository's error code and alias. `data.repositories` lists, per step, the
+  `repositoryId`, `alias`, `status`, the `finalize` outcome (`commitSha`,
+  `branch`, `pushed`, `error`), and the `pullRequest` outcome (`number`,
+  `url`, `head`, `base`, `error`).
+- **Durable status and replay.** The runner records the request fingerprint
+  and each step's finalize and pull-request status (`PENDING`, `SUCCEEDED`,
+  `FAILED`, `SKIPPED`) before and after it runs. Replaying the key with the
+  same input returns recorded successes without re-running them and retries
+  only failed, skipped, or unfinished steps; an unfinished step is resolved
+  through its derived `workspace_finalize` key, which reconciles against the
+  remote branch instead of pushing again. Before opening a pull request, a
+  step adopts an open, same-repository pull request from the same head to the
+  same base whose head commit is exactly the step's pushed commit, so a
+  creation result lost by an earlier attempt, or the same work replayed under a
+  new key, never fails on a duplicate. A pull request whose head is any other
+  commit is never adopted. The lookup reads the first 100 open pull requests.
+  Selecting a repository by alias or by `repo_` id is the same input; any other
+  difference under the same key is a non-retryable `CONFLICT`. With
+  `continueOnFailure`, a replay can open a later repository's pull request
+  before an earlier one whose step is retried, so the declared order holds
+  within one run, not across replays.
+- **Cancellation and long runs.** Once the request is cancelled or times out,
+  no further step starts; the steps not yet started are recorded as `SKIPPED`
+  with a reason that says to replay. A step already running finishes or fails
+  on its own. Replay the same key and input to continue: a `TIMEOUT` never
+  means the recorded steps were lost.
+- **Concurrency.** A second call for the same workspace while one runs is a
+  retryable `CONFLICT`, and so is `workspace_repo_add` or
+  `workspace_repo_remove` while a coordinated finalize runs (and the reverse).
+  The run holds the workspace mutation lease. If a repository a recorded run
+  named was removed since, a replay naming the same repositories in the same
+  order returns the recorded status without running anything; a key with no
+  recorded run still refuses the unknown repository. Recorded steps stay in the
+  runner state database with the workspace's other idempotency records.
+- A single-repository workspace accepts one step naming its only checkout,
+  which behaves like `workspace_finalize` followed by `pr_create`. Local stdio
+  mode refuses the tool.
+
+`github_action` `pr_create` accepts an optional `idempotencyKey`, cached like
+the other idempotent GitHub mutations: per owner and workspace, so the same
+key in another workspace is a separate request. The behaviour is owned by
+[`apps/runner/src/repos-finalize.ts`](../apps/runner/src/repos-finalize.ts) and
+exercised by
+[`apps/runner/test/repos-finalize.test.ts`](../apps/runner/test/repos-finalize.test.ts).
+
 `grep_search`, `symbols_search`, and `symbols_references` accept
 `scope: "all"`, mutually exclusive with `repositoryId`, to search every
 checkout in registry order within one `maxResults` budget. Each result carries
@@ -255,6 +352,7 @@ and [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-servic
 and the behaviour is exercised by
 [`apps/runner/test/multi-repository-workspaces.test.ts`](../apps/runner/test/multi-repository-workspaces.test.ts),
 [`apps/runner/test/dynamic-repositories.test.ts`](../apps/runner/test/dynamic-repositories.test.ts),
+[`apps/runner/test/repository-targeted-features.test.ts`](../apps/runner/test/repository-targeted-features.test.ts),
 and
 [`packages/contracts/test/multi-repository-contracts.test.ts`](../packages/contracts/test/multi-repository-contracts.test.ts).
 The design record is

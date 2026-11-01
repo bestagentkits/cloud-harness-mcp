@@ -15,6 +15,7 @@ import {
   scopedWorkerArgs,
   unknownRepository
 } from './workspace-repositories.js';
+import { reposFinalizeResponse, resolveReposFinalizePlan, runReposFinalize, type ReposFinalizeInput } from './repos-finalize.js';
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { chmod, chown, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { dirname, join, posix, relative, resolve, sep } from 'node:path';
@@ -80,6 +81,7 @@ import {
   type WorkspaceLifecycleOverrides,
   type GitOperationStatus,
   type PrincipalSelector,
+  type HookActivationRecord,
   type StateStore,
   type WorkspaceRecord,
   type WorkspaceRepositoryRecord,
@@ -172,9 +174,11 @@ const SKILL_RUN_DEFAULT_TIMEOUT_MS = 60_000;
  * means "run this skill script at this digest with exactly these inputs", and a retry that changes
  * any of them hashes to a different descriptor and cannot consume the grant. A plain call keeps the
  * original descriptor byte for byte. The arguments come last and are JSON-encoded, so no argument
- * value can imitate another field.
+ * value can imitate another field. In a multi-repository workspace the selected repository's stable
+ * id is part of the descriptor, so a grant approved for one checkout cannot run a same-named,
+ * same-digest script in another; a single-repository workspace passes none and keeps its descriptor.
  */
-export function skillRunGrantDescriptor(input: Record<string, unknown>): string {
+export function skillRunGrantDescriptor(input: Record<string, unknown>, repositoryId?: string): string {
   const name = input.name as string;
   const script = input.script as string;
   const expectedSha = (input.expectedContentSha256 ?? input.expectedSha256) as string;
@@ -183,6 +187,7 @@ export function skillRunGrantDescriptor(input: Record<string, unknown>): string 
   let descriptor = `skills_run ${name} script=${script} expected=${expectedSha}`;
   if (typeof input.source === 'string') descriptor += ` source=${input.source}`;
   if (timeoutMs !== SKILL_RUN_DEFAULT_TIMEOUT_MS) descriptor += ` timeoutMs=${timeoutMs}`;
+  if (repositoryId !== undefined) descriptor += ` repository=${repositoryId}`;
   if (args.length > 0) descriptor += ` args=${JSON.stringify(args)}`;
   return descriptor;
 }
@@ -319,7 +324,26 @@ const REPOSITORY_SELECTOR_REQUIRED = new Set<RunnerOperation>([
   'git_status', 'git_diff', 'git_log', 'git_branch', 'git_checkout', 'git_add', 'git_commit',
   'git_fetch', 'git_pull', 'git_push', 'git_merge', 'git_rebase',
   'worktrees_list', 'worktrees_create', 'worktrees_remove',
-  'workspace_finalize', 'github_read', 'github_action'
+  'workspace_finalize', 'github_read', 'github_action',
+  // Execution and activation run repository-provided code, so they never fall back to a repository
+  // the caller did not name.
+  'skills_run', 'hooks_run', 'hooks_activate'
+]);
+/**
+ * Read-only discovery and memories: without a selector a multi-repository workspace answers from its
+ * primary repository (the one open and agent bootstrap describe), and the result names that repository.
+ * Guidance, skills, and hooks are never merged across repositories.
+ */
+const REPOSITORY_PRIMARY_DEFAULT = new Set<RunnerOperation>([
+  'workspace_context', 'skills_list', 'skills_read', 'hooks_list',
+  'memories_list', 'memories_read', 'memories_write', 'memories_search', 'memories_delete'
+]);
+const MEMORY_OPERATIONS = new Set<RunnerOperation>([
+  'memories_list', 'memories_read', 'memories_write', 'memories_search', 'memories_delete'
+]);
+/** Operations whose result names the repository that answered, in a multi-repository workspace. */
+const REPOSITORY_PROVENANCE_OPERATIONS = new Set<RunnerOperation>([
+  ...REPOSITORY_PRIMARY_DEFAULT, 'skills_run', 'hooks_run', 'hooks_activate', 'hooks_deactivate'
 ]);
 /** Command tools the operation manager runs with a tree-relative `cwd` rather than through the worker. */
 const CWD_REBASED_OPERATIONS = new Set<RunnerOperation>(['shell_open', 'sessions_open', 'tasks_run']);
@@ -366,6 +390,45 @@ type RepositoryChange = {
 
 /** The device and inode of a checkout directory, so a removal touches only the directory it verified. */
 type CheckoutIdentity = { dev: number; ino: number };
+
+/**
+ * The `repository` memory scope key: the selected checkout's URL in a multi-repository workspace (the
+ * record view is scoped to it), and the workspace's own URL otherwise, so single-repository keys are
+ * unchanged.
+ */
+function memoryRepositoryKey(record: Pick<WorkspaceRecord, 'repositoryUrl'>): string {
+  return createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex');
+}
+
+/** Names the repository that answered a repository-targeted call of a multi-repository workspace. */
+function withRepositoryProvenance(record: WorkspaceRecord, operation: RunnerOperation, response: RunnerResponse): RunnerResponse {
+  if (!record.repositoryScope || !REPOSITORY_PROVENANCE_OPERATIONS.has(operation)) return response;
+  const data = response.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return response;
+  return { ...response, data: { ...data, repositoryId: record.repositoryScope.id, repositoryAlias: record.repositoryScope.alias } };
+}
+
+/**
+ * Workspace-wide activations recorded before lifecycle hooks were bound to one repository never run in a
+ * multi-repository workspace, since they do not name the repository they were approved for. A scoped
+ * `hooks_list` reports them so the owner can re-activate per repository (or deactivate them) instead of a
+ * blocking hook stopping silently.
+ */
+function withUnboundHookActivations(response: RunnerResponse, unbound: readonly HookActivationRecord[]): RunnerResponse {
+  const data = response.data;
+  if (unbound.length === 0 || !response.ok || !data || typeof data !== 'object' || Array.isArray(data)) return response;
+  return {
+    ...response,
+    data: {
+      ...data,
+      unboundActivations: unbound.map((activation) => ({ event: activation.event, manifestSha256: activation.manifestSha256, expiresAt: new Date(activation.expiresAt).toISOString() })),
+      warnings: [
+        ...(Array.isArray((data as { warnings?: unknown }).warnings) ? (data as { warnings: unknown[] }).warnings : []),
+        'workspace-wide hook activations do not run in a multi-repository workspace; re-activate them with hooks_activate and a repositoryId, or clear every activation of this workspace with hooks_deactivate without one'
+      ]
+    }
+  };
+}
 
 /** A scoped mutation's audit row names the repository it targeted, beside the workspace and generation. */
 function withRepositoryAudit(record: WorkspaceRecord, details: Record<string, string | number | boolean>): Record<string, string | number | boolean> {
@@ -480,6 +543,8 @@ export class WorkspaceService {
    * the SQLite state). The registry transaction still fences the rows if that ever changes.
    */
   private readonly repositoryChanges = new Set<string>();
+  /** Workspaces with a coordinated `workspace_repos_finalize` run in flight in this process. */
+  private readonly reposFinalizes = new Set<string>();
   /** Workspaces whose tree is frozen for a host-side check-and-change; no new tree writer may start. */
   private readonly frozenTrees = new Set<string>();
   /** In-flight helper containers that mount a workspace tree read-write, by workspace. */
@@ -573,7 +638,12 @@ export class WorkspaceService {
             if (record.generation !== request.workspaceGeneration) {
               throw new HarnessError('EXPIRED', 'agent bootstrap lost its workspace fence', 410, false);
             }
-            return await this.repositoryGuidance(this.primaryRecordView(record), request.signal);
+            // Guidance comes from exactly one repository: the one the spawn selected, or the primary one.
+            const view = request.repositoryId
+              ? this.resolveRepositoryView(record, { repositoryId: request.repositoryId }, 'optional', 'agent_spawn').scoped
+              : this.primaryRecordView(record);
+            const guidance = await this.repositoryGuidance(view, request.signal);
+            return view.repositoryScope ? { ...guidance, repositoryId: view.repositoryScope.id } : guidance;
           }
         })
       : undefined);
@@ -790,7 +860,9 @@ export class WorkspaceService {
     event: 'pre_commit' | 'post_commit' | 'post_checkout' | 'on_workspace_open',
     signal?: AbortSignal
   ): Promise<void> {
-    const activations = this.store.getActiveHookActivations(record.ownerId, record.id);
+    // A scoped record (one checkout of a multi-repository workspace) runs only the activations bound to
+    // that repository; activations of another repository never apply, even with an identical manifest.
+    const activations = this.store.getActiveHookActivations(record.ownerId, record.id, record.repositoryScope?.id);
     const act = activations.find((a) => a.event === event);
     if (!act) return;
 
@@ -2102,10 +2174,13 @@ export class WorkspaceService {
    */
   async skillRoster(
     principal: PrincipalSelector,
-    workspaceId: string
+    workspaceId: string,
+    repositoryId?: string
   ): Promise<{ entries: Array<Record<string, unknown>>; rosterDigest: string }> {
     const ownerId = this.store.resolvePrincipal(principal);
-    const record = this.requireWorkspace(ownerId, workspaceId);
+    const workspaceRecord = this.requireWorkspace(ownerId, workspaceId);
+    // One repository's roster: the selected one, or the primary one of a multi-repository workspace.
+    const record = this.resolveRepositoryView(workspaceRecord, repositoryId === undefined ? {} : { repositoryId }, 'primary', 'skill_suggest').scoped;
     const response = await this.runWorker(record, 'skills_roster', {});
     if (!response.ok) {
       throw new HarnessError('UNAVAILABLE', response.message || 'the workspace could not list its skills', 503, true);
@@ -2209,7 +2284,7 @@ export class WorkspaceService {
     const script = input.script as string;
     const timeoutMs = (input.timeoutMs as number) || SKILL_RUN_DEFAULT_TIMEOUT_MS;
     const maxOutputBytes = this.config.maxOutputBytes;
-    const grantCommand = skillRunGrantDescriptor(input);
+    const grantCommand = skillRunGrantDescriptor(input, record.repositoryScope?.id);
     const commandSha256 = createHash('sha256').update(grantCommand).digest('hex');
     const approvalGrantToken = input.approvalGrantToken as string | undefined;
 
@@ -2226,7 +2301,7 @@ export class WorkspaceService {
         message: 'Skill execution requires explicit operator approval grant',
         error: {
           code: 'PRIVILEGE_APPROVAL_REQUIRED',
-          message: `Approval grant required to run skill script ${name}/${script} in a disposable helper container`,
+          message: `Approval grant required to run skill script ${name}/${script}${record.repositoryScope ? ` from repository ${record.repositoryScope.alias}` : ''} in a disposable helper container`,
           grantRequest: {
             grantId: grant.id,
             workspaceId: grant.workspaceId,
@@ -2791,7 +2866,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
    * exists), and command tools that take a `cwd` are rebased onto the chosen checkout.
    */
   private scopeRecordForOperation(record: WorkspaceRecord, operation: RunnerOperation, validated: Record<string, unknown>): WorkspaceRecord {
-    const { entry, scoped } = this.resolveRepositoryView(record, validated, REPOSITORY_SELECTOR_REQUIRED.has(operation) ? 'required' : 'optional', operation);
+    // Owner- and workspace-scoped memories do not belong to a checkout, so only a repository-scoped
+    // memory call falls back to the primary repository.
+    const primaryDefault = REPOSITORY_PRIMARY_DEFAULT.has(operation)
+      && (!MEMORY_OPERATIONS.has(operation) || validated.scope === 'repository');
+    const mode = REPOSITORY_SELECTOR_REQUIRED.has(operation) ? 'required' : primaryDefault ? 'primary' : 'optional';
+    const { entry, scoped } = this.resolveRepositoryView(record, validated, mode, operation);
     if (!entry) return scoped;
     if (CWD_REBASED_OPERATIONS.has(operation)) {
       const cwd = String(validated.cwd ?? '.').replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '');
@@ -2800,10 +2880,6 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return scoped;
   }
 
-  /**
-   * The shared selector resolution. `optional` leaves an unselected multi-repository call on the tree root,
-   * `required` refuses it unless only one repository exists, and `primary` falls back to the primary one.
-   */
   /**
    * The view workspace-level guidance reads: the primary checkout of a multi-repository workspace, so
    * open, its replay, and agent bootstrap all describe the same repository. Unchanged for one repository.
@@ -2814,6 +2890,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return primary ? scopedRecordView(record, primary) : record;
   }
 
+  /**
+   * The shared selector resolution. `optional` leaves an unselected multi-repository call on the tree root,
+   * `required` refuses it unless only one repository exists, and `primary` falls back to the primary one.
+   */
   private resolveRepositoryView(
     record: WorkspaceRecord,
     validated: Record<string, unknown>,
@@ -2895,6 +2975,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (this.repositoryChanges.has(record.id)) {
       throw new HarnessError('CONFLICT', 'another repository change is in progress for this workspace', 409, true);
     }
+    if (this.reposFinalizes.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'a workspace_repos_finalize is in progress for this workspace; retry the repository change after it ends', 409, true);
+    }
     this.repositoryChanges.add(record.id);
     try {
       const change = { ownerId, record, entries, key, fingerprint };
@@ -2907,6 +2990,55 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       throw error;
     } finally {
       this.repositoryChanges.delete(record.id);
+    }
+  }
+
+  /**
+   * Finalizes several checkouts in the declared order. Each step is an ordinary `workspace_finalize` (and
+   * `github_action` `pr_create`) call for the same principal with a derived idempotency key, so the
+   * single-repository commit, push, read-only, and capability rules apply unchanged and a replay resolves a
+   * recorded step through that step's own idempotency record instead of committing or pushing it again. The whole run holds the workspace mutation lease and is serialized per workspace.
+   */
+  private async finalizeRepositories(
+    principal: PrincipalSelector | string,
+    ownerId: string,
+    validated: ReposFinalizeInput & { workspaceId?: string },
+    signal?: AbortSignal
+  ): Promise<RunnerResponse> {
+    const record = this.touch(this.requireWorkspace(ownerId, validated.workspaceId, true, false));
+    if (this.reposFinalizes.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'another workspace_repos_finalize is in progress for this workspace', 409, true);
+    }
+    if (this.repositoryChanges.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'a repository change is in progress for this workspace; retry workspace_repos_finalize after it ends', 409, true);
+    }
+    const recorded = this.store.reposFinalizeSteps(ownerId, record.id, validated.idempotencyKey);
+    let plan: ReturnType<typeof resolveReposFinalizePlan>;
+    try {
+      plan = resolveReposFinalizePlan(this.workspaceRepositoryEntries(record).entries, validated);
+    } catch (error) {
+      // A repository an earlier run with this key recorded may have been removed since. Its steps can no
+      // longer run, so a replay naming the same repositories in the same order reports the recorded status.
+      const sameSteps = recorded.length === validated.repositories.length && validated.repositories.every((step, index) =>
+        step.repositoryId === recorded[index]!.repositoryId || step.repositoryId === recorded[index]!.alias);
+      if (sameSteps && error instanceof HarnessError && error.code === 'INVALID_INPUT') {
+        return reposFinalizeResponse(record.id, recorded, true, validated.continueOnFailure);
+      }
+      throw error;
+    }
+    this.reposFinalizes.add(record.id);
+    try {
+      return await this.withMutationLease(record, () => runReposFinalize({
+        store: this.store,
+        ownerId,
+        workspaceId: record.id,
+        input: validated,
+        plan,
+        execute: (operation, input) => this.execute(principal, operation, input, signal),
+        ...(signal ? { signal } : {})
+      }));
+    } finally {
+      this.reposFinalizes.delete(record.id);
     }
   }
 
@@ -3622,6 +3754,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         '--user', input.runAs === 'unprivileged' ? '10001:10001' : '0:0',
         ...(input.runAs === 'unprivileged' ? ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true'] : []),
         '--workdir', workdir,
+        // A scoped run confines the one-shot worker (skills_run) to the selected checkout, as a scoped
+        // `docker exec` does; an unscoped record adds nothing.
+        ...(record.repositoryScope ? ['--env', `CH_WORKSPACE_ROOT=${checkoutPath}`] : []),
         '--pids-limit', '256',
         '--memory', '1g', '--memory-swap', '1g', '--cpus', '1',
         '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=128m',
@@ -4380,10 +4515,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (AgentManager.isPublicOperation(operation)) {
       if (!this.agentManager) throw new HarnessError('UNAVAILABLE', 'agent execution is not configured', 503, false);
       const targetWorkspace = this.requireWorkspace(ownerId, workspaceId, false, true);
+      // A spawn's guidance selector is normalized to the stable id (or dropped for a single repository,
+      // keeping its idempotency payload unchanged) and an unknown repository is refused before admission.
+      if (operation === 'agent_spawn' && validated.repositoryId !== undefined) {
+        this.resolveRepositoryView(targetWorkspace, validated, 'optional', operation);
+      }
       return await this.agentManager.dispatch(ownerId, targetWorkspace, operation, validated);
     }
     if (operation === 'workspace_repo_add' || operation === 'workspace_repo_remove') {
       return await this.changeRepositories(ownerId, operation, validated);
+    }
+    if (operation === 'workspace_repos_finalize') {
+      return await this.finalizeRepositories(principal, ownerId, validated as ReposFinalizeInput & { workspaceId?: string }, signal);
     }
 
     const workspaceRecord = this.touch(this.requireWorkspace(ownerId, workspaceId, true, false));
@@ -4589,7 +4732,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'memories_write') {
       const scope = (validated.scope || 'workspace') as 'owner' | 'repository' | 'workspace';
-      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const repoKey = scope === 'repository' ? memoryRepositoryKey(record) : null;
       const expectedGen = typeof validated.expectedGeneration === 'number' ? validated.expectedGeneration : 0;
       let mem;
       try {
@@ -4628,7 +4771,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'memories_read') {
       const scope = validated.scope as 'owner' | 'repository' | 'workspace' | undefined;
-      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const repoKey = scope === 'repository' ? memoryRepositoryKey(record) : null;
       const mem = this.store.readMemory({
         principalId: ownerId,
         ...(typeof validated.memoryId === 'string' ? { id: validated.memoryId } : {}),
@@ -4644,7 +4787,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'memories_list') {
       const scope = validated.scope as 'owner' | 'repository' | 'workspace' | undefined;
-      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const repoKey = scope === 'repository' ? memoryRepositoryKey(record) : null;
       const { memories, nextCursor } = this.store.listMemories({
         principalId: ownerId,
         ...(scope ? { scope } : {}),
@@ -4664,7 +4807,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'memories_search') {
       const scope = validated.scope as 'owner' | 'repository' | 'workspace' | undefined;
-      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const repoKey = scope === 'repository' ? memoryRepositoryKey(record) : null;
       const { memories, nextCursor } = this.store.searchMemories({
         principalId: ownerId,
         query: validated.query as string,
@@ -4685,7 +4828,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'memories_delete') {
       const scope = validated.scope as 'owner' | 'repository' | 'workspace' | undefined;
-      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const repoKey = scope === 'repository' ? memoryRepositoryKey(record) : null;
       try {
         this.store.deleteMemory({
           principalId: ownerId,
@@ -4858,6 +5001,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         const act = this.store.activateHook({
           principalId: ownerId,
           workspaceId: record.id,
+          ...(record.repositoryScope ? { repositoryId: record.repositoryScope.id } : {}),
           event: ev,
           manifestSha256: validated.manifestSha256 as string,
           ...(typeof validated.retentionSeconds === 'number' ? { retentionSeconds: validated.retentionSeconds } : {})
@@ -4872,19 +5016,19 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       // lifecycle events would run now. The internal lifecycle listing calls the worker directly.
       const result = withHookActivationState(
         await this.runWorker(record, 'hooks_list', validated, signal),
-        this.store.getActiveHookActivations(ownerId, record.id)
+        this.store.getActiveHookActivations(ownerId, record.id, record.repositoryScope?.id)
       );
       await this.enforceActiveLimits(record);
-      return result;
+      return record.repositoryScope ? withUnboundHookActivations(result, this.store.getActiveHookActivations(ownerId, record.id)) : result;
     }
     if (operation === 'hooks_deactivate') {
       const events = validated.events as string[] | undefined;
       if (events && events.length > 0) {
         for (const ev of events) {
-          this.store.deactivateHook({ principalId: ownerId, workspaceId: record.id, event: ev });
+          this.store.deactivateHook({ principalId: ownerId, workspaceId: record.id, ...(record.repositoryScope ? { repositoryId: record.repositoryScope.id } : {}), event: ev });
         }
       } else {
-        this.store.deactivateHook({ principalId: ownerId, workspaceId: record.id });
+        this.store.deactivateHook({ principalId: ownerId, workspaceId: record.id, ...(record.repositoryScope ? { repositoryId: record.repositoryScope.id } : {}) });
       }
       this.auditWorkspaceMutation(ownerId, 'hook.deactivated', record, { ...(events ? { events: events.join(',') } : { all: true }) });
       return { ok: true, message: 'Hooks deactivated', data: { deactivated: true }, truncated: false };
@@ -5182,8 +5326,14 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       try {
         response = await runFinalize();
       } catch (err: unknown) {
-        if (idempotencyKey && err instanceof HarnessError) {
-          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify({ message: err.message, code: err.code }));
+        if (idempotencyKey) {
+          // Any thrown error must settle the claim, or every later attempt with this key reports IN_FLIGHT.
+          // An unexpected error may land after the push, so it is recorded as unknown remote state: the next
+          // attempt probes the remote for the recorded commit before running again.
+          const known = err instanceof HarnessError;
+          const status: GitOperationStatus = known && err.code !== 'UNKNOWN_REMOTE_STATE' ? 'FAILED' : 'UNKNOWN_REMOTE_STATE';
+          const message = err instanceof Error ? err.message : 'finalize failed';
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, status, null, JSON.stringify({ message, code: known ? err.code : 'INTERNAL_ERROR' }));
         }
         throw err;
       }
@@ -5599,8 +5749,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           await this.runLifecycleHooks(record, 'post_commit', signal);
         }
       } catch (err: unknown) {
-        if (idempotencyKey && err instanceof HarnessError) {
-          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify({ message: err.message, code: err.code }), currentHeadOid);
+        if (idempotencyKey) {
+          // Any thrown error must settle the claim, or every later attempt with this key reports IN_FLIGHT.
+          const message = err instanceof Error ? err.message : 'commit failed';
+          const code = err instanceof HarnessError ? err.code : 'INTERNAL_ERROR';
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify({ message, code }), currentHeadOid);
         }
         throw err;
       }
@@ -5640,9 +5793,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
   if (isMutationOperation(operation, validated)) {
     const opTimeout = typeof validated.timeoutMs === 'number' ? validated.timeoutMs : undefined;
-    return await this.withMutationLease(record, dispatchAction, opTimeout);
+    return withRepositoryProvenance(record, operation, await this.withMutationLease(record, dispatchAction, opTimeout));
   }
-  return await dispatchAction();
+  return withRepositoryProvenance(record, operation, await dispatchAction());
 }
 
   /**
@@ -6562,7 +6715,7 @@ const GITHUB_CHECKOUT_FREE_ACTIONS: ReadonlySet<string> = new Set(['pr_merge', '
 
 /** Mutations that can duplicate a visible side effect, so an `idempotencyKey` replays the first result. */
 const GITHUB_IDEMPOTENT_ACTIONS: ReadonlySet<string> = new Set([
-  'pr_comment', 'issue_comment', 'issue_labels_add', 'issue_publish',
+  'pr_create', 'pr_comment', 'issue_comment', 'issue_labels_add', 'issue_publish',
   'pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_reviewers_request', 'pr_merge', 'pr_auto_merge_enable',
   'commit_status_create', 'check_run_create', 'workflow_dispatch', 'workflow_run_rerun_failed'
 ]);

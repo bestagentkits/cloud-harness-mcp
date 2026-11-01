@@ -58,7 +58,8 @@
     "verify:typesafe": "node scripts/verify-typesafe.mjs",
     "prebench:agent-runtime": "npm run build -w @cloud-harness/contracts",
     "bench:agent-runtime": "vitest run --reporter=verbose test/benchmarks/agent-runtime.bench.test.ts",
-    "bench:decision-plane": "npm run build -w @cloud-harness/contracts && RUN_DECISION_PLANE_BENCHMARK=true vitest run test/benchmarks/decision-plane.bench.test.ts"
+    "bench:decision-plane": "npm run build -w @cloud-harness/contracts && RUN_DECISION_PLANE_BENCHMARK=true vitest run test/benchmarks/decision-plane.bench.test.ts",
+    "bench:multi-repository": "npm run build -w @cloud-harness/contracts && RUN_MULTI_REPOSITORY_BENCHMARK=true vitest run --reporter=verbose test/benchmarks/multi-repository.bench.test.ts"
   },
   "devDependencies": {
     "@semantic-release/changelog": "7.0.0",

@@ -234,6 +234,27 @@ scenarios, fixtures and result shape are owned by
 the decision it supports is
 [ADR 0010](adr/0010-agent-session-persistence.md).
 
+## Multi-repository workspace benchmark
+
+`npm run bench:multi-repository` measures
+[multi-repository workspaces](mcp-api.md#multi-repository-workspaces) for 1, 3
+and 5 local fixture repositories: cold, cache-filling and warm (repository
+cache) opens with the default and full-history clone, job tree disk usage,
+runner RSS and heap deltas, `grep_search` on one checkout, with `scope: "all"`
+and over the tree root, repository list and status, close, and the
+`workspace_repositories` registry. It drives the real `WorkspaceService`,
+`StateStore`, clone helper and harness worker. A host-side Docker shim in
+[`test/benchmarks/multi-repository/`](../test/benchmarks/multi-repository/)
+runs those helpers on the host instead of in containers, so the numbers exclude
+container start, `docker exec` and executor sandbox overhead. It needs Git and
+ripgrep but no Docker or network. It is gated by
+`RUN_MULTI_REPOSITORY_BENCHMARK=true`, which the script sets, so `npm test`
+skips it. `MULTI_REPOSITORY_BENCHMARK_ITERATIONS` sets the open iterations
+(default 7) and `MULTI_REPOSITORY_BENCHMARK_OUT` writes the JSON report. The
+suite is
+[`test/benchmarks/multi-repository.bench.test.ts`](../test/benchmarks/multi-repository.bench.test.ts).
+Recorded runs live in `plans/reports/` as `benchmark-*-multi-repository-workspaces.md`.
+
 ## Live provider checks
 
 CI never calls TypeSafe. Two opt-in checks use the owner's TypeSafe key against

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { IntegrationCredentialIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { IntegrationCredentialIdSchema, RepositorySelectorSchema, WorkspaceIdSchema } from './identifiers.js';
 
 /** The hard ceiling the configured payload bound may never exceed. */
 export const TYPESAFE_EGRESS_CEILING = 8_192;
@@ -27,7 +27,9 @@ export const TypesafeConfigSchema = z.object({
 export const SkillSuggestInputSchema = z.object({
   prompt: z.string().min(1)
     .refine((value) => byteLength(value) <= TYPESAFE_EGRESS_CEILING, 'the prompt exceeds the egress byte bound'),
-  workspaceId: WorkspaceIdSchema.optional()
+  workspaceId: WorkspaceIdSchema.optional(),
+  // Ranks the skills of one repository of a multi-repository workspace; omitted uses the primary one.
+  repositoryId: RepositorySelectorSchema.optional()
 }).strict();
 
 export const SuggestedSkillSchema = z.object({

@@ -31,6 +31,9 @@ beforeEach(async () => {
   calls = [];
   const respond = async (operation: string, input: Record<string, unknown>): Promise<RunnerResponse> => {
     calls.push({ operation, input });
+    if (operation === 'hooks_list') {
+      return { ok: true, message: 'ok', truncated: false, data: { hooks: [], manifestSha256: digest, repositoryId: `repo_${'r'.repeat(24)}`, repositoryAlias: 'web', root: '/workspace/repos/web' } };
+    }
     if (operation === 'skills_list') {
       return { ok: true, message: 'ok', truncated: false, data: { skills: [{ name: 'build', source: 'owner', root: '/opt/skills', contentSha256: digest, shadowed: [{ source: 'repository', root: '/workspace/repo/.cloud-harness/skills', contentSha256: 'd'.repeat(64), reason: 'Shadowed by higher-precedence owner skill in /opt/skills' }] }] } };
     }
@@ -70,6 +73,17 @@ async function mutationHeaders(): Promise<Record<string, string>> {
 }
 
 describe('dashboard automation BFF', () => {
+  it('names the repository a multi-repository listing answered from, and forwards it on a run', async () => {
+    const reply = await send(`/api/v1/workspaces/${ws}/hooks`);
+    expect(reply.json.data).toEqual({ hooks: [], manifestSha256: digest, repositoryId: `repo_${'r'.repeat(24)}`, repositoryAlias: 'web' });
+    const run = await send(`/api/v1/workspaces/${ws}/hooks/run`, {
+      method: 'POST', headers: await mutationHeaders(),
+      body: JSON.stringify({ name: 'lint', expectedManifestSha256: digest, repositoryId: `repo_${'r'.repeat(24)}` })
+    });
+    expect(run.status).toBe(200);
+    expect(calls.at(-1)).toMatchObject({ operation: 'hooks_run', input: { repositoryId: `repo_${'r'.repeat(24)}` } });
+  });
+
   it('lists shadowed skills by source and digest only, without runner paths', async () => {
     const reply = await send(`/api/v1/workspaces/${ws}/skills`);
     expect(reply.status).toBe(200);

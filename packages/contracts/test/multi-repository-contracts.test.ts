@@ -84,6 +84,42 @@ describe('multi-repository workspace contracts', () => {
     expect(() => remove.parse({ workspaceId, repositoryId: '../docs', idempotencyKey: 'rm-docs-1' })).toThrow();
   });
 
+  it('registers the coordinated finalize as a destructive, egressing, idempotent write with a required key', () => {
+    expect(TOOL_SPECS.find((entry) => entry.name === 'workspace_repos_finalize')).toMatchObject({ readOnly: false, destructive: true, idempotent: true, openWorld: true });
+    expect(TOOL_SPECS.find((entry) => entry.name === 'workspace_repos_finalize')?.description).toMatch(/Not atomic/);
+    const schema = TOOL_SCHEMA_BY_NAME.workspace_repos_finalize;
+    const input = {
+      workspaceId,
+      idempotencyKey: 'repos-fin-1',
+      repositories: [
+        { repositoryId: 'api', commitMessage: 'feat: api', pullRequest: { title: 'API' } },
+        { repositoryId: `repo_${'b'.repeat(32)}`, commitMessage: 'feat: web', all: false, paths: ['src/a.ts'], push: false }
+      ]
+    };
+    expect(schema.parse(input)).toMatchObject({
+      continueOnFailure: false,
+      repositories: [
+        { repositoryId: 'api', all: true, push: true, pullRequest: { title: 'API', draft: false } },
+        { all: false, paths: ['src/a.ts'], push: false }
+      ]
+    });
+    expect(() => schema.parse({ ...input, idempotencyKey: undefined })).toThrow();
+    expect(() => schema.parse({ ...input, repositories: [] })).toThrow();
+    expect(() => schema.parse({ ...input, repositories: Array.from({ length: 21 }, (_, index) => ({ repositoryId: `r${index}`, commitMessage: 'x' })) })).toThrow();
+    expect(() => schema.parse({ ...input, repositories: [input.repositories[0], input.repositories[0]] })).toThrow(/duplicate repository/);
+    expect(() => schema.parse({ ...input, repositories: [{ repositoryId: '../api', commitMessage: 'x' }] })).toThrow();
+    expect(() => schema.parse({ ...input, repositories: [{ repositoryId: 'api', commitMessage: 'x', push: false, pullRequest: { title: 'T' } }] })).toThrow(/pullRequest requires push/);
+    expect(() => schema.parse({ ...input, repositories: [{ repositoryId: 'api', commitMessage: 'x', all: false }] })).toThrow(/paths are required/);
+    expect(() => schema.parse({ ...input, repositoryId: 'api' })).toThrow();
+  });
+
+  it('accepts an optional idempotency key on pr_create', () => {
+    const request = { workspaceId, action: 'pr_create', title: 'T', head: 'feature/x' };
+    expect(TOOL_SCHEMA_BY_NAME.github_action.parse(request)).toMatchObject({ base: 'main', body: '' });
+    expect(TOOL_SCHEMA_BY_NAME.github_action.parse({ ...request, idempotencyKey: 'pr-key-1' })).toMatchObject({ idempotencyKey: 'pr-key-1' });
+    expect(() => TOOL_SCHEMA_BY_NAME.github_action.parse({ ...request, idempotencyKey: 'bad key' })).toThrow();
+  });
+
   it('accepts scope "all" on the search tools, exclusive of repositoryId, and keeps the default shape', () => {
     const searches = [
       ['grep_search', { pattern: 'x' }],

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deploymentsOf, groupHooksByLifecycle, hookRunBody, hooksOf, parseDeployDraft, runResultOf, SCRIPT_PATTERN, skillsOf } from './automation-model';
+import { deploymentsOf, groupHooksByLifecycle, hookRunBody, hooksOf, listedRepositoryOf, parseDeployDraft, runResultOf, SCRIPT_PATTERN, skillsOf } from './automation-model';
 import { fileOf, joinPath, listingOf, parentPath, pathCrumbs, patchCopyText } from './files-model';
 import { gitActionBody, gitCommitsOf, gitStatusOf, worktreesOf } from './git-model';
 import { NODE_WIDTH, taskGraphLayout, taskGraphOf } from './task-graph-model';
@@ -64,6 +64,16 @@ describe('automation model', () => {
     expect(hookRunBody(hook, 'manual', 'b'.repeat(64))).toEqual({ name: 'h', event: 'manual', expectedManifestSha256: 'b'.repeat(64) });
     expect(hookRunBody(hook, 'manual', undefined)).toEqual({ name: 'h', event: 'manual', expectedSha256: SHA });
     expect(hookRunBody({ name: 'h', events: [], active: true }, 'manual', undefined)).toBeUndefined();
+  });
+
+  it('targets a run at the repository its listing answered from', () => {
+    const repositoryId = `repo_${'r'.repeat(24)}`;
+    const repository = listedRepositoryOf({ repositoryId, repositoryAlias: 'web' });
+    expect(repository).toEqual({ repositoryId, repositoryAlias: 'web' });
+    expect(listedRepositoryOf({ repositoryId: 'web' })).toBeUndefined();
+    expect(listedRepositoryOf({})).toBeUndefined();
+    const hook = { name: 'h', events: ['manual'], active: true };
+    expect(hookRunBody(hook, 'manual', SHA, repository)).toEqual({ name: 'h', event: 'manual', expectedManifestSha256: SHA, repositoryId });
   });
 
   it('accepts only bare script names', () => {
