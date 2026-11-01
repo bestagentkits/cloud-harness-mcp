@@ -86,6 +86,8 @@ import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const PACKAGE_OPERATION_SET: ReadonlySet<string> = new Set(PACKAGE_OPERATIONS);
+/** Package operations that only read state; the others build, bind, or release packages. */
+const PACKAGE_READ_OPERATIONS: ReadonlySet<PackageOperation> = new Set(['packages_list', 'packages_status']);
 
 function isPackageOperation(operation: RunnerOperation): operation is PackageOperation {
   return PACKAGE_OPERATION_SET.has(operation);
@@ -2488,6 +2490,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }, runSignal).finally(() => {
         held.release();
         this.liveToolboxContainers.delete(name);
+        // A container whose removal failed is left to the stale sweep, which must still be owed.
+        this.noteDockerActivity();
       });
     };
     if (validated.async !== true) return toolboxResponse(await run(signal));
@@ -2788,8 +2792,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   }
 
   private async runPackageOperation(ownerId: string, operation: PackageOperation, validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
-    const data = await this.packages.execute(ownerId, operation, validated, signal);
-    return { ok: true, message: packageMessage(operation, data), data, truncated: false };
+    try {
+      const data = await this.packages.execute(ownerId, operation, validated, signal);
+      return { ok: true, message: packageMessage(operation, data), data, truncated: false };
+    } finally {
+      if (!PACKAGE_READ_OPERATIONS.has(operation)) this.noteDockerActivity();
+    }
   }
 
   /**
@@ -5064,31 +5072,45 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   }
 
   /**
-   * Whether this reaper pass may run the sweeps that call Docker even when nothing is running. Without
-   * DOCKER_ON_DEMAND every pass does. With it, a pass sweeps while a workspace is enumerated or a toolbox
-   * container is live; once that activity ends it owes the closing and final sweeps, and after them it
-   * stops calling Docker, so an idle runner never wakes a suspended remote Docker host. Sweeps skipped
-   * meanwhile run on the first pass after activity resumes. The remaining reaper steps call Docker only
-   * for a workspace that needs it (an enumerated one, or a recoverable one whose auto-close is due, at
-   * most hourly while unsaved work defers it), so they need no gate.
+   * Records Docker activity that a reaper pass may not observe, such as a toolbox command or a package
+   * mutation that starts and ends between two passes, so the idle sweeps that clean up after it are owed.
+   */
+  private noteDockerActivity(now = Date.now()): void {
+    this.lastDockerActivityAt = now;
+    this.idleDockerSweepsOwed = 2;
+  }
+
+  /**
+   * Whether this reaper pass may run the toolbox sweep, which lists containers even when nothing is
+   * running. Without DOCKER_ON_DEMAND every pass does. With it, a pass sweeps while a workspace is
+   * enumerated or a toolbox container is live; after any Docker activity (seen by a pass or recorded by
+   * `noteDockerActivity`) it owes a closing sweep and a final one once a container that activity left
+   * behind is old enough to be stale, and after them it stops calling Docker, so an idle runner never
+   * wakes a suspended remote Docker host. The remaining reaper steps call Docker only when they have work:
+   * package GC only for a directory it cannot remove itself, and the workspace steps only for an
+   * enumerated workspace or a recoverable one whose auto-close is due (at most hourly while unsaved work
+   * defers it), so they need no gate.
    */
   private dockerSweepDue(now: number): boolean {
     if (this.config.dockerOnDemand !== true) return true;
     if (this.store.active().length > 0 || this.liveToolboxContainers.size > 0) {
-      this.lastDockerActivityAt = now;
-      this.idleDockerSweepsOwed = 2;
+      this.noteDockerActivity(now);
       return true;
     }
     if (this.idleDockerSweepsOwed >= 2) return true;
     return this.idleDockerSweepsOwed === 1 && now - this.lastDockerActivityAt >= TOOLBOX_STALE_AFTER_MS;
   }
 
-  /** The reaper sweeps that call Docker regardless of workspaces: stale toolbox containers and package GC. */
+  /**
+   * The reaper sweeps that run regardless of workspaces. Package GC runs on every pass: it is limited to
+   * once an hour and calls Docker only for a directory it cannot remove itself. The stale toolbox sweep
+   * lists containers, so DOCKER_ON_DEMAND gates it.
+   */
   private async sweepDocker(now: number): Promise<void> {
+    if (this.config.packagesEnabled === true) await this.packages.collectGarbage(now).catch(() => undefined);
     if (!this.dockerSweepDue(now)) return;
     const idle = this.store.active().length === 0 && this.liveToolboxContainers.size === 0;
     const swept = await reapStaleToolboxContainers(this.instanceId, this.liveToolboxContainers, now).then(() => true, () => false);
-    if (this.config.packagesEnabled === true) await this.packages.collectGarbage(now).catch(() => undefined);
     // A failed idle sweep stays owed, so the next pass retries it before the runner goes quiet.
     if (idle && swept && this.idleDockerSweepsOwed > 0) this.idleDockerSweepsOwed -= 1;
   }

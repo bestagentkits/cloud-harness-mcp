@@ -4,17 +4,47 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RunnerConfig } from '@cloud-harness/contracts';
 
-const docker = vi.hoisted(() => ({
-  runDocker: vi.fn<(args: string[]) => Promise<{ stdout: string; stderr: string; exitCode: number; truncated: boolean }>>(async () => ({ stdout: '', stderr: '', exitCode: 0, truncated: false })),
-  removeContainer: vi.fn(async () => undefined),
-  inspectContainer: vi.fn(async () => undefined),
-  inspectNetwork: vi.fn(async () => undefined),
-  terminateContainerProcessGroup: vi.fn(async () => undefined),
-  spawnDocker: vi.fn()
+type DockerResult = { stdout: string; stderr: string; exitCode: number; truncated: boolean };
+
+/** A fake Docker host holding toolbox containers by name with their creation time. */
+const docker = vi.hoisted(() => {
+  const containers = new Map<string, number>();
+  const fakeDocker = async (args: string[]): Promise<DockerResult> => {
+    if (args[0] === 'ps') return { stdout: [...containers.keys()].map((name) => `${name}\n`).join(''), stderr: '', exitCode: 0, truncated: false };
+    if (args[0] === 'inspect') {
+      const names = args.slice(args.indexOf('--format') + 2);
+      const lines = names.filter((name) => containers.has(name)).map((name) => `/${name}\t${new Date(containers.get(name)!).toISOString()}\n`);
+      return { stdout: lines.join(''), stderr: '', exitCode: 0, truncated: false };
+    }
+    return { stdout: '', stderr: '', exitCode: 0, truncated: false };
+  };
+  return {
+    containers,
+    fakeDocker,
+    runDocker: vi.fn<(args: string[]) => Promise<DockerResult>>(fakeDocker),
+    removeContainer: vi.fn(async (name: string) => { containers.delete(name); }),
+    inspectContainer: vi.fn(async () => undefined),
+    inspectNetwork: vi.fn(async () => undefined),
+    terminateContainerProcessGroup: vi.fn(async () => undefined),
+    spawnDocker: vi.fn()
+  };
+});
+
+/** A toolbox command whose container removal failed: the container stays on the Docker host. */
+const toolbox = vi.hoisted(() => ({
+  runToolboxCommand: vi.fn(async (spec: { name: string }) => {
+    docker.containers.set(spec.name, Date.now());
+    return { output: 'ok\n', exitCode: 0, signal: null, truncated: false, timedOut: false };
+  })
 }));
 
 vi.mock('../src/docker-engine.js', () => docker);
+vi.mock('../src/toolbox-runner.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof ToolboxRunner>()),
+  runToolboxCommand: toolbox.runToolboxCommand
+}));
 
+import type * as ToolboxRunner from '../src/toolbox-runner.js';
 import { DockerAgentGatewayControl } from '../src/agent-gateway-control.js';
 import { resolveDockerSocketPath } from '../src/docker-pty.js';
 import { StateStore } from '../src/state-store.js';
@@ -27,7 +57,8 @@ const openStores: StateStore[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
   docker.runDocker.mockClear();
-  docker.runDocker.mockImplementation(async () => ({ stdout: '', stderr: '', exitCode: 0, truncated: false }));
+  docker.runDocker.mockImplementation(docker.fakeDocker);
+  docker.containers.clear();
   for (const store of openStores.splice(0)) {
     try { store.close(); } catch { /* already closed */ }
   }
@@ -36,9 +67,13 @@ afterEach(() => {
   }
 });
 
-type ReaperHandle = { reapExpired: () => Promise<void>; liveToolboxContainers: Set<string> };
+type ReaperHandle = {
+  reapExpired: () => Promise<void>;
+  liveToolboxContainers: Set<string>;
+  execute: (ownerId: string, operation: string, input: Record<string, unknown>) => Promise<{ ok: boolean }>;
+};
 
-function createService(dockerOnDemand: boolean, clock: { now: number }): ReaperHandle {
+function createService(dockerOnDemand: boolean, clock: { now: number }, overrides: Partial<RunnerConfig> = {}): ReaperHandle {
   vi.spyOn(Date, 'now').mockImplementation(() => clock.now);
   const directory = mkdtempSync(join(tmpdir(), 'ch-docker-on-demand-'));
   temporaryDirectories.push(directory);
@@ -52,7 +87,11 @@ function createService(dockerOnDemand: boolean, clock: { now: number }): ReaperH
     wallTtlSeconds: 900,
     reaperIntervalSeconds: 30,
     packagesEnabled: false,
-    dockerOnDemand
+    maxOutputBytes: 262_144,
+    packagesRoot: join(directory, 'packages'),
+    packagesBuildTimeoutMs: 600_000,
+    dockerOnDemand,
+    ...overrides
   } as RunnerConfig;
   const store = new StateStore(config.stateDb);
   openStores.push(store);
@@ -110,12 +149,34 @@ describe('Docker on demand reaper', () => {
     expect(await runPasses(service, clock, 50)).toBe(0);
   });
 
+  it('removes a toolbox container left by a call that ran between reaper passes after the runner went quiet', async () => {
+    const clock = { now: 1_800_000_000_000 };
+    const service = createService(true, clock, { packagesEnabled: true });
+    // Spend the idle sweeps so the runner is quiet before the call.
+    await runPasses(service, clock, 1);
+    clock.now += TOOLBOX_STALE_AFTER_MS;
+    await runPasses(service, clock, 1);
+    expect(await runPasses(service, clock, 5)).toBe(0);
+
+    clock.now += 5_000;
+    const result = await service.execute('owner', 'bash', { command: 'node --version', target: 'toolbox' });
+    expect(result.ok).toBe(true);
+    expect(docker.containers.size).toBe(1);
+    const [leftover] = [...docker.containers.keys()];
+
+    // The call ended before any pass saw it live, yet the passes after it still sweep until it is gone.
+    await runPasses(service, clock, Math.ceil(TOOLBOX_STALE_AFTER_MS / intervalMs) + 1);
+    expect(docker.removeContainer).toHaveBeenCalledWith(leftover);
+    expect(docker.containers.size).toBe(0);
+    expect(await runPasses(service, clock, 50)).toBe(0);
+  });
+
   it('retries a failed idle sweep instead of going quiet with it unfinished', async () => {
     const clock = { now: 1_800_000_000_000 };
     const service = createService(true, clock);
     docker.runDocker.mockImplementation(async () => ({ stdout: '', stderr: 'daemon unavailable', exitCode: 1, truncated: false }));
     expect(await runPasses(service, clock, 3)).toBe(3);
-    docker.runDocker.mockImplementation(async () => ({ stdout: '', stderr: '', exitCode: 0, truncated: false }));
+    docker.runDocker.mockImplementation(docker.fakeDocker);
     expect(await runPasses(service, clock, 1)).toBe(1);
     expect(await runPasses(service, clock, 5)).toBe(0);
   });
