@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, RepositorySelectorSchema, SessionIdSchema, ShellIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { AgentProxyOperationSchema, AgentRuntimeKindSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
 import { SkillSuggestInputSchema } from './typesafe-schemas.js';
 import { MAX_WORKSPACE_REPOSITORIES_LIMIT } from './config.js';
@@ -35,10 +35,6 @@ const entryPath = relativePath.refine((value) => value.replaceAll('\\', '/') !==
 const workspace = { workspaceId: WorkspaceIdSchema.optional() };
 /** A repository alias names one checkout under `repos/<alias>/`; it can never contain `_`, so it cannot collide with a `repo_…` id. */
 export const RepositoryAliasSchema = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/, 'repository alias must be 1-40 lowercase letters, digits, or inner hyphens');
-/** Selects one repository of a multi-repository workspace by its stable `repo_…` id or its alias. */
-export const RepositorySelectorSchema = z.string()
-  .regex(/^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$/, 'repositoryId must be a repo_ id or a repository alias')
-  .describe('Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository.');
 const repository = { repositoryId: RepositorySelectorSchema.optional() };
 export const WorkspaceRepositoryAccessSchema = z.enum(['read-write', 'read-only']);
 export const WorkspaceRepositoryInputSchema = z.object({
@@ -1112,10 +1108,11 @@ const schemas = {
   worktrees_list: z.object({ ...workspace, ...repository }),
   worktrees_create: z.object({ ...workspace, ...repository, name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/), ref: gitArgument, createBranch: z.boolean().default(false) }),
   worktrees_remove: z.object({ ...workspace, ...repository, name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/), force: z.boolean().default(false) }),
-  skills_list: z.object({ ...workspace, limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional(), includeShadowed: z.boolean().default(true) }),
-  skills_read: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/), source: ProvenanceSourceSchema.optional(), expectedSha256: z.string().length(64).optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(262_144).default(65_536) }),
+  skills_list: z.object({ ...workspace, ...repository, limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional(), includeShadowed: z.boolean().default(true) }),
+  skills_read: z.object({ ...workspace, ...repository, name: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/), source: ProvenanceSourceSchema.optional(), expectedSha256: z.string().length(64).optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(262_144).default(65_536) }),
   skills_run: z.object({
     ...workspace,
+    ...repository,
     name: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/),
     source: ProvenanceSourceSchema.optional(),
     script: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
@@ -1134,9 +1131,10 @@ const schemas = {
   }),
   // The prompt bound is measured in bytes, because the bound exists to limit what leaves the process.
   skill_suggest: SkillSuggestInputSchema,
-  hooks_list: z.object({ ...workspace, event: HookEventSchema.optional(), includeInactive: z.boolean().default(false).describe('Accepted for compatibility and currently ignored: every hook is always listed, each with an `active` flag that reports whether lifecycle events would run it.'), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
+  hooks_list: z.object({ ...workspace, ...repository, event: HookEventSchema.optional(), includeInactive: z.boolean().default(false).describe('Accepted for compatibility and currently ignored: every hook is always listed, each with an `active` flag that reports whether lifecycle events would run it.'), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
   hooks_run: z.object({
     ...workspace,
+    ...repository,
     name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
     event: HookEventSchema.optional(),
     expectedSha256: z.string().length(64).optional(),
@@ -1148,11 +1146,12 @@ const schemas = {
       context.addIssue({ code: 'custom', path: ['expectedManifestSha256'], message: 'expectedManifestSha256 or expectedSha256 is required to prevent TOCTOU execution of modified hooks' });
     }
   }),
-  hooks_activate: z.object({ ...workspace, manifestSha256: z.string().length(64), events: z.array(HookEventSchema).min(1).max(10), retentionSeconds: z.number().int().min(60).max(2_592_000).optional() }),
-  hooks_deactivate: z.object({ ...workspace, events: z.array(HookEventSchema).max(10).optional() }),
-  memories_list: z.object({ ...workspace, scope: MemoryScopeSchema.optional(), tags: z.array(z.string().min(1).max(50)).max(16).optional(), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
+  hooks_activate: z.object({ ...workspace, ...repository, manifestSha256: z.string().length(64), events: z.array(HookEventSchema).min(1).max(10), retentionSeconds: z.number().int().min(60).max(2_592_000).optional() }),
+  hooks_deactivate: z.object({ ...workspace, ...repository, events: z.array(HookEventSchema).max(10).optional() }),
+  memories_list: z.object({ ...workspace, ...repository, scope: MemoryScopeSchema.optional(), tags: z.array(z.string().min(1).max(50)).max(16).optional(), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
   memories_read: z.object({
     ...workspace,
+    ...repository,
     scope: MemoryScopeSchema.optional(),
     name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/).optional(),
     memoryId: z.string().regex(/^mem_[A-Za-z0-9_-]{10,80}$/).optional()
@@ -1161,6 +1160,7 @@ const schemas = {
   }),
   memories_write: z.object({
     ...workspace,
+    ...repository,
     scope: MemoryScopeSchema.default('workspace'),
     name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
     content: z.string().max(262_144),
@@ -1171,6 +1171,7 @@ const schemas = {
   }),
   memories_search: z.object({
     ...workspace,
+    ...repository,
     query: z.string().min(1).max(512),
     scope: MemoryScopeSchema.optional(),
     tags: z.array(z.string().min(1).max(50)).max(16).optional(),
@@ -1180,6 +1181,7 @@ const schemas = {
   }),
   memories_delete: z.object({
     ...workspace,
+    ...repository,
     memoryId: z.string().regex(/^mem_[A-Za-z0-9_-]{10,80}$/).optional(),
     name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/).optional(),
     scope: MemoryScopeSchema.optional(),
@@ -1338,6 +1340,9 @@ const schemas = {
     // the idempotency payload of existing callers unchanged.
     repositoryContext: z.enum(['codex', 'claude', 'cursor', 'aider', 'all', 'none']).optional()
       .describe('Repository guidance profile placed before the task; omitted uses codex, none sends the task alone.'),
+    // Optional, and without a default, so omitting it keeps the idempotency payload unchanged.
+    repositoryId: RepositorySelectorSchema.optional()
+      .describe('Repository of a multi-repository workspace whose guidance is placed before the task; omitted uses the primary repository. Guidance is never merged across repositories.'),
     // Optional, and without a default, so omitting it keeps the idempotency payload unchanged.
     continueFrom: AgentIdSchema.optional()
       .describe('A terminal agent of this workspace whose session the new agent continues; a pi-coding agent needs session persistence on the instance, a pi-durable agent needs the durable runtime enabled. The new agent gets a new id, container, lease, and budget.'),

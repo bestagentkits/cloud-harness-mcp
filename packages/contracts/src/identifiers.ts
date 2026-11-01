@@ -48,3 +48,8 @@ export type ExecutorNetworkProfile = z.infer<typeof ExecutorNetworkProfileSchema
 
 export const WorkspaceNetworkExposureSchema = z.enum(['network-none', 'dependency-access', 'local-host']);
 export type WorkspaceNetworkExposure = z.infer<typeof WorkspaceNetworkExposureSchema>;
+
+/** Selects one repository of a multi-repository workspace by its stable `repo_…` id or its alias. */
+export const RepositorySelectorSchema = z.string()
+  .regex(/^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$/, 'repositoryId must be a repo_ id or a repository alias')
+  .describe('Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository.');

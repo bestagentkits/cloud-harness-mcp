@@ -163,6 +163,24 @@ executor's `/workspace` is the tree root and each checkout lives at
   `workspace_capabilities` describes the primary repository unless a selector
   names another. `workspace_recover` `status` and `patch` without a selector
   report every checkout under `data.repositories`.
+- **Guidance, skills, hooks, and memories target one repository.**
+  `workspace_context`, `skills_list`, `skills_read`, `hooks_list`,
+  `skill_suggest`, and the `memories_*` tools answer from the selected checkout,
+  or from the primary one without a selector, and add `repositoryId` and
+  `repositoryAlias` to the result so the caller sees which repository answered.
+  Guidance is never merged across repositories. `skills_run`, `hooks_run`, and
+  `hooks_activate` run or enrol repository-provided code, so they refuse an
+  unselected call like the Git-bound tools. A lifecycle hook activation is
+  bound to the repository it was activated for: a commit or checkout in
+  another repository never runs it, even when that repository's manifest has
+  the same digest. `hooks_deactivate` with a selector clears that repository's
+  activations and without one clears every activation of the workspace;
+  removing a repository drops its activations. The memory `repository` scope is
+  keyed by the selected repository's URL with the same derivation as a
+  single-repository workspace. `agent_spawn` accepts `repositoryId` to place
+  that repository's guidance (within the same input-budget bound) before the
+  task; without it the agent gets the primary repository's guidance, and its
+  `repository_context` log event names the selected repository.
 - **Single-repository workspaces are unchanged.** They accept a selector naming
   their only checkout (`workspace_repos_list` reports its synthesized id and
   alias at path `.`), behave identically with or without it, and keep their
@@ -255,6 +273,7 @@ and [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-servic
 and the behaviour is exercised by
 [`apps/runner/test/multi-repository-workspaces.test.ts`](../apps/runner/test/multi-repository-workspaces.test.ts),
 [`apps/runner/test/dynamic-repositories.test.ts`](../apps/runner/test/dynamic-repositories.test.ts),
+[`apps/runner/test/repository-targeted-features.test.ts`](../apps/runner/test/repository-targeted-features.test.ts),
 and
 [`packages/contracts/test/multi-repository-contracts.test.ts`](../packages/contracts/test/multi-repository-contracts.test.ts).
 The design record is

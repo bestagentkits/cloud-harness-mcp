@@ -86,7 +86,7 @@ Inspect workspace and repository authorization capabilities (including issue and
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 
 ### `workspace_context`
 
@@ -99,7 +99,7 @@ Read the active workspace ID, branch, lease time, Git identity, and repository o
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `clientProfile` | `"all"` \| `"claude"` \| `"codex"` \| `"cursor"` \| `"aider"` | No | default: `"all"` |
 | `include` | string[] | No | default: `["instructions","languages","test_commands","skills"]` |
 | `contentMode` | `"none"` \| `"excerpt"` | No | default: `"none"` |
@@ -142,7 +142,7 @@ Summarize each repository checkout of a workspace (its branch tracking line, whe
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 
 ### `workspace_repo_add`
 
@@ -199,7 +199,7 @@ Recover a recoverable expired workspace to active state, or inspect, patch, or e
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `mode` | `"resume"` \| `"status"` \| `"patch"` \| `"export"` | No | default: `"resume"` |
 | `targetBranch` | `string` | No | length: 1–255 |
 
@@ -246,7 +246,7 @@ List one workspace directory with bounded cursor pagination.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `path` | `string` | No | length: 1–1024, default: `"."` |
 | `cursor` | `string` | No | max length: 256 |
 | `limit` | `integer` | No | range: 1–500, default: `100` |
@@ -262,7 +262,7 @@ Read a bounded byte range from a workspace file with its size, SHA-256, and cont
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `path` | `string` | **Yes** | length: 1–1024 |
 | `offset` | `integer` | No | range: 0–9007199254740991, default: `0` |
 | `limit` | `integer` | No | range: 1–1048576, default: `65536` |
@@ -280,7 +280,7 @@ Atomically create or replace a workspace file, optionally guarded by its current
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `path` | `string` | **Yes** | length: 1–1024 |
 | `content` | `string` | **Yes** | max length: 1048576 |
 | `expectedSha256` | `string` | No | length: 64–64 |
@@ -296,7 +296,7 @@ Atomically write multiple workspace files in one call, automatically creating mi
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `files` | object[] | **Yes** | — |
 | `createParents` | `boolean` | No | default: `true` |
 | `atomic` | `boolean` | No | default: `true` |
@@ -313,7 +313,7 @@ Replace one unique exact text occurrence, optionally guarded by the file SHA-256
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `path` | `string` | **Yes** | length: 1–1024 |
 | `oldText` | `string` | **Yes** | max length: 262144 |
 | `newText` | `string` | **Yes** | max length: 262144 |
@@ -330,7 +330,7 @@ Delete one workspace file or directory, with explicit recursion and optional fil
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `path` | `string` | **Yes** | length: 1–1024 |
 | `recursive` | `boolean` | No | default: `false` |
 | `expectedSha256` | `string` | No | length: 64–64 |
@@ -346,7 +346,7 @@ Move or rename one workspace entry, optionally overwriting an existing file.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `source` | `string` | **Yes** | length: 1–1024 |
 | `destination` | `string` | **Yes** | length: 1–1024 |
 | `overwrite` | `boolean` | No | default: `false` |
@@ -362,7 +362,7 @@ Create one workspace directory, including missing parents by default.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `path` | `string` | **Yes** | length: 1–1024 |
 | `recursive` | `boolean` | No | default: `true` |
 
@@ -377,7 +377,7 @@ Search workspace text with a bounded regular expression and optional path and gl
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `scope` | `"all"` | No | all searches every repository checkout and annotates each result with repositoryId and alias; result paths are relative to that checkout. Mutually exclusive with repositoryId. |
 | `cursor` | `string` | No | Continuation cursor from a scope "all" search; it names the next repository to search. (max length: 256) |
 | `pattern` | `string` | **Yes** | length: 1–4096 |
@@ -396,7 +396,7 @@ Find bounded indexed symbol definitions by case-insensitive substring. scope "al
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `scope` | `"all"` | No | all searches every repository checkout and annotates each result with repositoryId and alias; result paths are relative to that checkout. Mutually exclusive with repositoryId. |
 | `cursor` | `string` | No | Continuation cursor from a scope "all" search; it names the next repository to search. (max length: 256) |
 | `query` | `string` | **Yes** | length: 1–256 |
@@ -415,7 +415,7 @@ Find bounded lexical whole-word occurrences of a symbol in workspace text. scope
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `scope` | `"all"` | No | all searches every repository checkout and annotates each result with repositoryId and alias; result paths are relative to that checkout. Mutually exclusive with repositoryId. |
 | `cursor` | `string` | No | Continuation cursor from a scope "all" search; it names the next repository to search. (max length: 256) |
 | `symbol` | `string` | **Yes** | length: 1–256 |
@@ -438,7 +438,7 @@ Run one bounded shell command in the workspace and return captured output.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `command` | `string` | **Yes** | length: 1–32768 |
 | `cwd` | `string` | No | length: 1–1024, default: `"."` |
 | `timeoutMs` | `integer` | No | range: 100–300000, default: `60000` |
@@ -458,7 +458,7 @@ Run one bounded bash command. target "workspace" (default) uses the exec_run pat
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `command` | `string` | **Yes** | length: 1–32768 |
 | `target` | `"workspace"` \| `"toolbox"` | No | workspace runs in the workspace executor like exec_run; toolbox runs in a disposable no-network container with no checkout. (default: `"workspace"`) |
 | `cwd` | `string` | No | Workspace-relative directory; workspace target only. (length: 1–1024, default: `"."`) |
@@ -477,7 +477,7 @@ Open an idempotent ephemeral interactive shell in the workspace.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `cwd` | `string` | No | length: 1–1024, default: `"."` |
 | `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
 
@@ -667,7 +667,7 @@ Open an idempotent named coding session in the workspace.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,80}$` |
 | `cwd` | `string` | No | length: 1–1024, default: `"."` |
 | `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
@@ -726,7 +726,7 @@ Start an idempotent managed command task with optional task dependencies.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `command` | `string` | **Yes** | length: 1–32768 |
 | `cwd` | `string` | No | length: 1–1024, default: `"."` |
 | `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
@@ -787,7 +787,7 @@ Read branch, index, and working-tree status for the workspace repository.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 
 ### `git_diff`
 
@@ -800,7 +800,7 @@ Read a bounded staged or unstaged Git diff with cursor pagination and readAll co
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `staged` | `boolean` | No | default: `false` |
 | `path` | `string` | No | length: 1–1024 |
 | `cursor` | `string` | No | max length: 256 |
@@ -818,7 +818,7 @@ Read bounded recent commit metadata from the workspace repository with cursor pa
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `limit` | `integer` | No | range: 1–500, default: `20` |
 | `cursor` | `string` | No | max length: 256 |
 | `readAll` | `boolean` | No | — |
@@ -834,7 +834,7 @@ List, create, or delete a local Git branch with constrained ref arguments.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `action` | `"list"` \| `"create"` \| `"delete"` | **Yes** | — |
 | `name` | `string` | No | length: 1–255 |
 | `startPoint` | `string` | No | length: 1–255 |
@@ -851,7 +851,7 @@ Check out an existing Git ref or create and check out a local branch.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `ref` | `string` | **Yes** | length: 1–255 |
 | `create` | `boolean` | No | default: `false` |
 
@@ -866,7 +866,7 @@ Stage either explicit workspace paths or all tracked and untracked changes.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `all` | `boolean` | No | default: `false` |
 | `paths` | string[] | No | default: `[]` |
 
@@ -879,7 +879,7 @@ Create an unsigned local Git commit with default or explicit author and message.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `message` | `string` | **Yes** | length: 1–10000 |
 | `authorName` | `string` | No | length: 1–200 |
 | `authorEmail` | `string` | No | format: `email`, pattern: `^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` |
@@ -924,7 +924,7 @@ Transactionally stage changes, run preflights, commit with default or explicit i
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `paths` | string[] | No | — |
 | `all` | `boolean` | No | default: `true` |
 | `commitMessage` | `string` | **Yes** | length: 1–10000 |
@@ -946,7 +946,7 @@ Fetch a constrained source ref from origin through the trusted repository broker
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `remote` | `"origin"` | No | default: `"origin"` |
 | `refspec` | `string` | No | length: 1–255 |
 | `depth` | `integer` | No | Deepen history to this many commits from each fetched tip. (range: 1–100000) |
@@ -964,7 +964,7 @@ Integrate an origin branch using ff-only, merge, or rebase strategy.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `remote` | `"origin"` | No | default: `"origin"` |
 | `branch` | `string` | No | length: 1–255 |
 | `strategy` | `"ff-only"` \| `"merge"` \| `"rebase"` | No | default: `"ff-only"` |
@@ -980,7 +980,7 @@ Push a constrained branch refspec to origin, with an optional atomic lease: forc
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `remote` | `"origin"` | No | default: `"origin"` |
 | `refspec` | `string` | No | length: 1–512 |
 | `forceWithLease` | `boolean` | No | default: `false` |
@@ -1000,7 +1000,7 @@ Merge a Git ref with an explicit fast-forward policy and optional message.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `ref` | `string` | **Yes** | length: 1–255 |
 | `fastForward` | `"allow"` \| `"only"` \| `"never"` | No | default: `"allow"` |
 | `message` | `string` | No | length: 1–10000 |
@@ -1016,7 +1016,7 @@ Start, continue, or abort a local Git rebase with constrained ref arguments.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `action` | `"start"` \| `"continue"` \| `"abort"` | **Yes** | — |
 | `upstream` | `string` | No | length: 1–255 |
 
@@ -1031,7 +1031,7 @@ List managed Git worktrees and their current branch or HEAD state.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 
 ### `worktrees_create`
 
@@ -1042,7 +1042,7 @@ Create a named managed worktree, optionally with a new local branch.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,80}$` |
 | `ref` | `string` | **Yes** | length: 1–255 |
 | `createBranch` | `boolean` | No | default: `false` |
@@ -1058,7 +1058,7 @@ Remove one named managed worktree, optionally discarding dirty state.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,80}$` |
 | `force` | `boolean` | No | default: `false` |
 
@@ -1073,7 +1073,7 @@ Create GitHub issues (action: "issue_create"), list, view, comment on, update, a
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `action` | `"pr_list"` \| `"pr_view"` \| `"pr_review_threads"` \| `"pr_reviews"` \| `"issue_list"` \| `"issue_view"` \| `"commit_list"` \| `"compare"` \| `"release_list"` \| `"tag_list"` \| `"ref_get"` \| `"commit_status_get"` \| `"check_runs_list"` \| `"workflow_runs_list"` \| `"workflow_run_view"` \| `"pr_create"` \| `"pr_update"` \| `"pr_comment"` \| `"issue_create"` \| `"issue_comment"` \| `"issue_comment_update"` \| `"label_create"` \| `"issue_labels_add"` \| `"issue_labels_remove"` \| `"issue_update"` \| `"issue_publish"` \| `"pr_review"` \| `"pr_review_comment"` \| `"pr_review_reply"` \| `"pr_review_thread_resolve"` \| `"pr_review_thread_unresolve"` \| `"pr_reviewers_request"` \| `"pr_reviewers_remove"` \| `"pr_ready"` \| `"pr_convert_to_draft"` \| `"pr_merge"` \| `"pr_auto_merge_enable"` \| `"pr_auto_merge_disable"` \| `"commit_status_create"` \| `"check_run_create"` \| `"check_run_update"` \| `"workflow_dispatch"` \| `"workflow_run_rerun_failed"` | **Yes** | — |
 | `limit` | `integer` | No | range: 1–250 |
 | `state` | string \| string | No | — |
@@ -1164,6 +1164,7 @@ List repository-provided agent skills discovered in the workspace.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `limit` | `integer` | No | range: 1–100, default: `50` |
 | `cursor` | `string` | No | max length: 256 |
 | `includeShadowed` | `boolean` | No | default: `true` |
@@ -1179,6 +1180,7 @@ Read bounded instructions for one repository-provided agent skill.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]{1,120}$` |
 | `source` | `"built-in"` \| `"owner"` \| `"workspace"` \| `"repository"` | No | — |
 | `expectedSha256` | `string` | No | length: 64–64 |
@@ -1196,6 +1198,7 @@ Execute one reviewed script packaged by a repository-provided skill.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]{1,120}$` |
 | `source` | `"built-in"` \| `"owner"` \| `"workspace"` \| `"repository"` | No | — |
 | `script` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
@@ -1216,6 +1219,7 @@ List repository-defined Cloud Harness automation hooks without running them.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `event` | `"on_workspace_open"` \| `"post_checkout"` \| `"pre_commit"` \| `"post_commit"` \| `"manual"` | No | — |
 | `includeInactive` | `boolean` | No | Accepted for compatibility and currently ignored: every hook is always listed, each with an `active` flag that reports whether lifecycle events would run it. (default: `false`) |
 | `limit` | `integer` | No | range: 1–100, default: `50` |
@@ -1232,6 +1236,7 @@ Execute one named repository-defined hook as a bounded shell command.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
 | `event` | `"on_workspace_open"` \| `"post_checkout"` \| `"pre_commit"` \| `"post_commit"` \| `"manual"` | No | — |
 | `expectedSha256` | `string` | No | length: 64–64 |
@@ -1249,6 +1254,7 @@ List Cloud Harness memory note names across owner, repository, and workspace sco
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `scope` | `"owner"` \| `"repository"` \| `"workspace"` | No | — |
 | `tags` | string[] | No | — |
 | `limit` | `integer` | No | range: 1–100, default: `50` |
@@ -1265,6 +1271,7 @@ Read one bounded Cloud Harness memory note by name or ID.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `scope` | `"owner"` \| `"repository"` \| `"workspace"` | No | — |
 | `name` | `string` | No | pattern: `^[A-Za-z0-9._-]{1,120}$` |
 | `memoryId` | `string` | No | pattern: `^mem_[A-Za-z0-9_-]{10,80}$` |
@@ -1280,6 +1287,7 @@ Create or replace one scoped Cloud Harness memory note with optimistic concurren
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `scope` | `"owner"` \| `"repository"` \| `"workspace"` | No | default: `"workspace"` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
 | `content` | `string` | **Yes** | max length: 262144 |
@@ -1537,7 +1545,7 @@ Preserve one workspace file as a principal-owned, TTL-retained artifact snapshot
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `path` | `string` | **Yes** | length: 1–1024 |
 | `logicalName` | `string` | **Yes** | pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `retentionSeconds` | `integer` | No | range: 60–2592000 |
@@ -1580,7 +1588,7 @@ Restore an unexpired principal-owned artifact into an active workspace file with
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `artifactId` | `string` | **Yes** | pattern: `^art_[A-Za-z0-9_-]{20,80}$` |
 | `path` | `string` | **Yes** | length: 1–1024 |
 | `overwrite` | `boolean` | No | default: `false` |
@@ -1695,6 +1703,7 @@ Suggest at most one skill from the workspace roster for a prompt. When an integr
 |---|---|---|---|
 | `prompt` | `string` | **Yes** | min length: 1 |
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 
 ### `hooks_activate`
 
@@ -1707,6 +1716,7 @@ Explicitly activate reviewed lifecycle hooks for a workspace by exact manifest d
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `manifestSha256` | `string` | **Yes** | length: 64–64 |
 | `events` | string[] | **Yes** | — |
 | `retentionSeconds` | `integer` | No | range: 60–2592000 |
@@ -1722,6 +1732,7 @@ Deactivate enrolled lifecycle hooks for a workspace.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `events` | string[] | No | — |
 
 ### `memories_search`
@@ -1735,6 +1746,7 @@ Search scoped memory notes by literal text query and tag filters with bounded pa
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `query` | `string` | **Yes** | length: 1–512 |
 | `scope` | `"owner"` \| `"repository"` \| `"workspace"` | No | — |
 | `tags` | string[] | No | — |
@@ -1753,6 +1765,7 @@ Delete one scoped memory note with generation guard.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `memoryId` | `string` | No | pattern: `^mem_[A-Za-z0-9_-]{10,80}$` |
 | `name` | `string` | No | pattern: `^[A-Za-z0-9._-]{1,120}$` |
 | `scope` | `"owner"` \| `"repository"` \| `"workspace"` | No | — |
@@ -1930,7 +1943,7 @@ Read-only GitHub access for the repository bound to an owner-authorized workspac
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, and GitHub tools when the workspace holds more than one repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace, by repo_ id or alias. Required for Git, worktree, finalize, recovery export, GitHub, skill-run, and hook run/activate tools when the workspace holds more than one repository; read-only discovery without it uses the primary repository. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `action` | `"pr_list"` \| `"pr_view"` \| `"pr_review_threads"` \| `"pr_reviews"` \| `"issue_list"` \| `"issue_view"` \| `"commit_list"` \| `"compare"` \| `"release_list"` \| `"tag_list"` \| `"ref_get"` \| `"commit_status_get"` \| `"check_runs_list"` \| `"workflow_runs_list"` \| `"workflow_run_view"` | **Yes** | — |
 | `limit` | `integer` | No | range: 1–250 |
 | `state` | `"open"` \| `"closed"` \| `"all"` | No | — |
@@ -1973,6 +1986,7 @@ Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container
 | `maxOutputTokens` | `integer` | No | range: 1–2000000, default: `32000` |
 | `maxCostMicros` | `integer` | No | range: 0–1000000000, default: `10000000` |
 | `repositoryContext` | `"codex"` \| `"claude"` \| `"cursor"` \| `"aider"` \| `"all"` \| `"none"` | No | Repository guidance profile placed before the task; omitted uses codex, none sends the task alone. |
+| `repositoryId` | `string` | No | Repository of a multi-repository workspace whose guidance is placed before the task; omitted uses the primary repository. Guidance is never merged across repositories. (pattern: `^(?:repo_[A-Za-z0-9_-]{20,80}|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$`) |
 | `continueFrom` | `string` | No | A terminal agent of this workspace whose session the new agent continues; a pi-coding agent needs session persistence on the instance, a pi-durable agent needs the durable runtime enabled. The new agent gets a new id, container, lease, and budget. (pattern: `^agent_[A-Za-z0-9_-]{20,80}$`) |
 | `runtime` | `"pi-coding"` \| `"pi-durable"` | No | Agent engine. Omitted means pi-coding, or the engine of the agent named by continueFrom; a continuation refuses a different engine. pi-durable is refused unless the instance enables it. |
 

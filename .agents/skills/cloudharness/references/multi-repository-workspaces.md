@@ -41,7 +41,10 @@ The executor's `/workspace` is the tree root and each checkout lives at
 | `exec_run`, `bash`, `shell_open`, `sessions_open`, `tasks_run` | `cwd` is relative to the tree root | `cwd` is relative to the checkout |
 | `workspace_capabilities` | Primary repository | That repository |
 | `workspace_recover` `status`/`patch`, `workspace_repo_status` | Every checkout, one entry each | That checkout |
-| `workspace_context` | Tree root | That checkout |
+| `workspace_context`, `skills_list`, `skills_read`, `hooks_list`, `skill_suggest`, `memories_*` | Primary repository; the result names it in `repositoryAlias` | That checkout (memory `repository` scope keyed by its URL) |
+| `skills_run`, `hooks_run`, `hooks_activate` | `INVALID_INPUT` listing the aliases (a one-entry set needs none) | Runs or enrols that checkout's code; activations stay bound to it |
+| `hooks_deactivate` | Every activation of the workspace | That repository's activations |
+| `agent_spawn` | Primary repository's guidance | That repository's guidance; never merged across repositories |
 
 A command started in a checkout can still `cd` to a sibling: the selector sets
 where it starts, not what it can reach. `git_identity_*`, `shell_io`, and other

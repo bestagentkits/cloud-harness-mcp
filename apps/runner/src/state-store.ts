@@ -82,6 +82,8 @@ export type MemoryRecord = {
 export type HookActivationRecord = {
   principalId: string;
   workspaceId: string;
+  /** Set for an activation bound to one repository of a multi-repository workspace. */
+  repositoryId?: string;
   event: string;
   manifestSha256: string;
   createdAt: number;
@@ -599,6 +601,10 @@ export class StateStore {
         is_primary INTEGER NOT NULL,
         UNIQUE(workspace_id, alias)
       );
+      -- Lifecycle hook activations of a multi-repository workspace are bound to one repository, so a
+      -- commit in one checkout never runs hooks activated for another, even with an identical manifest.
+      -- Rows go with their workspace's memories reap and with the repository's removal.
+      CREATE TABLE IF NOT EXISTS repository_hook_activations (principal_id TEXT NOT NULL, workspace_id TEXT NOT NULL, repository_id TEXT NOT NULL, event TEXT NOT NULL, manifest_sha256 TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY(principal_id, workspace_id, repository_id, event));
       CREATE TABLE IF NOT EXISTS workspace_repository_changes (owner_id TEXT NOT NULL, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, operation TEXT NOT NULL, fingerprint TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, workspace_id, idempotency_key));
       CREATE TABLE IF NOT EXISTS github_repository_create_idempotency (owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, fingerprint TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('PENDING','SUCCEEDED')), result_json TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(owner_id, idempotency_key));
     `);
@@ -757,6 +763,7 @@ export class StateStore {
       const remaining = current.filter((row) => row.id !== repositoryId);
       if (remaining.length === 0) throw new RepositoryRegistryConflictError('the last repository of a workspace cannot be removed');
       this.database.prepare('DELETE FROM workspace_repositories WHERE workspace_id = ? AND id = ?').run(workspaceId, repositoryId);
+      this.database.prepare('DELETE FROM repository_hook_activations WHERE workspace_id = ? AND repository_id = ?').run(workspaceId, repositoryId);
       if (target.primary) {
         const next = remaining[0]!;
         this.database.prepare('UPDATE workspace_repositories SET is_primary = 1 WHERE workspace_id = ? AND id = ?').run(workspaceId, next.id);
@@ -2614,12 +2621,19 @@ export class StateStore {
       .run(principalId, workspaceId);
     this.database.prepare('DELETE FROM hook_activations WHERE principal_id = ? AND workspace_id = ?')
       .run(principalId, workspaceId);
+    this.database.prepare('DELETE FROM repository_hook_activations WHERE principal_id = ? AND workspace_id = ?')
+      .run(principalId, workspaceId);
     return Number(res.changes);
   }
 
+  /**
+   * Activations without `repositoryId` belong to a single-repository workspace (or to its tree root);
+   * with one, they are bound to that repository of a multi-repository workspace.
+   */
   activateHook(params: {
     principalId: string;
     workspaceId: string;
+    repositoryId?: string;
     event: string;
     manifestSha256: string;
     retentionSeconds?: number;
@@ -2628,17 +2642,28 @@ export class StateStore {
     const ttl = params.retentionSeconds ? params.retentionSeconds * 1000 : (30 * 86_400_000);
     const expiresAt = now + ttl;
 
-    this.database.prepare(`
-      INSERT INTO hook_activations (principal_id, workspace_id, event, manifest_sha256, created_at, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(principal_id, workspace_id, event) DO UPDATE SET
-        manifest_sha256 = excluded.manifest_sha256,
-        expires_at = excluded.expires_at
-    `).run(params.principalId, params.workspaceId, params.event, params.manifestSha256, now, expiresAt);
+    if (params.repositoryId) {
+      this.database.prepare(`
+        INSERT INTO repository_hook_activations (principal_id, workspace_id, repository_id, event, manifest_sha256, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(principal_id, workspace_id, repository_id, event) DO UPDATE SET
+          manifest_sha256 = excluded.manifest_sha256,
+          expires_at = excluded.expires_at
+      `).run(params.principalId, params.workspaceId, params.repositoryId, params.event, params.manifestSha256, now, expiresAt);
+    } else {
+      this.database.prepare(`
+        INSERT INTO hook_activations (principal_id, workspace_id, event, manifest_sha256, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(principal_id, workspace_id, event) DO UPDATE SET
+          manifest_sha256 = excluded.manifest_sha256,
+          expires_at = excluded.expires_at
+      `).run(params.principalId, params.workspaceId, params.event, params.manifestSha256, now, expiresAt);
+    }
 
     return {
       principalId: params.principalId,
       workspaceId: params.workspaceId,
+      ...(params.repositoryId ? { repositoryId: params.repositoryId } : {}),
       event: params.event,
       manifestSha256: params.manifestSha256,
       createdAt: now,
@@ -2646,23 +2671,57 @@ export class StateStore {
     };
   }
 
+  /**
+   * With `repositoryId`, removes only that repository's activations. Without it, removes every
+   * activation of the workspace, including those bound to a repository.
+   */
   deactivateHook(params: {
     principalId: string;
     workspaceId: string;
+    repositoryId?: string;
     event?: string;
   }): boolean {
-    if (params.event) {
-      const res = this.database.prepare('DELETE FROM hook_activations WHERE principal_id = ? AND workspace_id = ? AND event = ?')
-        .run(params.principalId, params.workspaceId, params.event);
+    if (params.repositoryId) {
+      const res = params.event
+        ? this.database.prepare('DELETE FROM repository_hook_activations WHERE principal_id = ? AND workspace_id = ? AND repository_id = ? AND event = ?')
+          .run(params.principalId, params.workspaceId, params.repositoryId, params.event)
+        : this.database.prepare('DELETE FROM repository_hook_activations WHERE principal_id = ? AND workspace_id = ? AND repository_id = ?')
+          .run(params.principalId, params.workspaceId, params.repositoryId);
       return Number(res.changes) > 0;
     }
-    const res = this.database.prepare('DELETE FROM hook_activations WHERE principal_id = ? AND workspace_id = ?')
-      .run(params.principalId, params.workspaceId);
-    return Number(res.changes) > 0;
+    let changes = 0;
+    if (params.event) {
+      changes += Number(this.database.prepare('DELETE FROM hook_activations WHERE principal_id = ? AND workspace_id = ? AND event = ?')
+        .run(params.principalId, params.workspaceId, params.event).changes);
+      changes += Number(this.database.prepare('DELETE FROM repository_hook_activations WHERE principal_id = ? AND workspace_id = ? AND event = ?')
+        .run(params.principalId, params.workspaceId, params.event).changes);
+      return changes > 0;
+    }
+    changes += Number(this.database.prepare('DELETE FROM hook_activations WHERE principal_id = ? AND workspace_id = ?')
+      .run(params.principalId, params.workspaceId).changes);
+    changes += Number(this.database.prepare('DELETE FROM repository_hook_activations WHERE principal_id = ? AND workspace_id = ?')
+      .run(params.principalId, params.workspaceId).changes);
+    return changes > 0;
   }
 
-  getActiveHookActivations(principalId: string, workspaceId: string): HookActivationRecord[] {
+  /** The unexpired activations of a workspace, or of one of its repositories when `repositoryId` is given. */
+  getActiveHookActivations(principalId: string, workspaceId: string, repositoryId?: string): HookActivationRecord[] {
     const now = Date.now();
+    if (repositoryId) {
+      const rows = this.database.prepare(`
+        SELECT * FROM repository_hook_activations
+        WHERE principal_id = ? AND workspace_id = ? AND repository_id = ? AND expires_at > ?
+      `).all(principalId, workspaceId, repositoryId, now) as any[];
+      return rows.map(r => ({
+        principalId: r.principal_id,
+        workspaceId: r.workspace_id,
+        repositoryId: r.repository_id,
+        event: r.event,
+        manifestSha256: r.manifest_sha256,
+        createdAt: r.created_at,
+        expiresAt: r.expires_at
+      }));
+    }
     const rows = this.database.prepare(`
       SELECT * FROM hook_activations
       WHERE principal_id = ? AND workspace_id = ? AND expires_at > ?

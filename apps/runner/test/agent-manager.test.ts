@@ -1055,6 +1055,30 @@ describe('agent repository guidance bootstrap', () => {
     await manager.stop();
   });
 
+  it('asks for the selected repository\'s guidance and records that repository in the report', async () => {
+    const snapshot = buildRepositoryGuidanceSnapshot({ items: [], warnings: [], truncated: false });
+    const requests: Array<Record<string, unknown>> = [];
+    const { manager, record, repository, launcher } = guidedSetup(async (request) => {
+      requests.push(request);
+      return { snapshot, reused: false };
+    });
+    const repositoryId = `repo_${'w'.repeat(24)}`;
+    const selected = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { repositoryId }));
+    const selectedId = (selected.data as { agentId: string }).agentId;
+    await vi.waitFor(() => expect(launcher.inputs).toHaveLength(1));
+    expect(requests[0]).toMatchObject({ workspaceId: record.id, repositoryId });
+    const agent = repository.findAgent(record.ownerId, record.id, selectedId)!;
+    const report = JSON.parse(repository.readLogs(record.ownerId, record.id, selectedId, agent.generation, '0', 262_144).events
+      .find((event) => event.type === 'repository_context')!.content) as Record<string, unknown>;
+    expect(report.repositoryId).toBe(repositoryId);
+
+    // Without a selector the callback is asked for the default (primary) repository.
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { idempotencyKey: 'spawn-key-2' }));
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    expect(requests[1]).not.toHaveProperty('repositoryId');
+    await manager.stop();
+  });
+
   it('records only counts when the injected-document report would exceed the log event bound', async () => {
     const items = Array.from({ length: 60 }, (_, index) => {
       const content = `rule ${index}`;

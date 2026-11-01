@@ -168,6 +168,8 @@ export type AgentRepositoryGuidance = (input: {
   ownerId: string;
   workspaceId: string;
   workspaceGeneration: number;
+  /** The repository of a multi-repository workspace whose guidance is used; absent means the primary one. */
+  repositoryId?: string;
   signal?: AbortSignal;
 }) => Promise<{ snapshot: RepositoryGuidanceSnapshot; reused: boolean }>;
 export type AgentRepositoryContext = GuidanceProfile | 'none';
@@ -521,7 +523,8 @@ export class AgentManager {
       phase: 'reserve', reservedCostMicros: budget.maxCostMicros, at: now
     }));
     const repositoryContext = (input.repositoryContext as AgentRepositoryContext | undefined) ?? 'codex';
-    const launch = this.launch(reservation.record, prompt, profile, repositoryContext, dashboardManaged)
+    const guidanceRepositoryId = typeof input.repositoryId === 'string' ? input.repositoryId : undefined;
+    const launch = this.launch(reservation.record, prompt, profile, repositoryContext, dashboardManaged, guidanceRepositoryId)
       .finally(() => this.launches.delete(reservation.record.id));
     this.launches.set(reservation.record.id, launch);
     void launch.catch(() => undefined);
@@ -538,7 +541,8 @@ export class AgentManager {
     record: AgentRecord,
     prompt: string,
     repositoryContext: AgentRepositoryContext,
-    session?: { bytes: number; messages: unknown[] }
+    session?: { bytes: number; messages: unknown[] },
+    repositoryId?: string
   ): Promise<string> {
     if (repositoryContext === 'none' || !this.dependencies.repositoryGuidance) return prompt;
     let resolved: Awaited<ReturnType<AgentRepositoryGuidance>>;
@@ -546,7 +550,8 @@ export class AgentManager {
       resolved = await this.dependencies.repositoryGuidance({
         ownerId: record.ownerId,
         workspaceId: record.workspaceId,
-        workspaceGeneration: record.workspaceGeneration
+        workspaceGeneration: record.workspaceGeneration,
+        ...(repositoryId ? { repositoryId } : {})
       });
     } catch (error) {
       const reason = error instanceof HarnessError ? error.message : 'repository guidance could not be scanned';
@@ -568,7 +573,7 @@ export class AgentManager {
         session ? Math.floor(startRecordHeadroom({ bytes: session.bytes, messageCount: session.messages.length }, prompt) / 6) : Infinity
       ))
     });
-    const event = { ...composed.report, snapshotReused: resolved.reused };
+    const event = { ...composed.report, snapshotReused: resolved.reused, ...(repositoryId ? { repositoryId } : {}) };
     // The report is charged to the caller's output bytes like any log event, so it is kept to a
     // quarter of that budget and is dropped rather than ending the agent when it cannot fit.
     const eventLimit = Math.min(this.config.limits.maxLogEventBytes, Math.floor(record.budget.maxOutputBytes / 4));
@@ -591,7 +596,8 @@ export class AgentManager {
     prompt: string,
     profile: PricedAgentModelProfile,
     repositoryContext: AgentRepositoryContext,
-    reconcileGateway: boolean
+    reconcileGateway: boolean,
+    guidanceRepositoryId?: string
   ): Promise<void> {
     const spec = this.launchSpec(record);
     let leaseMayExist = false;
@@ -616,7 +622,7 @@ export class AgentManager {
         : undefined;
       // Guidance is composed before any lease or container exists, so an agent never starts its
       // first turn without the repository's applicable guidance, and a failed scan costs nothing.
-      const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext, sessionLog);
+      const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext, sessionLog, guidanceRepositoryId);
       if (!this.stillSpawning(record)) return;
       // The engine session is opened before any lease exists: for the durable engine this claims
       // the lineage's session store, so a run that cannot own it costs nothing.
