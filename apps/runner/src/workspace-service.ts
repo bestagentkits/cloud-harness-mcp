@@ -86,8 +86,6 @@ import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const PACKAGE_OPERATION_SET: ReadonlySet<string> = new Set(PACKAGE_OPERATIONS);
-/** Package operations that only read state; the others build, bind, or release packages. */
-const PACKAGE_READ_OPERATIONS: ReadonlySet<PackageOperation> = new Set(['packages_list', 'packages_status']);
 
 function isPackageOperation(operation: RunnerOperation): operation is PackageOperation {
   return PACKAGE_OPERATION_SET.has(operation);
@@ -2792,12 +2790,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   }
 
   private async runPackageOperation(ownerId: string, operation: PackageOperation, validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
-    try {
-      const data = await this.packages.execute(ownerId, operation, validated, signal);
-      return { ok: true, message: packageMessage(operation, data), data, truncated: false };
-    } finally {
-      if (!PACKAGE_READ_OPERATIONS.has(operation)) this.noteDockerActivity();
-    }
+    const data = await this.packages.execute(ownerId, operation, validated, signal);
+    return { ok: true, message: packageMessage(operation, data), data, truncated: false };
   }
 
   /**
@@ -5072,8 +5066,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   }
 
   /**
-   * Records Docker activity that a reaper pass may not observe, such as a toolbox command or a package
-   * mutation that starts and ends between two passes, so the idle sweeps that clean up after it are owed.
+   * Records Docker activity that a reaper pass may not observe, a toolbox command that starts and ends
+   * between two passes, so the idle sweeps that clean up a container it left behind are owed.
    */
   private noteDockerActivity(now = Date.now()): void {
     this.lastDockerActivityAt = now;

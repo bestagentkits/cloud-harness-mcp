@@ -811,7 +811,7 @@ without a network.
 
 | Variable | Default | Decision |
 |---|---|---|
-| `DOCKER_ON_DEMAND` | `false` | When `true`, the reaper stops listing toolbox containers while no workspace is active and no toolbox container is live. After any Docker activity, including a toolbox command or package change that starts and ends between two reaper passes, it runs one closing sweep and one final sweep once a container that activity left behind is old enough to remove (6 minutes). It then makes no Docker calls until the next activity. Hourly package garbage collection still runs and calls Docker only when it has a directory to remove that the runner cannot delete itself. Leave it off on a dedicated host. |
+| `DOCKER_ON_DEMAND` | `false` | When `true`, the reaper stops listing toolbox containers while no workspace is active and no toolbox container is live. After any Docker activity, including a toolbox command that starts and ends between two reaper passes, it runs one closing sweep and one final sweep once a container that activity left behind is old enough to remove (6 minutes). It then makes no Docker calls until the next activity. Hourly package garbage collection still runs and calls Docker only when it has a directory to remove that the runner cannot delete itself. Leave it off on a dedicated host. |
 | `AGENT_GATEWAY_CONTAINER` | unset | Docker container name of the model gateway. When set, the runner execs into it directly instead of discovering it by Compose project labels, which a non-Compose deployment does not have. |
 
 For such deployments,
