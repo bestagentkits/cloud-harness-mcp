@@ -117,6 +117,26 @@ describe('Cloudflare Access assertion verification', () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps accepting a key withdrawn from a successful refresh for its stale window', async () => {
+    const retired = key('retired');
+    const replacement = key('replacement');
+    let now = baseTime;
+    let activeKeys: JsonWebKey[] = [retired.jwk];
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ keys: activeKeys }), { status: 200 }));
+    const verifier = new CloudflareAccessJwtVerifier({
+      issuer, audience, jwksUrl, fetcher, now: () => now,
+      cacheTtlMs: 1_000, maxStaleMs: 4_000, refreshCooldownMs: 100
+    });
+    const assertion = jwt(retired, claims({ exp: Math.floor(baseTime / 1_000) + 120 }));
+    await expect(verifier.verify(assertion)).resolves.toBeDefined();
+    activeKeys = [replacement.jwk];
+    now += 1_100;
+    await expect(verifier.verify(assertion)).resolves.toBeDefined();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    now += 4_000;
+    await expect(verifier.verify(assertion)).rejects.toThrow('assertion verification failed');
+  });
+
   it('uses a cached key only within its bounded stale window during a JWKS outage', async () => {
     const signingKey = sharedSigningKey;
     let now = baseTime;

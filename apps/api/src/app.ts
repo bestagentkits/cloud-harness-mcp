@@ -2,7 +2,7 @@ import express, { type Express, type Request, type Response } from 'express';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { FetchLike } from '@modelcontextprotocol/client';
-import { WorkspaceIdSchema, type ApiConfig } from '@cloud-harness/contracts';
+import { WorkspaceIdSchema, hasOperatorDashboard, isCloudflareAccess, type ApiConfig } from '@cloud-harness/contracts';
 import { accessAssertionAuth, apiKeyGatewayAuth, bearerAuth, type AuthenticatedRequest, type VerifierOverrides } from './auth.js';
 import { createDashboardAssetsRouter } from './dashboard-assets.js';
 import { createDashboardReactRouter, loadDashboardReactBundle } from './dashboard-react-assets.js';
@@ -10,6 +10,7 @@ import { createDashboardRouter } from './dashboard-router.js';
 import { bindWorkspace, createCloudHarnessServerFactory, createWorkspaceBoundServerFactory } from './mcp-server.js';
 import { createMcpGateway } from './mcp-gateway/index.js';
 import type { McpGatewayService } from './mcp-gateway/service.js';
+import { createProtectedResourceMetadataRouter } from './protected-resource-metadata.js';
 import { preAuthRequestLimits, principalRequestLimits, requestSecurity } from './request-security.js';
 import { RunnerClient } from './runner-client.js';
 import { EventDeliveryWorker } from './events/event-delivery-worker.js';
@@ -64,6 +65,8 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
     response.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'unavailable' });
   });
   const verifierOverrides = overrides.accessVerifier ?? {};
+  const resourceMetadata = createProtectedResourceMetadataRouter(config);
+  if (resourceMetadata) app.use(resourceMetadata);
   app.use('/mcp', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config, verifierOverrides), principalRequestLimits());
   app.use('/mcp', express.json({ limit: config.maxBodyBytes, strict: true }));
   app.all('/mcp', async (request: Request, response: Response) => {
@@ -104,7 +107,7 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
     }
     await gatewayNodeHandler(request, response, request.body);
   });
-  if (config.authMode === 'cloudflare-access' && config.apiKeyAuthEnabled) {
+  if (isCloudflareAccess(config.authMode) && config.apiKeyAuthEnabled) {
     app.use(
       '/mcp-api-key',
       requestSecurity(config),
@@ -132,7 +135,9 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
       await gatewayNodeHandler(request, response, request.body);
     });
   }
-  if (config.authMode === 'cloudflare-access') {
+  // The Dashboard authenticates browser sessions through Cloudflare Access; owner-bearer and oidc
+  // deployments serve no Dashboard, so `/dashboard` stays unmounted and answers 404.
+  if (hasOperatorDashboard(config.authMode)) {
     // Authentication and broad pre-auth DoS protection cover the whole Dashboard,
     // while the tighter per-principal budget is reserved for BFF/API operations.
     // Static shell/assets are browser transport overhead and must not consume the

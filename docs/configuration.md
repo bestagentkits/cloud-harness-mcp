@@ -34,6 +34,10 @@ inventory.
   (including the workspace-bound `/mcp/workspaces/<workspaceId>` paths) and
   `/dashboard` at the Access edge. GitHub and Google are Access identity
   providers; Cloud Harness does not integrate their login tokens directly.
+- `oidc` trusts only an RS256 bearer token from one external OAuth
+  authorization server, such as TOSE for instances it hosts. Remove the owner
+  bearer and every Cloudflare Access setting. There is no browser dashboard in
+  this mode; see [OIDC bearer tokens](#oidc-bearer-tokens).
 
 The exact required/forbidden combinations are owned by
 [`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts).
@@ -43,6 +47,87 @@ into a hostile multi-tenant service. Dashboard mutations also require an exact
 allowed same-origin request and a short-lived CSRF session. The owning request
 paths are [`apps/api/src/auth.ts`](../apps/api/src/auth.ts) and
 [`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts).
+
+### OIDC bearer tokens
+
+In `oidc` mode the API accepts `Authorization: Bearer <jwt>` on `/mcp`,
+`/mcp/workspaces/<workspaceId>` and `/mcp-gateway`, and nothing else
+authenticates a request. The authorization server decides who may connect when
+it issues the token; Cloud Harness keeps no allowlist and maps each verified
+token straight to an operator principal.
+
+| Variable | Required | Decision |
+|---|---|---|
+| `OIDC_ISSUER` | yes | HTTPS issuer. A token's `iss` must equal it exactly. |
+| `OIDC_AUDIENCE` | yes | This instance's canonical HTTPS URL, without credentials, query, fragment, or a trailing slash. A path is allowed but not expected; use the bare origin, such as `https://ch.example.com`, not the `/mcp` endpoint. A token's `aud` (string or array) must contain it exactly, so a token issued for another instance is refused. |
+| `OIDC_JWKS_URL` | yes | HTTPS JWKS endpoint of the issuer. A key is used without refetching for 5 minutes after a fetch, and the key set is refetched early when an unknown `kid` arrives. A successful fetch drops every cached key it no longer lists. While the endpoint fails, keys from the last successful fetch stay usable for up to 15 minutes. |
+| `OIDC_REQUIRED_SCOPE` | no, `cloudharness:operator` | One RFC 6749 scope token that the space-separated `scope` claim must contain. Refused when set in another mode. |
+
+Token claims read by Cloud Harness:
+
+| Claim | Use |
+|---|---|
+| `iss` | Must equal `OIDC_ISSUER`. |
+| `aud` | Must contain `OIDC_AUDIENCE`. |
+| `sub` | Non-empty stable user identifier. The principal is the pair (`OIDC_ISSUER`, `sub`), so workspaces stay owned by the same person across tokens. |
+| `exp` | Required integer; a token is refused from that second on, with no clock-skew allowance. |
+| `nbf` | Optional; honoured when present. |
+| `scope` | Must contain `OIDC_REQUIRED_SCOPE`; a valid token without it receives 403 `insufficient_scope`. |
+| `email`, `name` | Optional display values recorded on the principal; never used for authorization. |
+
+The JOSE header must name `alg: RS256`, a `kid`, and `typ: at+jwt` (RFC 9068;
+`application/at+jwt` is accepted too, case-insensitively), so an ID token or
+another JWT signed by the same issuer cannot stand in for an access token. JWKS
+keys are used only when they declare `kty: RSA`, `alg: RS256`, `use: sig` and a
+`kid`. Other claims, such as `jti` or issuer-specific workspace hints, are
+ignored.
+
+The authorization server must therefore issue access tokens that carry
+`typ: at+jwt` and an `aud` equal to `OIDC_AUDIENCE` byte for byte. MCP clients
+may send the RFC 8707 `resource` parameter with a trailing slash or with the
+`/mcp` path; the authorization server normalizes it to the canonical URL before
+it sets `aud`, because Cloud Harness refuses both variants.
+
+Revocation is bounded by token lifetime. Cloud Harness does not introspect
+tokens, so removing a person from the authorization server's allowlist takes
+effect only when the tokens already issued to them expire. Keep the access-token
+lifetime at 10 minutes or less and re-check the allowlist on every refresh. A
+signing key withdrawn from the JWKS stops being accepted at the next successful
+key fetch, at most 5 minutes later, or up to 15 minutes later while the JWKS
+endpoint is failing.
+
+Because a key that a successful fetch no longer lists stops verifying within 5
+minutes, the authorization server rotates signing keys in this order:
+
+1. Publish the new key in the JWKS before signing any token with it. Until a
+   fetch returns it, Cloud Harness rejects tokens carrying the new `kid` and
+   remembers that `kid` as unknown for 30 seconds.
+2. Sign new tokens with the new key.
+3. Keep the retired key published until every token it signed has expired: the
+   access-token lifetime after the last token it signed, plus 5 minutes of
+   margin. Then remove it.
+
+During a rollout every JWKS replica serves the superset of the old and new keys.
+A replica that still serves an older set makes the fetch that reaches it drop
+the keys it lacks.
+
+A request without a valid token receives `401` with
+`WWW-Authenticate: Bearer resource_metadata="<url>"`, plus
+`error="invalid_token"` when a token was presented. The URL is the RFC 9728
+location for `OIDC_AUDIENCE`: `https://<host>/.well-known/oauth-protected-resource`,
+followed by the audience path if it has one. The API serves the protected
+resource metadata there, naming `OIDC_AUDIENCE` as the `resource` and
+`OIDC_ISSUER` as the only authorization server, so MCP clients can discover
+where to sign in. The other modes serve no such document.
+
+`/dashboard` returns 404 in this mode. Features that need a dashboard operator
+are therefore unavailable: privileged executor commands, package approvals,
+GitHub App installation links, and dashboard-managed secrets. A workspace can
+still clone public repositories and use the model gateway. The verifier lives in
+[`apps/api/src/access-jwt-verifier.ts`](../apps/api/src/access-jwt-verifier.ts),
+the middleware in [`apps/api/src/auth.ts`](../apps/api/src/auth.ts), and the
+metadata document in
+[`apps/api/src/protected-resource-metadata.ts`](../apps/api/src/protected-resource-metadata.ts).
 
 ### Dashboard UI rollout
 
@@ -709,7 +794,10 @@ the host persistence paths. `LOG_LEVEL` is read by API and runner logging.
 
 `API_HOST`/`RUNNER_HOST`, service ports, and the private `RUNNER_URL` are wired
 by Compose. Avoid publishing the API or runner, or changing the ingress proxy from loopback
-on an Internet-facing host.
+on an Internet-facing host. Outside Compose, for example when the services share
+one pod network, set `API_HOST=127.0.0.1` and `RUNNER_HOST=127.0.0.1` and let
+only the ingress listen on `0.0.0.0` (`INGRESS_HOST`), pointing it at the API
+with `API_UPSTREAM_HOST`/`API_UPSTREAM_PORT`.
 
 `HOST_ARTIFACT_ROOT` selects the host persistence path for `ARTIFACT_ROOT`, in
 the same way the existing job and state host overrides select their mounts.
@@ -717,3 +805,42 @@ Keep the artifact mount, state database, runtime configuration, GitHub App
 key, optional Cloudflare Access API token, and secret keyring in the coherent
 recovery set described in
 [`operations.md`](operations.md#backup-and-restore).
+
+## Remote Docker host
+
+The runner drives Docker only through the `docker` CLI and, for terminals, the
+Engine API socket, so it can use a Docker daemon in a sidecar instead of the
+local one. Set `DOCKER_HOST=unix:///path/to/docker.sock` (for example
+`unix:///var/run/tose-docker/docker.sock`) on the runner. The daemon must see
+the job, artifact, cache and package directories at the same absolute paths as
+the runner, because executors bind-mount them, and it must already hold every
+image the runner starts: containers run with `--pull never`. The runner never
+publishes container ports, so `docker run -p` not working is no loss. A daemon
+started with `--iptables=false` has not been verified, however: Docker enforces
+`--internal` networks (agent and provisioning networks) and the separation
+between bridge networks with iptables rules that such a daemon does not install,
+and the `dependency-access` profile needs the network-guard container to manage
+the daemon host's firewall. Until that is verified, set
+`WORKSPACE_NETWORK_PROFILE=network-none` on such a host so workspaces start
+without a network.
+
+| Variable | Default | Decision |
+|---|---|---|
+| `DOCKER_ON_DEMAND` | `false` | When `true`, the reaper stops listing toolbox containers while no workspace is active and no toolbox container is live. After any Docker activity, including a toolbox command that starts and ends between two reaper passes, it runs one closing sweep and one final sweep once a container that activity left behind is old enough to remove (6 minutes). It then makes no Docker calls until the next activity. Hourly package garbage collection still runs and calls Docker only when it has a directory to remove that the runner cannot delete itself. Leave it off on a dedicated host. |
+| `AGENT_GATEWAY_CONTAINER` | unset | Docker container name of the model gateway. When set, the runner execs into it directly instead of discovering it by Compose project labels, which a non-Compose deployment does not have. |
+
+For such deployments,
+[`.github/workflows/tose-images.yml`](../.github/workflows/tose-images.yml)
+pushes each stable release's images to Docker Hub as
+`digitop/cloudharness-<image>` and attaches `tose-manifest.json` to the GitHub
+release. It skips prerelease tags before the protected environment is entered,
+refuses a tag whose commit is not on `main`, waits up to 10 minutes for the
+GitHub release that semantic-release creates after pushing the tag, and never
+replaces a manifest already attached to a release. Written by
+[`scripts/build-tose-manifest.mjs`](../scripts/build-tose-manifest.mjs), it pins
+every image by `@sha256:` digest and lists the local tags the Docker host must
+apply, the model gateway and provisioning proxy containers that run inside it,
+their networks, and the API, ingress and runner settings for running beside it.
+The workflow runs in the protected `tose-images` environment, which holds the
+`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets. The manifest's runner
+settings set `WORKSPACE_NETWORK_PROFILE=network-none` for the reason above.

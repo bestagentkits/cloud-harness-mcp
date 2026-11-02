@@ -273,7 +273,7 @@ If an agent started but followed the wrong files, read the `repository_context` 
 | Error | Meaning and fix |
 | :--- | :--- |
 | `FORBIDDEN`, "disabled on this instance" | Managed packages are off. Operators enable them with `PACKAGES_ENABLED=true` (see the [environment variables reference](/reference/environment-variables)). |
-| `FORBIDDEN`, "has no Dashboard in owner-bearer mode" | `PACKAGES_APPROVAL_MODE=required` needs a Dashboard approver, and owner-bearer deployments have none. Operators either run with Cloudflare Access or set `PACKAGES_APPROVAL_MODE=none` deliberately. |
+| `FORBIDDEN`, "has no Dashboard in owner-bearer mode" (or `oidc` mode) | `PACKAGES_APPROVAL_MODE=required` needs a Dashboard approver, and owner-bearer and oidc deployments have none. Operators either run with Cloudflare Access or set `PACKAGES_APPROVAL_MODE=none` deliberately. |
 | `PACKAGE_APPROVAL_REQUIRED` | The plan is waiting for approval. Approve it on the Dashboard **Packages** page, then call `packages_apply` again with the same `planId` and `planDigest`. |
 | `NOT_SUPPORTED` | `apt` and other system packages are not managed packages. Bake them into an executor image variant instead. |
 | `UNAVAILABLE` naming a registry host | The provisioning proxy refused that host. Operators add it to `PACKAGES_PROXY_HOSTS` in the provisioning-proxy environment and restart the proxy. |

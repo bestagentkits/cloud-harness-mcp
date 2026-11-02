@@ -75,3 +75,41 @@ describe('Cloudflare Access Managed OAuth control-plane configuration', () => {
     expect(() => loadRunnerConfigWithReadiness()).toThrow(/only valid in cloudflare-access mode/);
   });
 });
+
+describe('oidc mode and remote Docker host configuration', () => {
+  it('loads oidc mode with a legacy principal mapping but refuses Cloudflare-only Managed OAuth', () => {
+    requiredEnvironment();
+    vi.stubEnv('AUTH_MODE', 'oidc');
+    vi.stubEnv('ACCESS_LEGACY_OWNER_ID', 'owner');
+    vi.stubEnv('ACCESS_LEGACY_ISSUER', 'https://tose.example.test');
+    vi.stubEnv('ACCESS_LEGACY_SUBJECT', 'tose-user-42');
+    expect(loadRunnerConfigWithReadiness().config).toMatchObject({
+      authMode: 'oidc',
+      legacyPrincipalMapping: { legacyOwnerId: 'owner', issuer: 'https://tose.example.test', subject: 'tose-user-42' }
+    });
+    vi.stubEnv('CLOUDFLARE_ACCESS_API_TOKEN', 'cf-token-' + 'q'.repeat(32));
+    vi.stubEnv('CLOUDFLARE_ACCESS_ACCOUNT_ID', '0123456789abcdef0123456789abcdef');
+    vi.stubEnv('CLOUDFLARE_ACCESS_APP_ID', '11111111-2222-4333-8444-555555555555');
+    expect(() => loadRunnerConfigWithReadiness()).toThrow(/only valid in cloudflare-access mode/);
+  });
+
+  it('keeps Docker on demand off and gateway discovery automatic by default', () => {
+    requiredEnvironment();
+    const { config } = loadRunnerConfigWithReadiness();
+    expect(config.dockerOnDemand).toBe(false);
+    expect(config.agentGatewayContainer).toBeUndefined();
+  });
+
+  it('reads DOCKER_ON_DEMAND and a pinned model gateway container name', () => {
+    requiredEnvironment();
+    vi.stubEnv('DOCKER_ON_DEMAND', 'true');
+    vi.stubEnv('AGENT_GATEWAY_CONTAINER', 'cloudharness-model-gateway');
+    expect(loadRunnerConfigWithReadiness().config).toMatchObject({ dockerOnDemand: true, agentGatewayContainer: 'cloudharness-model-gateway' });
+  });
+
+  it('refuses a gateway container value that is not a Docker container name', () => {
+    requiredEnvironment();
+    vi.stubEnv('AGENT_GATEWAY_CONTAINER', '--format={{json .}}');
+    expect(() => loadRunnerConfigWithReadiness()).toThrow(/Docker container name/);
+  });
+});

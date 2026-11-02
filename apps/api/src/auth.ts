@@ -1,10 +1,11 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import type { AuthInfo } from '@modelcontextprotocol/server';
-import { RunnerPrincipalSelectorSchema, type ApiConfig, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
-import { AccessJwtVerificationError, CloudflareAccessJwtVerifier, type AccessJwtVerifierOptions } from './access-jwt-verifier.js';
+import { RunnerPrincipalSelectorSchema, isCloudflareAccess, isOidc, type ApiConfig, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { AccessJwtVerificationError, CloudflareAccessJwtVerifier, JwksJwtVerifier, type AccessJwtVerifierOptions } from './access-jwt-verifier.js';
 import { renderAccessDiagnostic, type AccessDiagnosticReason } from './access-diagnostic.js';
 import { apiLogger } from './logging.js';
+import { bearerChallenge } from './protected-resource-metadata.js';
 
 type ApiKeyAuthenticator = {
   authenticateApiKey(apiKey: string): Promise<
@@ -97,7 +98,7 @@ export function principalFromAuthInfo(authInfo: AuthInfo | undefined): RunnerPri
 export type VerifierOverrides = Omit<Partial<AccessJwtVerifierOptions>, 'issuer' | 'audience' | 'jwksUrl'>;
 
 function accessVerifier(config: ApiConfig, verifierOptions: VerifierOverrides): CloudflareAccessJwtVerifier | undefined {
-  return config.authMode === 'cloudflare-access'
+  return isCloudflareAccess(config.authMode)
     ? new CloudflareAccessJwtVerifier({
         issuer: config.accessIssuer!,
         audience: config.accessAudience!,
@@ -143,7 +144,67 @@ export function accessAssertionAuth(config: ApiConfig, verifierOptions: Verifier
   };
 }
 
+/**
+ * `oidc` mode: the caller presents an RS256 access token from `OIDC_ISSUER` whose `aud` is this
+ * instance's canonical URL and whose `scope` carries `OIDC_REQUIRED_SCOPE`. The issuer decides who may
+ * hold such a token (its allowlist runs at authorization), so every verified `(issuer, sub)` is an
+ * operator principal here. Challenges name the RFC 9728 metadata so a client can discover the issuer.
+ */
+function oidcBearerAuth(config: ApiConfig, verifierOptions: VerifierOverrides) {
+  const resource = config.oidcAudience!;
+  // Test overrides (fetcher, clock, cache timings) go first so they can never relax the token policy.
+  const verifier = new JwksJwtVerifier({
+    ...verifierOptions,
+    issuer: config.oidcIssuer!,
+    audience: resource,
+    jwksUrl: config.oidcJwksUrl!,
+    requiredScope: config.oidcRequiredScope,
+    requiredHeaderType: 'at+jwt',
+    evictMissingKeys: true
+  });
+  let activeVerifications = 0;
+  return async (request: AuthenticatedRequest, response: Response, next: NextFunction): Promise<void> => {
+    const authorization = request.header('authorization') ?? '';
+    const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+    if (!token) {
+      response.setHeader('WWW-Authenticate', bearerChallenge(resource));
+      response.status(401).json({ error: 'authentication_failed' });
+      return;
+    }
+    if (activeVerifications >= 32) {
+      response.status(429).json({ error: 'too_many_requests' });
+      return;
+    }
+    activeVerifications += 1;
+    try {
+      const identity = await verifier.verify(token);
+      const principal: RunnerPrincipalSelector = { kind: 'external', ...identity.principal };
+      request.auth = {
+        token,
+        clientId: identity.principal.subject,
+        scopes,
+        expiresAt: identity.expiresAt,
+        extra: { principal, externalPrincipal: identity.principal }
+      };
+      next();
+    } catch (error) {
+      const reason = verificationReason(error);
+      logAssertionRejection(request, reason);
+      if (reason === 'insufficient_scope') {
+        response.setHeader('WWW-Authenticate', bearerChallenge(resource, 'error="insufficient_scope"', `scope="${config.oidcRequiredScope}"`));
+        response.status(403).json({ error: 'insufficient_scope' });
+        return;
+      }
+      response.setHeader('WWW-Authenticate', bearerChallenge(resource, 'error="invalid_token"'));
+      response.status(401).json({ error: 'authentication_failed' });
+    } finally {
+      activeVerifications -= 1;
+    }
+  };
+}
+
 export function bearerAuth(config: ApiConfig, verifierOptions: VerifierOverrides = {}) {
+  if (isOidc(config.authMode)) return oidcBearerAuth(config, verifierOptions);
   const verifier = accessVerifier(config, verifierOptions);
   let activeVerifications = 0;
   return async (request: AuthenticatedRequest, response: Response, next: NextFunction): Promise<void> => {
@@ -198,7 +259,7 @@ export function apiKeyGatewayAuth(
   runner: ApiKeyAuthenticator,
   verifierOptions: VerifierOverrides = {}
 ) {
-  const verifier = config.authMode === 'cloudflare-access' && config.apiKeyAuthEnabled
+  const verifier = isCloudflareAccess(config.authMode) && config.apiKeyAuthEnabled
     ? new CloudflareAccessJwtVerifier({
         issuer: config.accessIssuer!,
         audience: config.apiKeyGatewayAccessAudience!,

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { RunnerConfigSchema, SecretKeyringConfigSchema, type RunnerConfig } from '@cloud-harness/contracts';
+import { RunnerConfigSchema, SecretKeyringConfigSchema, hasOperatorDashboard, type RunnerConfig } from '@cloud-harness/contracts';
 
 function secret(name: string): string | undefined {
   const file = process.env[`${name}_FILE`];
@@ -12,7 +12,7 @@ function secret(name: string): string | undefined {
  * tooling also sets, so a value that cannot be a GitHub credential is ignored
  * after a warning rather than failing runner startup. The credential is used
  * only when no GitHub App repository token is available and only in
- * `owner-bearer` mode; `resolveGitHubFallbackToken` owns that policy, and the
+ * single-owner (`owner-bearer`) mode; `resolveGitHubFallbackToken` owns that policy, and the
  * resolved value is registered with the ingest-time redactor rather than being
  * logged or placed in an executor environment.
  */
@@ -153,6 +153,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     host: process.env.RUNNER_HOST,
     port: process.env.RUNNER_PORT,
     serviceToken: secret('RUNNER_TOKEN'),
+    dockerOnDemand: process.env.DOCKER_ON_DEMAND,
+    agentGatewayContainer: process.env.AGENT_GATEWAY_CONTAINER || undefined,
     jobsRoot: process.env.JOBS_ROOT ?? '/var/lib/cloud-harness/jobs',
     stateDb: process.env.STATE_DB ?? '/var/lib/cloud-harness/state/cloud-harness.db',
     executorImage: process.env.EXECUTOR_IMAGE ?? 'cloud-harness-executor:local',
@@ -264,18 +266,18 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     } : undefined
   });
   if (packageApprovalUnavailable(config)) {
-    console.warn('[runner-config] PACKAGES_APPROVAL_MODE=required has no Dashboard approver in owner-bearer mode: packages_apply is refused until PACKAGES_APPROVAL_MODE=none');
+    console.warn(`[runner-config] PACKAGES_APPROVAL_MODE=required has no Dashboard approver in ${config.authMode ?? 'owner-bearer'} mode: packages_apply is refused until PACKAGES_APPROVAL_MODE=none`);
   }
   return { config, ...(secretReadinessError ? { secretReadinessError } : {}) };
 }
 
 /**
  * Package plans need a Dashboard approval by default, and the Dashboard exists only in
- * `cloudflare-access` mode. The runner still starts in that combination (the toolbox is opt-in and
+ * `cloudflare-access` mode. The runner still starts without one (the toolbox is opt-in and
  * refusing to boot would break unrelated features); apply is refused instead.
  */
 export function packageApprovalUnavailable(config: Pick<RunnerConfig, 'authMode' | 'packagesEnabled' | 'packagesApprovalMode'>): boolean {
-  return config.packagesEnabled && config.packagesApprovalMode === 'required' && (config.authMode ?? 'owner-bearer') === 'owner-bearer';
+  return config.packagesEnabled && config.packagesApprovalMode === 'required' && !hasOperatorDashboard(config.authMode);
 }
 
 /** The lifecycle values the environment sets explicitly; an empty variable counts as unset, as zod coercion does not. */

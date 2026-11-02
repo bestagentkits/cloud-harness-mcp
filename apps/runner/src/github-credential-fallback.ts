@@ -1,5 +1,6 @@
 import {
  GITHUB_CREDENTIAL_SECRET_NAMES,
+ isMultiPrincipal,
  type RunnerConfig,
 } from "@cloud-harness/contracts";
 import type { MetadataStore } from "./metadata-store.js";
@@ -30,15 +31,14 @@ function usableToken(value: string | undefined): string | undefined {
  * Operator-wide credential from the runner process environment, assembled from
  * `GH_TOKEN` (preferred) then `GITHUB_TOKEN` at configuration load.
  *
- * Refused in `cloudflare-access` mode: a credential that authorizes every
+ * Refused in multi-principal modes (`cloudflare-access`, `oidc`): a credential that authorizes every
  * repository the operator can reach must never stand in for a principal-scoped
  * GitHub App grant. That mode uses a principal's own global secret instead.
  */
 export function envFallbackGitHubToken(
  config: RunnerConfig,
 ): string | undefined {
- if ((config.authMode ?? "owner-bearer") === "cloudflare-access")
-  return undefined;
+ if (isMultiPrincipal(config.authMode)) return undefined;
  return usableToken(config.githubToken);
 }
 
@@ -79,7 +79,7 @@ export function resolveGitHubFallbackToken(input: {
 /**
  * The fallback credential and the boundary it came from. The two sources are not
  * interchangeable: the runner environment credential is operator-wide and is
- * refused in `cloudflare-access` mode, while a principal's global runtime secret
+ * refused in multi-principal modes, while a principal's global runtime secret
  * belongs to — and is injected into the workspaces of — that principal alone.
  * Callers that record or report which credential performed an action need the
  * source, not just the value.

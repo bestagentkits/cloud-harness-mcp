@@ -3,6 +3,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { request as octokitRequest } from '@octokit/request';
 import {
   GitHubRepositoryCreateResultSchema,
+  isMultiPrincipal,
   type ErrorCode,
   type GitHubRepositoryCreateCapability,
   type GitHubRepositoryCreateInput,
@@ -118,8 +119,7 @@ export class GitHubRepositoryCreator {
       .map(organizationAvailability);
     const available = organizations.some((organization) => organization.available);
     if (available) return { ...base, available, organizations };
-    const authMode = this.options.config.authMode ?? 'owner-bearer';
-    const configuredUnverified = authMode !== 'cloudflare-access'
+    const configuredUnverified = !isMultiPrincipal(this.options.config.authMode)
       && githubApp.installationId !== undefined
       && !records.some((record) => record.installationId === String(githubApp.installationId));
     const reason = configuredUnverified
@@ -258,8 +258,8 @@ export class GitHubRepositoryCreator {
     const active = matching.find((record) => record.status === 'active') ?? matching[0];
     if (active) return active.installationId;
     // owner-bearer mode serves one owner through the operator-configured installation; the live
-    // check still proves it belongs to the requested organization. cloudflare-access never uses it.
-    if ((this.options.config.authMode ?? 'owner-bearer') !== 'cloudflare-access' && githubApp.installationId !== undefined) {
+    // check still proves it belongs to the requested organization. Multi-principal modes never use it.
+    if (!isMultiPrincipal(this.options.config.authMode) && githubApp.installationId !== undefined) {
       return String(githubApp.installationId);
     }
     throw new CreateFailure('NOT_FOUND', `No GitHub App installation for organization ${owner} is connected for this principal. Install the GitHub App on the organization and connect the installation from the dashboard GitHub page.`);

@@ -16,6 +16,54 @@ const httpsUrl = z.url().refine((value) => {
 }, 'HTTPS URL required');
 const enabled = z.preprocess((value) => value === true || value === 'true', z.boolean()).default(false);
 
+/**
+ * How the API authenticates callers. `owner-bearer` serves one owner through a shared bearer token;
+ * `cloudflare-access` and `oidc` both authenticate distinct external principals, keyed by
+ * `(issuer, subject)`, but only `cloudflare-access` serves the operator Dashboard.
+ */
+export const AuthModeSchema = z.enum(['owner-bearer', 'cloudflare-access', 'oidc']);
+export type AuthMode = z.infer<typeof AuthModeSchema>;
+
+/**
+ * True when callers are distinct external principals rather than the single configured owner.
+ * Every security decision that depends on that distinction branches on this, never on a mode name.
+ */
+export function isMultiPrincipal(authMode: AuthMode | undefined): boolean {
+  return (authMode ?? 'owner-bearer') !== 'owner-bearer';
+}
+
+/** True when the instance serves the operator Dashboard and its approval flows. */
+export function hasOperatorDashboard(authMode: AuthMode | undefined): boolean {
+  return authMode === 'cloudflare-access';
+}
+
+/** True for features that exist only behind Cloudflare Access (service tokens, Managed OAuth). */
+export function isCloudflareAccess(authMode: AuthMode | undefined): boolean {
+  return authMode === 'cloudflare-access';
+}
+
+/** True when callers present an OAuth access token (RS256 JWT) issued by the configured OIDC issuer. */
+export function isOidc(authMode: AuthMode | undefined): boolean {
+  return authMode === 'oidc';
+}
+
+/** An RFC 6749 scope token. */
+const scopeToken = z.string().regex(/^[\x21\x23-\x5B\x5D-\x7E]{1,128}$/, 'scope must be a single RFC 6749 scope token');
+
+/**
+ * The canonical URL of this instance, used as the token audience and the RFC 9728 `resource`. It
+ * must be exactly the string the authorization server puts in `aud`, so query, fragment, credentials,
+ * and a trailing slash are refused to keep one spelling.
+ */
+const canonicalResourceUrl = httpsUrl.refine((value) => {
+  try {
+    const url = new URL(value);
+    return !url.username && !url.password && !url.search && !url.hash && !value.endsWith('/') && !value.includes('?') && !value.includes('#');
+  } catch {
+    return false;
+  }
+}, 'canonical resource URL must be an https URL without credentials, query, fragment, or trailing slash');
+
 const principalRelink = z.object({
   oldIssuer: httpsUrl,
   oldSubject: z.string().min(1).max(512),
@@ -187,12 +235,20 @@ export const RunnerAgentsConfigSchema = z.object({
 export const ApiConfigSchema = z.object({
   host: z.string().default('0.0.0.0'),
   port: z.coerce.number().int().min(1).max(65_535).default(3000),
-  authMode: z.enum(['owner-bearer', 'cloudflare-access']).optional(),
+  authMode: AuthModeSchema.optional(),
   ownerId: z.string().min(1).max(100).default('owner'),
   bearerToken: token.optional(),
   accessIssuer: httpsUrl.optional(),
   accessAudience: z.string().min(1).max(512).optional(),
   accessJwksUrl: httpsUrl.optional(),
+  /** `oidc` mode: the authorization server whose RS256 access tokens this instance accepts. */
+  oidcIssuer: httpsUrl.optional(),
+  /** `oidc` mode: this instance's canonical URL, required in the token `aud` claim. */
+  oidcAudience: canonicalResourceUrl.optional(),
+  oidcJwksUrl: httpsUrl.optional(),
+  /** `oidc` mode: the scope every accepted token must carry in its space-delimited `scope` claim. */
+  /** Defaults to `cloudharness:operator` after validation; setting it outside oidc mode is refused. */
+  oidcRequiredScope: scopeToken.optional(),
   apiKeyAuthEnabled: enabled,
   apiKeyGatewayAccessAudience: z.string().min(1).max(512).optional(),
   apiKeyGatewayServiceSubject: z.string().regex(/^cf-service:[A-Za-z0-9_-]+$/).max(512).optional(),
@@ -241,23 +297,39 @@ export const ApiConfigSchema = z.object({
   }
   const mode = config.authMode ?? 'owner-bearer';
   const accessValues = [config.accessIssuer, config.accessAudience, config.accessJwksUrl];
+  const oidcValues = [config.oidcIssuer, config.oidcAudience, config.oidcJwksUrl, config.oidcRequiredScope];
   const apiKeyValues = [config.apiKeyGatewayAccessAudience, config.apiKeyGatewayServiceSubject, config.apiKeyGatewayPublicUrl];
-  if (mode === 'owner-bearer') {
-    if (!config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: 'bearer token is required in owner-bearer mode' });
-    if (accessValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['authMode'], message: 'Cloudflare Access settings are forbidden in owner-bearer mode' });
+  if (!isCloudflareAccess(mode)) {
+    if (accessValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['authMode'], message: `Cloudflare Access settings are forbidden in ${mode} mode` });
     if (config.apiKeyAuthEnabled || apiKeyValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['apiKeyAuthEnabled'], message: 'API key gateway is only valid in cloudflare-access mode' });
+  }
+  if (mode !== 'oidc' && oidcValues.some((value) => value !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['authMode'], message: `OIDC settings are forbidden in ${mode} mode` });
+  }
+  if (!isMultiPrincipal(mode)) {
+    if (!config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: 'bearer token is required in owner-bearer mode' });
     if (config.mcpGatewayAllowInsecureHttp && !config.mcpGatewayAllowPrivateEndpoints) {
       context.addIssue({ code: 'custom', path: ['mcpGatewayAllowInsecureHttp'], message: 'cleartext http MCP gateway endpoints require private endpoint opt-in' });
     }
     return;
   }
   if (config.mcpGatewayAllowInsecureHttp) {
-    context.addIssue({ code: 'custom', path: ['authMode'], message: 'cleartext http MCP gateway endpoints are forbidden in cloudflare-access mode' });
+    context.addIssue({ code: 'custom', path: ['authMode'], message: `cleartext http MCP gateway endpoints are forbidden in ${mode} mode` });
   }
   if (config.mcpGatewayAllowPrivateEndpoints) {
-    context.addIssue({ code: 'custom', path: ['authMode'], message: 'private MCP gateway endpoints are forbidden in cloudflare-access mode' });
+    context.addIssue({ code: 'custom', path: ['authMode'], message: `private MCP gateway endpoints are forbidden in ${mode} mode` });
   }
-  if (config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: 'owner bearer token is forbidden in cloudflare-access mode' });
+  if (config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: `owner bearer token is forbidden in ${mode} mode` });
+  if (mode === 'oidc') {
+    for (const [path, value] of [
+      ['oidcIssuer', config.oidcIssuer],
+      ['oidcAudience', config.oidcAudience],
+      ['oidcJwksUrl', config.oidcJwksUrl]
+    ] as const) {
+      if (!value) context.addIssue({ code: 'custom', path: [path], message: `${path} is required in oidc mode` });
+    }
+    return;
+  }
   for (const [path, value] of [
     ['accessIssuer', config.accessIssuer],
     ['accessAudience', config.accessAudience],
@@ -279,7 +351,7 @@ export const ApiConfigSchema = z.object({
   } else if (apiKeyValues.some((value) => value !== undefined)) {
     context.addIssue({ code: 'custom', path: ['apiKeyAuthEnabled'], message: 'API key gateway settings require API key authentication to be enabled' });
   }
-});
+}).transform((config) => ({ ...config, oidcRequiredScope: config.oidcRequiredScope ?? 'cloudharness:operator' }));
 
 export const SecretKeyringConfigSchema = z.object({
   activeVersion: z.number().int().positive(),
@@ -289,8 +361,20 @@ export const SecretKeyringConfigSchema = z.object({
 export const RunnerConfigSchema = z.object({
   host: z.string().default('0.0.0.0'),
   port: z.coerce.number().int().min(1).max(65_535).default(3001),
-  authMode: z.enum(['owner-bearer', 'cloudflare-access']).optional(),
+  authMode: AuthModeSchema.optional(),
   serviceToken: token,
+  /**
+   * When on, the periodic reaper stops listing stale toolbox containers while no workspace is enumerated
+   * and no toolbox container is live, so an idle runner never wakes a remote Docker host that is suspended
+   * between uses. After any Docker activity it still runs a closing sweep and a final one once a leftover
+   * container is old enough to remove. Off keeps the self-hosted behaviour of sweeping every reaper interval.
+   */
+  dockerOnDemand: enabled,
+  /**
+   * Name of the model gateway container on the Docker host. Unset discovers it through the runner's
+   * own Compose project label, which a runner outside that Docker host cannot read.
+   */
+  agentGatewayContainer: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/, 'agent gateway container must be a Docker container name').optional(),
   jobsRoot: z.string().min(1),
   stateDb: z.string().min(1),
   executorImage: z.string().min(1),
@@ -429,14 +513,14 @@ export const RunnerConfigSchema = z.object({
   if (config.packagesMaxReleaseBytes > config.packagesMaxOwnerBytes) {
     context.addIssue({ code: 'custom', path: ['packagesMaxReleaseBytes'], message: 'PACKAGES_MAX_RELEASE_BYTES must not exceed PACKAGES_MAX_OWNER_BYTES' });
   }
-  if (mode === 'owner-bearer' && config.legacyPrincipalMapping) {
-    context.addIssue({ code: 'custom', path: ['legacyPrincipalMapping'], message: 'legacy principal mapping is only valid in cloudflare-access mode' });
+  if (!isMultiPrincipal(mode) && config.legacyPrincipalMapping) {
+    context.addIssue({ code: 'custom', path: ['legacyPrincipalMapping'], message: 'legacy principal mapping is only valid in cloudflare-access or oidc mode' });
   }
-  if (mode === 'owner-bearer' && config.cloudflareAccessOAuth) {
+  if (!isCloudflareAccess(mode) && config.cloudflareAccessOAuth) {
     context.addIssue({ code: 'custom', path: ['cloudflareAccessOAuth'], message: 'Cloudflare Access Managed OAuth settings are only valid in cloudflare-access mode' });
   }
-  if (mode === 'owner-bearer' && config.principalRelinks !== undefined) {
-    context.addIssue({ code: 'custom', path: ['principalRelinks'], message: 'principal relinks are only valid in cloudflare-access mode' });
+  if (!isMultiPrincipal(mode) && config.principalRelinks !== undefined) {
+    context.addIssue({ code: 'custom', path: ['principalRelinks'], message: 'principal relinks are only valid in cloudflare-access or oidc mode' });
   }
   const relinkSources = new Set<string>();
   for (const [index, mapping] of (config.principalRelinks ?? []).entries()) {
@@ -446,11 +530,11 @@ export const RunnerConfigSchema = z.object({
     }
     relinkSources.add(key);
   }
-  if (mode === 'owner-bearer' && config.githubApp && !config.githubApp.installationId) {
+  if (!isMultiPrincipal(mode) && config.githubApp && !config.githubApp.installationId) {
     context.addIssue({ code: 'custom', path: ['githubApp', 'installationId'], message: 'GitHub App installation ID is required in owner-bearer mode' });
   }
-  if (mode === 'cloudflare-access' && config.githubApp && !config.githubApp.appSlug) {
-    context.addIssue({ code: 'custom', path: ['githubApp', 'appSlug'], message: 'GitHub App slug is required in cloudflare-access mode' });
+  if (isMultiPrincipal(mode) && config.githubApp && !config.githubApp.appSlug) {
+    context.addIssue({ code: 'custom', path: ['githubApp', 'appSlug'], message: `GitHub App slug is required in ${mode} mode` });
   }
   if (config.maxArtifactBytes > config.maxPrincipalArtifactBytes) {
     context.addIssue({ code: 'custom', path: ['maxArtifactBytes'], message: 'per-artifact quota cannot exceed principal quota' });
