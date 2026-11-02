@@ -1,3 +1,10 @@
+# [0.80.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.79.2...v0.80.0) (2026-11-02)
+
+
+### Features
+
+* **auth:** add oidc mode, remote Docker host and digest-pinned TOSE manifest ([#631](https://github.com/bestagentkits/cloud-harness-mcp/issues/631)) ([c352743](https://github.com/bestagentkits/cloud-harness-mcp/commit/c352743ea6e818f7a80b6f8693eacee5240b5044))
+
 ## [0.79.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.79.1...v0.79.2) (2026-10-29)
 
 
