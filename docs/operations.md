@@ -125,7 +125,8 @@ filesystem, and Docker inventories, scoped to the configured runner instance.
 
 ### Expired workspaces and auto-close
 
-The quota, idle TTL, wall TTL, and recoverable grace are set in Dashboard →
+The quota, idle TTL, wall TTL (default lifetime), maximum requestable lifetime,
+and recoverable grace are set in Dashboard →
 Settings → **Workspace limits & lifecycle**, falling back to the runner
 environment ([configuration](configuration.md#workspace-and-repository-policy)).
 The panel also shows the reaper interval, your counted, recoverable, and

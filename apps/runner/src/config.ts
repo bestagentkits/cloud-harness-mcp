@@ -164,6 +164,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     dependencyBridgeInterface: process.env.DEPENDENCY_BRIDGE_INTERFACE,
     dependencyNetworkName: process.env.DEPENDENCY_NETWORK_NAME,
     wallTtlSeconds: process.env.WORKSPACE_WALL_TTL_SECONDS,
+    maxWallTtlSeconds: process.env.WORKSPACE_MAX_WALL_TTL_SECONDS || undefined,
     idleTtlSeconds: process.env.WORKSPACE_IDLE_TTL_SECONDS,
     maxOutputBytes: process.env.MAX_OUTPUT_BYTES,
     terminalMaxPerWorkspace: process.env.TERMINAL_MAX_PER_WORKSPACE,
@@ -301,6 +302,7 @@ function lifecycleEnvironmentKeys(): string[] {
     ['maxActiveWorkspacesPerOwner', 'MAX_ACTIVE_WORKSPACES_PER_OWNER'],
     ['idleTtlSeconds', 'WORKSPACE_IDLE_TTL_SECONDS'],
     ['wallTtlSeconds', 'WORKSPACE_WALL_TTL_SECONDS'],
+    ['maxWallTtlSeconds', 'WORKSPACE_MAX_WALL_TTL_SECONDS'],
     ['recoverableGraceSeconds', 'WORKSPACE_RECOVERABLE_GRACE_SECONDS']
   ];
   return variables.filter(([, name]) => process.env[name] !== undefined && process.env[name] !== '').map(([key]) => key);

@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { mutationErrorText } from '@/lib/bff-mutation';
 import { formatDateTime, rec } from '@/lib/format';
 import {
-  bytesLabel, durationLabel, fieldBounds, graceIsZero, LIFECYCLE_FIELDS, type LifecycleField, type LifecycleUpdate, type LifecycleValues,
+  bytesLabel, durationLabel, fieldBounds, graceIsZero, LIFECYCLE_FIELDS, type LifecycleField, type LifecycleFieldName, type LifecycleUpdate, type LifecycleValues,
   type LifecycleView, lifecycleDefaults, lifecycleResetInput, lifecycleSchema, lifecycleSummary, lifecycleUpdateInput, readLifecycleView, sourceLabel, valueLabel
 } from './lifecycle-model';
 import { Callout, StatusLine } from './settings-feedback';
@@ -18,6 +18,15 @@ import { settingsRead, useConflictReload, useSettingsWrite } from './settings-qu
 
 const CONFLICT_MESSAGE = 'These settings changed elsewhere after you opened Settings. The panel now shows the current values; review them and save again.';
 const INVALID_MESSAGE = 'Fix the highlighted fields before saving.';
+
+/** Fields re-validated together, because the runner checks idle ≤ default lifetime ≤ ceiling. */
+const LIFECYCLE_FIELD_DEPS: Record<LifecycleFieldName, LifecycleFieldName[]> = {
+  maxActiveWorkspacesPerOwner: [],
+  idleTtlSeconds: ['wallTtlSeconds'],
+  wallTtlSeconds: ['idleTtlSeconds', 'maxWallTtlSeconds'],
+  maxWallTtlSeconds: ['wallTtlSeconds'],
+  recoverableGraceSeconds: []
+};
 
 /** Field help, in display order; each explains what the runner does with the value. */
 function fieldHelp(field: LifecycleField, view: LifecycleView) {
@@ -42,7 +51,10 @@ function fieldHelp(field: LifecycleField, view: LifecycleView) {
     return <p className="text-xs text-muted-foreground">A workspace expires after this long without activity. Tool calls that operate on the workspace refresh the idle lease: exec, files, git, shell, session, and task operations, <span className="font-mono">workspace_lease_renew</span>, and resuming with <span className="font-mono">workspace_recover</span>. <span className="font-mono">workspace_list</span>, <span className="font-mono">workspace_status</span>, and Dashboard polling or metadata reads do not keep a workspace alive.</p>;
   }
   if (field.name === 'wallTtlSeconds') {
-    return <p className="text-xs text-muted-foreground">A hard deadline counted from creation; activity never extends it. The effective active lifetime is the earlier of the idle expiry and this deadline (now: idle {durationLabel(settings.idleTtlSeconds.value)}, hard deadline {durationLabel(settings.wallTtlSeconds.value)}). The idle timeout may not exceed the lifetime.</p>;
+    return <p className="text-xs text-muted-foreground">The lifetime a workspace receives when <span className="font-mono">workspace_open</span> requests none. It is a hard deadline counted from creation; activity never extends it. The effective active lifetime is the earlier of the idle expiry and this deadline (now: idle {durationLabel(settings.idleTtlSeconds.value)}, hard deadline {durationLabel(settings.wallTtlSeconds.value)}). The idle timeout may not exceed the default lifetime.</p>;
+  }
+  if (field.name === 'maxWallTtlSeconds') {
+    return <p className="text-xs text-muted-foreground">Callers may request a longer lifetime with <span className="font-mono">workspace_open</span> <span className="font-mono">ttlSeconds</span> up to this ceiling; a longer request is clamped to it. It cannot be below the default lifetime (now {durationLabel(settings.wallTtlSeconds.value)}); when no ceiling is configured it follows the default lifetime.</p>;
   }
   return <p className="text-xs text-muted-foreground">How long an expired workspace stays recoverable before the reaper may close it. It closes at about expiry + grace + up to one reaper interval ({durationLabel(view.reaperIntervalSeconds)}).</p>;
 }
@@ -50,12 +62,13 @@ function fieldHelp(field: LifecycleField, view: LifecycleView) {
 function Timeline({ view }: { view: LifecycleView }) {
   const idle = durationLabel(view.settings.idleTtlSeconds.value);
   const wall = durationLabel(view.settings.wallTtlSeconds.value);
+  const ceiling = durationLabel(view.settings.maxWallTtlSeconds.value);
   const grace = durationLabel(view.settings.recoverableGraceSeconds.value);
   const reaper = durationLabel(view.reaperIntervalSeconds);
   return (
     <div className="grid gap-3">
       <ol aria-label="Workspace lifecycle states" className="grid gap-2 text-sm sm:grid-cols-3">
-        <li className="grid gap-1 rounded-md border p-3"><strong className="font-mono text-xs">ACTIVE</strong>Counts against the quota. Expires at the earlier of {idle} idle or {wall} after creation.</li>
+        <li className="grid gap-1 rounded-md border p-3"><strong className="font-mono text-xs">ACTIVE</strong>Counts against the quota. Expires at the earlier of {idle} idle or {wall} after creation (or the requested lifetime, up to {ceiling}).</li>
         <li className="grid gap-1 rounded-md border p-3"><strong className="font-mono text-xs">EXPIRED_RECOVERABLE</strong>Frees its active slot, but its checkout still uses disk. Recoverable with <span className="font-mono">workspace_recover</span> for {grace}.</li>
         <li className="grid gap-1 rounded-md border p-3"><strong className="font-mono text-xs">CLOSED</strong>Auto-closed at about expiry + {grace} + up to {reaper}. Auto-close never deletes uncommitted, untracked, stashed, or unpushed work, nor a workspace with running agents (Git-ignored files are not checked): those stay recoverable until closed explicitly with <span className="font-mono">workspace_close</span> or recovered.</li>
       </ol>
@@ -128,7 +141,7 @@ export function LifecycleSection({ view }: { view: LifecycleView }) {
           const setting = view.settings[field.name];
           const bounds = fieldBounds(field, setting);
           const range = field.unit === 'count' ? `${bounds.min}–${bounds.max}` : `${bounds.min}–${bounds.max} min`;
-          const deps = field.name === 'idleTtlSeconds' ? ['wallTtlSeconds' as const] : field.name === 'wallTtlSeconds' ? ['idleTtlSeconds' as const] : [];
+          const deps = LIFECYCLE_FIELD_DEPS[field.name];
           return (
             <div key={field.name} className="grid gap-2">
               <Field label={field.label} error={errors[field.name]?.message} description={`Source: ${sourceLabel(setting.source)} · Runner value: ${valueLabel(field, setting.runnerValue)} · Allowed: ${range}`}>

@@ -4,6 +4,7 @@ import { AgentProxyOperationSchema, AgentRuntimeKindSchema, AgentStatusSchema, H
 import { SkillSuggestInputSchema } from './typesafe-schemas.js';
 import { MAX_WORKSPACE_REPOSITORIES_LIMIT } from './config.js';
 import { KitLockSchema } from './kit-lock.js';
+import { WORKSPACE_LIFECYCLE_BOUNDS } from './workspace-lifecycle.js';
 import { GitHubRepositoryCreateInputSchema } from './github-repository-schemas.js';
 import {
   ModelConnectionVerifyToolInputSchema,
@@ -885,7 +886,11 @@ const schemas = {
       .describe('AgentKit skill locks (agentkit.skill-lock/v1) whose kit-owned skills the workspace installs at the locked kit versions, alongside toolkits. Requires ENABLE_KIT_LOCK_INSTALL on the instance. SkillX personal kit locks (skillx.personal-kit-lock/v1) are validated but refused until agentkit.best sign-in is available.'),
     skillSets: z.array(SkillSetSelectionSchema).max(16).default([]),
     skillOverrides: SkillOverrideMapSchema.default({}),
-    allowToolkitWorkspaceChanges: z.literal(true).optional()
+    allowToolkitWorkspaceChanges: z.literal(true).optional(),
+    ttlSeconds: z.number().int().min(WORKSPACE_LIFECYCLE_BOUNDS.maxWallTtlSeconds.min).max(WORKSPACE_LIFECYCLE_BOUNDS.maxWallTtlSeconds.max).optional()
+      .describe('Requested hard lifetime in seconds, counted from creation. The runner clamps it to the instance ceiling workspace_capabilities reports as workspaceLifetime.maxWorkspaceLifetimeSeconds; the result lifetime block reports the requested and granted values. Omitted keeps the instance default lifetime.'),
+    idleTtlSeconds: z.number().int().min(WORKSPACE_LIFECYCLE_BOUNDS.idleTtlSeconds.min).max(WORKSPACE_LIFECYCLE_BOUNDS.idleTtlSeconds.max).optional()
+      .describe('Requested idle timeout in seconds, clamped to the granted lifetime. Omitted keeps the instance default idle timeout.')
   }).superRefine((input, context) => {
     if ((input.repositoryUrl === undefined) === (input.repositories === undefined)) {
       context.addIssue({ code: 'custom', path: ['repositoryUrl'], message: 'provide either repositoryUrl or repositories, but not both' });
@@ -1477,7 +1482,7 @@ const titles: Record<RunnerOperation, string> = {
 };
 
 const descriptions: Record<RunnerOperation, string> = {
-  workspace_open: 'Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace. The result hardExpiresAt is a fixed deadline set by the instance maximum workspace lifetime that no renewal or activity extends.',
+  workspace_open: 'Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace. The result hardExpiresAt is a fixed deadline that no renewal or activity extends: the instance default lifetime, or the optional ttlSeconds clamped to the instance ceiling (workspace_capabilities.workspaceLifetime.maxWorkspaceLifetimeSeconds). The result lifetime block reports requestedSeconds, grantedSeconds, and capped, so a caller can stop before starting work the deadline cannot fit.',
   workspace_list: 'List owner-visible workspace records with bounded cursor pagination.',
   workspace_status: 'Read the lifecycle state and metadata for one workspace.',
   workspace_capabilities: 'Inspect workspace and repository authorization capabilities (including issue and pull request operations mapped to github_action) without modifying state or minting tokens. githubRepositoryCreate reports whether github_repository_create is available and for which organizations; called without a workspaceId when no workspace is active, it returns only that principal-level block (workspaceId: null).',

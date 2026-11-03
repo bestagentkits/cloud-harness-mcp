@@ -424,6 +424,7 @@ describe('dashboard static UI contract', () => {
         maxActiveWorkspacesPerOwner: setting(5, 'setting', 3, 1, 64),
         idleTtlSeconds: setting(300, 'environment', 300, 60, 43_200),
         wallTtlSeconds: setting(900, 'default', 900, 60, 86_400),
+        maxWallTtlSeconds: setting(14_400, 'setting', 900, 60, 86_400),
         recoverableGraceSeconds: setting(3_600, 'default', 3_600, 0, 86_400)
       },
       usage: { counted: 2, limit: 5, recoverable: 1, autoCloseDeferred: 4 },
@@ -437,7 +438,7 @@ describe('dashboard static UI contract', () => {
     const panel = renderWorkspaceLifecycleSettings(view);
     for (const selector of [
       'aria-labelledby="settings-lifecycle-heading"', 'id="settings-lifecycle-form"', 'id="settings-lifecycle-max-active"', 'id="settings-lifecycle-idle"',
-      'id="settings-lifecycle-wall"', 'id="settings-lifecycle-grace"', 'id="settings-lifecycle-ack"', 'id="save-settings-lifecycle"',
+      'id="settings-lifecycle-wall"', 'id="settings-lifecycle-max-wall"', 'id="settings-lifecycle-grace"', 'id="settings-lifecycle-ack"', 'id="save-settings-lifecycle"',
       'id="reset-settings-lifecycle"', 'id="settings-lifecycle-status"'
     ]) expect(panel, selector).toContain(selector);
     expect(panel).toMatch(/id="settings-lifecycle-status" class="status-message" aria-live="polite"/);
@@ -445,6 +446,12 @@ describe('dashboard static UI contract', () => {
     expect(panel).toMatch(/id="settings-lifecycle-max-active"[^>]*min="1" max="64" value="5"/);
     expect(panel).toMatch(/id="settings-lifecycle-idle"[^>]*step="1" min="1" max="720" value="5"/);
     expect(panel).toMatch(/id="settings-lifecycle-wall"[^>]*min="1" max="1440" value="15"/);
+    expect(panel).toMatch(/id="settings-lifecycle-max-wall"[^>]*min="1" max="1440" value="240"/);
+    // The fields render in display order, the ceiling directly after the default lifetime it may not undercut.
+    const order = ['max-active', 'idle', 'wall', 'max-wall', 'grace'].map((id) => panel.indexOf(`id="settings-lifecycle-${id}"`));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    for (const label of ['Default workspace lifetime (minutes)', 'Maximum requestable lifetime (minutes)']) expect(panel, label).toContain(label);
+    expect(panel).not.toContain('Maximum workspace lifetime');
     expect(panel).toMatch(/id="settings-lifecycle-grace"[^>]*min="0" max="1440" value="60"/);
     expect(panel).toMatch(/id="settings-lifecycle-idle"[^>]*aria-describedby="settings-lifecycle-idle-meta settings-lifecycle-idle-error"/);
     expect(panel).toContain('Source: Dashboard override · Runner value: 3');
@@ -454,7 +461,8 @@ describe('dashboard static UI contract', () => {
     expect(panel).toContain('4 of your workspaces');
     // Resource ceilings, timeline, retention, and the non-retroactive disclosure are stated, not implied.
     for (const text of ['1 GiB memory, 1 CPU, 256 pids', 'ceilings, not reservations', 'never closes an existing workspace', 'ACTIVE', 'EXPIRED_RECOVERABLE', 'CLOSED',
-      'up to 1 min', 'workspace_close', 'workspace_lease_renew', 'do not keep a workspace alive', 'only to newly opened workspaces', 'MCP OAuth session lifetime', 'agent task TTLs', 'earlier of']) {
+      'up to 1 min', 'workspace_close', 'workspace_lease_renew', 'do not keep a workspace alive', 'only to newly opened workspaces', 'MCP OAuth session lifetime', 'agent task TTLs', 'earlier of',
+      'requests none', 'ttlSeconds</span> up to this ceiling', 'cannot be below the default lifetime (now 15 min)', 'up to 240 min (4 h)']) {
       expect(panel, text).toContain(text);
     }
     // The grace-0 acknowledgement stays hidden until grace is 0, and shows when the stored grace is already 0.

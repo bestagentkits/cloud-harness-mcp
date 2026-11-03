@@ -25,10 +25,10 @@ const config: ApiConfig = {
 };
 
 const STALE_LIFECYCLE_REVISION = 99;
-const RUNNER_LIFECYCLE = { maxActiveWorkspacesPerOwner: 3, idleTtlSeconds: 300, wallTtlSeconds: 900, recoverableGraceSeconds: 3_600 } as const;
+const RUNNER_LIFECYCLE = { maxActiveWorkspacesPerOwner: 3, idleTtlSeconds: 300, wallTtlSeconds: 900, maxWallTtlSeconds: 900, recoverableGraceSeconds: 3_600 } as const;
 const LIFECYCLE_BOUNDS = {
   maxActiveWorkspacesPerOwner: { min: 1, max: 64 }, idleTtlSeconds: { min: 60, max: 43_200 },
-  wallTtlSeconds: { min: 60, max: 86_400 }, recoverableGraceSeconds: { min: 0, max: 86_400 }
+  wallTtlSeconds: { min: 60, max: 86_400 }, maxWallTtlSeconds: { min: 60, max: 86_400 }, recoverableGraceSeconds: { min: 0, max: 86_400 }
 } as const;
 
 /** The runner read-back after an optional lifecycle write: a number is an override, `null` restores the runner value. */
@@ -889,12 +889,13 @@ describe('dashboard BFF', () => {
     const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
     const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
 
-    const lifecycle = { expectedRevision: 4, maxActiveWorkspacesPerOwner: 5, idleTtlSeconds: 600, wallTtlSeconds: null, recoverableGraceSeconds: 0, acknowledgeImmediateClose: true };
+    const lifecycle = { expectedRevision: 4, maxActiveWorkspacesPerOwner: 5, idleTtlSeconds: 600, wallTtlSeconds: null, maxWallTtlSeconds: 14_400, recoverableGraceSeconds: 0, acknowledgeImmediateClose: true };
     const saved = await send('/api/v1/settings', { method: 'POST', headers, body: JSON.stringify({ workspaceLifecycle: lifecycle }) });
     expect(saved.status).toBe(200);
     expect(calls.at(-1)).toEqual({ operation: 'settings_update', input: { workspaceLifecycle: lifecycle }, principal });
     expect(saved.json.data.workspaceLifecycle.revision).toBe(5);
     expect(saved.json.data.workspaceLifecycle.settings.maxActiveWorkspacesPerOwner).toMatchObject({ value: 5, source: 'setting', runnerValue: 3 });
+    expect(saved.json.data.workspaceLifecycle.settings.maxWallTtlSeconds).toMatchObject({ value: 14_400, source: 'setting', runnerValue: 900 });
     expect(saved.json.data.workspaceLifecycle.executorCeilings).toEqual({ memoryBytes: 1_073_741_824, cpus: 1, pids: 256 });
 
     const network = await send('/api/v1/settings', { method: 'POST', headers, body: JSON.stringify({ defaultNetworkProfile: 'network-none' }) });
@@ -920,6 +921,9 @@ describe('dashboard BFF', () => {
       { expectedRevision: 4, idleTtlSeconds: 59 },
       { expectedRevision: 4, idleTtlSeconds: 43_201 },
       { expectedRevision: 4, wallTtlSeconds: 86_401 },
+      { expectedRevision: 4, maxWallTtlSeconds: 59 },
+      { expectedRevision: 4, maxWallTtlSeconds: 86_401 },
+      { expectedRevision: 4, maxWallTtlSeconds: 3_600.5 },
       { expectedRevision: 4, recoverableGraceSeconds: -1 },
       { expectedRevision: 4, recoverableGraceSeconds: 0 },
       { expectedRevision: 4, recoverableGraceSeconds: 0, acknowledgeImmediateClose: false },

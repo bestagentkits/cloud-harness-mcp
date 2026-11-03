@@ -126,8 +126,12 @@ that replays the cached result for 24 hours and rejects a changed payload with
 ## Long routines
 
 `workspace_lease_renew` extends only the idle lease and never passes the
-wall-clock deadline that `WORKSPACE_WALL_TTL_SECONDS` sets (shipped default 15
-minutes); a capped renewal returns `leaseCapped: true`. A train that keeps one
-workspace for about an hour needs that value at 3600 or more; otherwise open a fresh workspace for each phase and keep state
-in GitHub (the lock branch, statuses, comments). A `fetchDepth: 1` checkout is
+wall-clock deadline (`hardExpiresAt`) fixed at open; a capped renewal returns
+`leaseCapped: true`. A train that keeps one workspace for about an hour opens
+it with `ttlSeconds: 3600`. Check `workspace_capabilities`
+`workspaceLifetime.maxWorkspaceLifetimeSeconds` first, and read `lifetime.capped`
+in the open result: a capped grant means the instance ceiling is lower, so do
+not take the lock for work the deadline cannot fit. Otherwise open a fresh
+workspace for each phase and keep state in GitHub (the lock branch, statuses,
+comments). A `fetchDepth: 1` checkout is
 enough, because brokered GitHub calls do not read local history.

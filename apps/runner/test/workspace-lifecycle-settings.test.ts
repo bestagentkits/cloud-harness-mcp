@@ -312,7 +312,7 @@ describe('workspace lifecycle settings', () => {
       database.exec(`ALTER TABLE workspaces DROP COLUMN ${column}`);
     }
     for (const column of ['max_active_workspaces_per_owner', 'workspace_idle_ttl_seconds', 'workspace_wall_ttl_seconds',
-      'recoverable_grace_seconds', 'lifecycle_revision', 'lifecycle_updated_at']) {
+      'workspace_max_wall_ttl_seconds', 'recoverable_grace_seconds', 'lifecycle_revision', 'lifecycle_updated_at']) {
       database.exec(`ALTER TABLE instance_settings DROP COLUMN ${column}`);
     }
     database.close();
@@ -322,7 +322,7 @@ describe('workspace lifecycle settings', () => {
     expect(upgraded.byId(legacy.id)).toMatchObject({ expiredAt: 1_000_000, recoverableUntil: 1_000_000 + 3_600_000 });
     expect(upgraded.byId(legacy.id)?.recoverableGraceSeconds ?? null).toBeNull();
     expect(upgraded.byId(active.id)).toMatchObject({ expiredAt: null, recoverableUntil: null });
-    expect(upgraded.getWorkspaceLifecycleOverrides()).toMatchObject({ revision: 0, maxActiveWorkspacesPerOwner: null });
+    expect(upgraded.getWorkspaceLifecycleOverrides()).toMatchObject({ revision: 0, maxActiveWorkspacesPerOwner: null, maxWallTtlSeconds: null });
   });
 
   it('checks a bounded batch of due workspaces per reaper pass, oldest first', async () => {
@@ -332,5 +332,103 @@ describe('workspace lifecycle settings', () => {
     expect(context.store.listAutoCloseDue(now)).toHaveLength(10);
     expect(context.store.listAutoCloseDue(now).map((entry) => entry.id)).toEqual(ids.slice(0, 10));
     expect(context.store.listAutoCloseDue(now, 3)).toHaveLength(3);
+  });
+});
+
+describe('requested workspace lifetime', () => {
+  const open = (context: Fixture, idempotencyKey: string, extra: Record<string, unknown> = {}) => context.service.execute(context.ownerId, 'workspace_open', {
+    repositoryUrl: 'https://github.com/example/repo.git', idempotencyKey, ...extra
+  });
+  type Opened = { workspaceId: string; createdAt: string; hardExpiresAt: string; leaseWarnings?: string[]; lifetime: Record<string, unknown> };
+  const lifetimeMs = (data: Opened) => Date.parse(data.hardExpiresAt) - Date.parse(data.createdAt);
+
+  it('keeps the default lifetime and idle timeout when no lifetime is requested', async () => {
+    const context = fixture({ maxWallTtlSeconds: 7_200 });
+    const data = (await open(context, 'lifetime-default')).data as Opened;
+    expect(lifetimeMs(data)).toBe(900_000);
+    expect(data.lifetime).toEqual({
+      requestedSeconds: null, grantedSeconds: 900, capped: false, requestedIdleTtlSeconds: null, grantedIdleTtlSeconds: 300, idleCapped: false
+    });
+    expect(data.leaseWarnings ?? []).not.toContainEqual(expect.stringMatching(/exceeds the instance maximum/));
+    expect(context.store.byId(data.workspaceId)).toMatchObject({ idleTtlSeconds: 300 });
+  });
+
+  it('grants an in-range request and a requested idle timeout', async () => {
+    const context = fixture({ maxWallTtlSeconds: 7_200 });
+    const data = (await open(context, 'lifetime-in-range', { ttlSeconds: 3_600, idleTtlSeconds: 1_800 })).data as Opened;
+    expect(lifetimeMs(data)).toBe(3_600_000);
+    expect(data.lifetime).toMatchObject({ requestedSeconds: 3_600, grantedSeconds: 3_600, capped: false, grantedIdleTtlSeconds: 1_800, idleCapped: false });
+    const record = context.store.byId(data.workspaceId)!;
+    expect(record.expiresAt - record.createdAt).toBe(1_800_000);
+    expect(record.idleTtlSeconds).toBe(1_800);
+  });
+
+  it('clamps a request above the ceiling, reports it, and never renews past the granted deadline', async () => {
+    const context = fixture({ maxWallTtlSeconds: 1_800 });
+    const result = await open(context, 'lifetime-clamped', { ttlSeconds: 3_600, idleTtlSeconds: 7_200 });
+    const data = result.data as Opened;
+    expect(result.ok).toBe(true);
+    expect(lifetimeMs(data)).toBe(1_800_000);
+    expect(data.lifetime).toEqual({
+      requestedSeconds: 3_600, grantedSeconds: 1_800, capped: true, requestedIdleTtlSeconds: 7_200, grantedIdleTtlSeconds: 1_800, idleCapped: true
+    });
+    expect(data.leaseWarnings).toContainEqual(expect.stringMatching(/Requested lifetime 3600s exceeds the instance maximum; granted 1800s/));
+
+    const renewed = await context.service.execute(context.ownerId, 'workspace_lease_renew', { workspaceId: data.workspaceId, extensionSeconds: 86_400 });
+    expect((renewed.data as { hardExpiresAt: string }).hardExpiresAt).toBe(data.hardExpiresAt);
+    expect(context.store.byId(data.workspaceId)!.expiresAt).toBeLessThanOrEqual(Date.parse(data.hardExpiresAt));
+  });
+
+  it('caps a request at the default lifetime when no ceiling is configured', async () => {
+    const context = fixture();
+    const data = (await open(context, 'lifetime-no-ceiling', { ttlSeconds: 3_600 })).data as Opened;
+    expect(data.lifetime).toMatchObject({ requestedSeconds: 3_600, grantedSeconds: 900, capped: true });
+  });
+
+  it('grants a shorter lifetime than the default', async () => {
+    const context = fixture();
+    const data = (await open(context, 'lifetime-short', { ttlSeconds: 120 })).data as Opened;
+    expect(lifetimeMs(data)).toBe(120_000);
+    expect(context.store.byId(data.workspaceId)!.expiresAt - Date.parse(data.createdAt)).toBe(120_000);
+  });
+
+  it('replays the same lifetime block and refuses a reused key with a different lifetime', async () => {
+    const context = fixture({ maxWallTtlSeconds: 1_800 });
+    const first = (await open(context, 'lifetime-replay', { ttlSeconds: 3_600 })).data as Opened;
+    const replay = (await open(context, 'lifetime-replay', { ttlSeconds: 3_600 })).data as Opened;
+    expect(replay.workspaceId).toBe(first.workspaceId);
+    expect(replay.lifetime).toEqual(first.lifetime);
+    await expect(open(context, 'lifetime-replay', { ttlSeconds: 1_200 })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(open(context, 'lifetime-replay')).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('applies a Dashboard ceiling, refuses one below the default lifetime, and reports it in capabilities', async () => {
+    const context = fixture();
+    const before = await context.service.execute(context.ownerId, 'workspace_capabilities', {});
+    expect((before.data as { workspaceLifetime: unknown }).workspaceLifetime).toEqual({
+      defaultLifetimeSeconds: 900, maxWorkspaceLifetimeSeconds: 900, minLifetimeSeconds: 60, defaultIdleTtlSeconds: 300
+    });
+    const view = await settings(context.service);
+    expect(view.settings.maxWallTtlSeconds).toMatchObject({ value: 900, source: 'default', runnerValue: 900, min: 60, max: 86_400 });
+
+    await expect(settings(context.service, { workspaceLifecycle: { expectedRevision: 0, maxWallTtlSeconds: 600 } }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    const saved = await settings(context.service, { workspaceLifecycle: { expectedRevision: 0, maxWallTtlSeconds: 3_600 } });
+    expect(saved.settings.maxWallTtlSeconds).toMatchObject({ value: 3_600, source: 'setting' });
+    await expect(settings(context.service, { workspaceLifecycle: { expectedRevision: 1, wallTtlSeconds: 7_200 } }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+
+    const data = (await open(context, 'lifetime-dashboard', { ttlSeconds: 3_600 })).data as Opened;
+    expect(lifetimeMs(data)).toBe(3_600_000);
+    const capabilities = await context.service.execute(context.ownerId, 'workspace_capabilities', { workspaceId: data.workspaceId });
+    expect((capabilities.data as { workspaceLifetime: unknown }).workspaceLifetime).toMatchObject({ maxWorkspaceLifetimeSeconds: 3_600 });
+  });
+
+  it('never reports a ceiling below a raised default lifetime', async () => {
+    const context = fixture();
+    const saved = await settings(context.service, { workspaceLifecycle: { expectedRevision: 0, wallTtlSeconds: 1_800 } });
+    expect(saved.settings.maxWallTtlSeconds.value).toBe(1_800);
+    const data = (await open(context, 'lifetime-raised-default')).data as Opened;
+    expect(lifetimeMs(data)).toBe(1_800_000);
   });
 });

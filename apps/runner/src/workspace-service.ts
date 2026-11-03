@@ -51,6 +51,7 @@ import {
   type WorkspaceCapabilityResult,
   type GitHubRepositoryCreateInput,
   type PrincipalCapabilityResult,
+  type WorkspaceLifetimeCapability,
   type ToolkitSelection,
   type WorkspaceLifecycleSettingName,
   type WorkspaceLifecycleSettingsUpdate,
@@ -254,6 +255,8 @@ export function computeWorkspaceOpenFingerprint(input: {
   allowToolkitWorkspaceChanges?: boolean | undefined;
   fetchDepth?: number | undefined;
   shallowSince?: string | undefined;
+  ttlSeconds?: number | undefined;
+  idleTtlSeconds?: number | undefined;
 }): string {
   const canonicalToolkits = [...(input.toolkits ?? [])].sort((a, b) =>
     toolkitSelectionIdentity(a).localeCompare(toolkitSelectionIdentity(b)));
@@ -269,6 +272,9 @@ export function computeWorkspaceOpenFingerprint(input: {
     // History options join the fingerprint only when set, so replays of earlier requests keep matching.
     ...(input.fetchDepth !== undefined ? { fetchDepth: input.fetchDepth } : {}),
     ...(input.shallowSince !== undefined ? { shallowSince: input.shallowSince } : {}),
+    // Lifetime requests join only when set, so replays of requests without them keep matching.
+    ...(input.ttlSeconds !== undefined ? { ttlSeconds: input.ttlSeconds } : {}),
+    ...(input.idleTtlSeconds !== undefined ? { idleTtlSeconds: input.idleTtlSeconds } : {}),
     // A repository set joins only multi-repository requests, so single-repository replays keep matching.
     ...(input.repositories !== undefined ? {
       repositories: input.repositories.map((entry) => ({ url: entry.url, alias: entry.alias, ref: entry.ref ?? null, access: entry.access })),
@@ -438,6 +444,44 @@ function withRepositoryAudit(record: WorkspaceRecord, details: Record<string, st
 /** Each checkout of a multi-repository workspace has its own guidance, so it has its own cache entry. */
 function guidanceCacheKey(record: WorkspaceRecord): string {
   return record.repositoryScope ? `${record.id}:${record.repositoryScope.id}` : record.id;
+}
+
+/**
+ * The lifetime a workspace_open request receives. A requested `ttlSeconds` is clamped to the instance
+ * ceiling and never exceeds it; without one the default lifetime applies, as before the request existed.
+ * A requested idle timeout is clamped to the granted lifetime; without one the default idle timeout is
+ * kept unchanged, because the idle expiry is always bounded by the hard deadline anyway.
+ */
+export function grantWorkspaceLifetime(
+  policy: { wallTtlSeconds: number; maxWallTtlSeconds: number; idleTtlSeconds: number },
+  request: { ttlSeconds?: number | undefined; idleTtlSeconds?: number | undefined }
+): { grantedSeconds: number; grantedIdleTtlSeconds: number } {
+  const grantedSeconds = request.ttlSeconds === undefined ? policy.wallTtlSeconds : Math.min(request.ttlSeconds, policy.maxWallTtlSeconds);
+  const grantedIdleTtlSeconds = request.idleTtlSeconds === undefined ? policy.idleTtlSeconds : Math.min(request.idleTtlSeconds, grantedSeconds);
+  return { grantedSeconds, grantedIdleTtlSeconds };
+}
+
+/**
+ * The lifetime block of a workspace_open result. It is derived from the stored record and the request, so
+ * an idempotent replay reports the same values the first open did.
+ */
+function openedLifetime(
+  record: Pick<WorkspaceRecord, 'createdAt' | 'hardExpiresAt' | 'idleTtlSeconds'>,
+  request: { ttlSeconds?: number | undefined; idleTtlSeconds?: number | undefined },
+  defaultIdleTtlSeconds: number
+) {
+  const grantedSeconds = Math.round((record.hardExpiresAt - record.createdAt) / 1_000);
+  const grantedIdleTtlSeconds = record.idleTtlSeconds ?? defaultIdleTtlSeconds;
+  const requestedSeconds = request.ttlSeconds ?? null;
+  const requestedIdleTtlSeconds = request.idleTtlSeconds ?? null;
+  return {
+    requestedSeconds,
+    grantedSeconds,
+    capped: requestedSeconds !== null && grantedSeconds < requestedSeconds,
+    requestedIdleTtlSeconds,
+    grantedIdleTtlSeconds,
+    idleCapped: requestedIdleTtlSeconds !== null && grantedIdleTtlSeconds < requestedIdleTtlSeconds
+  };
 }
 
 function publicRecord(record: WorkspaceRecord, capabilities?: WorkspaceCapabilityResult) {
@@ -1142,6 +1186,8 @@ export class WorkspaceService {
       maxActiveWorkspacesPerOwner: this.configuredActiveWorkspaceLimit(),
       idleTtlSeconds: this.config.idleTtlSeconds,
       wallTtlSeconds: this.config.wallTtlSeconds,
+      // An unset ceiling equals the default lifetime, so a request can never exceed what the instance grants.
+      maxWallTtlSeconds: this.config.maxWallTtlSeconds ?? this.config.wallTtlSeconds,
       recoverableGraceSeconds: this.config.recoverableGraceSeconds ?? DEFAULT_RECOVERABLE_GRACE_SECONDS
     };
   }
@@ -1149,11 +1195,26 @@ export class WorkspaceService {
   /** The lifecycle policy a workspace opened now receives: each Dashboard override, else the runner value. */
   private effectiveLifecyclePolicy(overrides: WorkspaceLifecycleOverrides = this.store.getWorkspaceLifecycleOverrides()): Record<WorkspaceLifecycleSettingName, number> {
     const runner = this.runnerLifecycleValues();
+    const wallTtlSeconds = overrides.wallTtlSeconds ?? runner.wallTtlSeconds;
     return {
       maxActiveWorkspacesPerOwner: overrides.maxActiveWorkspacesPerOwner ?? runner.maxActiveWorkspacesPerOwner,
       idleTtlSeconds: overrides.idleTtlSeconds ?? runner.idleTtlSeconds,
-      wallTtlSeconds: overrides.wallTtlSeconds ?? runner.wallTtlSeconds,
+      wallTtlSeconds,
+      // The ceiling never falls below the default lifetime: a raised default without a configured ceiling
+      // still grants the default, and the settings write refuses an explicit ceiling below it.
+      maxWallTtlSeconds: Math.max(overrides.maxWallTtlSeconds ?? this.config.maxWallTtlSeconds ?? wallTtlSeconds, wallTtlSeconds),
       recoverableGraceSeconds: overrides.recoverableGraceSeconds ?? runner.recoverableGraceSeconds
+    };
+  }
+
+  /** The lifetime limits the next workspace_open receives, so a caller can check them before opening. */
+  private workspaceLifetimeCapability(): WorkspaceLifetimeCapability {
+    const policy = this.effectiveLifecyclePolicy();
+    return {
+      defaultLifetimeSeconds: policy.wallTtlSeconds,
+      maxWorkspaceLifetimeSeconds: policy.maxWallTtlSeconds,
+      minLifetimeSeconds: WORKSPACE_LIFECYCLE_BOUNDS.maxWallTtlSeconds.min,
+      defaultIdleTtlSeconds: policy.idleTtlSeconds
     };
   }
 
@@ -1591,7 +1652,7 @@ export class WorkspaceService {
       if (!workspaceOpenReplayMatches(prior, parsed, requestFingerprint)) {
         throw new HarnessError('CONFLICT', 'idempotency key reused with mismatched request parameters', 409, true);
       }
-      return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(prior), truncated: false };
+      return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(prior, parsed), truncated: false };
     }
     await this.ensureCapacity(ownerId);
     const now = Date.now();
@@ -1601,9 +1662,11 @@ export class WorkspaceService {
     const url = await validateRepositoryUrl(primary?.repositoryUrl ?? parsed.repositoryUrl ?? '', this.config.allowedGitHosts);
     if (parsed.ref?.startsWith('-')) throw new HarnessError('INVALID_INPUT', 'ref cannot start with a dash');
     // The lifecycle policy is snapshotted here: a later Settings change applies to workspaces opened after
-    // it and never shortens or extends this one. The hard deadline is the wall-TTL snapshot.
+    // it and never shortens or extends this one. The hard deadline is the granted lifetime: the request
+    // clamped to the instance ceiling, else the default lifetime.
     const policy = this.effectiveLifecyclePolicy();
-    const hardExpiresAt = now + policy.wallTtlSeconds * 1_000;
+    const lifetime = grantWorkspaceLifetime(policy, parsed);
+    const hardExpiresAt = now + lifetime.grantedSeconds * 1_000;
     const record: WorkspaceRecord = {
       id: workspaceId, ownerId, idempotencyKey: parsed.idempotencyKey, repositoryUrl: url.toString(),
       repositoryRef: primary ? primary.repositoryRef : parsed.ref ?? null, containerName: null, workspacePath: join(this.config.jobsRoot, workspaceId),
@@ -1611,9 +1674,9 @@ export class WorkspaceService {
       // Resolution order: explicit request, then the operator's persisted instance
       // default, then the runner configuration (shipped default: dependency-access).
       status: 'CREATING', networkProfile: parsed.networkProfile ?? this.store.getWorkspaceDefaultNetworkProfile() ?? this.config.networkProfile, createdAt: now,
-      lastActivityAt: now, expiresAt: Math.min(hardExpiresAt, now + policy.idleTtlSeconds * 1_000), hardExpiresAt, gitAuthorName: null, gitAuthorEmail: null,
+      lastActivityAt: now, expiresAt: Math.min(hardExpiresAt, now + lifetime.grantedIdleTtlSeconds * 1_000), hardExpiresAt, gitAuthorName: null, gitAuthorEmail: null,
       mutationLockedUntil: null, generation: 1, error: null, requestFingerprint,
-      idleTtlSeconds: policy.idleTtlSeconds, recoverableGraceSeconds: policy.recoverableGraceSeconds, expiredAt: null, recoverableUntil: null
+      idleTtlSeconds: lifetime.grantedIdleTtlSeconds, recoverableGraceSeconds: policy.recoverableGraceSeconds, expiredAt: null, recoverableUntil: null
     };
     try {
       this.store.admit(record, this.configuredActiveWorkspaceLimit(), repositories);
@@ -1623,7 +1686,7 @@ export class WorkspaceService {
         if (!workspaceOpenReplayMatches(replay, parsed, requestFingerprint)) {
           throw new HarnessError('CONFLICT', 'idempotency key reused with mismatched request parameters', 409, true);
         }
-        return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(replay), truncated: false };
+        return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(replay, parsed), truncated: false };
       }
       if (error instanceof ActiveWorkspaceLimitReachedError) {
         throw this.activeWorkspaceLimitError(error.active, error.limit);
@@ -1723,7 +1786,7 @@ export class WorkspaceService {
         ok: true,
         message: 'Workspace opened',
         data: {
-          ...this.publicWorkspaceRecord(active),
+          ...this.withOpenedLifetime(this.publicWorkspaceRecord(active), active, parsed),
           ...(guidance ? { repositoryContext: repositoryGuidanceSummary(guidance.snapshot) } : {})
         },
         truncated: false
@@ -2351,12 +2414,25 @@ export class WorkspaceService {
   }
 
   /** An open replay carries the cached guidance summary when this runner still holds one. */
-  private openedWorkspaceData(record: WorkspaceRecord) {
+  private openedWorkspaceData(record: WorkspaceRecord, request: { ttlSeconds?: number | undefined; idleTtlSeconds?: number | undefined }) {
     const cached = this.guidanceCache.get(guidanceCacheKey(this.primaryRecordView(record)));
     return {
-      ...this.publicWorkspaceRecord(record),
+      ...this.withOpenedLifetime(this.publicWorkspaceRecord(record), record, request),
       ...(cached && cached.generation === record.generation ? { repositoryContext: repositoryGuidanceSummary(cached.snapshot) } : {})
     };
+  }
+
+  /** Adds the lifetime block, and a lease warning when the instance ceiling capped the requested lifetime. */
+  private withOpenedLifetime(
+    data: Record<string, unknown>,
+    record: WorkspaceRecord,
+    request: { ttlSeconds?: number | undefined; idleTtlSeconds?: number | undefined }
+  ): Record<string, unknown> {
+    const lifetime = openedLifetime(record, request, this.config.idleTtlSeconds);
+    if (!lifetime.capped) return { ...data, lifetime };
+    const existing = Array.isArray(data.leaseWarnings) ? data.leaseWarnings as string[] : [];
+    const warning = `Requested lifetime ${lifetime.requestedSeconds}s exceeds the instance maximum; granted ${lifetime.grantedSeconds}s (hardExpiresAt ${String(data.hardExpiresAt)}).`;
+    return { ...data, lifetime, leaseWarnings: [...existing, warning] };
   }
 
   /**
@@ -4250,14 +4326,14 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         rec = this.requireWorkspace(ownerId, workspaceId, false, true);
       } catch (error) {
         if (workspaceId !== undefined || !(error instanceof HarnessError) || error.code !== 'NOT_FOUND') throw error;
-        const data: PrincipalCapabilityResult = { workspaceId: null, repository: null, githubRepositoryCreate };
+        const data: PrincipalCapabilityResult = { workspaceId: null, repository: null, githubRepositoryCreate, workspaceLifetime: this.workspaceLifetimeCapability() };
         return { ok: true, message: 'Principal capabilities retrieved (no active workspace)', data, truncated: false };
       }
       const caps = this.computeWorkspaceCapabilities(this.resolveRepositoryView(rec, validated, 'primary', operation).scoped);
       return {
         ok: true,
         message: 'Workspace capabilities retrieved',
-        data: { ...caps, githubRepositoryCreate },
+        data: { ...caps, githubRepositoryCreate, workspaceLifetime: this.workspaceLifetimeCapability() },
         truncated: false
       };
     }
@@ -6453,7 +6529,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         if (effective.idleTtlSeconds > effective.wallTtlSeconds) {
           throw new HarnessError(
             'INVALID_INPUT',
-            `the idle timeout (${effective.idleTtlSeconds}s) cannot exceed the maximum workspace lifetime (${effective.wallTtlSeconds}s)`,
+            `the idle timeout (${effective.idleTtlSeconds}s) cannot exceed the default workspace lifetime (${effective.wallTtlSeconds}s)`,
+            400,
+            false
+          );
+        }
+        // An explicit ceiling (Dashboard or environment) below the default lifetime is a contradiction the
+        // operator must resolve; an unset ceiling simply follows the default lifetime.
+        const ceiling = next.maxWallTtlSeconds ?? this.config.maxWallTtlSeconds;
+        if (ceiling !== null && ceiling !== undefined && ceiling < effective.wallTtlSeconds) {
+          throw new HarnessError(
+            'INVALID_INPUT',
+            `the maximum requestable lifetime (${ceiling}s) cannot be below the default workspace lifetime (${effective.wallTtlSeconds}s)`,
             400,
             false
           );

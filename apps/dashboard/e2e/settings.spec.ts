@@ -107,6 +107,7 @@ test('lifecycle: inline validation, changed fields only, grace 0 acknowledgement
     const update = (body as { workspaceLifecycle: Record<string, number | null> }).workspaceLifecycle;
     const next = lifecycle({ revision: 8 });
     if (typeof update.idleTtlSeconds === 'number') next.settings.idleTtlSeconds = { ...next.settings.idleTtlSeconds, value: update.idleTtlSeconds, source: 'setting' };
+    if (typeof update.maxWallTtlSeconds === 'number') next.settings.maxWallTtlSeconds = { ...next.settings.maxWallTtlSeconds, value: update.maxWallTtlSeconds, source: 'setting' };
     return { status: 200, body: settingsBody({ workspaceLifecycle: next }) };
   });
 
@@ -120,8 +121,18 @@ test('lifecycle: inline validation, changed fields only, grace 0 acknowledgement
   await idle.fill('10');
   await expect(idle).not.toHaveAttribute('aria-invalid');
   await page.getByTestId('save-lifecycle').click();
-  await expect(page.getByTestId('lifecycle-status')).toHaveText('Workspace lifecycle settings saved. Effective: up to 3 active per principal, idle 10 min, lifetime 15 min, grace 60 min.');
+  await expect(page.getByTestId('lifecycle-status')).toHaveText('Workspace lifecycle settings saved. Effective: up to 3 active per principal, idle 10 min, default lifetime 15 min, requestable up to 15 min, grace 60 min.');
   await expect(idle).toHaveValue('10');
+
+  const ceiling = page.getByLabel('Maximum requestable lifetime (minutes)');
+  await ceiling.fill('10');
+  await expect(main(page).getByText('The maximum requestable lifetime (10 min) cannot be below the default lifetime (15 min).')).toBeVisible();
+  await expect(ceiling).toHaveAttribute('aria-invalid', 'true');
+  await ceiling.fill('240');
+  await expect(ceiling).not.toHaveAttribute('aria-invalid');
+  await page.getByTestId('save-lifecycle').click();
+  await expect(page.getByTestId('lifecycle-status')).toContainText('Workspace lifecycle settings saved.');
+  await expect(page.getByLabel('Default workspace lifetime (minutes)')).toBeVisible();
 
   const grace = page.getByLabel('Recoverable grace before auto-close (minutes)');
   await grace.fill('0');
@@ -139,8 +150,9 @@ test('lifecycle: inline validation, changed fields only, grace 0 acknowledgement
 
   expect(writes.map((write) => write.body)).toEqual([
     { workspaceLifecycle: { expectedRevision: 7, idleTtlSeconds: 600 } },
+    { workspaceLifecycle: { expectedRevision: 8, maxWallTtlSeconds: 14_400 } },
     { workspaceLifecycle: { expectedRevision: 8, recoverableGraceSeconds: 0, acknowledgeImmediateClose: true } },
-    { workspaceLifecycle: { expectedRevision: 8, maxActiveWorkspacesPerOwner: null, idleTtlSeconds: null, wallTtlSeconds: null, recoverableGraceSeconds: null } }
+    { workspaceLifecycle: { expectedRevision: 8, maxActiveWorkspacesPerOwner: null, idleTtlSeconds: null, wallTtlSeconds: null, maxWallTtlSeconds: null, recoverableGraceSeconds: null } }
   ]);
   expect(writes.every((write) => write.csrf)).toBe(true);
   expect(problems).toEqual([]);

@@ -179,6 +179,18 @@ export const RepositoryOperationsSchema = z.object({
   deploymentsRun: z.boolean()
 }).passthrough();
 
+/**
+ * The lifetime a workspace_open request can receive on this instance. `maxWorkspaceLifetimeSeconds` is
+ * the ceiling a requested `ttlSeconds` is clamped to; it is never below the default lifetime.
+ */
+export const WorkspaceLifetimeCapabilitySchema = z.object({
+  defaultLifetimeSeconds: z.number().int(),
+  maxWorkspaceLifetimeSeconds: z.number().int(),
+  minLifetimeSeconds: z.number().int(),
+  defaultIdleTtlSeconds: z.number().int()
+}).strict();
+export type WorkspaceLifetimeCapability = z.infer<typeof WorkspaceLifetimeCapabilitySchema>;
+
 export const WorkspaceCapabilityResultSchema = z.object({
   workspaceId: z.string(),
   repository: z.string().nullable(),
@@ -199,7 +211,9 @@ export const WorkspaceCapabilityResultSchema = z.object({
     gated: z.array(z.string())
   }).strict().optional().describe('Which GitHub actions are read-only (callable through github_read without approval) and which stay gated on github_action'),
   githubRepositoryCreate: GitHubRepositoryCreateCapabilitySchema.optional()
-    .describe('Principal-level availability of github_repository_create; independent of the workspace repository')
+    .describe('Principal-level availability of github_repository_create; independent of the workspace repository'),
+  workspaceLifetime: WorkspaceLifetimeCapabilitySchema.optional()
+    .describe('Lifetime limits for the next workspace_open on this instance')
 }).passthrough();
 
 /**
@@ -209,7 +223,8 @@ export const WorkspaceCapabilityResultSchema = z.object({
 export const PrincipalCapabilityResultSchema = z.object({
   workspaceId: z.null(),
   repository: z.null(),
-  githubRepositoryCreate: GitHubRepositoryCreateCapabilitySchema
+  githubRepositoryCreate: GitHubRepositoryCreateCapabilitySchema,
+  workspaceLifetime: WorkspaceLifetimeCapabilitySchema.optional()
 }).strict();
 
 export type RepositoryCapabilities = z.infer<typeof RepositoryCapabilitiesSchema>;

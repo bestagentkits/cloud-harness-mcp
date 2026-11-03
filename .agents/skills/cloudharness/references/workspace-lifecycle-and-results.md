@@ -115,8 +115,9 @@ Clone an approved repository and start its bounded executor.
   TCP 80/443 through an attested host firewall). Pass
   `networkProfile: "network-none"` only when the owner asks for isolation; it
   blocks all executor egress. The legacy `networkMode` field is rejected.
+- Optional `ttlSeconds` (60–86,400) and `idleTtlSeconds` (60–43,200) are clamped to `workspace_capabilities` `workspaceLifetime.maxWorkspaceLifetimeSeconds` and the granted lifetime; omit them for the defaults. Check `lifetime.capped` (`requestedSeconds`/`grantedSeconds`) before work that must end by `hardExpiresAt`.
 - Returns workspace metadata including opaque `workspaceId`, status, network
-  profile, timestamps, and expiry. A fresh open usually also returns a
+  profile, timestamps, expiry, and the `lifetime` block. A fresh open usually also returns a
   content-free `repositoryContext` summary (digest, discovered guidance paths,
   client targets, sizes, truncation, warnings). It is best-effort: its absence
   is not an error and does not mean the repository has no guidance.
@@ -160,7 +161,7 @@ Read one workspace record by opaque ID.
 Inspect workspace and bound repository authorization capabilities without modifying state or minting tokens.
 
 - Optional: `workspaceId`.
-- Returns high-level capabilities (`repository`, `workspace`), fine-grained permissions (`contents`, `issues`, `pullRequests`), and direct operation authorizations (`gitPush`, `issueCreate`, `pullRequestCreate`, `commitList`, `compare`, `releaseList`, `tagList`, etc.). `workspace.defaultNetworkProfile` reports the effective profile applied when `workspace_open` omits `networkProfile`, and the `repository` issue/pull-request flags reflect the permissions the verified installation actually grants. `githubActions.readOnly` lists actions callable on `github_read` without approval prompts; `githubActions.gated` lists actions that stay on the destructive-annotated `github_action`.
+- Returns high-level capabilities (`repository`, `workspace`), fine-grained permissions (`contents`, `issues`, `pullRequests`), and direct operation authorizations (`gitPush`, `issueCreate`, `pullRequestCreate`, `commitList`, `compare`, `releaseList`, `tagList`, etc.). `workspace.defaultNetworkProfile` reports the effective profile applied when `workspace_open` omits `networkProfile`, and the `repository` issue/pull-request flags reflect the permissions the verified installation actually grants. `githubActions.readOnly` lists actions callable on `github_read` without approval prompts; `githubActions.gated` lists actions that stay on the destructive-annotated `github_action`. `workspaceLifetime` (`defaultLifetimeSeconds`, `maxWorkspaceLifetimeSeconds`, `minLifetimeSeconds`, `defaultIdleTtlSeconds`) reports what the next `workspace_open` can be granted; it is also returned without a `workspaceId` when no workspace is active.
 - Read-only and safe to repeat.
 
 <!-- cloudharness-example:workspace_capabilities

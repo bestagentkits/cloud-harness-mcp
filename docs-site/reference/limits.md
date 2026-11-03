@@ -15,7 +15,8 @@ To prevent unbounded memory growth and buffer overflow attacks, Cloud Harness MC
 | **Max Command Exec Output** | 1 MB | `exec_run` and `bash` buffer |
 | **Max Artifact Size** | 16 MB | `MAX_ARTIFACT_BYTES` |
 | **Total Principal Artifacts** | 128 MB | `MAX_PRINCIPAL_ARTIFACT_BYTES` |
-| **Workspace Wall TTL** | 900s (15 min) | `WORKSPACE_WALL_TTL_SECONDS` |
+| **Workspace Wall TTL** (default lifetime) | 900s (15 min) | `WORKSPACE_WALL_TTL_SECONDS` |
+| **Maximum Requestable Lifetime** | the wall TTL (at most 86,400s) | `WORKSPACE_MAX_WALL_TTL_SECONDS`, requested with `workspace_open.ttlSeconds` |
 | **Workspace Idle TTL** | 300s (5 min) | `WORKSPACE_IDLE_TTL_SECONDS` |
 | **Recoverable Grace** | 3600s (60 min) | `WORKSPACE_RECOVERABLE_GRACE_SECONDS` |
 | **Active Workspaces** | 3 per principal | `MAX_ACTIVE_WORKSPACES_PER_OWNER` |
