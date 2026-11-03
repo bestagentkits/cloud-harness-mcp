@@ -449,15 +449,16 @@ function guidanceCacheKey(record: WorkspaceRecord): string {
 /**
  * The lifetime a workspace_open request receives. A requested `ttlSeconds` is clamped to the instance
  * ceiling and never exceeds it; without one the default lifetime applies, as before the request existed.
- * A requested idle timeout is clamped to the granted lifetime; without one the default idle timeout is
- * kept unchanged, because the idle expiry is always bounded by the hard deadline anyway.
+ * The idle timeout, requested or default, is clamped to the granted lifetime, so a short requested
+ * lifetime never reports an idle timeout longer than itself. Without a ttlSeconds request the
+ * settings rule (idle within lifetime) already holds, so the default idle timeout is unchanged.
  */
 export function grantWorkspaceLifetime(
   policy: { wallTtlSeconds: number; maxWallTtlSeconds: number; idleTtlSeconds: number },
   request: { ttlSeconds?: number | undefined; idleTtlSeconds?: number | undefined }
 ): { grantedSeconds: number; grantedIdleTtlSeconds: number } {
   const grantedSeconds = request.ttlSeconds === undefined ? policy.wallTtlSeconds : Math.min(request.ttlSeconds, policy.maxWallTtlSeconds);
-  const grantedIdleTtlSeconds = request.idleTtlSeconds === undefined ? policy.idleTtlSeconds : Math.min(request.idleTtlSeconds, grantedSeconds);
+  const grantedIdleTtlSeconds = Math.min(request.idleTtlSeconds ?? policy.idleTtlSeconds, grantedSeconds);
   return { grantedSeconds, grantedIdleTtlSeconds };
 }
 
@@ -2428,7 +2429,9 @@ export class WorkspaceService {
     record: WorkspaceRecord,
     request: { ttlSeconds?: number | undefined; idleTtlSeconds?: number | undefined }
   ): Record<string, unknown> {
-    const lifetime = openedLifetime(record, request, this.config.idleTtlSeconds);
+    // A record persisted before open requests were fingerprinted replays any request, so its original
+    // lifetime request is unknown and is not compared with this one.
+    const lifetime = openedLifetime(record, record.requestFingerprint ? request : {}, this.config.idleTtlSeconds);
     if (!lifetime.capped) return { ...data, lifetime };
     const existing = Array.isArray(data.leaseWarnings) ? data.leaseWarnings as string[] : [];
     const warning = `Requested lifetime ${lifetime.requestedSeconds}s exceeds the instance maximum; granted ${lifetime.grantedSeconds}s (hardExpiresAt ${String(data.hardExpiresAt)}).`;
@@ -6500,7 +6503,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const settings = Object.fromEntries(WORKSPACE_LIFECYCLE_SETTING_NAMES.map((name) => [name, {
       value: effective[name],
       source: overrides[name] !== null ? 'setting' : environmentKeys.includes(name) ? 'environment' : 'default',
-      runnerValue: runner[name],
+      // A cleared ceiling follows the effective default lifetime, so that is what a reset restores.
+      runnerValue: name === 'maxWallTtlSeconds' ? Math.max(runner.maxWallTtlSeconds, effective.wallTtlSeconds) : runner[name],
       min: WORKSPACE_LIFECYCLE_BOUNDS[name].min,
       max: WORKSPACE_LIFECYCLE_BOUNDS[name].max
     }])) as WorkspaceLifecycleSettingsView['settings'];

@@ -53,7 +53,7 @@ This panel changes the workspace quota and lifetimes without a redeploy. Each va
 | Setting | Runner variable | Built-in default | What it decides |
 | :--- | :--- | :--- | :--- |
 | **Max active workspaces per principal** | `MAX_ACTIVE_WORKSPACES_PER_OWNER` | 3 | How many counted workspaces (`CREATING`, `ACTIVE`, `NETWORK_QUARANTINED`) one principal may hold. |
-| **Idle timeout** | `WORKSPACE_IDLE_TTL_SECONDS` | 5 min | How long a workspace may go without workspace activity before it expires. `workspace_list`, `workspace_status`, and Dashboard polling do not count as activity. |
+| **Idle timeout** | `WORKSPACE_IDLE_TTL_SECONDS` | 5 min | How long a workspace may go without workspace activity before it expires. `workspace_list`, `workspace_status`, and Dashboard polling do not count as activity. It is a default: `workspace_open` `idleTtlSeconds` may request another value, clamped to the workspace's granted lifetime. |
 | **Default workspace lifetime** | `WORKSPACE_WALL_TTL_SECONDS` | 15 min | The hard deadline from creation that a workspace gets when `workspace_open` requests no `ttlSeconds`. Activity never extends it. The idle timeout may not exceed it. |
 | **Maximum requestable lifetime** | `WORKSPACE_MAX_WALL_TTL_SECONDS` | the default lifetime | The ceiling a `workspace_open` `ttlSeconds` request is clamped to. It cannot be below the default lifetime; unset, callers cannot request more than the default. |
 | **Recoverable grace before auto-close** | `WORKSPACE_RECOVERABLE_GRACE_SECONDS` | 60 min | How long an expired workspace stays recoverable with `workspace_recover` before the reaper may close it. |

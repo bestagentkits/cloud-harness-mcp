@@ -281,7 +281,11 @@ lifetime a workspace receives when `workspace_open` requests none;
 `WORKSPACE_MAX_WALL_TTL_SECONDS` is the ceiling a requested `ttlSeconds` is
 clamped to. It is unset by default, which makes the ceiling equal the default
 lifetime, and the runner refuses to start when it is below the wall TTL (see
-[the MCP API](mcp-api.md) for the request and result fields). The grace is how long an expired workspace stays
+[the MCP API](mcp-api.md) for the request and result fields). The effective
+ceiling is never below the effective default lifetime: when a Dashboard wall
+override is above the environment ceiling, the override wins and every
+lifecycle save is refused until the ceiling or the default lifetime is
+corrected in the panel. The grace is how long an expired workspace stays
 `EXPIRED_RECOVERABLE` before the reaper may close it; `0` closes clean expired
 workspaces on the next reaper pass, and auto-close never discards unsaved work
 (see [operations](operations.md#expired-workspaces-and-auto-close)).

@@ -390,6 +390,8 @@ describe('requested workspace lifetime', () => {
     const data = (await open(context, 'lifetime-short', { ttlSeconds: 120 })).data as Opened;
     expect(lifetimeMs(data)).toBe(120_000);
     expect(context.store.byId(data.workspaceId)!.expiresAt - Date.parse(data.createdAt)).toBe(120_000);
+    expect(data.lifetime).toMatchObject({ grantedSeconds: 120, grantedIdleTtlSeconds: 120, idleCapped: false });
+    expect(context.store.byId(data.workspaceId)!.idleTtlSeconds).toBe(120);
   });
 
   it('replays the same lifetime block and refuses a reused key with a different lifetime', async () => {
@@ -427,7 +429,7 @@ describe('requested workspace lifetime', () => {
   it('never reports a ceiling below a raised default lifetime', async () => {
     const context = fixture();
     const saved = await settings(context.service, { workspaceLifecycle: { expectedRevision: 0, wallTtlSeconds: 1_800 } });
-    expect(saved.settings.maxWallTtlSeconds.value).toBe(1_800);
+    expect(saved.settings.maxWallTtlSeconds).toMatchObject({ value: 1_800, runnerValue: 1_800, source: 'default' });
     const data = (await open(context, 'lifetime-raised-default')).data as Opened;
     expect(lifetimeMs(data)).toBe(1_800_000);
   });

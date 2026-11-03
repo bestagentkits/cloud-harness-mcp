@@ -81,7 +81,7 @@ Read the lifecycle state and metadata for one workspace.
 
 **Workspace capabilities**
 
-Inspect workspace and repository authorization capabilities (including issue and pull request operations mapped to github_action) without modifying state or minting tokens. githubRepositoryCreate reports whether github_repository_create is available and for which organizations; called without a workspaceId when no workspace is active, it returns only that principal-level block (workspaceId: null).
+Inspect workspace and repository authorization capabilities (including issue and pull request operations mapped to github_action) without modifying state or minting tokens. githubRepositoryCreate reports whether github_repository_create is available and for which organizations; called without a workspaceId when no workspace is active, it returns only the principal-level blocks (workspaceId: null). workspaceLifetime (defaultLifetimeSeconds, maxWorkspaceLifetimeSeconds, minLifetimeSeconds, defaultIdleTtlSeconds) reports the lifetime the next workspace_open can be granted, with or without a workspace.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
 

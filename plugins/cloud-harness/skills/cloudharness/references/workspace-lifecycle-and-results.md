@@ -116,8 +116,7 @@ Clone an approved repository and start its bounded executor.
   `networkProfile: "network-none"` only when the owner asks for isolation; it
   blocks all executor egress. The legacy `networkMode` field is rejected.
 - Optional `ttlSeconds` (60–86,400) and `idleTtlSeconds` (60–43,200) are clamped to `workspace_capabilities` `workspaceLifetime.maxWorkspaceLifetimeSeconds` and the granted lifetime; omit them for the defaults. Check `lifetime.capped` (`requestedSeconds`/`grantedSeconds`) before work that must end by `hardExpiresAt`.
-- Returns workspace metadata including opaque `workspaceId`, status, network
-  profile, timestamps, expiry, and the `lifetime` block. A fresh open usually also returns a
+- Returns workspace metadata including opaque `workspaceId`, status, network profile, timestamps, expiry, and the `lifetime` block. A fresh open usually also returns a
   content-free `repositoryContext` summary (digest, discovered guidance paths,
   client targets, sizes, truncation, warnings). It is best-effort: its absence
   is not an error and does not mean the repository has no guidance.
