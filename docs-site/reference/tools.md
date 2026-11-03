@@ -27,7 +27,7 @@ Tools for opening, inspecting, listing, secrets discovery, and closing isolated 
 
 **Open workspace**
 
-Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace. The result hardExpiresAt is a fixed deadline set by the instance maximum workspace lifetime that no renewal or activity extends.
+Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace. The result hardExpiresAt is a fixed deadline that no renewal or activity extends: the instance default lifetime, or the optional ttlSeconds clamped to the instance ceiling (workspace_capabilities.workspaceLifetime.maxWorkspaceLifetimeSeconds). The result lifetime block reports requestedSeconds, grantedSeconds, and capped, so a caller can stop before starting work the deadline cannot fit.
 
 **Attributes:** `idempotent` · <span class="badge-openworld">openWorld</span>
 
@@ -49,6 +49,8 @@ Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding 
 | `skillSets` | object[] | No | default: `[]` |
 | `skillOverrides` | `object` | No | default: `{}` |
 | `allowToolkitWorkspaceChanges` | `true` | No | — |
+| `ttlSeconds` | `integer` | No | Requested hard lifetime in seconds, counted from creation. The runner clamps it to the instance ceiling workspace_capabilities reports as workspaceLifetime.maxWorkspaceLifetimeSeconds; the result lifetime block reports the requested and granted values. Omitted keeps the instance default lifetime. (range: 60–86400) |
+| `idleTtlSeconds` | `integer` | No | Requested idle timeout in seconds, clamped to the granted lifetime. Omitted keeps the instance default idle timeout. (range: 60–43200) |
 
 ### `workspace_list`
 
@@ -79,7 +81,7 @@ Read the lifecycle state and metadata for one workspace.
 
 **Workspace capabilities**
 
-Inspect workspace and repository authorization capabilities (including issue and pull request operations mapped to github_action) without modifying state or minting tokens. githubRepositoryCreate reports whether github_repository_create is available and for which organizations; called without a workspaceId when no workspace is active, it returns only that principal-level block (workspaceId: null).
+Inspect workspace and repository authorization capabilities (including issue and pull request operations mapped to github_action) without modifying state or minting tokens. githubRepositoryCreate reports whether github_repository_create is available and for which organizations; called without a workspaceId when no workspace is active, it returns only the principal-level blocks (workspaceId: null). workspaceLifetime (defaultLifetimeSeconds, maxWorkspaceLifetimeSeconds, minLifetimeSeconds, defaultIdleTtlSeconds) reports the lifetime the next workspace_open can be granted, with or without a workspace.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
 

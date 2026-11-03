@@ -519,7 +519,16 @@ export function workspaceLifecycleUpdateInput(view, values, acknowledged) {
   }
   if (!errors.idleTtlSeconds && !errors.wallTtlSeconds && effective.idleTtlSeconds > effective.wallTtlSeconds) {
     const field = update.wallTtlSeconds !== undefined && update.idleTtlSeconds === undefined ? 'wallTtlSeconds' : 'idleTtlSeconds';
-    errors[field] = `The idle timeout (${lifecycleDurationLabel(effective.idleTtlSeconds)}) cannot exceed the maximum lifetime (${lifecycleDurationLabel(effective.wallTtlSeconds)}).`;
+    errors[field] = `The idle timeout (${lifecycleDurationLabel(effective.idleTtlSeconds)}) cannot exceed the default lifetime (${lifecycleDurationLabel(effective.wallTtlSeconds)}).`;
+  }
+  // Mirrors the runner: an explicit ceiling (edited, a stored override, or the runner environment) may not be
+  // below the default lifetime, while a ceiling configured nowhere follows the default lifetime.
+  const ceilingSetting = view.settings.maxWallTtlSeconds;
+  const ceiling = update.maxWallTtlSeconds
+    ?? (ceilingSetting.source === 'setting' ? ceilingSetting.value : ceilingSetting.source === 'environment' ? ceilingSetting.runnerValue : undefined);
+  if (!errors.wallTtlSeconds && !errors.maxWallTtlSeconds && ceiling !== undefined && ceiling < effective.wallTtlSeconds) {
+    const field = update.wallTtlSeconds !== undefined && update.maxWallTtlSeconds === undefined ? 'wallTtlSeconds' : 'maxWallTtlSeconds';
+    errors[field] = `The maximum requestable lifetime (${lifecycleDurationLabel(ceiling)}) cannot be below the default lifetime (${lifecycleDurationLabel(effective.wallTtlSeconds)}).`;
   }
   if (update.recoverableGraceSeconds === 0) {
     if (acknowledged === true) update.acknowledgeImmediateClose = true;
@@ -533,8 +542,12 @@ export function workspaceLifecycleUpdateInput(view, values, acknowledged) {
 export function workspaceLifecycleResetInput(view) {
   const idle = view.settings.idleTtlSeconds.runnerValue;
   const wall = view.settings.wallTtlSeconds.runnerValue;
+  const ceiling = view.settings.maxWallTtlSeconds.runnerValue;
   if (idle > wall) {
-    return { error: `The runner values cannot be restored: the runner idle timeout (${lifecycleDurationLabel(idle)}) exceeds its maximum lifetime (${lifecycleDurationLabel(wall)}). Fix the runner environment, or keep a Dashboard override.` };
+    return { error: `The runner values cannot be restored: the runner idle timeout (${lifecycleDurationLabel(idle)}) exceeds its default lifetime (${lifecycleDurationLabel(wall)}). Fix the runner environment, or keep a Dashboard override.` };
+  }
+  if (ceiling < wall) {
+    return { error: `The runner values cannot be restored: the runner maximum requestable lifetime (${lifecycleDurationLabel(ceiling)}) is below its default lifetime (${lifecycleDurationLabel(wall)}). Fix the runner environment, or keep a Dashboard override.` };
   }
   return { body: { expectedRevision: view.revision, ...Object.fromEntries(WORKSPACE_LIFECYCLE_FIELDS.map((field) => [field.name, null])) } };
 }
@@ -543,7 +556,7 @@ export function workspaceLifecycleResetInput(view) {
 export function workspaceLifecycleSummary(view) {
   if (!isWorkspaceLifecycleView(view)) return '';
   const { settings } = view;
-  return `Effective: up to ${settings.maxActiveWorkspacesPerOwner.value} active per principal, idle ${lifecycleDurationLabel(settings.idleTtlSeconds.value)}, lifetime ${lifecycleDurationLabel(settings.wallTtlSeconds.value)}, grace ${lifecycleDurationLabel(settings.recoverableGraceSeconds.value)}.`;
+  return `Effective: up to ${settings.maxActiveWorkspacesPerOwner.value} active per principal, idle ${lifecycleDurationLabel(settings.idleTtlSeconds.value)}, default lifetime ${lifecycleDurationLabel(settings.wallTtlSeconds.value)}, requestable up to ${lifecycleDurationLabel(settings.maxWallTtlSeconds.value)}, grace ${lifecycleDurationLabel(settings.recoverableGraceSeconds.value)}.`;
 }
 
 export function apiKeyCreateInput(form) {

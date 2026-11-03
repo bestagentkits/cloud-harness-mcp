@@ -1561,14 +1561,34 @@ and
     `hardExpiresAt`, it is `true`, the result adds `requestedExpiresAt` and a
     `leaseWarnings` entry, and the message says the lease ends at the hard
     deadline (or was not extended at all).
+  - **Requested lifetime:** `workspace_open` sets `hardExpiresAt` once, at open.
+    Without `ttlSeconds` it is the instance default lifetime (Dashboard override
+    or `WORKSPACE_WALL_TTL_SECONDS`, shipped default 15 minutes). An optional
+    `ttlSeconds` (60–86,400) asks for another lifetime; the runner clamps it to
+    the instance ceiling (Dashboard **Maximum requestable lifetime** or
+    `WORKSPACE_MAX_WALL_TTL_SECONDS`, which defaults to the default lifetime and
+    is never below it). An optional `idleTtlSeconds` (60–43,200) is clamped to
+    the granted lifetime. The open result, and an idempotent replay of it,
+    carries `lifetime: { requestedSeconds, grantedSeconds, capped,
+    requestedIdleTtlSeconds, grantedIdleTtlSeconds, idleCapped }`, and a capped
+    request adds a `leaseWarnings` entry, so nothing silently exceeds the limit.
+    `ttlSeconds` and `idleTtlSeconds` join the idempotency fingerprint only when
+    set, so earlier replays keep matching. `workspace_capabilities` (also without
+    a workspace) reports `workspaceLifetime: { defaultLifetimeSeconds,
+    maxWorkspaceLifetimeSeconds, minLifetimeSeconds, defaultIdleTtlSeconds }`
+    so a caller can check the ceiling before it opens. The executable owners are
+    `grantWorkspaceLifetime` in
+    [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
+    and the bounds in
+    [`packages/contracts/src/workspace-lifecycle.ts`](../packages/contracts/src/workspace-lifecycle.ts).
   - **Long routines:** renewal extends only the idle lease and never passes
-    `hardExpiresAt`, which the instance wall TTL (Dashboard override or
-    `WORKSPACE_WALL_TTL_SECONDS`) sets when the workspace opens (shipped default
-    15 minutes). A routine that holds one workspace for about an hour
-    needs an instance wall TTL of at least `3600`, or should open a fresh workspace per
-    phase and keep its state in GitHub (statuses, refs, comments). Brokered
-    `github_action`/`github_read` calls do not read local history, so a
-    `fetchDepth: 1` checkout is enough for a coordination-only workspace.
+    `hardExpiresAt`. A routine that holds one workspace for about an hour opens
+    it with `ttlSeconds: 3600` on an instance whose ceiling allows it, and checks
+    `lifetime.capped` before it starts work the deadline cannot fit; otherwise it
+    opens a fresh workspace per phase and keeps its state in GitHub (statuses,
+    refs, comments). Brokered `github_action`/`github_read` calls do not read
+    local history, so a `fetchDepth: 1` checkout is enough for a
+    coordination-only workspace.
   - **`availableActions` Metadata:** `workspace_status` and `workspace_list` responses
     expose an `availableActions` string array listing valid lifecycle operations
     (e.g., `['workspace_recover', 'workspace_lease_renew', 'workspace_close']` for

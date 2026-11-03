@@ -262,6 +262,7 @@ export type WorkspaceLifecycleOverrides = {
   maxActiveWorkspacesPerOwner: number | null;
   idleTtlSeconds: number | null;
   wallTtlSeconds: number | null;
+  maxWallTtlSeconds: number | null;
   recoverableGraceSeconds: number | null;
   revision: number;
   updatedAt: number | null;
@@ -1320,6 +1321,7 @@ export class StateStore {
       ['max_active_workspaces_per_owner', 'INTEGER CHECK(max_active_workspaces_per_owner BETWEEN 1 AND 64)'],
       ['workspace_idle_ttl_seconds', 'INTEGER CHECK(workspace_idle_ttl_seconds BETWEEN 60 AND 43200)'],
       ['workspace_wall_ttl_seconds', 'INTEGER CHECK(workspace_wall_ttl_seconds BETWEEN 60 AND 86400)'],
+      ['workspace_max_wall_ttl_seconds', 'INTEGER CHECK(workspace_max_wall_ttl_seconds BETWEEN 60 AND 86400)'],
       ['recoverable_grace_seconds', 'INTEGER CHECK(recoverable_grace_seconds BETWEEN 0 AND 86400)'],
       ['lifecycle_revision', 'INTEGER NOT NULL DEFAULT 0'],
       ['lifecycle_updated_at', 'INTEGER']
@@ -1331,14 +1333,15 @@ export class StateStore {
   /** The Dashboard overrides of the workspace lifecycle policy, or all-null at revision 0 when none were saved. */
   getWorkspaceLifecycleOverrides(): WorkspaceLifecycleOverrides {
     const row = this.database.prepare(`SELECT max_active_workspaces_per_owner, workspace_idle_ttl_seconds, workspace_wall_ttl_seconds,
-      recoverable_grace_seconds, lifecycle_revision, lifecycle_updated_at FROM instance_settings WHERE id = 1`).get() as {
+      workspace_max_wall_ttl_seconds, recoverable_grace_seconds, lifecycle_revision, lifecycle_updated_at FROM instance_settings WHERE id = 1`).get() as {
       max_active_workspaces_per_owner: number | null; workspace_idle_ttl_seconds: number | null; workspace_wall_ttl_seconds: number | null;
-      recoverable_grace_seconds: number | null; lifecycle_revision: number; lifecycle_updated_at: number | null;
+      workspace_max_wall_ttl_seconds: number | null; recoverable_grace_seconds: number | null; lifecycle_revision: number; lifecycle_updated_at: number | null;
     } | undefined;
     return {
       maxActiveWorkspacesPerOwner: row?.max_active_workspaces_per_owner ?? null,
       idleTtlSeconds: row?.workspace_idle_ttl_seconds ?? null,
       wallTtlSeconds: row?.workspace_wall_ttl_seconds ?? null,
+      maxWallTtlSeconds: row?.workspace_max_wall_ttl_seconds ?? null,
       recoverableGraceSeconds: row?.recoverable_grace_seconds ?? null,
       revision: row?.lifecycle_revision ?? 0,
       updatedAt: row?.lifecycle_updated_at ?? null
@@ -1352,7 +1355,7 @@ export class StateStore {
    */
   updateWorkspaceLifecycleOverrides(
     expectedRevision: number,
-    changes: Partial<Pick<WorkspaceLifecycleOverrides, 'maxActiveWorkspacesPerOwner' | 'idleTtlSeconds' | 'wallTtlSeconds' | 'recoverableGraceSeconds'>>,
+    changes: Partial<Pick<WorkspaceLifecycleOverrides, 'maxActiveWorkspacesPerOwner' | 'idleTtlSeconds' | 'wallTtlSeconds' | 'maxWallTtlSeconds' | 'recoverableGraceSeconds'>>,
     updatedAt: number,
     validate: (next: WorkspaceLifecycleOverrides) => void
   ): { previous: WorkspaceLifecycleOverrides; next: WorkspaceLifecycleOverrides } {
@@ -1364,16 +1367,17 @@ export class StateStore {
       const next: WorkspaceLifecycleOverrides = { ...previous, ...defined, revision: previous.revision + 1, updatedAt };
       validate(next);
       this.database.prepare(`INSERT INTO instance_settings(id, updated_at, max_active_workspaces_per_owner, workspace_idle_ttl_seconds,
-          workspace_wall_ttl_seconds, recoverable_grace_seconds, lifecycle_revision, lifecycle_updated_at)
-        VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+          workspace_wall_ttl_seconds, workspace_max_wall_ttl_seconds, recoverable_grace_seconds, lifecycle_revision, lifecycle_updated_at)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at,
           max_active_workspaces_per_owner = excluded.max_active_workspaces_per_owner,
           workspace_idle_ttl_seconds = excluded.workspace_idle_ttl_seconds,
           workspace_wall_ttl_seconds = excluded.workspace_wall_ttl_seconds,
+          workspace_max_wall_ttl_seconds = excluded.workspace_max_wall_ttl_seconds,
           recoverable_grace_seconds = excluded.recoverable_grace_seconds,
           lifecycle_revision = excluded.lifecycle_revision,
           lifecycle_updated_at = excluded.lifecycle_updated_at`)
-        .run(updatedAt, next.maxActiveWorkspacesPerOwner, next.idleTtlSeconds, next.wallTtlSeconds, next.recoverableGraceSeconds, next.revision, updatedAt);
+        .run(updatedAt, next.maxActiveWorkspacesPerOwner, next.idleTtlSeconds, next.wallTtlSeconds, next.maxWallTtlSeconds, next.recoverableGraceSeconds, next.revision, updatedAt);
       this.database.exec('COMMIT;');
       return { previous, next };
     } catch (error) {

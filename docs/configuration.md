@@ -274,9 +274,18 @@ the persisted default and its reset semantics by
 [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts).
 Runner-owned remote Git helpers do not depend on the executor network profile.
 
-`WORKSPACE_WALL_TTL_SECONDS`, `WORKSPACE_IDLE_TTL_SECONDS`,
-`WORKSPACE_RECOVERABLE_GRACE_SECONDS`, and `REAPER_INTERVAL_SECONDS` define
-lifecycle timing. The grace is how long an expired workspace stays
+`WORKSPACE_WALL_TTL_SECONDS`, `WORKSPACE_MAX_WALL_TTL_SECONDS`,
+`WORKSPACE_IDLE_TTL_SECONDS`, `WORKSPACE_RECOVERABLE_GRACE_SECONDS`, and
+`REAPER_INTERVAL_SECONDS` define lifecycle timing. The wall TTL is the default
+lifetime a workspace receives when `workspace_open` requests none;
+`WORKSPACE_MAX_WALL_TTL_SECONDS` is the ceiling a requested `ttlSeconds` is
+clamped to. It is unset by default, which makes the ceiling equal the default
+lifetime, and the runner refuses to start when it is below the wall TTL (see
+[the MCP API](mcp-api.md) for the request and result fields). The effective
+ceiling is never below the effective default lifetime: when a Dashboard wall
+override is above the environment ceiling, the override wins and every
+lifecycle save is refused until the ceiling or the default lifetime is
+corrected in the panel. The grace is how long an expired workspace stays
 `EXPIRED_RECOVERABLE` before the reaper may close it; `0` closes clean expired
 workspaces on the next reaper pass, and auto-close never discards unsaved work
 (see [operations](operations.md#expired-workspaces-and-auto-close)).
@@ -285,8 +294,8 @@ workspace admission against a host reserve.
 
 **Dashboard lifecycle overrides.** Dashboard → Settings → **Workspace limits &
 lifecycle** stores durable, instance-wide overrides for
-`MAX_ACTIVE_WORKSPACES_PER_OWNER`, the idle TTL, the wall TTL, and the
-recoverable grace, so these can change without a redeploy. Each value resolves
+`MAX_ACTIVE_WORKSPACES_PER_OWNER`, the idle TTL, the wall TTL (default
+lifetime), the maximum requestable lifetime, and the recoverable grace, so these can change without a redeploy. Each value resolves
 as Dashboard override, then the runner environment variable, then the built-in
 default, and the panel shows which source applies. Resetting a field returns it
 to the runner value. Override ranges are narrower than some environment ranges
