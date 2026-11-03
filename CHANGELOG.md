@@ -1,3 +1,10 @@
+# [0.80.0-beta.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0-beta.2...v0.80.0-beta.3) (2026-11-03)
+
+
+### Features
+
+* **workspace:** let workspace_open request a lifetime up to an instance ceiling ([#633](https://github.com/bestagentkits/cloud-harness-mcp/issues/633)) ([6795986](https://github.com/bestagentkits/cloud-harness-mcp/commit/6795986819d452f4b4caa0153507ec97067d9b6f)), closes [#632](https://github.com/bestagentkits/cloud-harness-mcp/issues/632)
+
 # [0.80.0-beta.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0-beta.1...v0.80.0-beta.2) (2026-11-01)
 
 
