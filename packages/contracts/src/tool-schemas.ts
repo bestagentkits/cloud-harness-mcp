@@ -118,9 +118,19 @@ export const SkillSetSelectionSchema = z.object({
   expectedGeneration: z.number().int().positive()
 }).strict();
 
+/**
+ * The identity an override pins. A library skill (a Skill Set member) is pinned by its `skrev_`
+ * revision id; a toolkit skill has no library revision, so it is pinned by its content digest, which
+ * is also how a toolkit skill is identified in the launch projection.
+ */
+export const SkillOverrideRevisionSchema = z.union([
+  SkillRevisionIdSchema,
+  z.string().regex(/^[0-9a-f]{64}$/, 'expected a skrev_ revision id or a 64-character lowercase hex content digest')
+]);
+
 export const SkillOverrideMapSchema = z.record(
   z.string().regex(/^[A-Za-z0-9._-]{1,80}$/, 'invalid skill name'),
-  SkillRevisionIdSchema
+  SkillOverrideRevisionSchema
 ).refine((value) => Object.keys(value).length <= 128, 'at most 128 skill overrides per launch');
 
 export type SkillSetSelection = z.infer<typeof SkillSetSelectionSchema>;
@@ -947,11 +957,11 @@ const schemas = {
       skillSetIds.add(set.skillSetId);
     }
     const overrideNames = Object.keys(input.skillOverrides);
-    if (overrideNames.length > 0 && input.skillSets.length === 0) {
+    if (overrideNames.length > 0 && input.skillSets.length === 0 && input.toolkits.length === 0) {
       context.addIssue({
         code: 'custom',
         path: ['skillOverrides'],
-        message: 'skill overrides require at least one skill set selection'
+        message: 'skill overrides require at least one skill set or toolkit selection'
       });
     }
   }),

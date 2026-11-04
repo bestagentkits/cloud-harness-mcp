@@ -230,7 +230,13 @@ describe('skill registry repository', () => {
         assignments: [{ name: 'tdd', skillSourceId: sourceId, revisionId, tier: 'owner', pinned: true }]
       });
 
-      expect(() => store.deleteSkillSet(OWNER, setId, 2)).toThrow(/referenced by 1 workspace snapshot/i);
+      expect(() => store.deleteSkillSet(OWNER, setId, 2)).toThrow(/referenced by 1 live workspace snapshot/i);
+
+      // A closed workspace keeps no claim on the set: deletion succeeds and takes the snapshot with it.
+      store.database.prepare('UPDATE workspaces SET status = ? WHERE owner_id = ? AND id = ?').run('CLOSED', OWNER, `ws_${'w'.repeat(24)}`);
+      store.deleteSkillSet(OWNER, setId, 2);
+      expect(store.getSkillSet(OWNER, setId)).toBeUndefined();
+      expect(store.database.prepare('SELECT count(*) AS count FROM workspace_skill_set_snapshots WHERE owner_id = ?').get(OWNER)).toEqual({ count: 0 });
     } finally {
       store.close();
     }

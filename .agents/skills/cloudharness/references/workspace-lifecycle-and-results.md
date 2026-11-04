@@ -122,7 +122,7 @@ Clone an approved repository and start its bounded executor.
   is not an error and does not mean the repository has no guidance.
 - `toolkits` accepts `preset`/`git`/`agentkit` selections; licensed AgentKit
   kits stay `owner`-scoped, need a pinned registry key and licence token, and
-  report `verification: 'registry-signed'` (pre-release adds a `warnings` entry).
+  report `verification: 'registry-signed'` (pre-release adds a `warnings` entry). `skillSets` projects library skills: [Skill sets](skill-sets.md).
 - `kitLocks` (at most two, needs `ENABLE_KIT_LOCK_INSTALL`) pins the kits of an
   `agentkit.skill-lock/v1` lock as `kit-lock-<kitId>`: unusable locks return
   `INVALID_INPUT`, missing locked skills `NOT_FOUND`; personal locks are refused.

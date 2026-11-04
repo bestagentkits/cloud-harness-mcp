@@ -75,6 +75,7 @@ describe('skills management lifecycle', () => {
       }));
       const skillId = (created.data as { sourceId: string }).sourceId;
       const firstRevision = (created.data as { revisionId: string }).revisionId;
+      const firstBundle = (created.data as { bundleSha256: string }).bundleSha256;
       expect(skillId).toMatch(/^sk_/);
       expect(JSON.stringify(created)).not.toContain('sk_live');
 
@@ -96,7 +97,7 @@ describe('skills management lifecycle', () => {
         skillSets: [{ skillSetId, expectedGeneration: 1 }]
       }));
       expect((preview.data as { resolved: Array<{ name: string; tier: string }> }).resolved)
-        .toEqual([{ name: 'tdd', tier: 'owner', sourceId: skillId, revisionId: firstRevision, contentSha256: firstRevision, pinned: false }]);
+        .toEqual([{ name: 'tdd', tier: 'owner', sourceId: skillId, revisionId: firstRevision, contentSha256: firstBundle, pinned: false }]);
       expect((preview.data as { conflicts: unknown[] }).conflicts).toEqual([]);
 
       // 5. An override pins the revision, which is how a launch conflict is settled.
