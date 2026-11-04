@@ -106,11 +106,13 @@ issue and pull-request permissions cannot mint an action-scoped token.
    - **Homepage URL:** `https://harness.agentkit.best` (or your repository URL).
    - **Callback URL:** Leave empty (unless using Access SSO OAuth redirect).
    - **Setup URL:** `https://<your-dashboard-domain>/dashboard/integrations/github`, and
-     check **Redirect on update**. GitHub always returns to the Setup URL after a new
-     installation; **Redirect on update** also returns there after you change an existing
-     installation, which is the only way to connect an App that was already installed on
-     the account. An App registered earlier with `/dashboard/github` still works; that
-     path redirects here and keeps the setup callback parameters.
+     check **Redirect on update**. GitHub returns to the Setup URL after a new installation;
+     **Redirect on update** also returns there after you change an existing installation.
+     An account or organization that already has the App installed cannot be connected
+     yet: GitHub opens **Configure** instead of **Install**, and the dashboard needs the
+     setup `state` to bind it ([issue #640](https://github.com/bestagentkits/cloud-harness-mcp/issues/640)).
+     An App registered earlier with `/dashboard/github` still works; that path redirects
+     here and keeps the setup callback parameters.
 4. **Webhook:**
    - Uncheck **Active** under the Webhook section (Cloud Harness does not require webhooks).
 5. **Repository permissions:**
@@ -239,7 +241,7 @@ Test opening a private repository through your AI client (Cursor, Claude Code, e
 | **`commit_status_create`, `check_runs_list`, or `workflow_*` returns `FORBIDDEN` with `permission_not_granted`** | The installation does not grant **Commit statuses**, **Checks**, or **Actions**. | Add the permission to the App, then approve the updated permissions on the installation. |
 | **`Token minting: UNAVAILABLE`** | App ID or Private Key mismatch. | Verify `GITHUB_APP_ID` matches GitHub App ID, and that the `.pem` file corresponds to that exact App. |
 | **Key rotation** | Need to rotate an existing key. | Generate a second key in GitHub first, update the `.pem` file on host, restart runner, then delete the old key in GitHub. |
-| **Dashboard shows "No GitHub App installation is bound to this identity" after installing or saving on GitHub** | GitHub did not return to the dashboard with both `state` and `installation_id`: the App has no **Setup URL**, **Redirect on update** is off for an App that was already installed (GitHub opens **Configure** instead of **Install**), or the 10-minute setup link expired. | Set the Setup URL and **Redirect on update** as in [Step 2](#step-2-register-the-github-app), then click **Connect GitHub App** again and finish on GitHub within 10 minutes. If the dashboard still shows no installation, uninstall the App from [github.com/settings/installations](https://github.com/settings/installations) and install it again from **Connect GitHub App**; anything else using that installation loses access until it is reinstalled. |
+| **Dashboard shows "No GitHub App installation is bound to this identity" after installing or saving on GitHub** | GitHub did not return to the dashboard with both `state` and `installation_id`. Either the App has no **Setup URL**, the 10-minute setup link expired, or the App was already installed on that account. In the last case GitHub opens **Configure** instead of **Install**, and the dashboard does not yet bind an existing installation ([issue #640](https://github.com/bestagentkits/cloud-harness-mcp/issues/640)). | Set the Setup URL and **Redirect on update** as in [Step 2](#step-2-register-the-github-app), then click **Connect GitHub App** again and finish on GitHub within 10 minutes. For an App that is already installed, uninstall it from [github.com/settings/installations](https://github.com/settings/installations) and install it again from **Connect GitHub App**. Anything else using that installation loses access until it is reinstalled. |
 
 ## Where this page lives now
 

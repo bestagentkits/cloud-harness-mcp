@@ -102,10 +102,13 @@ their organization:
 4. Under **Setup URL (optional)**, enter
    `https://<your-dashboard-domain>/dashboard/integrations/github` and check
    **Redirect on update**. GitHub returns to the Setup URL with the
-   installation ID and setup state after every new installation; **Redirect on
-   update** also returns there after an existing installation is changed, which
-   is how an App already installed on the account gets connected (GitHub shows
-   **Configure** instead of **Install** for it). Without a Setup URL the
+   installation ID and setup state after a new installation; **Redirect on
+   update** also returns there after an existing installation is changed.
+   Binding requires the setup `state`. An account that already has the App
+   installed gets **Configure** instead of **Install** on GitHub, and that
+   path is not observed to carry `state`. Such an installation cannot be bound
+   until the user-authorization check in issue #640 lands. The workaround is to
+   uninstall and reinstall. Without a Setup URL the
    dashboard never receives the callback and cannot bind the installation. An
    App already registered with the legacy `/dashboard/github` Setup URL keeps
    working: that path redirects to the Integrations page and carries only the
