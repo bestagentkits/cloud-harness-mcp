@@ -22,6 +22,7 @@ docker compose --profile images build executor-image
 1. Open the Operator Dashboard → **GitHub**.
 2. Click **Install GitHub App** and authorize the target repository.
 3. Ensure the repository URL matches the format `https://github.com/owner/repo.git`.
+4. If the dashboard still shows "No GitHub App installation is bound to this identity" after you finish on GitHub, GitHub did not send you back with the setup callback. Set the App's **Setup URL** and **Redirect on update** as described in the [GitHub App guide](/dashboard/github#troubleshooting), then connect again.
 
 ---
 

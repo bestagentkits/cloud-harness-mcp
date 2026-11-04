@@ -101,12 +101,15 @@ their organization:
    sufficient when the App has no separate website.
 4. Under **Setup URL (optional)**, enter
    `https://<your-dashboard-domain>/dashboard/integrations/github` and check
-   **Redirect on setup**. GitHub then returns to the dashboard with the
-   installation ID and setup state so Cloud Harness can complete the
-   authorization. An App already registered with the legacy
-   `/dashboard/github` Setup URL keeps working: that path redirects to the
-   Integrations page and carries only the validated `state`,
-   `installation_id`, and `setup_action` callback parameters
+   **Redirect on update**. GitHub returns to the Setup URL with the
+   installation ID and setup state after every new installation; **Redirect on
+   update** also returns there after an existing installation is changed, which
+   is how an App already installed on the account gets connected (GitHub shows
+   **Configure** instead of **Install** for it). Without a Setup URL the
+   dashboard never receives the callback and cannot bind the installation. An
+   App already registered with the legacy `/dashboard/github` Setup URL keeps
+   working: that path redirects to the Integrations page and carries only the
+   validated `state`, `installation_id`, and `setup_action` callback parameters
    (`apps/api/src/dashboard-assets.ts`). Leave **Callback URL** empty.
 5. Clear **Active** under **Webhook**. This integration does not consume
    webhooks.
