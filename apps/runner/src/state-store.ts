@@ -470,6 +470,11 @@ export class SkillRegistryError extends Error {
   }
 }
 
+/** The one wording for a slug that is already taken, so a pre-check and the store constraint agree. */
+export function skillSlugConflictMessage(slug: string): string {
+  return `a skill with the slug "${slug}" already exists; edit it to publish a new revision`;
+}
+
 const MAX_SKILL_TAGS = 16;
 const MAX_SKILL_TAG_LENGTH = 32;
 // The same allowlist as an array, for the readers that pass it as a parameter instead of interpolating it,
@@ -3046,9 +3051,28 @@ export class StateStore {
       this.database.exec('COMMIT');
     } catch (error) {
       this.database.exec('ROLLBACK');
+      // The slug is unique per owner, so a second create under it is a conflict the caller can name,
+      // not an internal failure. node:sqlite reports the violation as SQLITE_CONSTRAINT_UNIQUE (2067).
+      if (error instanceof Error && 'errcode' in error && error.errcode === 2067 && error.message.includes('skill_sources.slug')) {
+        throw new SkillRegistryError('CONFLICT', skillSlugConflictMessage(input.slug));
+      }
       throw error;
     }
     return { sourceId, revisionId };
+  }
+
+  /** The id of this owner's skill source with the slug, whatever its state, or undefined. */
+  findSkillSourceIdBySlug(ownerId: string, slug: string): string | undefined {
+    const row = this.database.prepare('SELECT id FROM skill_sources WHERE owner_id = ? AND slug = ?')
+      .get(ownerId, slug) as { id: string } | undefined;
+    return row?.id;
+  }
+
+  /** Whether any skill revision or toolkit cache entry of this owner points at the bundle. */
+  isBundleReferenced(ownerId: string, bundleSha256: string): boolean {
+    return this.database.prepare(`SELECT 1 FROM skill_revisions WHERE owner_id = ? AND bundle_sha256 = ?
+      UNION ALL SELECT 1 FROM toolkit_cache_entries WHERE owner_id = ? AND bundle_sha256 = ? LIMIT 1`)
+      .get(ownerId, bundleSha256, ownerId, bundleSha256) !== undefined;
   }
 
   addSkillRevision(input: {
@@ -3310,12 +3334,24 @@ export class StateStore {
 
   deleteSkillSet(ownerId: string, id: string, expectedGeneration: number): void {
     this.requireSkillGeneration('skill_sets', ownerId, id, expectedGeneration);
-    const holders = this.database.prepare('SELECT count(*) as count FROM workspace_skill_set_snapshots WHERE owner_id = ? AND skill_set_id = ?')
-      .get(ownerId, id) as { count: number };
+    // Only a live workspace still depends on the set; a closed or failed one keeps no claim on it. Its
+    // snapshot rows go with the set, since the snapshot table refuses to outlive the set it names.
+    const holders = this.database.prepare(`SELECT count(*) as count FROM workspace_skill_set_snapshots s
+      JOIN workspaces w ON w.owner_id = s.owner_id AND w.id = s.workspace_id
+      WHERE s.owner_id = ? AND s.skill_set_id = ? AND w.status IN (SELECT value FROM json_each(?))`)
+      .get(ownerId, id, JSON.stringify(ACTIVE_WORKSPACE_STATUS_LIST)) as { count: number };
     if (holders.count > 0) {
-      throw new SkillRegistryError('CONFLICT', `skill set ${id} is referenced by ${holders.count} workspace snapshot(s)`);
+      throw new SkillRegistryError('CONFLICT', `skill set ${id} is referenced by ${holders.count} live workspace snapshot(s)`);
     }
-    this.database.prepare('DELETE FROM skill_sets WHERE owner_id = ? AND id = ?').run(ownerId, id);
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database.prepare('DELETE FROM workspace_skill_set_snapshots WHERE owner_id = ? AND skill_set_id = ?').run(ownerId, id);
+      this.database.prepare('DELETE FROM skill_sets WHERE owner_id = ? AND id = ?').run(ownerId, id);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   recordWorkspaceSkillSelection(input: {

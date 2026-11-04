@@ -237,6 +237,14 @@ async function skillEntries() {
     { source: 'repository', roots: ['.agents/skills', '.codex/skills', '.claude/skills'] }
   ];
 
+  // The runner records which library revision each projected owner skill is; it is a file beside the
+  // skill directories, so the directory scan below never mistakes it for a skill.
+  let ownerRevisions = {};
+  try {
+    const parsed = JSON.parse(await readFile(join(ownerRoot, '.cloud-harness-skill-revisions.json'), 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ownerRevisions = parsed;
+  } catch { /* no skill set was launched */ }
+
   const allCandidates = [];
   for (const group of sources) {
     for (const root of group.roots) {
@@ -261,7 +269,10 @@ async function skillEntries() {
                 file,
                 skillDir,
                 contentSha256: bundleDigest,
-                byteCount: st.size
+                byteCount: st.size,
+                ...(group.source === 'owner' && typeof ownerRevisions[item.name]?.revisionId === 'string'
+                  ? { revisionId: ownerRevisions[item.name].revisionId }
+                  : {})
               });
             } catch { /* not a skill */ }
           }
@@ -306,6 +317,7 @@ async function skillEntries() {
       root: selected.root,
       file: selected.file,
       contentSha256: selected.contentSha256,
+      ...(selected.revisionId ? { revisionId: selected.revisionId } : {}),
       shadowed,
       allCandidates: candidates
     });
@@ -1365,6 +1377,7 @@ const handlers = {
       source: e.source,
       root: e.root,
       contentSha256: e.contentSha256,
+      ...(e.revisionId ? { revisionId: e.revisionId } : {}),
       shadowed: (input.includeShadowed ?? true) ? e.shadowed : []
     }));
     return ok(`Found ${entries.length} skills`, { skills: outputList }, next ? { cursor: next } : {});
@@ -1395,6 +1408,7 @@ const handlers = {
         mutableBy: selectedCand.source === 'built-in' ? 'release' : selectedCand.source === 'owner' ? 'owner' : selectedCand.source === 'workspace' ? 'workspace-process' : 'repository-commit',
         path: selectedCand.file,
         contentSha256: selectedCand.contentSha256,
+        ...(selectedCand.revisionId ? { revisionId: selectedCand.revisionId } : {}),
         discoveredAt: new Date().toISOString()
       }
     }, { truncated: offset + sliced.length < content.length });
