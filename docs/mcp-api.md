@@ -77,6 +77,21 @@ of the Managed OAuth lane that authenticates the client to Cloud Harness.
    scope mounts toolkits read-only at `/opt/cloud-harness/owner-skills` without
    polluting git status; `workspace` scope materializes files into
    `.cloud-harness/skills` with `allowToolkitWorkspaceChanges: true`.
+   To launch with skills from the owner's Dashboard skill library, pass
+   `skillSets: [{ skillSetId, expectedGeneration }]` (at most 16). Each member is
+   projected, at the revision the set pinned, into the same `owner` tier as
+   `owner`-scoped toolkits, so `skills_list`/`skills_read` see it with source
+   `owner` and report its library `revisionId`. The selection is resolved before
+   any record, clone, or container exists and fails closed: an unknown set is
+   `NOT_FOUND`, a set whose generation moved is `STALE_GENERATION` (409), a
+   disabled or archived member is `CONFLICT` (409), and a member whose pinned
+   revision or bundle is gone is `NOT_FOUND`. A skill name defined with
+   different content by two members, or by a member and an `owner` toolkit, is a
+   same-tier `CONFLICT` (409) unless `skillOverrides` (`{ "<name>": "<id>" }`)
+   pins one: `<id>` is the member's `skrev_` revision id, or, for a toolkit
+   skill, its 64-character hex content digest. `skillOverrides` needs at least
+   one skill set or toolkit. The selection is part of the idempotency
+   fingerprint and is recorded per workspace.
    Licensed AgentKit kits use `{ kind: 'agentkit', kitId, channel }`: the runner
    resolves and signature-verifies the registry manifest with the operator's
    stored licence token, verifies the package digest, and mounts the kit skills

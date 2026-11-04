@@ -21,7 +21,8 @@ import { McpOAuthStoreError } from './mcp-oauth-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import { readSkillArchive } from './skill-archive.js';
 import { SkillExtensionService } from './skill-extension-service.js';
-import { SkillRegistryError, type PrivilegeGrantRecord, type StateStore } from './state-store.js';
+import { SkillRegistryError, skillSlugConflictMessage, type PrivilegeGrantRecord, type StateStore } from './state-store.js';
+import { classifySkillPublishFailure, type SkillPublishFailure } from './skill-publish-failure.js';
 import { compareSemver, isSemver, parseSkillVersion, trustedSkillVersion } from './skill-version.js';
 import { IntegrationCredentialError, IntegrationCredentialRepository } from './integration-credential-repository.js';
 import type { SecretKeyring } from './secret-keyring.js';
@@ -89,6 +90,7 @@ import {
 
 export class DashboardControlService {
   private connectionVerifier?: ModelConnectionVerifier;
+  private diagnosticLog?: (record: Record<string, unknown>) => void;
 
   constructor(
     private readonly config: RunnerConfig,
@@ -105,6 +107,11 @@ export class DashboardControlService {
     private readonly providerHttp?: ProviderHttpClient,
     private spendLedger?: ModelSpendLedger
   ) {}
+
+  /** Receives failures the service reports as a result rather than throws, so they still reach the runner log. */
+  useDiagnosticLog(log: (record: Record<string, unknown>) => void): void {
+    this.diagnosticLog = log;
+  }
 
   /**
    * Runs one import to completion and records every transition on the job row, because that row is what
@@ -999,36 +1006,23 @@ export class DashboardControlService {
           return ok('Skills updated in bulk', { results });
         }
         case 'skill_create_custom': {
-          // The package is published before the source row is written, so a created skill always has
-          // content behind it. A row pointing at missing bytes would resolve and then fail at launch,
-          // which is the failure this ordering exists to prevent.
-          let published: { bundleSha256: string; byteCount: number; fileCount: number; bundlePath: string };
           try {
-            published = await this.workspaces.toolkitCacheManager.publishLocalBundle(principalId, {
+            const created = await this.createLibrarySkill(principalId, parsed.input.slug, {
               [`skills/${parsed.input.slug}/SKILL.md`]: parsed.input.instructions
-            });
-          } catch (error) {
-            throw new HarnessError('INVALID_INPUT', error instanceof Error ? error.message : 'the skill package could not be published', 400, false);
-          }
-
-          const created = this.principals.createSkillSource({
-            ownerId: principalId,
-            slug: parsed.input.slug,
-            displayName: parsed.input.displayName,
-            kind: 'owner',
-            provider: 'custom',
-            description: parsed.input.description,
-            tags: parsed.input.tags,
-            revision: {
-              bundleSha256: published.bundleSha256,
+            }, {
+              displayName: parsed.input.displayName,
+              description: parsed.input.description,
+              tags: parsed.input.tags,
               // The bundle digest covers the whole tree; this digest is the authored instructions.
               contentSha256: createHash('sha256').update(parsed.input.instructions).digest('hex'),
               hasExecutableAssets: parsed.input.hasExecutableAssets,
-              origin: 'edit',
               version: resolveSkillVersion(parsed.input.instructions, parsed.input.version)
-            }
-          });
-          return mutation('Custom skill created', { ...created, bundleSha256: published.bundleSha256 });
+            });
+            return mutation('Custom skill created', created);
+          } catch (error) {
+            const failure = this.skillFailure('skill_create_custom', parsed.input.slug, error);
+            throw new HarnessError(failure.code, failure.message, failure.status, false);
+          }
         }
         case 'skill_archive_import': {
           // The whole archive is validated before anything is written, so a malformed archive cannot
@@ -1044,37 +1038,22 @@ export class DashboardControlService {
               continue;
             }
             try {
-              // The package is published before the source row, the order the single-skill path uses:
-              // a row naming bytes that do not exist would resolve and then fail at launch. The whole
-              // skill directory is published, so references, scripts, and assets survive the import.
-              const published = await this.workspaces.toolkitCacheManager.publishLocalBundle(principalId, Object.fromEntries(
+              // The whole skill directory is published, so references, scripts, and assets survive the import.
+              const created = await this.createLibrarySkill(principalId, entry.slug, Object.fromEntries(
                 Object.entries(entry.files).map(([relative, bytes]) => [`skills/${entry.slug}/${relative}`, bytes])
-              ));
-              const created = this.principals.createSkillSource({
-                ownerId: principalId,
-                slug: entry.slug,
+              ), {
                 displayName: entry.displayName,
-                kind: 'owner',
-                provider: 'custom',
                 description: '',
                 tags: [],
-                revision: {
-                  bundleSha256: published.bundleSha256,
-                  contentSha256: createHash('sha256').update(entry.instructions).digest('hex'),
-                  hasExecutableAssets: entry.hasExecutableAssets,
-                  origin: 'edit',
-                  version: trustedSkillVersion(entry.instructions) ?? null
-                }
+                contentSha256: createHash('sha256').update(entry.instructions).digest('hex'),
+                hasExecutableAssets: entry.hasExecutableAssets,
+                version: trustedSkillVersion(entry.instructions) ?? null
               });
               results.push({ slug: entry.slug, ok: true, skillId: created.sourceId });
             } catch (error) {
-              // A slug that already exists is a per-item conflict, not a failure of the whole upload,
-              // so the entries that could be created stay created.
-              results.push({
-                slug: entry.slug,
-                ok: false,
-                error: error instanceof SkillRegistryError ? error.code : 'INTERNAL_ERROR'
-              });
+              // A failed entry is reported on its own row, so the entries that could be created stay created.
+              const failure = this.skillFailure('skill_archive_import', entry.slug, error);
+              results.push({ slug: entry.slug, ok: false, error: failure.code, message: failure.message });
             }
           }
           return mutation('Skills imported from the archive', { results });
@@ -1097,17 +1076,23 @@ export class DashboardControlService {
             generation = Math.max(generation, set.generation);
             for (const item of set.items) {
               const source = byId.get(item.skillSourceId);
+              // Launch refuses a member that is not enabled, so the preview says so instead of
+              // presenting a selection the launch would then reject.
+              if (source !== undefined && source.state !== 'enabled') {
+                throw new HarnessError('CONFLICT', `Skill ${item.name} in skill set ${set.id} is ${source.state}; enable it or remove it from the set`, 409, false);
+              }
               // A registry skill is installed into the owner tier, so its source kind is not its tier.
               const kind = source?.kind ?? 'owner';
               const tier: SkillTier = kind === 'registry' ? 'owner' : kind;
+              const revision = this.principals.getSkillRevision(principalId, item.skillSourceId, item.revisionId);
               candidates.push({
                 name: item.name,
                 tier,
                 sourceId: item.skillSourceId,
                 revisionId: item.revisionId,
-                // The revision pins the content, so two items agree exactly when they name the same
-                // revision; a differing revision at the same tier is the collision the resolver reports.
-                contentSha256: item.revisionId,
+                // Two members agree when their pinned bytes do, as at launch; a revision whose row is
+                // gone falls back to its id, so it still collides with any other revision.
+                contentSha256: revision?.bundleSha256 ?? item.revisionId,
                 ...(source?.state === undefined ? {} : { state: source.state })
               });
             }
@@ -1261,7 +1246,8 @@ export class DashboardControlService {
               [`skills/${source.slug}/SKILL.md`]: parsed.input.instructions
             });
           } catch (error) {
-            throw new HarnessError('INVALID_INPUT', error instanceof Error ? error.message : 'the skill package could not be published', 400, false);
+            const failure = this.skillFailure('skill_revision_create', source.slug, error);
+            throw new HarnessError(failure.code, failure.message, failure.status, false);
           }
           const revisionId = this.principals.addSkillRevision({
             ownerId: principalId,
@@ -1420,6 +1406,58 @@ export class DashboardControlService {
       if (error instanceof IntegrationCredentialError) throw new HarnessError(error.code, error.message, statusFor(error.code), false);
       throw error;
     }
+  }
+
+  /**
+   * Creates one owner-tier library skill. A taken slug is refused before any byte is written; otherwise
+   * the package is published before the source row, because a row naming bytes that do not exist would
+   * resolve and then fail at launch. When the row cannot be written (a concurrent create took the slug),
+   * the bundle this call published is removed, so a refused create leaves nothing behind.
+   */
+  private async createLibrarySkill(
+    principalId: string,
+    slug: string,
+    files: Record<string, string | Buffer>,
+    source: { displayName: string; description: string; tags: string[]; contentSha256: string; hasExecutableAssets: boolean; version: string | null }
+  ): Promise<{ sourceId: string; revisionId: string; bundleSha256: string }> {
+    if (this.principals.findSkillSourceIdBySlug(principalId, slug) !== undefined) {
+      throw new SkillRegistryError('CONFLICT', skillSlugConflictMessage(slug));
+    }
+    const cache = this.workspaces.toolkitCacheManager;
+    const published = await cache.publishLocalBundle(principalId, files);
+    try {
+      const created = this.principals.createSkillSource({
+        ownerId: principalId,
+        slug,
+        displayName: source.displayName,
+        kind: 'owner',
+        provider: 'custom',
+        description: source.description,
+        tags: source.tags,
+        revision: {
+          bundleSha256: published.bundleSha256,
+          contentSha256: source.contentSha256,
+          hasExecutableAssets: source.hasExecutableAssets,
+          origin: 'edit',
+          version: source.version
+        }
+      });
+      return { ...created, bundleSha256: published.bundleSha256 };
+    } catch (error) {
+      if (published.created) {
+        await cache.discardLocalBundle(principalId, published.bundleSha256).catch((discardError: unknown) => {
+          this.diagnosticLog?.({ operation: 'skill_bundle_discard', slug, name: discardError instanceof Error ? discardError.name : 'unknown' });
+        });
+      }
+      throw error;
+    }
+  }
+
+  /** Classifies a skill create failure and records the ones the request did not cause. */
+  private skillFailure(operation: string, slug: string, error: unknown): SkillPublishFailure {
+    const failure = classifySkillPublishFailure(error);
+    if (failure.diagnostic) this.diagnosticLog?.({ operation, slug, ...failure.diagnostic });
+    return failure;
   }
 
   private githubStatus(principalId: string): GitHubStatusResult {

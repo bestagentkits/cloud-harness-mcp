@@ -93,6 +93,7 @@ const decisionPlane = createRunnerDecisionPlane({
 });
 service.useDecisionPlane(decisionPlane);
 const controls = new DashboardControlService(config, store, metadata, artifacts, service, githubInstallations, githubBinding, modelProfiles, gatewayControl, keyring, decisionPlane);
+controls.useDiagnosticLog((record) => logger.warn(record, 'skill library operation failed'));
 // A job row outlives the process that wrote it, so startup is where an import interrupted by a restart is
 // turned into a terminal state rather than left as a spinner that never ends.
 controls.reconcileInterruptedImports();
