@@ -110,21 +110,24 @@ issue and pull-request permissions cannot mint an action-scoped token.
 3. Fill in the basic details:
    - **GitHub App name:** `Cloud-Harness-<YourName>` (must be globally unique across GitHub).
    - **Homepage URL:** `https://harness.agentkit.best` (or your repository URL).
-   - **Callback URL:** Leave empty (unless using Access SSO OAuth redirect).
-   - **Setup URL:** `https://<your-dashboard-domain>/dashboard/integrations/github`, and
-     check **Redirect on update**. GitHub returns to the Setup URL after a new installation;
-     **Redirect on update** also returns there after you change an existing installation.
-     An account or organization that already has the App installed cannot be connected
-     yet: GitHub opens **Configure** instead of **Install**, and the dashboard needs the
-     setup `state` to bind it ([issue #640](https://github.com/bestagentkits/cloud-harness-mcp/issues/640)).
-     An App registered earlier with `/dashboard/github` still works; that path redirects
-     here and keeps the setup callback parameters.
+   - **Callback URL:** `https://<your-dashboard-domain>/dashboard/integrations/github`. The
+     dashboard asks you to authorize with GitHub before it connects an installation, and
+     GitHub only returns to a registered Callback URL. Leave **Request user authorization
+     (OAuth) during installation** unchecked.
+   - **Setup URL:** the same `https://<your-dashboard-domain>/dashboard/integrations/github`,
+     and check **Redirect on update**. GitHub returns to the Setup URL after a new installation;
+     **Redirect on update** also returns there after you change an existing installation, which
+     is how an account that already has the App installed gets connected (GitHub opens
+     **Configure** instead of **Install** for it). An App registered earlier with
+     `/dashboard/github` still works; that path redirects here and keeps the setup callback
+     parameters.
 4. **Webhook:**
    - Uncheck **Active** under the Webhook section (Cloud Harness does not require webhooks).
 5. **Repository permissions:**
    - Set **Contents** to **Read and write** (or Read-only).
    - (Optional) Set **Workflows** to **Read and write** if your agents need to edit GitHub Actions.
    - (Optional) Set **Commit statuses**, **Checks**, or **Actions** when an automated routine posts statuses, reads check runs, or dispatches and re-runs workflows.
+   - For an App that organizations connect from the dashboard, set **Organization permissions → Members** to **Read-only**. GitHub needs it to confirm that the person connecting is an organization owner.
 6. **Where can this GitHub App be installed?:**
    - Select **Only on this account**.
 7. Click **Create GitHub App**.
@@ -137,7 +140,9 @@ After creating the App:
 
 1. **App ID:** Copy the numeric **App ID** displayed at the top of the General settings page (e.g. `123456`).
 2. **App Slug / Name:** Note the URL slug of your app (e.g. `cloud-harness-operator`).
-3. **Generate Private Key:**
+3. **Client ID and client secret** (needed to connect installations from the dashboard): copy the
+   **Client ID**, then click **Generate a new client secret** and save the value; GitHub shows it once.
+4. **Generate Private Key:**
    - Scroll down to the **Private keys** section.
    - Click **Generate a private key**.
    - A `.pem` file will automatically download to your machine. Keep this file secure; GitHub does not store it.
@@ -174,6 +179,13 @@ sudo install -d -m 700 -o root -g root /etc/cloud-harness-mcp
 sudo install -m 600 -o root -g root /path/to/downloaded-key.pem /etc/cloud-harness-mcp/github-app-private-key.pem
 ```
 
+For dashboard connections, store the client secret the same way, without echoing it:
+
+```bash
+sudo install -m 600 -o root -g root /dev/null /etc/cloud-harness-mcp/github-app-client-secret
+sudoedit /etc/cloud-harness-mcp/github-app-client-secret
+```
+
 ### 2. Update Environment Variables (`.env`)
 
 In your server's `.env` or `/etc/cloud-harness-mcp/runtime.env`:
@@ -185,8 +197,13 @@ GITHUB_APP_ID=123456
 # In owner-bearer mode: provide the numeric installation ID
 GITHUB_APP_INSTALLATION_ID=78901234
 
-# In cloudflare-access mode: provide the app slug for dashboard linking
+# In cloudflare-access or oidc mode: provide the app slug for dashboard linking
 GITHUB_APP_SLUG=cloud-harness-operator
+
+# In cloudflare-access or oidc mode: the App's OAuth client, used to prove that the
+# GitHub user connecting an installation owns it (runner-only)
+GITHUB_APP_CLIENT_ID=Iv23exampleclientid
+GITHUB_APP_CLIENT_SECRET_FILE=/run/cloud-harness-secrets/github-app-client-secret
 
 # Container mount path to the private key (inside the runner)
 GITHUB_APP_PRIVATE_KEY_FILE=/run/cloud-harness-secrets/github-app-private-key.pem
@@ -202,12 +219,28 @@ docker compose down && docker compose up -d
 
 ---
 
-## Step 6: Link in Operator Dashboard
+## Step 6: Connect in Operator Dashboard
 
-1. Open the Operator Dashboard at `https://harness.zuey.me/dashboard`.
-2. Navigate to **GitHub** in the left navigation rail.
-3. If not already bound, click **Install / Link GitHub App**.
-4. Authorize the application. The dashboard will display your active installation ID and bound repositories.
+1. Open the Operator Dashboard at `https://<your-dashboard-domain>/dashboard`.
+2. Navigate to **Integrations → GitHub**.
+3. Click **Connect GitHub App** and finish within 10 minutes:
+   - **App not installed yet:** GitHub shows **Install**. Choose the repositories and install;
+     GitHub returns to the dashboard, which sends you straight on to authorize with GitHub.
+   - **App already installed on that account:** GitHub shows **Configure**. Save the
+     installation; GitHub returns with the installation ID only, and the dashboard shows
+     **Verify with GitHub**. Click it.
+4. Authorize the App on GitHub **as the account that owns the installation**: the personal
+   account itself, or an owner of the organization. Organization members who are not owners
+   are refused. The dashboard then shows the installation and its repositories.
+
+GitHub only proves who you are here; the user token is used once on the server, revoked at
+GitHub right after, and never stored or shown. If the operator has not set
+`GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET`, **Connect GitHub App** and **Verify
+with GitHub** are disabled and the page says so. If this identity already has the
+installation, returning from **Configure** just refreshes it. If the installation was bound
+earlier to a different Cloud Harness identity (older releases did not verify ownership),
+authorizing as the account owner or an organization owner moves it to you; the previous
+identity loses it and the audit log records the change.
 
 ---
 
@@ -247,7 +280,13 @@ Test opening a private repository through your AI client (Cursor, Claude Code, e
 | **`commit_status_create`, `check_runs_list`, or `workflow_*` returns `FORBIDDEN` with `permission_not_granted`** | The installation does not grant **Commit statuses**, **Checks**, or **Actions**. | Add the permission to the App, then approve the updated permissions on the installation. |
 | **`Token minting: UNAVAILABLE`** | App ID or Private Key mismatch. | Verify `GITHUB_APP_ID` matches GitHub App ID, and that the `.pem` file corresponds to that exact App. |
 | **Key rotation** | Need to rotate an existing key. | Generate a second key in GitHub first, update the `.pem` file on host, restart runner, then delete the old key in GitHub. |
-| **Dashboard shows "No GitHub App installation is bound to this identity" after installing or saving on GitHub** | GitHub did not return to the dashboard with both `state` and `installation_id`. Either the App has no **Setup URL**, the 10-minute setup link expired, or the App was already installed on that account. In the last case GitHub opens **Configure** instead of **Install**, and the dashboard does not yet bind an existing installation ([issue #640](https://github.com/bestagentkits/cloud-harness-mcp/issues/640)). | Set the Setup URL and **Redirect on update** as in [Step 2](#step-2-register-the-github-app), then click **Connect GitHub App** again and finish on GitHub within 10 minutes. For an App that is already installed, uninstall it from [github.com/settings/installations](https://github.com/settings/installations) and install it again from **Connect GitHub App**. Anything else using that installation loses access until it is reinstalled. |
+| **Dashboard shows "No GitHub App installation is bound to this identity" after installing or saving on GitHub** | GitHub did not return to the dashboard: the App has no **Setup URL**, or **Redirect on update** is off for an App that was already installed. | Set the Setup URL and **Redirect on update** as in [Step 2](#step-2-register-the-github-app), then click **Connect GitHub App** again. For an already-installed App, save on **Configure** and click **Verify with GitHub** when the dashboard asks. |
+| **"GitHub user authorization is unavailable"** | `GITHUB_APP_CLIENT_ID`/`GITHUB_APP_CLIENT_SECRET_FILE` are missing, or the App's **Callback URL** is not this dashboard's `/dashboard/integrations/github` page. | Set both values for the runner and restart it, and register the Callback URL as in [Step 2](#step-2-register-the-github-app). |
+| **"Your GitHub account cannot access installation …" or "Only the owner of the GitHub account …"** | You authorized as a different GitHub user than the one that owns the installation. | Switch GitHub accounts (or sign out of GitHub), then **Connect GitHub App** again. |
+| **"GitHub did not confirm that you are an owner of the … organization"** | You are not an organization owner, or the App lacks **Members: Read-only**. | Ask an organization owner to connect it; add **Members: Read-only** to the App and approve it on the installation. |
+| **"GitHub authorization was cancelled"** or **"… is invalid or expired"** | You declined on GitHub, took longer than 10 minutes, or reused an old link. | Click **Connect GitHub App** again. |
+| **"GitHub user authorization is not configured"** or a disabled **Connect GitHub App** | The runner has no `GITHUB_APP_CLIENT_ID`/`GITHUB_APP_CLIENT_SECRET`. | Set both and the App's Callback URL (`<origin>/dashboard/integrations/github`), then restart the runner. |
+| **An installation is bound to the wrong identity, or you cannot reach it** | Releases before user verification let a setup link bind an installation without proving ownership. | Authorize as the account owner or an organization owner from the identity that should hold it; the binding moves and the audit log records `github.rebound`. |
 
 ## Where this page lives now
 
@@ -259,8 +298,9 @@ their own rail entry, [MCP Servers](/dashboard/mcp-servers).
 
 ## Callback in the new dashboard
 
-The [new dashboard](index.md#new-dashboard-preview) completes the GitHub App installation
-itself: when GitHub sends you back to `/dashboard/integrations/github` with `state` and
-`installation_id`, the page links the installation once, removes both values from the
-address, and shows the result. A malformed value is ignored, and a reused or expired one is
-refused by the server.
+Both dashboards handle GitHub's returns themselves. A setup return with `installation_id`
+continues to GitHub's authorize page (automatically after a new installation, or through
+**Verify with GitHub** for an existing one); the authorize return with `code` and `state`
+connects the installation once. The page removes these values from the address after
+handling them. A malformed value is ignored, a cancelled authorization says so, and a reused
+or expired one is refused by the server.

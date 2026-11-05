@@ -87,6 +87,11 @@ describe('dashboard application mount', () => {
       .toBe(`/dashboard/integrations/github?state=${state}&installation_id=12345678&setup_action=install`);
     expect(await location(`?installation_id=42&setup_action=update`))
       .toBe('/dashboard/integrations/github?installation_id=42&setup_action=update');
+    // The OAuth return lands on /dashboard/integrations/github directly (it is the App's Callback URL),
+    // so a one-time `code` or `error` arriving at the legacy path is never carried forward.
+    expect(await location(`?state=${state}&code=abc.def&error=access_denied&installation_id=9`))
+      .toBe(`/dashboard/integrations/github?state=${state}&installation_id=9`);
+    expect(await location('?code=abc.def&error=access_denied')).toBe('/dashboard/integrations/github');
     // Malformed, repeated or injected values are dropped rather than echoed.
     expect(await location(`?state=short&installation_id=0x1&setup_action=%0D%0ALocation:%20x`)).toBe('/dashboard/integrations/github');
     expect(await location(`?state=${state}&state=${state}&installation_id=7`)).toBe('/dashboard/integrations/github?installation_id=7');

@@ -5,6 +5,7 @@ import type {
   GitHubAccountType,
   GitHubInstallationRecord,
   GitHubInstallationMutationAudit,
+  GitHubInstallationReplaceOptions,
   GitHubInstallationStore,
   GitHubPermissionLevel,
   GitHubRepositoryGrantRecord,
@@ -137,7 +138,8 @@ export class SqliteGitHubInstallationStore implements GitHubInstallationStore {
     principalId: string,
     verified: VerifiedGitHubInstallation,
     checkedAt: number,
-    audit?: GitHubInstallationMutationAudit
+    audit?: GitHubInstallationMutationAudit,
+    options: GitHubInstallationReplaceOptions = {}
   ): GitHubInstallationRecord {
     this.database.exec('BEGIN IMMEDIATE');
     try {
@@ -145,7 +147,15 @@ export class SqliteGitHubInstallationStore implements GitHubInstallationStore {
       const duplicate = this.database.prepare(
         'SELECT principal_id FROM github_installations WHERE installation_id=? AND principal_id<>?'
       ).get(installationId, principalId) as { principal_id: string } | undefined;
-      if (duplicate) throw new HarnessError('CONFLICT', 'GitHub installation is already bound', 409, false);
+      if (duplicate && !options.takeOver) throw new HarnessError('CONFLICT', 'GitHub installation is already bound', 409, false);
+      if (duplicate) {
+        this.database.prepare('DELETE FROM github_installations WHERE principal_id=? AND installation_id=?')
+          .run(duplicate.principal_id, installationId);
+        this.database.prepare(
+          `UPDATE github_repository_grants SET status='removed',generation=generation+1,updated_at=?,checked_at=?
+           WHERE principal_id=? AND installation_id=? AND status<>'removed'`
+        ).run(checkedAt, checkedAt, duplicate.principal_id, installationId);
+      }
 
       const accountId = String(verified.accountId);
       const sameAccount = this.database.prepare(
@@ -205,7 +215,7 @@ export class SqliteGitHubInstallationStore implements GitHubInstallationStore {
             .run(checkedAt, checkedAt, principalId, record.installationId, existing.owner, existing.repository);
         }
       }
-      audit?.(record);
+      audit?.(record, duplicate?.principal_id);
       this.database.exec('COMMIT');
       return record;
     } catch (error) { this.database.exec('ROLLBACK'); throw error; }

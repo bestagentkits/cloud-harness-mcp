@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { RunnerConfigSchema, SecretKeyringConfigSchema, hasOperatorDashboard, type RunnerConfig } from '@cloud-harness/contracts';
+import { RunnerConfigSchema, SecretKeyringConfigSchema, hasOperatorDashboard, isMultiPrincipal, type RunnerConfig } from '@cloud-harness/contracts';
 
 function secret(name: string): string | undefined {
   const file = process.env[`${name}_FILE`];
@@ -218,7 +218,9 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
       appId: githubAppId,
       installationId: githubInstallationId,
       privateKey: githubPrivateKey,
-      appSlug: process.env.GITHUB_APP_SLUG
+      appSlug: process.env.GITHUB_APP_SLUG,
+      clientId: process.env.GITHUB_APP_CLIENT_ID || undefined,
+      clientSecret: secret('GITHUB_APP_CLIENT_SECRET') || undefined
     } : undefined,
     githubToken,
     cloudflareAccessOAuth: cloudflareAccessOAuth(),
@@ -268,7 +270,20 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
   if (packageApprovalUnavailable(config)) {
     console.warn(`[runner-config] PACKAGES_APPROVAL_MODE=required has no Dashboard approver in ${config.authMode ?? 'owner-bearer'} mode: packages_apply is refused until PACKAGES_APPROVAL_MODE=none`);
   }
+  if (githubUserAuthorizationUnavailable(config)) {
+    console.warn(`[runner-config] GITHUB_APP_ID is set in ${config.authMode} mode without GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET: the Dashboard cannot bind a GitHub App installation until both are set and the GitHub App Callback URL is <origin>/dashboard/integrations/github`);
+  }
   return { config, ...(secretReadinessError ? { secretReadinessError } : {}) };
+}
+
+/**
+ * Binding an installation in a multi-principal deployment needs a GitHub user authorization, which
+ * needs the App's OAuth client credentials. Without them the runner still starts (agents and
+ * already-bound installations keep working); only new bindings are refused.
+ */
+export function githubUserAuthorizationUnavailable(config: Pick<RunnerConfig, 'authMode' | 'githubApp'>): boolean {
+  return isMultiPrincipal(config.authMode) && config.githubApp !== undefined &&
+    (config.githubApp.clientId === undefined || config.githubApp.clientSecret === undefined);
 }
 
 /**

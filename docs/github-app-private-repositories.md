@@ -117,25 +117,28 @@ their organization:
 4. Under **Setup URL (optional)**, enter
    `https://<your-dashboard-domain>/dashboard/integrations/github` and check
    **Redirect on update**. GitHub returns to the Setup URL with the
-   installation ID and setup state after a new installation; **Redirect on
-   update** also returns there after an existing installation is changed.
-   Binding requires the setup `state`. An account that already has the App
-   installed gets **Configure** instead of **Install** on GitHub, and that
-   path is not observed to carry `state`. Such an installation cannot be bound
-   until the user-authorization check in issue #640 lands. The workaround is to
-   uninstall and reinstall. Without a Setup URL the
-   dashboard never receives the callback and cannot bind the installation. An
-   App already registered with the legacy `/dashboard/github` Setup URL keeps
-   working: that path redirects to the Integrations page and carries only the
-   validated `state`, `installation_id`, and `setup_action` callback parameters
-   (`apps/api/src/dashboard-assets.ts`). Leave **Callback URL** empty.
-5. Clear **Active** under **Webhook**. This integration does not consume
+   installation ID (and, after a new installation, the setup `state`).
+   **Redirect on update** also returns there after an existing installation
+   is changed; that path carries no `state`. An App already registered with
+   the legacy `/dashboard/github` Setup URL keeps working: that path redirects
+   to the Integrations page and carries only the validated `state`,
+   `installation_id`, and `setup_action` callback parameters
+   (`apps/api/src/dashboard-assets.ts`).
+5. Under **Identifying and authorizing users**, add the **Callback URL**
+   `https://<your-dashboard-domain>/dashboard/integrations/github` (the same
+   page). GitHub requires the dashboard's `redirect_uri` to match a registered
+   Callback URL exactly. Leave **Request user authorization (OAuth) during
+   installation** cleared: the dashboard starts the user authorization itself,
+   after GitHub returns the installation ID.
+6. Clear **Active** under **Webhook**. This integration does not consume
    webhooks.
-6. Under **Repository permissions**, grant the level selected above and leave
-   all unrelated permissions at **No access**.
-7. Under **Where can this GitHub App be installed?**, select **Only on this
+7. Under **Repository permissions**, grant the level selected above and leave
+   all unrelated permissions at **No access**. For an App that organizations
+   connect through the dashboard, also grant **Organization permissions →
+   Members: Read-only** (see [Dashboard binding](#dashboard-binding-access-mode)).
+8. Under **Where can this GitHub App be installed?**, select **Only on this
    account** for an owner-operated private App.
-8. Select **Create GitHub App**.
+9. Select **Create GitHub App**.
 
 GitHub's current UI and field descriptions are documented in
 [Registering a GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
@@ -229,6 +232,94 @@ sudo docker compose \
 Do not paste `docker compose config` output into logs or support requests; it
 may contain resolved environment values.
 
+## Dashboard binding (Access mode)
+
+In `cloudflare-access` and `oidc` modes each principal binds its own
+installations from the dashboard GitHub page. Binding grants the principal
+every repository of the installation, so it requires proof that the
+principal's GitHub user owns that installation's account, not just a valid
+setup link (issue #640). The dashboard therefore runs a GitHub App user
+authorization (OAuth with PKCE) before every binding, for fresh installs and
+for an App that was already installed on the account:
+
+1. **Connect GitHub App** opens GitHub's install page with a one-time setup
+   `state`. GitHub returns `installation_id`, plus `state` after a new
+   installation. For an account that already has the App, GitHub shows
+   **Configure**, and after saving it returns only `installation_id`; the
+   dashboard then offers **Verify with GitHub** instead of discarding the
+   callback.
+2. The dashboard asks the runner to start a user authorization for that
+   installation and sends the browser to GitHub's authorize page. The runner
+   keeps the PKCE verifier and a hash of a per-browser nonce cookie; the
+   one-time authorization `state` is bound to the principal and that browser
+   and expires after 10 minutes.
+3. GitHub returns `code` and `state` to the Callback URL. The runner redeems
+   the code with the client secret and PKCE verifier, then requires that the
+   installation appears in `GET /user/installations` for that GitHub user and
+   that the user is the personal account itself or an active **owner** of the
+   organization (`GET /user/memberships/orgs/{org}`). Organization membership
+   alone is refused. Only then does the App JWT verify the installation and
+   record its repositories. The user token is used for those calls and then
+   revoked at GitHub (`DELETE /applications/{client_id}/token`, best effort);
+   it is never stored, logged, or sent to the browser. A GitHub rate limit
+   during the ownership check is reported as a retryable failure, not as "not
+   an owner".
+
+The executable owners are `apps/runner/src/github-user-authorizer.ts`,
+`apps/runner/src/github-binding-service.ts`, and the BFF routes in
+`apps/api/src/dashboard-control-router.ts`.
+
+Binding needs these runner values in addition to the App ID, private key, and
+`GITHUB_APP_SLUG`. Copy the **Client ID** from the App settings page, and
+generate a **client secret** there (GitHub shows it once):
+
+```dotenv
+GITHUB_APP_CLIENT_ID=Iv23exampleclientid
+GITHUB_APP_CLIENT_SECRET_FILE=/run/cloud-harness-secrets/github-app-client-secret
+```
+
+Install the client secret on the host the same way as the private key (root
+owned, mode `600`, under `/etc/cloud-harness-mcp`). The client secret is
+runner-only: Compose blanks it for the API service and
+`scripts/verify-compose-boundaries.mjs` enforces that. Without both values the
+dashboard reports that GitHub user authorization is unavailable and binds
+nothing.
+
+An organization owner must perform the binding, and the App needs the
+**Members: Read-only** organization permission so GitHub discloses the owner
+role; without it GitHub refuses the membership check and the dashboard says
+so. Reconcile keeps re-verifying the bound installation with the App JWT and
+does not need the user again.
+
+### Upgrade notes and reclaiming a binding
+
+Releases before this change bound an installation to whichever principal held
+a valid setup link, without proving that the principal's GitHub user owned the
+account. Those bindings are **not user-verified** and are not blocked: they keep
+working, and `reconcile` keeps refreshing them with the App JWT. To move or
+remove one:
+
+- **The real owner reclaims it.** Sign in to the dashboard as the identity that
+  should hold it, click **Connect GitHub App** (or **Verify with GitHub** after
+  a Configure round trip), and sign in to GitHub as the personal account or an
+  organization owner. When the proof passes, the binding held by the other
+  principal is replaced in one transaction: its grants are removed and the
+  audit log records `github.rebound` with both principal IDs (never a token).
+  A wrong GitHub user is refused and the existing binding stays; the attempt is
+  audited as `github.bind_refused` with the installation ID and error code only.
+- **An operator removes it.** Disconnect the installation from the holding
+  identity's dashboard, or uninstall the App on GitHub and let that identity
+  reconcile (the installation becomes `uninstalled`).
+
+Before upgrading a multi-principal (`cloudflare-access` or `oidc`) deployment,
+set `GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET[_FILE]` for the runner
+and register `https://<your-dashboard-domain>/dashboard/integrations/github` as
+the App's **Callback URL**. Until both are set the runner logs a startup
+warning, `GET /dashboard/api/v1/github` reports
+`userAuthorizationConfigured: false`, and both dashboards disable **Connect
+GitHub App** and **Verify with GitHub** with an explanation instead of sending
+users to GitHub. Already-bound installations keep working.
+
 ## Local Compose testing
 
 For a local test, keep the PEM outside the repository and mount it only into
@@ -284,6 +375,11 @@ successful private clone proves read access only; it does not prove push access.
 | `pr_merge` returns `GITHUB_PERMISSION_MISSING` naming `contents:write` | Merging needs **Contents: Read and write** on the App installation in addition to **Pull requests: Read and write**. Grant it, approve the changed permission, then reconcile the installation. Merging a PR that edits `.github/workflows/**` additionally needs the App's **Workflows** permission, which the merge token does not request. Branch protection that blocks the merge is a different error, `GITHUB_MERGE_BLOCKED`. |
 | A write fails while clone and push still work | Expected when only `Contents` is granted: Git access and `gh` authentication do not imply issue or pull-request permissions. Configure an operator `GH_TOKEN`/`GITHUB_TOKEN` (owner-bearer) or a per-principal global runtime secret (Access mode) only as the documented fallback, not instead of the App grant. |
 | `gh` inside a workspace reports no authentication | The runner-environment fallback credential never enters an executor; create a global runtime secret named `GH_TOKEN` or `GITHUB_TOKEN` for the workspace's principal and open a workspace with egress. |
+| Dashboard says GitHub user authorization is unavailable | Set `GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET_FILE` (or `GITHUB_APP_CLIENT_SECRET`) for the runner and restart it. If GitHub instead reports a Callback URL mismatch, register `https://<your-dashboard-domain>/dashboard/integrations/github` as a **Callback URL** on the App. |
+| Binding refused: "Your GitHub account cannot access installation …" or "Only the owner of the GitHub account …" | GitHub signed in a different user. Sign out of GitHub or switch accounts to the installation's personal account (or an organization owner), then use **Connect GitHub App** again. |
+| Binding refused: "GitHub did not confirm that you are an owner of the … organization" | An organization owner must connect it, and the App needs **Members: Read-only** under organization permissions; approve the changed permission on the installation, then connect again. |
+| Dashboard disables Connect and says GitHub user authorization is not configured | The runner has no `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET`. Set both, register the Callback URL above, and restart the runner. |
+| An installation shows under the wrong identity, or you cannot reach it | Reconnect it as the proven owner (see Upgrade notes above): the binding moves to you and the audit log records `github.rebound`. |
 
 The broker deliberately returns a sanitized error instead of GitHub's raw
 credential-bearing response. Use GitHub's installation settings and runner

@@ -68,14 +68,21 @@ export type VerifiedGitHubInstallation = GitHubInstallationOrganizationFacts & {
   }[];
 };
 
-export type GitHubInstallationMutationAudit = (record: GitHubInstallationRecord) => void;
+/** `replacedPrincipalId` is set when the mutation took the installation over from another principal. */
+export type GitHubInstallationMutationAudit = (record: GitHubInstallationRecord, replacedPrincipalId?: string) => void;
+
+export type GitHubInstallationReplaceOptions = {
+  /** Replace a binding held by another principal in the same transaction (a proven owner reclaiming it). */
+  takeOver?: boolean;
+};
 
 export interface GitHubInstallationStore {
   replaceVerified(
     principalId: string,
     verified: VerifiedGitHubInstallation,
     checkedAt: number,
-    audit?: GitHubInstallationMutationAudit
+    audit?: GitHubInstallationMutationAudit,
+    options?: GitHubInstallationReplaceOptions
   ): GitHubInstallationRecord;
   markUninstalled(
     principalId: string,
@@ -117,13 +124,15 @@ export class InMemoryGitHubInstallationStore implements GitHubInstallationStore 
     principalId: string,
     verified: VerifiedGitHubInstallation,
     checkedAt: number,
-    audit?: GitHubInstallationMutationAudit
+    audit?: GitHubInstallationMutationAudit,
+    options: GitHubInstallationReplaceOptions = {}
   ): GitHubInstallationRecord {
     const installationsBefore = new Map(this.#installations);
     const repositoriesBefore = new Map(this.#repositories);
     try {
+      const replacedPrincipalId = this.takeOverFrom(principalId, verified, checkedAt, options);
       const installation = this.replace(principalId, verified, checkedAt);
-      audit?.(installation);
+      audit?.(installation, replacedPrincipalId);
       return installation;
     } catch (error) {
       this.#installations.clear();
@@ -180,6 +189,22 @@ export class InMemoryGitHubInstallationStore implements GitHubInstallationStore 
     }
     audit?.(current);
     return true;
+  }
+
+  private takeOverFrom(
+    principalId: string,
+    verified: VerifiedGitHubInstallation,
+    checkedAt: number,
+    options: GitHubInstallationReplaceOptions
+  ): string | undefined {
+    if (!options.takeOver) return undefined;
+    const installationId = String(verified.installationId);
+    const holder = [...this.#installations.values()].find(
+      (record) => record.principalId !== principalId && record.installationId === installationId
+    );
+    if (!holder) return undefined;
+    this.removeInstallation(holder.principalId, installationId, checkedAt);
+    return holder.principalId;
   }
 
   private replace(principalId: string, verified: VerifiedGitHubInstallation, checkedAt: number): GitHubInstallationRecord {

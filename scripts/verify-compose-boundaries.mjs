@@ -141,9 +141,12 @@ for (const name of ['api', 'runner']) {
   requireBoundary(!envFilePaths(rawServices[name]).includes(proxyEnvFile), `${name} must not share the provisioning-proxy env file`);
 }
 
-for (const name of ['SECRET_KEYRING', 'SECRET_KEYRING_FILE', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_APP_PRIVATE_KEY_FILE', 'CLOUDFLARE_ACCESS_API_TOKEN', 'CLOUDFLARE_ACCESS_API_TOKEN_FILE']) {
+for (const name of ['SECRET_KEYRING', 'SECRET_KEYRING_FILE', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_APP_PRIVATE_KEY_FILE', 'GITHUB_APP_CLIENT_SECRET', 'GITHUB_APP_CLIENT_SECRET_FILE', 'CLOUDFLARE_ACCESS_API_TOKEN', 'CLOUDFLARE_ACCESS_API_TOKEN_FILE']) {
   requireBoundary(!services.api.environment?.[name], `API must not receive ${name}`);
 }
+// The GitHub App OAuth client secret is runner-only and shares the runtime env file, so the API
+// must blank it explicitly rather than rely on the operator never setting it there.
+requireBoundary('GITHUB_APP_CLIENT_SECRET' in (services.api.environment ?? {}) && 'GITHUB_APP_CLIENT_SECRET_FILE' in (services.api.environment ?? {}), 'API must explicitly blank the GitHub App client secret');
 // The Managed OAuth control-plane token is runner-only: the API must blank it so a
 // shared env file cannot leak it, and nothing else may name it at all.
 requireBoundary('CLOUDFLARE_ACCESS_API_TOKEN' in (services.api.environment ?? {}) && 'CLOUDFLARE_ACCESS_API_TOKEN_FILE' in (services.api.environment ?? {}), 'API must explicitly blank the Cloudflare Access API token');

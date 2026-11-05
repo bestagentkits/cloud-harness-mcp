@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 import { answer, expectNoSeriousA11yViolations, expectPage, sidebarLink, stubReads, watchConsole } from './support';
 import { stubBff, writesTo } from './write-support';
 
@@ -161,32 +161,90 @@ test('browser storage holds only display preferences and scroll positions', asyn
   }
 });
 
-test('a GitHub App callback completes once in the new Dashboard and cleans the URL', async ({ page, context }) => {
+const GITHUB_STATUS = { '/github': answer(200, { data: { configured: true, installation: null, repositories: [] } }) };
+const AUTHORIZE_URL = 'https://github.com/login/oauth/authorize?client_id=e2e&state=server-bound';
+const CANONICAL_GITHUB = (url: URL) => url.pathname === '/dashboard/integrations/github' && url.search === '';
+
+/** Fulfils GitHub's own pages so a navigation away from the Dashboard stays inside the test. */
+async function stubGitHubSite(page: Page) {
+  await page.route('https://github.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<title>GitHub</title>' }));
+}
+
+async function expectNoCallbackInStorage(page: Page, values: string[]) {
+  const stored = await page.evaluate(() => JSON.stringify([{ ...localStorage }, { ...sessionStorage }, document.cookie]));
+  for (const value of values) expect(stored.includes(value), `storage must not contain ${value}`).toBe(false);
+}
+
+test('a fresh GitHub install authorizes once with its state and leaves for the returned GitHub URL', async ({ page, context }) => {
   const state = 'one-time-state-value-0123456789abcdef';
-  const writes = await stubBff(page, { reads: { '/github': answer(200, { data: { configured: true, installation: null, repositories: [] } }) }, writes: { 'POST /github/complete': answer(200, { data: { ok: true } }) } });
+  await stubGitHubSite(page);
+  const writes = await stubBff(page, { reads: GITHUB_STATUS, writes: { 'POST /github/authorize': answer(200, { data: { url: AUTHORIZE_URL, expiresAt: '2030-01-01T00:00:00.000Z' } }) } });
   await page.goto(`/dashboard/integrations/github?installation_id=4242&setup_action=install&state=${state}`);
-  // The React page answers the callback itself and replaces the URL with the canonical page.
-  await page.waitForURL((url) => url.pathname === '/dashboard/integrations/github' && url.search === '');
+  await page.waitForURL(AUTHORIZE_URL);
+  expect(writesTo(writes, 'POST', '/github/authorize')).toHaveLength(1);
+  expect(writesTo(writes, 'POST', '/github/authorize')[0]?.body).toEqual({ installationId: '4242', state });
+  expect(writesTo(writes, 'POST', '/github/complete')).toHaveLength(0);
+  // No hand-off: the browser is not pinned to the classic shell.
+  expect((await context.cookies()).find((cookie) => cookie.name === 'ch-dashboard-ui')).toBeUndefined();
+});
+
+test('a GitHub install callback without a state asks to verify, then authorizes with the installation only', async ({ page }) => {
+  await stubGitHubSite(page);
+  const writes = await stubBff(page, { reads: GITHUB_STATUS, writes: { 'POST /github/authorize': answer(200, { data: { url: AUTHORIZE_URL, expiresAt: '2030-01-01T00:00:00.000Z' } }) } });
+  await page.goto('/dashboard/integrations/github?installation_id=4242&setup_action=update');
+  await page.waitForURL(CANONICAL_GITHUB);
+  await expectPage(page, 'github');
+  await expect(page.getByText('GitHub returned installation 4242 without a connection state.')).toBeVisible();
+  expect(writesTo(writes, 'POST', '/github/authorize')).toHaveLength(0);
+  await expectNoCallbackInStorage(page, ['4242']);
+  await page.getByRole('button', { name: 'Verify with GitHub' }).click();
+  await page.waitForURL(AUTHORIZE_URL);
+  expect(writesTo(writes, 'POST', '/github/authorize')).toHaveLength(1);
+  expect(writesTo(writes, 'POST', '/github/authorize')[0]?.body).toEqual({ installationId: '4242' });
+});
+
+test('an operator-actionable authorize failure is shown on the page', async ({ page }) => {
+  const message = 'Finish the GitHub authorization in the browser that started it. Start the connection again.';
+  const writes = await stubBff(page, { reads: GITHUB_STATUS, writes: { 'POST /github/authorize': answer(403, { error: 'forbidden', message }) } });
+  await page.goto('/dashboard/integrations/github?installation_id=4242');
+  await page.getByRole('button', { name: 'Verify with GitHub' }).click();
+  await expect(page.getByRole('alert').filter({ hasText: message })).toBeVisible();
+  expect(writesTo(writes, 'POST', '/github/authorize')).toHaveLength(1);
+});
+
+test('a GitHub OAuth return completes once with the state and code, and leaves nothing in the URL or storage', async ({ page, context }) => {
+  const state = 'one-time-state-value-0123456789abcdef';
+  const code = 'oauth-code-4242';
+  const writes = await stubBff(page, { reads: GITHUB_STATUS, writes: { 'POST /github/complete': answer(200, { data: { ok: true } }) } });
+  await page.goto(`/dashboard/integrations/github?code=${code}&state=${state}`);
+  await page.waitForURL(CANONICAL_GITHUB);
   await expectPage(page, 'github');
   await expect.poll(() => writesTo(writes, 'POST', '/github/complete').length).toBe(1);
-  expect(writesTo(writes, 'POST', '/github/complete')[0]?.body).toEqual({ state, installationId: '4242' });
-  // No hand-off: the browser is not pinned to the classic shell.
-  const cookies = await context.cookies();
-  expect(cookies.find((cookie) => cookie.name === 'ch-dashboard-ui')).toBeUndefined();
-  // The callback's one-time values never reach browser storage, and it is sent only once.
-  const stored = await page.evaluate(() => JSON.stringify([{ ...localStorage }, { ...sessionStorage }]));
-  expect(stored.includes(state)).toBe(false);
-  expect(stored.includes('4242')).toBe(false);
+  expect(writesTo(writes, 'POST', '/github/complete')[0]?.body).toEqual({ state, code });
+  expect(writesTo(writes, 'POST', '/github/authorize')).toHaveLength(0);
+  expect((await context.cookies()).find((cookie) => cookie.name === 'ch-dashboard-ui')).toBeUndefined();
+  await expectNoCallbackInStorage(page, [state, code]);
   expect(writesTo(writes, 'POST', '/github/complete')).toHaveLength(1);
 });
 
-for (const query of ['installation_id=4242&setup_action=install', 'state=short&installation_id=4242', 'setup_action=update']) {
-  test(`an invalid or incomplete GitHub callback (${query}) is cleared from the URL and never sent`, async ({ page }) => {
-    const writes = await stubBff(page, { reads: { '/github': answer(200, { data: { configured: true, installation: null, repositories: [] } }) } });
+test('a GitHub OAuth refusal shows a persistent message and sends nothing', async ({ page }) => {
+  const writes = await stubBff(page, { reads: GITHUB_STATUS });
+  await page.goto(`/dashboard/integrations/github?error=access_denied&error_description=Evil%20text&state=${'A'.repeat(43)}`);
+  await page.waitForURL(CANONICAL_GITHUB);
+  await expectPage(page, 'github');
+  await expect(page.getByRole('alert').filter({ hasText: 'GitHub authorization was cancelled. The installation was not connected.' })).toBeVisible();
+  await expect(page.locator('body')).not.toContainText('Evil text');
+  expect(writes).toEqual([]);
+});
+
+for (const query of ['state=short', 'setup_action=update', 'code=abc&state=short']) {
+  test(`a GitHub callback with nothing valid to act on (${query}) is cleared from the URL and never sent`, async ({ page }) => {
+    const writes = await stubBff(page, { reads: GITHUB_STATUS });
     await page.goto(`/dashboard/integrations/github?${query}`);
-    await page.waitForURL((url) => url.pathname === '/dashboard/integrations/github' && url.search === '');
+    await page.waitForURL(CANONICAL_GITHUB);
     await expectPage(page, 'github');
     expect(writesTo(writes, 'POST', '/github/complete')).toHaveLength(0);
+    expect(writesTo(writes, 'POST', '/github/authorize')).toHaveLength(0);
   });
 }
 

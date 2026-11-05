@@ -50,7 +50,7 @@ import {
 import {
   escapeHtml,
   launchBlockedByConflicts,
-  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderOverview, renderOverviewSkeleton,
+  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, githubRefusalMessage, renderGlobalSecrets, renderOverview, renderOverviewSkeleton,
   renderProjectDetail, renderProfile, renderProjectIndex, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
   renderMcpServersIndex, renderMcpServerDetail,
@@ -161,9 +161,90 @@ export function conflictRecovery(localContent, actions) {
   return { reviewLatest: () => actions.reviewLatest(), copyChanges: () => actions.copyChanges(localContent), cancel: () => actions.cancel() };
 }
 
+const GITHUB_STATE_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
+const GITHUB_CODE_PATTERN = /^[A-Za-z0-9_.-]{1,256}$/;
+const GITHUB_INSTALLATION_PATTERN = /^[1-9][0-9]{0,19}$/;
+
+/**
+ * Classifies GitHub's callback query. Precedence: code, error, installation+state,
+ * installation alone, nothing. Raw error text/descriptions are never returned.
+ */
 export function githubCallbackParameters(search) {
-  const parameters = new URLSearchParams(search); const state = parameters.get('state'); const installationId = parameters.get('installation_id');
-  return state && installationId ? { state, installationId } : undefined;
+  const parameters = new URLSearchParams(search);
+  const state = parameters.get('state');
+  const code = parameters.get('code');
+  const installationId = parameters.get('installation_id');
+  const validState = state !== null && GITHUB_STATE_PATTERN.test(state);
+  const validInstallation = installationId !== null && GITHUB_INSTALLATION_PATTERN.test(installationId);
+  if (code !== null) {
+    return validState && GITHUB_CODE_PATTERN.test(code) ? { kind: 'complete', state, code } : { kind: 'malformed' };
+  }
+  if (parameters.has('error')) {
+    const error = parameters.get('error');
+    return { kind: 'refused', reason: error === 'access_denied' || error === 'redirect_uri_mismatch' ? error : 'other' };
+  }
+  if (validInstallation && validState) return { kind: 'authorize', installationId, state };
+  if (validInstallation) return { kind: 'verify', installationId };
+  return { kind: 'none' };
+}
+
+/**
+ * Acts on a classified GitHub callback and returns what the page must show: the GitHub status, and a
+ * notice when something needs the operator's attention. Resolves `{ redirected: true }` once the
+ * browser was sent to GitHub. Dependencies are injected so the flow can be exercised without a DOM.
+ *
+ * - OAuth return: complete the connection.
+ * - Fresh install: authorize with the setup state; an expired or invalid state (403) falls back to
+ *   the Verify prompt for the same installation instead of ending in an error.
+ * - Already-installed App (no state): a Verify prompt, unless this identity already has the
+ *   installation, which needs no user proof and is reconciled instead.
+ */
+export async function resolveGitHubCallback({ callback, origin, read, post, authorize, announce, reportError, showPending }) {
+  let notice;
+  if (callback.kind === 'complete') {
+    showPending();
+    try {
+      await post('/github/complete', { state: callback.state, code: callback.code });
+      announce('GitHub App connection completed.');
+    } catch (error) {
+      notice = { kind: 'message', text: error instanceof Error ? error.message : 'GitHub App connection failed.' };
+      reportError(error);
+    }
+  } else if (callback.kind === 'malformed') {
+    notice = { kind: 'message', text: 'The GitHub authorization callback was malformed. Start the connection again.' };
+  } else if (callback.kind === 'refused') {
+    notice = { kind: 'message', text: githubRefusalMessage(callback.reason, origin) };
+  } else if (callback.kind === 'authorize') {
+    showPending();
+    try {
+      await authorize({ installationId: callback.installationId, state: callback.state });
+      return { redirected: true };
+    } catch (error) {
+      if (error?.status === 403) {
+        notice = { kind: 'verify', installationId: callback.installationId, expired: true };
+      } else {
+        notice = { kind: 'message', text: error instanceof Error ? error.message : 'GitHub authorization failed.' };
+        reportError(error);
+      }
+    }
+  } else if (callback.kind === 'verify') {
+    notice = { kind: 'verify', installationId: callback.installationId };
+  }
+  let result = await read();
+  if (notice?.kind === 'verify') {
+    const bound = [result.data.installation, ...(result.data.installations ?? [])].some((item) => item && String(item.installationId) === notice.installationId);
+    if (bound) {
+      try {
+        await post('/github/reconcile', { installationId: notice.installationId });
+        announce('GitHub installation reconciled.');
+        result = await read();
+      } catch (error) { reportError(error); }
+      notice = undefined;
+    } else {
+      notice = { ...notice, unavailable: result.data.userAuthorizationConfigured === false };
+    }
+  }
+  return { redirected: false, status: result.data, notice };
 }
 
 export function resetWriteOnlyFields(form) {
@@ -2270,22 +2351,40 @@ export function initializeDashboard() {
   async function loadGitHub() {
     selectNavigation('integrations'); document.querySelector('#command-surface').hidden = true;
     const callback = githubCallbackParameters(location.search);
-    if (callback) {
-      insertRendered(content, renderGitHub({ configured: true, installation: null, repositories: [] }, true));
-      try {
-        await api('/github/complete', { method: 'POST', body: requestBody(callback) });
-        announce('GitHub App connection completed.');
-      } catch (error) {
-        showError(error);
-      } finally {
-        history.replaceState({}, '', '/dashboard/integrations/github');
-      }
-    }
-    const result = await api('/github'); insertRendered(content, renderGitHub(result.data));
-    setPageActions(renderGitHubActions(result.data));
+    if (location.search) history.replaceState({}, '', '/dashboard/integrations/github');
+    const outcome = await resolveGitHubCallback({
+      callback, origin: location.origin,
+      read: () => api('/github'), post: (path, body) => api(path, { method: 'POST', body: requestBody(body) }),
+      authorize: authorizeGitHub, announce, reportError: showError,
+      showPending: () => insertRendered(content, renderGitHub({ configured: true, installation: null, repositories: [] }, true))
+    });
+    if (outcome.redirected) return;
+    // The query was already replaced, so a re-render can never resend one-time state/code.
+    insertRendered(content, renderGitHub(outcome.status, false, outcome.notice, location.origin));
+    setPageActions(renderGitHubActions(outcome.status));
     bindGitHubControls();
   }
+  async function authorizeGitHub(body) {
+    const result = await api('/github/authorize', { method: 'POST', body: requestBody(body) });
+    let destination;
+    try {
+      destination = new URL(result.data.url);
+    } catch {
+      throw new Error('GitHub authorization URL was invalid.');
+    }
+    if (destination.protocol !== 'https:') throw new Error('GitHub authorization URL was invalid.');
+    location.assign(destination.toString());
+  }
   function bindGitHubControls() {
+    const verifyButton = document.querySelector('#github-verify');
+    if (verifyButton) {
+      verifyButton.addEventListener('click', async (event) => {
+        const button = event.currentTarget; const originalText = button.textContent;
+        button.disabled = true; button.textContent = 'Verifying…';
+        try { await authorizeGitHub({ installationId: button.dataset.installationId }); }
+        catch (error) { showError(error); button.disabled = false; button.textContent = originalText; }
+      });
+    }
     const form = document.querySelector('#github-setup-form');
     if (form) {
       form.addEventListener('submit', (event) => {

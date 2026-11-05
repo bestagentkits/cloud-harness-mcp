@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  apiKeyCreateInput, conflictRecovery, createApiKeyRevealController, createAsyncDialogController, createModalController, githubCallbackParameters,
+  apiKeyCreateInput, conflictRecovery, createApiKeyRevealController, createAsyncDialogController, createModalController, githubCallbackParameters, resolveGitHubCallback,
   parseDotEnv, renderWorkspaceDrawer, resetWriteOnlyFields, submitPatchEdit, submitPatchForm, validateSecretClient,
   THEME_ORDER, nextTheme, themeActionLabel,
   PALETTE_BATCH_SIZE, chunkPaletteRequests, isPaletteHotkey, buildPaletteIndex, rankPaletteMatches,
   createPaletteIndexLoader, backdropHit, dismissOnBackdrop
 } from '../dashboard/dashboard.js';
-import { renderApiKeyIndex, renderGitHub, renderGitHubActions, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail, renderSettings, renderWorkspaceDetail, profileDisplayName } from '../dashboard/dashboard-render.js';
+import { githubRefusalMessage, renderApiKeyIndex, renderGitHub, renderGitHubActions, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail, renderSettings, renderWorkspaceDetail, profileDisplayName } from '../dashboard/dashboard-render.js';
 import { FakeElement } from './dashboard-test-dom.js';
 
 describe('dashboard UI behavior', () => {
@@ -508,10 +508,145 @@ describe('dashboard UI behavior', () => {
     expect(detail.innerHTML).toContain('acme/control-plane');
   });
 
-  it('parses only a complete GitHub App callback pair', () => {
-    expect(githubCallbackParameters('?state=state-value&installation_id=12345')).toEqual({ state: 'state-value', installationId: '12345' });
-    expect(githubCallbackParameters('?state=state-value')).toBeUndefined();
-    expect(githubCallbackParameters('?installation_id=12345')).toBeUndefined();
+  it('classifies GitHub callbacks by precedence', () => {
+    const state = 'Ab0_-'.repeat(8) + 'xyz';
+    expect(githubCallbackParameters(`?state=${state}&code=abc.DEF_1-2&installation_id=5`)).toEqual({ kind: 'complete', state, code: 'abc.DEF_1-2' });
+    expect(githubCallbackParameters(`?code=abc&state=short`)).toEqual({ kind: 'malformed' });
+    expect(githubCallbackParameters(`?code=abc`)).toEqual({ kind: 'malformed' });
+    expect(githubCallbackParameters(`?state=${state}&code=${encodeURIComponent('a b')}`)).toEqual({ kind: 'malformed' });
+    expect(githubCallbackParameters(`?state=${state}&code=&error=access_denied`)).toEqual({ kind: 'malformed' });
+    expect(githubCallbackParameters('?error=access_denied&installation_id=5')).toEqual({ kind: 'refused', reason: 'access_denied' });
+    expect(githubCallbackParameters('?error=redirect_uri_mismatch')).toEqual({ kind: 'refused', reason: 'redirect_uri_mismatch' });
+    const hostile = githubCallbackParameters('?error=%3Cscript%3E&error_description=%3Cimg%20onerror%3Dx%3E&error_uri=javascript:x');
+    expect(hostile).toEqual({ kind: 'refused', reason: 'other' });
+    expect(JSON.stringify(hostile)).not.toContain('script');
+    expect(githubCallbackParameters(`?installation_id=12345&state=${state}&setup_action=install`)).toEqual({ kind: 'authorize', installationId: '12345', state });
+    expect(githubCallbackParameters('?installation_id=4242&setup_action=update')).toEqual({ kind: 'verify', installationId: '4242' });
+    expect(githubCallbackParameters('?installation_id=4242&state=bad')).toEqual({ kind: 'verify', installationId: '4242' });
+    expect(githubCallbackParameters('?installation_id=0')).toEqual({ kind: 'none' });
+    expect(githubCallbackParameters('?installation_id=abc&state=' + state)).toEqual({ kind: 'none' });
+    expect(githubCallbackParameters('?setup_action=install')).toEqual({ kind: 'none' });
+    expect(githubCallbackParameters('')).toEqual({ kind: 'none' });
+  });
+
+  it('renders the GitHub verify prompt and fixed refusal messages without attacker text', () => {
+    const status = { configured: true, installations: [], repositories: [] };
+    const verify = renderGitHub(status, false, { kind: 'verify', installationId: '4242' });
+    expect(verify).toContain('GitHub returned installation 4242 without a connection state. This happens when the App was already installed on the account. Verify with GitHub to connect it.');
+    expect(verify).toContain('id="github-verify"');
+    expect(verify).toContain('Verify with GitHub</button>');
+    expect(githubRefusalMessage('access_denied', 'https://h.example')).toBe('GitHub authorization was cancelled. The installation was not connected.');
+    expect(githubRefusalMessage('redirect_uri_mismatch', 'https://h.example')).toBe("GitHub refused this dashboard's callback URL. Set the GitHub App Callback URL to https://h.example/dashboard/integrations/github, then connect again.");
+    expect(githubRefusalMessage('other', 'https://h.example')).toBe('GitHub did not authorize the connection. Start the connection again.');
+    const message = renderGitHub(status, false, { kind: 'message', text: '<img src=x onerror=alert(1)>' });
+    expect(message).not.toContain('<img');
+    expect(message).toContain('role="alert"');
+  });
+
+  describe('GitHub callback flow', () => {
+    const state = 'Ab0_-'.repeat(8) + 'xyz';
+    const bound = { configured: true, userAuthorizationConfigured: true, installation: null, installations: [{ installationId: '4242', accountLogin: 'acme', status: 'active' }], repositories: [] };
+    const unbound = { configured: true, userAuthorizationConfigured: true, installation: null, installations: [], repositories: [] };
+
+    function flow(overrides: { status?: object; authorize?: () => Promise<void>; post?: (path: string) => Promise<unknown> } = {}) {
+      const posts: Array<[string, unknown]> = [];
+      const reads: string[] = [];
+      const announcements: string[] = [];
+      const errors: unknown[] = [];
+      const deps = {
+        origin: 'https://dash.example',
+        read: async () => { reads.push('/github'); return { data: overrides.status ?? unbound }; },
+        post: async (path: string, body: unknown) => { posts.push([path, body]); return await (overrides.post?.(path) ?? Promise.resolve({})); },
+        authorize: overrides.authorize ?? (async () => undefined),
+        announce: (text: string) => announcements.push(text),
+        reportError: (error: unknown) => errors.push(error),
+        showPending: vi.fn()
+      };
+      return { deps, posts, reads, announcements, errors };
+    }
+
+    it('offers Verify for an installation GitHub returned without a state, and sends nothing yet', async () => {
+      const { deps, posts } = flow();
+      const outcome = await resolveGitHubCallback({ ...deps, callback: githubCallbackParameters('?installation_id=4242&setup_action=update') });
+      expect(outcome).toMatchObject({ redirected: false, notice: { kind: 'verify', installationId: '4242', unavailable: false } });
+      expect(posts).toEqual([]);
+      const html = renderGitHub(outcome.status, false, outcome.notice, 'https://dash.example');
+      expect(html).toContain('id="github-verify"');
+      expect(html).toContain('data-installation-id="4242"');
+      expect(html).not.toMatch(/id="github-verify"[^>]*disabled/);
+    });
+
+    it('reconciles an installation this identity already has instead of offering Verify', async () => {
+      const { deps, posts, announcements, reads } = flow({ status: bound });
+      const outcome = await resolveGitHubCallback({ ...deps, callback: githubCallbackParameters('?installation_id=4242&setup_action=update') });
+      expect(posts).toEqual([['/github/reconcile', { installationId: '4242' }]]);
+      expect(announcements).toEqual(['GitHub installation reconciled.']);
+      expect(reads).toEqual(['/github', '/github']);
+      expect(outcome.notice).toBeUndefined();
+      expect(renderGitHub(outcome.status, false, outcome.notice)).not.toContain('github-verify');
+    });
+
+    it('keeps the installation list and reports the failure when that reconcile fails', async () => {
+      const failure = new Error('reconcile failed');
+      const { deps, errors } = flow({ status: bound, post: async () => { throw failure; } });
+      const outcome = await resolveGitHubCallback({ ...deps, callback: githubCallbackParameters('?installation_id=4242') });
+      expect(errors).toEqual([failure]);
+      expect(outcome.notice).toBeUndefined();
+      expect(outcome.status).toEqual(bound);
+    });
+
+    it('sends a fresh install straight to GitHub with its setup state', async () => {
+      const authorize = vi.fn(async () => undefined);
+      const { deps, reads } = flow({ authorize });
+      const outcome = await resolveGitHubCallback({ ...deps, callback: githubCallbackParameters(`?installation_id=4242&setup_action=install&state=${state}`) });
+      expect(outcome).toEqual({ redirected: true });
+      expect(authorize).toHaveBeenCalledWith({ installationId: '4242', state });
+      expect(reads).toEqual([]);
+    });
+
+    it('falls back to Verify when the setup state expired, and surfaces any other failure', async () => {
+      const expired = Object.assign(new Error('GitHub installation setup is invalid or expired.'), { status: 403 });
+      const first = flow({ authorize: async () => { throw expired; } });
+      const outcome = await resolveGitHubCallback({ ...first.deps, callback: githubCallbackParameters(`?installation_id=4242&state=${state}`) });
+      expect(outcome.notice).toMatchObject({ kind: 'verify', installationId: '4242', expired: true });
+      expect(first.errors).toEqual([]);
+      expect(renderGitHub(outcome.status, false, outcome.notice)).toContain('The connection started here has expired. Verify with GitHub to connect installation 4242.');
+
+      const unavailable = Object.assign(new Error('GitHub could not complete the authorization right now. Retry in a moment.'), { status: 503 });
+      const second = flow({ authorize: async () => { throw unavailable; } });
+      const failed = await resolveGitHubCallback({ ...second.deps, callback: githubCallbackParameters(`?installation_id=4242&state=${state}`) });
+      expect(failed.notice).toEqual({ kind: 'message', text: unavailable.message });
+      expect(second.errors).toEqual([unavailable]);
+    });
+
+    it('completes the OAuth return with exactly the state and code, and shows a refusal as a message', async () => {
+      const ok = flow();
+      await resolveGitHubCallback({ ...ok.deps, callback: githubCallbackParameters(`?code=abc.def&state=${state}`) });
+      expect(ok.posts).toEqual([['/github/complete', { state, code: 'abc.def' }]]);
+      expect(ok.announcements).toEqual(['GitHub App connection completed.']);
+
+      const refused = Object.assign(new Error('Only the owner of the GitHub account acme can connect its installation.'), { status: 403 });
+      const bad = flow({ post: async () => { throw refused; } });
+      const outcome = await resolveGitHubCallback({ ...bad.deps, callback: githubCallbackParameters(`?code=abc.def&state=${state}`) });
+      expect(outcome.notice).toEqual({ kind: 'message', text: refused.message });
+      expect(bad.errors).toEqual([refused]);
+    });
+
+    it('disables Connect and Verify with an explanation when user authorization is not configured', async () => {
+      const { deps } = flow({ status: { ...unbound, userAuthorizationConfigured: false } });
+      const outcome = await resolveGitHubCallback({ ...deps, callback: githubCallbackParameters('?installation_id=4242') });
+      expect(outcome.notice).toMatchObject({ kind: 'verify', unavailable: true });
+      const html = renderGitHub(outcome.status, false, outcome.notice, 'https://dash.example');
+      expect(html).toMatch(/id="github-verify"[^>]*disabled/);
+      expect(html).toContain('GITHUB_APP_CLIENT_ID');
+      expect(html).toContain('https://dash.example/dashboard/integrations/github');
+      expect(html).toMatch(/<button type="submit" disabled>Connect GitHub App/);
+
+      const plain = renderGitHub({ ...unbound, userAuthorizationConfigured: false }, false, undefined, 'https://dash.example');
+      expect(plain).toContain('id="github-user-authorization-unconfigured"');
+      expect(plain).toMatch(/<button type="submit" disabled>Connect GitHub App/);
+      expect(renderGitHub(unbound, false)).not.toMatch(/disabled/);
+    });
   });
 
   it('renders multiple GitHub installations with per-installation action controls', () => {

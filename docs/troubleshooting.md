@@ -134,12 +134,16 @@ Never paste tokens, authorization codes, or callback URLs carrying `code` or
   to the repository, and a valid PEM key. The optional path is not considered
   live-verified merely because configuration loads.
 - In Access mode, GitHub login is not repository authorization. If the
-  dashboard shows no grant, complete the principal-bound GitHub App setup. If
-  it still shows none after GitHub saved the installation, GitHub never returned
-  with `state` and `installation_id`. The App needs a Setup URL
-  ([GitHub App setup](github-app-private-repositories.md)). An App already
-  installed on the account cannot be bound yet (issue #640); uninstall it and
-  install again from **Connect GitHub App**. If
+  dashboard shows no grant, complete the principal-bound GitHub App setup:
+  **Connect GitHub App**, then authorize with GitHub as the installation's
+  personal account or an organization owner. If GitHub saved the installation
+  but the dashboard never asked you to authorize, GitHub did not return to the
+  Setup URL ([GitHub App setup](github-app-private-repositories.md)). If the
+  dashboard disables **Connect GitHub App** and says GitHub user authorization is
+  not configured, set `GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET_FILE`
+  for the runner and register the dashboard's `/dashboard/integrations/github`
+  page as the App's Callback URL. A refused binding names whom to sign in as
+  ([dashboard binding](github-app-private-repositories.md#dashboard-binding-access-mode)). If
   reconcile reports removal or suspension, correct the installation at GitHub
   and reconcile again; do not substitute another principal's installation.
 - A private clone that fails with `remote: Write access to repository not

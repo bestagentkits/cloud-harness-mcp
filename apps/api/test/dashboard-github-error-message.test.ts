@@ -24,8 +24,8 @@ function capture(operation: Parameters<typeof sendRunnerResponse>[1], result: Ru
   return { status, body };
 }
 
-const failure = (code: string, message: string): RunnerResponse =>
-  ({ ok: false, error: { code, message } }) as unknown as RunnerResponse;
+const failure = (code: string, message: string, retryable = false): RunnerResponse =>
+  ({ ok: false, error: { code, message, retryable } }) as unknown as RunnerResponse;
 
 describe('GitHub operations report their own failures', () => {
   it('reconcile reports a GitHub authorization problem, not a workspace outage', () => {
@@ -52,6 +52,32 @@ describe('GitHub operations report their own failures', () => {
   it('reports an uncompletable connection attempt as such', () => {
     const { body } = capture('github_setup_complete', failure('INVALID_INPUT', 'state expired'));
     expect(body.message).toBe('The GitHub App connection could not be completed. Start the connection again.');
+  });
+
+  it('shows why a binding was refused, so the operator knows whom to sign in as', () => {
+    const refusal = 'Your GitHub account cannot access installation 456. Sign in to GitHub as the account owner or an organization owner, then start again.';
+    const { body } = capture('github_setup_complete', failure('FORBIDDEN', refusal));
+    expect(body.message).toBe(refusal);
+  });
+
+  it('points an unconfigured user authorization at the client credentials and Callback URL', () => {
+    for (const operation of ['github_authorize_begin', 'github_setup_complete'] as const) {
+      const { body } = capture(operation, failure('UNAVAILABLE', 'GitHub App user authorization is not configured: raw detail'));
+      expect(body.message).toContain('GITHUB_APP_CLIENT_ID');
+      expect(body.message).toContain('Callback URL');
+      expect(body.message).not.toContain('raw detail');
+    }
+  });
+
+  it('tells the user to retry a transient GitHub failure without blaming the configuration', () => {
+    for (const operation of ['github_authorize_begin', 'github_setup_complete'] as const) {
+      const { status, body } = capture(operation, failure('UNAVAILABLE', 'GitHub user authorization failed: raw provider detail', true));
+      expect(status).toBe(503);
+      expect(body.message).toContain('Retry');
+      expect(body.message).not.toContain('GITHUB_APP_CLIENT_ID');
+      expect(body.message).not.toContain('Callback URL');
+      expect(body.message).not.toContain('raw provider detail');
+    }
   });
 
   it('leaves other operations on the shared workspace wording', () => {

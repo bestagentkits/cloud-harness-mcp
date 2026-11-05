@@ -475,7 +475,14 @@ export const RunnerConfigSchema = z.object({
     appId: z.coerce.number().int().positive(),
     installationId: z.coerce.number().int().positive().optional(),
     privateKey: z.string().includes('PRIVATE KEY').max(32_768),
-    appSlug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/).optional()
+    appSlug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/).optional(),
+    /**
+     * GitHub App OAuth client credentials. Binding an installation to a principal requires a
+     * user authorization that proves the GitHub user owns or administers it; without these,
+     * the dashboard cannot bind any installation.
+     */
+    clientId: z.string().regex(/^[A-Za-z0-9._-]{1,100}$/).optional(),
+    clientSecret: z.string().min(1).max(512).optional()
   }).optional(),
   /**
    * Operator-wide GitHub fallback credential, assembled from `GH_TOKEN` and
@@ -535,6 +542,9 @@ export const RunnerConfigSchema = z.object({
   }
   if (isMultiPrincipal(mode) && config.githubApp && !config.githubApp.appSlug) {
     context.addIssue({ code: 'custom', path: ['githubApp', 'appSlug'], message: `GitHub App slug is required in ${mode} mode` });
+  }
+  if (config.githubApp && (config.githubApp.clientId === undefined) !== (config.githubApp.clientSecret === undefined)) {
+    context.addIssue({ code: 'custom', path: ['githubApp', 'clientSecret'], message: 'GitHub App client ID and client secret must be configured together' });
   }
   if (config.maxArtifactBytes > config.maxPrincipalArtifactBytes) {
     context.addIssue({ code: 'custom', path: ['maxArtifactBytes'], message: 'per-artifact quota cannot exceed principal quota' });

@@ -693,10 +693,14 @@ GitHub login through Access establishes identity only. Repository permission is
 a separate GitHub App boundary verified and stored per principal by
 [`apps/runner/src/github-binding-service.ts`](../apps/runner/src/github-binding-service.ts).
 In `owner-bearer` mode the App configuration includes the fixed installation
-ID. In `cloudflare-access` mode it instead includes the App slug and each
-principal completes a bounded, single-use installation ceremony; no global
-installation is required. The configuration schema rejects partial or
-mode-incompatible combinations.
+ID. In `cloudflare-access` and `oidc` modes it instead includes the App slug
+and the App's OAuth client ID and secret (`GITHUB_APP_CLIENT_ID`,
+`GITHUB_APP_CLIENT_SECRET[_FILE]`, runner-only), and each principal binds an
+installation only after a GitHub user authorization proves its GitHub user
+owns the account or is an organization owner
+([dashboard binding](github-app-private-repositories.md#dashboard-binding-access-mode)).
+No global installation is required. The configuration schema rejects partial
+or mode-incompatible combinations, including a client ID without its secret.
 
 Prefer the file form. Production Compose mounts the root-owned
 `/etc/cloud-harness-mcp` directory read-only at `/run/cloud-harness-secrets`
