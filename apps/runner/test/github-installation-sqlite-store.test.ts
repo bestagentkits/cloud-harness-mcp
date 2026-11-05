@@ -25,6 +25,19 @@ describe('SQLite GitHub installation store', () => {
     state.close();
   });
 
+  it('persists the installation Contents level and leaves legacy rows unverified', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cloud-harness-github-contents-')); roots.push(root);
+    const state = new StateStore(join(root, 'state.db'));
+    const principal = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'a' });
+    const store = new SqliteGitHubInstallationStore(state.database);
+    store.replaceVerified(principal, { appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', issues: null, pullRequests: null, contents: 'none', status: 'active', repositories: [] }, 100);
+    expect(store.getInstallation(principal, 2)).toMatchObject({ contents: 'none' });
+    expect(store.getRepositoryGrant(principal, 'acme', 'app')).toBeUndefined();
+    store.replaceVerified(principal, { appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', issues: null, pullRequests: null, status: 'active', repositories: [] }, 200);
+    expect(store.getInstallation(principal, 2)?.contents).toBeUndefined();
+    state.close();
+  });
+
   it('enforces one principal per GitHub installation identity', () => {
     const root = mkdtempSync(join(tmpdir(), 'cloud-harness-github-unique-')); roots.push(root);
     const state = new StateStore(join(root, 'state.db'));

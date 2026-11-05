@@ -66,6 +66,13 @@ choose the narrowest permission level:
 | Use a branch as a create-only, compare-and-swap, or delete-if-match lock through `git_push` leases | **Contents: Read and write** |
 | Create organization repositories (`github_repository_create`) | **Administration: Read and write** on the organization installation |
 
+If the installation has no **Contents** permission, the runner records no
+repository grant for it, mints no App token (git would refuse it with
+`403 Write access to repository not granted`), and `workspace_capabilities`
+reports `read`/`push` as false with `repositoryAccessReason`: "GitHub App
+installation lacks the Contents permission; an owner must approve it". Approve
+the permission request on the installation, then reconcile the installation.
+
 Every other repository, organization, and account permission can stay at **No
 access**. `Contents` is the permission for HTTP Git access and is also required
 for every brokered `github_action`, because the action-scoped token always

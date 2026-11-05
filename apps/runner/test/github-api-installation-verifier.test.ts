@@ -106,6 +106,36 @@ describe('GitHub API installation verifier', () => {
     ]);
   });
 
+  it('creates no repository grant when the installation lacks the Contents permission', async () => {
+    const noContents = {
+      id: 456, app_id: 123, suspended_at: null,
+      account: { id: 789, login: 'acme' },
+      permissions: { metadata: 'read', issues: 'write' }
+    };
+    const request = vi.fn(async (input: URL | RequestInfo) => String(input).includes('/app/installations/')
+      ? Response.json(noContents)
+      : Response.json({ total_count: 1, repositories: [{ name: 'agentkit', owner: { login: 'acme' }, permissions: { admin: false, push: false, pull: true } }] })) as typeof fetch;
+
+    const verified = await new GitHubApiInstallationVerifier(githubApp, request).verifyInstallation('456');
+    expect(verified.contents).toBe('none');
+    expect(verified.repositories).toEqual([]);
+  });
+
+  it('records contents: read installations as read grants and keeps write unchanged', async () => {
+    const readInstallation = {
+      id: 456, app_id: 123, suspended_at: null,
+      account: { id: 789, login: 'acme' },
+      permissions: { contents: 'read', metadata: 'read' }
+    };
+    const repo = { name: 'agentkit', owner: { login: 'acme' }, permissions: { pull: true } };
+    const request = vi.fn(async (input: URL | RequestInfo) => String(input).includes('/app/installations/')
+      ? Response.json(readInstallation)
+      : Response.json({ total_count: 1, repositories: [repo] })) as typeof fetch;
+    const verified = await new GitHubApiInstallationVerifier(githubApp, request).verifyInstallation('456');
+    expect(verified.contents).toBe('read');
+    expect(verified.repositories).toEqual([{ owner: 'acme', repository: 'agentkit', contents: 'read' }]);
+  });
+
   it('records the granted issue and pull-request levels reported by the installation', async () => {
     const permissionedInstallation = {
       id: 456, app_id: 123, suspended_at: null,

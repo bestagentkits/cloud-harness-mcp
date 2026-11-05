@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { HarnessError, sanitizeAndAttributeProvenance, type RunnerConfig } from '@cloud-harness/contracts';
+import { HarnessError, sanitizeAndAttributeProvenance, WorkspaceCapabilityResultSchema, type RunnerConfig } from '@cloud-harness/contracts';
 import { InMemoryGitHubInstallationStore } from '../src/github-installation-store.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
@@ -221,6 +221,26 @@ describe('Workspace Capabilities and Authorization Preflight', () => {
       expect(harnessErr.repository).toBe('test-org/test-repo');
       expect(harnessErr.requiredCapability).toBe('repository.push');
     }
+  });
+
+  it('does not claim contents read when the installation lacks the Contents permission', async () => {
+    const { service, installations, workspaceId, ownerId } = createFixture({
+      authMode: 'cloudflare-access',
+      githubApp: { appId: 100, privateKey: 'key', appSlug: 'test-app' }
+    });
+    installations.replaceVerified(ownerId, {
+      appId: 100, installationId: 'inst_1', accountId: 'acc_1', accountLogin: 'test-org', status: 'active',
+      issues: 'write', pullRequests: 'write', contents: 'none', repositories: []
+    }, Date.now());
+
+    const res = await service.execute('principal_1', 'workspace_capabilities', { workspaceId });
+    const data = res.data as { capabilities: { repository: Record<string, boolean> }; permissions: { contents: { read: boolean; write: boolean } }; operations: Record<string, boolean>; repositoryAccessReason?: string };
+    expect(data.capabilities.repository.read).toBe(false);
+    expect(data.capabilities.repository.push).toBe(false);
+    expect(data.permissions.contents).toEqual({ read: false, write: false });
+    expect(data.operations.gitFetch).toBe(false);
+    expect(data.repositoryAccessReason).toBe('GitHub App installation lacks the Contents permission; an owner must approve it');
+    expect(() => WorkspaceCapabilityResultSchema.parse(data)).not.toThrow();
   });
 
   it('computes permissions accurately in cloudflare-access mode based on repository grants', async () => {

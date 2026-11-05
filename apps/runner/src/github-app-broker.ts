@@ -111,6 +111,13 @@ export async function mintPrincipalRepositoryToken(input: {
     String(input.config.githubApp.appId) !== installation.appId
   ) throw repositoryNotAuthorized();
 
+  // A grant recorded before the installation's Contents level was tracked can outlive the permission
+  // being revoked. Git refuses such a token with 403, so hand out none and let the caller fall back.
+  if (installation.contents === 'none') {
+    if (requiredPermission === 'write') throw repositoryNotAuthorized();
+    return undefined;
+  }
+
   return mintForInstallation(input.config.githubApp, installation.installationId, repository);
 }
 

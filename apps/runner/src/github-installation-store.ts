@@ -1,5 +1,9 @@
 import { HarnessError } from '@cloud-harness/contracts';
 
+/** Why a repository is unreadable when the installation has no Contents permission, with the remedy. */
+export const CONTENTS_PERMISSION_MISSING_REASON =
+  'GitHub App installation lacks the Contents permission; an owner must approve it';
+
 export type GitHubInstallationStatus = 'active' | 'suspended' | 'uninstalled';
 export type GitHubContentsPermission = 'read' | 'write';
 export type GitHubPermissionLevel = 'none' | 'read' | 'write';
@@ -13,6 +17,11 @@ export type GitHubAccountType = 'Organization' | 'User';
 export type GitHubInstallationOrganizationFacts = {
   /** Installation permission `administration`, which GitHub requires to create repositories. */
   administration?: GitHubPermissionLevel | undefined;
+  /**
+   * Installation permission `contents`. `none` means git cannot read the repositories, so the
+   * verifier records no repository grant for it; an owner must approve the Contents permission.
+   */
+  contents?: GitHubPermissionLevel | undefined;
   accountType?: GitHubAccountType | undefined;
 };
 
@@ -90,6 +99,7 @@ export interface GitHubInstallationStore {
 export function organizationFacts(source: GitHubInstallationOrganizationFacts): GitHubInstallationOrganizationFacts {
   return {
     ...(source.administration !== undefined ? { administration: source.administration } : {}),
+    ...(source.contents !== undefined ? { contents: source.contents } : {}),
     ...(source.accountType !== undefined ? { accountType: source.accountType } : {})
   };
 }

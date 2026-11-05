@@ -13,7 +13,7 @@ import {
 } from '@cloud-harness/contracts';
 import { ArtifactStoreError, type ArtifactStore } from './artifact-store.js';
 import type { GitHubBindingService } from './github-binding-service.js';
-import type { GitHubInstallationStore } from './github-installation-store.js';
+import { CONTENTS_PERMISSION_MISSING_REASON, type GitHubInstallationRecord, type GitHubInstallationStore } from './github-installation-store.js';
 import type { McpGatewayStoredHeader } from './mcp-gateway-store.js';
 import { McpOAuthStoreError } from './mcp-oauth-store.js';
 import type { MetadataStore } from './metadata-store.js';
@@ -42,6 +42,11 @@ function resolveSkillVersion(instructions: string, explicit?: string): string | 
  * Advisory text when a revision does not advance the declared version. This is deliberately not a
  * rejection: keeping a version is a legitimate operator choice, so drift only ever warns.
  */
+/** An installation without Contents is listed with the reason its repositories carry no grant. */
+function withContentsReason(record: GitHubInstallationRecord) {
+  return record.contents === 'none' ? { ...record, contentsReason: CONTENTS_PERMISSION_MISSING_REASON } : record;
+}
+
 function skillVersionDriftWarning(previous: string | null, next: string | null): string | undefined {
   if (previous === null || next === null || compareSemver(next, previous) > 0) return undefined;
   return `declared version ${next} does not advance the current revision's ${previous}`;
@@ -1375,8 +1380,8 @@ export class DashboardControlService {
     const record = this.githubInstallations?.getInstallation(principalId);
     return {
       configured: Boolean(this.config.githubApp?.appSlug),
-      installations,
-      installation: record ?? null,
+      installations: installations.map(withContentsReason),
+      installation: record ? withContentsReason(record) : null,
       repositories: this.githubInstallations?.listRepositoryGrants(principalId) ?? []
     };
   }
