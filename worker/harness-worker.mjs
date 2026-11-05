@@ -177,7 +177,43 @@ async function command(program, args, { cwd = getWorkspaceRoot(), env = process.
 
 const gitArgs = (args) => ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'core.pager=cat', ...args];
 async function git(args, options = {}) {
-  return await command('git', gitArgs(args), { ...options, env: gitEnvironment });
+  return await command('git', gitArgs(args), { ...options, env: { ...gitEnvironment, ...options.env } });
+}
+
+const DEFAULT_GIT_NAME = 'Cloud Harness Agent';
+const DEFAULT_GIT_EMAIL = 'agent@cloud-harness.local';
+
+/**
+ * The identity a commit-creating operation records: the runner-resolved identity first, then the
+ * executor environment, then the harness default. It is passed per command with `-c`, never written
+ * to a Git config file, so it cannot leak into another workspace or persist in the checkout.
+ */
+function gitIdentityArgs(input) {
+  const name = input.authorName || process.env.GIT_AUTHOR_NAME || DEFAULT_GIT_NAME;
+  const email = input.authorEmail || process.env.GIT_AUTHOR_EMAIL || DEFAULT_GIT_EMAIL;
+  return { name, email, args: ['-c', `user.name=${name}`, '-c', `user.email=${email}`] };
+}
+
+/**
+ * Identity arguments for a merge or rebase. Without a runner-resolved identity, an identity the
+ * checkout's own Git config already provides is kept; only a checkout with none gets the default.
+ */
+async function mergeIdentityArgs(input) {
+  if (!input.authorName && !process.env.GIT_AUTHOR_NAME) {
+    const [name, email] = await Promise.all([git(['config', '--get', 'user.name']), git(['config', '--get', 'user.email'])]);
+    if (name.exitCode === 0 && name.output.trim() && email.exitCode === 0 && email.output.trim()) return [];
+  }
+  return gitIdentityArgs(input).args;
+}
+
+const MISSING_IDENTITY = /Committer identity unknown|Author identity unknown|Please tell me who you are|unable to auto-detect email address/i;
+
+/** Names the missing identity instead of letting it read as a source conflict. */
+function gitFailure(output, fallback) {
+  const message = output || fallback;
+  return MISSING_IDENTITY.test(message)
+    ? fail('CONFLICT', `${message}\nGit has no usable author/committer identity for this operation; configure one with git_identity_set.`)
+    : fail('CONFLICT', message);
 }
 
 async function computeSkillBundleDigest(skillDir) {
@@ -1314,10 +1350,9 @@ const handlers = {
       const add = await git(['add', '--all']);
       if (add.exitCode !== 0) return fail('CONFLICT', add.output || 'Git add failed');
     }
-    const authorName = input.authorName || process.env.GIT_AUTHOR_NAME || 'Cloud Harness Agent';
-    const authorEmail = input.authorEmail || process.env.GIT_AUTHOR_EMAIL || 'agent@cloud-harness.local';
-    const result = await git(['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`, 'commit', '--no-gpg-sign', '-m', input.message]);
-    return result.exitCode === 0 ? ok('Git commit created', { output: result.output, authorName, authorEmail }) : fail('CONFLICT', result.output || 'Git commit failed');
+    const identity = gitIdentityArgs(input);
+    const result = await git([...identity.args, 'commit', '--no-gpg-sign', '-m', input.message]);
+    return result.exitCode === 0 ? ok('Git commit created', { output: result.output, authorName: identity.name, authorEmail: identity.email }) : gitFailure(result.output, 'Git commit failed');
   },
   async git_fetch(input) {
     // History options only deepen a shallow checkout; a complete checkout is never cut back.
@@ -1334,21 +1369,23 @@ const handlers = {
     return result.exitCode === 0 ? ok('Git fetch complete', { output: result.output }) : fail('UNAVAILABLE', result.output || 'Git fetch failed', true);
   },
   async git_merge(input) {
-    const args = ['merge', '--no-edit'];
+    const args = [...await mergeIdentityArgs(input), 'merge', '--no-edit', '--no-gpg-sign'];
     if (input.fastForward === 'only') args.push('--ff-only');
     if (input.fastForward === 'never') args.push('--no-ff');
     if (input.message) args.push('-m', input.message);
     args.push(input.ref);
     const result = await git(args, { timeoutMs: 120_000 });
-    return result.exitCode === 0 ? ok('Git merge complete', { output: result.output }) : fail('CONFLICT', result.output || 'Git merge failed');
+    return result.exitCode === 0 ? ok('Git merge complete', { output: result.output }) : gitFailure(result.output, 'Git merge failed');
   },
   async git_rebase(input) {
-    const args = ['rebase'];
+    // Replayed commits keep their original author; the identity only becomes their committer.
+    // `--no-gpg-sign` is refused alongside `--continue`, so signing is disabled through config instead.
+    const args = [...await mergeIdentityArgs(input), '-c', 'commit.gpgsign=false', 'rebase'];
     if (input.action === 'continue') args.push('--continue');
     else if (input.action === 'abort') args.push('--abort');
     else args.push(input.upstream);
-    const result = await git(args, { timeoutMs: 120_000, env: { ...gitEnvironment, GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true' } });
-    return result.exitCode === 0 ? ok(`Git rebase ${input.action} complete`, { output: result.output }) : fail('CONFLICT', result.output || `Git rebase ${input.action} failed`);
+    const result = await git(args, { timeoutMs: 120_000, env: { GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true' } });
+    return result.exitCode === 0 ? ok(`Git rebase ${input.action} complete`, { output: result.output }) : gitFailure(result.output, `Git rebase ${input.action} failed`);
   },
   async worktrees_list() {
     const result = await git(['worktree', 'list', '--porcelain']);
