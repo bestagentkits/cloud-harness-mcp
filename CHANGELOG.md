@@ -1,3 +1,10 @@
+## [0.80.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0...v0.80.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **dashboard:** ship GitHub App setup callback redirect fix to main ([#498](https://github.com/bestagentkits/cloud-harness-mcp/issues/498)) ([#634](https://github.com/bestagentkits/cloud-harness-mcp/issues/634)) ([7d3d9b4](https://github.com/bestagentkits/cloud-harness-mcp/commit/7d3d9b49a743029453b880451afb2960d0e9e5fe)), closes [#499](https://github.com/bestagentkits/cloud-harness-mcp/issues/499) [#640](https://github.com/bestagentkits/cloud-harness-mcp/issues/640)
+
 # [0.80.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.79.2...v0.80.0) (2026-11-02)
 
 
