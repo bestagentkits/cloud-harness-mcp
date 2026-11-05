@@ -1,3 +1,10 @@
+# [0.80.0-beta.6](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0-beta.5...v0.80.0-beta.6) (2026-11-05)
+
+
+### Bug Fixes
+
+* **api:** truthful 429 retry window, GitHub limit schema parity, explicit recover side effects ([#628](https://github.com/bestagentkits/cloud-harness-mcp/issues/628)) ([63db14c](https://github.com/bestagentkits/cloud-harness-mcp/commit/63db14c86fce776d34df1a73f77c671946c87810)), closes [#452](https://github.com/bestagentkits/cloud-harness-mcp/issues/452)
+
 # [0.80.0-beta.5](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0-beta.4...v0.80.0-beta.5) (2026-11-05)
 
 
