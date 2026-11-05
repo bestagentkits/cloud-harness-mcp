@@ -1,3 +1,10 @@
+## [0.80.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.2...v0.80.3) (2026-11-05)
+
+
+### Bug Fixes
+
+* **docs-site:** scroll wide tables inside themselves on narrow viewports ([#650](https://github.com/bestagentkits/cloud-harness-mcp/issues/650)) ([d397ade](https://github.com/bestagentkits/cloud-harness-mcp/commit/d397ade647eaa7c2760766f76429f2fd0d59c1ad)), closes [#649](https://github.com/bestagentkits/cloud-harness-mcp/issues/649) [#649](https://github.com/bestagentkits/cloud-harness-mcp/issues/649)
+
 ## [0.80.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.1...v0.80.2) (2026-11-05)
 
 
