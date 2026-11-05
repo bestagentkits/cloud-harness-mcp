@@ -81,7 +81,8 @@ export class GitHubApiInstallationVerifier implements GitHubInstallationVerifier
     if (!installation.id || !installation.app_id || !installation.account?.id || !installation.account.login) {
       throw new HarnessError('UNAVAILABLE', 'GitHub returned an invalid installation record', 502, true);
     }
-    const installationContents = installation.permissions?.contents;
+    // Real installation payloads always carry `permissions`; without them only repository-level facts exist.
+    const installationContentsLevel = installation.permissions ? permissionLevel(installation.permissions.contents) : undefined;
     return {
       appId: installation.app_id,
       installationId: installation.id,
@@ -92,14 +93,23 @@ export class GitHubApiInstallationVerifier implements GitHubInstallationVerifier
       administration: permissionLevel(installation.permissions?.administration),
       ...(installation.account.type === 'Organization' || installation.account.type === 'User' ? { accountType: installation.account.type } : {}),
       status: installation.suspended_at ? 'suspended' : 'active',
-      repositories: repositories.map((repository) => {
+      ...(installationContentsLevel !== undefined ? { contents: installationContentsLevel } : {}),
+      // A repository the installation cannot read through git gets no grant: a token minted for
+      // it is refused with 403, so the runner must not report or hand out access it lacks.
+      repositories: repositories.flatMap((repository) => {
         const permissions = repository.permissions;
-        const contents = installationContents === 'write' ||
-          permissions?.contents === 'write' ||
-          permissions?.push === true
-          ? 'write'
-          : 'read';
-        return { owner: repository.owner!.login!, repository: repository.name!, contents } as const;
+        const repositoryWrite = permissions?.contents === 'write' || permissions?.push === true;
+        // The installation level is authoritative when GitHub reported it; repository facts decide only without it.
+        const contents: GitHubPermissionLevel = installationContentsLevel === 'none'
+          ? 'none'
+          : installationContentsLevel === 'write' || repositoryWrite
+            ? 'write'
+            : installationContentsLevel === 'read' || permissions?.contents === 'read'
+              ? 'read'
+              : 'none';
+        return contents === 'none'
+          ? []
+          : [{ owner: repository.owner!.login!, repository: repository.name!, contents } as const];
       })
     };
   }

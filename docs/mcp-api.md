@@ -1250,7 +1250,12 @@ starting work. `capabilities.repository.issuesRead`/`issuesWrite` and
 verified installation actually grants, not merely from an App being configured,
 and `capabilities.workspace.defaultNetworkProfile` reports the effective profile
 that `workspace_open` applies when it omits `networkProfile`.
-`githubRepositoryCreate` reports principal-level repository-creation
+When the installation lacks the Contents permission the runner records no
+repository grant, mints no App token, reports `read`/`push` false, and sets
+`repositoryAccessReason` ("GitHub App installation lacks the Contents permission;
+an owner must approve it"); the dashboard GitHub status lists the installation
+with `contents: "none"` and `contentsReason`. A configured fallback credential
+still applies. `githubRepositoryCreate` reports principal-level repository-creation
 availability (see `github_repository_create` above). Unauthorized repository operations fail with `REPOSITORY_OPERATION_NOT_AUTHORIZED`
 identifying the missing capability. The broker and leak boundary are owned by
 [`apps/runner/src/github-app-broker.ts`](../apps/runner/src/github-app-broker.ts),

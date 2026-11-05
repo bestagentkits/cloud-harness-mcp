@@ -87,6 +87,10 @@ Before creating the App in GitHub, choose the minimum required permission level:
 | **Use a branch as a merge-train lock (`git_push` leases)** | **Contents: Read and write** |
 | **Create organization repositories (`github_repository_create`)** | **Administration: Read and write** (organization installation only) |
 
+::: warning Installation without Contents
+An installation lacking the **Contents** permission lists no readable repositories, mints no token for clones, and `workspace_capabilities` reports `repositoryAccessReason`: "GitHub App installation lacks the Contents permission; an owner must approve it". Approve the permission request, then reconcile.
+:::
+
 ::: tip Principle of Least Privilege
 Leave every other repository, organization, and user permission set to **No access**.
 :::

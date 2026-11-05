@@ -156,6 +156,8 @@ Read one workspace record by opaque ID.
 
 Inspect workspace and bound repository authorization capabilities without modifying state or minting tokens.
 
+When `repositoryAccessReason` is present, the GitHub App installation cannot read the repository (for example it lacks the Contents permission), so `read` and `push` are false; an owner must approve the App's Contents permission.
+
 - Optional: `workspaceId`.
 - Returns high-level capabilities (`repository`, `workspace`), fine-grained permissions (`contents`, `issues`, `pullRequests`), and direct operation authorizations (`gitPush`, `issueCreate`, `pullRequestCreate`, `commitList`, `compare`, `releaseList`, `tagList`, etc.). `workspace.defaultNetworkProfile` reports the effective profile applied when `workspace_open` omits `networkProfile`, and the `repository` issue/pull-request flags reflect the permissions the verified installation actually grants. `githubActions.readOnly` lists actions callable on `github_read` without approval prompts; `githubActions.gated` lists actions that stay on the destructive-annotated `github_action`.
 - Read-only and safe to repeat.

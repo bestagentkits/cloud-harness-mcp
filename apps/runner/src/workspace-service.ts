@@ -47,7 +47,7 @@ import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
 import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken, requiredGitHubPermissions, type GitHubPermissionScope } from './github-app-broker.js';
 import type { GitHubBindingService } from './github-binding-service.js';
 import { ArtifactStoreError, type ArtifactMetadata, type ArtifactStore } from './artifact-store.js';
-import type { GitHubInstallationRecord, GitHubInstallationStore } from './github-installation-store.js';
+import { CONTENTS_PERMISSION_MISSING_REASON, type GitHubInstallationRecord, type GitHubInstallationStore } from './github-installation-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import { OperationManager, type TrackedOperation } from './operation-manager.js';
 import { validateRepositoryUrl } from './repository-policy.js';
@@ -1465,11 +1465,21 @@ export class WorkspaceService {
     // A GitHub credential the broker can use exists. Statuses, checks, and Actions levels are not
     // recorded per installation, so those operations are advertised on this and GitHub decides per call.
     let githubBrokered = false;
+    // Set when the GitHub App installation cannot read the repository because it lacks Contents.
+    let repositoryAccessReason: string | undefined;
 
     if (multiPrincipal) {
       if (this.githubInstallations && isGitHub && owner && repository) {
         const grant = this.githubInstallations.getRepositoryGrant(record.ownerId, owner, repository);
-        if (grant && grant.status === 'granted') {
+        const lacksContents = this.githubInstallations.listInstallations(record.ownerId).find((candidate) =>
+          candidate.status === 'active' &&
+          candidate.contents === 'none' &&
+          String(this.config.githubApp?.appId) === candidate.appId &&
+          (grant?.status === 'granted' ? candidate.installationId === grant.installationId : candidate.accountLogin.toLowerCase() === owner)
+        );
+        if (lacksContents) {
+          repositoryAccessReason = CONTENTS_PERMISSION_MISSING_REASON;
+        } else if (grant && grant.status === 'granted') {
           const installation = this.githubInstallations.getInstallation(record.ownerId, grant.installationId);
           if (
             installation &&
@@ -1498,7 +1508,13 @@ export class WorkspaceService {
       // gated on `contentsWrite`. The fallback credential's own permission set is
       // unknown to the harness, so these flags mean "a credential exists and is
       // expected to be able to perform this", not "the harness verified it".
+      if (repositoryAccessReason && !fallbackAvailable) {
+        // The App cannot read the repository and no other credential can: do not claim access.
+        contentsRead = false;
+        contentsWrite = false;
+      }
       if (fallbackAvailable) {
+        repositoryAccessReason = undefined;
         githubBrokered = true;
         contentsRead = true;
         contentsWrite = true;
@@ -1519,8 +1535,14 @@ export class WorkspaceService {
         const grantedIssues = installation?.issues ?? null;
         const grantedPullRequests = installation?.pullRequests ?? null;
         githubBrokered = true;
-        contentsRead = true;
-        contentsWrite = true;
+        if (installation?.contents === 'none' && !fallbackAvailable) {
+          repositoryAccessReason = CONTENTS_PERMISSION_MISSING_REASON;
+          contentsRead = false;
+          contentsWrite = false;
+        } else {
+          contentsRead = true;
+          contentsWrite = true;
+        }
         issuesRead = fallbackAvailable || grantedIssues === null || grantedIssues !== 'none';
         issuesWrite = fallbackAvailable || grantedIssues === null || grantedIssues === 'write';
         pullRequestsRead = fallbackAvailable || grantedPullRequests === null || grantedPullRequests !== 'none';
@@ -1554,6 +1576,7 @@ export class WorkspaceService {
           defaultNetworkProfile: this.store.getWorkspaceDefaultNetworkProfile() ?? this.config.networkProfile
         }
       },
+      ...(repositoryAccessReason ? { repositoryAccessReason } : {}),
       permissions: {
         contents: {
           read: contentsRead,

@@ -14,7 +14,7 @@ import type {
 type InstallationRow = {
   principal_id: string; app_id: string; installation_id: string; account_id: string; account_login: string;
   issues: GitHubPermissionLevel | null; pull_requests: GitHubPermissionLevel | null;
-  administration: GitHubPermissionLevel | null; account_type: GitHubAccountType | null;
+  administration: GitHubPermissionLevel | null; contents: GitHubPermissionLevel | null; account_type: GitHubAccountType | null;
   status: GitHubInstallationRecord['status']; generation: number; created_at: number; updated_at: number; checked_at: number;
 };
 type GrantRow = {
@@ -28,6 +28,7 @@ const installation = (row: InstallationRow): GitHubInstallationRecord => ({
   accountId: row.account_id, accountLogin: row.account_login,
   issues: row.issues, pullRequests: row.pull_requests,
   ...(row.administration !== null ? { administration: row.administration } : {}),
+  ...(row.contents !== null ? { contents: row.contents } : {}),
   ...(row.account_type !== null ? { accountType: row.account_type } : {}),
   status: row.status,
   generation: row.generation, createdAt: row.created_at, updatedAt: row.updated_at, checkedAt: row.checked_at
@@ -95,6 +96,10 @@ export function migrateGitHubInstallationSchema(database: DatabaseSync): void {
     // Repository-creation facts: NULL until the installation is verified again.
     if (!permissionColumns.some((column) => column.name === 'administration')) {
       database.exec("ALTER TABLE github_installations ADD COLUMN administration TEXT CHECK(administration IN ('none','read','write'))");
+    }
+    // Installation Contents level: NULL until the installation is verified again.
+    if (!permissionColumns.some((column) => column.name === 'contents')) {
+      database.exec("ALTER TABLE github_installations ADD COLUMN contents TEXT CHECK(contents IN ('none','read','write'))");
     }
     if (!permissionColumns.some((column) => column.name === 'account_type')) {
       database.exec("ALTER TABLE github_installations ADD COLUMN account_type TEXT CHECK(account_type IN ('Organization','User'))");
@@ -165,14 +170,14 @@ export class SqliteGitHubInstallationStore implements GitHubInstallationStore {
         updatedAt: checkedAt, checkedAt
       };
       this.database.prepare(`INSERT INTO github_installations
-        (principal_id,app_id,installation_id,account_id,account_login,issues,pull_requests,administration,account_type,status,generation,created_at,updated_at,checked_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(principal_id, installation_id) DO UPDATE SET
+        (principal_id,app_id,installation_id,account_id,account_login,issues,pull_requests,administration,contents,account_type,status,generation,created_at,updated_at,checked_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(principal_id, installation_id) DO UPDATE SET
         app_id=excluded.app_id,account_id=excluded.account_id,account_login=excluded.account_login,
         issues=excluded.issues,pull_requests=excluded.pull_requests,
-        administration=excluded.administration,account_type=excluded.account_type,
+        administration=excluded.administration,contents=excluded.contents,account_type=excluded.account_type,
         status=excluded.status,generation=excluded.generation,updated_at=excluded.updated_at,checked_at=excluded.checked_at`)
         .run(principalId, record.appId, record.installationId, record.accountId, record.accountLogin,
-          record.issues, record.pullRequests, record.administration ?? null, record.accountType ?? null, record.status,
+          record.issues, record.pullRequests, record.administration ?? null, record.contents ?? null, record.accountType ?? null, record.status,
           record.generation, record.createdAt, record.updatedAt, record.checkedAt);
 
       const current = new Set<string>();

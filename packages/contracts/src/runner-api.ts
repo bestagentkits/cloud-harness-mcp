@@ -146,6 +146,8 @@ export const WorkspaceCapabilityResultSchema = z.object({
   }).passthrough(),
   permissions: RepositoryPermissionsSchema,
   operations: RepositoryOperationsSchema,
+  repositoryAccessReason: z.string().max(300).optional()
+    .describe('Present when the GitHub App installation cannot read this repository (for example it lacks the Contents permission); states the cause and remedy'),
   githubActions: z.object({
     readOnlyTool: z.literal('github_read'),
     readOnly: z.array(z.string()),

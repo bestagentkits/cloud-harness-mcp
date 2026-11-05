@@ -72,6 +72,28 @@ describe('GitHub App broker', () => {
     expect(authMocks.createAppAuth).toHaveBeenCalledWith(expect.objectContaining({ installationId: '777' }));
   });
 
+  it('mints no token for a repository whose installation lacks the Contents permission', async () => {
+    const installations = new InMemoryGitHubInstallationStore();
+    const verified = {
+      appId: 123, installationId: 777, accountId: 789, accountLogin: 'example', issues: null, pullRequests: null,
+      status: 'active' as const, contents: 'none' as const
+    };
+    // The verifier records no grant for an installation without Contents.
+    installations.replaceVerified('principal-a', { ...verified, repositories: [] }, 1_000);
+    const request = {
+      config, principalId: 'principal-a', installations,
+      repositoryUrl: new URL('https://github.com/example/private-repo.git')
+    };
+    await expect(mintPrincipalRepositoryToken(request)).resolves.toBeUndefined();
+    // A grant stored before the Contents level was tracked must not mint either.
+    installations.replaceVerified('principal-a', {
+      ...verified, repositories: [{ owner: 'example', repository: 'private-repo', contents: 'read' }]
+    }, 2_000);
+    await expect(mintPrincipalRepositoryToken(request)).resolves.toBeUndefined();
+    await expect(mintPrincipalRepositoryToken({ ...request, requiredPermission: 'write' })).rejects.toThrow('not authorized');
+    expect(authMocks.installationAuth).not.toHaveBeenCalled();
+  });
+
   it('denies cross-principal, removed, suspended, and insufficient grants before token creation', async () => {
     const installations = new InMemoryGitHubInstallationStore();
     installations.replaceVerified('principal-a', {
