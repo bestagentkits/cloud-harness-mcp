@@ -40,6 +40,12 @@ and can be deployed independently to Cloudflare Pages.
 - [x] A reproducible Cloudflare Pages deployment command and rollback process are documented.
 - [x] The page is published to an isolated Cloudflare Pages hostname and its public URL, links, and owner-boundary copy are smoke-tested.
 
+Evidence (2026-11-05): `https://cloud-harness-mcp.pages.dev/` returns 200 and,
+at a 375px viewport, does not scroll horizontally (`scrollWidth` 375). Its copy
+describes a "private single-owner server" and labels multi-tenant isolation as
+an architecture preview. All 9 outbound links return 200. The deploy, list, and
+rollback procedure is in `docs/cloudflare-pages.md`.
+
 ## Non-goals
 
 - Moving or proxying the MCP API through Cloudflare Pages.
