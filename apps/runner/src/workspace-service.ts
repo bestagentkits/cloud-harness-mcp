@@ -83,6 +83,15 @@ import {
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
 import { DurableSessionStore } from './durable-session-store.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
+
+/** Where a repository Git credential came from; reported in clone failures, never the token itself. */
+type RepositoryCredentialSource = 'github-app' | 'principal-global-secret' | 'runner-environment';
+interface RepositoryCredential {
+  token: string;
+  source: RepositoryCredentialSource;
+  /** Set when a GitHub App mint failed and the fallback credential was used instead. */
+  appMintError?: unknown;
+}
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const PACKAGE_OPERATION_SET: ReadonlySet<string> = new Set(PACKAGE_OPERATIONS);
@@ -862,11 +871,14 @@ export class WorkspaceService {
     await mkdir(jobPath, { recursive: true, mode: 0o700 });
     await chmod(jobPath, 0o777);
 
-    let repositoryToken = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
+    const credential = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
+    let repositoryToken = credential?.token;
+    let credentialSource: RepositoryCredentialSource | 'none' = credential?.source ?? 'none';
+    let appMintError: unknown = credential?.appMintError;
     let cachePathForVolume: string | undefined;
     if (this.config.enableRepoCache) {
       try {
-        const cacheResult = await this.repoCacheManager.acquireCacheMirror(record.ownerId, record.repositoryUrl, repositoryToken);
+        const cacheResult = await this.repoCacheManager.acquireCacheMirror(record.ownerId, record.repositoryUrl, credential?.token);
         if (cacheResult.isReady) {
           cachePathForVolume = cacheResult.cachePath;
         }
@@ -901,15 +913,33 @@ export class WorkspaceService {
       await this.safeRemovePath(repositoryPath);
       result = await runClone(repositoryToken, undefined);
     }
-    if (result.exitCode !== 0 && !repositoryToken) {
-      const refreshedToken = await this.refreshRepositoryToken(record.ownerId, repositoryUrl);
+    if (result.exitCode !== 0 && credentialSource !== 'github-app') {
+      // A fallback (or missing) credential failed: the principal's GitHub App
+      // grant may simply be stale, so reconcile once and retry with an App token.
+      let refreshedToken: string | undefined;
+      try {
+        refreshedToken = await this.refreshRepositoryToken(record.ownerId, repositoryUrl);
+      } catch (error) {
+        appMintError = error;
+      }
       if (refreshedToken) {
         await this.safeRemovePath(repositoryPath);
         repositoryToken = refreshedToken;
+        credentialSource = 'github-app';
         result = await runClone(repositoryToken, undefined);
       }
     }
-    if (result.exitCode !== 0) throw new HarnessError('UNAVAILABLE', `repository clone failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 502, true);
+    if (result.exitCode !== 0) {
+      const appNote = appMintError !== undefined && credentialSource !== 'github-app'
+        ? ` [GitHub App token unavailable: ${appMintError instanceof Error ? appMintError.message : 'mint failed'}]`
+        : '';
+      throw new HarnessError(
+        'UNAVAILABLE',
+        `repository clone failed (credential: ${credentialSource})${appNote}: ${result.stderr || result.stdout}`.slice(0, 2_000),
+        502,
+        true
+      );
+    }
     return repositoryPath;
   }
   private async refreshRepositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write' = 'read'): Promise<string | undefined> {
@@ -2148,7 +2178,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
   private async remoteFetch(record: WorkspaceRecord, remoteRef: string | undefined, signal?: AbortSignal, historySpec = '') {
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
-    const token = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
+    const token = (await this.repositoryToken(record.ownerId, repositoryUrl, 'read'))?.token;
     const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
     try {
       const fetched = await this.runGitTransferHelper(record, 'fetch', transferName, remoteRef ?? '', token, undefined, signal, historySpec);
@@ -2168,7 +2198,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const repoStr = this.extractRepositoryName(repositoryUrl);
     let token: string | undefined;
     try {
-      token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write');
+      token = (await this.repositoryToken(record.ownerId, repositoryUrl, 'write'))?.token;
     } catch (err: unknown) {
       if (err instanceof HarnessError && (err.code === 'FORBIDDEN' || err.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED')) {
         throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', err.message, 403, false, {
@@ -3767,7 +3797,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
             let token: string | undefined;
             try {
-              token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write');
+              token = (await this.repositoryToken(record.ownerId, repositoryUrl, 'write'))?.token;
             } catch { /* ignore if token cannot be minted */ }
             const remoteOid = await this.probeRemoteRefOid(record, branch, token, signal);
             if (remoteOid && remoteOid === existingOp.localCommitSha) {
@@ -4453,14 +4483,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
    * credentials are preferred; the operator-supplied fallback is used only when
    * no App token can be minted, so existing App deployments are unaffected.
    */
-  private async repositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write'): Promise<string | undefined> {
-    const fallback = () => resolveGitHubFallbackToken({
-      config: this.config,
-      principalId: ownerId,
-      metadata: this.metadata
-    });
+  private async repositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write'): Promise<RepositoryCredential | undefined> {
+    const fallback = (appMintError?: unknown): RepositoryCredential | undefined => {
+      const resolved = resolveGitHubFallbackCredential({
+        config: this.config,
+        principalId: ownerId,
+        metadata: this.metadata
+      });
+      return resolved ? { ...resolved, ...(appMintError === undefined ? {} : { appMintError }) } : undefined;
+    };
     if (!isMultiPrincipal(this.config.authMode)) {
-      return await mintRepositoryToken(this.config, repositoryUrl) ?? fallback();
+      const appToken = await mintRepositoryToken(this.config, repositoryUrl);
+      return appToken ? { token: appToken, source: 'github-app' } : fallback();
     }
     if (!this.githubInstallations || !this.config.githubApp) return fallback();
 
@@ -4475,15 +4509,15 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       mintError = error;
     }
 
-    if (token) return token;
+    if (token) return { token, source: 'github-app' };
 
     if (permission === 'write' && this.githubBinding) {
       const refreshed = await this.refreshRepositoryToken(ownerId, repositoryUrl, 'write');
-      if (refreshed) return refreshed;
+      if (refreshed) return { token: refreshed, source: 'github-app' };
     }
 
-    const fallbackToken = fallback();
-    if (fallbackToken) return fallbackToken;
+    const fallbackCredential = fallback(mintError);
+    if (fallbackCredential) return fallbackCredential;
 
     if (mintError) throw mintError;
     return undefined;

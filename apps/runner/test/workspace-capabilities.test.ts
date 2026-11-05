@@ -448,11 +448,15 @@ describe('Workspace Capabilities and Authorization Preflight', () => {
       githubToken: fallbackToken
     });
     const call = (service as unknown as {
-      repositoryToken: (ownerId: string, url: URL, permission: 'read' | 'write') => Promise<string | undefined>;
+      repositoryToken: (ownerId: string, url: URL, permission: 'read' | 'write') => Promise<{ token: string; source: string } | undefined>;
     });
     const repositoryUrl = new URL('https://github.com/test-org/test-repo.git');
-    await expect(call.repositoryToken('principal_1', repositoryUrl, 'read')).resolves.toBe(fallbackToken);
-    await expect(call.repositoryToken('principal_1', repositoryUrl, 'write')).resolves.toBe(fallbackToken);
+    const read = await call.repositoryToken('principal_1', repositoryUrl, 'read');
+    const write = await call.repositoryToken('principal_1', repositoryUrl, 'write');
+    expect(read?.token).toBe(fallbackToken);
+    expect(read?.source).toBe('runner-environment');
+    expect(write?.token).toBe(fallbackToken);
+    expect(write?.source).toBe('runner-environment');
   });
 
   it('reads owner skills from the workspace toolkit projection instead of a host-global executor path', async () => {

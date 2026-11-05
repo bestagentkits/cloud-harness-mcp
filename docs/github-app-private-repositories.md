@@ -38,6 +38,14 @@ never placed in an executor environment. To authenticate the `gh` CLI inside a
 workspace, create a global runtime secret named `GH_TOKEN` or `GITHUB_TOKEN`,
 which is injected into the executor and readable by workspace processes.
 
+`GH_TOKEN` shadows `GITHUB_TOKEN`: only the first usable name is sent, so a
+wrong `GH_TOKEN` hides a correct `GITHUB_TOKEN`. A fine-grained personal access
+token covers one resource owner, and one that is pending organization approval
+is refused with a 403. When a clone with such a token fails and the principal
+has an installation on the repository owner, the runner reconciles it and
+retries once with an App token. A clone failure names the credential source
+(`github-app`, `principal-global-secret`, `runner-environment`, or `none`).
+
 ## Decide the required access
 
 Before creating the App, list the repositories Cloud Harness must access and

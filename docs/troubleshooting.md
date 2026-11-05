@@ -142,6 +142,21 @@ Never paste tokens, authorization codes, or callback URLs carrying `code` or
   install again from **Connect GitHub App**. If
   reconcile reports removal or suspension, correct the installation at GitHub
   and reconcile again; do not substitute another principal's installation.
+- A private clone that fails with `remote: Write access to repository not
+  granted.` (or another GitHub 403) names the credential in the error, for
+  example `repository clone failed (credential: principal-global-secret)`. The
+  value is `github-app`, `principal-global-secret`, `runner-environment`, or
+  `none`; the token itself is never printed. When the credential was not a
+  GitHub App token and the principal has an installation on the repository
+  owner, the runner reconciles that installation and retries once with an App
+  token; the error adds `GitHub App token unavailable: ...` when that mint
+  failed. If the source is a global secret, remember that `GH_TOKEN` shadows
+  `GITHUB_TOKEN`, so a wrong `GH_TOKEN` hides a correct `GITHUB_TOKEN`. A
+  fine-grained personal access token covers one resource owner (a personal
+  account or one organization), so it is refused for repositories of any other
+  owner. A token for an organization that requires approval of fine-grained
+  tokens yields the same 403 until an owner approves it. Fix the secret, or
+  install the GitHub App on the repository owner.
 
 Replay the same `workspace_open` idempotency key or call `workspace_list` after
 a lost response; do not create a second key until the first result is resolved.

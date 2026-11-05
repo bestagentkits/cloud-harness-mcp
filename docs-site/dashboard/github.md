@@ -38,6 +38,8 @@ Or create it in the dashboard under **Secrets**, which requires no restart and i
 - Resolved credentials are passed over `stdin` to ephemeral helpers and are registered with the ingest-time redactor. They are never written to results, logs, audit payloads, or the Git remote.
 - `workspace_capabilities` reports GitHub read/write capability when either an App or a fallback credential is available.
 - A personal access token is **not** repository-scoped and cannot be limited by an installation grant. Prefer a GitHub App, or the narrowest fine-grained token.
+- `GH_TOKEN` shadows `GITHUB_TOKEN`: only the first usable name is sent. A fine-grained token covers a single resource owner, and one pending organization approval is refused with a 403.
+- If a clone with a fallback credential fails and you have an installation on the repository owner, the runner reconciles it and retries once with an App token. Clone errors name the credential source (`github-app`, `principal-global-secret`, `runner-environment`, `none`), never the token.
 - The environment credential authenticates **harness-side** operations only; it is never placed in an executor environment. To authenticate the workspace's own `gh` CLI, create a global runtime secret named `GH_TOKEN`/`GITHUB_TOKEN` (see [Secrets & Credentials](secrets.md#github-credentials-in-workspaces)).
 
 ---

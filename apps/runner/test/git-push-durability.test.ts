@@ -179,7 +179,7 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
       });
 
       vi.spyOn(service as unknown as { workspaceBytes: () => Promise<number> }, 'workspaceBytes').mockResolvedValue(1024);
-      vi.spyOn(service as unknown as { repositoryToken: () => Promise<string> }, 'repositoryToken').mockResolvedValue('token123');
+      vi.spyOn(service as unknown as { repositoryToken: () => Promise<{ token: string; source: 'github-app' }> }, 'repositoryToken').mockResolvedValue({ token: 'token123', source: 'github-app' });
       vi.spyOn(service as unknown as { currentBranch: () => Promise<string> }, 'currentBranch').mockResolvedValue('main');
       let pushHead = 'aaaabbbbccccddddeeeeffff1111222233334444';
       vi.spyOn(service as unknown as { currentHead: () => Promise<string> }, 'currentHead').mockImplementation(async () => pushHead);
@@ -287,7 +287,7 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
       });
 
       vi.spyOn(service as unknown as { workspaceBytes: () => Promise<number> }, 'workspaceBytes').mockResolvedValue(1024);
-      vi.spyOn(service as unknown as { repositoryToken: () => Promise<string> }, 'repositoryToken').mockResolvedValue('token123');
+      vi.spyOn(service as unknown as { repositoryToken: () => Promise<{ token: string; source: 'github-app' }> }, 'repositoryToken').mockResolvedValue({ token: 'token123', source: 'github-app' });
       vi.spyOn(service as unknown as { currentBranch: () => Promise<string> }, 'currentBranch').mockResolvedValue('main');
       vi.spyOn(service as unknown as { currentHead: () => Promise<string> }, 'currentHead').mockResolvedValue('aaaabbbbccccddddeeeeffff1111222233334444');
 
@@ -400,7 +400,7 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
       const knownCommitSha = '9999888877776666555544443333222211110000';
       vi.spyOn(service as unknown as { workspaceBytes: () => Promise<number> }, 'workspaceBytes').mockResolvedValue(1024);
       vi.spyOn(service as any, 'currentBranch').mockResolvedValue('main');
-      vi.spyOn(service as any, 'repositoryToken').mockResolvedValue('fake-token');
+      vi.spyOn(service as any, 'repositoryToken').mockResolvedValue({ token: 'fake-token', source: 'github-app' });
       vi.spyOn(service as any, 'probeRemoteRefOid').mockResolvedValue(knownCommitSha);
       // Simulate a runner crash after commit: finalize operation in UNKNOWN_REMOTE_STATE with commitSha recorded
       const idempotencyKey = 'ik_finalize_crash_recovery';
