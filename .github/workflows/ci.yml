@@ -118,6 +118,10 @@ jobs:
   # time and do not depend on their results.
   docker-integration:
     runs-on: ubuntu-24.04
+    env:
+      # Bake parses the whole Compose file, including the runtime `env_file`, which a CI
+      # checkout has no `.env` for. The example file satisfies the parser; builds ignore it.
+      CLOUD_HARNESS_ENV_FILE: .env.example
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
