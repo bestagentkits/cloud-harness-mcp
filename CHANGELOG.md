@@ -1,3 +1,10 @@
+# [0.80.0-beta.5](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0-beta.4...v0.80.0-beta.5) (2026-11-05)
+
+
+### Bug Fixes
+
+* **git:** apply the configured Git identity to merges, rebases, and pulls ([#629](https://github.com/bestagentkits/cloud-harness-mcp/issues/629)) ([aded5dd](https://github.com/bestagentkits/cloud-harness-mcp/commit/aded5dd28573997f2fa8d407c7f2d393c7d48427)), closes [#626](https://github.com/bestagentkits/cloud-harness-mcp/issues/626)
+
 # [0.80.0-beta.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0-beta.3...v0.80.0-beta.4) (2026-11-04)
 
 
