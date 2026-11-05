@@ -113,6 +113,14 @@
   display: table;
 }
 
+/* A table wider than the content column scrolls inside itself instead of widening the page. */
+@media (max-width: 767px) {
+  .vp-doc table {
+    display: block;
+    overflow-x: auto;
+  }
+}
+
 .vp-doc th {
   text-transform: uppercase;
   font-size: 0.8rem;
