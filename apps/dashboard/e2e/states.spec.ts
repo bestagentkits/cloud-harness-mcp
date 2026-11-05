@@ -52,8 +52,13 @@ test('the real per-principal limit answers 429 once the owner exhausts the minut
   }
   // The page already spent part of this owner's 120-request minute; the limit then holds.
   expect(sent).toBeLessThanOrEqual(120);
-  expect(limited?.headers()['retry-after']).toBe('1');
-  expect(await limited?.json()).toEqual({ error: 'rate_limited' });
+  // A spent budget frees only at the window reset, so the advertised wait is the rest of the minute.
+  const retryAfter = Number(limited?.headers()['retry-after']);
+  expect(retryAfter).toBeGreaterThanOrEqual(1);
+  expect(retryAfter).toBeLessThanOrEqual(60);
+  const body = await limited?.json() as { retryAfterMs: number };
+  expect(body).toEqual({ error: 'rate_limited', scope: 'requests_per_minute', retryable: true, retryAfterMs: expect.any(Number) });
+  expect(Math.ceil(body.retryAfterMs / 1_000)).toBe(retryAfter);
   expect((await page.request.get('/dashboard/api/v1/profile')).status()).toBe(429);
 
   // Another signed-in owner (its own context, so its own Access subject) is not affected.

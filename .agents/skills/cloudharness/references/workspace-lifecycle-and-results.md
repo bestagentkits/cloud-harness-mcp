@@ -204,7 +204,7 @@ Explicitly renew the active workspace idle lease or reactivate a recoverable exp
 Recover an active or recoverable expired workspace to active state, or inspect, patch, or export unpushed work.
 
 - Optional: `workspaceId`, `mode` (`resume` (default), `status`, `patch`, or `export`), `targetBranch`.
-- Returns restored active workspace, recovery status, unpushed patch, or branch recovery details.
+- Returns restored active workspace, recovery status, unpushed patch, or branch recovery details. Side effects: `status` and `patch` only read. `export` publishes: it commits every uncommitted change and pushes `HEAD` to `targetBranch` (default: the current branch). Use `patch` when nothing may be committed or pushed.
 
 <!-- cloudharness-example:workspace_recover
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","mode":"resume"}
