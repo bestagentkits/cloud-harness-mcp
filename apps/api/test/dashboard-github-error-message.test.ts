@@ -69,15 +69,31 @@ describe('GitHub operations report their own failures', () => {
     }
   });
 
-  it('tells the user to retry a transient GitHub failure without blaming the configuration', () => {
-    for (const operation of ['github_authorize_begin', 'github_setup_complete'] as const) {
-      const { status, body } = capture(operation, failure('UNAVAILABLE', 'GitHub user authorization failed: raw provider detail', true));
-      expect(status).toBe(503);
-      expect(body.message).toContain('Retry');
+  it('tells the user to retry a transient failure only where the state is still unspent', () => {
+    const begin = capture('github_authorize_begin', failure('UNAVAILABLE', 'GitHub user authorization failed: raw provider detail', true));
+    expect(begin.status).toBe(503);
+    expect(begin.body.message).toContain('Retry');
+    expect(begin.body.message).not.toContain('Start the connection again');
+
+    // The OAuth return already consumed its state, so retrying the same return cannot work.
+    for (const result of [
+      failure('UNAVAILABLE', 'GitHub user authorization failed: raw provider detail', true),
+      failure('TIMEOUT', 'raw provider detail', true)
+    ]) {
+      const { body } = capture('github_setup_complete', result);
+      expect(body.message).toContain('Start the connection again');
+      expect(body.message).not.toContain('Retry');
       expect(body.message).not.toContain('GITHUB_APP_CLIENT_ID');
       expect(body.message).not.toContain('Callback URL');
       expect(body.message).not.toContain('raw provider detail');
     }
+  });
+
+  it('reports a refused GitHub state as a 403 the dashboard reads as an expired connection', () => {
+    for (const operation of ['github_authorize_begin', 'github_setup_complete'] as const) {
+      expect(capture(operation, failure('FORBIDDEN', 'invalid or expired')).status).toBe(403);
+    }
+    expect(capture('workspace_status', failure('FORBIDDEN', 'x')).status).toBe(404);
   });
 
   it('leaves other operations on the shared workspace wording', () => {

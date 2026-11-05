@@ -100,7 +100,7 @@ function useGitHubCallback(search: string) {
           return;
         }
       } catch (error) {
-        if (callback.kind === 'authorize' && error instanceof ForbiddenError) {
+        if (callback.kind === 'authorize' && error instanceof ForbiddenError && error.code === 'forbidden') {
           setStateExpired(true);
           setCallback({ kind: 'verify', installationId: callback.installationId });
         } else {
@@ -241,7 +241,7 @@ export function GitHubPage({ search = '' }: { search?: string }) {
       {callback.kind === 'verify' && !alreadyBound && !read.isPending ? (
         <Callout tone="warning" testId="github-verify">
           <p>{stateExpired
-            ? `The connection started here has expired. Verify with GitHub to connect installation ${callback.installationId}.`
+            ? `The connection started here has expired, and the account restriction it carried expired with it. Verify with GitHub to connect installation ${callback.installationId}.`
             : `GitHub returned installation ${callback.installationId} without a connection state. This happens when the App was already installed on the account. Verify with GitHub to connect it.`}</p>
           {verifyUnavailable ? <p className="pt-2 text-sm">GitHub user authorization is not configured: an operator must set GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET and the GitHub App Callback URL.</p> : null}
           <div className="pt-2"><Button size="sm" disabled={verifying || verifyUnavailable} aria-busy={verifying || undefined} onClick={() => { void verify(); }}>{verifying ? 'Opening GitHub…' : 'Verify with GitHub'}</Button></div>

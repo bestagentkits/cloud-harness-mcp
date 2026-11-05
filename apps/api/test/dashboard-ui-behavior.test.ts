@@ -605,12 +605,19 @@ describe('dashboard UI behavior', () => {
     });
 
     it('falls back to Verify when the setup state expired, and surfaces any other failure', async () => {
-      const expired = Object.assign(new Error('GitHub installation setup is invalid or expired.'), { status: 403 });
+      const expired = Object.assign(new Error('GitHub installation setup is invalid or expired.'), { status: 403, code: 'forbidden' });
       const first = flow({ authorize: async () => { throw expired; } });
       const outcome = await resolveGitHubCallback({ ...first.deps, callback: githubCallbackParameters(`?installation_id=4242&state=${state}`) });
       expect(outcome.notice).toMatchObject({ kind: 'verify', installationId: '4242', expired: true });
       expect(first.errors).toEqual([]);
-      expect(renderGitHub(outcome.status, false, outcome.notice)).toContain('The connection started here has expired. Verify with GitHub to connect installation 4242.');
+      expect(renderGitHub(outcome.status, false, outcome.notice)).toContain('The connection started here has expired, and the account restriction it carried expired with it. Verify with GitHub to connect installation 4242.');
+
+      // A 403 from the BFF (origin, session, CSRF) says nothing about the setup state.
+      const origin = Object.assign(new Error('Origin not allowed.'), { status: 403, code: 'forbidden_origin' });
+      const blocked = flow({ authorize: async () => { throw origin; } });
+      const refusedOrigin = await resolveGitHubCallback({ ...blocked.deps, callback: githubCallbackParameters(`?installation_id=4242&state=${state}`) });
+      expect(refusedOrigin.notice).toEqual({ kind: 'message', text: origin.message });
+      expect(blocked.errors).toEqual([origin]);
 
       const unavailable = Object.assign(new Error('GitHub could not complete the authorization right now. Retry in a moment.'), { status: 503 });
       const second = flow({ authorize: async () => { throw unavailable; } });

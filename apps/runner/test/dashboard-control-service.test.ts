@@ -11,6 +11,7 @@ import { ArtifactStore } from '../src/artifact-store.js';
 import { DashboardControlService } from '../src/dashboard-control-service.js';
 import { GitHubAuthorizationStateStore, GitHubBindingService, GitHubSetupStateStore } from '../src/github-binding-service.js';
 import { InMemoryGitHubInstallationStore } from '../src/github-installation-store.js';
+import { SqliteGitHubInstallationStore } from '../src/github-installation-sqlite-store.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
 import type { ProviderHttpClient } from '../src/model-provider-http.js';
@@ -647,9 +648,9 @@ describe('dashboard control service', () => {
     const BROWSER = 'b'.repeat(43);
     const operatorB = { ...principal, subject: 'operator-b' };
 
-    function githubSetup(options: { configured?: boolean } = {}) {
+    function githubSetup(options: { configured?: boolean; sqlite?: boolean } = {}) {
       const { principals, metadata, artifacts, workspaces } = setup();
-      const store = new InMemoryGitHubInstallationStore();
+      const store = options.sqlite ? new SqliteGitHubInstallationStore(principals.database) : new InMemoryGitHubInstallationStore();
       const verifier = { verifyInstallation: async (id: string) => ({ appId: '1', installationId: id, accountId: '201', accountLogin: 'acme', issues: null, pullRequests: null, status: 'active' as const, repositories: [{ owner: 'acme', repository: 'app', contents: 'write' as const }] }) };
       let outcome: 'owner' | 'organization_admin' | HarnessError = 'owner';
       const authorizer = {
@@ -688,8 +689,8 @@ describe('dashboard control service', () => {
       expect((await controls.execute(request('github_status', {}))).data).toMatchObject({ userAuthorizationConfigured: true });
     });
 
-    it('lets the proven owner take an installation over from another principal and audits both identities', async () => {
-      const { controls, metadata, principals, connect } = githubSetup();
+    it.each(['memory', 'sqlite'] as const)('lets the proven owner take an installation over from another principal and audits both identities (%s store)', async (kind) => {
+      const { controls, metadata, principals, connect } = githubSetup({ sqlite: kind === 'sqlite' });
       await connect(principal);
       await connect(operatorB);
 
@@ -698,8 +699,36 @@ describe('dashboard control service', () => {
       const rebound = metadata.listAudit(idB, 10).find((event) => event.action === 'github.rebound');
       expect(rebound).toMatchObject({ subjectId: '456', details: { githubUser: 'alice', relation: 'owner', replacedPrincipalId: idA } });
       expect(metadata.listAudit(idB, 10).some((event) => event.action === 'github.bound')).toBe(false);
+      // The replaced holder lost the installation, so its own audit says so without naming the new holder.
+      const unbound = metadata.listAudit(idA, 10).find((event) => event.action === 'github.unbound');
+      expect(unbound).toMatchObject({ subjectType: 'github_installation', subjectId: '456', details: { reason: 'rebound', accountLogin: 'acme' } });
+      expect(Object.keys(unbound!.details).sort()).toEqual(['accountLogin', 'reason']);
+      expect(JSON.stringify(unbound)).not.toContain(idB);
       expect((await controls.execute(request('github_status', {}, principal))).data).toMatchObject({ installations: [], installation: null });
       expect((await controls.execute(request('github_status', {}, operatorB))).data).toMatchObject({ installations: [expect.objectContaining({ installationId: '456' })] });
+    });
+
+    it('audits a refused authorization state with its stage only, and keeps the owner state', async () => {
+      const { controls, metadata, principals } = githubSetup();
+      const begun = await controls.execute(request('github_authorize_begin', { installationId: '456', redirectUri: REDIRECT_URI, browserBinding: BROWSER }, principal));
+      const state = new URL((begun.data as { url: string }).url).searchParams.get('state')!;
+      const complete = (as: typeof principal, browserBinding: string) =>
+        controls.execute(request('github_setup_complete', { state, code: 'github-code', browserBinding }, as));
+
+      await expect(complete(operatorB, BROWSER)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(complete(principal, 'c'.repeat(43))).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      const idB = principals.resolvePrincipal(operatorB);
+      const idA = principals.resolvePrincipal(principal);
+      const refusal = metadata.listAudit(idB, 10).find((event) => event.action === 'github.bind_refused');
+      expect(refusal).toMatchObject({ details: { code: 'FORBIDDEN', stage: 'state' } });
+      expect(Object.keys(refusal!.details).sort()).toEqual(['code', 'stage']);
+      expect(JSON.stringify(metadata.listAudit(idA, 10))).not.toContain(state);
+      expect(metadata.listAudit(idA, 10).filter((event) => event.action === 'github.bind_refused')).toHaveLength(1);
+
+      // The refusals did not delete the owner's state: the owner still completes, then a replay is refused too.
+      expect((await complete(principal, BROWSER)).ok).toBe(true);
+      await expect(complete(principal, BROWSER)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      expect(metadata.listAudit(idA, 10).filter((event) => event.action === 'github.bind_refused')).toHaveLength(2);
     });
 
     it('audits a refused binding with the installation and error code only', async () => {

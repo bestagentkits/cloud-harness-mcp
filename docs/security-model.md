@@ -494,7 +494,9 @@ wrong-principal, wrong-browser, expired, or replayed state is refused before
 any GitHub call. The browser nonce lives in a per-flow `__Host-` cookie named
 after a digest of the authorization `state`, so two authorizations in two tabs
 do not overwrite each other. A refused attempt is audited as
-`github.bind_refused` with the installation ID and error code only. The
+`github.bind_refused` with the installation ID and error code only; a refused authorization state
+(replay, expiry, another principal or browser) is audited with the code and `stage: state`, never the
+state value, and is not deleted by the refusal. The
 executable owners are
 [`apps/runner/src/github-user-authorizer.ts`](../apps/runner/src/github-user-authorizer.ts)
 and [`apps/runner/src/github-binding-service.ts`](../apps/runner/src/github-binding-service.ts).
@@ -508,7 +510,9 @@ A user whose authorization proves ownership of the installation (the personal
 account, or an active organization owner) may take over a binding held by
 another principal: the runner replaces it in one transaction, removes the
 previous holder's grants, and audits `github.rebound` with the new principal
-and the replaced principal's ID (never a token). This is how the real owner
+and the replaced principal's ID (never a token). The replaced principal's own audit shows
+`github.unbound` with the reason `rebound` and the account login, in the same transaction and without
+naming the new holder. This is how the real owner
 recovers an installation that an unverified binding locked out; a wrong GitHub
 user cannot, and the attempt is refused and audited. An operator can also
 disconnect a binding from the holder's dashboard. See

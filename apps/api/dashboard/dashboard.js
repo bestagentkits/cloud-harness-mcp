@@ -220,7 +220,8 @@ export async function resolveGitHubCallback({ callback, origin, read, post, auth
       await authorize({ installationId: callback.installationId, state: callback.state });
       return { redirected: true };
     } catch (error) {
-      if (error?.status === 403) {
+      // Only the runner's own refusal means the state expired; a BFF 403 (origin, session, CSRF) is a real error.
+      if (error?.status === 403 && error?.code === 'forbidden') {
         notice = { kind: 'verify', installationId: callback.installationId, expired: true };
       } else {
         notice = { kind: 'message', text: error instanceof Error ? error.message : 'GitHub authorization failed.' };

@@ -286,7 +286,7 @@ Test opening a private repository through your AI client (Cursor, Claude Code, e
 | **"GitHub did not confirm that you are an owner of the … organization"** | You are not an organization owner, or the App lacks **Members: Read-only**. | Ask an organization owner to connect it; add **Members: Read-only** to the App and approve it on the installation. |
 | **"GitHub authorization was cancelled"** or **"… is invalid or expired"** | You declined on GitHub, took longer than 10 minutes, or reused an old link. | Click **Connect GitHub App** again. |
 | **"GitHub user authorization is not configured"** or a disabled **Connect GitHub App** | The runner has no `GITHUB_APP_CLIENT_ID`/`GITHUB_APP_CLIENT_SECRET`. | Set both and the App's Callback URL (`<origin>/dashboard/integrations/github`), then restart the runner. |
-| **An installation is bound to the wrong identity, or you cannot reach it** | Releases before user verification let a setup link bind an installation without proving ownership. | Authorize as the account owner or an organization owner from the identity that should hold it; the binding moves and the audit log records `github.rebound`. |
+| **An installation is bound to the wrong identity, or you cannot reach it** | Releases before user verification let a setup link bind an installation without proving ownership. | Authorize as the account owner or an organization owner from the identity that should hold it; the binding moves and the audit log records `github.rebound`. The previous holder's audit shows `github.unbound`. |
 
 ## Where this page lives now
 

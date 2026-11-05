@@ -353,9 +353,16 @@ export class GitHubBindingService {
     code: string;
     browserBinding: string;
   }, audit?: (record: GitHubInstallationRecord, proof: GitHubUserInstallationProof, replacedPrincipalId?: string) => void,
-  refused?: (installationId: string, error: HarnessError) => void): Promise<GitHubInstallationRecord> {
+  refused?: (installationId: string | undefined, error: HarnessError) => void): Promise<GitHubInstallationRecord> {
     const { states, authorizer } = this.requireUserAuthorization();
-    const pending = states.consume(input.state, input.principalId, input.browserBinding, this.now());
+    let pending: AuthorizationState;
+    try {
+      pending = states.consume(input.state, input.principalId, input.browserBinding, this.now());
+    } catch (error) {
+      // Replay, another principal or browser, or expiry. The state is not deleted by this refusal.
+      if (error instanceof HarnessError && !error.retryable) refused?.(undefined, error);
+      throw error;
+    }
     try {
       const proof = await authorizer.proveInstallationAdministration({
         code: input.code, codeVerifier: pending.codeVerifier, redirectUri: pending.redirectUri, installationId: pending.installationId

@@ -304,9 +304,13 @@ remove one:
   a Configure round trip), and sign in to GitHub as the personal account or an
   organization owner. When the proof passes, the binding held by the other
   principal is replaced in one transaction: its grants are removed and the
-  audit log records `github.rebound` with both principal IDs (never a token).
+  audit log records `github.rebound` with both principal IDs (never a token) for the new holder,
+  and the previous holder's audit shows `github.unbound` with the reason `rebound` and the account login
+  (never the new holder).
   A wrong GitHub user is refused and the existing binding stays; the attempt is
-  audited as `github.bind_refused` with the installation ID and error code only.
+  audited as `github.bind_refused` with the installation ID and error code only. A replayed,
+  expired, or foreign authorization state is audited the same way with the code and `stage: state`
+  (never the state), and the refusal does not delete the owner's pending state.
 - **An operator removes it.** Disconnect the installation from the holding
   identity's dashboard, or uninstall the App on GitHub and let that identity
   reconcile (the installation becomes `uninstalled`).
@@ -379,7 +383,7 @@ successful private clone proves read access only; it does not prove push access.
 | Binding refused: "Your GitHub account cannot access installation …" or "Only the owner of the GitHub account …" | GitHub signed in a different user. Sign out of GitHub or switch accounts to the installation's personal account (or an organization owner), then use **Connect GitHub App** again. |
 | Binding refused: "GitHub did not confirm that you are an owner of the … organization" | An organization owner must connect it, and the App needs **Members: Read-only** under organization permissions; approve the changed permission on the installation, then connect again. |
 | Dashboard disables Connect and says GitHub user authorization is not configured | The runner has no `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET`. Set both, register the Callback URL above, and restart the runner. |
-| An installation shows under the wrong identity, or you cannot reach it | Reconnect it as the proven owner (see Upgrade notes above): the binding moves to you and the audit log records `github.rebound`. |
+| An installation shows under the wrong identity, or you cannot reach it | Reconnect it as the proven owner (see Upgrade notes above): the binding moves to you and the audit log records `github.rebound`; the previous holder's audit shows `github.unbound`. |
 
 The broker deliberately returns a sanitized error instead of GitHub's raw
 credential-bearing response. Use GitHub's installation settings and runner

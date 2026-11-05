@@ -693,6 +693,8 @@ const githubUserAuthorizationNotConfigured = 'GitHub user authorization is not c
 const githubUserAuthorizationRetry = 'GitHub could not complete the authorization right now. Retry in a moment.';
 /** Operations that run the GitHub user authorization; their UNAVAILABLE wording depends on `retryable`. */
 const githubUserAuthorizationOperations = new Set<string>(['github_authorize_begin', 'github_setup_complete']);
+/** The OAuth return consumed its state before calling GitHub, so the same code cannot be retried. */
+const githubAuthorizationRestart = 'GitHub could not complete the authorization right now. Start the connection again.';
 const packagesDisabled = 'Managed packages are off. Operators enable them with PACKAGES_ENABLED=true.';
 
 /** Gateway operations need gateway wording; the shared table is workspace-oriented. */
@@ -1007,9 +1009,13 @@ export function buildActivityProjection(input: { events?: Record<string, unknown
 export function sendRunnerResponse(response: Response, operation: DashboardResponseOperation, result: RunnerResponse): void {
   if (!result.ok) {
     const code = result.error?.code ?? 'INTERNAL_ERROR';
-    const perOperation = code === 'UNAVAILABLE' && githubUserAuthorizationOperations.has(operation)
-      ? (result.error?.retryable ? githubUserAuthorizationRetry : githubUserAuthorizationNotConfigured)
-      : operationMessages[operation]?.[code];
+    const perOperation = githubUserAuthorizationOperations.has(operation) && code === 'UNAVAILABLE'
+      ? (!result.error?.retryable
+        ? githubUserAuthorizationNotConfigured
+        : operation === 'github_setup_complete' ? githubAuthorizationRestart : githubUserAuthorizationRetry)
+      : operation === 'github_setup_complete' && code === 'TIMEOUT'
+        ? githubAuthorizationRestart
+        : operationMessages[operation]?.[code];
     // `LIMIT_EXCEEDED` is raised only by our own admission, quota, and reserve
     // checks, and its message carries the active count, the configured limit, and
     // the remedy. Every other code keeps the shared table so raw runner, Docker, and
@@ -1017,7 +1023,9 @@ export function sendRunnerResponse(response: Response, operation: DashboardRespo
     const message = perOperation ?? (result.error?.message && (descriptiveOperations.has(operation) || code === 'LIMIT_EXCEEDED')
       ? result.error.message
       : (messages[code] ?? messages.INTERNAL_ERROR));
-    response.status(statuses[code] ?? 500).json({ error: code.toLowerCase(), message });
+    // A refused GitHub state or proof is a 403 the dashboard reads as "start again"; the shared table hides FORBIDDEN as 404.
+    const status = code === 'FORBIDDEN' && githubUserAuthorizationOperations.has(operation) ? 403 : (statuses[code] ?? 500);
+    response.status(status).json({ error: code.toLowerCase(), message });
     return;
   }
   response.json({ data: mapDashboardData(operation, result.data), truncated: result.truncated, ...(result.cursor ? { cursor: result.cursor } : {}) });

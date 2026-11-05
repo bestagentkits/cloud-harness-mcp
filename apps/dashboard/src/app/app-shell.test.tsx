@@ -213,10 +213,21 @@ describe('AppShell', () => {
         '/github/authorize': () => Response.json({ error: 'forbidden', message: 'GitHub installation setup is invalid or expired. Start the connection again.' }, { status: 403 })
       });
       renderAt(`/dashboard/integrations/github?installation_id=4245&setup_action=install&state=${'H'.repeat(43)}`);
-      expect(await screen.findByText(/The connection started here has expired\. Verify with GitHub to connect installation 4245\./)).toBeInTheDocument();
+      expect(await screen.findByText(/The connection started here has expired, and the account restriction it carried expired with it\. Verify with GitHub to connect installation 4245\./)).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Verify with GitHub' })).toBeEnabled();
       expect(screen.queryByTestId('github-callback-error')).not.toBeInTheDocument();
       expect(githubCalls('/github/authorize')).toHaveLength(1);
+    });
+
+    it('shows the normal error, not the verify prompt, when the BFF refuses the authorize request', async () => {
+      stubGitHubWrites({
+        '/github': () => Response.json(githubStatus()),
+        '/github/authorize': () => Response.json({ error: 'forbidden_origin', message: 'This origin is not allowed.' }, { status: 403 })
+      });
+      renderAt(`/dashboard/integrations/github?installation_id=4247&setup_action=install&state=${'J'.repeat(43)}`);
+      expect(await screen.findByTestId('github-callback-error')).toHaveTextContent('This origin is not allowed.');
+      expect(screen.queryByRole('button', { name: 'Verify with GitHub' })).not.toBeInTheDocument();
+      expect(screen.queryByText(/has expired/)).not.toBeInTheDocument();
     });
 
     it('disables Connect and Verify and explains why when user authorization is not configured', async () => {

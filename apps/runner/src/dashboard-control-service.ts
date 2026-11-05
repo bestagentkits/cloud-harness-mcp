@@ -396,20 +396,31 @@ export class DashboardControlService {
         case 'github_setup_complete': {
           await this.requireGitHubBinding().completeAuthorization(
             { principalId, ...parsed.input },
-            (record, proof, replacedPrincipalId) => this.metadata.recordAuditInTransaction(
-              this.principals.database, principalId,
-              replacedPrincipalId === undefined ? 'github.bound' : 'github.rebound', 'github_installation',
-              record.installationId, record.generation,
-              {
-                accountLogin: record.accountLogin, githubUser: proof.userLogin, relation: proof.relation,
-                ...(replacedPrincipalId === undefined ? {} : { replacedPrincipalId })
+            (record, proof, replacedPrincipalId) => {
+              this.metadata.recordAuditInTransaction(
+                this.principals.database, principalId,
+                replacedPrincipalId === undefined ? 'github.bound' : 'github.rebound', 'github_installation',
+                record.installationId, record.generation,
+                {
+                  accountLogin: record.accountLogin, githubUser: proof.userLogin, relation: proof.relation,
+                  ...(replacedPrincipalId === undefined ? {} : { replacedPrincipalId })
+                }
+              );
+              // The previous holder lost the installation and its grants, so its own audit must say so
+              // without naming the principal that took it over.
+              if (replacedPrincipalId !== undefined) {
+                this.metadata.recordAuditInTransaction(
+                  this.principals.database, replacedPrincipalId, 'github.unbound', 'github_installation',
+                  record.installationId, record.generation, { reason: 'rebound', accountLogin: record.accountLogin }
+                );
               }
-            ),
+            },
             // The attempt is recorded with the installation and the error code only: the reason text
-            // can name the GitHub account, and no token, code, or state reaches this entry.
+            // can name the GitHub account, and no token, code, or state reaches this entry. A refused
+            // state has no trusted installation, so it records the stage instead and never the state.
             (installationId, error) => this.metadata.recordAudit(
-              principalId, 'github.bind_refused', 'github_installation', installationId, 0,
-              { installationId, code: error.code }
+              principalId, 'github.bind_refused', 'github_installation', installationId ?? 'state', 0,
+              installationId === undefined ? { code: error.code, stage: 'state' } : { installationId, code: error.code }
             )
           );
           return ok('GitHub installation connected', this.githubStatus(principalId));

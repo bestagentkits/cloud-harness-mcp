@@ -1168,7 +1168,7 @@ export function githubRefusalMessage(reason, origin) {
 }
 
 export function githubVerifyPrompt(installationId, expired = false) {
-  if (expired) return `The connection started here has expired. Verify with GitHub to connect installation ${installationId}.`;
+  if (expired) return `The connection started here has expired, and the account restriction it carried expired with it. Verify with GitHub to connect installation ${installationId}.`;
   return `GitHub returned installation ${installationId} without a connection state. This happens when the App was already installed on the account. Verify with GitHub to connect it.`;
 }
 
