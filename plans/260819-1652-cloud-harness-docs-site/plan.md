@@ -1,7 +1,7 @@
 ---
 title: "Cloud Harness docs site"
 description: "Public VitePress documentation site at docs.harness.agentkit.best, self-hosted on Cloudflare Pages, brand-matched to the marketing site, with reference pages generated from source."
-status: pending
+status: completed
 priority: P1
 effort: "2-3d"
 tags: [docs, cloudflare-pages, vitepress]
@@ -64,12 +64,12 @@ Dependency order: 1 → (2, 3, 4 in parallel) → 5.
 
 ## Success Criteria
 
-- [ ] `docs.harness.agentkit.best` serves every requested section + accepted additions with working nav, local search, and syntax-highlighted code.
-- [ ] Merge to `main` → CI builds docs (dead-link + drift checks) → Pages deploy publishes it; artifact/link/smoke checks pass.
-- [ ] Adding a new tool or env var and rebuilding updates the reference page with zero hand edits; a stale hand-edit fails the drift check.
-- [ ] Fetching any page URL with a `.md` suffix returns clean Markdown as `text/markdown`; `llms.txt`/`llms-full.txt` are served at the site root.
-- [ ] Light/dark and 375px verified in a browser; brand matches the marketing site.
-- [ ] `npm run verify` remains green; docs build is not coupled into the API/runner graph.
+- [x] `docs.harness.agentkit.best` serves every requested section + accepted additions with working nav, local search, and syntax-highlighted code.
+- [x] Merge to `main` → CI builds docs (dead-link + drift checks) → Pages deploy publishes it; artifact/link/smoke checks pass.
+- [x] Adding a new tool or env var and rebuilding updates the reference page with zero hand edits; a stale hand-edit fails the drift check.
+- [x] Fetching any page URL with a `.md` suffix returns clean Markdown as `text/markdown`; `llms.txt`/`llms-full.txt` are served at the site root.
+- [x] Light/dark and 375px verified in a browser; brand matches the marketing site. (2026-11-05: the 375px check found wide tables widening the page; fixed by letting tables scroll inside themselves below 768px.)
+- [x] `npm run verify` remains green; docs build is not coupled into the API/runner graph.
 
 ## Owner action (live-op, not code)
 
