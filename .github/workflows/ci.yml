@@ -14,7 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
+  # Static gates, the full build and documentation integrity. `npm run verify` stays the
+  # local gate; CI runs its parts as parallel jobs and `quality` below requires all of them.
+  checks:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -26,19 +28,73 @@ jobs:
       - run: npm ci
       - run: bash -n worker/clone-helper.sh worker/task-runner.sh worker/shell-runner.sh worker/worker-runner.sh worker/gh-helper.sh deploy/scripts/bootstrap-vps.sh deploy/scripts/deploy-release.sh deploy/scripts/release-runtime.sh deploy/scripts/rollback-release.sh deploy/scripts/deploy-ssh-wrapper.sh deploy/scripts/upgrade-nginx-dashboard.sh deploy/scripts/setup-dependency-firewall.sh
       - run: npm run verify:compose
-      - run: npm run verify
-      # `verify` already built the API and the React Dashboard; the suites drive that build
-      # through the real Express app in Chromium (shell, navigation transaction, error
-      # states, axe, CSP, browser storage, navigation p95). Screenshots run in
-      # `dashboard-visual`, inside the image their baselines were recorded in.
-      - run: npx -w @cloud-harness/dashboard playwright install --with-deps chromium
-      - run: npm run test:e2e -w @cloud-harness/dashboard -- --project=chromium
+      - run: npm run plugin:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
       - name: Verify documentation and reference integrity
         run: |
           npm run docs:reference
           npm run docs:check
           npm run docs:build
           npm run docs:artifact
+  # `npm test` split across runners by file. Each shard keeps `--no-file-parallelism`, so
+  # files inside a shard still run one at a time exactly as in `npm test`.
+  unit-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.11.0
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx vitest run --exclude '**/*.docker.test.ts' --no-file-parallelism --shard=${{ matrix.shard }}/4
+      - if: matrix.shard == 1
+        run: npm run test -w @cloud-harness/dashboard
+  # The Chromium suites drive the built API and React Dashboard through the real Express app
+  # (shell, navigation transaction, error states, axe, CSP, browser storage, navigation
+  # p95), split by spec file. Screenshots run in `dashboard-visual`, inside the image their
+  # baselines were recorded in.
+  dashboard-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.11.0
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w @cloud-harness/contracts
+      - run: npm run build -w @cloud-harness/api
+      - run: npm run build -w @cloud-harness/dashboard
+      - run: npx -w @cloud-harness/dashboard playwright install --with-deps chromium
+      - run: npm run test:e2e -w @cloud-harness/dashboard -- --project=chromium --shard=${{ matrix.shard }}/3
+  # The required branch-protection check. It passes only when every gate the former single
+  # `quality` job ran has passed, so splitting the work never weakens what `main` requires.
+  quality:
+    if: always()
+    needs: [checks, unit-tests, dashboard-e2e]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every quality gate
+        run: |
+          echo 'checks=${{ needs.checks.result }} unit-tests=${{ needs.unit-tests.result }} dashboard-e2e=${{ needs.dashboard-e2e.result }}'
+          test '${{ needs.checks.result }}' = success
+          test '${{ needs.unit-tests.result }}' = success
+          test '${{ needs.dashboard-e2e.result }}' = success
   # The light/dark screenshots at 1280, 768 and 375 px. Fonts and Chromium come from the
   # pinned Playwright image, the same one the Linux baselines in
   # apps/dashboard/e2e/visual.spec.ts-snapshots are recorded in, so a diff is the UI's.
@@ -59,8 +115,9 @@ jobs:
       - run: npm run build -w @cloud-harness/api
       - run: npm run build -w @cloud-harness/dashboard
       - run: npm run test:e2e -w @cloud-harness/dashboard -- --project=visual
+  # Runs alongside the quality gates instead of after them: the image builds dominate its
+  # time and do not depend on their results.
   docker-integration:
-    needs: quality
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:

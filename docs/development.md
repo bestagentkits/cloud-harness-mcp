@@ -164,6 +164,14 @@ are the test authority:
 - CI order and trusted-event behavior:
   [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
 
+CI runs the parts of `npm run verify` and the Dashboard Chromium suite as
+parallel jobs, with the Vitest and Playwright suites sharded by file, and
+starts `docker-integration` alongside them rather than after them. The
+required `quality` check is an aggregate that passes only when every one of
+those gates passed, so branch protection still covers the same work while a PR
+waits for the slowest job instead of their sum. Locally, `npm run verify`
+remains the single gate.
+
 After a failed Docker test, inspect managed leftovers without deleting
 unrelated containers:
 
