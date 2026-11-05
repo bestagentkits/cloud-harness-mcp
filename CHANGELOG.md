@@ -1,3 +1,11 @@
+## [0.80.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.1...v0.80.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* **runner:** reconcile GitHub App after fallback clone failure and report credential source ([#644](https://github.com/bestagentkits/cloud-harness-mcp/issues/644)) ([3c343ee](https://github.com/bestagentkits/cloud-harness-mcp/commit/3c343eed2c63472253c4303cfdc95c26ec23e350)), closes [#641](https://github.com/bestagentkits/cloud-harness-mcp/issues/641)
+* **runner:** record no repository grant when the installation lacks Contents (Fixes [#643](https://github.com/bestagentkits/cloud-harness-mcp/issues/643)) ([#645](https://github.com/bestagentkits/cloud-harness-mcp/issues/645)) ([54eb971](https://github.com/bestagentkits/cloud-harness-mcp/commit/54eb97141ddbc49d4e6c2e1424f0cb35fddeeb91))
+
 ## [0.80.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0...v0.80.1) (2026-11-05)
 
 
