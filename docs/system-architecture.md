@@ -409,7 +409,7 @@ Cloud Harness MCP provides a portable coding context plane across agent clients 
    Enforces Optimistic Concurrency Control via `expectedGeneration` (CAS) and TTL expiration.
 
 5. **Declarative Lifecycle Hooks:**
-   Hooks defined in `.cloud-harness/hooks.json` support named lifecycle events (`pre_commit`, `post_checkout`, `on_workspace_open`, `post_commit`). Automatic execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest and executes in an unprivileged, no-network executor container.
+   Hooks defined in `.cloud-harness/hooks.json` support named lifecycle events (`pre_commit`, `post_checkout`, `on_workspace_open`, `post_commit`). Automatic execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest and executes in the workspace's own unprivileged executor container, inheriting its `networkProfile` (`dependency-access` by default, `network-none` as the isolation opt-out).
 
 6. **Adversarial Output Boundary:**
    Structured MCP results keep repository text nested in `data` under `trust: untrusted-executor`. Text projections (`mcp-response-text.ts`) format context items with trusted boundary markers and JSON-escaped excerpts to prevent delimiter breakouts or prompt injection.
