@@ -181,4 +181,61 @@ describe('private repository clone reconciliation', () => {
       store.close();
     }
   });
+
+  it('reconciles the App installation and retries with an App token when a fallback credential was refused', async () => {
+    const { config, store, installations, record } = fixture();
+    const pat = 'github_pat_wrong_owner_token_0000000000';
+    const metadata = {
+      recordAuditInTransaction: vi.fn(),
+      globalSecretValue: vi.fn((_principal: string, name: string) => name === 'GH_TOKEN' ? pat : undefined)
+    } as unknown as MetadataStore;
+    const reconcile = vi.fn(async () => undefined);
+    const binding = { reconcile } as unknown as GitHubBindingService;
+    const service = new WorkspaceService(config, store, metadata, installations, binding);
+    broker.mintPrincipalRepositoryToken
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce('fresh-repository-token');
+    docker.runDocker
+      .mockResolvedValueOnce({ exitCode: 128, stdout: '', stderr: 'remote: Write access to repository not granted.', truncated: false })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '', truncated: false });
+
+    try {
+      const clone = (service as unknown as { clone: CloneMethod }).clone.bind(service);
+      await expect(clone(record, new URL(record.repositoryUrl))).resolves.toBe(join(record.workspacePath, 'repo'));
+      expect(reconcile).toHaveBeenCalledTimes(1);
+      expect(docker.runDocker).toHaveBeenCalledTimes(2);
+      expect(docker.runDocker.mock.calls[0]?.[1]?.stdin).toBe(`${pat}\n`);
+      expect(docker.runDocker.mock.calls[1]?.[1]?.stdin).toBe('fresh-repository-token\n');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('reports the credential source and the App mint failure, never a token value, when a fallback clone fails', async () => {
+    const { config, store, installations, record } = fixture();
+    const pat = 'github_pat_wrong_owner_token_0000000000';
+    const metadata = {
+      recordAuditInTransaction: vi.fn(),
+      globalSecretValue: vi.fn((_principal: string, name: string) => name === 'GH_TOKEN' ? pat : undefined)
+    } as unknown as MetadataStore;
+    const reconcile = vi.fn(async () => undefined);
+    const binding = { reconcile } as unknown as GitHubBindingService;
+    const service = new WorkspaceService(config, store, metadata, installations, binding);
+    broker.mintPrincipalRepositoryToken
+      .mockRejectedValueOnce(new Error('installation token mint refused'))
+      .mockResolvedValueOnce(undefined);
+    docker.runDocker.mockResolvedValue({ exitCode: 128, stdout: '', stderr: 'remote: Write access to repository not granted.', truncated: false });
+
+    try {
+      const clone = (service as unknown as { clone: CloneMethod }).clone.bind(service);
+      const error = await clone(record, new URL(record.repositoryUrl)).catch((caught: unknown) => caught as Error);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain('repository clone failed (credential: principal-global-secret)');
+      expect(error.message).toContain('GitHub App token unavailable');
+      expect(error.message).not.toContain(pat);
+      expect(docker.runDocker).toHaveBeenCalledTimes(1);
+    } finally {
+      store.close();
+    }
+  });
 });
