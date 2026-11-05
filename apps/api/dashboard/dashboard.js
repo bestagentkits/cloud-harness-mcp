@@ -519,7 +519,16 @@ export function workspaceLifecycleUpdateInput(view, values, acknowledged) {
   }
   if (!errors.idleTtlSeconds && !errors.wallTtlSeconds && effective.idleTtlSeconds > effective.wallTtlSeconds) {
     const field = update.wallTtlSeconds !== undefined && update.idleTtlSeconds === undefined ? 'wallTtlSeconds' : 'idleTtlSeconds';
-    errors[field] = `The idle timeout (${lifecycleDurationLabel(effective.idleTtlSeconds)}) cannot exceed the maximum lifetime (${lifecycleDurationLabel(effective.wallTtlSeconds)}).`;
+    errors[field] = `The idle timeout (${lifecycleDurationLabel(effective.idleTtlSeconds)}) cannot exceed the default lifetime (${lifecycleDurationLabel(effective.wallTtlSeconds)}).`;
+  }
+  // Mirrors the runner: an explicit ceiling (edited, a stored override, or the runner environment) may not be
+  // below the default lifetime, while a ceiling configured nowhere follows the default lifetime.
+  const ceilingSetting = view.settings.maxWallTtlSeconds;
+  const ceiling = update.maxWallTtlSeconds
+    ?? (ceilingSetting.source === 'setting' ? ceilingSetting.value : ceilingSetting.source === 'environment' ? ceilingSetting.runnerValue : undefined);
+  if (!errors.wallTtlSeconds && !errors.maxWallTtlSeconds && ceiling !== undefined && ceiling < effective.wallTtlSeconds) {
+    const field = update.wallTtlSeconds !== undefined && update.maxWallTtlSeconds === undefined ? 'wallTtlSeconds' : 'maxWallTtlSeconds';
+    errors[field] = `The maximum requestable lifetime (${lifecycleDurationLabel(ceiling)}) cannot be below the default lifetime (${lifecycleDurationLabel(effective.wallTtlSeconds)}).`;
   }
   if (update.recoverableGraceSeconds === 0) {
     if (acknowledged === true) update.acknowledgeImmediateClose = true;
@@ -533,8 +542,12 @@ export function workspaceLifecycleUpdateInput(view, values, acknowledged) {
 export function workspaceLifecycleResetInput(view) {
   const idle = view.settings.idleTtlSeconds.runnerValue;
   const wall = view.settings.wallTtlSeconds.runnerValue;
+  const ceiling = view.settings.maxWallTtlSeconds.runnerValue;
   if (idle > wall) {
-    return { error: `The runner values cannot be restored: the runner idle timeout (${lifecycleDurationLabel(idle)}) exceeds its maximum lifetime (${lifecycleDurationLabel(wall)}). Fix the runner environment, or keep a Dashboard override.` };
+    return { error: `The runner values cannot be restored: the runner idle timeout (${lifecycleDurationLabel(idle)}) exceeds its default lifetime (${lifecycleDurationLabel(wall)}). Fix the runner environment, or keep a Dashboard override.` };
+  }
+  if (ceiling < wall) {
+    return { error: `The runner values cannot be restored: the runner maximum requestable lifetime (${lifecycleDurationLabel(ceiling)}) is below its default lifetime (${lifecycleDurationLabel(wall)}). Fix the runner environment, or keep a Dashboard override.` };
   }
   return { body: { expectedRevision: view.revision, ...Object.fromEntries(WORKSPACE_LIFECYCLE_FIELDS.map((field) => [field.name, null])) } };
 }
@@ -543,7 +556,7 @@ export function workspaceLifecycleResetInput(view) {
 export function workspaceLifecycleSummary(view) {
   if (!isWorkspaceLifecycleView(view)) return '';
   const { settings } = view;
-  return `Effective: up to ${settings.maxActiveWorkspacesPerOwner.value} active per principal, idle ${lifecycleDurationLabel(settings.idleTtlSeconds.value)}, lifetime ${lifecycleDurationLabel(settings.wallTtlSeconds.value)}, grace ${lifecycleDurationLabel(settings.recoverableGraceSeconds.value)}.`;
+  return `Effective: up to ${settings.maxActiveWorkspacesPerOwner.value} active per principal, idle ${lifecycleDurationLabel(settings.idleTtlSeconds.value)}, default lifetime ${lifecycleDurationLabel(settings.wallTtlSeconds.value)}, requestable up to ${lifecycleDurationLabel(settings.maxWallTtlSeconds.value)}, grace ${lifecycleDurationLabel(settings.recoverableGraceSeconds.value)}.`;
 }
 
 export function apiKeyCreateInput(form) {
@@ -1067,6 +1080,101 @@ export function createLaunchSkillSetController({ submit, loadSets, preview }) {
     }
   };
   return controller;
+}
+
+/**
+ * Submits the launch dialog. One launch intent keeps one idempotency key across retries, so a retry
+ * after a lost answer replays the same request instead of opening a second workspace; a changed intent
+ * gets a fresh key. A submit while one is in flight is ignored, which is what stops a double click from
+ * racing two requests before the first answer can disable anything.
+ */
+export function createOpenWorkspaceController({ values, skills, post, setBusy, setStatus, opened, newKey }) {
+  const makeKey = newKey ?? (() => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  let inFlight = false;
+  let launch;
+  return {
+    get pending() { return inFlight; },
+    async submit() {
+      if (inFlight) return { ok: false, reason: 'busy' };
+      const input = values();
+      const repositoryUrl = String(input.repositoryUrl ?? '').trim();
+      const ref = String(input.ref ?? '').trim();
+      if (!repositoryUrl) {
+        setStatus('Enter the repository HTTPS URL.');
+        return { ok: false, reason: 'invalid' };
+      }
+      const chosen = skills();
+      const intent = {
+        repositoryUrl,
+        ...(ref ? { ref } : {}),
+        networkProfile: input.networkProfile,
+        skillSets: chosen.skillSets,
+        skillOverrides: chosen.skillOverrides
+      };
+      const serialized = JSON.stringify(intent);
+      if (launch?.intent !== serialized) launch = { intent: serialized, key: makeKey() };
+      inFlight = true;
+      setBusy(true);
+      setStatus('Launching\u2026');
+      try {
+        const response = await post({ ...intent, idempotencyKey: launch.key });
+        const workspaceId = response?.data?.workspaceId;
+        launch = undefined;
+        setStatus('');
+        if (typeof workspaceId === 'string' && workspaceId) opened(workspaceId);
+        return { ok: true, workspaceId };
+      } catch (error) {
+        setStatus(error instanceof Error && error.message ? error.message : 'The workspace could not be opened.');
+        return { ok: false, reason: 'error', error };
+      } finally {
+        inFlight = false;
+        setBusy(false);
+      }
+    }
+  };
+}
+
+/**
+ * Uploads one skill archive. A second submit while an upload is in flight is ignored, and every
+ * per-entry row carries the server's message beside its code, because a bare code such as
+ * `archive_invalid` does not tell the operator which entry to fix.
+ */
+export function createSkillUploadController({ file, maxBytes, post, setBusy, setStatus, setRows, reload }) {
+  let inFlight = false;
+  return {
+    get pending() { return inFlight; },
+    async submit() {
+      if (inFlight) return { ok: false, reason: 'busy' };
+      setRows([]);
+      const chosen = file();
+      if (!chosen) { setStatus('Choose a .zip archive first.'); return { ok: false, reason: 'invalid' }; }
+      if (chosen.size > maxBytes) { setStatus('Archive must be 8 MiB or smaller.'); return { ok: false, reason: 'invalid' }; }
+      inFlight = true;
+      setBusy(true);
+      setStatus(`Uploading ${chosen.name}\u2026`);
+      try {
+        const response = await post(await chosen.arrayBuffer());
+        const rows = Array.isArray(response?.data?.results) ? response.data.results : [];
+        const created = rows.filter((row) => row.ok).length;
+        setStatus(created === rows.length
+          ? `Imported ${created} skill${created === 1 ? '' : 's'}.`
+          : `Imported ${created} of ${rows.length}. The rest were reported per entry.`);
+        setRows(rows.map((row) => ({
+          slug: String(row.slug ?? ''),
+          text: row.ok ? 'created' : [String(row.error ?? 'failed'), typeof row.message === 'string' && row.message ? row.message : '']
+            .filter(Boolean).join(': ')
+        })));
+        // The library reloads from the runner rather than assuming the rows it just sent.
+        await reload();
+        return { ok: true, rows };
+      } catch (error) {
+        return { ok: false, reason: 'error', error };
+      } finally {
+        inFlight = false;
+        setBusy(false);
+      }
+    }
+  };
 }
 
 /**
@@ -2111,45 +2219,36 @@ export function initializeDashboard() {
     // An archive is uploaded as bytes, so this is the one control that does not go through the JSON
     // helper. The per-item results are rendered rather than announced, because a partial upload has to
     // say which entries conflicted while the dialog is still open.
-    document.querySelector('#skill-upload')?.addEventListener('submit', (event) => {
+    const uploadForm = document.querySelector('#skill-upload');
+    const uploader = createSkillUploadController({
+      file: () => document.querySelector('#skill-upload-file')?.files?.[0],
+      maxBytes: SKILL_ARCHIVE_MAX_BYTES,
+      post: (buffer) => api('/skill-archives', { method: 'POST', headers: { 'content-type': 'application/zip' }, body: buffer }),
+      setBusy: (busy) => {
+        const button = uploadForm?.querySelector('#skill-upload-save');
+        if (button) button.disabled = busy;
+        if (busy) uploadForm?.setAttribute('aria-busy', 'true'); else uploadForm?.removeAttribute('aria-busy');
+      },
+      setStatus: (text) => { const status = document.querySelector('#skill-upload-status'); if (status) status.textContent = text; },
+      // Built as nodes rather than markup: a slug, an error code and its message all originate in the upload.
+      setRows: (rows) => {
+        const results = document.querySelector('#skill-upload-results');
+        if (!results) return;
+        results.replaceChildren();
+        for (const row of rows) {
+          const item = document.createElement('li');
+          const slug = document.createElement('span');
+          slug.className = 'mono';
+          slug.textContent = row.slug;
+          item.append(slug, ` ${row.text}`);
+          results.append(item);
+        }
+      },
+      reload: () => enterSkillsTab('library')
+    });
+    uploadForm?.addEventListener('submit', (event) => {
       event.preventDefault();
-      const status = document.querySelector('#skill-upload-status');
-      const results = document.querySelector('#skill-upload-results');
-      const file = document.querySelector('#skill-upload-file')?.files?.[0];
-      if (results) results.replaceChildren();
-      if (!file) { if (status) status.textContent = 'Choose a .zip archive first.'; return; }
-      if (file.size > SKILL_ARCHIVE_MAX_BYTES) {
-        if (status) status.textContent = 'Archive must be 8 MiB or smaller.';
-        return;
-      }
-      if (status) status.textContent = `Uploading ${file.name}\u2026`;
-      void file.arrayBuffer().then(async (buffer) => {
-        const response = await api('/skill-archives', {
-          method: 'POST',
-          headers: { 'content-type': 'application/zip' },
-          body: buffer
-        });
-        const rows = Array.isArray(response?.data?.results) ? response.data.results : [];
-        const created = rows.filter((row) => row.ok).length;
-        if (status) {
-          status.textContent = created === rows.length
-            ? `Imported ${created} skill${created === 1 ? '' : 's'}.`
-            : `Imported ${created} of ${rows.length}. The rest were reported per entry.`;
-        }
-        // Built as nodes rather than markup: a slug and an error code both originate in the upload.
-        if (results) {
-          for (const row of rows) {
-            const item = document.createElement('li');
-            const slug = document.createElement('span');
-            slug.className = 'mono';
-            slug.textContent = String(row.slug ?? '');
-            item.append(slug, ` ${row.ok ? 'created' : String(row.error ?? 'failed')}`);
-            results.append(item);
-          }
-        }
-        // The library reloads from the runner rather than assuming the rows it just sent.
-        await enterSkillsTab('library');
-      }).catch(showError);
+      void uploader.submit().then((result) => { if (result.reason === 'error') showError(result.error); });
     });
 
     const names = ['library', 'discover', 'sets', 'registry'];
@@ -4273,7 +4372,10 @@ export function initializeDashboard() {
       api(`/workspaces/${scoped}/skills`).catch(() => undefined),
       api(`/workspaces/${scoped}/hooks`).catch(() => undefined)
     ]);
-    return renderAutomationPanel({ skills: skillsResult?.data?.skills ?? [], hooks: hooksResult?.data?.hooks ?? [], manifestSha256: hooksResult?.data?.manifestSha256 ?? '' });
+    return renderAutomationPanel({
+      skills: skillsResult?.data?.skills ?? [], hooks: hooksResult?.data?.hooks ?? [], manifestSha256: hooksResult?.data?.manifestSha256 ?? '',
+      skillsRepository: skillsResult?.data, hooksRepository: hooksResult?.data
+    });
   }
   /** Deployment targets defined by the repository. */
   async function deployPanel(workspaceId) {
@@ -4295,7 +4397,8 @@ export function initializeDashboard() {
         target: `${name} @ ${expectedManifestSha256.slice(0, 16)}`,
         label: 'Run hook', pendingLabel: 'Running…',
         action: async () => {
-          await api(`/workspaces/${scoped}/hooks/run`, { method: 'POST', body: requestBody({ name, expectedManifestSha256 }) });
+          const repositoryId = hookForm.dataset.repositoryId;
+          await api(`/workspaces/${scoped}/hooks/run`, { method: 'POST', body: requestBody({ name, expectedManifestSha256, ...(repositoryId ? { repositoryId } : {}) }) });
           announce('Hook finished.');
           navigateTo(`/dashboard/workspaces/${scoped}/automation`);
         }
@@ -4313,7 +4416,7 @@ export function initializeDashboard() {
       const contentSha256 = skillForm.querySelector('#skill-run-name')?.selectedOptions?.[0]?.dataset.contentSha256 ?? '';
       const runSkill = (approvalGrantToken) => api(`/workspaces/${scoped}/skills/${encodeURIComponent(name)}/run`, {
         method: 'POST',
-        body: requestBody({ script, expectedContentSha256: contentSha256, ...(approvalGrantToken ? { approvalGrantToken } : {}) })
+        body: requestBody({ script, expectedContentSha256: contentSha256, ...(skillForm.dataset.repositoryId ? { repositoryId: skillForm.dataset.repositoryId } : {}), ...(approvalGrantToken ? { approvalGrantToken } : {}) })
       });
       // The run's output stays on the page, so the tab is not reloaded over it.
       const showResult = (run, failed) => {
@@ -5018,6 +5121,33 @@ export function initializeDashboard() {
       if (!name || !event.target?.value) return;
       void controller.resolve(name, event.target.value).then(paint).catch(showError);
     });
+
+    const form = document.querySelector('#open-workspace-form');
+    const statusLine = document.querySelector('#open-workspace-status');
+    const launcher = createOpenWorkspaceController({
+      values: () => {
+        const fields = new FormData(form);
+        return { repositoryUrl: fields.get('repositoryUrl'), ref: fields.get('ref'), networkProfile: fields.get('networkProfile') };
+      },
+      skills: () => controller.body(),
+      post: (body) => api('/workspaces', { method: 'POST', body: requestBody(body) }),
+      setBusy: (busy) => {
+        if (submit) submit.disabled = busy || controller.blocked();
+        if (busy) form.setAttribute('aria-busy', 'true'); else form.removeAttribute('aria-busy');
+      },
+      setStatus: (text) => { if (statusLine) statusLine.textContent = text; },
+      opened: (workspaceId) => {
+        dialog.close();
+        navigateTo(`/dashboard/workspaces/${encodeURIComponent(workspaceId)}`);
+      }
+    });
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      // The button is disabled while a conflict is unresolved; Enter in a field must not bypass that.
+      if (controller.blocked()) { if (statusLine) statusLine.textContent = 'Resolve the skill conflicts before launching.'; return; }
+      void launcher.submit();
+    });
+    document.querySelector('#cancel-open-workspace')?.addEventListener('click', () => { if (!launcher.pending) dialog.close(); });
   }
 
   // Same-origin Dashboard links stay inside the live shell. Modified clicks,

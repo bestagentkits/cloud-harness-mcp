@@ -162,7 +162,7 @@ describe('contracts', () => {
       serviceToken: 'runner-token-that-is-longer-than-32-characters', jobsRoot: '/jobs', stateDb: '/state/state.db',
       executorImage: 'executor:latest', allowedGitHosts: ['github.com']
     };
-    for (const name of ['maxActiveWorkspacesPerOwner', 'idleTtlSeconds', 'wallTtlSeconds', 'recoverableGraceSeconds'] as const) {
+    for (const name of ['maxActiveWorkspacesPerOwner', 'idleTtlSeconds', 'wallTtlSeconds', 'maxWallTtlSeconds', 'recoverableGraceSeconds'] as const) {
       const { max } = WORKSPACE_LIFECYCLE_BOUNDS[name];
       expect(RunnerConfigSchema.parse({ ...runner, [name]: max })[name]).toBe(max);
       expect(() => RunnerConfigSchema.parse({ ...runner, [name]: max + 1 })).toThrow();
@@ -171,6 +171,20 @@ describe('contracts', () => {
     expect(RunnerConfigSchema.parse({ ...runner, idleTtlSeconds: 30 }).idleTtlSeconds).toBe(30);
     expect(RunnerConfigSchema.parse({ ...runner, wallTtlSeconds: WORKSPACE_LIFECYCLE_BOUNDS.wallTtlSeconds.min }).wallTtlSeconds).toBe(60);
     expect(() => RunnerConfigSchema.parse({ ...runner, wallTtlSeconds: 59 })).toThrow();
+    // The lifetime ceiling is optional and may never be below the default lifetime.
+    expect(RunnerConfigSchema.parse(runner).maxWallTtlSeconds).toBeUndefined();
+    expect(RunnerConfigSchema.parse({ ...runner, wallTtlSeconds: 900, maxWallTtlSeconds: '3600' }).maxWallTtlSeconds).toBe(3_600);
+    expect(() => RunnerConfigSchema.parse({ ...runner, wallTtlSeconds: 900, maxWallTtlSeconds: 600 })).toThrow(/WORKSPACE_MAX_WALL_TTL_SECONDS/);
+  });
+
+  it('accepts a bounded workspace_open lifetime request', () => {
+    const base = { repositoryUrl: 'https://github.com/example/repo.git', idempotencyKey: 'open-lifetime-1' };
+    expect(TOOL_SCHEMA_BY_NAME.workspace_open.parse({ ...base, ttlSeconds: 3_600, idleTtlSeconds: 1_800 }))
+      .toMatchObject({ ttlSeconds: 3_600, idleTtlSeconds: 1_800 });
+    expect(TOOL_SCHEMA_BY_NAME.workspace_open.parse(base)).not.toHaveProperty('ttlSeconds');
+    for (const invalid of [{ ttlSeconds: 59 }, { ttlSeconds: 86_401 }, { ttlSeconds: 1.5 }, { idleTtlSeconds: 59 }, { idleTtlSeconds: 43_201 }]) {
+      expect(TOOL_SCHEMA_BY_NAME.workspace_open.safeParse({ ...base, ...invalid }).success).toBe(false);
+    }
   });
 
   it('accepts only complete, unique Access principal relinks', () => {

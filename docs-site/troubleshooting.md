@@ -297,7 +297,7 @@ If an agent started but followed the wrong files, read the `repository_context` 
 1. `CONFLICT` on `expectedAbsent: true` means another holder created the lock branch first; on `expectedRemoteOid` (update or `delete: true`) it means the branch moved. Read the branch with `github_read` `ref_get`, then wait or take the new value as your next lease. `CONFLICT` on a create-only push also appears when the lock already holds the very commit you pushed: two holders pushing the same `HEAD` cannot both win, so push a commit unique to the holder (see [Git transfer](/reference/git-transfer)). After `UNKNOWN_REMOTE_STATE`, retry with the same `idempotencyKey`: a lock that already holds your refspec source's commit returns `alreadyFinalized: true`, and `CONFLICT` carries `currentRemoteOid` to compare with the commit you pushed.
 2. `FORBIDDEN` "rejected by the remote's branch protection, ruleset, or hook" (`[remote rejected]`, `GH006`, `GH013`) is a policy refusal and is not retryable: the target branch requires passing checks, a pull request, or a bypass entry for the App. `GITHUB_PERMISSION_MISSING` on a push means the commit changes `.github/workflows` and the App lacks **Workflows: Read and write**.
 3. After `workflow_dispatch`, poll `github_read` `workflow_runs_list` with the returned `runLookup` (`workflow`, `headSha`, `event: "workflow_dispatch"`) for a few seconds until the run appears.
-4. A routine that keeps one workspace for about an hour needs `WORKSPACE_WALL_TTL_SECONDS` of at least `3600`, because `workspace_lease_renew` never extends past the wall-clock deadline (`hardExpiresAt`). A renewal the deadline caps returns `leaseCapped: true`, `requestedExpiresAt`, and a `leaseWarnings` entry, so check `leaseCapped` instead of `ok` before a long step. Alternatively open a fresh workspace (a `fetchDepth: 1` checkout is enough for brokered GitHub calls) for each phase.
+4. A routine that keeps one workspace for about an hour opens it with `workspace_open` `ttlSeconds: 3600`, because `workspace_lease_renew` never extends past the wall-clock deadline (`hardExpiresAt`). The request is clamped to the instance ceiling (`workspace_capabilities.workspaceLifetime.maxWorkspaceLifetimeSeconds`; Dashboard **Maximum requestable lifetime** or `WORKSPACE_MAX_WALL_TTL_SECONDS`), so check `lifetime.capped` in the open result and stop before work the deadline cannot fit. A renewal the deadline caps returns `leaseCapped: true`, `requestedExpiresAt`, and a `leaseWarnings` entry, so check `leaseCapped` instead of `ok` before a long step. Alternatively open a fresh workspace (a `fetchDepth: 1` checkout is enough for brokered GitHub calls) for each phase.
 
 ---
 
@@ -404,7 +404,9 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 
 ### 33. Multi-repository workspace: `needs repositoryId`, `is read-only`, or a repository-limit `LIMIT_EXCEEDED`
 **Cause:** A workspace opened with `repositories` holds one checkout per alias under `repos/<alias>/`, and some tools need to know which one you mean.
-- `INVALID_INPUT: <tool> needs repositoryId in a multi-repository workspace` comes from a Git, worktree, `workspace_finalize`, `workspace_recover` `export`, `github_read`, or `github_action` call without a selector. These tools never guess, so a commit or push cannot land in the wrong repository.
+- `INVALID_INPUT: <tool> needs repositoryId in a multi-repository workspace` comes from a Git, worktree, `workspace_finalize`, `workspace_recover` `export`, `github_read`, `github_action`, `skills_run`, `hooks_run`, or `hooks_activate` call without a selector. These tools never guess, so a commit or push cannot land in the wrong repository and no skill or hook runs from a repository you did not name.
+- A hook activated in one checkout shows `active: false` in `hooks_list` for another checkout, even with an identical manifest: activations are bound to the repository they were made for. Activate it again with that repository's `repositoryId`. If `hooks_list` returns `unboundActivations`, those are workspace-wide activations recorded before activations were bound to one repository: they no longer run, so activate each hook again with a `repositoryId`, or clear them with `hooks_deactivate` without one (which clears every activation of the workspace).
+- `FORBIDDEN: ... does not match the approved run` on `skills_run` with `approvalGrantToken` can mean the retry named a different `repositoryId` than the request that minted the grant. A skill-run approval is bound to one repository.
 - `FORBIDDEN: repository <alias> is read-only in this workspace` means that repository was opened with `access: "read-only"`, which refuses pushes, pushing finalizes, recovery exports, and GitHub write actions for it.
 - `LIMIT_EXCEEDED: a workspace holds at most N repositories on this instance` means the `repositories` set is larger than the operator's `MAX_WORKSPACE_REPOSITORIES`.
 - `repository <alias>: ...` on `workspace_open` means that repository's clone failed. The whole open fails and no checkout is kept.
@@ -496,7 +498,18 @@ File and command tools without `repositoryId` work on the workspace root, so pat
 
 ---
 
-### 40. `git_merge` or `git_rebase` fails with `Committer identity unknown`
+### 40. `workspace_repos_finalize` returns `status: "partial"` or `"failed"`
+**Cause:** At least one repository step failed. The call is not atomic: repositories finalized before the failure keep their commits, pushes, and pull requests, and nothing is rolled back. Without `continueOnFailure`, the steps after the failure are `SKIPPED` and were not attempted. A step's pull request is `SKIPPED` when its push did not succeed. `CONFLICT: Idempotency key reused with different workspace_repos_finalize parameters` means the same key was sent with a different repository list, message, option, or order. `FORBIDDEN` before anything ran means a step pushes to a `read-only` repository.
+
+**Fix:**
+1. Read `data.repositories`: each entry's `finalize.error` or `pullRequest.error` names the cause, using the same codes as `workspace_finalize` and `github_action`.
+2. Fix the cause (for example, pull and rebase a rejected branch, or grant the GitHub App access), then call again with the same idempotency key and the same input. Steps that already succeeded are returned as recorded and are not committed or pushed again.
+3. To change the plan, use a new idempotency key; repositories already pushed then report a clean tree and push nothing new, and an open pull request whose head is exactly that pushed commit is adopted instead of failing as a duplicate.
+4. If the call returned `TIMEOUT` or was cancelled, nothing recorded was lost: steps that had not started are `SKIPPED`. Replay the same key and input to continue. `CONFLICT` with "in progress" means another coordinated finalize or a `workspace_repo_add`/`workspace_repo_remove` is still running for this workspace; retry after it ends.
+
+---
+
+### 41. `git_merge` or `git_rebase` fails with `Committer identity unknown`
 **Cause:** Git found no usable author or committer identity for an operation that creates a commit. The harness passes the resolved identity (explicit call arguments, then the workspace identity, then the owner default, then `Cloud Harness Agent`) to `git_commit`, `git_merge`, `git_rebase`, `git_pull`, and `workspace_finalize`. When nothing is configured, a merge or rebase keeps an identity the checkout's own Git config provides, and uses `Cloud Harness Agent` only when there is none. The identity is supplied per command, so `git config user.name` inside the workspace stays empty by design; a raw `git merge` or `git commit` run through `exec_run` or `bash` does not receive it.
 
 **Fix:**

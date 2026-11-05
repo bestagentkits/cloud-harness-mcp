@@ -125,7 +125,8 @@ filesystem, and Docker inventories, scoped to the configured runner instance.
 
 ### Expired workspaces and auto-close
 
-The quota, idle TTL, wall TTL, and recoverable grace are set in Dashboard →
+The quota, idle TTL, wall TTL (default lifetime), maximum requestable lifetime,
+and recoverable grace are set in Dashboard →
 Settings → **Workspace limits & lifecycle**, falling back to the runner
 environment ([configuration](configuration.md#workspace-and-repository-policy)).
 The panel also shows the reaper interval, your counted, recoverable, and
@@ -715,7 +716,7 @@ To verify live provider connectivity and obtain the operational receipts require
 
 - Verify exact release SHA, image digests, and staging deployment status.
 - Prepare a disposable test repository (no private secrets, PII, or customer data).
-- Ensure workspace uses `networkMode: "none"`.
+- Open the workspace with `networkProfile: "network-none"` (agents refuse any other profile).
 - Configure an operator profile in `/etc/cloud-harness-model-gateway/profiles.json` with low hard caps (`maxCostMicros: 500000`, approximately $0.50 maximum spending ceiling).
 - Mount the provider API key exclusively into Model Gateway (`/etc/cloud-harness-model-gateway/provider-api-key`).
 

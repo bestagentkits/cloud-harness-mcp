@@ -55,6 +55,14 @@ describe('automation and deploy renderers', () => {
     expect(markup).toContain('<option value="format">format</option>');
     expect(markup).toContain('<option value="lint">lint</option>');
     expect(markup.match(/<option /g)).toHaveLength(2);
+    // A multi-repository listing names its repository, and the run form carries that repository's id.
+    const repositoryId = `repo_${'r'.repeat(24)}`;
+    const scoped = renderHooks([hook({ name: 'format' })], manifest, { repositoryId, repositoryAlias: 'web' });
+    expect(scoped).toContain(`data-manifest-sha256="${manifest}" data-repository-id="${repositoryId}">`);
+    expect(scoped).toContain('From repository <code class="mono">web</code>');
+    expect(renderHooks([hook({ name: 'format' })], manifest, { repositoryId: 'web' })).not.toContain('data-repository-id');
+    expect(renderAutomationPanel({ skills: [{ name: 'build', contentSha256: manifest }], skillsRepository: { repositoryId } }))
+      .toContain(`<form id="skill-run-form" class="stack-form" data-repository-id="${repositoryId}">`);
     // A name hooks_run would refuse is not offered.
     expect(renderHooks([hook({ name: 'run tests' })], manifest)).not.toContain('id="hook-run-form"');
     // Without a manifest digest there is nothing a run could name, so no form renders.

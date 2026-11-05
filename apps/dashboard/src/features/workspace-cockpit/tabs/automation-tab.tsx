@@ -16,8 +16,8 @@ import { type BffEnvelope, bffPath, bffQuery } from '@/lib/bff-query';
 import { mutationErrorText, useBffMutation } from '@/lib/bff-mutation';
 import type { CockpitTabProps } from '../cockpit-tab-registry';
 import {
-  groupHooksByLifecycle, hookRunBody, hooksOf, type RunResult, runResultOf, SCRIPT_PATTERN,
-  skillsOf, type WorkspaceHook, type WorkspaceSkill
+  groupHooksByLifecycle, hookRunBody, hooksOf, type ListedRepository, listedRepositoryOf, type RunResult, runResultOf,
+  SCRIPT_PATTERN, skillsOf, type WorkspaceHook, type WorkspaceSkill
 } from '../automation-model';
 import { RunResultView } from './run-result';
 
@@ -40,14 +40,14 @@ export default function AutomationTab({ workspaceId }: CockpitTabProps) {
       <p className="text-sm text-muted-foreground"><strong className="font-medium text-foreground">Workspace automation.</strong> Skills resolve from your library and pinned sets; hooks run at lifecycle events inside the executor.</p>
       <Section title="Skills" description="A script runs inside the workspace executor under the runner's verified-bytes contract. Nothing runs unless you name it here.">
         <AsyncStatus query={skills} label="skills">
-          {(body) => <SkillList workspaceId={workspaceId} skills={skillsOf(dataOf(body))} invalidate={[skillsPath]} />}
+          {(body) => <SkillList workspaceId={workspaceId} skills={skillsOf(dataOf(body))} repository={listedRepositoryOf(dataOf(body))} invalidate={[skillsPath]} />}
         </AsyncStatus>
       </Section>
       <Section title="Hooks" description="Activation and deactivation stay with the runner's manifest contract; this page runs only what is already active.">
         <AsyncStatus query={hooks} label="hooks">
           {(body) => {
             const parsed = hooksOf(dataOf(body));
-            return <HookPipeline workspaceId={workspaceId} hooks={parsed.hooks} manifestSha256={parsed.manifestSha256} invalidate={[hooksPath]} />;
+            return <HookPipeline workspaceId={workspaceId} hooks={parsed.hooks} manifestSha256={parsed.manifestSha256} repository={listedRepositoryOf(dataOf(body))} invalidate={[hooksPath]} />;
           }}
         </AsyncStatus>
       </Section>
@@ -55,12 +55,13 @@ export default function AutomationTab({ workspaceId }: CockpitTabProps) {
   );
 }
 
-function SkillList({ workspaceId, skills, invalidate }: { workspaceId: string; skills: WorkspaceSkill[]; invalidate: string[] }) {
+function SkillList({ workspaceId, skills, repository, invalidate }: { workspaceId: string; skills: WorkspaceSkill[]; repository: ListedRepository | undefined; invalidate: string[] }) {
   const [running, setRunning] = useState<WorkspaceSkill>();
   const [result, setResult] = useState<{ title: string; result: RunResult }>();
   if (!skills.length) return <EmptyState icon={SparklesIcon} title="No skills are resolved for this workspace" />;
   return (
     <>
+      <RepositoryNote repository={repository} />
       <ul className="grid gap-2" aria-label="Workspace skills">
         {skills.map((skill) => (
           <li key={`${skill.name}:${skill.tier ?? ''}:${skill.sha256 ?? ''}`} className="flex flex-wrap items-start justify-between gap-3 rounded-md border p-3">
@@ -80,6 +81,7 @@ function SkillList({ workspaceId, skills, invalidate }: { workspaceId: string; s
       <SkillRunDialog
         workspaceId={workspaceId}
         skill={running}
+        repository={repository}
         invalidate={invalidate}
         onOpenChange={(open) => { if (!open) setRunning(undefined); }}
         onResult={(title, next) => setResult({ title, result: next })}
@@ -93,9 +95,10 @@ function SkillList({ workspaceId, skills, invalidate }: { workspaceId: string; s
  * may also ask for an owner privilege grant, which the Dashboard cannot attach, so that
  * refusal surfaces as the error it is.
  */
-function SkillRunDialog({ workspaceId, skill, invalidate, onOpenChange, onResult }: {
+function SkillRunDialog({ workspaceId, skill, repository, invalidate, onOpenChange, onResult }: {
   workspaceId: string;
   skill: WorkspaceSkill | undefined;
+  repository: ListedRepository | undefined;
   invalidate: string[];
   onOpenChange: (open: boolean) => void;
   onResult: (title: string, result: RunResult) => void;
@@ -107,7 +110,7 @@ function SkillRunDialog({ workspaceId, skill, invalidate, onOpenChange, onResult
   const changeOpen = (next: boolean) => { if (!next) { setScript(''); setError(''); } onOpenChange(next); };
   const run = useBffMutation<{ name: string; script: string; sha256: string }, unknown>({
     mutationFn: ({ name, script: chosen, sha256 }) => apiClient.request(`${bffPath('workspaces', workspaceId, 'skills', name)}/run`, {
-      method: 'POST', body: { script: chosen, expectedContentSha256: sha256 }
+      method: 'POST', body: { script: chosen, expectedContentSha256: sha256, ...(repository ? { repositoryId: repository.repositoryId } : {}) }
     }),
     invalidate,
     successToast: 'Skill script finished.',
@@ -148,12 +151,19 @@ function SkillRunDialog({ workspaceId, skill, invalidate, onOpenChange, onResult
   );
 }
 
+/** In a multi-repository workspace the listing, and every run started from it, is one repository's. */
+function RepositoryNote({ repository }: { repository: ListedRepository | undefined }) {
+  if (!repository) return null;
+  return <p className="text-xs text-muted-foreground">From repository <code className="font-mono">{repository.repositoryAlias ?? repository.repositoryId}</code>; runs started here target that repository.</p>;
+}
+
 type PendingHook = { hook: WorkspaceHook; event: string; eventLabel: string };
 
-function HookPipeline({ workspaceId, hooks, manifestSha256, invalidate }: {
+function HookPipeline({ workspaceId, hooks, manifestSha256, repository, invalidate }: {
   workspaceId: string;
   hooks: WorkspaceHook[];
   manifestSha256: string | undefined;
+  repository: ListedRepository | undefined;
   invalidate: string[];
 }) {
   const groups = groupHooksByLifecycle(hooks);
@@ -161,7 +171,7 @@ function HookPipeline({ workspaceId, hooks, manifestSha256, invalidate }: {
   const [result, setResult] = useState<{ title: string; result: RunResult }>();
   const run = useBffMutation<PendingHook, unknown>({
     mutationFn: ({ hook, event }) => {
-      const body = hookRunBody(hook, event, manifestSha256);
+      const body = hookRunBody(hook, event, manifestSha256, repository);
       return apiClient.request(`${bffPath('workspaces', workspaceId, 'hooks')}/run`, { method: 'POST', body: body ?? {} });
     },
     invalidate,
@@ -172,6 +182,7 @@ function HookPipeline({ workspaceId, hooks, manifestSha256, invalidate }: {
 
   return (
     <div className="grid gap-4">
+      <RepositoryNote repository={repository} />
       <ol className="grid gap-2 sm:grid-cols-5" aria-label="Hook lifecycle in run order">
         {groups.map((group) => (
           <li key={group.id} className={`grid gap-0.5 rounded-md border p-2 text-sm ${group.hooks.length ? 'border-primary/50 bg-primary/5' : ''}`}>

@@ -41,7 +41,10 @@ The executor's `/workspace` is the tree root and each checkout lives at
 | `exec_run`, `bash`, `shell_open`, `sessions_open`, `tasks_run` | `cwd` is relative to the tree root | `cwd` is relative to the checkout |
 | `workspace_capabilities` | Primary repository | That repository |
 | `workspace_recover` `status`/`patch`, `workspace_repo_status` | Every checkout, one entry each | That checkout |
-| `workspace_context` | Tree root | That checkout |
+| `workspace_context`, `skills_list`, `skills_read`, `hooks_list`, `skill_suggest`, `memories_*` | Primary repository; the result names it in `repositoryAlias` (owner- and workspace-scoped memories use no checkout) | That checkout (memory `repository` scope keyed by its URL) |
+| `skills_run`, `hooks_run`, `hooks_activate` | `INVALID_INPUT` listing the aliases (a one-entry set needs none) | Runs or enrols that checkout's code; activations and `skills_run` approval grants stay bound to it |
+| `hooks_deactivate` | Every activation of the workspace | That repository's activations |
+| `agent_spawn` | Primary repository's guidance | That repository's guidance; never merged across repositories |
 
 A command started in a checkout can still `cd` to a sibling: the selector sets
 where it starts, not what it can reach. `git_identity_*`, `shell_io`, and other
@@ -141,7 +144,8 @@ A workspace opened with `repositoryUrl` behaves exactly as before.
 ## Finish and recover
 
 - Finalize, push, and open pull requests per repository, each with its own
-  `repositoryId` and idempotency key.
+  `repositoryId` and idempotency key, or in one ordered call with
+  `workspace_repos_finalize` (below).
 - Before `workspace_close`, call `workspace_repo_status` and confirm every
   checkout is clean or pushed.
 - Auto-close defers while any checkout has unsaved work, and also when files
@@ -149,9 +153,51 @@ A workspace opened with `repositoryUrl` behaves exactly as before.
   checkout (an extra clone, a scratch file), because no remote holds them.
   Keep scratch files inside a checkout or remove them.
 
+<!-- cloudharness-tool:workspace_repos_finalize -->
+### `workspace_repos_finalize`
+
+Commit, push, and optionally open a pull request in several checkouts, one
+step per repository, strictly in array order.
+
+- Required: `idempotencyKey`, `repositories` (1 to the instance limit, each
+  repository at most once). Each step takes `repositoryId`, `commitMessage`,
+  and the `workspace_finalize` options `paths`/`all`, `branch` (defaults to the
+  checkout's current branch), and `push` (default `true`), plus an optional
+  `pullRequest` `{ title, body?, base? (default main), draft? }` that needs
+  `push`. Shared options: `authorName`, `authorEmail`, `preflight`,
+  `continueOnFailure` (default `false`).
+- Each step is an ordinary `workspace_finalize`, and its pull request an
+  ordinary `github_action` `pr_create` opened only after that step's push
+  succeeded, so read-only access, capabilities, and errors are the same. An
+  unknown `repositoryId` is `INVALID_INPUT`, and a pushing step on a
+  `read-only` repository is `FORBIDDEN` before any step runs.
+- **Not atomic.** A failed step never undoes earlier pushes or pull requests.
+  Without `continueOnFailure` the later steps are `SKIPPED`; with it they still
+  run. `data.status` is `succeeded`, `partial`, or `failed` (nothing
+  finalized), `data.atomic` is always `false`, and `ok` is `true` only for
+  `succeeded`. Read every `data.repositories[]` entry: its `status`,
+  `finalize` (`commitSha`, `branch`, `pushed`, `error`), and `pullRequest`
+  (`number`, `url`, `error`).
+- To retry, call again with the same key and the same input: succeeded steps
+  are returned as recorded, and only failed, skipped, or unfinished steps run,
+  through per-step keys that reconcile against the remote instead of pushing
+  again. An open pull request from the same head to the same base whose head
+  commit is exactly the pushed commit is adopted instead of opening a
+  duplicate. The same key with different input is `CONFLICT`.
+- On `TIMEOUT` or cancellation, steps not yet started are `SKIPPED`; replay the
+  same key and input to continue. A second call for the same workspace while
+  one runs, or `workspace_repo_add`/`workspace_repo_remove` during one, is a
+  retryable `CONFLICT`.
+- A single-repository workspace accepts one step naming its only checkout.
+
+<!-- cloudharness-example:workspace_repos_finalize
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","idempotencyKey":"release-api-web-20261101","repositories":[{"repositoryId":"api","commitMessage":"feat(api): add search endpoint","branch":"feature/search","pullRequest":{"title":"Add search endpoint"}},{"repositoryId":"web","commitMessage":"feat(web): use search endpoint","branch":"feature/search","pullRequest":{"title":"Use search endpoint","draft":true}}]}
+-->
+
 ## Local servers
 
 Local stdio and local multi-workspace servers do not support this:
 `repositoryId`, `scope: "all"`, `workspace_repos_list`, `workspace_repo_status`,
-`workspace_repo_add`, and `workspace_repo_remove` return `INVALID_INPUT`. See
+`workspace_repo_add`, `workspace_repo_remove`, and `workspace_repos_finalize`
+return `INVALID_INPUT`. See
 [workspace lifecycle](workspace-lifecycle-and-results.md#local-workspaces).

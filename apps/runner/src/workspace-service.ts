@@ -15,7 +15,8 @@ import {
   scopedWorkerArgs,
   unknownRepository
 } from './workspace-repositories.js';
-import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { reposFinalizeResponse, resolveReposFinalizePlan, runReposFinalize, type ReposFinalizeInput } from './repos-finalize.js';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { chmod, chown, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { dirname, join, posix, relative, resolve, sep } from 'node:path';
 import {
@@ -50,6 +51,7 @@ import {
   type WorkspaceCapabilityResult,
   type GitHubRepositoryCreateInput,
   type PrincipalCapabilityResult,
+  type WorkspaceLifetimeCapability,
   type ToolkitSelection,
   type WorkspaceLifecycleSettingName,
   type WorkspaceLifecycleSettingsUpdate,
@@ -80,6 +82,7 @@ import {
   type WorkspaceLifecycleOverrides,
   type GitOperationStatus,
   type PrincipalSelector,
+  type HookActivationRecord,
   type StateStore,
   type WorkspaceRecord,
   type WorkspaceRepositoryRecord,
@@ -91,7 +94,7 @@ import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { ToolkitCacheManager } from './toolkit-cache-manager.js';
 import { ToolkitService } from './toolkit-service.js';
 import { assertKitLockSatisfied, planKitLockToolkits } from './kit-lock-planner.js';
-import { resolveWorkspaceSkills, type SkillCandidate } from './skill-resolver.js';
+import { assertSkillSetGenerations, resolveWorkspaceSkills, SkillSetGenerationError, type SkillCandidate } from './skill-resolver.js';
 import { NetworkProfileManager } from './network-profile-manager.js';
 import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
@@ -112,7 +115,7 @@ import type { CodingActionBroker } from './agent-governance/action-broker.js';
 import { LockfileInstallExecutor, type InstallResult } from './agent-governance/install-executor.js';
 import { CODING_GIT_ARGS, CODING_GIT_ENV, CODING_GIT_SUBCOMMANDS, isCommitSha, parseTransferInspection, type PushVerifier } from './agent-governance/coding-git.js';
 import { DurableSessionStore } from './durable-session-store.js';
-import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
+import { computeFullTreeDigest, computeFullTreeDigestAsync } from './adapters/mattpocock-adapter.js';
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const PACKAGE_OPERATION_SET: ReadonlySet<string> = new Set(PACKAGE_OPERATIONS);
@@ -172,9 +175,11 @@ const SKILL_RUN_DEFAULT_TIMEOUT_MS = 60_000;
  * means "run this skill script at this digest with exactly these inputs", and a retry that changes
  * any of them hashes to a different descriptor and cannot consume the grant. A plain call keeps the
  * original descriptor byte for byte. The arguments come last and are JSON-encoded, so no argument
- * value can imitate another field.
+ * value can imitate another field. In a multi-repository workspace the selected repository's stable
+ * id is part of the descriptor, so a grant approved for one checkout cannot run a same-named,
+ * same-digest script in another; a single-repository workspace passes none and keeps its descriptor.
  */
-export function skillRunGrantDescriptor(input: Record<string, unknown>): string {
+export function skillRunGrantDescriptor(input: Record<string, unknown>, repositoryId?: string): string {
   const name = input.name as string;
   const script = input.script as string;
   const expectedSha = (input.expectedContentSha256 ?? input.expectedSha256) as string;
@@ -183,6 +188,7 @@ export function skillRunGrantDescriptor(input: Record<string, unknown>): string 
   let descriptor = `skills_run ${name} script=${script} expected=${expectedSha}`;
   if (typeof input.source === 'string') descriptor += ` source=${input.source}`;
   if (timeoutMs !== SKILL_RUN_DEFAULT_TIMEOUT_MS) descriptor += ` timeoutMs=${timeoutMs}`;
+  if (repositoryId !== undefined) descriptor += ` repository=${repositoryId}`;
   if (args.length > 0) descriptor += ` args=${JSON.stringify(args)}`;
   return descriptor;
 }
@@ -238,6 +244,62 @@ export function gitTransferRepositoryPath(transferName: string): string {
   return `/job/${transferName}/repository.git`;
 }
 
+/** One library skill a Skill Set launch projects, read from the revision the set pinned. */
+interface SkillSetMember {
+  name: string;
+  skillSourceId: string;
+  revisionId: string;
+  sourceDir: string;
+}
+
+interface SkillSetPlan {
+  members: SkillSetMember[];
+  sets: Array<{ skillSetId: string; skillSetGeneration: number; snapshotSha256: string }>;
+}
+
+const holdsSkillDocument = (dir: string): boolean => {
+  try {
+    return lstatSync(join(dir, 'SKILL.md')).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * A forked skill keeps its original bundle under a new slug, so the slug names no directory in it.
+ * The bundle is still unambiguous when it holds exactly one `skills/<dir>` that carries a SKILL.md.
+ */
+function soleBundledSkillDir(bundle: string): string | undefined {
+  try {
+    const root = join(bundle, 'skills');
+    const dirs = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && holdsSkillDocument(join(root, entry.name)));
+    return dirs.length === 1 ? join(root, dirs[0]!.name) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The executor reads the owner mount as UID 10001, but a cached bundle is written owner-only. Directories
+ * become 0755 and files 0644 (0755 when the source had an execute bit); symbolic links are never followed.
+ */
+async function normalizeProjectedModes(path: string): Promise<void> {
+  const info = await lstat(path);
+  if (info.isSymbolicLink()) return;
+  if (info.isDirectory()) {
+    await chmod(path, 0o755);
+    for (const entry of await readdir(path)) await normalizeProjectedModes(join(path, entry));
+  } else if (info.isFile()) {
+    await chmod(path, (info.mode & 0o111) !== 0 ? 0o755 : 0o644);
+  }
+}
+
+const OWNER_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+const BUNDLE_SHA256 = /^[0-9a-f]{64}$/;
+/** Maps each projected library skill to its revision; the worker reads it beside the skill directories. */
+const OWNER_SKILL_PROVENANCE_FILE = '.cloud-harness-skill-revisions.json';
+
 export function computeWorkspaceOpenFingerprint(input: {
   repositoryUrl?: string | URL | undefined;
   repositories?: Array<{ url: string; alias: string; ref?: string | undefined; access: string }> | undefined;
@@ -246,9 +308,13 @@ export function computeWorkspaceOpenFingerprint(input: {
   environmentId?: string | undefined;
   networkProfile?: string | undefined;
   toolkits?: ToolkitSelection[] | undefined;
+  skillSets?: Array<{ skillSetId: string; expectedGeneration: number }> | undefined;
+  skillOverrides?: Record<string, string> | undefined;
   allowToolkitWorkspaceChanges?: boolean | undefined;
   fetchDepth?: number | undefined;
   shallowSince?: string | undefined;
+  ttlSeconds?: number | undefined;
+  idleTtlSeconds?: number | undefined;
 }): string {
   const canonicalToolkits = [...(input.toolkits ?? [])].sort((a, b) =>
     toolkitSelectionIdentity(a).localeCompare(toolkitSelectionIdentity(b)));
@@ -261,9 +327,21 @@ export function computeWorkspaceOpenFingerprint(input: {
     networkProfile: input.networkProfile ?? null,
     toolkits: canonicalToolkits,
     allowToolkitWorkspaceChanges: input.allowToolkitWorkspaceChanges ?? false,
+    // Skill selections join only when made, so replays of requests without them keep matching, while a
+    // replay naming a different set, generation, or override is a different request.
+    ...(input.skillSets && input.skillSets.length > 0 ? {
+      skillSets: [...input.skillSets].sort((a, b) => a.skillSetId.localeCompare(b.skillSetId))
+        .map((entry) => ({ skillSetId: entry.skillSetId, expectedGeneration: entry.expectedGeneration }))
+    } : {}),
+    ...(input.skillOverrides && Object.keys(input.skillOverrides).length > 0
+      ? { skillOverrides: Object.entries(input.skillOverrides).sort(([a], [b]) => a.localeCompare(b)) }
+      : {}),
     // History options join the fingerprint only when set, so replays of earlier requests keep matching.
     ...(input.fetchDepth !== undefined ? { fetchDepth: input.fetchDepth } : {}),
     ...(input.shallowSince !== undefined ? { shallowSince: input.shallowSince } : {}),
+    // Lifetime requests join only when set, so replays of requests without them keep matching.
+    ...(input.ttlSeconds !== undefined ? { ttlSeconds: input.ttlSeconds } : {}),
+    ...(input.idleTtlSeconds !== undefined ? { idleTtlSeconds: input.idleTtlSeconds } : {}),
     // A repository set joins only multi-repository requests, so single-repository replays keep matching.
     ...(input.repositories !== undefined ? {
       repositories: input.repositories.map((entry) => ({ url: entry.url, alias: entry.alias, ref: entry.ref ?? null, access: entry.access })),
@@ -319,7 +397,26 @@ const REPOSITORY_SELECTOR_REQUIRED = new Set<RunnerOperation>([
   'git_status', 'git_diff', 'git_log', 'git_branch', 'git_checkout', 'git_add', 'git_commit',
   'git_fetch', 'git_pull', 'git_push', 'git_merge', 'git_rebase',
   'worktrees_list', 'worktrees_create', 'worktrees_remove',
-  'workspace_finalize', 'github_read', 'github_action'
+  'workspace_finalize', 'github_read', 'github_action',
+  // Execution and activation run repository-provided code, so they never fall back to a repository
+  // the caller did not name.
+  'skills_run', 'hooks_run', 'hooks_activate'
+]);
+/**
+ * Read-only discovery and memories: without a selector a multi-repository workspace answers from its
+ * primary repository (the one open and agent bootstrap describe), and the result names that repository.
+ * Guidance, skills, and hooks are never merged across repositories.
+ */
+const REPOSITORY_PRIMARY_DEFAULT = new Set<RunnerOperation>([
+  'workspace_context', 'skills_list', 'skills_read', 'hooks_list',
+  'memories_list', 'memories_read', 'memories_write', 'memories_search', 'memories_delete'
+]);
+const MEMORY_OPERATIONS = new Set<RunnerOperation>([
+  'memories_list', 'memories_read', 'memories_write', 'memories_search', 'memories_delete'
+]);
+/** Operations whose result names the repository that answered, in a multi-repository workspace. */
+const REPOSITORY_PROVENANCE_OPERATIONS = new Set<RunnerOperation>([
+  ...REPOSITORY_PRIMARY_DEFAULT, 'skills_run', 'hooks_run', 'hooks_activate', 'hooks_deactivate'
 ]);
 /** Command tools the operation manager runs with a tree-relative `cwd` rather than through the worker. */
 const CWD_REBASED_OPERATIONS = new Set<RunnerOperation>(['shell_open', 'sessions_open', 'tasks_run']);
@@ -367,6 +464,45 @@ type RepositoryChange = {
 /** The device and inode of a checkout directory, so a removal touches only the directory it verified. */
 type CheckoutIdentity = { dev: number; ino: number };
 
+/**
+ * The `repository` memory scope key: the selected checkout's URL in a multi-repository workspace (the
+ * record view is scoped to it), and the workspace's own URL otherwise, so single-repository keys are
+ * unchanged.
+ */
+function memoryRepositoryKey(record: Pick<WorkspaceRecord, 'repositoryUrl'>): string {
+  return createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex');
+}
+
+/** Names the repository that answered a repository-targeted call of a multi-repository workspace. */
+function withRepositoryProvenance(record: WorkspaceRecord, operation: RunnerOperation, response: RunnerResponse): RunnerResponse {
+  if (!record.repositoryScope || !REPOSITORY_PROVENANCE_OPERATIONS.has(operation)) return response;
+  const data = response.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return response;
+  return { ...response, data: { ...data, repositoryId: record.repositoryScope.id, repositoryAlias: record.repositoryScope.alias } };
+}
+
+/**
+ * Workspace-wide activations recorded before lifecycle hooks were bound to one repository never run in a
+ * multi-repository workspace, since they do not name the repository they were approved for. A scoped
+ * `hooks_list` reports them so the owner can re-activate per repository (or deactivate them) instead of a
+ * blocking hook stopping silently.
+ */
+function withUnboundHookActivations(response: RunnerResponse, unbound: readonly HookActivationRecord[]): RunnerResponse {
+  const data = response.data;
+  if (unbound.length === 0 || !response.ok || !data || typeof data !== 'object' || Array.isArray(data)) return response;
+  return {
+    ...response,
+    data: {
+      ...data,
+      unboundActivations: unbound.map((activation) => ({ event: activation.event, manifestSha256: activation.manifestSha256, expiresAt: new Date(activation.expiresAt).toISOString() })),
+      warnings: [
+        ...(Array.isArray((data as { warnings?: unknown }).warnings) ? (data as { warnings: unknown[] }).warnings : []),
+        'workspace-wide hook activations do not run in a multi-repository workspace; re-activate them with hooks_activate and a repositoryId, or clear every activation of this workspace with hooks_deactivate without one'
+      ]
+    }
+  };
+}
+
 /** A scoped mutation's audit row names the repository it targeted, beside the workspace and generation. */
 function withRepositoryAudit(record: WorkspaceRecord, details: Record<string, string | number | boolean>): Record<string, string | number | boolean> {
   return record.repositoryScope ? { ...details, repositoryId: record.repositoryScope.id, repositoryAlias: record.repositoryScope.alias } : details;
@@ -375,6 +511,45 @@ function withRepositoryAudit(record: WorkspaceRecord, details: Record<string, st
 /** Each checkout of a multi-repository workspace has its own guidance, so it has its own cache entry. */
 function guidanceCacheKey(record: WorkspaceRecord): string {
   return record.repositoryScope ? `${record.id}:${record.repositoryScope.id}` : record.id;
+}
+
+/**
+ * The lifetime a workspace_open request receives. A requested `ttlSeconds` is clamped to the instance
+ * ceiling and never exceeds it; without one the default lifetime applies, as before the request existed.
+ * The idle timeout, requested or default, is clamped to the granted lifetime, so a short requested
+ * lifetime never reports an idle timeout longer than itself. Without a ttlSeconds request the
+ * settings rule (idle within lifetime) already holds, so the default idle timeout is unchanged.
+ */
+export function grantWorkspaceLifetime(
+  policy: { wallTtlSeconds: number; maxWallTtlSeconds: number; idleTtlSeconds: number },
+  request: { ttlSeconds?: number | undefined; idleTtlSeconds?: number | undefined }
+): { grantedSeconds: number; grantedIdleTtlSeconds: number } {
+  const grantedSeconds = request.ttlSeconds === undefined ? policy.wallTtlSeconds : Math.min(request.ttlSeconds, policy.maxWallTtlSeconds);
+  const grantedIdleTtlSeconds = Math.min(request.idleTtlSeconds ?? policy.idleTtlSeconds, grantedSeconds);
+  return { grantedSeconds, grantedIdleTtlSeconds };
+}
+
+/**
+ * The lifetime block of a workspace_open result. It is derived from the stored record and the request, so
+ * an idempotent replay reports the same values the first open did.
+ */
+function openedLifetime(
+  record: Pick<WorkspaceRecord, 'createdAt' | 'hardExpiresAt' | 'idleTtlSeconds'>,
+  request: { ttlSeconds?: number | undefined; idleTtlSeconds?: number | undefined },
+  defaultIdleTtlSeconds: number
+) {
+  const grantedSeconds = Math.round((record.hardExpiresAt - record.createdAt) / 1_000);
+  const grantedIdleTtlSeconds = record.idleTtlSeconds ?? defaultIdleTtlSeconds;
+  const requestedSeconds = request.ttlSeconds ?? null;
+  const requestedIdleTtlSeconds = request.idleTtlSeconds ?? null;
+  return {
+    requestedSeconds,
+    grantedSeconds,
+    capped: requestedSeconds !== null && grantedSeconds < requestedSeconds,
+    requestedIdleTtlSeconds,
+    grantedIdleTtlSeconds,
+    idleCapped: requestedIdleTtlSeconds !== null && grantedIdleTtlSeconds < requestedIdleTtlSeconds
+  };
 }
 
 function publicRecord(record: WorkspaceRecord, capabilities?: WorkspaceCapabilityResult) {
@@ -480,6 +655,8 @@ export class WorkspaceService {
    * the SQLite state). The registry transaction still fences the rows if that ever changes.
    */
   private readonly repositoryChanges = new Set<string>();
+  /** Workspaces with a coordinated `workspace_repos_finalize` run in flight in this process. */
+  private readonly reposFinalizes = new Set<string>();
   /** Workspaces whose tree is frozen for a host-side check-and-change; no new tree writer may start. */
   private readonly frozenTrees = new Set<string>();
   /** In-flight helper containers that mount a workspace tree read-write, by workspace. */
@@ -573,7 +750,12 @@ export class WorkspaceService {
             if (record.generation !== request.workspaceGeneration) {
               throw new HarnessError('EXPIRED', 'agent bootstrap lost its workspace fence', 410, false);
             }
-            return await this.repositoryGuidance(this.primaryRecordView(record), request.signal);
+            // Guidance comes from exactly one repository: the one the spawn selected, or the primary one.
+            const view = request.repositoryId
+              ? this.resolveRepositoryView(record, { repositoryId: request.repositoryId }, 'optional', 'agent_spawn').scoped
+              : this.primaryRecordView(record);
+            const guidance = await this.repositoryGuidance(view, request.signal);
+            return view.repositoryScope ? { ...guidance, repositoryId: view.repositoryScope.id } : guidance;
           }
         })
       : undefined);
@@ -790,7 +972,9 @@ export class WorkspaceService {
     event: 'pre_commit' | 'post_commit' | 'post_checkout' | 'on_workspace_open',
     signal?: AbortSignal
   ): Promise<void> {
-    const activations = this.store.getActiveHookActivations(record.ownerId, record.id);
+    // A scoped record (one checkout of a multi-repository workspace) runs only the activations bound to
+    // that repository; activations of another repository never apply, even with an identical manifest.
+    const activations = this.store.getActiveHookActivations(record.ownerId, record.id, record.repositoryScope?.id);
     const act = activations.find((a) => a.event === event);
     if (!act) return;
 
@@ -1070,6 +1254,8 @@ export class WorkspaceService {
       maxActiveWorkspacesPerOwner: this.configuredActiveWorkspaceLimit(),
       idleTtlSeconds: this.config.idleTtlSeconds,
       wallTtlSeconds: this.config.wallTtlSeconds,
+      // An unset ceiling equals the default lifetime, so a request can never exceed what the instance grants.
+      maxWallTtlSeconds: this.config.maxWallTtlSeconds ?? this.config.wallTtlSeconds,
       recoverableGraceSeconds: this.config.recoverableGraceSeconds ?? DEFAULT_RECOVERABLE_GRACE_SECONDS
     };
   }
@@ -1077,11 +1263,26 @@ export class WorkspaceService {
   /** The lifecycle policy a workspace opened now receives: each Dashboard override, else the runner value. */
   private effectiveLifecyclePolicy(overrides: WorkspaceLifecycleOverrides = this.store.getWorkspaceLifecycleOverrides()): Record<WorkspaceLifecycleSettingName, number> {
     const runner = this.runnerLifecycleValues();
+    const wallTtlSeconds = overrides.wallTtlSeconds ?? runner.wallTtlSeconds;
     return {
       maxActiveWorkspacesPerOwner: overrides.maxActiveWorkspacesPerOwner ?? runner.maxActiveWorkspacesPerOwner,
       idleTtlSeconds: overrides.idleTtlSeconds ?? runner.idleTtlSeconds,
-      wallTtlSeconds: overrides.wallTtlSeconds ?? runner.wallTtlSeconds,
+      wallTtlSeconds,
+      // The ceiling never falls below the default lifetime: a raised default without a configured ceiling
+      // still grants the default, and the settings write refuses an explicit ceiling below it.
+      maxWallTtlSeconds: Math.max(overrides.maxWallTtlSeconds ?? this.config.maxWallTtlSeconds ?? wallTtlSeconds, wallTtlSeconds),
       recoverableGraceSeconds: overrides.recoverableGraceSeconds ?? runner.recoverableGraceSeconds
+    };
+  }
+
+  /** The lifetime limits the next workspace_open receives, so a caller can check them before opening. */
+  private workspaceLifetimeCapability(): WorkspaceLifetimeCapability {
+    const policy = this.effectiveLifecyclePolicy();
+    return {
+      defaultLifetimeSeconds: policy.wallTtlSeconds,
+      maxWorkspaceLifetimeSeconds: policy.maxWallTtlSeconds,
+      minLifetimeSeconds: WORKSPACE_LIFECYCLE_BOUNDS.maxWallTtlSeconds.min,
+      defaultIdleTtlSeconds: policy.idleTtlSeconds
     };
   }
 
@@ -1519,8 +1720,11 @@ export class WorkspaceService {
       if (!workspaceOpenReplayMatches(prior, parsed, requestFingerprint)) {
         throw new HarnessError('CONFLICT', 'idempotency key reused with mismatched request parameters', 409, true);
       }
-      return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(prior), truncated: false };
+      return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(prior, parsed), truncated: false };
     }
+    // Skill sets are resolved before a record, clone, or container exists, so an unknown set, a stale
+    // generation, or an unusable member refuses the launch instead of dropping the selection.
+    const skillSetPlan = this.planSkillSets(ownerId, parsed.skillSets);
     await this.ensureCapacity(ownerId);
     const now = Date.now();
     const workspaceId = opaqueId('ws');
@@ -1529,9 +1733,11 @@ export class WorkspaceService {
     const url = await validateRepositoryUrl(primary?.repositoryUrl ?? parsed.repositoryUrl ?? '', this.config.allowedGitHosts);
     if (parsed.ref?.startsWith('-')) throw new HarnessError('INVALID_INPUT', 'ref cannot start with a dash');
     // The lifecycle policy is snapshotted here: a later Settings change applies to workspaces opened after
-    // it and never shortens or extends this one. The hard deadline is the wall-TTL snapshot.
+    // it and never shortens or extends this one. The hard deadline is the granted lifetime: the request
+    // clamped to the instance ceiling, else the default lifetime.
     const policy = this.effectiveLifecyclePolicy();
-    const hardExpiresAt = now + policy.wallTtlSeconds * 1_000;
+    const lifetime = grantWorkspaceLifetime(policy, parsed);
+    const hardExpiresAt = now + lifetime.grantedSeconds * 1_000;
     const record: WorkspaceRecord = {
       id: workspaceId, ownerId, idempotencyKey: parsed.idempotencyKey, repositoryUrl: url.toString(),
       repositoryRef: primary ? primary.repositoryRef : parsed.ref ?? null, containerName: null, workspacePath: join(this.config.jobsRoot, workspaceId),
@@ -1539,9 +1745,9 @@ export class WorkspaceService {
       // Resolution order: explicit request, then the operator's persisted instance
       // default, then the runner configuration (shipped default: dependency-access).
       status: 'CREATING', networkProfile: parsed.networkProfile ?? this.store.getWorkspaceDefaultNetworkProfile() ?? this.config.networkProfile, createdAt: now,
-      lastActivityAt: now, expiresAt: Math.min(hardExpiresAt, now + policy.idleTtlSeconds * 1_000), hardExpiresAt, gitAuthorName: null, gitAuthorEmail: null,
+      lastActivityAt: now, expiresAt: Math.min(hardExpiresAt, now + lifetime.grantedIdleTtlSeconds * 1_000), hardExpiresAt, gitAuthorName: null, gitAuthorEmail: null,
       mutationLockedUntil: null, generation: 1, error: null, requestFingerprint,
-      idleTtlSeconds: policy.idleTtlSeconds, recoverableGraceSeconds: policy.recoverableGraceSeconds, expiredAt: null, recoverableUntil: null
+      idleTtlSeconds: lifetime.grantedIdleTtlSeconds, recoverableGraceSeconds: policy.recoverableGraceSeconds, expiredAt: null, recoverableUntil: null
     };
     try {
       this.store.admit(record, this.configuredActiveWorkspaceLimit(), repositories);
@@ -1551,7 +1757,7 @@ export class WorkspaceService {
         if (!workspaceOpenReplayMatches(replay, parsed, requestFingerprint)) {
           throw new HarnessError('CONFLICT', 'idempotency key reused with mismatched request parameters', 409, true);
         }
-        return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(replay), truncated: false };
+        return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(replay, parsed), truncated: false };
       }
       if (error instanceof ActiveWorkspaceLimitReachedError) {
         throw this.activeWorkspaceLimitError(error.active, error.limit);
@@ -1606,7 +1812,7 @@ export class WorkspaceService {
       const ownerBundles = bundlePaths.filter(b => b.scope === 'owner');
       const workspaceBundles = bundlePaths.filter(b => b.scope === 'workspace');
 
-      await this.composeOwnerToolkitProjection(record, ownerBundles, parsed.skillOverrides);
+      await this.composeOwnerToolkitProjection(record, ownerBundles, skillSetPlan, parsed.skillOverrides);
 
       const historySpec = cloneHistorySpec(parsed.fetchDepth, parsed.shallowSince);
       let repositoryPath: string;
@@ -1651,7 +1857,7 @@ export class WorkspaceService {
         ok: true,
         message: 'Workspace opened',
         data: {
-          ...this.publicWorkspaceRecord(active),
+          ...this.withOpenedLifetime(this.publicWorkspaceRecord(active), active, parsed),
           ...(guidance ? { repositoryContext: repositoryGuidanceSummary(guidance.snapshot) } : {})
         },
         truncated: false
@@ -1722,18 +1928,98 @@ export class WorkspaceService {
     return join(record.workspacePath, 'repo');
   }
 
+  /**
+   * Resolves the selected Skill Sets for this owner into the library skills a launch projects.
+   *
+   * Every refusal is a named error: an unknown set, a generation that moved since the operator saw it,
+   * a member whose source is gone, not enabled, or not an owner-tier skill, and a pinned revision whose
+   * bundle is missing from the cache. Each member is read from the revision the set pinned, never from
+   * the skill's current revision.
+   */
+  private planSkillSets(ownerId: string, selections: ReadonlyArray<{ skillSetId: string; expectedGeneration: number }>): SkillSetPlan {
+    if (selections.length === 0) return { members: [], sets: [] };
+    const sets = selections.map((selection) => {
+      const set = this.store.getSkillSet(ownerId, selection.skillSetId);
+      if (!set) throw new HarnessError('NOT_FOUND', `Skill set ${selection.skillSetId} was not found`, 404, false);
+      return set;
+    });
+    try {
+      assertSkillSetGenerations(selections, sets.map((set) => ({ skillSetId: set.id, generation: set.generation })));
+    } catch (error) {
+      if (error instanceof SkillSetGenerationError) throw new HarnessError('STALE_GENERATION', error.message, 409, false);
+      throw error;
+    }
+
+    const members: SkillSetMember[] = [];
+    for (const set of sets) {
+      for (const item of set.items) {
+        const source = this.store.getSkillSource(ownerId, item.skillSourceId);
+        if (!source) throw new HarnessError('NOT_FOUND', `Skill ${item.name} in skill set ${set.id} no longer exists`, 404, false);
+        if (source.state !== 'enabled') {
+          throw new HarnessError('CONFLICT', `Skill ${item.name} in skill set ${set.id} is ${source.state}; enable it or remove it from the set`, 409, false);
+        }
+        // A registry skill is installed into the owner tier; built-in, workspace and repository sources are
+        // not library skills and are never projected from a set.
+        if (source.kind !== 'owner' && source.kind !== 'registry') {
+          throw new HarnessError('INVALID_INPUT', `Skill ${item.name} in skill set ${set.id} is a ${source.kind} skill and cannot be launched from a set`, 400, false);
+        }
+        if (!OWNER_SKILL_NAME.test(item.name) || !OWNER_SKILL_NAME.test(source.slug)) {
+          throw new HarnessError('INVALID_INPUT', `Skill ${item.name} in skill set ${set.id} has a name that cannot be projected`, 400, false);
+        }
+        const revision = this.store.getSkillRevision(ownerId, item.skillSourceId, item.revisionId);
+        if (!revision) throw new HarnessError('NOT_FOUND', `Revision ${item.revisionId} of skill ${item.name} in skill set ${set.id} was not found`, 404, false);
+        if (!BUNDLE_SHA256.test(revision.bundleSha256)) {
+          throw new HarnessError('NOT_FOUND', `Revision ${item.revisionId} of skill ${item.name} has no bundle`, 404, false);
+        }
+        const bundle = this.toolkitCacheManager.bundlePath(ownerId, revision.bundleSha256);
+        // The layouts a library bundle may use, as the Skills extension reads them.
+        const sourceDir = [join(bundle, 'skills', source.slug), join(bundle, source.slug), bundle]
+          .find(holdsSkillDocument) ?? soleBundledSkillDir(bundle);
+        if (!sourceDir) {
+          throw new HarnessError('NOT_FOUND', `Bundle of revision ${item.revisionId} for skill ${item.name} is missing from the skill cache; re-upload the skill`, 404, false);
+        }
+        members.push({ name: item.name, skillSourceId: item.skillSourceId, revisionId: item.revisionId, sourceDir });
+      }
+    }
+    return {
+      members,
+      sets: sets.map((set) => ({
+        skillSetId: set.id,
+        skillSetGeneration: set.generation,
+        snapshotSha256: createHash('sha256').update(JSON.stringify(set.items.map((item) => [item.name, item.skillSourceId, item.revisionId]))).digest('hex')
+      }))
+    };
+  }
+
   private async composeOwnerToolkitProjection(
     record: WorkspaceRecord,
     ownerBundlePaths: Array<{ instanceId: string; path: string }>,
+    skillSetPlan: SkillSetPlan,
     overrides?: Record<string, string>
   ): Promise<void> {
     const ownerSkillsPath = join(record.workspacePath, 'toolkit-projection', 'owner-skills');
     await mkdir(ownerSkillsPath, { recursive: true, mode: 0o755 });
 
     // The same-tier collision rule has one owner, the resolver, so the launch path and the preview
-    // path cannot drift on what counts as a conflict or on how an override settles one.
+    // path cannot drift on what counts as a conflict or on how an override settles one. A library
+    // skill is identified by its `skrev_` revision id and a toolkit skill by its content digest, and
+    // an override pins whichever of the two it names.
     const candidates: SkillCandidate[] = [];
     const sources = new Map<string, string>();
+    const library = new Map<string, SkillSetMember>();
+
+    for (const member of skillSetPlan.members) {
+      const digest = (await computeFullTreeDigestAsync(member.sourceDir)).bundleSha256;
+      candidates.push({
+        name: member.name,
+        tier: 'owner',
+        sourceId: member.skillSourceId,
+        revisionId: member.revisionId,
+        contentSha256: digest
+      });
+      sources.set(`${member.name}:${digest}`, member.sourceDir);
+      library.set(`${member.name}:${member.revisionId}`, member);
+    }
 
     for (const item of ownerBundlePaths) {
       const skillsDir = join(item.path, 'skills');
@@ -1741,12 +2027,12 @@ export class WorkspaceService {
 
       const entries = await readdir(skillsDir, { withFileTypes: true });
       for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
+        if (!entry.isDirectory() || !OWNER_SKILL_NAME.test(entry.name)) continue;
         const srcSkill = join(skillsDir, entry.name);
         const skillMd = join(srcSkill, 'SKILL.md');
         if (!existsSync(skillMd)) continue;
 
-        const digest = computeFullTreeDigest(srcSkill).bundleSha256;
+        const digest = (await computeFullTreeDigestAsync(srcSkill)).bundleSha256;
         candidates.push({
           name: entry.name,
           tier: 'owner',
@@ -1762,16 +2048,46 @@ export class WorkspaceService {
     const resolution = resolveWorkspaceSkills({ candidates, overrides });
     const conflict = resolution.conflicts[0];
     if (conflict) {
-      throw new HarnessError('CONFLICT', `Same-tier toolkit skill collision: ${conflict.name} is defined with conflicting content in multiple toolkits`, 409, false);
+      throw new HarnessError(
+        'CONFLICT',
+        `Same-tier skill collision: ${conflict.name} is defined with conflicting content by more than one skill set or toolkit; pin one with skillOverrides { "${conflict.name}": <identity> } using one of: ${conflict.candidates.map((candidate) => `${candidate.tier}:${candidate.revisionId}`).join(', ')} (a skrev_ revision id for a skill set member, or the content digest for a toolkit skill)`,
+        409,
+        false
+      );
     }
 
+    const provenance: Record<string, { revisionId: string; sourceId: string }> = {};
+    const assignments: Array<{ name: string; skillSourceId: string; revisionId: string; tier: 'owner'; pinned: boolean }> = [];
     for (const skill of resolution.resolved) {
       const srcSkill = sources.get(`${skill.name}:${skill.contentSha256}`);
       if (!srcSkill) continue;
       const destSkill = join(ownerSkillsPath, skill.name);
       if (!existsSync(destSkill)) {
         await cp(srcSkill, destSkill, { recursive: true });
+        await normalizeProjectedModes(destSkill);
       }
+      const member = library.get(`${skill.name}:${skill.revisionId}`);
+      if (member) {
+        provenance[skill.name] = { revisionId: member.revisionId, sourceId: member.skillSourceId };
+        assignments.push({ name: skill.name, skillSourceId: member.skillSourceId, revisionId: member.revisionId, tier: 'owner', pinned: skill.pinned });
+      }
+    }
+
+    if (skillSetPlan.sets.length > 0) {
+      // The executor lists the owner mount by directory, so this file is invisible as a skill; the
+      // worker reads it to report which library revision each projected skill is.
+      try {
+        await writeFile(join(ownerSkillsPath, OWNER_SKILL_PROVENANCE_FILE), `${JSON.stringify(provenance)}\n`, { mode: 0o644 });
+      } catch {
+        // The raw filesystem error names host paths, and a failed open persists its message.
+        throw new HarnessError('UNAVAILABLE', 'The skill revision manifest could not be written for this workspace', 503, true);
+      }
+      this.store.recordWorkspaceSkillSelection({
+        ownerId: record.ownerId,
+        workspaceId: record.id,
+        sets: skillSetPlan.sets,
+        assignments
+      });
     }
   }
 
@@ -2102,10 +2418,13 @@ export class WorkspaceService {
    */
   async skillRoster(
     principal: PrincipalSelector,
-    workspaceId: string
+    workspaceId: string,
+    repositoryId?: string
   ): Promise<{ entries: Array<Record<string, unknown>>; rosterDigest: string }> {
     const ownerId = this.store.resolvePrincipal(principal);
-    const record = this.requireWorkspace(ownerId, workspaceId);
+    const workspaceRecord = this.requireWorkspace(ownerId, workspaceId);
+    // One repository's roster: the selected one, or the primary one of a multi-repository workspace.
+    const record = this.resolveRepositoryView(workspaceRecord, repositoryId === undefined ? {} : { repositoryId }, 'primary', 'skill_suggest').scoped;
     const response = await this.runWorker(record, 'skills_roster', {});
     if (!response.ok) {
       throw new HarnessError('UNAVAILABLE', response.message || 'the workspace could not list its skills', 503, true);
@@ -2234,7 +2553,7 @@ export class WorkspaceService {
     const script = input.script as string;
     const timeoutMs = (input.timeoutMs as number) || SKILL_RUN_DEFAULT_TIMEOUT_MS;
     const maxOutputBytes = this.config.maxOutputBytes;
-    const grantCommand = skillRunGrantDescriptor(input);
+    const grantCommand = skillRunGrantDescriptor(input, record.repositoryScope?.id);
     const commandSha256 = createHash('sha256').update(grantCommand).digest('hex');
     const approvalGrantToken = input.approvalGrantToken as string | undefined;
 
@@ -2251,7 +2570,7 @@ export class WorkspaceService {
         message: 'Skill execution requires explicit operator approval grant',
         error: {
           code: 'PRIVILEGE_APPROVAL_REQUIRED',
-          message: `Approval grant required to run skill script ${name}/${script} in a disposable helper container`,
+          message: `Approval grant required to run skill script ${name}/${script}${record.repositoryScope ? ` from repository ${record.repositoryScope.alias}` : ''} in a disposable helper container`,
           grantRequest: {
             grantId: grant.id,
             workspaceId: grant.workspaceId,
@@ -2301,12 +2620,27 @@ export class WorkspaceService {
   }
 
   /** An open replay carries the cached guidance summary when this runner still holds one. */
-  private openedWorkspaceData(record: WorkspaceRecord) {
+  private openedWorkspaceData(record: WorkspaceRecord, request: { ttlSeconds?: number | undefined; idleTtlSeconds?: number | undefined }) {
     const cached = this.guidanceCache.get(guidanceCacheKey(this.primaryRecordView(record)));
     return {
-      ...this.publicWorkspaceRecord(record),
+      ...this.withOpenedLifetime(this.publicWorkspaceRecord(record), record, request),
       ...(cached && cached.generation === record.generation ? { repositoryContext: repositoryGuidanceSummary(cached.snapshot) } : {})
     };
+  }
+
+  /** Adds the lifetime block, and a lease warning when the instance ceiling capped the requested lifetime. */
+  private withOpenedLifetime(
+    data: Record<string, unknown>,
+    record: WorkspaceRecord,
+    request: { ttlSeconds?: number | undefined; idleTtlSeconds?: number | undefined }
+  ): Record<string, unknown> {
+    // A record persisted before open requests were fingerprinted replays any request, so its original
+    // lifetime request is unknown and is not compared with this one.
+    const lifetime = openedLifetime(record, record.requestFingerprint ? request : {}, this.config.idleTtlSeconds);
+    if (!lifetime.capped) return { ...data, lifetime };
+    const existing = Array.isArray(data.leaseWarnings) ? data.leaseWarnings as string[] : [];
+    const warning = `Requested lifetime ${lifetime.requestedSeconds}s exceeds the instance maximum; granted ${lifetime.grantedSeconds}s (hardExpiresAt ${String(data.hardExpiresAt)}).`;
+    return { ...data, lifetime, leaseWarnings: [...existing, warning] };
   }
 
   /**
@@ -2816,7 +3150,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
    * exists), and command tools that take a `cwd` are rebased onto the chosen checkout.
    */
   private scopeRecordForOperation(record: WorkspaceRecord, operation: RunnerOperation, validated: Record<string, unknown>): WorkspaceRecord {
-    const { entry, scoped } = this.resolveRepositoryView(record, validated, REPOSITORY_SELECTOR_REQUIRED.has(operation) ? 'required' : 'optional', operation);
+    // Owner- and workspace-scoped memories do not belong to a checkout, so only a repository-scoped
+    // memory call falls back to the primary repository.
+    const primaryDefault = REPOSITORY_PRIMARY_DEFAULT.has(operation)
+      && (!MEMORY_OPERATIONS.has(operation) || validated.scope === 'repository');
+    const mode = REPOSITORY_SELECTOR_REQUIRED.has(operation) ? 'required' : primaryDefault ? 'primary' : 'optional';
+    const { entry, scoped } = this.resolveRepositoryView(record, validated, mode, operation);
     if (!entry) return scoped;
     if (CWD_REBASED_OPERATIONS.has(operation)) {
       const cwd = String(validated.cwd ?? '.').replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '');
@@ -2825,10 +3164,6 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return scoped;
   }
 
-  /**
-   * The shared selector resolution. `optional` leaves an unselected multi-repository call on the tree root,
-   * `required` refuses it unless only one repository exists, and `primary` falls back to the primary one.
-   */
   /**
    * The view workspace-level guidance reads: the primary checkout of a multi-repository workspace, so
    * open, its replay, and agent bootstrap all describe the same repository. Unchanged for one repository.
@@ -2839,6 +3174,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return primary ? scopedRecordView(record, primary) : record;
   }
 
+  /**
+   * The shared selector resolution. `optional` leaves an unselected multi-repository call on the tree root,
+   * `required` refuses it unless only one repository exists, and `primary` falls back to the primary one.
+   */
   private resolveRepositoryView(
     record: WorkspaceRecord,
     validated: Record<string, unknown>,
@@ -2920,6 +3259,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (this.repositoryChanges.has(record.id)) {
       throw new HarnessError('CONFLICT', 'another repository change is in progress for this workspace', 409, true);
     }
+    if (this.reposFinalizes.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'a workspace_repos_finalize is in progress for this workspace; retry the repository change after it ends', 409, true);
+    }
     this.repositoryChanges.add(record.id);
     try {
       const change = { ownerId, record, entries, key, fingerprint };
@@ -2932,6 +3274,55 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       throw error;
     } finally {
       this.repositoryChanges.delete(record.id);
+    }
+  }
+
+  /**
+   * Finalizes several checkouts in the declared order. Each step is an ordinary `workspace_finalize` (and
+   * `github_action` `pr_create`) call for the same principal with a derived idempotency key, so the
+   * single-repository commit, push, read-only, and capability rules apply unchanged and a replay resolves a
+   * recorded step through that step's own idempotency record instead of committing or pushing it again. The whole run holds the workspace mutation lease and is serialized per workspace.
+   */
+  private async finalizeRepositories(
+    principal: PrincipalSelector | string,
+    ownerId: string,
+    validated: ReposFinalizeInput & { workspaceId?: string },
+    signal?: AbortSignal
+  ): Promise<RunnerResponse> {
+    const record = this.touch(this.requireWorkspace(ownerId, validated.workspaceId, true, false));
+    if (this.reposFinalizes.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'another workspace_repos_finalize is in progress for this workspace', 409, true);
+    }
+    if (this.repositoryChanges.has(record.id)) {
+      throw new HarnessError('CONFLICT', 'a repository change is in progress for this workspace; retry workspace_repos_finalize after it ends', 409, true);
+    }
+    const recorded = this.store.reposFinalizeSteps(ownerId, record.id, validated.idempotencyKey);
+    let plan: ReturnType<typeof resolveReposFinalizePlan>;
+    try {
+      plan = resolveReposFinalizePlan(this.workspaceRepositoryEntries(record).entries, validated);
+    } catch (error) {
+      // A repository an earlier run with this key recorded may have been removed since. Its steps can no
+      // longer run, so a replay naming the same repositories in the same order reports the recorded status.
+      const sameSteps = recorded.length === validated.repositories.length && validated.repositories.every((step, index) =>
+        step.repositoryId === recorded[index]!.repositoryId || step.repositoryId === recorded[index]!.alias);
+      if (sameSteps && error instanceof HarnessError && error.code === 'INVALID_INPUT') {
+        return reposFinalizeResponse(record.id, recorded, true, validated.continueOnFailure);
+      }
+      throw error;
+    }
+    this.reposFinalizes.add(record.id);
+    try {
+      return await this.withMutationLease(record, () => runReposFinalize({
+        store: this.store,
+        ownerId,
+        workspaceId: record.id,
+        input: validated,
+        plan,
+        execute: (operation, input) => this.execute(principal, operation, input, signal),
+        ...(signal ? { signal } : {})
+      }));
+    } finally {
+      this.reposFinalizes.delete(record.id);
     }
   }
 
@@ -3647,6 +4038,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         '--user', input.runAs === 'unprivileged' ? '10001:10001' : '0:0',
         ...(input.runAs === 'unprivileged' ? ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true'] : []),
         '--workdir', workdir,
+        // A scoped run confines the one-shot worker (skills_run) to the selected checkout, as a scoped
+        // `docker exec` does; an unscoped record adds nothing.
+        ...(record.repositoryScope ? ['--env', `CH_WORKSPACE_ROOT=${checkoutPath}`] : []),
         '--pids-limit', '256',
         '--memory', '1g', '--memory-swap', '1g', '--cpus', '1',
         '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=128m',
@@ -4131,14 +4525,14 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         rec = this.requireWorkspace(ownerId, workspaceId, false, true);
       } catch (error) {
         if (workspaceId !== undefined || !(error instanceof HarnessError) || error.code !== 'NOT_FOUND') throw error;
-        const data: PrincipalCapabilityResult = { workspaceId: null, repository: null, githubRepositoryCreate };
+        const data: PrincipalCapabilityResult = { workspaceId: null, repository: null, githubRepositoryCreate, workspaceLifetime: this.workspaceLifetimeCapability() };
         return { ok: true, message: 'Principal capabilities retrieved (no active workspace)', data, truncated: false };
       }
       const caps = this.computeWorkspaceCapabilities(this.resolveRepositoryView(rec, validated, 'primary', operation).scoped);
       return {
         ok: true,
         message: 'Workspace capabilities retrieved',
-        data: { ...caps, githubRepositoryCreate },
+        data: { ...caps, githubRepositoryCreate, workspaceLifetime: this.workspaceLifetimeCapability() },
         truncated: false
       };
     }
@@ -4396,10 +4790,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (AgentManager.isPublicOperation(operation)) {
       if (!this.agentManager) throw new HarnessError('UNAVAILABLE', 'agent execution is not configured', 503, false);
       const targetWorkspace = this.requireWorkspace(ownerId, workspaceId, false, true);
+      // A spawn's guidance selector is normalized to the stable id (or dropped for a single repository,
+      // keeping its idempotency payload unchanged) and an unknown repository is refused before admission.
+      if (operation === 'agent_spawn' && validated.repositoryId !== undefined) {
+        this.resolveRepositoryView(targetWorkspace, validated, 'optional', operation);
+      }
       return await this.agentManager.dispatch(ownerId, targetWorkspace, operation, validated);
     }
     if (operation === 'workspace_repo_add' || operation === 'workspace_repo_remove') {
       return await this.changeRepositories(ownerId, operation, validated);
+    }
+    if (operation === 'workspace_repos_finalize') {
+      return await this.finalizeRepositories(principal, ownerId, validated as ReposFinalizeInput & { workspaceId?: string }, signal);
     }
 
     const workspaceRecord = this.touch(this.requireWorkspace(ownerId, workspaceId, true, false));
@@ -4602,7 +5004,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'memories_write') {
       const scope = (validated.scope || 'workspace') as 'owner' | 'repository' | 'workspace';
-      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const repoKey = scope === 'repository' ? memoryRepositoryKey(record) : null;
       const expectedGen = typeof validated.expectedGeneration === 'number' ? validated.expectedGeneration : 0;
       let mem;
       try {
@@ -4641,7 +5043,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'memories_read') {
       const scope = validated.scope as 'owner' | 'repository' | 'workspace' | undefined;
-      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const repoKey = scope === 'repository' ? memoryRepositoryKey(record) : null;
       const mem = this.store.readMemory({
         principalId: ownerId,
         ...(typeof validated.memoryId === 'string' ? { id: validated.memoryId } : {}),
@@ -4657,7 +5059,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'memories_list') {
       const scope = validated.scope as 'owner' | 'repository' | 'workspace' | undefined;
-      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const repoKey = scope === 'repository' ? memoryRepositoryKey(record) : null;
       const { memories, nextCursor } = this.store.listMemories({
         principalId: ownerId,
         ...(scope ? { scope } : {}),
@@ -4677,7 +5079,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'memories_search') {
       const scope = validated.scope as 'owner' | 'repository' | 'workspace' | undefined;
-      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const repoKey = scope === 'repository' ? memoryRepositoryKey(record) : null;
       const { memories, nextCursor } = this.store.searchMemories({
         principalId: ownerId,
         query: validated.query as string,
@@ -4698,7 +5100,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'memories_delete') {
       const scope = validated.scope as 'owner' | 'repository' | 'workspace' | undefined;
-      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const repoKey = scope === 'repository' ? memoryRepositoryKey(record) : null;
       try {
         this.store.deleteMemory({
           principalId: ownerId,
@@ -4871,6 +5273,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         const act = this.store.activateHook({
           principalId: ownerId,
           workspaceId: record.id,
+          ...(record.repositoryScope ? { repositoryId: record.repositoryScope.id } : {}),
           event: ev,
           manifestSha256: validated.manifestSha256 as string,
           ...(typeof validated.retentionSeconds === 'number' ? { retentionSeconds: validated.retentionSeconds } : {})
@@ -4885,19 +5288,19 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       // lifecycle events would run now. The internal lifecycle listing calls the worker directly.
       const result = withHookActivationState(
         await this.runWorker(record, 'hooks_list', validated, signal),
-        this.store.getActiveHookActivations(ownerId, record.id)
+        this.store.getActiveHookActivations(ownerId, record.id, record.repositoryScope?.id)
       );
       await this.enforceActiveLimits(record);
-      return result;
+      return record.repositoryScope ? withUnboundHookActivations(result, this.store.getActiveHookActivations(ownerId, record.id)) : result;
     }
     if (operation === 'hooks_deactivate') {
       const events = validated.events as string[] | undefined;
       if (events && events.length > 0) {
         for (const ev of events) {
-          this.store.deactivateHook({ principalId: ownerId, workspaceId: record.id, event: ev });
+          this.store.deactivateHook({ principalId: ownerId, workspaceId: record.id, ...(record.repositoryScope ? { repositoryId: record.repositoryScope.id } : {}), event: ev });
         }
       } else {
-        this.store.deactivateHook({ principalId: ownerId, workspaceId: record.id });
+        this.store.deactivateHook({ principalId: ownerId, workspaceId: record.id, ...(record.repositoryScope ? { repositoryId: record.repositoryScope.id } : {}) });
       }
       this.auditWorkspaceMutation(ownerId, 'hook.deactivated', record, { ...(events ? { events: events.join(',') } : { all: true }) });
       return { ok: true, message: 'Hooks deactivated', data: { deactivated: true }, truncated: false };
@@ -5195,8 +5598,14 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       try {
         response = await runFinalize();
       } catch (err: unknown) {
-        if (idempotencyKey && err instanceof HarnessError) {
-          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify({ message: err.message, code: err.code }));
+        if (idempotencyKey) {
+          // Any thrown error must settle the claim, or every later attempt with this key reports IN_FLIGHT.
+          // An unexpected error may land after the push, so it is recorded as unknown remote state: the next
+          // attempt probes the remote for the recorded commit before running again.
+          const known = err instanceof HarnessError;
+          const status: GitOperationStatus = known && err.code !== 'UNKNOWN_REMOTE_STATE' ? 'FAILED' : 'UNKNOWN_REMOTE_STATE';
+          const message = err instanceof Error ? err.message : 'finalize failed';
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, status, null, JSON.stringify({ message, code: known ? err.code : 'INTERNAL_ERROR' }));
         }
         throw err;
       }
@@ -5612,8 +6021,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           await this.runLifecycleHooks(record, 'post_commit', signal);
         }
       } catch (err: unknown) {
-        if (idempotencyKey && err instanceof HarnessError) {
-          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify({ message: err.message, code: err.code }), currentHeadOid);
+        if (idempotencyKey) {
+          // Any thrown error must settle the claim, or every later attempt with this key reports IN_FLIGHT.
+          const message = err instanceof Error ? err.message : 'commit failed';
+          const code = err instanceof HarnessError ? err.code : 'INTERNAL_ERROR';
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify({ message, code }), currentHeadOid);
         }
         throw err;
       }
@@ -5658,9 +6070,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
   if (isMutationOperation(operation, validated)) {
     const opTimeout = typeof validated.timeoutMs === 'number' ? validated.timeoutMs : undefined;
-    return await this.withMutationLease(record, dispatchAction, opTimeout);
+    return withRepositoryProvenance(record, operation, await this.withMutationLease(record, dispatchAction, opTimeout));
   }
-  return await dispatchAction();
+  return withRepositoryProvenance(record, operation, await dispatchAction());
 }
 
   /**
@@ -6289,7 +6701,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const settings = Object.fromEntries(WORKSPACE_LIFECYCLE_SETTING_NAMES.map((name) => [name, {
       value: effective[name],
       source: overrides[name] !== null ? 'setting' : environmentKeys.includes(name) ? 'environment' : 'default',
-      runnerValue: runner[name],
+      // A cleared ceiling follows the effective default lifetime, so that is what a reset restores.
+      runnerValue: name === 'maxWallTtlSeconds' ? Math.max(runner.maxWallTtlSeconds, effective.wallTtlSeconds) : runner[name],
       min: WORKSPACE_LIFECYCLE_BOUNDS[name].min,
       max: WORKSPACE_LIFECYCLE_BOUNDS[name].max
     }])) as WorkspaceLifecycleSettingsView['settings'];
@@ -6318,7 +6731,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         if (effective.idleTtlSeconds > effective.wallTtlSeconds) {
           throw new HarnessError(
             'INVALID_INPUT',
-            `the idle timeout (${effective.idleTtlSeconds}s) cannot exceed the maximum workspace lifetime (${effective.wallTtlSeconds}s)`,
+            `the idle timeout (${effective.idleTtlSeconds}s) cannot exceed the default workspace lifetime (${effective.wallTtlSeconds}s)`,
+            400,
+            false
+          );
+        }
+        // An explicit ceiling (Dashboard or environment) below the default lifetime is a contradiction the
+        // operator must resolve; an unset ceiling simply follows the default lifetime.
+        const ceiling = next.maxWallTtlSeconds ?? this.config.maxWallTtlSeconds;
+        if (ceiling !== null && ceiling !== undefined && ceiling < effective.wallTtlSeconds) {
+          throw new HarnessError(
+            'INVALID_INPUT',
+            `the maximum requestable lifetime (${ceiling}s) cannot be below the default workspace lifetime (${effective.wallTtlSeconds}s)`,
             400,
             false
           );
@@ -6580,7 +7004,7 @@ const GITHUB_CHECKOUT_FREE_ACTIONS: ReadonlySet<string> = new Set(['pr_merge', '
 
 /** Mutations that can duplicate a visible side effect, so an `idempotencyKey` replays the first result. */
 const GITHUB_IDEMPOTENT_ACTIONS: ReadonlySet<string> = new Set([
-  'pr_comment', 'issue_comment', 'issue_labels_add', 'issue_publish',
+  'pr_create', 'pr_comment', 'issue_comment', 'issue_labels_add', 'issue_publish',
   'pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_reviewers_request', 'pr_merge', 'pr_auto_merge_enable',
   'commit_status_create', 'check_run_create', 'workflow_dispatch', 'workflow_run_rerun_failed'
 ]);

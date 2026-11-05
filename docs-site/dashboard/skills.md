@@ -78,6 +78,13 @@ executable files is recorded as carrying executable assets; its scripts still ru
 - A skill with more than 512 files, more than 16 MiB of content, or directories nested deeper than 32
   levels is reported as `LIMIT_EXCEEDED` on its own row (the result's `message` names the limit) and
   not imported; the other skills in the archive are still imported.
+- A skill whose slug already exists in your library is reported as `CONFLICT` on its own row and
+  nothing is written for it. An upload never replaces or updates an existing skill: open that skill
+  and use **Edit instructions** to publish a new revision. **New skill** and **Fork** refuse a taken
+  slug the same way.
+- A row the runner could not store is reported as `UNAVAILABLE`, and its message names the failing
+  operation and error code (for example `mkdir failed with EACCES`) but not the host path. The runner
+  logs the same failure with the skill's slug for the operator.
 
 The dialog lists one result per skill. Archive-wide limits are covered in
 [Troubleshooting](/troubleshooting).
@@ -103,10 +110,13 @@ already in flight finishes in the background, and the import stops at its next s
 A set is a named selection of skills pinned to the exact revision each member had when the set was
 built. Pinning matters: a set that stored names would silently change meaning when a skill was updated.
 
-Sets are selected when launching a workspace. Because the same skill name can exist at several tiers,
+Sets are selected when launching a workspace (`workspace_open` with `skillSets`), and every member is
+projected into the workspace's owner tier at its pinned revision, where the workspace tools
+`skills_list` and `skills_read` find it. The launch is refused, not silently reduced, when a set was
+changed since you chose it, or a member has been disabled or archived. Because the same skill name can exist at several tiers,
 launching can produce a conflict, and the dialog resolves it with a radio choice per conflict. Launch
 stays disabled until every conflict has an override, which is the same rule the resolver applies — the
-dialog cannot offer a launch the runner would then refuse.
+preview covers skill sets only. A collision between a set member and a toolkit skill surfaces at launch, and the error names the conflicting identities to pin with an override.
 
 ## Registry
 

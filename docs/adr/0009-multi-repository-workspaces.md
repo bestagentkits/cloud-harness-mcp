@@ -99,8 +99,13 @@ and the boundary in the [security model](../security-model.md#multi-repository-w
 - **Resuming a search inside a checkout (rejected):** a per-checkout offset
   would need either server-side search state or a re-run that can shift under
   concurrent edits; the caller narrows a truncated checkout with `repositoryId`.
-- **Deferred:** repository-targeted guidance and hooks, and coordinated
-  cross-repository pull requests, remain follow-up work.
+- **Follow-up (delivered):** guidance, skills, hooks and memories now target
+  one repository through `repositoryId`, with the primary repository as the
+  read-only default, and `workspace_repos_finalize` commits, pushes and opens
+  pull requests across checkouts in a declared order. That finalize is
+  deliberately not atomic: it records each repository's outcome durably,
+  reports `partial` explicitly, and a replay retries only the steps that did
+  not succeed. See [`docs/mcp-api.md`](../mcp-api.md).
 
 ## Consequences
 

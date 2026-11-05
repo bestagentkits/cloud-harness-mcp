@@ -12,6 +12,7 @@ export function lifecycle(overrides: Record<string, unknown> = {}) {
       maxActiveWorkspacesPerOwner: setting(3, 3, 1, 64),
       idleTtlSeconds: setting(300, 300, 60, 43_200),
       wallTtlSeconds: setting(900, 900, 60, 86_400),
+      maxWallTtlSeconds: setting(900, 900, 60, 86_400, 'default'),
       recoverableGraceSeconds: setting(3_600, 3_600, 0, 86_400, 'default')
     },
     reaperIntervalSeconds: 60,

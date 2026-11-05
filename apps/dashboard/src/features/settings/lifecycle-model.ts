@@ -8,7 +8,7 @@ import { z } from 'zod';
  * classic `workspaceLifecycleUpdateInput`; the runner re-validates every rule.
  */
 
-export type LifecycleFieldName = 'maxActiveWorkspacesPerOwner' | 'idleTtlSeconds' | 'wallTtlSeconds' | 'recoverableGraceSeconds';
+export type LifecycleFieldName = 'maxActiveWorkspacesPerOwner' | 'idleTtlSeconds' | 'wallTtlSeconds' | 'maxWallTtlSeconds' | 'recoverableGraceSeconds';
 export type LifecycleSource = 'setting' | 'environment' | 'default';
 
 export type LifecycleField = { name: LifecycleFieldName; label: string; unit: 'count' | 'minutes' };
@@ -17,7 +17,8 @@ export type LifecycleField = { name: LifecycleFieldName; label: string; unit: 'c
 export const LIFECYCLE_FIELDS: readonly LifecycleField[] = [
   { name: 'maxActiveWorkspacesPerOwner', label: 'Max active workspaces per principal', unit: 'count' },
   { name: 'idleTtlSeconds', label: 'Idle timeout (minutes)', unit: 'minutes' },
-  { name: 'wallTtlSeconds', label: 'Maximum workspace lifetime (minutes)', unit: 'minutes' },
+  { name: 'wallTtlSeconds', label: 'Default workspace lifetime (minutes)', unit: 'minutes' },
+  { name: 'maxWallTtlSeconds', label: 'Maximum requestable lifetime (minutes)', unit: 'minutes' },
   { name: 'recoverableGraceSeconds', label: 'Recoverable grace before auto-close (minutes)', unit: 'minutes' }
 ];
 
@@ -101,6 +102,18 @@ export function bytesLabel(bytes: number | undefined): string {
   return gib >= 1 ? `${Math.round(gib * 100) / 100} GiB` : `${Math.round(bytes / 1024 ** 2)} MiB`;
 }
 
+/**
+ * The ceiling the runner would treat as explicit after a write: an edited value, else a stored
+ * Dashboard override, else a runner-environment value. A ceiling from none of them follows the
+ * default lifetime, so it can never be below it.
+ */
+function explicitCeiling(setting: LifecycleSetting, edited: number | null | undefined): number | undefined {
+  if (typeof edited === 'number') return edited;
+  if (setting.source === 'setting') return setting.value;
+  if (setting.source === 'environment') return setting.runnerValue;
+  return undefined;
+}
+
 /** The form values the view loads with. */
 export function lifecycleDefaults(view: LifecycleView): LifecycleValues {
   const values = { acknowledgeImmediateClose: false } as LifecycleValues;
@@ -142,7 +155,12 @@ export function lifecycleUpdateInput(view: LifecycleView, values: Partial<Lifecy
   }
   if (!errors.idleTtlSeconds && !errors.wallTtlSeconds && effective.idleTtlSeconds > effective.wallTtlSeconds) {
     const field = update.wallTtlSeconds !== undefined && update.idleTtlSeconds === undefined ? 'wallTtlSeconds' : 'idleTtlSeconds';
-    errors[field] = `The idle timeout (${durationLabel(effective.idleTtlSeconds)}) cannot exceed the maximum lifetime (${durationLabel(effective.wallTtlSeconds)}).`;
+    errors[field] = `The idle timeout (${durationLabel(effective.idleTtlSeconds)}) cannot exceed the default lifetime (${durationLabel(effective.wallTtlSeconds)}).`;
+  }
+  const ceiling = explicitCeiling(view.settings.maxWallTtlSeconds, update.maxWallTtlSeconds);
+  if (!errors.wallTtlSeconds && !errors.maxWallTtlSeconds && ceiling !== undefined && ceiling < effective.wallTtlSeconds) {
+    const field = update.wallTtlSeconds !== undefined && update.maxWallTtlSeconds === undefined ? 'wallTtlSeconds' : 'maxWallTtlSeconds';
+    errors[field] = `The maximum requestable lifetime (${durationLabel(ceiling)}) cannot be below the default lifetime (${durationLabel(effective.wallTtlSeconds)}).`;
   }
   if (update.recoverableGraceSeconds === 0) {
     if (acknowledged) update.acknowledgeImmediateClose = true;
@@ -156,17 +174,21 @@ export function lifecycleUpdateInput(view: LifecycleView, values: Partial<Lifecy
 export function lifecycleResetInput(view: LifecycleView): { error: string; body?: undefined } | { body: LifecycleUpdate; error?: undefined } {
   const idle = view.settings.idleTtlSeconds.runnerValue;
   const wall = view.settings.wallTtlSeconds.runnerValue;
+  const ceiling = view.settings.maxWallTtlSeconds.runnerValue;
   if (idle > wall) {
-    return { error: `The runner values cannot be restored: the runner idle timeout (${durationLabel(idle)}) exceeds its maximum lifetime (${durationLabel(wall)}). Fix the runner environment, or keep a Dashboard override.` };
+    return { error: `The runner values cannot be restored: the runner idle timeout (${durationLabel(idle)}) exceeds its default lifetime (${durationLabel(wall)}). Fix the runner environment, or keep a Dashboard override.` };
   }
-  return { body: { expectedRevision: view.revision, maxActiveWorkspacesPerOwner: null, idleTtlSeconds: null, wallTtlSeconds: null, recoverableGraceSeconds: null } };
+  if (ceiling < wall) {
+    return { error: `The runner values cannot be restored: the runner maximum requestable lifetime (${durationLabel(ceiling)}) is below its default lifetime (${durationLabel(wall)}). Fix the runner environment, or keep a Dashboard override.` };
+  }
+  return { body: { expectedRevision: view.revision, maxActiveWorkspacesPerOwner: null, idleTtlSeconds: null, wallTtlSeconds: null, maxWallTtlSeconds: null, recoverableGraceSeconds: null } };
 }
 
 /** The read-back the status line announces after a save, so the operator hears what the runner stored. */
 export function lifecycleSummary(view: LifecycleView | undefined): string {
   if (!view) return '';
   const { settings } = view;
-  return `Effective: up to ${settings.maxActiveWorkspacesPerOwner.value} active per principal, idle ${durationLabel(settings.idleTtlSeconds.value)}, lifetime ${durationLabel(settings.wallTtlSeconds.value)}, grace ${durationLabel(settings.recoverableGraceSeconds.value)}.`;
+  return `Effective: up to ${settings.maxActiveWorkspacesPerOwner.value} active per principal, idle ${durationLabel(settings.idleTtlSeconds.value)}, default lifetime ${durationLabel(settings.wallTtlSeconds.value)}, requestable up to ${durationLabel(settings.maxWallTtlSeconds.value)}, grace ${durationLabel(settings.recoverableGraceSeconds.value)}.`;
 }
 
 /**
@@ -179,6 +201,7 @@ export function lifecycleSchema(view: LifecycleView) {
     maxActiveWorkspacesPerOwner: z.string(),
     idleTtlSeconds: z.string(),
     wallTtlSeconds: z.string(),
+    maxWallTtlSeconds: z.string(),
     recoverableGraceSeconds: z.string(),
     acknowledgeImmediateClose: z.boolean()
   }).superRefine((values, context) => {

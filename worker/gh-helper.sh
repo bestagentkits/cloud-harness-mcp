@@ -54,7 +54,7 @@ case "$action" in
   pr_list)
     limit="${1:-20}"
     state="${2:-open}"
-    exec gh pr list --limit "$limit" --state "$state" --json number,title,state,author,headRefName,baseRefName,isCrossRepository,url
+    exec gh pr list --limit "$limit" --state "$state" --json number,title,state,author,headRefName,headRefOid,baseRefName,isCrossRepository,url
     ;;
   pr_view)
     pr_number="${1:-}"

@@ -1,3 +1,24 @@
+# [0.80.0-beta.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0-beta.3...v0.80.0-beta.4) (2026-11-04)
+
+
+### Bug Fixes
+
+* **skills:** library create errors, skill-set launch, and legacy workspace launch ([#639](https://github.com/bestagentkits/cloud-harness-mcp/issues/639)) ([42ff10e](https://github.com/bestagentkits/cloud-harness-mcp/commit/42ff10e0746264ac9528e17ba52a79aa605ef551)), closes [#638](https://github.com/bestagentkits/cloud-harness-mcp/issues/638) [#635](https://github.com/bestagentkits/cloud-harness-mcp/issues/635) [#636](https://github.com/bestagentkits/cloud-harness-mcp/issues/636) [#637](https://github.com/bestagentkits/cloud-harness-mcp/issues/637)
+
+# [0.80.0-beta.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0-beta.2...v0.80.0-beta.3) (2026-11-03)
+
+
+### Features
+
+* **workspace:** let workspace_open request a lifetime up to an instance ceiling ([#633](https://github.com/bestagentkits/cloud-harness-mcp/issues/633)) ([6795986](https://github.com/bestagentkits/cloud-harness-mcp/commit/6795986819d452f4b4caa0153507ec97067d9b6f)), closes [#632](https://github.com/bestagentkits/cloud-harness-mcp/issues/632)
+
+# [0.80.0-beta.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0-beta.1...v0.80.0-beta.2) (2026-11-01)
+
+
+### Features
+
+* repository-targeted workspace features and coordinated finalize ([#630](https://github.com/bestagentkits/cloud-harness-mcp/issues/630)) ([1f2d2c3](https://github.com/bestagentkits/cloud-harness-mcp/commit/1f2d2c3d0ddd9cdbb592d8de54ecfd6b035d365b))
+
 # [0.80.0-beta.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.79.2...v0.80.0-beta.1) (2026-10-30)
 
 

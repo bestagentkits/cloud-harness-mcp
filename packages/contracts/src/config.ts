@@ -355,6 +355,9 @@ export const RunnerConfigSchema = z.object({
   dependencyBridgeInterface: z.string().default('chm-egress0'),
   dependencyNetworkName: z.string().default('cloud-harness-dependency-access'),
   wallTtlSeconds: z.coerce.number().int().min(WORKSPACE_LIFECYCLE_BOUNDS.wallTtlSeconds.min).max(WORKSPACE_LIFECYCLE_BOUNDS.wallTtlSeconds.max).default(900),
+  // The ceiling a workspace_open ttlSeconds request is clamped to. Unset means the default lifetime above,
+  // so callers cannot request more than the instance already grants.
+  maxWallTtlSeconds: z.coerce.number().int().min(WORKSPACE_LIFECYCLE_BOUNDS.maxWallTtlSeconds.min).max(WORKSPACE_LIFECYCLE_BOUNDS.maxWallTtlSeconds.max).optional(),
   // The environment keeps its older 30s idle floor, below the Settings floor, so existing deployments still validate.
   idleTtlSeconds: z.coerce.number().int().min(30).max(WORKSPACE_LIFECYCLE_BOUNDS.idleTtlSeconds.max).default(300),
   maxOutputBytes: z.coerce.number().int().min(1_024).max(10_485_760).default(262_144),
@@ -403,7 +406,7 @@ export const RunnerConfigSchema = z.object({
   // replaces it for workspaces opened afterwards. 0 closes clean expired workspaces on the next pass.
   recoverableGraceSeconds: z.coerce.number().int().min(WORKSPACE_LIFECYCLE_BOUNDS.recoverableGraceSeconds.min).max(WORKSPACE_LIFECYCLE_BOUNDS.recoverableGraceSeconds.max).default(DEFAULT_RECOVERABLE_GRACE_SECONDS),
   // Which lifecycle values the runner environment set explicitly, so Settings can tell them from defaults.
-  lifecycleEnvironmentKeys: z.array(z.enum(['maxActiveWorkspacesPerOwner', 'idleTtlSeconds', 'wallTtlSeconds', 'recoverableGraceSeconds'])).max(4).default([]),
+  lifecycleEnvironmentKeys: z.array(z.enum(['maxActiveWorkspacesPerOwner', 'idleTtlSeconds', 'wallTtlSeconds', 'maxWallTtlSeconds', 'recoverableGraceSeconds'])).max(5).default([]),
   reaperIntervalSeconds: z.coerce.number().int().min(10).max(3_600).default(30),
   artifactRoot: z.string().min(1).default('/var/lib/cloud-harness/artifacts'),
   maxArtifactBytes: z.coerce.number().int().min(1_024).max(268_435_456).default(16_777_216),
@@ -538,6 +541,9 @@ export const RunnerConfigSchema = z.object({
   }
   if (config.maxArtifactBytes > config.maxPrincipalArtifactBytes) {
     context.addIssue({ code: 'custom', path: ['maxArtifactBytes'], message: 'per-artifact quota cannot exceed principal quota' });
+  }
+  if (config.maxWallTtlSeconds !== undefined && config.maxWallTtlSeconds < config.wallTtlSeconds) {
+    context.addIssue({ code: 'custom', path: ['maxWallTtlSeconds'], message: 'WORKSPACE_MAX_WALL_TTL_SECONDS cannot be below WORKSPACE_WALL_TTL_SECONDS' });
   }
 });
 

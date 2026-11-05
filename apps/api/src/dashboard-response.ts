@@ -323,6 +323,17 @@ function pick(value: unknown, keys: readonly string[]): Record<string, unknown> 
   return Object.fromEntries(keys.filter((key) => item[key] !== undefined).map((key) => [key, item[key]]));
 }
 
+/**
+ * The repository a multi-repository workspace answered a skills or hooks listing from, so a run the page
+ * starts targets that same checkout. Only a well-formed `repo_` id and alias pass; one repository adds nothing.
+ */
+function listedRepository(data: Record<string, unknown>): Record<string, string> {
+  const id = typeof data.repositoryId === 'string' && /^repo_[A-Za-z0-9_-]{20,80}$/.test(data.repositoryId) ? data.repositoryId : undefined;
+  if (!id) return {};
+  const alias = typeof data.repositoryAlias === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(data.repositoryAlias) ? data.repositoryAlias : undefined;
+  return { repositoryId: id, ...(alias ? { repositoryAlias: alias } : {}) };
+}
+
 const metadataKeys = ['id', 'name', 'state', 'generation', 'createdAt', 'updatedAt', 'deletedAt'] as const;
 const environmentKeys = [...metadataKeys, 'projectId'] as const;
 const secretKeys = ['id', 'environmentId', 'name', 'description', 'state', 'version', 'generation', 'createdAt', 'updatedAt', 'deletedAt'] as const;
@@ -548,12 +559,12 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
       const shadowed = Array.isArray(skill?.shadowed) ? skill.shadowed.map((entry: unknown) => pick(entry, ['source', 'contentSha256'])) : undefined;
       return { ...pick(skill, ['name', 'tier', 'source', 'kind', 'state', 'sha256', 'contentSha256', 'description']), ...(shadowed ? { shadowed } : {}) };
     }) : [];
-    return { skills, ...(data.cursor !== undefined ? { cursor: data.cursor } : {}) };
+    return { skills, ...listedRepository(data), ...(data.cursor !== undefined ? { cursor: data.cursor } : {}) };
   }
   if (operation === 'skills_read') return pick(data, ['name', 'source', 'content', 'sha256', 'bytes', 'offset', 'truncated']);
   if (operation === 'hooks_list') {
     const hooks = Array.isArray(data.hooks) ? data.hooks.map((hook) => pick(hook, ['name', 'path', 'events', 'active', 'trigger', 'description', 'sha256'])) : [];
-    return { hooks, ...(typeof data.manifestSha256 === 'string' ? { manifestSha256: data.manifestSha256 } : {}), ...(data.cursor !== undefined ? { cursor: data.cursor } : {}) };
+    return { hooks, ...(typeof data.manifestSha256 === 'string' ? { manifestSha256: data.manifestSha256 } : {}), ...listedRepository(data), ...(data.cursor !== undefined ? { cursor: data.cursor } : {}) };
   }
   if (operation === 'deployments_list') {
     const deployments = Array.isArray(data.deployments) ? data.deployments.map((entry) => pick(entry, ['name', 'cwd', 'status', 'lastResult', 'durationMs', 'error'])) : [];

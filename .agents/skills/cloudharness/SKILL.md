@@ -132,7 +132,7 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    when no GitHub App is configured. Treat such a workspace as credential-bearing
    and never echo that value.
    To mount agent skills or toolkits (such as `mattpocock/skills`, `obra/superpowers`,
-   or custom Git repos), pass `toolkits: [{ kind: 'preset', id: '...' }]` during `workspace_open`.
+   or custom Git repos), pass `toolkits: [{ kind: 'preset', id: '...' }]` (`skillSets`: [library skills](references/skill-sets.md)) during `workspace_open`.
    Licensed AgentKit kits such as the engineering kit use
    `toolkits: [{ kind: 'agentkit', kitId: 'engineer', channel: 'stable' }]`; they
    require operator-pinned registry key material and a stored licence token, are
@@ -156,8 +156,9 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    instead of `repositoryUrl`; each checkout lives at `repos/<alias>/`, Git and
    GitHub tools then need `repositoryId`, and `read-only` access blocks only
    brokered writes, not file edits. Add or remove a checkout later with
-   `workspace_repo_add`/`workspace_repo_remove`, and search every checkout
-   with `scope: "all"`. Details:
+   `workspace_repo_add`/`workspace_repo_remove`, search every checkout
+   with `scope: "all"`, and publish across checkouts in order with
+   `workspace_repos_finalize` (not atomic: check its `status`). Details:
    [Multi-repository workspaces](references/multi-repository-workspaces.md).
    On a local server (its instructions say "local stdio workspace" or "local
    multi-workspace server"), workspaces are already open and `workspace_open`

@@ -21,6 +21,14 @@ export type CachedToolkitBundle = {
   fileCount: number;
 };
 
+/** A local bundle refused for its own content, as opposed to a failure of the cache storage. */
+export class LocalBundleInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LocalBundleInputError';
+  }
+}
+
 export class ToolkitCacheManager {
   private readonly root: string;
   private readonly store: StateStore;
@@ -50,9 +58,9 @@ export class ToolkitCacheManager {
   async publishLocalBundle(
     ownerId: string,
     files: Record<string, string | Buffer>
-  ): Promise<{ bundleSha256: string; byteCount: number; fileCount: number; bundlePath: string }> {
+  ): Promise<{ bundleSha256: string; byteCount: number; fileCount: number; bundlePath: string; created: boolean }> {
     const entries = Object.entries(files);
-    if (entries.length === 0) throw new Error('a local bundle needs at least one file');
+    if (entries.length === 0) throw new LocalBundleInputError('a local bundle needs at least one file');
     for (const [relativePath] of entries) {
       // The bundle is published into the cache root, so a traversing or absolute member would write
       // outside the directory belonging to this owner. Checking whole segments keeps a file such as
@@ -60,7 +68,7 @@ export class ToolkitCacheManager {
       const segments = relativePath.split('/');
       if (relativePath.startsWith('/') || relativePath.includes('\\') || relativePath.includes('\0')
         || segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
-        throw new Error(`unsafe bundle member path: ${relativePath}`);
+        throw new LocalBundleInputError(`unsafe bundle member path: ${relativePath}`);
       }
     }
 
@@ -78,19 +86,32 @@ export class ToolkitCacheManager {
       const targetDir = this.bundlePath(ownerId, bundleSha256);
       await mkdir(dirname(targetDir), { recursive: true, mode: 0o700 });
 
-      if (existsSync(targetDir)) {
-        // Identical content is already published, so the new copy is redundant rather than conflicting.
-        await rm(stagingDir, { recursive: true, force: true });
-      } else {
+      // Identical content already published is redundant rather than conflicting, so it is reused, and
+      // `created` tells the caller whether this call is the one that put the bytes there.
+      const created = !existsSync(targetDir);
+      if (created) {
         this.fsyncDirectoryRecursive(stagingDir);
         await rename(stagingDir, targetDir);
         this.fsyncDirectory(dirname(targetDir));
+      } else {
+        await rm(stagingDir, { recursive: true, force: true });
       }
-      return { bundleSha256, byteCount, fileCount, bundlePath: targetDir };
+      return { bundleSha256, byteCount, fileCount, bundlePath: targetDir, created };
     } catch (error) {
       await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
       throw error;
     }
+  }
+
+  /**
+   * Removes a local bundle this process just published when the record that was going to reference it
+   * could not be written, so a refused create does not leave bytes nothing points at. Local bundles have
+   * no cache-entry row, so nothing else would ever reclaim them. A bundle any revision or cache entry
+   * references is kept, which also covers a concurrent create that published the same bytes.
+   */
+  async discardLocalBundle(ownerId: string, bundleSha256: string): Promise<void> {
+    if (this.store.isBundleReferenced(ownerId, bundleSha256)) return;
+    await rm(this.bundlePath(ownerId, bundleSha256), { recursive: true, force: true });
   }
 
   async reconcileStartup(): Promise<void> {

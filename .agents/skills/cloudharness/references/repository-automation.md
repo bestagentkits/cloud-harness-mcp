@@ -39,7 +39,7 @@ responsible for supplying their own binary.
   repository`. The `built-in` tier is operator-provided content mounted at
   `/opt/cloud-harness/skills`, so it outranks a same-named project skill; check
   `selectedSource` and `shadowed` before assuming a repository skill won. The
-  `agentkit` toolkit kind mounts licensed kits into the `owner` tier.
+  `agentkit` toolkit kind and `skillSets` members (with `revisionId`) are `owner`.
 
 <!-- cloudharness-tool:skills_read -->
 ### `skills_read`

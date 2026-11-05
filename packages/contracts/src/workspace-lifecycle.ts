@@ -11,11 +11,16 @@ export const DEFAULT_RECOVERABLE_GRACE_SECONDS = 3_600;
  * The ranges a Dashboard override may take. They are integer seconds; the Dashboard edits whole minutes.
  * The idle floor is a minute because the runner environment's 30-second floor exists only for backward
  * compatibility, and a grace of 0 is accepted only with an explicit acknowledgement.
+ *
+ * `wallTtlSeconds` is the lifetime a workspace receives when `workspace_open` requests none, and
+ * `maxWallTtlSeconds` is the ceiling a requested `ttlSeconds` is clamped to. An unset ceiling equals the
+ * default lifetime, so an instance that never configures it keeps the fixed lifetime it had before.
  */
 export const WORKSPACE_LIFECYCLE_BOUNDS = {
   maxActiveWorkspacesPerOwner: { min: 1, max: 64 },
   idleTtlSeconds: { min: 60, max: 43_200 },
   wallTtlSeconds: { min: 60, max: 86_400 },
+  maxWallTtlSeconds: { min: 60, max: 86_400 },
   recoverableGraceSeconds: { min: 0, max: 86_400 }
 } as const;
 
@@ -37,6 +42,7 @@ export const WorkspaceLifecycleSettingsUpdateSchema = z.object({
   maxActiveWorkspacesPerOwner: override('maxActiveWorkspacesPerOwner'),
   idleTtlSeconds: override('idleTtlSeconds'),
   wallTtlSeconds: override('wallTtlSeconds'),
+  maxWallTtlSeconds: override('maxWallTtlSeconds'),
   recoverableGraceSeconds: override('recoverableGraceSeconds'),
   acknowledgeImmediateClose: z.literal(true).optional()
 }).strict().superRefine((value, context) => {

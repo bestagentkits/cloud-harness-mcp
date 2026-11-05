@@ -715,7 +715,7 @@ export function renderHookPipeline(groups = []) {
  * one hook from the manifest and the manifest digest this page was rendered from, so a manifest
  * that changed since is refused rather than run.
  */
-export function renderHooks(hooks = [], manifestSha256 = '') {
+export function renderHooks(hooks = [], manifestSha256 = '', repository = undefined) {
   const groups = groupHooksByLifecycle(hooks);
   const lists = groups.map((group) => {
     const rows = group.hooks.length
@@ -726,13 +726,26 @@ export function renderHooks(hooks = [], manifestSha256 = '') {
   const runnable = /^[a-f0-9]{64}$/.test(String(manifestSha256)) ? hooks.filter((hook) => /^[A-Za-z0-9._-]{1,120}$/.test(String(hook.name ?? ''))) : [];
   const options = runnable.map((hook) => `<option value="${escape(String(hook.name))}">${escape(String(hook.name))}</option>`).join('');
   const form = runnable.length
-    ? `<form id="hook-run-form" class="stack-form" data-manifest-sha256="${escape(String(manifestSha256))}"><label for="hook-name">Run a hook from the repository manifest</label><select id="hook-name" name="name" required>${options}</select><button type="submit">Run hook</button><p class="form-status" aria-live="polite"></p></form>`
+    ? `<form id="hook-run-form" class="stack-form" data-manifest-sha256="${escape(String(manifestSha256))}"${repositoryDataAttribute(repository)}><label for="hook-name">Run a hook from the repository manifest</label><select id="hook-name" name="name" required>${options}</select><button type="submit">Run hook</button><p class="form-status" aria-live="polite"></p></form>`
     : '<p class="empty-note">No hook can run from this page.</p>';
-  return `<section class="panel" aria-labelledby="hooks-heading"><h2 id="hooks-heading">Hooks</h2>${renderHookPipeline(groups)}${lists}${form}<p class="page-note">Activation and deactivation stay with the runner's manifest contract. Running a hook here is a one-off manual run you confirm first; it does not activate the hook.</p></section>`;
+  return `<section class="panel" aria-labelledby="hooks-heading"><h2 id="hooks-heading">Hooks</h2>${renderListedRepository(repository)}${renderHookPipeline(groups)}${lists}${form}<p class="page-note">Activation and deactivation stay with the runner's manifest contract. Running a hook here is a one-off manual run you confirm first; it does not activate the hook.</p></section>`;
+}
+
+/**
+ * The repository a multi-repository workspace answered a listing from. A run form started from that
+ * listing carries its `repo_` id, so the run targets the same checkout; one repository reports none.
+ */
+const LISTED_REPOSITORY_ID = /^repo_[A-Za-z0-9_-]{20,80}$/;
+function repositoryDataAttribute(repository) {
+  return repository && LISTED_REPOSITORY_ID.test(String(repository.repositoryId ?? '')) ? ` data-repository-id="${escape(String(repository.repositoryId))}"` : '';
+}
+function renderListedRepository(repository) {
+  if (!repository || !LISTED_REPOSITORY_ID.test(String(repository.repositoryId ?? ''))) return '';
+  return `<p class="page-note">From repository <code class="mono">${escape(String(repository.repositoryAlias ?? repository.repositoryId))}</code>; runs started here target that repository.</p>`;
 }
 
 /** The workspace skill set, with a guarded run form for an explicitly named script. */
-export function renderWorkspaceSkills(skills = []) {
+export function renderWorkspaceSkills(skills = [], repository = undefined) {
   const digest = (skill) => String(skill.contentSha256 ?? '');
   const rows = skills.length
     ? `<ul class="record-list">${skills.map((skill) => `<li><strong>${escape(String(skill.name ?? 'skill'))}</strong>${skill.tier ? ` <span class="status">${escape(String(skill.tier))}</span>` : ''}${skill.description ? `<p>${escape(String(skill.description))}</p>` : ''}${digest(skill) ? `<small class="mono wrap">${escape(digest(skill).slice(0, 16))}</small>` : ''}</li>`).join('')}</ul>`
@@ -741,9 +754,9 @@ export function renderWorkspaceSkills(skills = []) {
   const runnable = skills.filter((skill) => skill.name && /^[0-9a-f]{64}$/.test(digest(skill)));
   const options = runnable.map((skill) => `<option value="${escape(String(skill.name))}" data-content-sha256="${escape(digest(skill))}">${escape(String(skill.name))}</option>`).join('');
   const form = runnable.length
-    ? `<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs once in a disposable helper container from the verified skill revision listed here. Nothing runs unless you name it here, and each run asks for your approval first.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><select id="skill-run-name" name="name" required>${options}</select><label for="skill-run-script">Script name</label><input id="skill-run-script" name="script" required maxlength="120" placeholder="run.sh"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form><div id="skill-run-result"></div></details>`
+    ? `<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs once in a disposable helper container from the verified skill revision listed here. Nothing runs unless you name it here, and each run asks for your approval first.</p><form id="skill-run-form" class="stack-form"${repositoryDataAttribute(repository)}><label for="skill-run-name">Skill</label><select id="skill-run-name" name="name" required>${options}</select><label for="skill-run-script">Script name</label><input id="skill-run-script" name="script" required maxlength="120" placeholder="run.sh"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form><div id="skill-run-result"></div></details>`
     : '';
-  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}${form}</section>`;
+  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${renderListedRepository(repository)}${rows}${form}</section>`;
 }
 
 /** A finished skill run: exit code, where it ran, the signal that stopped it (a timeout) and its bounded, redacted output. */
@@ -776,10 +789,10 @@ export function renderDeployPanel(deployments = []) {
 }
 
 /** The cockpit Automation tab: the workspace skill set and its hooks. */
-export function renderAutomationPanel({ skills = [], hooks = [], manifestSha256 = '' } = {}) {
+export function renderAutomationPanel({ skills = [], hooks = [], manifestSha256 = '', skillsRepository, hooksRepository } = {}) {
   return `${renderResourcePage({
     note: '<div class="page-note"><strong>Workspace automation.</strong> Skills resolve from your library and pinned sets; hooks run at lifecycle events inside the executor.</div>',
-    body: `${renderWorkspaceSkills(skills)}${renderHooks(hooks, manifestSha256)}`
+    body: `${renderWorkspaceSkills(skills, skillsRepository)}${renderHooks(hooks, manifestSha256, hooksRepository)}`
   })}`;
 }
 
@@ -1368,13 +1381,14 @@ export function renderOAuthSettings(view, loadError) {
 }
 
 /**
- * The four workspace lifecycle settings in display order. `unit` is the unit the operator edits:
+ * The five workspace lifecycle settings in display order. `unit` is the unit the operator edits:
  * the quota is a count and the durations are whole minutes over the runner's integer seconds.
  */
 export const WORKSPACE_LIFECYCLE_FIELDS = [
   { name: 'maxActiveWorkspacesPerOwner', id: 'settings-lifecycle-max-active', label: 'Max active workspaces per principal', unit: 'count' },
   { name: 'idleTtlSeconds', id: 'settings-lifecycle-idle', label: 'Idle timeout (minutes)', unit: 'minutes' },
-  { name: 'wallTtlSeconds', id: 'settings-lifecycle-wall', label: 'Maximum workspace lifetime (minutes)', unit: 'minutes' },
+  { name: 'wallTtlSeconds', id: 'settings-lifecycle-wall', label: 'Default workspace lifetime (minutes)', unit: 'minutes' },
+  { name: 'maxWallTtlSeconds', id: 'settings-lifecycle-max-wall', label: 'Maximum requestable lifetime (minutes)', unit: 'minutes' },
   { name: 'recoverableGraceSeconds', id: 'settings-lifecycle-grace', label: 'Recoverable grace before auto-close (minutes)', unit: 'minutes' }
 ];
 
@@ -1431,6 +1445,7 @@ export function renderWorkspaceLifecycleSettings(view) {
   const quota = settings.maxActiveWorkspacesPerOwner.value;
   const idle = settings.idleTtlSeconds.value;
   const wall = settings.wallTtlSeconds.value;
+  const maxWall = settings.maxWallTtlSeconds.value;
   const grace = settings.recoverableGraceSeconds.value;
 
   const field = (definition, help) => {
@@ -1448,14 +1463,16 @@ export function renderWorkspaceLifecycleSettings(view) {
     : '';
   const quotaHelp = `<dl class="facts"><dt>Your active workspaces</dt><dd><span class="mono">${escape(usage.counted ?? 0)} / ${escape(usage.limit ?? quota)}</span> counted against the effective limit</dd><dt>Expired, recoverable</dt><dd>${escape(usage.recoverable ?? 0)} (not counted; their checkouts still use disk)</dd></dl><p class="warning">Each executor is capped at ${ceilingText}. These are ceilings, not reservations, and they multiply with every concurrent workspace, so this per-principal quota does not guarantee the host has capacity.${atLimit}</p><p class="field-help">The limit is enforced at the next open, recover, or lease renew. Lowering it below current usage blocks new opens but never closes an existing workspace.</p>`;
   const idleHelp = '<p class="field-help">A workspace expires after this long without activity. Tool calls that operate on the workspace refresh the idle lease: exec, files, git, shell, session, and task operations, <span class="mono">workspace_lease_renew</span>, and resuming with <span class="mono">workspace_recover</span>. <span class="mono">workspace_list</span>, <span class="mono">workspace_status</span>, and Dashboard polling or metadata reads do not keep a workspace alive.</p>';
-  const wallHelp = `<p class="field-help">A hard deadline counted from creation; activity never extends it. The effective active lifetime is the earlier of the idle expiry and this deadline (now: idle ${escape(lifecycleDurationLabel(idle))}, hard deadline ${escape(lifecycleDurationLabel(wall))}). The idle timeout may not exceed the lifetime.</p>`;
+  const wallHelp = `<p class="field-help">The lifetime a workspace receives when <span class="mono">workspace_open</span> requests none. It is a hard deadline counted from creation; activity never extends it. The effective active lifetime is the earlier of the idle expiry and this deadline (now: idle ${escape(lifecycleDurationLabel(idle))}, hard deadline ${escape(lifecycleDurationLabel(wall))}). The idle timeout may not exceed the default lifetime.</p>`;
+  const maxWallHelp = `<p class="field-help">Callers may request a longer lifetime with <span class="mono">workspace_open</span> <span class="mono">ttlSeconds</span> up to this ceiling; a longer request is clamped to it. It cannot be below the default lifetime (now ${escape(lifecycleDurationLabel(wall))}); when no ceiling is configured it follows the default lifetime.</p>`;
   const graceHelp = `<p class="field-help">How long an expired workspace stays recoverable before the reaper may close it. It closes at about expiry + grace + up to one reaper interval (${escape(reaper)}).</p><div id="settings-lifecycle-ack-block" class="lifecycle-ack"${grace === 0 ? '' : ' hidden'}><p><strong>A grace of 0 closes clean expired workspaces on the next reaper pass.</strong> There is no window to recover them after expiry.</p><label class="checkbox-label" for="settings-lifecycle-ack"><input id="settings-lifecycle-ack" name="acknowledgeImmediateClose" type="checkbox" aria-describedby="settings-lifecycle-ack-error"><span>I understand expired workspaces close without a recovery window</span></label><p id="settings-lifecycle-ack-error" class="field-error"></p></div>`;
 
-  const timeline = `<ol class="lifecycle lifecycle-states" aria-label="Workspace lifecycle states"><li><strong class="mono">ACTIVE</strong>Counts against the quota. Expires at the earlier of ${escape(lifecycleDurationLabel(idle))} idle or ${escape(lifecycleDurationLabel(wall))} after creation.</li><li><strong class="mono">EXPIRED_RECOVERABLE</strong>Frees its active slot, but its checkout still uses disk. Recoverable with <span class="mono">workspace_recover</span> for ${escape(lifecycleDurationLabel(grace))}.</li><li><strong class="mono">CLOSED</strong>Auto-closed at about expiry + ${escape(lifecycleDurationLabel(grace))} + up to ${escape(reaper)}. Auto-close never deletes uncommitted, untracked, stashed, or unpushed work, nor a workspace with running agents (Git-ignored files are not checked): those stay recoverable until closed explicitly with <span class="mono">workspace_close</span> or recovered.</li></ol><dl class="facts"><dt>Retained by auto-close</dt><dd>${escape(usage.autoCloseDeferred ?? 0)} of your workspaces</dd><dt>Last changed</dt><dd>${view.updatedAt ? time(view.updatedAt) : 'Never changed in this dashboard'} <span class="mono">rev ${escape(view.revision)}</span></dd></dl>`;
+  const timeline = `<ol class="lifecycle lifecycle-states" aria-label="Workspace lifecycle states"><li><strong class="mono">ACTIVE</strong>Counts against the quota. Expires at the earlier of ${escape(lifecycleDurationLabel(idle))} idle or ${escape(lifecycleDurationLabel(wall))} after creation (or the requested lifetime, up to ${escape(lifecycleDurationLabel(maxWall))}).</li><li><strong class="mono">EXPIRED_RECOVERABLE</strong>Frees its active slot, but its checkout still uses disk. Recoverable with <span class="mono">workspace_recover</span> for ${escape(lifecycleDurationLabel(grace))}.</li><li><strong class="mono">CLOSED</strong>Auto-closed at about expiry + ${escape(lifecycleDurationLabel(grace))} + up to ${escape(reaper)}. Auto-close never deletes uncommitted, untracked, stashed, or unpushed work, nor a workspace with running agents (Git-ignored files are not checked): those stay recoverable until closed explicitly with <span class="mono">workspace_close</span> or recovered.</li></ol><dl class="facts"><dt>Retained by auto-close</dt><dd>${escape(usage.autoCloseDeferred ?? 0)} of your workspaces</dd><dt>Last changed</dt><dd>${view.updatedAt ? time(view.updatedAt) : 'Never changed in this dashboard'} <span class="mono">rev ${escape(view.revision)}</span></dd></dl>`;
 
   const disclosure = '<p class="page-note"><strong>Not retroactive.</strong> Idle timeout, lifetime, and grace changes apply only to newly opened workspaces; open workspaces keep the policy they were opened with. The quota applies to the next open, recover, or renew. These are separate from the MCP OAuth session lifetime and from agent task TTLs.</p>';
 
-  const form = `<form id="settings-lifecycle-form" class="stack-form lifecycle-form" novalidate>${field(WORKSPACE_LIFECYCLE_FIELDS[0], quotaHelp)}${field(WORKSPACE_LIFECYCLE_FIELDS[1], idleHelp)}${field(WORKSPACE_LIFECYCLE_FIELDS[2], wallHelp)}${field(WORKSPACE_LIFECYCLE_FIELDS[3], graceHelp)}<div class="form-row-actions"><button id="save-settings-lifecycle" class="accent-btn" type="submit">Save lifecycle settings</button><button id="reset-settings-lifecycle" type="button">Reset to runner values</button></div></form>`;
+  const help = { maxActiveWorkspacesPerOwner: quotaHelp, idleTtlSeconds: idleHelp, wallTtlSeconds: wallHelp, maxWallTtlSeconds: maxWallHelp, recoverableGraceSeconds: graceHelp };
+  const form = `<form id="settings-lifecycle-form" class="stack-form lifecycle-form" novalidate>${WORKSPACE_LIFECYCLE_FIELDS.map((definition) => field(definition, help[definition.name])).join('')}<div class="form-row-actions"><button id="save-settings-lifecycle" class="accent-btn" type="submit">Save lifecycle settings</button><button id="reset-settings-lifecycle" type="button">Reset to runner values</button></div></form>`;
 
   return `<section id="settings-lifecycle-panel" class="panel" aria-labelledby="settings-lifecycle-heading"><h2 id="settings-lifecycle-heading">Workspace limits &amp; lifecycle</h2><p>Instance-wide quota and lifetimes for workspaces. Effective values below are what the runner reports.</p>${disclosure}${timeline}${form}<p id="settings-lifecycle-status" class="status-message" aria-live="polite"></p></section>`;
 }
