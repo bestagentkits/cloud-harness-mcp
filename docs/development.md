@@ -169,7 +169,9 @@ parallel jobs, with the Vitest and Playwright suites sharded by file, and
 starts `docker-integration` alongside them rather than after them. The
 required `quality` check is an aggregate that passes only when every one of
 those gates passed, so branch protection still covers the same work while a PR
-waits for the slowest job instead of their sum. Locally, `npm run verify`
+waits for the slowest job instead of their sum. `docker-integration` builds
+its images with a per-image BuildKit layer cache, except the executor image,
+which installs unpinned `latest` tools and is always built fresh. Locally, `npm run verify`
 remains the single gate.
 
 After a failed Docker test, inspect managed leftovers without deleting
