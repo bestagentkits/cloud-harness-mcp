@@ -25,6 +25,10 @@ const FAUX_PROVIDER = 'faux';
 // A resumed run asks the model again for its interrupted work before the new prompt, so the
 // script gets room for more requests than it has steps; past its end it repeats the final answer.
 const SPARE_RESPONSES = 8;
+// Partial-message commits are throttled by wall-clock time, so a stream slowed by a loaded host
+// adds storage rows. The longest timer Node accepts outlasts every scripted stream, and the stream's
+// end cancels it, so only the commits every run makes are counted.
+const NO_PARTIAL_COMMITS_MS = 2_147_483_647;
 
 function loadDurableEngine({ start, steps, model, output, writer }: DurableEngineIo) {
   const faux = fauxProvider({
@@ -50,7 +54,8 @@ function loadDurableEngine({ start, steps, model, output, writer }: DurableEngin
     models,
     model: { provider: FAUX_PROVIDER, modelId: start.model.id },
     // A killed container's storage requests are never answered; its engine winds down promptly.
-    storage: { requestTimeoutMs: 2_000 }
+    storage: { requestTimeoutMs: 2_000 },
+    partialIntervalMs: NO_PARTIAL_COMMITS_MS
   }));
 }
 
