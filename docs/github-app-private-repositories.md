@@ -99,7 +99,21 @@ their organization:
 2. Select **Developer settings** → **GitHub Apps** → **New GitHub App**.
 3. Enter a unique name and a homepage URL. The Cloud Harness repository URL is
    sufficient when the App has no separate website.
-4. Under **Setup URL (optional)**, enter `https://<your-dashboard-domain>/dashboard/github` (e.g. `https://harness.zuey.me/dashboard/github`) and ensure **Redirect on setup** is checked. This allows GitHub to automatically redirect back to your dashboard with the installation ID so Cloud Harness can complete the authorization. Leave Callback URL empty.
+4. Under **Setup URL (optional)**, enter
+   `https://<your-dashboard-domain>/dashboard/integrations/github` and check
+   **Redirect on update**. GitHub returns to the Setup URL with the
+   installation ID and setup state after a new installation; **Redirect on
+   update** also returns there after an existing installation is changed.
+   Binding requires the setup `state`. An account that already has the App
+   installed gets **Configure** instead of **Install** on GitHub, and that
+   path is not observed to carry `state`. Such an installation cannot be bound
+   until the user-authorization check in issue #640 lands. The workaround is to
+   uninstall and reinstall. Without a Setup URL the
+   dashboard never receives the callback and cannot bind the installation. An
+   App already registered with the legacy `/dashboard/github` Setup URL keeps
+   working: that path redirects to the Integrations page and carries only the
+   validated `state`, `installation_id`, and `setup_action` callback parameters
+   (`apps/api/src/dashboard-assets.ts`). Leave **Callback URL** empty.
 5. Clear **Active** under **Webhook**. This integration does not consume
    webhooks.
 6. Under **Repository permissions**, grant the level selected above and leave

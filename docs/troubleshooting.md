@@ -135,6 +135,11 @@ Never paste tokens, authorization codes, or callback URLs carrying `code` or
   live-verified merely because configuration loads.
 - In Access mode, GitHub login is not repository authorization. If the
   dashboard shows no grant, complete the principal-bound GitHub App setup. If
+  it still shows none after GitHub saved the installation, GitHub never returned
+  with `state` and `installation_id`. The App needs a Setup URL
+  ([GitHub App setup](github-app-private-repositories.md)). An App already
+  installed on the account cannot be bound yet (issue #640); uninstall it and
+  install again from **Connect GitHub App**. If
   reconcile reports removal or suspension, correct the installation at GitHub
   and reconcile again; do not substitute another principal's installation.
 
