@@ -1,3 +1,10 @@
+# [0.80.0-beta.7](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0-beta.6...v0.80.0-beta.7) (2026-11-06)
+
+
+### Bug Fixes
+
+* **dashboard:** port cockpit and file safety fixes to dev ([#652](https://github.com/bestagentkits/cloud-harness-mcp/issues/652)) ([2f4eace](https://github.com/bestagentkits/cloud-harness-mcp/commit/2f4eace65efa97d76da4430ea0faf7fceeb555d1))
+
 # [0.80.0-beta.6](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0-beta.5...v0.80.0-beta.6) (2026-11-05)
 
 
