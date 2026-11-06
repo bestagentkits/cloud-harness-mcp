@@ -1,3 +1,27 @@
+# [1.0.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.3...v1.0.0) (2026-11-06)
+
+
+### Bug Fixes
+
+* **github:** verify GitHub user ownership before binding an installation ([#651](https://github.com/bestagentkits/cloud-harness-mcp/issues/651)) ([cdadb36](https://github.com/bestagentkits/cloud-harness-mcp/commit/cdadb36891d7a2935adece9c7135fe99ec3569bf)), closes [#640](https://github.com/bestagentkits/cloud-harness-mcp/issues/640) [#640](https://github.com/bestagentkits/cloud-harness-mcp/issues/640) [#640](https://github.com/bestagentkits/cloud-harness-mcp/issues/640)
+
+
+### Features
+
+* **dashboard:** persistent workspace terminal dock across all pages (P0 [#421](https://github.com/bestagentkits/cloud-harness-mcp/issues/421)) ([#426](https://github.com/bestagentkits/cloud-harness-mcp/issues/426)) ([7772776](https://github.com/bestagentkits/cloud-harness-mcp/commit/77727760c4e9e1107e80fcab867a2d29ef1223e1))
+
+
+### BREAKING CHANGES
+
+* **github:** dashboard binding in cloudflare-access and oidc modes now
+requires GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET (or
+GITHUB_APP_CLIENT_SECRET_FILE) on the runner, and the GitHub App's Callback
+URL must be set to <origin>/dashboard/integrations/github. Without them the
+dashboard disables Connect GitHub App and Verify with GitHub, and the runner
+logs a startup warning. Already-bound installations keep working; the GitHub
+App also needs the Members: Read-only organization permission to bind
+organization installations.
+
 ## [0.80.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.2...v0.80.3) (2026-11-05)
 
 
