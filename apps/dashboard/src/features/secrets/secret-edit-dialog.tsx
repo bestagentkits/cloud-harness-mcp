@@ -1,0 +1,88 @@
+import { useEffect } from 'react';
+import { useForm } from 'react-hook-form';
+import { Field } from '@/components/ui/field';
+import { SecretInput } from '@/components/ui/secret-input';
+import { Textarea } from '@/components/ui/textarea';
+import { ConflictError } from '@/lib/api-client';
+import { mutationErrorText, useBffMutation } from '@/lib/bff-mutation';
+import { FormDialog } from '../shared/form-dialog';
+import { SECRET_DESCRIPTION_MAX, type SecretReference, secretValueError } from './secret-model';
+import { type SecretScope, secretsApi, secretsPath } from './secrets-api';
+
+export type SecretEditMode = 'rotate' | 'describe';
+type Values = { value: string; description: string };
+
+/**
+ * Rotate a secret's value (with an optional new description) or edit only its
+ * description. Both carry the generation of the row the dialog opened with (`secret` is a
+ * snapshot a background refetch never moves), so a change made elsewhere is refused with
+ * 409. `onConflict` then replaces the snapshot with the latest row, so the retry is fenced
+ * on its generation. The value field is never re-seeded.
+ */
+export function SecretEditDialog({ scope, secret, mode, onConflict, onClose }: {
+  scope: SecretScope; secret: SecretReference | undefined; mode: SecretEditMode; onConflict: (secretId: string) => Promise<void>; onClose: () => void;
+}) {
+  const global = scope.kind === 'global';
+  const form = useForm<Values>({ defaultValues: { value: '', description: '' } });
+  const { errors, isDirty } = form.formState;
+  // Seeded per opened secret and mode. A refreshed generation alone never wipes what was
+  // typed; only a description changed elsewhere re-seeds the description editor.
+  const seeded = secret ? `${secret.id}:${mode}` : undefined;
+  const seedDescription = mode === 'describe' ? secret?.description ?? '' : '';
+  useEffect(() => {
+    if (seeded) form.reset({ value: '', description: seedDescription });
+  }, [form, seeded, seedDescription]);
+
+  const mutation = useBffMutation<{ target: SecretReference } & Values>({
+    mutationFn: ({ target, value, description }) => (mode === 'rotate' ? secretsApi.rotate(scope, target, { value, description }) : secretsApi.describe(scope, target, description)),
+    invalidate: [secretsPath(scope)],
+    successToast: mode === 'rotate'
+      ? (global ? 'Global secret rotated. Value was not retained in the page.' : 'Secret rotated. Value was not retained in the page.')
+      : (global ? 'Global secret description updated.' : 'Secret description updated.')
+  });
+
+  function setOpen(next: boolean) {
+    if (next) return;
+    form.reset({ value: '', description: '' });
+    mutation.reset();
+    onClose();
+  }
+
+  const submit = form.handleSubmit(async (values) => {
+    if (!secret) return;
+    form.setValue('value', '');
+    try {
+      await mutation.mutateAsync({ target: secret, ...values });
+      setOpen(false);
+    } catch (error) {
+      // Shown in the dialog; after a 409 the fence moves to the latest row.
+      if (error instanceof ConflictError) await onConflict(secret.id).catch(() => undefined);
+    }
+  });
+
+  const rotate = mode === 'rotate';
+  return (
+    <FormDialog
+      testId="secret-edit-dialog"
+      open={secret !== undefined}
+      onOpenChange={setOpen}
+      title={rotate ? `Rotate ${secret?.name ?? 'secret'}` : `Edit description of ${secret?.name ?? 'secret'}`}
+      description={rotate ? 'The new value replaces the current one for future workspace opens. Running workspaces keep the value they started with.' : 'Descriptions are shown to operators and exported in .env.example files.'}
+      submitLabel={rotate ? 'Rotate' : 'Save description'}
+      pendingLabel={rotate ? 'Rotating…' : 'Saving…'}
+      pending={mutation.isPending}
+      error={mutation.isError ? mutationErrorText(mutation.error) : undefined}
+      dirty={isDirty}
+      onSubmit={(event) => { void submit(event); }}
+    >
+      {rotate ? (
+        <Field label="New write-only value" error={errors.value?.message}>
+          <SecretInput autoFocus {...form.register('value', { validate: (value) => secretValueError(value) ?? true })} />
+        </Field>
+      ) : null}
+      <Field label={rotate ? 'New description' : 'Description'} optional={rotate} description={rotate ? 'Leave empty to keep the current description.' : 'Leave empty to clear it.'}>
+        <Textarea rows={2} maxLength={SECRET_DESCRIPTION_MAX} {...form.register('description')} />
+      </Field>
+    </FormDialog>
+  );
+}

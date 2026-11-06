@@ -11,3 +11,7 @@ coverage/
 .cloud-harness-state/
 deploy/.generated/
 .cloud-harness-test-fixtures/
+
+# Playwright output
+apps/dashboard/test-results/
+apps/dashboard/playwright-report/

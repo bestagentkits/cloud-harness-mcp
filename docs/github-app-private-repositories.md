@@ -38,6 +38,14 @@ never placed in an executor environment. To authenticate the `gh` CLI inside a
 workspace, create a global runtime secret named `GH_TOKEN` or `GITHUB_TOKEN`,
 which is injected into the executor and readable by workspace processes.
 
+`GH_TOKEN` shadows `GITHUB_TOKEN`: only the first usable name is sent, so a
+wrong `GH_TOKEN` hides a correct `GITHUB_TOKEN`. A fine-grained personal access
+token covers one resource owner, and one that is pending organization approval
+is refused with a 403. When a clone with such a token fails and the principal
+has an installation on the repository owner, the runner reconciles it and
+retries once with an App token. A clone failure names the credential source
+(`github-app`, `principal-global-secret`, `runner-environment`, or `none`).
+
 ## Decide the required access
 
 Before creating the App, list the repositories Cloud Harness must access and
@@ -56,6 +64,14 @@ choose the narrowest permission level:
 | List check runs for a commit (`check_runs_list`) | **Checks: Read-only** and **Contents: Read-only** |
 | List or view workflow runs; dispatch a workflow or re-run failed jobs (`workflow_runs_list`, `workflow_run_view`, `workflow_dispatch`, `workflow_run_rerun_failed`) | **Actions: Read-only** or **Read and write**, and **Contents: Read-only** |
 | Use a branch as a create-only, compare-and-swap, or delete-if-match lock through `git_push` leases | **Contents: Read and write** |
+| Create organization repositories (`github_repository_create`) | **Administration: Read and write** on the organization installation |
+
+If the installation has no **Contents** permission, the runner records no
+repository grant for it, mints no App token (git would refuse it with
+`403 Write access to repository not granted`), and `workspace_capabilities`
+reports `read`/`push` as false with `repositoryAccessReason`: "GitHub App
+installation lacks the Contents permission; an owner must approve it". Approve
+the permission request on the installation, then reconcile the installation.
 
 Every other repository, organization, and account permission can stay at **No
 access**. `Contents` is the permission for HTTP Git access and is also required
@@ -98,7 +114,21 @@ their organization:
 2. Select **Developer settings** → **GitHub Apps** → **New GitHub App**.
 3. Enter a unique name and a homepage URL. The Cloud Harness repository URL is
    sufficient when the App has no separate website.
-4. Under **Setup URL (optional)**, enter `https://<your-dashboard-domain>/dashboard/github` (e.g. `https://harness.zuey.me/dashboard/github`) and ensure **Redirect on setup** is checked. This allows GitHub to automatically redirect back to your dashboard with the installation ID so Cloud Harness can complete the authorization. Leave Callback URL empty.
+4. Under **Setup URL (optional)**, enter
+   `https://<your-dashboard-domain>/dashboard/integrations/github` and check
+   **Redirect on update**. GitHub returns to the Setup URL with the
+   installation ID and setup state after a new installation; **Redirect on
+   update** also returns there after an existing installation is changed.
+   Binding requires the setup `state`. An account that already has the App
+   installed gets **Configure** instead of **Install** on GitHub, and that
+   path is not observed to carry `state`. Such an installation cannot be bound
+   until the user-authorization check in issue #640 lands. The workaround is to
+   uninstall and reinstall. Without a Setup URL the
+   dashboard never receives the callback and cannot bind the installation. An
+   App already registered with the legacy `/dashboard/github` Setup URL keeps
+   working: that path redirects to the Integrations page and carries only the
+   validated `state`, `installation_id`, and `setup_action` callback parameters
+   (`apps/api/src/dashboard-assets.ts`). Leave **Callback URL** empty.
 5. Clear **Active** under **Webhook**. This integration does not consume
    webhooks.
 6. Under **Repository permissions**, grant the level selected above and leave

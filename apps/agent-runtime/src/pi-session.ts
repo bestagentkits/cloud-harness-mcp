@@ -9,6 +9,7 @@ import {
 import { ControlledResourceLoader } from './controlled-resources.js';
 import type { ProxyToolBroker } from './proxy-tools.js';
 import type { StartRecord, Usage } from './protocol-schemas.js';
+import type { SessionMessage } from './session-replay.js';
 
 const GATEWAY_PROVIDER_ID = 'cloud-harness-gateway';
 const RUNTIME_CWD = '/runtime';
@@ -42,10 +43,27 @@ export interface AgentSessionLike {
   getSessionStats(): SessionStatsLike;
 }
 
+/**
+ * Creates the Pi session. `history`, when given, is the verified and repaired message log of a
+ * persisted session; it is replayed into the session before the first prompt.
+ */
 export type AgentSessionFactory = (
   start: StartRecord,
-  broker: ProxyToolBroker
+  broker: ProxyToolBroker,
+  history?: readonly SessionMessage[]
 ) => Promise<AgentSessionLike>;
+
+type ReplayableMessage = Parameters<SessionManager['appendMessage']>[0];
+
+/** An in-memory Pi session store holding the replayed history, if any. Nothing touches disk. */
+export function createReplaySessionManager(history: readonly SessionMessage[] = []): SessionManager {
+  const sessionManager = SessionManager.inMemory(RUNTIME_CWD);
+  // The messages are Pi's own message objects, recorded by an earlier run and verified against
+  // the runner's chained digest; the role was checked by the start-record schema. Pi's message
+  // union is structural, so they replay unchanged.
+  for (const message of history) sessionManager.appendMessage(message as unknown as ReplayableMessage);
+  return sessionManager;
+}
 
 export function usageFromSession(session: AgentSessionLike): Usage {
   const stats = session.getSessionStats();
@@ -79,7 +97,7 @@ export function createPiSessionFactory(gatewayBaseUrl: string): AgentSessionFact
   if (parsedGatewayUrl.username || parsedGatewayUrl.password || parsedGatewayUrl.search || parsedGatewayUrl.hash) {
     throw new Error('model gateway URL cannot contain credentials, query parameters, or fragments');
   }
-  return async (start, broker) => {
+  return async (start, broker, history) => {
     const credentials = new InMemoryCredentialStore();
     const modelRuntime = await ModelRuntime.create({
       credentials,
@@ -139,7 +157,7 @@ export function createPiSessionFactory(gatewayBaseUrl: string): AgentSessionFact
       tools: start.tools,
       customTools,
       resourceLoader,
-      sessionManager: SessionManager.inMemory(RUNTIME_CWD),
+      sessionManager: createReplaySessionManager(history),
       settingsManager
     });
     if (extensionsResult.extensions.length !== 0 || extensionsResult.errors.length !== 0) {

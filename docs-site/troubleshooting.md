@@ -22,6 +22,11 @@ docker compose --profile images build executor-image
 1. Open the Operator Dashboard → **GitHub**.
 2. Click **Install GitHub App** and authorize the target repository.
 3. Ensure the repository URL matches the format `https://github.com/owner/repo.git`.
+4. If the dashboard still shows "No GitHub App installation is bound to this identity" after you finish on GitHub, GitHub did not send you back with the setup callback. Set the App's **Setup URL** and **Redirect on update** as described in the [GitHub App guide](/dashboard/github#troubleshooting), then connect again. If the App was already installed on that account, connecting it is not supported yet: uninstall it on GitHub, then install it again from **Connect GitHub App**.
+5. If the error reads `repository clone failed (credential: ...): remote: Write access to repository not granted.` (a GitHub 403), the credential named in parentheses was refused. The value is `github-app`, `principal-global-secret`, `runner-environment`, or `none`; the token is never printed. When that credential is a fallback token and you have a GitHub App installation on the repository owner, the runner reconciles it and retries once with an App token, and adds `GitHub App token unavailable: ...` to the error if the mint failed. Otherwise check the token:
+   - `GH_TOKEN` takes priority over `GITHUB_TOKEN`; a wrong `GH_TOKEN` hides a correct `GITHUB_TOKEN`.
+   - A fine-grained personal access token covers a single resource owner (your account or one organization) and is refused for repositories of any other owner.
+   - A token for an organization that requires approval of fine-grained tokens returns this 403 until an owner approves it.
 
 ---
 
@@ -106,14 +111,15 @@ Non-browser clients keep receiving the compact `{"error":"authentication_failed"
 ---
 
 ### 10. `DEPENDENCY_EGRESS_UNAVAILABLE` on `workspace_open` (HTTP 503)
-**Cause:** The effective network profile is `dependency-access` — the shipped default — but the Linux host firewall is not provisioned, or its rules have drifted, so the runner fails the open closed instead of silently downgrading to `network-none`.
+**Cause:** The effective network profile is `dependency-access` — the shipped default — but the Linux host firewall is not provisioned, or its rules have drifted, so the runner fails the open closed instead of silently downgrading to `network-none`. When another host service such as Tailscale only inserts its own jump ahead of a managed one (for example `-A INPUT -j ts-input`), the runner moves the managed jump back to the top and continues, logging a warning. Every attestation does this, including the Settings readiness check, so a Tailscale host in its default netfilter mode is corrected again each time tailscaled re-asserts its rules; this error therefore means the managed rules are missing or changed.
 **Fix:**
 1. Provision the host firewall on the Docker host:
 ```bash
 bash deploy/scripts/setup-dependency-firewall.sh
 ```
-2. Confirm **Egress readiness** reports `Ready` on the dashboard [Settings](/dashboard/settings) page.
+2. Confirm **Egress readiness** reports `Ready` on the dashboard [Settings](/dashboard/settings) page. If it still reports a rule-order reason that names a foreign chain, inspect `sudo iptables -S INPUT`, `sudo iptables -S FORWARD`, and `sudo iptables -S DOCKER-USER`; on a Tailscale host, `sudo tailscale set --netfilter-mode=nodivert` stops tailscaled from inserting its jumps at the head of those chains, but then you must add the `ts-input` and `ts-forward` jumps yourself, after the managed jumps, or Tailscale's own filtering stops applying.
 3. Open the workspace again with a fresh idempotency key. The failed attempt kept its key with a `FAILED` status, and replaying that key returns the failed record without retrying the attestation.
+Re-running the provisioning script is safe on every redeploy: it keeps exactly one copy of each managed jump at rule 1 and leaves other chains, such as `ts-input`, in place below it.
 To work without egress meanwhile, reset the default to `network-none` on the Settings page or open the workspace with `networkProfile: "network-none"` under a new idempotency key. An omitted profile and an explicit `network-none` are different requests, so reusing the failed open's key with the explicit profile returns `CONFLICT`.
 
 ---
@@ -272,7 +278,7 @@ If an agent started but followed the wrong files, read the `repository_context` 
 | Error | Meaning and fix |
 | :--- | :--- |
 | `FORBIDDEN`, "disabled on this instance" | Managed packages are off. Operators enable them with `PACKAGES_ENABLED=true` (see the [environment variables reference](/reference/environment-variables)). |
-| `FORBIDDEN`, "has no Dashboard in owner-bearer mode" | `PACKAGES_APPROVAL_MODE=required` needs a Dashboard approver, and owner-bearer deployments have none. Operators either run with Cloudflare Access or set `PACKAGES_APPROVAL_MODE=none` deliberately. |
+| `FORBIDDEN`, "has no Dashboard in owner-bearer mode" (or `oidc` mode) | `PACKAGES_APPROVAL_MODE=required` needs a Dashboard approver, and owner-bearer and oidc deployments have none. Operators either run with Cloudflare Access or set `PACKAGES_APPROVAL_MODE=none` deliberately. |
 | `PACKAGE_APPROVAL_REQUIRED` | The plan is waiting for approval. Approve it on the Dashboard **Packages** page, then call `packages_apply` again with the same `planId` and `planDigest`. |
 | `NOT_SUPPORTED` | `apt` and other system packages are not managed packages. Bake them into an executor image variant instead. |
 | `UNAVAILABLE` naming a registry host | The provisioning proxy refused that host. Operators add it to `PACKAGES_PROXY_HOSTS` in the provisioning-proxy environment and restart the proxy. |
@@ -372,3 +378,31 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 1. Run `model_profile_validate` with the same change: its `escalations` list shows exactly what a save would refuse. Drop those fields to save the rest over MCP.
 2. Otherwise, ask the owner to make the change on the Dashboard [Models page](/dashboard/models), where the same change is saved. Once the owner has saved a profile on a Custom upstream URL, MCP calls may use that URL with that credential.
 3. A profile created over MCP starts **Disabled**. `agent_spawn` cannot use it until the owner activates it on the Models page; no MCP tool activates, disables, or deletes a profile.
+
+---
+
+### 32. `agent_spawn` returns `NOT_SUPPORTED` for `continueFrom` or `runtime: "pi-durable"`
+**Cause:** Continuing an agent and the durable engine are off by default. `continueFrom needs agent session persistence, which is off on this instance` means the operator has not set `AGENT_SESSION_PERSISTENCE_ENABLED` (or, for a durable predecessor, `AGENT_DURABLE_RUNTIME_ENABLED`). `the pi-durable agent runtime is off on this instance` means `AGENT_DURABLE_RUNTIME_ENABLED` is off. Nothing was created.
+
+**Fix:**
+1. Without the flag, spawn a new agent and include what it needs from the earlier one in its prompt. Omit `runtime` to use the default engine.
+2. Otherwise ask the operator to enable the flag; see [Environment Variables](/reference/environment-variables). An agent that ran while persistence was off has no stored session and cannot be continued later (`CONFLICT`).
+3. A durable agent that ends `FAILED` with `the durable agent runtime is not installed in this agent image` needs an agent image built with `INCLUDE_DURABLE_RUNTIME=true`; this is an operator fix.
+
+---
+
+### 33. A durable agent ends `LIMIT_EXCEEDED` with `durable agent session exceeded its size limit or a session byte budget`
+**Cause:** A durable agent and every agent that continues it share one session store. It grew past `AGENT_DURABLE_MAX_LINEAGE_BYTES`, or the instance's stored sessions reached one of the `AGENT_*_SESSION_BYTES` budgets, which durable session stores count toward like persisted conversations. The runner ended the run and refuses further writes to that store. If the store is still over `AGENT_DURABLE_MAX_LINEAGE_BYTES` when the run ends (measured after closing, against the cap configured then), `agent_status` reports `session.continuable: false` and `continueFrom` is refused with `CONFLICT`. Past a session byte budget the agent stays continuable, but a continuation hits the same limit until the budget frees up.
+
+**Fix:**
+1. Start a new agent without `continueFrom`, and give it a summary of the earlier work.
+2. Close workspaces whose agent sessions are no longer needed to free budget, or, if long durable chains are expected, ask the operator to raise the cap within its documented bounds.
+
+---
+
+### 34. An agent reports `EFFECT_UNKNOWN` for a write, delete, or move
+**Cause:** The earlier agent was stopped (cancelled, killed, or interrupted by a runner restart) while that change was in flight, and the runner could not tell from the workspace whether it landed. It did not run the change again: a durable agent (`runtime: "pi-durable"`) reruns the interrupted call under its original request ID, and the runner answers it without running the change. A cancelled durable agent is the exception: its unfinished calls are aborted, not rerun, so a continued agent may issue the change again; check the workspace first. An interrupted agent is never reported as `SUCCEEDED`. A running agent gets the same answer when the runner's request to carry out a change fails partway (for example, the runner is stopping), because the change may have landed before the failure; a failed read stays a plain failure. `EFFECT_NOT_APPLIED` instead means the write provably did not land.
+
+**Fix:**
+1. Read the affected file or path before repeating the change; the agent receives the same instruction.
+2. For `EFFECT_NOT_APPLIED`, the agent may simply issue the change again.

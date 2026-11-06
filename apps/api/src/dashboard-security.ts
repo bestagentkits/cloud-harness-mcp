@@ -8,6 +8,20 @@ function hostnameFromHost(raw: string): string {
   return raw.split(':', 1)[0]!.toLowerCase();
 }
 
+/** Policy for every Dashboard response, including the legacy shell and the BFF. */
+export const DASHBOARD_CONTENT_SECURITY_POLICY = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+
+/**
+ * Policy for the React shell document only. It differs from the Dashboard policy in two
+ * directives: `font-src 'self'` for the self-hosted Geist files, and a per-response
+ * style nonce for the `<style>` element Radix's scroll lock injects at runtime. Scripts
+ * stay `'self'` with no nonce, so injected markup can never execute.
+ */
+export function reactShellContentSecurityPolicy(nonce: string): string {
+  if (!/^[A-Za-z0-9+/]{16,}={0,2}$/.test(nonce)) throw new Error('invalid CSP nonce');
+  return `default-src 'none'; script-src 'self'; style-src 'self' 'nonce-${nonce}'; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`;
+}
+
 export function dashboardSecurity(config: ApiConfig) {
   const hosts = new Set(config.publicHosts.map((host) => host.toLowerCase()));
   const origins = new Set(config.allowedOrigins.map((origin) => new URL(origin).origin));
@@ -26,7 +40,7 @@ export function dashboardSecurity(config: ApiConfig) {
       response.status(403).json({ error: 'origin_required' }); return;
     }
     response.setHeader('Cache-Control', 'no-store');
-    response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+    response.setHeader('Content-Security-Policy', DASHBOARD_CONTENT_SECURITY_POLICY);
     response.setHeader('Referrer-Policy', 'no-referrer');
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('X-Frame-Options', 'DENY');

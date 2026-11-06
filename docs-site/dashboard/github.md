@@ -38,6 +38,8 @@ Or create it in the dashboard under **Secrets**, which requires no restart and i
 - Resolved credentials are passed over `stdin` to ephemeral helpers and are registered with the ingest-time redactor. They are never written to results, logs, audit payloads, or the Git remote.
 - `workspace_capabilities` reports GitHub read/write capability when either an App or a fallback credential is available.
 - A personal access token is **not** repository-scoped and cannot be limited by an installation grant. Prefer a GitHub App, or the narrowest fine-grained token.
+- `GH_TOKEN` shadows `GITHUB_TOKEN`: only the first usable name is sent. A fine-grained token covers a single resource owner, and one pending organization approval is refused with a 403.
+- If a clone with a fallback credential fails and you have an installation on the repository owner, the runner reconciles it and retries once with an App token. Clone errors name the credential source (`github-app`, `principal-global-secret`, `runner-environment`, `none`), never the token.
 - The environment credential authenticates **harness-side** operations only; it is never placed in an executor environment. To authenticate the workspace's own `gh` CLI, create a global runtime secret named `GH_TOKEN`/`GITHUB_TOKEN` (see [Secrets & Credentials](secrets.md#github-credentials-in-workspaces)).
 
 ---
@@ -83,6 +85,11 @@ Before creating the App in GitHub, choose the minimum required permission level:
 | **List check runs for a commit (`check_runs_list`)** | **Checks: Read-only** + **Contents: Read-only** |
 | **Read workflow runs, dispatch workflows, re-run failed jobs** | **Actions: Read-only** or **Read and write** + **Contents: Read-only** |
 | **Use a branch as a merge-train lock (`git_push` leases)** | **Contents: Read and write** |
+| **Create organization repositories (`github_repository_create`)** | **Administration: Read and write** (organization installation only) |
+
+::: warning Installation without Contents
+An installation lacking the **Contents** permission lists no readable repositories, mints no token for clones, and `workspace_capabilities` reports `repositoryAccessReason`: "GitHub App installation lacks the Contents permission; an owner must approve it". Approve the permission request, then reconcile.
+:::
 
 ::: tip Principle of Least Privilege
 Leave every other repository, organization, and user permission set to **No access**.
@@ -104,7 +111,14 @@ issue and pull-request permissions cannot mint an action-scoped token.
    - **GitHub App name:** `Cloud-Harness-<YourName>` (must be globally unique across GitHub).
    - **Homepage URL:** `https://harness.agentkit.best` (or your repository URL).
    - **Callback URL:** Leave empty (unless using Access SSO OAuth redirect).
-   - **Setup URL:** Leave empty.
+   - **Setup URL:** `https://<your-dashboard-domain>/dashboard/integrations/github`, and
+     check **Redirect on update**. GitHub returns to the Setup URL after a new installation;
+     **Redirect on update** also returns there after you change an existing installation.
+     An account or organization that already has the App installed cannot be connected
+     yet: GitHub opens **Configure** instead of **Install**, and the dashboard needs the
+     setup `state` to bind it ([issue #640](https://github.com/bestagentkits/cloud-harness-mcp/issues/640)).
+     An App registered earlier with `/dashboard/github` still works; that path redirects
+     here and keeps the setup callback parameters.
 4. **Webhook:**
    - Uncheck **Active** under the Webhook section (Cloud Harness does not require webhooks).
 5. **Repository permissions:**
@@ -233,6 +247,7 @@ Test opening a private repository through your AI client (Cursor, Claude Code, e
 | **`commit_status_create`, `check_runs_list`, or `workflow_*` returns `FORBIDDEN` with `permission_not_granted`** | The installation does not grant **Commit statuses**, **Checks**, or **Actions**. | Add the permission to the App, then approve the updated permissions on the installation. |
 | **`Token minting: UNAVAILABLE`** | App ID or Private Key mismatch. | Verify `GITHUB_APP_ID` matches GitHub App ID, and that the `.pem` file corresponds to that exact App. |
 | **Key rotation** | Need to rotate an existing key. | Generate a second key in GitHub first, update the `.pem` file on host, restart runner, then delete the old key in GitHub. |
+| **Dashboard shows "No GitHub App installation is bound to this identity" after installing or saving on GitHub** | GitHub did not return to the dashboard with both `state` and `installation_id`. Either the App has no **Setup URL**, the 10-minute setup link expired, or the App was already installed on that account. In the last case GitHub opens **Configure** instead of **Install**, and the dashboard does not yet bind an existing installation ([issue #640](https://github.com/bestagentkits/cloud-harness-mcp/issues/640)). | Set the Setup URL and **Redirect on update** as in [Step 2](#step-2-register-the-github-app), then click **Connect GitHub App** again and finish on GitHub within 10 minutes. For an App that is already installed, uninstall it from [github.com/settings/installations](https://github.com/settings/installations) and install it again from **Connect GitHub App**. Anything else using that installation loses access until it is reinstalled. |
 
 ## Where this page lives now
 
@@ -241,3 +256,11 @@ GitHub authorization lives on the **Integrations** page. The rail links to
 `/dashboard/integrations/github`; `/dashboard/github` still works and redirects there, so
 existing bookmarks and documentation links keep resolving. MCP server connections have
 their own rail entry, [MCP Servers](/dashboard/mcp-servers).
+
+## Callback in the new dashboard
+
+The [new dashboard](index.md#new-dashboard-preview) completes the GitHub App installation
+itself: when GitHub sends you back to `/dashboard/integrations/github` with `state` and
+`installation_id`, the page links the installation once, removes both values from the
+address, and shows the result. A malformed value is ignored, and a reused or expired one is
+refused by the server.

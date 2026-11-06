@@ -2411,7 +2411,7 @@ export function initializeDashboard() {
       } catch (error) {
         showError(error);
       } finally {
-        history.replaceState({}, '', '/dashboard/github');
+        history.replaceState({}, '', '/dashboard/integrations/github');
       }
     }
     const result = await api('/github'); insertRendered(content, renderGitHub(result.data));

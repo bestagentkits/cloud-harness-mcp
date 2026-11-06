@@ -14,9 +14,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
+  # Static gates, the full build and documentation integrity. `npm run verify` stays the
+  # local gate; CI runs its parts as parallel jobs and `quality` below requires all of them.
+  checks:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -24,18 +26,102 @@ jobs:
           node-version: 24.11.0
           cache: npm
       - run: npm ci
-      - run: bash -n worker/clone-helper.sh worker/task-runner.sh worker/shell-runner.sh worker/worker-runner.sh worker/gh-helper.sh deploy/scripts/bootstrap-vps.sh deploy/scripts/deploy-release.sh deploy/scripts/release-runtime.sh deploy/scripts/rollback-release.sh deploy/scripts/deploy-ssh-wrapper.sh deploy/scripts/upgrade-nginx-dashboard.sh
+      - run: bash -n worker/clone-helper.sh worker/task-runner.sh worker/shell-runner.sh worker/worker-runner.sh worker/gh-helper.sh deploy/scripts/bootstrap-vps.sh deploy/scripts/deploy-release.sh deploy/scripts/release-runtime.sh deploy/scripts/rollback-release.sh deploy/scripts/deploy-ssh-wrapper.sh deploy/scripts/upgrade-nginx-dashboard.sh deploy/scripts/setup-dependency-firewall.sh
       - run: npm run verify:compose
-      - run: npm run verify
+      - run: npm run plugin:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run test -w @cloud-harness/dashboard
       - name: Verify documentation and reference integrity
         run: |
           npm run docs:reference
           npm run docs:check
           npm run docs:build
           npm run docs:artifact
-  docker-integration:
-    needs: quality
+  # `npm test` split across runners by file. Each shard keeps `--no-file-parallelism`, so
+  # files inside a shard still run one at a time exactly as in `npm test`.
+  unit-tests:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.11.0
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx vitest run --exclude '**/*.docker.test.ts' --no-file-parallelism --shard=${{ matrix.shard }}/4
+  # The Chromium suites drive the built API and React Dashboard through the real Express app
+  # (shell, navigation transaction, error states, axe, CSP, browser storage, navigation
+  # p95), split by spec file. Screenshots run in `dashboard-visual`, inside the image their
+  # baselines were recorded in.
+  dashboard-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.11.0
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w @cloud-harness/contracts
+      - run: npm run build -w @cloud-harness/api
+      - run: npm run build -w @cloud-harness/dashboard
+      - run: npx -w @cloud-harness/dashboard playwright install --with-deps chromium
+      - run: npm run test:e2e -w @cloud-harness/dashboard -- --project=chromium --shard=${{ matrix.shard }}/3
+  # The required branch-protection check. It passes only when every gate the former single
+  # `quality` job ran has passed, so splitting the work never weakens what `main` requires.
+  quality:
+    if: always()
+    needs: [checks, unit-tests, dashboard-e2e]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every quality gate
+        run: |
+          echo 'checks=${{ needs.checks.result }} unit-tests=${{ needs.unit-tests.result }} dashboard-e2e=${{ needs.dashboard-e2e.result }}'
+          test '${{ needs.checks.result }}' = success
+          test '${{ needs.unit-tests.result }}' = success
+          test '${{ needs.dashboard-e2e.result }}' = success
+  # The light/dark screenshots at 1280, 768 and 375 px. Fonts and Chromium come from the
+  # pinned Playwright image, the same one the Linux baselines in
+  # apps/dashboard/e2e/visual.spec.ts-snapshots are recorded in, so a diff is the UI's.
+  dashboard-visual:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --user 1001 --ipc=host
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.11.0
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w @cloud-harness/contracts
+      - run: npm run build -w @cloud-harness/api
+      - run: npm run build -w @cloud-harness/dashboard
+      - run: npm run test:e2e -w @cloud-harness/dashboard -- --project=visual
+  # Runs alongside the quality gates instead of after them: the image builds dominate its
+  # time and do not depend on their results.
+  docker-integration:
+    runs-on: ubuntu-24.04
+    env:
+      # Bake parses the whole Compose file, including the runtime `env_file`, which a CI
+      # checkout has no `.env` for. The example file satisfies the parser; builds ignore it.
+      CLOUD_HARNESS_ENV_FILE: .env.example
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -45,9 +131,41 @@ jobs:
           cache: npm
       - run: npm ci
       - run: node scripts/generate-model-gateway-test-fixtures.mjs
-      - run: docker compose --profile images build executor-image agent-image api runner model-gateway network-guard-image
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      # The Compose build targets through BuildKit with a per-image GitHub Actions layer
+      # cache. The executor image installs unpinned `latest` tools, so it is never cached
+      # and always tests what a fresh production build would install.
+      - uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e
+        with:
+          source: .
+          files: compose.yaml
+          targets: executor-image,agent-image,api,runner,model-gateway,network-guard-image
+          load: true
+          set: |
+            agent-image.cache-from=type=gha,scope=agent
+            agent-image.cache-to=type=gha,scope=agent,mode=max
+            api.cache-from=type=gha,scope=api
+            api.cache-to=type=gha,scope=api,mode=max
+            runner.cache-from=type=gha,scope=runner
+            runner.cache-to=type=gha,scope=runner,mode=max
+            model-gateway.cache-from=type=gha,scope=model-gateway
+            model-gateway.cache-to=type=gha,scope=model-gateway,mode=max
+            network-guard-image.cache-from=type=gha,scope=network-guard
+            network-guard-image.cache-to=type=gha,scope=network-guard,mode=max
+      - name: Build the agent image with the opt-in durable engine
+        uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e
+        with:
+          source: .
+          files: compose.yaml
+          targets: agent-image
+          load: true
+          set: |
+            agent-image.args.INCLUDE_DURABLE_RUNTIME=true
+            agent-image.tags=cloud-harness-agent-durable:local
+            agent-image.cache-from=type=gha,scope=agent-durable
+            agent-image.cache-to=type=gha,scope=agent-durable,mode=max
       - name: Verify non-root API runtime dependencies
-        run: docker run --rm --entrypoint node cloud-harness-api:local -e "const fs=require('node:fs'); for (const file of ['/app/package.json','/app/apps/api/package.json','/app/apps/api/dashboard/index.html','/app/packages/contracts/package.json','/app/scripts/deploy-canary.mjs','/app/deploy/ingress-proxy.mjs']) fs.accessSync(file, fs.constants.R_OK); import('@cloud-harness/contracts')"
+        run: docker run --rm --entrypoint node cloud-harness-api:local -e "const fs=require('node:fs'); for (const file of ['/app/package.json','/app/apps/api/package.json','/app/apps/api/dashboard/index.html','/app/apps/dashboard/dist/index.html','/app/packages/contracts/package.json','/app/scripts/deploy-canary.mjs','/app/deploy/ingress-proxy.mjs']) fs.accessSync(file, fs.constants.R_OK); import('@cloud-harness/contracts')"
       - run: CLOUD_HARNESS_REQUIRE_DOCKER_TESTS=1 npm run test:docker
       - run: CLOUD_HARNESS_REQUIRE_DOCKER_TESTS=1 npm run test:e2e
       - name: Assert managed-container cleanup

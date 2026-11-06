@@ -81,54 +81,41 @@ if ! $SUDO iptables-restore -w 10 -n --test < "$TMP_RESTORE"; then
 fi
 
 $SUDO iptables-restore -w 10 --noflush < "$TMP_RESTORE"
-# 5. Head-insert jump rules at Rule 1 in INPUT, DOCKER-USER, and POSTROUTING
-$SUDO iptables -w 10 -I INPUT 1 -i "$BRIDGE_IF" -j "$INPUT_CHAIN"
-$SUDO iptables -w 10 -I DOCKER-USER 1 -i "$BRIDGE_IF" -j "$EGRESS_CHAIN"
-$SUDO iptables -w 10 -t nat -I POSTROUTING 1 -s "$SUBNET" -j "$NAT_CHAIN"
+# 4. Move each managed jump to rule 1 atomically. Existing exact copies are
+# removed by rule specification (never by position, which races with
+# concurrent writers such as tailscaled or ufw) and the single jump is
+# re-inserted at the head in the same iptables-restore transaction. Specs must
+# match the canonical form printed by `iptables -S`.
+INPUT_JUMP="-i $BRIDGE_IF -j $INPUT_CHAIN"
+EGRESS_JUMP="-i $BRIDGE_IF -j $EGRESS_CHAIN"
+NAT_JUMP="-s $SUBNET -j $NAT_CHAIN"
 
-dedup_jump() {
-  local chain="$1"
-  local target="$2"
-  while true; do
-    local nums
-    nums=$($SUDO iptables -w 10 -L "$chain" --line-numbers -n | awk -v ifc="$BRIDGE_IF" -v tgt="$target" '$2==tgt && $0 ~ ("in "ifc) {print $1}')
-    local count
-    count=$(echo "$nums" | wc -w)
-    if [ "$count" -le 1 ]; then
-      break
-    fi
-    local last
-    last=$(echo "$nums" | awk '{print $NF}')
-    if [ -n "$last" ]; then
-      $SUDO iptables -w 10 -D "$chain" "$last" || break
-    else
-      break
-    fi
+# Print "-D" lines for every existing exact copy of a jump, then one "-I 1".
+emit_head_move() {
+  local table="$1" chain="$2" spec="$3" rules count i
+  rules=$($SUDO iptables -w 10 -t "$table" -S "$chain")
+  count=$(awk -v want="-A $chain $spec" '$0 == want { n++ } END { print n + 0 }' <<<"$rules")
+  for ((i = 0; i < count; i++)); do
+    echo "-D $chain $spec"
   done
+  echo "-I $chain 1 $spec"
 }
-dedup_jump INPUT "$INPUT_CHAIN"
-dedup_jump DOCKER-USER "$EGRESS_CHAIN"
 
-dedup_jump_nat() {
-  local chain="$1"
-  local target="$2"
-  while true; do
-    local nums
-    nums=$($SUDO iptables -w 10 -t nat -L "$chain" --line-numbers -n | awk -v sn="$SUBNET" -v tgt="$target" '$2==tgt && $0 ~ sn {print $1}')
-    local count
-    count=$(echo "$nums" | wc -w)
-    if [ "$count" -le 1 ]; then
-      break
-    fi
-    local last
-    last=$(echo "$nums" | awk '{print $NF}')
-    if [ -n "$last" ]; then
-      $SUDO iptables -w 10 -t nat -D "$chain" "$last" || break
-    else
-      break
-    fi
-  done
-}
-dedup_jump_nat POSTROUTING "$NAT_CHAIN"
+# Brace groups (not command substitution) keep errexit active, so a failed
+# `iptables -S` aborts before an incomplete move is applied.
+{
+  echo "*filter"
+  emit_head_move filter INPUT "$INPUT_JUMP"
+  emit_head_move filter DOCKER-USER "$EGRESS_JUMP"
+  echo "COMMIT"
+} > "$TMP_RESTORE"
+$SUDO iptables-restore -w 10 --noflush < "$TMP_RESTORE"
+
+{
+  echo "*nat"
+  emit_head_move nat POSTROUTING "$NAT_JUMP"
+  echo "COMMIT"
+} > "$TMP_RESTORE"
+$SUDO iptables-restore -w 10 --noflush < "$TMP_RESTORE"
 
 echo "cloud-harness-dependency-firewall: committed transactional policy successfully"

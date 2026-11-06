@@ -24,6 +24,8 @@ export const ErrorCodeSchema = z.enum([
   'GITHUB_MERGE_CONFLICT',
   'GITHUB_AUTO_MERGE_UNAVAILABLE',
   'GITHUB_ACTION_FAILED',
+  // A repository with the requested name already exists; never reported as a successful create.
+  'GITHUB_REPOSITORY_EXISTS',
   'UNKNOWN_REMOTE_STATE',
   'STALE_HEAD',
   'STALE_GENERATION',

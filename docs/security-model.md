@@ -60,11 +60,28 @@ The default `owner-bearer` mode authenticates one long-lived replayable owner
 secret and exposes MCP only. The opt-in `cloudflare-access` mode delegates
 login, OAuth discovery/token issuance, and coarse admission to Cloudflare
 Access. The origin derives identity only from the verified forwarded Access
-assertion; the opaque client bearer is not interpreted as identity. The two
-modes cannot be enabled ambiguously.
+assertion; the opaque client bearer is not interpreted as identity. The opt-in
+`oidc` mode is for instances hosted by an external platform such as TOSE: the
+origin verifies an RS256 bearer token against the issuer's JWKS and accepts it
+only when `iss` is the configured issuer, `aud` is exactly this instance's
+canonical URL, and `scope` carries the operator scope. A token minted for a
+sibling instance therefore fails the audience check even though it shares the
+issuer and signing keys. The issuer decides who may connect when it issues the
+token; the origin keeps no allowlist and serves no dashboard. It also requires
+the RFC 9068 header `typ: at+jwt`, so an ID token from the same issuer is not
+accepted as an access token. Because tokens are not introspected, removing a
+person at the issuer takes effect only when their issued tokens expire; the
+issuer should keep access tokens to 10 minutes or less and re-check its
+allowlist on refresh. A signing key withdrawn from the JWKS stops being accepted
+at the next successful key fetch (at most 5 minutes), or within 15 minutes while
+the JWKS endpoint fails. The issuer therefore publishes a new key before signing
+with it, keeps a retired key published until every token it signed has expired,
+and serves the same superset from every JWKS replica during a rollout
+([key rotation](configuration.md#oidc-bearer-tokens)). The modes cannot be enabled ambiguously.
 
 Access policies may offer GitHub and Google login, but Cloud Harness keys
-authorization only on Access-normalized `(issuer, subject)`. Email and display
+authorization only on Access-normalized `(issuer, subject)`; `oidc` mode keys it
+on the token's `(iss, sub)` in the same way. Email and display
 name are metadata, not linking signals. Subject recovery is an explicit,
 collision-checked operator mapping with a redacted audit record; there is no
 first-login or same-email takeover path. Cloudflare hostname ownership, Zero
@@ -407,12 +424,33 @@ default masquerade off, and a transactional host firewall (installed via a
 single `iptables-restore` commit and verified through an ephemeral
 `NET_ADMIN`-only network-guard container) permits only public DNS and public
 TCP 80/443. The managed jump is the first rule of both `INPUT` and
-`DOCKER-USER`, and forbidden destination classes — loopback-to-host,
+`DOCKER-USER` in the `filter` table (rules in `mangle` and `raw` do not count
+toward that order, since `filter` makes the accept or reject decision), and forbidden destination classes — loopback-to-host,
 Docker/control-plane, RFC 1918, carrier-grade NAT, link-local, and
 cloud-metadata (`169.254.169.254`) — are rejected before the allowed ports.
 IPv6 is disabled on the bridge. The runner attests the Docker network and the
 exact ordered host ruleset before every dependency executor start and during
-periodic reaper reconciliation; on drift it fences the workspace to
+periodic reaper reconciliation. When the only defect is that another host
+service (Tailscale's `ts-input`/`ts-forward` jumps, for example) inserted a rule
+ahead of a managed jump, the runner moves that existing managed jump back to the
+head of its chain through the same network-guard image, in one atomic
+`iptables-restore --noflush` transaction that deletes and re-inserts the jump by
+rule spec, and attests the fresh ruleset again. It never adds, edits, or
+removes any other rule. Moving the managed `INPUT` jump cannot widen access,
+because its chain only rejects. Moving the bridge `DOCKER-USER` jump cannot
+widen bridge access beyond the attested egress policy, though it lets that
+policy's public DNS and TCP 80/443 accepts run before a foreign rule that
+would have dropped them.
+Moving Docker's unconditional `FORWARD -j DOCKER-USER` jump, however, also puts
+any operator rule kept in `DOCKER-USER` ahead of the foreign chain for
+non-bridge traffic, so keep host-wide accept rules out of `DOCKER-USER` on a
+host that runs such a service; a ruleset that would not attest after that move is left
+untouched, and a jump that vanished since the probe fails the transaction
+unchanged. Because the readiness check and reaper run the same attestation,
+they may perform this repair, and a service that keeps re-asserting its own
+head position (Tailscale's default netfilter mode) is moved behind again on
+each attestation. On any other drift it
+fences the workspace to
 `NETWORK_QUARANTINED`, stops the executor, and retains its data for recovery
 after policy reconciliation. If attestation is unavailable the profile fails
 closed (`DEPENDENCY_EGRESS_UNAVAILABLE`) and never falls back to broad bridge
@@ -448,7 +486,7 @@ also accepting a `_FILE` form); then
 the requesting principal.
 
 The environment source is honored **only** in `owner-bearer` mode. In
-`cloudflare-access` (multi-principal) mode it is refused entirely, because a
+the multi-principal `cloudflare-access` and `oidc` modes it is refused entirely, because a
 single operator-wide credential must never stand in for a different
 principal's App grant; those deployments use the per-principal secret instead.
 Values that cannot be GitHub credentials (shorter than 20 characters or
@@ -480,6 +518,30 @@ Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `pr_update`,
 The merge-train actions follow the same model with their own GitHub permission: `commit_status_get`/`commit_status_create` mint `statuses: read|write`, `check_runs_list` mints `checks: read`, and `workflow_runs_list`, `workflow_run_view`, `workflow_dispatch`, and `workflow_run_rerun_failed` mint `actions: read|write`, each beside `contents: read`. A dispatch runs workflow code the repository already holds on the named ref; it passes only string inputs and never a harness credential. The helper validates SHAs, refs, workflow identifiers, and run IDs before placing them in a REST path.
 
 The read-only `commit_list`, `compare`, `release_list`, `tag_list`, and `ref_get` actions mint a `contents: read`-scoped token directly (no `pull_requests`/`issues` scope needed) and are reachable through either `github_action` or the non-destructive `github_read` tool, which shares this broker and helper so read-only calls do not carry `github_action`'s tool-level destructive annotation.
+
+Repository creation (`github_repository_create`) is a separate, workspace-free
+tool, because the repository does not exist yet and `workspace_open` must never
+create one as a side effect of a clone failure. It creates organization-owned
+repositories only, through the requesting principal's own GitHub App
+installation on that organization (in `cloudflare-access` or `oidc` mode, never the
+operator-configured installation; in `owner-bearer` mode, the configured
+installation only after GitHub confirms it belongs to the requested
+organization). Before minting anything, the runner verifies the installation
+live with the App JWT: it must belong to the requested organization, be an
+`Organization` account, be unsuspended, and grant `administration: write`.
+Write access to an existing repository never counts. Only then does it mint an
+installation token narrowed to `administration: write` with no repository
+restriction, used in-process for one `POST /orgs/{org}/repos` call; it never
+reaches a container, a result, an error, or the audit record. No operator or
+principal fallback credential (`GH_TOKEN`, `GITHUB_TOKEN`) is ever used for
+creation. Personal accounts are refused (`NOT_SUPPORTED`) because installation
+tokens cannot create user-owned repositories. The harness never deletes a
+repository it created. Each attempt is audited as `github.repository_create`
+(principal, owner/name, visibility, repository ID, installation ID, success,
+error code). The executable owner is
+[`apps/runner/src/github-repository-creator.ts`](../apps/runner/src/github-repository-creator.ts),
+with evidence in
+[`apps/runner/test/github-repository-creator.test.ts`](../apps/runner/test/github-repository-creator.test.ts).
 
 All write mutations and token authorization denials emit auditable events (`github_action.<action>`) into `audit_events` recording principal, repository, target entity numbers, success status, and structured error codes without storing token secrets or unbounded request payloads. Helper execution failures are classified into structured, typed error codes (`GITHUB_RATE_LIMITED` with retryAfterMs, `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`, and the review/merge codes documented in `docs/mcp-api.md`) to provide deterministic machine-readable recovery semantics for autonomous agents.
 
@@ -561,7 +623,7 @@ Standard executors strictly preserve `--read-only`, `--cap-drop ALL`, `--securit
 
 When `exec_run` is invoked with `privileged: true`:
 
-1. Privileged execution is supported in `cloudflare-access` mode (where the operator dashboard is authenticated via Cloudflare Access) and is disabled in `owner-bearer` mode to prevent self-approval.
+1. Privileged execution is supported in `cloudflare-access` mode (where the operator dashboard is authenticated via Cloudflare Access) and is disabled in `owner-bearer` and `oidc` modes, which have no operator dashboard, to prevent self-approval.
 2. In `cloudflare-access` mode, an unapproved request is rejected with `PRIVILEGE_APPROVAL_REQUIRED` and returns a single-use `grantId` bound to the command and working directory with a 60-second TTL.
 3. The operator must explicitly approve the grant via the authenticated Dashboard BFF API (`POST /api/v1/privilege-grants/:grantId/approve`). MCP clients cannot self-approve.
 4. The caller provides the `approvalGrantToken`. The runner validates the grant and command/cwd hash, atomically consumes it (single-use), and executes the command in an isolated ephemeral container with `try/finally` cleanup. The standard executor container remains permanently hardened and unmodified.
@@ -692,7 +754,8 @@ the boundary it keeps.
 - **Browser posture.** The emulator is the vendored `@xterm/xterm` and
   `@xterm/addon-fit`, served same-origin from an explicit allow-list in
   [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts)
-  from the pinned dependency, never from a CDN. The dashboard CSP is unchanged.
+  from the pinned dependency, never from a CDN. The legacy dashboard CSP is
+  unchanged.
   xterm writes styles from script, which `style-src 'self'` blocks, so
   [`apps/api/dashboard/dashboard-terminal.js`](../apps/api/dashboard/dashboard-terminal.js)
   installs a CSSOM adapter that turns script-created `<style>` elements and
@@ -700,6 +763,241 @@ the boundary it keeps.
   Markup-delivered styles stay blocked and no nonce or `'unsafe-inline'` is
   introduced. The asset confinement is asserted by
   [`apps/api/test/dashboard-ui-contract.test.ts`](../apps/api/test/dashboard-ui-contract.test.ts).
+
+### Dashboard 2.0 React shell
+
+The React Dashboard ([ADR 0005](adr/0005-dashboard-react-rewrite.md)) is served
+by the API under `/dashboard`, behind the same Host, Origin, Access, and CSRF
+boundary as the legacy shell; it adds no route outside `/dashboard` and no host
+mount. Its CSP differs from the legacy one in exactly two directives:
+
+- **Per-response style nonce.** Every shell response carries a fresh random
+  nonce in `style-src 'self' 'nonce-…'`, because Radix and the router inject
+  runtime `<style>` elements that `style-src 'self'` alone would block. The
+  nonce applies only to styles: `script-src` stays `'self'` with no nonce, no
+  hash, and no `'unsafe-inline'`, and the shell is `no-store` so a nonce is
+  never replayed from a cache.
+- **`font-src 'self'`.** Geist is self-hosted from hashed same-origin assets;
+  no external font or CDN host is allowed.
+
+Both are built by `reactShellContentSecurityPolicy` in
+[`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts)
+and applied in
+[`apps/api/src/dashboard-react-assets.ts`](../apps/api/src/dashboard-react-assets.ts),
+which serves only files named by the startup-validated Vite manifest, renders
+the HTTP-only theme cookie from a fixed set of values, and answers unknown
+Dashboard navigations with a 404 shell. The `?ui=react|legacy` canary sets the
+`ch-dashboard-ui` cookie (`Path=/dashboard; HttpOnly; Secure; SameSite=Lax`, so the
+pin survives the cross-site Access sign-in redirect and links from other sites)
+and redirects to the same Dashboard path, never off it. A cross-site GET can
+set that cookie, but it only selects which first-party UI an operator sees after
+Access; it grants no authority and carries no data, so the impact is low and
+`?ui=legacy` reverses it. The assertions live in
+[`apps/api/test/dashboard-react-shell.test.ts`](../apps/api/test/dashboard-react-shell.test.ts).
+
+Secret handling in the React pages follows the same write-only rule as the
+legacy shell, with these client-side guarantees:
+
+- **Write-only fields live only in the open form.** Secret values and provider
+  keys are typed into masked inputs and held only in that dialog's in-memory
+  form state (the model profile wizard keeps its key in an uncontrolled input
+  outside wizard state). Secret value and key fields are emptied when the
+  request is sent, and every field resets when the dialog closes; values never
+  reach drafts, the query cache, browser storage or logs, and a failed save
+  asks for the value again. MCP server headers differ by mode: a literal header
+  value is not a secret, so the BFF returns it and the edit dialog prefills it
+  (masked); a secret-reference header names a global secret, whose value is
+  write-only and never sent to the page.
+- **The one-time API key reveal is component state only.** The `POST /api-keys`
+  response is not cached, and the plaintext is dropped on dismiss, on any
+  navigation (router or link click), on `pagehide`, when the session ends, and
+  on unmount; a reveal is refused once the session has ended
+  ([`apps/dashboard/src/lib/one-time-reveal.ts`](../apps/dashboard/src/lib/one-time-reveal.ts)).
+- **Wizard restore is allowlisted and session-scoped.** A multi-step wizard may
+  keep its step and non-secret choices in `sessionStorage` (prefix
+  `ch-dashboard-restore:`) so a reload does not lose progress. Each wizard
+  rebuilds that entry from an allowlist on both write and read, so an injected
+  key is neither restored nor written back, and the entry is removed on cancel
+  and save ([`apps/dashboard/src/lib/restorable-state.ts`](../apps/dashboard/src/lib/restorable-state.ts),
+  `parseStoredWizard` in
+  [`apps/dashboard/src/features/models/models-wizard-state.ts`](../apps/dashboard/src/features/models/models-wizard-state.ts)).
+  The secret fields themselves are never part of a draft (ADR 0005), and a
+  custom upstream URL is dropped from it when it does not parse or carries user
+  info, a query or a fragment, where a pasted credential would sit. Dialogs
+  that take secret values have no draft at all.
+  The open-workspace wizard applies the same URL filter to the repository URL
+  and also keeps its pending launch's `idempotencyKey`, a non-secret dedupe
+  token, beside a SHA-256 digest of the request (never the request itself), so a
+  reload after a lost answer replays the same intent instead of opening a second
+  workspace. The wizard refuses a repository URL with user info, a query or a
+  fragment before anything is sent
+  ([`open-workspace-model.ts`](../apps/dashboard/src/features/workspaces/open-workspace-model.ts)).
+  The cockpit deploy wizard keeps only the chosen target name; deployment,
+  skill and hook output stays in component state.
+- **Writes use the unchanged BFF boundary.** Every mutation sends the session
+  cookie and the in-memory CSRF token; a `session_ended` 401 bootstraps a new
+  session and retries once, anything else surfaces the sign-in path. The
+  embedded assistant's writes take the same path
+  ([`widget-host-setup.ts`](../apps/dashboard/src/features/assistant/widget-host-setup.ts)),
+  so it recovers after an API restart without a reload. Fences
+  (`expectedGeneration`, plan digests) are sent exactly as the legacy shell
+  sends them, and a 409 reloads the latest version instead of retrying.
+
+[`apps/dashboard/e2e/bff-write-security.spec.ts`](../apps/dashboard/e2e/bff-write-security.spec.ts)
+proves the CSRF, Origin and expired-session paths against the real in-process
+BFF, and
+[`one-time-reveal.spec.ts`](../apps/dashboard/e2e/one-time-reveal.spec.ts) and
+[`write-paths.spec.ts`](../apps/dashboard/e2e/write-paths.spec.ts) check that
+no secret reaches the DOM, form values, Web Storage, IndexedDB, Cache Storage,
+cookies, the console or any read response. That the TanStack Query cache never
+holds a one-time reveal is asserted at unit level
+([`one-time-reveal.test.tsx`](../apps/dashboard/src/lib/one-time-reveal.test.tsx)),
+because the in-memory cache is not reachable from the page.
+
+### Dashboard path ids are authoritative
+
+A Dashboard BFF mutation acts on the resource its URL names. When a JSON body
+repeats a path id (`workspaceId`, `environmentId`, `name`, `skillId`, and so
+on) with a different value, the request is refused with
+`400 path_id_mismatch` before the runner is called. A body that repeats the
+same value is accepted, and the path value is always the one forwarded. This
+keeps page actions built by the Dewee agent, and any other client, from aiming
+a route at a different resource than the one it called. The owner is
+[`apps/api/src/dashboard-path-ids.ts`](../apps/api/src/dashboard-path-ids.ts).
+The per-route regression table is
+[`apps/api/test/dashboard-path-id-authority.test.ts`](../apps/api/test/dashboard-path-id-authority.test.ts).
+
+### Dashboard webchat (Dewee)
+
+The Dashboard webchat ([ADR 0005](adr/0005-dashboard-react-rewrite.md)) talks
+to a Dewee agent through a BFF under `/dashboard/api/v1/dewee/`
+([`apps/api/src/dashboard-dewee-router.ts`](../apps/api/src/dashboard-dewee-router.ts)).
+
+**Request boundary.** The BFF runs behind the same boundary as every
+Dashboard BFF route:
+
+- the Access assertion, the dashboard principal, Host and Origin checks, the
+  CSRF header on POST, and the shared per-principal limit;
+- its own tighter per-operator budget: sessions, chat turns and history reads
+  per minute, plus at most two concurrent streams.
+
+The widget's "visitor" is the signed-in operator. The visitor id is an HMAC of
+the Access issuer and subject under `DEWEE_WEBCHAT_SECRET`, so a visitor token
+opens only that operator's own conversations. A token minted for one operator
+is refused for another.
+
+The agent is fixed by `DEWEE_AGENT_ID`. The browser can neither switch agents
+nor bring its own gateway credentials.
+
+**What leaves for the gateway and its LLM provider.** Each chat turn sends:
+
+- the operator's message;
+- the page-action manifest the Dashboard registered (names, descriptions,
+  JSON Schemas, sensitivity);
+- the page context, as a `[[dewee-page v1]]` block that the server prepends to
+  the message.
+
+Page context is meant to carry only non-secret summary state (route, filters,
+selection, counts, statuses). The server still enforces the size limits and
+strips secret-shaped values before forwarding:
+
+- **Size limits:** 32 actions and 16 KiB per manifest, 4 KiB of page context.
+  Violations get `400 invalid_actions`, `413 actions_too_large` or
+  `413 context_too_large`.
+- **Stripping:** fields with credential-like names (including bare `key` and
+  `value`), plus bearer tokens, JWTs, provider and GitHub tokens, managed API
+  keys, private keys, URL credentials, and long random-looking hex or base64
+  strings.
+
+Public resource ids (`ws_…`, `agent_…`, `art_…` and the other id prefixes the
+sanitizer lists) are kept, in fields and inside routes, because page context
+exists to carry them. Credential-bearing prefixes such as gateway leases are
+not on that list. A field named `key` or `value` is always redacted, so
+page-context fields need a more specific name, such as `filterValue`.
+
+Stripping is a backstop, not the control. Pattern matching cannot recognise
+every secret, so the Dashboard's page-context registry must never put a secret
+value into page context in the first place.
+
+Gateway history is per operator and per conversation, and is stored by the
+Dewee gateway, not by Cloud Harness.
+
+**Token custody.**
+
+- `DEWEE_GATEWAY_TOKEN` and `DEWEE_WEBCHAT_SECRET` live only in the `api`
+  service. Compose blanks them on the runner, and the compose boundary check
+  asserts that no other service names a `DEWEE_` setting.
+- The token is sent only in the gateway WebSocket `connect` frame. It never
+  reaches the browser, the bundle, a response, or a log line.
+- Gateway and run errors reach the browser as fixed messages, so a token or
+  stack trace echoed by the gateway is not forwarded.
+- The BFF logs only a route name and a short error code. Message bodies, page
+  context, tool payloads and tokens are never logged.
+
+**Prompt injection.** Anything the agent reads is untrusted and can carry
+instructions: page context, tool results, and whatever it reads over MCP (file
+contents, terminal output, diffs, logs).
+
+- Page actions the agent proposes run in the browser through the typed action
+  registry, and mutating or destructive actions need the operator's click.
+- Path ids are authoritative (see above), so an action cannot aim a route at
+  another resource.
+- These controls do not cover the agent's own MCP calls.
+
+**Dashboard page actions.** The React Dashboard advertises a typed action
+registry to the widget
+([`apps/dashboard/src/lib/page-actions.ts`](../apps/dashboard/src/lib/page-actions.ts),
+[`apps/dashboard/src/features/assistant/`](../apps/dashboard/src/features/assistant/)).
+Three rules hold for every action:
+
+- **Confirm before any write.** Only `mutate` and `destructive` actions need
+  confirmation; `navigate`, `read`, filter and open-wizard actions change only
+  what the page shows and run directly. A `mutate` or `destructive` action only
+  prepares a request. The Dashboard validates the agent's arguments strictly,
+  builds the exact typed body itself, and shows the method, path and body in a
+  confirmation dialog. It sends that stored request only after the operator
+  clicks confirm; dismissing the dialog is a denial reported to the agent.
+  Agent arguments never reach the API as a raw payload, and no action is ever
+  executed automatically. Creating secrets or API keys and deciding approvals
+  have no action at all: those stay on their pages.
+- **No secrets in page context or results.** Page context carries route,
+  filters, selection ids, counts and statuses picked from an allowlist of
+  fields. Action results carry ids and states. Secret values, one-time keys,
+  file contents, terminal output, diffs and logs are never included. A failed
+  send reports fixed text chosen by error class with the HTTP status and a
+  short code, never the server's message, which can quote input or upstream
+  text; the operator's toast shows that message. The BFF backstop applies the
+  same redaction as page context to every `dewee-action-result` block in a
+  chat message, so results of reads and writes are stripped too; the
+  operator's own typed words are forwarded as written.
+- **The widget holds no stored credential.** Every widget request sends the
+  in-memory CSRF header and the session cookie. The widget's own visitor token
+  is removed from `localStorage` as soon as the widget writes it, so it lives
+  only in memory, and its styles are adopted as constructed stylesheets so the
+  CSP needs no `unsafe-inline`.
+
+`apps/dashboard/e2e/dewee-assistant.spec.ts` drives the real widget and BFF
+against a scripted gateway and asserts all three.
+
+**Owner opt-in: the agent's MCP key.** The Dewee agent reaches Cloud Harness
+MCP through a managed API key with full static-client authority (see
+[ADR 0005](adr/0005-dashboard-react-rewrite.md)). Managed keys carry no scope,
+so the agent can read, write and execute in every workspace the owner can. Its
+MCP calls do not pass through the Dashboard confirmation step, and the
+confirmation rule above does not limit them. Revoking or rotating that key on
+the API Keys page is the only control for the agent's MCP authority. Disabling
+the webchat does not revoke it.
+
+**Kill switch.** Unset `DEWEE_GATEWAY_URL`, `DEWEE_GATEWAY_TOKEN` and
+`DEWEE_WEBCHAT_SECRET`, then recreate the `api` container. Every webchat route
+then answers `503 dewee_disabled`, and nothing reaches the gateway. Rotating
+`DEWEE_WEBCHAT_SECRET` invalidates every outstanding visitor token. It also
+changes every visitor id, because each id is an HMAC under that secret. So
+every operator loses access to their earlier webchat conversations: the
+gateway keeps them under the old ids, but nothing can open them.
+
+The assertions live in
+[`apps/api/test/dashboard-dewee-router.test.ts`](../apps/api/test/dashboard-dewee-router.test.ts).
 
 ### Managed toolbox packages
 
@@ -918,7 +1216,7 @@ To prevent late-stage workflow failures where an agent completes extensive edits
 - **`workspace_capabilities` and `workspace_status`:** Inspectable at any point without modifying state, minting tokens, or launching containers. Returns structured `capabilities.repository` (`read`, `push`, `issuesRead`, `issuesWrite`, `pullRequestsRead`, `pullRequestsWrite`), `permissions`, and `operations`.
 - **Policy-driven derivation:** Capabilities reflect Cloud Harness security policy:
   - In `owner-bearer` mode, write capabilities require a configured GitHub App installation on GitHub repositories.
-  - In `cloudflare-access` mode, write capabilities are derived from verified GitHub App installation grants bound to the authenticated principal.
+  - In `cloudflare-access` and `oidc` modes, write capabilities are derived from verified GitHub App installation grants bound to the authenticated principal.
   - In local stdio mode, capabilities reflect explicit operator flags (`--git-push`, `--git-network`).
 - **Structured denial error:** Unauthorized operations reject immediately with `REPOSITORY_OPERATION_NOT_AUTHORIZED` (403, non-retryable) indicating the exact `operation`, `repository`, and `requiredCapability` (e.g. `repository.push`, `repository.issuesWrite`, `repository.pullRequestsWrite`).
 
@@ -974,6 +1272,135 @@ the boundary is explicit; the composer is
   skip reasons, and digests only, never guidance content.
 - A failed scan fails the agent closed instead of starting it silently without
   guidance; `repositoryContext: "none"` is the caller's explicit opt-out.
+
+### Persisted agent sessions
+
+With `AGENT_SESSION_PERSISTENCE_ENABLED`, the runner keeps each agent's Pi
+conversation (prompts, replies, tool calls, and tool results, which can include
+repository content) so `agent_spawn.continueFrom` can start a new agent from
+it. The store and its checks are owned by
+[`apps/runner/src/agent-state-repository.ts`](../apps/runner/src/agent-state-repository.ts):
+
+- Sessions live only in the runner's state database, scoped to the owner,
+  workspace, and workspace generation that created them. The agent gets no
+  mount, database path, or credential for them: the runner sends the history
+  in the agent's start record over the existing protocol channel, and the
+  agent reports new messages back the same way. No MCP tool returns session
+  content; status reports only counts and flags.
+- The agent's model lease is redacted from every reported message. Nothing
+  else is changed, so the history replays exactly. Stored messages therefore
+  keep raw model and tool content, such as file contents the agent read; unlike
+  caller-facing events and logs, they do not pass through the redactor
+  (`redactSecretDeep` in
+  [`apps/agent-runtime/src/session-replay.ts`](../apps/agent-runtime/src/session-replay.ts)
+  is the only scrub). A session is replayed only into a continuation on the
+  same model profile, and its content is never returned through MCP.
+- The rows sit in the runner state database for the configured retention. The
+  pre-deploy backup in
+  [`deploy/scripts/deploy-release.sh`](../deploy/scripts/deploy-release.sh)
+  copies that whole database, so a session can outlive its retention inside a
+  backup set under `/var/lib/cloud-harness/backups`; treat those backups as
+  holding repository content.
+- The runner appends a message only from the running agent of the current
+  runner epoch and agent generation, and only at the next sequence number.
+  Each log carries a chained SHA-256 digest that the runner and the runtime
+  both verify before replay, so a gap, a stale writer, or a corrupted row
+  stops continuation instead of feeding a model altered history. Message count
+  and bytes are bounded per session, and the stored bytes of all sessions are
+  bounded per workspace, owner, and instance. A continuation copies its
+  predecessor's whole log, so the copy counts against those budgets at
+  admission. In Access mode one owner can use up the instance budget before
+  reaching its own, which then stops recording for other owners' new
+  messages; size `AGENT_GLOBAL_SESSION_BYTES` for the expected owners.
+- Continuation is never automatic. It needs an explicit spawn by the same
+  owner in the same workspace generation, passes normal spawn admission and
+  budgets, and gets a fresh container and lease. Each session has at most one
+  successor.
+- Closing or expiring the workspace deletes its sessions, and sealed sessions
+  are purged after their retention.
+
+### Durable agent engine
+
+`AGENT_DURABLE_RUNTIME_ENABLED` lets an agent run on the pi-durable engine
+instead of the default coding runtime. The session store, its claim, and its
+bounds are owned by
+[`apps/runner/src/durable-session-store.ts`](../apps/runner/src/durable-session-store.ts)
+and [`apps/runner/src/agent-runtime-adapter.ts`](../apps/runner/src/agent-runtime-adapter.ts):
+
+- The agent container still holds no session state, mount, or database path.
+  Every storage call is a bounded request on the existing protocol channel to
+  the runner, which keeps one SQLite database per continuation lineage under
+  `agent-sessions/` beside its state database, private to the runner user. Only
+  an allowlist of storage methods with checked argument shapes runs, at a
+  bounded rate and record size.
+- One run owns a lineage's store at a time. The run claims it at launch with
+  the runner epoch and its depth in the lineage, a continuation claims it at a
+  greater position, and a stale or losing run is fenced from every further
+  request, also across a runner restart. Each lineage has at most one successor,
+  so of two racing continuations only one can claim.
+- The model lease is issued per run and is never written to the store; the
+  engine reaches the model through the same gateway, lease, and budget as the
+  default runtime. Usage counts only what the run itself consumed, and resumed
+  work is charged to the continuation's own lease and caps.
+- Continuation is never automatic, as for persisted sessions. A continuation
+  of a cancelled agent cancels its unfinished work instead of resuming it.
+  The flag is read at runner start: turning it off takes a runner restart,
+  which stops running agents as any restart does (none resumes on its own),
+  and afterwards new durable spawns and continuations are refused.
+- Resumed work reruns an interrupted tool call under its original request ID,
+  so the runner's effect ledger, not the engine, decides whether a mutation
+  already landed. Settling it as interrupted instead would lead the model to
+  issue it again under a new request ID that the ledger cannot match.
+- The store is bounded on disk by `AGENT_DURABLE_MAX_LINEAGE_BYTES`, and its
+  size counts toward the same workspace, owner, and instance session byte
+  budgets as persisted logs, measured at runner start and around every commit;
+  a run whose commit would pass either, or leaves usage over a budget, ends as
+  `LIMIT_EXCEEDED`. A budget can be overshot by at most one commit's growth per
+  concurrently writing lineage. A store still over the size cap when its run
+  ends leaves the session not continuable. The runner decides this at the end
+  of the run, after closing the store checkpointed its write-ahead log, and
+  against the cap configured then. A passed aggregate budget does not, because
+  it frees up once other stores are deleted. Closing or expiring the workspace deletes its lineage databases,
+  including owner marks a crash left half-written, and the reaper deletes a
+  lineage's database once retention has purged every session of it. A
+  lineage's session rows are deleted only after its files: a failed removal
+  fails the close, which leaves the workspace `EXPIRED_RECOVERABLE` rather
+  than `CLOSED`, and the retried close removes the files. A failed removal
+  after a retention purge leaves the purged rows, so the workspace close
+  still finds the lineage.
+
+Accepted risk: the runner depends on the upstream pi-durable package to read
+and write these databases. It is pinned in the lockfile, imported only while
+the flag is on, and handed JSON data only; with the flag off it is never
+loaded. The agent image carries the engine only when built with
+`INCLUDE_DURABLE_RUNTIME=true`, so the default image runs no pi-durable code.
+
+### Agent tool effect receipts
+
+The runner records every proxied agent tool call in an owner- and
+workspace-scoped effect ledger in its state database, so a repeated delivery
+returns the original outcome instead of acting twice
+([`docs/mcp-api.md`](mcp-api.md#agent-tool-receipts-and-replay) describes the
+behaviour the model sees):
+
+- A receipt is the exact tool result text the model received, bounded like any
+  tool result. It can hold repository content, including secrets a read
+  returned, so result text is stored only for an agent spawned with session
+  persistence or on the durable engine, the only cases a continuation can
+  replay it, and only up to a
+  per-lineage byte cap. Every other effect keeps its payload and result hashes
+  only. Stored text stays in the runner's state database, is never returned by
+  an MCP tool, and has the agent's model lease redacted before it is stored.
+  Receipt content is cleared after the session retention, and the workspace's
+  receipts are deleted when it closes, expires, or is compacted.
+- The runner never re-issues a mutation on its own. A mutation whose outcome
+  was lost is settled by reading workspace state through the same fenced
+  executor path, never by repeating it, and an undecidable outcome is reported
+  as unknown.
+- A stale writer cannot change an outcome, usage, or session: each write
+  requires the current runner epoch and the agent's generation, and no
+  successor continuing the agent; recording an outcome also requires a running
+  or cancelling agent in the active workspace generation.
 
 ### Scoped SQLite memories with optimistic concurrency
 

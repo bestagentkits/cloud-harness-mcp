@@ -1,3 +1,130 @@
+## [0.80.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.2...v0.80.3) (2026-11-05)
+
+
+### Bug Fixes
+
+* **docs-site:** scroll wide tables inside themselves on narrow viewports ([#650](https://github.com/bestagentkits/cloud-harness-mcp/issues/650)) ([d397ade](https://github.com/bestagentkits/cloud-harness-mcp/commit/d397ade647eaa7c2760766f76429f2fd0d59c1ad)), closes [#649](https://github.com/bestagentkits/cloud-harness-mcp/issues/649) [#649](https://github.com/bestagentkits/cloud-harness-mcp/issues/649)
+
+## [0.80.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.1...v0.80.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* **runner:** reconcile GitHub App after fallback clone failure and report credential source ([#644](https://github.com/bestagentkits/cloud-harness-mcp/issues/644)) ([3c343ee](https://github.com/bestagentkits/cloud-harness-mcp/commit/3c343eed2c63472253c4303cfdc95c26ec23e350)), closes [#641](https://github.com/bestagentkits/cloud-harness-mcp/issues/641)
+* **runner:** record no repository grant when the installation lacks Contents (Fixes [#643](https://github.com/bestagentkits/cloud-harness-mcp/issues/643)) ([#645](https://github.com/bestagentkits/cloud-harness-mcp/issues/645)) ([54eb971](https://github.com/bestagentkits/cloud-harness-mcp/commit/54eb97141ddbc49d4e6c2e1424f0cb35fddeeb91))
+
+## [0.80.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.0...v0.80.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **dashboard:** ship GitHub App setup callback redirect fix to main ([#498](https://github.com/bestagentkits/cloud-harness-mcp/issues/498)) ([#634](https://github.com/bestagentkits/cloud-harness-mcp/issues/634)) ([7d3d9b4](https://github.com/bestagentkits/cloud-harness-mcp/commit/7d3d9b49a743029453b880451afb2960d0e9e5fe)), closes [#499](https://github.com/bestagentkits/cloud-harness-mcp/issues/499) [#640](https://github.com/bestagentkits/cloud-harness-mcp/issues/640)
+
+# [0.80.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.79.2...v0.80.0) (2026-11-02)
+
+
+### Features
+
+* **auth:** add oidc mode, remote Docker host and digest-pinned TOSE manifest ([#631](https://github.com/bestagentkits/cloud-harness-mcp/issues/631)) ([c352743](https://github.com/bestagentkits/cloud-harness-mcp/commit/c352743ea6e818f7a80b6f8693eacee5240b5044))
+
+## [0.79.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.79.1...v0.79.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* **runner:** clean half-written durable owner marks and stop continuing a lineage left over its cap ([#585](https://github.com/bestagentkits/cloud-harness-mcp/issues/585)) ([ccf8f28](https://github.com/bestagentkits/cloud-harness-mcp/commit/ccf8f28114db327bc827eca606805a26d06d6863)), closes [#584](https://github.com/bestagentkits/cloud-harness-mcp/issues/584)
+
+## [0.79.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.79.0...v0.79.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **agents:** report a mutation whose executor call failed as EFFECT_UNKNOWN ([#593](https://github.com/bestagentkits/cloud-harness-mcp/issues/593)) ([a785299](https://github.com/bestagentkits/cloud-harness-mcp/commit/a785299ef0a08e2cae2327445371ab984b2fa0f2)), closes [#594](https://github.com/bestagentkits/cloud-harness-mcp/issues/594)
+
+# [0.79.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.78.1...v0.79.0) (2026-10-26)
+
+
+### Features
+
+* **agent:** opt-in Pi Durable runtime behind a flag with runner-hosted storage ([#448](https://github.com/bestagentkits/cloud-harness-mcp/issues/448)) ([1ce7731](https://github.com/bestagentkits/cloud-harness-mcp/commit/1ce77314aedb4065f2749ad64af523e33deb08d1)), closes [#582](https://github.com/bestagentkits/cloud-harness-mcp/issues/582) [#588](https://github.com/bestagentkits/cloud-harness-mcp/issues/588) [#592](https://github.com/bestagentkits/cloud-harness-mcp/issues/592) [#589](https://github.com/bestagentkits/cloud-harness-mcp/issues/589)
+
+## [0.78.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.78.0...v0.78.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **runner): restore ts-input firewall repair on main; feat(github:** add github_repository_create ([#580](https://github.com/bestagentkits/cloud-harness-mcp/issues/580)) ([950f536](https://github.com/bestagentkits/cloud-harness-mcp/commit/950f5369722bcff506003e0c054df0d4a91bdcfa)), closes [#476](https://github.com/bestagentkits/cloud-harness-mcp/issues/476) [#474](https://github.com/bestagentkits/cloud-harness-mcp/issues/474)
+
+# [0.78.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.77.0...v0.78.0) (2026-10-26)
+
+
+### Features
+
+* **agents:** keep tool receipts and reconcile lost effects instead of replaying mutations ([#430](https://github.com/bestagentkits/cloud-harness-mcp/issues/430)) ([7bfd5a1](https://github.com/bestagentkits/cloud-harness-mcp/commit/7bfd5a147f819db9cc6970df9b6e961c53ca9423))
+
+# [0.77.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.76.2...v0.77.0) (2026-10-26)
+
+
+### Bug Fixes
+
+* **dashboard:** wait for chat.abort before closing the Dewee gateway socket ([#535](https://github.com/bestagentkits/cloud-harness-mcp/issues/535)) ([c78162d](https://github.com/bestagentkits/cloud-harness-mcp/commit/c78162d115cb3d84423cfb48198ae5c2c07eff09)), closes [#533](https://github.com/bestagentkits/cloud-harness-mcp/issues/533)
+
+
+### Features
+
+* **agents:** persist agent sessions in the runner and continue them in a fresh container ([#423](https://github.com/bestagentkits/cloud-harness-mcp/issues/423)) ([4e98ea1](https://github.com/bestagentkits/cloud-harness-mcp/commit/4e98ea15249a0a302be1b7c5f9f7e978a2b44ad4)), closes [#545](https://github.com/bestagentkits/cloud-harness-mcp/issues/545)
+
+## [0.76.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.76.1...v0.76.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **dashboard:** open the workspace from classic /summary links instead of a 404 ([#538](https://github.com/bestagentkits/cloud-harness-mcp/issues/538)) ([9257bfa](https://github.com/bestagentkits/cloud-harness-mcp/commit/9257bfaae921078c374a8502d7d361fc0ccf150e))
+
+## [0.76.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.76.0...v0.76.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **dashboard:** recover the assistant's CSRF session after an API restart ([#536](https://github.com/bestagentkits/cloud-harness-mcp/issues/536)) ([c24fd6b](https://github.com/bestagentkits/cloud-harness-mcp/commit/c24fd6b6a0debfafa73db48971a5db6a1c53068a))
+
+# [0.76.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.75.0...v0.76.0) (2026-10-21)
+
+
+### Features
+
+* **dashboard:** cockpit tabs, wizards, artifacts and packages in React ([#520](https://github.com/bestagentkits/cloud-harness-mcp/issues/520)) ([e850ba7](https://github.com/bestagentkits/cloud-harness-mcp/commit/e850ba7ea2b43122ed6e6db965f4938755bdd80f)), closes [#458](https://github.com/bestagentkits/cloud-harness-mcp/issues/458) [#484](https://github.com/bestagentkits/cloud-harness-mcp/issues/484)
+* **dashboard:** core pages in React: overview, workspaces, cockpit, agents, activity, skills, knowledge, projects, audit ([#458](https://github.com/bestagentkits/cloud-harness-mcp/issues/458) P3) ([#495](https://github.com/bestagentkits/cloud-harness-mcp/issues/495)) ([d7b8a9f](https://github.com/bestagentkits/cloud-harness-mcp/commit/d7b8a9fc4efe0e63a33443736dc42e7b79f43ec6))
+* **dashboard:** embedded assistant with typed page actions and confirm-gated mutations ([#509](https://github.com/bestagentkits/cloud-harness-mcp/issues/509)) ([470a34f](https://github.com/bestagentkits/cloud-harness-mcp/commit/470a34faf49f1da2c278864bfbcf34cb236de9ac)), closes [#485](https://github.com/bestagentkits/cloud-harness-mcp/issues/485) [#528](https://github.com/bestagentkits/cloud-harness-mcp/issues/528) [#523](https://github.com/bestagentkits/cloud-harness-mcp/issues/523) [#530](https://github.com/bestagentkits/cloud-harness-mcp/issues/530)
+
+# [0.75.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.74.0...v0.75.0) (2026-10-20)
+
+
+### Features
+
+* **dashboard-bff:** Dewee webchat BFF handler behind Access, session, CSRF and rate limit ([#458](https://github.com/bestagentkits/cloud-harness-mcp/issues/458) P5a) ([#491](https://github.com/bestagentkits/cloud-harness-mcp/issues/491)) ([e9192df](https://github.com/bestagentkits/cloud-harness-mcp/commit/e9192dfea166a62bc205a9201732d8604bedfa74)), closes [#490](https://github.com/bestagentkits/cloud-harness-mcp/issues/490) [#485](https://github.com/bestagentkits/cloud-harness-mcp/issues/485)
+
+# [0.74.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.73.0...v0.74.0) (2026-10-20)
+
+
+### Features
+
+* **dashboard:** sensitive pages in React: secrets, API keys, MCP servers, models ([#458](https://github.com/bestagentkits/cloud-harness-mcp/issues/458) P4a) ([#496](https://github.com/bestagentkits/cloud-harness-mcp/issues/496)) ([15b9aeb](https://github.com/bestagentkits/cloud-harness-mcp/commit/15b9aeb51bb5161d325bbcdac4e49d3efed003b6)), closes [#484](https://github.com/bestagentkits/cloud-harness-mcp/issues/484) [#484](https://github.com/bestagentkits/cloud-harness-mcp/issues/484)
+
+# [0.73.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.72.0...v0.73.0) (2026-10-20)
+
+
+### Features
+
+* **dashboard:** router shell, navigation transaction and shared primitives ([#489](https://github.com/bestagentkits/cloud-harness-mcp/issues/489)) ([7a6b03f](https://github.com/bestagentkits/cloud-harness-mcp/commit/7a6b03f83f01604a9d02c11f6fe971ad2bceb462)), closes [#482](https://github.com/bestagentkits/cloud-harness-mcp/issues/482) [#458](https://github.com/bestagentkits/cloud-harness-mcp/issues/458)
+
+# [0.72.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.71.0...v0.72.0) (2026-10-20)
+
+
+### Features
+
+* **dashboard:** React app scaffold behind rollout flag ([#458](https://github.com/bestagentkits/cloud-harness-mcp/issues/458) P1) ([#488](https://github.com/bestagentkits/cloud-harness-mcp/issues/488)) ([0921ce0](https://github.com/bestagentkits/cloud-harness-mcp/commit/0921ce06ca778edc59b024063fdaf5cdb6473bab))
+
 # [0.71.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.70.0...v0.71.0) (2026-10-18)
 
 

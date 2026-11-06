@@ -1,5 +1,5 @@
 import { createAppAuth } from '@octokit/auth-app';
-import { HarnessError, type RunnerConfig } from '@cloud-harness/contracts';
+import { HarnessError, isMultiPrincipal, type RunnerConfig } from '@cloud-harness/contracts';
 import type { GitHubInstallationStore } from './github-installation-store.js';
 
 export type GitHubPermissionScope = 'issues' | 'pull_requests' | 'contents' | 'statuses' | 'checks' | 'actions';
@@ -111,6 +111,13 @@ export async function mintPrincipalRepositoryToken(input: {
     String(input.config.githubApp.appId) !== installation.appId
   ) throw repositoryNotAuthorized();
 
+  // A grant recorded before the installation's Contents level was tracked can outlive the permission
+  // being revoked. Git refuses such a token with 403, so hand out none and let the caller fall back.
+  if (installation.contents === 'none') {
+    if (requiredPermission === 'write') throw repositoryNotAuthorized();
+    return undefined;
+  }
+
   return mintForInstallation(input.config.githubApp, installation.installationId, repository);
 }
 
@@ -128,9 +135,7 @@ export async function mintPrincipalRepositoryScopedToken(input: {
 }): Promise<MintedInstallationToken | undefined> {
   if (!input.config.githubApp || input.repositoryUrl.hostname.toLowerCase() !== 'github.com') return undefined;
   const { owner, repository } = parseGitHubRepository(input.repositoryUrl);
-  const authMode = input.config.authMode ?? 'owner-bearer';
-
-  if (authMode === 'cloudflare-access') {
+  if (isMultiPrincipal(input.config.authMode)) {
     if (!input.installations) {
       if (input.requiredPermission === 'write') {
         throw repositoryNotAuthorized();

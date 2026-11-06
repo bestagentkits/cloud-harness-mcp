@@ -21,10 +21,15 @@ export function loadApiConfig(): ApiConfig {
     accessIssuer: process.env.CLOUDFLARE_ACCESS_ISSUER,
     accessAudience: process.env.CLOUDFLARE_ACCESS_AUDIENCE,
     accessJwksUrl: process.env.CLOUDFLARE_ACCESS_JWKS_URL,
+    oidcIssuer: environment('OIDC_ISSUER') || undefined,
+    oidcAudience: environment('OIDC_AUDIENCE') || undefined,
+    oidcJwksUrl: environment('OIDC_JWKS_URL') || undefined,
+    oidcRequiredScope: environment('OIDC_REQUIRED_SCOPE') || undefined,
     runnerUrl: process.env.RUNNER_URL ?? 'http://runner:3001',
     runnerToken: secret('RUNNER_TOKEN'),
     publicHosts: csv(process.env.API_PUBLIC_HOSTS, 'localhost,127.0.0.1'),
     allowedOrigins: csv(process.env.API_ALLOWED_ORIGINS),
+    dashboardUi: environment('CLOUD_HARNESS_DASHBOARD_UI') || undefined,
     requestTimeoutMs: process.env.REQUEST_TIMEOUT_MS,
     maxBodyBytes: process.env.MAX_BODY_BYTES,
     mcpGatewayTimeoutMs: environment('MCP_GATEWAY_TIMEOUT_MS'),
@@ -41,6 +46,12 @@ export function loadApiConfig(): ApiConfig {
     ,apiKeyAuthEnabled: environment('API_KEY_AUTH_ENABLED'),
     apiKeyGatewayAccessAudience: environment('API_KEY_GATEWAY_ACCESS_AUDIENCE'),
     apiKeyGatewayServiceSubject: environment('API_KEY_GATEWAY_SERVICE_SUBJECT'),
-    apiKeyGatewayPublicUrl: environment('API_KEY_GATEWAY_PUBLIC_URL')
+    apiKeyGatewayPublicUrl: environment('API_KEY_GATEWAY_PUBLIC_URL'),
+    deweeGatewayUrl: environment('DEWEE_GATEWAY_URL') || undefined,
+    deweeGatewayToken: secret('DEWEE_GATEWAY_TOKEN') || undefined,
+    deweeWebchatSecret: secret('DEWEE_WEBCHAT_SECRET') || undefined,
+    deweeTenantId: environment('DEWEE_TENANT_ID') || undefined,
+    deweeAgentId: environment('DEWEE_AGENT_ID') || undefined,
+    deweeChatTimeoutMs: environment('DEWEE_CHAT_TIMEOUT_MS') || undefined
   });
 }

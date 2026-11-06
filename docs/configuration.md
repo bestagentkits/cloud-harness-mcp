@@ -34,6 +34,10 @@ inventory.
   (including the workspace-bound `/mcp/workspaces/<workspaceId>` paths) and
   `/dashboard` at the Access edge. GitHub and Google are Access identity
   providers; Cloud Harness does not integrate their login tokens directly.
+- `oidc` trusts only an RS256 bearer token from one external OAuth
+  authorization server, such as TOSE for instances it hosts. Remove the owner
+  bearer and every Cloudflare Access setting. There is no browser dashboard in
+  this mode; see [OIDC bearer tokens](#oidc-bearer-tokens).
 
 The exact required/forbidden combinations are owned by
 [`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts).
@@ -44,9 +48,164 @@ allowed same-origin request and a short-lived CSRF session. The owning request
 paths are [`apps/api/src/auth.ts`](../apps/api/src/auth.ts) and
 [`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts).
 
+### OIDC bearer tokens
+
+In `oidc` mode the API accepts `Authorization: Bearer <jwt>` on `/mcp`,
+`/mcp/workspaces/<workspaceId>` and `/mcp-gateway`, and nothing else
+authenticates a request. The authorization server decides who may connect when
+it issues the token; Cloud Harness keeps no allowlist and maps each verified
+token straight to an operator principal.
+
+| Variable | Required | Decision |
+|---|---|---|
+| `OIDC_ISSUER` | yes | HTTPS issuer. A token's `iss` must equal it exactly. |
+| `OIDC_AUDIENCE` | yes | This instance's canonical HTTPS URL, without credentials, query, fragment, or a trailing slash. A path is allowed but not expected; use the bare origin, such as `https://ch.example.com`, not the `/mcp` endpoint. A token's `aud` (string or array) must contain it exactly, so a token issued for another instance is refused. |
+| `OIDC_JWKS_URL` | yes | HTTPS JWKS endpoint of the issuer. A key is used without refetching for 5 minutes after a fetch, and the key set is refetched early when an unknown `kid` arrives. A successful fetch drops every cached key it no longer lists. While the endpoint fails, keys from the last successful fetch stay usable for up to 15 minutes. |
+| `OIDC_REQUIRED_SCOPE` | no, `cloudharness:operator` | One RFC 6749 scope token that the space-separated `scope` claim must contain. Refused when set in another mode. |
+
+Token claims read by Cloud Harness:
+
+| Claim | Use |
+|---|---|
+| `iss` | Must equal `OIDC_ISSUER`. |
+| `aud` | Must contain `OIDC_AUDIENCE`. |
+| `sub` | Non-empty stable user identifier. The principal is the pair (`OIDC_ISSUER`, `sub`), so workspaces stay owned by the same person across tokens. |
+| `exp` | Required integer; a token is refused from that second on, with no clock-skew allowance. |
+| `nbf` | Optional; honoured when present. |
+| `scope` | Must contain `OIDC_REQUIRED_SCOPE`; a valid token without it receives 403 `insufficient_scope`. |
+| `email`, `name` | Optional display values recorded on the principal; never used for authorization. |
+
+The JOSE header must name `alg: RS256`, a `kid`, and `typ: at+jwt` (RFC 9068;
+`application/at+jwt` is accepted too, case-insensitively), so an ID token or
+another JWT signed by the same issuer cannot stand in for an access token. JWKS
+keys are used only when they declare `kty: RSA`, `alg: RS256`, `use: sig` and a
+`kid`. Other claims, such as `jti` or issuer-specific workspace hints, are
+ignored.
+
+The authorization server must therefore issue access tokens that carry
+`typ: at+jwt` and an `aud` equal to `OIDC_AUDIENCE` byte for byte. MCP clients
+may send the RFC 8707 `resource` parameter with a trailing slash or with the
+`/mcp` path; the authorization server normalizes it to the canonical URL before
+it sets `aud`, because Cloud Harness refuses both variants.
+
+Revocation is bounded by token lifetime. Cloud Harness does not introspect
+tokens, so removing a person from the authorization server's allowlist takes
+effect only when the tokens already issued to them expire. Keep the access-token
+lifetime at 10 minutes or less and re-check the allowlist on every refresh. A
+signing key withdrawn from the JWKS stops being accepted at the next successful
+key fetch, at most 5 minutes later, or up to 15 minutes later while the JWKS
+endpoint is failing.
+
+Because a key that a successful fetch no longer lists stops verifying within 5
+minutes, the authorization server rotates signing keys in this order:
+
+1. Publish the new key in the JWKS before signing any token with it. Until a
+   fetch returns it, Cloud Harness rejects tokens carrying the new `kid` and
+   remembers that `kid` as unknown for 30 seconds.
+2. Sign new tokens with the new key.
+3. Keep the retired key published until every token it signed has expired: the
+   access-token lifetime after the last token it signed, plus 5 minutes of
+   margin. Then remove it.
+
+During a rollout every JWKS replica serves the superset of the old and new keys.
+A replica that still serves an older set makes the fetch that reaches it drop
+the keys it lacks.
+
+A request without a valid token receives `401` with
+`WWW-Authenticate: Bearer resource_metadata="<url>"`, plus
+`error="invalid_token"` when a token was presented. The URL is the RFC 9728
+location for `OIDC_AUDIENCE`: `https://<host>/.well-known/oauth-protected-resource`,
+followed by the audience path if it has one. The API serves the protected
+resource metadata there, naming `OIDC_AUDIENCE` as the `resource` and
+`OIDC_ISSUER` as the only authorization server, so MCP clients can discover
+where to sign in. The other modes serve no such document.
+
+`/dashboard` returns 404 in this mode. Features that need a dashboard operator
+are therefore unavailable: privileged executor commands, package approvals,
+GitHub App installation links, and dashboard-managed secrets. A workspace can
+still clone public repositories and use the model gateway. The verifier lives in
+[`apps/api/src/access-jwt-verifier.ts`](../apps/api/src/access-jwt-verifier.ts),
+the middleware in [`apps/api/src/auth.ts`](../apps/api/src/auth.ts), and the
+metadata document in
+[`apps/api/src/protected-resource-metadata.ts`](../apps/api/src/protected-resource-metadata.ts).
+
+### Dashboard UI rollout
+
+`CLOUD_HARNESS_DASHBOARD_UI` selects which dashboard `/dashboard` serves in
+`cloudflare-access` mode: `legacy` (the default when unset) or `react`, the
+rebuilt app in `apps/dashboard`. The flag exists so the React app can ship dark
+and be rolled back by recreating only the `api` container
+([deployment](deployment.md#rollback-or-disable-the-route)); with `legacy` and no canary cookie the API
+answers byte-for-byte as before. Appending `?ui=react` or `?ui=legacy` to any
+Dashboard page pins one browser to that UI through an `HttpOnly`, `Secure`,
+`SameSite=Lax` cookie and redirects back to the same page without the
+parameter, so an operator can canary the React app without changing the
+instance.
+
+Do not set `react` for the whole instance until the React app reaches parity
+(phase P6 of the rollout): deep links the BFF generates and the OAuth callback's
+redirect targets still point at legacy pages the React app does not route yet,
+so they would land on its 404 page. Use the per-browser canary until then.
+
+The React shell keeps the same Host, Origin, Access, and CSRF boundary and adds
+only a per-response style nonce and `font-src 'self'` to its CSP
+([security model](security-model.md#dashboard-20-react-shell)). Both shells
+render the `ch-dashboard-theme` cookie, set by the Dashboard preferences API,
+before first paint; browser storage only mirrors it. The API validates the
+build's Vite manifest at startup and logs one line naming the shell mode and
+the canary state (`enabled`, `disabled` when no build is shipped, or
+`disabled-invalid-manifest`): an invalid build fails startup under `react`,
+and under `legacy` it disables the canary while legacy keeps serving. Only the
+React routes the API allowlists answer 200; other Dashboard navigations get a
+404 rendered by the React not-found page, and the BFF, OAuth callback, assets,
+and MCP routes are never answered by the shell. Owners:
+[`apps/api/src/dashboard-react-assets.ts`](../apps/api/src/dashboard-react-assets.ts)
+and [`apps/api/src/dashboard-security.ts`](../apps/api/src/dashboard-security.ts).
+
 `RUNNER_TOKEN` is independent of either public authentication mode and is used
 only from API to runner. Secret-valued settings accept their documented
 `_FILE` form and must meet schema length/placeholder checks.
+
+### Dashboard webchat (Dewee)
+
+The Dashboard webchat BFF under `/dashboard/api/v1/dewee/` proxies the
+dewee-webchat HTTP contract to a Dewee gateway. It is configured on the `api`
+service only:
+
+- `DEWEE_GATEWAY_URL`: the gateway origin. It must be `https`; cleartext
+  `http` is accepted only for a loopback host.
+- `DEWEE_GATEWAY_TOKEN`: the server-side gateway token.
+- `DEWEE_WEBCHAT_SECRET`: at least 32 characters. It signs the per-operator
+  visitor tokens the widget holds and derives each operator's visitor id.
+  Rotating it orphans existing webchat conversations (see the
+  [security model](security-model.md#dashboard-webchat-dewee)).
+- `DEWEE_AGENT_ID` (default `cloud-harness-operator`): the only agent the
+  widget can reach. It cannot be switched from the browser.
+- `DEWEE_TENANT_ID` (optional): for a multi-tenant gateway.
+- `DEWEE_CHAT_TIMEOUT_MS` (default 180000): bounds one agent run.
+
+Set the URL, token and secret together. A partial set fails API startup, and
+leaving all three unset disables every webchat route with
+`503 dewee_disabled`. Unsetting them and recreating the `api` container is the
+kill switch.
+
+The `api` service has no host mounts, so put the two secrets in the runtime env
+file. The `_FILE` forms work only where a file is actually mounted. Compose
+blanks both secrets on the runner, which shares that env file, and
+`scripts/verify-compose-boundaries.mjs` asserts that no other service names a
+`DEWEE_` setting.
+
+In production the three required settings go in
+`/etc/cloud-harness-mcp/runtime.env`, next to the other `api` settings; the
+[deployment guide](deployment.md#enable-the-dashboard-assistant-dewee) has the
+order. The React Dashboard shows its Assistant button either way; while the
+settings are unset, every request the widget makes answers `503 dewee_disabled`.
+
+The data flow and its risks are in the
+[security model](security-model.md#dashboard-webchat-dewee). The executable
+owners are
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts) and
+[`apps/api/src/dashboard-dewee-router.ts`](../apps/api/src/dashboard-dewee-router.ts).
 
 ### Dashboard-managed API-key gateway
 
@@ -596,6 +755,37 @@ the call bounds by
 and the rationale by [ADR 0004](adr/0004-decision-plane.md). Live counters are
 at `GET /api/v1/decision-plane/status`.
 
+## Managed agents
+
+The runner reads the managed-agent settings (`AGENT_*`) in
+[`apps/runner/src/config.ts`](../apps/runner/src/config.ts); their defaults and
+bounds are the `RunnerAgentsConfigSchema` in
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts).
+Session persistence is an opt-in:
+
+| Variable | Default | Decision |
+|---|---|---|
+| `AGENT_SESSION_PERSISTENCE_ENABLED` | `false` | Runner flag. Agents spawned while it is on record their Pi session in the runner state store, and `agent_spawn.continueFrom` can continue a terminal agent's session in a new agent on the same model profile. Off, spawns behave exactly as before and `continueFrom` is refused with `NOT_SUPPORTED`. Turning it off later keeps existing sessions until their retention or workspace close. |
+| `AGENT_MAX_SESSION_MESSAGES` | `2000` | The most messages one persisted session may hold. Past it the run continues, but the session is no longer continuable. |
+| `AGENT_MAX_SESSION_BYTES` | `7340032` (7 MiB) | The most message bytes one persisted session may hold, with the same outcome. Its maximum keeps a full session, the prompt, and the rest of the start record inside the 8 MiB agent protocol record. |
+| `AGENT_SESSION_RETENTION_MS` | `604800000` (7 days) | How long a sealed session stays continuable after its agent ends. The runner then purges its messages. Closing or expiring the workspace deletes its sessions sooner. |
+| `AGENT_WORKSPACE_SESSION_BYTES` | `67108864` (64 MiB) | The most message bytes all stored sessions of one workspace may hold together. A continuation copies its predecessor's whole log, so without an aggregate bound each continuation grows the store by up to one full session. A message that would pass the budget leaves its session not continuable (the run continues), and a continuation whose copy would pass it is refused with `LIMIT_EXCEEDED`. Every stored log counts, including one that stopped being continuable, until retention purges it or the workspace closes. Each durable lineage's session database counts its size on disk, write-ahead log included, until its files are deleted; a durable commit that would pass a budget, judged by its request size, is refused, and one that leaves usage over a budget ends the run as `LIMIT_EXCEEDED`. |
+| `AGENT_PRINCIPAL_SESSION_BYTES` | `536870912` (512 MiB) | The same budget across every workspace of one owner. |
+| `AGENT_GLOBAL_SESSION_BYTES` | `1073741824` (1 GiB) | The same budget across the instance. The three must satisfy workspace ≤ principal ≤ global, and `AGENT_MAX_SESSION_BYTES` may not exceed the workspace budget. |
+| `AGENT_DURABLE_RUNTIME_ENABLED` | `false` | Runner flag for the opt-in durable engine. On, `agent_spawn.runtime: "pi-durable"` runs an agent on pi-durable, whose session store the runner keeps per lineage under `agent-sessions/` beside the state database, and a continuation resumes the lineage's unfinished work. Off, durable spawns and durable continuations are refused with `NOT_SUPPORTED`, and nothing resumes on its own. The runner reads it only at start, so changing it needs a runner restart, which stops running agents like any restart. The runner loads the engine only while it is on. It needs an agent image built with the durable engine; see [operations](operations.md#durable-agent-engine). |
+| `AGENT_DURABLE_MAX_LINEAGE_BYTES` | `268435456` (256 MiB) | The most bytes one durable lineage's session database may hold on disk, write-ahead log included; bounded between 1 MiB and 4 GiB. A commit that leaves it over the cap ends the run as `LIMIT_EXCEEDED` and the runner refuses further commits to it. When the run ends, the runner measures the closed database (its write-ahead log checkpointed) against the cap configured then; still over it, the agent is not continuable. The database also counts toward the `AGENT_*_SESSION_BYTES` budgets, so with the defaults the 64 MiB workspace budget, shared with the workspace's other stored sessions, binds before this cap. |
+| `AGENT_MAX_RECEIPT_BYTES_PER_LINEAGE` | `33554432` (32 MiB) | The most tool-result bytes (receipts) one agent lineage keeps for replay. Only an agent spawned with session persistence or on the durable engine stores result text at all; past the cap, and for every other agent, the effect ledger keeps the payload and result hashes only, and a repeated call behaves as if its receipt had expired. |
+
+The [security model](security-model.md#persisted-agent-sessions) describes
+what the session store holds and who can read it. The
+[agent tools](mcp-api.md#persisted-sessions-and-continuefrom) describe
+`continueFrom` and the status fields.
+
+The durable engine ships only in an agent image built with the
+`INCLUDE_DURABLE_RUNTIME=true` build argument, so the default image and its size
+are unchanged. Turning `AGENT_DURABLE_RUNTIME_ENABLED` on without that image fails
+each durable run at start with an error that names the build argument.
+
 ## Compose and logging overrides
 
 `CLOUD_HARNESS_ENV_FILE` selects the runtime environment file. `API_HOST_PORT`
@@ -604,7 +794,10 @@ the host persistence paths. `LOG_LEVEL` is read by API and runner logging.
 
 `API_HOST`/`RUNNER_HOST`, service ports, and the private `RUNNER_URL` are wired
 by Compose. Avoid publishing the API or runner, or changing the ingress proxy from loopback
-on an Internet-facing host.
+on an Internet-facing host. Outside Compose, for example when the services share
+one pod network, set `API_HOST=127.0.0.1` and `RUNNER_HOST=127.0.0.1` and let
+only the ingress listen on `0.0.0.0` (`INGRESS_HOST`), pointing it at the API
+with `API_UPSTREAM_HOST`/`API_UPSTREAM_PORT`.
 
 `HOST_ARTIFACT_ROOT` selects the host persistence path for `ARTIFACT_ROOT`, in
 the same way the existing job and state host overrides select their mounts.
@@ -612,3 +805,42 @@ Keep the artifact mount, state database, runtime configuration, GitHub App
 key, optional Cloudflare Access API token, and secret keyring in the coherent
 recovery set described in
 [`operations.md`](operations.md#backup-and-restore).
+
+## Remote Docker host
+
+The runner drives Docker only through the `docker` CLI and, for terminals, the
+Engine API socket, so it can use a Docker daemon in a sidecar instead of the
+local one. Set `DOCKER_HOST=unix:///path/to/docker.sock` (for example
+`unix:///var/run/tose-docker/docker.sock`) on the runner. The daemon must see
+the job, artifact, cache and package directories at the same absolute paths as
+the runner, because executors bind-mount them, and it must already hold every
+image the runner starts: containers run with `--pull never`. The runner never
+publishes container ports, so `docker run -p` not working is no loss. A daemon
+started with `--iptables=false` has not been verified, however: Docker enforces
+`--internal` networks (agent and provisioning networks) and the separation
+between bridge networks with iptables rules that such a daemon does not install,
+and the `dependency-access` profile needs the network-guard container to manage
+the daemon host's firewall. Until that is verified, set
+`WORKSPACE_NETWORK_PROFILE=network-none` on such a host so workspaces start
+without a network.
+
+| Variable | Default | Decision |
+|---|---|---|
+| `DOCKER_ON_DEMAND` | `false` | When `true`, the reaper stops listing toolbox containers while no workspace is active and no toolbox container is live. After any Docker activity, including a toolbox command that starts and ends between two reaper passes, it runs one closing sweep and one final sweep once a container that activity left behind is old enough to remove (6 minutes). It then makes no Docker calls until the next activity. Hourly package garbage collection still runs and calls Docker only when it has a directory to remove that the runner cannot delete itself. Leave it off on a dedicated host. |
+| `AGENT_GATEWAY_CONTAINER` | unset | Docker container name of the model gateway. When set, the runner execs into it directly instead of discovering it by Compose project labels, which a non-Compose deployment does not have. |
+
+For such deployments,
+[`.github/workflows/tose-images.yml`](../.github/workflows/tose-images.yml)
+pushes each stable release's images to Docker Hub as
+`digitop/cloudharness-<image>` and attaches `tose-manifest.json` to the GitHub
+release. It skips prerelease tags before the protected environment is entered,
+refuses a tag whose commit is not on `main`, waits up to 10 minutes for the
+GitHub release that semantic-release creates after pushing the tag, and never
+replaces a manifest already attached to a release. Written by
+[`scripts/build-tose-manifest.mjs`](../scripts/build-tose-manifest.mjs), it pins
+every image by `@sha256:` digest and lists the local tags the Docker host must
+apply, the model gateway and provisioning proxy containers that run inside it,
+their networks, and the API, ingress and runner settings for running beside it.
+The workflow runs in the protected `tose-images` environment, which holds the
+`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets. The manifest's runner
+settings set `WORKSPACE_NETWORK_PROFILE=network-none` for the reason above.

@@ -20,6 +20,24 @@ const BRIDGE_IF = 'chm-egress0';
 const SUBNET = '172.30.240.0/24';
 const CANARY_NET = 'chm-egress-canary-net';
 const METADATA_NET = 'chm-egress-meta-net';
+// Stand-ins for Tailscale's ts-input/ts-forward chains, named so a developer
+// host running real tailscaled is never flushed by this suite.
+const FOREIGN_INPUT = 'chm-test-ts-input';
+const FOREIGN_FORWARD = 'chm-test-ts-forward';
+const MANAGED_INPUT_JUMP = `-A INPUT -i ${BRIDGE_IF} -j CHM-INPUT-v1`;
+const SUDO_PREFIX = `sudo=""\nif [[ $(id -u) -ne 0 ]] && command -v sudo >/dev/null 2>&1; then sudo="sudo"; fi\n`;
+
+function provisionFirewall(): void {
+  execFileSync('bash', ['deploy/scripts/setup-dependency-firewall.sh'], {
+    env: { ...process.env, DEPENDENCY_NETWORK_NAME: NETWORK, DEPENDENCY_BRIDGE_INTERFACE: BRIDGE_IF, DEPENDENCY_BRIDGE_SUBNET: SUBNET, DEPENDENCY_DNS_RESOLVERS: '8.8.8.8 1.1.1.1' },
+    stdio: 'inherit'
+  });
+}
+
+function inputRules(): string[] {
+  return execFileSync('bash', ['-c', `${SUDO_PREFIX}$sudo iptables -w 10 -t filter -S INPUT`], { encoding: 'utf8' })
+    .split('\n').filter((line) => line.startsWith('-A INPUT'));
+}
 
 let directory: string;
 let store: StateStore;
@@ -51,10 +69,7 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
       dependencyBridgeInterface: BRIDGE_IF, dependencyNetworkName: NETWORK
     };
     // Provision the dedicated bridge and transactional host firewall.
-    execFileSync('bash', ['deploy/scripts/setup-dependency-firewall.sh'], {
-      env: { ...process.env, DEPENDENCY_NETWORK_NAME: NETWORK, DEPENDENCY_BRIDGE_INTERFACE: BRIDGE_IF, DEPENDENCY_BRIDGE_SUBNET: SUBNET, DEPENDENCY_DNS_RESOLVERS: '8.8.8.8 1.1.1.1' },
-      stdio: 'inherit'
-    });
+    provisionFirewall();
     // Simulated forbidden destination canaries on dedicated positive-control networks.
     await runDocker(['network', 'create', '--subnet', '10.88.0.0/24', CANARY_NET], { timeoutMs: 30_000 }).catch(() => undefined);
     await startCanary('chm-canary-private', CANARY_NET, '10.88.0.10');
@@ -78,6 +93,10 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
       `$sudo iptables -w 10 -D INPUT -i ${BRIDGE_IF} -j CHM-INPUT-v1 2>/dev/null || true\n` +
       `$sudo iptables -w 10 -F CHM-INPUT-v1 2>/dev/null || true; $sudo iptables -w 10 -X CHM-INPUT-v1 2>/dev/null || true\n` +
       `$sudo iptables -w 10 -F CHM-EGRESS-v1 2>/dev/null || true; $sudo iptables -w 10 -X CHM-EGRESS-v1 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -D INPUT -j ${FOREIGN_INPUT} 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -D FORWARD -j ${FOREIGN_FORWARD} 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -F ${FOREIGN_INPUT} 2>/dev/null || true; $sudo iptables -w 10 -X ${FOREIGN_INPUT} 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -F ${FOREIGN_FORWARD} 2>/dev/null || true; $sudo iptables -w 10 -X ${FOREIGN_FORWARD} 2>/dev/null || true\n` +
       `docker network rm ${NETWORK} 2>/dev/null || true`
     ], { stdio: 'ignore' });
     if (service) await service.stop().catch(() => undefined);
@@ -135,6 +154,51 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
       expect(text, `${probe.label} must be blocked`).toContain('BLOCKED');
       expect(text, `${probe.label} must not return 200`).not.toContain('200');
     }
+  }, 180_000);
+
+  it('repairs Tailscale-style head jumps inserted after setup and survives a redeploy re-run', async () => {
+    // tailscaled head-inserts its own jumps whenever it starts; ts-input accepts
+    // traffic on every interface, so it must never sit above the managed jump.
+    execFileSync('bash', ['-c',
+      SUDO_PREFIX +
+      `$sudo iptables -w 10 -N ${FOREIGN_INPUT} 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -F ${FOREIGN_INPUT}\n` +
+      `$sudo iptables -w 10 -A ${FOREIGN_INPUT} -p udp --dport 41641 -j ACCEPT\n` +
+      `$sudo iptables -w 10 -N ${FOREIGN_FORWARD} 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -F ${FOREIGN_FORWARD}\n` +
+      `$sudo iptables -w 10 -I INPUT 1 -j ${FOREIGN_INPUT}\n` +
+      `$sudo iptables -w 10 -I FORWARD 1 -j ${FOREIGN_FORWARD}`
+    ], { stdio: 'inherit' });
+    expect(inputRules()[0]).toBe(`-A INPUT -j ${FOREIGN_INPUT}`);
+
+    const opened = await service.execute('owner', 'workspace_open', {
+      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      idempotencyKey: 'egress-dep-tailscale', networkProfile: 'dependency-access'
+    });
+    expect(opened.ok).toBe(true);
+    const workspaceId = (opened.data as { workspaceId: string }).workspaceId;
+    try {
+      expect(inputRules()[0]).toBe(MANAGED_INPUT_JUMP);
+      expect(inputRules()).toContain(`-A INPUT -j ${FOREIGN_INPUT}`);
+      const metadata = await service.execute('owner', 'exec_run', {
+        workspaceId,
+        command: 'curl -s -o /dev/null -w "%{http_code}" --max-time 4 http://169.254.169.254/ || echo BLOCKED',
+        cwd: '.', timeoutMs: 20_000
+      });
+      expect(JSON.stringify(metadata.data)).toContain('BLOCKED');
+    } finally {
+      await service.execute('owner', 'workspace_close', { workspaceId }).catch(() => undefined);
+    }
+
+    // A redeploy re-runs provisioning; it must keep exactly one managed jump at rule 1.
+    provisionFirewall();
+    const rules = inputRules();
+    expect(rules[0]).toBe(MANAGED_INPUT_JUMP);
+    expect(rules.filter((rule) => rule === MANAGED_INPUT_JUMP)).toHaveLength(1);
+    expect(rules).toContain(`-A INPUT -j ${FOREIGN_INPUT}`);
+    // The reaper repairs the same ordering defect instead of quarantining the
+    // already-running dependency workspace.
+    expect(store.byId(depWorkspaceId!)?.status).not.toBe('NETWORK_QUARANTINED');
   }, 180_000);
 
   it('quarantines the workspace when the host firewall drifts and stops all containers', async () => {

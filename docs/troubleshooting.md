@@ -21,6 +21,8 @@ URLs, or raw command content into tickets or shared logs.
 | TLS hostname/certificate error | Certbot has not issued/installed the dedicated hostname certificate, nginx is serving another site's default certificate, or DNS points elsewhere. Check `certbot certificates`, `nginx -T`, DNS, and the [TLS install step](deployment.md#obtain-https-with-the-existing-nginx). Do not disable certificate verification. |
 | `401` with `WWW-Authenticate: Bearer` in owner-bearer mode | The MCP bearer is missing or differs from `MCP_BEARER_TOKEN`. Check that the client names an exported local variable, then restart it after changing the value. |
 | MCP `401` in Access mode | The public request did not arrive with a valid Access assertion for the configured issuer/audience, or the Access OAuth credential is expired/revoked. Check the Access application, policy, discovery flow, and sanitized edge logs; do not add an origin bearer bypass. |
+| `401` with `error="invalid_token"` in oidc mode | The bearer token failed verification: wrong issuer, an `aud` that is not exactly `OIDC_AUDIENCE` (a token issued for another instance, or one whose audience carries a trailing slash or `/mcp`), an expired token, a non-RS256 algorithm, or a `kid` absent from `OIDC_JWKS_URL`. The API logs the sanitized reason; have the client obtain a new token for this instance's canonical URL. See [OIDC bearer tokens](configuration.md#oidc-bearer-tokens). |
+| `403` with `error="insufficient_scope"` in oidc mode | The token is valid but its `scope` claim lacks `OIDC_REQUIRED_SCOPE`. The issuer must grant that scope when it authorizes the person. |
 | OAuth DCR error: `redirect_uri is not allowed by the account configuration` | Claude Desktop, Codex App, ChatGPT Web, or another OAuth MCP client failed during Dynamic Client Registration. Cloudflare Access Managed OAuth requires whitelisting allowed callback URLs in the Access Application. In Cloudflare Zero Trust, edit the application for the MCP hostname, go to **Advanced settings → Managed OAuth → Allowed redirect URIs**, and add the target client callback URLs: for Claude Desktop, add `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`; for Codex App and loopback clients, pin `mcp_oauth_callback_port = 3118` in `~/.codex/config.toml` and add `http://127.0.0.1:3118/callback/*`, `http://127.0.0.1:3118/*`, `http://localhost:3118/callback/*`, and `http://localhost:3118/*`; for ChatGPT Web, add `https://chatgpt.com/connector/oauth/*`, `https://chatgpt.com/connector_platform_oauth_redirect`, and `https://chatgpt.com/api/aip/p/oauth/callback`. |
 | Frequent MCP sign-out or re-authentication prompts in AI tools | Managed OAuth clients (`https://harness.zuey.me/mcp`) sign in again when their OAuth grant expires. Lengthen the grant in **Dashboard → Settings → MCP OAuth sessions** (or, without the [Cloudflare API integration](configuration.md#managed-oauth-session-settings), under **Advanced settings → Managed OAuth** in Cloudflare Zero Trust); keep the access-token lifetime short, because a longer token does not reduce sign-ins. Static-header clients (Claude Code, Cursor, Codex, etc.) can use the API-key gateway `https://api.harness.zuey.me/mcp` with a key from `/dashboard/api-keys` instead. |
 | Client cannot connect with static token or header | The client is configured with a static Bearer token/env var but pointed to the OAuth endpoint `https://harness.zuey.me/mcp`. Static-header clients must point to the dedicated API key gateway `https://api.harness.zuey.me/mcp` and use a managed API key generated from `/dashboard/api-keys`. |
@@ -133,8 +135,28 @@ Never paste tokens, authorization codes, or callback URLs carrying `code` or
   live-verified merely because configuration loads.
 - In Access mode, GitHub login is not repository authorization. If the
   dashboard shows no grant, complete the principal-bound GitHub App setup. If
+  it still shows none after GitHub saved the installation, GitHub never returned
+  with `state` and `installation_id`. The App needs a Setup URL
+  ([GitHub App setup](github-app-private-repositories.md)). An App already
+  installed on the account cannot be bound yet (issue #640); uninstall it and
+  install again from **Connect GitHub App**. If
   reconcile reports removal or suspension, correct the installation at GitHub
   and reconcile again; do not substitute another principal's installation.
+- A private clone that fails with `remote: Write access to repository not
+  granted.` (or another GitHub 403) names the credential in the error, for
+  example `repository clone failed (credential: principal-global-secret)`. The
+  value is `github-app`, `principal-global-secret`, `runner-environment`, or
+  `none`; the token itself is never printed. When the credential was not a
+  GitHub App token and the principal has an installation on the repository
+  owner, the runner reconciles that installation and retries once with an App
+  token; the error adds `GitHub App token unavailable: ...` when that mint
+  failed. If the source is a global secret, remember that `GH_TOKEN` shadows
+  `GITHUB_TOKEN`, so a wrong `GH_TOKEN` hides a correct `GITHUB_TOKEN`. A
+  fine-grained personal access token covers one resource owner (a personal
+  account or one organization), so it is refused for repositories of any other
+  owner. A token for an organization that requires approval of fine-grained
+  tokens yields the same 403 until an owner approves it. Fix the secret, or
+  install the GitHub App on the repository owner.
 
 Replay the same `workspace_open` idempotency key or call `workspace_list` after
 a lost response; do not create a second key until the first result is resolved.
@@ -201,7 +223,10 @@ a lost response; do not create a second key until the first result is resolved.
   API over a unix socket and are unavailable with any other Docker host.
 - `workspace_open` fails with `DEPENDENCY_EGRESS_UNAVAILABLE` (HTTP 503): the
   effective profile is `dependency-access` — the shipped default — but the Linux
-  host firewall is missing or drifted. Provision it with
+  host firewall is missing or drifted. A foreign rule inserted ahead of a managed
+  jump (such as Tailscale's `-A INPUT -j ts-input`) is repaired automatically on
+  the next attestation and logged as a runner warning, so this error means the
+  managed rules themselves are missing or changed. Provision it with
   `deploy/scripts/setup-dependency-firewall.sh`, confirm egress readiness from
   the dashboard Settings page, then open with a fresh idempotency key: the failed
   open recorded its key with a `FAILED` status, and replaying that key returns the
@@ -210,6 +235,12 @@ a lost response; do not create a second key until the first result is resolved.
   meantime, select `network-none` and Save on the Settings page, or open with
   `networkProfile: "network-none"`; the Reset action only clears the instance
   setting, so it returns a host with the egress default to `dependency-access`.
+  The provisioning script is safe to re-run on every redeploy: it keeps one
+  copy of each managed jump at rule 1 and leaves foreign chains such as
+  `ts-input` in place below it. To roll the egress profile back, make
+  `network-none` the instance default first; then removing the managed jumps
+  and `CHM-*-v1` chains only quarantines the remaining `dependency-access`
+  workspaces instead of exposing the host, because attestation fails closed.
 - A dependency download, arbitrary network command, or networked deployment
   fails with a network error: the workspace is on `network-none`. Open a new
   workspace on `dependency-access` — or select `dependency-access` and Save as the
@@ -259,6 +290,55 @@ a lost response; do not create a second key until the first result is resolved.
   reaped independently of TTL workspace files. Inspect redacted audit metadata
   and the configured artifact root; a database row without its matching
   payload indicates an incoherent restore.
+
+## Managed agent sessions
+
+Session persistence and the durable engine are off by default. The decision
+and its evidence are in
+[ADR 0006](adr/0006-agent-session-persistence.md); the error contract is in
+[agent sessions](mcp-api.md#persisted-sessions-and-continuefrom).
+
+- `agent_spawn` with `continueFrom` fails with `NOT_SUPPORTED` and
+  `continueFrom needs agent session persistence`: the instance runs with
+  `AGENT_SESSION_PERSISTENCE_ENABLED` off (and, for a durable predecessor,
+  `AGENT_DURABLE_RUNTIME_ENABLED` off). Nothing was created. Spawn a fresh agent
+  and brief it by hand, or ask the operator to enable the flag (see
+  [operations](operations.md#agent-session-persistence-and-the-durable-engine)).
+  An agent spawned while the flag was off has no stored session, so it cannot be
+  continued even after the flag is turned on (`CONFLICT`).
+- `agent_spawn` with `runtime: "pi-durable"` fails with `NOT_SUPPORTED` and
+  `the pi-durable agent runtime is off on this instance`: the durable engine
+  flag is off. Omit `runtime` to run the default `pi-coding` engine.
+- A durable agent ends `FAILED` right after it starts with `the durable agent
+  runtime is not installed in this agent image`: the runner flag is on but the
+  agent image was built without `INCLUDE_DURABLE_RUNTIME=true`. Rebuild the
+  agent image with it, or turn the runner flag off; the message is produced by
+  [`apps/agent-runtime/src/engine-selection.ts`](../apps/agent-runtime/src/engine-selection.ts).
+- A durable agent ends `LIMIT_EXCEEDED` with `durable agent session exceeded
+  its size limit or a session byte budget`: its lineage's session database grew
+  past `AGENT_DURABLE_MAX_LINEAGE_BYTES`, or the stored sessions it counts
+  toward reached `AGENT_GLOBAL_SESSION_BYTES`, `AGENT_PRINCIPAL_SESSION_BYTES`,
+  or `AGENT_WORKSPACE_SESSION_BYTES`; durable lineage databases count toward
+  those budgets like persisted logs. The runner refuses further commits to it,
+  so continuing the same lineage hits the same cap. Start a new root agent
+  (without `continueFrom`), free budget by closing workspaces whose sessions are
+  no longer needed, or ask the operator to raise the cap within its bounds
+  ([configuration](configuration.md#managed-agents)).
+- A continuation's model sees a tool result with `EFFECT_UNKNOWN`: the earlier
+  run was stopped while a write, delete, or move was in flight, and the runner
+  could not establish from the workspace whether it landed. The call was not
+  issued again: a persisted continuation receives this outcome, and a durable
+  agent reruns the call under its original request ID, which the effect ledger
+  answers without reaching the executor. A cancelled durable predecessor is the
+  exception: its unfinished calls are aborted, not rerun, so its successor's
+  model gets no outcome for them and may issue the change again under a new
+  request ID. Read the affected path before repeating the change; the agent is
+  told the same. `EFFECT_NOT_APPLIED` means the write provably did not land
+  and may be retried with a new call. The rules are in
+  [`apps/runner/src/agent-effect-reconciler.ts`](../apps/runner/src/agent-effect-reconciler.ts).
+- An agent killed mid-run reports `INTERRUPTED`, never `SUCCEEDED`, whichever
+  engine ran it. For a durable agent, `run.resumable: true` means its store
+  still holds unfinished work that a `continueFrom` resumes first.
 
 ## MCP Events
 

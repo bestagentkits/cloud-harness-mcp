@@ -469,7 +469,7 @@ export class PackageService {
     const request = parseInput(PackagesApplyInputSchema, input);
     this.requireRunning();
     if (packageApprovalUnavailable(this.config)) {
-      throw harness('FORBIDDEN', 'Package plans need a Dashboard approval, and this instance has no Dashboard in owner-bearer mode; the operator can opt out of approvals with PACKAGES_APPROVAL_MODE=none', 403);
+      throw harness('FORBIDDEN', `Package plans need a Dashboard approval, and this instance has no Dashboard in ${this.config.authMode ?? 'owner-bearer'} mode; the operator can opt out of approvals with PACKAGES_APPROVAL_MODE=none`, 403);
     }
     const plan = this.store.getPlan(ownerId, request.planId);
     if (!plan) throw harness('NOT_FOUND', 'package plan not found', 404);

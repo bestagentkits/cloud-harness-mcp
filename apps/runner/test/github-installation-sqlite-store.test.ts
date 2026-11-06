@@ -25,6 +25,19 @@ describe('SQLite GitHub installation store', () => {
     state.close();
   });
 
+  it('persists the installation Contents level and leaves legacy rows unverified', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cloud-harness-github-contents-')); roots.push(root);
+    const state = new StateStore(join(root, 'state.db'));
+    const principal = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'a' });
+    const store = new SqliteGitHubInstallationStore(state.database);
+    store.replaceVerified(principal, { appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', issues: null, pullRequests: null, contents: 'none', status: 'active', repositories: [] }, 100);
+    expect(store.getInstallation(principal, 2)).toMatchObject({ contents: 'none' });
+    expect(store.getRepositoryGrant(principal, 'acme', 'app')).toBeUndefined();
+    store.replaceVerified(principal, { appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', issues: null, pullRequests: null, status: 'active', repositories: [] }, 200);
+    expect(store.getInstallation(principal, 2)?.contents).toBeUndefined();
+    state.close();
+  });
+
   it('enforces one principal per GitHub installation identity', () => {
     const root = mkdtempSync(join(tmpdir(), 'cloud-harness-github-unique-')); roots.push(root);
     const state = new StateStore(join(root, 'state.db'));
@@ -281,5 +294,26 @@ describe('SQLite GitHub installation store', () => {
     expect(store.getInstallation(principal, 999)).toMatchObject({ issues: 'read', pullRequests: 'none', generation: 2 });
 
     state.close();
+  });
+
+  it('persists the administration level and account type, leaving older records unverified', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cloud-harness-github-admin-')); roots.push(root);
+    const statePath = join(root, 'state.db');
+    const state = new StateStore(statePath);
+    const principal = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'a' });
+    const store = new SqliteGitHubInstallationStore(state.database);
+    const base = { appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', issues: null, pullRequests: null, status: 'active' as const, repositories: [] };
+    store.replaceVerified(principal, base, 100);
+    const unverified = store.getInstallation(principal, 2);
+    expect(unverified).not.toHaveProperty('administration');
+    expect(unverified).not.toHaveProperty('accountType');
+
+    store.replaceVerified(principal, { ...base, administration: 'write', accountType: 'Organization' }, 200);
+    state.close();
+    const reopened = new StateStore(statePath);
+    const reopenedStore = new SqliteGitHubInstallationStore(reopened.database);
+    expect(reopenedStore.getInstallation(principal, 2)).toMatchObject({ administration: 'write', accountType: 'Organization' });
+    expect(reopenedStore.markUninstalled(principal, 2, 300)).toMatchObject({ status: 'uninstalled', administration: 'write', accountType: 'Organization' });
+    reopened.close();
   });
 });

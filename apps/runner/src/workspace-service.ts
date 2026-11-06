@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { chmod, chown, cp, mkdir, readFile, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
-import { join, relative, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
   DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
@@ -17,6 +17,8 @@ import {
   TOOL_SCHEMA_BY_NAME,
   applyGuidanceActivity,
   buildRepositoryGuidanceSnapshot,
+  hasOperatorDashboard,
+  isMultiPrincipal,
   repositoryGuidanceSummary,
   sanitizeAndAttributeProvenance,
   toolkitSelectionIdentity,
@@ -28,6 +30,8 @@ import {
   type RunnerOperation,
   type RunnerResponse,
   type WorkspaceCapabilityResult,
+  type GitHubRepositoryCreateInput,
+  type PrincipalCapabilityResult,
   type ToolkitSelection,
   type WorkspaceLifecycleSettingName,
   type WorkspaceLifecycleSettingsUpdate,
@@ -35,7 +39,7 @@ import {
   TERMINAL_MAX_INPUT_BYTES
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
-import { EXECUTOR_HARDENING_ARGS, EXECUTOR_RESOURCE_CEILINGS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
+import { EXECUTOR_HARDENING_ARGS, EXECUTOR_RESOURCE_CEILINGS, TOOLBOX_STALE_AFTER_MS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
 import { PackageBuilder } from './package-builder.js';
 import { PACKAGE_OPERATIONS, PackageService, databaseWorkspaceDirectory, type PackageOperation } from './package-service.js';
 import { PackageStore } from './package-store.js';
@@ -43,7 +47,7 @@ import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
 import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken, requiredGitHubPermissions, type GitHubPermissionScope } from './github-app-broker.js';
 import type { GitHubBindingService } from './github-binding-service.js';
 import { ArtifactStoreError, type ArtifactMetadata, type ArtifactStore } from './artifact-store.js';
-import type { GitHubInstallationRecord, GitHubInstallationStore } from './github-installation-store.js';
+import { CONTENTS_PERMISSION_MISSING_REASON, type GitHubInstallationRecord, type GitHubInstallationStore } from './github-installation-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import { OperationManager, type TrackedOperation } from './operation-manager.js';
 import { validateRepositoryUrl } from './repository-policy.js';
@@ -68,6 +72,7 @@ import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
+import { GitHubRepositoryCreator } from './github-repository-creator.js';
 import { FailureIntelligence } from './decision-plane/failure-intelligence.js';
 import type { DecisionPlane } from './decision-plane/decision-plane.js';
 import {
@@ -76,7 +81,17 @@ import {
   resolveGitHubFallbackToken
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
+import { DurableSessionStore } from './durable-session-store.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
+
+/** Where a repository Git credential came from; reported in clone failures, never the token itself. */
+type RepositoryCredentialSource = 'github-app' | 'principal-global-secret' | 'runner-environment';
+interface RepositoryCredential {
+  token: string;
+  source: RepositoryCredentialSource;
+  /** Set when a GitHub App mint failed and the fallback credential was used instead. */
+  appMintError?: unknown;
+}
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const PACKAGE_OPERATION_SET: ReadonlySet<string> = new Set(PACKAGE_OPERATIONS);
@@ -306,6 +321,14 @@ export class WorkspaceService {
   private reaperRunning = false;
   /** Toolbox containers this runner is running now; the semaphore count and the sweep's exclusion list. */
   private readonly liveToolboxContainers = new Set<string>();
+  /** With DOCKER_ON_DEMAND, when a reaper pass last saw Docker activity; startup reconciliation counts as activity. */
+  private lastDockerActivityAt = Date.now();
+  /**
+   * With DOCKER_ON_DEMAND, the idle Docker sweeps still owed since that activity: a closing sweep on the
+   * first idle pass, and a final one once a toolbox container the activity left behind is old enough
+   * for the stale sweep to remove it.
+   */
+  private idleDockerSweepsOwed = 2;
   readonly toolkitCacheManager: ToolkitCacheManager;
   readonly toolkitService: ToolkitService;
   private packageService?: PackageService | undefined;
@@ -314,6 +337,8 @@ export class WorkspaceService {
   private readonly agentManager?: AgentManager | undefined;
   private readonly metadata?: MetadataStore | undefined;
   private failureIntelligence?: FailureIntelligence | undefined;
+  /** Workspace-independent organization repository creation through the principal's App installation. */
+  readonly repositoryCreator: GitHubRepositoryCreator;
   constructor(
     private readonly config: RunnerConfig,
     private readonly store: StateStore,
@@ -336,6 +361,14 @@ export class WorkspaceService {
     this.agentManager = manager ?? (config.agents
       ? new AgentManager(config.agents, store, {
           ...managerDependencies,
+          // Durable-runtime session stores sit beside the state database. The store loads the
+          // experimental storage code only while the durable runtime is enabled; with it off it
+          // still deletes stores left by an earlier run when their workspace closes.
+          durableSessions: managerDependencies.durableSessions ?? new DurableSessionStore({
+            stateDir: join(dirname(config.stateDb), 'agent-sessions'),
+            enabled: config.agents.durableRuntimeEnabled,
+            maxLineageBytes: config.agents.limits.maxDurableLineageBytes
+          }),
           toolExecutor: async (request) => await this.executeAgentProxy(request),
           repositoryGuidance: async (request) => {
             const record = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
@@ -358,6 +391,21 @@ export class WorkspaceService {
       }
     });
     this.operations.redactorProvider = (wsId) => this.getRedactor(wsId);
+    this.repositoryCreator = new GitHubRepositoryCreator({
+      config: this.config,
+      installations: this.githubInstallations,
+      idempotency: this.store,
+      audit: (principalId, subjectId, details) => {
+        try {
+          this.metadata?.recordAudit(principalId, 'github.repository_create', 'github_repository', subjectId, 1, details);
+        } catch { /* outcome audit persistence is best-effort */ }
+      },
+      refreshInstallation: this.githubBinding
+        ? async (principalId, installationId) => {
+            await this.githubBinding!.reconcile(principalId, this.installationReconcileAudit(principalId), installationId);
+          }
+        : undefined
+    });
     // A running terminal is active work: reads, input, and resizes refresh the lease (throttled by the
     // operation manager). `touch` keeps the existing wall-clock cap, so a terminal never outlives it.
     this.operations.onTerminalActivity = (wsId) => {
@@ -507,10 +555,10 @@ export class WorkspaceService {
   }
 
   async start(): Promise<void> {
-    if ((this.config.authMode ?? 'owner-bearer') === 'cloudflare-access') {
+    if (isMultiPrincipal(this.config.authMode)) {
       const legacyOwners = this.store.legacyWorkspaceOwnerIds();
       if (legacyOwners.length > 0 && !this.config.legacyPrincipalMapping) {
-        throw new Error('cloudflare-access mode requires an exact legacy principal mapping before startup');
+        throw new Error(`${this.config.authMode} mode requires an exact legacy principal mapping before startup`);
       }
       if (this.config.legacyPrincipalMapping) this.store.applyLegacyPrincipalMapping(this.config.legacyPrincipalMapping);
       this.store.applyPrincipalRelinks(this.config.principalRelinks ?? [], (database, result) => {
@@ -823,11 +871,14 @@ export class WorkspaceService {
     await mkdir(jobPath, { recursive: true, mode: 0o700 });
     await chmod(jobPath, 0o777);
 
-    let repositoryToken = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
+    const credential = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
+    let repositoryToken = credential?.token;
+    let credentialSource: RepositoryCredentialSource | 'none' = credential?.source ?? 'none';
+    let appMintError: unknown = credential?.appMintError;
     let cachePathForVolume: string | undefined;
     if (this.config.enableRepoCache) {
       try {
-        const cacheResult = await this.repoCacheManager.acquireCacheMirror(record.ownerId, record.repositoryUrl, repositoryToken);
+        const cacheResult = await this.repoCacheManager.acquireCacheMirror(record.ownerId, record.repositoryUrl, credential?.token);
         if (cacheResult.isReady) {
           cachePathForVolume = cacheResult.cachePath;
         }
@@ -862,19 +913,37 @@ export class WorkspaceService {
       await this.safeRemovePath(repositoryPath);
       result = await runClone(repositoryToken, undefined);
     }
-    if (result.exitCode !== 0 && !repositoryToken) {
-      const refreshedToken = await this.refreshRepositoryToken(record.ownerId, repositoryUrl);
+    if (result.exitCode !== 0 && credentialSource !== 'github-app') {
+      // A fallback (or missing) credential failed: the principal's GitHub App
+      // grant may simply be stale, so reconcile once and retry with an App token.
+      let refreshedToken: string | undefined;
+      try {
+        refreshedToken = await this.refreshRepositoryToken(record.ownerId, repositoryUrl);
+      } catch (error) {
+        appMintError = error;
+      }
       if (refreshedToken) {
         await this.safeRemovePath(repositoryPath);
         repositoryToken = refreshedToken;
+        credentialSource = 'github-app';
         result = await runClone(repositoryToken, undefined);
       }
     }
-    if (result.exitCode !== 0) throw new HarnessError('UNAVAILABLE', `repository clone failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 502, true);
+    if (result.exitCode !== 0) {
+      const appNote = appMintError !== undefined && credentialSource !== 'github-app'
+        ? ` [GitHub App token unavailable: ${appMintError instanceof Error ? appMintError.message : 'mint failed'}]`
+        : '';
+      throw new HarnessError(
+        'UNAVAILABLE',
+        `repository clone failed (credential: ${credentialSource})${appNote}: ${result.stderr || result.stdout}`.slice(0, 2_000),
+        502,
+        true
+      );
+    }
     return repositoryPath;
   }
   private async refreshRepositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write' = 'read'): Promise<string | undefined> {
-    if ((this.config.authMode ?? 'owner-bearer') !== 'cloudflare-access') return undefined;
+    if (!isMultiPrincipal(this.config.authMode)) return undefined;
     if (!this.githubInstallations || !this.githubBinding || !this.config.githubApp) return undefined;
     if (repositoryUrl.hostname.toLowerCase() !== 'github.com') return undefined;
     const repositoryOwner = repositoryUrl.pathname.replace(/^\/+/, '').split('/')[0]?.toLowerCase();
@@ -882,7 +951,19 @@ export class WorkspaceService {
       candidate.status !== 'uninstalled' && candidate.accountLogin.toLowerCase() === repositoryOwner
     );
     if (!installation) return undefined;
-    const audit = this.metadata
+    await this.githubBinding.reconcile(ownerId, this.installationReconcileAudit(ownerId), installation.installationId);
+    return await mintPrincipalRepositoryToken({
+      config: this.config,
+      principalId: ownerId,
+      repositoryUrl,
+      installations: this.githubInstallations,
+      requiredPermission: permission
+    });
+  }
+
+  /** Audit hook for installation records rewritten by a reconcile with GitHub. */
+  private installationReconcileAudit(ownerId: string): ((record: GitHubInstallationRecord) => void) | undefined {
+    return this.metadata
       ? (record: GitHubInstallationRecord) => this.metadata!.recordAuditInTransaction(
           this.store.database,
           ownerId,
@@ -893,14 +974,6 @@ export class WorkspaceService {
           { status: record.status }
         )
       : undefined;
-    await this.githubBinding.reconcile(ownerId, audit, installation.installationId);
-    return await mintPrincipalRepositoryToken({
-      config: this.config,
-      principalId: ownerId,
-      repositoryUrl,
-      installations: this.githubInstallations,
-      requiredPermission: permission
-    });
   }
 
   private async provisionMountDirectories(record: WorkspaceRecord): Promise<{ toolsPath: string; cachePath: string; ownerSkillsPath: string }> {
@@ -1378,9 +1451,9 @@ export class WorkspaceService {
       // Ignore invalid url format fallback
     }
 
-    const authMode = this.config.authMode ?? 'owner-bearer';
+    const multiPrincipal = isMultiPrincipal(this.config.authMode);
     // A fallback credential is a GitHub credential: it never widens capability
-    // for a non-GitHub host, and in cloudflare-access mode the operator-wide
+    // for a non-GitHub host, and in a multi-principal mode the operator-wide
     // environment token is excluded by `envFallbackGitHubToken`.
     const fallbackAvailable = isGitHub && hasGitHubFallbackCredential(this.config, record.ownerId, this.metadata);
     let contentsRead = true;
@@ -1392,11 +1465,21 @@ export class WorkspaceService {
     // A GitHub credential the broker can use exists. Statuses, checks, and Actions levels are not
     // recorded per installation, so those operations are advertised on this and GitHub decides per call.
     let githubBrokered = false;
+    // Set when the GitHub App installation cannot read the repository because it lacks Contents.
+    let repositoryAccessReason: string | undefined;
 
-    if (authMode === 'cloudflare-access') {
+    if (multiPrincipal) {
       if (this.githubInstallations && isGitHub && owner && repository) {
         const grant = this.githubInstallations.getRepositoryGrant(record.ownerId, owner, repository);
-        if (grant && grant.status === 'granted') {
+        const lacksContents = this.githubInstallations.listInstallations(record.ownerId).find((candidate) =>
+          candidate.status === 'active' &&
+          candidate.contents === 'none' &&
+          String(this.config.githubApp?.appId) === candidate.appId &&
+          (grant?.status === 'granted' ? candidate.installationId === grant.installationId : candidate.accountLogin.toLowerCase() === owner)
+        );
+        if (lacksContents) {
+          repositoryAccessReason = CONTENTS_PERMISSION_MISSING_REASON;
+        } else if (grant && grant.status === 'granted') {
           const installation = this.githubInstallations.getInstallation(record.ownerId, grant.installationId);
           if (
             installation &&
@@ -1425,7 +1508,13 @@ export class WorkspaceService {
       // gated on `contentsWrite`. The fallback credential's own permission set is
       // unknown to the harness, so these flags mean "a credential exists and is
       // expected to be able to perform this", not "the harness verified it".
+      if (repositoryAccessReason && !fallbackAvailable) {
+        // The App cannot read the repository and no other credential can: do not claim access.
+        contentsRead = false;
+        contentsWrite = false;
+      }
       if (fallbackAvailable) {
+        repositoryAccessReason = undefined;
         githubBrokered = true;
         contentsRead = true;
         contentsWrite = true;
@@ -1446,8 +1535,14 @@ export class WorkspaceService {
         const grantedIssues = installation?.issues ?? null;
         const grantedPullRequests = installation?.pullRequests ?? null;
         githubBrokered = true;
-        contentsRead = true;
-        contentsWrite = true;
+        if (installation?.contents === 'none' && !fallbackAvailable) {
+          repositoryAccessReason = CONTENTS_PERMISSION_MISSING_REASON;
+          contentsRead = false;
+          contentsWrite = false;
+        } else {
+          contentsRead = true;
+          contentsWrite = true;
+        }
         issuesRead = fallbackAvailable || grantedIssues === null || grantedIssues !== 'none';
         issuesWrite = fallbackAvailable || grantedIssues === null || grantedIssues === 'write';
         pullRequestsRead = fallbackAvailable || grantedPullRequests === null || grantedPullRequests !== 'none';
@@ -1455,7 +1550,8 @@ export class WorkspaceService {
       }
     }
 
-    const privileged = authMode === 'cloudflare-access';
+    // Privileged execution is approved on the operator Dashboard, so only a mode that serves it can offer it.
+    const privileged = hasOperatorDashboard(this.config.authMode);
 
     return {
       workspaceId: record.id,
@@ -1480,6 +1576,7 @@ export class WorkspaceService {
           defaultNetworkProfile: this.store.getWorkspaceDefaultNetworkProfile() ?? this.config.networkProfile
         }
       },
+      ...(repositoryAccessReason ? { repositoryAccessReason } : {}),
       permissions: {
         contents: {
           read: contentsRead,
@@ -2104,7 +2201,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
   private async remoteFetch(record: WorkspaceRecord, remoteRef: string | undefined, signal?: AbortSignal, historySpec = '') {
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
-    const token = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
+    const token = (await this.repositoryToken(record.ownerId, repositoryUrl, 'read'))?.token;
     const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
     try {
       const fetched = await this.runGitTransferHelper(record, 'fetch', transferName, remoteRef ?? '', token, undefined, signal, historySpec);
@@ -2124,7 +2221,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const repoStr = this.extractRepositoryName(repositoryUrl);
     let token: string | undefined;
     try {
-      token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write');
+      token = (await this.repositoryToken(record.ownerId, repositoryUrl, 'write'))?.token;
     } catch (err: unknown) {
       if (err instanceof HarnessError && (err.code === 'FORBIDDEN' || err.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED')) {
         throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', err.message, 403, false, {
@@ -2300,8 +2397,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const approvalGrantToken = validated.approvalGrantToken as string | undefined;
 
     if (privileged) {
-      if ((this.config.authMode ?? 'owner-bearer') === 'owner-bearer') {
-        throw new HarnessError('FORBIDDEN', 'Privileged execution requires Cloudflare Access operator dashboard approval and is disabled in owner-bearer mode', 403, false);
+      if (!hasOperatorDashboard(this.config.authMode)) {
+        throw new HarnessError('FORBIDDEN', `Privileged execution requires Cloudflare Access operator dashboard approval and is disabled in ${this.config.authMode ?? 'owner-bearer'} mode`, 403, false);
       }
       const commandSha256 = createHash('sha256').update(command).digest('hex');
       if (!approvalGrantToken) {
@@ -2444,6 +2541,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }, runSignal).finally(() => {
         held.release();
         this.liveToolboxContainers.delete(name);
+        // A container whose removal failed is left to the stale sweep, which must still be owed.
+        this.noteDockerActivity();
       });
     };
     if (validated.async !== true) return toolboxResponse(await run(signal));
@@ -2767,6 +2866,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const validated = TOOL_SCHEMA_BY_NAME[operation].parse(input) as Record<string, unknown>;
     if (operation === 'workspace_open') return await this.open(ownerId, validated);
     if (operation === 'workspace_list') return this.list(ownerId, validated);
+    // Repository creation is not bound to a workspace: the repository does not exist yet.
+    if (operation === 'github_repository_create') {
+      return await this.repositoryCreator.create(ownerId, validated as GitHubRepositoryCreateInput, signal);
+    }
     if (operation === 'secrets_list') return this.secretsList(ownerId, validated);
     if (operation === 'bash' && validated.target === 'toolbox') return await this.runToolbox(ownerId, validated, signal);
     // Package operations are owner-scoped and never take a workspace mutation lock.
@@ -2960,12 +3063,22 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const workspaceId = validated.workspaceId as string | undefined;
     if (operation === 'workspace_status') return this.status(ownerId, workspaceId);
     if (operation === 'workspace_capabilities') {
-      const rec = this.requireWorkspace(ownerId, workspaceId, false, true);
+      const githubRepositoryCreate = this.repositoryCreator.capability(ownerId);
+      // Without a workspaceId and with no active workspace, only principal-level capabilities exist;
+      // an explicit or ambiguous workspace selection keeps its usual errors.
+      let rec: WorkspaceRecord;
+      try {
+        rec = this.requireWorkspace(ownerId, workspaceId, false, true);
+      } catch (error) {
+        if (workspaceId !== undefined || !(error instanceof HarnessError) || error.code !== 'NOT_FOUND') throw error;
+        const data: PrincipalCapabilityResult = { workspaceId: null, repository: null, githubRepositoryCreate };
+        return { ok: true, message: 'Principal capabilities retrieved (no active workspace)', data, truncated: false };
+      }
       const caps = this.computeWorkspaceCapabilities(rec);
       return {
         ok: true,
         message: 'Workspace capabilities retrieved',
-        data: caps,
+        data: { ...caps, githubRepositoryCreate },
         truncated: false
       };
     }
@@ -3707,7 +3820,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
             let token: string | undefined;
             try {
-              token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write');
+              token = (await this.repositoryToken(record.ownerId, repositoryUrl, 'write'))?.token;
             } catch { /* ignore if token cannot be minted */ }
             const remoteOid = await this.probeRemoteRefOid(record, branch, token, signal);
             if (remoteOid && remoteOid === existingOp.localCommitSha) {
@@ -4393,14 +4506,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
    * credentials are preferred; the operator-supplied fallback is used only when
    * no App token can be minted, so existing App deployments are unaffected.
    */
-  private async repositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write'): Promise<string | undefined> {
-    const fallback = () => resolveGitHubFallbackToken({
-      config: this.config,
-      principalId: ownerId,
-      metadata: this.metadata
-    });
-    if ((this.config.authMode ?? 'owner-bearer') !== 'cloudflare-access') {
-      return await mintRepositoryToken(this.config, repositoryUrl) ?? fallback();
+  private async repositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write'): Promise<RepositoryCredential | undefined> {
+    const fallback = (appMintError?: unknown): RepositoryCredential | undefined => {
+      const resolved = resolveGitHubFallbackCredential({
+        config: this.config,
+        principalId: ownerId,
+        metadata: this.metadata
+      });
+      return resolved ? { ...resolved, ...(appMintError === undefined ? {} : { appMintError }) } : undefined;
+    };
+    if (!isMultiPrincipal(this.config.authMode)) {
+      const appToken = await mintRepositoryToken(this.config, repositoryUrl);
+      return appToken ? { token: appToken, source: 'github-app' } : fallback();
     }
     if (!this.githubInstallations || !this.config.githubApp) return fallback();
 
@@ -4415,15 +4532,15 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       mintError = error;
     }
 
-    if (token) return token;
+    if (token) return { token, source: 'github-app' };
 
     if (permission === 'write' && this.githubBinding) {
       const refreshed = await this.refreshRepositoryToken(ownerId, repositoryUrl, 'write');
-      if (refreshed) return refreshed;
+      if (refreshed) return { token: refreshed, source: 'github-app' };
     }
 
-    const fallbackToken = fallback();
-    if (fallbackToken) return fallbackToken;
+    const fallbackCredential = fallback(mintError);
+    if (fallbackCredential) return fallbackCredential;
 
     if (mintError) throw mintError;
     return undefined;
@@ -5005,10 +5122,53 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     } catch { /* the change is committed; a failed audit write must not report the save as failed */ }
   }
 
+  /**
+   * Records Docker activity that a reaper pass may not observe, a toolbox command that starts and ends
+   * between two passes, so the idle sweeps that clean up a container it left behind are owed.
+   */
+  private noteDockerActivity(now = Date.now()): void {
+    this.lastDockerActivityAt = now;
+    this.idleDockerSweepsOwed = 2;
+  }
+
+  /**
+   * Whether this reaper pass may run the toolbox sweep, which lists containers even when nothing is
+   * running. Without DOCKER_ON_DEMAND every pass does. With it, a pass sweeps while a workspace is
+   * enumerated or a toolbox container is live; after any Docker activity (seen by a pass or recorded by
+   * `noteDockerActivity`) it owes a closing sweep and a final one once a container that activity left
+   * behind is old enough to be stale, and after them it stops calling Docker, so an idle runner never
+   * wakes a suspended remote Docker host. The remaining reaper steps call Docker only when they have work:
+   * package GC only for a directory it cannot remove itself, and the workspace steps only for an
+   * enumerated workspace or a recoverable one whose auto-close is due (at most hourly while unsaved work
+   * defers it), so they need no gate.
+   */
+  private dockerSweepDue(now: number): boolean {
+    if (this.config.dockerOnDemand !== true) return true;
+    if (this.store.active().length > 0 || this.liveToolboxContainers.size > 0) {
+      this.noteDockerActivity(now);
+      return true;
+    }
+    if (this.idleDockerSweepsOwed >= 2) return true;
+    return this.idleDockerSweepsOwed === 1 && now - this.lastDockerActivityAt >= TOOLBOX_STALE_AFTER_MS;
+  }
+
+  /**
+   * The reaper sweeps that run regardless of workspaces. Package GC runs on every pass: it is limited to
+   * once an hour and calls Docker only for a directory it cannot remove itself. The stale toolbox sweep
+   * lists containers, so DOCKER_ON_DEMAND gates it.
+   */
+  private async sweepDocker(now: number): Promise<void> {
+    if (this.config.packagesEnabled === true) await this.packages.collectGarbage(now).catch(() => undefined);
+    if (!this.dockerSweepDue(now)) return;
+    const idle = this.store.active().length === 0 && this.liveToolboxContainers.size === 0;
+    const swept = await reapStaleToolboxContainers(this.instanceId, this.liveToolboxContainers, now).then(() => true, () => false);
+    // A failed idle sweep stays owed, so the next pass retries it before the runner goes quiet.
+    if (idle && swept && this.idleDockerSweepsOwed > 0) this.idleDockerSweepsOwed -= 1;
+  }
+
   private async reapExpired(): Promise<void> {
     const now = Date.now();
-    await reapStaleToolboxContainers(this.instanceId, this.liveToolboxContainers, now).catch(() => undefined);
-    if (this.config.packagesEnabled === true) await this.packages.collectGarbage(now).catch(() => undefined);
+    await this.sweepDocker(now);
     const hasDependencyWorkspaces = this.store.active().some((r) => r.status === 'ACTIVE' && r.networkProfile === 'dependency-access');
     if (hasDependencyWorkspaces) {
       const attestation = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));

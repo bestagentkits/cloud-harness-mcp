@@ -19,7 +19,7 @@ describe('StateStore Schema Version 10 Migration & Knowledge Plane', () => {
     const store = new StateStore(dbPath);
     try {
       const row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(row.version).toBe(14);
+      expect(row.version).toBe(17);
 
       // Verify knowledge tables exist
       const tableRows = store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
@@ -41,7 +41,7 @@ describe('StateStore Schema Version 10 Migration & Knowledge Plane', () => {
     try {
       store.database.exec('PRAGMA foreign_keys = ON');
       const initial = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(initial.version).toBe(14);
+      expect(initial.version).toBe(17);
 
       // Head is v12, so step down through v11 and v10 to reach v9.
       downgradeStateSchemaToV11(store.database);
@@ -69,7 +69,7 @@ describe('StateStore Schema Version 10 Migration & Knowledge Plane', () => {
       // Re-upgrade to exact version 10
       migratePrincipalSchema(store.database);
       const v10Row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(v10Row.version).toBe(14);
+      expect(v10Row.version).toBe(17);
 
       const tableRowsV10 = store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
       const tablesV10 = new Set(tableRowsV10.map((r) => r.name));

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { HarnessError, sanitizeAndAttributeProvenance, type RunnerConfig } from '@cloud-harness/contracts';
+import { HarnessError, sanitizeAndAttributeProvenance, WorkspaceCapabilityResultSchema, type RunnerConfig } from '@cloud-harness/contracts';
 import { InMemoryGitHubInstallationStore } from '../src/github-installation-store.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
@@ -62,7 +62,7 @@ afterEach(() => {
   }
 });
 
-function createFixture(options: { authMode?: 'owner-bearer' | 'cloudflare-access'; githubApp?: RunnerConfig['githubApp']; githubToken?: string; githubSecret?: string; builtinSkillsRoot?: string } = {}) {
+function createFixture(options: { authMode?: RunnerConfig['authMode']; githubApp?: RunnerConfig['githubApp']; githubToken?: string; githubSecret?: string; builtinSkillsRoot?: string } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ch-cap-test-'));
   temporaryDirectories.push(directory);
   const workspaceId = `ws_${'c'.repeat(24)}`;
@@ -221,6 +221,26 @@ describe('Workspace Capabilities and Authorization Preflight', () => {
       expect(harnessErr.repository).toBe('test-org/test-repo');
       expect(harnessErr.requiredCapability).toBe('repository.push');
     }
+  });
+
+  it('does not claim contents read when the installation lacks the Contents permission', async () => {
+    const { service, installations, workspaceId, ownerId } = createFixture({
+      authMode: 'cloudflare-access',
+      githubApp: { appId: 100, privateKey: 'key', appSlug: 'test-app' }
+    });
+    installations.replaceVerified(ownerId, {
+      appId: 100, installationId: 'inst_1', accountId: 'acc_1', accountLogin: 'test-org', status: 'active',
+      issues: 'write', pullRequests: 'write', contents: 'none', repositories: []
+    }, Date.now());
+
+    const res = await service.execute('principal_1', 'workspace_capabilities', { workspaceId });
+    const data = res.data as { capabilities: { repository: Record<string, boolean> }; permissions: { contents: { read: boolean; write: boolean } }; operations: Record<string, boolean>; repositoryAccessReason?: string };
+    expect(data.capabilities.repository.read).toBe(false);
+    expect(data.capabilities.repository.push).toBe(false);
+    expect(data.permissions.contents).toEqual({ read: false, write: false });
+    expect(data.operations.gitFetch).toBe(false);
+    expect(data.repositoryAccessReason).toBe('GitHub App installation lacks the Contents permission; an owner must approve it');
+    expect(() => WorkspaceCapabilityResultSchema.parse(data)).not.toThrow();
   });
 
   it('computes permissions accurately in cloudflare-access mode based on repository grants', async () => {
@@ -406,6 +426,41 @@ describe('Workspace Capabilities and Authorization Preflight', () => {
     expect(token).toBeUndefined();
   });
 
+  it('refuses the operator-wide fallback credential in oidc mode, which serves several principals', async () => {
+    const { service, workspaceId } = createFixture({
+      authMode: 'oidc',
+      githubApp: { appId: 100, privateKey: 'key', appSlug: 'test-app' },
+      githubToken: `ghp_${'f'.repeat(36)}`
+    });
+
+    const res = await service.execute('principal_1', 'workspace_capabilities', { workspaceId });
+    const data = res.data as { capabilities: { repository: Record<string, boolean> } };
+    expect(data.capabilities.repository.push).toBe(false);
+    expect(data.capabilities.repository.issuesWrite).toBe(false);
+
+    const token = await (service as unknown as {
+      repositoryToken: (ownerId: string, url: URL, permission: 'read' | 'write') => Promise<string | undefined>;
+    }).repositoryToken('principal_1', new URL('https://github.com/test-org/test-repo.git'), 'write');
+    expect(token).toBeUndefined();
+  });
+
+  it.each([
+    ['owner-bearer', false],
+    ['cloudflare-access', true],
+    ['oidc', false]
+  ] as const)('advertises privileged execution in %s mode only when the operator Dashboard can approve it', async (authMode, privileged) => {
+    const { service, workspaceId } = createFixture({ authMode });
+    const res = await service.execute('principal_1', 'workspace_capabilities', { workspaceId });
+    const data = res.data as { capabilities: { workspace: { privileged: boolean } } };
+    expect(data.capabilities.workspace.privileged).toBe(privileged);
+  });
+
+  it('refuses a privileged command in oidc mode, which has no Dashboard approver', async () => {
+    const { service, workspaceId } = createFixture({ authMode: 'oidc' });
+    await expect(service.execute('principal_1', 'exec_run', { workspaceId, command: 'id', privileged: true }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining('disabled in oidc mode') });
+  });
+
   it('resolves the fallback credential for Git read and write operations when no App token is minted', async () => {
     const fallbackToken = `ghp_${'f'.repeat(36)}`;
     const { service } = createFixture({
@@ -413,11 +468,15 @@ describe('Workspace Capabilities and Authorization Preflight', () => {
       githubToken: fallbackToken
     });
     const call = (service as unknown as {
-      repositoryToken: (ownerId: string, url: URL, permission: 'read' | 'write') => Promise<string | undefined>;
+      repositoryToken: (ownerId: string, url: URL, permission: 'read' | 'write') => Promise<{ token: string; source: string } | undefined>;
     });
     const repositoryUrl = new URL('https://github.com/test-org/test-repo.git');
-    await expect(call.repositoryToken('principal_1', repositoryUrl, 'read')).resolves.toBe(fallbackToken);
-    await expect(call.repositoryToken('principal_1', repositoryUrl, 'write')).resolves.toBe(fallbackToken);
+    const read = await call.repositoryToken('principal_1', repositoryUrl, 'read');
+    const write = await call.repositoryToken('principal_1', repositoryUrl, 'write');
+    expect(read?.token).toBe(fallbackToken);
+    expect(read?.source).toBe('runner-environment');
+    expect(write?.token).toBe(fallbackToken);
+    expect(write?.source).toBe('runner-environment');
   });
 
   it('reads owner skills from the workspace toolkit projection instead of a host-global executor path', async () => {

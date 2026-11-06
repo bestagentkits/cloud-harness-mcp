@@ -57,7 +57,7 @@ const artifacts = new ArtifactStore(store.database, {
   defaultRetentionMs: config.artifactRetentionSeconds * 1_000,
   maxRetentionMs: 2_592_000_000
 });
-const gatewayControl = config.agents ? new DockerAgentGatewayControl() : undefined;
+const gatewayControl = config.agents ? new DockerAgentGatewayControl(config.agentGatewayContainer) : undefined;
 const modelProfiles = keyring ? new ModelProfileStateRepository(store.database, keyring) : undefined;
 const service = new WorkspaceService(config, store, metadata, githubInstallations, githubBinding, artifacts, { modelProfiles, ...(gatewayControl !== undefined ? { gateway: gatewayControl } : {}) });
 const decisionPlane = createRunnerDecisionPlane({

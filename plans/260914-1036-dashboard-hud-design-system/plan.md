@@ -175,23 +175,30 @@ does not "fix" them by distorting the palette.
 
 ## Success Criteria
 
-- [ ] `apps/api/dashboard/dashboard.css` declares the marketing HUD ramp in
+Met when PR #194 merged (2026-09-14). The later "ops ledger" art direction in
+`apps/api/dashboard/dashboard.css` and `docs/design-guidelines.md` supersedes the
+marketing-site source comment and part of the HUD naming; the contrast,
+light-theme, cyan-accent, and no-hex/gradient/import gates still run in
+`apps/api/test/dashboard-design-tokens.test.ts` and
+`apps/api/test/dashboard-ui-contract.test.ts`.
+
+- [x] `apps/api/dashboard/dashboard.css` declares the marketing HUD ramp in
       OKLCH, with a source comment naming `site/index.html` / `site/haas.html`.
-- [ ] `:root` renders the dark HUD palette; both the `:root[data-theme="light"]`
+- [x] `:root` renders the dark HUD palette; both the `:root[data-theme="light"]`
       block and the `@media (prefers-color-scheme: light)` block render the light
       companion.
-- [ ] `--accent` is cyan (hue ~203 dark, ~242 light); the corner brackets and
+- [x] `--accent` is cyan (hue ~203 dark, ~242 light); the corner brackets and
       active nav rail are cyan; `--warning` is the only surviving amber.
-- [ ] A new contrast test proves AA for the pairs in the table above in both
+- [x] A new contrast test proves AA for the pairs in the table above in both
       themes, and fails if any value regresses.
-- [ ] `apps/api/test/dashboard-ui-contract.test.ts` passes unmodified except for
+- [x] `apps/api/test/dashboard-ui-contract.test.ts` passes unmodified except for
       additive assertions.
-- [ ] Every Phase 4 defect has a before/after note and a passing check.
-- [ ] No `#rrggbb`, no `gradient(`, no `url(` / `@font-face` / `@import`, no
+- [x] Every Phase 4 defect has a before/after note and a passing check.
+- [x] No `#rrggbb`, no `gradient(`, no `url(` / `@font-face` / `@import`, no
       inline `style=` — each asserted by the contract test.
-- [ ] `npx vitest run dashboard` (all five dashboard UI suites), `npm run lint`,
+- [x] `npx vitest run dashboard` (all five dashboard UI suites), `npm run lint`,
       `npm run typecheck`, and `npm run verify` pass.
-- [ ] `docs/design-guidelines.md` describes the HUD system and its deviations;
+- [x] `docs/design-guidelines.md` describes the HUD system and its deviations;
       `docs-site/dashboard/` is checked for stale visual claims.
 
 ## Non-goals

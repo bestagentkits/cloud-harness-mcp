@@ -1,5 +1,5 @@
 import type { JsonlWriter } from './jsonl.js';
-import type { OutputRecord, TerminalState, Usage } from './protocol-schemas.js';
+import type { OutputRecord, SessionMessageRecord, TerminalState, Usage } from './protocol-schemas.js';
 
 export class OutputLimitError extends Error {}
 
@@ -23,7 +23,7 @@ export class BoundedOutput {
     this.#maxEventBytes = limits.maxEventBytes;
   }
 
-  emit(record: Exclude<OutputRecord, { type: 'terminal' }>): Promise<void> {
+  emit(record: Exclude<OutputRecord, { type: 'terminal' | 'session_message' }>): Promise<void> {
     if (this.#terminal) throw new Error('cannot emit after terminal record');
     const bytes = Buffer.byteLength(JSON.stringify(record), 'utf8') + 1;
     if (record.type === 'event' && this.#events + 1 > this.#maxEvents) {
@@ -38,6 +38,21 @@ export class BoundedOutput {
     if (record.type === 'event') this.#events += 1;
     this.#outputBytes += bytes;
     return this.#writer.write(record);
+  }
+
+  /**
+   * Writes a persisted-session record. It is runner state, not caller output, so it never counts
+   * against the caller's event or byte budget. A record that cannot be written (over the protocol
+   * record limit, or not a valid message) is skipped and `undefined` is returned; the resulting
+   * sequence gap makes the runner stop the log rather than fail the run.
+   */
+  emitSession(record: SessionMessageRecord): Promise<void> | undefined {
+    if (this.#terminal) return undefined;
+    try {
+      return this.#writer.write(record);
+    } catch {
+      return undefined;
+    }
   }
 
   terminal(state: TerminalState, usage: Usage, error?: string): Promise<void> {

@@ -1,0 +1,165 @@
+name: Hosted images
+
+# Publishes the images a hosting platform runs against a remote Docker host and the manifest that
+# pins them by digest (scripts/build-tose-manifest.mjs). Release tags pushed with RELEASE_TOKEN
+# start it; tags pushed by the workflow token do not trigger workflows, so dispatch it by hand then.
+# Only stable release tags whose commit is on main publish, and a release's manifest is written once.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable release tag to publish, for example v1.2.3
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hosted-images-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY_NAMESPACE: docker.io/digitop
+  MANIFEST_ASSET: tose-manifest.json
+
+jobs:
+  # Classifies the tag outside the protected environment, so a prerelease or malformed tag never waits
+  # for a deployment approval only to be skipped.
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+    outputs:
+      publish: ${{ steps.tag.outputs.publish }}
+    steps:
+      - name: Classify the release tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ ]]; then
+            echo "::notice::$TAG is a prerelease; hosted images are published for stable releases only."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$TAG is not a release tag."
+            exit 1
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: gate
+    if: needs.gate.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # Docker Hub credentials live in this protected environment, so its reviewers and branch rules gate
+    # every publication.
+    environment: tose-images
+    env:
+      TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Confirm the tag is released from main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$TAG points at $(git rev-parse HEAD), which is not on main."
+            exit 1
+          fi
+      - name: Wait for the release and refuse to replace a published manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # semantic-release pushes the tag before it creates the GitHub release. A release that does not
+          # exist yet has no manifest; wait for it here, before anything is pushed, so the manifest can be
+          # attached at the end.
+          attempts=40
+          for ((attempt = 1; ; attempt++)); do
+            if assets="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"; then
+              break
+            fi
+            if ((attempt >= attempts)); then
+              echo "::error::No GitHub release for $TAG after $attempts attempts; create it, then dispatch this workflow."
+              exit 1
+            fi
+            echo "Waiting for the $TAG release ($attempt/$attempts)."
+            sleep 15
+          done
+          if grep -qxF "$MANIFEST_ASSET" <<< "$assets"; then
+            echo "::error::$TAG already has $MANIFEST_ASSET; a release's image manifest is never replaced."
+            exit 1
+          fi
+      - name: Sign in to Docker Hub
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
+            echo "::error::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are required."
+            exit 1
+          fi
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+      - name: Build and push images
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          mkdir -p "$RUNNER_TEMP/image-metadata"
+          docker buildx create --use --name hosted-images >/dev/null
+          for entry in api model-gateway executor agent network-guard runner; do
+            repository="$REGISTRY_NAMESPACE/cloudharness-$entry"
+            docker buildx build \
+              --file "docker/$entry.Dockerfile" \
+              --platform linux/amd64 \
+              --provenance=false \
+              --tag "$repository:$version" \
+              --metadata-file "$RUNNER_TEMP/image-metadata/$entry.json" \
+              --push \
+              .
+          done
+      - name: Write the image manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          arguments=()
+          for file in "$RUNNER_TEMP"/image-metadata/*.json; do
+            entry="$(basename "$file" .json)"
+            digest="$(jq -r '."containerimage.digest" // empty' "$file")"
+            arguments+=(--digest "$entry=$digest")
+          done
+          node scripts/build-tose-manifest.mjs \
+            --registry "$REGISTRY_NAMESPACE" \
+            --version "${TAG#v}" \
+            --commit "$(git rev-parse HEAD)" \
+            --repository "$GITHUB_REPOSITORY" \
+            --out deploy/tose/manifest.json \
+            "${arguments[@]}"
+          jq -e '.images | to_entries | all(.value | test("@sha256:"))' deploy/tose/manifest.json
+      - name: Attach the manifest to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cp deploy/tose/manifest.json "$RUNNER_TEMP/$MANIFEST_ASSET"
+          gh release upload "$TAG" "$RUNNER_TEMP/$MANIFEST_ASSET" --repo "$GITHUB_REPOSITORY"
+      - name: Sign out of Docker Hub
+        if: always()
+        run: docker logout docker.io

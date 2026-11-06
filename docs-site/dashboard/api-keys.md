@@ -24,3 +24,10 @@ Static API keys allow IDE extensions (Cursor), local CLI agents (Claude Code, Co
 The key is shown once, in a dialog, and cannot be recovered. Creation moves into that
 dialog rather than sitting under the list, and the action is disabled with an explanation
 when the key limit is reached or the gateway is not ready.
+
+## In the new dashboard
+
+The [new dashboard](index.md#new-dashboard-preview) shows a new key once, in a dialog that
+only **I have saved it** or Escape closes. The key disappears if you leave the page, reload,
+or your dashboard session ends, and it is never kept in the browser, so copy it before you
+move on. A lost key cannot be shown again: revoke it and create another.

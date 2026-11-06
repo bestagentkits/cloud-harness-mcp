@@ -87,14 +87,14 @@ describe('model profile revision pricing columns', () => {
     const columns = revisionColumns(store.database);
     for (const column of PRICING_COLUMNS) expect(columns).toContain(column);
     expect(columns.filter((column) => PRICING_COLUMNS.includes(column))).toHaveLength(PRICING_COLUMNS.length);
-    expect(schemaVersion(store.database)).toBe(14);
+    expect(schemaVersion(store.database)).toBe(17);
   });
 
   it('reads revisions of a legacy database back as user overrides with their prices unchanged', () => {
     const { store } = open();
     const principalId = store.resolvePrincipal({ kind: 'owner', ownerId: 'legacy-owner' });
     const { revisionId } = seedLegacy(store.database, principalId);
-    expect(schemaVersion(store.database)).toBe(14);
+    expect(schemaVersion(store.database)).toBe(17);
 
     const repo = new ModelProfileStateRepository(store.database, keyring());
     new ModelProfileStateRepository(store.database, keyring());
@@ -105,7 +105,7 @@ describe('model profile revision pricing columns', () => {
     expect(profile?.activeRevision?.pricing).toEqual({ inputMicrosPerMillionTokens: 1500, outputMicrosPerMillionTokens: 6000 });
     expect(profile?.activeRevision?.priceProvenance).toEqual(USER_OVERRIDE);
     expect(profile?.activeRevision?.digest).toBe('sha256:legacy');
-    expect(schemaVersion(store.database)).toBe(14);
+    expect(schemaVersion(store.database)).toBe(17);
   });
 
   it('accepts an explicit-column insert from an older runner after the upgrade, with default provenance', () => {
@@ -195,7 +195,7 @@ describe('model profile revision pricing columns', () => {
     store.close();
 
     const reopened = open(path).store;
-    expect(schemaVersion(reopened.database)).toBe(14);
+    expect(schemaVersion(reopened.database)).toBe(17);
     const reopenedRepo = new ModelProfileStateRepository(reopened.database, keyring());
     expect(reopenedRepo.listProfiles(principalId)[0]?.activeRevision).toEqual(created.activeRevision);
   });

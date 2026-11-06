@@ -151,6 +151,21 @@ COMMIT
       expect(attestor.parseFirewallRules(full)).toEqual({ ok: true });
     });
 
+    it('reads INPUT and FORWARD order from the filter table only', () => {
+      // iptables-nft-save prints mangle before filter; its INPUT/FORWARD rules
+      // never decide whether bridge traffic is accepted.
+      const mangle = '*mangle\n-A INPUT -j MARK --set-xmark 0x1/0xffffffff\n-A FORWARD -j MARK --set-xmark 0x1/0xffffffff\nCOMMIT\n';
+      const filter = validIptables.replace(':INPUT ACCEPT [0:0]', ':INPUT ACCEPT [0:0]\n-A FORWARD -j DOCKER-USER');
+      const nat = '*nat\n-A POSTROUTING -s 172.30.240.0/24 -p tcp -m multiport --dports 80,443 -j MASQUERADE\n' +
+        ['8.8.8.8', '1.1.1.1'].flatMap((r) => [`-A POSTROUTING -s 172.30.240.0/24 -p udp -d ${r}/32 --dport 53 -j MASQUERADE`, `-A POSTROUTING -s 172.30.240.0/24 -p tcp -d ${r}/32 --dport 53 -j MASQUERADE`]).join('\n') + '\nCOMMIT';
+      expect(attestor.parseFirewallRules(filter + nat)).toEqual({ ok: true });
+      expect(attestor.parseFirewallRules(mangle + filter + nat)).toEqual({ ok: true });
+      // A managed-looking jump in mangle must not stand in for the filter jump.
+      const mangleOnlyJump = mangle.replace('-A INPUT -j MARK', '-A INPUT -i chm-egress0 -j CHM-INPUT-v1\n-A INPUT -j MARK');
+      const withoutFilterJump = filter.replace('-A INPUT -i chm-egress0 -j CHM-INPUT-v1\n', '-A INPUT -j ts-input\n');
+      expect(attestor.parseFirewallRules(mangleOnlyJump + withoutFilterJump + nat).ok).toBe(false);
+    });
+
     it('accepts dedicated CHM-NAT-v1 chain in nat table', () => {
       const natChainRules = `
 *filter

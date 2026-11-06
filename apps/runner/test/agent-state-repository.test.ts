@@ -3,7 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RunnerAgentLimitsSchema, type AgentBudget, type RunnerAgentLimits } from '@cloud-harness/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
-import { AgentStateRepository, type AgentSpawnReservation } from '../src/agent-state-repository.js';
+import {
+  AgentStateRepository,
+  MAX_AGENT_EFFECT_RECEIPT_BYTES,
+  type AgentRecord,
+  type AgentSpawnReservation
+} from '../src/agent-state-repository.js';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
 const temporaryDirectories: string[] = [];
 const openStores: StateStore[] = [];
@@ -348,5 +353,135 @@ describe('AgentStateRepository', () => {
     expect(row.state).toBe('UNKNOWN');
 
     store.close();
+  });
+
+  describe('effect receipts', () => {
+    function running(repository: AgentStateRepository, workspaceRecord: WorkspaceRecord, suffix: string, epoch: number, session: AgentSpawnReservation['session'] = {}) {
+      const agent = repository.reserveSpawn(reservation(workspaceRecord, suffix, { session })).record;
+      const record = repository.transitionStatus({
+        ownerId: agent.ownerId, workspaceId: agent.workspaceId, agentId: agent.id, generation: agent.generation,
+        runtimeEpoch: epoch, expectedStatuses: ['SPAWNING'], status: 'RUNNING', now: Date.now()
+      });
+      if (!record) throw new Error('expected a running agent');
+      return record;
+    }
+    function receiptSetup() {
+      const context = setup();
+      const repository = new AgentStateRepository(context.store.database, limits(), 'runner-test');
+      const epoch = repository.bumpEpoch('runner-test', Date.now());
+      return { ...context, repository, epoch };
+    }
+    const fenceOf = (agent: AgentRecord, runnerEpoch: number) => ({
+      ownerId: agent.ownerId, workspaceId: agent.workspaceId, agentId: agent.id, agentGeneration: agent.generation, runnerEpoch
+    });
+    const reserveInput = (agent: AgentRecord, runnerEpoch: number, overrides: Record<string, unknown> = {}) => ({
+      ownerId: agent.ownerId, workspaceId: agent.workspaceId, agentId: agent.id, agentGeneration: agent.generation, runnerEpoch,
+      requestId: 'toolu_1', kind: 'files_write', payloadHash: 'a'.repeat(64), replayClass: 'conditional-write' as const,
+      fenced: true, now: Date.now(), ...overrides
+    });
+
+    it('stores the exact result text with the outcome and returns it to a repeated request', () => {
+      const { repository, workspace: workspaceRecord, epoch } = receiptSetup();
+      const agent = running(repository, workspaceRecord, 'r', epoch);
+      const { effect } = repository.reserveEffect(reserveInput(agent, epoch));
+      expect(effect).toMatchObject({ rootAgentId: agent.id, state: 'INTENT', replayClass: 'conditional-write', workspaceGeneration: 1, resultJson: null });
+      const key = { rootAgentId: agent.id, requestId: 'toolu_1', kind: 'files_write' };
+      expect(repository.dispatchEffect({ ...key, fence: fenceOf(agent, epoch), expectedStates: ['INTENT'], intendedSha256: 'b'.repeat(64), now: Date.now() })).toBe(true);
+      const text = '{"ok":true,"message":"File written","data":{"sha256":"bbbb"}}';
+      expect(repository.completeEffect({ ...key, fence: fenceOf(agent, epoch), expectedStates: ['DISPATCHED'], state: 'APPLIED', receipt: { text }, now: 1_000 })).toBe(true);
+
+      const replay = repository.reserveEffect(reserveInput(agent, epoch));
+      expect(replay.replayed).toBe(true);
+      expect(replay.effect).toMatchObject({
+        state: 'APPLIED', resultJson: text, intendedSha256: 'b'.repeat(64), executorGeneration: epoch,
+        retainUntil: 1_000 + limits().sessionRetentionMs, reconciled: false
+      });
+      expect(replay.effect.resultSha256).toMatch(/^[0-9a-f]{64}$/);
+      // A completed effect cannot be completed again.
+      expect(repository.completeEffect({ ...key, fence: fenceOf(agent, epoch), expectedStates: ['DISPATCHED'], state: 'REJECTED', receipt: { text: 'x' }, now: 2_000 })).toBe(false);
+      expect(() => repository.reserveEffect(reserveInput(agent, epoch, { payloadHash: 'c'.repeat(64) }))).toThrow('different payload');
+    });
+
+    it('validates request IDs, digests, and the receipt bound', () => {
+      const { repository, workspace: workspaceRecord, epoch } = receiptSetup();
+      const agent = running(repository, workspaceRecord, 'v', epoch);
+      expect(() => repository.reserveEffect(reserveInput(agent, epoch, { requestId: '../escape' }))).toThrow('invalid effect request ID');
+      expect(() => repository.reserveEffect(reserveInput(agent, epoch, { requestId: 'x'.repeat(129) }))).toThrow('invalid effect request ID');
+      expect(() => repository.reserveEffect(reserveInput(agent, epoch, { intendedSha256: 'NOT-A-DIGEST' }))).toThrow('SHA-256');
+      repository.reserveEffect(reserveInput(agent, epoch));
+      const key = { rootAgentId: agent.id, requestId: 'toolu_1', kind: 'files_write' };
+      repository.dispatchEffect({ ...key, fence: fenceOf(agent, epoch), expectedStates: ['INTENT'], now: Date.now() });
+      expect(() => repository.completeEffect({
+        ...key, fence: fenceOf(agent, epoch), expectedStates: ['DISPATCHED'], state: 'APPLIED',
+        receipt: { text: 'x'.repeat(MAX_AGENT_EFFECT_RECEIPT_BYTES + 1) }, now: Date.now()
+      })).toThrow('exceeds');
+      expect(() => repository.completeEffect({
+        ...key, fence: fenceOf(agent, epoch), expectedStates: ['DISPATCHED'], state: 'UNKNOWN', receipt: { text: 'x' }, now: Date.now()
+      })).toThrow('no receipt');
+    });
+
+    it('refuses effects, usage, and session messages from a stale runner epoch or agent generation', () => {
+      const { repository, workspace: workspaceRecord, epoch } = receiptSetup();
+      const agent = running(repository, workspaceRecord, 'e', epoch);
+      expect(() => repository.reserveEffect(reserveInput(agent, epoch + 1))).toThrow('lifecycle fence');
+      expect(() => repository.reserveEffect(reserveInput({ ...agent, generation: agent.generation + 1 }, epoch))).toThrow('lifecycle fence');
+      repository.reserveEffect(reserveInput(agent, epoch));
+      const key = { rootAgentId: agent.id, requestId: 'toolu_1', kind: 'files_write' };
+      repository.dispatchEffect({ ...key, fence: fenceOf(agent, epoch), expectedStates: ['INTENT'], now: Date.now() });
+
+      const next = repository.bumpEpoch('runner-test', Date.now());
+      expect(repository.completeEffect({ ...key, fence: fenceOf(agent, epoch), expectedStates: ['DISPATCHED'], state: 'APPLIED', receipt: { text: '{}' }, now: Date.now() })).toBe(false);
+      expect(repository.dispatchEffect({ ...key, fence: fenceOf(agent, next), expectedStates: ['DISPATCHED'], now: Date.now() })).toBe(false);
+      expect(repository.findEffect(key)).toMatchObject({ state: 'DISPATCHED', resultJson: null });
+      expect(repository.addUsage(agent.ownerId, agent.workspaceId, agent.id, agent.generation, { toolTimeMs: 50 }, { runnerEpoch: epoch }).toolTimeMs).toBe(0);
+      expect(repository.appendSessionMessage({
+        ownerId: agent.ownerId, workspaceId: agent.workspaceId, agentId: agent.id, generation: agent.generation,
+        runnerEpoch: epoch, seq: 0, message: { role: 'user', content: 'late' }, now: Date.now()
+      })).toBe('FENCED');
+    });
+
+    it('scopes request IDs to a lineage and fences a continued predecessor', () => {
+      const { repository, workspace: workspaceRecord, epoch } = receiptSetup();
+      const predecessor = running(repository, workspaceRecord, 'p', epoch);
+      repository.reserveEffect(reserveInput(predecessor, epoch));
+      const key = { rootAgentId: predecessor.id, requestId: 'toolu_1', kind: 'files_write' };
+      repository.dispatchEffect({ ...key, fence: fenceOf(predecessor, epoch), expectedStates: ['INTENT'], now: Date.now() });
+      repository.completeEffect({ ...key, fence: fenceOf(predecessor, epoch), expectedStates: ['DISPATCHED'], state: 'APPLIED', receipt: { text: '{"ok":true}' }, now: Date.now() });
+      for (const [from, to] of [['RUNNING', 'CANCELLING'], ['CANCELLING', 'SUCCEEDED']] as const) {
+        repository.transitionStatus({
+          ownerId: predecessor.ownerId, workspaceId: predecessor.workspaceId, agentId: predecessor.id, generation: predecessor.generation,
+          expectedStatuses: [from], status: to, now: Date.now()
+        });
+      }
+      const successor = running(repository, workspaceRecord, 's', epoch, { continuedFrom: predecessor.id });
+      expect(repository.lineageRoot(successor.id)).toBe(predecessor.id);
+
+      // The successor's repeat of the predecessor's request finds the predecessor's receipt.
+      const replay = repository.reserveEffect(reserveInput(successor, epoch));
+      expect(replay).toMatchObject({ replayed: true, effect: { agentId: predecessor.id, state: 'APPLIED', resultJson: '{"ok":true}' } });
+      // An unrelated agent with the same request ID has its own lineage.
+      const other = running(repository, workspaceRecord, 'o', epoch);
+      expect(repository.reserveEffect(reserveInput(other, epoch)).replayed).toBe(false);
+
+      // The predecessor's writer is fenced once it has a successor.
+      expect(repository.addUsage(predecessor.ownerId, predecessor.workspaceId, predecessor.id, predecessor.generation, { toolTimeMs: 50 }, { runnerEpoch: epoch }).toolTimeMs).toBe(0);
+      expect(repository.addUsage(successor.ownerId, successor.workspaceId, successor.id, successor.generation, { toolTimeMs: 50 }, { runnerEpoch: epoch }).toolTimeMs).toBe(50);
+    });
+
+    it('purges receipt content past retention but keeps the outcome, and deletes effects with the workspace sessions', () => {
+      const { repository, workspace: workspaceRecord, epoch, store } = receiptSetup();
+      const agent = running(repository, workspaceRecord, 'g', epoch);
+      repository.reserveEffect(reserveInput(agent, epoch));
+      const key = { rootAgentId: agent.id, requestId: 'toolu_1', kind: 'files_write' };
+      repository.dispatchEffect({ ...key, fence: fenceOf(agent, epoch), expectedStates: ['INTENT'], now: Date.now() });
+      repository.completeEffect({ ...key, fence: fenceOf(agent, epoch), expectedStates: ['DISPATCHED'], state: 'APPLIED', receipt: { text: '{"ok":true}' }, now: 1_000 });
+      expect(repository.purgeExpiredReceipts(1_000 + limits().sessionRetentionMs - 1)).toBe(0);
+      expect(repository.purgeExpiredReceipts(1_000 + limits().sessionRetentionMs)).toBe(1);
+      expect(repository.findEffect(key)).toMatchObject({ state: 'APPLIED', resultJson: null, resultSha256: null, retainUntil: null });
+
+      repository.deleteWorkspaceSessions(agent.ownerId, agent.workspaceId);
+      expect(repository.findEffect(key)).toBeUndefined();
+      expect((store.database.prepare('SELECT count(*) AS count FROM agent_effects').get() as { count: number }).count).toBe(0);
+    });
   });
 });

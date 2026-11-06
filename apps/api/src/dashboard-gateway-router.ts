@@ -1,6 +1,6 @@
 import type { NextFunction, Response, Router } from 'express';
 import { z } from 'zod';
-import { HarnessError, type ApiConfig, type RunnerPrincipalSelector, type ToolResult } from '@cloud-harness/contracts';
+import { HarnessError, isCloudflareAccess, type ApiConfig, type RunnerPrincipalSelector, type ToolResult } from '@cloud-harness/contracts';
 import { principalFromAuthInfo } from './auth.js';
 import type { DashboardRequest } from './dashboard-types.js';
 import type { McpGatewayService } from './mcp-gateway/service.js';
@@ -32,7 +32,7 @@ function gatewayPublicUrl(request: DashboardRequest, config: ApiConfig): string 
  * origin with the `/mcp-gateway` path. Null unless that lane is enabled and published.
  */
 function gatewayApiKeyPublicUrl(config: ApiConfig): string | null {
-  if (config.authMode !== 'cloudflare-access' || !config.apiKeyAuthEnabled || !config.apiKeyGatewayPublicUrl) return null;
+  if (!isCloudflareAccess(config.authMode) || !config.apiKeyAuthEnabled || !config.apiKeyGatewayPublicUrl) return null;
   return new URL('/mcp-gateway', config.apiKeyGatewayPublicUrl).toString();
 }
 

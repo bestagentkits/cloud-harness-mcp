@@ -15,6 +15,9 @@ let workspaceId: string | undefined;
 let runnerConfig: RunnerConfig;
 let orphanContainer: string | undefined;
 let foreignOrphanContainer: string | undefined;
+// The suite clones a fixed, tiny tag of this repository, so the ceiling never tracks how large the default branch grows.
+const fixtureRepositoryUrl = 'https://github.com/bestagentkits/cloud-harness-mcp.git';
+const fixtureRef = 'test-fixture-v1';
 const workspaceCeilingBytes = 64 * 1_024 * 1_024;
 const workspaceResultSchema = z.object({ workspaceId: z.string() });
 const executionResultSchema = z.object({ exitCode: z.number().int(), output: z.string() });
@@ -61,7 +64,7 @@ afterAll(async () => {
 describe('real Docker sandbox', () => {
   it('clones, persists edits across calls, enforces container policy, and cleans up', async () => {
     const opened = await service.execute('owner', 'workspace_open', {
-      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      repositoryUrl: fixtureRepositoryUrl, ref: fixtureRef,
       idempotencyKey: 'docker-test-workspace-1', networkProfile: 'network-none'
     });
     expect(opened.ok).toBe(true);
@@ -159,7 +162,7 @@ describe('real Docker sandbox', () => {
     workspaceId = undefined;
 
     const cancellableWorkspace = await service.execute('owner', 'workspace_open', {
-      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      repositoryUrl: fixtureRepositoryUrl, ref: fixtureRef,
       idempotencyKey: 'docker-test-abort-workspace', networkProfile: 'network-none'
     });
     workspaceId = (cancellableWorkspace.data as { workspaceId: string }).workspaceId;
@@ -181,7 +184,7 @@ describe('real Docker sandbox', () => {
 
   it('creates, validates, and rejects invalid AgentKit plans offline through exec_run', async () => {
     const opened = await service.execute('owner', 'workspace_open', {
-      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      repositoryUrl: fixtureRepositoryUrl, ref: fixtureRef,
       idempotencyKey: 'docker-test-agentkit-plan', networkProfile: 'network-none'
     });
     expect(opened.ok).toBe(true);
@@ -220,7 +223,7 @@ describe('real Docker sandbox', () => {
 
   it('enforces 3-zone storage isolation and single-use approval grants for privileged execution', async () => {
     const opened = await service.execute('owner', 'workspace_open', {
-      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      repositoryUrl: fixtureRepositoryUrl, ref: fixtureRef,
       idempotencyKey: 'docker-test-privilege-workspace', networkProfile: 'network-none'
     });
     expect(opened.ok).toBe(true);
@@ -339,7 +342,7 @@ describe('real Docker sandbox', () => {
 
   it('rejects the removed bridge escape hatch and legacy networkMode input', async () => {
     await expect(service.execute('owner', 'workspace_open', {
-      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      repositoryUrl: fixtureRepositoryUrl, ref: fixtureRef,
       idempotencyKey: 'docker-test-legacy-bridge', networkMode: 'bridge'
     })).rejects.toThrow(/networkMode was replaced by networkProfile/);
   }, 30_000);

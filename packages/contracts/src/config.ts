@@ -16,6 +16,54 @@ const httpsUrl = z.url().refine((value) => {
 }, 'HTTPS URL required');
 const enabled = z.preprocess((value) => value === true || value === 'true', z.boolean()).default(false);
 
+/**
+ * How the API authenticates callers. `owner-bearer` serves one owner through a shared bearer token;
+ * `cloudflare-access` and `oidc` both authenticate distinct external principals, keyed by
+ * `(issuer, subject)`, but only `cloudflare-access` serves the operator Dashboard.
+ */
+export const AuthModeSchema = z.enum(['owner-bearer', 'cloudflare-access', 'oidc']);
+export type AuthMode = z.infer<typeof AuthModeSchema>;
+
+/**
+ * True when callers are distinct external principals rather than the single configured owner.
+ * Every security decision that depends on that distinction branches on this, never on a mode name.
+ */
+export function isMultiPrincipal(authMode: AuthMode | undefined): boolean {
+  return (authMode ?? 'owner-bearer') !== 'owner-bearer';
+}
+
+/** True when the instance serves the operator Dashboard and its approval flows. */
+export function hasOperatorDashboard(authMode: AuthMode | undefined): boolean {
+  return authMode === 'cloudflare-access';
+}
+
+/** True for features that exist only behind Cloudflare Access (service tokens, Managed OAuth). */
+export function isCloudflareAccess(authMode: AuthMode | undefined): boolean {
+  return authMode === 'cloudflare-access';
+}
+
+/** True when callers present an OAuth access token (RS256 JWT) issued by the configured OIDC issuer. */
+export function isOidc(authMode: AuthMode | undefined): boolean {
+  return authMode === 'oidc';
+}
+
+/** An RFC 6749 scope token. */
+const scopeToken = z.string().regex(/^[\x21\x23-\x5B\x5D-\x7E]{1,128}$/, 'scope must be a single RFC 6749 scope token');
+
+/**
+ * The canonical URL of this instance, used as the token audience and the RFC 9728 `resource`. It
+ * must be exactly the string the authorization server puts in `aud`, so query, fragment, credentials,
+ * and a trailing slash are refused to keep one spelling.
+ */
+const canonicalResourceUrl = httpsUrl.refine((value) => {
+  try {
+    const url = new URL(value);
+    return !url.username && !url.password && !url.search && !url.hash && !value.endsWith('/') && !value.includes('?') && !value.includes('#');
+  } catch {
+    return false;
+  }
+}, 'canonical resource URL must be an https URL without credentials, query, fragment, or trailing slash');
+
 const principalRelink = z.object({
   oldIssuer: httpsUrl,
   oldSubject: z.string().min(1).max(512),
@@ -26,8 +74,28 @@ const principalRelink = z.object({
   'principal relink source and target must differ'
 );
 
+/**
+ * The Dewee gateway origin the Dashboard webchat proxies to. HTTPS is required; cleartext
+ * http is accepted only for a loopback host (a gateway on the same machine or a test stub),
+ * so the server-side gateway token never crosses a network in the clear.
+ */
+const deweeGatewayUrl = z.url().refine((value) => {
+  try {
+    const url = new URL(value);
+    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    return (url.protocol === 'https:' || (url.protocol === 'http:' && loopback))
+      && !url.username && !url.password && !url.search && !url.hash;
+  } catch {
+    return false;
+  }
+}, 'Dewee gateway URL must be https (or loopback http) without credentials, query or fragment');
+
 const positiveBoundedInteger = (maximum: number, defaultValue: number) =>
   z.coerce.number().int().min(1).max(maximum).default(defaultValue);
+
+/** Upper bounds of a persisted agent session; the agent runtime's `start` schema accepts no more. */
+export const MAX_AGENT_SESSION_MESSAGES = 10_000;
+export const MAX_AGENT_SESSION_BYTES = 7_864_320;
 
 const gatewayUrl = z.url().refine((value) => {
   try {
@@ -89,7 +157,22 @@ export const RunnerAgentLimitsSchema = z.object({
   cleanupRetryLimit: positiveBoundedInteger(1_000, 20),
   cleanupRetryMaxDelayMs: positiveBoundedInteger(86_400_000, 3_600_000),
   retentionSeconds: positiveBoundedInteger(31_536_000, 604_800),
-  lookupHorizonSeconds: positiveBoundedInteger(31_536_000, 2_592_000)
+  lookupHorizonSeconds: positiveBoundedInteger(31_536_000, 2_592_000),
+  // Persisted Pi session bounds. A continuation seeds the whole log through one `start` protocol
+  // record (8 MiB, which also carries a prompt of up to 256 KiB), so the byte bound stays below it.
+  maxSessionMessages: positiveBoundedInteger(MAX_AGENT_SESSION_MESSAGES, 2_000),
+  maxSessionBytes: positiveBoundedInteger(MAX_AGENT_SESSION_BYTES, 7_340_032),
+  sessionRetentionMs: positiveBoundedInteger(31_536_000_000, 604_800_000),
+  // Aggregate bytes of every stored session log, per workspace, principal, and instance. A continuation
+  // copies its predecessor's whole log, so without these the store grows with each continuation.
+  globalSessionBytes: positiveBoundedInteger(17_179_869_184, 1_073_741_824),
+  principalSessionBytes: positiveBoundedInteger(8_589_934_592, 536_870_912),
+  workspaceSessionBytes: positiveBoundedInteger(1_073_741_824, 67_108_864),
+  // On-disk size cap of one durable-runtime lineage's session database. A commit that leaves the
+  // database above it ends the run as LIMIT_EXCEEDED, and the lineage accepts no further commit.
+  maxDurableLineageBytes: z.coerce.number().int().min(1_048_576).max(4_294_967_296).default(268_435_456),
+  // Stored tool-result bytes (receipts) one agent lineage may hold; past it only hashes are kept.
+  maxReceiptBytesPerLineage: positiveBoundedInteger(1_073_741_824, 33_554_432)
 }).strict().superRefine((limits, context) => {
   if (limits.minTtlSeconds > limits.maxTtlSeconds) {
     context.addIssue({ code: 'custom', path: ['minTtlSeconds'], message: 'minimum agent TTL cannot exceed maximum agent TTL' });
@@ -105,6 +188,12 @@ export const RunnerAgentLimitsSchema = z.object({
   }
   if (limits.workspaceRetainedBytes > limits.principalRetainedBytes || limits.principalRetainedBytes > limits.globalRetainedBytes) {
     context.addIssue({ code: 'custom', path: ['workspaceRetainedBytes'], message: 'retained byte limits must satisfy workspace <= principal <= global' });
+  }
+  if (limits.workspaceSessionBytes > limits.principalSessionBytes || limits.principalSessionBytes > limits.globalSessionBytes) {
+    context.addIssue({ code: 'custom', path: ['workspaceSessionBytes'], message: 'session byte limits must satisfy workspace <= principal <= global' });
+  }
+  if (limits.maxSessionBytes > limits.workspaceSessionBytes) {
+    context.addIssue({ code: 'custom', path: ['maxSessionBytes'], message: 'one session cannot be allowed more bytes than its workspace session budget' });
   }
   if (limits.retentionSeconds > limits.lookupHorizonSeconds) {
     context.addIssue({ code: 'custom', path: ['retentionSeconds'], message: 'retention cannot exceed lookup horizon' });
@@ -131,18 +220,35 @@ export const RunnerAgentsConfigSchema = z.object({
     (profiles) => new Set(profiles.map((profile) => profile.id)).size === profiles.length,
     'agent profile IDs must be unique'
   ),
+  // Instance switch for persisted Pi sessions and `agent_spawn.continueFrom`. The decision is made
+  // per agent at spawn: turning it off refuses new continuations and stops recording for agents
+  // spawned afterwards; stored sessions age out through retention.
+  sessionPersistenceEnabled: enabled,
+  // Instance switch for the opt-in pi-durable agent engine, read at runner start. Off refuses new and
+  // continued durable spawns, and nothing resumes on its own; flipping it takes a runner restart,
+  // which stops running agents as any restart does. The runner loads the experimental durable
+  // storage code only while it is on.
+  durableRuntimeEnabled: enabled,
   limits: RunnerAgentLimitsSchema.default(DEFAULT_RUNNER_AGENT_LIMITS)
 }).strict();
 
 export const ApiConfigSchema = z.object({
   host: z.string().default('0.0.0.0'),
   port: z.coerce.number().int().min(1).max(65_535).default(3000),
-  authMode: z.enum(['owner-bearer', 'cloudflare-access']).optional(),
+  authMode: AuthModeSchema.optional(),
   ownerId: z.string().min(1).max(100).default('owner'),
   bearerToken: token.optional(),
   accessIssuer: httpsUrl.optional(),
   accessAudience: z.string().min(1).max(512).optional(),
   accessJwksUrl: httpsUrl.optional(),
+  /** `oidc` mode: the authorization server whose RS256 access tokens this instance accepts. */
+  oidcIssuer: httpsUrl.optional(),
+  /** `oidc` mode: this instance's canonical URL, required in the token `aud` claim. */
+  oidcAudience: canonicalResourceUrl.optional(),
+  oidcJwksUrl: httpsUrl.optional(),
+  /** `oidc` mode: the scope every accepted token must carry in its space-delimited `scope` claim. */
+  /** Defaults to `cloudharness:operator` after validation; setting it outside oidc mode is refused. */
+  oidcRequiredScope: scopeToken.optional(),
   apiKeyAuthEnabled: enabled,
   apiKeyGatewayAccessAudience: z.string().min(1).max(512).optional(),
   apiKeyGatewayServiceSubject: z.string().regex(/^cf-service:[A-Za-z0-9_-]+$/).max(512).optional(),
@@ -151,6 +257,12 @@ export const ApiConfigSchema = z.object({
   runnerToken: token,
   publicHosts: z.array(z.string().min(1)).min(1),
   allowedOrigins: z.array(z.url()).default([]),
+  /**
+   * Which Dashboard UI `/dashboard` serves: the shipped `legacy` shell or the `react`
+   * app from `apps/dashboard`. Unset means `legacy`; a per-browser `?ui=` canary cookie
+   * can still opt into either (see `apps/api/src/dashboard-react-assets.ts`).
+   */
+  dashboardUi: z.enum(['legacy', 'react']).optional(),
   requestTimeoutMs: z.coerce.number().int().min(1_000).max(300_000).default(60_000),
   maxBodyBytes: z.coerce.number().int().min(1_024).max(4_194_304).default(1_048_576),
   mcpGatewayTimeoutMs: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
@@ -167,27 +279,57 @@ export const ApiConfigSchema = z.object({
     const url = new URL(value);
     const loopback = url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
     return (url.protocol === 'https:' || loopback) && url.pathname === '/dashboard/mcp-oauth/callback' && !url.search && !url.hash;
-  }, 'redirect URL must be an https (or loopback http) URL ending in /dashboard/mcp-oauth/callback').optional()
+  }, 'redirect URL must be an https (or loopback http) URL ending in /dashboard/mcp-oauth/callback').optional(),
+  /**
+   * Dashboard webchat (Dewee). The gateway URL, gateway token and webchat signing secret are
+   * all set or all unset; unset disables `/dashboard/api/v1/dewee/*` with a typed 503.
+   */
+  deweeGatewayUrl: deweeGatewayUrl.optional(),
+  deweeGatewayToken: z.string().min(16).max(4_096).refine((value) => !value.startsWith('change-me'), 'placeholder secret is forbidden').optional(),
+  deweeWebchatSecret: token.optional(),
+  deweeTenantId: z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/).optional(),
+  deweeAgentId: z.string().regex(/^[A-Za-z0-9_.:-]{1,64}$/).default('cloud-harness-operator'),
+  deweeChatTimeoutMs: z.coerce.number().int().min(10_000).max(600_000).default(180_000)
 }).superRefine((config, context) => {
+  const deweeValues = [config.deweeGatewayUrl, config.deweeGatewayToken, config.deweeWebchatSecret];
+  if (deweeValues.some((value) => value !== undefined) && deweeValues.some((value) => value === undefined)) {
+    context.addIssue({ code: 'custom', path: ['deweeGatewayUrl'], message: 'Dewee gateway URL, gateway token and webchat secret must all be set or all be unset' });
+  }
   const mode = config.authMode ?? 'owner-bearer';
   const accessValues = [config.accessIssuer, config.accessAudience, config.accessJwksUrl];
+  const oidcValues = [config.oidcIssuer, config.oidcAudience, config.oidcJwksUrl, config.oidcRequiredScope];
   const apiKeyValues = [config.apiKeyGatewayAccessAudience, config.apiKeyGatewayServiceSubject, config.apiKeyGatewayPublicUrl];
-  if (mode === 'owner-bearer') {
-    if (!config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: 'bearer token is required in owner-bearer mode' });
-    if (accessValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['authMode'], message: 'Cloudflare Access settings are forbidden in owner-bearer mode' });
+  if (!isCloudflareAccess(mode)) {
+    if (accessValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['authMode'], message: `Cloudflare Access settings are forbidden in ${mode} mode` });
     if (config.apiKeyAuthEnabled || apiKeyValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['apiKeyAuthEnabled'], message: 'API key gateway is only valid in cloudflare-access mode' });
+  }
+  if (mode !== 'oidc' && oidcValues.some((value) => value !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['authMode'], message: `OIDC settings are forbidden in ${mode} mode` });
+  }
+  if (!isMultiPrincipal(mode)) {
+    if (!config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: 'bearer token is required in owner-bearer mode' });
     if (config.mcpGatewayAllowInsecureHttp && !config.mcpGatewayAllowPrivateEndpoints) {
       context.addIssue({ code: 'custom', path: ['mcpGatewayAllowInsecureHttp'], message: 'cleartext http MCP gateway endpoints require private endpoint opt-in' });
     }
     return;
   }
   if (config.mcpGatewayAllowInsecureHttp) {
-    context.addIssue({ code: 'custom', path: ['authMode'], message: 'cleartext http MCP gateway endpoints are forbidden in cloudflare-access mode' });
+    context.addIssue({ code: 'custom', path: ['authMode'], message: `cleartext http MCP gateway endpoints are forbidden in ${mode} mode` });
   }
   if (config.mcpGatewayAllowPrivateEndpoints) {
-    context.addIssue({ code: 'custom', path: ['authMode'], message: 'private MCP gateway endpoints are forbidden in cloudflare-access mode' });
+    context.addIssue({ code: 'custom', path: ['authMode'], message: `private MCP gateway endpoints are forbidden in ${mode} mode` });
   }
-  if (config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: 'owner bearer token is forbidden in cloudflare-access mode' });
+  if (config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: `owner bearer token is forbidden in ${mode} mode` });
+  if (mode === 'oidc') {
+    for (const [path, value] of [
+      ['oidcIssuer', config.oidcIssuer],
+      ['oidcAudience', config.oidcAudience],
+      ['oidcJwksUrl', config.oidcJwksUrl]
+    ] as const) {
+      if (!value) context.addIssue({ code: 'custom', path: [path], message: `${path} is required in oidc mode` });
+    }
+    return;
+  }
   for (const [path, value] of [
     ['accessIssuer', config.accessIssuer],
     ['accessAudience', config.accessAudience],
@@ -209,7 +351,7 @@ export const ApiConfigSchema = z.object({
   } else if (apiKeyValues.some((value) => value !== undefined)) {
     context.addIssue({ code: 'custom', path: ['apiKeyAuthEnabled'], message: 'API key gateway settings require API key authentication to be enabled' });
   }
-});
+}).transform((config) => ({ ...config, oidcRequiredScope: config.oidcRequiredScope ?? 'cloudharness:operator' }));
 
 export const SecretKeyringConfigSchema = z.object({
   activeVersion: z.number().int().positive(),
@@ -219,8 +361,20 @@ export const SecretKeyringConfigSchema = z.object({
 export const RunnerConfigSchema = z.object({
   host: z.string().default('0.0.0.0'),
   port: z.coerce.number().int().min(1).max(65_535).default(3001),
-  authMode: z.enum(['owner-bearer', 'cloudflare-access']).optional(),
+  authMode: AuthModeSchema.optional(),
   serviceToken: token,
+  /**
+   * When on, the periodic reaper stops listing stale toolbox containers while no workspace is enumerated
+   * and no toolbox container is live, so an idle runner never wakes a remote Docker host that is suspended
+   * between uses. After any Docker activity it still runs a closing sweep and a final one once a leftover
+   * container is old enough to remove. Off keeps the self-hosted behaviour of sweeping every reaper interval.
+   */
+  dockerOnDemand: enabled,
+  /**
+   * Name of the model gateway container on the Docker host. Unset discovers it through the runner's
+   * own Compose project label, which a runner outside that Docker host cannot read.
+   */
+  agentGatewayContainer: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/, 'agent gateway container must be a Docker container name').optional(),
   jobsRoot: z.string().min(1),
   stateDb: z.string().min(1),
   executorImage: z.string().min(1),
@@ -359,14 +513,14 @@ export const RunnerConfigSchema = z.object({
   if (config.packagesMaxReleaseBytes > config.packagesMaxOwnerBytes) {
     context.addIssue({ code: 'custom', path: ['packagesMaxReleaseBytes'], message: 'PACKAGES_MAX_RELEASE_BYTES must not exceed PACKAGES_MAX_OWNER_BYTES' });
   }
-  if (mode === 'owner-bearer' && config.legacyPrincipalMapping) {
-    context.addIssue({ code: 'custom', path: ['legacyPrincipalMapping'], message: 'legacy principal mapping is only valid in cloudflare-access mode' });
+  if (!isMultiPrincipal(mode) && config.legacyPrincipalMapping) {
+    context.addIssue({ code: 'custom', path: ['legacyPrincipalMapping'], message: 'legacy principal mapping is only valid in cloudflare-access or oidc mode' });
   }
-  if (mode === 'owner-bearer' && config.cloudflareAccessOAuth) {
+  if (!isCloudflareAccess(mode) && config.cloudflareAccessOAuth) {
     context.addIssue({ code: 'custom', path: ['cloudflareAccessOAuth'], message: 'Cloudflare Access Managed OAuth settings are only valid in cloudflare-access mode' });
   }
-  if (mode === 'owner-bearer' && config.principalRelinks !== undefined) {
-    context.addIssue({ code: 'custom', path: ['principalRelinks'], message: 'principal relinks are only valid in cloudflare-access mode' });
+  if (!isMultiPrincipal(mode) && config.principalRelinks !== undefined) {
+    context.addIssue({ code: 'custom', path: ['principalRelinks'], message: 'principal relinks are only valid in cloudflare-access or oidc mode' });
   }
   const relinkSources = new Set<string>();
   for (const [index, mapping] of (config.principalRelinks ?? []).entries()) {
@@ -376,11 +530,11 @@ export const RunnerConfigSchema = z.object({
     }
     relinkSources.add(key);
   }
-  if (mode === 'owner-bearer' && config.githubApp && !config.githubApp.installationId) {
+  if (!isMultiPrincipal(mode) && config.githubApp && !config.githubApp.installationId) {
     context.addIssue({ code: 'custom', path: ['githubApp', 'installationId'], message: 'GitHub App installation ID is required in owner-bearer mode' });
   }
-  if (mode === 'cloudflare-access' && config.githubApp && !config.githubApp.appSlug) {
-    context.addIssue({ code: 'custom', path: ['githubApp', 'appSlug'], message: 'GitHub App slug is required in cloudflare-access mode' });
+  if (isMultiPrincipal(mode) && config.githubApp && !config.githubApp.appSlug) {
+    context.addIssue({ code: 'custom', path: ['githubApp', 'appSlug'], message: `GitHub App slug is required in ${mode} mode` });
   }
   if (config.maxArtifactBytes > config.maxPrincipalArtifactBytes) {
     context.addIssue({ code: 'custom', path: ['maxArtifactBytes'], message: 'per-artifact quota cannot exceed principal quota' });
