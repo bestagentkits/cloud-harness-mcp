@@ -113,3 +113,43 @@ describe('oidc mode and remote Docker host configuration', () => {
     expect(() => loadRunnerConfigWithReadiness()).toThrow(/Docker container name/);
   });
 });
+
+describe('GitHub App user authorization readiness', () => {
+  const githubApp = () => {
+    requiredEnvironment();
+    vi.stubEnv('AUTH_MODE', 'oidc');
+    vi.stubEnv('GITHUB_APP_ID', '123');
+    vi.stubEnv('GITHUB_APP_SLUG', 'cloud-harness');
+    vi.stubEnv('GITHUB_APP_PRIVATE_KEY', '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----');
+  };
+
+  it('warns that bindings are impossible when a multi-principal App has no client credentials', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      githubApp();
+      expect(loadRunnerConfigWithReadiness().config.githubApp).toMatchObject({ appId: 123, clientId: undefined });
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET.*dashboard\/integrations\/github/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays quiet once the client credentials are configured', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      githubApp();
+      vi.stubEnv('GITHUB_APP_CLIENT_ID', 'Iv23client');
+      vi.stubEnv('GITHUB_APP_CLIENT_SECRET', 'client-secret-value');
+      expect(loadRunnerConfigWithReadiness().config.githubApp).toMatchObject({ clientId: 'Iv23client', clientSecret: 'client-secret-value' });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('refuses a client ID without its secret', () => {
+    githubApp();
+    vi.stubEnv('GITHUB_APP_CLIENT_ID', 'Iv23client');
+    expect(() => loadRunnerConfigWithReadiness()).toThrow(/client ID and client secret must be configured together/);
+  });
+});

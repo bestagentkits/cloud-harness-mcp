@@ -1,24 +1,23 @@
 import { createFileRoute, useRouterState } from '@tanstack/react-router';
-import { githubCallbackSearch, hasGitHubCallbackParams } from '@/features/github/github-callback-search';
 import { GitHubPage } from '@/features/github/github-page';
 import { warmPageRead } from '@/lib/page-read';
+import { noSearch } from '@/lib/search-params';
 
 /**
- * The GitHub App installation callback lands here with `state` and `installation_id`
- * (`setup_action` is ignored, as in the classic Dashboard). The page completes it natively
- * and then replaces the URL, so the one-time state does not stay in history. An invalid or
- * incomplete callback is not sent, but its params are cleared from the URL all the same.
+ * The GitHub App callbacks land here: the setup return (`installation_id`, optional
+ * `state`) and the OAuth return (`code` + `state`, or `error`). The page classifies the raw
+ * query, acts on it once, and replaces the URL so the one-time values do not stay in the
+ * address bar or history. A callback that cannot be acted on is cleared all the same.
  */
 export const Route = createFileRoute('/integrations/github')({
   staticData: { pageId: 'github' },
-  validateSearch: githubCallbackSearch,
+  validateSearch: noSearch,
   loader: (match) => warmPageRead('github', match),
   component: GitHubRoute
 });
 
 function GitHubRoute() {
-  const { state, installation_id: installationId } = githubCallbackSearch(Route.useSearch());
-  // The raw query, before validation: invalid values are `undefined` in the validated search.
-  const callbackParams = useRouterState({ select: (router) => hasGitHubCallbackParams(router.location.searchStr) });
-  return <GitHubPage callback={state && installationId ? { state, installationId } : undefined} callbackParams={callbackParams} />;
+  // The raw query string: the page classifies it itself, since a validated search would drop a malformed callback.
+  const search = useRouterState({ select: (router) => router.location.searchStr });
+  return <GitHubPage search={search} />;
 }

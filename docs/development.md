@@ -98,6 +98,13 @@ ships fonts without their `OFL.txt` licence. The limits live in
 the API serves the same manifest through
 [`apps/api/src/dashboard-react-assets.ts`](../apps/api/src/dashboard-react-assets.ts).
 
+The GitHub App connection stores a per-flow nonce in an HttpOnly cookie with the
+`__Host-` prefix, which requires the `Secure` attribute. Chrome and Firefox
+accept it on `http://localhost`; Safari does not store `__Host-`/`Secure`
+cookies on plain-HTTP `localhost`, so **Connect GitHub App** fails there with
+"Finish the GitHub authorization in the browser that started it". Test the
+GitHub binding flow in Chrome or Firefox, or behind HTTPS.
+
 The root `package.json` `overrides` pin a single React 19 copy across the
 workspace, because the docs site's VitePress dependencies would otherwise pull a
 second React and break hooks in the dashboard. `npm run docs:build` still runs

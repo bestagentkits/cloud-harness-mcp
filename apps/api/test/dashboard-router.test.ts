@@ -110,6 +110,16 @@ beforeEach(async () => {
         }, workspaceLifecycle: lifecycleView(lifecycle) } };
       }
       if (operation === 'settings_network_check') return { ok: true, message: 'Dependency egress readiness', truncated: false, data: { ready: true, reason: null } };
+      if (operation === 'github_setup_begin') {
+        return { ok: true, message: 'GitHub setup started', truncated: false, data: {
+          url: 'https://github.com/apps/cloud-harness/installations/new?state=setup-state'
+        } };
+      }
+      if (operation === 'github_authorize_begin') {
+        // The runner mints a fresh one-time state per authorization, as the real one does.
+        const state = `${String(input.installationId).padEnd(8, 'x')}${'q'.repeat(40)}`;
+        return { ok: true, message: 'GitHub authorization started', truncated: false, data: { url: `https://github.com/login/oauth/authorize?state=${state}`, expiresAt: 1 } };
+      }
       if (operation === 'oauth_settings_get' || operation === 'oauth_settings_update') {
         if ((input.grant as { seconds?: number } | undefined)?.seconds === 86_400) {
           return { ok: false, message: 'conflict', truncated: false, error: { code: 'CONFLICT', message: 'The Cloudflare OAuth configuration changed since this page loaded. Reload to see the current values.', retryable: false } };
@@ -308,6 +318,9 @@ describe('dashboard BFF', () => {
 
     const mapped = mapDashboardData('github_status', rawStatus) as Record<string, unknown>;
     expect(mapped.configured).toBe(true);
+    // Only an explicit `true` from the runner enables Connect; a missing flag reads as unconfigured.
+    expect(mapped.userAuthorizationConfigured).toBe(false);
+    expect((mapDashboardData('github_status', { ...rawStatus, userAuthorizationConfigured: true }) as Record<string, unknown>).userAuthorizationConfigured).toBe(true);
     expect(mapped.installations).toHaveLength(2);
     expect(mapped.installation).toMatchObject({ installationId: '101', accountLogin: 'org-one' });
     expect(mapped.repositories).toHaveLength(1);
@@ -344,6 +357,104 @@ describe('dashboard BFF', () => {
     });
     expect(postRes.status).toBe(200);
     expect(calls.at(-1)).toEqual({ operation: 'github_disconnect', input: { installationId: '102' }, principal });
+  });
+
+  it('starts GitHub App installation setup for the signed-in principal', async () => {
+    const session = await send('/api/v1/session');
+    const sessionCookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const body = { expectedAccountId: '1234' };
+    const response = await send('/api/v1/github/setup', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'https://dashboard.example',
+        'x-csrf-token': session.json.csrfToken,
+        cookie: sessionCookie
+      },
+      body: JSON.stringify(body)
+    });
+
+    expect(response.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'github_setup_begin', principal, input: body });
+    expect(response.json.data.url).toBe('https://github.com/apps/cloud-harness/installations/new?state=setup-state');
+  });
+
+  it('binds a GitHub user authorization to the starting browser and derives the redirect from the verified origin', async () => {
+    const session = await send('/api/v1/session');
+    const sessionCookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie: sessionCookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const setupState = 's'.repeat(43);
+
+    const started = await send('/api/v1/github/authorize', {
+      method: 'POST', headers, body: JSON.stringify({ installationId: '4242', state: setupState, redirectUri: 'https://evil.example/dashboard/integrations/github' })
+    });
+    expect(started.status).toBe(400);
+    expect(calls.some((call) => call.operation === 'github_authorize_begin')).toBe(false);
+
+    const authorize = await send('/api/v1/github/authorize', { method: 'POST', headers, body: JSON.stringify({ installationId: '4242', state: setupState }) });
+    expect(authorize.status).toBe(200);
+    const authorizeState = new URL(authorize.json.data.url).searchParams.get('state')!;
+    const setCookie = [authorize.headers['set-cookie']].flat().find((value) => value?.startsWith('__Host-ch-github-authorization-'));
+    expect(setCookie).toMatch(/HttpOnly/);
+    expect(setCookie).toMatch(/Secure/);
+    expect(setCookie).toMatch(/Path=\//);
+    expect(setCookie).not.toMatch(/Domain=/);
+    expect(setCookie).not.toContain(authorizeState);
+    const authorizationCookie = String(setCookie).split(';', 1)[0]!;
+    const nonce = authorizationCookie.split('=')[1]!;
+    const binding = createHash('sha256').update(nonce).digest('base64url');
+    expect(calls.at(-1)).toEqual({
+      operation: 'github_authorize_begin', principal,
+      input: { installationId: '4242', setupState, redirectUri: 'https://dashboard.example/dashboard/integrations/github', browserBinding: binding }
+    });
+    expect(JSON.stringify(calls.at(-1))).not.toContain(nonce);
+
+    const completion = { state: authorizeState, code: 'github-code' };
+    const withoutCookie = await send('/api/v1/github/complete', { method: 'POST', headers, body: JSON.stringify(completion) });
+    expect(withoutCookie.status).toBe(403);
+    expect(withoutCookie.json.message).toContain('browser that started it');
+    expect(calls.some((call) => call.operation === 'github_setup_complete')).toBe(false);
+
+    const completed = await send('/api/v1/github/complete', {
+      method: 'POST', headers: { ...headers, cookie: `${sessionCookie}; ${authorizationCookie}` }, body: JSON.stringify(completion)
+    });
+    expect(completed.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'github_setup_complete', principal, input: { ...completion, browserBinding: binding } });
+    const clearedName = authorizationCookie.split('=')[0]!;
+    expect([completed.headers['set-cookie']].flat()).toContainEqual(expect.stringMatching(new RegExp(`^${clearedName}=;.*Max-Age=0`)));
+  });
+
+  it('keeps two concurrent GitHub authorizations apart, so finishing one never clobbers the other', async () => {
+    const session = await send('/api/v1/session');
+    const sessionCookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie: sessionCookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const start = async (installationId: string) => {
+      const response = await send('/api/v1/github/authorize', { method: 'POST', headers, body: JSON.stringify({ installationId }) });
+      const cookie = String([response.headers['set-cookie']].flat().find((value) => value?.startsWith('__Host-ch-github-authorization-'))).split(';', 1)[0]!;
+      return { cookie, state: new URL(response.json.data.url).searchParams.get('state')! };
+    };
+    const tabA = await start('1111');
+    const tabB = await start('2222');
+    expect(tabA.cookie.split('=')[0]).not.toBe(tabB.cookie.split('=')[0]);
+
+    // Tab B returns first with only its own cookie; tab A's cookie is left alone and still completes.
+    const completeB = await send('/api/v1/github/complete', {
+      method: 'POST', headers: { ...headers, cookie: `${sessionCookie}; ${tabA.cookie}; ${tabB.cookie}` }, body: JSON.stringify({ state: tabB.state, code: 'code-b' })
+    });
+    expect(completeB.status).toBe(200);
+    const cleared = [completeB.headers['set-cookie']].flat();
+    expect(cleared).toContainEqual(expect.stringMatching(new RegExp(`^${tabB.cookie.split('=')[0]}=;`)));
+    expect(cleared.some((value) => value?.startsWith(`${tabA.cookie.split('=')[0]}=`))).toBe(false);
+
+    const completeA = await send('/api/v1/github/complete', {
+      method: 'POST', headers: { ...headers, cookie: `${sessionCookie}; ${tabA.cookie}` }, body: JSON.stringify({ state: tabA.state, code: 'code-a' })
+    });
+    expect(completeA.status).toBe(200);
+    // A state presented with the other flow's cookie is refused before reaching the runner.
+    const crossed = await send('/api/v1/github/complete', {
+      method: 'POST', headers: { ...headers, cookie: `${sessionCookie}; ${tabA.cookie}` }, body: JSON.stringify({ state: tabB.state, code: 'code-b' })
+    });
+    expect(crossed.status).toBe(403);
   });
   it('uses only the verified request principal and strips control-plane fields', async () => {
     const response = await send('/api/v1/workspaces');

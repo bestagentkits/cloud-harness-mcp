@@ -1,15 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiClient } from '@/lib/api-client';
 import type * as ApiClientModule from '@/lib/api-client';
+import { ApiError, ConflictError, ForbiddenError, UnauthorizedError } from '@/lib/api-client';
 import { ClientValidationError } from '@/lib/bff-mutation';
 import {
   accountOf,
   githubApi,
+  githubCallbackErrorText,
   type GitHubInstallation,
   installationsOf,
-  safeSetupUrl
+  safeSetupUrl,
+  userAuthorizationUnavailable
 } from './github-model';
-import { GITHUB_INSTALLATION_PATTERN, GITHUB_STATE_PATTERN, githubCallbackSearch, hasGitHubCallbackParams } from './github-callback-search';
+import { classifyGitHubCallback, GITHUB_CODE_PATTERN, GITHUB_INSTALLATION_PATTERN, GITHUB_STATE_PATTERN, hasGitHubCallbackParams } from './github-callback-search';
 
 vi.mock('@/lib/api-client', async (importOriginal) => {
   const actual = await importOriginal<typeof ApiClientModule>();
@@ -21,58 +24,16 @@ beforeEach(() => request.mockReset());
 
 const STATE_32 = 'a'.repeat(32);
 
-describe('githubCallbackSearch', () => {
-  it('keeps a well-formed state and installation_id and ignores setup_action and other keys', () => {
-    expect(githubCallbackSearch({ state: STATE_32, installation_id: '12345678', setup_action: 'install', extra: 'x' })).toEqual({
-      state: STATE_32,
-      installation_id: '12345678'
-    });
-  });
-
-  it('reads a numeric installation_id as text, as the router delivers it', () => {
-    expect(githubCallbackSearch({ state: STATE_32, installation_id: 12_345_678 })).toEqual({ state: STATE_32, installation_id: '12345678' });
-  });
-
-  it('trims a padded installation_id before checking it', () => {
-    expect(githubCallbackSearch({ installation_id: '  42  ' })).toEqual({ installation_id: '42' });
-  });
-
-  it('keeps the state at 32 and 128 characters and drops it outside that range', () => {
-    expect(githubCallbackSearch({ state: 'b'.repeat(128) })).toEqual({ state: 'b'.repeat(128) });
-    expect(githubCallbackSearch({ state: 'b'.repeat(31) })).toEqual({});
-    expect(githubCallbackSearch({ state: 'b'.repeat(129) })).toEqual({});
-  });
-
-  it('accepts only the base64url alphabet in the state', () => {
-    expect(githubCallbackSearch({ state: `${'A'.repeat(30)}_-` })).toEqual({ state: `${'A'.repeat(30)}_-` });
-    expect(githubCallbackSearch({ state: `${'A'.repeat(31)}+` })).toEqual({});
-    expect(githubCallbackSearch({ state: `${'A'.repeat(31)}/` })).toEqual({});
-    expect(githubCallbackSearch({ state: `${'A'.repeat(31)}=` })).toEqual({});
-  });
-
-  it('keeps installation_id at 1 to 20 digits and drops anything else', () => {
-    expect(githubCallbackSearch({ installation_id: '1' })).toEqual({ installation_id: '1' });
-    expect(githubCallbackSearch({ installation_id: '1'.repeat(20) })).toEqual({ installation_id: '1'.repeat(20) });
-    expect(githubCallbackSearch({ installation_id: '1'.repeat(21) })).toEqual({});
-    expect(githubCallbackSearch({ installation_id: '12ab' })).toEqual({});
-    expect(githubCallbackSearch({ installation_id: '' })).toEqual({});
-    expect(githubCallbackSearch({ installation_id: 1.5 })).toEqual({});
-  });
-
-  it('drops a numeric installation_id longer than 20 digits instead of truncating it', () => {
-    expect(githubCallbackSearch({ installation_id: Number('1'.repeat(21)) })).toEqual({});
-  });
-
-  it('names every key, so the router cannot merge an invalid raw value back in', () => {
-    const result = githubCallbackSearch({ state: 'short', installation_id: '12ab' });
-    expect(Object.keys(result).sort()).toEqual(['installation_id', 'state']);
-    expect({ ...{ state: 'short', installation_id: '12ab' }, ...result }).toEqual({ state: undefined, installation_id: undefined });
-  });
-
+describe('GitHub callback patterns', () => {
   it('exports the same patterns the runner accepts', () => {
     expect(GITHUB_STATE_PATTERN.test(STATE_32)).toBe(true);
-    expect(GITHUB_INSTALLATION_PATTERN.test('0')).toBe(true);
+    expect(GITHUB_INSTALLATION_PATTERN.test('1')).toBe(true);
+    expect(GITHUB_INSTALLATION_PATTERN.test('0')).toBe(false);
+    expect(GITHUB_INSTALLATION_PATTERN.test('01')).toBe(false);
     expect(GITHUB_INSTALLATION_PATTERN.test('')).toBe(false);
+    expect(GITHUB_CODE_PATTERN.test('a1_.-')).toBe(true);
+    expect(GITHUB_CODE_PATTERN.test('a'.repeat(257))).toBe(false);
+    expect(GITHUB_CODE_PATTERN.test('a b')).toBe(false);
   });
 });
 
@@ -81,8 +42,41 @@ describe('hasGitHubCallbackParams', () => {
     expect(hasGitHubCallbackParams('?state=short')).toBe(true);
     expect(hasGitHubCallbackParams('?installation_id=12ab')).toBe(true);
     expect(hasGitHubCallbackParams('?setup_action=install')).toBe(true);
+    expect(hasGitHubCallbackParams('?code=abc')).toBe(true);
+    expect(hasGitHubCallbackParams('?error=access_denied')).toBe(true);
+    expect(hasGitHubCallbackParams('?error_description=x')).toBe(true);
+    expect(hasGitHubCallbackParams('?error_uri=x')).toBe(true);
     expect(hasGitHubCallbackParams('?tab=other')).toBe(false);
     expect(hasGitHubCallbackParams('')).toBe(false);
+  });
+});
+
+describe('classifyGitHubCallback', () => {
+  const state = 'S'.repeat(43);
+  it('treats a code as the OAuth return, ahead of everything else', () => {
+    expect(classifyGitHubCallback(`?code=abc.def_1&state=${state}&installation_id=42&error=access_denied`)).toEqual({ kind: 'complete', state, code: 'abc.def_1' });
+  });
+  it.each([`?code=abc`, `?code=a%20b&state=${state}`, `?code=&state=${state}`, `?code=abc&state=short`, `?code=${'a'.repeat(257)}&state=${state}&installation_id=42`])('flags a malformed OAuth return (%s) and sends nothing', (query) => {
+    expect(classifyGitHubCallback(query)).toEqual({ kind: 'malformed' });
+  });
+  it('maps an OAuth refusal without keeping the raw value', () => {
+    expect(classifyGitHubCallback(`?error=access_denied&error_description=evil&state=${state}`)).toEqual({ kind: 'refused', reason: 'access_denied' });
+    expect(classifyGitHubCallback('?error=redirect_uri_mismatch')).toEqual({ kind: 'refused', reason: 'redirect_uri_mismatch' });
+    expect(classifyGitHubCallback('?error=<script>&installation_id=42')).toEqual({ kind: 'refused', reason: 'other' });
+  });
+  it('reads values the router re-serialized with JSON quotes', () => {
+    expect(classifyGitHubCallback('?installation_id=%224242%22')).toEqual({ kind: 'verify', installationId: '4242' });
+    expect(classifyGitHubCallback(`?code=%22123456%22&state=${state}`)).toEqual({ kind: 'complete', state, code: '123456' });
+  });
+  it('authorizes a fresh install that carries a valid state', () => {
+    expect(classifyGitHubCallback(`?installation_id=4242&setup_action=install&state=${state}`)).toEqual({ kind: 'authorize', installationId: '4242', state });
+  });
+  it('asks to verify an installation whose state is absent or invalid', () => {
+    expect(classifyGitHubCallback('?installation_id=4242&setup_action=update')).toEqual({ kind: 'verify', installationId: '4242' });
+    expect(classifyGitHubCallback('?installation_id=4242&state=short')).toEqual({ kind: 'verify', installationId: '4242' });
+  });
+  it.each(['', '?setup_action=update', '?installation_id=0', '?installation_id=12ab', `?state=${'S'.repeat(43)}`])('has nothing to do for %s', (query) => {
+    expect(classifyGitHubCallback(query)).toEqual({ kind: 'none' });
   });
 });
 
@@ -94,6 +88,12 @@ describe('installation helpers', () => {
     expect(installationsOf({ configured: true, installation: one, installations: [other] })).toEqual([other]);
     expect(installationsOf({ configured: true, installation: one, installations: [] })).toEqual([one]);
     expect(installationsOf({ configured: false, installation: null })).toEqual([]);
+  });
+
+  it('treats user authorization as unavailable only when the status says so', () => {
+    expect(userAuthorizationUnavailable({ configured: true, userAuthorizationConfigured: false, installation: null })).toBe(true);
+    expect(userAuthorizationUnavailable({ configured: true, userAuthorizationConfigured: true, installation: null })).toBe(false);
+    expect(userAuthorizationUnavailable({ configured: true, installation: null })).toBe(false);
   });
 
   it('names an account by login, then by id, then generically', () => {
@@ -114,6 +114,19 @@ describe('safeSetupUrl', () => {
   });
 });
 
+describe('githubCallbackErrorText', () => {
+  it('shows the operator message of a 403, a 409 or any other API answer', () => {
+    expect(githubCallbackErrorText(new ForbiddenError(403, 'Finish the GitHub authorization in the browser that started it.', 'forbidden'))).toBe('Finish the GitHub authorization in the browser that started it.');
+    expect(githubCallbackErrorText(new ConflictError(409, 'This GitHub installation is already connected to another Cloud Harness identity.', 'conflict'))).toContain('already connected');
+    expect(githubCallbackErrorText(new ApiError(400, 'Your GitHub account cannot access installation 456.'))).toContain('installation 456');
+  });
+  it('keeps the session copy for an ended session and fixed copy for other failures', () => {
+    expect(githubCallbackErrorText(new UnauthorizedError(401, 'x', 'session_ended'))).toContain('session ended');
+    expect(githubCallbackErrorText(new ClientValidationError('GitHub authorization URL was invalid.'))).toBe('GitHub authorization URL was invalid.');
+    expect(githubCallbackErrorText(new Error('boom'))).toBe('The request could not be completed.');
+  });
+});
+
 describe('githubApi', () => {
   it('starts setup with the trimmed expected account, or an empty body when none is given', async () => {
     request.mockResolvedValueOnce({ data: { url: 'https://github.com/apps/cloud-harness/installations/new' } });
@@ -130,10 +143,23 @@ describe('githubApi', () => {
     await expect(githubApi.setup('')).rejects.toBeInstanceOf(ClientValidationError);
   });
 
-  it('completes with the state and installation ID', async () => {
+  it('completes with exactly the state and the OAuth code', async () => {
     request.mockResolvedValueOnce(undefined);
-    await githubApi.complete(STATE_32, '42');
-    expect(request).toHaveBeenCalledWith('/github/complete', { method: 'POST', body: { state: STATE_32, installationId: '42' } });
+    await githubApi.complete(STATE_32, 'code-1');
+    expect(request).toHaveBeenCalledWith('/github/complete', { method: 'POST', body: { state: STATE_32, code: 'code-1' } });
+  });
+
+  it('authorizes with the installation ID and the setup state only when there is one', async () => {
+    request.mockResolvedValue({ data: { url: 'https://github.com/login/oauth/authorize?x=1' } });
+    await expect(githubApi.authorize('42', STATE_32)).resolves.toBe('https://github.com/login/oauth/authorize?x=1');
+    expect(request).toHaveBeenLastCalledWith('/github/authorize', { method: 'POST', body: { installationId: '42', state: STATE_32 } });
+    await githubApi.authorize('42');
+    expect(request).toHaveBeenLastCalledWith('/github/authorize', { method: 'POST', body: { installationId: '42' } });
+  });
+
+  it('refuses an authorization URL that is not https', async () => {
+    request.mockResolvedValueOnce({ data: { url: 'javascript:alert(1)' } });
+    await expect(githubApi.authorize('42')).rejects.toThrow('GitHub authorization URL was invalid.');
   });
 
   it('reconciles all installations without an ID, or one installation with it', async () => {

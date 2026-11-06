@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GitHubAuthorizationRedirectUriSchema,
   InternalRunnerRequestSchema,
   MODEL_TOOL_OPERATIONS,
   InternalRunnerOperationSchema,
@@ -213,5 +214,21 @@ describe('internal runner API contract', () => {
       }
     });
     expect(parsed.operation).toBe('mcp_oauth_grant_save');
+  });
+
+  it('accepts only the dashboard callback page as a GitHub authorization redirect', () => {
+    for (const accepted of [
+      'https://dashboard.example.com/dashboard/integrations/github',
+      'https://dashboard.example.com:8443/dashboard/integrations/github',
+      'http://localhost:3000/dashboard/integrations/github'
+    ]) expect(GitHubAuthorizationRedirectUriSchema.safeParse(accepted).success).toBe(true);
+    for (const refused of [
+      'http://dashboard.example.com/dashboard/integrations/github',
+      'https://dashboard.example.com/dashboard/github',
+      'https://dashboard.example.com/dashboard/integrations/github?next=/',
+      'https://dashboard.example.com/dashboard/integrations/github#x',
+      'https://user@dashboard.example.com/dashboard/integrations/github',
+      'javascript:alert(1)'
+    ]) expect(GitHubAuthorizationRedirectUriSchema.safeParse(refused).success).toBe(false);
   });
 });

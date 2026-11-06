@@ -388,7 +388,7 @@ describe('dashboard static UI contract', () => {
     expect(DASHBOARD_PAGES.find((page) => page.id === 'mcp-servers')?.nav).toBe(true);
     for (const endpoint of [
       "api('/projects')", "api('/secrets')", "api('/artifacts',", '`/audit?limit=50', "api('/github')", "api('/profile')",
-      "'/github/setup'", "'/github/complete'", "'/github/reconcile'", "'/github/disconnect'", '`/environments/${'
+      "'/github/setup'", "'/github/authorize'", "'/github/complete'", "'/github/reconcile'", "'/github/disconnect'", '`/environments/${'
     ]) expect(script).toContain(endpoint);
     expect(script).toContain('expectedGeneration');
     expect(script).toContain('retentionSeconds');

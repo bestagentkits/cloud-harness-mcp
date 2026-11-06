@@ -225,7 +225,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'global_secret_list', 'global_secret_create', 'global_secret_rotate', 'global_secret_update', 'global_secret_delete', 'global_secret_bulk_apply',
   'audit_list',
   'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
-  'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
+  'github_status', 'github_setup_begin', 'github_authorize_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
   'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject',
   'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove',
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
@@ -400,6 +400,7 @@ function githubStatus(data: Record<string, unknown>): Record<string, unknown> {
   const installation = installations[0] ?? (data.installation && typeof data.installation === 'object' ? pick(data.installation, installationKeys) : null);
   return {
     configured: data.configured === true,
+    userAuthorizationConfigured: data.userAuthorizationConfigured === true,
     installation,
     installations,
     ...list(data, 'repositories', ['installationId', 'owner', 'repository', 'contents', 'status', 'generation', 'createdAt', 'updatedAt', 'checkedAt'])
@@ -525,6 +526,7 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'artifact_read') return pick(data, ['artifactId', 'logicalName', 'offset', 'bytesReturned', 'totalBytes', 'sha256', 'eof', 'content']);
   if (operation === 'artifact_restore') return pick(data, ['artifactId', 'workspaceId', 'path', 'sizeBytes', 'sha256']);
   if (operation === 'github_setup_begin') return pick(data, ['url', 'state', 'expiresAt']);
+  if (operation === 'github_authorize_begin') return pick(data, ['url', 'expiresAt']);
   if (['github_status', 'github_setup_complete', 'github_reconcile', 'github_disconnect'].includes(operation)) return githubStatus(data);
   if (operation === 'privilege_grant_list') return list(data, 'grants', privilegeGrantKeys);
   if (operation === 'privilege_grant_approve' || operation === 'privilege_grant_reject') return { grant: pick(data.grant, privilegeGrantKeys) };
@@ -679,10 +681,20 @@ const descriptiveOperations = new Set<string>([
   'model_spend_policy_set', 'model_spend_policy_delete',
   // Package decisions answer with the store's plain refusal (digest mismatch, expired, rollback target gone,
   // stale generation, apply in flight).
-  'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove'
+  'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove',
+  // A refused GitHub binding names its remedy (sign in as the account or organization owner, start
+  // again) in runner-composed text that carries no token, code, or state. UNAVAILABLE keeps the
+  // static wording below because provider failures may embed raw detail.
+  'github_authorize_begin', 'github_setup_complete'
 ]);
 
 const githubUnavailable = 'GitHub authorization is unavailable. Check the GitHub App credentials in the runner configuration, then retry.';
+const githubUserAuthorizationNotConfigured = 'GitHub user authorization is not configured. Check GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET in the runner configuration, and that the GitHub App Callback URL is this dashboard\'s /dashboard/integrations/github page.';
+const githubUserAuthorizationRetry = 'GitHub could not complete the authorization right now. Retry in a moment.';
+/** Operations that run the GitHub user authorization; their UNAVAILABLE wording depends on `retryable`. */
+const githubUserAuthorizationOperations = new Set<string>(['github_authorize_begin', 'github_setup_complete']);
+/** The OAuth return consumed its state before calling GitHub, so the same code cannot be retried. */
+const githubAuthorizationRestart = 'GitHub could not complete the authorization right now. Start the connection again.';
 const packagesDisabled = 'Managed packages are off. Operators enable them with PACKAGES_ENABLED=true.';
 
 /** Gateway operations need gateway wording; the shared table is workspace-oriented. */
@@ -693,8 +705,10 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
   // raw provider/TypeError detail.
   github_status: { UNAVAILABLE: githubUnavailable },
   github_setup_begin: { UNAVAILABLE: githubUnavailable },
+  github_authorize_begin: {
+    INVALID_INPUT: 'The GitHub App connection could not be started. Start the connection again.'
+  },
   github_setup_complete: {
-    UNAVAILABLE: githubUnavailable,
     INVALID_INPUT: 'The GitHub App connection could not be completed. Start the connection again.',
     NOT_FOUND: 'GitHub installation not found.'
   },
@@ -995,7 +1009,13 @@ export function buildActivityProjection(input: { events?: Record<string, unknown
 export function sendRunnerResponse(response: Response, operation: DashboardResponseOperation, result: RunnerResponse): void {
   if (!result.ok) {
     const code = result.error?.code ?? 'INTERNAL_ERROR';
-    const perOperation = operationMessages[operation]?.[code];
+    const perOperation = githubUserAuthorizationOperations.has(operation) && code === 'UNAVAILABLE'
+      ? (!result.error?.retryable
+        ? githubUserAuthorizationNotConfigured
+        : operation === 'github_setup_complete' ? githubAuthorizationRestart : githubUserAuthorizationRetry)
+      : operation === 'github_setup_complete' && code === 'TIMEOUT'
+        ? githubAuthorizationRestart
+        : operationMessages[operation]?.[code];
     // `LIMIT_EXCEEDED` is raised only by our own admission, quota, and reserve
     // checks, and its message carries the active count, the configured limit, and
     // the remedy. Every other code keeps the shared table so raw runner, Docker, and
@@ -1003,7 +1023,9 @@ export function sendRunnerResponse(response: Response, operation: DashboardRespo
     const message = perOperation ?? (result.error?.message && (descriptiveOperations.has(operation) || code === 'LIMIT_EXCEEDED')
       ? result.error.message
       : (messages[code] ?? messages.INTERNAL_ERROR));
-    response.status(statuses[code] ?? 500).json({ error: code.toLowerCase(), message });
+    // A refused GitHub state or proof is a 403 the dashboard reads as "start again"; the shared table hides FORBIDDEN as 404.
+    const status = code === 'FORBIDDEN' && githubUserAuthorizationOperations.has(operation) ? 403 : (statuses[code] ?? 500);
+    response.status(status).json({ error: code.toLowerCase(), message });
     return;
   }
   response.json({ data: mapDashboardData(operation, result.data), truncated: result.truncated, ...(result.cursor ? { cursor: result.cursor } : {}) });

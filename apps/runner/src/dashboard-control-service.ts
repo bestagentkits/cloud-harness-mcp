@@ -385,12 +385,42 @@ export class DashboardControlService {
         }
         case 'github_status': return ok('GitHub authorization status', this.githubStatus(principalId));
         case 'github_setup_begin': return ok('GitHub setup started', this.beginGitHubSetup(principalId, parsed.input.expectedAccountId));
+        case 'github_authorize_begin': {
+          const github = this.config.githubApp;
+          if (!github) throw new HarnessError('UNAVAILABLE', 'GitHub App setup is not configured', 503, false);
+          const { setupState, ...authorization } = parsed.input;
+          return ok('GitHub authorization started', this.requireGitHubBinding().beginAuthorization({
+            principalId, expectedAppId: github.appId, ...authorization, ...(setupState === undefined ? {} : { setupState })
+          }));
+        }
         case 'github_setup_complete': {
-          await this.requireGitHubBinding().completeSetup(
+          await this.requireGitHubBinding().completeAuthorization(
             { principalId, ...parsed.input },
-            (record) => this.metadata.recordAuditInTransaction(
-              this.principals.database, principalId, 'github.bound', 'github_installation',
-              record.installationId, record.generation, { accountLogin: record.accountLogin }
+            (record, proof, replacedPrincipalId) => {
+              this.metadata.recordAuditInTransaction(
+                this.principals.database, principalId,
+                replacedPrincipalId === undefined ? 'github.bound' : 'github.rebound', 'github_installation',
+                record.installationId, record.generation,
+                {
+                  accountLogin: record.accountLogin, githubUser: proof.userLogin, relation: proof.relation,
+                  ...(replacedPrincipalId === undefined ? {} : { replacedPrincipalId })
+                }
+              );
+              // The previous holder lost the installation and its grants, so its own audit must say so
+              // without naming the principal that took it over.
+              if (replacedPrincipalId !== undefined) {
+                this.metadata.recordAuditInTransaction(
+                  this.principals.database, replacedPrincipalId, 'github.unbound', 'github_installation',
+                  record.installationId, record.generation, { reason: 'rebound', accountLogin: record.accountLogin }
+                );
+              }
+            },
+            // The attempt is recorded with the installation and the error code only: the reason text
+            // can name the GitHub account, and no token, code, or state reaches this entry. A refused
+            // state has no trusted installation, so it records the stage instead and never the state.
+            (installationId, error) => this.metadata.recordAudit(
+              principalId, 'github.bind_refused', 'github_installation', installationId ?? 'state', 0,
+              installationId === undefined ? { code: error.code, stage: 'state' } : { installationId, code: error.code }
             )
           );
           return ok('GitHub installation connected', this.githubStatus(principalId));
@@ -1380,6 +1410,7 @@ export class DashboardControlService {
     const record = this.githubInstallations?.getInstallation(principalId);
     return {
       configured: Boolean(this.config.githubApp?.appSlug),
+      userAuthorizationConfigured: this.githubBinding?.userAuthorizationConfigured === true,
       installations: installations.map(withContentsReason),
       installation: record ? withContentsReason(record) : null,
       repositories: this.githubInstallations?.listRepositoryGrants(principalId) ?? []
@@ -1482,6 +1513,9 @@ export class DashboardControlService {
   private beginGitHubSetup(principalId: string, expectedAccountId?: string) {
     const binding = this.requireGitHubBinding(); const github = this.config.githubApp;
     if (!github?.appSlug) throw new HarnessError('UNAVAILABLE', 'GitHub App setup is not configured', 503, false);
+    if (!binding.userAuthorizationConfigured) {
+      throw new HarnessError('UNAVAILABLE', 'GitHub App setup is not configured: set GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET', 503, false);
+    }
     const created = binding.beginSetup({ principalId, expectedAppId: github.appId, ...(expectedAccountId ? { expectedAccountId } : {}) });
     return { ...created, url: `https://github.com/apps/${github.appSlug}/installations/new?state=${encodeURIComponent(created.state)}` };
   }

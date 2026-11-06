@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import express, { type NextFunction, type Response, type Router } from 'express';
-import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, McpEventSubscriptionIdSchema, McpEventsRunnerDataSchemas, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, PackagePlanApproveInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema, type ApiConfig, type ApiKeyManagementOperation, type McpEventsRunnerRequest, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, GITHUB_AUTHORIZATION_CALLBACK_PATH, McpEventSubscriptionIdSchema, McpEventsRunnerDataSchemas, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, PackagePlanApproveInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema, type ApiConfig, type ApiKeyManagementOperation, type McpEventsRunnerRequest, type MetadataRunnerOperation, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
 import { requireArchiveMediaType, SKILL_ARCHIVE_MEDIA_TYPES, SKILL_ARCHIVE_PATH } from './dashboard-security.js';
@@ -16,6 +16,30 @@ const queryText = (value: unknown): string | null => (typeof value === 'string' 
 const createName = z.object({ name: z.string().trim().min(1).max(100), expectedGeneration: z.literal(0) }).strict();
 /** Mirrors the runner's archive cap, so an oversized upload is refused before anything decodes it. */
 const SKILL_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Binds a GitHub user authorization to the browser that started it: the nonce lives only in an
+ * HttpOnly cookie and the runner keeps its SHA-256. The cookie name carries a digest of the OAuth
+ * `state` (the one value that comes back with the return), so two flows in two tabs each keep
+ * their own nonce and completing one clears only its own cookie. The `__Host-` prefix stays, so the
+ * cookie is Secure, host-only and path `/`. `SameSite=Lax` because the completing request follows a
+ * cross-site return from github.com; it is still a CSRF-checked same-origin POST.
+ */
+const GITHUB_AUTHORIZATION_COOKIE_PREFIX = '__Host-ch-github-authorization-';
+const GITHUB_AUTHORIZATION_COOKIE_ATTRIBUTES = 'Path=/; HttpOnly; Secure; SameSite=Lax';
+const githubState = z.string().regex(/^[A-Za-z0-9_-]{32,128}$/);
+const githubAuthorizeBody = z.object({ installationId: z.string().regex(/^[1-9][0-9]{0,19}$/), state: githubState.optional() }).strict();
+const githubCompleteBody = z.object({ state: githubState, code: z.string().regex(/^[A-Za-z0-9_.-]{1,256}$/) }).strict();
+const browserBinding = (nonce: string) => createHash('sha256').update(nonce).digest('base64url');
+const githubCookieName = (state: string) => `${GITHUB_AUTHORIZATION_COOKIE_PREFIX}${createHash('sha256').update(state).digest('base64url').slice(0, 22)}`;
+
+function cookieValue(request: DashboardRequest, name: string): string | undefined {
+  for (const part of (request.header('cookie') ?? '').split(';')) {
+    const [key, ...value] = part.trim().split('=');
+    if (key === name) return value.join('=') || undefined;
+  }
+  return undefined;
+}
 
 export function registerDashboardControlRoutes(
   router: Router,
@@ -196,8 +220,40 @@ export function registerDashboardControlRoutes(
   });
   router.delete('/api/v1/artifacts/:artifactId', endpoint('artifact_delete', (request) => ({ artifactId: internalId('art').parse(request.params.artifactId), ...generation.parse(request.body) })));
   router.get('/api/v1/github', endpoint('github_status', () => ({})));
-  router.post('/api/v1/github/setup', endpoint('github_setup_begin', (request) => request.body as Record<string, unknown>));
-  router.post('/api/v1/github/complete', endpoint('github_setup_complete', (request) => request.body as Record<string, unknown>));
+  router.post('/api/v1/github/setup', endpoint('github_setup_begin', (request) => (request.body ?? {}) as Record<string, unknown>));
+  // GitHub binding needs a user authorization that proves the GitHub user owns or administers the
+  // installation. The browser names the installation (and the setup state when GitHub kept it);
+  // the redirect URI comes from the Origin the security middleware already verified.
+  router.post('/api/v1/github/authorize', endpoint('github_authorize_begin', (request, response) => {
+    const body = githubAuthorizeBody.parse(request.body);
+    const nonce = randomBytes(32).toString('base64url');
+    response.locals.githubAuthorizationNonce = nonce;
+    return {
+      installationId: body.installationId,
+      ...(body.state ? { setupState: body.state } : {}),
+      redirectUri: new URL(GITHUB_AUTHORIZATION_CALLBACK_PATH, request.header('origin')).toString(),
+      browserBinding: browserBinding(nonce)
+    };
+  }, {
+    // The cookie is named after the state the runner just issued, so it is set only on success.
+    beforeSend: (result, _request, response) => {
+      const data: unknown = result.ok ? result.data : undefined;
+      const url = data && typeof data === 'object' && 'url' in data && typeof data.url === 'string' ? data.url : undefined;
+      const state = url ? new URL(url).searchParams.get('state') : null;
+      if (state) response.append('Set-Cookie', `${githubCookieName(state)}=${response.locals.githubAuthorizationNonce}; ${GITHUB_AUTHORIZATION_COOKIE_ATTRIBUTES}; Max-Age=600`);
+    }
+  }));
+  router.post('/api/v1/github/complete', endpoint('github_setup_complete', (request, response) => {
+    const body = githubCompleteBody.parse(request.body);
+    const cookie = githubCookieName(body.state);
+    const nonce = cookieValue(request, cookie);
+    response.append('Set-Cookie', `${cookie}=; ${GITHUB_AUTHORIZATION_COOKIE_ATTRIBUTES}; Max-Age=0`);
+    if (!nonce) {
+      response.status(403).json({ error: 'forbidden', message: 'Finish the GitHub authorization in the browser that started it. Start the connection again.' });
+      return undefined;
+    }
+    return { ...body, browserBinding: browserBinding(nonce) };
+  }));
   router.post('/api/v1/github/reconcile', endpoint('github_reconcile', (request) => (request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {})));
   router.delete('/api/v1/github/installations/:installationId', endpoint('github_disconnect', (request) => ({ installationId: request.params.installationId })));
   router.post('/api/v1/github/disconnect', endpoint('github_disconnect', (request) => request.body as Record<string, unknown>));
@@ -310,16 +366,28 @@ export function registerDashboardControlRoutes(
   // unmapped response and be dropped by the mapper's key allowlist.
   type DashboardRoutableOperation = Extract<MetadataRunnerOperation, Parameters<typeof sendRunnerResponse>[1]>;
 
-  function endpoint(operation: DashboardRoutableOperation, input: (request: DashboardRequest) => Record<string, unknown>, options?: { evict?: boolean; validateEndpoint?: boolean }) {
+  function endpoint(
+    operation: DashboardRoutableOperation,
+    input: (request: DashboardRequest, response: Response) => Record<string, unknown> | undefined,
+    options?: {
+      evict?: boolean;
+      validateEndpoint?: boolean;
+      /** Runs after the runner answers and before the response is written, so it can still set headers. */
+      beforeSend?: (result: RunnerResponse, request: DashboardRequest, response: Response) => void;
+    }
+  ) {
     return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
       try {
         const selected = principal(request, response);
         if (!selected) return;
         if (!runner.callInternal) throw new Error('dashboard controls are unavailable');
-        const payload = input(request);
+        // An input builder that already answered the request returns nothing.
+        const payload = input(request, response);
+        if (!payload) return;
         if ((operation === 'mcp_server_create' || operation === 'mcp_server_update') && rejectAuthenticatedSse(payload, response)) return;
         if (options?.validateEndpoint && await rejectUnsafeEndpoint(payload, response)) return;
         const result = await runner.callInternal(operation, payload, selected);
+        options?.beforeSend?.(result, request, response);
         sendRunnerResponse(response, operation, result);
         // A successful mutation evicts the API-side catalog and, when the route names
         // a server, closes its cached downstream connection so stale credentials or

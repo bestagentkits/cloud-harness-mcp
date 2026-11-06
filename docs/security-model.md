@@ -474,6 +474,50 @@ executor and import without network or credentials. Push first stages a bare
 snapshot without credentials, then uses a separate networked helper. Transfer
 directories and helper containers are removed after the operation.
 
+#### Binding an installation to a principal
+
+Binding grants the principal every repository of an installation, so a valid
+Harness setup `state` is not enough: GitHub drops it when an already-installed
+App is configured, and a state proves only which principal started the flow,
+not that its GitHub user owns the installation. Every binding therefore runs a
+GitHub App user authorization (OAuth with PKCE). The runner keeps the PKCE
+verifier and the OAuth client secret; the one-time authorization `state` is
+stored hashed, expires after 10 minutes, and is consumed only by the principal
+that created it and by the browser holding the BFF's HttpOnly nonce cookie (the
+runner stores the nonce's SHA-256). With the user's token the runner requires
+the installation in `GET /user/installations` and ownership-level proof: the
+personal account itself, or an active organization owner. Organization
+membership alone is refused. The App JWT then verifies the installation, and
+the user token is revoked at GitHub (`DELETE /applications/{client_id}/token`,
+best effort) without ever being stored, logged, or returned. A
+wrong-principal, wrong-browser, expired, or replayed state is refused before
+any GitHub call. The browser nonce lives in a per-flow `__Host-` cookie named
+after a digest of the authorization `state`, so two authorizations in two tabs
+do not overwrite each other. A refused attempt is audited as
+`github.bind_refused` with the installation ID and error code only; a refused authorization state
+(replay, expiry, another principal or browser) is audited with the code and `stage: state`, never the
+state value, and is not deleted by the refusal. The
+executable owners are
+[`apps/runner/src/github-user-authorizer.ts`](../apps/runner/src/github-user-authorizer.ts)
+and [`apps/runner/src/github-binding-service.ts`](../apps/runner/src/github-binding-service.ts).
+The OAuth client secret follows the App key boundary: runner-only, blanked for
+the API and enforced by
+[`scripts/verify-compose-boundaries.mjs`](../scripts/verify-compose-boundaries.mjs).
+
+Bindings created before this check existed were not user-verified. They are not
+blocked or migrated, and `reconcile` keeps verifying them with the App JWT only.
+A user whose authorization proves ownership of the installation (the personal
+account, or an active organization owner) may take over a binding held by
+another principal: the runner replaces it in one transaction, removes the
+previous holder's grants, and audits `github.rebound` with the new principal
+and the replaced principal's ID (never a token). The replaced principal's own audit shows
+`github.unbound` with the reason `rebound` and the account login, in the same transaction and without
+naming the new holder. This is how the real owner
+recovers an installation that an unverified binding locked out; a wrong GitHub
+user cannot, and the attempt is refused and audited. An operator can also
+disconnect a binding from the holder's dashboard. See
+[GitHub App private repositories](github-app-private-repositories.md#upgrade-notes-and-reclaiming-a-binding).
+
 #### Operator-supplied GitHub credential fallback
 
 A GitHub App is optional. When no App repository token can be minted, Git and

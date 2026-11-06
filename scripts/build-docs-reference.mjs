@@ -299,7 +299,12 @@ Copy \`.env.example\` to \`.env\` and replace all \`change-me\` placeholder secr
 
 for (const entry of envEntries) {
   const reqStr = entry.optional ? 'Optional' : '**Required**';
-  const desc = entry.description.replaceAll('|', '\\|');
+  // Vue compiles the page, so a bare `<origin>` outside a code span would parse as an element.
+  const desc = entry.description
+    .split('`')
+    .map((part, index) => (index % 2 === 0 ? part.replaceAll('<', '&lt;') : part))
+    .join('`')
+    .replaceAll('|', '\\|');
   envMd += `| \`${entry.name}\` | \`${entry.defaultValue}\` | ${reqStr} | ${desc} |\n`;
 }
 

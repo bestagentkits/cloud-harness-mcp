@@ -1160,7 +1160,34 @@ function renderInstallationCard(installation) {
   return `<li class="panel installation-card" data-installation-id="${id}"><div class="record-heading"><div><h3>${account}</h3><p><code class="mono">${id}</code> <span class="status ${installation.status === 'active' ? 'active' : ''}">${instStatus}</span></p></div><div class="row-actions"><button class="reconcile-installation" type="button" data-installation-id="${id}">Reconcile</button><button class="danger disconnect-installation" type="button" data-installation-id="${id}" data-account="${account}">Disconnect</button></div></div><dl class="facts"><dt>Account</dt><dd>${account}</dd><dt>Status</dt><dd>${instStatus}</dd><dt>Installation ID</dt><dd class="mono">${id}</dd><dt>Last checked</dt><dd>${checked}</dd></dl></li>`;
 }
 
-export function renderGitHub(status, callbackPending = false) {
+/** Fixed operator messages for GitHub OAuth refusals; never echoes attacker-controllable callback values. */
+export function githubRefusalMessage(reason, origin) {
+  if (reason === 'access_denied') return 'GitHub authorization was cancelled. The installation was not connected.';
+  if (reason === 'redirect_uri_mismatch') return `GitHub refused this dashboard's callback URL. Set the GitHub App Callback URL to ${origin}/dashboard/integrations/github, then connect again.`;
+  return 'GitHub did not authorize the connection. Start the connection again.';
+}
+
+export function githubVerifyPrompt(installationId, expired = false) {
+  if (expired) return `The connection started here has expired, and the account restriction it carried expired with it. Verify with GitHub to connect installation ${installationId}.`;
+  return `GitHub returned installation ${installationId} without a connection state. This happens when the App was already installed on the account. Verify with GitHub to connect it.`;
+}
+
+/** Shown instead of the Connect and Verify controls when the runner has no GitHub App client credentials. */
+export function githubUserAuthorizationNotice(origin) {
+  return `GitHub user authorization is not configured. An operator must set GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET on the runner and set the GitHub App Callback URL to ${origin}/dashboard/integrations/github before an installation can be connected.`;
+}
+
+/** notice: { kind: 'message', text } or { kind: 'verify', installationId, expired?, unavailable? }. */
+export function renderGitHubNotice(notice, origin = '') {
+  if (!notice) return '';
+  if (notice.kind === 'verify') {
+    const unavailable = notice.unavailable === true;
+    return `<section class="panel" id="github-verify-prompt"><p class="status-message" role="status">${escape(githubVerifyPrompt(notice.installationId, notice.expired === true))}</p>${unavailable ? `<p class="warning" id="github-user-authorization-unconfigured" role="alert">${escape(githubUserAuthorizationNotice(origin))}</p>` : ''}<button type="button" id="github-verify" data-installation-id="${escape(notice.installationId)}"${unavailable ? ' disabled' : ''}>Verify with GitHub</button></section>`;
+  }
+  return `<p class="warning" id="github-callback-message" role="alert">${escape(notice.text)}</p>`;
+}
+
+export function renderGitHub(status, callbackPending = false, notice = undefined, origin = '') {
   const installations = Array.isArray(status?.installations) && status.installations.length
     ? status.installations
     : (status?.installation ? [status.installation] : []);
@@ -1170,7 +1197,8 @@ export function renderGitHub(status, callbackPending = false) {
   const repositories = status?.repositories?.length ? `<ul class="record-list">${status.repositories.map((repository) => `<li><strong>${escape(repository.owner)}/${escape(repository.repository)}</strong><span>${escape(repository.status)} · Contents ${escape(repository.contents)}${repository.installationId ? ` · ID <code class="mono">${escape(repository.installationId)}</code>` : ''}</span></li>`).join('')}</ul>` : '<p>No authorized repositories reported.</p>';
   const reconcileLabel = installations.length > 1 ? 'Reconcile all installations' : 'Reconcile installation';
   void reconcileLabel;
-  return `<div class="page-note"><strong>GitHub App authorization metadata.</strong> Provider private keys and minted tokens remain runner-only and are never rendered.</div>${callbackPending ? '<p class="status-message" role="status">Completing GitHub App connection…</p>' : ''}<section class="panel"><h2>Installation status</h2>${installationView}<p id="github-status-message" class="form-status" aria-live="polite"></p></section><section class="panel"><h2>Connect GitHub App</h2><form id="github-setup-form" class="stack-form"><label for="github-account-id">Expected account ID <span class="optional">Optional</span></label><input id="github-account-id" name="expectedAccountId" maxlength="100"><button type="submit">Connect GitHub App</button><p class="form-status" aria-live="polite"></p></form></section><section><h2>Authorized repositories</h2>${repositories}</section>`;
+  const unavailable = status?.userAuthorizationConfigured === false;
+  return `<div class="page-note"><strong>GitHub App authorization metadata.</strong> Provider private keys and minted tokens remain runner-only and are never rendered.</div>${callbackPending ? '<p class="status-message" role="status">Completing GitHub App connection…</p>' : ''}${renderGitHubNotice(notice, origin)}<section class="panel"><h2>Installation status</h2>${installationView}<p id="github-status-message" class="form-status" aria-live="polite"></p></section><section class="panel"><h2>Connect GitHub App</h2>${unavailable && notice?.kind !== 'verify' ? `<p class="warning" id="github-user-authorization-unconfigured" role="alert">${escape(githubUserAuthorizationNotice(origin))}</p>` : ''}<form id="github-setup-form" class="stack-form"><label for="github-account-id">Expected account ID <span class="optional">Optional</span></label><input id="github-account-id" name="expectedAccountId" maxlength="100"><button type="submit"${unavailable ? ' disabled' : ''}>Connect GitHub App</button><p class="form-status" aria-live="polite"></p></form></section><section><h2>Authorized repositories</h2>${repositories}</section>`;
 }
 export function profileDisplayName(profile) {
   const preferred = typeof profile?.preferences?.displayName === 'string' ? profile.preferences.displayName.trim() : '';

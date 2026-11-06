@@ -7,7 +7,8 @@ import { ApiKeyStore } from './api-key-store.js';
 import { loadRunnerConfigWithReadiness } from './config.js';
 import { DashboardControlService } from './dashboard-control-service.js';
 import { GitHubApiInstallationVerifier } from './github-api-installation-verifier.js';
-import { GitHubBindingService, GitHubSetupStateStore } from './github-binding-service.js';
+import { GitHubAuthorizationStateStore, GitHubBindingService, GitHubSetupStateStore } from './github-binding-service.js';
+import { GitHubApiUserAuthorizer } from './github-user-authorizer.js';
 import { SqliteGitHubInstallationStore } from './github-installation-sqlite-store.js';
 import { MetadataStore } from './metadata-store.js';
 import { McpEventService } from './mcp-event-service.js';
@@ -48,8 +49,20 @@ const events = new McpEventService({
   }
 });
 const githubInstallations = new SqliteGitHubInstallationStore(store.database);
-const githubBinding = config.githubApp
-  ? new GitHubBindingService(new GitHubSetupStateStore(store.database), githubInstallations, new GitHubApiInstallationVerifier(config.githubApp))
+const githubApp = config.githubApp;
+const githubBinding = githubApp
+  ? new GitHubBindingService(
+    new GitHubSetupStateStore(store.database),
+    githubInstallations,
+    new GitHubApiInstallationVerifier(githubApp),
+    Date.now,
+    githubApp.clientId && githubApp.clientSecret
+      ? {
+        states: new GitHubAuthorizationStateStore(store.database),
+        authorizer: new GitHubApiUserAuthorizer({ appId: githubApp.appId, clientId: githubApp.clientId, clientSecret: githubApp.clientSecret })
+      }
+      : undefined
+  )
   : undefined;
 const artifacts = new ArtifactStore(store.database, {
   root: config.artifactRoot, maxArtifactBytes: config.maxArtifactBytes,

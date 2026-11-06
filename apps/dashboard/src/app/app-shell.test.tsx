@@ -118,25 +118,157 @@ describe('AppShell', () => {
     expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
   });
 
-  it('completes a GitHub App callback natively, once, and clears the one-time state from the URL', async () => {
-    const state = 'S'.repeat(43);
-    const fetchMock = vi.mocked(fetch);
-    const router = renderAt(`/dashboard/integrations/github?installation_id=987654&setup_action=install&state=${state}`);
-    await vi.waitFor(() => expect(router.state.location.searchStr).toBe(''));
-    expect(router.state.location.pathname).toBe('/integrations/github');
-    const completes = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/github/complete'));
-    expect(completes).toHaveLength(1);
-    const [, init] = completes[0] as [string, RequestInit];
-    expect(init.method).toBe('POST');
-    expect(JSON.parse(String(init.body))).toEqual({ state, installationId: '987654' });
-    expect(new Headers(init.headers).get('x-csrf-token')).toBe('csrf-fixture');
-  });
+  describe('GitHub callbacks', () => {
+    const githubCalls = (path: string) => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith(path)) as unknown as [string, RequestInit][];
+    const stubGitHubWrites = (writes: Record<string, () => Response>) => {
+      const base = vi.mocked(fetch).getMockImplementation() as unknown as (url: string) => Promise<Response>;
+      vi.mocked(fetch).mockImplementation((async (url: string) => {
+        const key = Object.keys(writes).find((path) => String(url).endsWith(path));
+        return key ? writes[key]!() : base(url);
+      }) as unknown as typeof fetch);
+    };
+    const assign = vi.fn();
+    beforeEach(() => {
+      assign.mockReset();
+      vi.stubGlobal('location', { origin: 'https://dash.example.test', assign });
+    });
 
-  it('ignores a GitHub callback with a malformed or partial state', async () => {
-    const fetchMock = vi.mocked(fetch);
-    renderAt('/dashboard/integrations/github?installation_id=987654&state=short');
-    expect(await screen.findByRole('heading', { level: 1, name: 'GitHub' })).toBeInTheDocument();
-    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/github/complete'))).toEqual([]);
+    it('completes an OAuth return natively, once, and clears the one-time values from the URL', async () => {
+      const state = 'C'.repeat(43);
+      const router = renderAt(`/dashboard/integrations/github?code=oauth-code-1&state=${state}`);
+      await vi.waitFor(() => expect(router.state.location.searchStr).toBe(''));
+      expect(router.state.location.pathname).toBe('/integrations/github');
+      await vi.waitFor(() => expect(githubCalls('/github/complete')).toHaveLength(1));
+      const [, init] = githubCalls('/github/complete')[0]!;
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(String(init.body))).toEqual({ state, code: 'oauth-code-1' });
+      expect(new Headers(init.headers).get('x-csrf-token')).toBe('csrf-fixture');
+      expect(githubCalls('/github/authorize')).toEqual([]);
+    });
+
+    it('shows the server message when completing the OAuth return fails', async () => {
+      stubGitHubWrites({ '/github/complete': () => Response.json({ error: 'forbidden', message: 'Your GitHub account cannot access installation 456.' }, { status: 403 }) });
+      renderAt(`/dashboard/integrations/github?code=oauth-code-2&state=${'D'.repeat(43)}`);
+      expect(await screen.findByRole('alert')).toHaveTextContent('Your GitHub account cannot access installation 456.');
+    });
+
+    it('authorizes a fresh install once with its state and leaves for the returned https URL', async () => {
+      const state = 'E'.repeat(43);
+      stubGitHubWrites({ '/github/authorize': () => Response.json({ data: { url: 'https://github.com/login/oauth/authorize?client_id=x', expiresAt: 'later' } }) });
+      const router = renderAt(`/dashboard/integrations/github?installation_id=987654&setup_action=install&state=${state}`);
+      await vi.waitFor(() => expect(assign).toHaveBeenCalledWith('https://github.com/login/oauth/authorize?client_id=x'));
+      expect(router.state.location.searchStr).toBe('');
+      expect(githubCalls('/github/authorize')).toHaveLength(1);
+      expect(JSON.parse(String(githubCalls('/github/authorize')[0]![1].body))).toEqual({ installationId: '987654', state });
+      expect(githubCalls('/github/complete')).toEqual([]);
+    });
+
+    it('refuses a non-https authorization URL', async () => {
+      stubGitHubWrites({ '/github/authorize': () => Response.json({ data: { url: 'http://github.com/x', expiresAt: 'later' } }) });
+      renderAt(`/dashboard/integrations/github?installation_id=987655&state=${'F'.repeat(43)}`);
+      expect(await screen.findByRole('alert')).toHaveTextContent('GitHub authorization URL was invalid.');
+      expect(assign).not.toHaveBeenCalled();
+    });
+
+    it('prompts to verify an already-installed App and authorizes without a state on request', async () => {
+      stubGitHubWrites({ '/github/authorize': () => Response.json({ data: { url: 'https://github.com/login/oauth/authorize?client_id=y', expiresAt: 'later' } }) });
+      const router = renderAt('/dashboard/integrations/github?installation_id=4242&setup_action=update');
+      expect(await screen.findByText(/GitHub returned installation 4242 without a connection state\./)).toBeInTheDocument();
+      await vi.waitFor(() => expect(router.state.location.searchStr).toBe(''));
+      expect(githubCalls('/github/authorize')).toEqual([]);
+      await userEvent.click(screen.getByRole('button', { name: 'Verify with GitHub' }));
+      await vi.waitFor(() => expect(assign).toHaveBeenCalledWith('https://github.com/login/oauth/authorize?client_id=y'));
+      expect(JSON.parse(String(githubCalls('/github/authorize')[0]![1].body))).toEqual({ installationId: '4242' });
+    });
+
+    it('shows the server message when verification fails and keeps the prompt', async () => {
+      stubGitHubWrites({ '/github/authorize': () => Response.json({ error: 'conflict', message: 'Finish the GitHub authorization in the browser that started it.' }, { status: 400 }) });
+      renderAt('/dashboard/integrations/github?installation_id=4243');
+      await userEvent.click(await screen.findByRole('button', { name: 'Verify with GitHub' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent('Finish the GitHub authorization in the browser that started it.');
+      expect(screen.getByRole('button', { name: 'Verify with GitHub' })).toBeEnabled();
+      expect(assign).not.toHaveBeenCalled();
+    });
+
+    const githubStatus = (overrides: Record<string, unknown> = {}) => ({
+      data: { configured: true, userAuthorizationConfigured: true, installation: null, installations: [], repositories: [], ...overrides }
+    });
+
+    it('reconciles an installation this identity already has instead of asking to verify it', async () => {
+      stubGitHubWrites({
+        '/github': () => Response.json(githubStatus({ installations: [{ installationId: '4244', accountLogin: 'acme', status: 'active' }] })),
+        '/github/reconcile': () => Response.json({ data: {} })
+      });
+      renderAt('/dashboard/integrations/github?installation_id=4244&setup_action=update');
+      await vi.waitFor(() => expect(githubCalls('/github/reconcile')).toHaveLength(1));
+      expect(JSON.parse(String(githubCalls('/github/reconcile')[0]![1].body))).toEqual({ installationId: '4244' });
+      expect(await screen.findByRole('heading', { level: 3, name: 'acme' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Verify with GitHub' })).not.toBeInTheDocument();
+      expect(githubCalls('/github/authorize')).toEqual([]);
+    });
+
+    it('falls back to the verify prompt when a fresh install setup state has expired', async () => {
+      stubGitHubWrites({
+        '/github': () => Response.json(githubStatus()),
+        '/github/authorize': () => Response.json({ error: 'forbidden', message: 'GitHub installation setup is invalid or expired. Start the connection again.' }, { status: 403 })
+      });
+      renderAt(`/dashboard/integrations/github?installation_id=4245&setup_action=install&state=${'H'.repeat(43)}`);
+      expect(await screen.findByText(/The connection started here has expired, and the account restriction it carried expired with it\. Verify with GitHub to connect installation 4245\./)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Verify with GitHub' })).toBeEnabled();
+      expect(screen.queryByTestId('github-callback-error')).not.toBeInTheDocument();
+      expect(githubCalls('/github/authorize')).toHaveLength(1);
+    });
+
+    it('shows the normal error, not the verify prompt, when the BFF refuses the authorize request', async () => {
+      stubGitHubWrites({
+        '/github': () => Response.json(githubStatus()),
+        '/github/authorize': () => Response.json({ error: 'forbidden_origin', message: 'This origin is not allowed.' }, { status: 403 })
+      });
+      renderAt(`/dashboard/integrations/github?installation_id=4247&setup_action=install&state=${'J'.repeat(43)}`);
+      expect(await screen.findByTestId('github-callback-error')).toHaveTextContent('This origin is not allowed.');
+      expect(screen.queryByRole('button', { name: 'Verify with GitHub' })).not.toBeInTheDocument();
+      expect(screen.queryByText(/has expired/)).not.toBeInTheDocument();
+    });
+
+    it('disables Connect and Verify and explains why when user authorization is not configured', async () => {
+      stubGitHubWrites({ '/github': () => Response.json(githubStatus({ userAuthorizationConfigured: false })) });
+      renderAt('/dashboard/integrations/github?installation_id=4246&setup_action=update');
+      expect(await screen.findByRole('button', { name: 'Connect GitHub App' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Verify with GitHub' })).toBeDisabled();
+      expect(screen.getAllByText(/GITHUB_APP_CLIENT_ID/).length).toBeGreaterThan(0);
+      expect(document.body.textContent).toContain('https://dash.example.test/dashboard/integrations/github');
+      expect(githubCalls('/github/authorize')).toEqual([]);
+    });
+
+    it.each([
+      ['access_denied', 'GitHub authorization was cancelled. The installation was not connected.'],
+      ['redirect_uri_mismatch', "GitHub refused this dashboard's callback URL. Set the GitHub App Callback URL to https://dash.example.test/dashboard/integrations/github, then connect again."],
+      ['server_error', 'GitHub did not authorize the connection. Start the connection again.']
+    ])('shows a persistent message for an OAuth refusal (%s) and sends nothing', async (error, message) => {
+      const router = renderAt(`/dashboard/integrations/github?error=${error}&error_description=Evil%20text&error_uri=https%3A%2F%2Fevil.test&state=${'G'.repeat(43)}`);
+      expect(await screen.findByRole('alert')).toHaveTextContent(message);
+      await vi.waitFor(() => expect(router.state.location.searchStr).toBe(''));
+      expect(screen.getByRole('alert')).toHaveTextContent(message);
+      expect(document.body.textContent).not.toContain('Evil text');
+      expect(document.body.textContent).not.toContain('evil.test');
+      expect(githubCalls('/github/complete')).toEqual([]);
+      expect(githubCalls('/github/authorize')).toEqual([]);
+    });
+
+    it('rejects a malformed OAuth return without sending anything', async () => {
+      const router = renderAt('/dashboard/integrations/github?code=oauth-code-3&state=short');
+      expect(await screen.findByRole('alert')).toHaveTextContent('The GitHub authorization callback was malformed. Start the connection again.');
+      await vi.waitFor(() => expect(router.state.location.searchStr).toBe(''));
+      expect(githubCalls('/github/complete')).toEqual([]);
+    });
+
+    it('clears a callback with nothing to act on', async () => {
+      const router = renderAt('/dashboard/integrations/github?setup_action=update');
+      await vi.waitFor(() => expect(router.state.location.searchStr).toBe(''));
+      expect(await screen.findByRole('heading', { level: 1, name: 'GitHub' })).toBeInTheDocument();
+      expect(githubCalls('/github/complete')).toEqual([]);
+      expect(githubCalls('/github/authorize')).toEqual([]);
+    });
   });
 
   it('renders only the search params a page declares', async () => {

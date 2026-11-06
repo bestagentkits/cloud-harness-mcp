@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HarnessError } from '@cloud-harness/contracts';
-import { GitHubBindingService, GitHubSetupStateStore } from '../src/github-binding-service.js';
+import { GitHubAuthorizationStateStore, GitHubBindingService, GitHubSetupStateStore } from '../src/github-binding-service.js';
 import { SqliteGitHubInstallationStore } from '../src/github-installation-sqlite-store.js';
 import { StateStore } from '../src/state-store.js';
 
@@ -48,6 +48,30 @@ describe('SQLite GitHub installation store', () => {
     store.replaceVerified(principalA, verified, 100);
     expect(() => store.replaceVerified(principalB, verified, 200)).toThrow('already bound');
     expect(store.getInstallation(principalB)).toBeUndefined();
+    state.close();
+  });
+
+  it('hands an installation to a proven owner atomically, removing the holder grants, or changes nothing', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cloud-harness-github-takeover-')); roots.push(root);
+    const state = new StateStore(join(root, 'state.db'));
+    const principalA = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'a' });
+    const principalB = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'b' });
+    const store = new SqliteGitHubInstallationStore(state.database);
+    const verified = { appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', issues: null, pullRequests: null, status: 'active' as const, repositories: [{ owner: 'Acme', repository: 'App', contents: 'write' as const }] };
+    store.replaceVerified(principalA, verified, 100);
+
+    expect(() => store.replaceVerified(principalB, verified, 200, () => { throw new Error('audit unavailable'); }, { takeOver: true })).toThrow('audit unavailable');
+    expect(store.getInstallation(principalA)).toMatchObject({ status: 'active' });
+    expect(store.getRepositoryGrant(principalA, 'acme', 'app')).toMatchObject({ status: 'granted' });
+    expect(store.getInstallation(principalB)).toBeUndefined();
+
+    const audit = vi.fn();
+    store.replaceVerified(principalB, verified, 300, audit, { takeOver: true });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ principalId: principalB }), principalA);
+    expect(store.getInstallation(principalA)).toBeUndefined();
+    expect(store.getRepositoryGrant(principalA, 'acme', 'app')).toMatchObject({ status: 'removed' });
+    expect(store.getInstallation(principalB)).toMatchObject({ installationId: '2', status: 'active' });
+    expect(store.getRepositoryGrant(principalB, 'acme', 'app')).toMatchObject({ status: 'granted' });
     state.close();
   });
 
@@ -125,6 +149,29 @@ describe('SQLite GitHub installation store', () => {
     states.create({ principalId: principalA, expectedAppId: 1, now: 2_000, ttlMs: 100 });
     expect(state.database.prepare('SELECT COUNT(*) AS count FROM github_setup_states').get()).toEqual({ count: 1 });
     expect(() => states.consume(third.state, principalA, 2_000)).toThrow('invalid or expired');
+    state.close();
+  });
+
+  it('persists a hashed authorization state that survives restart and is consumed once by its own principal and browser', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cloud-harness-github-authorization-')); roots.push(root);
+    const databasePath = join(root, 'state.db');
+    let state = new StateStore(databasePath);
+    const principal = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'owner' });
+    const other = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'other' });
+    const browser = 'b'.repeat(43);
+    const created = new GitHubAuthorizationStateStore(state.database).create({
+      principalId: principal, browserBinding: browser, installationId: '2', expectedAppId: '1',
+      redirectUri: 'https://dashboard.example.com/dashboard/integrations/github', codeVerifier: 'v'.repeat(43)
+    }, 100, 1_000);
+    expect(JSON.stringify(state.database.prepare('SELECT * FROM github_authorization_states').get())).not.toContain(created.state);
+    state.close();
+
+    state = new StateStore(databasePath);
+    const states = new GitHubAuthorizationStateStore(state.database);
+    expect(() => states.consume(created.state, other, browser, 200)).toThrow('invalid or expired');
+    expect(() => states.consume(created.state, principal, 'c'.repeat(43), 200)).toThrow('invalid or expired');
+    expect(states.consume(created.state, principal, browser, 200)).toMatchObject({ installationId: '2', expectedAppId: '1', codeVerifier: 'v'.repeat(43) });
+    expect(() => states.consume(created.state, principal, browser, 200)).toThrow('invalid or expired');
     state.close();
   });
 

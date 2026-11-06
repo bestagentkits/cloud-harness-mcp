@@ -19,10 +19,10 @@ docker compose --profile images build executor-image
 ### 2. `repository clone failed: unauthorized`
 **Cause:** Attempting to clone a private repository without a valid GitHub App installation.
 **Fix:**
-1. Open the Operator Dashboard → **GitHub**.
-2. Click **Install GitHub App** and authorize the target repository.
+1. Open the Operator Dashboard → **Integrations → GitHub**.
+2. Click **Connect GitHub App**, install it (or save **Configure** if it is already installed), and authorize with GitHub as the account owner or an organization owner.
 3. Ensure the repository URL matches the format `https://github.com/owner/repo.git`.
-4. If the dashboard still shows "No GitHub App installation is bound to this identity" after you finish on GitHub, GitHub did not send you back with the setup callback. Set the App's **Setup URL** and **Redirect on update** as described in the [GitHub App guide](/dashboard/github#troubleshooting), then connect again. If the App was already installed on that account, connecting it is not supported yet: uninstall it on GitHub, then install it again from **Connect GitHub App**.
+4. If the dashboard still shows "No GitHub App installation is bound to this identity" after you finish on GitHub, GitHub did not send you back. Set the App's **Setup URL**, **Callback URL**, and **Redirect on update** as described in the [GitHub App guide](/dashboard/github#troubleshooting), then connect again. If the dashboard refuses the connection, its message names whom to sign in to GitHub as.
 5. If the error reads `repository clone failed (credential: ...): remote: Write access to repository not granted.` (a GitHub 403), the credential named in parentheses was refused. The value is `github-app`, `principal-global-secret`, `runner-environment`, or `none`; the token is never printed. When that credential is a fallback token and you have a GitHub App installation on the repository owner, the runner reconciles it and retries once with an App token, and adds `GitHub App token unavailable: ...` to the error if the mint failed. Otherwise check the token:
    - `GH_TOKEN` takes priority over `GITHUB_TOKEN`; a wrong `GH_TOKEN` hides a correct `GITHUB_TOKEN`.
    - A fine-grained personal access token covers a single resource owner (your account or one organization) and is refused for repositories of any other owner.

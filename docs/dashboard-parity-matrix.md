@@ -95,7 +95,7 @@ are never answered by the fallback.
 | `/dashboard/secrets` | secrets / `loadGlobalSecrets` | `secrets` | P4 | none | `/secrets` | Write-only; bulk `.env` text cleared when its dialog closes | `dashboard-ui-behavior` (b) |
 | `/dashboard/models` | models / `loadModels` | `models` | P4 | none | `/provider-credentials`, `/agent-model-profiles`, `/agent-model-config-status`, `/model-providers`, `/model-catalog`, `/model-spend` | Provider keys write-only; `model_*` responses pass through unmapped (F7) | `dashboard-models-wizard` (b+c), `dashboard-models-spend` (b), `dashboard-models-router` (a) |
 | `/dashboard/skills` | skills / `loadSkills` | `skills` | P3 | Skills tab is not in the URL (R16); React should add it | `/skills`, `/skills/search`, `/skills/:id/revisions`, `/skills/:id/diff`, `/skills/:id/usage`, `/skill-sets`, `/toolkit-registry`, `/skill-imports/:jobId` | Zip upload has its own parser and limit | `dashboard-skills-ui` (b), `dashboard-skills-mapper` (a) |
-| `/dashboard/integrations[/github]` | integrations / `loadGitHub` | `integrations` | P4 | `state`, `installation_id` (GitHub App callback) | `/github` | `state` is a one-time setup value; the query is cleared with `replaceState` after `POST /github/complete` | `dashboard-github-error-message` (a) |
+| `/dashboard/integrations[/github]` | integrations / `loadGitHub` | `integrations` | P4 | `installation_id`, `state`, `setup_action` (App setup callback); `code`, `state`, `error` (App user authorization callback) | `/github` | Setup and authorization `state`s and the `code` are one-time values; the query is cleared with `replaceState` when handled. A setup callback without `state` (already-installed App) offers **Verify with GitHub** instead of being dropped (#640) | `dashboard-github-error-message` (a) |
 | `/dashboard/mcp-servers[/:mcps_id]` | mcp-servers / `loadMcpServers`, `loadMcpServerDetail` | `mcp-servers` | P4 | `oauth`, `reason` (callback outcome, announced once then cleared); detail tab not in the URL (R16) | `/mcp-servers`, `/mcp-servers/:id`, `/mcp-servers/:id/logs`, `/mcp-servers/:id/oauth`, `/mcp-gateway`; the add/edit dialog reads `/secrets` | Header secret-reference values are never shown; endpoints pass the server's SSRF guard | `mcp-servers-dashboard-ui` (c), `dashboard-mcp-gateway-api` (a), `mcp-oauth` (a) |
 | `/dashboard/knowledge[/:kn_id]` | knowledge / `loadKnowledge` | `knowledge` | P3 | `kind`, `scope`, `projectId`, `q`, `cursor` | `/knowledge`, `/knowledge/:id`, `/knowledge-graph`, `POST /knowledge/search`; create dialog reads `/projects` | Markdown escaped; no `style=`, no `<style>` | `knowledge-dashboard-ui` (c), `knowledge-api` (a) |
 | `/dashboard/artifacts` | artifacts / `loadArtifacts` | `artifacts` | P4 | `cursor` | `/artifacts?limit=…`; download is a native link to `/artifacts/:id/download` | Download stays under `/dashboard/api/v1/artifacts/` | `dashboard-ui-contract` (c) |
@@ -356,7 +356,8 @@ descriptions with empty values and revokes its object URL immediately.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | GET | `/github` | control router | — | integrations page | `integrations` | P4 | |
 | POST | `/github/setup` | control router | strict | integrations page | `integrations` | P4 | Returns a one-time `url` and `state`; navigate natively |
-| POST | `/github/complete` | control router | strict `state`, `installationId` | callback handling | `integrations` | P4 | Clear the query after completion |
+| POST | `/github/authorize` | control router | strict `installationId`, optional setup `state`; sets a per-flow HttpOnly authorization nonce cookie named after the returned state | callback handling | `integrations` | P4 | Returns a one-time GitHub authorize `url`; navigate natively |
+| POST | `/github/complete` | control router | strict `state`, `code`; requires that flow's nonce cookie | callback handling | `integrations` | P4 | Clear the query after completion |
 | POST | `/github/reconcile` | control router | — | integrations page | `integrations` | P4 | |
 | POST | `/github/disconnect` | control router | body `{installationId}`, confirm | integrations page | `integrations` | P4 | |
 | DELETE | `/github/installations/:id` | control router | — | **none** (duplicate of disconnect) | — | P4: drop | `POST /github/disconnect` is the one shape |
@@ -531,7 +532,7 @@ Owner: `createTerminalSession` and `mountTerminalPane` in
 | Bulk `.env` text | D4 textarea | cleared on every close | same |
 | CSRF token | module variable in `dashboard-api.js` | dropped on 401 | memory only |
 | GitHub setup `state`, OAuth `authorizationUrl` | JSON response, then navigation | not stored | not stored; native navigation |
-| `?oauth=`, `?state=&installation_id=` | URL | `replaceState` after handling | remove the search params after handling |
+| `?oauth=`, `?state=&installation_id=`, `?code=&state=`, `?error=` | URL | `replaceState` after handling | remove the search params after handling |
 | Clipboard | API key copy, knowledge draft copy, file conflict copy, `data-copy` chips | — | keep, with a screen-reader announcement |
 
 `localStorage` (allowed by the ADR) holds only non-secret preferences. Wizard
