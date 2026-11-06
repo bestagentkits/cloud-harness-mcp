@@ -110,10 +110,10 @@ export const DASHBOARD_PAGES = [
     label: 'Terminals',
     group: 'operate',
     title: 'Terminals',
-    help: 'Every live workspace terminal, with its size, age, and idle expiry.',
+    help: 'View terminal sessions from anywhere in the dashboard.',
     palette: true,
     paletteHint: 'Live workspace terminals and their idle expiry',
-    nav: false,
+    nav: true,
     navParent: 'workspaces',
     icon: '<path d="M4 5h16v14H4z"/><path d="M8 10l3 2-3 2"/><path d="M13 15h3"/>'
   },

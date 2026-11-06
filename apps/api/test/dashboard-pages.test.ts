@@ -61,6 +61,7 @@ describe('dashboard page registry', () => {
       'activity',
       'approvals',
       'packages',
+      'terminals',
       'projects',
       'secrets',
       'models',
