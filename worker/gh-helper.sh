@@ -5,6 +5,16 @@ set -euo pipefail
 read -r GH_TOKEN
 export GH_TOKEN
 
+# gh may spawn git. The runner mounts no checkout, and this pins Git to a fixed configuration
+# anyway, so no repository, system, or global config can run a command while the token is held.
+# GIT_CONFIG_COUNT entries outrank repository config, and GIT_CEILING_DIRECTORIES stops discovery.
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_CEILING_DIRECTORIES=/
+export GIT_CONFIG_COUNT=4
+export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
+export GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null
+export GIT_CONFIG_KEY_2=credential.helper GIT_CONFIG_VALUE_2=
+export GIT_CONFIG_KEY_3=http.followRedirects GIT_CONFIG_VALUE_3=false
+
 require_number() {
   if ! [[ "${1:-}" =~ ^[0-9]+$ ]]; then
     echo "$2 must be a positive integer" >&2
