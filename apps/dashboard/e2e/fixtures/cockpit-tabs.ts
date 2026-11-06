@@ -19,12 +19,12 @@ export const cockpitTabReads = (base: string): Record<string, ReadHandler> => ({
       ? { path: 'src', entries: [{ name: 'main.ts', type: 'file' }, { name: 'lib', type: 'directory' }] }
       : { path: '.', entries: [{ name: 'src', type: 'directory' }, { name: 'README.md', type: 'file' }] } })(route);
   },
-  [`${base}/files/content`]: answer(200, { data: { path: 'src/main.ts', content: 'export const answer = 41;\n', sha256: SHA, bytes: 26 } }),
+  [`${base}/files/content`]: answer(200, { data: { path: 'src/main.ts', content: 'export const answer = 41;\n', sha256: SHA, bytesReturned: 26, totalBytes: 26, eof: true, binary: false } }),
   [`${base}/git/status`]: answer(200, { data: { branch: 'feature/launch', upstream: 'origin/feature/launch', ahead: 1, behind: 0, staged: 1, modified: 1, untracked: 0, entries: [{ code: 'M', path: 'src/main.ts' }] } }),
   [`${base}/git/diff`]: (route) => answer(200, { data: { diff: new URL(route.request().url()).searchParams.get('staged') === 'true' ? '+staged line' : '+unstaged line' } })(route),
   [`${base}/git/log`]: answer(200, { data: { commits: [{ oid: 'abc1234', subject: 'Add launch', author: 'Owner' }] } }),
   [`${base}/worktrees`]: answer(200, { data: { worktrees: [] } }),
-  [`${base}/skills`]: answer(200, { data: { skills: [{ name: 'lint', tier: 'library', description: 'Runs the linters.', sha256: SHA }] } }),
+  [`${base}/skills`]: answer(200, { data: { skills: [{ name: 'lint', tier: 'library', description: 'Runs the linters.', contentSha256: SHA }] } }),
   [`${base}/hooks`]: answer(200, { data: { hooks: [{ name: 'format', events: ['pre_commit'], active: true }], manifestSha256: SHA_NEXT } }),
   [`${base}/deployments`]: answer(200, { data: { deployments: [{ name: 'production', cwd: 'deploy', lastResult: 'succeeded', durationMs: 900 }, { name: 'staging', cwd: 'deploy' }] } }),
   [`${base}/artifacts`]: answer(200, { data: { artifacts: [{ artifactId: 'art_tab_01', logicalName: 'bundle.tgz', sha256: SHA, sizeBytes: 2048, expiresAt: '2030-01-01T00:00:00.000Z', generation: 1 }] } }),

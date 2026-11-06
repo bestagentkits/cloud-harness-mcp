@@ -57,7 +57,10 @@ dashboard can read: a lease inside its threshold, a failed workspace, a quaranti
 - **Files** browses, edits, patches and deletes files. The editor loads the first
   64 KB of a file. For a larger file it shows how much was loaded, makes the editor
   read-only and hides **Save file**, so a save can never cut the file short; use
-  **Apply text patch**, which edits the whole file on the server.
+  **Apply text patch**, which edits the whole file on the server. A binary file, or
+  one that is not valid UTF-8 text, opens read-only with a notice and no **Save
+  file**, because its preview is not an exact copy and saving it would corrupt it;
+  deleting it still works.
 - **Git** keeps **Finalize** as the happy path and stays collapsed for everything else:
   branch, ahead/behind, staged/modified/untracked counts, the changed-file list, a
   bounded staged or unstaged diff, recent commits, worktrees, and advanced operations

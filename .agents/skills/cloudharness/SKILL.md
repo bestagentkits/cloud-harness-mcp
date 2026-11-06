@@ -19,7 +19,7 @@ network isolation.
 | Choose a tool and locate its detailed contract | [Tool reference index](references/tool-reference.md) |
 | Open, recover, inspect, or close a workspace; interpret results/errors | [Workspace lifecycle and results](references/workspace-lifecycle-and-results.md) |
 | Work across several repositories in one workspace, choose `repositoryId`, or handle a `read-only` repository | [Multi-repository workspaces](references/multi-repository-workspaces.md) |
-| List, read, write, patch, move, delete, grep, or search symbols | [Files and search](references/files-and-search.md) |
+| Read, edit, or search files and symbols, including partial reads and binary previews | [Files and search](references/files-and-search.md) |
 | Run a command, interactive shell, coding session, or dependency task | [Execution and tasks](references/execution-and-tasks.md) |
 | Install, update, roll back, or uninstall a durable CLI tool for every workspace | [Managed packages](references/managed-packages.md) |
 | Inspect or change Git state, transfer origin refs, or use worktrees | [Git and worktrees](references/git-and-worktrees.md) |

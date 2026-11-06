@@ -157,3 +157,15 @@ describe('dashboard page registry', () => {
     expect(script).not.toContain("location.pathname === '/dashboard/settings'");
   });
 });
+
+describe('dashboard parity matrix', () => {
+  // The React cutover deletes the legacy shell, so a legacy page without a parity row would be
+  // dropped silently. Section 2 of the matrix keys each row by the registry page id.
+  it('has a section 2 row for every legacy page', () => {
+    const matrix = readFileSync(new URL('../../../docs/dashboard-parity-matrix.md', import.meta.url), 'utf8');
+    const section = matrix.slice(matrix.indexOf('## 2. Routes and pages'), matrix.indexOf('### 2.1'));
+    const keys = new Set([...section.matchAll(/^\| `\/dashboard(?:[^|\\]|\\.)*\| ([a-z-]+) \//gmu)].map((match) => match[1]));
+    expect(keys.size).toBeGreaterThan(0);
+    for (const page of DASHBOARD_PAGES) expect(keys, page.id).toContain(page.id);
+  });
+});
