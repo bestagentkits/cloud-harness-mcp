@@ -220,6 +220,7 @@ export function registerDashboardControlRoutes(
   });
   router.delete('/api/v1/artifacts/:artifactId', endpoint('artifact_delete', (request) => ({ artifactId: internalId('art').parse(request.params.artifactId), ...generation.parse(request.body) })));
   router.get('/api/v1/github', endpoint('github_status', () => ({})));
+  router.post('/api/v1/github/setup', endpoint('github_setup_begin', (request) => (request.body ?? {}) as Record<string, unknown>));
   // GitHub binding needs a user authorization that proves the GitHub user owns or administers the
   // installation. The browser names the installation (and the setup state when GitHub kept it);
   // the redirect URI comes from the Origin the security middleware already verified.

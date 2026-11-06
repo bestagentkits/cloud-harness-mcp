@@ -110,6 +110,11 @@ beforeEach(async () => {
         }, workspaceLifecycle: lifecycleView(lifecycle) } };
       }
       if (operation === 'settings_network_check') return { ok: true, message: 'Dependency egress readiness', truncated: false, data: { ready: true, reason: null } };
+      if (operation === 'github_setup_begin') {
+        return { ok: true, message: 'GitHub setup started', truncated: false, data: {
+          url: 'https://github.com/apps/cloud-harness/installations/new?state=setup-state'
+        } };
+      }
       if (operation === 'github_authorize_begin') {
         // The runner mints a fresh one-time state per authorization, as the real one does.
         const state = `${String(input.installationId).padEnd(8, 'x')}${'q'.repeat(40)}`;
@@ -352,6 +357,26 @@ describe('dashboard BFF', () => {
     });
     expect(postRes.status).toBe(200);
     expect(calls.at(-1)).toEqual({ operation: 'github_disconnect', input: { installationId: '102' }, principal });
+  });
+
+  it('starts GitHub App installation setup for the signed-in principal', async () => {
+    const session = await send('/api/v1/session');
+    const sessionCookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const body = { expectedAccountId: '1234' };
+    const response = await send('/api/v1/github/setup', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'https://dashboard.example',
+        'x-csrf-token': session.json.csrfToken,
+        cookie: sessionCookie
+      },
+      body: JSON.stringify(body)
+    });
+
+    expect(response.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'github_setup_begin', principal, input: body });
+    expect(response.json.data.url).toBe('https://github.com/apps/cloud-harness/installations/new?state=setup-state');
   });
 
   it('binds a GitHub user authorization to the starting browser and derives the redirect from the verified origin', async () => {
