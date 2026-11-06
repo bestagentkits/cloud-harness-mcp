@@ -44,11 +44,17 @@ export type ApiRequestOptions = {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string | undefined;
-  constructor(status: number, message: string, code?: string) {
+  /**
+   * The redacted result projection a 422 carries: an operation that ran as asked but reports
+   * a failure (a skill script exiting non-zero) answers with the same shape as its success.
+   */
+  readonly data: Record<string, unknown> | undefined;
+  constructor(status: number, message: string, code?: string, data?: Record<string, unknown>) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
+    this.data = data;
   }
 }
 /** 401: the Access assertion or dashboard session ended; the operator must reload or sign in. */
@@ -86,7 +92,7 @@ function retryAfter(response: Response): number | undefined {
 }
 
 async function toError(response: Response): Promise<ApiError> {
-  let body: { message?: unknown; error?: unknown } = {};
+  let body: { message?: unknown; error?: unknown; data?: unknown } = {};
   try { body = await response.json() as typeof body; } catch { /* sanitised fallback */ }
   const message = typeof body.message === 'string' && body.message ? body.message : GENERIC_MESSAGE;
   const code = typeof body.error === 'string' ? body.error : undefined;
@@ -96,7 +102,8 @@ async function toError(response: Response): Promise<ApiError> {
   if (status === 409) return new ConflictError(status, message, code);
   if (status === 429) return new RateLimitedError(status, message, code, retryAfter(response));
   if (status >= 500) return new ServerError(status, message, code);
-  return new ApiError(status, message, code);
+  const data = status === 422 && body.data && typeof body.data === 'object' && !Array.isArray(body.data) ? body.data as Record<string, unknown> : undefined;
+  return new ApiError(status, message, code, data);
 }
 
 /** Matches by name: the abort reason may come from another realm (iframe, test DOM). */
