@@ -19,12 +19,13 @@ describe('page registry', () => {
     expect(DASHBOARD_PAGES.map((page) => page.id)).toEqual([...PAGE_IDS]);
   });
 
-  it('matches the classic Dashboard registry for every shared page', () => {
+  it('matches the classic registry except for the Classic-only terminal sidebar entry', () => {
     for (const old of legacy.DASHBOARD_PAGES) {
       const page = pageById(old.id as never);
       expect(page, old.id).toBeDefined();
+      if (old.id === 'terminals') expect(old.nav).toBe(true);
       expect({ label: page.label, title: page.title, group: page.group, nav: page.nav }, old.id).toEqual({
-        label: old.label, title: old.title, group: old.group, nav: old.nav !== false
+        label: old.label, title: old.title, group: old.group, nav: old.id !== 'terminals' && old.nav !== false
       });
     }
   });
