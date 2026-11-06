@@ -17,7 +17,7 @@ services, and it gives you no more access than an agent working in that workspac
 
 ## Dashboard-wide dock
 
-The header's **Terminals** button opens a persistent dock from any Dashboard page
+In the Classic Dashboard, the header's **Terminals** button opens a persistent dock from any page
 (or use **Ctrl+Shift+Backquote** outside an active terminal). Pick an **ACTIVE**
 workspace and select **Open tab**. Each dock tab can open a new PTY (including multiple tabs in one workspace) or
 re-attach to a running one. The dock remains mounted when you navigate to another

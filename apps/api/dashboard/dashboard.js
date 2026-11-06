@@ -1016,9 +1016,9 @@ export function initializeDashboard() {
     try {
       const result = await persistentApi('/workspaces');
       const workspaces = (result.data?.workspaces ?? []).filter((w) => w.status === 'ACTIVE');
-      dockSelect.replaceChildren(new Option('Select active workspace', ''));
+      dockSelect.replaceChildren(new globalThis.Option('Select active workspace', ''));
       for (const workspace of workspaces) {
-        dockSelect.add(new Option(repositoryName(workspace.repositoryUrl) + ' · ' + workspace.workspaceId.slice(0, 12), workspace.workspaceId));
+        dockSelect.add(new globalThis.Option(repositoryName(workspace.repositoryUrl) + ' · ' + workspace.workspaceId.slice(0, 12), workspace.workspaceId));
       }
       if (workspaces.some((w) => w.workspaceId === previous)) dockSelect.value = previous;
       else if (workspaces.length) dockSelect.value = workspaces[0].workspaceId;
