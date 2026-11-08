@@ -422,10 +422,16 @@ describe('skills extension serving bounds', () => {
     await expect(get('skill://cloud-harness/built-in/dup/SKILL.md')).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
-  it('does not serve a skill holding a file name that is not UTF-8', async () => {
+  it('does not serve a skill holding a file name that is not UTF-8', async (context) => {
     const { builtin, list, read } = setup();
     const dir = builtin('raw', { 'SKILL.md': document('raw') });
-    writeFileSync(Buffer.concat([Buffer.from(`${dir}/`), Buffer.from([0xff, 0xfe, 0x2e, 0x6d, 0x64])]), 'x');
+    try {
+      writeFileSync(Buffer.concat([Buffer.from(`${dir}/`), Buffer.from([0xff, 0xfe, 0x2e, 0x6d, 0x64])]), 'x');
+    } catch (error) {
+      // APFS (and other UTF-8-only file systems) refuse the name itself, so the fixture cannot exist here.
+      if ((error as NodeJS.ErrnoException).code === 'EILSEQ') context.skip();
+      throw error;
+    }
     builtin('clean', { 'SKILL.md': document('clean') });
     expect((await list()).skills.map((skill) => skill.frontmatter.name)).toEqual(['clean']);
     await expect(read('skill://cloud-harness/built-in/raw/SKILL.md')).rejects.toMatchObject({ code: 'NOT_FOUND' });

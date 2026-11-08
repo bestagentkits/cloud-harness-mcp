@@ -87,6 +87,13 @@ docker run --rm --ipc=host -v "$PWD:/work" -w /work mcr.microsoft.com/playwright
 Review the changed images under `apps/dashboard/e2e/visual.spec.ts-snapshots/`
 before committing them.
 
+A few runner tests exercise mechanisms the production runner and executor only
+have on Linux, and skip themselves elsewhere: the workspace and repository skill
+tiers need `/proc/self/fd` (`skill-extension-workspace.test.ts`), the terminal
+session kill needs procps `pkill -s` (`terminal-session-scripts.test.ts`), and
+the non-UTF-8 file name case needs a file system that accepts such names. On
+macOS they report as skipped; Linux CI runs them all.
+
 The dashboard `build` script ends with
 [`apps/dashboard/scripts/verify-build-output.mjs`](../apps/dashboard/scripts/verify-build-output.mjs),
 so CI fails a build that breaks the shell contract or the gzip budget read from
