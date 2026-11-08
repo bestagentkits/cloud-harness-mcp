@@ -466,10 +466,13 @@ Repository code is never evaluated by the runner during clone.
 
 Optional GitHub App credentials remain in the runner. Access GitHub SSO never
 grants repository access. A separate principal-bound App installation and
-verified repository grant authorize private Git operations. Short-lived,
-repository-scoped tokens are supplied over stdin only to ephemeral clone,
-fetch, or push helpers; the stored remote stays credential-free and the helper
-environment never receives a token. Remote fetch/pull first stage outside the
+verified repository grant authorize private Git operations, or a member's own
+GitHub user authorization where one is connected (see
+[GitHub user authorization](#github-user-authorization-member-access)).
+Short-lived, repository-scoped tokens (or the user token) are supplied over
+stdin only to ephemeral clone, fetch, or push helpers; the stored remote stays
+credential-free and the helper's launch environment never receives a token.
+Remote fetch/pull first stage outside the
 executor and import without network or credentials. Push first stages a bare
 snapshot without credentials, then uses a separate networked helper. Transfer
 directories and helper containers are removed after the operation.
@@ -541,10 +544,136 @@ with the ingest-time redactor. The owning resolution logic and its tests are
 and
 [`apps/runner/test/github-credential-fallback.test.ts`](../apps/runner/test/github-credential-fallback.test.ts).
 
+In the multi-principal modes this fallback is eligible only for a principal that
+has no GitHub user authorization or disconnected it. A `connected` principal
+uses the user token lane, and a `revoked` one gets
+`GITHUB_USER_AUTHORIZATION_REQUIRED`; the secret never stands in for either (see
+[GitHub user authorization](#github-user-authorization-member-access)).
+
 This fallback is deliberately weaker than an App token: a personal access token
 is not scoped to one repository and cannot be bounded by an installation grant,
 so prefer the narrowest fine-grained token, or a GitHub App where one is
 practical.
+
+#### GitHub user authorization (member access)
+
+In `cloudflare-access` and `oidc` modes a member can connect their own GitHub
+user from Dashboard → Integrations → GitHub → GitHub user, so repository access
+follows what that person can reach instead of an installation binding they do
+not own or a shared personal access token. It is a second `purpose` of the same
+authorization flow as binding (PKCE, one-time `state` bound to the principal and
+browser, per-flow `__Host-` cookie). The purpose is read only from the stored
+server-side state, never from the URL or body, so a `bind` state cannot be
+replayed as `user`. The `user` purpose requests `scope=offline_access`, which
+GitHub documents as returning an expiring access token and a refresh token even
+when the App is not configured for expiring tokens, so no App setting is
+required. It does no organization-owner proof and does not need **Members:
+Read-only**. Connect fails closed when GitHub's response lacks the refresh
+token or either lifetime.
+
+**Credential selection.** For a github.com repository the runner resolves, in
+order: the principal's installation token (a binding, unchanged); then the user
+token; then the legacy fallback. The stored status decides the lane, not
+whether token material exists:
+
+| Stored status | Resolution for a repository the binding does not cover |
+| --- | --- |
+| none, or `disconnected` | Legacy `principal-global-secret` lane, if configured. |
+| `connected` | User-token lane, terminal. |
+| `revoked` | `GITHUB_USER_AUTHORIZATION_REQUIRED`, even when a fallback secret exists. |
+
+Only an explicit Disconnect moves `revoked` to `disconnected`, and only a
+successful `user` authorization moves either back to `connected`, so the lane
+changes by the person's action, never as a side effect of GitHub refusing a
+token. A person with no user authorization keeps the legacy lane exactly as
+before.
+
+- **Owner pre-check.** The user token is used only when the repository owner has
+  a GitHub App installation in `GET /user/installations` (filtered to this App,
+  cached for a short time per principal). That is an owner-level check, not a
+  per-repository listing, so GitHub decides repository access and the person's
+  own rate limit is spared. When the owner is unreachable, no credential is
+  used: a public repository still clones anonymously, `github_action` returns
+  `REPOSITORY_OPERATION_NOT_AUTHORIZED`, and the legacy fallback secret is not
+  consulted. This is terminal too: a failed anonymous clone is not retried with
+  an App token.
+- **Terminal lane.** Once selected, the outcome is final. A 403, 404, SAML
+  enforcement, refresh failure, read-only member's push, or provider outage
+  never switches to an App token, a PAT, or the runner environment. Clone, fetch,
+  push, `github_action`, and `github_read` share the rule (the reconcile probe
+  has no recovery retry).
+  The only retry is one recovery of the same lane: on a 401 the runner reads the
+  current token (refreshing if that is what the rejection means) and repeats the
+  request once. A second refusal is final.
+- **No PAT or App fallback after revocation.** A fallback secret is never a
+  recovery path for a refused user token.
+- **Capabilities.** `workspace_capabilities` and the fallback helpers account for
+  a connected authorization rather than advertising a secret that would not be
+  used. App-only actions such as repository creation stay App-only.
+- **SAML single sign-on** is a state of one organization. GitHub's refusal is
+  returned per request as `GITHUB_PERMISSION_MISSING` naming that organization's
+  SSO page, and revokes nothing; other organizations keep working.
+- **`oidc` onboarding** has no dashboard to connect from and is out of scope here
+  (tracked in #655).
+
+**Storage.** One row per principal in `github_user_authorizations` (a runner
+metadata table; `principal_id` is unique, with `ON DELETE RESTRICT` so deleting a
+principal must remove the row explicitly). `github_user_id` is not unique: a
+person can be two principals, and attribution comes from audit by principal plus
+GitHub user ID. The access and refresh tokens are sealed together as one
+`SecretKeyring` envelope bound to the principal and the row's `generation`, so a
+ciphertext moved to another principal or generation fails to decrypt. The row
+keeps only non-secret status, login, reason code and expiries once revoked or
+disconnected; the envelope is cleared. Every write is a compare-and-swap on
+`generation` and no transaction spans a GitHub request, so a refresh finishing
+after a Disconnect cannot restore the credential, a stale 401 cannot revoke a
+newer authorization, and refresh is single-flight per principal. A token is
+renewed shortly before it expires. `secrets:rekey` re-encrypts the row without
+changing `generation`, so an in-flight refresh still wins its swap. The
+authorization store is built before the secret store, so a key version the
+keyring lacks disables every secret surface instead of letting a global-secret
+credential stand in for a token that cannot be opened. The same fail-closed rule
+covers a runner that holds a `connected` row but lacks the OAuth client
+credentials or the keyring: every GitHub credential request returns a
+non-retryable `UNAVAILABLE` naming `GITHUB_APP_CLIENT_ID`,
+`GITHUB_APP_CLIENT_SECRET` and `SECRET_KEYRING`, no PAT is used, and Disconnect
+is unavailable until the configuration is restored. Connecting without a
+keyring likewise returns a non-retryable `UNAVAILABLE`.
+
+**Revocation and loss.** GitHub refusing the refresh token (`bad_refresh_token`)
+or an expired refresh token revokes (`revoked`, with a reason code). Disconnect
+revokes the access token with `DELETE /applications/{client_id}/token`, best
+effort, and never calls `…/grant`, which would remove the user's whole
+authorization of the App. If the runner crashes after GitHub rotates the refresh
+token but before the row is written, that refresh token is lost and the person
+reconnects; this is accepted. Audit entries are `github.user_authorized` (login,
+GitHub user ID), `github.user_authorization_revoked` (reason code) and
+`github.user_disconnected`; there is no per-refresh entry and no token material
+anywhere in audit, logs, results, errors, or API responses. User tokens used by
+an operation, before and after a refresh, are also redacted from helper output.
+A Disconnect voids every authorization completion in flight: one that loses
+that race revokes the token pair it just received at GitHub, stores nothing, and
+asks the person to start the connection again. Write
+`github_action` entries and clone failures name the credential as
+`credentialSource` (`github-app`, `github-user`, `principal-global-secret`,
+`runner-environment`, `none`), never the token.
+
+**Residual risk.** One stored credential spans every repository in the
+intersection of what the App is installed on and what the user can access, for up
+to 8 hours per access token (the refresh token extends it until it expires or
+is revoked). GitHub's `repository_id` narrowing exists only on the code exchange,
+not on refresh, and is ignored when the user or App cannot access that
+repository. The documented position is therefore that there is no documented way
+to narrow a shared stored credential for each helper call, not that user tokens
+can never be narrowed. A token also carries the person's own permissions, so a
+member who can push to a repository the App is installed on can push through the
+harness. The executable owners are
+[`apps/runner/src/github-user-authorization-service.ts`](../apps/runner/src/github-user-authorization-service.ts),
+[`apps/runner/src/github-user-authorization-store.ts`](../apps/runner/src/github-user-authorization-store.ts),
+[`apps/runner/src/github-user-authorizer.ts`](../apps/runner/src/github-user-authorizer.ts),
+[`apps/runner/src/github-user-lane.ts`](../apps/runner/src/github-user-lane.ts),
+and the selection in
+[`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts).
 
 ### Owner-scoped repository cache isolation
 
@@ -557,7 +686,7 @@ When repository caching is enabled (`enableRepoCache: true`):
 
 ### Brokered GitHub actions
 
-Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `pr_update`, `pr_comment`, `pr_review_threads`, the review, reviewer, draft/ready, and merge actions listed in `docs/mcp-api.md`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`, `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`, `issue_update`, `issue_publish`) are executed through the `github_action` tool using an ephemeral helper container (`worker/gh-helper.sh`). Action-scoped tokens (`pull_requests: read|write`, `issues: read|write`, each also carrying `contents: read`) are minted by the runner from the trusted GitHub App installation, or resolved from the operator fallback described above when no App token is available, and passed exclusively via `stdin`. `pr_merge` and `pr_auto_merge_enable` additionally mint `contents: write`, and are refused with `GITHUB_PERMISSION_MISSING` naming both scopes when the token GitHub reports lacks it; they never widen any other action. Issue actions that take a number (`issue_view`, `issue_comment`, `issue_update`, `issue_labels_add`, `issue_labels_remove`, `issue_publish`) also ask for `pull_requests` at the same level, because every pull request is also an issue and `gh` resolves the number through `issueOrPullRequest`, which GitHub refuses for a pull request without that permission. That scope is optional: when the installation does not grant it, the runner mints the issues-only token instead, and GitHub's refusal on a pull request number (`Resource not accessible by integration`) is reported as `GITHUB_PERMISSION_MISSING` naming `pull_requests` and the matching `pr_*` action. The accompanying `contents: read` is required for the action to work at all: `gh` resolves repository metadata (such as `defaultBranchRef`) over the GraphQL API, and GitHub refuses those fields for a token narrowed to the action scope alone. The helper container runs read-only with dropped capabilities, and is forcibly removed on all exit paths in a `try/finally` block. Credentials resolved this way never enter the helper environment, workspace filesystem, workspace environment, client result, or audit payload.
+Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `pr_update`, `pr_comment`, `pr_review_threads`, the review, reviewer, draft/ready, and merge actions listed in `docs/mcp-api.md`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`, `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`, `issue_update`, `issue_publish`) are executed through the `github_action` tool using an ephemeral helper container (`worker/gh-helper.sh`). Action-scoped tokens (`pull_requests: read|write`, `issues: read|write`, each also carrying `contents: read`) are minted by the runner from the trusted GitHub App installation, or resolved from the principal's GitHub user authorization or the operator fallback described above when no App token is available, and passed exclusively via `stdin`. A GitHub user token is not narrowed to an action scope: it carries the person's own permissions, and GitHub decides what the action may do. `pr_merge` and `pr_auto_merge_enable` additionally mint `contents: write`, and are refused with `GITHUB_PERMISSION_MISSING` naming both scopes when the token GitHub reports lacks it; they never widen any other action. Issue actions that take a number (`issue_view`, `issue_comment`, `issue_update`, `issue_labels_add`, `issue_labels_remove`, `issue_publish`) also ask for `pull_requests` at the same level, because every pull request is also an issue and `gh` resolves the number through `issueOrPullRequest`, which GitHub refuses for a pull request without that permission. That scope is optional: when the installation does not grant it, the runner mints the issues-only token instead, and GitHub's refusal on a pull request number (`Resource not accessible by integration`) is reported as `GITHUB_PERMISSION_MISSING` naming `pull_requests` and the matching `pr_*` action. The accompanying `contents: read` is required for the action to work at all: `gh` resolves repository metadata (such as `defaultBranchRef`) over the GraphQL API, and GitHub refuses those fields for a token narrowed to the action scope alone. The helper container runs read-only with dropped capabilities, and is forcibly removed on all exit paths in a `try/finally` block. The credential reaches the helper only over `stdin`: `gh-helper.sh` reads it and exports `GH_TOKEN` inside the helper process, so it is in that process's environment for the length of the call. It is never in the executor, the container's launch environment, `docker inspect`, the workspace filesystem or environment, a client result, or an audit payload.
 
 The helper never mounts the workspace checkout. It runs as the executor's uid, so Git would trust a checkout written by repository-controlled code (`safe.directory` does not apply to a same-uid owner), and a read-only mount still lets Git read and act on `.git/config`. Every action therefore names its target through `GH_REPO` and explicit numbers or refs, and the helper starts in `/tmp`. As a second layer, `worker/gh-helper.sh` pins Git to a fixed configuration for any `git` that `gh` spawns while the token is held: `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CEILING_DIRECTORIES=/`, and `GIT_CONFIG_COUNT` entries (which outrank repository config) for `core.fsmonitor=false`, `core.hooksPath=/dev/null`, an empty `credential.helper`, and `http.followRedirects=false`. `test/integration/gh-helper.docker.test.ts` proves this against the real image with a hostile checkout.
 

@@ -1157,3 +1157,80 @@ describe('dashboard server access control', () => {
     expect(await statusOf()).toBe(401);
   });
 });
+
+describe('dashboard GitHub user authorization routes', () => {
+  async function signedIn() {
+    const created = await send('/api/v1/session');
+    const cookie = String(created.headers['set-cookie']?.[0]).split(';', 1)[0]!;
+    return { cookie, headers: { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': String(created.json.csrfToken) } };
+  }
+
+  it('starts a user authorization with only its purpose, and derives the redirect and the browser binding on the server', async () => {
+    const { headers, cookie } = await signedIn();
+    const authorize = await send('/api/v1/github/authorize', { method: 'POST', headers, body: JSON.stringify({ purpose: 'user' }) });
+    expect(authorize.status).toBe(200);
+    const state = new URL(authorize.json.data.url).searchParams.get('state')!;
+    const setCookie = String([authorize.headers['set-cookie']].flat().find((value) => value?.startsWith('__Host-ch-github-authorization-')));
+    const authorizationCookie = setCookie.split(';', 1)[0]!;
+    const nonce = authorizationCookie.split('=')[1]!;
+    const binding = createHash('sha256').update(nonce).digest('base64url');
+    expect(setCookie).toMatch(/HttpOnly/);
+    expect(setCookie).toMatch(/Secure/);
+    expect(calls.at(-1)).toEqual({
+      operation: 'github_authorize_begin', principal,
+      input: { purpose: 'user', redirectUri: 'https://dashboard.example/dashboard/integrations/github', browserBinding: binding }
+    });
+    // A user authorization names no installation and takes nothing from the browser but its purpose.
+    for (const body of [
+      { purpose: 'user', installationId: '4242' },
+      { purpose: 'user', redirectUri: 'https://evil.example/dashboard/integrations/github' },
+      { purpose: 'admin' }
+    ]) {
+      expect((await send('/api/v1/github/authorize', { method: 'POST', headers, body: JSON.stringify(body) })).status).toBe(400);
+    }
+    expect(calls.filter((call) => call.operation === 'github_authorize_begin')).toHaveLength(1);
+
+    // Completion states no purpose either: the runner reads it from the state it stored.
+    const completion = { state, code: 'github-code' };
+    const withCookie = { ...headers, cookie: `${cookie}; ${authorizationCookie}` };
+    expect((await send('/api/v1/github/complete', { method: 'POST', headers: withCookie, body: JSON.stringify({ ...completion, purpose: 'bind' }) })).status).toBe(400);
+    expect(calls.some((call) => call.operation === 'github_setup_complete')).toBe(false);
+    const completed = await send('/api/v1/github/complete', { method: 'POST', headers: withCookie, body: JSON.stringify(completion) });
+    expect(completed.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'github_setup_complete', principal, input: { ...completion, browserBinding: binding } });
+  });
+
+  it('requires a session, the CSRF token, and the exact Origin for the user disconnect route', async () => {
+    const { headers } = await signedIn();
+    const withoutOrigin = { cookie: headers.cookie, 'content-type': headers['content-type'], 'x-csrf-token': headers['x-csrf-token'] };
+    const refused = [
+      await send('/api/v1/github/user/disconnect', { method: 'POST', headers: { origin: headers.origin, 'content-type': 'application/json' }, body: '{}' }),
+      await send('/api/v1/github/user/disconnect', { method: 'POST', headers: { ...headers, 'x-csrf-token': 'wrong' }, body: '{}' }),
+      await send('/api/v1/github/user/disconnect', { method: 'POST', headers: withoutOrigin, body: '{}' }),
+      await send('/api/v1/github/user/disconnect', { method: 'POST', headers: { ...headers, origin: 'https://evil.example' }, body: '{}' })
+    ];
+    for (const response of refused) expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(calls.some((call) => call.operation === 'github_user_disconnect')).toBe(false);
+
+    const disconnected = await send('/api/v1/github/user/disconnect', { method: 'POST', headers, body: '{}' });
+    expect(disconnected.status).toBe(200);
+    // The runner acts on the verified principal alone: nothing from the body is forwarded.
+    expect(calls.at(-1)).toEqual({ operation: 'github_user_disconnect', principal, input: {} });
+  });
+
+  it('projects the user authorization as status only, whatever the runner returned', () => {
+    const hostile = { accessToken: 'ghu_secret', refreshToken: 'ghr_secret', ciphertext: 'cipher-bytes', generation: 4, principalId: 'internal-owner', nonce: 'nonce-bytes' };
+    const raw = {
+      configured: true, userAuthorizationConfigured: true, installations: [], installation: null, repositories: [],
+      userAuthorization: { status: 'connected', login: 'alice', githubUserId: '789', refreshExpiresAt: 1_900_000_000_000, reasonCode: null, ...hostile }
+    };
+    for (const operation of ['github_status', 'github_setup_complete', 'github_reconcile', 'github_disconnect', 'github_user_disconnect'] as const) {
+      const mapped = mapDashboardData(operation, raw) as Record<string, unknown>;
+      expect(mapped.userAuthorization).toEqual({ status: 'connected', login: 'alice', githubUserId: '789', refreshExpiresAt: 1_900_000_000_000, reasonCode: null });
+      const serialized = JSON.stringify(mapped);
+      for (const secret of ['ghu_secret', 'ghr_secret', 'cipher-bytes', 'internal-owner', 'nonce-bytes', 'generation']) expect(serialized).not.toContain(secret);
+    }
+    expect((mapDashboardData('github_status', { configured: true }) as Record<string, unknown>).userAuthorization).toBeNull();
+    expect((mapDashboardData('github_status', { userAuthorization: 'ghu_secret' }) as Record<string, unknown>).userAuthorization).toBeNull();
+  });
+});

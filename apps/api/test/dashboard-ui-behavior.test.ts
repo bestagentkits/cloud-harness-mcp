@@ -6,7 +6,7 @@ import {
   PALETTE_BATCH_SIZE, chunkPaletteRequests, isPaletteHotkey, buildPaletteIndex, rankPaletteMatches,
   createPaletteIndexLoader, backdropHit, dismissOnBackdrop
 } from '../dashboard/dashboard.js';
-import { githubRefusalMessage, renderApiKeyIndex, renderGitHub, renderGitHubActions, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail, renderSettings, renderWorkspaceDetail, profileDisplayName } from '../dashboard/dashboard-render.js';
+import { githubRefusalMessage, githubUserAuthorizationReason, renderApiKeyIndex, renderGitHub, renderGitHubActions, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail, renderSettings, renderWorkspaceDetail, profileDisplayName } from '../dashboard/dashboard-render.js';
 import { FakeElement } from './dashboard-test-dom.js';
 
 describe('dashboard UI behavior', () => {
@@ -630,7 +630,7 @@ describe('dashboard UI behavior', () => {
       const ok = flow();
       await resolveGitHubCallback({ ...ok.deps, callback: githubCallbackParameters(`?code=abc.def&state=${state}`) });
       expect(ok.posts).toEqual([['/github/complete', { state, code: 'abc.def' }]]);
-      expect(ok.announcements).toEqual(['GitHub App connection completed.']);
+      expect(ok.announcements).toEqual(['GitHub connection completed.']);
 
       const refused = Object.assign(new Error('Only the owner of the GitHub account acme can connect its installation.'), { status: 403 });
       const bad = flow({ post: async () => { throw refused; } });
@@ -653,6 +653,61 @@ describe('dashboard UI behavior', () => {
       expect(plain).toContain('id="github-user-authorization-unconfigured"');
       expect(plain).toMatch(/<button type="submit" disabled>Connect GitHub App/);
       expect(renderGitHub(unbound, false)).not.toMatch(/disabled/);
+    });
+
+    describe('GitHub user card', () => {
+      const user = { login: 'octo-cat', githubUserId: '583231' };
+      const connected = { ...user, status: 'connected', refreshExpiresAt: Date.UTC(2030, 0, 1, 12), reasonCode: null };
+      const revoked = (reasonCode: string) => ({ ...user, status: 'revoked', refreshExpiresAt: null, reasonCode });
+
+      it('offers Connect for no authorization and for a disconnected one', () => {
+        for (const userAuthorization of [undefined, null, { ...user, status: 'disconnected', refreshExpiresAt: null, reasonCode: null }]) {
+          const html = renderGitHub({ ...unbound, userAuthorization }, false, undefined, 'https://dash.example');
+          expect(html).toContain('<h2>GitHub user</h2>');
+          expect(html).toMatch(/<button id="github-user-connect" type="button">Connect as GitHub user<\/button>/);
+          expect(html).not.toContain('id="github-user-disconnect"');
+          expect(html).not.toContain('@octo-cat');
+        }
+      });
+
+      it('shows the login, the renewal date and Disconnect when connected', () => {
+        const html = renderGitHub({ ...unbound, userAuthorization: connected });
+        expect(html).toContain('<h3>@octo-cat</h3>');
+        expect(html).toContain(`<time datetime="${connected.refreshExpiresAt}">`);
+        expect(html).toContain('Renewal date');
+        expect(html).toContain('id="github-user-disconnect"');
+        expect(html).not.toContain('id="github-user-connect"');
+      });
+
+      it('shows why a revoked authorization stopped, with Reconnect and Disconnect', () => {
+        const expired = renderGitHub({ ...unbound, userAuthorization: revoked('refresh_token_expired') });
+        expect(expired).toContain('was not renewed in time');
+        expect(expired).toMatch(/<button id="github-user-connect" type="button">Reconnect<\/button>/);
+        expect(expired).toContain('id="github-user-disconnect"');
+        expect(renderGitHub({ ...unbound, userAuthorization: revoked('bad_refresh_token') })).toContain('GitHub rejected the stored authorization');
+        expect(githubUserAuthorizationReason('bad_refresh_token')).not.toBe(githubUserAuthorizationReason('refresh_token_expired'));
+      });
+
+      it('disables Connect and Reconnect with the not-configured explanation', () => {
+        const none = renderGitHub({ ...unbound, userAuthorizationConfigured: false }, false, undefined, 'https://dash.example');
+        expect(none).toMatch(/<button id="github-user-connect" type="button" disabled>Connect as GitHub user/);
+        expect(none).toContain('id="github-user-card-unconfigured"');
+        const reconnect = renderGitHub({ ...unbound, userAuthorizationConfigured: false, userAuthorization: revoked('bad_refresh_token') });
+        expect(reconnect).toMatch(/<button id="github-user-connect" type="button" disabled>Reconnect/);
+      });
+
+      it('escapes a hostile login', () => {
+        const html = renderGitHub({ ...unbound, userAuthorization: { ...connected, login: '<img src=x onerror=alert(1)>' } });
+        expect(html).not.toContain('<img src=x');
+        expect(html).toContain('&lt;img src=x');
+      });
+
+      it('renders the updated card after an OAuth return, whatever purpose the server stored', async () => {
+        const { deps, posts } = flow({ status: { ...unbound, userAuthorization: connected } });
+        const outcome = await resolveGitHubCallback({ ...deps, callback: githubCallbackParameters(`?code=abc.def&state=${state}`) });
+        expect(posts).toEqual([['/github/complete', { state, code: 'abc.def' }]]);
+        expect(renderGitHub(outcome.status, false, outcome.notice)).toContain('<h3>@octo-cat</h3>');
+      });
     });
   });
 

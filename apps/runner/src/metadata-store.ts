@@ -9,6 +9,7 @@ import {
 import type { SecretPurpose } from '@cloud-harness/contracts';
 import { McpGatewayStore } from './mcp-gateway-store.js';
 import { McpOAuthStore } from './mcp-oauth-store.js';
+import { GitHubUserAuthorizationStore, readGitHubUserAuthorization, type GitHubUserAuthorizationRecord } from './github-user-authorization-store.js';
 import { SecretMetadataStore } from './secret-metadata-store.js';
 import type { EncryptedSecret, SecretKeyring } from './secret-keyring.js';
 
@@ -23,6 +24,7 @@ export class MetadataStore {
   private readonly availableMcpGateway: McpGatewayStore;
   private readonly availableSecretStore?: SecretMetadataStore;
   private readonly availableMcpOAuth?: McpOAuthStore;
+  private readonly availableGitHubUserAuthorizations?: GitHubUserAuthorizationStore;
   private readonly secretReadinessError?: Error;
 
   constructor(path: string, keyring?: SecretKeyring, secretReadinessError?: string) {
@@ -36,8 +38,13 @@ export class MetadataStore {
       return;
     }
     try {
+      // First, so a key version this keyring lacks disables every secret surface together: a
+      // principal whose GitHub user token cannot be opened must not silently fall back to a
+      // global-secret credential that still decrypts.
+      const githubUserAuthorizations = new GitHubUserAuthorizationStore(this.database, keyring);
       this.availableSecretStore = new SecretMetadataStore(this.database, keyring);
       this.availableMcpOAuth = new McpOAuthStore(this.database, keyring);
+      this.availableGitHubUserAuthorizations = githubUserAuthorizations;
     } catch (error) {
       this.secretReadinessError = error instanceof Error ? error : new Error('secret store is unavailable');
     }
@@ -51,6 +58,20 @@ export class MetadataStore {
   get mcpOAuth(): McpOAuthStore {
     if (!this.availableMcpOAuth) throw this.secretReadinessError ?? new Error('secret store is unavailable');
     return this.availableMcpOAuth;
+  }
+
+  /** Encrypted GitHub App user access tokens; unavailable, like secrets, without a keyring. */
+  get githubUserAuthorizations(): GitHubUserAuthorizationStore {
+    if (!this.availableGitHubUserAuthorizations) throw this.secretReadinessError ?? new Error('secret store is unavailable');
+    return this.availableGitHubUserAuthorizations;
+  }
+
+  /**
+   * The non-secret GitHub user authorization of a principal. It reads no token and needs no keyring, so it
+   * answers whatever the OAuth or secret configuration is.
+   */
+  githubUserAuthorization(principalId: string): GitHubUserAuthorizationRecord | undefined {
+    return readGitHubUserAuthorization(this.database, principalId);
   }
 
   get secrets(): SecretMetadataStore {

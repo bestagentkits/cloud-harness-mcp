@@ -190,6 +190,19 @@ content and user-supplied commands are untrusted execution input.
   installation cannot satisfy the action. When no credential can, it fails with
   `GITHUB_PERMISSION_MISSING` (403), naming the missing scope and both remedies;
   a `403` from the helper is never retried.
+- Members of `cloudflare-access` or `oidc` instances can connect their own GitHub
+  user (Dashboard → Integrations → GitHub → GitHub user). While it is connected
+  and the repository owner has an App installation that user can reach, that
+  user's token is the credential (`credentialSource: github-user`). It is final:
+  a refusal (including a read-only member's push or a SAML single-sign-on 403,
+  reported as `GITHUB_PERMISSION_MISSING` naming the organization's SSO page)
+  never switches to an App token, a secret, or the runner environment. If the
+  owner has no installation the user can reach, no credential applies and
+  `github_action` returns `REPOSITORY_OPERATION_NOT_AUTHORIZED`. When GitHub no
+  longer accepts the saved authorization, credentialed Git and GitHub calls
+  return `GITHUB_USER_AUTHORIZATION_REQUIRED` (not retryable, and a configured
+  secret does not stand in): stop and ask the person to reconnect it, or
+  disconnect it to return to the secret lane. Never ask for a token instead.
 - Fetch, pull, and push use isolated transfer helpers. They do not require
   executor networking and do not expose the broker credential to repository code.
 

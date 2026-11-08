@@ -8,6 +8,7 @@ import { loadRunnerConfigWithReadiness } from './config.js';
 import { DashboardControlService } from './dashboard-control-service.js';
 import { GitHubApiInstallationVerifier } from './github-api-installation-verifier.js';
 import { GitHubAuthorizationStateStore, GitHubBindingService, GitHubSetupStateStore } from './github-binding-service.js';
+import { GitHubUserAuthorizationService } from './github-user-authorization-service.js';
 import { GitHubApiUserAuthorizer } from './github-user-authorizer.js';
 import { SqliteGitHubInstallationStore } from './github-installation-sqlite-store.js';
 import { MetadataStore } from './metadata-store.js';
@@ -50,16 +51,24 @@ const events = new McpEventService({
 });
 const githubInstallations = new SqliteGitHubInstallationStore(store.database);
 const githubApp = config.githubApp;
+const userAuthorizer = githubApp?.clientId && githubApp.clientSecret
+  ? new GitHubApiUserAuthorizer({ appId: githubApp.appId, clientId: githubApp.clientId, clientSecret: githubApp.clientSecret })
+  : undefined;
+// A user token is stored encrypted, so the `user` purpose needs the secret keyring; `bind` does not.
+const userAuthorizations = userAuthorizer && metadata.secretReadiness().ready
+  ? new GitHubUserAuthorizationService(metadata.githubUserAuthorizations, userAuthorizer)
+  : undefined;
 const githubBinding = githubApp
   ? new GitHubBindingService(
     new GitHubSetupStateStore(store.database),
     githubInstallations,
     new GitHubApiInstallationVerifier(githubApp),
     Date.now,
-    githubApp.clientId && githubApp.clientSecret
+    userAuthorizer
       ? {
         states: new GitHubAuthorizationStateStore(store.database),
-        authorizer: new GitHubApiUserAuthorizer({ appId: githubApp.appId, clientId: githubApp.clientId, clientSecret: githubApp.clientSecret })
+        authorizer: userAuthorizer,
+        ...(userAuthorizations ? { userAuthorizations } : {})
       }
       : undefined
   )

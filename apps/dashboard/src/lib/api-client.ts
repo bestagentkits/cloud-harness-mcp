@@ -55,6 +55,11 @@ export class ApiError extends Error {
 export class UnauthorizedError extends ApiError { override name = 'UnauthorizedError'; }
 /** 403: forbidden host/origin, failed CSRF, or a principal-scoped denial. */
 export class ForbiddenError extends ApiError { override name = 'ForbiddenError'; }
+/** The BFF's 403 code for an operation that needs the person's own GitHub user authorization. */
+export const GITHUB_USER_AUTHORIZATION_REQUIRED_CODE = 'github_user_authorization_required';
+/** Fixed copy for that refusal: it names where to reconnect and never echoes the server's text. */
+export const GITHUB_USER_AUTHORIZATION_REQUIRED_MESSAGE = 'Your GitHub user authorization is required. Reconnect it in Integrations → GitHub → GitHub user.';
+export const isGitHubUserAuthorizationRequired = (error: unknown): boolean => error instanceof ForbiddenError && error.code === GITHUB_USER_AUTHORIZATION_REQUIRED_CODE;
 /** 409: a generation fence or lifecycle conflict; refetch before retrying. */
 export class ConflictError extends ApiError { override name = 'ConflictError'; }
 /** 429: rate limited; `retryAfterSeconds` comes from `Retry-After` when present. */

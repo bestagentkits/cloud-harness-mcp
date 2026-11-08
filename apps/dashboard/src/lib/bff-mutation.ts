@@ -1,7 +1,7 @@
 import { type QueryKey, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from '@/components/ui/toast-store';
-import { ApiError, ConflictError, ForbiddenError, NetworkError, RateLimitedError, UnauthorizedError } from './api-client';
+import { ApiError, ConflictError, ForbiddenError, GITHUB_USER_AUTHORIZATION_REQUIRED_MESSAGE, isGitHubUserAuthorizationRequired, NetworkError, RateLimitedError, UnauthorizedError } from './api-client';
 
 /** The query-key prefix of a BFF read, for invalidation: `['bff', path]` matches every query of that path. */
 export function bffPrefix(path: string): QueryKey {
@@ -26,6 +26,7 @@ export const SESSION_ENDED_MESSAGE = 'Your dashboard session ended. Reload the p
 export function mutationErrorText(error: unknown): string {
   if (error instanceof UnauthorizedError) return SESSION_ENDED_MESSAGE;
   if (error instanceof ConflictError) return CONFLICT_MESSAGE;
+  if (isGitHubUserAuthorizationRequired(error)) return GITHUB_USER_AUTHORIZATION_REQUIRED_MESSAGE;
   if (error instanceof ForbiddenError) return 'The server refused this request. Reload the page and try again.';
   if (error instanceof RateLimitedError) return error.message;
   if (error instanceof NetworkError) return 'The Dashboard could not reach the server. Check your connection and try again.';

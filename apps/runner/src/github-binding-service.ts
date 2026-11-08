@@ -1,12 +1,14 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { HarnessError } from '@cloud-harness/contracts';
+import { z } from 'zod';
+import { HarnessError, type GitHubUserAuthorizationView } from '@cloud-harness/contracts';
 import type {
   GitHubInstallationRecord,
   GitHubInstallationMutationAudit,
   GitHubInstallationStore,
   VerifiedGitHubInstallation
 } from './github-installation-store.js';
+import type { GitHubUserAuthorizationService } from './github-user-authorization-service.js';
 import type { GitHubUserAuthorizer, GitHubUserInstallationProof } from './github-user-authorizer.js';
 
 type SetupState = {
@@ -28,11 +30,18 @@ type SetupStateRow = {
  * runner, so an authorization code intercepted in the browser cannot be redeemed elsewhere.
  * `browserBinding` is the SHA-256 of a nonce held in an HttpOnly cookie of the browser that
  * started the flow.
+ *
+ * `purpose` says what completing it does: `bind` proves the user owns or administers
+ * `installationId` and binds it; `user` stores the principal's own user access token and names no
+ * installation. It lives only here, server-side, and completion reads it from this state: the
+ * browser never states a purpose on return, so a `bind` state cannot be replayed as `user` or the
+ * reverse.
  */
 type AuthorizationState = {
   principalId: string;
   browserBinding: string;
-  installationId: string;
+  purpose: GitHubAuthorizationPurpose;
+  installationId?: string;
   expectedAppId: string;
   expectedAccountId?: string;
   redirectUri: string;
@@ -40,7 +49,19 @@ type AuthorizationState = {
   expiresAt: number;
 };
 
+export type GitHubAuthorizationPurpose = 'bind' | 'user';
+
 type AuthorizationPayload = Omit<AuthorizationState, 'principalId' | 'browserBinding' | 'expiresAt'>;
+
+/** A state persisted before purposes existed has none, and was always a `bind`. */
+const AuthorizationPayloadSchema = z.object({
+  purpose: z.enum(['bind', 'user']).default('bind'),
+  installationId: z.string().optional(),
+  expectedAppId: z.string(),
+  expectedAccountId: z.string().optional(),
+  redirectUri: z.string(),
+  codeVerifier: z.string()
+}).strict();
 
 const DEFAULT_MAX_STATES_PER_PRINCIPAL = 8;
 
@@ -264,7 +285,7 @@ export class GitHubAuthorizationStateStore {
         .run(stateHash, principalId);
       if (deleted.changes !== 1) throw invalidAuthorizationState();
       database.exec('COMMIT');
-      return { ...(JSON.parse(row.payload) as AuthorizationPayload), principalId, browserBinding: row.browser_binding, expiresAt: row.expires_at };
+      return authorizationFrom(row.payload, principalId, row.browser_binding, row.expires_at);
     } catch (error) {
       if (database.isTransaction) database.exec('ROLLBACK');
       throw error;
@@ -280,7 +301,17 @@ export class GitHubAuthorizationStateStore {
 export type GitHubUserAuthorization = {
   states: GitHubAuthorizationStateStore;
   authorizer: GitHubUserAuthorizer;
+  /**
+   * Stores and renews the token pair a `user` authorization produces. Absent when no secret keyring
+   * can protect a token, which leaves the `bind` purpose working and refuses the `user` one.
+   */
+  userAuthorizations?: GitHubUserAuthorizationService;
 };
+
+/** What completing an authorization did, as the stored state's purpose decided. */
+export type GitHubAuthorizationCompletion =
+  | { purpose: 'bind'; installation: GitHubInstallationRecord }
+  | { purpose: 'user'; authorization: GitHubUserAuthorizationView };
 
 const AUTHORIZATION_TTL_MS = 10 * 60_000;
 
@@ -296,6 +327,11 @@ export class GitHubBindingService {
   /** Whether the GitHub App OAuth client credentials are configured, so a binding can be proven. */
   get userAuthorizationConfigured(): boolean {
     return this.userAuthorization !== undefined;
+  }
+
+  /** The principal's GitHub user token lifecycle; `undefined` while no keyring can protect a token. */
+  get userAuthorizations(): GitHubUserAuthorizationService | undefined {
+    return this.userAuthorization?.userAuthorizations;
   }
 
   beginSetup(input: {
@@ -329,6 +365,7 @@ export class GitHubBindingService {
     const created = states.create({
       principalId: input.principalId,
       browserBinding: input.browserBinding,
+      purpose: 'bind',
       installationId: input.installationId,
       expectedAppId: String(input.expectedAppId),
       ...(setup?.expectedAccountId === undefined ? {} : { expectedAccountId: setup.expectedAccountId }),
@@ -340,12 +377,43 @@ export class GitHubBindingService {
   }
 
   /**
-   * Binds the installation only after GitHub proves, with the user's own token, that the user
-   * can access it and owns its account or administers its organization. The App JWT then
-   * verifies the installation and its repositories; the user token is revoked at GitHub once
-   * the proof is read. Because the proof establishes ownership, a binding held by another
-   * principal (for example one created before user authorization existed) is replaced in the
-   * same transaction and reported to `audit` as `replacedPrincipalId`.
+   * Starts the GitHub user authorization that stores the principal's own user access token. It names
+   * no installation and consumes no setup state: GitHub decides what the token reaches, which is the
+   * intersection of the App's installations and the user's own access.
+   */
+  beginUserAuthorization(input: {
+    principalId: string;
+    expectedAppId: string | number;
+    redirectUri: string;
+    browserBinding: string;
+  }): { url: string; expiresAt: number } {
+    const { states, authorizer } = this.requireUserAuthorization();
+    this.requireUserAuthorizations();
+    const codeVerifier = randomBytes(32).toString('base64url');
+    const created = states.create({
+      principalId: input.principalId,
+      browserBinding: input.browserBinding,
+      purpose: 'user',
+      expectedAppId: String(input.expectedAppId),
+      redirectUri: input.redirectUri,
+      codeVerifier
+    }, this.now(), AUTHORIZATION_TTL_MS);
+    const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+    return { url: authorizer.authorizeUserUrl({ state: created.state, codeChallenge, redirectUri: input.redirectUri }), expiresAt: created.expiresAt };
+  }
+
+  /**
+   * Completes the authorization the stored state describes. The purpose comes from that state only.
+   *
+   * `bind` binds the installation only after GitHub proves, with the user's own token, that the user
+   * can access it and owns its account or administers its organization. The App JWT then verifies the
+   * installation and its repositories; the user token is revoked at GitHub once the proof is read.
+   * Because the proof establishes ownership, a binding held by another principal (for example one
+   * created before user authorization existed) is replaced in the same transaction and reported to
+   * `audit` as `replacedPrincipalId`.
+   *
+   * `user` keeps the token pair: it is stored encrypted under a generation, and a pair it replaces is
+   * revoked at GitHub. The refusal and audit hooks belong to `bind`.
    */
   async completeAuthorization(input: {
     principalId: string;
@@ -353,7 +421,7 @@ export class GitHubBindingService {
     code: string;
     browserBinding: string;
   }, audit?: (record: GitHubInstallationRecord, proof: GitHubUserInstallationProof, replacedPrincipalId?: string) => void,
-  refused?: (installationId: string | undefined, error: HarnessError) => void): Promise<GitHubInstallationRecord> {
+  refused?: (installationId: string | undefined, error: HarnessError) => void): Promise<GitHubAuthorizationCompletion> {
     const { states, authorizer } = this.requireUserAuthorization();
     let pending: AuthorizationState;
     try {
@@ -363,14 +431,17 @@ export class GitHubBindingService {
       if (error instanceof HarnessError && !error.retryable) refused?.(undefined, error);
       throw error;
     }
+    if (pending.purpose === 'user') return await this.completeUserAuthorization(input, pending);
+    const installationId = pending.installationId;
+    if (installationId === undefined) throw invalidAuthorizationState();
     try {
       const proof = await authorizer.proveInstallationAdministration({
-        code: input.code, codeVerifier: pending.codeVerifier, redirectUri: pending.redirectUri, installationId: pending.installationId
+        code: input.code, codeVerifier: pending.codeVerifier, redirectUri: pending.redirectUri, installationId
       });
-      const verified = await this.verifier.verifyInstallation(pending.installationId);
+      const verified = await this.verifier.verifyInstallation(installationId);
       if (
-        !sameId(pending.installationId, proof.installationId) ||
-        !sameId(pending.installationId, verified.installationId) ||
+        !sameId(installationId, proof.installationId) ||
+        !sameId(installationId, verified.installationId) ||
         !sameId(pending.expectedAppId, proof.appId) ||
         !sameId(pending.expectedAppId, verified.appId) ||
         !sameId(proof.accountId, verified.accountId) ||
@@ -378,16 +449,28 @@ export class GitHubBindingService {
       ) {
         throw new HarnessError('FORBIDDEN', 'The GitHub installation does not match the connection you started. Start the connection again.', 403);
       }
-      return this.installations.replaceVerified(
+      const installation = this.installations.replaceVerified(
         input.principalId, verified, this.now(),
         audit ? (record, replacedPrincipalId) => audit(record, proof, replacedPrincipalId) : undefined,
         { takeOver: true }
       );
+      return { purpose: 'bind', installation };
     } catch (error) {
       // A refusal is a decision about this installation; a retryable provider failure is not.
-      if (error instanceof HarnessError && !error.retryable) refused?.(pending.installationId, error);
+      if (error instanceof HarnessError && !error.retryable) refused?.(installationId, error);
       throw error;
     }
+  }
+
+  private async completeUserAuthorization(input: { principalId: string; code: string }, pending: AuthorizationState): Promise<GitHubAuthorizationCompletion> {
+    const { authorizer } = this.requireUserAuthorization();
+    const userAuthorizations = this.requireUserAuthorizations();
+    // The ticket is taken before the exchange: the exchange runs for as long as GitHub takes, and a
+    // Disconnect or a newer completion during that time decides whether its result may be stored.
+    const ticket = userAuthorizations.beginCompletion(input.principalId);
+    const exchange = await authorizer.exchangeUserCode({ code: input.code, codeVerifier: pending.codeVerifier, redirectUri: pending.redirectUri });
+    // A completion that cannot commit revokes the token GitHub just issued itself.
+    return { purpose: 'user', authorization: await userAuthorizations.complete(ticket, exchange) };
   }
 
   async reconcile(
@@ -433,11 +516,24 @@ export class GitHubBindingService {
     return this.installations.removeInstallation(principalId, installationId, this.now(), audit);
   }
 
+  /** Disconnects the principal's GitHub user authorization; `undefined` when it never had one. */
+  async disconnectUser(principalId: string): Promise<GitHubUserAuthorizationView | undefined> {
+    return await this.requireUserAuthorizations().disconnect(principalId);
+  }
+
   private requireUserAuthorization(): GitHubUserAuthorization {
     if (!this.userAuthorization) {
       throw new HarnessError('UNAVAILABLE', 'GitHub App user authorization is not configured: set GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET', 503, false);
     }
     return this.userAuthorization;
+  }
+
+  private requireUserAuthorizations(): GitHubUserAuthorizationService {
+    const userAuthorizations = this.userAuthorizations;
+    if (!userAuthorizations) {
+      throw new HarnessError('UNAVAILABLE', 'GitHub user authorization is not configured: it stores an encrypted token, so it needs SECRET_KEYRING', 503, false);
+    }
+    return userAuthorizations;
   }
 }
 
@@ -449,6 +545,26 @@ function sameId(expected: string | number, actual: string | number): boolean {
   const left = Buffer.from(String(expected));
   const right = Buffer.from(String(actual));
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function authorizationFrom(payload: string, principalId: string, browserBinding: string, expiresAt: number): AuthorizationState {
+  let stored: z.infer<typeof AuthorizationPayloadSchema>;
+  try {
+    stored = AuthorizationPayloadSchema.parse(JSON.parse(payload));
+  } catch {
+    throw invalidAuthorizationState();
+  }
+  return {
+    principalId,
+    browserBinding,
+    expiresAt,
+    purpose: stored.purpose,
+    expectedAppId: stored.expectedAppId,
+    redirectUri: stored.redirectUri,
+    codeVerifier: stored.codeVerifier,
+    ...(stored.installationId === undefined ? {} : { installationId: stored.installationId }),
+    ...(stored.expectedAccountId === undefined ? {} : { expectedAccountId: stored.expectedAccountId })
+  };
 }
 
 function invalidSetupState(): HarnessError {

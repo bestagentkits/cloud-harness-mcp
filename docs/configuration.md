@@ -702,6 +702,14 @@ owns the account or is an organization owner
 No global installation is required. The configuration schema rejects partial
 or mode-incompatible combinations, including a client ID without its secret.
 
+The same client ID and secret also power the member's own GitHub user
+authorization (Dashboard → Integrations → GitHub → GitHub user), which needs no
+further App setting: the runner requests `offline_access` per authorization to
+receive an expiring token with a refresh token. Storing that token requires the
+runner-only `SECRET_KEYRING_FILE` keyring; without it Connect reports
+`UNAVAILABLE`. See the
+[security model](security-model.md#github-user-authorization-member-access).
+
 Prefer the file form. Production Compose mounts the root-owned
 `/etc/cloud-harness-mcp` directory read-only at `/run/cloud-harness-secrets`
 in the runner, so the maintained key path is

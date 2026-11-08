@@ -1,9 +1,9 @@
 import { TriangleAlertIcon } from 'lucide-react';
-import { ConflictError, ForbiddenError, NetworkError, RateLimitedError, ServerError, UnauthorizedError } from '@/lib/api-client';
+import { ConflictError, ForbiddenError, GITHUB_USER_AUTHORIZATION_REQUIRED_MESSAGE, isGitHubUserAuthorizationRequired, NetworkError, RateLimitedError, ServerError, UnauthorizedError } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 import { ActionButton } from '@/components/ui/button';
 
-export type ErrorKind = 'session' | 'forbidden' | 'conflict' | 'rate-limited' | 'server' | 'network' | 'unknown';
+export type ErrorKind = 'session' | 'forbidden' | 'github-authorization' | 'conflict' | 'rate-limited' | 'server' | 'network' | 'unknown';
 
 /**
  * Operator-facing copy per failure class. Messages are fixed strings: the server's own
@@ -11,6 +11,7 @@ export type ErrorKind = 'session' | 'forbidden' | 'conflict' | 'rate-limited' | 
  */
 export function describeError(error: unknown): { kind: ErrorKind; title: string; message: string; retryable: boolean } {
   if (error instanceof UnauthorizedError) return { kind: 'session', title: 'Your session ended', message: 'Reload the page to sign in again.', retryable: false };
+  if (isGitHubUserAuthorizationRequired(error)) return { kind: 'github-authorization', title: 'GitHub authorization required', message: GITHUB_USER_AUTHORIZATION_REQUIRED_MESSAGE, retryable: false };
   if (error instanceof ForbiddenError) return { kind: 'forbidden', title: 'Not allowed', message: 'Your signed-in identity cannot open this. Ask the instance owner if you need access.', retryable: false };
   if (error instanceof ConflictError) return { kind: 'conflict', title: 'This changed elsewhere', message: 'Someone else updated it. Retry to load the latest version.', retryable: true };
   if (error instanceof RateLimitedError) {

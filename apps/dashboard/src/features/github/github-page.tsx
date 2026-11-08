@@ -18,7 +18,7 @@ import { reportActionError } from '../shared/report-error';
 import { Section } from '../shared/section';
 import { StatusBadge } from '../shared/status-badge';
 import { hasGitHubCallbackParams } from './github-callback-search';
-import { accountOf, classifyGitHubCallback, type GitHubCallback, type GitHubInstallation, type GitHubStatus, githubApi, githubCallbackErrorText, GITHUB_READS, installationsOf, userAuthorizationUnavailable } from './github-model';
+import { accountOf, classifyGitHubCallback, type GitHubCallback, type GitHubInstallation, type GitHubStatus, githubApi, githubCallbackErrorText, GITHUB_READS, installationsOf, userAuthorizationReasonText, userAuthorizationState, userAuthorizationUnavailable } from './github-model';
 import { ForbiddenError } from '@/lib/api-client';
 
 /** One-time callbacks already acted on in this document, so a re-render or StrictMode never replays one. */
@@ -94,7 +94,7 @@ function useGitHubCallback(search: string) {
       try {
         if (callback.kind === 'complete') {
           await githubApi.complete(callback.state, callback.code);
-          toast({ title: 'GitHub App connection completed.', variant: 'success' });
+          toast({ title: 'GitHub connection completed.', variant: 'success' });
         } else if (callback.kind === 'authorize') {
           window.location.assign(await githubApi.authorize(callback.installationId, callback.state));
           return;
@@ -104,7 +104,7 @@ function useGitHubCallback(search: string) {
           setStateExpired(true);
           setCallback({ kind: 'verify', installationId: callback.installationId });
         } else {
-          setFailure({ title: callback.kind === 'complete' ? 'The GitHub App connection could not be completed.' : 'GitHub authorization could not be started.', message: githubCallbackErrorText(error) });
+          setFailure({ title: callback.kind === 'complete' ? 'The GitHub connection could not be completed.' : 'GitHub authorization could not be started.', message: githubCallbackErrorText(error) });
         }
       }
       await queryClient.invalidateQueries({ queryKey: bffPrefix('/github') });
@@ -151,11 +151,88 @@ function InstallationCard({ installation, onReconcile, reconciling, onDisconnect
   );
 }
 
-function UserAuthorizationNotice() {
+function UserAuthorizationNotice({ testId = 'github-user-authorization-unconfigured' }: { testId?: string }) {
   return (
-    <AlertMessage testId="github-user-authorization-unconfigured" title="GitHub user authorization is not configured.">
+    <AlertMessage testId={testId} title="GitHub user authorization is not configured.">
       {`An operator must set GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET on the runner and set the GitHub App Callback URL to ${window.location.origin}/dashboard/integrations/github before an installation can be connected.`}
     </AlertMessage>
+  );
+}
+
+/**
+ * The person's own GitHub user authorization. Connect and Reconnect start the same flow
+ * (`POST /github/authorize` with `{ purpose: 'user' }`, then a native navigation to GitHub); the
+ * return is completed by the callback handler, which never branches on a purpose of its own.
+ */
+function UserAuthorizationCard({ status, onChanged }: { status: GitHubStatus; onChanged: () => Promise<unknown> }) {
+  const state = userAuthorizationState(status);
+  const authorization = status.userAuthorization ?? undefined;
+  const unavailable = userAuthorizationUnavailable(status);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [confirming, setConfirming] = useState(false);
+  const connect = async () => {
+    setPending(true);
+    setError(undefined);
+    try {
+      window.location.assign(await githubApi.authorizeUser());
+    } catch (failure) {
+      setError(mutationErrorText(failure));
+      setPending(false);
+    }
+  };
+  const connectLabel = state === 'revoked' ? 'Reconnect' : 'Connect as GitHub user';
+  const connectButton = (
+    <Button size="sm" disabled={pending || unavailable} aria-busy={pending || undefined} onClick={() => { void connect(); }}>{pending ? 'Opening GitHub…' : connectLabel}</Button>
+  );
+  return (
+    <Section title="GitHub user" testId="github-user">
+      {unavailable ? <UserAuthorizationNotice testId="github-user-card-unconfigured" /> : null}
+      {state === 'connected' && authorization ? (
+        <div className="grid gap-3" data-testid="github-user-connected">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <p className="flex flex-wrap items-center gap-2 font-semibold break-all">@{authorization.login}<StatusBadge tone="success">connected</StatusBadge></p>
+            <Button size="sm" variant="outline" className="text-destructive" aria-haspopup="dialog" aria-label={`Disconnect GitHub user @${authorization.login}`} onClick={() => setConfirming(true)}>Disconnect</Button>
+          </div>
+          <dl className="grid gap-3 text-sm sm:grid-cols-2">
+            <div className="grid gap-0.5"><dt className="text-xs text-muted-foreground">GitHub user</dt><dd className="break-all">@{authorization.login}</dd></div>
+            <div className="grid gap-0.5"><dt className="text-xs text-muted-foreground">Renewal date</dt><dd>{authorization.refreshExpiresAt === null ? 'Not scheduled' : formatTime(authorization.refreshExpiresAt)}</dd></div>
+          </dl>
+        </div>
+      ) : state === 'revoked' && authorization ? (
+        <div className="grid gap-3" data-testid="github-user-revoked">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <p className="flex flex-wrap items-center gap-2 font-semibold break-all">@{authorization.login}<StatusBadge tone="neutral">revoked</StatusBadge></p>
+            <div className="flex flex-wrap gap-2">
+              {connectButton}
+              <Button size="sm" variant="outline" className="text-destructive" aria-haspopup="dialog" aria-label={`Disconnect GitHub user @${authorization.login}`} onClick={() => setConfirming(true)}>Disconnect</Button>
+            </div>
+          </div>
+          <p className="text-sm" data-testid="github-user-revoked-reason">{userAuthorizationReasonText(authorization.reasonCode)} Reconnect to use your GitHub access again.</p>
+        </div>
+      ) : (
+        <div className="grid justify-items-start gap-3" data-testid="github-user-disconnected">
+          <p className="text-sm text-muted-foreground">Connect your own GitHub account so private repositories are accessed as you, not through a shared credential.</p>
+          {connectButton}
+        </div>
+      )}
+      {error ? <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm" data-testid="github-user-error">{error}</p> : null}
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        title="Disconnect GitHub user authorization?"
+        description="Cloud Harness will stop using your GitHub account and delete the stored authorization. You can connect again at any time."
+        target={authorization ? `@${authorization.login}` : ''}
+        confirmLabel="Disconnect"
+        pendingLabel="Disconnecting…"
+        onConfirm={async () => {
+          await githubApi.disconnectUser();
+          toast({ title: 'GitHub user disconnected.', variant: 'success' });
+          await onChanged();
+        }}
+        onError={(failure) => { reportActionError('The GitHub user could not be disconnected', failure); void onChanged(); }}
+      />
+    </Section>
   );
 }
 
@@ -235,7 +312,7 @@ export function GitHubPage({ search = '' }: { search?: string }) {
   return (
     <div className="grid gap-(--stack-gap)" data-testid="github-page">
       <Callout title="GitHub App authorization metadata.">Provider private keys and minted tokens remain runner-only and are never rendered.</Callout>
-      {busy ? <p role="status" className="rounded-lg border bg-surface p-3 text-sm" data-testid="github-completing">{callback.kind === 'authorize' ? 'Redirecting to GitHub to verify your authorization…' : 'Completing GitHub App connection…'}</p> : null}
+      {busy ? <p role="status" className="rounded-lg border bg-surface p-3 text-sm" data-testid="github-completing">{callback.kind === 'authorize' ? 'Redirecting to GitHub to verify your authorization…' : 'Completing GitHub connection…'}</p> : null}
       {callback.kind === 'refused' ? <AlertMessage testId="github-callback-refused">{callback.reason === 'redirect_uri_mismatch' ? `GitHub refused this dashboard's callback URL. Set the GitHub App Callback URL to ${window.location.origin}/dashboard/integrations/github, then connect again.` : REFUSAL_MESSAGES[callback.reason]}</AlertMessage> : null}
       {callback.kind === 'malformed' ? <AlertMessage testId="github-callback-malformed">The GitHub authorization callback was malformed. Start the connection again.</AlertMessage> : null}
       {callback.kind === 'verify' && !alreadyBound && !read.isPending ? (
@@ -253,6 +330,7 @@ export function GitHubPage({ search = '' }: { search?: string }) {
           const list = installationsOf(status);
           return (
             <>
+              <UserAuthorizationCard status={status} onChanged={refresh} />
               <Section
                 title="Installation status"
                 actions={list.length ? (

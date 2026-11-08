@@ -63,8 +63,11 @@ describe('GitHub installation binding', () => {
     return { state: parsed.searchParams.get('state')!, codeChallenge: parsed.searchParams.get('code_challenge')! };
   }
 
-  function complete(principalId: string, state: string, browserBinding = BROWSER) {
-    return service.completeAuthorization({ principalId, state, code: 'github-code', browserBinding });
+  /** Completes as whatever the stored state says; these tests bind, so the installation is what they read. */
+  async function complete(principalId: string, state: string, browserBinding = BROWSER) {
+    const completion = await service.completeAuthorization({ principalId, state, code: 'github-code', browserBinding });
+    if (completion.purpose !== 'bind') throw new Error('expected a bind completion');
+    return completion.installation;
   }
 
   async function bind(principalId: string, installationId = '456') {
@@ -159,9 +162,9 @@ describe('GitHub installation binding', () => {
     now += 100;
     const audit = vi.fn();
     const { state } = authorize('principal-b');
-    const record = await service.completeAuthorization({ principalId: 'principal-b', state, code: 'github-code', browserBinding: BROWSER }, audit);
+    const completion = await service.completeAuthorization({ principalId: 'principal-b', state, code: 'github-code', browserBinding: BROWSER }, audit);
 
-    expect(record).toMatchObject({ principalId: 'principal-b', installationId: '456', status: 'active' });
+    expect(completion).toMatchObject({ purpose: 'bind', installation: { principalId: 'principal-b', installationId: '456', status: 'active' } });
     expect(audit).toHaveBeenCalledWith(expect.objectContaining({ principalId: 'principal-b' }), expect.objectContaining({ relation: 'owner' }), 'principal-a');
     // The previous holder lost the installation and every repository grant that came with it.
     expect(store.getInstallation('principal-a')).toBeUndefined();

@@ -97,8 +97,10 @@ one-off runner re-encryption entry point owned by
 the `secrets:rekey` package script or its compiled runner command.
 
 That command re-encrypts secret versions, workspace secret snapshots,
-downstream MCP OAuth grants and pending flows, and MCP Events webhook secrets. A grant is rewritten only while
-its generation is unchanged, so a concurrent token refresh is never overwritten.
+downstream MCP OAuth grants and pending flows, MCP Events webhook secrets, and
+GitHub user authorizations. A grant or authorization is rewritten only while
+its generation is unchanged (rekey itself never changes the generation), so a
+concurrent token refresh is never overwritten.
 
 The command is interruptible and safe to resume; verify that it completes,
 take a new coherent backup, and keep old decrypt keys through the release and
@@ -334,7 +336,8 @@ running the bounded downgrade from the exact release checkout:
 npm run metadata:down:v6 -w @cloud-harness/runner -- /path/to/db
 ```
 
-Keep the database offline for the command. It requires version 7 and changes
+Keep the database offline for the command. It requires version 7 (a v8 ledger
+first needs `metadata:down:v7`, below) and changes
 only the downstream OAuth schema, leaving the MCP gateway registry, API keys,
 and secret tables in place; it never chains further down. To reach v5, run
 `metadata:down:v5` afterwards as described above. The exact statements are
@@ -344,6 +347,35 @@ and the command by
 [`apps/runner/src/metadata-schema-down-v6.ts`](../apps/runner/src/metadata-schema-down-v6.ts).
 Then deploy the prior runner and canary readiness, the dashboard, and the MCP
 server list. Restore-from-backup remains the fallback.
+
+## GitHub user authorization schema rollback
+
+Metadata schema v8 adds `github_user_authorizations`: one row per principal with
+the encrypted GitHub user token pair and the non-secret `connected`, `revoked`
+or `disconnected` status. A v7 runner cannot start on a v8 ledger. Downgrading
+discards every stored authorization, tokens and status alike, by design: members
+must reconnect (Dashboard → Integrations → GitHub → GitHub user) after a later
+upgrade, and a principal that had connected falls back to the legacy secret
+lane in the meantime, because there is no row left to say otherwise. Quiesce
+dashboard and MCP writes, stop the service, and take a coherent recovery backup
+before running the bounded downgrade from the exact release checkout:
+
+```bash
+npm run metadata:down:v7 -w @cloud-harness/runner -- /path/to/db
+```
+
+Keep the database offline for the command. It requires version 8, drops only
+`github_user_authorizations`, and never chains further down, so downstream OAuth
+grants, the MCP gateway registry, API keys, and the secret tables stay in place.
+To go below v7, run `metadata:down:v6` and then `metadata:down:v5` in that
+order: each requires exactly the version above its target, so `metadata:down:v6`
+refuses to run on a v8 ledger and changes nothing. The exact statements are
+owned by `downgradeMetadataSchemaToV7` in
+[`apps/runner/src/metadata-schema.ts`](../apps/runner/src/metadata-schema.ts)
+and the command by
+[`apps/runner/src/metadata-schema-down-v7.ts`](../apps/runner/src/metadata-schema-down-v7.ts).
+Then deploy the prior runner and canary readiness and the dashboard.
+Restore-from-backup remains the fallback.
 
 ## MCP Events state schema rollback
 

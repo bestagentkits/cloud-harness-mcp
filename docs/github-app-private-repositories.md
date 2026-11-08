@@ -44,7 +44,10 @@ token covers one resource owner, and one that is pending organization approval
 is refused with a 403. When a clone with such a token fails and the principal
 has an installation on the repository owner, the runner reconciles it and
 retries once with an App token. A clone failure names the credential source
-(`github-app`, `principal-global-secret`, `runner-environment`, or `none`).
+(`github-app`, `github-user`, `principal-global-secret`, `runner-environment`, or
+`none`). In the multi-principal modes this fallback applies only to a principal
+without a [GitHub user authorization](#connect-your-github-user-members), or one
+that disconnected it.
 
 ## Decide the required access
 
@@ -324,6 +327,54 @@ warning, `GET /dashboard/api/v1/github` reports
 GitHub App** and **Verify with GitHub** with an explanation instead of sending
 users to GitHub. Already-bound installations keep working.
 
+## Connect your GitHub user (members)
+
+In `cloudflare-access` and `oidc` deployments a member who does not own the
+organization, and so cannot bind its installation, can connect their own GitHub
+user instead: **Integrations → GitHub → GitHub user → Connect as GitHub user**.
+It uses the same App, Callback URL, client ID and secret as binding, and needs
+no App setting beyond them: the runner requests `offline_access` for each
+authorization, which GitHub documents as returning an expiring token and a
+refresh token even when the App is not set to expire user tokens. It does not
+need **Members: Read-only**, which only the owner binding uses. The stored token
+requires the runner's `SECRET_KEYRING_FILE`; without it Connect reports that the
+service is unavailable. `oidc` instances have no dashboard, so member onboarding
+there is not covered yet (issue #655).
+
+What it changes:
+
+- Repository operations use the person's own access. For a github.com
+  repository the runner tries the principal's installation binding first, then
+  the user token when the repository owner has an installation of this App that
+  the user can reach, then (only for a principal with no user authorization or
+  one that disconnected it) the operator-supplied fallback secret.
+- It is final once chosen. A repository the person cannot access, a read-only
+  member's push, a SAML refusal, or a provider outage is reported as is; the
+  runner never retries with an App token or a fallback secret. If no
+  installation of the owner is reachable for the user, no credential applies
+  (public repositories still clone) and `github_action` returns
+  `REPOSITORY_OPERATION_NOT_AUTHORIZED`: an owner of that account must install
+  the App.
+- The card shows `@login` with a `connected` badge and the **Renewal date** (when
+  the refresh token stops working), a `revoked` badge with the reason, or a
+  **Connect as GitHub user** button when there is no authorization.
+  **Reconnect** and **Connect as GitHub user** are the same authorization.
+  **Disconnect** revokes the access token at GitHub (never the user's grant of
+  the App) and returns the principal to the fallback lane.
+- When GitHub refuses to renew the authorization (the person revoked the App on
+  GitHub, or the refresh token expired) the status becomes `revoked` and every
+  operation that needs a GitHub credential fails with
+  `GITHUB_USER_AUTHORIZATION_REQUIRED` until the person reconnects or
+  disconnects. A fallback secret never takes over.
+- A GitHub organization that enforces SAML single sign-on refuses the token per
+  organization until the person starts an SSO session for it; the error names
+  `https://github.com/orgs/<org>/sso`. Nothing is revoked, and other
+  organizations keep working.
+
+Security properties, storage, and residual risk (one stored credential spans
+every repository the App is installed on and the user can access) are in the
+[security model](security-model.md#github-user-authorization-member-access).
+
 ## Local Compose testing
 
 For a local test, keep the PEM outside the repository and mount it only into
@@ -384,6 +435,10 @@ successful private clone proves read access only; it does not prove push access.
 | Binding refused: "GitHub did not confirm that you are an owner of the … organization" | An organization owner must connect it, and the App needs **Members: Read-only** under organization permissions; approve the changed permission on the installation, then connect again. |
 | Dashboard disables Connect and says GitHub user authorization is not configured | The runner has no `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET`. Set both, register the Callback URL above, and restart the runner. |
 | An installation shows under the wrong identity, or you cannot reach it | Reconnect it as the proven owner (see Upgrade notes above): the binding moves to you and the audit log records `github.rebound`; the previous holder's audit shows `github.unbound`. |
+| Operations fail with `GITHUB_USER_AUTHORIZATION_REQUIRED` | GitHub no longer accepts the person's saved authorization (revoked App, or expired refresh token), or the refresh token was lost to a runner crash during renewal. Reconnect in **Integrations → GitHub → GitHub user**, or Disconnect to use the fallback secret again. |
+| A member's clone or `github_action` is refused with a SAML single-sign-on message | The organization enforces SAML. Open `https://github.com/orgs/<org>/sso` as that GitHub user to start a session, then retry; if GitHub still refuses, revoke the App under github.com/settings/applications and connect again. |
+| `github_action` returns `REPOSITORY_OPERATION_NOT_AUTHORIZED` for a connected member | The owner of the repository has no installation of this App that the member's GitHub user can reach. Ask an owner of that account to install the App. |
+| A member's GitHub operations fail with a non-retryable `UNAVAILABLE` naming `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` and `SECRET_KEYRING` | The runner holds a `connected` authorization but lost its OAuth client credentials or keyring, so it fails closed: no fallback secret is used and Disconnect is unavailable. Restore the configuration and restart the runner; nothing needs reconnecting. |
 
 The broker deliberately returns a sanitized error instead of GitHub's raw
 credential-bearing response. Use GitHub's installation settings and runner

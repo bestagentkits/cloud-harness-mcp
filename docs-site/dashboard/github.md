@@ -23,6 +23,8 @@ Resolution order for `github_action` and private Git operations (clone, fetch, p
 
 In `cloudflare-access` mode step 2 is refused entirely: a single operator-wide credential must never stand in for a different principal's App grant. Use step 3 there.
 
+In `cloudflare-access` and `oidc` modes a member can also [connect their own GitHub user](#connect-your-github-user). While that is connected, the user's token is used after step 1 and step 3 is not; a revoked authorization answers `GITHUB_USER_AUTHORIZATION_REQUIRED` instead of falling back to a secret. Step 3 applies only to a member with no GitHub user authorization, or one who disconnected it.
+
 Setting the runner environment credential:
 
 ```bash
@@ -39,7 +41,7 @@ Or create it in the dashboard under **Secrets**, which requires no restart and i
 - `workspace_capabilities` reports GitHub read/write capability when either an App or a fallback credential is available.
 - A personal access token is **not** repository-scoped and cannot be limited by an installation grant. Prefer a GitHub App, or the narrowest fine-grained token.
 - `GH_TOKEN` shadows `GITHUB_TOKEN`: only the first usable name is sent. A fine-grained token covers a single resource owner, and one pending organization approval is refused with a 403.
-- If a clone with a fallback credential fails and you have an installation on the repository owner, the runner reconciles it and retries once with an App token. Clone errors name the credential source (`github-app`, `principal-global-secret`, `runner-environment`, `none`), never the token.
+- If a clone with a fallback credential fails and you have an installation on the repository owner, the runner reconciles it and retries once with an App token. Clone errors name the credential source (`github-app`, `github-user`, `principal-global-secret`, `runner-environment`, `none`), never the token. A `github-user` credential is never retried with an App token or a secret.
 - The environment credential authenticates **harness-side** operations only; it is never placed in an executor environment. To authenticate the workspace's own `gh` CLI, create a global runtime secret named `GH_TOKEN`/`GITHUB_TOKEN` (see [Secrets & Credentials](secrets.md#github-credentials-in-workspaces)).
 
 ---
@@ -242,6 +244,26 @@ earlier to a different Cloud Harness identity (older releases did not verify own
 authorizing as the account owner or an organization owner moves it to you; the previous
 identity loses it and the audit log records the change.
 
+## Connect your GitHub user
+
+In `cloudflare-access` and `oidc` deployments, **Integrations → GitHub** has a **GitHub user** card. It lets you use your own GitHub access, which is the way to reach an organization's repositories when you are a member rather than an owner and so cannot connect its installation. It needs the same `GITHUB_APP_CLIENT_ID`/`GITHUB_APP_CLIENT_SECRET` as above, plus the runner's secret keyring (`SECRET_KEYRING_FILE`) to store the token. It needs no extra App setting: Cloud Harness asks GitHub for a renewable token on each authorization.
+
+1. Click **Connect as GitHub user**. If the operator has not configured the App's OAuth client, the button is disabled and the card says why.
+2. Authorize the App on GitHub as the account you want to use. You return to the dashboard, and the card shows `@your-login`, `connected`, and a **Renewal date**.
+
+| Card shows | Meaning | What you can do |
+| --- | --- | --- |
+| **Connect as GitHub user** | No authorization, or you disconnected it. | Connect. Until you do, a global `GH_TOKEN`/`GITHUB_TOKEN` secret is used if you have one. |
+| `@login` `connected`, **Renewal date** | Your token is used for repositories whose owner has this App installed and reachable by you. The access token renews itself shortly before it expires; the **Renewal date** is when the saved authorization itself stops working. | **Disconnect**, or connect again before the renewal date. |
+| `@login` `revoked`, a reason | GitHub no longer accepts the saved authorization: you revoked the App on GitHub, or it was not renewed in time. | **Reconnect** (the same authorization as Connect), or **Disconnect**. |
+
+What to expect:
+
+- **No fallback.** While connected, a refusal (you cannot access the repository, a read-only push, SAML) is reported as is: Cloud Harness never retries with an App token or a secret. While `revoked`, repository operations fail with `GITHUB_USER_AUTHORIZATION_REQUIRED` even if you also saved a `GH_TOKEN` secret. Only **Disconnect** returns you to that secret.
+- **Owner must have the App.** If the owner of a repository has no installation of this App that your GitHub user can reach, no credential applies: public repositories still clone and `github_action` returns `REPOSITORY_OPERATION_NOT_AUTHORIZED`. Ask an owner of that account to install the App.
+- **Disconnect** revokes the saved token at GitHub and deletes it; it does not remove your authorization of the App on GitHub.
+- **Scope.** One saved authorization covers every repository the App is installed on and your account can access, for up to 8 hours per token. See the [security model](/security-model).
+
 ---
 
 ## Step 7: Verify Private Repository Access
@@ -287,6 +309,11 @@ Test opening a private repository through your AI client (Cursor, Claude Code, e
 | **"GitHub authorization was cancelled"** or **"… is invalid or expired"** | You declined on GitHub, took longer than 10 minutes, or reused an old link. | Click **Connect GitHub App** again. |
 | **"GitHub user authorization is not configured"** or a disabled **Connect GitHub App** | The runner has no `GITHUB_APP_CLIENT_ID`/`GITHUB_APP_CLIENT_SECRET`. | Set both and the App's Callback URL (`<origin>/dashboard/integrations/github`), then restart the runner. |
 | **An installation is bound to the wrong identity, or you cannot reach it** | Releases before user verification let a setup link bind an installation without proving ownership. | Authorize as the account owner or an organization owner from the identity that should hold it; the binding moves and the audit log records `github.rebound`. The previous holder's audit shows `github.unbound`. |
+| **`GITHUB_USER_AUTHORIZATION_REQUIRED`**, or the card shows `revoked` | GitHub no longer accepts your saved GitHub user authorization (you revoked the App, or it expired), or the runner crashed while GitHub was rotating the refresh token and the new one was never saved. | Click **Reconnect** on the **GitHub user** card (or **Disconnect** to use a `GH_TOKEN` secret again). A crash during renewal loses the refresh token, which is accepted; reconnecting fixes it. |
+| **A clone or `github_action` is refused with a SAML single sign-on message** (`GITHUB_PERMISSION_MISSING` naming `https://github.com/orgs/<org>/sso`) | The organization enforces SAML SSO and your GitHub user has no SSO session for it. Nothing was revoked, and other organizations still work. | Open the SSO link, sign in, and retry. If GitHub still refuses, revoke this App under [github.com/settings/applications](https://github.com/settings/applications) and connect again. |
+| **`REPOSITORY_OPERATION_NOT_AUTHORIZED`: "No GitHub credential applies to …"** | You are connected, but the repository owner has no installation of this App that your GitHub user can reach. | Ask an owner of that account to install the App. |
+| **A non-retryable `UNAVAILABLE` naming `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` and `SECRET_KEYRING`** | Your authorization is `connected`, but the runner lost its OAuth client credentials or keyring, so GitHub access fails closed (no secret is used) and **Disconnect** is unavailable. | Ask the operator to restore that configuration; nothing needs reconnecting afterwards. |
+| **"Start the connection again"** | A **Disconnect** landed while you were authorizing, so that authorization was discarded and its token revoked at GitHub. | Click **Connect as GitHub user** again. |
 
 ## Where this page lives now
 

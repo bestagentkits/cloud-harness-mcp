@@ -510,6 +510,30 @@ owner supplies valid App credentials.
 This script is not Access/IdP verification; use the Access rollout checklist
 above for that distinct live claim.
 
+### GitHub user authorization and metadata schema v8
+
+GitHub user authorization (members connecting their own GitHub user) introduces
+metadata schema v8, so upgrade the runner before the API as for v6 and v7. A v7
+runner cannot start on a v8 ledger. The feature needs the runner-only keyring
+(`SECRET_KEYRING_FILE`) and the App's existing `GITHUB_APP_CLIENT_ID` and
+secret; the App needs no new setting and no new permission. Keep both in place
+while any principal is `connected`: without them (or without the keyring) that
+principal's GitHub access fails closed with `UNAVAILABLE` and Disconnect is
+unavailable. Prove the bounded
+v8 → v7 rollback on a copy of the production database before promoting the
+release:
+
+```bash
+npm run metadata:down:v7 -w @cloud-harness/runner -- /path/to/db
+```
+
+It requires the ledger to be version 8 and drops only the authorization table,
+discarding every stored GitHub user authorization. Run it before
+`metadata:down:v6`, which now requires a v7 ledger and refuses a v8 one;
+going from v8 to v5 is `down:v7`, then `down:v6`, then `down:v5`. Details and the
+effect on members are in
+[operations](operations.md#github-user-authorization-schema-rollback).
+
 ## GitHub Actions deployment
 
 The production environment used by

@@ -11,7 +11,7 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number };
-    if (row.version === 7) {
+    if (row.version === 8) {
       database.exec('COMMIT');
       return;
     }
@@ -282,8 +282,44 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
 
       UPDATE metadata_schema_meta SET version = 7 WHERE singleton = 1;
     `);
-    const migrated = (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number }).version;
-    if (migrated !== 7) throw new Error(`unsupported metadata schema version ${migrated}`);
+    const postV7 = metadataVersion(database);
+    if (postV7 === 7) database.exec(`
+      -- One row per principal: a constraint, not a convention. The token pair is one AES-GCM
+      -- envelope (context: github_user_authorization / principal_id / generation) that exists only
+      -- while the status is 'connected'; a revoked or disconnected row keeps its non-secret status,
+      -- reason and login and holds no token material. Every write is
+      -- UPDATE ... WHERE principal_id = ? AND generation = ?, so a stale writer changes nothing.
+      -- ON DELETE RESTRICT: deleting a principal must remove its row explicitly first.
+      CREATE TABLE github_user_authorizations (
+        principal_id TEXT NOT NULL UNIQUE REFERENCES principals(id) ON DELETE RESTRICT,
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        status TEXT NOT NULL CHECK (status IN ('connected', 'revoked', 'disconnected')),
+        reason_code TEXT,
+        github_user_id TEXT NOT NULL,
+        github_login TEXT NOT NULL,
+        access_expires_at INTEGER,
+        refresh_expires_at INTEGER,
+        key_version INTEGER CHECK (key_version IS NULL OR key_version > 0),
+        nonce BLOB,
+        ciphertext BLOB,
+        auth_tag BLOB,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        CHECK (
+          (status = 'connected'
+            AND key_version IS NOT NULL AND nonce IS NOT NULL AND ciphertext IS NOT NULL AND auth_tag IS NOT NULL
+            AND access_expires_at IS NOT NULL AND refresh_expires_at IS NOT NULL)
+          OR
+          (status <> 'connected'
+            AND key_version IS NULL AND nonce IS NULL AND ciphertext IS NULL AND auth_tag IS NULL
+            AND access_expires_at IS NULL AND refresh_expires_at IS NULL)
+        )
+      );
+
+      UPDATE metadata_schema_meta SET version = 8 WHERE singleton = 1;
+    `);
+    const migrated = metadataVersion(database);
+    if (migrated !== 8) throw new Error(`unsupported metadata schema version ${migrated}`);
     database.exec('COMMIT');
   } catch (error) {
     database.exec('ROLLBACK');
@@ -294,18 +330,47 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
 const metadataVersion = (database: DatabaseSync): number | undefined =>
   (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined)?.version;
 
-/** Unwind a v7 ledger to v6. Must run before the caller opens its own transaction. */
+/** Unwind a v8 ledger to v7. Must run before the caller opens its own transaction. */
+function unwindFromV8(database: DatabaseSync): void {
+  if (metadataVersion(database) === 8) downgradeMetadataSchemaToV7(database);
+}
+
+/** Unwind a v7 or v8 ledger to v6. Must run before the caller opens its own transaction. */
 function unwindFromV7(database: DatabaseSync): void {
+  unwindFromV8(database);
   if (metadataVersion(database) === 7) downgradeMetadataSchemaToV6(database);
 }
 
-/** Unwind a v6 or v7 ledger to v5. Must run before the caller opens its own transaction. */
+/** Unwind a v6, v7, or v8 ledger to v5. Must run before the caller opens its own transaction. */
 function unwindFromV6(database: DatabaseSync): void {
   unwindFromV7(database);
   if (metadataVersion(database) === 6) downgradeMetadataSchemaToV5(database);
 }
 
+/**
+ * Drops the stored GitHub user authorizations: their encrypted token pairs and their non-secret
+ * status. A principal that was `revoked` therefore reads as having no authorization afterwards,
+ * which is why the legacy fallback lane is open again for it; releases before v8 have no user
+ * token lane to refuse it.
+ */
+export function downgradeMetadataSchemaToV7(database: DatabaseSync): void {
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
+    if (!row || row.version !== 8) throw new Error('metadata schema must be version 8 before downgrade');
+    database.exec(`
+      DROP TABLE IF EXISTS github_user_authorizations;
+      UPDATE metadata_schema_meta SET version = 7 WHERE singleton = 1;
+    `);
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 export function downgradeMetadataSchemaToV6(database: DatabaseSync): void {
+  unwindFromV8(database);
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
@@ -416,7 +481,7 @@ export function downgradeMetadataSchemaToV1(database: DatabaseSync): void {
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
-    if (!row || (row.version !== 2 && row.version !== 3 && row.version !== 4 && row.version !== 5 && row.version !== 6 && row.version !== 7)) throw new Error('metadata schema must be version 2, 3, 4, 5, 6, or 7 before downgrade');
+    if (!row || (row.version !== 2 && row.version !== 3 && row.version !== 4 && row.version !== 5 && row.version !== 6 && row.version !== 7 && row.version !== 8)) throw new Error('metadata schema must be version 2, 3, 4, 5, 6, 7, or 8 before downgrade');
     if (row.version === 4) {
       database.exec(`
         DROP TABLE IF EXISTS global_secret_versions;

@@ -149,9 +149,10 @@ Never paste tokens, authorization codes, or callback URLs carrying `code` or
 - A private clone that fails with `remote: Write access to repository not
   granted.` (or another GitHub 403) names the credential in the error, for
   example `repository clone failed (credential: principal-global-secret)`. The
-  value is `github-app`, `principal-global-secret`, `runner-environment`, or
-  `none`; the token itself is never printed. When the credential was not a
-  GitHub App token and the principal has an installation on the repository
+  value is `github-app`, `github-user`, `principal-global-secret`,
+  `runner-environment`, or `none`; the token itself is never printed. When the
+  credential was a fallback token (not a GitHub App token or a `github-user`
+  token, whose outcome is final) and the principal has an installation on the repository
   owner, the runner reconciles that installation and retries once with an App
   token; the error adds `GitHub App token unavailable: ...` when that mint
   failed. If the source is a global secret, remember that `GH_TOKEN` shadows
@@ -161,6 +162,31 @@ Never paste tokens, authorization codes, or callback URLs carrying `code` or
   owner. A token for an organization that requires approval of fine-grained
   tokens yields the same 403 until an owner approves it. Fix the secret, or
   install the GitHub App on the repository owner.
+- A member's operation fails with `GITHUB_USER_AUTHORIZATION_REQUIRED`: GitHub no
+  longer accepts the saved GitHub user authorization (the App was revoked on
+  GitHub, or the refresh token expired), and a fallback secret is deliberately
+  not used instead. Reconnect it in Dashboard → Integrations → GitHub → GitHub
+  user, or Disconnect to return to the legacy fallback secret. If the runner
+  crashed while GitHub was rotating the refresh token, that refresh token is
+  lost and the same Reconnect fixes it. A SAML single-sign-on refusal is a
+  different, per-organization error (`GITHUB_PERMISSION_MISSING` naming
+  `https://github.com/orgs/<org>/sso`): start an SSO session for that
+  organization and retry; nothing was revoked. For a connected member whose
+  repository owner has no installation the user can reach, `github_action`
+  returns `REPOSITORY_OPERATION_NOT_AUTHORIZED`; ask an owner of that account to
+  install the App
+  ([GitHub user authorization](github-app-private-repositories.md#connect-your-github-user-members)).
+- A member's GitHub credential request fails with a non-retryable `UNAVAILABLE`
+  naming `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` and
+  `SECRET_KEYRING`: the runner holds a `connected` authorization but lacks the
+  OAuth client credentials or the keyring, so it fails closed (no PAT is tried)
+  and Disconnect is unavailable too. Restore that configuration and restart the
+  runner; the authorization works again unchanged. A **Connect** that reports
+  the same cause also needs it restored first. If a Disconnect lands while a
+  connection is completing, the completion is discarded, its token pair is
+  revoked at GitHub, and the dashboard asks you to start the connection again.
+  An owner with no reachable installation is terminal: a failed anonymous clone
+  is not retried with an App token.
 
 Replay the same `workspace_open` idempotency key or call `workspace_list` after
 a lost response; do not create a second key until the first result is resolved.

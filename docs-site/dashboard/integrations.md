@@ -9,6 +9,10 @@ description: GitHub App authorization for private repository access on this inst
 installation bindings that let workspaces clone and push private repositories. See
 [GitHub Bindings](/dashboard/github) for the permissions and troubleshooting details.
 
+In `cloudflare-access` and `oidc` modes the page also has a **GitHub user** card, where you
+connect your own GitHub account instead of relying on a shared credential; see
+[Connect your GitHub user](/dashboard/github#connect-your-github-user).
+
 Downstream MCP servers are not an integration tab. They are the MCP Hub behind your
 gateway endpoint and have their own rail entry, [MCP Servers](/dashboard/mcp-servers).
 

@@ -9,7 +9,9 @@ import {
   githubCallbackErrorText,
   type GitHubInstallation,
   installationsOf,
-  safeSetupUrl,
+  safeGitHubUrl,
+  userAuthorizationReasonText,
+  userAuthorizationState,
   userAuthorizationUnavailable
 } from './github-model';
 import { classifyGitHubCallback, GITHUB_CODE_PATTERN, GITHUB_INSTALLATION_PATTERN, GITHUB_STATE_PATTERN, hasGitHubCallbackParams } from './github-callback-search';
@@ -103,14 +105,40 @@ describe('installation helpers', () => {
   });
 });
 
-describe('safeSetupUrl', () => {
-  it('follows an https URL', () => {
-    expect(safeSetupUrl('https://github.com/apps/cloud-harness/installations/new')).toBe('https://github.com/apps/cloud-harness/installations/new');
+describe('safeGitHubUrl', () => {
+  it('follows an https URL on github.com', () => {
+    expect(safeGitHubUrl('https://github.com/apps/cloud-harness/installations/new')).toBe('https://github.com/apps/cloud-harness/installations/new');
   });
 
-  it.each(['http://github.com/apps/x', 'javascript:alert(1)', 'not a url', undefined])('refuses %s', (value) => {
-    expect(() => safeSetupUrl(value)).toThrow(ClientValidationError);
-    expect(() => safeSetupUrl(value)).toThrow('GitHub setup URL was invalid.');
+  it.each([
+    'http://github.com/apps/x', 'javascript:alert(1)', 'not a url', undefined,
+    'https://evil.example/login/oauth/authorize', 'https://github.com.evil.example/x', 'https://api.github.com/x',
+    'https://github.com@evil.example/x', 'https://user:pw@github.com/x', 'https://github.com:8443/x'
+  ])('refuses %s', (value) => {
+    expect(() => safeGitHubUrl(value)).toThrow(ClientValidationError);
+    expect(() => safeGitHubUrl(value)).toThrow('GitHub setup URL was invalid.');
+  });
+});
+
+describe('user authorization helpers', () => {
+  const base = { configured: true, installation: null };
+  const authorization = { login: 'octo', githubUserId: '1', refreshExpiresAt: null, reasonCode: null } as const;
+
+  it('shows Connect for no authorization and for a disconnected one', () => {
+    expect(userAuthorizationState(base)).toBe('none');
+    expect(userAuthorizationState({ ...base, userAuthorization: null })).toBe('none');
+    expect(userAuthorizationState({ ...base, userAuthorization: { ...authorization, status: 'disconnected' } })).toBe('none');
+  });
+
+  it('tells connected from revoked', () => {
+    expect(userAuthorizationState({ ...base, userAuthorization: { ...authorization, status: 'connected', refreshExpiresAt: 1_900_000_000_000 } })).toBe('connected');
+    expect(userAuthorizationState({ ...base, userAuthorization: { ...authorization, status: 'revoked', reasonCode: 'bad_refresh_token' } })).toBe('revoked');
+  });
+
+  it('gives a human reason per reason code', () => {
+    expect(userAuthorizationReasonText('refresh_token_expired')).toContain('expired');
+    expect(userAuthorizationReasonText('bad_refresh_token')).toContain('rejected');
+    expect(userAuthorizationReasonText(null)).toContain('no longer valid');
   });
 });
 
@@ -155,6 +183,23 @@ describe('githubApi', () => {
     expect(request).toHaveBeenLastCalledWith('/github/authorize', { method: 'POST', body: { installationId: '42', state: STATE_32 } });
     await githubApi.authorize('42');
     expect(request).toHaveBeenLastCalledWith('/github/authorize', { method: 'POST', body: { installationId: '42' } });
+  });
+
+  it('starts a user authorization with exactly the user purpose', async () => {
+    request.mockResolvedValueOnce({ data: { url: 'https://github.com/login/oauth/authorize?x=1' } });
+    await expect(githubApi.authorizeUser()).resolves.toBe('https://github.com/login/oauth/authorize?x=1');
+    expect(request).toHaveBeenCalledWith('/github/authorize', { method: 'POST', body: { purpose: 'user' } });
+  });
+
+  it('refuses a user authorization URL that is not on github.com', async () => {
+    request.mockResolvedValueOnce({ data: { url: 'https://evil.example/login/oauth/authorize' } });
+    await expect(githubApi.authorizeUser()).rejects.toThrow('GitHub authorization URL was invalid.');
+  });
+
+  it('disconnects the user authorization with an empty body', async () => {
+    request.mockResolvedValueOnce(undefined);
+    await githubApi.disconnectUser();
+    expect(request).toHaveBeenCalledWith('/github/user/disconnect', { method: 'POST', body: {} });
   });
 
   it('refuses an authorization URL that is not https', async () => {

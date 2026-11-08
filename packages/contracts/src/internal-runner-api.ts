@@ -190,7 +190,7 @@ export const MetadataRunnerOperationSchema = z.enum([
   'global_secret_list', 'global_secret_create', 'global_secret_rotate', 'global_secret_update', 'global_secret_delete', 'global_secret_bulk_apply',
   'audit_list',
   'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
-  'github_status', 'github_setup_begin', 'github_authorize_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
+  'github_status', 'github_setup_begin', 'github_authorize_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect', 'github_user_disconnect',
   'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject',
   'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove',
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
@@ -247,6 +247,27 @@ export const GitHubAuthorizationRedirectUriSchema = z.string().max(2_048).refine
 
 /** SHA-256 (base64url) of the per-browser authorization nonce cookie. */
 export const GitHubBrowserBindingSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+
+/**
+ * Starts a GitHub App user authorization. `bind` (the default, so every caller before purposes
+ * existed keeps working) proves the user owns or administers one installation and then binds it.
+ * `user` stores the principal's own user access token and names no installation. The runner keeps
+ * the purpose with the stored one-time state and reads it back from there on completion; the
+ * completion request carries none.
+ */
+export const GitHubAuthorizeBindInputSchema = z.object({
+  purpose: z.literal('bind').default('bind'),
+  installationId: z.string().regex(/^[1-9][0-9]{0,19}$/),
+  setupState: z.string().min(32).max(128).optional(),
+  redirectUri: GitHubAuthorizationRedirectUriSchema,
+  browserBinding: GitHubBrowserBindingSchema
+}).strict();
+export const GitHubAuthorizeUserInputSchema = z.object({
+  purpose: z.literal('user'),
+  redirectUri: GitHubAuthorizationRedirectUriSchema,
+  browserBinding: GitHubBrowserBindingSchema
+}).strict();
+export const GitHubAuthorizeBeginInputSchema = z.union([GitHubAuthorizeBindInputSchema, GitHubAuthorizeUserInputSchema]);
 
 const metadataInputs = {
   skill_suggest: SkillSuggestInputSchema,
@@ -319,13 +340,9 @@ const metadataInputs = {
   github_status: z.object({}).strict(),
   github_setup_begin: z.object({ expectedAccountId: z.string().min(1).max(100).optional() }).strict(),
   // The BFF derives `redirectUri` from the verified request origin and `browserBinding` from an
-  // HttpOnly cookie it set on this browser; the browser supplies neither directly.
-  github_authorize_begin: z.object({
-    installationId: z.string().regex(/^[1-9][0-9]{0,19}$/),
-    setupState: z.string().min(32).max(128).optional(),
-    redirectUri: GitHubAuthorizationRedirectUriSchema,
-    browserBinding: GitHubBrowserBindingSchema
-  }).strict(),
+  // HttpOnly cookie it set on this browser; the browser supplies neither directly. `purpose` is
+  // chosen here only to start a flow: completion reads it back from the stored state.
+  github_authorize_begin: GitHubAuthorizeBeginInputSchema,
   github_setup_complete: z.object({
     state: z.string().regex(/^[A-Za-z0-9_-]{32,128}$/),
     code: z.string().regex(/^[A-Za-z0-9_.-]{1,256}$/),
@@ -333,6 +350,8 @@ const metadataInputs = {
   }).strict(),
   github_reconcile: z.object({ installationId: z.string().min(1).max(100).optional() }).strict(),
   github_disconnect: z.object({ installationId: z.string().min(1).max(100) }).strict(),
+  // Disconnects the principal's own GitHub user authorization. It names nothing: a principal has one.
+  github_user_disconnect: z.object({}).strict(),
   privilege_grant_list: z.object({ workspaceId: WorkspaceIdSchema.optional() }).strict(),
   privilege_grant_approve: z.object({ grantId: z.string().min(1).max(128) }).strict(),
   privilege_grant_reject: z.object({ grantId: z.string().min(1).max(128) }).strict(),
@@ -649,7 +668,7 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('global_secret_list'), metadataRequest('global_secret_create'), metadataRequest('global_secret_rotate'), metadataRequest('global_secret_update'), metadataRequest('global_secret_delete'), metadataRequest('global_secret_bulk_apply'),
   metadataRequest('audit_list'), metadataRequest('artifact_list'), metadataRequest('artifact_snapshot'),
   metadataRequest('artifact_read'), metadataRequest('artifact_restore'), metadataRequest('artifact_delete'),
-  metadataRequest('github_status'), metadataRequest('github_setup_begin'), metadataRequest('github_authorize_begin'), metadataRequest('github_setup_complete'), metadataRequest('github_reconcile'), metadataRequest('github_disconnect'),
+  metadataRequest('github_status'), metadataRequest('github_setup_begin'), metadataRequest('github_authorize_begin'), metadataRequest('github_setup_complete'), metadataRequest('github_reconcile'), metadataRequest('github_disconnect'), metadataRequest('github_user_disconnect'),
   metadataRequest('privilege_grant_list'), metadataRequest('privilege_grant_approve'), metadataRequest('privilege_grant_reject'),
   metadataRequest('package_overview'), metadataRequest('package_plan_list'), metadataRequest('package_plan_approve'),
   metadataRequest('package_plan_reject'), metadataRequest('package_rollback'), metadataRequest('package_remove'),

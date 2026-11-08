@@ -232,3 +232,63 @@ describe('internal runner API contract', () => {
     ]) expect(GitHubAuthorizationRedirectUriSchema.safeParse(refused).success).toBe(false);
   });
 });
+
+import {
+  ErrorCodeSchema, GITHUB_CREDENTIAL_SOURCES, GitHubCredentialSourceSchema, GitHubStatusResultSchema, GitHubUserAuthorizationViewSchema, HarnessError, ToolResultSchema
+} from '../src/index.js';
+
+describe('GitHub user authorization contract', () => {
+  const redirectUri = 'https://dashboard.example.com/dashboard/integrations/github';
+  const browserBinding = 'b'.repeat(43);
+  const authorize = (input: Record<string, unknown>) => MetadataRunnerRequestSchema.safeParse({ version: 2, principal, operation: 'github_authorize_begin', input });
+
+  it('has one credentialSource union and no longer the old `app` value', () => {
+    expect(GITHUB_CREDENTIAL_SOURCES).toEqual(['github-app', 'github-user', 'principal-global-secret', 'runner-environment', 'none']);
+    expect(GitHubCredentialSourceSchema.parse('github-user')).toBe('github-user');
+    expect(GitHubCredentialSourceSchema.safeParse('app').success).toBe(false);
+  });
+
+  it('carries GITHUB_USER_AUTHORIZATION_REQUIRED as a non-retryable error through the result envelope', () => {
+    const code = 'GITHUB_USER_AUTHORIZATION_REQUIRED';
+    expect(ErrorCodeSchema.parse(code)).toBe(code);
+    const result = ToolResultSchema.parse({
+      ok: false, message: 'refused', error: { code, message: 'Reconnect it in Dashboard → Integrations → GitHub → GitHub user.', retryable: false, resumeAction: 'dashboard:integrations/github' }
+    });
+    expect(result.error).toMatchObject({ code, retryable: false });
+    expect(new HarnessError(code, 'refused', 403, false).code).toBe(code);
+  });
+
+  it('starts a bind authorization by default and a user one without any installation', () => {
+    expect(authorize({ installationId: '4242', redirectUri, browserBinding })).toMatchObject({ success: true, data: { input: { purpose: 'bind', installationId: '4242' } } });
+    expect(authorize({ purpose: 'bind', installationId: '4242', setupState: 's'.repeat(43), redirectUri, browserBinding }).success).toBe(true);
+    expect(authorize({ purpose: 'user', redirectUri, browserBinding })).toMatchObject({ success: true, data: { input: { purpose: 'user' } } });
+    expect(authorize({ purpose: 'user', installationId: '4242', redirectUri, browserBinding }).success).toBe(false);
+    expect(authorize({ purpose: 'user', setupState: 's'.repeat(43), redirectUri, browserBinding }).success).toBe(false);
+    expect(authorize({ purpose: 'bind', redirectUri, browserBinding }).success).toBe(false);
+    expect(authorize({ purpose: 'admin', redirectUri, browserBinding }).success).toBe(false);
+    expect(authorize({ purpose: 'user', redirectUri: 'https://dashboard.example.com/elsewhere', browserBinding }).success).toBe(false);
+  });
+
+  it('adds an internal github_user_disconnect that takes no input and is not a public tool', () => {
+    expect(MetadataRunnerRequestSchema.safeParse({ version: 2, principal, operation: 'github_user_disconnect', input: {} }).success).toBe(true);
+    expect(MetadataRunnerRequestSchema.safeParse({ version: 2, principal, operation: 'github_user_disconnect', input: { installationId: '1' } }).success).toBe(false);
+    expect(MetadataRunnerOperationSchema.options).toContain('github_user_disconnect');
+    expect(RunnerOperationSchema.options).not.toContain('github_user_disconnect');
+    expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('github_user_disconnect');
+  });
+
+  it('reports the user authorization in github_status as status only', () => {
+    const base = { configured: true, userAuthorizationConfigured: true, installations: [], installation: null, repositories: [] };
+    const view = { status: 'connected', login: 'alice', githubUserId: '789', refreshExpiresAt: 1_900_000_000_000, reasonCode: null };
+    expect(GitHubStatusResultSchema.parse({ ...base, userAuthorization: view }).userAuthorization).toEqual(view);
+    expect(GitHubStatusResultSchema.parse({ ...base, userAuthorization: null }).userAuthorization).toBeNull();
+    expect(GitHubStatusResultSchema.parse({ ...base, userAuthorization: { ...view, status: 'revoked', refreshExpiresAt: null, reasonCode: 'bad_refresh_token' } }).userAuthorization)
+      .toMatchObject({ status: 'revoked', reasonCode: 'bad_refresh_token' });
+    expect(GitHubStatusResultSchema.safeParse({ ...base }).success).toBe(false);
+    for (const extra of [{ accessToken: 'ghu_secret' }, { refreshToken: 'ghr_secret' }, { generation: 3 }, { ciphertext: 'x' }]) {
+      expect(GitHubUserAuthorizationViewSchema.safeParse({ ...view, ...extra }).success).toBe(false);
+    }
+    expect(GitHubUserAuthorizationViewSchema.safeParse({ ...view, status: 'unknown' }).success).toBe(false);
+    expect(GitHubUserAuthorizationViewSchema.safeParse({ ...view, reasonCode: 'something_else' }).success).toBe(false);
+  });
+});

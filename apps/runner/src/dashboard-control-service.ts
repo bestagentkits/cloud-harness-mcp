@@ -6,6 +6,7 @@ import {
   HarnessError, MetadataRunnerRequestSchema, ModelCatalogRefreshResultSchema, ModelCatalogSearchResultSchema,
   ModelProfileValidateResultSchema, TOOL_SCHEMA_BY_NAME, listModelProviders, qualifiedToolName,
   type AgentModelPricing, type AgentModelProfileInput, type AgentModelProfileMetadata, type AgentModelProfileUpdateInput,
+  type GitHubStatusResult,
   type MetadataRunnerRequest, type ModelCatalogPriceRef, type ModelConnectionVerifyInput, type ModelProfileCreateToolInput,
   type ModelProfileEscalation, type ModelProfileUpdateToolInput, type ModelProfileValidateInput,
   type ModelProfileValidateResult, type ModelSpendSummaryToolResult, type ModelToolOperation, type RunnerConfig,
@@ -14,6 +15,7 @@ import {
 import { ArtifactStoreError, type ArtifactStore } from './artifact-store.js';
 import type { GitHubBindingService } from './github-binding-service.js';
 import { CONTENTS_PERMISSION_MISSING_REASON, type GitHubInstallationRecord, type GitHubInstallationStore } from './github-installation-store.js';
+import { githubUserAuthorizationView } from './github-user-authorization-service.js';
 import type { McpGatewayStoredHeader } from './mcp-gateway-store.js';
 import { McpOAuthStoreError } from './mcp-oauth-store.js';
 import type { MetadataStore } from './metadata-store.js';
@@ -388,13 +390,21 @@ export class DashboardControlService {
         case 'github_authorize_begin': {
           const github = this.config.githubApp;
           if (!github) throw new HarnessError('UNAVAILABLE', 'GitHub App setup is not configured', 503, false);
-          const { setupState, ...authorization } = parsed.input;
-          return ok('GitHub authorization started', this.requireGitHubBinding().beginAuthorization({
-            principalId, expectedAppId: github.appId, ...authorization, ...(setupState === undefined ? {} : { setupState })
+          const binding = this.requireGitHubBinding();
+          const authorize = parsed.input;
+          if (authorize.purpose === 'user') {
+            return ok('GitHub user authorization started', binding.beginUserAuthorization({
+              principalId, expectedAppId: github.appId, redirectUri: authorize.redirectUri, browserBinding: authorize.browserBinding
+            }));
+          }
+          return ok('GitHub authorization started', binding.beginAuthorization({
+            principalId, expectedAppId: github.appId, installationId: authorize.installationId,
+            redirectUri: authorize.redirectUri, browserBinding: authorize.browserBinding,
+            ...(authorize.setupState === undefined ? {} : { setupState: authorize.setupState })
           }));
         }
         case 'github_setup_complete': {
-          await this.requireGitHubBinding().completeAuthorization(
+          const completion = await this.requireGitHubBinding().completeAuthorization(
             { principalId, ...parsed.input },
             (record, proof, replacedPrincipalId) => {
               this.metadata.recordAuditInTransaction(
@@ -423,7 +433,9 @@ export class DashboardControlService {
               installationId === undefined ? { code: error.code, stage: 'state' } : { installationId, code: error.code }
             )
           );
-          return ok('GitHub installation connected', this.githubStatus(principalId));
+          // `user` records `github.user_authorized` inside the store's own transaction, so the token pair
+          // and its audit entry commit together; only a `bind` carries the hooks above.
+          return ok(completion.purpose === 'user' ? 'GitHub user connected' : 'GitHub installation connected', this.githubStatus(principalId));
         }
         case 'github_reconcile': {
           await this.requireGitHubBinding().reconcile(
@@ -447,6 +459,11 @@ export class DashboardControlService {
             )
           );
           return ok('GitHub installation disconnected', this.githubStatus(principalId));
+        }
+        case 'github_user_disconnect': {
+          // The store audits `github.user_disconnected` atomically with the state change.
+          await this.requireGitHubBinding().disconnectUser(principalId);
+          return ok('GitHub user disconnected', this.githubStatus(principalId));
         }
         case 'privilege_grant_list': {
           return ok('Privilege grants listed', {
@@ -1405,15 +1422,19 @@ export class DashboardControlService {
     }
   }
 
-  private githubStatus(principalId: string) {
+  private githubStatus(principalId: string): GitHubStatusResult {
     const installations = this.githubInstallations?.listInstallations(principalId) ?? [];
     const record = this.githubInstallations?.getInstallation(principalId);
+    const authorization = this.metadata.githubUserAuthorization(principalId);
     return {
       configured: Boolean(this.config.githubApp?.appSlug),
       userAuthorizationConfigured: this.githubBinding?.userAuthorizationConfigured === true,
       installations: installations.map(withContentsReason),
       installation: record ? withContentsReason(record) : null,
-      repositories: this.githubInstallations?.listRepositoryGrants(principalId) ?? []
+      repositories: this.githubInstallations?.listRepositoryGrants(principalId) ?? [],
+      // Status only: no token, ciphertext, or generation. `null` until the principal first connects. It is read
+      // from the stored row, not through the lifecycle service, so it is true whatever the OAuth configuration is.
+      userAuthorization: authorization ? githubUserAuthorizationView(authorization) : null
     };
   }
   private secrets() {

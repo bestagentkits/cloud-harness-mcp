@@ -26,3 +26,4 @@ export * from './terminal-schemas.js';
 export * from './package-schemas.js';
 export * from './events-api.js';
 export * from './workspace-lifecycle.js';
+export * from './github-user-authorization.js';

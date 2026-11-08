@@ -248,6 +248,113 @@ for (const query of ['state=short', 'setup_action=update', 'code=abc&state=short
   });
 }
 
+// The person's own GitHub user authorization card (#642).
+const RENEWS_AT = 1_893_499_200_000; // 2030-01-01T12:00:00Z
+const userStatus = (userAuthorization: unknown, extra: Record<string, unknown> = {}) => answer(200, { data: { configured: true, userAuthorizationConfigured: true, installation: null, repositories: [], userAuthorization, ...extra } });
+const connectedUser = { status: 'connected', login: 'octo-cat', githubUserId: '583231', refreshExpiresAt: RENEWS_AT, reasonCode: null };
+const revokedUser = (reasonCode: string) => ({ status: 'revoked', login: 'octo-cat', githubUserId: '583231', refreshExpiresAt: null, reasonCode });
+
+test('a user who never connected connects as a GitHub user with exactly the user purpose', async ({ page, context }) => {
+  await stubGitHubSite(page);
+  const writes = await stubBff(page, { reads: { '/github': userStatus(null) }, writes: { 'POST /github/authorize': answer(200, { data: { url: AUTHORIZE_URL, expiresAt: '2030-01-01T00:00:00.000Z' } }) } });
+  await page.goto('/dashboard/integrations/github');
+  await expectPage(page, 'github');
+  await expect(page.getByTestId('github-user').getByRole('button', { name: 'Connect as GitHub user' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Connect as GitHub user' }).click();
+  await page.waitForURL(AUTHORIZE_URL);
+  expect(writesTo(writes, 'POST', '/github/authorize')).toHaveLength(1);
+  expect(writesTo(writes, 'POST', '/github/authorize')[0]?.body).toEqual({ purpose: 'user' });
+  expect(writesTo(writes, 'POST', '/github/authorize')[0]?.csrf).toBeTruthy();
+  expect((await context.cookies()).find((cookie) => cookie.name === 'ch-dashboard-ui')).toBeUndefined();
+});
+
+test('a disconnected user authorization offers Connect again', async ({ page }) => {
+  await stubBff(page, { reads: { '/github': userStatus({ status: 'disconnected', login: 'octo-cat', githubUserId: '583231', refreshExpiresAt: null, reasonCode: null }) } });
+  await page.goto('/dashboard/integrations/github');
+  await expectPage(page, 'github');
+  await expect(page.getByRole('button', { name: 'Connect as GitHub user' })).toBeVisible();
+  await expect(page.getByTestId('github-user')).not.toContainText('@octo-cat');
+});
+
+test('a connected GitHub user shows the login and renewal date, and disconnects after a confirmation', async ({ page }) => {
+  const writes = await stubBff(page, { reads: { '/github': [userStatus(connectedUser), userStatus(null)] }, writes: { 'POST /github/user/disconnect': userStatus(null) } });
+  await page.goto('/dashboard/integrations/github');
+  await expectPage(page, 'github');
+  const card = page.getByTestId('github-user');
+  await expect(card.getByTestId('github-user-connected')).toContainText('@octo-cat');
+  await expect(card).toContainText('2030');
+  await expect(card.getByRole('button', { name: 'Connect as GitHub user' })).toHaveCount(0);
+  await card.getByRole('button', { name: 'Disconnect GitHub user @octo-cat' }).click();
+  await expect(page.getByRole('alertdialog')).toContainText('@octo-cat');
+  expect(writesTo(writes, 'POST', '/github/user/disconnect')).toHaveLength(0);
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Disconnect' }).click();
+  await expect.poll(() => writesTo(writes, 'POST', '/github/user/disconnect').length).toBe(1);
+  expect(writesTo(writes, 'POST', '/github/user/disconnect')[0]?.body).toEqual({});
+  expect(writesTo(writes, 'POST', '/github/user/disconnect')[0]?.csrf).toBeTruthy();
+  await expect(card.getByRole('button', { name: 'Connect as GitHub user' })).toBeVisible();
+});
+
+for (const [reasonCode, text] of [['bad_refresh_token', 'GitHub rejected the stored authorization'], ['refresh_token_expired', 'was not renewed in time']] as const) {
+  test(`a revoked GitHub user (${reasonCode}) shows why, with Reconnect and Disconnect`, async ({ page }) => {
+    await stubGitHubSite(page);
+    const writes = await stubBff(page, { reads: { '/github': userStatus(revokedUser(reasonCode)) }, writes: { 'POST /github/authorize': answer(200, { data: { url: AUTHORIZE_URL, expiresAt: '2030-01-01T00:00:00.000Z' } }) } });
+    await page.goto('/dashboard/integrations/github');
+    await expectPage(page, 'github');
+    const card = page.getByTestId('github-user');
+    await expect(card.getByTestId('github-user-revoked-reason')).toContainText(text);
+    await expect(card.getByRole('button', { name: 'Disconnect GitHub user @octo-cat' })).toBeVisible();
+    await card.getByRole('button', { name: 'Reconnect' }).click();
+    await page.waitForURL(AUTHORIZE_URL);
+    expect(writesTo(writes, 'POST', '/github/authorize')[0]?.body).toEqual({ purpose: 'user' });
+  });
+}
+
+test('without GitHub App client credentials the user card explains why Connect is disabled', async ({ page }) => {
+  const writes = await stubBff(page, { reads: { '/github': userStatus(null, { userAuthorizationConfigured: false }) } });
+  await page.goto('/dashboard/integrations/github');
+  await expectPage(page, 'github');
+  await expect(page.getByTestId('github-user').getByRole('button', { name: 'Connect as GitHub user' })).toBeDisabled();
+  await expect(page.getByTestId('github-user-card-unconfigured')).toContainText('GITHUB_APP_CLIENT_ID');
+  expect(writes).toEqual([]);
+});
+
+test('a user-purpose OAuth return renders the updated card without the page naming a purpose', async ({ page }) => {
+  const state = 'one-time-state-value-0123456789abcdef';
+  const code = 'oauth-code-4242';
+  const writes = await stubBff(page, {
+    reads: { '/github': [userStatus(null), userStatus(connectedUser)] },
+    writes: { 'POST /github/complete': userStatus(connectedUser) }
+  });
+  await page.goto(`/dashboard/integrations/github?code=${code}&state=${state}`);
+  await page.waitForURL(CANONICAL_GITHUB);
+  await expect(page.getByTestId('github-user-connected')).toContainText('@octo-cat');
+  expect(writesTo(writes, 'POST', '/github/complete')).toHaveLength(1);
+  expect(writesTo(writes, 'POST', '/github/complete')[0]?.body).toEqual({ state, code });
+  await expectNoCallbackInStorage(page, [state, code, '583231']);
+});
+
+test('a missing GitHub user authorization is shown with where to reconnect, on a read and on a write', async ({ page }) => {
+  const required = { error: 'github_user_authorization_required', message: 'Your GitHub user authorization is required. Reconnect it in Integrations → GitHub → GitHub user.' };
+  const problems = watchConsole(page, { allow: [/Failed to load resource/] });
+  await stubReads(page, { '/projects': answer(403, required) });
+  await page.goto('/dashboard/projects');
+  await expectPage(page, 'projects');
+  const alert = page.getByRole('alert').filter({ hasText: 'GitHub authorization required' });
+  await expect(alert).toBeVisible({ timeout: 10_000 });
+  await expect(alert).toHaveAttribute('data-error-kind', 'github-authorization');
+  await expect(alert).toContainText('Integrations → GitHub → GitHub user');
+  await expect(page.locator('main')).not.toContainText('github_user_authorization_required');
+  await expectNoSeriousA11yViolations(page);
+  expect(problems).toEqual([]);
+
+  const writes = await stubBff(page, { reads: { '/github': userStatus(connectedUser) }, writes: { 'POST /github/user/disconnect': answer(403, required) } });
+  await page.goto('/dashboard/integrations/github');
+  await page.getByRole('button', { name: 'Disconnect GitHub user @octo-cat' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Disconnect' }).click();
+  await expect(page.getByText(required.message).first()).toBeVisible();
+  expect(writesTo(writes, 'POST', '/github/user/disconnect')).toHaveLength(1);
+});
+
 test('the classic Dashboard link keeps the page query', async ({ page }) => {
   await stubReads(page);
   await page.goto('/dashboard/artifacts?cursor=c_42');
