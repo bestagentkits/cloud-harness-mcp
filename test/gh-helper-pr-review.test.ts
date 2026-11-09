@@ -62,17 +62,39 @@ describe('gh-helper pull request review lifecycle', () => {
     expect(result.calls[0]!.some((part) => part.startsWith('start_line='))).toBe(false);
   });
 
+  const ownThread = 'case "$*" in *nameWithOwner*) echo Acme/Widgets;; esac';
+
   it('lists review threads and replies, resolves, and unresolves them over GraphQL', () => {
     const list = run(['pr_review_threads', '12', '25']);
     expect(list.calls[0]).toEqual(expect.arrayContaining(['graphql', 'owner=acme', 'repo=widgets', 'number=12', 'limit=25']));
-    const reply = run(['pr_review_reply', 'PRRT_abc123', 'done']);
-    expect(reply.calls[0]).toEqual(expect.arrayContaining(['graphql', 'thread=PRRT_abc123', 'body=done']));
-    expect(reply.calls[0]!.join(' ')).toContain('addPullRequestReviewThreadReply');
-    const resolve = run(['pr_review_thread_resolve', 'PRRT_abc123']);
-    expect(resolve.calls[0]!.join(' ')).toContain('resolveReviewThread(');
-    const unresolve = run(['pr_review_thread_unresolve', 'PRRT_abc123']);
-    expect(unresolve.calls[0]!.join(' ')).toContain('unresolveReviewThread(');
+    const reply = run(['pr_review_reply', 'PRRT_abc123', 'done'], ownThread);
+    expect(reply.calls[1]).toEqual(expect.arrayContaining(['graphql', 'thread=PRRT_abc123', 'body=done']));
+    expect(reply.calls[1]!.join(' ')).toContain('addPullRequestReviewThreadReply');
+    const resolve = run(['pr_review_thread_resolve', 'PRRT_abc123'], ownThread);
+    expect(resolve.calls[1]!.join(' ')).toContain('resolveReviewThread(');
+    const unresolve = run(['pr_review_thread_unresolve', 'PRRT_abc123'], ownThread);
+    expect(unresolve.calls[1]!.join(' ')).toContain('unresolveReviewThread(');
   });
+
+  it.each(['pr_review_reply', 'pr_review_thread_resolve', 'pr_review_thread_unresolve'])(
+    '%s refuses a review thread of another repository before any mutation, because the node ID is global',
+    (action) => {
+      const args = action === 'pr_review_reply' ? [action, 'PRRT_other1', 'hi'] : [action, 'PRRT_other1'];
+      const foreign = run(args, 'case "$*" in *nameWithOwner*) echo other/private-repo;; esac');
+      expect(foreign.status).not.toBe(0);
+      expect(foreign.stderr).toContain('does not belong to acme/widgets');
+      expect(foreign.calls).toHaveLength(1);
+      expect(foreign.calls[0]!.join(' ')).not.toMatch(/mutation/);
+      // A thread GitHub cannot resolve to a repository is refused too, never mutated blind.
+      const unknown = run(args);
+      expect(unknown.status).not.toBe(0);
+      expect(unknown.calls).toHaveLength(1);
+      const failed = run(args, 'case "$*" in *nameWithOwner*) exit 1;; esac');
+      expect(failed.status).not.toBe(0);
+      expect(failed.stderr).toContain('could not be verified');
+      expect(failed.calls).toHaveLength(1);
+    }
+  );
 
   it('requests and removes users and teams through the requested_reviewers endpoint', () => {
     const request = run(['pr_reviewers_request', '12', 'octocat,hubot', 'core'], 'cat > "$(dirname "$0")/body.json"');

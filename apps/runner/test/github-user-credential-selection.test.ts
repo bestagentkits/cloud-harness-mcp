@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -707,5 +707,129 @@ describe('the legacy lane follows the status at the moment of the decision', () 
     const helper = helperCalls(operation === 'clone' ? '/opt/harness/clone-helper.sh' : TRANSFER_HELPER)[0];
     expect(helper?.[1]).toMatchObject({ stdin: `${PAT}\n` });
     expect(JSON.stringify(docker.runDocker.mock.calls)).not.toContain('ghu_access_lane');
+  });
+});
+
+describe('the user token acts only on the workspace repository', () => {
+  const OWN = 'bestagentkits/cloud-harness-mcp';
+  const OWN_URL = 'https://github.com/bestagentkits/cloud-harness-mcp.git';
+  const VICTIM = 'victim/private-repo';
+
+  /** Another repository named everywhere a checkout or a caller could name one: remotes, rewrites, and push URLs. */
+  function poisonCheckout(workspacePath: string) {
+    mkdirSync(join(workspacePath, 'repo', '.git'), { recursive: true });
+    writeFileSync(join(workspacePath, 'repo', '.git', 'config'), [
+      '[remote "origin"]', `\turl = https://github.com/${VICTIM}.git`, `\tpushurl = https://github.com/${VICTIM}.git`,
+      `[url "https://github.com/${VICTIM}.git"]`, `\tinsteadOf = ${OWN_URL}`, ''
+    ].join('\n'));
+  }
+  const ghRepo = (args: string[]) => args.find((value) => value.startsWith('GH_REPO='));
+  const launches = () => docker.runDocker.mock.calls.map(([args]) => args as string[]);
+  const urlsGiven = (script: string) => launches().filter((args) => args.includes(script));
+  const expectNoVictim = () => expect(launchArguments()).not.toContain('victim');
+
+  it('derives the owner pre-check, GH_REPO, and the helper target from the workspace record, never from the caller', async () => {
+    const { action, lane, userAuthorizations, principalId } = fixture();
+    lane('user');
+    docker.runDocker.mockImplementation(async (args: string[]) => (args.includes(GH_HELPER) ? { ...ok, stdout: 'done' } : ok));
+    // A caller that names another repository in any spelling it can: the schema keeps none of them.
+    const result = await action({ repository: VICTIM, repo: VICTIM, owner: 'victim', url: `https://github.com/${VICTIM}`, remote: `https://github.com/${VICTIM}.git` });
+    expect(result.ok).toBe(true);
+    expect(userAuthorizations.credentialFor).toHaveBeenCalledTimes(1);
+    expect(userAuthorizations.credentialFor).toHaveBeenCalledWith(principalId, 'bestagentkits');
+    const [helper] = urlsGiven(GH_HELPER);
+    expect(ghRepo(helper!)).toBe(`GH_REPO=${OWN}`);
+    expect(helper!.filter((value) => value.startsWith('GH_REPO='))).toHaveLength(1);
+    // The helper never mounts a checkout, so no `.git/config` of it can name another repository.
+    expect(helper).not.toContain('--volume');
+    expectNoVictim();
+  });
+
+  it('refuses a pull request or issue target that is a URL of another repository, before any credential is resolved', async () => {
+    const { service, principalSelector, workspaceId, userAuthorizations, lane } = fixture();
+    lane('user');
+    for (const [operation, input] of [
+      ['github_read', { action: 'pr_view', prNumber: `https://github.com/${VICTIM}/pull/1` }],
+      ['github_read', { action: 'issue_view', issueNumber: `${VICTIM}#1` }],
+      ['github_action', { action: 'pr_comment', prNumber: `https://github.com/${VICTIM}/pull/1`, body: 'hi' }]
+    ] as const) {
+      await expect(service.execute(principalSelector, operation, { workspaceId, ...input })).rejects.toMatchObject({ name: 'ZodError' });
+    }
+    expect(userAuthorizations.credentialFor).not.toHaveBeenCalled();
+    expect(helperCalls(GH_HELPER)).toHaveLength(0);
+  });
+
+  it('clones the workspace repository with the owner pre-check of the workspace owner', async () => {
+    const { cloneRepository, lane, userAuthorizations, principalId, record } = fixture();
+    lane('user');
+    await cloneRepository();
+    expect(userAuthorizations.credentialFor).toHaveBeenCalledWith(principalId, 'bestagentkits');
+    const [helper] = urlsGiven('/opt/harness/clone-helper.sh');
+    const afterImage = helper!.slice(helper!.indexOf('executor') + 1);
+    expect(afterImage[0]).toBe(record.repositoryUrl);
+    expect(afterImage.filter((value) => value.includes('github.com'))).toEqual([OWN_URL]);
+    expect(stdins()).toEqual([`${USER_TOKEN}\n`]);
+  });
+
+  it('fetches and pushes only to the workspace repository when the checkout names another one', async () => {
+    const { service, record, lane, userAuthorizations, principalId } = fixture();
+    lane('user');
+    poisonCheckout(record.workspacePath);
+    docker.runDocker.mockImplementation(async (args: string[]) => (args.includes('rev-parse') ? { ...ok, stdout: `${'a'.repeat(40)}\n` } : ok));
+    const internals = service as unknown as {
+      remoteFetch: (record: WorkspaceRecord, ref: string | undefined) => Promise<unknown>;
+      remotePush: (record: WorkspaceRecord, input: Record<string, unknown>) => Promise<unknown>;
+    };
+    await internals.remoteFetch(record, `refs/heads/${'main'}`);
+    await internals.remotePush(record, { refspec: 'HEAD:refs/heads/main' });
+    expect(userAuthorizations.credentialFor.mock.calls.map(([, owner]) => owner)).toEqual(['bestagentkits', 'bestagentkits']);
+    expect(userAuthorizations.credentialFor).toHaveBeenCalledWith(principalId, 'bestagentkits');
+    // Only the two transfers that hold the token run on the network; each is handed the workspace URL.
+    const networked = urlsGiven(TRANSFER_HELPER).filter((args) => args.includes('bridge'));
+    expect(networked.map((args) => args[args.indexOf('executor') + 2])).toEqual([record.repositoryUrl, record.repositoryUrl]);
+    expect(networked.map((args) => args[args.indexOf('executor') + 1])).toEqual(['fetch', 'push']);
+    const tokenHolders = docker.runDocker.mock.calls.filter(([, options]) => (options as { stdin?: string } | undefined)?.stdin === `${USER_TOKEN}\n`);
+    expect(tokenHolders).toHaveLength(2);
+    // The token-holding helpers get no mount of the agent-written checkout either: only the transfer volume.
+    for (const [args] of tokenHolders) expect((args as string[]).filter((value) => value.includes(record.workspacePath))).toEqual([`${record.workspacePath}:/job:rw`]);
+    expectNoVictim();
+  });
+
+  it('refuses a push or fetch that names a remote, URL, or refspec destination of another repository, and starts no token-holding helper', async () => {
+    const { service, principalSelector, workspaceId, lane, userAuthorizations } = fixture();
+    lane('user');
+    const victimUrl = `https://github.com/${VICTIM}.git`;
+    for (const [operation, input] of [
+      ['git_push', { remote: victimUrl, refspec: 'HEAD:refs/heads/main' }],
+      ['git_push', { remote: 'upstream', refspec: 'HEAD:refs/heads/main' }],
+      ['git_push', { refspec: `HEAD:${victimUrl}` }],
+      ['git_push', { refspec: `${victimUrl}:refs/heads/main` }],
+      ['git_fetch', { remote: victimUrl }],
+      ['git_fetch', { refspec: victimUrl }],
+      ['git_pull', { remote: victimUrl }]
+    ] as const) {
+      await expect(service.execute(principalSelector, operation, { workspaceId, ...input })).rejects.toMatchObject({ name: 'ZodError' });
+    }
+    expect(userAuthorizations.credentialFor).not.toHaveBeenCalled();
+    expect(stdins()).not.toContain(`${USER_TOKEN}\n`);
+    expect(helperCalls(TRANSFER_HELPER)).toHaveLength(0);
+  });
+
+  it('probes the remote branch of the workspace repository with the user token, whatever the checkout names', async () => {
+    const { service, record, lane, userAuthorizations, principalId } = fixture();
+    lane('user');
+    poisonCheckout(record.workspacePath);
+    const probe = (service as unknown as {
+      probeRemoteRefOid: (record: WorkspaceRecord, branch: string, credential: unknown) => Promise<string | null | undefined>;
+    }).probeRemoteRefOid.bind(service);
+    docker.runDocker.mockResolvedValue({ ...ok, stdout: `${'c'.repeat(40)}\trefs/heads/main\n` });
+    await expect(probe(record, 'main', { token: USER_TOKEN, source: 'github-user', userGeneration: 3 })).resolves.toBe('c'.repeat(40));
+    const [helper] = urlsGiven('probe-helper');
+    expect(helper!.slice(helper!.indexOf('probe-helper'))).toEqual(['probe-helper', record.repositoryUrl, 'refs/heads/main']);
+    expect(helper).not.toContain('--volume');
+    expect(stdins()).toEqual([`${USER_TOKEN}\n`]);
+    expect(userAuthorizations.credentialFor).not.toHaveBeenCalled();
+    expect(principalId).toBeTruthy();
+    expectNoVictim();
   });
 });

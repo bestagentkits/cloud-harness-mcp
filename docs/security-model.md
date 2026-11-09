@@ -597,6 +597,16 @@ before.
   `REPOSITORY_OPERATION_NOT_AUTHORIZED`, and the legacy fallback secret is not
   consulted. This is terminal too: a failed anonymous clone is not retried with
   an App token.
+- **Workspace repository only.** A user token acts on the repository recorded
+  for the workspace and nowhere else, though the person may reach many. Every use
+  (the clone, fetch, and push URLs, the reconcile probe, `GH_REPO` for
+  `github_action` and `github_read`, and the owner pre-check) is derived from the
+  workspace record, never from a caller's input, a remote or URL in the checkout,
+  or `.git/config`: `git_fetch`, `git_pull`, and `git_push` accept only
+  `remote: origin`, and the token-holding helpers get no checkout. Because a
+  review thread is addressed by a global node ID, `pr_review_reply`,
+  `pr_review_thread_resolve`, and `pr_review_thread_unresolve` first confirm that
+  the thread belongs to `GH_REPO` and refuse otherwise.
 - **Terminal lane.** Once selected, the outcome is final. A 403, 404, SAML
   enforcement, refresh failure, read-only member's push, or provider outage
   never switches to an App token, a PAT, or the runner environment. Clone, fetch,

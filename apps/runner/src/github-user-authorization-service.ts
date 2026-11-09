@@ -271,6 +271,7 @@ export class GitHubUserAuthorizationService {
     }
   }
 
+  // One flight per principal, not per generation: a caller that joins it may hold a different generation, so safety rests on the superseded outcome and the callers' re-read loops.
   private refresh(principalId: string, generation: number): Promise<RefreshOutcome> {
     const inFlight = this.#refreshing.get(principalId);
     if (inFlight) return inFlight;
