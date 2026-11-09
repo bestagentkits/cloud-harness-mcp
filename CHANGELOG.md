@@ -1,3 +1,11 @@
+## [1.0.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v1.0.0...v1.0.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **runner:** keep gh-helper away from agent-written Git config ([#654](https://github.com/bestagentkits/cloud-harness-mcp/issues/654)) ([2e90c8c](https://github.com/bestagentkits/cloud-harness-mcp/commit/2e90c8ccde3f725e25faf3d6f99c69ed6ca744a1)), closes [#helper](https://github.com/bestagentkits/cloud-harness-mcp/issues/helper) [#653](https://github.com/bestagentkits/cloud-harness-mcp/issues/653) [#helper](https://github.com/bestagentkits/cloud-harness-mcp/issues/helper) [#helper](https://github.com/bestagentkits/cloud-harness-mcp/issues/helper) [#653](https://github.com/bestagentkits/cloud-harness-mcp/issues/653)
+* **worker:** report a synchronous spawn failure as a failed run; skip host-bound runner tests off Linux ([#657](https://github.com/bestagentkits/cloud-harness-mcp/issues/657)) ([16baf4c](https://github.com/bestagentkits/cloud-harness-mcp/commit/16baf4c182bb078322e05cc3692987147603d1f7)), closes [#656](https://github.com/bestagentkits/cloud-harness-mcp/issues/656) [#656](https://github.com/bestagentkits/cloud-harness-mcp/issues/656)
+
 # [1.0.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.80.3...v1.0.0) (2026-11-06)
 
 
