@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import type * as FsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +10,10 @@ import {
   type RunnerConfig,
   type SkillEntry
 } from '@cloud-harness/contracts';
+
+// Workspace and repository tiers are served only after `/proc/self/fd` proves where an opened path
+// really is; a host without it (macOS) refuses them by design, so these suites need a host that has it.
+const servesWorkspaceTiers = existsSync('/proc/self/fd');
 
 // Lets a test change the tree at the exact moment the service opens or inspects a path, to stage a race
 // deterministically: `onOpen` runs just before an open, `afterLstat` just after an lstat returns.
@@ -149,7 +153,7 @@ const errorOf = async (promise: Promise<unknown>) => {
   throw new Error('expected the call to fail');
 };
 
-describe('skills extension workspace binding', () => {
+describe.skipIf(!servesWorkspaceTiers)('skills extension workspace binding', () => {
   it('never shows workspace or repository skills to an unbound request', async () => {
     const { openWorkspace, write, list, get, read } = setup();
     const repo = openWorkspace(WS_A);
@@ -221,7 +225,7 @@ describe('skills extension workspace binding', () => {
   });
 });
 
-describe('skills extension repository content safety', () => {
+describe.skipIf(!servesWorkspaceTiers)('skills extension repository content safety', () => {
   it('does not serve a repository skill that holds a symlink, even one pointing outside the checkout', async () => {
     const { openWorkspace, write, list, get, read } = setup();
     const repo = openWorkspace(WS_A);
@@ -305,7 +309,7 @@ describe('skills extension repository content safety', () => {
   });
 });
 
-describe('skills extension workspace bounds', () => {
+describe.skipIf(!servesWorkspaceTiers)('skills extension workspace bounds', () => {
   it('considers at most 60 skill directories per root and serves nothing past the bound', async () => {
     const { openWorkspace, write, listPage, get } = setup();
     const repo = openWorkspace(WS_A);
@@ -352,7 +356,7 @@ describe('skills extension workspace bounds', () => {
   });
 });
 
-describe('skills extension workspace snapshots', () => {
+describe.skipIf(!servesWorkspaceTiers)('skills extension workspace snapshots', () => {
   it('refuses a file whose digest differs from the one the caller pinned', async () => {
     const { openWorkspace, write, get, read } = setup();
     const dir = write(join(openWorkspace(WS_A), '.agents/skills/alpha'), { 'SKILL.md': document('alpha'), 'a.md': 'before' });
@@ -393,7 +397,7 @@ describe('skills extension workspace snapshots', () => {
   });
 });
 
-describe('skills extension workspace tiers and precedence', () => {
+describe.skipIf(!servesWorkspaceTiers)('skills extension workspace tiers and precedence', () => {
   it('serves every tier at its own URI and resolves repository roots by their rank', async () => {
     const { builtinRoot, openWorkspace, write, list, read } = setup();
     const repo = openWorkspace(WS_A);

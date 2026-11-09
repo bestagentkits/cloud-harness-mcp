@@ -121,7 +121,15 @@ const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
 async function command(program, args, { cwd = getWorkspaceRoot(), env = process.env, stdin, timeoutMs = 60_000, maxBytes = MAX_INTERNAL_OUTPUT, includeStderr = true } = {}) {
   return await new Promise((resolvePromise) => {
-    const child = spawn(program, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+    let child;
+    try {
+      child = spawn(program, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+    } catch (error) {
+      // Some exec failures (ENOEXEC on macOS's posix_spawn, EMFILE/EAGAIN anywhere) throw synchronously
+      // instead of emitting 'error'; they are the same failed run, not an invalid request.
+      resolvePromise({ output: error instanceof Error ? error.message : String(error), exitCode: 1, truncated: false });
+      return;
+    }
     if (process.env.CH_OPERATION_PID_FILE) {
       writeFileSync(process.env.CH_OPERATION_PID_FILE, `${process.pid}\n${child.pid}\n`, { mode: 0o600 });
     }

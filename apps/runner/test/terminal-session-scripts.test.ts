@@ -11,6 +11,8 @@ import { KILL_SESSION_SCRIPT, TERMINAL_PID_DIR, terminalCommand } from '../src/d
  * the PTY's login shell does inside the executor and the session kill can only reach this test's processes.
  */
 const EXECUTOR_HOME = '/tmp/cloud-harness-home';
+// The session kill uses procps `pkill -s`/`pgrep -s`, which the executor has and BSD pkill (macOS) lacks.
+const hasSessionKill = process.platform === 'linux';
 
 let root: string;
 let pidDir: string;
@@ -78,7 +80,7 @@ describe.skipIf(process.platform === 'win32')('terminal session scripts', () => 
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('ends the whole session of a shell that recorded its pid and forgets the pid file', async () => {
+  it.skipIf(!hasSessionKill)('ends the whole session of a shell that recorded its pid and forgets the pid file', async () => {
     const shell = startShell('term_recorded');
     const pidFile = join(pidDir, 'term_recorded.pid');
     await waitForFile(pidFile);
@@ -119,7 +121,7 @@ describe.skipIf(process.platform === 'win32')('terminal session scripts', () => 
     expect(code).not.toBe(0);
   });
 
-  it('does not let a stale close of one terminal block another', async () => {
+  it.skipIf(!hasSessionKill)('does not let a stale close of one terminal block another', async () => {
     expect(await killSession('term_other')).toBe(0);
     const shell = startShell('term_live');
     await waitForFile(join(pidDir, 'term_live.pid'));
