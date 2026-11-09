@@ -442,7 +442,21 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
       await service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_review', prNumber: 12, event: 'APPROVE' });
       const [args] = helperCall()!;
       expect(args.join(' ')).not.toContain('pr-scoped-write-token');
-      expect(args.join(' ')).toContain('/repo:/workspace:ro');
+    });
+
+    it.each([
+      ['pr_create', { title: 't', head: 'feature', base: 'main' }],
+      ['pr_review', { prNumber: 12, event: 'APPROVE' }],
+      ['pr_comment', { prNumber: 12, body: 'b' }],
+      ['pr_merge', { prNumber: 12, method: 'squash' }]
+    ])('runs %s without mounting the agent-writable checkout', async (action, input) => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      writeToken();
+      await service.execute(principalSelector, 'github_action', { workspaceId, action, ...input });
+      const [args] = helperCall()!;
+      expect(args.some((arg) => arg.includes('/repo:'))).toBe(false);
+      expect(args[args.indexOf('--workdir') + 1]).toBe('/tmp');
     });
 
     it('redacts both a workspace GH_TOKEN and a different fallback token', () => {
