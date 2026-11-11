@@ -50,7 +50,7 @@ import {
 import {
   escapeHtml,
   launchBlockedByConflicts,
-  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, githubRefusalMessage, renderGlobalSecrets, renderOverview, renderOverviewSkeleton,
+  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, githubRefusalMessage, GITHUB_USER_AUTHORIZATION_REQUIRED_CODE, GITHUB_USER_AUTHORIZATION_REQUIRED_MESSAGE, renderGlobalSecrets, renderOverview, renderOverviewSkeleton,
   renderProjectDetail, renderProfile, renderProjectIndex, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
   renderMcpServersIndex, renderMcpServerDetail,
@@ -205,9 +205,9 @@ export async function resolveGitHubCallback({ callback, origin, read, post, auth
     showPending();
     try {
       await post('/github/complete', { state: callback.state, code: callback.code });
-      announce('GitHub App connection completed.');
+      announce('GitHub connection completed.');
     } catch (error) {
-      notice = { kind: 'message', text: error instanceof Error ? error.message : 'GitHub App connection failed.' };
+      notice = { kind: 'message', text: error instanceof Error ? error.message : 'GitHub connection failed.' };
       reportError(error);
     }
   } else if (callback.kind === 'malformed') {
@@ -1318,6 +1318,7 @@ export function initializeDashboard() {
   }
   let apiKeyPageData;
   const errorText = (error) => (error.status === 401 ? 'Your dashboard session ended. Sign in again.'
+    : error.status === 403 && error.code === GITHUB_USER_AUTHORIZATION_REQUIRED_CODE ? GITHUB_USER_AUTHORIZATION_REQUIRED_MESSAGE
     : error.status === 409 ? 'This item changed after you opened it. Review the latest version before trying again.' : error.message);
   function showError(error) {
     document.querySelector('.page-header').removeAttribute('data-shell-pending');
@@ -2498,18 +2499,47 @@ export function initializeDashboard() {
     setPageActions(renderGitHubActions(outcome.status));
     bindGitHubControls();
   }
-  async function authorizeGitHub(body) {
-    const result = await api('/github/authorize', { method: 'POST', body: requestBody(body) });
+  /** GitHub's pages are followed only over HTTPS on github.com itself, with no embedded credentials or port. */
+  function githubDestination(value, message) {
     let destination;
     try {
-      destination = new URL(result.data.url);
+      destination = new URL(value);
     } catch {
-      throw new Error('GitHub authorization URL was invalid.');
+      throw new Error(message);
     }
-    if (destination.protocol !== 'https:') throw new Error('GitHub authorization URL was invalid.');
-    location.assign(destination.toString());
+    if (destination.protocol !== 'https:' || destination.hostname !== 'github.com' || destination.username || destination.password || destination.port) throw new Error(message);
+    return destination.toString();
+  }
+  async function authorizeGitHub(body) {
+    const result = await api('/github/authorize', { method: 'POST', body: requestBody(body) });
+    location.assign(githubDestination(result.data.url, 'GitHub authorization URL was invalid.'));
   }
   function bindGitHubControls() {
+    const userConnect = document.querySelector('#github-user-connect');
+    if (userConnect) {
+      userConnect.addEventListener('click', async (event) => {
+        const button = event.currentTarget; const originalText = button.textContent;
+        button.disabled = true; button.textContent = 'Opening GitHub…';
+        // The body is exactly the user purpose; the runner reads the purpose of the return from its stored state.
+        try { await authorizeGitHub({ purpose: 'user' }); }
+        catch (error) { showError(error); button.disabled = false; button.textContent = originalText; }
+      });
+    }
+    const userDisconnect = document.querySelector('#github-user-disconnect');
+    if (userDisconnect) {
+      userDisconnect.addEventListener('click', (event) => confirmAction({
+        title: 'Disconnect GitHub user authorization?',
+        description: 'Cloud Harness will stop using your GitHub account and delete the stored authorization. You can connect again at any time.',
+        target: `@${userDisconnect.dataset.login}`,
+        label: 'Disconnect',
+        pendingLabel: 'Disconnecting…',
+        action: async () => {
+          await api('/github/user/disconnect', { method: 'POST', body: requestBody({}) });
+          announce('GitHub user disconnected.');
+          await loadGitHub();
+        }
+      }, event.currentTarget));
+    }
     const verifyButton = document.querySelector('#github-verify');
     if (verifyButton) {
       verifyButton.addEventListener('click', async (event) => {
@@ -2525,14 +2555,7 @@ export function initializeDashboard() {
         event.preventDefault(); const values = new FormData(form); const expectedAccountId = String(values.get('expectedAccountId') ?? '').trim();
         void submitForm(form, 'Preparing connection…', async () => {
           const result = await api('/github/setup', { method: 'POST', body: requestBody(expectedAccountId ? { expectedAccountId } : {}) });
-          let destination;
-          try {
-            destination = new URL(result.data.url);
-          } catch {
-            throw new Error('GitHub setup URL was invalid.');
-          }
-          if (destination.protocol !== 'https:') throw new Error('GitHub setup URL was invalid.');
-          location.assign(destination.toString());
+          location.assign(githubDestination(result.data.url, 'GitHub setup URL was invalid.'));
         }, async () => {});
       });
     }

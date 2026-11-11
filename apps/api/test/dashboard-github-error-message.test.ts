@@ -102,3 +102,24 @@ describe('GitHub operations report their own failures', () => {
     expect(body.message).toBe(WORKSPACE_UNAVAILABLE);
   });
 });
+
+describe('GitHub user authorization failures', () => {
+  it('maps GITHUB_USER_AUTHORIZATION_REQUIRED to a 403 that names where to reconnect, from any operation', () => {
+    for (const operation of ['workspace_status', 'github_status', 'github_reconcile', 'github_user_disconnect'] as const) {
+      const { status, body } = capture(operation, failure('GITHUB_USER_AUTHORIZATION_REQUIRED', 'runner detail naming ghu_secret'));
+      expect(status).toBe(403);
+      expect(body.message).toBe('Your GitHub user authorization is required. Reconnect it in Integrations → GitHub → GitHub user.');
+      expect(JSON.stringify(body)).not.toContain('ghu_secret');
+    }
+  });
+
+  it('points an unconfigured user authorization at the keyring that stores the token, and keeps disconnect wording static', () => {
+    const begin = capture('github_authorize_begin', failure('UNAVAILABLE', 'GitHub user authorization is not configured: raw detail'));
+    expect(begin.body.message).toContain('SECRET_KEYRING');
+    expect(begin.body.message).toContain('GITHUB_APP_CLIENT_ID');
+    const disconnect = capture('github_user_disconnect', failure('UNAVAILABLE', 'raw detail'));
+    expect(disconnect.status).toBe(503);
+    expect(disconnect.body.message).toContain('SECRET_KEYRING');
+    expect(disconnect.body.message).not.toContain('raw detail');
+  });
+});

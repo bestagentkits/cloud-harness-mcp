@@ -1,7 +1,7 @@
 import { loadRunnerConfig } from './config.js';
-import { McpEventService } from './mcp-event-service.js';
 import { MetadataStore } from './metadata-store.js';
 import { SecretKeyring } from './secret-keyring.js';
+import { rekeySecrets } from './secret-rekey.js';
 import { StateStore } from './state-store.js';
 
 const config = loadRunnerConfig();
@@ -16,19 +16,13 @@ process.once('SIGINT', () => controller.abort());
 process.once('SIGTERM', () => controller.abort());
 
 try {
-  const changed = await metadata.secrets.reencrypt(controller.signal);
-  const snapshotsChanged = state.reencryptSnapshots((item) => metadata.secrets.reencryptSnapshotItem(item));
-  const oauthChanged = metadata.mcpOAuth.reencrypt(controller.signal);
-  const eventsChanged = new McpEventService({
-    database: state.database,
-    resolvePrincipal: (principal) => state.resolvePrincipal(principal),
-    keyring
-  }).reencrypt(controller.signal);
+  const counts = await rekeySecrets({ state, metadata, keyring }, controller.signal);
+  const summary = `${counts.secretVersions} secret version(s) and ${counts.snapshots} snapshot(s) and ${counts.oauthRecords} OAuth record(s) and ${counts.eventSubscriptions} event subscription(s) and ${counts.githubUserAuthorizations} GitHub user authorization(s)`;
   if (controller.signal.aborted) {
-    process.stderr.write(`Secret re-encryption interrupted after ${changed} version(s) and ${snapshotsChanged} snapshot(s) and ${oauthChanged} OAuth record(s) and ${eventsChanged} event subscription(s). It is safe to resume.\n`);
+    process.stderr.write(`Secret re-encryption interrupted after ${summary}. It is safe to resume.\n`);
     process.exitCode = 130;
   } else {
-    process.stdout.write(`Re-encrypted ${changed} secret version(s) and ${snapshotsChanged} snapshot(s) and ${oauthChanged} OAuth record(s) and ${eventsChanged} event subscription(s).\n`);
+    process.stdout.write(`Re-encrypted ${summary}.\n`);
   }
 } finally {
   metadata.close();

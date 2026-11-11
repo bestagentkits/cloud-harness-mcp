@@ -890,13 +890,39 @@ ChatGPT subscription (see
   [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
   and
   [`apps/runner/src/github-app-broker.ts`](../apps/runner/src/github-app-broker.ts).
+  In `cloudflare-access` and `oidc` modes a member may instead have connected
+  their own GitHub user (Dashboard → Integrations → GitHub → GitHub user; see
+  [the security model](security-model.md#github-user-authorization-member-access)).
+  After the principal's own installation token, a `connected` user authorization
+  is the credential whenever the repository owner has an installation that user
+  can reach, and the result is final: no App-token retry, no fallback secret.
+  A connected user whose owner is unreachable gets no credential, and
+  `github_action` returns `REPOSITORY_OPERATION_NOT_AUTHORIZED`. A SAML
+  single-sign-on refusal is `GITHUB_PERMISSION_MISSING` naming the
+  organization's SSO page and does not revoke the authorization. When GitHub no
+  longer accepts the saved authorization it is `revoked`, and every operation
+  that needs a GitHub credential on github.com (clone, fetch, push,
+  `github_action`, `github_read`) fails with `GITHUB_USER_AUTHORIZATION_REQUIRED`,
+  even when a fallback secret exists; the fallback applies only to a principal
+  with no authorization or one that chose Disconnect.
+  A `connected` authorization on a runner that lacks the OAuth client
+  credentials or the keyring fails closed the same way, with a non-retryable
+  `UNAVAILABLE` naming `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` and
+  `SECRET_KEYRING`; no fallback secret is used.
   Tokens are supplied exclusively via stdin and are never written to workspace files.
-  All write actions emit structured `github_action.<action>` events in `audit_events`.
+  All write actions emit structured `github_action.<action>` events in `audit_events`,
+  and their details and a failed clone's message name the credential used as
+  `credentialSource`: `github-app` (an installation token), `github-user`,
+  `principal-global-secret`, `runner-environment`, or `none`. The earlier
+  `app` value for brokered actions is now `github-app`; the union is
+  `GitHubCredentialSourceSchema` in
+  [`packages/contracts/src/github-user-authorization.ts`](../packages/contracts/src/github-user-authorization.ts).
   Failures return typed machine-actionable error codes (`GITHUB_RATE_LIMITED` with retryAfterMs,
   `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`, plus the review
   and merge codes `GITHUB_REVIEW_NOT_ALLOWED`, `GITHUB_REVIEW_COMMENT_INVALID`,
   `GITHUB_REVIEWER_UNASSIGNABLE`, `GITHUB_MERGE_BLOCKED`, `GITHUB_MERGE_CONFLICT`,
-  `GITHUB_AUTO_MERGE_UNAVAILABLE`);
+  `GITHUB_AUTO_MERGE_UNAVAILABLE`, and `GITHUB_USER_AUTHORIZATION_REQUIRED`, which is
+  not retryable and carries `resumeAction: "dashboard:integrations/github"`);
   a `403` from the helper is never retried.
   When the `failure-classification` Decision Plane purpose is on and a failure
   matches no rule (`GITHUB_ACTION_FAILED`), the error may carry an advisory

@@ -22,6 +22,8 @@ import {
   repositoryGuidanceSummary,
   sanitizeAndAttributeProvenance,
   toolkitSelectionIdentity,
+  type GitHubCredentialSource,
+  type GitHubUserAuthorizationStatus,
   type GuidanceProfile,
   type RepositoryGuidanceSnapshot,
   type AgentProxyOperation,
@@ -73,6 +75,12 @@ import type { EncryptedSecret } from './secret-keyring.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
 import { GitHubRepositoryCreator } from './github-repository-creator.js';
+import type { GitHubUserAuthorizationService, GitHubUserLane } from './github-user-authorization-service.js';
+import { readGitHubUserAuthorization, type GitHubUserAuthorizationRecord } from './github-user-authorization-store.js';
+import {
+  githubSamlRefusal, githubUserAuthorizationRequired, githubUserAuthorizationUnavailable, githubUserOwnerNotReachable,
+  githubUserPermissionRefusal, isGitHubCredentialRejection, isGitHubSamlRefusal, redactCredentials
+} from './github-user-lane.js';
 import { FailureIntelligence } from './decision-plane/failure-intelligence.js';
 import type { DecisionPlane } from './decision-plane/decision-plane.js';
 import {
@@ -84,13 +92,24 @@ import { AgentManager, type AgentManagerDependencies } from './agent-manager.js'
 import { DurableSessionStore } from './durable-session-store.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 
+/** What credential resolution decided; see `resolveRepositoryCredential`. */
+interface RepositoryCredentialDecision {
+  credential?: RepositoryCredential;
+  /** The user token lane found nothing that applies to the owner, so no credential is used and none is tried later. */
+  ownerUnreachable?: boolean;
+  /** The GitHub App mint failure that no other credential covered. */
+  mintError?: unknown;
+}
+
 /** Where a repository Git credential came from; reported in clone failures, never the token itself. */
-type RepositoryCredentialSource = 'github-app' | 'principal-global-secret' | 'runner-environment';
+type RepositoryCredentialSource = Exclude<GitHubCredentialSource, 'none'>;
 interface RepositoryCredential {
   token: string;
   source: RepositoryCredentialSource;
   /** Set when a GitHub App mint failed and the fallback credential was used instead. */
   appMintError?: unknown;
+  /** The stored generation of a `github-user` token, which a later rejection of it is attributed to. */
+  userGeneration?: number;
 }
 /** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
 const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -871,10 +890,18 @@ export class WorkspaceService {
     await mkdir(jobPath, { recursive: true, mode: 0o700 });
     await chmod(jobPath, 0o777);
 
-    const credential = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
+    const decision = await this.resolveRepositoryCredential(record.ownerId, repositoryUrl, 'read');
+    // An App mint failure that no other credential covered is raised, as it always was.
+    if (!decision.credential && decision.mintError !== undefined) throw decision.mintError;
+    let credential = decision.credential;
+    // The user lane found nothing that applies to this owner: no credential is used, and none is tried later.
+    const ownerUnreachable = decision.ownerUnreachable === true;
     let repositoryToken = credential?.token;
-    let credentialSource: RepositoryCredentialSource | 'none' = credential?.source ?? 'none';
+    let credentialSource: GitHubCredentialSource = credential?.source ?? 'none';
     let appMintError: unknown = credential?.appMintError;
+    // Every credential this clone used, a user token before and after a refresh included: the helper's
+    // output is cleaned of all of them before it can reach an error.
+    const usedTokens: string[] = [];
     let cachePathForVolume: string | undefined;
     if (this.config.enableRepoCache) {
       try {
@@ -900,8 +927,10 @@ export class WorkspaceService {
     ];
 
     const runClone = async (token: string | undefined, cachePath?: string) => {
+      if (token) usedTokens.push(token);
       try {
-        return await runDocker(buildArgs(cachePath), { stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes });
+        const output = await runDocker(buildArgs(cachePath), { stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes });
+        return { ...output, stdout: redactCredentials(output.stdout, usedTokens), stderr: redactCredentials(output.stderr, usedTokens) };
       } finally {
         await removeContainer(helperName);
       }
@@ -913,7 +942,17 @@ export class WorkspaceService {
       await this.safeRemovePath(repositoryPath);
       result = await runClone(repositoryToken, undefined);
     }
-    if (result.exitCode !== 0 && credentialSource !== 'github-app') {
+    if (result.exitCode !== 0 && credential?.source === 'github-user' && isGitHubCredentialRejection(`${result.stderr}\n${result.stdout}`)) {
+      // GitHub rejected the user token itself (401): it expired, or a refresh rotated it. The user lane
+      // recovers with its own token, once. It never switches to another credential.
+      credential = await this.recoverUserCredential(record.ownerId, credential);
+      await this.safeRemovePath(repositoryPath);
+      repositoryToken = credential.token;
+      result = await runClone(repositoryToken, undefined);
+    }
+    // The user token lane is final: a refused user token is never retried with an App token, and a user
+    // whose owner is unreachable never reaches for one either.
+    if (result.exitCode !== 0 && credentialSource !== 'github-app' && credentialSource !== 'github-user' && !ownerUnreachable) {
       // A fallback (or missing) credential failed: the principal's GitHub App
       // grant may simply be stale, so reconcile once and retry with an App token.
       let refreshedToken: string | undefined;
@@ -930,12 +969,18 @@ export class WorkspaceService {
       }
     }
     if (result.exitCode !== 0) {
+      if (credentialSource === 'github-user' && isGitHubSamlRefusal(`${result.stderr}\n${result.stdout}`)) {
+        throw githubSamlRefusal(this.repositoryOwner(repositoryUrl));
+      }
       const appNote = appMintError !== undefined && credentialSource !== 'github-app'
         ? ` [GitHub App token unavailable: ${appMintError instanceof Error ? appMintError.message : 'mint failed'}]`
         : '';
+      const userNote = ownerUnreachable
+        ? ` [your connected GitHub user cannot reach a GitHub App installation of ${this.repositoryOwner(repositoryUrl)}; no credential was used]`
+        : '';
       throw new HarnessError(
         'UNAVAILABLE',
-        `repository clone failed (credential: ${credentialSource})${appNote}: ${result.stderr || result.stdout}`.slice(0, 2_000),
+        `repository clone failed (credential: ${credentialSource})${appNote}${userNote}: ${result.stderr || result.stdout}`.slice(0, 2_000),
         502,
         true
       );
@@ -1454,8 +1499,20 @@ export class WorkspaceService {
     const multiPrincipal = isMultiPrincipal(this.config.authMode);
     // A fallback credential is a GitHub credential: it never widens capability
     // for a non-GitHub host, and in a multi-principal mode the operator-wide
-    // environment token is excluded by `envFallbackGitHubToken`.
-    const fallbackAvailable = isGitHub && hasGitHubFallbackCredential(this.config, record.ownerId, this.metadata);
+    // environment token is excluded by `envFallbackGitHubToken`. A connected or revoked GitHub
+    // user authorization closes that lane by its stored status, so a secret the principal still
+    // holds advertises nothing.
+    // The stored authorization is read straight from the database, so a connected or revoked user closes
+    // the fallback lane whether or not OAuth is configured on this runner.
+    const userRecord = isGitHub && multiPrincipal ? readGitHubUserAuthorization(this.store.database, record.ownerId) : undefined;
+    const userAuthorization = userRecord?.status;
+    const fallbackAvailable = isGitHub && hasGitHubFallbackCredential(this.config, record.ownerId, this.metadata, userAuthorization);
+    // A connected user token is a credential of its own for every owner the user can reach, provided this
+    // runner can use the connection at all. Reach is known only from the short-lived cache, and unknown is
+    // not a denial, so it is advertised until the cache says the owner is unreachable. GitHub decides each call.
+    const userAuthorizations = this.githubBinding?.userAuthorizations;
+    const userTokenAvailable = userAuthorization === 'connected' && userAuthorizations !== undefined
+      && userAuthorizations.cachedOwnerVisible(record.ownerId, owner) !== false;
     let contentsRead = true;
     let contentsWrite = false;
     let issuesRead = false;
@@ -1513,7 +1570,9 @@ export class WorkspaceService {
         contentsRead = false;
         contentsWrite = false;
       }
-      if (fallbackAvailable) {
+      if (fallbackAvailable || (userTokenAvailable && !repositoryAccessReason)) {
+        // A user token is bounded by the App installation's own permissions, so it widens nothing
+        // while the installation lacks Contents; the fallback secret is independent of the App.
         repositoryAccessReason = undefined;
         githubBrokered = true;
         contentsRead = true;
@@ -2004,12 +2063,13 @@ export class WorkspaceService {
     token: string | undefined,
     expectedRemoteOid: string | undefined,
     signal?: AbortSignal,
-    historySpec = ''
+    historySpec = '',
+    redact: readonly string[] = []
   ) {
     const helperName = `chm-git-${mode.replaceAll('-', '').slice(0, 5)}-${randomBytes(6).toString('hex')}`;
     const network = mode === 'fetch' || mode === 'push' ? 'bridge' : 'none';
     try {
-      const result = await runDocker([
+      const output = await runDocker([
         'run', '-i', '--rm', '--pull', 'never', '--name', helperName,
         '--label', 'cloud-harness.role=git-transfer-helper', '--label', 'cloud-harness.ephemeral=true',
         '--label', `cloud-harness.instance=${this.instanceId}`, '--label', `cloud-harness.workspace=${record.id}`,
@@ -2023,6 +2083,13 @@ export class WorkspaceService {
         stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes,
         ...(signal ? { signal } : {})
       });
+      // Cleaned before the output is classified, thrown, or returned: it may echo the token it ran with.
+      const credentials = [token, ...redact];
+      const result = {
+        ...output,
+        stdout: redactCredentials(output.stdout, credentials),
+        stderr: redactCredentials(output.stderr, credentials)
+      };
       if (result.exitCode !== 0) {
         const action = mode === 'push' ? 'push' : mode === 'fetch' ? 'fetch' : 'transfer';
         // `push --porcelain` writes each ref's status line (`[rejected] (stale info)`, `[remote rejected]`)
@@ -2151,26 +2218,36 @@ export class WorkspaceService {
     }
   }
 
-  /** The branch's remote object ID, `null` when the remote answered that the branch does not exist, or `undefined` when the probe failed. */
-  private async probeRemoteRefOid(record: WorkspaceRecord, branch: string, token?: string, signal?: AbortSignal): Promise<string | null | undefined> {
+  /**
+   * The branch's remote object ID, `null` when the remote answered that the branch does not exist, or
+   * `undefined` when the probe was indeterminate: the helper could not run, or GitHub could not be asked.
+   * With a user credential a 401 recovers it once, a revoked authorization throws
+   * `GITHUB_USER_AUTHORIZATION_REQUIRED`, and a SAML refusal is the per-organization error, so a
+   * lifecycle or policy decision is never reported as an unknown remote state.
+   */
+  private async probeRemoteRefOid(record: WorkspaceRecord, branch: string, credential: RepositoryCredential | undefined, signal?: AbortSignal): Promise<string | null | undefined> {
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
-    const helperName = `chm-probe-${randomBytes(6).toString('hex')}`;
-    try {
-      const askpassScript = `#!/usr/bin/env bash
+    // Every credential this probe used: its output is cleaned of all of them before it is read.
+    const usedTokens: string[] = [];
+    const probe = async (token: string | undefined) => {
+      if (token) usedTokens.push(token);
+      const helperName = `chm-probe-${randomBytes(6).toString('hex')}`;
+      try {
+        const askpassScript = `#!/usr/bin/env bash
 case \${1:-} in
   *Username*) printf '%s\\n' x-access-token ;;
   *) printf '%s\\n' "$CLOUD_HARNESS_GIT_TOKEN" ;;
 esac
 `;
-      const result = await runDocker([
-        'run', '-i', '--rm', '--name', helperName,
-        '--label', 'cloud-harness.role=probe-helper', '--label', 'cloud-harness.ephemeral=true',
-        '--network', 'bridge', '--user', '10001:10001', '--read-only',
-        '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-        '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_TERMINAL_PROMPT=0',
-        '--entrypoint', '/bin/bash', this.config.executorImage,
-        '-c',
-        `token=; IFS= read -r token || true;
+        const output = await runDocker([
+          'run', '-i', '--rm', '--name', helperName,
+          '--label', 'cloud-harness.role=probe-helper', '--label', 'cloud-harness.ephemeral=true',
+          '--network', 'bridge', '--user', '10001:10001', '--read-only',
+          '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+          '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_TERMINAL_PROMPT=0',
+          '--entrypoint', '/bin/bash', this.config.executorImage,
+          '-c',
+          `token=; IFS= read -r token || true;
 if [[ -n $token ]]; then
   printf '%s\\n' '${askpassScript}' > /tmp/askpass;
   chmod 0700 /tmp/askpass;
@@ -2179,32 +2256,44 @@ if [[ -n $token ]]; then
 fi;
 git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2"
 `,
-        'probe-helper', repositoryUrl.toString(), `refs/heads/${branch}`
-      ], {
-        stdin: `${token ?? ''}\n`,
-        timeoutMs: 30_000,
-        maxBytes: 65_536,
-        ...(signal ? { signal } : {})
-      });
-      if (result.exitCode === 0) {
-        const line = result.stdout.trim().split('\n')[0];
-        const oid = line?.split(/\s+/)[0];
-        return oid || null;
+          'probe-helper', repositoryUrl.toString(), `refs/heads/${branch}`
+        ], {
+          stdin: `${token ?? ''}\n`,
+          timeoutMs: 30_000,
+          maxBytes: 65_536,
+          ...(signal ? { signal } : {})
+        });
+        return { ...output, stdout: redactCredentials(output.stdout, usedTokens), stderr: redactCredentials(output.stderr, usedTokens) };
+      } catch {
+        return undefined;
+      } finally {
+        await removeContainer(helperName);
       }
-      return undefined;
-    } catch {
-      return undefined;
-    } finally {
-      await removeContainer(helperName);
+    };
+    let result = await probe(credential?.token);
+    if (result && result.exitCode !== 0 && credential?.source === 'github-user') {
+      if (isGitHubCredentialRejection(`${result.stderr}\n${result.stdout}`)) {
+        const recovered = await this.recoverUserCredential(record.ownerId, credential);
+        result = await probe(recovered.token);
+      }
+      if (result && result.exitCode !== 0 && isGitHubSamlRefusal(`${result.stderr}\n${result.stdout}`)) {
+        throw githubSamlRefusal(this.repositoryOwner(repositoryUrl));
+      }
     }
+    if (!result || result.exitCode !== 0) return undefined;
+    const line = result.stdout.trim().split('\n')[0];
+    const oid = line?.split(/\s+/)[0];
+    return oid || null;
   }
 
   private async remoteFetch(record: WorkspaceRecord, remoteRef: string | undefined, signal?: AbortSignal, historySpec = '') {
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
-    const token = (await this.repositoryToken(record.ownerId, repositoryUrl, 'read'))?.token;
+    const credential = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
     const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
     try {
-      const fetched = await this.runGitTransferHelper(record, 'fetch', transferName, remoteRef ?? '', token, undefined, signal, historySpec);
+      const fetched = await this.runWithCredential(record.ownerId, repositoryUrl, credential, async (token, usedTokens) =>
+        await this.runGitTransferHelper(record, 'fetch', transferName, remoteRef ?? '', token, undefined, signal, historySpec, usedTokens)
+      );
       const imported = record.containerName
         ? await this.withPausedExecutor(record, async () =>
             await this.runGitTransferHelper(record, 'import', transferName, remoteRef ?? '', undefined, undefined, signal, historySpec)
@@ -2219,9 +2308,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   private async remotePush(record: WorkspaceRecord, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
     const repoStr = this.extractRepositoryName(repositoryUrl);
-    let token: string | undefined;
+    let credential: RepositoryCredential | undefined;
     try {
-      token = (await this.repositoryToken(record.ownerId, repositoryUrl, 'write'))?.token;
+      credential = await this.repositoryToken(record.ownerId, repositoryUrl, 'write');
     } catch (err: unknown) {
       if (err instanceof HarnessError && (err.code === 'FORBIDDEN' || err.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED')) {
         throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', err.message, 403, false, {
@@ -2232,6 +2321,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       throw err;
     }
+    const token = credential?.token;
     if (!token) {
       throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', 'Git push requires a configured GitHub App with repository write access', 403, false, {
         operation: 'git_push',
@@ -2293,7 +2383,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         const existingOp = claim.existing;
         if (existingOp.status === 'UNKNOWN_REMOTE_STATE') {
           const targetBranchName = branch || (refspec.includes(':') ? refspec.split(':')[1]?.replace(/^refs\/heads\//, '') : refspec.replace(/^refs\/heads\//, '')) || 'main';
-          const remoteOid = await this.probeRemoteRefOid(record, targetBranchName, token, signal);
+          const remoteOid = await this.probeRemoteRefOid(record, targetBranchName, credential, signal);
           const reconciled = (message: string): RunnerResponse => {
             const successResponse: RunnerResponse = { ok: true, message, data: { refspec, alreadyFinalized: true }, truncated: false };
             this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'SUCCEEDED', JSON.stringify(successResponse), null, existingOp.localCommitSha);
@@ -2355,7 +2445,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       let pushed: { exitCode: number; stdout: string; stderr: string; truncated: boolean };
       try {
-        pushed = await this.runGitTransferHelper(record, 'push', transferName, refspec, token, lease, signal);
+        pushed = await this.runWithCredential(record.ownerId, repositoryUrl, credential, async (pushToken, usedTokens) =>
+          await this.runGitTransferHelper(record, 'push', transferName, refspec, pushToken, lease, signal, '', usedTokens)
+        );
       } catch (err: unknown) {
         if (err instanceof HarnessError && (err.code === 'TIMEOUT' || err.code === 'UNAVAILABLE')) {
           throw new HarnessError('UNKNOWN_REMOTE_STATE', `Git push interrupted by timeout or transport failure (${err.message})`.slice(0, 2_000), 504, true, {
@@ -2639,7 +2731,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     action: string,
     args: string[],
     signal?: AbortSignal
-  ): Promise<{ result: RunnerResponse; credentialSource: 'app' | 'runner-environment' | 'principal-global-secret' }> {
+  ): Promise<{ result: RunnerResponse; credentialSource: RepositoryCredentialSource }> {
     const requirement = requiredGitHubPermissions(action);
     if (!requirement) throw new HarnessError('INVALID_INPUT', `unsupported github_action: ${action}`);
     const isWrite = requirement.write;
@@ -2654,6 +2746,15 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       throw new HarnessError('INVALID_INPUT', 'Invalid repository URL');
     }
     const repoStr = this.extractRepositoryName(repoUrl);
+    const auditFailure = (errorCode: string) => {
+      if (!isWrite) return;
+      this.auditWorkspaceOutcome(record.ownerId, `github_action.${action}`, record, {
+        repository: record.repositoryUrl,
+        action,
+        success: false,
+        errorCode
+      });
+    };
 
     let appToken: string | undefined;
     let appPermissions: Record<string, string> | undefined;
@@ -2686,7 +2787,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       : undefined;
 
     let token: string | undefined;
-    let credentialSource: 'app' | 'runner-environment' | 'principal-global-secret' = 'runner-environment';
+    let credentialSource: RepositoryCredentialSource = 'runner-environment';
+    let userCredential: RepositoryCredential | undefined;
+    let ownerNotReachable = false;
     // An infrastructure mint failure is not evidence that the App cannot perform the
     // action, so it propagates instead of quietly falling back.
     const propagateMintFailure = appAuthorizationError !== undefined
@@ -2694,31 +2797,47 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         && (appAuthorizationError.code === 'FORBIDDEN' || appAuthorizationError.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED'));
     if (appSatisfies) {
       token = appToken;
-      credentialSource = 'app';
+      credentialSource = 'github-app';
     } else if (!propagateMintFailure) {
-      // Resolved only when the App path cannot satisfy the action, so a usable App
-      // token never decrypts the principal's stored credential.
-      const fallback = resolveGitHubFallbackCredential({
-        config: this.config,
-        principalId: record.ownerId,
-        metadata: this.metadata
-      });
-      if (fallback) {
-        token = fallback.token;
-        credentialSource = fallback.source;
+      // Resolved only when the App path cannot satisfy the action, so a usable App token never
+      // decrypts the principal's stored credential. The user token lane comes first and is final;
+      // a revoked authorization refuses here, whatever fallback secret exists.
+      let lane: GitHubUserLane;
+      try {
+        lane = await this.userLane(record.ownerId, repoUrl);
+      } catch (error) {
+        auditFailure(error instanceof HarnessError ? error.code : 'UNAVAILABLE');
+        throw error;
+      }
+      if (lane.lane === 'user') {
+        token = lane.credential.token;
+        credentialSource = 'github-user';
+        userCredential = { token: lane.credential.token, source: 'github-user', userGeneration: lane.credential.generation };
+      } else if (lane.lane === 'owner-not-visible') {
+        ownerNotReachable = true;
+      } else {
+        const fallback = resolveGitHubFallbackCredential({
+          config: this.config,
+          principalId: record.ownerId,
+          metadata: this.metadata,
+          userAuthorization: this.userAuthorizationStatus(record.ownerId, repoUrl)
+        });
+        if (fallback) {
+          token = fallback.token;
+          credentialSource = fallback.source;
+        }
       }
     }
     if (!token) {
-      const auditFailure = (errorCode: string) => {
-        if (!isWrite) return;
-        this.auditWorkspaceOutcome(record.ownerId, `github_action.${action}`, record, {
-          repository: record.repositoryUrl,
-          action,
-          success: false,
-          errorCode
-        });
-      };
       if (propagateMintFailure) throw appAuthorizationError;
+      if (ownerNotReachable) {
+        auditFailure('REPOSITORY_OPERATION_NOT_AUTHORIZED');
+        throw githubUserOwnerNotReachable(this.repositoryOwner(repoUrl), {
+          operation: `github_action.${action}`,
+          repository: repoStr ?? undefined,
+          requiredCapability
+        });
+      }
       if (authorizationReason === 'permission_not_granted' || appToken !== undefined) {
         const requiredLabel = [`${permissionScope}:${isWrite ? 'write' : 'read'}`, ...alsoWrite.map((scope) => `${scope}:write`)].join(' and ');
         auditFailure('GITHUB_PERMISSION_MISSING');
@@ -2747,98 +2866,131 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       });
     }
 
-    const helperName = `chm-gh-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
-    try {
-      const result = await runDocker([
-        'run', '-i', '--rm', '--name', helperName,
-        '--label', 'cloud-harness.managed=true',
-        '--label', `cloud-harness.instance=${this.instanceId}`,
-        '--label', `cloud-harness.workspace=${record.id}`,
-        '--label', 'cloud-harness.role=gh-helper',
-        '--label', 'cloud-harness.ephemeral=true',
-        '--network', 'bridge',
-        '--user', '10001:10001',
-        '--read-only',
-        '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m',
-        '--cap-drop', 'ALL',
-        '--security-opt', 'no-new-privileges',
-        '--pids-limit', '64',
-        '--memory', '256m', '--memory-swap', '256m', '--cpus', '1',
-        '--ulimit', 'nofile=1024:1024',
-        // The helper holds a GitHub credential, so it never sees the agent-writable checkout: every
-        // action names its target through GH_REPO and explicit numbers or refs, not local Git state.
-        '--workdir', '/tmp',
-        '--env', 'HOME=/tmp/cloud-harness-home',
-        '--env', `GH_REPO=${new URL(record.repositoryUrl).pathname.replace(/^\//, '').replace(/\.git$/, '')}`,
-        '--entrypoint', '/opt/harness/gh-helper.sh',
-        this.config.executorImage,
-        action,
-        ...args
-      ], {
-        stdin: `${token}\n`,
-        timeoutMs: 60_000,
-        maxBytes: this.config.maxOutputBytes,
-        ...(signal ? { signal } : {})
-      });
-
-      if (result.exitCode === 0) {
-        return {
-          result: {
-            ok: true,
-            message: `GitHub ${action} successful`,
-            data: { output: result.stdout || result.stderr },
-            truncated: result.truncated
-          },
-          credentialSource
-        };
-      }
-
-      let classified = classifyGitHubFailure(result.stderr, result.stdout, action);
-      const optionalScope = requirement.optionalScope;
-      const optionalLevel = isWrite ? 'write' : 'read';
-      const optionalGranted = optionalScope !== undefined
-        && (appPermissions?.[optionalScope] === 'write' || appPermissions?.[optionalScope] === optionalLevel);
-      if (classified.code === 'GITHUB_PERMISSION_MISSING' && optionalScope && credentialSource === 'app' && !optionalGranted
-        && /Resource not accessible by integration/i.test(`${result.stderr}\n${result.stdout}`)) {
-        // The App token holds the action's own scope, so a refusal here means the number names a
-        // pull request the installation cannot reach: say which permission that is, not a generic hint.
-        const hint = `GitHub ${action} was refused: the number most likely names a pull request, and this GitHub App installation does not grant ${optionalScope}:${optionalLevel}, which an issue action on a pull request needs. Use the matching pr_* action (pr_view, pr_comment), or add the Pull requests permission to the GitHub App and approve the installation change.`;
-        classified = { ...classified, message: `${hint} Detail: ${result.stderr || result.stdout}`.trim().slice(0, 2_000) };
-      }
-      // Known errors stay authoritative; only the generic fallback gains an advisory diagnosis, and
-      // the deterministic code and retryability are returned unchanged either way.
-      const diagnosis = classified.code === 'GITHUB_ACTION_FAILED'
-        ? await this.failureIntelligence?.diagnose({
-          ownerId: record.ownerId,
-          workspaceId: record.id,
-          operation: `github ${action}`,
-          deterministicCode: classified.code,
-          exitCode: result.exitCode,
-          stderr: result.stderr,
-          stdout: result.stdout,
-          networkProfile: record.networkProfile,
-          secrets: () => ({ ...this.redactionSecrets(record.id), GITHUB_ACTION_TOKEN: token }),
+    // Every credential this action used, a user token before and after a refresh included. The helper's
+    // output is cleaned of all of them before anything below classifies, reports, or diagnoses it.
+    const usedTokens: string[] = [];
+    const runHelper = async (helperToken: string) => {
+      usedTokens.push(helperToken);
+      const helperName = `chm-gh-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
+      try {
+        const output = await runDocker([
+          'run', '-i', '--rm', '--name', helperName,
+          '--label', 'cloud-harness.managed=true',
+          '--label', `cloud-harness.instance=${this.instanceId}`,
+          '--label', `cloud-harness.workspace=${record.id}`,
+          '--label', 'cloud-harness.role=gh-helper',
+          '--label', 'cloud-harness.ephemeral=true',
+          '--network', 'bridge',
+          '--user', '10001:10001',
+          '--read-only',
+          '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m',
+          '--cap-drop', 'ALL',
+          '--security-opt', 'no-new-privileges',
+          '--pids-limit', '64',
+          '--memory', '256m', '--memory-swap', '256m', '--cpus', '1',
+          '--ulimit', 'nofile=1024:1024',
+          // The helper holds a GitHub credential, so it never sees the agent-writable checkout: every
+          // action names its target through GH_REPO and explicit numbers or refs, not local Git state.
+          '--workdir', '/tmp',
+          '--env', 'HOME=/tmp/cloud-harness-home',
+          '--env', `GH_REPO=${new URL(record.repositoryUrl).pathname.replace(/^\//, '').replace(/\.git$/, '')}`,
+          '--entrypoint', '/opt/harness/gh-helper.sh',
+          this.config.executorImage,
+          action,
+          ...args
+        ], {
+          stdin: `${helperToken}\n`,
+          timeoutMs: 60_000,
+          maxBytes: this.config.maxOutputBytes,
           ...(signal ? { signal } : {})
-        }).catch(() => undefined)
-        : undefined;
+        });
+        return { ...output, stdout: redactCredentials(output.stdout, usedTokens), stderr: redactCredentials(output.stderr, usedTokens) };
+      } finally {
+        await removeContainer(helperName);
+      }
+    };
+
+    let activeToken: string = token;
+    let result = await runHelper(activeToken);
+    if (result.exitCode !== 0 && userCredential !== undefined
+      && classifyGitHubFailure(result.stderr, result.stdout, action).code === 'AUTHENTICATION_FAILED') {
+      // GitHub rejected the user token itself (401): it expired, or a refresh rotated it. The user lane
+      // recovers with its own token and runs the action once more. It never switches to another credential.
+      try {
+        const recovered = await this.recoverUserCredential(record.ownerId, userCredential);
+        activeToken = recovered.token;
+      } catch (error) {
+        auditFailure(error instanceof HarnessError ? error.code : 'UNAVAILABLE');
+        throw error;
+      }
+      result = await runHelper(activeToken);
+    }
+
+    if (result.exitCode === 0) {
       return {
         result: {
-          ok: false,
-          message: classified.message,
-          data: { output: result.stdout || result.stderr, ...(diagnosis ? { diagnosis } : {}) },
-          error: {
-            code: classified.code,
-            message: classified.message,
-            retryable: classified.retryable,
-            ...(classified.retryAfterMs ? { retryAfterMs: classified.retryAfterMs } : {})
-          },
+          ok: true,
+          message: `GitHub ${action} successful`,
+          data: { output: result.stdout || result.stderr },
           truncated: result.truncated
         },
         credentialSource
       };
-    } finally {
-      await removeContainer(helperName);
     }
+
+    let classified = classifyGitHubFailure(result.stderr, result.stdout, action);
+    const optionalScope = requirement.optionalScope;
+    const optionalLevel = isWrite ? 'write' : 'read';
+    const optionalGranted = optionalScope !== undefined
+      && (appPermissions?.[optionalScope] === 'write' || appPermissions?.[optionalScope] === optionalLevel);
+    if (classified.code === 'GITHUB_PERMISSION_MISSING' && optionalScope && credentialSource === 'github-app' && !optionalGranted
+      && /Resource not accessible by integration/i.test(`${result.stderr}\n${result.stdout}`)) {
+      // The App token holds the action's own scope, so a refusal here means the number names a
+      // pull request the installation cannot reach: say which permission that is, not a generic hint.
+      const hint = `GitHub ${action} was refused: the number most likely names a pull request, and this GitHub App installation does not grant ${optionalScope}:${optionalLevel}, which an issue action on a pull request needs. Use the matching pr_* action (pr_view, pr_comment), or add the Pull requests permission to the GitHub App and approve the installation change.`;
+      classified = { ...classified, message: `${hint} Detail: ${result.stderr || result.stdout}`.trim().slice(0, 2_000) };
+    }
+    if (credentialSource === 'github-user') {
+      // The user lane's refusals stay about the user lane: SAML is a per-organization state with its
+      // own fix and revokes nothing, and a permission refusal never points at an operator secret.
+      if (isGitHubSamlRefusal(`${result.stderr}\n${result.stdout}`)) {
+        const saml = githubSamlRefusal(this.repositoryOwner(repoUrl));
+        classified = { code: saml.code, message: saml.message, retryable: saml.retryable };
+      } else if (classified.code === 'GITHUB_PERMISSION_MISSING') {
+        classified = { ...classified, message: githubUserPermissionRefusal(action, result.stderr || result.stdout) };
+      }
+    }
+    // Known errors stay authoritative; only the generic fallback gains an advisory diagnosis, and
+    // the deterministic code and retryability are returned unchanged either way.
+    const diagnosis = classified.code === 'GITHUB_ACTION_FAILED'
+      ? await this.failureIntelligence?.diagnose({
+        ownerId: record.ownerId,
+        workspaceId: record.id,
+        operation: `github ${action}`,
+        deterministicCode: classified.code,
+        exitCode: result.exitCode,
+        stderr: result.stderr,
+        stdout: result.stdout,
+        networkProfile: record.networkProfile,
+        secrets: () => ({ ...this.redactionSecrets(record.id), GITHUB_ACTION_TOKEN: activeToken }),
+        ...(signal ? { signal } : {})
+      }).catch(() => undefined)
+      : undefined;
+    return {
+      result: {
+        ok: false,
+        message: classified.message,
+        data: { output: result.stdout || result.stderr, ...(diagnosis ? { diagnosis } : {}) },
+        error: {
+          code: classified.code,
+          message: classified.message,
+          retryable: classified.retryable,
+          ...(classified.retryAfterMs ? { retryAfterMs: classified.retryAfterMs } : {})
+        },
+        truncated: result.truncated
+      },
+      credentialSource
+    };
   }
 
   private async runPackageOperation(ownerId: string, operation: PackageOperation, validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
@@ -3817,11 +3969,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           const existingOp = claim.existing;
           if (existingOp.status === 'UNKNOWN_REMOTE_STATE' && existingOp.localCommitSha) {
             const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
-            let token: string | undefined;
-            try {
-              token = (await this.repositoryToken(record.ownerId, repositoryUrl, 'write'))?.token;
-            } catch { /* ignore if token cannot be minted */ }
-            const remoteOid = await this.probeRemoteRefOid(record, branch, token, signal);
+            // The probe only reads, but it still runs under the credential policy: a refusal of the GitHub user
+            // lane (a revoked authorization, a connection this runner cannot use, a failed owner lookup) stops
+            // here, before any helper runs, instead of being reported as an unknown remote state. Only an App
+            // mint failure that no other credential covered is passed over: a public remote can still be probed.
+            const decision = await this.resolveRepositoryCredential(record.ownerId, repositoryUrl, 'write');
+            const remoteOid = await this.probeRemoteRefOid(record, branch, decision.credential, signal);
             if (remoteOid && remoteOid === existingOp.localCommitSha) {
               const successResponse: RunnerResponse = {
                 ok: true,
@@ -4501,48 +4654,191 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 }
 
   /**
-   * Resolve a Git credential for one workspace operation. GitHub App
-   * credentials are preferred; the operator-supplied fallback is used only when
-   * no App token can be minted, so existing App deployments are unaffected.
+   * Resolve a Git credential for one workspace operation, in this order:
+   * 1. a GitHub App installation token from the principal's own binding;
+   * 2. the principal's GitHub user token, when its authorization is `connected` and the repository's
+   *    owner has an installation the user can reach. Once chosen it is final: a refusal is never
+   *    retried with an App token or a fallback secret. A connected user whose owner is unreachable
+   *    gets no credential at all, so a public repository still clones anonymously;
+   * 3. the legacy fallback (the principal's own `GH_TOKEN`/`GITHUB_TOKEN` secret), only while the
+   *    principal has no user authorization or disconnected it. A `revoked` authorization never
+   *    reaches this step: it throws `GITHUB_USER_AUTHORIZATION_REQUIRED`.
    */
   private async repositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write'): Promise<RepositoryCredential | undefined> {
+    const decision = await this.resolveRepositoryCredential(ownerId, repositoryUrl, permission);
+    if (decision.credential) return decision.credential;
+    if (decision.mintError !== undefined) throw decision.mintError;
+    return undefined;
+  }
+
+  /**
+   * The credential decision behind `repositoryToken`, kept apart so a caller can tell the user lane's verdict
+   * from the App's. It throws only for the persisted user policy (a revoked authorization, a connection this
+   * runner cannot use, a failed owner lookup): those are policy and lifecycle answers, never to be passed over.
+   * They are given before any decision that carries no installation credential, so no App configuration, grant,
+   * mint or reconcile outcome can route around them. A failure of the App path itself (its mint, or the
+   * reconcile that precedes a write mint) is returned as `mintError` for the caller to raise or pass over; it
+   * never falls through to the fallback secret. `ownerUnreachable` is the user lane's terminal "nothing applies".
+   */
+  private async resolveRepositoryCredential(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write'): Promise<RepositoryCredentialDecision> {
+    // The fallback decides from the status as it is when it is asked, not as it was when resolution began: a
+    // Disconnect or a reconnect can land during the awaits below, and only the current status says whether the
+    // legacy lane is open.
     const fallback = (appMintError?: unknown): RepositoryCredential | undefined => {
       const resolved = resolveGitHubFallbackCredential({
         config: this.config,
         principalId: ownerId,
-        metadata: this.metadata
+        metadata: this.metadata,
+        userAuthorization: this.userAuthorizationStatus(ownerId, repositoryUrl)
       });
       return resolved ? { ...resolved, ...(appMintError === undefined ? {} : { appMintError }) } : undefined;
     };
+    const found = (credential: RepositoryCredential | undefined): RepositoryCredentialDecision => credential ? { credential } : {};
     if (!isMultiPrincipal(this.config.authMode)) {
-      const appToken = await mintRepositoryToken(this.config, repositoryUrl);
-      return appToken ? { token: appToken, source: 'github-app' } : fallback();
+      let appToken: string | undefined;
+      try {
+        appToken = await mintRepositoryToken(this.config, repositoryUrl);
+      } catch (error) {
+        return { mintError: error };
+      }
+      return found(appToken ? { token: appToken, source: 'github-app' } : fallback());
     }
-    if (!this.githubInstallations || !this.config.githubApp) return fallback();
 
-    let token: string | undefined;
     let mintError: unknown;
-    try {
-      token = await mintPrincipalRepositoryToken({
-        config: this.config, principalId: ownerId, repositoryUrl,
-        installations: this.githubInstallations, requiredPermission: permission
-      });
-    } catch (error) {
-      mintError = error;
+    if (this.githubInstallations && this.config.githubApp) {
+      let token: string | undefined;
+      try {
+        token = await mintPrincipalRepositoryToken({
+          config: this.config, principalId: ownerId, repositoryUrl,
+          installations: this.githubInstallations, requiredPermission: permission
+        });
+      } catch (error) {
+        mintError = error;
+      }
+      if (token) return { credential: { token, source: 'github-app' } };
+
+      if (permission === 'write' && this.githubBinding) {
+        try {
+          const refreshed = await this.refreshRepositoryToken(ownerId, repositoryUrl, 'write');
+          if (refreshed) return { credential: { token: refreshed, source: 'github-app' } };
+        } catch (error) {
+          // The App path failed on its own: that ends the resolution rather than falling through to the
+          // fallback secret, but never past the persisted user policy, which refuses first.
+          this.assertUserPolicyOpen(ownerId, repositoryUrl);
+          return { mintError: error };
+        }
+      }
     }
 
-    if (token) return { token, source: 'github-app' };
-
-    if (permission === 'write' && this.githubBinding) {
-      const refreshed = await this.refreshRepositoryToken(ownerId, repositoryUrl, 'write');
-      if (refreshed) return { token: refreshed, source: 'github-app' };
+    // No installation credential applies: no App is configured, nothing is granted, or the mint failed. The
+    // persisted user policy decides what stands in, so it is consulted whatever the App configuration is.
+    const lane = await this.userLane(ownerId, repositoryUrl);
+    if (lane.lane === 'user') {
+      return { credential: { token: lane.credential.token, source: 'github-user', userGeneration: lane.credential.generation } };
     }
+    // Connected, but no installation of this owner is reachable by the user: nothing applies, and the
+    // legacy lane is closed to a connected principal.
+    if (lane.lane === 'owner-not-visible') return { ownerUnreachable: true, ...(mintError === undefined ? {} : { mintError }) };
 
     const fallbackCredential = fallback(mintError);
-    if (fallbackCredential) return fallbackCredential;
+    if (fallbackCredential) return { credential: fallbackCredential };
+    return mintError === undefined ? {} : { mintError };
+  }
 
-    if (mintError) throw mintError;
-    return undefined;
+  /** The login of a repository's owner as the URL spells it. */
+  private repositoryOwner(repositoryUrl: URL): string {
+    return repositoryUrl.pathname.replace(/^\/+/, '').split('/')[0] ?? '';
+  }
+
+  /**
+   * The stored (non-secret) GitHub user authorization of a principal for one repository, read straight from
+   * the database. The credential policy rests on it, not on the lifecycle service, so it holds whether or not
+   * OAuth and the keyring are configured on this runner. It exists only for a GitHub repository in a
+   * multi-principal deployment: the token and its status are about GitHub, and single-owner mode has no
+   * principals to authorize.
+   */
+  private userAuthorizationRecord(ownerId: string, repositoryUrl: URL): GitHubUserAuthorizationRecord | undefined {
+    if (!isMultiPrincipal(this.config.authMode) || repositoryUrl.hostname.toLowerCase() !== 'github.com') return undefined;
+    return readGitHubUserAuthorization(this.store.database, ownerId);
+  }
+
+  /** The stored status of the principal's GitHub user authorization, which decides whether the legacy fallback lane is open. */
+  private userAuthorizationStatus(ownerId: string, repositoryUrl: URL): GitHubUserAuthorizationStatus | undefined {
+    return this.userAuthorizationRecord(ownerId, repositoryUrl)?.status;
+  }
+
+  /**
+   * The persisted user policy for one repository, read when it is asked. It throws for a revoked authorization
+   * (`GITHUB_USER_AUTHORIZATION_REQUIRED`) and for a connected one this runner cannot use (`UNAVAILABLE`):
+   * neither lets any other credential stand in. It returns the lifecycle service for a connected
+   * authorization, and `undefined` when the legacy lane is open: no authorization, or one the person
+   * disconnected.
+   */
+  private userPolicy(ownerId: string, repositoryUrl: URL): GitHubUserAuthorizationService | undefined {
+    const record = this.userAuthorizationRecord(ownerId, repositoryUrl);
+    if (record === undefined || record.status === 'disconnected') return undefined;
+    if (record.status === 'revoked') throw githubUserAuthorizationRequired(record.reasonCode);
+    const service = this.githubBinding?.userAuthorizations;
+    if (!service) throw githubUserAuthorizationUnavailable();
+    return service;
+  }
+
+  /** Throws when the persisted user policy refuses every credential, and returns when some lane may still apply. */
+  private assertUserPolicyOpen(ownerId: string, repositoryUrl: URL): void {
+    this.userPolicy(ownerId, repositoryUrl);
+  }
+
+  /**
+   * The user token lane for one repository, decided by the persisted policy (see `userPolicy`): `legacy`
+   * means the fallback lane is open, and `user` or `owner-not-visible` come from the lifecycle for a
+   * connected principal.
+   */
+  private async userLane(ownerId: string, repositoryUrl: URL): Promise<GitHubUserLane> {
+    const service = this.userPolicy(ownerId, repositoryUrl);
+    return service ? await service.credentialFor(ownerId, this.repositoryOwner(repositoryUrl)) : { lane: 'legacy' };
+  }
+
+  /**
+   * GitHub rejected (401) the user token of `credential`. The user lane answers with its own current
+   * token, refreshing first when that is what the rejection means, or throws
+   * `GITHUB_USER_AUTHORIZATION_REQUIRED` when GitHub refuses the refresh. A rejection of an older
+   * generation revokes nothing.
+   */
+  private async recoverUserCredential(ownerId: string, credential: RepositoryCredential): Promise<RepositoryCredential> {
+    const service = this.githubBinding?.userAuthorizations;
+    if (!service || credential.userGeneration === undefined) {
+      throw new HarnessError('INTERNAL_ERROR', 'The GitHub user credential lost its authorization context', 500, false);
+    }
+    const recovered = await service.recoverRejected(ownerId, credential.userGeneration);
+    return { token: recovered.token, source: 'github-user', userGeneration: recovered.generation };
+  }
+
+  /**
+   * Runs one authenticated Git transfer. With the user token, a 401 recovers the token once and runs
+   * the transfer once more, and a SAML refusal becomes the per-organization error that names SSO and
+   * revokes nothing. Every other failure is final: no other credential is tried.
+   */
+  private async runWithCredential<T>(
+    ownerId: string,
+    repositoryUrl: URL,
+    credential: RepositoryCredential | undefined,
+    attempt: (token: string | undefined, usedTokens: readonly string[]) => Promise<T>
+  ): Promise<T> {
+    if (credential?.source !== 'github-user') return await attempt(credential?.token, []);
+    const owner = this.repositoryOwner(repositoryUrl);
+    const refusal = (error: unknown): unknown => error instanceof HarnessError && isGitHubSamlRefusal(error.message) ? githubSamlRefusal(owner) : error;
+    try {
+      return await attempt(credential.token, []);
+    } catch (error) {
+      if (!(error instanceof HarnessError && isGitHubCredentialRejection(error.message))) throw refusal(error);
+      const recovered = await this.recoverUserCredential(ownerId, credential);
+      try {
+        // The refused token is passed along so the retry's output is cleaned of it too.
+        return await attempt(recovered.token, [credential.token]);
+      } catch (retryError) {
+        throw refusal(retryError);
+      }
+    }
   }
 
   private auditWorkspaceMutation(

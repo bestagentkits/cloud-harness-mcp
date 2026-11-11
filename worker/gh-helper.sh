@@ -53,6 +53,22 @@ print_if_ok() {
   printf '%s\n' "$out"
 }
 
+# A review thread is addressed by a global node ID, so a mutation by ID alone would act on a thread of any
+# repository the token can reach. The credential acts only on GH_REPO: the thread must belong to it.
+require_thread_in_repo() {
+  local thread_repo
+  if ! thread_repo=$(gh api graphql -f thread="$1" \
+    -f query='query($thread: ID!) { node(id: $thread) { ... on PullRequestReviewThread { pullRequest { repository { nameWithOwner } } } } }' \
+    --jq '.data.node.pullRequest.repository.nameWithOwner // empty' 2>/dev/null); then
+    echo "Review thread could not be verified against $GH_REPO" >&2
+    exit 1
+  fi
+  if [ "$(printf '%s' "$thread_repo" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$GH_REPO" | tr '[:upper:]' '[:lower:]')" ]; then
+    echo "Review thread does not belong to $GH_REPO" >&2
+    exit 1
+  fi
+}
+
 action="${1:-}"
 if [ -z "$action" ]; then
   echo "GitHub action required" >&2
@@ -194,6 +210,7 @@ case "$action" in
       echo "Review thread ID and reply body required" >&2
       exit 1
     fi
+    require_thread_in_repo "$thread_id"
     exec gh api graphql -f thread="$thread_id" -f body="$body" \
       -f query='mutation($thread: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $thread, body: $body }) { comment { id databaseId url } } }' \
       --jq '.data.addPullRequestReviewThreadReply.comment | { id, commentId: .databaseId, url }'
@@ -204,6 +221,7 @@ case "$action" in
       echo "Review thread ID required" >&2
       exit 1
     fi
+    require_thread_in_repo "$thread_id"
     if [ "$action" = "pr_review_thread_resolve" ]; then mutation="resolveReviewThread"; else mutation="unresolveReviewThread"; fi
     exec gh api graphql -f thread="$thread_id" \
       -f query="mutation(\$thread: ID!) { ${mutation}(input: { threadId: \$thread }) { thread { id isResolved } } }" \

@@ -153,7 +153,9 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    wasting execution effort on operations that current GitHub App grants, or an
    available operator fallback credential, do not authorize. `github_action`
    reports `GITHUB_PERMISSION_MISSING` when no configured credential can perform
-   the action.
+   the action. Members may authorize their own GitHub user in the dashboard; a
+   revoked authorization answers `GITHUB_USER_AUTHORIZATION_REQUIRED` instead of
+   falling back to another credential.
 4. **Inspect code with native tools.** Prefer `files_list`, `files_read`,
    `grep_search`, `symbols_search`, and `symbols_references` over shell commands
    for code navigation. Use byte-offset limits and cursors for large files.

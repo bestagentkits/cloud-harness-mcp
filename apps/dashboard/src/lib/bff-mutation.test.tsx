@@ -201,6 +201,12 @@ describe('mutationErrorText', () => {
     expect(mutationErrorText(new ForbiddenError(403, 'principal owner-7 may not write'))).toBe('The server refused this request. Reload the page and try again.');
   });
 
+  it('names where to reconnect for a missing GitHub user authorization, without echoing the server text', () => {
+    const message = mutationErrorText(new ForbiddenError(403, 'runner detail naming ghu_secret', 'github_user_authorization_required'));
+    expect(message).toBe('Your GitHub user authorization is required. Reconnect it in Integrations → GitHub → GitHub user.');
+    expect(message).not.toContain('ghu_secret');
+  });
+
   it('passes a rate-limit message through', () => {
     expect(mutationErrorText(new RateLimitedError(429, 'Slow down for 30 seconds.', undefined, 30))).toBe('Slow down for 30 seconds.');
   });

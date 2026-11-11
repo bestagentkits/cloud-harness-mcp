@@ -4,7 +4,9 @@ import type { RunnerResponse } from '@cloud-harness/contracts';
 const statuses: Record<string, number> = {
   AUTHENTICATION_FAILED: 401, FORBIDDEN: 404, INVALID_INPUT: 400, NOT_FOUND: 404,
   CONFLICT: 409, STALE_GENERATION: 409, EXPIRED: 410, LIMIT_EXCEEDED: 429, TIMEOUT: 504,
-  CANCELLED: 409, UNAVAILABLE: 503, DEPENDENCY_EGRESS_UNAVAILABLE: 503, INTERNAL_ERROR: 500
+  CANCELLED: 409, UNAVAILABLE: 503, DEPENDENCY_EGRESS_UNAVAILABLE: 503, INTERNAL_ERROR: 500,
+  // The principal's own GitHub connection is revoked: a 403 the dashboard shows as an action to take.
+  GITHUB_USER_AUTHORIZATION_REQUIRED: 403
 };
 
 const messages: Record<string, string> = {
@@ -20,6 +22,7 @@ const messages: Record<string, string> = {
   CANCELLED: 'The operation was cancelled.',
   UNAVAILABLE: 'The workspace service is temporarily unavailable.',
   DEPENDENCY_EGRESS_UNAVAILABLE: 'Dependency-access network egress is unavailable.',
+  GITHUB_USER_AUTHORIZATION_REQUIRED: 'Your GitHub user authorization is required. Reconnect it in Integrations → GitHub → GitHub user.',
   INTERNAL_ERROR: 'The workspace service could not complete the request.'
 };
 
@@ -225,7 +228,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'global_secret_list', 'global_secret_create', 'global_secret_rotate', 'global_secret_update', 'global_secret_delete', 'global_secret_bulk_apply',
   'audit_list',
   'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
-  'github_status', 'github_setup_begin', 'github_authorize_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
+  'github_status', 'github_setup_begin', 'github_authorize_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect', 'github_user_disconnect',
   'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject',
   'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove',
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
@@ -393,6 +396,11 @@ const list = (data: Record<string, unknown>, key: string, keys: readonly string[
 });
 
 const installationKeys = ['appId', 'installationId', 'accountId', 'accountLogin', 'status', 'generation', 'createdAt', 'updatedAt', 'checkedAt'] as const;
+/**
+ * The principal's own GitHub user authorization, as status only. This allowlist is the boundary a
+ * token, ciphertext, or generation would have to cross, and none of them is on it.
+ */
+const githubUserAuthorizationKeys = ['status', 'login', 'githubUserId', 'refreshExpiresAt', 'reasonCode'] as const;
 function githubStatus(data: Record<string, unknown>): Record<string, unknown> {
   const installations = Array.isArray(data.installations)
     ? data.installations.map((item) => pick(item, installationKeys))
@@ -403,6 +411,9 @@ function githubStatus(data: Record<string, unknown>): Record<string, unknown> {
     userAuthorizationConfigured: data.userAuthorizationConfigured === true,
     installation,
     installations,
+    userAuthorization: data.userAuthorization && typeof data.userAuthorization === 'object'
+      ? pick(data.userAuthorization, githubUserAuthorizationKeys)
+      : null,
     ...list(data, 'repositories', ['installationId', 'owner', 'repository', 'contents', 'status', 'generation', 'createdAt', 'updatedAt', 'checkedAt'])
   };
 }
@@ -527,7 +538,7 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'artifact_restore') return pick(data, ['artifactId', 'workspaceId', 'path', 'sizeBytes', 'sha256']);
   if (operation === 'github_setup_begin') return pick(data, ['url', 'state', 'expiresAt']);
   if (operation === 'github_authorize_begin') return pick(data, ['url', 'expiresAt']);
-  if (['github_status', 'github_setup_complete', 'github_reconcile', 'github_disconnect'].includes(operation)) return githubStatus(data);
+  if (['github_status', 'github_setup_complete', 'github_reconcile', 'github_disconnect', 'github_user_disconnect'].includes(operation)) return githubStatus(data);
   if (operation === 'privilege_grant_list') return list(data, 'grants', privilegeGrantKeys);
   if (operation === 'privilege_grant_approve' || operation === 'privilege_grant_reject') return { grant: pick(data.grant, privilegeGrantKeys) };
   if (operation === 'package_overview') return packageOverview(data);
@@ -689,7 +700,7 @@ const descriptiveOperations = new Set<string>([
 ]);
 
 const githubUnavailable = 'GitHub authorization is unavailable. Check the GitHub App credentials in the runner configuration, then retry.';
-const githubUserAuthorizationNotConfigured = 'GitHub user authorization is not configured. Check GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET in the runner configuration, and that the GitHub App Callback URL is this dashboard\'s /dashboard/integrations/github page.';
+const githubUserAuthorizationNotConfigured = 'GitHub user authorization is not configured. Check GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET (and SECRET_KEYRING, which stores a connected GitHub user\'s token) in the runner configuration, and that the GitHub App Callback URL is this dashboard\'s /dashboard/integrations/github page.';
 const githubUserAuthorizationRetry = 'GitHub could not complete the authorization right now. Retry in a moment.';
 /** Operations that run the GitHub user authorization; their UNAVAILABLE wording depends on `retryable`. */
 const githubUserAuthorizationOperations = new Set<string>(['github_authorize_begin', 'github_setup_complete']);
@@ -717,6 +728,7 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
     NOT_FOUND: 'GitHub installation not found.'
   },
   github_disconnect: { NOT_FOUND: 'GitHub installation not found.' },
+  github_user_disconnect: { UNAVAILABLE: 'The GitHub user connection is unavailable. Check the GitHub App credentials and SECRET_KEYRING in the runner configuration, then retry.' },
   package_plan_approve: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
   package_plan_reject: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
   package_rollback: { FORBIDDEN: packagesDisabled },

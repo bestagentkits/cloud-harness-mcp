@@ -71,6 +71,7 @@ On failure `error` may also carry actionable detail fields: `resumeAction`
 | `STALE_HEAD` | `git_commit` `expectedHeadOid` no longer matches HEAD; inspect the returned `currentHeadOid`/`expectedHeadOid`, rebuild on the new base, then retry. A diverged remote ref on `git_push` force-with-lease returns `CONFLICT` with current/expected remote OIDs instead. |
 | `RUNNER_RESTARTED` | An in-flight task was interrupted by a runner restart and its record is terminal. Re-list/read task state; start fresh work rather than resuming the old process. |
 | `AUTHORIZATION_REQUIRED` | `/mcp-gateway` only: the downstream OAuth server has no usable grant. Not retryable from a tool; ask the owner to Connect or Reauthorize that server in the dashboard, then retry. |
+| `GITHUB_USER_AUTHORIZATION_REQUIRED` | The person's connected GitHub user authorization was revoked (GitHub refused to renew it). Not retryable, and no secret or App token is tried instead. Stop and ask the person to reconnect it, or disconnect it, in Dashboard → Integrations → GitHub → GitHub user. |
 
 ## Idempotency keys
 

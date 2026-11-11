@@ -28,7 +28,13 @@ const SKILL_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;
 const GITHUB_AUTHORIZATION_COOKIE_PREFIX = '__Host-ch-github-authorization-';
 const GITHUB_AUTHORIZATION_COOKIE_ATTRIBUTES = 'Path=/; HttpOnly; Secure; SameSite=Lax';
 const githubState = z.string().regex(/^[A-Za-z0-9_-]{32,128}$/);
-const githubAuthorizeBody = z.object({ installationId: z.string().regex(/^[1-9][0-9]{0,19}$/), state: githubState.optional() }).strict();
+// `purpose` only starts a flow: `bind` (the default) names the installation to prove and bind, `user`
+// stores the signed-in person's own GitHub user token and names none. Completion carries no purpose:
+// the runner reads it from the state it stored, so the browser cannot choose it on return.
+const githubAuthorizeBody = z.union([
+  z.object({ purpose: z.literal('bind').optional(), installationId: z.string().regex(/^[1-9][0-9]{0,19}$/), state: githubState.optional() }).strict(),
+  z.object({ purpose: z.literal('user') }).strict()
+]);
 const githubCompleteBody = z.object({ state: githubState, code: z.string().regex(/^[A-Za-z0-9_.-]{1,256}$/) }).strict();
 const browserBinding = (nonce: string) => createHash('sha256').update(nonce).digest('base64url');
 const githubCookieName = (state: string) => `${GITHUB_AUTHORIZATION_COOKIE_PREFIX}${createHash('sha256').update(state).digest('base64url').slice(0, 22)}`;
@@ -228,10 +234,12 @@ export function registerDashboardControlRoutes(
     const body = githubAuthorizeBody.parse(request.body);
     const nonce = randomBytes(32).toString('base64url');
     response.locals.githubAuthorizationNonce = nonce;
+    const redirectUri = new URL(GITHUB_AUTHORIZATION_CALLBACK_PATH, request.header('origin')).toString();
+    if (body.purpose === 'user') return { purpose: 'user', redirectUri, browserBinding: browserBinding(nonce) };
     return {
       installationId: body.installationId,
       ...(body.state ? { setupState: body.state } : {}),
-      redirectUri: new URL(GITHUB_AUTHORIZATION_CALLBACK_PATH, request.header('origin')).toString(),
+      redirectUri,
       browserBinding: browserBinding(nonce)
     };
   }, {
@@ -257,6 +265,9 @@ export function registerDashboardControlRoutes(
   router.post('/api/v1/github/reconcile', endpoint('github_reconcile', (request) => (request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {})));
   router.delete('/api/v1/github/installations/:installationId', endpoint('github_disconnect', (request) => ({ installationId: request.params.installationId })));
   router.post('/api/v1/github/disconnect', endpoint('github_disconnect', (request) => request.body as Record<string, unknown>));
+  // The signed-in person's own GitHub user connection. It names nothing, and the runner operates on
+  // the verified principal alone, so no body is read.
+  router.post('/api/v1/github/user/disconnect', endpoint('github_user_disconnect', () => ({})));
   router.get('/api/v1/privilege-grants', endpoint('privilege_grant_list', (request) => ({ ...(request.query.workspaceId ? { workspaceId: String(request.query.workspaceId) } : {}) })));
   router.post('/api/v1/privilege-grants/:grantId/approve', endpoint('privilege_grant_approve', (request) => ({ grantId: request.params.grantId })));
   router.post('/api/v1/privilege-grants/:grantId/reject', endpoint('privilege_grant_reject', (request) => ({ grantId: request.params.grantId })));

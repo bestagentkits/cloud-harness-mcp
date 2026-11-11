@@ -26,6 +26,10 @@ export const ErrorCodeSchema = z.enum([
   'GITHUB_ACTION_FAILED',
   // A repository with the requested name already exists; never reported as a successful create.
   'GITHUB_REPOSITORY_EXISTS',
+  // The principal's GitHub user authorization was revoked: GitHub refused to renew it. Not retryable
+  // and never resolved by another credential; the person reconnects or disconnects it on the
+  // Dashboard (Integrations → GitHub → GitHub user).
+  'GITHUB_USER_AUTHORIZATION_REQUIRED',
   'UNKNOWN_REMOTE_STATE',
   'STALE_HEAD',
   'STALE_GENERATION',
