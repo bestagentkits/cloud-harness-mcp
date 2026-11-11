@@ -1,3 +1,18 @@
+# [2.0.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v1.0.1...v2.0.0) (2026-11-11)
+
+
+### Features
+
+* **github:** let organization members use the GitHub App through their own user authorization ([#658](https://github.com/bestagentkits/cloud-harness-mcp/issues/658)) ([bbb1c78](https://github.com/bestagentkits/cloud-harness-mcp/commit/bbb1c783a8f4de1bac34e0be030ea73c4d5b264a)), closes [#642](https://github.com/bestagentkits/cloud-harness-mcp/issues/642) [#642](https://github.com/bestagentkits/cloud-harness-mcp/issues/642)
+
+
+### BREAKING CHANGES
+
+* **github:** credentialSource values are one union across clone
+failures, github_action results and audit details: 'app' is now
+'github-app', and 'github-user' is new. The runner's metadata ledger
+moves to v8; roll back with metadata:down:v7 before metadata:down:v6.
+
 ## [1.0.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v1.0.0...v1.0.1) (2026-11-09)
 
 
