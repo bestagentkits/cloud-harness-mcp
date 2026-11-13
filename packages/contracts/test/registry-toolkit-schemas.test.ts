@@ -176,6 +176,18 @@ describe('workspace_open skill set and override parameters', () => {
     }))).toThrow(/duplicate skill set/i);
   });
 
+  it('accepts a toolkit content digest as an override identity and rejects other values', () => {
+    const digest = 'a'.repeat(64);
+    expect(workspaceOpen.parse(openParams({ skillOverrides: { deploy: digest }, toolkits: [{ kind: 'preset', id: 'mattpocock/skills' }] })).skillOverrides)
+      .toEqual({ deploy: digest });
+    expect(() => workspaceOpen.parse(openParams({ skillSets: [{ skillSetId: SET_ID, expectedGeneration: 1 }], skillOverrides: { deploy: 'sha256:abc' } }))).toThrow();
+    expect(() => workspaceOpen.parse(openParams({ skillSets: [{ skillSetId: SET_ID, expectedGeneration: 1 }], skillOverrides: { deploy: 'A'.repeat(64) } }))).toThrow();
+  });
+
+  it('requires a skill set or toolkit selection for overrides', () => {
+    expect(() => workspaceOpen.parse(openParams({ skillOverrides: { deploy: revisionId(1) } }))).toThrow(/skill set or toolkit/i);
+  });
+
   it('rejects a malformed skill set entry rather than silently dropping it', () => {
     expect(() => workspaceOpen.parse(openParams({
       skillSets: [{ skillSetId: SET_ID }]

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
-import { chmod, chown, cp, mkdir, readFile, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { chmod, chown, cp, lstat, mkdir, readFile, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
@@ -68,7 +68,7 @@ import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { ToolkitCacheManager } from './toolkit-cache-manager.js';
 import { ToolkitService } from './toolkit-service.js';
-import { resolveWorkspaceSkills, type SkillCandidate } from './skill-resolver.js';
+import { assertSkillSetGenerations, resolveWorkspaceSkills, SkillSetGenerationError, type SkillCandidate } from './skill-resolver.js';
 import { NetworkProfileManager } from './network-profile-manager.js';
 import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
@@ -90,7 +90,7 @@ import {
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
 import { DurableSessionStore } from './durable-session-store.js';
-import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
+import { computeFullTreeDigest, computeFullTreeDigestAsync } from './adapters/mattpocock-adapter.js';
 
 /** What credential resolution decided; see `resolveRepositoryCredential`. */
 interface RepositoryCredentialDecision {
@@ -171,12 +171,69 @@ export function builtinSkillsMountArgs(builtinSkillsRoot: string | undefined): s
   return ['--volume', `${builtinSkillsRoot}:/opt/cloud-harness/skills:ro`];
 }
 
+/** One library skill a Skill Set launch projects, read from the revision the set pinned. */
+interface SkillSetMember {
+  name: string;
+  skillSourceId: string;
+  revisionId: string;
+  sourceDir: string;
+}
+
+interface SkillSetPlan {
+  members: SkillSetMember[];
+  sets: Array<{ skillSetId: string; skillSetGeneration: number; snapshotSha256: string }>;
+}
+
+const holdsSkillDocument = (dir: string): boolean => {
+  try {
+    return lstatSync(join(dir, 'SKILL.md')).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * A forked skill keeps its original bundle under a new slug, so the slug names no directory in it.
+ * The bundle is still unambiguous when it holds exactly one `skills/<dir>` that carries a SKILL.md.
+ */
+function soleBundledSkillDir(bundle: string): string | undefined {
+  try {
+    const root = join(bundle, 'skills');
+    const dirs = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && holdsSkillDocument(join(root, entry.name)));
+    return dirs.length === 1 ? join(root, dirs[0]!.name) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The executor reads the owner mount as UID 10001, but a cached bundle is written owner-only. Directories
+ * become 0755 and files 0644 (0755 when the source had an execute bit); symbolic links are never followed.
+ */
+async function normalizeProjectedModes(path: string): Promise<void> {
+  const info = await lstat(path);
+  if (info.isSymbolicLink()) return;
+  if (info.isDirectory()) {
+    await chmod(path, 0o755);
+    for (const entry of await readdir(path)) await normalizeProjectedModes(join(path, entry));
+  } else if (info.isFile()) {
+    await chmod(path, (info.mode & 0o111) !== 0 ? 0o755 : 0o644);
+  }
+}
+
+const OWNER_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+const BUNDLE_SHA256 = /^[0-9a-f]{64}$/;
+/** Maps each projected library skill to its revision; the worker reads it beside the skill directories. */
+const OWNER_SKILL_PROVENANCE_FILE = '.cloud-harness-skill-revisions.json';
 export function computeWorkspaceOpenFingerprint(input: {
   repositoryUrl: string | URL;
   ref?: string | undefined;
   environmentId?: string | undefined;
   networkProfile?: string | undefined;
   toolkits?: ToolkitSelection[] | undefined;
+  skillSets?: Array<{ skillSetId: string; expectedGeneration: number }> | undefined;
+  skillOverrides?: Record<string, string> | undefined;
   allowToolkitWorkspaceChanges?: boolean | undefined;
   fetchDepth?: number | undefined;
   shallowSince?: string | undefined;
@@ -192,6 +249,15 @@ export function computeWorkspaceOpenFingerprint(input: {
     networkProfile: input.networkProfile ?? null,
     toolkits: canonicalToolkits,
     allowToolkitWorkspaceChanges: input.allowToolkitWorkspaceChanges ?? false,
+    // Skill selections join only when made, so replays of requests without them keep matching, while a
+    // replay naming a different set, generation, or override is a different request.
+    ...(input.skillSets && input.skillSets.length > 0 ? {
+      skillSets: [...input.skillSets].sort((a, b) => a.skillSetId.localeCompare(b.skillSetId))
+        .map((entry) => ({ skillSetId: entry.skillSetId, expectedGeneration: entry.expectedGeneration }))
+    } : {}),
+    ...(input.skillOverrides && Object.keys(input.skillOverrides).length > 0
+      ? { skillOverrides: Object.entries(input.skillOverrides).sort(([a], [b]) => a.localeCompare(b)) }
+      : {}),
     // History options join the fingerprint only when set, so replays of earlier requests keep matching.
     ...(input.fetchDepth !== undefined ? { fetchDepth: input.fetchDepth } : {}),
     ...(input.shallowSince !== undefined ? { shallowSince: input.shallowSince } : {})
@@ -1197,6 +1263,9 @@ export class WorkspaceService {
       }
       return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(prior), truncated: false };
     }
+    // Skill sets are resolved before a record, clone, or container exists, so an unknown set, a stale
+    // generation, or an unusable member refuses the launch instead of dropping the selection.
+    const skillSetPlan = this.planSkillSets(ownerId, parsed.skillSets);
     await this.ensureCapacity(ownerId);
     const url = await validateRepositoryUrl(parsed.repositoryUrl, this.config.allowedGitHosts);
     if (parsed.ref?.startsWith('-')) throw new HarnessError('INVALID_INPUT', 'ref cannot start with a dash');
@@ -1279,7 +1348,7 @@ export class WorkspaceService {
       const ownerBundles = bundlePaths.filter(b => b.scope === 'owner');
       const workspaceBundles = bundlePaths.filter(b => b.scope === 'workspace');
 
-      await this.composeOwnerToolkitProjection(record, ownerBundles, parsed.skillOverrides);
+      await this.composeOwnerToolkitProjection(record, ownerBundles, skillSetPlan, parsed.skillOverrides);
 
       const repositoryPath = await this.clone(record, url, parsed.ref, cloneHistorySpec(parsed.fetchDepth, parsed.shallowSince));
       if (workspaceBundles.length > 0) {
@@ -1330,18 +1399,97 @@ export class WorkspaceService {
     }
   }
 
+  /**
+   * Resolves the selected Skill Sets for this owner into the library skills a launch projects.
+   *
+   * Every refusal is a named error: an unknown set, a generation that moved since the operator saw it,
+   * a member whose source is gone, not enabled, or not an owner-tier skill, and a pinned revision whose
+   * bundle is missing from the cache. Each member is read from the revision the set pinned, never from
+   * the skill's current revision.
+   */
+  private planSkillSets(ownerId: string, selections: ReadonlyArray<{ skillSetId: string; expectedGeneration: number }>): SkillSetPlan {
+    if (selections.length === 0) return { members: [], sets: [] };
+    const sets = selections.map((selection) => {
+      const set = this.store.getSkillSet(ownerId, selection.skillSetId);
+      if (!set) throw new HarnessError('NOT_FOUND', `Skill set ${selection.skillSetId} was not found`, 404, false);
+      return set;
+    });
+    try {
+      assertSkillSetGenerations(selections, sets.map((set) => ({ skillSetId: set.id, generation: set.generation })));
+    } catch (error) {
+      if (error instanceof SkillSetGenerationError) throw new HarnessError('STALE_GENERATION', error.message, 409, false);
+      throw error;
+    }
+
+    const members: SkillSetMember[] = [];
+    for (const set of sets) {
+      for (const item of set.items) {
+        const source = this.store.getSkillSource(ownerId, item.skillSourceId);
+        if (!source) throw new HarnessError('NOT_FOUND', `Skill ${item.name} in skill set ${set.id} no longer exists`, 404, false);
+        if (source.state !== 'enabled') {
+          throw new HarnessError('CONFLICT', `Skill ${item.name} in skill set ${set.id} is ${source.state}; enable it or remove it from the set`, 409, false);
+        }
+        // A registry skill is installed into the owner tier; built-in, workspace and repository sources are
+        // not library skills and are never projected from a set.
+        if (source.kind !== 'owner' && source.kind !== 'registry') {
+          throw new HarnessError('INVALID_INPUT', `Skill ${item.name} in skill set ${set.id} is a ${source.kind} skill and cannot be launched from a set`, 400, false);
+        }
+        if (!OWNER_SKILL_NAME.test(item.name) || !OWNER_SKILL_NAME.test(source.slug)) {
+          throw new HarnessError('INVALID_INPUT', `Skill ${item.name} in skill set ${set.id} has a name that cannot be projected`, 400, false);
+        }
+        const revision = this.store.getSkillRevision(ownerId, item.skillSourceId, item.revisionId);
+        if (!revision) throw new HarnessError('NOT_FOUND', `Revision ${item.revisionId} of skill ${item.name} in skill set ${set.id} was not found`, 404, false);
+        if (!BUNDLE_SHA256.test(revision.bundleSha256)) {
+          throw new HarnessError('NOT_FOUND', `Revision ${item.revisionId} of skill ${item.name} has no bundle`, 404, false);
+        }
+        const bundle = this.toolkitCacheManager.bundlePath(ownerId, revision.bundleSha256);
+        // The layouts a library bundle may use, as the Skills extension reads them.
+        const sourceDir = [join(bundle, 'skills', source.slug), join(bundle, source.slug), bundle]
+          .find(holdsSkillDocument) ?? soleBundledSkillDir(bundle);
+        if (!sourceDir) {
+          throw new HarnessError('NOT_FOUND', `Bundle of revision ${item.revisionId} for skill ${item.name} is missing from the skill cache; re-upload the skill`, 404, false);
+        }
+        members.push({ name: item.name, skillSourceId: item.skillSourceId, revisionId: item.revisionId, sourceDir });
+      }
+    }
+    return {
+      members,
+      sets: sets.map((set) => ({
+        skillSetId: set.id,
+        skillSetGeneration: set.generation,
+        snapshotSha256: createHash('sha256').update(JSON.stringify(set.items.map((item) => [item.name, item.skillSourceId, item.revisionId]))).digest('hex')
+      }))
+    };
+  }
   private async composeOwnerToolkitProjection(
     record: WorkspaceRecord,
     ownerBundlePaths: Array<{ instanceId: string; path: string }>,
+    skillSetPlan: SkillSetPlan,
     overrides?: Record<string, string>
   ): Promise<void> {
     const ownerSkillsPath = join(record.workspacePath, 'toolkit-projection', 'owner-skills');
     await mkdir(ownerSkillsPath, { recursive: true, mode: 0o755 });
 
     // The same-tier collision rule has one owner, the resolver, so the launch path and the preview
-    // path cannot drift on what counts as a conflict or on how an override settles one.
+    // path cannot drift on what counts as a conflict or on how an override settles one. A library
+    // skill is identified by its `skrev_` revision id and a toolkit skill by its content digest, and
+    // an override pins whichever of the two it names.
     const candidates: SkillCandidate[] = [];
     const sources = new Map<string, string>();
+    const library = new Map<string, SkillSetMember>();
+
+    for (const member of skillSetPlan.members) {
+      const digest = (await computeFullTreeDigestAsync(member.sourceDir)).bundleSha256;
+      candidates.push({
+        name: member.name,
+        tier: 'owner',
+        sourceId: member.skillSourceId,
+        revisionId: member.revisionId,
+        contentSha256: digest
+      });
+      sources.set(`${member.name}:${digest}`, member.sourceDir);
+      library.set(`${member.name}:${member.revisionId}`, member);
+    }
 
     for (const item of ownerBundlePaths) {
       const skillsDir = join(item.path, 'skills');
@@ -1349,12 +1497,12 @@ export class WorkspaceService {
 
       const entries = await readdir(skillsDir, { withFileTypes: true });
       for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
+        if (!entry.isDirectory() || !OWNER_SKILL_NAME.test(entry.name)) continue;
         const srcSkill = join(skillsDir, entry.name);
         const skillMd = join(srcSkill, 'SKILL.md');
         if (!existsSync(skillMd)) continue;
 
-        const digest = computeFullTreeDigest(srcSkill).bundleSha256;
+        const digest = (await computeFullTreeDigestAsync(srcSkill)).bundleSha256;
         candidates.push({
           name: entry.name,
           tier: 'owner',
@@ -1370,16 +1518,46 @@ export class WorkspaceService {
     const resolution = resolveWorkspaceSkills({ candidates, overrides });
     const conflict = resolution.conflicts[0];
     if (conflict) {
-      throw new HarnessError('CONFLICT', `Same-tier toolkit skill collision: ${conflict.name} is defined with conflicting content in multiple toolkits`, 409, false);
+      throw new HarnessError(
+        'CONFLICT',
+        `Same-tier skill collision: ${conflict.name} is defined with conflicting content by more than one skill set or toolkit; pin one with skillOverrides { "${conflict.name}": <identity> } using one of: ${conflict.candidates.map((candidate) => `${candidate.tier}:${candidate.revisionId}`).join(', ')} (a skrev_ revision id for a skill set member, or the content digest for a toolkit skill)`,
+        409,
+        false
+      );
     }
 
+    const provenance: Record<string, { revisionId: string; sourceId: string }> = {};
+    const assignments: Array<{ name: string; skillSourceId: string; revisionId: string; tier: 'owner'; pinned: boolean }> = [];
     for (const skill of resolution.resolved) {
       const srcSkill = sources.get(`${skill.name}:${skill.contentSha256}`);
       if (!srcSkill) continue;
       const destSkill = join(ownerSkillsPath, skill.name);
       if (!existsSync(destSkill)) {
         await cp(srcSkill, destSkill, { recursive: true });
+        await normalizeProjectedModes(destSkill);
       }
+      const member = library.get(`${skill.name}:${skill.revisionId}`);
+      if (member) {
+        provenance[skill.name] = { revisionId: member.revisionId, sourceId: member.skillSourceId };
+        assignments.push({ name: skill.name, skillSourceId: member.skillSourceId, revisionId: member.revisionId, tier: 'owner', pinned: skill.pinned });
+      }
+    }
+
+    if (skillSetPlan.sets.length > 0) {
+      // The executor lists the owner mount by directory, so this file is invisible as a skill; the
+      // worker reads it to report which library revision each projected skill is.
+      try {
+        await writeFile(join(ownerSkillsPath, OWNER_SKILL_PROVENANCE_FILE), `${JSON.stringify(provenance)}\n`, { mode: 0o644 });
+      } catch {
+        // The raw filesystem error names host paths, and a failed open persists its message.
+        throw new HarnessError('UNAVAILABLE', 'The skill revision manifest could not be written for this workspace', 503, true);
+      }
+      this.store.recordWorkspaceSkillSelection({
+        ownerId: record.ownerId,
+        workspaceId: record.id,
+        sets: skillSetPlan.sets,
+        assignments
+      });
     }
   }
 

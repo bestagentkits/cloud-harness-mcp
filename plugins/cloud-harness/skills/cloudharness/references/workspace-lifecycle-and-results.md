@@ -124,6 +124,7 @@ Clone an approved repository and start its bounded executor.
   `owner`-scoped, need an operator-pinned registry signing key plus a stored
   licence token, and report `verification: 'registry-signed'` with a
   `warnings` entry when a pre-release channel was mounted.
+  `skillSets` projects library skills: [Skill sets](skill-sets.md).
 - Side effects: clone, state record, workspace directory, executor creation;
   may contact the approved repository host through the trusted clone broker.
 - Recovery: after a lost response, retry with the same key. A different key is

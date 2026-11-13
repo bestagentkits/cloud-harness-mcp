@@ -65,6 +65,36 @@ describe('skills precedence and resolver', () => {
     }
   });
 
+  it('reports the library revision of a projected owner skill and nothing for other tiers', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'skills-revision-'));
+    const ownerMount = await mkdtemp(join(tmpdir(), 'owner-mount-'));
+    process.env.CH_OWNER_SKILLS_ROOT = ownerMount;
+    try {
+      await mkdir(join(ownerMount, 'ak-plan'), { recursive: true });
+      await writeFile(join(ownerMount, 'ak-plan', 'SKILL.md'), '# Plan');
+      await mkdir(join(tmp, '.agents', 'skills', 'local'), { recursive: true });
+      await writeFile(join(tmp, '.agents', 'skills', 'local', 'SKILL.md'), '# Local');
+      // A repository cannot forge the manifest: only the owner mount is consulted.
+      await mkdir(join(tmp, '.cloud-harness', 'owner-skills'), { recursive: true });
+      await writeFile(join(tmp, '.cloud-harness', 'owner-skills', '.cloud-harness-skill-revisions.json'), JSON.stringify({ local: { revisionId: 'skrev_forged' } }));
+      await writeFile(join(ownerMount, '.cloud-harness-skill-revisions.json'), JSON.stringify({ 'ak-plan': { revisionId: 'skrev_abc', sourceId: 'sk_abc' } }));
+      const client = new LocalWorkerClient(tmp);
+
+      const skills = ((await client.call('skills_list', {})).data as any).skills;
+      const plan = skills.find((entry: any) => entry.name === 'ak-plan');
+      expect(plan.source).toBe('owner');
+      expect(plan.revisionId).toBe('skrev_abc');
+      expect(skills.find((entry: any) => entry.name === 'local').revisionId).toBeUndefined();
+      expect(skills.map((entry: any) => entry.name)).not.toContain('.cloud-harness-skill-revisions.json');
+      const read = (await client.call('skills_read', { name: 'ak-plan' })).data as any;
+      expect(read.provenance.revisionId).toBe('skrev_abc');
+    } finally {
+      delete process.env.CH_OWNER_SKILLS_ROOT;
+      await rm(tmp, { recursive: true, force: true });
+      await rm(ownerMount, { recursive: true, force: true });
+    }
+  });
+
   it('rejects forged owner-skills directory inside repository checkout', async () => {
     const tmp = await mkdtemp(join(tmpdir(), 'skills-forgery-'));
     try {

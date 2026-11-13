@@ -139,7 +139,7 @@ server redirects stay.
 | D2 | `file-conflict-dialog` | 409 from file PUT/PATCH/DELETE (`openFileConflict`) | `workspace-files` | P4 | Keeps unsaved editor text; Review latest, Copy changes | no | Fix R11 (stacked `once` listeners) |
 | D3 | `api-key-reveal-dialog` | after `POST /api-keys` (`createApiKeyRevealController`) | `api-keys` | P4 | Acknowledge or Esc only; key cleared on dismiss, any link click, `pagehide`, copy failure | **one-time reveal** | Key lives in component state only: not in the query cache, not logged. E2E proves each clear path. |
 | D4 | `bulk-import-dialog` | `.open-bulk-import`, `#open-global-bulk-import` | `secrets` | P4 | Every close clears textarea, preview and status | write-only `.env` text | No draft, no dirty prompt |
-| D5 | `open-workspace-dialog` (launch workspace) | `#open-workspace-btn` opens it with `showModal`; skill-set list and preview are wired (`/skill-sets`, `POST /skill-sets/preview`) | `workspaces` | P4 | **Submit and Cancel have no handler (R4)** | no | Implement on `POST /workspaces` (`idempotencyKey` required, kept across retries); keep the skill-set preview |
+| D5 | `open-workspace-dialog` (launch workspace) | `#open-workspace-btn` opens it with `showModal`; skill-set list and preview are wired (`/skill-sets`, `POST /skill-sets/preview`) | `workspaces` | P4 | Submit and Cancel are wired (#638): `POST /workspaces` with the skill-set selection, one `idempotencyKey` per intent kept across retries, submit ignored while in flight | no | Done on the legacy shell; the React wizard remains the target |
 | D6 | `model-credential-dialog` | add credential, rotate (`bindModelCredentialDialog`) | `models` | P4 | Close resets the form and clears the key | provider key write-only (`type=password`) | Clear the key from form state before the request |
 | D7 | `model-profile-dialog` (wizard, `createModelWizard`) | add, edit, duplicate, review price | `models` | P4 | Close blocked while busy; close aborts combobox and clears the key | key may be entered in the wizard | Restorable wizard step (non-secret fields only); keep combobox ARIA semantics |
 | D8 | `knowledge-conflict-dialog` | 409 on save (`openKnowledgeConflict`) | `knowledge` | P3 | Base, server and "your changes" panes | no | "Load current server version" must confirm before discarding the draft (R10) |
@@ -419,8 +419,6 @@ Terminal bodies are strict, so they cannot override path ids.
 
 Grep found no legacy caller for:
 
-- `POST /workspaces` (the launch dialog opens and previews skill sets, but
-  submit and cancel are not wired: R4)
 - `GET /workspaces/:id/tasks/:taskId`
 - `POST /workspaces/:id/hooks/{activate,deactivate}`
 - `GET /toolkits`, `POST /toolkits/preview`
@@ -647,7 +645,7 @@ issue instead of widening an epic PR.
 
 | ID | Severity | Defect | Owner | React handling | Separate legacy issue? |
 | --- | --- | --- | --- | --- | --- |
-| R4 | high | Launch-workspace dialog: it opens and previews skill sets, but submit and cancel have no handler; the form has no `method`/`action`, so a submit may become a GET with the fields in the query string | `index.html` `open-workspace-form`, launch wiring in `dashboard.js` | implement on `POST /workspaces` (idem) | yes: fix or hide the button, after a browser check |
+| R4 | high | Launch-workspace dialog: it opens and previews skill sets, but submit and cancel have no handler; the form has no `method`/`action`, so a submit may become a GET with the fields in the query string | `index.html` `open-workspace-form`, launch wiring in `dashboard.js` | implement on `POST /workspaces` (idem) | fixed in the legacy shell (#638): submit and cancel are wired |
 | R1 | medium-high | Workspace filter navigates to `/dashboard?q=` (Overview) and ignores `q`/`status`; `#clear-filters` does the same | `#workspace-filter` submit, `loadIndex` | filters are search params of `/dashboard/workspaces` | yes |
 | R5 | medium | Idempotency key regenerated per submit (agent message, session) | agent message and open-session handlers | key per intent, kept across retries | optional |
 | R7 | medium | Skill import poller not stopped on navigation; unhandled rejections | `createImportPollingController` | query-owned poller | optional |
