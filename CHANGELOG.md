@@ -1,3 +1,10 @@
+# [2.1.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v2.0.1...v2.1.0) (2026-11-15)
+
+
+### Features
+
+* **dashboard:** show server version and release changelog in the sidebar ([#662](https://github.com/bestagentkits/cloud-harness-mcp/issues/662)) ([7e0a1f1](https://github.com/bestagentkits/cloud-harness-mcp/commit/7e0a1f1a5ed5b116006e9c186cf2e881c4915074)), closes [#661](https://github.com/bestagentkits/cloud-harness-mcp/issues/661) [#661](https://github.com/bestagentkits/cloud-harness-mcp/issues/661)
+
 ## [2.0.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v2.0.0...v2.0.1) (2026-11-15)
 
 
