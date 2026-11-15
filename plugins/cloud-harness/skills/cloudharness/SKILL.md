@@ -117,7 +117,7 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    when no GitHub App is configured. Treat such a workspace as credential-bearing
    and never echo that value.
    To mount agent skills or toolkits (such as `mattpocock/skills`, `obra/superpowers`,
-   or custom Git repos), pass `toolkits: [{ kind: 'preset', id: '...' }]` during `workspace_open`.
+   or custom Git repos), pass `toolkits: [{ kind: 'preset', id: '...' }]` (`skillSets`: [library skills](references/skill-sets.md)) during `workspace_open`.
    Licensed AgentKit kits such as the engineering kit use
    `toolkits: [{ kind: 'agentkit', kitId: 'engineer', channel: 'stable' }]`; they
    require operator-pinned registry key material and a stored licence token, are

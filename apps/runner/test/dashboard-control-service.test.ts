@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HarnessError, ModelProfileValidateResultSchema,
   type AgentModelProfileMetadata, type MetadataRunnerRequest, type ModelConnectionVerifyResult, type ModelProfileValidateResult, type RunnerConfig
@@ -20,6 +20,7 @@ import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
 import { ToolkitCacheManager } from '../src/toolkit-cache-manager.js';
 import type { WorkspaceService } from '../src/workspace-service.js';
+import { makeZip } from './skill-zip-fixture.js';
 const roots: string[] = [];
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -214,6 +215,91 @@ describe('skill revisions', () => {
     await expect(controls.execute(request('skill_revision_diff', {
       skillId: created.sourceId, fromRevisionId: created.revisionId, toRevisionId: created.revisionId
     }))).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
+});
+
+describe('skill library create failures', () => {
+  const skillDocument = (name: string) => `---\nname: ${name}\ndescription: ${name} skill\n---\n# ${name}\n`;
+  const bundleCount = (root: string, ownerId: string) => {
+    try { return readdirSync(join(root, 'toolkits', ownerId)).length; } catch { return 0; }
+  };
+  const storageFailure = () => Object.assign(
+    new Error("EACCES: permission denied, mkdir '/var/lib/cloud-harness/toolkits/staging/x'"),
+    { code: 'EACCES', syscall: 'mkdir', path: '/var/lib/cloud-harness/toolkits/staging/x' }
+  );
+
+  it('reports an archive entry whose slug exists as a conflict, publishes nothing for it, and imports the rest', async () => {
+    const { controls, principals, root } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const first = makeZip([{ name: 'tdd/SKILL.md', data: skillDocument('tdd') }]).toString('base64');
+    await controls.execute(request('skill_archive_import', { archiveBase64: first, expectedGeneration: 0 }));
+    const bundlesBefore = bundleCount(root, ownerId);
+
+    // Different bytes under the same slug: publishing it first would leave a bundle nothing references.
+    const second = makeZip([
+      { name: 'tdd/SKILL.md', data: `${skillDocument('tdd')}\nchanged\n` },
+      { name: 'review/SKILL.md', data: skillDocument('review') }
+    ]).toString('base64');
+    const imported = await controls.execute(request('skill_archive_import', { archiveBase64: second, expectedGeneration: 0 }));
+    const results = (imported.data as { results: { slug: string; ok: boolean; error?: string; message?: string }[] }).results;
+
+    expect(results[0]).toEqual({ slug: 'tdd', ok: false, error: 'CONFLICT', message: expect.stringContaining('"tdd" already exists') });
+    expect(results[1]).toMatchObject({ slug: 'review', ok: true });
+    expect(bundleCount(root, ownerId)).toBe(bundlesBefore + 1);
+  });
+
+  it('refuses a custom skill or a fork onto an existing slug as a 409 conflict', async () => {
+    const { controls } = setup();
+    const created = await controls.execute(request('skill_create_custom', {
+      slug: 'tdd', displayName: 'TDD', instructions: skillDocument('tdd'), expectedGeneration: 0
+    }));
+    const { sourceId, revisionId } = created.data as { sourceId: string; revisionId: string };
+
+    await expect(controls.execute(request('skill_create_custom', {
+      slug: 'tdd', displayName: 'TDD again', instructions: skillDocument('tdd'), expectedGeneration: 0
+    }))).rejects.toMatchObject({ code: 'CONFLICT', status: 409, message: expect.stringContaining('"tdd" already exists') });
+    await expect(controls.execute(request('skill_revision_fork', {
+      skillId: sourceId, revisionId, slug: 'tdd', displayName: 'TDD fork', expectedGeneration: 0
+    }))).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+  });
+
+  it('classifies a storage failure per archive entry without a host path, logs it, and continues', async () => {
+    const { controls, workspaces } = setup();
+    const log = vi.fn();
+    controls.useDiagnosticLog(log);
+    vi.spyOn(workspaces.toolkitCacheManager, 'publishLocalBundle').mockRejectedValueOnce(storageFailure());
+    const archive = makeZip([
+      { name: 'tdd/SKILL.md', data: skillDocument('tdd') },
+      { name: 'review/SKILL.md', data: skillDocument('review') }
+    ]).toString('base64');
+
+    const imported = await controls.execute(request('skill_archive_import', { archiveBase64: archive, expectedGeneration: 0 }));
+    const results = (imported.data as { results: { slug: string; ok: boolean; error?: string; message?: string }[] }).results;
+
+    expect(results[0]).toEqual({ slug: 'tdd', ok: false, error: 'UNAVAILABLE', message: 'the skill package could not be stored (mkdir failed with EACCES)' });
+    expect(results[1]).toMatchObject({ slug: 'review', ok: true });
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ operation: 'skill_archive_import', slug: 'tdd', code: 'EACCES', syscall: 'mkdir' }));
+    expect(JSON.stringify(log.mock.calls)).not.toContain('/var/lib');
+  });
+
+  it('keeps an invalid declared version a 400 input error, not a storage failure', async () => {
+    const { controls } = setup();
+    const log = vi.fn();
+    controls.useDiagnosticLog(log);
+    await expect(controls.execute(request('skill_create_custom', {
+      slug: 'tdd', displayName: 'TDD', expectedGeneration: 0,
+      instructions: '---\nname: tdd\ndescription: tdd skill\nmetadata:\n  version: not-a-version\n---\n# tdd\n'
+    }))).rejects.toMatchObject({ code: 'INVALID_INPUT', status: 400, message: expect.stringContaining('not a semantic version') });
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('reports a storage failure on a custom skill as unavailable rather than invalid input', async () => {
+    const { controls, workspaces } = setup();
+    vi.spyOn(workspaces.toolkitCacheManager, 'publishLocalBundle').mockRejectedValueOnce(storageFailure());
+    const failure = await controls.execute(request('skill_create_custom', {
+      slug: 'tdd', displayName: 'TDD', instructions: skillDocument('tdd'), expectedGeneration: 0
+    })).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: 'UNAVAILABLE', status: 503, message: 'the skill package could not be stored (mkdir failed with EACCES)' });
   });
 });
 
@@ -440,7 +526,7 @@ describe('dashboard control service', () => {
     const data = preview.data as { resolved: unknown[]; conflicts: unknown[]; generation: number };
     expect(data.generation).toBe(1);
     expect(data.conflicts).toEqual([]);
-    expect(data.resolved).toEqual([{ name: 'tdd', tier: 'owner', sourceId, revisionId, contentSha256: revisionId, pinned: false }]);
+    expect(data.resolved).toEqual([{ name: 'tdd', tier: 'owner', sourceId, revisionId, contentSha256: 'a'.repeat(64), pinned: false }]);
 
     // An override pins the revision, so the preview shows what launch would actually resolve.
     const pinned = await controls.execute(request('skill_set_preview', {
@@ -456,6 +542,12 @@ describe('dashboard control service', () => {
     await expect(controls.execute(request('skill_set_preview', {
       skillSets: [{ skillSetId: `skset_${'z'.repeat(24)}`, expectedGeneration: 1 }]
     }))).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+
+    // Launch refuses a member that is not enabled, so the preview refuses it the same way.
+    principals.setSkillState(ownerId, sourceId, 'disabled', principals.getSkillSource(ownerId, sourceId)!.generation);
+    await expect(controls.execute(request('skill_set_preview', {
+      skillSets: [{ skillSetId: setId, expectedGeneration: 1 }]
+    }))).rejects.toMatchObject({ code: 'CONFLICT', status: 409, message: expect.stringContaining('is disabled') });
   });
   it('reports a bulk state change per item instead of failing the whole batch', async () => {
     const { controls, principals } = setup();

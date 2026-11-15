@@ -61,7 +61,8 @@ describe('skills archive upload control', () => {
     expect(uploadScript).toContain("api('/skill-archives'");
     expect(uploadScript).toContain("'content-type': 'application/zip'");
     expect(uploadScript).toContain('const SKILL_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;');
-    expect(uploadScript).toContain('file.size > SKILL_ARCHIVE_MAX_BYTES');
+    expect(uploadScript).toContain('maxBytes: SKILL_ARCHIVE_MAX_BYTES');
+    expect(uploadScript).toContain('chosen.size > maxBytes');
     expect(uploadScript).toContain('Archive must be 8 MiB or smaller.');
     // The bytes must not be wrapped in JSON, which is what every other write on this page uses.
     expect(uploadScript).toContain('body: buffer');

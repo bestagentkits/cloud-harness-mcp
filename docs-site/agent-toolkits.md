@@ -227,6 +227,27 @@ Cloud Harness supports two installation scopes depending on your workflow needs:
 }
 ```
 
+### Skill sets from your library
+
+Skills you uploaded under **Dashboard → Skills** reach a workspace through `skillSets`. Each member is
+projected into the `owner` tier at the revision the set pinned, so `skills_list` and `skills_read` see it
+beside any `owner`-scoped toolkits, and `skills_list` reports its library `revisionId`.
+
+```json
+{
+  "repositoryUrl": "https://github.com/my-org/my-project.git",
+  "idempotencyKey": "unique-session-key-004",
+  "skillSets": [{ "skillSetId": "skset_…", "expectedGeneration": 3 }],
+  "skillOverrides": { "deploy": "skrev_…" }
+}
+```
+
+The launch is refused, before any workspace exists, when the set is unknown (`NOT_FOUND`), its
+generation has moved (`STALE_GENERATION`), a member is disabled or archived (`CONFLICT`), or a pinned
+revision's bundle is missing (`NOT_FOUND`). When a member and an `owner` toolkit skill share a name with
+different content, `workspace_open` fails with `CONFLICT` until `skillOverrides` pins one: use the
+`skrev_` revision id for a library skill, or the 64-character content digest for a toolkit skill.
+
 ---
 
 ## 4-Tier Skill Precedence
@@ -242,7 +263,7 @@ Rank 1 (Lowest):   repository  (/workspace/.agents/skills or .claude/skills)
 
 - Higher-rank skills take precedence over lower-rank skills of the same name.
 - `skills_list` reports shadowed candidates under `shadowed` metadata.
-- Same-tier collisions (e.g. two owner toolkits declaring conflicting `deploy` skills) fail deterministically with `CONFLICT` (409).
+- Same-tier collisions (e.g. two owner toolkits, or a skill-set member and an owner toolkit, declaring conflicting `deploy` skills) fail deterministically with `CONFLICT` (409) unless `skillOverrides` pins one.
 - The dashboard's [Skills & Skill Sets](/dashboard/skills) page manages the library, imports, sets, and the registry, and settles a launch conflict with an operator override instead of guessing.
 
 ---

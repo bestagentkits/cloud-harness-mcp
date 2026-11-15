@@ -821,6 +821,101 @@ export function createLaunchSkillSetController({ submit, loadSets, preview }) {
 }
 
 /**
+ * Submits the launch dialog. One launch intent keeps one idempotency key across retries, so a retry
+ * after a lost answer replays the same request instead of opening a second workspace; a changed intent
+ * gets a fresh key. A submit while one is in flight is ignored, which is what stops a double click from
+ * racing two requests before the first answer can disable anything.
+ */
+export function createOpenWorkspaceController({ values, skills, post, setBusy, setStatus, opened, newKey }) {
+  const makeKey = newKey ?? (() => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  let inFlight = false;
+  let launch;
+  return {
+    get pending() { return inFlight; },
+    async submit() {
+      if (inFlight) return { ok: false, reason: 'busy' };
+      const input = values();
+      const repositoryUrl = String(input.repositoryUrl ?? '').trim();
+      const ref = String(input.ref ?? '').trim();
+      if (!repositoryUrl) {
+        setStatus('Enter the repository HTTPS URL.');
+        return { ok: false, reason: 'invalid' };
+      }
+      const chosen = skills();
+      const intent = {
+        repositoryUrl,
+        ...(ref ? { ref } : {}),
+        networkProfile: input.networkProfile,
+        skillSets: chosen.skillSets,
+        skillOverrides: chosen.skillOverrides
+      };
+      const serialized = JSON.stringify(intent);
+      if (launch?.intent !== serialized) launch = { intent: serialized, key: makeKey() };
+      inFlight = true;
+      setBusy(true);
+      setStatus('Launching\u2026');
+      try {
+        const response = await post({ ...intent, idempotencyKey: launch.key });
+        const workspaceId = response?.data?.workspaceId;
+        launch = undefined;
+        setStatus('');
+        if (typeof workspaceId === 'string' && workspaceId) opened(workspaceId);
+        return { ok: true, workspaceId };
+      } catch (error) {
+        setStatus(error instanceof Error && error.message ? error.message : 'The workspace could not be opened.');
+        return { ok: false, reason: 'error', error };
+      } finally {
+        inFlight = false;
+        setBusy(false);
+      }
+    }
+  };
+}
+
+/**
+ * Uploads one skill archive. A second submit while an upload is in flight is ignored, and every
+ * per-entry row carries the server's message beside its code, because a bare code such as
+ * `archive_invalid` does not tell the operator which entry to fix.
+ */
+export function createSkillUploadController({ file, maxBytes, post, setBusy, setStatus, setRows, reload }) {
+  let inFlight = false;
+  return {
+    get pending() { return inFlight; },
+    async submit() {
+      if (inFlight) return { ok: false, reason: 'busy' };
+      setRows([]);
+      const chosen = file();
+      if (!chosen) { setStatus('Choose a .zip archive first.'); return { ok: false, reason: 'invalid' }; }
+      if (chosen.size > maxBytes) { setStatus('Archive must be 8 MiB or smaller.'); return { ok: false, reason: 'invalid' }; }
+      inFlight = true;
+      setBusy(true);
+      setStatus(`Uploading ${chosen.name}\u2026`);
+      try {
+        const response = await post(await chosen.arrayBuffer());
+        const rows = Array.isArray(response?.data?.results) ? response.data.results : [];
+        const created = rows.filter((row) => row.ok).length;
+        setStatus(created === rows.length
+          ? `Imported ${created} skill${created === 1 ? '' : 's'}.`
+          : `Imported ${created} of ${rows.length}. The rest were reported per entry.`);
+        setRows(rows.map((row) => ({
+          slug: String(row.slug ?? ''),
+          text: row.ok ? 'created' : [String(row.error ?? 'failed'), typeof row.message === 'string' && row.message ? row.message : '']
+            .filter(Boolean).join(': ')
+        })));
+        // The library reloads from the runner rather than assuming the rows it just sent.
+        await reload();
+        return { ok: true, rows };
+      } catch (error) {
+        return { ok: false, reason: 'error', error };
+      } finally {
+        inFlight = false;
+        setBusy(false);
+      }
+    }
+  };
+}
+
+/**
  * The bulk operation carries one generation for the whole batch, so a caller that selects rows from
  * different generations has to group them. Sending one batch with a single generation would report
  * every other row as a conflict, which looks like a locking problem when it is really a batching one.
@@ -1964,45 +2059,36 @@ export function initializeDashboard() {
     // An archive is uploaded as bytes, so this is the one control that does not go through the JSON
     // helper. The per-item results are rendered rather than announced, because a partial upload has to
     // say which entries conflicted while the dialog is still open.
-    document.querySelector('#skill-upload')?.addEventListener('submit', (event) => {
+    const uploadForm = document.querySelector('#skill-upload');
+    const uploader = createSkillUploadController({
+      file: () => document.querySelector('#skill-upload-file')?.files?.[0],
+      maxBytes: SKILL_ARCHIVE_MAX_BYTES,
+      post: (buffer) => api('/skill-archives', { method: 'POST', headers: { 'content-type': 'application/zip' }, body: buffer }),
+      setBusy: (busy) => {
+        const button = uploadForm?.querySelector('#skill-upload-save');
+        if (button) button.disabled = busy;
+        if (busy) uploadForm?.setAttribute('aria-busy', 'true'); else uploadForm?.removeAttribute('aria-busy');
+      },
+      setStatus: (text) => { const status = document.querySelector('#skill-upload-status'); if (status) status.textContent = text; },
+      // Built as nodes rather than markup: a slug, an error code and its message all originate in the upload.
+      setRows: (rows) => {
+        const results = document.querySelector('#skill-upload-results');
+        if (!results) return;
+        results.replaceChildren();
+        for (const row of rows) {
+          const item = document.createElement('li');
+          const slug = document.createElement('span');
+          slug.className = 'mono';
+          slug.textContent = row.slug;
+          item.append(slug, ` ${row.text}`);
+          results.append(item);
+        }
+      },
+      reload: () => enterSkillsTab('library')
+    });
+    uploadForm?.addEventListener('submit', (event) => {
       event.preventDefault();
-      const status = document.querySelector('#skill-upload-status');
-      const results = document.querySelector('#skill-upload-results');
-      const file = document.querySelector('#skill-upload-file')?.files?.[0];
-      if (results) results.replaceChildren();
-      if (!file) { if (status) status.textContent = 'Choose a .zip archive first.'; return; }
-      if (file.size > SKILL_ARCHIVE_MAX_BYTES) {
-        if (status) status.textContent = 'Archive must be 8 MiB or smaller.';
-        return;
-      }
-      if (status) status.textContent = `Uploading ${file.name}\u2026`;
-      void file.arrayBuffer().then(async (buffer) => {
-        const response = await api('/skill-archives', {
-          method: 'POST',
-          headers: { 'content-type': 'application/zip' },
-          body: buffer
-        });
-        const rows = Array.isArray(response?.data?.results) ? response.data.results : [];
-        const created = rows.filter((row) => row.ok).length;
-        if (status) {
-          status.textContent = created === rows.length
-            ? `Imported ${created} skill${created === 1 ? '' : 's'}.`
-            : `Imported ${created} of ${rows.length}. The rest were reported per entry.`;
-        }
-        // Built as nodes rather than markup: a slug and an error code both originate in the upload.
-        if (results) {
-          for (const row of rows) {
-            const item = document.createElement('li');
-            const slug = document.createElement('span');
-            slug.className = 'mono';
-            slug.textContent = String(row.slug ?? '');
-            item.append(slug, ` ${row.ok ? 'created' : String(row.error ?? 'failed')}`);
-            results.append(item);
-          }
-        }
-        // The library reloads from the runner rather than assuming the rows it just sent.
-        await enterSkillsTab('library');
-      }).catch(showError);
+      void uploader.submit().then((result) => { if (result.reason === 'error') showError(result.error); });
     });
 
     const names = ['library', 'discover', 'sets', 'registry'];
@@ -4370,6 +4456,33 @@ export function initializeDashboard() {
       if (!name || !event.target?.value) return;
       void controller.resolve(name, event.target.value).then(paint).catch(showError);
     });
+
+    const form = document.querySelector('#open-workspace-form');
+    const statusLine = document.querySelector('#open-workspace-status');
+    const launcher = createOpenWorkspaceController({
+      values: () => {
+        const fields = new FormData(form);
+        return { repositoryUrl: fields.get('repositoryUrl'), ref: fields.get('ref'), networkProfile: fields.get('networkProfile') };
+      },
+      skills: () => controller.body(),
+      post: (body) => api('/workspaces', { method: 'POST', body: requestBody(body) }),
+      setBusy: (busy) => {
+        if (submit) submit.disabled = busy || controller.blocked();
+        if (busy) form.setAttribute('aria-busy', 'true'); else form.removeAttribute('aria-busy');
+      },
+      setStatus: (text) => { if (statusLine) statusLine.textContent = text; },
+      opened: (workspaceId) => {
+        dialog.close();
+        navigateTo(`/dashboard/workspaces/${encodeURIComponent(workspaceId)}`);
+      }
+    });
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      // The button is disabled while a conflict is unresolved; Enter in a field must not bypass that.
+      if (controller.blocked()) { if (statusLine) statusLine.textContent = 'Resolve the skill conflicts before launching.'; return; }
+      void launcher.submit();
+    });
+    document.querySelector('#cancel-open-workspace')?.addEventListener('click', () => { if (!launcher.pending) dialog.close(); });
   }
 
   // Same-origin Dashboard links stay inside the live shell. Modified clicks,
