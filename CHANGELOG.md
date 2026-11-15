@@ -1,3 +1,10 @@
+## [2.0.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v2.0.0...v2.0.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **skills:** library create errors, skill-set launch, and legacy workspace launch ([#639](https://github.com/bestagentkits/cloud-harness-mcp/issues/639)) ([#660](https://github.com/bestagentkits/cloud-harness-mcp/issues/660)) ([f4b26c2](https://github.com/bestagentkits/cloud-harness-mcp/commit/f4b26c2650b1d9600c908e2fc38806cfeb9067e7)), closes [#638](https://github.com/bestagentkits/cloud-harness-mcp/issues/638) [#635](https://github.com/bestagentkits/cloud-harness-mcp/issues/635) [#636](https://github.com/bestagentkits/cloud-harness-mcp/issues/636) [#637](https://github.com/bestagentkits/cloud-harness-mcp/issues/637)
+
 # [2.0.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v1.0.1...v2.0.0) (2026-11-11)
 
 
