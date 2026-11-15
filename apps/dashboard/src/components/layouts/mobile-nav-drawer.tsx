@@ -1,6 +1,7 @@
 import { type PageId, PRODUCT_NAME } from '@/app/page-registry';
 import { Drawer, DrawerContent, DrawerDescription, DrawerTitle } from '@/components/ui/drawer';
 import { SidebarNav } from './sidebar-nav';
+import { SidebarVersion } from './sidebar-version';
 
 /** The sidebar as a drawer on small screens; loaded the first time it opens. */
 export default function MobileNavDrawer({ open, onOpenChange, currentId, pageId }: { open: boolean; onOpenChange: (open: boolean) => void; currentId: PageId | undefined; pageId: PageId | undefined }) {
@@ -12,6 +13,7 @@ export default function MobileNavDrawer({ open, onOpenChange, currentId, pageId 
           <DrawerDescription id="mobile-nav-description" className="sr-only">Dashboard navigation</DrawerDescription>
         </div>
         <SidebarNav currentId={currentId} pageId={pageId} onNavigate={() => onOpenChange(false)} />
+        <div className="border-t p-2"><SidebarVersion onNavigate={() => onOpenChange(false)} /></div>
       </DrawerContent>
     </Drawer>
   );

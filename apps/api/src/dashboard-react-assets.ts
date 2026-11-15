@@ -30,7 +30,7 @@ const COMPAT_REDIRECT_PATHS = new Set(Object.keys(DASHBOARD_COMPAT_REDIRECTS).ma
  */
 export const DASHBOARD_REACT_ROUTES: readonly string[] = [
   '/', '/workspaces', '/agents', '/activity', '/approvals', '/packages', '/terminals', '/audit', '/projects', '/secrets', '/models',
-  '/skills', '/integrations', '/mcp-servers', '/knowledge', '/artifacts', '/api-keys', '/settings', '/profile'
+  '/skills', '/integrations', '/mcp-servers', '/knowledge', '/artifacts', '/api-keys', '/settings', '/changelog', '/profile'
 ];
 
 export type DashboardReactBundle = {

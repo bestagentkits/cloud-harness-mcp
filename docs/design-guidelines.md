@@ -348,7 +348,11 @@ wired, so the visible one is never the only working one. Owners:
   The rail is **fixed to the viewport below the top
   bar and scrolls internally**, so a long navigation list never pushes the page
   or hides entries; the rail foot carries the running **server version** outside
-  that scroll and hides it when the rail collapses to icons. A chevron control
+  that scroll, as a link to the **Changelog** page (Admin group), and hides it when
+  the rail collapses to icons, where the Changelog entry stays reachable. The
+  Changelog lists the release notes in the `CHANGELOG.md` shipped with the image,
+  parsed server-side by `apps/api/src/dashboard-changelog.ts` into text and
+  GitHub-link segments so no release-note Markdown or HTML reaches the page. A chevron control
   collapses the rail to icons on desktop (toggling `.app-shell.nav-collapsed`);
   it also collapses to icons on tablet and to a drawer on mobile. The version is
   labelled "Server version" rather than "Release" because production runs the

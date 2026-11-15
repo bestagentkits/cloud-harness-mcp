@@ -12,6 +12,7 @@ import { PathIdMismatchError, withPathIds } from './dashboard-path-ids.js';
 import { registerDashboardGatewayRoutes } from './dashboard-gateway-router.js';
 import { registerDashboardTerminalRoutes } from './dashboard-terminal-router.js';
 import type { McpGatewayService } from './mcp-gateway/service.js';
+import { loadChangelog } from './dashboard-changelog.js';
 import { serverVersion } from './version.js';
 
 const THEME_COOKIE = 'ch-dashboard-theme';
@@ -164,6 +165,13 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
         checkedAt: new Date().toISOString()
       }
     });
+  });
+
+  router.get('/api/v1/changelog', (request: DashboardRequest, response) => {
+    const selected = principal(request, response);
+    if (!selected || selected.kind !== 'external') return;
+    const changelog = loadChangelog();
+    response.json({ data: { version: serverVersion, available: changelog.available, releases: changelog.releases }, truncated: changelog.truncated });
   });
 
   router.put('/api/v1/preferences', (request: DashboardRequest, response) => {

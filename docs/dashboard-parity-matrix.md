@@ -101,6 +101,7 @@ are never answered by the fallback.
 | `/dashboard/artifacts` | artifacts / `loadArtifacts` | `artifacts` | P4 | `cursor` | `/artifacts?limit=…`; download is a native link to `/artifacts/:id/download` | Download stays under `/dashboard/api/v1/artifacts/` | `dashboard-ui-contract` (c) |
 | `/dashboard/api-keys` | api-keys / `loadApiKeys` | `api-keys` | P4 | none | `/api-keys` | One-time reveal (D3) | `dashboard-ui-behavior` (b) |
 | `/dashboard/settings` | settings / `loadSettings` | `settings` | P3 (lifecycle, network, OAuth session), P4 (TypeSafe credential) | none | `/settings`, `/settings/oauth` (`fetchOAuthSettings`), `/typesafe/status` and `/integration-credentials` (`fetchTypesafeSettings`) | `settings_*` responses pass through unmapped (F7); TypeSafe key write-only | `dashboard-lifecycle-settings` (b), `dashboard-oauth-settings` (b), `dashboard-typesafe` (a+b), `dashboard-router` (a) |
+| `/dashboard/changelog` | changelog / `loadChangelog` | `changelog` | P3 | none | `/changelog`; the sidebar version foot links here | Release notes arrive as structured segments; only `https://github.com/` links render, never raw Markdown or HTML | `dashboard-changelog` (a+b), `features/changelog/changelog-model.test.ts` |
 | `/dashboard/profile` | profile / `loadProfile` | `profile` | P3 | none | `/profile` | Display name via server cookie | `dashboard-ui-behavior` (b) |
 
 The command palette (`PALETTE_SOURCE_REQUESTS` in `dashboard.js`) also reads
@@ -208,7 +209,8 @@ calls the route (collected in [4.13](#413-routes-without-a-legacy-ui-caller)).
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | GET | `/session` | router, session | — | `bootstrapSession` | `shell/session` | P2 | Each call mints a new session (F10): bootstrap once per tab, again on 401 |
 | GET | `/profile` | router | — | overview, profile, top-bar chip | `profile`, `shell` | P2/P3 | |
-| GET | `/server` | router | — | overview | `overview` | P3 | `managedOAuthUrl`, limits, version |
+| GET | `/server` | router | — | overview | `overview`, `shell` | P3 | `managedOAuthUrl`, limits, version; the React sidebar version foot reads it too |
+| GET | `/changelog` | router, `dashboard-changelog.ts` | — | changelog | `changelog` | P3 | Server version plus the bundled `CHANGELOG.md`, parsed and capped; `available: false` when the build ships none |
 | PUT | `/preferences` | router | strict schema | theme toggle, profile | `shell/theme`, `profile` | P2 | Sets the theme and display-name cookies |
 
 ### 4.2 Workspaces, files, git, runtime, automation

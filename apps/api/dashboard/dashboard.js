@@ -51,7 +51,7 @@ import {
   escapeHtml,
   launchBlockedByConflicts,
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, githubRefusalMessage, GITHUB_USER_AUTHORIZATION_REQUIRED_CODE, GITHUB_USER_AUTHORIZATION_REQUIRED_MESSAGE, renderGlobalSecrets, renderOverview, renderOverviewSkeleton,
-  renderProjectDetail, renderProfile, renderProjectIndex, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
+  renderChangelog, renderProjectDetail, renderProfile, renderProjectIndex, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
   renderMcpServersIndex, renderMcpServerDetail,
   renderSkillsLibraryCards, renderSkillsLibraryRows, renderSkillsRegistryRows,
@@ -1521,6 +1521,7 @@ export function initializeDashboard() {
     artifacts: loadArtifacts,
     'api-keys': loadApiKeys,
     settings: loadSettings,
+    changelog: loadChangelog,
     profile: loadProfile
   };
   let loadQueue = Promise.resolve();
@@ -2680,6 +2681,10 @@ export function initializeDashboard() {
         }
       }, event.currentTarget));
     }
+  }
+  async function loadChangelog() {
+    selectNavigation('changelog'); document.querySelector('#command-surface').hidden = true;
+    const result = await api('/changelog'); insertRendered(content, renderChangelog({ ...result.data, truncated: result.truncated === true }));
   }
   async function loadProfile() {
     selectNavigation('profile'); document.querySelector('#command-surface').hidden = true;

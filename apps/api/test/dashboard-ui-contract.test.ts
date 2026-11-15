@@ -485,8 +485,11 @@ describe('dashboard static UI contract', () => {
 
   it('keeps the server version in the persistent sidebar rail', () => {
     expect(html).toContain('class="sidebar-version"');
+    // The version foot opens the Changelog, and the loader keeps the envelope's truncation flag.
+    expect(html).toContain('<a class="sidebar-version" href="/dashboard/changelog"');
+    expect(readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8')).toContain("renderChangelog({ ...result.data, truncated: result.truncated === true })");
     expect(html).toContain('__CH_VERSION__');
-    expect(html).toContain('<span class="sr-only">Server version</span>');
+    expect(html).toContain('<span class="sr-only">Server version </span>');
     expect(css).toContain('.sidebar-version');
     expect(css).toContain('.app-shell.nav-collapsed .sidebar-version');
   });

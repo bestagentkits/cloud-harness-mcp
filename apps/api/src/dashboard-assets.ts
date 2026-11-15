@@ -106,6 +106,7 @@ export const DASHBOARD_SHELL_PATHS: string[] = [
   '/mcp-servers',
   '/mcp-servers/:serverId',
   '/settings',
+  '/changelog',
   '/profile',
 ];
 

@@ -705,6 +705,18 @@ describe('dashboard BFF', () => {
     expect(response.headers['cache-control']).toBe('no-store');
   });
 
+  it('serves the bundled changelog as structured release notes with the server version', async () => {
+    const response = await send('/api/v1/changelog');
+    expect(response.status).toBe(200);
+    expect(typeof response.json.data.version).toBe('string');
+    expect(response.json.data.available).toBe(true);
+    expect(Array.isArray(response.json.data.releases)).toBe(true);
+    expect(response.json.data.releases.length).toBeGreaterThan(0);
+    expect(response.json.data.releases[0]).toEqual(expect.objectContaining({ version: expect.any(String), sections: expect.any(Array) }));
+    expect(typeof response.json.truncated).toBe('boolean');
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+
   it('persists a valid theme preference by cookie and rejects unknown or unauthenticated changes', async () => {
     const session = await send('/api/v1/session');
     const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
