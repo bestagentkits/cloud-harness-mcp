@@ -8,6 +8,7 @@ import { DisplayPreferencesButton } from '@/components/layouts/display-preferenc
 import { PageHeader } from '@/components/layouts/page-header';
 import { SessionEndedBanner } from '@/components/layouts/session-ended-banner';
 import { SidebarNav } from '@/components/layouts/sidebar-nav';
+import { SidebarVersion } from '@/components/layouts/sidebar-version';
 import { ThemeToggle } from '@/components/layouts/theme-toggle';
 import { WorkspaceFilter } from '@/components/layouts/workspace-filter';
 import { Button } from '@/components/ui/button';
@@ -95,7 +96,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           <span className={cn('text-sm font-semibold tracking-tight', collapsed && 'sr-only')}>{PRODUCT_NAME}</span>
         </div>
         <SidebarNav currentId={navId} pageId={page?.id} collapsed={collapsed} />
-        <div className={cn('flex items-center border-t p-2', collapsed ? 'justify-center' : 'justify-end')}>
+        <div className={cn('flex items-center gap-2 border-t p-2', collapsed ? 'justify-center' : 'justify-between')}>
+          <SidebarVersion collapsed={collapsed} />
           <Tooltip>
             <TooltipTrigger asChild>
               <Button variant="ghost" size="icon" className="size-8" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-keyshortcuts="[" aria-expanded={!collapsed} onClick={toggleSidebar}>

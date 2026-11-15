@@ -26,12 +26,13 @@ The **Mission Control** operator dashboard is available at `https://harness.zuey
 - **[API Access](/dashboard/api-keys):** Create and revoke static gateway keys for IDE and local CLI tools.
 - **[Audit Logs](/dashboard/audit):** The durable security record, also reachable as the Audit filter inside the Activity Center.
 - **[Settings](/dashboard/settings):** Instance-wide defaults applied to newly opened workspaces, and how long MCP OAuth clients stay signed in.
+- **Changelog:** the release notes shipped with the running server, newest first, with the running version marked **Running**. Open it from the **Changelog** entry in the Admin group or by clicking the version at the foot of the left rail.
 - **[Profile & Preferences](/dashboard/profile):** View signed-in identity details, edit the display name shown in the top-bar chip, and switch the theme with the icon control in the top bar, which cycles System, Light, and Dark and persists server-side. Profile has no rail entry: the top-bar chip and the command palette are its entry points.
 
 ## Search and Version
 
 - **Search:** press `CMD+K` or `CTRL+K` (or click the "Search or jump to…" field in the top bar) to jump to any dashboard page or find a workspace, project, secret, API key, model credential or profile, or artifact. Results cover the first page of each resource type. Memories and journals are searched on the Knowledge page, which has its own search. Press `Escape` or tap/click outside the palette to close it.
-- **Server version:** the left rail shows the version of the running MCP server, so you can confirm which build answered a request. The rail stays fixed beside the page and scrolls on its own when the navigation is taller than the window.
+- **Server version:** the left rail shows the version of the running MCP server, so you can confirm which build answered a request; click it to open the Changelog. Changes merged after that release appear in the Changelog once the next release is published. The rail stays fixed beside the page and scrolls on its own when the navigation is taller than the window.
 - **Account controls:** the top-bar chip shows your display name and opens the Profile page; the adjacent icon signs you out.
 
 Every dashboard page ends with the same footer crediting [AgentKit](https://agentkit.best).

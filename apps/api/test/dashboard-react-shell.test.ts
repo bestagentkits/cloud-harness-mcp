@@ -9,6 +9,7 @@ import { createApiApp, type ApiRuntime } from '../src/app.js';
 import { DASHBOARD_CONTENT_SECURITY_POLICY } from '../src/dashboard-security.js';
 import { apiLogger } from '../src/logging.js';
 import type { RunnerClient } from '../src/runner-client.js';
+import { serverVersion } from '../src/version.js';
 
 // Drives the real Express app with an offline Access JWKS and a fixture React build, so the
 // rollout flag, canary cookie, SPA fallback boundaries and CSP are checked as production
@@ -43,6 +44,7 @@ writeFileSync(join(fixture, 'index.html'), [
   '<!doctype html><html lang="en"><head><title>React shell fixture</title>',
   '<script src="/dashboard/preferences-boot.js" nonce="__CH_CSP_NONCE__"></script>',
   '<meta property="csp-nonce" nonce="__CH_CSP_NONCE__">',
+  '<meta name="ch-server-version" content="__CH_VERSION__">',
   `<script type="module" crossorigin src="/dashboard/assets/${ASSET_JS}" nonce="__CH_CSP_NONCE__"></script>`,
   '</head><body><div id="root"></div></body></html>'
 ].join('\n'));
@@ -144,6 +146,7 @@ function expectReactShell(response: Response, body: string, status = 200): void 
   expect(response.status).toBe(status);
   expect(body).toContain('<title>React shell fixture</title>');
   expect(body).not.toContain('__CH_CSP_NONCE__');
+  expect(body).toContain(`<meta name="ch-server-version" content="${serverVersion}">`);
   expect(response.headers.get('cache-control')).toBe('no-store');
   expect(response.headers.get('etag')).toBeNull();
 }

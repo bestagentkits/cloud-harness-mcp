@@ -1247,6 +1247,37 @@ export function profileDisplayName(profile) {
   return identity.name ?? identity.email ?? 'Signed in';
 }
 
+/** Inline changelog text: link segments carry only server-allowlisted GitHub URLs; all text is escaped. */
+function changelogSegments(segments) {
+  return (Array.isArray(segments) ? segments : []).map((segment) => {
+    const text = escape(segment?.text);
+    return typeof segment?.href === 'string' && segment.href.startsWith('https://github.com/')
+      ? `<a href="${escape(segment.href)}" target="_blank" rel="noopener noreferrer">${text}</a>`
+      : text;
+  }).join('');
+}
+
+export function renderChangelog(changelog) {
+  const version = String(changelog?.version ?? 'unknown');
+  const releases = Array.isArray(changelog?.releases) ? changelog.releases : [];
+  const note = `<p class="page-note"><strong>Server version <span class="mono">v${escape(version)}</span>.</strong> Release notes shipped with this build, newest first. Changes merged after this release are listed once the next release is published.</p>`;
+  if (!changelog?.available || !releases.length) {
+    return `${note}<div class="empty"><h3>No release notes available.</h3><p>This server build does not include a changelog.</p></div>`;
+  }
+  const items = releases.map((release, index) => {
+    const id = `changelog-release-${index}`;
+    const current = release.version === version ? '<span class="status active">Running</span>' : '';
+    const date = release.date ? `<p><time datetime="${escape(release.date)}">${escape(release.date)}</time></p>` : '';
+    const sections = (Array.isArray(release.sections) ? release.sections : []).map((section) => `<h3>${escape(section.title)}</h3><ul class="changelog-items">${(Array.isArray(section.items) ? section.items : []).map((item) => `<li>${item.scope ? `<span class="changelog-scope">${escape(item.scope)}:</span> ` : ''}${changelogSegments(item.segments)}</li>`).join('')}</ul>`).join('');
+    const compare = typeof release.compareUrl === 'string' && release.compareUrl.startsWith('https://github.com/')
+      ? `<p class="changelog-compare"><a href="${escape(release.compareUrl)}" target="_blank" rel="noopener noreferrer">Compare with the previous release</a></p>`
+      : '';
+    return `<li class="panel changelog-release" aria-labelledby="${id}"><div class="record-heading"><div><h2 id="${id}" class="mono">v${escape(release.version)}</h2>${date}</div>${current}</div>${sections || '<p>No notable changes listed.</p>'}${compare}</li>`;
+  }).join('');
+  const more = changelog.truncated ? '<p class="empty-note">Older releases are listed in <code>CHANGELOG.md</code> in the repository.</p>' : '';
+  return `${note}<ol class="changelog-list" aria-label="Releases">${items}</ol>${more}`;
+}
+
 export function renderProfile(profile) {
   const identity = profile?.identity ?? {};
   const scopes = Array.isArray(profile?.scopes) ? profile.scopes : [];

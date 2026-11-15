@@ -4,6 +4,7 @@ import {
   BoxIcon,
   CpuIcon,
   FolderKanbanIcon,
+  HistoryIcon,
   KeyRoundIcon,
   LayoutDashboardIcon,
   type LucideIcon,
@@ -48,7 +49,7 @@ export type PageGroupId = (typeof PAGE_GROUPS)[number]['id'];
 export const PAGE_IDS = [
   'overview', 'workspaces', 'workspace', 'agents', 'agent', 'activity', 'approvals', 'packages', 'terminals', 'audit',
   'projects', 'project', 'secrets', 'models', 'skills', 'integrations', 'github', 'mcp-servers', 'mcp-server',
-  'knowledge', 'knowledge-entry', 'artifacts', 'api-keys', 'settings', 'profile'
+  'knowledge', 'knowledge-entry', 'artifacts', 'api-keys', 'settings', 'changelog', 'profile'
 ] as const;
 
 export type PageId = (typeof PAGE_IDS)[number];
@@ -200,6 +201,11 @@ export const DASHBOARD_PAGES: readonly DashboardPage[] = [
     id: 'settings', path: '/settings', label: 'Settings', group: 'admin', title: 'Settings', icon: SettingsIcon, nav: true, palette: true,
     help: 'Instance defaults for workspaces and network egress.', paletteHint: 'Instance defaults for workspaces and network egress',
     read: { path: '/settings' }
+  },
+  {
+    id: 'changelog', path: '/changelog', label: 'Changelog', group: 'admin', title: 'Changelog', icon: HistoryIcon, nav: true, palette: true,
+    help: 'Release notes shipped with the running server version, newest first.', paletteHint: 'Server version and release notes',
+    read: { path: '/changelog' }
   },
   {
     id: 'profile', path: '/profile', label: 'Profile', group: 'account', title: 'Profile', icon: UserIcon, nav: false, palette: true,

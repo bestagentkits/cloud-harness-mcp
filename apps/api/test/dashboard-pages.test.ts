@@ -71,7 +71,8 @@ describe('dashboard page registry', () => {
       'knowledge',
       'artifacts',
       'api-keys',
-      'settings'
+      'settings',
+      'changelog'
     ]);
     expect(navGroups().some((group) => group.pages.some((page) => page.id === 'profile'))).toBe(false);
     // Audit history moved into the Activity Center, so the rail no longer lists it.

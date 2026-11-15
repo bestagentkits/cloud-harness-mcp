@@ -8,12 +8,15 @@ import { acceptsHtml } from './auth.js';
 import { DASHBOARD_COMPAT_REDIRECTS, forcedTheme } from './dashboard-assets.js';
 import { reactShellContentSecurityPolicy } from './dashboard-security.js';
 import { apiLogger } from './logging.js';
+import { serverVersion } from './version.js';
 
 /** `apps/dashboard/dist`, resolved the same way from `apps/api/src` and `apps/api/dist`. */
 export const DEFAULT_DASHBOARD_REACT_DIRECTORY = fileURLToPath(new URL('../../dashboard/dist/', import.meta.url));
 
 /** Must match `CSP_NONCE_PLACEHOLDER` in `apps/dashboard/vite.config.ts`. */
 const NONCE_PLACEHOLDER = '__CH_CSP_NONCE__';
+/** Filled with the allowlisted server version, as in the legacy shell, so the sidebar needs no read. */
+const VERSION_PLACEHOLDER = '__CH_VERSION__';
 export const DASHBOARD_UI_COOKIE = 'ch-dashboard-ui';
 const UI_MODES = new Set(['legacy', 'react']);
 /** The theme cookie is rendered onto this tag before first paint, as in the legacy shell. */
@@ -30,7 +33,7 @@ const COMPAT_REDIRECT_PATHS = new Set(Object.keys(DASHBOARD_COMPAT_REDIRECTS).ma
  */
 export const DASHBOARD_REACT_ROUTES: readonly string[] = [
   '/', '/workspaces', '/agents', '/activity', '/approvals', '/packages', '/terminals', '/audit', '/projects', '/secrets', '/models',
-  '/skills', '/integrations', '/mcp-servers', '/knowledge', '/artifacts', '/api-keys', '/settings', '/profile'
+  '/skills', '/integrations', '/mcp-servers', '/knowledge', '/artifacts', '/api-keys', '/settings', '/changelog', '/profile'
 ];
 
 export type DashboardReactBundle = {
@@ -156,7 +159,7 @@ function sendShell(request: Request, response: Response, bundle: DashboardReactB
   const html = theme
     ? `<html lang="en" data-server-theme="${theme}" data-theme="${theme}">`
     : '<html lang="en" data-server-theme="system">';
-  const body = bundle.indexHtml.replace(HTML_OPEN, html).replaceAll(NONCE_PLACEHOLDER, nonce);
+  const body = bundle.indexHtml.replace(HTML_OPEN, html).replaceAll(NONCE_PLACEHOLDER, nonce).replaceAll(VERSION_PLACEHOLDER, serverVersion);
   response.setHeader('Content-Security-Policy', reactShellContentSecurityPolicy(nonce));
   // Never stored, like the legacy shell, so a deploy is picked up at once; the nonce makes
   // each body unique, so no ETag is sent.

@@ -15,6 +15,7 @@ import { Route as ApiKeysRouteImport } from './routes/api-keys'
 import { Route as ApprovalsRouteImport } from './routes/approvals'
 import { Route as ArtifactsRouteImport } from './routes/artifacts'
 import { Route as AuditRouteImport } from './routes/audit'
+import { Route as ChangelogRouteImport } from './routes/changelog'
 import { Route as ModelsRouteImport } from './routes/models'
 import { Route as PackagesRouteImport } from './routes/packages'
 import { Route as ProfileRouteImport } from './routes/profile'
@@ -64,6 +65,11 @@ const ArtifactsRoute = ArtifactsRouteImport.update({
 const AuditRoute = AuditRouteImport.update({
   id: '/audit',
   path: '/audit',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ChangelogRoute = ChangelogRouteImport.update({
+  id: '/changelog',
+  path: '/changelog',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ModelsRoute = ModelsRouteImport.update({
@@ -176,6 +182,7 @@ export interface FileRoutesByFullPath {
   '/approvals': typeof ApprovalsRoute
   '/artifacts': typeof ArtifactsRoute
   '/audit': typeof AuditRoute
+  '/changelog': typeof ChangelogRoute
   '/models': typeof ModelsRoute
   '/packages': typeof PackagesRoute
   '/profile': typeof ProfileRoute
@@ -204,6 +211,7 @@ export interface FileRoutesByTo {
   '/approvals': typeof ApprovalsRoute
   '/artifacts': typeof ArtifactsRoute
   '/audit': typeof AuditRoute
+  '/changelog': typeof ChangelogRoute
   '/models': typeof ModelsRoute
   '/packages': typeof PackagesRoute
   '/profile': typeof ProfileRoute
@@ -233,6 +241,7 @@ export interface FileRoutesById {
   '/approvals': typeof ApprovalsRoute
   '/artifacts': typeof ArtifactsRoute
   '/audit': typeof AuditRoute
+  '/changelog': typeof ChangelogRoute
   '/models': typeof ModelsRoute
   '/packages': typeof PackagesRoute
   '/profile': typeof ProfileRoute
@@ -263,6 +272,7 @@ export interface FileRouteTypes {
     | '/approvals'
     | '/artifacts'
     | '/audit'
+    | '/changelog'
     | '/models'
     | '/packages'
     | '/profile'
@@ -291,6 +301,7 @@ export interface FileRouteTypes {
     | '/approvals'
     | '/artifacts'
     | '/audit'
+    | '/changelog'
     | '/models'
     | '/packages'
     | '/profile'
@@ -319,6 +330,7 @@ export interface FileRouteTypes {
     | '/approvals'
     | '/artifacts'
     | '/audit'
+    | '/changelog'
     | '/models'
     | '/packages'
     | '/profile'
@@ -348,6 +360,7 @@ export interface RootRouteChildren {
   ApprovalsRoute: typeof ApprovalsRoute
   ArtifactsRoute: typeof ArtifactsRoute
   AuditRoute: typeof AuditRoute
+  ChangelogRoute: typeof ChangelogRoute
   ModelsRoute: typeof ModelsRoute
   PackagesRoute: typeof PackagesRoute
   ProfileRoute: typeof ProfileRoute
@@ -412,6 +425,13 @@ declare module '@tanstack/react-router' {
       path: '/audit'
       fullPath: '/audit'
       preLoaderRoute: typeof AuditRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/changelog': {
+      id: '/changelog'
+      path: '/changelog'
+      fullPath: '/changelog'
+      preLoaderRoute: typeof ChangelogRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/models': {
@@ -564,6 +584,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApprovalsRoute: ApprovalsRoute,
   ArtifactsRoute: ArtifactsRoute,
   AuditRoute: AuditRoute,
+  ChangelogRoute: ChangelogRoute,
   ModelsRoute: ModelsRoute,
   PackagesRoute: PackagesRoute,
   ProfileRoute: ProfileRoute,

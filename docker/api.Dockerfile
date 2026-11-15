@@ -34,6 +34,8 @@ RUN find /app/apps/dashboard/dist -type d -exec chmod 0555 {} + \
   && find /app/apps/dashboard/dist -type f -exec chmod 0444 {} +
 COPY --from=build --chmod=0444 /app/packages/contracts/package.json ./packages/contracts/package.json
 COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
+# Release notes the Dashboard Changelog page reads (apps/api/src/dashboard-changelog.ts).
+COPY --chmod=0444 CHANGELOG.md ./CHANGELOG.md
 COPY --chown=node:node --chmod=0555 scripts/deploy-canary.mjs ./scripts/deploy-canary.mjs
 COPY --chown=node:node --chmod=0555 deploy/ingress-proxy.mjs ./deploy/ingress-proxy.mjs
 COPY --chown=node:node --chmod=0555 deploy/provisioning-proxy.mjs ./deploy/provisioning-proxy.mjs
