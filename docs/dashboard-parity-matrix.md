@@ -209,7 +209,7 @@ calls the route (collected in [4.13](#413-routes-without-a-legacy-ui-caller)).
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | GET | `/session` | router, session | — | `bootstrapSession` | `shell/session` | P2 | Each call mints a new session (F10): bootstrap once per tab, again on 401 |
 | GET | `/profile` | router | — | overview, profile, top-bar chip | `profile`, `shell` | P2/P3 | |
-| GET | `/server` | router | — | overview | `overview`, `shell` | P3 | `managedOAuthUrl`, limits, version; the React sidebar version foot reads it too |
+| GET | `/server` | router | — | overview | `overview` | P3 | `managedOAuthUrl`, limits, version |
 | GET | `/changelog` | router, `dashboard-changelog.ts` | — | changelog | `changelog` | P3 | Server version plus the bundled `CHANGELOG.md`, parsed and capped; `available: false` when the build ships none |
 | PUT | `/preferences` | router | strict schema | theme toggle, profile | `shell/theme`, `profile` | P2 | Sets the theme and display-name cookies |
 

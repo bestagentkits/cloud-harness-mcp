@@ -1,18 +1,25 @@
-import { useQuery } from '@tanstack/react-query';
-import { bffQuery } from '@/lib/bff-query';
 import { cn } from '@/lib/utils';
 import { NavLink } from './nav-link';
 
 /**
- * The running server version at the foot of the sidebar, linking to the Changelog. It shares
- * the `/server` read (and its cache entry) with the Overview. Labelled "Server version"
- * because production runs the pre-version-bump commit. Hidden while the rail is collapsed;
- * the Changelog nav entry stays reachable there.
+ * The running server version the API writes into `<meta name="ch-server-version">` when it
+ * serves the shell (`apps/api/src/dashboard-react-assets.ts`), the same injection the classic
+ * shell uses, so showing it costs no BFF read. An unfilled placeholder (the Vite dev server)
+ * or a missing tag reads as no version.
+ */
+export function serverVersionFrom(doc: Pick<Document, 'querySelector'> = document): string | undefined {
+  const value = doc.querySelector<HTMLMetaElement>('meta[name="ch-server-version"]')?.content ?? '';
+  return /^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(value) ? value : undefined;
+}
+
+/**
+ * The server version at the foot of the sidebar, linking to the Changelog. Labelled "Server
+ * version" because production runs the pre-version-bump commit. Hidden while the rail is
+ * collapsed; the Changelog nav entry stays reachable there.
  */
 export function SidebarVersion({ collapsed = false, onNavigate, className }: { collapsed?: boolean; onNavigate?: () => void; className?: string }) {
-  const query = useQuery(bffQuery<{ version?: unknown }>('/server'));
-  const version = query.data?.data?.version;
-  if (collapsed || typeof version !== 'string' || !version) return null;
+  const version = serverVersionFrom();
+  if (collapsed || !version) return null;
   return (
     <NavLink
       to="/changelog"
