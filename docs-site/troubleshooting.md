@@ -408,6 +408,8 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 1. Start a new agent without `continueFrom`, and give it a summary of the earlier work.
 2. Close workspaces whose agent sessions are no longer needed to free budget, or, if long durable chains are expected, ask the operator to raise the cap within its documented bounds.
 
+**After the durable engine is turned off:** `agent_spawn` with `continueFrom` of a default (`pi-coding`) agent can be refused with `LIMIT_EXCEEDED` (`persisted agent sessions would exceed the workspace session byte budget`). Durable session stores left in your workspaces still count toward the session byte budgets until their workspace closes or retention purges them. The durable lineage cap does not apply here, so raising it does not help. Either ask the operator to raise the session budgets, or close the workspace and brief a new agent in a new one; closing deletes the workspace's stored sessions, including the one you meant to continue.
+
 ---
 
 ### 34. An agent reports `EFFECT_UNKNOWN` for a write, delete, or move

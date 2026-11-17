@@ -505,7 +505,15 @@ The default spawn path never reads the stored sessions, so turning the flags
 off needs no data change. Stored sessions, receipts, and durable lineage
 databases stay until the retention in `AGENT_SESSION_RETENTION_MS` purges them
 or their workspace closes, so turning a flag back on makes those agents
-continuable again.
+continuable again. Until then, leftover durable lineage databases keep counting
+toward the `AGENT_*_SESSION_BYTES` budgets even with the durable engine off, for
+their workspace, its owner, and the instance. With persistence still on, a
+later `pi-coding` `continueFrom` can therefore be refused with `LIMIT_EXCEEDED`.
+`AGENT_DURABLE_MAX_LINEAGE_BYTES` caps only durable commits, so raising it does
+not change that refusal. Reclaim the space by closing the workspace (which also
+deletes its other stored sessions), waiting for `AGENT_SESSION_RETENTION_MS` to
+purge the stores, or raising the session budgets within their bounds
+([configuration](configuration.md#managed-agents)) and restarting the runner.
 
 A rollback to a runner older than session persistence also needs the schema
 steps in

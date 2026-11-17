@@ -354,6 +354,13 @@ and its evidence are in
   (without `continueFrom`), free budget by closing workspaces whose sessions are
   no longer needed, or ask the operator to raise the cap within its bounds
   ([configuration](configuration.md#managed-agents)).
+- `agent_spawn` with `continueFrom` of a `pi-coding` agent is refused with
+  `LIMIT_EXCEEDED` (`persisted agent sessions would exceed the workspace session
+  byte budget`) after the durable engine was turned off: leftover durable
+  lineage databases still count toward the session budgets. Raising
+  `AGENT_DURABLE_MAX_LINEAGE_BYTES` does not help; see the
+  [kill switch](operations.md#kill-switch-and-rollback) for how to reclaim the
+  space and what closing the workspace discards.
 - A continuation's model sees a tool result with `EFFECT_UNKNOWN`: the earlier
   run was stopped while a write, delete, or move was in flight, and the runner
   could not establish from the workspace whether it landed. The call was not
