@@ -494,6 +494,31 @@ describe('DurableSessionStore', () => {
     expect(after.totalBytes()).toBe(0);
   });
 
+  it('tolerates an unreadable store directory at start only while the durable runtime is off', async () => {
+    const parent = await stateDir();
+    const notADirectory = join(parent, 'agent-sessions');
+    await mkdir(parent, { recursive: true });
+    await writeFile(notADirectory, 'not a directory');
+    const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const off = new DurableSessionStore({ stateDir: notADirectory, enabled: false });
+      stores.push(off);
+      await expect(off.measure()).resolves.toBeUndefined();
+      expect(off.totalBytes()).toBe(0);
+      expect(String(warn.mock.calls.at(-1)?.[0])).toContain('"code":"ENOTDIR"');
+    } finally {
+      warn.mockRestore();
+    }
+
+    const on = new DurableSessionStore({ stateDir: notADirectory, enabled: true });
+    stores.push(on);
+    await expect(on.measure()).rejects.toThrow(`durable session store directory ${notADirectory} is unreadable (ENOTDIR)`);
+
+    // Workspace cleanup at start finds no session files under a store path that is a file.
+    await expect(deleteDurableSessionFiles(notADirectory, LINEAGE)).resolves.toBeUndefined();
+    expect(existsSync(notADirectory)).toBe(true);
+  });
+
   it.skipIf(process.platform === 'win32')('keeps the database and its directory private to the runner user', async () => {
     // POSIX permission bits; Windows ACLs do not map onto these modes.
     const dir = await stateDir();
