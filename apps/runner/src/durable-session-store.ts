@@ -271,7 +271,7 @@ async function orphanedOwnerFiles(stateDir: string, lineageRootId: string): Prom
   try {
     names = await readdir(stateDir);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    if (isAbsentPath(error)) return [];
     throw error;
   }
   return names
@@ -288,13 +288,31 @@ export async function deleteDurableSessionFiles(stateDir: string, lineageRootId:
   const paths = sessionPaths(stateDir, lineageRootId);
   const temporaryOwners = await orphanedOwnerFiles(stateDir, lineageRootId);
   await Promise.all([
-    rm(paths.database, { force: true }),
-    rm(`${paths.database}-wal`, { force: true }),
-    rm(`${paths.database}-shm`, { force: true }),
-    rm(`${paths.database}-journal`, { force: true }),
-    rm(paths.owner, { force: true }),
-    ...temporaryOwners.map((path) => rm(path, { force: true }))
-  ]);
+    paths.database,
+    `${paths.database}-wal`,
+    `${paths.database}-shm`,
+    `${paths.database}-journal`,
+    paths.owner,
+    ...temporaryOwners
+  ].map(removeIfPresent));
+}
+
+/**
+ * Missing, or under a path component that is not a directory (a store path a state restore left
+ * as a file): either way no session file can exist there. Permission errors stay fatal, because
+ * files may really remain and the caller keeps its records to retry.
+ */
+function isAbsentPath(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+async function removeIfPresent(path: string): Promise<void> {
+  try {
+    await rm(path, { force: true });
+  } catch (error) {
+    if (!isAbsentPath(error)) throw error;
+  }
 }
 
 /** Removes the session files of every lineage a closed workspace owned. */
@@ -491,8 +509,15 @@ export class DurableSessionStore {
     try {
       names = await readdir(stateDir);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw error;
+      const code = (error as NodeJS.ErrnoException).code ?? 'UNKNOWN';
+      if (code === 'ENOENT') return;
+      // With the durable engine off, an unreadable store (for example a file or a foreign-owned
+      // directory left by a state restore) must not stop the runner; its stores go uncounted.
+      if (!this.#enabled) {
+        process.stderr.write(`${JSON.stringify({ level: 'warn', time: Date.now(), msg: 'durable session store directory is unreadable; its stores are not counted toward the session budgets', path: stateDir, code })}\n`);
+        return;
+      }
+      throw new Error(`durable session store directory ${stateDir} is unreadable (${code}); fix its type or permissions, or turn the durable runtime off`, { cause: error });
     }
     for (const name of names) {
       const lineageRootId = name.endsWith('.sqlite') ? name.slice(0, -'.sqlite'.length) : '';
