@@ -600,7 +600,7 @@ describe('Durable Task Engine & Restart Reconciliation', () => {
 });
 
 describe('startup reconciliation of a workspace whose durable session files cannot be removed', () => {
-  function setup(stopError: Error) {
+  function setup(stopError: Error, containerName: string | null = null) {
     const dir = tempDir();
     const dbPath = join(dir, 'state.sqlite');
     const store = new StateStore(dbPath);
@@ -626,8 +626,9 @@ describe('startup reconciliation of a workspace whose durable session files cann
       enableRepoCache: false,
       repoCacheRoot: join(dir, 'cache')
     };
-    const stopWorkspace = vi.fn(async () => { throw stopError; });
-    const service = new WorkspaceService(config, store, { manager: { stopWorkspace } } as never);
+    // The first close fails as given; once the filesystem is repaired, a retried close succeeds.
+    const stopWorkspace = vi.fn(async (): Promise<void> => undefined).mockRejectedValueOnce(stopError);
+    const service = new WorkspaceService(config, store, { manager: { stopWorkspace, hasActiveAgents: () => false } } as never);
     const ownerId = store.resolvePrincipal({ kind: 'external', issuer: 'https://issuer.com', subject: 'user-startup-durable' });
     const wsId = 'ws_dddddddddddddddddddddddddddddddd';
     const workspacePath = join(dir, 'jobs', wsId);
@@ -637,7 +638,7 @@ describe('startup reconciliation of a workspace whose durable session files cann
       ownerId,
       idempotencyKey: 'ik_ws_startup_durable',
       repositoryUrl: 'https://github.com/org/repo',
-      containerName: null,
+      containerName,
       workspacePath,
       status: 'ACTIVE',
       networkProfile: 'network-none',
@@ -651,8 +652,15 @@ describe('startup reconciliation of a workspace whose durable session files cann
       generation: 1,
       error: null
     });
-    const closeAtStartup = (service as unknown as { closeAtStartup(record: unknown, reason: string): Promise<void> }).closeAtStartup.bind(service);
-    return { store, wsId, workspacePath, stopWorkspace, close: () => closeAtStartup(store.byId(wsId), 'executor missing during startup reconciliation') };
+    const closeAtStartup = (service as unknown as { closeAtStartup(record: unknown, reason: string, executorMissing: boolean): Promise<void> }).closeAtStartup.bind(service);
+    return {
+      store,
+      service,
+      wsId,
+      workspacePath,
+      stopWorkspace,
+      close: (executorMissing = true) => closeAtStartup(store.byId(wsId), executorMissing ? 'executor missing during startup reconciliation' : 'runner restarted during workspace creation', executorMissing)
+    };
   }
 
   it('defers the close and keeps the workspace recoverable instead of refusing to start', async () => {
@@ -668,6 +676,57 @@ describe('startup reconciliation of a workspace whose durable session files cann
       // Nothing past the failed durable cleanup ran, so the workspace files are kept for the retry.
       expect(existsSync(workspacePath)).toBe(true);
       expect(String(warn.mock.calls.at(-1)?.[0])).toContain('"code":"EACCES"');
+    } finally {
+      warn.mockRestore();
+      store.close();
+    }
+  });
+
+  it('drops a verified-missing executor name on deferral, so the reaper checks the checkout with a recovery helper and then closes', async () => {
+    const denied = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    const { store, service, wsId, workspacePath, stopWorkspace, close } = setup(new DurableCleanupError('/state/agent-sessions', denied), 'chm-ws-stale-executor');
+    const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await close(true);
+      expect(store.byId(wsId)).toMatchObject({ status: 'EXPIRED_RECOVERABLE', containerName: null });
+
+      // Recovery never execs into the missing container: with no name it takes the helper path.
+      const internals = service as unknown as {
+        runWorker: (...args: unknown[]) => Promise<unknown>;
+        runRecoveryWorker: (record: { containerName: string | null }, ...rest: unknown[]) => Promise<unknown>;
+        autoCloseRecoverable(id: string, generation: number): Promise<void>;
+      };
+      const runWorker = vi.fn(async () => { throw new Error('exec into a missing container'); });
+      internals.runWorker = runWorker;
+      const helperChecks: Array<string | null> = [];
+      internals.runRecoveryWorker = vi.fn(async (record: { containerName: string | null }) => {
+        helperChecks.push(record.containerName);
+        if (record.containerName) return await runWorker();
+        return { ok: true, message: 'clean', data: { uncommittedPaths: 0, stashes: 0, unpushedCommits: 0 }, truncated: false };
+      });
+
+      // The filesystem is repaired and the retry window has passed: the reaper's auto-close completes.
+      const due = store.byId(wsId)!;
+      store.updateFenced(wsId, due.generation, ['EXPIRED_RECOVERABLE'], { recoverableUntil: Date.now() - 1 });
+      await internals.autoCloseRecoverable(wsId, due.generation);
+      expect(helperChecks).toEqual([null]);
+      expect(runWorker).not.toHaveBeenCalled();
+      expect(stopWorkspace).toHaveBeenCalledTimes(2);
+      expect(store.byId(wsId)?.status).toBe('CLOSED');
+      expect(existsSync(workspacePath)).toBe(false);
+    } finally {
+      warn.mockRestore();
+      store.close();
+    }
+  });
+
+  it('keeps the executor name of a workspace still in creation, whose executor may be live', async () => {
+    const denied = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    const { store, wsId, close } = setup(new DurableCleanupError('/state/agent-sessions', denied), 'chm-ws-creating');
+    const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await close(false);
+      expect(store.byId(wsId)).toMatchObject({ status: 'EXPIRED_RECOVERABLE', containerName: 'chm-ws-creating' });
     } finally {
       warn.mockRestore();
       store.close();

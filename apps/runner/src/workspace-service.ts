@@ -672,8 +672,8 @@ export class WorkspaceService {
         }
         continue;
       }
-      if (record.status === 'CREATING') await this.closeAtStartup(record, 'runner restarted during workspace creation');
-      else if (!record.containerName || !(await inspectContainer(record.containerName))) await this.closeAtStartup(record, 'executor missing during startup reconciliation');
+      if (record.status === 'CREATING') await this.closeAtStartup(record, 'runner restarted during workspace creation', false);
+      else if (!record.containerName || !(await inspectContainer(record.containerName))) await this.closeAtStartup(record, 'executor missing during startup reconciliation', true);
       else {
         const inspection = await inspectContainer(record.containerName);
         const hostConfig = inspection?.HostConfig as { NetworkMode?: string } | undefined;
@@ -5384,12 +5384,21 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
    * session files could not be removed is deferred: the workspace stays EXPIRED_RECOVERABLE with
    * its lineage records and closed admission, and a later close retries. Any other failure still
    * stops the runner from starting.
+   *
+   * When startup verified that the executor is gone, a deferred workspace drops its container
+   * name: recovery and the auto-close unsaved-work check then use a recovery helper on the
+   * checkout instead of exec'ing into a container that no longer exists. A workspace still in
+   * creation keeps its name, because its executor may be live.
    */
-  private async closeAtStartup(record: WorkspaceRecord, reason: string): Promise<void> {
+  private async closeAtStartup(record: WorkspaceRecord, reason: string, executorMissing: boolean): Promise<void> {
     try {
       await this.closeRecord(record, reason);
     } catch (error) {
       if (!(error instanceof DurableCleanupError)) throw error;
+      const deferred = this.store.byId(record.id);
+      if (executorMissing && deferred?.status === 'EXPIRED_RECOVERABLE' && deferred.containerName !== null && deferred.containerName === record.containerName) {
+        this.store.updateFenced(deferred.id, deferred.generation, ['EXPIRED_RECOVERABLE'], { containerName: null });
+      }
       process.stderr.write(`${JSON.stringify({ level: 'warn', time: Date.now(), msg: 'workspace close deferred: durable session files could not be removed', workspaceId: record.id, path: error.path, code: error.code })}\n`);
     }
   }
