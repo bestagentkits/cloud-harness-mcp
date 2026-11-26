@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { DetailList } from '@/components/data/detail-list';
-import { ActionButton } from '@/components/ui/button';
+import { ActionButton, Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Field } from '@/components/ui/field';
@@ -31,6 +31,7 @@ export function RedirectUrisPanel({ view, revision, onStatus }: { view: Redirect
   const reloadOnConflict = useConflictReload(oauthRead().queryKey);
   const draft = parseUriLines(text);
   const removed = removedUris(saved, draft);
+  const unchanged = sameUris(saved, draft);
 
   async function persist() {
     onStatus('Saving…');
@@ -41,18 +42,6 @@ export function RedirectUrisPanel({ view, revision, onStatus }: { view: Redirect
       onStatus(await reloadOnConflict(error) ? CONFLICT_MESSAGE : mutationErrorText(error));
       throw error;
     }
-  }
-
-  async function save() {
-    if (sameUris(saved, draft)) {
-      onStatus('No changes to save.');
-      return;
-    }
-    if (removed.length > 0) {
-      setConfirming(true);
-      return;
-    }
-    await persist();
   }
 
   const facts = [
@@ -96,7 +85,10 @@ export function RedirectUrisPanel({ view, revision, onStatus }: { view: Redirect
               <Textarea rows={Math.min(12, Math.max(4, draft.length + 1))} spellCheck={false} className="font-mono text-xs" value={text} onChange={(event) => setText(event.target.value)} />
             </Field>
             <div className="flex flex-wrap gap-2">
-              <ActionButton data-testid="save-oauth-redirect-uris" pendingLabel="Saving…" successLabel="Saved" onAction={save}>Save redirect URIs</ActionButton>
+              {removed.length > 0
+                // A removal is saved only from the confirmation dialog, so this button just opens it.
+                ? <Button data-testid="save-oauth-redirect-uris" onClick={() => setConfirming(true)}>Save redirect URIs…</Button>
+                : <ActionButton data-testid="save-oauth-redirect-uris" disabled={unchanged} pendingLabel="Saving…" successLabel="Saved" onAction={persist}>Save redirect URIs</ActionButton>}
             </div>
             <ConfirmDialog
               open={confirming}

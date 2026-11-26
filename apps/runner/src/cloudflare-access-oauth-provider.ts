@@ -97,6 +97,8 @@ export class CloudflareAccessOAuthProvider implements OAuthGrantProvider {
   private async getApplication(): Promise<AccessApplication> {
     const result = await this.send('GET');
     if (!isRecord(result)) throw providerError('provider_invalid_response');
+    // An answer that names a different application is not this application's state.
+    if (result.id !== undefined && String(result.id).toLowerCase() !== this.config.appId.toLowerCase()) throw providerError('provider_invalid_response');
     return result;
   }
 
@@ -137,7 +139,8 @@ export class CloudflareAccessOAuthProvider implements OAuthGrantProvider {
 function snapshot(application: AccessApplication): OAuthGrantProviderSnapshot {
   const oauth = isRecord(application.oauth_configuration) ? application.oauth_configuration : undefined;
   const grant = oauth && isRecord(oauth.grant) ? oauth.grant : undefined;
-  const registration = oauth && isRecord(oauth.dynamic_client_registration) ? oauth.dynamic_client_registration : undefined;
+  const rawRegistration = oauth?.dynamic_client_registration;
+  const registration = isRecord(rawRegistration) ? rawRegistration : undefined;
   const sessionDuration = grant?.session_duration;
   const tokenLifetime = grant?.access_token_lifetime;
   const allowed = registration?.allowed_uris;
@@ -154,7 +157,7 @@ function snapshot(application: AccessApplication): OAuthGrantProviderSnapshot {
     allowAnyOnLocalhost: booleanOrNull(registration?.allow_any_on_localhost),
     allowAnyOnLoopback: booleanOrNull(registration?.allow_any_on_loopback),
     redirectUris: validList ? allowed.filter((uri): uri is string => typeof uri === 'string') : null,
-    redirectUrisMalformed: allowed !== undefined && !validList
+    redirectUrisMalformed: (rawRegistration !== undefined && registration === undefined) || (allowed !== undefined && !validList)
   };
 }
 
@@ -162,10 +165,13 @@ function booleanOrNull(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
 
-/** Order-insensitive: the provider may return the allowlist in its own order. */
+/**
+ * Order-insensitive, because the provider may return the allowlist in its own order, but
+ * exact in size: a read-back with repeats or extra entries is not the list that was written.
+ */
 function sameMembers(actual: readonly string[], expected: readonly string[]): boolean {
   const wanted = new Set(expected);
-  return new Set(actual).size === wanted.size && actual.every((uri) => wanted.has(uri));
+  return actual.length === expected.length && new Set(actual).size === wanted.size && actual.every((uri) => wanted.has(uri));
 }
 
 /**

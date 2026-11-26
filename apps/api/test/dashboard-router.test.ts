@@ -24,6 +24,21 @@ const config: ApiConfig = {
   mcpGatewayMaxConnections: 32, mcpGatewayAllowInsecureHttp: false, mcpGatewayAllowPrivateEndpoints: false
 };
 
+/** A view that satisfies the strict OAuth settings schema the BFF enforces. */
+const OAUTH_VIEW = {
+  provider: { id: 'cloudflare-access', label: 'Cloudflare Access Managed OAuth' },
+  capabilities: {
+    canReadGrantConfiguration: true, canWriteGrantConfiguration: true, supportsUnboundedGrant: false, maxGrantSeconds: 2_592_000, minGrantSeconds: 3_600,
+    grantPresetsSeconds: [86_400], tokenLifetime: { minSeconds: 60, maxSeconds: 3_600, defaultSeconds: 900 }
+  },
+  effective: { oauthEnabled: true, grantSeconds: 2_592_000, grantExplicitlyConfigured: true, grantIsProviderMaximum: true, tokenLifetimeSeconds: 900 },
+  management: { state: 'unmanaged', desired: null, updatedAt: null, updatedBy: null },
+  revision: 'b'.repeat(64),
+  lastSync: null,
+  readOnlyReason: null,
+  redirectUris: { canWrite: true, dynamicRegistrationEnabled: true, allowAnyOnLocalhost: null, allowAnyOnLoopback: null, uris: [], readOnlyReason: null, presets: [] }
+};
+
 const STALE_LIFECYCLE_REVISION = 99;
 const RUNNER_LIFECYCLE = { maxActiveWorkspacesPerOwner: 3, idleTtlSeconds: 300, wallTtlSeconds: 900, recoverableGraceSeconds: 3_600 } as const;
 const LIFECYCLE_BOUNDS = {
@@ -124,7 +139,10 @@ beforeEach(async () => {
         if ((input.grant as { seconds?: number } | undefined)?.seconds === 86_400) {
           return { ok: false, message: 'conflict', truncated: false, error: { code: 'CONFLICT', message: 'The Cloudflare OAuth configuration changed since this page loaded. Reload to see the current values.', retryable: false } };
         }
-        return { ok: true, message: 'Inbound OAuth session settings', truncated: false, data: { provider: { id: 'cloudflare-access', label: 'Cloudflare Access Managed OAuth' }, revision: 'b'.repeat(64) } };
+        if ((input.uris as string[] | undefined)?.includes('https://leak.example/cb')) {
+          return { ok: true, message: 'Inbound OAuth session settings', truncated: false, data: { ...OAUTH_VIEW, apiToken: 'cf-secret' } };
+        }
+        return { ok: true, message: 'Inbound OAuth session settings', truncated: false, data: OAUTH_VIEW };
       }
       return { ok: true, message: 'detail', truncated: false, data: {
         workspaceId, repositoryUrl: 'https://github.com/example/project.git', status: 'ACTIVE', networkProfile: 'network-none', generation: 7,
@@ -917,6 +935,12 @@ describe('dashboard BFF', () => {
     const saved = await send('/api/v1/settings/oauth/redirect-uris', { method: 'POST', headers, body: JSON.stringify(body) });
     expect(saved.status).toBe(200);
     expect(calls.at(-1)).toEqual({ operation: 'oauth_redirect_uris_update', input: body, principal });
+    expect(saved.json.data.redirectUris.canWrite).toBe(true);
+
+    // An answer outside the strict view schema never reaches the browser.
+    const leaked = await send('/api/v1/settings/oauth/redirect-uris', { method: 'POST', headers, body: JSON.stringify({ ...body, uris: ['https://leak.example/cb'] }) });
+    expect(leaked.status).toBe(502);
+    expect(JSON.stringify(leaked.json)).not.toContain('cf-secret');
 
     const before = calls.length;
     for (const invalid of [{ ...body, apiToken: 'leak' }, { uris: body.uris }, { ...body, uris: 'https://client.example/cb' }]) {

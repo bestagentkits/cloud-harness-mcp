@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseUriLines, presetState, readRedirectUris, removedUris, togglePreset } from './oauth-redirect-model';
+import { parseUriLines, presetState, readRedirectUris, removedUris, sameUris, togglePreset } from './oauth-redirect-model';
 
 const gemini = { id: 'gemini', label: 'Gemini custom apps', uris: ['https://oauth-redirect.googleusercontent.com/r/*'] };
 const claude = { id: 'claude', label: 'Claude', uris: ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback'] };
@@ -31,5 +31,10 @@ describe('redirect URI editor model', () => {
 
   it('reports what a save would remove from the provider allowlist', () => {
     expect(removedUris(['https://a.example/cb', 'https://b.example/cb'], ['https://b.example/cb', 'https://c.example/cb'])).toEqual(['https://a.example/cb']);
+  });
+
+  it('treats an addition as a change even when the provider list has repeats', () => {
+    expect(sameUris(['https://a.example/cb', 'https://a.example/cb'], ['https://a.example/cb', 'https://b.example/cb'])).toBe(false);
+    expect(sameUris(['https://a.example/cb', 'https://a.example/cb'], ['https://a.example/cb'])).toBe(true);
   });
 });

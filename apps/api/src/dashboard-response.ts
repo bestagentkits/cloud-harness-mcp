@@ -1,5 +1,8 @@
 import type { Response } from 'express';
-import type { RunnerResponse } from '@cloud-harness/contracts';
+import { OAuthGrantSettingsViewSchema, type RunnerResponse } from '@cloud-harness/contracts';
+
+/** Operations whose answer is the inbound OAuth settings view; it reaches the browser only when it matches the strict schema. */
+const oauthViewOperations = new Set<string>(['oauth_settings_get', 'oauth_settings_update', 'oauth_redirect_uris_update']);
 
 const statuses: Record<string, number> = {
   AUTHENTICATION_FAILED: 401, FORBIDDEN: 404, INVALID_INPUT: 400, NOT_FOUND: 404,
@@ -1038,6 +1041,15 @@ export function sendRunnerResponse(response: Response, operation: DashboardRespo
     // A refused GitHub state or proof is a 403 the dashboard reads as "start again"; the shared table hides FORBIDDEN as 404.
     const status = code === 'FORBIDDEN' && githubUserAuthorizationOperations.has(operation) ? 403 : (statuses[code] ?? 500);
     response.status(status).json({ error: code.toLowerCase(), message });
+    return;
+  }
+  if (oauthViewOperations.has(operation)) {
+    const view = OAuthGrantSettingsViewSchema.safeParse(result.data);
+    if (!view.success) {
+      response.status(502).json({ error: 'unavailable', message: 'OAuth session settings returned an unexpected answer, so nothing is shown. Reload to try again.' });
+      return;
+    }
+    response.json({ data: view.data, truncated: result.truncated });
     return;
   }
   response.json({ data: mapDashboardData(operation, result.data), truncated: result.truncated, ...(result.cursor ? { cursor: result.cursor } : {}) });

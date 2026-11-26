@@ -263,7 +263,10 @@ The same adapter edits the Managed OAuth redirect allowlist
 (`oauth_configuration.dynamic_client_registration.allowed_uris`) from Dashboard
 Settings, under the same write rules: re-read, revision check, a PUT that
 changes only that list, and an order-insensitive read-back that must come from
-the same supported, Managed-OAuth-enabled application. The allowlist
+the same supported, Managed-OAuth-enabled application (a GET naming another
+application id is refused) and hold exactly the written entries, no more and no
+repeats. The BFF forwards the OAuth settings view only when it matches the
+strict `OAuthGrantSettingsViewSchema`. The allowlist
 decides where Access may deliver authorization codes, so the runner validates
 every entry before calling Cloudflare: a literal `https://`, or `http://` on
 `localhost` and `127.0.0.1` only; no credentials, query string, or fragment;

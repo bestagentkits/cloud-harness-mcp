@@ -41,7 +41,8 @@ export function useOAuthWrite() {
 
 /** The answer is the whole OAuth view, so it replaces the `/settings/oauth` read like a grant save. */
 export function useRedirectUrisWrite() {
-  return useReadBackWrite<RedirectUrisUpdate>('/settings/oauth/redirect-uris', oauthRead().queryKey, 'The redirect URIs were not saved');
+  // Neutral: a failed answer can also mean "may or may not have been applied"; the status line says which.
+  return useReadBackWrite<RedirectUrisUpdate>('/settings/oauth/redirect-uris', oauthRead().queryKey, 'The redirect URI save did not complete');
 }
 
 /** A stale revision (409): the panel reloads the current values instead of retrying the write. */

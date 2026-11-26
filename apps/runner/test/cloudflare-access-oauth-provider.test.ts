@@ -177,6 +177,24 @@ describe('Cloudflare Access Managed OAuth provider', () => {
     }
     const malformedRead = new CloudflareAccessOAuthProvider(config, fakeCloudflare({ ...application(), oauth_configuration: { enabled: true, dynamic_client_registration: { allowed_uris: [null] } } }).request);
     expect(await malformedRead.read()).toMatchObject({ redirectUris: null, redirectUrisMalformed: true });
+
+    // A non-object registration is malformed, not absent.
+    const brokenParent = new CloudflareAccessOAuthProvider(config, fakeCloudflare({ ...application(), oauth_configuration: { enabled: true, dynamic_client_registration: 'off' } }).request);
+    expect(await brokenParent.read()).toMatchObject({ redirectUris: null, redirectUrisMalformed: true });
+
+    // A read-back with repeats, or one naming another application, confirms nothing.
+    const doubled = fakeCloudflare(application());
+    const doubling = new CloudflareAccessOAuthProvider(config, (async (input: string | URL | Request, init?: RequestInit) => {
+      const response = await doubled.request(input, init);
+      if ((init?.method ?? 'GET') !== 'GET' || !doubled.calls.some((call) => call.method === 'PUT')) return response;
+      const body = await response.json() as { result: { oauth_configuration: { dynamic_client_registration: { allowed_uris: string[] } } } };
+      const list = body.result.oauth_configuration.dynamic_client_registration.allowed_uris;
+      list.push(...list);
+      return Response.json(body);
+    }) as typeof fetch);
+    expect(await reason(doubling.writeRedirectUris(uris, (await doubling.read()).revision))).toBe('readback_mismatch');
+    const other = new CloudflareAccessOAuthProvider(config, fakeCloudflare({ ...application(), id: '99999999-2222-4333-8444-555555555555' }).request);
+    expect(await reason(other.read())).toBe('provider_invalid_response');
   });
 
   it('refuses to overwrite a configuration that changed since the caller read it', async () => {

@@ -144,6 +144,15 @@ export const OAUTH_REDIRECT_URI_PRESETS: readonly OAuthRedirectUriPreset[] = [
   { id: 'gemini', label: 'Gemini custom apps', uris: ['https://oauth-redirect.googleusercontent.com/r/*'] }
 ];
 
+/** True when `value` holds a C0 control character or DEL, which never belongs in a callback URL. */
+export function containsControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
 /**
  * Why `value` may not be allowlisted, or `null` when it may. A redirect URI
  * decides where authorization codes are delivered, so only `https://` (or
@@ -157,6 +166,8 @@ export const OAUTH_REDIRECT_URI_PRESETS: readonly OAuthRedirectUriPreset[] = [
 export function oauthRedirectUriProblem(value: string): string | null {
   if (value.length === 0 || value.length > OAUTH_REDIRECT_URI_MAX_LENGTH) return `A redirect URI must be 1–${OAUTH_REDIRECT_URI_MAX_LENGTH} characters.`;
   if (/\s/.test(value)) return 'A redirect URI cannot contain spaces.';
+  if (containsControlCharacter(value)) return 'A redirect URI cannot contain control characters.';
+  if (/^https?:\/\/\//.test(value)) return 'A redirect URI needs a host after the scheme.';
   let url: URL;
   try { url = new URL(value); } catch { return 'Enter an absolute URL such as https://client.example/oauth/callback.'; }
   const loopback = LOOPBACK_HOSTS[url.hostname] === true;

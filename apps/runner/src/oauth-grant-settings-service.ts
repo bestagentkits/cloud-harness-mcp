@@ -1,5 +1,6 @@
 import {
   HarnessError,
+  containsControlCharacter,
   OAUTH_GRANT_SECONDS_FLOOR,
   OAUTH_REDIRECT_URI_MAX_LENGTH,
   OAUTH_REDIRECT_URI_PRESETS,
@@ -44,8 +45,8 @@ const REDIRECT_URI_PRESETS = OAUTH_REDIRECT_URI_PRESETS.map((preset) => ({ id: p
 function redirectListProblem(snapshot: OAuthGrantProviderSnapshot): string | null {
   if (snapshot.redirectUrisMalformed) return 'Cloudflare returned a redirect allowlist Cloud Harness cannot read. Review it in Cloudflare Zero Trust.';
   const uris = snapshot.redirectUris ?? [];
-  if (uris.some((uri) => /[?#@]/.test(uri) || uri.length > OAUTH_REDIRECT_URI_MAX_LENGTH)) {
-    return 'A redirect URI in Cloudflare contains a query string, credentials, or a fragment, or is too long, so the list is not shown here. Fix it in Cloudflare Zero Trust, then reload.';
+  if (uris.some((uri) => /[?#@\s]/.test(uri) || containsControlCharacter(uri) || uri.length > OAUTH_REDIRECT_URI_MAX_LENGTH)) {
+    return 'A redirect URI in Cloudflare contains a query string, credentials, a fragment, whitespace or control characters, or is too long, so the list is not shown here. Fix it in Cloudflare Zero Trust, then reload.';
   }
   if (uris.length > OAUTH_REDIRECT_URIS_MAX) return `Cloudflare holds more than ${OAUTH_REDIRECT_URIS_MAX} redirect URIs, more than this panel can save. Manage them in Cloudflare Zero Trust.`;
   return null;
@@ -159,6 +160,8 @@ export class OAuthGrantSettingsService {
       const problem = redirectListProblem(before);
       if (problem) throw new HarnessError('CONFLICT', problem, 409, false, { reason: 'redirect_uris_unmanageable' });
       snapshot = await provider.writeRedirectUris(uris, input.expectedRevision);
+      // A read-back this panel could not show is not a confirmation either.
+      if (redirectListProblem(snapshot)) throw providerError('readback_mismatch');
     } catch (error) {
       this.recordFailure(error);
       throw error;

@@ -64,6 +64,9 @@ export function removedUris(saved: readonly string[], draft: readonly string[]):
   return saved.filter((uri) => !draft.includes(uri));
 }
 
+/** Equal when both hold the same distinct URIs; repeats in the provider list do not hide an addition. */
 export function sameUris(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((uri) => right.includes(uri));
+  const a = new Set(left);
+  const b = new Set(right);
+  return a.size === b.size && [...a].every((uri) => b.has(uri));
 }
