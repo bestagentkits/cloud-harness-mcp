@@ -131,7 +131,9 @@ export class CloudflareAccessOAuthProvider implements OAuthGrantProvider {
     } catch {
       throw providerError(method === 'PUT' ? 'write_unconfirmed' : 'provider_invalid_response');
     }
-    if (!isRecord(envelope) || envelope.success !== true) throw providerError(method === 'PUT' ? 'provider_rejected' : 'provider_invalid_response');
+    // Only an explicit refusal proves a PUT changed nothing; an ill-formed answer may follow an applied write.
+    if (method === 'PUT' && isRecord(envelope) && envelope.success === false) throw providerError('provider_rejected');
+    if (!isRecord(envelope) || envelope.success !== true) throw providerError(method === 'PUT' ? 'write_unconfirmed' : 'provider_invalid_response');
     return envelope.result;
   }
 }

@@ -700,6 +700,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
     }
     const bodyError = error as { type?: string };
     if (bodyError?.type === 'entity.too.large') { response.status(413).json({ error: 'request_too_large' }); return; }
+    if (bodyError?.type === 'entity.parse.failed') { response.status(400).json({ error: 'invalid_request', message: 'The request body is not valid JSON.' }); return; }
     response.status(500).json({ error: 'internal_error', message: 'The workspace service could not complete the request.' });
   });
   return router;

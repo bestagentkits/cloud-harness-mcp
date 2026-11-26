@@ -167,9 +167,15 @@ export function oauthRedirectUriProblem(value: string): string | null {
   if (value.length === 0 || value.length > OAUTH_REDIRECT_URI_MAX_LENGTH) return `A redirect URI must be 1–${OAUTH_REDIRECT_URI_MAX_LENGTH} characters.`;
   if (/\s/.test(value)) return 'A redirect URI cannot contain spaces.';
   if (containsControlCharacter(value)) return 'A redirect URI cannot contain control characters.';
+  if (value.includes('\\')) return 'A redirect URI cannot contain backslashes.';
+  if (!value.startsWith('https://') && !value.startsWith('http://')) return 'Use https://, or http:// only for localhost and 127.0.0.1.';
   if (/^https?:\/\/\//.test(value)) return 'A redirect URI needs a host after the scheme.';
   let url: URL;
   try { url = new URL(value); } catch { return 'Enter an absolute URL such as https://client.example/oauth/callback.'; }
+  // The provider matches the string as typed, so the host the parser settled on must be the
+  // host that was typed (`127.1` or a percent-encoded name would otherwise pass as another).
+  const typedHost = value.slice(value.indexOf('//') + 2).split(/[/:]/, 1)[0] ?? '';
+  if (typedHost.toLowerCase() !== url.hostname) return 'Write the host in its plain form, such as client.example or 127.0.0.1.';
   const loopback = LOOPBACK_HOSTS[url.hostname] === true;
   const https = value.startsWith('https://') && url.protocol === 'https:';
   const loopbackHttp = value.startsWith('http://') && url.protocol === 'http:' && loopback;

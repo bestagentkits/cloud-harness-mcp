@@ -237,6 +237,17 @@ test('OAuth: the Gemini preset adds its callback, and removing a URI asks before
   expect(problems).toEqual([]);
 });
 
+test('OAuth: reloading from the provider drops an unsaved redirect URI draft even when nothing changed', async ({ page }) => {
+  const claude = 'https://claude.ai/api/mcp/auth_callback';
+  const redirectUris = { canWrite: true, dynamicRegistrationEnabled: true, allowAnyOnLocalhost: null, allowAnyOnLoopback: null, uris: [claude], readOnlyReason: null, presets: [] };
+  await openSettings(page, { '/settings/oauth': answer(200, oauthBody({ redirectUris })) });
+  const field = page.getByLabel('Redirect URIs (one per line)');
+  await field.fill(`${claude}\nhttps://unsaved.example/cb`);
+  await page.getByRole('button', { name: 'Reload from provider' }).click();
+  await expect(page.getByTestId('oauth-status')).toHaveText('Reloaded from the provider.');
+  await expect(field).toHaveValue(claude);
+});
+
 test('OAuth: a read-only provider shows facts and the reason without a form', async ({ page }) => {
   await openSettings(page, { '/settings/oauth': answer(200, oauthBody({ capabilities: { ...oauthBody().data.capabilities, canWriteGrantConfiguration: false }, readOnlyReason: 'The Cloudflare API token cannot update this Access application.' })) });
   await expect(main(page)).toContainText('cannot update this Access application');

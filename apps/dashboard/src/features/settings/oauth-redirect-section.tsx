@@ -94,7 +94,7 @@ export function RedirectUrisPanel({ view, revision, onStatus }: { view: Redirect
               open={confirming}
               onOpenChange={setConfirming}
               title={`Remove ${removed.length} redirect URI${removed.length === 1 ? '' : 's'}?`}
-              description="Clients that use these callbacks can no longer register or complete a new sign-in."
+              description="Clients that use these callbacks may no longer be able to register or complete a new sign-in, unless another listed URI or loopback setting still allows them."
               details={<ul className="grid gap-1 rounded-md bg-muted px-2 py-1 font-mono text-xs break-all">{removed.map((uri) => <li key={uri}>{uri}</li>)}</ul>}
               confirmLabel="Save and remove"
               pendingLabel="Saving…"

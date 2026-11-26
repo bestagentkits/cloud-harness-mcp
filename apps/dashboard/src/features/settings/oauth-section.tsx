@@ -138,6 +138,9 @@ function ReloadButton({ reload }: { reload: () => Promise<unknown> }) {
 export function OAuthSection() {
   const query = useQuery(oauthRead());
   const [status, setStatus] = useState('');
+  // Bumped by every successful explicit reload, so the redirect editor drops an unsaved draft
+  // even when the provider answers with the same revision.
+  const [reloads, setReloads] = useState(0);
 
   async function reload() {
     setStatus('Reloading…');
@@ -147,6 +150,7 @@ export function OAuthSection() {
       setStatus(message);
       throw new Error(message);
     }
+    setReloads((count) => count + 1);
     setStatus('Reloaded from the provider.');
   }
 
@@ -170,7 +174,7 @@ export function OAuthSection() {
                 ? <OAuthForm view={view} onStatus={setStatus} reload={reload} />
                 : view.provider.id !== 'none' ? <div><ReloadButton reload={reload} /></div> : null}
               {redirect && view.provider.id !== 'none'
-                ? <RedirectUrisPanel key={view.revision ?? 'none'} view={redirect} revision={view.revision} onStatus={setStatus} />
+                ? <RedirectUrisPanel key={`${view.revision ?? 'none'}:${reloads}`} view={redirect} revision={view.revision} onStatus={setStatus} />
                 : null}
             </>
           );

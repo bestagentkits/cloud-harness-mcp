@@ -2925,7 +2925,7 @@ export function initializeDashboard() {
       }
       confirmAction({
         title: `Remove ${removed.length} redirect URI${removed.length === 1 ? '' : 's'}?`,
-        description: 'Clients that use these callbacks can no longer register or complete a new sign-in.',
+        description: 'Clients that use these callbacks may no longer be able to register or complete a new sign-in, unless another listed URI or loopback setting still allows them.',
         target: removed.join('\n'),
         label: 'Save and remove',
         pendingLabel: 'Saving…',

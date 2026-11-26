@@ -942,6 +942,10 @@ describe('dashboard BFF', () => {
     expect(leaked.status).toBe(502);
     expect(JSON.stringify(leaked.json)).not.toContain('cf-secret');
 
+    const unparsable = await send('/api/v1/settings/oauth/redirect-uris', { method: 'POST', headers, body: '{"uris":' });
+    expect(unparsable.status).toBe(400);
+    expect(unparsable.json.error).toBe('invalid_request');
+
     const before = calls.length;
     for (const invalid of [{ ...body, apiToken: 'leak' }, { uris: body.uris }, { ...body, uris: 'https://client.example/cb' }]) {
       const rejected = await send('/api/v1/settings/oauth/redirect-uris', { method: 'POST', headers, body: JSON.stringify(invalid) });

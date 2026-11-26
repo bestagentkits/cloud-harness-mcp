@@ -195,6 +195,19 @@ describe('Cloudflare Access Managed OAuth provider', () => {
     expect(await reason(doubling.writeRedirectUris(uris, (await doubling.read()).revision))).toBe('readback_mismatch');
     const other = new CloudflareAccessOAuthProvider(config, fakeCloudflare({ ...application(), id: '99999999-2222-4333-8444-555555555555' }).request);
     expect(await reason(other.read())).toBe('provider_invalid_response');
+
+    // A 200 PUT answer without an explicit refusal may follow an applied write, so it is unconfirmed.
+    const acked = fakeCloudflare(application());
+    const illFormed = new CloudflareAccessOAuthProvider(config, (async (input: string | URL | Request, init?: RequestInit) => {
+      const response = await acked.request(input, init);
+      return init?.method === 'PUT' ? Response.json({}) : response;
+    }) as typeof fetch);
+    expect(await reason(illFormed.writeRedirectUris(uris, (await illFormed.read()).revision))).toBe('write_unconfirmed');
+    const refused = fakeCloudflare(application());
+    const refusing = new CloudflareAccessOAuthProvider(config, (async (input: string | URL | Request, init?: RequestInit) => (
+      init?.method === 'PUT' ? Response.json({ success: false, errors: [] }) : refused.request(input, init)
+    )) as typeof fetch);
+    expect(await reason(refusing.writeRedirectUris(uris, (await refusing.read()).revision))).toBe('provider_rejected');
   });
 
   it('refuses to overwrite a configuration that changed since the caller read it', async () => {

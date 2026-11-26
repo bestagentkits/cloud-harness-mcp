@@ -282,6 +282,20 @@ describe('inbound OAuth grant settings', () => {
     expect(audits).toEqual([]);
   });
 
+  it('keeps a native-app callback Cloudflare already holds when another client is added', async () => {
+    const provider = new FakeProvider({ oauthEnabled: true, grantSeconds: MAX, tokenLifetimeSeconds: 900, explicit: true });
+    provider.redirectUris = ['com.example.app:/oauth/callback'];
+    const { settings } = service(provider);
+    const view = OAuthGrantSettingsViewSchema.parse(await settings.view());
+    expect(view.redirectUris).toMatchObject({ canWrite: true, uris: ['com.example.app:/oauth/callback'] });
+    const uris = ['com.example.app:/oauth/callback', 'https://oauth-redirect.googleusercontent.com/r/*'];
+    await settings.updateRedirectUris('owner', { uris, expectedRevision: view.revision });
+    expect(provider.redirectWrites).toEqual([uris]);
+    // A new custom-scheme entry is still refused.
+    const next = await settings.view();
+    await expect(settings.updateRedirectUris('owner', { uris: [...uris, 'com.other.app:/cb'], expectedRevision: next.revision })).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  });
+
   it('is reachable as an internal dashboard operation and never echoes the provider credential', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-oauth-op-'));
     directories.push(directory);

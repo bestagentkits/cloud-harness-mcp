@@ -79,7 +79,9 @@ describe('OAuth redirect URI allowlist', () => {
       ...OAUTH_REDIRECT_URI_PRESETS.flatMap((preset) => preset.uris),
       'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-1c0d36c88983d5e09b17fcee',
       'https://client.example/oauth/callback',
-      'http://localhost/*'
+      'http://localhost/*',
+      'https://Client.Example/cb',
+      'http://127.0.0.1:3118/callback/*'
     ]) {
       expect(oauthRedirectUriProblem(uri), uri).toBeNull();
     }
@@ -93,6 +95,10 @@ describe('OAuth redirect URI allowlist', () => {
       'https:///client.example/cb',
       'https://client.example/cb\u0001',
       'https:\\\\client.example\\cb',
+      'https://client.example/a\\b',
+      'http://127.1/cb',
+      'http://0x7f.0.0.1/cb',
+      'https://client%2Eexample/cb',
       'http://[::1]:8080/callback',
       'https://client.example/oauth/callback?tenant=a',
       'https://client.example/cb?token=secret',

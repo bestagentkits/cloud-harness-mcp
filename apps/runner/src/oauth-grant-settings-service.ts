@@ -145,11 +145,6 @@ export class OAuthGrantSettingsService {
     const provider = this.provider;
     if (!provider) throw new HarnessError('FORBIDDEN', 'No OAuth provider integration is configured, so these settings are read-only.', 403, false, { reason: 'provider_not_configured' });
     const uris = [...new Set(input.uris)];
-    // Name the entry by position: the value itself is never echoed back into an error.
-    uris.forEach((uri, index) => {
-      const problem = oauthRedirectUriProblem(uri);
-      if (problem) throw new HarnessError('INVALID_INPUT', `Redirect URI ${index + 1}: ${problem}`, 400, false, { reason: 'redirect_uri_invalid' });
-    });
     let before: OAuthGrantProviderSnapshot;
     let snapshot: OAuthGrantProviderSnapshot;
     try {
@@ -159,6 +154,14 @@ export class OAuthGrantSettingsService {
       if (before.revision !== input.expectedRevision) throw providerError('revision_conflict');
       const problem = redirectListProblem(before);
       if (problem) throw new HarnessError('CONFLICT', problem, 409, false, { reason: 'redirect_uris_unmanageable' });
+      // Entries Cloudflare already holds (such as a native app's custom-scheme callback) are
+      // kept as they are; only new ones must meet the rules. Name an entry by position: the
+      // value itself is never echoed back into an error.
+      const existing = new Set(before.redirectUris ?? []);
+      uris.forEach((uri, index) => {
+        const invalid = existing.has(uri) ? null : oauthRedirectUriProblem(uri);
+        if (invalid) throw new HarnessError('INVALID_INPUT', `Redirect URI ${index + 1}: ${invalid}`, 400, false, { reason: 'redirect_uri_invalid' });
+      });
       snapshot = await provider.writeRedirectUris(uris, input.expectedRevision);
       // A read-back this panel could not show is not a confirmation either.
       if (redirectListProblem(snapshot)) throw providerError('readback_mismatch');

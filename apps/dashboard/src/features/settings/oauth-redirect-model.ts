@@ -59,7 +59,7 @@ export function togglePreset(uris: readonly string[], preset: RedirectUriPreset,
   return on ? [...uris, ...preset.uris.filter((uri) => !uris.includes(uri))] : uris.filter((uri) => !preset.uris.includes(uri));
 }
 
-/** URIs the provider holds that the draft drops: clients using them can no longer register or sign in. */
+/** URIs the provider holds that the draft drops: clients using them may lose registration and sign-in. */
 export function removedUris(saved: readonly string[], draft: readonly string[]): string[] {
   return saved.filter((uri) => !draft.includes(uri));
 }
