@@ -123,7 +123,7 @@ export type OAuthManagementState = z.infer<typeof OAuthManagementStateSchema>;
  */
 export const OAUTH_REDIRECT_URIS_MAX = 128;
 export const OAUTH_REDIRECT_URI_MAX_LENGTH = 2_048;
-const LOOPBACK_HOSTS: Record<string, true> = { localhost: true, '127.0.0.1': true, '[::1]': true };
+const LOOPBACK_HOSTS: Record<string, true> = { localhost: true, '127.0.0.1': true };
 
 export type OAuthRedirectUriPreset = { id: string; label: string; uris: readonly string[] };
 
@@ -146,10 +146,13 @@ export const OAUTH_REDIRECT_URI_PRESETS: readonly OAuthRedirectUriPreset[] = [
 
 /**
  * Why `value` may not be allowlisted, or `null` when it may. A redirect URI
- * decides where authorization codes are delivered, so only `https` (or `http`
- * on loopback) is accepted, a wildcard only as a trailing `/*` on a path, and
- * never origin-wide on a public host. The value is kept exactly as typed,
- * because the provider matches it literally.
+ * decides where authorization codes are delivered, so only `https://` (or
+ * `http://` on localhost and 127.0.0.1) is accepted, a wildcard only as a
+ * trailing `/*` on a path, and never origin-wide on a public host. Queries are
+ * refused so a value never carries a parameter that could hold a secret into
+ * the provider, the audit log, or another operator's view. The value is kept
+ * exactly as typed, because the provider matches it literally, so the checks
+ * apply to the literal string as well as to its parsed form.
  */
 export function oauthRedirectUriProblem(value: string): string | null {
   if (value.length === 0 || value.length > OAUTH_REDIRECT_URI_MAX_LENGTH) return `A redirect URI must be 1–${OAUTH_REDIRECT_URI_MAX_LENGTH} characters.`;
@@ -157,12 +160,15 @@ export function oauthRedirectUriProblem(value: string): string | null {
   let url: URL;
   try { url = new URL(value); } catch { return 'Enter an absolute URL such as https://client.example/oauth/callback.'; }
   const loopback = LOOPBACK_HOSTS[url.hostname] === true;
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return 'Use https://, or http:// only for localhost and 127.0.0.1.';
-  if (url.username || url.password) return 'A redirect URI cannot contain credentials.';
+  const https = value.startsWith('https://') && url.protocol === 'https:';
+  const loopbackHttp = value.startsWith('http://') && url.protocol === 'http:' && loopback;
+  if (!https && !loopbackHttp) return 'Use https://, or http:// only for localhost and 127.0.0.1.';
+  if (url.username || url.password || value.includes('@')) return 'A redirect URI cannot contain credentials.';
+  if (value.includes('?')) return 'A redirect URI cannot contain a query string.';
   if (value.includes('#')) return 'A redirect URI cannot contain a fragment.';
   const star = value.indexOf('*');
   if (star !== -1) {
-    if (star !== value.length - 1 || !value.endsWith('/*') || url.search) return 'A wildcard is allowed only as a trailing /* on the path.';
+    if (star !== value.length - 1 || !value.endsWith('/*')) return 'A wildcard is allowed only as a trailing /* on the path.';
     if (!loopback && url.pathname === '/*') return 'An origin-wide wildcard is refused; scope it under a path, such as https://client.example/oauth/*.';
   }
   return null;

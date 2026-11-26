@@ -11,7 +11,7 @@ import {
   type OAuthGrantSettingsView,
   type OAuthProviderCapabilities
 } from '@cloud-harness/contracts';
-import { providerErrorMessage } from './cloudflare-access-oauth-provider.js';
+import { providerError, providerErrorMessage } from './cloudflare-access-oauth-provider.js';
 import type { OAuthGrantProvider, OAuthGrantProviderSnapshot } from './oauth-grant-provider.js';
 import type { OAuthGrantChangeSource, OAuthGrantSettingsRecord } from './state-store.js';
 
@@ -29,8 +29,8 @@ const SYNC_FAILURE_REASONS = new Set([
   'provider_write_denied', 'provider_application_not_found', 'write_unconfirmed', 'readback_mismatch'
 ]);
 const GRANT_PRESETS_SECONDS = [86_400, 604_800, 1_209_600, 2_592_000];
-/** Audit details stay bounded; the provider read-back remains the full record. */
-const AUDIT_URI_LIST_MAX_CHARS = 2_000;
+/** Audit lists hold one URI per line; validated URIs never contain whitespace. */
+const AUDIT_URI_SEPARATOR = '\n';
 const REDIRECT_URI_PRESETS = OAUTH_REDIRECT_URI_PRESETS.map((preset) => ({ id: preset.id, label: preset.label, uris: [...preset.uris] }));
 
 type OAuthGrantStore = {
@@ -126,26 +126,31 @@ export class OAuthGrantSettingsService {
     const provider = this.provider;
     if (!provider) throw new HarnessError('FORBIDDEN', 'No OAuth provider integration is configured, so these settings are read-only.', 403, false, { reason: 'provider_not_configured' });
     const uris = [...new Set(input.uris)];
-    for (const uri of uris) {
+    // Name the entry by position: the value itself is never echoed back into an error.
+    uris.forEach((uri, index) => {
       const problem = oauthRedirectUriProblem(uri);
-      if (problem) throw new HarnessError('INVALID_INPUT', `${uri.slice(0, 200)}: ${problem}`, 400, false, { reason: 'redirect_uri_invalid' });
-    }
+      if (problem) throw new HarnessError('INVALID_INPUT', `Redirect URI ${index + 1}: ${problem}`, 400, false, { reason: 'redirect_uri_invalid' });
+    });
     let before: OAuthGrantProviderSnapshot;
     let snapshot: OAuthGrantProviderSnapshot;
     try {
       before = await provider.read();
+      // The revision fingerprints the whole OAuth configuration, so a baseline at the
+      // expected revision holds exactly the allowlist the adapter's guarded write replaces.
+      if (before.revision !== input.expectedRevision) throw providerError('revision_conflict');
       snapshot = await provider.writeRedirectUris(uris, input.expectedRevision);
     } catch (error) {
       this.recordFailure(error);
       throw error;
     }
+    this.store.recordOAuthGrantSync(true, null, this.now());
     const previous = new Set(before.redirectUris ?? []);
     const next = new Set(uris);
     this.audit(ownerId, 'settings.oauth_redirect_uris.changed', {
       provider: provider.id,
       count: uris.length,
-      added: uris.filter((uri) => !previous.has(uri)).join(' ').slice(0, AUDIT_URI_LIST_MAX_CHARS),
-      removed: [...previous].filter((uri) => !next.has(uri)).join(' ').slice(0, AUDIT_URI_LIST_MAX_CHARS)
+      added: uris.filter((uri) => !previous.has(uri)).join(AUDIT_URI_SEPARATOR),
+      removed: [...previous].filter((uri) => !next.has(uri)).join(AUDIT_URI_SEPARATOR)
     });
     return this.buildView(snapshot);
   }

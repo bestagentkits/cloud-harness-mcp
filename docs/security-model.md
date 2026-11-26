@@ -262,11 +262,13 @@ account.
 The same adapter edits the Managed OAuth redirect allowlist
 (`oauth_configuration.dynamic_client_registration.allowed_uris`) from Dashboard
 Settings, under the same write rules: re-read, revision check, a PUT that
-changes only that list, and an order-insensitive read-back. The allowlist
+changes only that list, and an order-insensitive read-back that must come from
+the same supported, Managed-OAuth-enabled application. The allowlist
 decides where Access may deliver authorization codes, so the runner validates
-every entry before calling Cloudflare: `https`, or `http` on loopback only; no
-credentials or fragment; a wildcard only as a trailing `/*`, never origin-wide
-on a public host. The Gemini preset allows
+every entry before calling Cloudflare: a literal `https://`, or `http://` on
+`localhost` and `127.0.0.1` only; no credentials, query string, or fragment;
+a wildcard only as a trailing `/*`, never origin-wide on a public host.
+Invalid entries are reported by position, never echoed. The Gemini preset allows
 `https://oauth-redirect.googleusercontent.com/r/*` because Gemini's callback
 carries a per-account id, the same shape as the existing ChatGPT
 `connector/oauth/*` entry; the Access policy, not the callback, still decides

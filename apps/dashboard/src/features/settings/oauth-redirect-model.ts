@@ -30,7 +30,8 @@ export function readRedirectUris(raw: unknown): RedirectUrisView | undefined {
     dynamicRegistrationEnabled: booleanOrNull(view.dynamicRegistrationEnabled),
     allowAnyOnLocalhost: booleanOrNull(view.allowAnyOnLocalhost),
     allowAnyOnLoopback: booleanOrNull(view.allowAnyOnLoopback),
-    uris: Array.isArray(view.uris) ? strings(view.uris, 256) : null,
+    // Never truncated: the editor saves the whole list, so a partial read would silently drop entries.
+    uris: Array.isArray(view.uris) ? strings(view.uris, Number.POSITIVE_INFINITY) : null,
     presets: (Array.isArray(view.presets) ? view.presets : []).flatMap((item) => {
       const preset = record(item);
       return preset && typeof preset.id === 'string' && typeof preset.label === 'string'

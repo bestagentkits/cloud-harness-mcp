@@ -78,9 +78,8 @@ describe('OAuth redirect URI allowlist', () => {
     for (const uri of [
       ...OAUTH_REDIRECT_URI_PRESETS.flatMap((preset) => preset.uris),
       'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-1c0d36c88983d5e09b17fcee',
-      'https://client.example/oauth/callback?tenant=a',
-      'http://localhost/*',
-      'http://[::1]:8080/callback'
+      'https://client.example/oauth/callback',
+      'http://localhost/*'
     ]) {
       expect(oauthRedirectUriProblem(uri), uri).toBeNull();
     }
@@ -90,6 +89,11 @@ describe('OAuth redirect URI allowlist', () => {
     for (const uri of [
       '',
       'not a url',
+      'https:client.example/cb',
+      'http://[::1]:8080/callback',
+      'https://client.example/oauth/callback?tenant=a',
+      'https://client.example/cb?token=secret',
+      'https://client.example/a@b/cb',
       'client.example/callback',
       'http://client.example/callback',
       'ftp://client.example/callback',

@@ -149,6 +149,16 @@ describe('Cloudflare Access Managed OAuth provider', () => {
     expect(await reason(ignored.writeRedirectUris(uris, (await ignored.read()).revision))).toBe('readback_mismatch');
     const readOnly = new CloudflareAccessOAuthProvider({ ...config, access: 'read-only' }, fakeCloudflare(application()).request);
     expect(await reason(readOnly.writeRedirectUris(uris, seen.revision))).toBe('provider_read_only');
+
+    // Clearing the list must not be confirmed by a read-back that is not the managed application.
+    const emptied = fakeCloudflare(application());
+    const clearing = new CloudflareAccessOAuthProvider(config, emptied.request);
+    const revision = (await clearing.read()).revision;
+    const blank = new CloudflareAccessOAuthProvider(config, (async (input: string | URL | Request, init?: RequestInit) => (
+      (init?.method ?? 'GET') === 'GET' && emptied.calls.some((call) => call.method === 'PUT') ? Response.json({ success: true, result: {} }) : emptied.request(input, init)
+    )) as typeof fetch);
+    expect(await reason(blank.writeRedirectUris([], revision))).toBe('readback_mismatch');
+    expect((await clearing.writeRedirectUris([], (await clearing.read()).revision)).redirectUris).toEqual([]);
   });
 
   it('refuses to overwrite a configuration that changed since the caller read it', async () => {

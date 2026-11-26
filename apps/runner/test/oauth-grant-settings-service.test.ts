@@ -235,9 +235,10 @@ describe('inbound OAuth grant settings', () => {
     const saved = OAuthGrantSettingsViewSchema.parse(await settings.updateRedirectUris('owner-1', { uris, expectedRevision: before.revision }));
     expect(provider.redirectWrites).toEqual([['https://oauth-redirect.googleusercontent.com/r/*', 'http://127.0.0.1:3118/*']]);
     expect(saved.redirectUris.uris).toEqual(['https://oauth-redirect.googleusercontent.com/r/*', 'http://127.0.0.1:3118/*']);
+    expect(saved.lastSync).toMatchObject({ ok: true, errorCode: null });
     expect(audits).toEqual([{ ownerId: 'owner-1', action: 'settings.oauth_redirect_uris.changed', details: {
       provider: 'cloudflare-access', count: 2,
-      added: 'https://oauth-redirect.googleusercontent.com/r/* http://127.0.0.1:3118/*',
+      added: 'https://oauth-redirect.googleusercontent.com/r/*\nhttp://127.0.0.1:3118/*',
       removed: 'https://claude.ai/api/mcp/auth_callback'
     } }]);
   });
@@ -246,8 +247,10 @@ describe('inbound OAuth grant settings', () => {
     const provider = new FakeProvider({ oauthEnabled: true, grantSeconds: MAX, tokenLifetimeSeconds: 900, explicit: true });
     const { settings, audits } = service(provider);
     const { revision } = await settings.view();
-    for (const uri of ['https://oauth-redirect.googleusercontent.com/*', 'http://client.example/callback', 'https://*.example.com/cb', 'javascript:alert(1)']) {
-      await expect(settings.updateRedirectUris('owner', { uris: [uri], expectedRevision: revision }), uri).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    for (const uri of ['https://oauth-redirect.googleusercontent.com/*', 'http://client.example/callback', 'https://*.example.com/cb', 'javascript:alert(1)', 'https://client.example/cb?token=secret-value']) {
+      const error = await settings.updateRedirectUris('owner', { uris: ['https://claude.ai/api/mcp/auth_callback', uri], expectedRevision: revision }).catch((caught: unknown) => caught);
+      expect(error, uri).toMatchObject({ code: 'INVALID_INPUT', message: expect.stringMatching(/^Redirect URI 2: /) });
+      expect((error as Error).message, uri).not.toContain(uri);
     }
     expect(provider.redirectWrites).toEqual([]);
     expect(audits).toEqual([]);

@@ -62,11 +62,12 @@ export class CloudflareAccessOAuthProvider implements OAuthGrantProvider {
     }, (after) => after.grantSeconds === next.grantSeconds && after.tokenLifetimeSeconds === next.tokenLifetimeSeconds);
   }
 
+  /** An absent list confirms only an empty save; anything else must be read back as written. */
   async writeRedirectUris(uris: readonly string[], expectedRevision: string | null): Promise<OAuthGrantProviderSnapshot> {
     return await this.update(expectedRevision, (oauth) => {
       const registration = isRecord(oauth.dynamic_client_registration) ? oauth.dynamic_client_registration : {};
       return { ...oauth, dynamic_client_registration: { ...registration, allowed_uris: [...uris] } };
-    }, (after) => sameMembers(after.redirectUris ?? [], uris));
+    }, (after) => (after.redirectUris === null ? uris.length === 0 : sameMembers(after.redirectUris, uris)));
   }
 
   private async update(
@@ -88,7 +89,8 @@ export class CloudflareAccessOAuthProvider implements OAuthGrantProvider {
     // After a PUT the provider may hold the new value, so a failed read-back is
     // reported as unconfirmed, never as "nothing was changed".
     const after = snapshot(await this.getApplication().catch(() => { throw providerError('readback_mismatch'); }));
-    if (!confirmed(after)) throw providerError('readback_mismatch');
+    // A read-back that is not the same managed application confirms nothing.
+    if (after.unsupportedReason || !after.oauthEnabled || !confirmed(after)) throw providerError('readback_mismatch');
     return after;
   }
 

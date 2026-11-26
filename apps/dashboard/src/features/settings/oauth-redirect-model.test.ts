@@ -12,6 +12,11 @@ describe('redirect URI editor model', () => {
     });
   });
 
+  it('keeps every provider entry, because a save replaces the whole list', () => {
+    const uris = Array.from({ length: 300 }, (_, index) => `https://c${index}.example/cb`);
+    expect(readRedirectUris({ canWrite: true, uris, presets: [] })?.uris).toHaveLength(300);
+  });
+
   it('parses one URI per line, dropping blanks and repeats', () => {
     expect(parseUriLines(' https://a.example/cb \n\nhttps://b.example/cb\nhttps://a.example/cb\n')).toEqual(['https://a.example/cb', 'https://b.example/cb']);
   });
