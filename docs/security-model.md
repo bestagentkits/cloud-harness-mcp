@@ -241,12 +241,19 @@ Writes fail closed. The adapter re-reads the application, refuses the save when
 its OAuth configuration changed since the operator loaded the page, changes
 only the two grant fields, keeps policies attached by reference, and reports
 success only after a matching read-back. SCIM-enabled and non-self-hosted
-applications are refused because their full state cannot be round-tripped. On
+applications, and applications with an attached policy that has no id (which a
+PUT could only send inline, as a possible new policy), are refused because
+their full state cannot be round-tripped. An omitted Managed OAuth `enabled`
+flag on an existing OAuth configuration counts as on, as Cloudflare documents;
+an absent configuration or an ill-typed flag counts as off. On
 startup the runner applies the provider maximum only to a new install whose
 grant duration has never been set explicitly; it never overwrites a customised
 grant or an explicit access-token lifetime outside the panel bounds, and offers
 **Adopt** in Settings instead. Provider writes from one runner are serialized,
-so the startup default cannot replace a concurrent Dashboard save. Dashboard
+so the startup default cannot replace a concurrent Dashboard save. The revision
+check is a read-then-write guard, not an atomic compare-and-swap at Cloudflare:
+an edit made directly in Zero Trust between the adapter's re-read and its PUT is
+not detected, and the PUT replaces it. Dashboard
 saves are audited as `settings.oauth_grant.changed`; the startup default has no
 acting principal, so it is logged by the runner and shown in Settings as applied
 automatically at first start. A PUT that times out or fails server-side is
@@ -258,6 +265,38 @@ the provider boundary and the deferred owned authorization server are recorded
 in [ADR 0002](adr/0002-inbound-oauth-grant-provider.md). The Cloudflare
 exchange is unit-tested against a fetch double, not verified against a live
 account.
+
+The same adapter edits the Managed OAuth redirect allowlist
+(`oauth_configuration.dynamic_client_registration.allowed_uris`) from Dashboard
+Settings, under the same write rules: re-read, revision check, a PUT that
+changes only that list, and an order-insensitive read-back that must come from
+the same supported, Managed-OAuth-enabled application (a GET naming another
+application id is refused) and hold exactly the written entries, no more and no
+repeats. The BFF forwards the OAuth settings view only when it matches the
+strict `OAuthGrantSettingsViewSchema`. The allowlist
+decides where Access may deliver authorization codes, so the runner validates
+every entry it adds before calling Cloudflare: a literal `https://`, or
+`http://` on `localhost` and `127.0.0.1` only; the host as typed must be the
+host the URL parser reads; no backslash, control character, credentials, query
+string, or fragment; a wildcard only as a trailing `/*`, never origin-wide on a
+public host. Entries Cloudflare already holds, such as a native app's
+custom-scheme callback, are kept unchanged. Invalid entries are reported by
+position, never echoed. A provider list that is malformed, holds more entries
+than a save may send, or holds an entry with whitespace, a control character, a
+query string, credentials, a fragment, or excess length is neither shown nor
+replaceable from the Dashboard: the panel says why and points to Zero Trust, so
+such a value never reaches the browser or an audit record. The Gemini preset allows
+`https://oauth-redirect.googleusercontent.com/r/*` because Gemini's callback
+carries a per-account id, the same shape as the existing ChatGPT
+`connector/oauth/*` entry; the Access policy, not the callback, still decides
+who receives a token. Like the network default and the grant, this is an
+instance-wide setting that any authenticated dashboard principal may change,
+because every principal admitted by the Access policy is a trusted operator
+(see [Intended use](#intended-use)). Saves are audited as
+`settings.oauth_redirect_uris.changed` with the added and removed URIs. The
+dynamic-registration and loopback flags are shown but never written. The
+validator and presets live in
+[`packages/contracts/src/oauth-grant-settings.ts`](../packages/contracts/src/oauth-grant-settings.ts).
 
 ## MCP gateway egress and credential resolution
 

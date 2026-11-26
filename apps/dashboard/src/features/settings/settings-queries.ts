@@ -6,6 +6,7 @@ import { pageReadQuery } from '@/lib/page-read';
 import type { LifecycleUpdate } from './lifecycle-model';
 import type { NetworkProfile } from './network-model';
 import type { OAuthUpdate } from './oauth-model';
+import type { RedirectUrisUpdate } from './oauth-redirect-model';
 
 /**
  * The Settings page reads exactly what the classic page reads, once each: `/settings` (the
@@ -36,6 +37,12 @@ export function useSettingsWrite(errorTitle: string) {
 
 export function useOAuthWrite() {
   return useReadBackWrite<OAuthUpdate>('/settings/oauth', oauthRead().queryKey, 'The OAuth settings were not saved');
+}
+
+/** The answer is the whole OAuth view, so it replaces the `/settings/oauth` read like a grant save. */
+export function useRedirectUrisWrite() {
+  // Neutral: a failed answer can also mean "may or may not have been applied"; the status line says which.
+  return useReadBackWrite<RedirectUrisUpdate>('/settings/oauth/redirect-uris', oauthRead().queryKey, 'The redirect URI save did not complete');
 }
 
 /** A stale revision (409): the panel reloads the current values instead of retrying the write. */

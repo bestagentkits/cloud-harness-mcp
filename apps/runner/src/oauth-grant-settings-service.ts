@@ -1,14 +1,20 @@
 import {
   HarnessError,
+  containsControlCharacter,
   OAUTH_GRANT_SECONDS_FLOOR,
+  OAUTH_REDIRECT_URI_MAX_LENGTH,
+  OAUTH_REDIRECT_URI_PRESETS,
+  OAUTH_REDIRECT_URIS_MAX,
   OAUTH_TOKEN_LIFETIME_SECONDS_CEILING,
   OAUTH_TOKEN_LIFETIME_SECONDS_FLOOR,
   OAuthGrantSettingsUpdateInputSchema,
+  OAuthRedirectUrisUpdateInputSchema,
+  oauthRedirectUriProblem,
   type OAuthGrantSelection,
   type OAuthGrantSettingsView,
   type OAuthProviderCapabilities
 } from '@cloud-harness/contracts';
-import { providerErrorMessage } from './cloudflare-access-oauth-provider.js';
+import { providerError, providerErrorMessage } from './cloudflare-access-oauth-provider.js';
 import type { OAuthGrantProvider, OAuthGrantProviderSnapshot } from './oauth-grant-provider.js';
 import type { OAuthGrantChangeSource, OAuthGrantSettingsRecord } from './state-store.js';
 
@@ -26,6 +32,25 @@ const SYNC_FAILURE_REASONS = new Set([
   'provider_write_denied', 'provider_application_not_found', 'write_unconfirmed', 'readback_mismatch'
 ]);
 const GRANT_PRESETS_SECONDS = [86_400, 604_800, 1_209_600, 2_592_000];
+/** Audit lists hold one URI per line; validated URIs never contain whitespace. */
+const AUDIT_URI_SEPARATOR = '\n';
+const REDIRECT_URI_PRESETS = OAUTH_REDIRECT_URI_PRESETS.map((preset) => ({ id: preset.id, label: preset.label, uris: [...preset.uris] }));
+
+/**
+ * Why the provider's current allowlist cannot be shown or replaced here, or `null`. A value
+ * that could carry a secret (query, credentials, fragment) is never projected to the browser
+ * or copied into an audit record, so such a list is left to Cloudflare Zero Trust, as are an
+ * unreadable list and one larger than a save may send.
+ */
+function redirectListProblem(snapshot: OAuthGrantProviderSnapshot): string | null {
+  if (snapshot.redirectUrisMalformed) return 'Cloudflare returned a redirect allowlist Cloud Harness cannot read. Review it in Cloudflare Zero Trust.';
+  const uris = snapshot.redirectUris ?? [];
+  if (uris.some((uri) => /[?#@\s]/.test(uri) || containsControlCharacter(uri) || uri.length > OAUTH_REDIRECT_URI_MAX_LENGTH)) {
+    return 'A redirect URI in Cloudflare contains a query string, credentials, a fragment, whitespace or control characters, or is too long, so the list is not shown here. Fix it in Cloudflare Zero Trust, then reload.';
+  }
+  if (uris.length > OAUTH_REDIRECT_URIS_MAX) return `Cloudflare holds more than ${OAUTH_REDIRECT_URIS_MAX} redirect URIs, more than this panel can save. Manage them in Cloudflare Zero Trust.`;
+  return null;
+}
 
 type OAuthGrantStore = {
   getOAuthGrantSettings(): OAuthGrantSettingsRecord;
@@ -101,6 +126,57 @@ export class OAuthGrantSettingsService {
       grantMode: input.grant.mode,
       grantSeconds,
       tokenLifetimeSeconds: input.tokenLifetimeSeconds
+    });
+    return this.buildView(snapshot);
+  }
+
+  /**
+   * Replace the dynamic-client-registration redirect allowlist. It decides
+   * where authorization codes may be delivered, so every URI is validated here
+   * before the provider sees it, and the change is audited with what was added
+   * and removed.
+   */
+  async updateRedirectUris(ownerId: string, rawInput: unknown): Promise<OAuthGrantSettingsView> {
+    return await this.serialized(() => this.applyRedirectUris(ownerId, rawInput));
+  }
+
+  private async applyRedirectUris(ownerId: string, rawInput: unknown): Promise<OAuthGrantSettingsView> {
+    const input = OAuthRedirectUrisUpdateInputSchema.parse(rawInput);
+    const provider = this.provider;
+    if (!provider) throw new HarnessError('FORBIDDEN', 'No OAuth provider integration is configured, so these settings are read-only.', 403, false, { reason: 'provider_not_configured' });
+    const uris = [...new Set(input.uris)];
+    let before: OAuthGrantProviderSnapshot;
+    let snapshot: OAuthGrantProviderSnapshot;
+    try {
+      before = await provider.read();
+      // The revision fingerprints the whole OAuth configuration, so a baseline at the
+      // expected revision holds exactly the allowlist the adapter's guarded write replaces.
+      if (before.revision !== input.expectedRevision) throw providerError('revision_conflict');
+      const problem = redirectListProblem(before);
+      if (problem) throw new HarnessError('CONFLICT', problem, 409, false, { reason: 'redirect_uris_unmanageable' });
+      // Entries Cloudflare already holds (such as a native app's custom-scheme callback) are
+      // kept as they are; only new ones must meet the rules. Name an entry by position: the
+      // value itself is never echoed back into an error.
+      const existing = new Set(before.redirectUris ?? []);
+      uris.forEach((uri, index) => {
+        const invalid = existing.has(uri) ? null : oauthRedirectUriProblem(uri);
+        if (invalid) throw new HarnessError('INVALID_INPUT', `Redirect URI ${index + 1}: ${invalid}`, 400, false, { reason: 'redirect_uri_invalid' });
+      });
+      snapshot = await provider.writeRedirectUris(uris, input.expectedRevision);
+      // A read-back this panel could not show is not a confirmation either.
+      if (redirectListProblem(snapshot)) throw providerError('readback_mismatch');
+    } catch (error) {
+      this.recordFailure(error);
+      throw error;
+    }
+    this.store.recordOAuthGrantSync(true, null, this.now());
+    const previous = new Set(before.redirectUris ?? []);
+    const next = new Set(uris);
+    this.audit(ownerId, 'settings.oauth_redirect_uris.changed', {
+      provider: provider.id,
+      count: uris.length,
+      added: uris.filter((uri) => !previous.has(uri)).join(AUDIT_URI_SEPARATOR),
+      removed: [...previous].filter((uri) => !next.has(uri)).join(AUDIT_URI_SEPARATOR)
     });
     return this.buildView(snapshot);
   }
@@ -182,7 +258,21 @@ export class OAuthGrantSettingsService {
       },
       revision: snapshot?.revision ?? null,
       lastSync: record.lastSync ? { at: new Date(record.lastSync.at).toISOString(), ok: record.lastSync.ok, errorCode: record.lastSync.errorCode } : null,
-      readOnlyReason
+      readOnlyReason,
+      redirectUris: this.redirectView(snapshot, writable)
+    };
+  }
+
+  private redirectView(snapshot: OAuthGrantProviderSnapshot | undefined, writable: boolean): OAuthGrantSettingsView['redirectUris'] {
+    const problem = snapshot ? redirectListProblem(snapshot) : null;
+    return {
+      canWrite: writable && problem === null,
+      dynamicRegistrationEnabled: snapshot?.dynamicRegistrationEnabled ?? null,
+      allowAnyOnLocalhost: snapshot?.allowAnyOnLocalhost ?? null,
+      allowAnyOnLoopback: snapshot?.allowAnyOnLoopback ?? null,
+      uris: problem === null ? snapshot?.redirectUris ?? null : null,
+      readOnlyReason: problem,
+      presets: REDIRECT_URI_PRESETS
     };
   }
 
@@ -207,7 +297,8 @@ export class OAuthGrantSettingsService {
       management: { state: 'unconfigured', desired: null, updatedAt: null, updatedBy: null },
       revision: null,
       lastSync: null,
-      readOnlyReason: 'No OAuth provider integration is configured. Grant and access-token lifetimes are managed outside Cloud Harness.'
+      readOnlyReason: 'No OAuth provider integration is configured. Grant lifetimes and redirect URIs are managed outside Cloud Harness.',
+      redirectUris: this.redirectView(undefined, false)
     };
   }
 }

@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   InternalRunnerRequestSchema,
+  OAUTH_REDIRECT_URI_PRESETS,
   OAuthGrantSettingsUpdateInputSchema,
+  OAuthRedirectUrisUpdateInputSchema,
   formatOAuthDuration,
+  oauthRedirectUriProblem,
   parseOAuthDurationSeconds
 } from '../src/index.js';
 
@@ -67,5 +70,68 @@ describe('OAuth grant settings update input', () => {
       version: 2, principal, operation: 'oauth_settings_update',
       input: { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: 900, expectedRevision: null }
     }).success).toBe(true);
+  });
+});
+
+describe('OAuth redirect URI allowlist', () => {
+  it('accepts every preset and exact or path-scoped callbacks', () => {
+    for (const uri of [
+      ...OAUTH_REDIRECT_URI_PRESETS.flatMap((preset) => preset.uris),
+      'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-1c0d36c88983d5e09b17fcee',
+      'https://client.example/oauth/callback',
+      'http://localhost/*',
+      'https://Client.Example/cb',
+      'http://127.0.0.1:3118/callback/*'
+    ]) {
+      expect(oauthRedirectUriProblem(uri), uri).toBeNull();
+    }
+  });
+
+  it('refuses callbacks that could deliver codes beyond the intended client', () => {
+    for (const uri of [
+      '',
+      'not a url',
+      'https:client.example/cb',
+      'https:///client.example/cb',
+      'https://client.example/cb\u0001',
+      'https:\\\\client.example\\cb',
+      'https://client.example/a\\b',
+      'http://127.1/cb',
+      'http://0x7f.0.0.1/cb',
+      'https://client%2Eexample/cb',
+      'http://[::1]:8080/callback',
+      'https://client.example/oauth/callback?tenant=a',
+      'https://client.example/cb?token=secret',
+      'https://client.example/a@b/cb',
+      'client.example/callback',
+      'http://client.example/callback',
+      'ftp://client.example/callback',
+      'javascript:alert(1)',
+      'https://user:pass@client.example/callback',
+      'https://client.example/callback#frag',
+      'https://client.example/*',
+      'https://*.client.example/callback',
+      'https://client.example/*/callback',
+      'https://client.example/callback*',
+      'https://client.example/cb?next=/*',
+      ' https://client.example/callback',
+      `https://client.example/${'a'.repeat(2_048)}`
+    ]) {
+      expect(oauthRedirectUriProblem(uri), uri).not.toBeNull();
+    }
+  });
+
+  it('is a strict, bounded internal runner operation', () => {
+    const principal = { kind: 'external', issuer: 'https://access.example.com', subject: 'owner' };
+    const input = { uris: ['https://oauth-redirect.googleusercontent.com/r/*'], expectedRevision: 'a'.repeat(64) };
+    expect(InternalRunnerRequestSchema.safeParse({ version: 2, principal, operation: 'oauth_redirect_uris_update', input }).success).toBe(true);
+    for (const invalid of [
+      { ...input, apiToken: 'x' },
+      { uris: input.uris },
+      { ...input, uris: Array.from({ length: 129 }, (_, index) => `https://c${index}.example/cb`) },
+      { ...input, uris: 'https://client.example/cb' }
+    ]) {
+      expect(OAuthRedirectUrisUpdateInputSchema.safeParse(invalid).success, JSON.stringify(invalid).slice(0, 80)).toBe(false);
+    }
   });
 });

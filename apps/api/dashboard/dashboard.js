@@ -52,6 +52,7 @@ import {
   launchBlockedByConflicts,
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, githubRefusalMessage, GITHUB_USER_AUTHORIZATION_REQUIRED_CODE, GITHUB_USER_AUTHORIZATION_REQUIRED_MESSAGE, renderGlobalSecrets, renderOverview, renderOverviewSkeleton,
   renderChangelog, renderProjectDetail, renderProfile, renderProjectIndex, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
+  parseRedirectUriLines, redirectPresetState, toggleRedirectPreset,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
   renderMcpServersIndex, renderMcpServerDetail,
   renderSkillsLibraryCards, renderSkillsLibraryRows, renderSkillsRegistryRows,
@@ -2744,6 +2745,7 @@ export function initializeDashboard() {
     bindSettingsControls();
     bindLifecycleSettingsControls();
     bindOAuthSettingsControls();
+    bindOAuthRedirectControls();
     bindTypesafeSettingsControls();
   }
   function typesafeStatus(message) {
@@ -2872,6 +2874,63 @@ export function initializeDashboard() {
     });
     document.querySelector('#adopt-settings-oauth')?.addEventListener('click', (event) => {
       void saveOAuthSettings(event.currentTarget, { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: bounds.defaultSeconds, expectedRevision: view.revision }, 'Default adopted: clients stay signed in for the provider maximum.');
+    });
+  }
+  /** Save the whole allowlist, then show only what the provider returned on read-back. */
+  async function postOAuthRedirects(body) {
+    const { data } = await api('/settings/oauth/redirect-uris', { method: 'POST', body: requestBody(body) });
+    settingsOAuth = { view: data };
+    renderSettingsView();
+    oauthStatus('Redirect URIs saved and confirmed by the provider.');
+  }
+  function bindOAuthRedirectControls() {
+    const view = settingsOAuth?.view;
+    const form = document.querySelector('#settings-oauth-redirects-form');
+    const redirect = view?.redirectUris;
+    if (!form || !redirect) return;
+    const field = form.querySelector('#settings-oauth-redirect-uris');
+    const presets = Array.isArray(redirect.presets) ? redirect.presets : [];
+    const boxes = [...form.querySelectorAll('input[data-preset]')].map((box) => [presets.find((preset) => preset.id === box.dataset.preset), box]).filter(([preset]) => preset);
+    // A partly listed preset shows as indeterminate, which only the DOM property can express.
+    const syncPresets = () => {
+      const uris = parseRedirectUriLines(field.value);
+      for (const [preset, box] of boxes) {
+        const state = redirectPresetState(preset, uris);
+        box.checked = state === 'on';
+        box.indeterminate = state === 'partial';
+      }
+    };
+    for (const [preset, box] of boxes) {
+      box.addEventListener('change', () => {
+        field.value = toggleRedirectPreset(parseRedirectUriLines(field.value), preset, box.checked).join('\n');
+        syncPresets();
+      });
+    }
+    field.addEventListener('input', syncPresets);
+    syncPresets();
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const saved = Array.isArray(redirect.uris) ? redirect.uris : [];
+      const uris = parseRedirectUriLines(field.value);
+      if (uris.length === saved.length && uris.every((uri) => saved.includes(uri))) {
+        oauthStatus('No changes to save.');
+        return;
+      }
+      const body = { uris, expectedRevision: view.revision };
+      const button = form.querySelector('#save-settings-oauth-redirects');
+      const removed = saved.filter((uri) => !uris.includes(uri));
+      if (removed.length === 0) {
+        void oauthAction(button, 'Saving…', () => postOAuthRedirects(body));
+        return;
+      }
+      confirmAction({
+        title: `Remove ${removed.length} redirect URI${removed.length === 1 ? '' : 's'}?`,
+        description: 'Clients that use these callbacks may no longer be able to register or complete a new sign-in, unless another listed URI or loopback setting still allows them.',
+        target: removed.join('\n'),
+        label: 'Save and remove',
+        pendingLabel: 'Saving…',
+        action: () => postOAuthRedirects(body)
+      }, button);
     });
   }
   function lifecycleStatus(message) {

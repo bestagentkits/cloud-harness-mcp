@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { oauthDurationLabel, renderOAuthSettings, renderSettings } from '../dashboard/dashboard-render.js';
+import { oauthDurationLabel, parseRedirectUriLines, redirectPresetState, renderOAuthSettings, renderSettings, toggleRedirectPreset } from '../dashboard/dashboard-render.js';
 
 const capabilities = {
   canReadGrantConfiguration: true,
@@ -89,5 +89,37 @@ describe('Dashboard MCP OAuth session settings', () => {
     const page = renderSettings({ defaultNetworkProfile: { value: 'dependency-access', source: 'environment' } }, undefined, { view: undefined, error: 'down' });
     expect(page).toContain('id="settings-network-profile"');
     expect(page).toContain('id="settings-oauth-heading"');
+  });
+
+  const gemini = { id: 'gemini', label: 'Gemini custom apps', uris: ['https://oauth-redirect.googleusercontent.com/r/*'] };
+  const redirectUris = (overrides: Record<string, unknown> = {}) => ({
+    canWrite: true, dynamicRegistrationEnabled: true, allowAnyOnLocalhost: null, allowAnyOnLoopback: false,
+    uris: ['https://claude.ai/api/mcp/auth_callback', 'https://x.example/cb?a=<b>'], presets: [gemini], ...overrides
+  });
+
+  it('renders the redirect allowlist editor with presets and escaped URIs when the provider is writable', () => {
+    const html = renderOAuthSettings(view({ redirectUris: redirectUris() }));
+    expect(html).toContain('id="settings-oauth-redirects-form"');
+    expect(html).toContain('data-preset="gemini"');
+    expect(html).toContain('https://oauth-redirect.googleusercontent.com/r/*');
+    expect(html).toContain('https://claude.ai/api/mcp/auth_callback\nhttps://x.example/cb?a=&lt;b&gt;</textarea>');
+    expect(html).toContain('<dt>Any 127.0.0.1 callback</dt><dd>Not allowed</dd>');
+    expect(html).not.toContain('<b>');
+  });
+
+  it('shows a read-only allowlist as a list without save controls, and nothing without a provider', () => {
+    const readOnly = renderOAuthSettings(view({ redirectUris: redirectUris({ canWrite: false }) }));
+    expect(readOnly).toContain('<li class="mono">https://claude.ai/api/mcp/auth_callback</li>');
+    expect(readOnly).not.toContain('id="save-settings-oauth-redirects"');
+    expect(renderOAuthSettings(view({ provider: { id: 'none', label: 'Not configured' }, redirectUris: redirectUris() }))).not.toContain('Allowed redirect URIs');
+  });
+
+  it('applies presets to the one-per-line list the way the controller does', () => {
+    const uris = parseRedirectUriLines(' https://a.example/cb\n\nhttps://a.example/cb\n');
+    expect(uris).toEqual(['https://a.example/cb']);
+    const withGemini = toggleRedirectPreset(uris, gemini, true);
+    expect(withGemini).toEqual(['https://a.example/cb', 'https://oauth-redirect.googleusercontent.com/r/*']);
+    expect(redirectPresetState(gemini, withGemini)).toBe('on');
+    expect(toggleRedirectPreset(withGemini, gemini, false)).toEqual(['https://a.example/cb']);
   });
 });

@@ -386,6 +386,7 @@ descriptions with empty values and revokes its object URL immediately.
 | POST | `/event-subscriptions/:id/revoke` | control router | — | **none** | `api-keys` | P4: defer (#494) | |
 | GET / POST | `/settings` | router | schema parse | settings | `settings` | P3 | Unmapped passthrough (F7) |
 | GET / POST | `/settings/oauth` | router | schema parse | settings | `settings` | P3 | |
+| POST | `/settings/oauth/redirect-uris` | router | schema parse | settings | `settings` | P3 | Both shells; answer is the `/settings/oauth` view |
 | POST | `/settings/network-check` | router | — | settings | `settings` | P3 | |
 
 ### 4.11 MCP servers, gateway, downstream OAuth

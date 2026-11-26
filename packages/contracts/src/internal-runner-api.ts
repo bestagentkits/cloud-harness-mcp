@@ -38,7 +38,7 @@ import {
   McpGatewayTraceStatusSchema,
   McpGatewayUpdateInputSchema
 } from './mcp-gateway-schemas.js';
-import { OAuthGrantSettingsUpdateInputSchema } from './oauth-grant-settings.js';
+import { OAuthGrantSettingsUpdateInputSchema, OAuthRedirectUrisUpdateInputSchema } from './oauth-grant-settings.js';
 import { ModelConnectionVerifyInputSchema } from './model-verification-schemas.js';
 import { ModelSpendPolicyDeleteInputSchema, ModelSpendPolicyInputSchema } from './model-spend-schemas.js';
 import {
@@ -64,6 +64,7 @@ export const InternalRunnerOperationSchema = z.enum([
   'settings_network_check',
   'oauth_settings_get',
   'oauth_settings_update',
+  'oauth_redirect_uris_update',
   'terminal_open',
   'terminal_read',
   'terminal_input',
@@ -139,6 +140,13 @@ const oauthSettingsUpdateRequest = z.object({
   input: OAuthGrantSettingsUpdateInputSchema
 }).strict();
 
+const oauthRedirectUrisUpdateRequest = z.object({
+  version: z.literal(2),
+  principal: RunnerPrincipalSelectorSchema,
+  operation: z.literal('oauth_redirect_uris_update'),
+  input: OAuthRedirectUrisUpdateInputSchema
+}).strict();
+
 const terminalRequest = <Operation extends string, Input extends z.ZodTypeAny>(operation: Operation, input: Input) => z.object({
   version: z.literal(2),
   principal: RunnerPrincipalSelectorSchema,
@@ -163,6 +171,7 @@ export const InternalRunnerRequestSchema = z.discriminatedUnion('operation', [
   settingsNetworkCheckRequest,
   oauthSettingsGetRequest,
   oauthSettingsUpdateRequest,
+  oauthRedirectUrisUpdateRequest,
   terminalOpenRequest,
   terminalReadRequest,
   terminalInputRequest,

@@ -33,6 +33,8 @@ class FakeProvider implements OAuthGrantProvider {
   readonly label = 'Cloudflare Access Managed OAuth';
   readonly maxGrantSeconds = MAX;
   writes: Array<{ grantSeconds: number; tokenLifetimeSeconds: number; expectedRevision: string | null }> = [];
+  redirectWrites: string[][] = [];
+  redirectUris: string[] = ['https://claude.ai/api/mcp/auth_callback'];
   fail: string | undefined;
   constructor(public state: { oauthEnabled: boolean; grantSeconds: number | null; tokenLifetimeSeconds: number | null; explicit: boolean }, public readonly canWrite = true) {}
   private snapshot(): OAuthGrantProviderSnapshot {
@@ -42,8 +44,13 @@ class FakeProvider implements OAuthGrantProvider {
       grantExplicitlyConfigured: this.state.explicit,
       tokenLifetimeSeconds: this.state.tokenLifetimeSeconds,
       tokenLifetimeExplicitlyConfigured: this.state.tokenLifetimeSeconds !== null,
-      revision: (`${this.state.grantSeconds}-${this.state.tokenLifetimeSeconds}`).padEnd(64, '0').replace(/[^a-f0-9]/g, 'a').slice(0, 64),
-      unsupportedReason: null
+      revision: (`${this.state.grantSeconds}-${this.state.tokenLifetimeSeconds}-${this.redirectUris.length}`).padEnd(64, '0').replace(/[^a-f0-9]/g, 'a').slice(0, 64),
+      unsupportedReason: null,
+      dynamicRegistrationEnabled: true,
+      allowAnyOnLocalhost: null,
+      allowAnyOnLoopback: null,
+      redirectUris: [...this.redirectUris],
+      redirectUrisMalformed: false
     };
   }
   async read() {
@@ -55,6 +62,13 @@ class FakeProvider implements OAuthGrantProvider {
     if (this.fail) throw providerError(this.fail);
     if (expectedRevision !== this.snapshot().revision) throw providerError('revision_conflict');
     this.state = { ...this.state, grantSeconds: next.grantSeconds, tokenLifetimeSeconds: next.tokenLifetimeSeconds, explicit: true };
+    return this.snapshot();
+  }
+  async writeRedirectUris(uris: readonly string[], expectedRevision: string | null) {
+    this.redirectWrites.push([...uris]);
+    if (this.fail) throw providerError(this.fail);
+    if (expectedRevision !== this.snapshot().revision) throw providerError('revision_conflict');
+    this.redirectUris = [...uris];
     return this.snapshot();
   }
 }
@@ -210,6 +224,76 @@ describe('inbound OAuth grant settings', () => {
     provider.state = { ...provider.state, grantSeconds: 86_400 };
     await expect(settings.update('owner', { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: 900, expectedRevision: revision })).rejects.toMatchObject({ code: 'CONFLICT' });
     expect((await settings.view()).management.state).toBe('drifted');
+  });
+
+  it('replaces the redirect allowlist, audits what was added and removed, and returns the read-back', async () => {
+    const provider = new FakeProvider({ oauthEnabled: true, grantSeconds: MAX, tokenLifetimeSeconds: 900, explicit: true });
+    const { settings, audits } = service(provider);
+    const before = OAuthGrantSettingsViewSchema.parse(await settings.view());
+    expect(before.redirectUris).toMatchObject({ canWrite: true, dynamicRegistrationEnabled: true, uris: ['https://claude.ai/api/mcp/auth_callback'] });
+    expect(before.redirectUris.presets.find((preset) => preset.id === 'gemini')?.uris).toEqual(['https://oauth-redirect.googleusercontent.com/r/*']);
+    const uris = ['https://oauth-redirect.googleusercontent.com/r/*', 'https://oauth-redirect.googleusercontent.com/r/*', 'http://127.0.0.1:3118/*'];
+    const saved = OAuthGrantSettingsViewSchema.parse(await settings.updateRedirectUris('owner-1', { uris, expectedRevision: before.revision }));
+    expect(provider.redirectWrites).toEqual([['https://oauth-redirect.googleusercontent.com/r/*', 'http://127.0.0.1:3118/*']]);
+    expect(saved.redirectUris.uris).toEqual(['https://oauth-redirect.googleusercontent.com/r/*', 'http://127.0.0.1:3118/*']);
+    expect(saved.lastSync).toMatchObject({ ok: true, errorCode: null });
+    expect(audits).toEqual([{ ownerId: 'owner-1', action: 'settings.oauth_redirect_uris.changed', details: {
+      provider: 'cloudflare-access', count: 2,
+      added: 'https://oauth-redirect.googleusercontent.com/r/*\nhttp://127.0.0.1:3118/*',
+      removed: 'https://claude.ai/api/mcp/auth_callback'
+    } }]);
+  });
+
+  it('refuses a redirect URI that could deliver codes somewhere unintended, without calling the provider', async () => {
+    const provider = new FakeProvider({ oauthEnabled: true, grantSeconds: MAX, tokenLifetimeSeconds: 900, explicit: true });
+    const { settings, audits } = service(provider);
+    const { revision } = await settings.view();
+    for (const uri of ['https://oauth-redirect.googleusercontent.com/*', 'http://client.example/callback', 'https://*.example.com/cb', 'javascript:alert(1)', 'https://client.example/cb?token=secret-value']) {
+      const error = await settings.updateRedirectUris('owner', { uris: ['https://claude.ai/api/mcp/auth_callback', uri], expectedRevision: revision }).catch((caught: unknown) => caught);
+      expect(error, uri).toMatchObject({ code: 'INVALID_INPUT', message: expect.stringMatching(/^Redirect URI 2: /) });
+      expect((error as Error).message, uri).not.toContain(uri);
+    }
+    expect(provider.redirectWrites).toEqual([]);
+    expect(audits).toEqual([]);
+  });
+
+  it('refuses a redirect save over a provider-side change and reports read-only integrations', async () => {
+    const provider = new FakeProvider({ oauthEnabled: true, grantSeconds: MAX, tokenLifetimeSeconds: 900, explicit: true });
+    const { settings } = service(provider);
+    const { revision } = await settings.view();
+    provider.redirectUris = [];
+    await expect(settings.updateRedirectUris('owner', { uris: ['https://claude.ai/api/mcp/auth_callback'], expectedRevision: revision })).rejects.toMatchObject({ code: 'CONFLICT' });
+    const readOnly = OAuthGrantSettingsViewSchema.parse(await service(new FakeProvider({ oauthEnabled: true, grantSeconds: MAX, tokenLifetimeSeconds: 900, explicit: true }, false)).settings.view());
+    expect(readOnly.redirectUris.canWrite).toBe(false);
+    const unconfigured = OAuthGrantSettingsViewSchema.parse(await service(undefined).settings.view());
+    expect(unconfigured.redirectUris).toMatchObject({ canWrite: false, uris: null });
+  });
+
+  it('never shows or audits a provider callback that could carry a secret, and refuses to replace that list', async () => {
+    const provider = new FakeProvider({ oauthEnabled: true, grantSeconds: MAX, tokenLifetimeSeconds: 900, explicit: true });
+    provider.redirectUris = ['https://claude.ai/api/mcp/auth_callback', 'https://client.example/cb?token=marker-value'];
+    const { settings, audits } = service(provider);
+    const view = OAuthGrantSettingsViewSchema.parse(await settings.view());
+    expect(view.redirectUris).toMatchObject({ canWrite: false, uris: null, readOnlyReason: expect.stringMatching(/query string/) });
+    expect(JSON.stringify(view)).not.toContain('marker-value');
+    await expect(settings.updateRedirectUris('owner', { uris: ['https://claude.ai/api/mcp/auth_callback'], expectedRevision: view.revision }))
+      .rejects.toMatchObject({ code: 'CONFLICT', details: { reason: 'redirect_uris_unmanageable' } });
+    expect(provider.redirectWrites).toEqual([]);
+    expect(audits).toEqual([]);
+  });
+
+  it('keeps a native-app callback Cloudflare already holds when another client is added', async () => {
+    const provider = new FakeProvider({ oauthEnabled: true, grantSeconds: MAX, tokenLifetimeSeconds: 900, explicit: true });
+    provider.redirectUris = ['com.example.app:/oauth/callback'];
+    const { settings } = service(provider);
+    const view = OAuthGrantSettingsViewSchema.parse(await settings.view());
+    expect(view.redirectUris).toMatchObject({ canWrite: true, uris: ['com.example.app:/oauth/callback'] });
+    const uris = ['com.example.app:/oauth/callback', 'https://oauth-redirect.googleusercontent.com/r/*'];
+    await settings.updateRedirectUris('owner', { uris, expectedRevision: view.revision });
+    expect(provider.redirectWrites).toEqual([uris]);
+    // A new custom-scheme entry is still refused.
+    const next = await settings.view();
+    await expect(settings.updateRedirectUris('owner', { uris: [...uris, 'com.other.app:/cb'], expectedRevision: next.revision })).rejects.toMatchObject({ code: 'INVALID_INPUT' });
   });
 
   it('is reachable as an internal dashboard operation and never echoes the provider credential', async () => {

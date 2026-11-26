@@ -13,6 +13,14 @@ export type OAuthGrantProviderSnapshot = {
   revision: string;
   /** Set when the provider configuration cannot be written safely; the value is a reason code. */
   unsupportedReason: string | null;
+  /** Dynamic client registration: `null` when the provider holds no value. */
+  dynamicRegistrationEnabled: boolean | null;
+  allowAnyOnLocalhost: boolean | null;
+  allowAnyOnLoopback: boolean | null;
+  /** Allowlisted redirect URIs exactly as the provider stores them; `null` when unset or unreadable. */
+  redirectUris: string[] | null;
+  /** True when the provider holds an allowlist value that is not an array of strings. */
+  redirectUrisMalformed: boolean;
 };
 
 /**
@@ -30,4 +38,6 @@ export interface OAuthGrantProvider {
   read(): Promise<OAuthGrantProviderSnapshot>;
   /** Write both values, then return the provider's read-back. Throws without writing on a revision mismatch. */
   write(next: { grantSeconds: number; tokenLifetimeSeconds: number }, expectedRevision: string | null): Promise<OAuthGrantProviderSnapshot>;
+  /** Replace the redirect allowlist, then return the provider's read-back. Throws without writing on a revision mismatch. */
+  writeRedirectUris(uris: readonly string[], expectedRevision: string | null): Promise<OAuthGrantProviderSnapshot>;
 }

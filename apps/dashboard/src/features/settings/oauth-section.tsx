@@ -11,11 +11,13 @@ import { Input } from '@/components/ui/input';
 import { NativeSelect } from '@/components/ui/select';
 import { mutationErrorText } from '@/lib/bff-mutation';
 import type { BffEnvelope } from '@/lib/bff-query';
-import { formatDateTime } from '@/lib/format';
+import { formatDateTime, rec } from '@/lib/format';
 import {
   canAdoptDefault, CUSTOM_GRANT, grantFact, MANAGEMENT_LABELS, maximumLabel, oauthAdoptInput, oauthDefaults, oauthDurationLabel, oauthSchema,
   type OAuthUpdate, oauthUpdateInput, type OAuthValues, type OAuthView, readOAuthView, tokenFact
 } from './oauth-model';
+import { RedirectUrisPanel } from './oauth-redirect-section';
+import { readRedirectUris } from './oauth-redirect-model';
 import { Callout, SectionRead, StatusLine } from './settings-feedback';
 import { oauthRead, useConflictReload, useOAuthWrite } from './settings-queries';
 
@@ -136,6 +138,9 @@ function ReloadButton({ reload }: { reload: () => Promise<unknown> }) {
 export function OAuthSection() {
   const query = useQuery(oauthRead());
   const [status, setStatus] = useState('');
+  // Bumped by every successful explicit reload, so the redirect editor drops an unsaved draft
+  // even when the provider answers with the same revision.
+  const [reloads, setReloads] = useState(0);
 
   async function reload() {
     setStatus('Reloading…');
@@ -145,6 +150,7 @@ export function OAuthSection() {
       setStatus(message);
       throw new Error(message);
     }
+    setReloads((count) => count + 1);
     setStatus('Reloaded from the provider.');
   }
 
@@ -152,11 +158,13 @@ export function OAuthSection() {
     <Section
       id="settings-oauth"
       title="MCP OAuth sessions"
-      description="How long an MCP client such as ChatGPT or Claude stays connected after one sign-in. Access tokens stay short and refresh silently; every refresh re-checks your access policy, so revoking access still takes effect at the next refresh. This is separate from the browser session for this dashboard."
+      description="How long an MCP client such as ChatGPT or Claude stays connected after one sign-in, and which client callbacks may register. Access tokens stay short and refresh silently; every refresh re-checks your access policy, so revoking access still takes effect at the next refresh. This is separate from the browser session for this dashboard."
     >
       <SectionRead query={query} what="OAuth session settings">
         {(body) => {
-          const view = readOAuthView((body as BffEnvelope<unknown> | undefined)?.data);
+          const data = (body as BffEnvelope<unknown> | undefined)?.data;
+          const view = readOAuthView(data);
+          const redirect = readRedirectUris(rec(data).redirectUris);
           if (!view) return <Callout><p>{UNAVAILABLE}</p></Callout>;
           return (
             <>
@@ -165,6 +173,9 @@ export function OAuthSection() {
               {view.capabilities.canWriteGrantConfiguration
                 ? <OAuthForm view={view} onStatus={setStatus} reload={reload} />
                 : view.provider.id !== 'none' ? <div><ReloadButton reload={reload} /></div> : null}
+              {redirect && view.provider.id !== 'none'
+                ? <RedirectUrisPanel key={`${view.revision ?? 'none'}:${reloads}`} view={redirect} revision={view.revision} onStatus={setStatus} />
+                : null}
             </>
           );
         }}

@@ -198,6 +198,16 @@ Under **Allowed redirect URIs**, configure the exact callback URLs required by t
   - `https://chatgpt.com/connector_platform_oauth_redirect`
   - `https://chatgpt.com/api/aip/p/oauth/callback`
 
+With the optional Cloudflare API integration in read-write mode, operators can
+manage this list from **Dashboard → Settings → MCP OAuth sessions → Allowed
+redirect URIs** instead of Zero Trust. The panel has presets for the clients
+above and for Gemini custom apps
+(`https://oauth-redirect.googleusercontent.com/r/*`); the preset list is owned
+by `OAUTH_REDIRECT_URI_PRESETS` in
+[`packages/contracts/src/oauth-grant-settings.ts`](../packages/contracts/src/oauth-grant-settings.ts),
+and the write rules by the
+[security model](security-model.md#inbound-mcp-oauth-session-lifetimes).
+
 #### Why Allowed redirect URIs and wildcards are required
 
 1. **RFC 7591 Dynamic Client Registration (DCR):** When an AI client initiates an OAuth connection to `https://harness.zuey.me/mcp`, it automatically sends metadata (including `redirect_uris`, `grant_types`, and `client_name`) to the Cloudflare Access registration endpoint (`/cdn-cgi/access/oauth/registration`). If the requested callback URI is not allowlisted in the Cloudflare application settings, Cloudflare rejects the request with `HTTP 400 Bad Request: {"error":"invalid_client_metadata","error_description":"redirect_uri is not allowed by the account configuration"}`.

@@ -24,6 +24,21 @@ const config: ApiConfig = {
   mcpGatewayMaxConnections: 32, mcpGatewayAllowInsecureHttp: false, mcpGatewayAllowPrivateEndpoints: false
 };
 
+/** A view that satisfies the strict OAuth settings schema the BFF enforces. */
+const OAUTH_VIEW = {
+  provider: { id: 'cloudflare-access', label: 'Cloudflare Access Managed OAuth' },
+  capabilities: {
+    canReadGrantConfiguration: true, canWriteGrantConfiguration: true, supportsUnboundedGrant: false, maxGrantSeconds: 2_592_000, minGrantSeconds: 3_600,
+    grantPresetsSeconds: [86_400], tokenLifetime: { minSeconds: 60, maxSeconds: 3_600, defaultSeconds: 900 }
+  },
+  effective: { oauthEnabled: true, grantSeconds: 2_592_000, grantExplicitlyConfigured: true, grantIsProviderMaximum: true, tokenLifetimeSeconds: 900 },
+  management: { state: 'unmanaged', desired: null, updatedAt: null, updatedBy: null },
+  revision: 'b'.repeat(64),
+  lastSync: null,
+  readOnlyReason: null,
+  redirectUris: { canWrite: true, dynamicRegistrationEnabled: true, allowAnyOnLocalhost: null, allowAnyOnLoopback: null, uris: [], readOnlyReason: null, presets: [] }
+};
+
 const STALE_LIFECYCLE_REVISION = 99;
 const RUNNER_LIFECYCLE = { maxActiveWorkspacesPerOwner: 3, idleTtlSeconds: 300, wallTtlSeconds: 900, recoverableGraceSeconds: 3_600 } as const;
 const LIFECYCLE_BOUNDS = {
@@ -120,11 +135,14 @@ beforeEach(async () => {
         const state = `${String(input.installationId).padEnd(8, 'x')}${'q'.repeat(40)}`;
         return { ok: true, message: 'GitHub authorization started', truncated: false, data: { url: `https://github.com/login/oauth/authorize?state=${state}`, expiresAt: 1 } };
       }
-      if (operation === 'oauth_settings_get' || operation === 'oauth_settings_update') {
+      if (operation === 'oauth_settings_get' || operation === 'oauth_settings_update' || operation === 'oauth_redirect_uris_update') {
         if ((input.grant as { seconds?: number } | undefined)?.seconds === 86_400) {
           return { ok: false, message: 'conflict', truncated: false, error: { code: 'CONFLICT', message: 'The Cloudflare OAuth configuration changed since this page loaded. Reload to see the current values.', retryable: false } };
         }
-        return { ok: true, message: 'Inbound OAuth session settings', truncated: false, data: { provider: { id: 'cloudflare-access', label: 'Cloudflare Access Managed OAuth' }, revision: 'b'.repeat(64) } };
+        if ((input.uris as string[] | undefined)?.includes('https://leak.example/cb')) {
+          return { ok: true, message: 'Inbound OAuth session settings', truncated: false, data: { ...OAUTH_VIEW, apiToken: 'cf-secret' } };
+        }
+        return { ok: true, message: 'Inbound OAuth session settings', truncated: false, data: OAUTH_VIEW };
       }
       return { ok: true, message: 'detail', truncated: false, data: {
         workspaceId, repositoryUrl: 'https://github.com/example/project.git', status: 'ACTIVE', networkProfile: 'network-none', generation: 7,
@@ -900,6 +918,37 @@ describe('dashboard BFF', () => {
       { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: 900 }
     ]) {
       const rejected = await send('/api/v1/settings/oauth', { method: 'POST', headers, body: JSON.stringify(invalid) });
+      expect(rejected.status, JSON.stringify(invalid)).toBe(400);
+    }
+    expect(calls.length).toBe(before);
+  });
+
+  it('proxies the redirect URI allowlist save with CSRF and refuses malformed bodies before the runner', async () => {
+    const body = { uris: ['https://oauth-redirect.googleusercontent.com/r/*'], expectedRevision: 'b'.repeat(64) };
+    const unauthenticated = await send('/api/v1/settings/oauth/redirect-uris', { method: 'POST', headers: { origin: 'https://dashboard.example', 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    expect(unauthenticated.status).toBe(401);
+    expect(calls.some((call) => call.operation === 'oauth_redirect_uris_update')).toBe(false);
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const saved = await send('/api/v1/settings/oauth/redirect-uris', { method: 'POST', headers, body: JSON.stringify(body) });
+    expect(saved.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'oauth_redirect_uris_update', input: body, principal });
+    expect(saved.json.data.redirectUris.canWrite).toBe(true);
+
+    // An answer outside the strict view schema never reaches the browser.
+    const leaked = await send('/api/v1/settings/oauth/redirect-uris', { method: 'POST', headers, body: JSON.stringify({ ...body, uris: ['https://leak.example/cb'] }) });
+    expect(leaked.status).toBe(502);
+    expect(JSON.stringify(leaked.json)).not.toContain('cf-secret');
+
+    const unparsable = await send('/api/v1/settings/oauth/redirect-uris', { method: 'POST', headers, body: '{"uris":' });
+    expect(unparsable.status).toBe(400);
+    expect(unparsable.json.error).toBe('invalid_request');
+
+    const before = calls.length;
+    for (const invalid of [{ ...body, apiToken: 'leak' }, { uris: body.uris }, { ...body, uris: 'https://client.example/cb' }]) {
+      const rejected = await send('/api/v1/settings/oauth/redirect-uris', { method: 'POST', headers, body: JSON.stringify(invalid) });
       expect(rejected.status, JSON.stringify(invalid)).toBe(400);
     }
     expect(calls.length).toBe(before);
