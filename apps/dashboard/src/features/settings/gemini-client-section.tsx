@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { ActionButton, Button } from '@/components/ui/button';
 import { DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Field } from '@/components/ui/field';
@@ -62,6 +62,7 @@ function GeminiClientRevealDialog({ credentials, onDismiss }: { credentials: Gem
  * registers a client for one Google account's callback and shows its credentials once.
  */
 export function GeminiClientSection({ onStatus }: { onStatus: (message: string) => void }) {
+  const createButton = useRef<HTMLButtonElement>(null);
   const [redirectUri, setRedirectUri] = useState('');
   const [error, setError] = useState<string | undefined>(undefined);
   const reveal = useOneTimeReveal<GeminiClientCredentials>();
@@ -88,12 +89,15 @@ export function GeminiClientSection({ onStatus }: { onStatus: (message: string) 
         <h3 className="text-sm font-semibold">Connect Gemini</h3>
         <p className="text-sm text-muted-foreground">If Gemini reports that automatic registration failed and asks for a client ID and secret, create them here. First allow Gemini's callback: tick "Gemini custom apps" under Allowed redirect URIs, or add https://oauth-redirect.googleusercontent.com/r/* in Cloudflare Zero Trust. Each Google account has its own redirect URI, so each Gemini user creates their own client.</p>
       </div>
-      <Field label="Gemini redirect URI" error={error} description='In the Gemini connector dialog, click "Copy redirect URI" and paste it here.'>
-        <Input value={redirectUri} spellCheck={false} autoComplete="off" className="font-mono text-xs" placeholder="https://oauth-redirect.googleusercontent.com/r/…" onChange={(event) => { setRedirectUri(event.target.value); setError(undefined); }} />
-      </Field>
-      <div className="flex flex-wrap gap-2">
-        <ActionButton data-testid="create-gemini-client" disabled={redirectUri.trim() === ''} pendingLabel="Creating…" successLabel="Created" onAction={create}>Create Gemini client</ActionButton>
-      </div>
+      {/* A form, so Enter after pasting the URI creates the client through the same action button. */}
+      <form noValidate aria-label="Connect Gemini" className="grid gap-3" onSubmit={(event) => { event.preventDefault(); createButton.current?.click(); }}>
+        <Field label="Gemini redirect URI" error={error} description='In the Gemini connector dialog, click "Copy redirect URI" and paste it here.'>
+          <Input value={redirectUri} spellCheck={false} autoComplete="off" className="font-mono text-xs" placeholder="https://oauth-redirect.googleusercontent.com/r/…" onChange={(event) => { setRedirectUri(event.target.value); setError(undefined); }} />
+        </Field>
+        <div className="flex flex-wrap gap-2">
+          <ActionButton ref={createButton} data-testid="create-gemini-client" disabled={redirectUri.trim() === ''} pendingLabel="Creating…" successLabel="Created" onAction={create}>Create Gemini client</ActionButton>
+        </div>
+      </form>
       <GeminiClientRevealDialog credentials={reveal.value} onDismiss={reveal.clear} />
     </div>
   );

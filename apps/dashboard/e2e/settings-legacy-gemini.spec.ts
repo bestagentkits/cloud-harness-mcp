@@ -69,9 +69,16 @@ test('legacy shell: an answer that arrives after Settings re-rendered is dropped
   expect(await page.content()).not.toContain(SECRET);
 });
 
+/** A promise the test releases by hand (the dashboard's TypeScript lib predates Promise.withResolvers). */
+function gate(): { promise: Promise<void>; resolve: () => void } {
+  let resolve = () => {};
+  const promise = new Promise<void>((release) => { resolve = release; });
+  return { promise, resolve };
+}
+
 test('legacy shell: an answer that arrives after navigation starts, while Settings is still on screen, is dropped', async ({ page }) => {
-  const registration = Promise.withResolvers<void>();
-  const destination = Promise.withResolvers<void>();
+  const registration = gate();
+  const destination = gate();
   await stubReads(page, {
     '/settings': answer(200, settingsBody()),
     '/settings/oauth': answer(200, oauthBody()),

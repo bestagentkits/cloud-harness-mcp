@@ -269,7 +269,8 @@ test('OAuth: Connect Gemini creates a client and shows its credentials once, nev
   // The runner's remedy reaches the operator unchanged.
   await expect(page.getByTestId('oauth-status')).toHaveText(/Tick "Gemini custom apps" under Allowed redirect URIs/);
   await expect(page.getByTestId('gemini-client-reveal-dialog')).toHaveCount(0);
-  await page.getByTestId('create-gemini-client').click();
+  // Enter in the field submits like the button.
+  await field.press('Enter');
   const dialog = page.getByTestId('gemini-client-reveal-dialog');
   await expect(dialog.getByLabel('OAuth client ID')).toHaveValue('client-123');
   await expect(dialog.getByLabel('OAuth client secret')).toHaveValue(secret);

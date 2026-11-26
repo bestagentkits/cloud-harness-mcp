@@ -122,6 +122,11 @@ export class OAuthClientRegistrar {
       if (method === 'POST' && response.status >= 400 && response.status < 500) throw refusal('rejected');
       throw refusal('unreachable');
     }
+    // A declared length over the cap is refused before any byte is buffered; the stream cap still applies.
+    if (Number(response.headers.get('content-length') ?? 0) > MAX_RESPONSE_BYTES) {
+      await response.body?.cancel().catch(() => undefined);
+      throw refusal('invalid_response');
+    }
     const text = await readBounded(response);
     try { return JSON.parse(text) as unknown; } catch { throw refusal('invalid_response'); }
   }

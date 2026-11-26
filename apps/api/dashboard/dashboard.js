@@ -2957,10 +2957,10 @@ export function initializeDashboard() {
     wipeGeminiInputs = () => { idField.value = ''; secretField.value = ''; result.hidden = true; };
     const clear = clearGeminiCredentials;
     const copy = (input, label) => {
-      void globalThis.navigator.clipboard.writeText(input.value).then(
-        () => oauthStatus(`${label} copied.`),
-        () => { clear(); oauthStatus(`The ${label.toLowerCase()} could not be copied, so the credentials were cleared. Create another client.`); }
-      );
+      const failed = () => { clear(); oauthStatus(`The ${label.toLowerCase()} could not be copied, so the credentials were cleared. Create another client.`); };
+      // Without the Clipboard API (insecure context, old browser) the failure branch still clears the secret.
+      if (!globalThis.navigator.clipboard?.writeText) { failed(); return; }
+      void globalThis.navigator.clipboard.writeText(input.value).then(() => oauthStatus(`${label} copied.`), failed);
     };
     result.querySelector('#copy-settings-oauth-gemini-id').addEventListener('click', () => copy(idField, 'Client ID'));
     result.querySelector('#copy-settings-oauth-gemini-secret').addEventListener('click', () => copy(secretField, 'Client secret'));
