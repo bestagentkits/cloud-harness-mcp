@@ -104,7 +104,8 @@ test('legacy shell: an answer that arrives after navigation starts, while Settin
   await expect(page.locator('#settings-oauth-gemini-form')).toHaveCount(1);
   // Settings is still rendered while the Audit read is pending; the registration answers now.
   registration.resolve();
-  await page.waitForTimeout(500);
+  // The create action re-enables its button only after the answer has been handled.
+  await expect(page.locator('#create-settings-oauth-gemini')).toBeEnabled();
   await expect(page.locator('#settings-oauth-gemini-result')).toBeHidden();
   await expect(page.locator('#settings-oauth-gemini-secret')).toHaveValue('');
   expect(await page.content()).not.toContain(SECRET);
