@@ -1,3 +1,10 @@
+# [2.2.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v2.1.0...v2.2.0) (2026-11-26)
+
+
+### Features
+
+* **dashboard:** manage MCP client redirect URIs from Settings ([#667](https://github.com/bestagentkits/cloud-harness-mcp/issues/667)) ([e43c6ef](https://github.com/bestagentkits/cloud-harness-mcp/commit/e43c6effa061e2367177e5f16c379ad1f36fac34)), closes [#666](https://github.com/bestagentkits/cloud-harness-mcp/issues/666) [#665](https://github.com/bestagentkits/cloud-harness-mcp/issues/665)
+
 # [2.1.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v2.0.1...v2.1.0) (2026-11-15)
 
 
