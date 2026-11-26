@@ -241,7 +241,11 @@ Writes fail closed. The adapter re-reads the application, refuses the save when
 its OAuth configuration changed since the operator loaded the page, changes
 only the two grant fields, keeps policies attached by reference, and reports
 success only after a matching read-back. SCIM-enabled and non-self-hosted
-applications are refused because their full state cannot be round-tripped. On
+applications, and applications with an attached policy that has no id (which a
+PUT could only send inline, as a possible new policy), are refused because
+their full state cannot be round-tripped. An omitted Managed OAuth `enabled`
+flag on an existing OAuth configuration counts as on, as Cloudflare documents;
+an absent configuration or an ill-typed flag counts as off. On
 startup the runner applies the provider maximum only to a new install whose
 grant duration has never been set explicitly; it never overwrites a customised
 grant or an explicit access-token lifetime outside the panel bounds, and offers

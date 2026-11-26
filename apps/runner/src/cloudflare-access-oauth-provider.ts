@@ -148,7 +148,8 @@ function snapshot(application: AccessApplication): OAuthGrantProviderSnapshot {
   const allowed = registration?.allowed_uris;
   const validList = Array.isArray(allowed) && allowed.every((uri) => typeof uri === 'string');
   return {
-    oauthEnabled: oauth?.enabled === true,
+    // Cloudflare documents `enabled` as defaulting to true when omitted, but only for an existing OAuth object.
+    oauthEnabled: oauth !== undefined && (oauth.enabled === true || oauth.enabled === undefined),
     grantSeconds: parseOAuthDurationSeconds(sessionDuration) ?? null,
     grantExplicitlyConfigured: typeof sessionDuration === 'string' && sessionDuration.trim().length > 0,
     tokenLifetimeSeconds: parseOAuthDurationSeconds(tokenLifetime) ?? null,
@@ -179,12 +180,18 @@ function sameMembers(actual: readonly string[], expected: readonly string[]): bo
 /**
  * Cloudflare's PUT replaces the whole application. Shapes whose full state a
  * GET cannot round-trip are refused rather than risked: a SaaS or
- * non-self-hosted application, and SCIM provisioning whose credentials are
- * write-only.
+ * non-self-hosted application, SCIM provisioning whose credentials are
+ * write-only, and an attached policy without an id, which a PUT could only
+ * send inline and Cloudflare may treat as a new policy definition.
  */
 function unsupportedReason(application: AccessApplication): string | null {
   if (application.type !== 'self_hosted') return 'provider_unsupported_application';
   if (isRecord(application.scim_config) && application.scim_config.enabled === true) return 'provider_unsupported_application';
+  const policies = application.policies;
+  if (policies !== undefined && !Array.isArray(policies)) return 'provider_unsupported_application';
+  if (Array.isArray(policies) && !policies.every((policy) => typeof policy === 'string' || (isRecord(policy) && typeof policy.id === 'string'))) {
+    return 'provider_unsupported_application';
+  }
   return null;
 }
 
@@ -197,7 +204,7 @@ function writableApplication(application: AccessApplication): AccessApplication 
   return body;
 }
 
-/** Keep each policy attached by reference so a PUT never re-creates or edits a policy. */
+/** Keep each policy attached by reference so a PUT never re-creates or edits a policy; `unsupportedReason` refuses any other shape first. */
 function policyReference(policy: unknown): unknown {
   if (!isRecord(policy) || typeof policy.id !== 'string') return policy;
   return typeof policy.precedence === 'number' ? { id: policy.id, precedence: policy.precedence } : { id: policy.id };
@@ -224,7 +231,7 @@ const PROVIDER_ERRORS: Record<string, { code: ConstructorParameters<typeof Harne
   provider_application_not_found: { code: 'NOT_FOUND', status: 404, retryable: false, message: 'Cloudflare has no Access application with the configured account and application ID.' },
   provider_rejected: { code: 'INVALID_INPUT', status: 400, retryable: false, message: 'Cloudflare rejected the update to the Access application. Nothing was changed; check the values and the application in Cloudflare Zero Trust.' },
   provider_read_only: { code: 'FORBIDDEN', status: 403, retryable: false, message: 'The Cloudflare integration is configured read-only. Set CLOUDFLARE_ACCESS_OAUTH_ACCESS=read-write to change it here.' },
-  provider_unsupported_application: { code: 'CONFLICT', status: 409, retryable: false, message: 'This Access application uses settings Cloud Harness cannot safely round-trip (SCIM or a non-self-hosted type). Change these settings in Cloudflare Zero Trust.' },
+  provider_unsupported_application: { code: 'CONFLICT', status: 409, retryable: false, message: 'This Access application uses settings Cloud Harness cannot safely round-trip (SCIM, a non-self-hosted type, or a policy without an ID). Change these settings in Cloudflare Zero Trust.' },
   managed_oauth_disabled: { code: 'CONFLICT', status: 409, retryable: false, message: 'Managed OAuth is turned off for this Access application. Turn it on in Cloudflare Zero Trust first.' },
   revision_conflict: { code: 'CONFLICT', status: 409, retryable: false, message: 'The Cloudflare OAuth configuration changed since this page loaded. Reload to see the current values.' },
   write_unconfirmed: { code: 'UNAVAILABLE', status: 502, retryable: true, message: 'Cloudflare did not answer the update clearly, so it may or may not have been applied. Reload to see the effective values.' },

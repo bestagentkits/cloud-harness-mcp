@@ -274,7 +274,34 @@ describe('Cloudflare Access Managed OAuth provider', () => {
     delete untyped.type;
     const unknownType = fakeCloudflare(untyped);
     expect((await new CloudflareAccessOAuthProvider(config, unknownType.request).read()).unsupportedReason).toBe('provider_unsupported_application');
-    for (const cloudflare of [disabledCloudflare, scimCloudflare, saas, unknownType]) expect(cloudflare.calls.some((call) => call.method === 'PUT')).toBe(false);
+
+    // A policy without an id could only be sent inline, so no write is attempted.
+    const inlinePolicy = fakeCloudflare({ ...application(), policies: [{ precedence: 1, decision: 'allow', include: [{ everyone: {} }] }] });
+    const inlineProvider = new CloudflareAccessOAuthProvider(config, inlinePolicy.request);
+    const inlineSnapshot = await inlineProvider.read();
+    expect(inlineSnapshot.unsupportedReason).toBe('provider_unsupported_application');
+    expect(await reason(inlineProvider.writeRedirectUris(['https://claude.ai/api/mcp/auth_callback'], inlineSnapshot.revision))).toBe('provider_unsupported_application');
+
+    // An ill-typed enabled flag stays closed; only an omitted flag on an existing object defaults to on.
+    const illTyped = application();
+    (illTyped.oauth_configuration as Record<string, unknown>).enabled = 'true';
+    expect((await new CloudflareAccessOAuthProvider(config, fakeCloudflare(illTyped).request).read()).oauthEnabled).toBe(false);
+    const noOauth: Record<string, unknown> = application();
+    delete noOauth.oauth_configuration;
+    expect((await new CloudflareAccessOAuthProvider(config, fakeCloudflare(noOauth).request).read()).oauthEnabled).toBe(false);
+    for (const cloudflare of [disabledCloudflare, scimCloudflare, saas, unknownType, inlinePolicy]) expect(cloudflare.calls.some((call) => call.method === 'PUT')).toBe(false);
+  });
+
+  it('treats an omitted enabled flag on an existing OAuth configuration as on, as Cloudflare documents', async () => {
+    const app = application();
+    delete (app.oauth_configuration as Record<string, unknown>).enabled;
+    const cloudflare = fakeCloudflare(app);
+    const provider = new CloudflareAccessOAuthProvider(config, cloudflare.request);
+    const before = await provider.read();
+    expect(before.oauthEnabled).toBe(true);
+    const after = await provider.writeRedirectUris(['https://oauth-redirect.googleusercontent.com/r/*'], before.revision);
+    expect(after).toMatchObject({ oauthEnabled: true, redirectUris: ['https://oauth-redirect.googleusercontent.com/r/*'] });
+    expect((cloudflare.calls.find((call) => call.method === 'PUT')!.body!.oauth_configuration as Record<string, unknown>).enabled).toBeUndefined();
   });
 
   it('honours an operator-configured provider maximum', () => {
