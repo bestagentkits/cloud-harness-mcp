@@ -62,12 +62,12 @@ export class CloudflareAccessOAuthProvider implements OAuthGrantProvider {
     }, (after) => after.grantSeconds === next.grantSeconds && after.tokenLifetimeSeconds === next.tokenLifetimeSeconds);
   }
 
-  /** An absent list confirms only an empty save; anything else must be read back as written. */
+  /** Confirmed only by a well-formed list with the same members; an absent or malformed value confirms nothing. */
   async writeRedirectUris(uris: readonly string[], expectedRevision: string | null): Promise<OAuthGrantProviderSnapshot> {
     return await this.update(expectedRevision, (oauth) => {
       const registration = isRecord(oauth.dynamic_client_registration) ? oauth.dynamic_client_registration : {};
       return { ...oauth, dynamic_client_registration: { ...registration, allowed_uris: [...uris] } };
-    }, (after) => (after.redirectUris === null ? uris.length === 0 : sameMembers(after.redirectUris, uris)));
+    }, (after) => after.redirectUris !== null && sameMembers(after.redirectUris, uris));
   }
 
   private async update(
@@ -141,6 +141,7 @@ function snapshot(application: AccessApplication): OAuthGrantProviderSnapshot {
   const sessionDuration = grant?.session_duration;
   const tokenLifetime = grant?.access_token_lifetime;
   const allowed = registration?.allowed_uris;
+  const validList = Array.isArray(allowed) && allowed.every((uri) => typeof uri === 'string');
   return {
     oauthEnabled: oauth?.enabled === true,
     grantSeconds: parseOAuthDurationSeconds(sessionDuration) ?? null,
@@ -152,7 +153,8 @@ function snapshot(application: AccessApplication): OAuthGrantProviderSnapshot {
     dynamicRegistrationEnabled: booleanOrNull(registration?.enabled),
     allowAnyOnLocalhost: booleanOrNull(registration?.allow_any_on_localhost),
     allowAnyOnLoopback: booleanOrNull(registration?.allow_any_on_loopback),
-    redirectUris: Array.isArray(allowed) ? allowed.filter((uri): uri is string => typeof uri === 'string') : null
+    redirectUris: validList ? allowed.filter((uri): uri is string => typeof uri === 'string') : null,
+    redirectUrisMalformed: allowed !== undefined && !validList
   };
 }
 

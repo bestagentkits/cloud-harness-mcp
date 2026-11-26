@@ -1324,11 +1324,12 @@ function renderOAuthRedirectUris(redirect) {
   const saved = Array.isArray(redirect.uris) ? redirect.uris : [];
   const intro = '<h3 id="settings-oauth-redirects-heading">Allowed redirect URIs</h3><p>An MCP client connects only when its OAuth callback is listed here. A trailing <span class="mono">/*</span> matches every sub-path; an origin-wide wildcard is refused.</p>';
   const facts = `<dl class="facts"><dt>Dynamic client registration</dt><dd>${flag(redirect.dynamicRegistrationEnabled, 'On', 'Off — clients cannot register themselves')}</dd><dt>Any localhost callback</dt><dd>${flag(redirect.allowAnyOnLocalhost, 'Allowed', 'Not allowed')}</dd><dt>Any 127.0.0.1 callback</dt><dd>${flag(redirect.allowAnyOnLoopback, 'Allowed', 'Not allowed')}</dd></dl>`;
+  const notice = redirect.readOnlyReason ? `<p class="warning">${escape(redirect.readOnlyReason)}</p>` : '';
   if (!redirect.canWrite) {
     const list = saved.length
       ? `<ul class="redirect-uri-list">${saved.map((uri) => `<li class="mono">${escape(uri)}</li>`).join('')}</ul>`
-      : `<p>${redirect.uris === null || redirect.uris === undefined ? 'Not available.' : 'No redirect URIs are listed.'}</p>`;
-    return `<div class="oauth-redirects">${intro}${facts}${list}</div>`;
+      : notice ? '' : `<p>${redirect.uris === null || redirect.uris === undefined ? 'Not available.' : 'No redirect URIs are listed.'}</p>`;
+    return `<div class="oauth-redirects">${intro}${facts}${notice}${list}</div>`;
   }
   const presets = (Array.isArray(redirect.presets) ? redirect.presets : []).map((preset) => `<label class="checkbox-label" for="settings-oauth-preset-${escape(preset.id)}"><input id="settings-oauth-preset-${escape(preset.id)}" type="checkbox" data-preset="${escape(preset.id)}"><span>${escape(preset.label)} <span class="mono">${escape((preset.uris ?? []).join('  '))}</span></span></label>`).join('');
   const rows = Math.min(12, Math.max(4, saved.length + 1));

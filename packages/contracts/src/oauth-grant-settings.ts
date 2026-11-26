@@ -215,7 +215,9 @@ export const OAuthGrantSettingsViewSchema = z.object({
     dynamicRegistrationEnabled: z.boolean().nullable(),
     allowAnyOnLocalhost: z.boolean().nullable(),
     allowAnyOnLoopback: z.boolean().nullable(),
-    uris: z.array(z.string().max(OAUTH_REDIRECT_URI_MAX_LENGTH)).max(OAUTH_REDIRECT_URIS_MAX * 2).nullable(),
+    uris: z.array(z.string().max(OAUTH_REDIRECT_URI_MAX_LENGTH)).max(OAUTH_REDIRECT_URIS_MAX).nullable(),
+    /** Why the allowlist is shown without values or edit controls even though the provider is writable. */
+    readOnlyReason: z.string().max(400).nullable(),
     presets: z.array(z.object({
       id: z.string().max(40),
       label: z.string().max(120),

@@ -1,7 +1,9 @@
 import {
   HarnessError,
   OAUTH_GRANT_SECONDS_FLOOR,
+  OAUTH_REDIRECT_URI_MAX_LENGTH,
   OAUTH_REDIRECT_URI_PRESETS,
+  OAUTH_REDIRECT_URIS_MAX,
   OAUTH_TOKEN_LIFETIME_SECONDS_CEILING,
   OAUTH_TOKEN_LIFETIME_SECONDS_FLOOR,
   OAuthGrantSettingsUpdateInputSchema,
@@ -32,6 +34,22 @@ const GRANT_PRESETS_SECONDS = [86_400, 604_800, 1_209_600, 2_592_000];
 /** Audit lists hold one URI per line; validated URIs never contain whitespace. */
 const AUDIT_URI_SEPARATOR = '\n';
 const REDIRECT_URI_PRESETS = OAUTH_REDIRECT_URI_PRESETS.map((preset) => ({ id: preset.id, label: preset.label, uris: [...preset.uris] }));
+
+/**
+ * Why the provider's current allowlist cannot be shown or replaced here, or `null`. A value
+ * that could carry a secret (query, credentials, fragment) is never projected to the browser
+ * or copied into an audit record, so such a list is left to Cloudflare Zero Trust, as are an
+ * unreadable list and one larger than a save may send.
+ */
+function redirectListProblem(snapshot: OAuthGrantProviderSnapshot): string | null {
+  if (snapshot.redirectUrisMalformed) return 'Cloudflare returned a redirect allowlist Cloud Harness cannot read. Review it in Cloudflare Zero Trust.';
+  const uris = snapshot.redirectUris ?? [];
+  if (uris.some((uri) => /[?#@]/.test(uri) || uri.length > OAUTH_REDIRECT_URI_MAX_LENGTH)) {
+    return 'A redirect URI in Cloudflare contains a query string, credentials, or a fragment, or is too long, so the list is not shown here. Fix it in Cloudflare Zero Trust, then reload.';
+  }
+  if (uris.length > OAUTH_REDIRECT_URIS_MAX) return `Cloudflare holds more than ${OAUTH_REDIRECT_URIS_MAX} redirect URIs, more than this panel can save. Manage them in Cloudflare Zero Trust.`;
+  return null;
+}
 
 type OAuthGrantStore = {
   getOAuthGrantSettings(): OAuthGrantSettingsRecord;
@@ -138,6 +156,8 @@ export class OAuthGrantSettingsService {
       // The revision fingerprints the whole OAuth configuration, so a baseline at the
       // expected revision holds exactly the allowlist the adapter's guarded write replaces.
       if (before.revision !== input.expectedRevision) throw providerError('revision_conflict');
+      const problem = redirectListProblem(before);
+      if (problem) throw new HarnessError('CONFLICT', problem, 409, false, { reason: 'redirect_uris_unmanageable' });
       snapshot = await provider.writeRedirectUris(uris, input.expectedRevision);
     } catch (error) {
       this.recordFailure(error);
@@ -233,14 +253,20 @@ export class OAuthGrantSettingsService {
       revision: snapshot?.revision ?? null,
       lastSync: record.lastSync ? { at: new Date(record.lastSync.at).toISOString(), ok: record.lastSync.ok, errorCode: record.lastSync.errorCode } : null,
       readOnlyReason,
-      redirectUris: {
-        canWrite: writable,
-        dynamicRegistrationEnabled: snapshot?.dynamicRegistrationEnabled ?? null,
-        allowAnyOnLocalhost: snapshot?.allowAnyOnLocalhost ?? null,
-        allowAnyOnLoopback: snapshot?.allowAnyOnLoopback ?? null,
-        uris: snapshot?.redirectUris ?? null,
-        presets: REDIRECT_URI_PRESETS
-      }
+      redirectUris: this.redirectView(snapshot, writable)
+    };
+  }
+
+  private redirectView(snapshot: OAuthGrantProviderSnapshot | undefined, writable: boolean): OAuthGrantSettingsView['redirectUris'] {
+    const problem = snapshot ? redirectListProblem(snapshot) : null;
+    return {
+      canWrite: writable && problem === null,
+      dynamicRegistrationEnabled: snapshot?.dynamicRegistrationEnabled ?? null,
+      allowAnyOnLocalhost: snapshot?.allowAnyOnLocalhost ?? null,
+      allowAnyOnLoopback: snapshot?.allowAnyOnLoopback ?? null,
+      uris: problem === null ? snapshot?.redirectUris ?? null : null,
+      readOnlyReason: problem,
+      presets: REDIRECT_URI_PRESETS
     };
   }
 
@@ -266,7 +292,7 @@ export class OAuthGrantSettingsService {
       revision: null,
       lastSync: null,
       readOnlyReason: 'No OAuth provider integration is configured. Grant lifetimes and redirect URIs are managed outside Cloud Harness.',
-      redirectUris: { canWrite: false, dynamicRegistrationEnabled: null, allowAnyOnLocalhost: null, allowAnyOnLoopback: null, uris: null, presets: REDIRECT_URI_PRESETS }
+      redirectUris: this.redirectView(undefined, false)
     };
   }
 }

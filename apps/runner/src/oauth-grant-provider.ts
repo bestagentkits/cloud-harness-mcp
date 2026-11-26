@@ -17,8 +17,10 @@ export type OAuthGrantProviderSnapshot = {
   dynamicRegistrationEnabled: boolean | null;
   allowAnyOnLocalhost: boolean | null;
   allowAnyOnLoopback: boolean | null;
-  /** Allowlisted redirect URIs exactly as the provider stores them; `null` when unset. */
+  /** Allowlisted redirect URIs exactly as the provider stores them; `null` when unset or unreadable. */
   redirectUris: string[] | null;
+  /** True when the provider holds an allowlist value that is not an array of strings. */
+  redirectUrisMalformed: boolean;
 };
 
 /**

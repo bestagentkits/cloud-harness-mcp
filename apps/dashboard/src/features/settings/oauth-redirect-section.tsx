@@ -7,6 +7,7 @@ import { Field } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
 import { mutationErrorText } from '@/lib/bff-mutation';
 import { parseUriLines, presetState, type RedirectUrisView, removedUris, sameUris, togglePreset } from './oauth-redirect-model';
+import { Callout } from './settings-feedback';
 import { oauthRead, useConflictReload, useRedirectUrisWrite } from './settings-queries';
 
 const CONFLICT_MESSAGE = 'The OAuth settings changed in the provider after you opened Settings. The panel now shows the current values; review them and save again.';
@@ -67,6 +68,7 @@ export function RedirectUrisPanel({ view, revision, onStatus }: { view: Redirect
         <p className="text-sm text-muted-foreground">An MCP client connects only when its OAuth callback is listed here. A trailing <span className="font-mono">/*</span> matches every sub-path; an origin-wide wildcard is refused.</p>
       </div>
       <DetailList items={facts} />
+      {view.readOnlyReason ? <Callout><p>{view.readOnlyReason}</p></Callout> : null}
       {view.canWrite
         ? (
           <>
@@ -110,7 +112,7 @@ export function RedirectUrisPanel({ view, revision, onStatus }: { view: Redirect
         )
         : saved.length > 0
           ? <ul className="grid gap-1 font-mono text-xs break-all">{saved.map((uri) => <li key={uri}>{uri}</li>)}</ul>
-          : <p className="text-sm text-muted-foreground">{view.uris === null ? 'Not available.' : 'No redirect URIs are listed.'}</p>}
+          : view.readOnlyReason ? null : <p className="text-sm text-muted-foreground">{view.uris === null ? 'Not available.' : 'No redirect URIs are listed.'}</p>}
     </div>
   );
 }

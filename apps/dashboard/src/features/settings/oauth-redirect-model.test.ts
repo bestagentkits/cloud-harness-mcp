@@ -8,7 +8,7 @@ describe('redirect URI editor model', () => {
   it('reads only known fields and treats a missing list as unknown, not empty', () => {
     expect(readRedirectUris(undefined)).toBeUndefined();
     expect(readRedirectUris({ canWrite: true, uris: null, presets: [gemini, { id: 1 }], extra: 'x' })).toEqual({
-      canWrite: true, dynamicRegistrationEnabled: null, allowAnyOnLocalhost: null, allowAnyOnLoopback: null, uris: null, presets: [gemini]
+      canWrite: true, dynamicRegistrationEnabled: null, allowAnyOnLocalhost: null, allowAnyOnLoopback: null, uris: null, readOnlyReason: null, presets: [gemini]
     });
   });
 

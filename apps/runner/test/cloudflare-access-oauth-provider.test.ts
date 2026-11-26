@@ -159,6 +159,24 @@ describe('Cloudflare Access Managed OAuth provider', () => {
     )) as typeof fetch);
     expect(await reason(blank.writeRedirectUris([], revision))).toBe('readback_mismatch');
     expect((await clearing.writeRedirectUris([], (await clearing.read()).revision)).redirectUris).toEqual([]);
+
+    // A malformed allowlist on an otherwise valid application confirms nothing, not even an empty save.
+    for (const malformed of [{}, [null], 'https://a.example/cb']) {
+      const app = application();
+      const broken = fakeCloudflare(app);
+      const writer = new CloudflareAccessOAuthProvider(config, broken.request);
+      const seenBroken = (await writer.read()).revision;
+      const reading = new CloudflareAccessOAuthProvider(config, (async (input: string | URL | Request, init?: RequestInit) => {
+        const response = await broken.request(input, init);
+        if ((init?.method ?? 'GET') !== 'GET' || !broken.calls.some((call) => call.method === 'PUT')) return response;
+        const body = await response.json() as { result: { oauth_configuration: { dynamic_client_registration: Record<string, unknown> } } };
+        body.result.oauth_configuration.dynamic_client_registration.allowed_uris = malformed;
+        return Response.json(body);
+      }) as typeof fetch);
+      expect(await reason(reading.writeRedirectUris([], seenBroken)), JSON.stringify(malformed)).toBe('readback_mismatch');
+    }
+    const malformedRead = new CloudflareAccessOAuthProvider(config, fakeCloudflare({ ...application(), oauth_configuration: { enabled: true, dynamic_client_registration: { allowed_uris: [null] } } }).request);
+    expect(await malformedRead.read()).toMatchObject({ redirectUris: null, redirectUrisMalformed: true });
   });
 
   it('refuses to overwrite a configuration that changed since the caller read it', async () => {

@@ -12,6 +12,7 @@ export type RedirectUrisView = {
   allowAnyOnLocalhost: boolean | null;
   allowAnyOnLoopback: boolean | null;
   uris: string[] | null;
+  readOnlyReason: string | null;
   presets: RedirectUriPreset[];
 };
 export type PresetState = 'on' | 'partial' | 'off';
@@ -32,6 +33,7 @@ export function readRedirectUris(raw: unknown): RedirectUrisView | undefined {
     allowAnyOnLoopback: booleanOrNull(view.allowAnyOnLoopback),
     // Never truncated: the editor saves the whole list, so a partial read would silently drop entries.
     uris: Array.isArray(view.uris) ? strings(view.uris, Number.POSITIVE_INFINITY) : null,
+    readOnlyReason: typeof view.readOnlyReason === 'string' && view.readOnlyReason ? view.readOnlyReason.slice(0, 400) : null,
     presets: (Array.isArray(view.presets) ? view.presets : []).flatMap((item) => {
       const preset = record(item);
       return preset && typeof preset.id === 'string' && typeof preset.label === 'string'

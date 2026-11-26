@@ -268,7 +268,11 @@ decides where Access may deliver authorization codes, so the runner validates
 every entry before calling Cloudflare: a literal `https://`, or `http://` on
 `localhost` and `127.0.0.1` only; no credentials, query string, or fragment;
 a wildcard only as a trailing `/*`, never origin-wide on a public host.
-Invalid entries are reported by position, never echoed. The Gemini preset allows
+Invalid entries are reported by position, never echoed. A provider list that is
+malformed, holds more entries than a save may send, or holds an entry with a
+query string, credentials, a fragment, or excess length is neither shown nor
+replaceable from the Dashboard: the panel says why and points to Zero Trust, so
+such a value never reaches the browser or an audit record. The Gemini preset allows
 `https://oauth-redirect.googleusercontent.com/r/*` because Gemini's callback
 carries a per-account id, the same shape as the existing ChatGPT
 `connector/oauth/*` entry; the Access policy, not the callback, still decides

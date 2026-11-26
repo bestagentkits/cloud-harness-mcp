@@ -49,7 +49,8 @@ class FakeProvider implements OAuthGrantProvider {
       dynamicRegistrationEnabled: true,
       allowAnyOnLocalhost: null,
       allowAnyOnLoopback: null,
-      redirectUris: [...this.redirectUris]
+      redirectUris: [...this.redirectUris],
+      redirectUrisMalformed: false
     };
   }
   async read() {
@@ -266,6 +267,19 @@ describe('inbound OAuth grant settings', () => {
     expect(readOnly.redirectUris.canWrite).toBe(false);
     const unconfigured = OAuthGrantSettingsViewSchema.parse(await service(undefined).settings.view());
     expect(unconfigured.redirectUris).toMatchObject({ canWrite: false, uris: null });
+  });
+
+  it('never shows or audits a provider callback that could carry a secret, and refuses to replace that list', async () => {
+    const provider = new FakeProvider({ oauthEnabled: true, grantSeconds: MAX, tokenLifetimeSeconds: 900, explicit: true });
+    provider.redirectUris = ['https://claude.ai/api/mcp/auth_callback', 'https://client.example/cb?token=marker-value'];
+    const { settings, audits } = service(provider);
+    const view = OAuthGrantSettingsViewSchema.parse(await settings.view());
+    expect(view.redirectUris).toMatchObject({ canWrite: false, uris: null, readOnlyReason: expect.stringMatching(/query string/) });
+    expect(JSON.stringify(view)).not.toContain('marker-value');
+    await expect(settings.updateRedirectUris('owner', { uris: ['https://claude.ai/api/mcp/auth_callback'], expectedRevision: view.revision }))
+      .rejects.toMatchObject({ code: 'CONFLICT', details: { reason: 'redirect_uris_unmanageable' } });
+    expect(provider.redirectWrites).toEqual([]);
+    expect(audits).toEqual([]);
   });
 
   it('is reachable as an internal dashboard operation and never echoes the provider credential', async () => {
