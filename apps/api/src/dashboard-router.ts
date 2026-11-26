@@ -299,7 +299,17 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
         response.status(503).json({ error: 'settings_unavailable', message: 'Settings are temporarily unavailable.' });
         return;
       }
-      sendRunnerResponse(response, 'oauth_client_register', await runner.callInternal('oauth_client_register', OAuthClientRegistrationInputSchema.parse(request.body), selected));
+      // A browser that leaves before discovery finishes must not trigger a registration it will never see.
+      const disconnected = new AbortController();
+      const onClose = () => { if (!response.writableFinished) disconnected.abort(); };
+      response.on('close', onClose);
+      try {
+        const result = await runner.callInternal('oauth_client_register', OAuthClientRegistrationInputSchema.parse(request.body), selected, disconnected.signal);
+        if (disconnected.signal.aborted || response.headersSent) return;
+        sendRunnerResponse(response, 'oauth_client_register', result);
+      } finally {
+        response.off('close', onClose);
+      }
     } catch (error) { next(error); }
   });
 

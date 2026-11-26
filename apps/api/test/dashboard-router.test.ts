@@ -972,6 +972,8 @@ describe('dashboard BFF', () => {
     expect(created.status).toBe(200);
     expect(created.headers['cache-control']).toBe('no-store');
     expect(calls.at(-1)).toEqual({ operation: 'oauth_client_register', input: body, principal });
+    // The browser's disconnect reaches the runner, so a tab closed during discovery cancels the registration.
+    expect(vi.mocked(runner.callInternal!).mock.calls.at(-1)?.[3]).toBeInstanceOf(AbortSignal);
     expect(created.json.data).toMatchObject({ clientId: 'client-1', clientSecret: 'secret-1', redirectUri });
 
     // An answer outside the strict result schema never reaches the browser.

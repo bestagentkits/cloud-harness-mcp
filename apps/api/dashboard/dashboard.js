@@ -1541,10 +1541,12 @@ export function initializeDashboard() {
     return queued;
   }
   // The Connect Gemini panel's one-time credentials live only in its two inputs. Every
-  // navigation, Settings re-render, and pagehide wipes them through this hook, so replaced
-  // nodes never keep a secret reachable.
-  let clearGeminiCredentials = () => {};
-  globalThis.addEventListener('pagehide', () => clearGeminiCredentials());
+  // navigation, Settings re-render, dismiss, and pagehide wipes them and bumps the
+  // generation, so a registration answer that arrives afterwards is never shown.
+  let geminiGeneration = 0;
+  let wipeGeminiInputs = () => {};
+  const clearGeminiCredentials = () => { geminiGeneration += 1; wipeGeminiInputs(); };
+  globalThis.addEventListener('pagehide', clearGeminiCredentials);
   async function performLoad(signal) {
     clearGeminiCredentials();
     alertBox.hidden = true; setBusy(true);
@@ -2952,8 +2954,8 @@ export function initializeDashboard() {
     const field = form.querySelector('#settings-oauth-gemini-uri');
     const idField = result.querySelector('#settings-oauth-gemini-id');
     const secretField = result.querySelector('#settings-oauth-gemini-secret');
-    const clear = () => { idField.value = ''; secretField.value = ''; result.hidden = true; };
-    clearGeminiCredentials = clear;
+    wipeGeminiInputs = () => { idField.value = ''; secretField.value = ''; result.hidden = true; };
+    const clear = clearGeminiCredentials;
     const copy = (input, label) => {
       void globalThis.navigator.clipboard.writeText(input.value).then(
         () => oauthStatus(`${label} copied.`),
@@ -2971,13 +2973,14 @@ export function initializeDashboard() {
         field.focus();
         return;
       }
+      const generation = geminiGeneration;
       void oauthAction(form.querySelector('#create-settings-oauth-gemini'), 'Creating…', async () => {
         const { data } = await api('/settings/oauth/clients', { method: 'POST', body: requestBody({ client: 'gemini', redirectUri }) });
+        // Navigation, a re-render, or a dismiss since the request started: drop the answer.
+        if (generation !== geminiGeneration || !secretField.isConnected) return;
         if (typeof data?.clientId !== 'string' || typeof data?.clientSecret !== 'string' || data?.redirectUri !== redirectUri) {
           throw new Error('The new client credentials were unavailable. Create another client.');
         }
-        // A late answer after navigation or a re-render lands in detached inputs: drop it.
-        if (!secretField.isConnected) return;
         field.value = '';
         idField.value = data.clientId;
         secretField.value = data.clientSecret;
