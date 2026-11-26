@@ -1,5 +1,5 @@
 import express, { Router, type NextFunction, type Response } from 'express';
-import { InstanceSettingsUpdateInputSchema, OAuthGrantSettingsUpdateInputSchema, OAuthRedirectUrisUpdateInputSchema, TOOL_SCHEMA_BY_NAME, type ApiConfig, type RunnerOperation, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
+import { InstanceSettingsUpdateInputSchema, OAuthClientRegistrationInputSchema, OAuthGrantSettingsUpdateInputSchema, OAuthRedirectUrisUpdateInputSchema, TOOL_SCHEMA_BY_NAME, type ApiConfig, type RunnerOperation, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { principalFromAuthInfo } from './auth.js';
 import { agentNeedsAttention, buildActivityProjection, buildMetricsProjection, buildOverviewProjection, buildReliabilityProjection, METRIC_WINDOWS, mapDashboardData, sendRunnerResponse, type DashboardResponseOperation } from './dashboard-response.js';
@@ -288,6 +288,18 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
         return;
       }
       sendRunnerResponse(response, 'oauth_redirect_uris_update', await runner.callInternal('oauth_redirect_uris_update', OAuthRedirectUrisUpdateInputSchema.parse(request.body), selected));
+    } catch (error) { next(error); }
+  });
+
+  router.post('/api/v1/settings/oauth/clients', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      if (!runner.callInternal) {
+        response.status(503).json({ error: 'settings_unavailable', message: 'Settings are temporarily unavailable.' });
+        return;
+      }
+      sendRunnerResponse(response, 'oauth_client_register', await runner.callInternal('oauth_client_register', OAuthClientRegistrationInputSchema.parse(request.body), selected));
     } catch (error) { next(error); }
   });
 

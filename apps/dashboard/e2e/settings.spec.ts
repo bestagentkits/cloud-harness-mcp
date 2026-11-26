@@ -248,6 +248,38 @@ test('OAuth: reloading from the provider drops an unsaved redirect URI draft eve
   await expect(field).toHaveValue(claude);
 });
 
+test('OAuth: Connect Gemini creates a client and shows its credentials once, never storing them', async ({ page }) => {
+  const problems = watchConsole(page);
+  const redirectUri = 'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-abc123';
+  const secret = 'gemini-client-secret-value';
+  await openSettings(page);
+  const writes = await stubWrite(page, '/settings/oauth/clients', () => ({
+    status: 200,
+    body: { data: { client: 'gemini', clientId: 'client-123', clientSecret: secret, clientName: 'Gemini custom app (Cloud Harness Dashboard)', redirectUri, tokenEndpointAuthMethod: 'client_secret_post' }, truncated: false }
+  }));
+  const field = page.getByLabel('Gemini redirect URI');
+  await field.fill('https://example.com/r/nope');
+  await page.getByTestId('create-gemini-client').click();
+  await expect(main(page)).toContainText('Paste the redirect URI from Gemini');
+  expect(writes).toHaveLength(0);
+
+  await field.fill(redirectUri);
+  await page.getByTestId('create-gemini-client').click();
+  const dialog = page.getByTestId('gemini-client-reveal-dialog');
+  await expect(dialog.getByLabel('OAuth client ID')).toHaveValue('client-123');
+  await expect(dialog.getByLabel('OAuth client secret')).toHaveValue(secret);
+  await expect(field).toHaveValue('');
+  const stored = await page.evaluate(() => JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage }));
+  expect(stored).not.toContain(secret);
+  await dialog.getByRole('button', { name: 'I have saved them' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(main(page)).not.toContainText(secret);
+
+  expect(writes.map((write) => write.body)).toEqual([{ client: 'gemini', redirectUri }]);
+  expect(writes[0]?.csrf).toBe(true);
+  expect(problems).toEqual([]);
+});
+
 test('OAuth: a read-only provider shows facts and the reason without a form', async ({ page }) => {
   await openSettings(page, { '/settings/oauth': answer(200, oauthBody({ capabilities: { ...oauthBody().data.capabilities, canWriteGrantConfiguration: false }, readOnlyReason: 'The Cloudflare API token cannot update this Access application.' })) });
   await expect(main(page)).toContainText('cannot update this Access application');

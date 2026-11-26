@@ -56,7 +56,7 @@ docker compose --profile images build executor-image
    - **ChatGPT Web:** `https://chatgpt.com/connector/oauth/*`, `https://chatgpt.com/connector_platform_oauth_redirect`, and `https://chatgpt.com/api/aip/p/oauth/callback`.
    - **Gemini web app:** `https://oauth-redirect.googleusercontent.com/r/*`.
 
-**Gemini still reports that automatic registration failed**, or says you must link the account after you sign in: register a client with Gemini's exact redirect URI and `client_secret_post`, and paste its ID and secret into Gemini. See [Gemini web app](/ai-tools/gemini#_3-if-gemini-asks-for-a-client-id-and-secret).
+**Gemini still reports that automatic registration failed**, or says you must link the account after you sign in: create a client in **Dashboard → [Settings](/dashboard/settings#connect-gemini) → Connect Gemini** with Gemini's exact redirect URI, and paste its ID and secret into Gemini. A client registered by hand must use `client_secret_post`. See [Gemini web app](/ai-tools/gemini#_3-if-gemini-asks-for-a-client-id-and-secret).
 
 ---
 

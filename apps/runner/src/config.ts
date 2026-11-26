@@ -223,6 +223,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
       clientSecret: secret('GITHUB_APP_CLIENT_SECRET') || undefined
     } : undefined,
     githubToken,
+    accessIssuer: process.env.CLOUDFLARE_ACCESS_ISSUER || undefined,
     cloudflareAccessOAuth: cloudflareAccessOAuth(),
     agents: agentConfigurationPresent ? {
       image: process.env.AGENT_IMAGE,

@@ -31,31 +31,32 @@ The allowlist covers `/r/*` only, not the whole `oauth-redirect.googleuserconten
 
 ### 3. If Gemini asks for a client ID and secret
 
-Gemini may report that automatic registration with the server failed and ask for an OAuth client ID and secret, even after step 1. Cloudflare accepts standard registrations for Gemini's callback, so the cause is on Gemini's side and has not been identified. Register a client yourself and paste its credentials into Gemini:
+Gemini may report that automatic registration with the server failed and ask for an OAuth client ID and secret, even after step 1. Cloudflare accepts standard registrations for Gemini's callback, so the cause is on Gemini's side and has not been identified. Create a client for your Google account and paste its credentials into Gemini:
 
 1. In the Gemini dialog, click **Copy redirect URI**. Use this exact value; it is specific to your Google account.
-2. Register a client. The registration endpoint is public and needs no Zero Trust access; anyone who registers still has to pass the Access policy to get a token.
+2. Open **Dashboard → [Settings](/dashboard/settings#connect-gemini) → MCP OAuth sessions → Connect Gemini**, paste the URI, and click **Create Gemini client**. A dialog shows the client ID and secret once; copy each into Gemini before closing it.
+3. Under **Advanced settings** in the Gemini dialog, paste the client ID and secret, then click **Next**, accept the Google permissions, sign in through Cloudflare Access, and click **Allow**.
 
-   ```bash
-   REDIRECT_URI='<paste the URI from step 1>'
-   REGISTRATION=$(curl -s https://harness.zuey.me/.well-known/oauth-authorization-server | jq -r .registration_endpoint)
-   curl -s -X POST "$REGISTRATION" -H 'content-type: application/json' -d "{
-     \"client_name\": \"Gemini custom app\",
-     \"redirect_uris\": [\"$REDIRECT_URI\"],
-     \"grant_types\": [\"authorization_code\", \"refresh_token\"],
-     \"response_types\": [\"code\"],
-     \"token_endpoint_auth_method\": \"client_secret_post\"
-   }" | jq '{client_id, client_secret}'
-   ```
+Without the Dashboard, register the client yourself. The registration endpoint is public and needs no Zero Trust access; anyone who registers still has to pass the Access policy to get a token.
 
-3. Under **Advanced settings** in the Gemini dialog, paste `client_id` and `client_secret`, then click **Next**, accept the Google permissions, sign in through Cloudflare Access, and click **Allow**.
+```bash
+REDIRECT_URI='<paste the URI from step 1>'
+REGISTRATION=$(curl -s https://harness.zuey.me/.well-known/oauth-authorization-server | jq -r .registration_endpoint)
+curl -s -X POST "$REGISTRATION" -H 'content-type: application/json' -d "{
+  \"client_name\": \"Gemini custom app\",
+  \"redirect_uris\": [\"$REDIRECT_URI\"],
+  \"grant_types\": [\"authorization_code\", \"refresh_token\"],
+  \"response_types\": [\"code\"],
+  \"token_endpoint_auth_method\": \"client_secret_post\"
+}" | jq '{client_id, client_secret}'
+```
 
-Keep these two details exactly as shown:
+Either way, two details matter:
 
-- **`client_secret_post`.** Gemini sends the secret in the request body, and Cloudflare enforces the method a client registered with. A `client_secret_basic` client completes the sign-in but fails the token exchange, and Gemini then reports that you must link the account.
-- **The secret is shown once.** Cloudflare returns it only in the registration response. If you lose it, register a new client.
+- **`client_secret_post`.** Gemini sends the secret in the request body, and Cloudflare enforces the method a client registered with. A `client_secret_basic` client completes the sign-in but fails the token exchange, and Gemini then reports that you must link the account. The Dashboard always registers `client_secret_post`.
+- **The secret is shown once.** Cloudflare returns it only in the registration response, and Cloud Harness does not keep it. If you lose it, create another client.
 
-Each Google account has its own callback, so each Gemini user registers their own client. Cloudflare shows the client name on its **Authorize Client** page.
+Each Google account has its own callback, so each Gemini user creates their own client. Cloudflare shows the client name on its **Authorize Client** page. Cloud Harness cannot list or delete these clients; remove unused ones in Cloudflare Zero Trust.
 
 ### What Gemini can do once connected
 

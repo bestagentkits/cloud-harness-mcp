@@ -52,7 +52,7 @@ import {
   launchBlockedByConflicts,
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, githubRefusalMessage, GITHUB_USER_AUTHORIZATION_REQUIRED_CODE, GITHUB_USER_AUTHORIZATION_REQUIRED_MESSAGE, renderGlobalSecrets, renderOverview, renderOverviewSkeleton,
   renderChangelog, renderProjectDetail, renderProfile, renderProjectIndex, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
-  parseRedirectUriLines, redirectPresetState, toggleRedirectPreset,
+  parseRedirectUriLines, redirectPresetState, toggleRedirectPreset, GEMINI_REDIRECT_URI_PATTERN,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
   renderMcpServersIndex, renderMcpServerDetail,
   renderSkillsLibraryCards, renderSkillsLibraryRows, renderSkillsRegistryRows,
@@ -2746,6 +2746,7 @@ export function initializeDashboard() {
     bindLifecycleSettingsControls();
     bindOAuthSettingsControls();
     bindOAuthRedirectControls();
+    bindGeminiClientControls();
     bindTypesafeSettingsControls();
   }
   function typesafeStatus(message) {
@@ -2931,6 +2932,49 @@ export function initializeDashboard() {
         pendingLabel: 'Saving…',
         action: () => postOAuthRedirects(body)
       }, button);
+    });
+  }
+  /**
+   * Creates a Gemini OAuth client and shows its ID and secret once, through DOM properties
+   * only. Dismissing, leaving the page, or any re-render of Settings drops them.
+   */
+  function bindGeminiClientControls() {
+    const form = document.querySelector('#settings-oauth-gemini-form');
+    const result = document.querySelector('#settings-oauth-gemini-result');
+    if (!form || !result) return;
+    const field = form.querySelector('#settings-oauth-gemini-uri');
+    const idField = result.querySelector('#settings-oauth-gemini-id');
+    const secretField = result.querySelector('#settings-oauth-gemini-secret');
+    const clear = () => { idField.value = ''; secretField.value = ''; result.hidden = true; };
+    globalThis.addEventListener('pagehide', clear, { once: true });
+    const copy = (input, label) => {
+      void globalThis.navigator.clipboard.writeText(input.value).then(
+        () => oauthStatus(`${label} copied.`),
+        () => { clear(); oauthStatus(`The ${label.toLowerCase()} could not be copied, so the credentials were cleared. Create another client.`); }
+      );
+    };
+    result.querySelector('#copy-settings-oauth-gemini-id').addEventListener('click', () => copy(idField, 'Client ID'));
+    result.querySelector('#copy-settings-oauth-gemini-secret').addEventListener('click', () => copy(secretField, 'Client secret'));
+    result.querySelector('#dismiss-settings-oauth-gemini').addEventListener('click', () => { clear(); oauthStatus('Credentials cleared from this page.'); });
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const redirectUri = field.value.trim();
+      if (!GEMINI_REDIRECT_URI_PATTERN.test(redirectUri)) {
+        oauthStatus('Paste the redirect URI from Gemini: https://oauth-redirect.googleusercontent.com/r/…');
+        field.focus();
+        return;
+      }
+      void oauthAction(form.querySelector('#create-settings-oauth-gemini'), 'Creating…', async () => {
+        const { data } = await api('/settings/oauth/clients', { method: 'POST', body: requestBody({ client: 'gemini', redirectUri }) });
+        if (typeof data?.clientId !== 'string' || typeof data?.clientSecret !== 'string' || data?.redirectUri !== redirectUri) {
+          throw new Error('The new client credentials were unavailable. Create another client.');
+        }
+        field.value = '';
+        idField.value = data.clientId;
+        secretField.value = data.clientSecret;
+        result.hidden = false;
+        oauthStatus('Gemini client created. Copy its ID and secret now.');
+      });
     });
   }
   function lifecycleStatus(message) {

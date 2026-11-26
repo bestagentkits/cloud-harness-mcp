@@ -3,14 +3,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { isSessionEnded, subscribeSessionEnded } from './session-state';
 
 /**
- * Holds a one-time reveal (a newly created API key) in component state only, per ADR 0005:
- * never storage, the query cache, the console or the URL. The value is cleared on every
- * path that leaves the reveal: an explicit dismiss (the caller calls `clear`), any
- * router navigation, a click on any link, `pagehide`, the dashboard session ending, and
- * unmount (state dies with the component).
+ * Holds a one-time reveal (a newly created API key, or an OAuth client's ID and secret) in
+ * component state only, per ADR 0005: never storage, the query cache, the console or the
+ * URL. The value is cleared on every path that leaves the reveal: an explicit dismiss (the
+ * caller calls `clear`), any router navigation, a click on any link, `pagehide`, the
+ * dashboard session ending, and unmount (state dies with the component).
  */
-export function useOneTimeReveal() {
-  const [value, setValue] = useState<string | undefined>(undefined);
+export function useOneTimeReveal<T = string>() {
+  const [value, setValue] = useState<T | undefined>(undefined);
   const clear = useCallback(() => setValue(undefined), []);
   const router = useRouter();
   const revealed = value !== undefined;
@@ -32,6 +32,6 @@ export function useOneTimeReveal() {
   }, [clear, revealed, router]);
 
   // Never hand out a value once the session has ended, even before the listener runs.
-  const reveal = useCallback((next: string) => { if (!isSessionEnded()) setValue(next); }, []);
+  const reveal = useCallback((next: T) => { if (!isSessionEnded()) setValue(() => next); }, []);
   return { value, reveal, clear };
 }

@@ -387,6 +387,7 @@ descriptions with empty values and revokes its object URL immediately.
 | GET / POST | `/settings` | router | schema parse | settings | `settings` | P3 | Unmapped passthrough (F7) |
 | GET / POST | `/settings/oauth` | router | schema parse | settings | `settings` | P3 | |
 | POST | `/settings/oauth/redirect-uris` | router | schema parse | settings | `settings` | P3 | Both shells; answer is the `/settings/oauth` view |
+| POST | `/settings/oauth/clients` | router | schema parse | settings | `settings` | P3 | Both shells; one-time Gemini client ID + secret, strict projection, never cached |
 | POST | `/settings/network-check` | router | — | settings | `settings` | P3 | |
 
 ### 4.11 MCP servers, gateway, downstream OAuth

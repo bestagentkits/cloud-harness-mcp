@@ -298,6 +298,28 @@ dynamic-registration and loopback flags are shown but never written. The
 validator and presets live in
 [`packages/contracts/src/oauth-grant-settings.ts`](../packages/contracts/src/oauth-grant-settings.ts).
 
+Dashboard Settings can also register an OAuth client for the Gemini web app,
+whose own registration fails against Managed OAuth. The runner, not the API,
+posts the RFC 7591 registration: it discovers the endpoint from the Access team
+domain (`CLOUDFLARE_ACCESS_ISSUER`, which the runner reads from the same
+runtime environment as the API) and refuses an endpoint on another origin. The
+registration endpoint is public and needs no Cloudflare credential. Input is
+limited to one Gemini per-account callback
+(`https://oauth-redirect.googleusercontent.com/r/<id>`), the client is always
+`client_secret_post`, and an answer that does not echo that callback and method
+is discarded. When the provider integration can read the allowlist, a callback
+that is not on it is refused before any request. The client secret passes
+through once: the runner returns it in the operation result, the BFF forwards
+it only inside the strict `OAuthClientRegistrationResultSchema` with
+`Cache-Control: no-store`, and both shells hold it in page state until the
+operator dismisses it or leaves the page. It is never stored, logged, or
+audited; the audit event `oauth_client.registered` records the client ID and
+callback. A registered client grants nothing by itself: a token still requires
+passing the Access policy. Cloudflare returns no registration access token, so
+Cloud Harness cannot list or delete these clients; remove them in Zero Trust.
+The owner is
+[`apps/runner/src/oauth-client-registrar.ts`](../apps/runner/src/oauth-client-registrar.ts).
+
 ## MCP gateway egress and credential resolution
 
 The `/mcp-gateway` composition root adds the first user-configurable API egress

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { oauthDurationLabel, parseRedirectUriLines, redirectPresetState, renderOAuthSettings, renderSettings, toggleRedirectPreset } from '../dashboard/dashboard-render.js';
+import { GEMINI_REDIRECT_URI_PATTERN, oauthDurationLabel, parseRedirectUriLines, redirectPresetState, renderOAuthSettings, renderSettings, toggleRedirectPreset } from '../dashboard/dashboard-render.js';
 
 const capabilities = {
   canReadGrantConfiguration: true,
@@ -121,5 +121,14 @@ describe('Dashboard MCP OAuth session settings', () => {
     expect(withGemini).toEqual(['https://a.example/cb', 'https://oauth-redirect.googleusercontent.com/r/*']);
     expect(redirectPresetState(gemini, withGemini)).toBe('on');
     expect(toggleRedirectPreset(withGemini, gemini, false)).toEqual(['https://a.example/cb']);
+  });
+
+  it('renders the Connect Gemini form with an empty, hidden result area', () => {
+    const html = renderOAuthSettings(view());
+    expect(html).toContain('id="settings-oauth-gemini-form"');
+    expect(html).toMatch(/<div id="settings-oauth-gemini-result" hidden>/);
+    expect(html).toMatch(/id="settings-oauth-gemini-secret" class="mono" type="text" readonly autocomplete="off" spellcheck="false">/);
+    expect(GEMINI_REDIRECT_URI_PATTERN.test('https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-abc')).toBe(true);
+    expect(GEMINI_REDIRECT_URI_PATTERN.test('https://oauth-redirect.googleusercontent.com/r/x?y=1')).toBe(false);
   });
 });
