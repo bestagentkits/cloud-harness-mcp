@@ -549,7 +549,7 @@ export class DurableSessionStore {
       } catch (error) {
         // A listable directory can still deny reading one store (for example mode 0400). The
         // readable stores stay counted; the unreadable one is skipped while the engine is off.
-        const path = join(stateDir, name);
+        const path = (error as NodeJS.ErrnoException).path ?? join(stateDir, name);
         const code = (error as NodeJS.ErrnoException).code ?? 'UNKNOWN';
         if (!this.#enabled) {
           process.stderr.write(`${JSON.stringify({ level: 'warn', time: Date.now(), msg: 'durable session store is unreadable; it is not counted toward the session budgets', path, code })}\n`);
