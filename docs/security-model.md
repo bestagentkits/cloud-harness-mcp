@@ -250,7 +250,10 @@ startup the runner applies the provider maximum only to a new install whose
 grant duration has never been set explicitly; it never overwrites a customised
 grant or an explicit access-token lifetime outside the panel bounds, and offers
 **Adopt** in Settings instead. Provider writes from one runner are serialized,
-so the startup default cannot replace a concurrent Dashboard save. Dashboard
+so the startup default cannot replace a concurrent Dashboard save. The revision
+check is a read-then-write guard, not an atomic compare-and-swap at Cloudflare:
+an edit made directly in Zero Trust between the adapter's re-read and its PUT is
+not detected, and the PUT replaces it. Dashboard
 saves are audited as `settings.oauth_grant.changed`; the startup default has no
 acting principal, so it is logged by the runner and shown in Settings as applied
 automatically at first start. A PUT that times out or fails server-side is
