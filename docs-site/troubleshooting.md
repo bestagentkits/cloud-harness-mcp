@@ -47,12 +47,16 @@ docker compose --profile images build executor-image
 ### 5. OAuth DCR Error (`redirect_uri is not allowed by the account configuration`)
 **Cause:** Cloudflare Access Managed OAuth rejected Dynamic Client Registration because the client's callback URL was not allowlisted.
 **Fix:**
-1. Log into [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Access controls** → **Applications**.
-2. Edit the application for your MCP hostname → **Advanced settings** → **Managed OAuth**.
-3. Add the required callback URLs to **Allowed redirect URIs**:
+1. With the Cloudflare API integration in read-write mode, open **Dashboard → [Settings](/dashboard/settings#allowed-redirect-uris) → MCP OAuth sessions → Allowed redirect URIs**, tick the client under **Known clients**, and click **Save redirect URIs**. Otherwise, continue in Cloudflare Zero Trust:
+2. Log into [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Access controls** → **Applications**.
+3. Edit the application for your MCP hostname → **Advanced settings** → **Managed OAuth**.
+4. Add the required callback URLs to **Allowed redirect URIs**:
    - **Claude Desktop:** `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`
    - **Codex App / Native Clients:** Pin `mcp_oauth_callback_port = 3118` in `~/.codex/config.toml` and add `http://127.0.0.1:3118/callback/*`, `http://127.0.0.1:3118/*`, `http://localhost:3118/callback/*`, and `http://localhost:3118/*`.
    - **ChatGPT Web:** `https://chatgpt.com/connector/oauth/*`, `https://chatgpt.com/connector_platform_oauth_redirect`, and `https://chatgpt.com/api/aip/p/oauth/callback`.
+   - **Gemini web app:** `https://oauth-redirect.googleusercontent.com/r/*`.
+
+**Gemini still reports that automatic registration failed**, or says you must link the account after you sign in: register a client with Gemini's exact redirect URI and `client_secret_post`, and paste its ID and secret into Gemini. See [Gemini web app](/ai-tools/gemini#_3-if-gemini-asks-for-a-client-id-and-secret).
 
 ---
 

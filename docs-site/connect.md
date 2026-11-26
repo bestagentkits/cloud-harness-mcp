@@ -160,6 +160,6 @@ Select your AI coding tool for specific setup instructions:
 - [Claude Code](/ai-tools/claude-code)
 - [Cursor IDE](/ai-tools/cursor)
 - [OpenAI Codex CLI](/ai-tools/codex)
-- [Google Gemini CLI](/ai-tools/gemini)
+- [Google Gemini (web app and CLI)](/ai-tools/gemini)
 - [Google Antigravity](/ai-tools/antigravity)
 - [Grok / xAI](/ai-tools/grok)

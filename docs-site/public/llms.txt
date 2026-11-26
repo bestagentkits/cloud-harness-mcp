@@ -19,7 +19,7 @@
 - [Claude Code](https://docs.harness.agentkit.best/ai-tools/claude-code.md): Local authorization header connection.
 - [Cursor](https://docs.harness.agentkit.best/ai-tools/cursor.md): Global or project-level MCP setup.
 - [Codex](https://docs.harness.agentkit.best/ai-tools/codex.md): config.toml configuration.
-- [Gemini CLI](https://docs.harness.agentkit.best/ai-tools/gemini.md): CLI setup.
+- [Gemini](https://docs.harness.agentkit.best/ai-tools/gemini.md): Gemini web app over Managed OAuth and Gemini CLI setup.
 - [Google Antigravity](https://docs.harness.agentkit.best/ai-tools/antigravity.md): IDE configuration.
 - [Grok / xAI](https://docs.harness.agentkit.best/ai-tools/grok.md): Responses API MCP integration.
 
