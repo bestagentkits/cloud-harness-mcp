@@ -31,7 +31,7 @@ The allowlist covers `/r/*` only, not the whole `oauth-redirect.googleuserconten
 
 ### 3. If Gemini asks for a client ID and secret
 
-Gemini may report that automatic registration with the server failed and ask for an OAuth client ID and secret, even after step 1. Cloudflare accepts standard registrations for Gemini's callback, so the cause is on Gemini's side and has not been identified. Create a client for your Google account and paste its credentials into Gemini:
+Gemini may report that automatic registration with the server failed and ask for an OAuth client ID and secret, even after step 1. Cloudflare accepts standard registrations for Gemini's callback; why Gemini's own registration fails is not yet identified. Create a client for your Google account and paste its credentials into Gemini:
 
 1. In the Gemini dialog, click **Copy redirect URI**. Use this exact value; it is specific to your Google account.
 2. Open **Dashboard → [Settings](/dashboard/settings#connect-gemini) → MCP OAuth sessions → Connect Gemini**, paste the URI, and click **Create Gemini client**. A dialog shows the client ID and secret once; copy each into Gemini before closing it.
@@ -60,7 +60,7 @@ Each Google account has its own callback, so each Gemini user creates their own 
 
 ### What Gemini can do once connected
 
-Gemini can call every Cloud Harness tool as you: open workspaces, read and write files, run commands with `exec_run`, use git, and run agents. It acts with your principal's permissions; privileged commands still need approval on the Dashboard. To disconnect, remove the app from Gemini's connected apps or unlink it from your Google account. Removing the Gemini callback from the allowlist, or removing you from the Access policy, stops new sign-ins and takes effect for existing connections at the next token refresh.
+Gemini can call every Cloud Harness tool as you: open workspaces, read and write files, run commands with `exec_run`, use git, and run agents. It acts with your principal's permissions; privileged commands still need approval on the Dashboard. To disconnect, remove the app from Gemini's connected apps or unlink it from your Google account. To cut off access from the harness side, remove the person from the Access policy: their existing connection stops at its next token refresh, because every refresh re-checks the policy. Removing the Gemini callback from the allowlist only blocks new registrations and sign-ins; it does not revoke a connection that already holds a grant.
 
 ## Gemini CLI
 

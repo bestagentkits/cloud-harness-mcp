@@ -119,7 +119,8 @@ export class OAuthClientRegistrar {
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       if (response.status === 429) throw refusal('throttled');
-      if (method === 'POST' && response.status >= 400 && response.status < 500) throw refusal('rejected');
+      // Only a metadata refusal points at the callback; a missing or disabled endpoint (404/405) does not.
+      if (method === 'POST' && (response.status === 400 || response.status === 422)) throw refusal('rejected');
       throw refusal('unreachable');
     }
     // A declared length over the cap is refused before any byte is buffered; the stream cap still applies.

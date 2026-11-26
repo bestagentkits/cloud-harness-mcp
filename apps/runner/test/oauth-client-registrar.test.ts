@@ -82,6 +82,7 @@ describe('OAuth client registration for Gemini', () => {
   it('maps refusals and unusable answers without exposing credentials', async () => {
     const register = (options: Parameters<typeof fakeAccess>[0]) => new OAuthClientRegistrar(ISSUER, undefined, undefined, fakeAccess(options).request).register('owner', { client: 'gemini', redirectUri: URI });
     expect(await reason(register({ postStatus: 400 }))).toBe('oauth_client_rejected');
+    expect(await reason(register({ postStatus: 404 }))).toBe('oauth_client_unreachable');
     expect(await reason(register({ postThrows: true }))).toBe('oauth_client_unreachable');
     expect(await reason(register({ postStatus: 429 }))).toBe('oauth_client_throttled');
     // The cap counts bytes as they stream, so a multibyte or chunked body cannot slip past it.

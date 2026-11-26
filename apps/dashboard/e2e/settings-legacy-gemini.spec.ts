@@ -9,7 +9,7 @@ import { oauthBody, settingsBody, TYPESAFE_CREDENTIALS, TYPESAFE_STATUS } from '
 const REDIRECT_URI = 'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-abc123';
 const SECRET = 'legacy-gemini-secret-value';
 
-async function openLegacySettings(page: Page, delayMs = 0) {
+async function openLegacySettings(page: Page, hold?: Promise<void>) {
   await stubReads(page, {
     '/settings': answer(200, settingsBody()),
     '/settings/oauth': answer(200, oauthBody()),
@@ -19,7 +19,7 @@ async function openLegacySettings(page: Page, delayMs = 0) {
   const writes: unknown[] = [];
   await page.route('**/dashboard/api/v1/settings/oauth/clients', async (route) => {
     writes.push(route.request().postDataJSON());
-    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (hold) await hold;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -57,13 +57,19 @@ test('legacy shell: Connect Gemini validates, shows credentials once, and clears
 });
 
 test('legacy shell: an answer that arrives after Settings re-rendered is dropped', async ({ page }) => {
-  const writes = await openLegacySettings(page, 1_500);
+  const registration = gate();
+  const writes = await openLegacySettings(page, registration.promise);
   await page.locator('#settings-oauth-gemini-uri').fill(REDIRECT_URI);
   await page.locator('#create-settings-oauth-gemini').click();
+  await expect.poll(() => writes.length).toBe(1);
   await page.locator('#reload-settings-oauth').click();
   await expect(page.locator('#settings-oauth-status')).toHaveText('Reloaded from the provider.');
-  await expect.poll(() => writes.length).toBe(1);
-  await page.waitForTimeout(2_000);
+  // Settings has re-rendered; only now does the registration answer.
+  const answered = page.waitForResponse('**/dashboard/api/v1/settings/oauth/clients');
+  registration.resolve();
+  await answered;
+  // Let the page handle the answer (fetch resolution, JSON parse, handler) before asserting.
+  await page.evaluate(() => new Promise<void>((settled) => { setTimeout(settled, 0); }));
   await expect(page.locator('#settings-oauth-gemini-result')).toBeHidden();
   await expect(page.locator('#settings-oauth-gemini-secret')).toHaveValue('');
   expect(await page.content()).not.toContain(SECRET);
