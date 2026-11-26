@@ -4,10 +4,11 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { StateStore } from '../src/state-store.js';
 import { OperationManager } from '../src/operation-manager.js';
 import { WorkspaceService } from '../src/workspace-service.js';
+import { DurableCleanupError } from '../src/durable-session-store.js';
 const tempDir = () => {
   const dir = join(tmpdir(), `test-durable-tasks-${randomBytes(8).toString('hex')}`);
   mkdirSync(dir, { recursive: true });
@@ -596,4 +597,90 @@ describe('Durable Task Engine & Restart Reconciliation', () => {
       store.close();
     }
   }, 20_000);
+});
+
+describe('startup reconciliation of a workspace whose durable session files cannot be removed', () => {
+  function setup(stopError: Error) {
+    const dir = tempDir();
+    const dbPath = join(dir, 'state.sqlite');
+    const store = new StateStore(dbPath);
+    const config = {
+      host: '0.0.0.0',
+      port: 3001,
+      serviceToken: 'a'.repeat(32),
+      jobsRoot: join(dir, 'jobs'),
+      stateDb: dbPath,
+      executorImage: 'cloud-harness-executor:local',
+      allowedGitHosts: ['github.com'],
+      networkProfile: 'network-none' as const,
+      wallTtlSeconds: 900,
+      idleTtlSeconds: 300,
+      maxOutputBytes: 262144,
+      minFreeBytes: 104857600,
+      maxWorkspaceBytes: 104857600,
+      reaperIntervalSeconds: 30,
+      artifactRoot: join(dir, 'artifacts'),
+      maxArtifactBytes: 16777216,
+      maxPrincipalArtifactBytes: 134217728,
+      artifactRetentionSeconds: 86400,
+      enableRepoCache: false,
+      repoCacheRoot: join(dir, 'cache')
+    };
+    const stopWorkspace = vi.fn(async () => { throw stopError; });
+    const service = new WorkspaceService(config, store, { manager: { stopWorkspace } } as never);
+    const ownerId = store.resolvePrincipal({ kind: 'external', issuer: 'https://issuer.com', subject: 'user-startup-durable' });
+    const wsId = 'ws_dddddddddddddddddddddddddddddddd';
+    const workspacePath = join(dir, 'jobs', wsId);
+    mkdirSync(workspacePath, { recursive: true });
+    store.create({
+      id: wsId,
+      ownerId,
+      idempotencyKey: 'ik_ws_startup_durable',
+      repositoryUrl: 'https://github.com/org/repo',
+      containerName: null,
+      workspacePath,
+      status: 'ACTIVE',
+      networkProfile: 'network-none',
+      createdAt: Date.now(),
+      lastActivityAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      hardExpiresAt: Date.now() + 7200_000,
+      gitAuthorName: null,
+      gitAuthorEmail: null,
+      mutationLockedUntil: null,
+      generation: 1,
+      error: null
+    });
+    const closeAtStartup = (service as unknown as { closeAtStartup(record: unknown, reason: string): Promise<void> }).closeAtStartup.bind(service);
+    return { store, wsId, workspacePath, stopWorkspace, close: () => closeAtStartup(store.byId(wsId), 'executor missing during startup reconciliation') };
+  }
+
+  it('defers the close and keeps the workspace recoverable instead of refusing to start', async () => {
+    const denied = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    const { store, wsId, workspacePath, stopWorkspace, close } = setup(new DurableCleanupError('/state/agent-sessions', denied));
+    const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await expect(close()).resolves.toBeUndefined();
+      expect(stopWorkspace).toHaveBeenCalledTimes(1);
+      const record = store.byId(wsId);
+      expect(record?.status).toBe('EXPIRED_RECOVERABLE');
+      expect(record?.error).toContain('could not be removed (EACCES)');
+      // Nothing past the failed durable cleanup ran, so the workspace files are kept for the retry.
+      expect(existsSync(workspacePath)).toBe(true);
+      expect(String(warn.mock.calls.at(-1)?.[0])).toContain('"code":"EACCES"');
+    } finally {
+      warn.mockRestore();
+      store.close();
+    }
+  });
+
+  it('still refuses to start on any other close failure', async () => {
+    const { store, wsId, close } = setup(new Error('teardown deadline exceeded'));
+    try {
+      await expect(close()).rejects.toThrow('teardown deadline exceeded');
+      expect(store.byId(wsId)?.status).toBe('EXPIRED_RECOVERABLE');
+    } finally {
+      store.close();
+    }
+  });
 });

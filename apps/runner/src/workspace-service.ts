@@ -89,7 +89,7 @@ import {
   resolveGitHubFallbackToken
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
-import { DurableSessionStore } from './durable-session-store.js';
+import { DurableCleanupError, DurableSessionStore } from './durable-session-store.js';
 import { computeFullTreeDigest, computeFullTreeDigestAsync } from './adapters/mattpocock-adapter.js';
 
 /** What credential resolution decided; see `resolveRepositoryCredential`. */
@@ -672,8 +672,8 @@ export class WorkspaceService {
         }
         continue;
       }
-      if (record.status === 'CREATING') await this.closeRecord(record, 'runner restarted during workspace creation');
-      else if (!record.containerName || !(await inspectContainer(record.containerName))) await this.closeRecord(record, 'executor missing during startup reconciliation');
+      if (record.status === 'CREATING') await this.closeAtStartup(record, 'runner restarted during workspace creation');
+      else if (!record.containerName || !(await inspectContainer(record.containerName))) await this.closeAtStartup(record, 'executor missing during startup reconciliation');
       else {
         const inspection = await inspectContainer(record.containerName);
         const hostConfig = inspection?.HostConfig as { NetworkMode?: string } | undefined;
@@ -5376,6 +5376,21 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       ], { timeoutMs: 30_000, maxBytes: 65_536 });
       if (cleaned.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'workspace permissions could not be normalized for cleanup', 503, true);
       await rm(target, { recursive: true, force: true, maxRetries: 3 });
+    }
+  }
+
+  /**
+   * Closes a workspace during startup reconciliation. A close that fails only because durable
+   * session files could not be removed is deferred: the workspace stays EXPIRED_RECOVERABLE with
+   * its lineage records and closed admission, and a later close retries. Any other failure still
+   * stops the runner from starting.
+   */
+  private async closeAtStartup(record: WorkspaceRecord, reason: string): Promise<void> {
+    try {
+      await this.closeRecord(record, reason);
+    } catch (error) {
+      if (!(error instanceof DurableCleanupError)) throw error;
+      process.stderr.write(`${JSON.stringify({ level: 'warn', time: Date.now(), msg: 'workspace close deferred: durable session files could not be removed', workspaceId: record.id, path: error.path, code: error.code })}\n`);
     }
   }
 
