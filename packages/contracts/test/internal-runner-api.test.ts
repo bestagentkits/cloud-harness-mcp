@@ -22,7 +22,7 @@ describe('internal runner API contract', () => {
     expect(InternalRunnerOperationSchema.options).toEqual([
       'workspace_detail', 'workspace_close_fenced', 'toolkits_list', 'toolkits_preview',
       'settings_get', 'settings_update', 'settings_network_check',
-      'oauth_settings_get', 'oauth_settings_update',
+      'oauth_settings_get', 'oauth_settings_update', 'oauth_redirect_uris_update',
       'terminal_open', 'terminal_read', 'terminal_input', 'terminal_resize', 'terminal_close', 'terminal_list'
     ]);
     for (const operation of InternalRunnerOperationSchema.options.filter((name) => name.startsWith('terminal_'))) {

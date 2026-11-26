@@ -1,9 +1,12 @@
 import {
   HarnessError,
   OAUTH_GRANT_SECONDS_FLOOR,
+  OAUTH_REDIRECT_URI_PRESETS,
   OAUTH_TOKEN_LIFETIME_SECONDS_CEILING,
   OAUTH_TOKEN_LIFETIME_SECONDS_FLOOR,
   OAuthGrantSettingsUpdateInputSchema,
+  OAuthRedirectUrisUpdateInputSchema,
+  oauthRedirectUriProblem,
   type OAuthGrantSelection,
   type OAuthGrantSettingsView,
   type OAuthProviderCapabilities
@@ -26,6 +29,9 @@ const SYNC_FAILURE_REASONS = new Set([
   'provider_write_denied', 'provider_application_not_found', 'write_unconfirmed', 'readback_mismatch'
 ]);
 const GRANT_PRESETS_SECONDS = [86_400, 604_800, 1_209_600, 2_592_000];
+/** Audit details stay bounded; the provider read-back remains the full record. */
+const AUDIT_URI_LIST_MAX_CHARS = 2_000;
+const REDIRECT_URI_PRESETS = OAUTH_REDIRECT_URI_PRESETS.map((preset) => ({ id: preset.id, label: preset.label, uris: [...preset.uris] }));
 
 type OAuthGrantStore = {
   getOAuthGrantSettings(): OAuthGrantSettingsRecord;
@@ -101,6 +107,45 @@ export class OAuthGrantSettingsService {
       grantMode: input.grant.mode,
       grantSeconds,
       tokenLifetimeSeconds: input.tokenLifetimeSeconds
+    });
+    return this.buildView(snapshot);
+  }
+
+  /**
+   * Replace the dynamic-client-registration redirect allowlist. It decides
+   * where authorization codes may be delivered, so every URI is validated here
+   * before the provider sees it, and the change is audited with what was added
+   * and removed.
+   */
+  async updateRedirectUris(ownerId: string, rawInput: unknown): Promise<OAuthGrantSettingsView> {
+    return await this.serialized(() => this.applyRedirectUris(ownerId, rawInput));
+  }
+
+  private async applyRedirectUris(ownerId: string, rawInput: unknown): Promise<OAuthGrantSettingsView> {
+    const input = OAuthRedirectUrisUpdateInputSchema.parse(rawInput);
+    const provider = this.provider;
+    if (!provider) throw new HarnessError('FORBIDDEN', 'No OAuth provider integration is configured, so these settings are read-only.', 403, false, { reason: 'provider_not_configured' });
+    const uris = [...new Set(input.uris)];
+    for (const uri of uris) {
+      const problem = oauthRedirectUriProblem(uri);
+      if (problem) throw new HarnessError('INVALID_INPUT', `${uri.slice(0, 200)}: ${problem}`, 400, false, { reason: 'redirect_uri_invalid' });
+    }
+    let before: OAuthGrantProviderSnapshot;
+    let snapshot: OAuthGrantProviderSnapshot;
+    try {
+      before = await provider.read();
+      snapshot = await provider.writeRedirectUris(uris, input.expectedRevision);
+    } catch (error) {
+      this.recordFailure(error);
+      throw error;
+    }
+    const previous = new Set(before.redirectUris ?? []);
+    const next = new Set(uris);
+    this.audit(ownerId, 'settings.oauth_redirect_uris.changed', {
+      provider: provider.id,
+      count: uris.length,
+      added: uris.filter((uri) => !previous.has(uri)).join(' ').slice(0, AUDIT_URI_LIST_MAX_CHARS),
+      removed: [...previous].filter((uri) => !next.has(uri)).join(' ').slice(0, AUDIT_URI_LIST_MAX_CHARS)
     });
     return this.buildView(snapshot);
   }
@@ -182,7 +227,15 @@ export class OAuthGrantSettingsService {
       },
       revision: snapshot?.revision ?? null,
       lastSync: record.lastSync ? { at: new Date(record.lastSync.at).toISOString(), ok: record.lastSync.ok, errorCode: record.lastSync.errorCode } : null,
-      readOnlyReason
+      readOnlyReason,
+      redirectUris: {
+        canWrite: writable,
+        dynamicRegistrationEnabled: snapshot?.dynamicRegistrationEnabled ?? null,
+        allowAnyOnLocalhost: snapshot?.allowAnyOnLocalhost ?? null,
+        allowAnyOnLoopback: snapshot?.allowAnyOnLoopback ?? null,
+        uris: snapshot?.redirectUris ?? null,
+        presets: REDIRECT_URI_PRESETS
+      }
     };
   }
 
@@ -207,7 +260,8 @@ export class OAuthGrantSettingsService {
       management: { state: 'unconfigured', desired: null, updatedAt: null, updatedBy: null },
       revision: null,
       lastSync: null,
-      readOnlyReason: 'No OAuth provider integration is configured. Grant and access-token lifetimes are managed outside Cloud Harness.'
+      readOnlyReason: 'No OAuth provider integration is configured. Grant lifetimes and redirect URIs are managed outside Cloud Harness.',
+      redirectUris: { canWrite: false, dynamicRegistrationEnabled: null, allowAnyOnLocalhost: null, allowAnyOnLoopback: null, uris: null, presets: REDIRECT_URI_PRESETS }
     };
   }
 }

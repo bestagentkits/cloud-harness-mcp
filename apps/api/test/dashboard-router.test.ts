@@ -120,7 +120,7 @@ beforeEach(async () => {
         const state = `${String(input.installationId).padEnd(8, 'x')}${'q'.repeat(40)}`;
         return { ok: true, message: 'GitHub authorization started', truncated: false, data: { url: `https://github.com/login/oauth/authorize?state=${state}`, expiresAt: 1 } };
       }
-      if (operation === 'oauth_settings_get' || operation === 'oauth_settings_update') {
+      if (operation === 'oauth_settings_get' || operation === 'oauth_settings_update' || operation === 'oauth_redirect_uris_update') {
         if ((input.grant as { seconds?: number } | undefined)?.seconds === 86_400) {
           return { ok: false, message: 'conflict', truncated: false, error: { code: 'CONFLICT', message: 'The Cloudflare OAuth configuration changed since this page loaded. Reload to see the current values.', retryable: false } };
         }
@@ -900,6 +900,27 @@ describe('dashboard BFF', () => {
       { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: 900 }
     ]) {
       const rejected = await send('/api/v1/settings/oauth', { method: 'POST', headers, body: JSON.stringify(invalid) });
+      expect(rejected.status, JSON.stringify(invalid)).toBe(400);
+    }
+    expect(calls.length).toBe(before);
+  });
+
+  it('proxies the redirect URI allowlist save with CSRF and refuses malformed bodies before the runner', async () => {
+    const body = { uris: ['https://oauth-redirect.googleusercontent.com/r/*'], expectedRevision: 'b'.repeat(64) };
+    const unauthenticated = await send('/api/v1/settings/oauth/redirect-uris', { method: 'POST', headers: { origin: 'https://dashboard.example', 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    expect(unauthenticated.status).toBe(401);
+    expect(calls.some((call) => call.operation === 'oauth_redirect_uris_update')).toBe(false);
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const saved = await send('/api/v1/settings/oauth/redirect-uris', { method: 'POST', headers, body: JSON.stringify(body) });
+    expect(saved.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'oauth_redirect_uris_update', input: body, principal });
+
+    const before = calls.length;
+    for (const invalid of [{ ...body, apiToken: 'leak' }, { uris: body.uris }, { ...body, uris: 'https://client.example/cb' }]) {
+      const rejected = await send('/api/v1/settings/oauth/redirect-uris', { method: 'POST', headers, body: JSON.stringify(invalid) });
       expect(rejected.status, JSON.stringify(invalid)).toBe(400);
     }
     expect(calls.length).toBe(before);

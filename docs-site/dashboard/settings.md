@@ -91,6 +91,16 @@ On a new install whose grant duration was never set, Cloud Harness applies the p
 
 The panel is read-only, with the reason shown, when no integration is configured, the integration is read-only, Managed OAuth is off for the application, or the application uses SCIM provisioning or is not self-hosted. In those cases change the values in Cloudflare Zero Trust under **Advanced settings → Managed OAuth**. Operators enable the integration with the runner-only `CLOUDFLARE_ACCESS_*` API variables in the [environment-variable reference](/reference/environment-variables), using a Cloudflare API token limited to one account with **Access: Apps and Policies Write** (or **Read** for a read-only panel). The token never reaches the API, the browser, or a workspace. For sync errors, see [Troubleshooting](/troubleshooting#_21-mcp-oauth-sessions-panel-is-read-only-or-shows-a-sync-error).
 
+### Allowed redirect URIs
+
+An MCP client registers itself with the Access application before its first sign-in, and Cloudflare refuses the registration unless the client's OAuth callback is on the application's allowlist. In the client this shows up as an automatic-registration error or a request for a client ID and secret, as Gemini does. The **Allowed redirect URIs** part of the same panel edits that allowlist, so adding a client no longer needs Cloudflare Zero Trust access.
+
+- **Known clients** fills in the callbacks of Claude, ChatGPT, Codex and other loopback clients on port 3118, and Gemini. Ticking one adds every callback it needs; unticking removes them all. A client shown as *partly listed* is missing some of them.
+- **Redirect URIs** lists one URI per line. For a client that is not listed, copy its exact callback from its connector dialog. A trailing `/*` matches every sub-path. Cloud Harness accepts only `https://` URIs, or `http://` on `localhost` and `127.0.0.1`, and refuses an origin-wide wildcard such as `https://client.example/*` on a public host.
+- **Save redirect URIs** writes the whole list and reports success only after Cloudflare confirms it. Removing a URI asks for confirmation first, because the clients that use that callback can no longer register or complete a new sign-in.
+
+The panel also shows whether dynamic client registration is on and whether Cloudflare accepts any `localhost` or `127.0.0.1` callback. It does not change those two settings. Saves follow the same rules as the grant settings above: they need a read-write integration, a save is refused if the configuration changed after the page loaded, and each save is recorded in the [Audit log](/dashboard/audit) as `settings.oauth_redirect_uris.changed` with the URIs it added and removed.
+
 ## TypeSafe integration
 
 The last panel stores your write-only TypeSafe API key and shows whether it is configured, whether the operator left TypeSafe egress on, and the endpoint and model in use. The key is per owner, unlike the instance-wide values above. See [TypeSafe Integration](/dashboard/typesafe).

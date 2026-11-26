@@ -212,7 +212,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'toolkits_list',
   'toolkits_preview',
   'settings_get', 'settings_update', 'settings_network_check',
-  'oauth_settings_get', 'oauth_settings_update',
+  'oauth_settings_get', 'oauth_settings_update', 'oauth_redirect_uris_update',
   'files_list',
   'files_read',
   'files_write',
@@ -666,7 +666,7 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
 const descriptiveOperations = new Set<string>([
   // The runner composes plain-language, credential-free provider messages for these
   // (missing permission, concurrent edit, unconfirmed read-back).
-  'oauth_settings_get', 'oauth_settings_update',
+  'oauth_settings_get', 'oauth_settings_update', 'oauth_redirect_uris_update',
   'secret_create', 'secret_rotate', 'secret_update', 'secret_delete', 'secret_bulk_apply',
   'global_secret_create', 'global_secret_rotate', 'global_secret_update', 'global_secret_delete', 'global_secret_bulk_apply',
   'project_create', 'project_update', 'project_delete',

@@ -200,6 +200,43 @@ test('OAuth: a custom duration out of range is refused before any request, and a
   expect(writes.map((write) => write.body)).toEqual([{ grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: 900, expectedRevision: OAUTH_REVISION }]);
 });
 
+test('OAuth: the Gemini preset adds its callback, and removing a URI asks before saving', async ({ page }) => {
+  const problems = watchConsole(page);
+  const claude = 'https://claude.ai/api/mcp/auth_callback';
+  const geminiUri = 'https://oauth-redirect.googleusercontent.com/r/*';
+  const redirectUris = (uris: string[]) => ({
+    canWrite: true, dynamicRegistrationEnabled: true, allowAnyOnLocalhost: null, allowAnyOnLoopback: null, uris,
+    presets: [{ id: 'gemini', label: 'Gemini custom apps', uris: [geminiUri] }]
+  });
+  await openSettings(page, { '/settings/oauth': answer(200, oauthBody({ redirectUris: redirectUris([claude]) })) });
+  const writes = await stubWrite(page, '/settings/oauth/redirect-uris', (body) => ({
+    status: 200,
+    body: oauthBody({ revision: 'e'.repeat(64), redirectUris: redirectUris((body as { uris: string[] }).uris) })
+  }));
+  const field = page.getByLabel('Redirect URIs (one per line)');
+  await expect(field).toHaveValue(claude);
+  const gemini = page.getByRole('checkbox', { name: /Gemini custom apps/ });
+  await gemini.check();
+  await expect(field).toHaveValue(`${claude}\n${geminiUri}`);
+  await page.getByTestId('save-oauth-redirect-uris').click();
+  await expect(page.getByTestId('oauth-status')).toHaveText('Redirect URIs saved and confirmed by the provider.');
+  await expect(gemini).toBeChecked();
+
+  await field.fill(geminiUri);
+  await page.getByTestId('save-oauth-redirect-uris').click();
+  const dialog = page.getByRole('alertdialog', { name: 'Remove 1 redirect URI?' });
+  await expect(dialog).toContainText(claude);
+  await dialog.getByRole('button', { name: 'Save and remove' }).click();
+  await expect(page.getByTestId('oauth-status')).toHaveText('Redirect URIs saved and confirmed by the provider.');
+
+  expect(writes.map((write) => write.body)).toEqual([
+    { uris: [claude, geminiUri], expectedRevision: OAUTH_REVISION },
+    { uris: [geminiUri], expectedRevision: 'e'.repeat(64) }
+  ]);
+  expect(writes.every((write) => write.csrf)).toBe(true);
+  expect(problems).toEqual([]);
+});
+
 test('OAuth: a read-only provider shows facts and the reason without a form', async ({ page }) => {
   await openSettings(page, { '/settings/oauth': answer(200, oauthBody({ capabilities: { ...oauthBody().data.capabilities, canWriteGrantConfiguration: false }, readOnlyReason: 'The Cloudflare API token cannot update this Access application.' })) });
   await expect(main(page)).toContainText('cannot update this Access application');

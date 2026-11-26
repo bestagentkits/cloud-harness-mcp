@@ -1298,6 +1298,44 @@ export function oauthDurationLabel(seconds) {
   return plural(seconds, 'second');
 }
 
+/** One URI per line; blank lines and repeats are dropped, order is kept. */
+export function parseRedirectUriLines(text) {
+  return [...new Set(String(text ?? '').split('\n').map((line) => line.trim()).filter(Boolean))];
+}
+
+export function redirectPresetState(preset, uris) {
+  const present = preset.uris.filter((uri) => uris.includes(uri)).length;
+  if (present === 0) return 'off';
+  return present === preset.uris.length ? 'on' : 'partial';
+}
+
+/** Turning a preset on appends its missing URIs; turning it off removes all of them. */
+export function toggleRedirectPreset(uris, preset, on) {
+  return on ? [...uris, ...preset.uris.filter((uri) => !uris.includes(uri))] : uris.filter((uri) => !preset.uris.includes(uri));
+}
+
+/**
+ * The dynamic-client-registration redirect allowlist from the OAuth read-back. The runner
+ * validates every line; the preset checkboxes are synced to the textarea by the controller.
+ */
+function renderOAuthRedirectUris(redirect) {
+  if (!redirect || typeof redirect !== 'object') return '';
+  const flag = (value, on, off) => (value === true ? on : value === false ? off : 'Not set');
+  const saved = Array.isArray(redirect.uris) ? redirect.uris : [];
+  const intro = '<h3 id="settings-oauth-redirects-heading">Allowed redirect URIs</h3><p>An MCP client connects only when its OAuth callback is listed here. A trailing <span class="mono">/*</span> matches every sub-path; an origin-wide wildcard is refused.</p>';
+  const facts = `<dl class="facts"><dt>Dynamic client registration</dt><dd>${flag(redirect.dynamicRegistrationEnabled, 'On', 'Off — clients cannot register themselves')}</dd><dt>Any localhost callback</dt><dd>${flag(redirect.allowAnyOnLocalhost, 'Allowed', 'Not allowed')}</dd><dt>Any 127.0.0.1 callback</dt><dd>${flag(redirect.allowAnyOnLoopback, 'Allowed', 'Not allowed')}</dd></dl>`;
+  if (!redirect.canWrite) {
+    const list = saved.length
+      ? `<ul class="redirect-uri-list">${saved.map((uri) => `<li class="mono">${escape(uri)}</li>`).join('')}</ul>`
+      : `<p>${redirect.uris === null || redirect.uris === undefined ? 'Not available.' : 'No redirect URIs are listed.'}</p>`;
+    return `<div class="oauth-redirects">${intro}${facts}${list}</div>`;
+  }
+  const presets = (Array.isArray(redirect.presets) ? redirect.presets : []).map((preset) => `<label class="checkbox-label" for="settings-oauth-preset-${escape(preset.id)}"><input id="settings-oauth-preset-${escape(preset.id)}" type="checkbox" data-preset="${escape(preset.id)}"><span>${escape(preset.label)} <span class="mono">${escape((preset.uris ?? []).join('  '))}</span></span></label>`).join('');
+  const rows = Math.min(12, Math.max(4, saved.length + 1));
+  const form = `<form id="settings-oauth-redirects-form" class="stack-form" novalidate><fieldset><legend>Known clients</legend>${presets}</fieldset><label for="settings-oauth-redirect-uris">Redirect URIs (one per line)</label><textarea id="settings-oauth-redirect-uris" rows="${rows}" spellcheck="false">${escape(saved.join('\n'))}</textarea><p class="field-help">Copy a client's exact callback from its connector dialog when it is not a known client.</p><div class="form-row-actions"><button id="save-settings-oauth-redirects" class="accent-btn" type="submit">Save redirect URIs</button></div></form>`;
+  return `<div class="oauth-redirects">${intro}${facts}${form}</div>`;
+}
+
 const OAUTH_STATE_LABELS = {
   unconfigured: 'Not managed by Cloud Harness (no provider integration)',
   unmanaged: 'Set outside Cloud Harness; left unchanged',
@@ -1334,7 +1372,7 @@ export function renderOAuthSettings(view, loadError) {
     : 'Never';
   const facts = `<dl class="facts"><dt>Provider</dt><dd>${escape(view.provider?.label ?? 'Not configured')}</dd><dt>Stay signed in</dt><dd>${effective?.grantIsProviderMaximum ? 'On — provider maximum' : effective ? 'Custom duration' : 'Not available'}</dd><dt>Grant duration (effective)</dt><dd>${grantFact}</dd><dt>Access-token lifetime (effective)</dt><dd>${tokenFact}</dd><dt>Management</dt><dd>${escape(OAUTH_STATE_LABELS[management.state] ?? 'Unknown')}${managedNote}</dd><dt>Last provider sync</dt><dd>${lastSync}</dd></dl>`;
   const notice = view.readOnlyReason ? `<p class="warning">${escape(view.readOnlyReason)}</p>` : '';
-  const intro = '<p>How long an MCP client such as ChatGPT or Claude stays connected after one sign-in. Access tokens stay short and refresh silently; every refresh re-checks your access policy, so revoking access still takes effect at the next refresh. This is separate from the browser session for this dashboard.</p>';
+  const intro = '<p>How long an MCP client such as ChatGPT or Claude stays connected after one sign-in, and which client callbacks may register. Access tokens stay short and refresh silently; every refresh re-checks your access policy, so revoking access still takes effect at the next refresh. This is separate from the browser session for this dashboard.</p>';
   let form = '';
   if (capabilities.canWriteGrantConfiguration) {
     const persistent = desired ? desired.grant?.mode === 'provider-maximum' : (effective?.grantIsProviderMaximum ?? true) || (management.state === 'unmanaged' && effective?.grantSeconds === null);
@@ -1356,7 +1394,8 @@ export function renderOAuthSettings(view, loadError) {
   } else if (view.provider?.id !== 'none') {
     form = '<div class="form-row-actions"><button id="reload-settings-oauth" type="button">Reload from provider</button></div>';
   }
-  return `<section class="panel" aria-labelledby="settings-oauth-heading"><h2 id="settings-oauth-heading">MCP OAuth sessions</h2>${intro}${facts}${notice}${form}<p id="settings-oauth-status" class="status-message" aria-live="polite"></p></section>`;
+  const redirects = view.provider?.id !== 'none' ? renderOAuthRedirectUris(view.redirectUris) : '';
+  return `<section class="panel" aria-labelledby="settings-oauth-heading"><h2 id="settings-oauth-heading">MCP OAuth sessions</h2>${intro}${facts}${notice}${form}${redirects}<p id="settings-oauth-status" class="status-message" aria-live="polite"></p></section>`;
 }
 
 /**

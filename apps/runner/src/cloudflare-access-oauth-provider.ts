@@ -23,10 +23,11 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const SERVER_OWNED_FIELDS = new Set(['id', 'uid', 'aud', 'created_at', 'updated_at']);
 
 /**
- * Reads and updates `oauth_configuration.grant` of one Access application.
+ * Reads and updates the OAuth configuration of one Access application: the
+ * grant lifetimes and the dynamic-client-registration redirect allowlist.
  * Cloudflare offers only a full-object PUT, so a write re-reads the current
  * application, refuses when its OAuth configuration changed since the caller
- * looked, changes nothing but the two grant fields, and reads the result back.
+ * looked, changes nothing but the targeted fields, and reads the result back.
  * Provider response bodies and the API token never leave this class.
  */
 export class CloudflareAccessOAuthProvider implements OAuthGrantProvider {
@@ -48,32 +49,46 @@ export class CloudflareAccessOAuthProvider implements OAuthGrantProvider {
   }
 
   async write(next: { grantSeconds: number; tokenLifetimeSeconds: number }, expectedRevision: string | null): Promise<OAuthGrantProviderSnapshot> {
-    if (!this.canWrite) throw providerError('provider_read_only');
-    const current = await this.getApplication();
-    const before = snapshot(current);
-    if (before.unsupportedReason) throw providerError(before.unsupportedReason);
-    if (!before.oauthEnabled) throw providerError('managed_oauth_disabled');
-    if (expectedRevision !== before.revision) throw providerError('revision_conflict');
-    const oauth = current.oauth_configuration as Record<string, unknown>;
-    const grant = isRecord(oauth.grant) ? oauth.grant : {};
-    const body: AccessApplication = {
-      ...writableApplication(current),
-      oauth_configuration: {
+    return await this.update(expectedRevision, (oauth) => {
+      const grant = isRecord(oauth.grant) ? oauth.grant : {};
+      return {
         ...oauth,
         grant: {
           ...grant,
           session_duration: formatOAuthDuration(next.grantSeconds),
           access_token_lifetime: formatOAuthDuration(next.tokenLifetimeSeconds)
         }
-      }
+      };
+    }, (after) => after.grantSeconds === next.grantSeconds && after.tokenLifetimeSeconds === next.tokenLifetimeSeconds);
+  }
+
+  async writeRedirectUris(uris: readonly string[], expectedRevision: string | null): Promise<OAuthGrantProviderSnapshot> {
+    return await this.update(expectedRevision, (oauth) => {
+      const registration = isRecord(oauth.dynamic_client_registration) ? oauth.dynamic_client_registration : {};
+      return { ...oauth, dynamic_client_registration: { ...registration, allowed_uris: [...uris] } };
+    }, (after) => sameMembers(after.redirectUris ?? [], uris));
+  }
+
+  private async update(
+    expectedRevision: string | null,
+    change: (oauth: Record<string, unknown>) => Record<string, unknown>,
+    confirmed: (after: OAuthGrantProviderSnapshot) => boolean
+  ): Promise<OAuthGrantProviderSnapshot> {
+    if (!this.canWrite) throw providerError('provider_read_only');
+    const current = await this.getApplication();
+    const before = snapshot(current);
+    if (before.unsupportedReason) throw providerError(before.unsupportedReason);
+    if (!before.oauthEnabled) throw providerError('managed_oauth_disabled');
+    if (expectedRevision !== before.revision) throw providerError('revision_conflict');
+    const body: AccessApplication = {
+      ...writableApplication(current),
+      oauth_configuration: change(current.oauth_configuration as Record<string, unknown>)
     };
     await this.send('PUT', body);
     // After a PUT the provider may hold the new value, so a failed read-back is
     // reported as unconfirmed, never as "nothing was changed".
     const after = snapshot(await this.getApplication().catch(() => { throw providerError('readback_mismatch'); }));
-    if (after.grantSeconds !== next.grantSeconds || after.tokenLifetimeSeconds !== next.tokenLifetimeSeconds) {
-      throw providerError('readback_mismatch');
-    }
+    if (!confirmed(after)) throw providerError('readback_mismatch');
     return after;
   }
 
@@ -120,8 +135,10 @@ export class CloudflareAccessOAuthProvider implements OAuthGrantProvider {
 function snapshot(application: AccessApplication): OAuthGrantProviderSnapshot {
   const oauth = isRecord(application.oauth_configuration) ? application.oauth_configuration : undefined;
   const grant = oauth && isRecord(oauth.grant) ? oauth.grant : undefined;
+  const registration = oauth && isRecord(oauth.dynamic_client_registration) ? oauth.dynamic_client_registration : undefined;
   const sessionDuration = grant?.session_duration;
   const tokenLifetime = grant?.access_token_lifetime;
+  const allowed = registration?.allowed_uris;
   return {
     oauthEnabled: oauth?.enabled === true,
     grantSeconds: parseOAuthDurationSeconds(sessionDuration) ?? null,
@@ -129,8 +146,22 @@ function snapshot(application: AccessApplication): OAuthGrantProviderSnapshot {
     tokenLifetimeSeconds: parseOAuthDurationSeconds(tokenLifetime) ?? null,
     tokenLifetimeExplicitlyConfigured: typeof tokenLifetime === 'string' && tokenLifetime.trim().length > 0,
     revision: createHash('sha256').update(canonicalJson(oauth ?? null)).digest('hex'),
-    unsupportedReason: unsupportedReason(application)
+    unsupportedReason: unsupportedReason(application),
+    dynamicRegistrationEnabled: booleanOrNull(registration?.enabled),
+    allowAnyOnLocalhost: booleanOrNull(registration?.allow_any_on_localhost),
+    allowAnyOnLoopback: booleanOrNull(registration?.allow_any_on_loopback),
+    redirectUris: Array.isArray(allowed) ? allowed.filter((uri): uri is string => typeof uri === 'string') : null
   };
+}
+
+function booleanOrNull(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+/** Order-insensitive: the provider may return the allowlist in its own order. */
+function sameMembers(actual: readonly string[], expected: readonly string[]): boolean {
+  const wanted = new Set(expected);
+  return new Set(actual).size === wanted.size && actual.every((uri) => wanted.has(uri));
 }
 
 /**
@@ -181,11 +212,11 @@ const PROVIDER_ERRORS: Record<string, { code: ConstructorParameters<typeof Harne
   provider_application_not_found: { code: 'NOT_FOUND', status: 404, retryable: false, message: 'Cloudflare has no Access application with the configured account and application ID.' },
   provider_rejected: { code: 'INVALID_INPUT', status: 400, retryable: false, message: 'Cloudflare rejected the update to the Access application. Nothing was changed; check the values and the application in Cloudflare Zero Trust.' },
   provider_read_only: { code: 'FORBIDDEN', status: 403, retryable: false, message: 'The Cloudflare integration is configured read-only. Set CLOUDFLARE_ACCESS_OAUTH_ACCESS=read-write to change it here.' },
-  provider_unsupported_application: { code: 'CONFLICT', status: 409, retryable: false, message: 'This Access application uses settings Cloud Harness cannot safely round-trip (SCIM or a non-self-hosted type). Change the grant duration in Cloudflare Zero Trust.' },
+  provider_unsupported_application: { code: 'CONFLICT', status: 409, retryable: false, message: 'This Access application uses settings Cloud Harness cannot safely round-trip (SCIM or a non-self-hosted type). Change these settings in Cloudflare Zero Trust.' },
   managed_oauth_disabled: { code: 'CONFLICT', status: 409, retryable: false, message: 'Managed OAuth is turned off for this Access application. Turn it on in Cloudflare Zero Trust first.' },
   revision_conflict: { code: 'CONFLICT', status: 409, retryable: false, message: 'The Cloudflare OAuth configuration changed since this page loaded. Reload to see the current values.' },
   write_unconfirmed: { code: 'UNAVAILABLE', status: 502, retryable: true, message: 'Cloudflare did not answer the update clearly, so it may or may not have been applied. Reload to see the effective values.' },
-  readback_mismatch: { code: 'UNAVAILABLE', status: 502, retryable: true, message: 'Cloudflare did not confirm the new OAuth grant settings on read-back. Reload to see the effective values.' }
+  readback_mismatch: { code: 'UNAVAILABLE', status: 502, retryable: true, message: 'Cloudflare did not confirm the new OAuth settings on read-back. Reload to see the effective values.' }
 };
 
 export function providerError(reason: string): HarnessError {

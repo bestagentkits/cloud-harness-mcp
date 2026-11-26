@@ -111,6 +111,46 @@ describe('Cloudflare Access Managed OAuth provider', () => {
     for (const field of ['id', 'uid', 'aud', 'created_at', 'updated_at']) expect(put).not.toHaveProperty(field);
   });
 
+  it('replaces only the redirect allowlist, keeps the other registration flags, and reads the URIs back', async () => {
+    const initial = application({ session_duration: '24h', access_token_lifetime: '15m' });
+    const cloudflare = fakeCloudflare(initial);
+    const provider = new CloudflareAccessOAuthProvider(config, cloudflare.request);
+    const before = await provider.read();
+    expect(before).toMatchObject({ dynamicRegistrationEnabled: true, allowAnyOnLocalhost: true, allowAnyOnLoopback: null, redirectUris: null });
+    const uris = ['https://oauth-redirect.googleusercontent.com/r/*', 'https://claude.ai/api/mcp/auth_callback'];
+    const after = await provider.writeRedirectUris(uris, before.revision);
+    expect(after.redirectUris).toEqual(uris);
+    const put = cloudflare.calls.find((call) => call.method === 'PUT')!.body!;
+    const omit = (value: Record<string, unknown>, keys: string[]) => Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
+    expect(omit(put, ['policies', 'oauth_configuration'])).toEqual(omit(initial, ['id', 'uid', 'aud', 'created_at', 'updated_at', 'policies', 'oauth_configuration']));
+    expect(put.oauth_configuration).toEqual({
+      ...initial.oauth_configuration,
+      dynamic_client_registration: { enabled: true, allow_any_on_localhost: true, allowed_uris: uris }
+    });
+  });
+
+  it('accepts the allowlist back in another order but fails closed when it is not confirmed', async () => {
+    const reordered = fakeCloudflare(application());
+    const provider = new CloudflareAccessOAuthProvider(config, reordered.request);
+    const seen = await provider.read();
+    const uris = ['https://a.example/cb', 'https://b.example/cb'];
+    const original = reordered.request;
+    const reversing = (async (input: string | URL | Request, init?: RequestInit) => {
+      const response = await original(input, init);
+      if ((init?.method ?? 'GET') !== 'GET') return response;
+      const body = await response.json() as { result: { oauth_configuration?: { dynamic_client_registration?: { allowed_uris?: string[] } } } };
+      body.result.oauth_configuration?.dynamic_client_registration?.allowed_uris?.reverse();
+      return Response.json(body);
+    }) as typeof fetch;
+    const reversed = new CloudflareAccessOAuthProvider(config, reversing);
+    expect((await reversed.writeRedirectUris(uris, seen.revision)).redirectUris).toEqual([...uris].reverse());
+
+    const ignored = new CloudflareAccessOAuthProvider(config, fakeCloudflare(application(), { ignorePut: true }).request);
+    expect(await reason(ignored.writeRedirectUris(uris, (await ignored.read()).revision))).toBe('readback_mismatch');
+    const readOnly = new CloudflareAccessOAuthProvider({ ...config, access: 'read-only' }, fakeCloudflare(application()).request);
+    expect(await reason(readOnly.writeRedirectUris(uris, seen.revision))).toBe('provider_read_only');
+  });
+
   it('refuses to overwrite a configuration that changed since the caller read it', async () => {
     const cloudflare = fakeCloudflare(application({ session_duration: '24h' }));
     const provider = new CloudflareAccessOAuthProvider(config, cloudflare.request);

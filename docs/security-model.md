@@ -259,6 +259,26 @@ in [ADR 0002](adr/0002-inbound-oauth-grant-provider.md). The Cloudflare
 exchange is unit-tested against a fetch double, not verified against a live
 account.
 
+The same adapter edits the Managed OAuth redirect allowlist
+(`oauth_configuration.dynamic_client_registration.allowed_uris`) from Dashboard
+Settings, under the same write rules: re-read, revision check, a PUT that
+changes only that list, and an order-insensitive read-back. The allowlist
+decides where Access may deliver authorization codes, so the runner validates
+every entry before calling Cloudflare: `https`, or `http` on loopback only; no
+credentials or fragment; a wildcard only as a trailing `/*`, never origin-wide
+on a public host. The Gemini preset allows
+`https://oauth-redirect.googleusercontent.com/r/*` because Gemini's callback
+carries a per-account id, the same shape as the existing ChatGPT
+`connector/oauth/*` entry; the Access policy, not the callback, still decides
+who receives a token. Like the network default and the grant, this is an
+instance-wide setting that any authenticated dashboard principal may change,
+because every principal admitted by the Access policy is a trusted operator
+(see [Intended use](#intended-use)). Saves are audited as
+`settings.oauth_redirect_uris.changed` with the added and removed URIs. The
+dynamic-registration and loopback flags are shown but never written. The
+validator and presets live in
+[`packages/contracts/src/oauth-grant-settings.ts`](../packages/contracts/src/oauth-grant-settings.ts).
+
 ## MCP gateway egress and credential resolution
 
 The `/mcp-gateway` composition root adds the first user-configurable API egress
