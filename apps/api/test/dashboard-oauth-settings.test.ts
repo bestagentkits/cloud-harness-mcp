@@ -111,7 +111,7 @@ describe('Dashboard MCP OAuth session settings', () => {
     const readOnly = renderOAuthSettings(view({ redirectUris: redirectUris({ canWrite: false }) }));
     expect(readOnly).toContain('<li class="mono">https://claude.ai/api/mcp/auth_callback</li>');
     expect(readOnly).not.toContain('id="save-settings-oauth-redirects"');
-    expect(renderOAuthSettings(view({ provider: { id: 'none', label: 'Not configured' }, redirectUris: redirectUris() }))).not.toContain('Allowed redirect URIs');
+    expect(renderOAuthSettings(view({ provider: { id: 'none', label: 'Not configured' }, redirectUris: redirectUris() }))).not.toContain('id="settings-oauth-redirects-heading"');
   });
 
   it('applies presets to the one-per-line list the way the controller does', () => {

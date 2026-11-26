@@ -86,7 +86,7 @@ export function GeminiClientSection({ onStatus }: { onStatus: (message: string) 
     <div className="grid gap-3 border-t pt-4" data-testid="gemini-client">
       <div className="grid gap-1">
         <h3 className="text-sm font-semibold">Connect Gemini</h3>
-        <p className="text-sm text-muted-foreground">If Gemini reports that automatic registration failed and asks for a client ID and secret, create them here. Tick "Gemini custom apps" above first. Each Google account has its own redirect URI, so each Gemini user creates their own client.</p>
+        <p className="text-sm text-muted-foreground">If Gemini reports that automatic registration failed and asks for a client ID and secret, create them here. First allow Gemini's callback: tick "Gemini custom apps" under Allowed redirect URIs, or add https://oauth-redirect.googleusercontent.com/r/* in Cloudflare Zero Trust. Each Google account has its own redirect URI, so each Gemini user creates their own client.</p>
       </div>
       <Field label="Gemini redirect URI" error={error} description='In the Gemini connector dialog, click "Copy redirect URI" and paste it here.'>
         <Input value={redirectUri} spellCheck={false} autoComplete="off" className="font-mono text-xs" placeholder="https://oauth-redirect.googleusercontent.com/r/…" onChange={(event) => { setRedirectUri(event.target.value); setError(undefined); }} />

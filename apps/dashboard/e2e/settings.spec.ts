@@ -249,14 +249,15 @@ test('OAuth: reloading from the provider drops an unsaved redirect URI draft eve
 });
 
 test('OAuth: Connect Gemini creates a client and shows its credentials once, never storing them', async ({ page }) => {
-  const problems = watchConsole(page);
+  // The first create is refused by design (400), which the browser reports as a failed resource load.
+  const problems = watchConsole(page, { allow: [/status of 400/] });
   const redirectUri = 'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-abc123';
   const secret = 'gemini-client-secret-value';
   await openSettings(page);
-  const writes = await stubWrite(page, '/settings/oauth/clients', () => ({
-    status: 200,
-    body: { data: { client: 'gemini', clientId: 'client-123', clientSecret: secret, clientName: 'Gemini custom app (Cloud Harness Dashboard)', redirectUri, tokenEndpointAuthMethod: 'client_secret_post' }, truncated: false }
-  }));
+  let answered = 0;
+  const writes = await stubWrite(page, '/settings/oauth/clients', () => (answered++ === 0
+    ? { status: 400, body: { error: 'invalid_input', message: 'This redirect URI is not on the Allowed redirect URIs list. Tick "Gemini custom apps" under Allowed redirect URIs and save, then try again.' } }
+    : { status: 200, body: { data: { client: 'gemini', clientId: 'client-123', clientSecret: secret, clientName: 'Gemini custom app (Cloud Harness Dashboard)', redirectUri, tokenEndpointAuthMethod: 'client_secret_post' }, truncated: false } }));
   const field = page.getByLabel('Gemini redirect URI');
   await field.fill('https://example.com/r/nope');
   await page.getByTestId('create-gemini-client').click();
@@ -264,6 +265,10 @@ test('OAuth: Connect Gemini creates a client and shows its credentials once, nev
   expect(writes).toHaveLength(0);
 
   await field.fill(redirectUri);
+  await page.getByTestId('create-gemini-client').click();
+  // The runner's remedy reaches the operator unchanged.
+  await expect(page.getByTestId('oauth-status')).toHaveText(/Tick "Gemini custom apps" under Allowed redirect URIs/);
+  await expect(page.getByTestId('gemini-client-reveal-dialog')).toHaveCount(0);
   await page.getByTestId('create-gemini-client').click();
   const dialog = page.getByTestId('gemini-client-reveal-dialog');
   await expect(dialog.getByLabel('OAuth client ID')).toHaveValue('client-123');
@@ -275,7 +280,7 @@ test('OAuth: Connect Gemini creates a client and shows its credentials once, nev
   await expect(dialog).toHaveCount(0);
   await expect(main(page)).not.toContainText(secret);
 
-  expect(writes.map((write) => write.body)).toEqual([{ client: 'gemini', redirectUri }]);
+  expect(writes.map((write) => write.body)).toEqual([{ client: 'gemini', redirectUri }, { client: 'gemini', redirectUri }]);
   expect(writes[0]?.csrf).toBe(true);
   expect(problems).toEqual([]);
 });

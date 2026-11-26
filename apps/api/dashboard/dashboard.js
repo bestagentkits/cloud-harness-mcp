@@ -1540,7 +1540,13 @@ export function initializeDashboard() {
     loadQueue = queued;
     return queued;
   }
+  // The Connect Gemini panel's one-time credentials live only in its two inputs. Every
+  // navigation, Settings re-render, and pagehide wipes them through this hook, so replaced
+  // nodes never keep a secret reachable.
+  let clearGeminiCredentials = () => {};
+  globalThis.addEventListener('pagehide', () => clearGeminiCredentials());
   async function performLoad(signal) {
+    clearGeminiCredentials();
     alertBox.hidden = true; setBusy(true);
     try {
       const pathname = location.pathname;
@@ -2741,6 +2747,7 @@ export function initializeDashboard() {
     renderSettingsView();
   }
   function renderSettingsView() {
+    clearGeminiCredentials();
     insertRendered(content, renderSettings(settingsPageData, settingsReadiness, settingsOAuth, settingsTypesafe));
     bindSettingsControls();
     bindLifecycleSettingsControls();
@@ -2946,7 +2953,7 @@ export function initializeDashboard() {
     const idField = result.querySelector('#settings-oauth-gemini-id');
     const secretField = result.querySelector('#settings-oauth-gemini-secret');
     const clear = () => { idField.value = ''; secretField.value = ''; result.hidden = true; };
-    globalThis.addEventListener('pagehide', clear, { once: true });
+    clearGeminiCredentials = clear;
     const copy = (input, label) => {
       void globalThis.navigator.clipboard.writeText(input.value).then(
         () => oauthStatus(`${label} copied.`),
@@ -2969,6 +2976,8 @@ export function initializeDashboard() {
         if (typeof data?.clientId !== 'string' || typeof data?.clientSecret !== 'string' || data?.redirectUri !== redirectUri) {
           throw new Error('The new client credentials were unavailable. Create another client.');
         }
+        // A late answer after navigation or a re-render lands in detached inputs: drop it.
+        if (!secretField.isConnected) return;
         field.value = '';
         idField.value = data.clientId;
         secretField.value = data.clientSecret;

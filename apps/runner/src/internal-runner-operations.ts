@@ -42,7 +42,7 @@ export async function executeInternalRunnerOperation(
   }
   if (parsed.operation === 'oauth_client_register') {
     if (!oauth?.clients) throw new HarnessError('UNAVAILABLE', 'OAuth client registration is unavailable', 503, true);
-    const data = await oauth.clients.register(oauth.resolvePrincipal(parsed.principal), parsed.input);
+    const data = await oauth.clients.register(oauth.resolvePrincipal(parsed.principal), parsed.input, signal);
     return { ok: true, message: 'OAuth client registered', data, truncated: false };
   }
   return await service.executeInternal(parsed.principal, parsed.operation, parsed.input, signal);
