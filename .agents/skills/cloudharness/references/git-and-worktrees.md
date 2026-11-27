@@ -208,36 +208,25 @@ List managed worktrees and their branch/HEAD state for `workspaceId`.
 
 ## Brokered GitHub operations
 
-Prefer `github_read` for any read-only GitHub call. `github_action` is
-annotated destructive as a whole tool (there is no per-action server approval
-gate), so MCP clients may prompt for approval on every call, including reads;
-`github_read` is annotated read-only/idempotent/non-destructive instead.
+Prefer `github_read` for any read-only GitHub call. `github_action` is annotated destructive as a whole tool (there is no per-action server approval gate), so MCP clients may prompt for approval on every call, including reads; `github_read` is annotated read-only/idempotent/non-destructive instead, which clients may use to group it or let the user pre-allow it.
 
 <!-- cloudharness-tool:github_read -->
 ### `github_read`
 
-Read-only GitHub access with no approval prompts, sharing `github_action`'s broker and helper.
+Read-only GitHub access annotated read-only, sharing `github_action`'s broker and helper.
 
-- Required: `workspaceId`, `action` — one of `pr_list`, `pr_view`,
-  `pr_review_threads`, `pr_reviews`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`,
-  `ref_get`, `commit_status_get`, `check_runs_list`, `workflow_runs_list`, `workflow_run_view`. Mutating
-  actions are rejected.
-- `pr_list` / `issue_list`: optional `limit` (default 20, max 100), `state`
-  (`open`, `closed`, or `all`).
+- Required: `workspaceId`, `action` — one of `pr_list`, `pr_view`, `pr_diff`, `pr_review_threads`, `pr_reviews`, `issue_list`, `issue_view`, `commit_list`, `compare`, `file_read`, `release_list`, `tag_list`, `ref_get`, `commit_status_get`, `check_runs_list`, `workflow_runs_list`, `workflow_run_view`. Mutating actions are rejected. `pr_diff` and `file_read` exist only here, not on `github_action`.
+- `pr_list` / `issue_list`: optional `limit` (default 20, max 100), `state` (`open`, `closed`, or `all`).
 - `pr_view`: required `prNumber`. `pr_review_threads`: required `prNumber`, optional `limit` (default 50, max 100). `issue_view`: required `issueNumber`.
-- `commit_list`: optional `limit` (default 30, max 100), `sha` (branch, tag, or
-  commit), `path` (workspace-relative), `since`/`until` (ISO date or datetime).
-- `compare`: required `base`, `head` (branch, tag, or commit; no range syntax);
-  optional `limit` (default 100, max 250). Returns commits and a changed-file
-  summary between the two revisions.
+- `pr_diff`: required `prNumber`; optional `cursor` from the previous page. Returns `baseSha`, `headSha`, `changedFiles`, `startIndex`, `files`, `nextCursor`, and `filesUnavailableUpstream`. Each file has `filename`, `previousFilename` on rename, `status`, line counts, and `patchStatus`: `included` (with `patch`), `unavailable_upstream` (GitHub sent no patch; do not assume binary), or `exceeds_response_limit` (with `patchBytes`; read the file at both SHAs with `file_read`). Keep calling with `nextCursor` until it is `null`; the diff is complete only when the last page reports `filesUnavailableUpstream: 0` (otherwise GitHub did not list that many changed files). `STALE_HEAD` means the PR was pushed or rebased since the cursor (or during the read): start again without a cursor. Cursors work only in the workspace that issued them.
+- `file_read`: required `path` (repository-relative; `?` and `#` allowed, backslashes not) and `sha` (branch, tag, or commit SHA, for example `headSha` from `pr_diff`); optional `cursor`. Every result has `commitSha` and `exists` (`false` when the path is absent at that commit). Entries are typed by Git mode: a file returns `contentStatus` `text` (`content`, `offset`, `nextCursor` byte pages), `binary`, or `too_large` (over 4 MiB: open a workspace and use `files_read`); a directory returns `entries`; a symlink returns its `target`, never the file it points to; a submodule returns its commit `sha`. `STALE_HEAD` means the file changed under that revision since the cursor; `NOT_FOUND` means the revision does not exist; `FORBIDDEN` means the content holds the credential used to read it.
+- `commit_list`: optional `limit` (default 30, max 100), `sha` (branch, tag, or commit), `path` (workspace-relative), `since`/`until` (ISO date or datetime).
+- `compare`: required `base`, `head` (branch, tag, or commit; no range syntax); optional `limit` (default 100, max 250). Returns commits and a changed-file summary between the two revisions, without patch text; use `pr_diff` for a pull request's patches.
 - `release_list` / `tag_list`: optional `limit` (default 20/30, max 100).
-- `pr_reviews`, `ref_get`, `commit_status_get`, `check_runs_list`,
-  `workflow_runs_list`, `workflow_run_view`: inputs and results in
-  [GitHub merge train](github-merge-train.md#reads).
-- History and ref reads mint a `contents: read`-scoped token; other reads mint
-  the narrowest scope their action needs, via the same broker as `github_action`.
-  Tokens are never exposed to workspace files.
+- `pr_reviews`, `ref_get`, `commit_status_get`, `check_runs_list`, `workflow_runs_list`, `workflow_run_view`: inputs and results in [GitHub merge train](github-merge-train.md#reads).
+- History, ref, and `file_read` reads mint a `contents: read`-scoped token; other reads mint the narrowest scope their action needs, via the same broker as `github_action`. Tokens are never exposed to workspace files.
 - `issue_*` accepts a PR number when the App grants Pull requests; if the error says the number most likely names a pull request, use `pr_view` / `pr_comment`.
+- Review a pull request without a checkout: `pr_view` → `pr_diff` (page to the end) → `file_read` at `headSha` for surrounding code → post with `github_action` `pr_review` or `pr_comment`.
 
 <!-- cloudharness-example:github_read
 {"workspaceId":"ws_abcdefghijklmnopqrstuvwxyz012345","action":"commit_list","limit":10}
@@ -249,7 +238,7 @@ Read-only GitHub access with no approval prompts, sharing `github_action`'s brok
 - Required: `workspaceId`, `action`.
 - Uses trusted GitHub App broker tokens passed via stdin to an ephemeral helper container. Tokens are never exposed to workspace files.
 - When no GitHub App repository token can be minted, the runner falls back to an operator-supplied credential: `GH_TOKEN` then `GITHUB_TOKEN` from the runner environment (owner-bearer mode only), then the requesting principal's global runtime secret of the same name. The credential still travels over stdin only and never enters a result, log, or audit payload. A failed clone names the credential used: `repository clone failed (credential: github-app|github-user|principal-global-secret|runner-environment|none)`, and a write `github_action` audit entry records the same `credentialSource`. `GH_TOKEN` shadows `GITHUB_TOKEN`, and a fine-grained token covers one resource owner, so a wrong-owner or approval-pending token yields `remote: Write access to repository not granted.`. When a fallback credential fails and the principal has an installation on the repository owner, the runner reconciles it and retries once with an App token. Members of a multi-principal instance can instead connect their own GitHub user in the dashboard: see [Repository and Git credential boundary](installation-and-security.md#repository-and-git-credential-boundary) for the `github-user` lane and `GITHUB_USER_AUTHORIZATION_REQUIRED`.
-- Read actions (also available on `github_read`, which avoids approval prompts):
+- Read actions (also available on `github_read`, which is annotated read-only; `pr_diff` and `file_read` are only there):
   - `pr_list` / `issue_list`: optional `limit` (default 20, max 100), `state` (`open`, `closed`, or `all`).
   - `pr_view`: required `prNumber`; also returns `isDraft`, `reviewDecision`, `reviewRequests`, `mergeable`, `mergeStateStatus`, `headRefOid`, and `autoMergeRequest`.
   - `pr_review_threads`: required `prNumber`; optional `limit` (default 50, max 100). Returns each thread's `id` (the `threadId` for the thread actions), `isResolved`, `isOutdated`, `path`, `line`, and its comments.

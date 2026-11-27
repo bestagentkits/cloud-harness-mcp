@@ -15,16 +15,29 @@ export async function runDocker(args: string[], options: {
   return await new Promise((resolve, reject) => {
     const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let settled = false;
-    let stdout = '';
-    let stderr = '';
     let truncated = false;
-    const append = (current: string, chunk: Buffer) => {
-      const remaining = Math.max(0, maxBytes - Buffer.byteLength(current));
-      if (chunk.length > remaining) truncated = true;
-      return remaining > 0 ? current + chunk.subarray(0, remaining).toString('utf8') : current;
+    // Bytes are kept until the process closes and decoded once, so a multi-byte character split across
+    // two chunks is never replaced; each stream keeps at most maxBytes.
+    const capture = () => {
+      const chunks: Buffer[] = [];
+      let kept = 0;
+      return {
+        push(chunk: Buffer) {
+          const remaining = maxBytes - kept;
+          if (chunk.length > remaining) truncated = true;
+          if (remaining > 0) {
+            const part = chunk.subarray(0, remaining);
+            chunks.push(part);
+            kept += part.length;
+          }
+        },
+        text: () => Buffer.concat(chunks).toString('utf8')
+      };
     };
-    child.stdout.on('data', (chunk: Buffer) => { stdout = append(stdout, chunk); if (truncated) child.kill(); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr = append(stderr, chunk); if (truncated) child.kill(); });
+    const stdout = capture();
+    const stderr = capture();
+    child.stdout.on('data', (chunk: Buffer) => { stdout.push(chunk); if (truncated) child.kill(); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr.push(chunk); if (truncated) child.kill(); });
     const fail = (error: Error) => {
       if (settled) return;
       settled = true;
@@ -48,7 +61,7 @@ export async function runDocker(args: string[], options: {
       settled = true;
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', abort);
-      resolve({ stdout, stderr, exitCode: code ?? 1, truncated });
+      resolve({ stdout: stdout.text(), stderr: stderr.text(), exitCode: code ?? 1, truncated });
     });
     if (options.stdin !== undefined) child.stdin.end(options.stdin); else child.stdin.end();
   });

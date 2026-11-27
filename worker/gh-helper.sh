@@ -53,6 +53,28 @@ print_if_ok() {
   printf '%s\n' "$out"
 }
 
+# The fixed stderr marker the runner reads as "one GitHub response exceeded the download cap".
+DOWNLOAD_CAP_MARKER=GITHUB_READ_DOWNLOAD_CAP_EXCEEDED
+
+# Writes one GitHub API response to a file and reads at most `cap` bytes of it. Past the cap the pipe
+# closes, so gh stops downloading, and the helper exits with the marker before anything parses the body.
+bounded_api() {
+  local out=$1 cap=$2
+  shift 2
+  local -a statuses
+  set +e +o pipefail
+  gh api "$@" | head -c "$((cap + 1))" > "$out"
+  statuses=("${PIPESTATUS[@]}")
+  set -e -o pipefail
+  if (( $(wc -c < "$out") > cap )); then
+    echo "$DOWNLOAD_CAP_MARKER: a GitHub response exceeded $cap bytes" >&2
+    exit 3
+  fi
+  if (( statuses[0] != 0 )); then
+    exit "${statuses[0]}"
+  fi
+}
+
 # A review thread is addressed by a global node ID, so a mutation by ID alone would act on a thread of any
 # repository the token can reach. The credential acts only on GH_REPO: the thread must belong to it.
 require_thread_in_repo() {
@@ -343,6 +365,103 @@ case "$action" in
       exit 1
     fi
     exec gh api "repos/{owner}/{repo}/compare/${base}...${head}" --jq "{ status, aheadBy: .ahead_by, behindBy: .behind_by, totalCommits: .total_commits, url: .html_url, commits: [.commits[:${limit}][] | { sha, message: .commit.message, author: .commit.author.name, date: .commit.author.date }], files: [(.files // [])[:${limit}][] | { filename, status, additions, deletions, changes }], filesTotal: ((.files // []) | length) }"
+    ;;
+  pr_diff)
+    pr_number="${1:-}"
+    page="${2:-}"
+    per_page="${3:-}"
+    cap="${4:-}"
+    require_number "$pr_number" "Pull request number"
+    require_number "$page" "Page"
+    require_number "$per_page" "Page size"
+    require_number "$cap" "Download cap"
+    # The pull request is read before and after its files page, so the runner can refuse a page that
+    # straddles a push. Only the files page can be large, so only it is read through the download cap.
+    pull_request='{ baseSha: .base.sha, headSha: .head.sha, changedFiles: .changed_files }'
+    before=$(gh api "repos/{owner}/{repo}/pulls/$pr_number" --jq "$pull_request")
+    files_json=$(mktemp)
+    bounded_api "$files_json" "$cap" -X GET "repos/{owner}/{repo}/pulls/$pr_number/files" -f "per_page=$per_page" -f "page=$page"
+    after=$(gh api "repos/{owner}/{repo}/pulls/$pr_number" --jq "$pull_request")
+    jq -c --argjson before "$before" --argjson after "$after" \
+      '$before + { files: [.[] | { filename, previousFilename: .previous_filename, status, additions, deletions, changes, patch }],
+        baseShaAfter: $after.baseSha, headShaAfter: $after.headSha }' "$files_json"
+    ;;
+  file_read)
+    path="${1:-}"
+    revision="${2:-}"
+    max_bytes="${3:-}"
+    cap="${4:-}"
+    require_revision "$revision"
+    require_number "$max_bytes" "Maximum file size"
+    require_number "$cap" "Download cap"
+    if ! jq -en --arg path "$path" '$path | split("/") | length > 0 and all(. != "" and . != "." and . != "..")' >/dev/null; then
+      echo "Path must name a repository entry without empty, '.', or '..' segments" >&2
+      exit 1
+    fi
+    # The entry is classified by its Git mode at the resolved commit, so a symlink is never read as the file
+    # it points to. The path travels as a GraphQL variable, and a validated revision cannot change the
+    # expression. Contents are read by object ID; no download_url or submodule URL is ever followed.
+    meta_json=$(mktemp)
+    set +e
+    gh api graphql -f owner="${GH_REPO%%/*}" -f repo="${GH_REPO#*/}" -f expression="${revision}^{commit}" -f path="$path" \
+      -f query='query($owner: String!, $repo: String!, $expression: String!, $path: String!) { repository(owner: $owner, name: $repo) { object(expression: $expression) { ... on Commit { oid file(path: $path) { mode oid object { ... on Blob { byteSize } } } } } } }' \
+      > "$meta_json"
+    status=$?
+    set -e
+    # GitHub answers a missing path with a partial response: data with file null and one NOT_FOUND error at
+    # repository.object.file, and gh exits 1. Only exactly that is an absent path; every other error,
+    # partial or not, fails with gh's status so the runner classifies it.
+    absent_path='(.errors // []) as $errors | ($errors | length) > 0
+      and ($errors | all(.type == "NOT_FOUND" and .path == ["repository", "object", "file"]))
+      and .data.repository.object.file == null'
+    if jq -e "$absent_path" "$meta_json" >/dev/null 2>&1; then
+      jq -c '{ commitSha: .data.repository.object.oid, exists: false }' "$meta_json"
+      exit 0
+    fi
+    if (( status != 0 )); then exit "$status"; fi
+    if ! commit=$(jq -er '.data.repository.object.oid' "$meta_json" 2>/dev/null); then
+      echo "Revision $revision was not found in $GH_REPO (HTTP 404)" >&2
+      exit 1
+    fi
+    if ! entry=$(jq -ec '.data.repository.object.file' "$meta_json"); then
+      echo "GitHub returned no entry for $path at $revision" >&2
+      exit 1
+    fi
+    mode=$(jq -r '.mode' <<<"$entry")
+    oid=$(jq -r '.oid' <<<"$entry")
+    require_revision "$oid"
+    object_json=$(mktemp)
+    case "$mode" in
+      16384)
+        bounded_api "$object_json" "$cap" "repos/{owner}/{repo}/git/trees/$oid"
+        jq -c --arg commit "$commit" --arg oid "$oid" --arg dir "$path" \
+          '{ commitSha: $commit, exists: true, type: "dir", sha: $oid, entriesTruncatedUpstream: (.truncated // false),
+            entries: [.tree[] | { name: .path, path: ($dir + "/" + .path), size, sha,
+              type: (if .type == "tree" then "dir" elif .type == "commit" then "submodule" elif .mode == "120000" then "symlink" else "file" end) }] }' \
+          "$object_json"
+        ;;
+      57344)
+        jq -cn --arg commit "$commit" --arg oid "$oid" '{ commitSha: $commit, exists: true, type: "submodule", sha: $oid }'
+        ;;
+      40960)
+        # The target is returned as the blob's base64; the runner decodes and checks it.
+        bounded_api "$object_json" "$cap" "repos/{owner}/{repo}/git/blobs/$oid"
+        jq -c --arg commit "$commit" --arg oid "$oid" '{ commitSha: $commit, exists: true, type: "symlink", sha: $oid, encoding, content }' "$object_json"
+        ;;
+      *)
+        size=$(jq -r '.object.byteSize' <<<"$entry")
+        require_number "$size" "File size"
+        if (( size > max_bytes )); then
+          jq -cn --arg commit "$commit" --arg oid "$oid" --argjson size "$size" '{ commitSha: $commit, exists: true, type: "file", sha: $oid, size: $size }'
+        else
+          # Content stays as GitHub's line-wrapped base64: rewriting a multi-megabyte string in jq is slow,
+          # and the runner's base64 decoder skips the line breaks.
+          bounded_api "$object_json" "$cap" "repos/{owner}/{repo}/git/blobs/$oid"
+          jq -c --arg commit "$commit" --arg oid "$oid" --argjson size "$size" \
+            '{ commitSha: $commit, exists: true, type: "file", sha: $oid, size: $size, encoding, content }' "$object_json"
+        fi
+        ;;
+    esac
     ;;
   release_list)
     limit="${1:-20}"

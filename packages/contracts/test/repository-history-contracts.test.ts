@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { GITHUB_READ_ACTIONS, GITHUB_WRITE_ACTIONS, TOOL_SCHEMA_BY_NAME, TOOL_SPECS, WorkspaceCapabilityResultSchema } from '../src/index.js';
+import { GITHUB_ACTION_READ_ACTIONS, GITHUB_READ_ACTIONS, GITHUB_WRITE_ACTIONS, TOOL_SCHEMA_BY_NAME, TOOL_SPECS, WorkspaceCapabilityResultSchema } from '../src/index.js';
 
 const workspaceId = `ws_${'a'.repeat(24)}`;
 
 describe('repository history contracts', () => {
-  it('annotates github_read as read-only so clients need not prompt for approval', () => {
+  it('annotates github_read as read-only so clients may group or pre-allow it', () => {
     const spec = TOOL_SPECS.find((tool) => tool.name === 'github_read');
     expect(spec).toMatchObject({ readOnly: true, destructive: false, idempotent: true, openWorld: true });
     expect(TOOL_SPECS.find((tool) => tool.name === 'github_action')?.destructive).toBe(true);
@@ -36,6 +36,32 @@ describe('repository history contracts', () => {
   it('keeps the new history actions available on github_action', () => {
     expect(TOOL_SCHEMA_BY_NAME.github_action.parse({ workspaceId, action: 'compare', base: 'main', head: 'feature/x' })).toMatchObject({ action: 'compare' });
     expect(TOOL_SCHEMA_BY_NAME.github_action.parse({ workspaceId, action: 'tag_list' })).toMatchObject({ limit: 30 });
+  });
+
+  it('serves pr_diff and file_read on github_read only', () => {
+    const read = TOOL_SCHEMA_BY_NAME.github_read;
+    const sha = 'a'.repeat(40);
+    expect(read.parse({ workspaceId, action: 'pr_diff', prNumber: 4, cursor: 'eyJ2IjoxfQ' })).toMatchObject({ action: 'pr_diff', prNumber: 4, cursor: 'eyJ2IjoxfQ' });
+    expect(read.parse({ workspaceId, action: 'file_read', path: 'src/a b.ts', sha })).toMatchObject({ action: 'file_read', path: 'src/a b.ts', sha });
+    expect(read.parse({ workspaceId, action: 'file_read', path: 'README.md', sha: 'feature/x' })).toMatchObject({ sha: 'feature/x' });
+    expect(GITHUB_READ_ACTIONS).toEqual(expect.arrayContaining(['pr_diff', 'file_read']));
+    expect(GITHUB_ACTION_READ_ACTIONS).not.toEqual(expect.arrayContaining(['pr_diff']));
+    expect(() => TOOL_SCHEMA_BY_NAME.github_action.parse({ workspaceId, action: 'pr_diff', prNumber: 4 })).toThrow();
+    expect(() => TOOL_SCHEMA_BY_NAME.github_action.parse({ workspaceId, action: 'file_read', path: 'a', sha })).toThrow();
+  });
+
+  it('accepts any Git file name for file_read but refuses traversal, empty segments, and range revisions', () => {
+    const read = TOOL_SCHEMA_BY_NAME.github_read;
+    for (const path of ['../a', 'a//b', './a', 'a/', '/etc/passwd', 'a\\b']) {
+      expect(() => read.parse({ workspaceId, action: 'file_read', path, sha: 'main' })).toThrow();
+    }
+    expect(read.parse({ workspaceId, action: 'file_read', path: 'docs/a?b#c.md', sha: 'main' })).toMatchObject({ path: 'docs/a?b#c.md' });
+    expect(() => read.parse({ workspaceId, action: 'commit_list', path: 'a?b' })).toThrow();
+    for (const sha of ['main..dev', 'main:secret', 'main^{tree}']) {
+      expect(() => read.parse({ workspaceId, action: 'file_read', path: 'a', sha })).toThrow();
+    }
+    expect(() => read.parse({ workspaceId, action: 'file_read', path: 'a' })).toThrow();
+    expect(() => read.parse({ workspaceId, action: 'pr_diff', prNumber: 4, cursor: 'not base64url!' })).toThrow();
   });
 
   it('accepts one workspace_open history option at a time', () => {

@@ -83,6 +83,7 @@ Before creating the App in GitHub, choose the minimum required permission level:
 | **Review pull requests (reviews, inline comments, threads, reviewers, draft/ready)** | **Pull requests: Read and write** + **Contents: Read-only** |
 | **Merge pull requests or enable auto-merge** | **Pull requests: Read and write** + **Contents: Read and write** |
 | **List/compare commits, releases, and tags through `github_read`/`github_action`** | **Contents: Read-only** |
+| **Read a pull request's patches (`github_read` `pr_diff`) or a file at a revision (`file_read`)** | `pr_diff`: **Pull requests: Read-only** + **Contents: Read-only**; `file_read`: **Contents: Read-only** |
 | **Read or post commit statuses (`commit_status_get`, `commit_status_create`)** | **Commit statuses: Read-only** or **Read and write** + **Contents: Read-only** |
 | **List check runs for a commit (`check_runs_list`)** | **Checks: Read-only** + **Contents: Read-only** |
 | **Read workflow runs, dispatch workflows, re-run failed jobs** | **Actions: Read-only** or **Read and write** + **Contents: Read-only** |

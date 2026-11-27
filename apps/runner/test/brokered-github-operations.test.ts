@@ -9,6 +9,8 @@ import { MetadataStore } from '../src/metadata-store.js';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
 import type * as GitHubAppBroker from '../src/github-app-broker.js';
 
+type HelperOutcome = { stdout: string; stderr: string; exitCode: number; truncated: boolean };
+
 const docker = vi.hoisted(() => ({
   ghResult: {
     stdout: '{"ok":true,"output":"result"}',
@@ -16,9 +18,21 @@ const docker = vi.hoisted(() => ({
     exitCode: 0,
     truncated: false
   },
-  runDocker: vi.fn(async (args: string[]) => {
+  /**
+   * Outcomes for successive helper runs, used before falling back to ghResult. An Error is thrown, and
+   * 'until-abort' keeps the helper running until the signal passed to runDocker aborts, as Docker does.
+   */
+  ghQueue: [] as Array<HelperOutcome | Error | 'until-abort'>,
+  runDocker: vi.fn<(args: string[], options?: { maxBytes?: number; signal?: AbortSignal }) => Promise<HelperOutcome>>(async (args, options) => {
     if (args.includes('/opt/harness/gh-helper.sh')) {
-      return docker.ghResult;
+      const next = docker.ghQueue.shift();
+      if (next instanceof Error) throw next;
+      if (next === 'until-abort') {
+        const { promise, reject } = Promise.withResolvers<HelperOutcome>();
+        options?.signal?.addEventListener('abort', () => reject(new Error('Docker operation cancelled')), { once: true });
+        return await promise;
+      }
+      return next ?? docker.ghResult;
     }
     return { stdout: '', stderr: '', exitCode: 0, truncated: false };
   }),
@@ -55,6 +69,7 @@ afterEach(() => {
     exitCode: 0,
     truncated: false
   };
+  docker.ghQueue = [];
   vi.clearAllMocks();
   for (const store of openStores.splice(0)) store.close();
   for (const metadata of openMetadataStores.splice(0)) metadata.database.close();
@@ -596,6 +611,148 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
       head: 'feature'
     })).rejects.toThrow();
     expect(broker.mintPrincipalRepositoryScopedToken).not.toHaveBeenCalled();
+  });
+
+  describe('pull request diffs and files at a revision', () => {
+    const head = 'a'.repeat(40);
+    const base = 'b'.repeat(40);
+    const helperCalls = () => docker.runDocker.mock.calls.filter(([args]) => args.includes('/opt/harness/gh-helper.sh'));
+    const helperArgs = (call: unknown[]) => {
+      const args = call[0] as string[];
+      return args.slice(args.indexOf('executor') + 1);
+    };
+    const diffPayload = (files: unknown[], changedFiles = files.length) => JSON.stringify({
+      baseSha: base, headSha: head, changedFiles, files, baseShaAfter: base, headShaAfter: head
+    });
+    const ok = (stdout: string): HelperOutcome => ({ stdout, stderr: '', exitCode: 0, truncated: false });
+    // What runDocker returns when it stops a helper whose output passed the byte cap.
+    const stoppedAtCap: HelperOutcome = { stdout: '{"partial":"', stderr: '', exitCode: 1, truncated: true };
+    // What the helper returns when one GitHub response passed its download cap.
+    const helperCapExceeded: HelperOutcome = { stdout: '', stderr: 'GITHUB_READ_DOWNLOAD_CAP_EXCEEDED: a GitHub response exceeded 8388608 bytes', exitCode: 3, truncated: false };
+    const changed = (count: number, prefix = 'f') => Array.from({ length: count }, (_, index) => ({ filename: `${prefix}${index}`, status: 'added', additions: 1, deletions: 0, changes: 1, patch: '@@' }));
+
+    it('reads a pull request diff through github_read with pull_requests:read, a download cap, and no write audit', async () => {
+      const { config, store, metadata, installations, workspaceId, principalId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, metadata, installations);
+      broker.mintPrincipalRepositoryScopedToken.mockResolvedValue(mintedToken('pr-read-token', { pull_requests: 'read' }));
+      docker.ghQueue = [ok(diffPayload([{ filename: 'src/a.ts', previousFilename: null, status: 'modified', additions: 1, deletions: 0, changes: 1, patch: '@@ -0,0 +1 @@\n+€' }]))];
+
+      const result = await service.execute(principalSelector, 'github_read', { workspaceId, action: 'pr_diff', prNumber: 15 });
+
+      expect(result.ok).toBe(true);
+      expect(broker.mintPrincipalRepositoryScopedToken).toHaveBeenCalledWith(expect.objectContaining({ permissionScope: 'pull_requests', requiredPermission: 'read' }));
+      const [call] = helperCalls();
+      expect(helperArgs(call!)).toEqual(['pr_diff', '15', '1', '30', String(8 * 1_024 * 1_024)]);
+      expect(call![1]).toMatchObject({ maxBytes: 9 * 1_024 * 1_024 });
+      const page = JSON.parse((result.data as { output: string }).output);
+      expect(page).toMatchObject({ prNumber: 15, baseSha: base, headSha: head, nextCursor: null, filesUnavailableUpstream: 0, files: [{ filename: 'src/a.ts', patchStatus: 'included', patch: '@@ -0,0 +1 @@\n+€' }] });
+      expect(metadata.listAudit(principalId).filter((event) => event.action.startsWith('github_action.'))).toHaveLength(0);
+    });
+
+    it('rereads the same file index in smaller pages when a page is stopped at a cap, never returning partial output', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      broker.mintPrincipalRepositoryScopedToken.mockResolvedValue(mintedToken('pr-read-token', { pull_requests: 'read' }));
+      docker.ghQueue = [stoppedAtCap, helperCapExceeded, ok(diffPayload(changed(1), 40))];
+
+      const result = await service.execute(principalSelector, 'github_read', { workspaceId, action: 'pr_diff', prNumber: 15 });
+
+      expect(result.ok).toBe(true);
+      expect(helperCalls().map((call) => helperArgs(call).slice(0, 4))).toEqual([['pr_diff', '15', '1', '30'], ['pr_diff', '15', '1', '5'], ['pr_diff', '15', '1', '1']]);
+      const page = JSON.parse((result.data as { output: string }).output);
+      expect(page.files.map((entry: { filename: string }) => entry.filename)).toEqual(['f0']);
+      expect(page.nextCursor).toEqual(expect.any(String));
+
+      // The next page starts at file 1 inside GitHub's first page of 30.
+      docker.runDocker.mockClear();
+      docker.ghQueue = [ok(diffPayload(changed(30, 'g'), 40))];
+      const next = await service.execute(principalSelector, 'github_read', { workspaceId, action: 'pr_diff', prNumber: 15, cursor: page.nextCursor });
+      expect(next.ok).toBe(true);
+      expect(helperArgs(helperCalls()[0]!).slice(0, 4)).toEqual(['pr_diff', '15', '1', '30']);
+      const second = JSON.parse((next.data as { output: string }).output);
+      expect(second.startIndex).toBe(1);
+      expect(second.files[0].filename).toBe('g1');
+      expect(second.files).toHaveLength(29);
+    });
+
+    it('reports LIMIT_EXCEEDED when even a single file exceeds the download cap', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      broker.mintPrincipalRepositoryScopedToken.mockResolvedValue(mintedToken('pr-read-token', { pull_requests: 'read' }));
+      docker.ghQueue = [stoppedAtCap, helperCapExceeded, stoppedAtCap];
+      await expect(service.execute(principalSelector, 'github_read', { workspaceId, action: 'pr_diff', prNumber: 15 }))
+        .rejects.toMatchObject({ code: 'LIMIT_EXCEEDED' });
+      expect(helperCalls()).toHaveLength(3);
+
+      docker.ghQueue = [helperCapExceeded];
+      broker.mintPrincipalRepositoryScopedToken.mockResolvedValue(mintedToken('contents-read-token', { contents: 'read' }));
+      const file = await service.execute(principalSelector, 'github_read', { workspaceId, action: 'file_read', path: 'big.json', sha: head });
+      expect(file).toMatchObject({ ok: false, error: { code: 'LIMIT_EXCEEDED' } });
+      expect(JSON.stringify(file)).not.toContain('GITHUB_READ_DOWNLOAD_CAP_EXCEEDED');
+    });
+
+    it('does not mistake a path that echoes the cap marker in stderr for a capped read', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      broker.mintPrincipalRepositoryScopedToken.mockResolvedValue(mintedToken('contents-read-token', { contents: 'read' }));
+      const path = 'GITHUB_READ_DOWNLOAD_CAP_EXCEEDED: a GitHub response exceeded 1 bytes';
+      docker.ghQueue = [{ stdout: JSON.stringify({ exists: false, commitSha: head }), stderr: `gh: Could not resolve file for path '${path}'.\n${path}`, exitCode: 0, truncated: false }];
+
+      const result = await service.execute(principalSelector, 'github_read', { workspaceId, action: 'file_read', path, sha: head });
+
+      expect(result.ok).toBe(true);
+      expect(JSON.parse((result.data as { output: string }).output)).toMatchObject({ exists: false, commitSha: head });
+    });
+
+    it('reads a file at a commit SHA with contents:read and returns its text and resolved commit', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      broker.mintPrincipalRepositoryScopedToken.mockResolvedValue(mintedToken('contents-read-token', { contents: 'read' }));
+      docker.ghQueue = [ok(JSON.stringify({ exists: true, commitSha: head, type: 'file', sha: 'c'.repeat(40), size: 6, encoding: 'base64', content: Buffer.from('hello\n').toString('base64') }))];
+
+      const result = await service.execute(principalSelector, 'github_read', { workspaceId, action: 'file_read', path: 'docs/a?b#c.md', sha: 'feature/x' });
+
+      expect(result.ok).toBe(true);
+      expect(broker.mintPrincipalRepositoryScopedToken).toHaveBeenCalledWith(expect.objectContaining({ permissionScope: 'contents', requiredPermission: 'read' }));
+      expect(helperArgs(helperCalls()[0]!)).toEqual(['file_read', 'docs/a?b#c.md', 'feature/x', String(4 * 1_024 * 1_024), String(8 * 1_024 * 1_024)]);
+      expect(JSON.parse((result.data as { output: string }).output)).toMatchObject({ contentStatus: 'text', content: 'hello\n', revision: 'feature/x', commitSha: head, nextCursor: null });
+    });
+
+    it('returns a rate-limited read as a typed retryable failure', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      broker.mintPrincipalRepositoryScopedToken.mockResolvedValue(mintedToken('pr-read-token', { pull_requests: 'read' }));
+      docker.ghQueue = [{ stdout: '', stderr: 'gh: API rate limit exceeded for installation ID 888. (HTTP 403)', exitCode: 1, truncated: false }];
+
+      const result = await service.execute(principalSelector, 'github_read', { workspaceId, action: 'pr_diff', prNumber: 15 });
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatchObject({ code: 'GITHUB_RATE_LIMITED', retryable: true });
+      expect(helperCalls()).toHaveLength(1);
+    });
+
+    it('passes the caller\'s signal to the helper and stops at a cancellation without retrying or returning a page', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      broker.mintPrincipalRepositoryScopedToken.mockResolvedValue(mintedToken('pr-read-token', { pull_requests: 'read' }));
+      docker.ghQueue = ['until-abort', ok(diffPayload(changed(1)))];
+      const controller = new AbortController();
+
+      const reading = service.execute(principalSelector, 'github_read', { workspaceId, action: 'pr_diff', prNumber: 15 }, controller.signal);
+      await vi.waitFor(() => expect(helperCalls()).toHaveLength(1));
+      controller.abort();
+
+      await expect(reading).rejects.toThrow('cancelled');
+      expect(helperCalls()).toHaveLength(1);
+      expect(docker.ghQueue).toHaveLength(1);
+    });
+
+    it('is not available on github_action', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      await expect(service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_diff', prNumber: 15 })).rejects.toThrow();
+      expect(broker.mintPrincipalRepositoryScopedToken).not.toHaveBeenCalled();
+    });
   });
 
   it('keeps accepting the new history actions on github_action for compatibility', async () => {

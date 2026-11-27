@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RunnerConfig } from '@cloud-harness/contracts';
+import { GITHUB_READ_ACTIONS, GITHUB_WRITE_ACTIONS, type RunnerConfig } from '@cloud-harness/contracts';
 
 const authMocks = vi.hoisted(() => ({
   installationAuth: vi.fn(async () => ({
@@ -330,6 +330,14 @@ describe('GitHub App broker', () => {
 
   it('reports no requirement for an action the broker does not serve', () => {
     expect(requiredGitHubPermissions('release_create')).toBeUndefined();
+  });
+
+  it('mints a read-only token for every github_read action and a write token for every gated action', () => {
+    // github_read is annotated read-only, so clients may pre-allow it; no action it accepts may mint a write token.
+    for (const action of GITHUB_READ_ACTIONS) expect(requiredGitHubPermissions(action)).toMatchObject({ write: false });
+    for (const action of GITHUB_WRITE_ACTIONS) expect(requiredGitHubPermissions(action)).toMatchObject({ write: true });
+    expect(requiredGitHubPermissions('pr_diff')).toEqual({ scope: 'pull_requests', write: false });
+    expect(requiredGitHubPermissions('file_read')).toEqual({ scope: 'contents', write: false });
   });
 
   it('mints one token carrying the scope the action needs', async () => {

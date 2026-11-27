@@ -825,18 +825,73 @@ ChatGPT subscription (see
   [security model](security-model.md#managed-toolbox-packages).
 - `github_read` is a read-only, non-destructive tool sharing the same broker
   and handler as `github_action`, restricted to the read actions (`pr_list`,
-  `pr_view`, `pr_review_threads`, `pr_reviews`, `issue_list`, `issue_view`,
-  `commit_list`, `compare`, `release_list`, `tag_list`, `ref_get`,
+  `pr_view`, `pr_diff`, `pr_review_threads`, `pr_reviews`, `issue_list`, `issue_view`,
+  `commit_list`, `compare`, `file_read`, `release_list`, `tag_list`, `ref_get`,
   `commit_status_get`, `check_runs_list`, `workflow_runs_list`, and
   `workflow_run_view`). It exists because MCP client approval prompts key off tool-level
   annotations: `github_action` is annotated destructive as a whole (there is no
   per-action server approval gate), so every action on it — including reads —
-  could trigger an approval prompt. Prefer `github_read` for any read so
-  clients do not prompt on every call; `github_action` still accepts the same
-  read actions for backward compatibility. `commit_list` supports `limit`,
-  `sha`, `path`, `since`, and `until` filters; `compare` returns commits and a
-  changed-file summary between `base` and `head`. `workspace_capabilities`
-  reports the current read/gated split under `githubActions`.
+  could trigger an approval prompt. `github_read` carries the read-only annotation,
+  which clients may use to group it or let the user pre-allow it; whether and how
+  often a client prompts is the client's decision, not a server guarantee. Prefer
+  `github_read` for any read; `github_action` still accepts the older read actions
+  for backward compatibility, but `pr_diff` and `file_read` exist only on
+  `github_read`. `commit_list` supports `limit`, `sha`, `path`, `since`, and
+  `until` filters; `compare` returns commits and a changed-file summary (no patch
+  text) between `base` and `head`. `workspace_capabilities` reports the current
+  read/gated split under `githubActions`.
+- `pr_diff` and `file_read` let an agent review a pull request without a checkout,
+  `git_fetch`, or `exec_run`. Both return bounded pages. The helper reads each large
+  GitHub response (a files page, a tree, or a blob) through an 8 MiB download cap and
+  stops downloading past it; the runner accepts at most 9 MiB of helper output and
+  never classifies or returns output stopped at either cap. The runner then cuts one
+  page measured on the exact JSON it returns, within its `maxOutputBytes`, so a page
+  never ends mid-value; a read whose smallest page cannot fit returns
+  `LIMIT_EXCEEDED`. Page with the returned opaque `nextCursor` until it is `null`.
+  Cursors are bound to the workspace and its repository, so a cursor from another
+  workspace is refused with `INVALID_INPUT`.
+  - `pr_diff` takes `prNumber` and lists the pull request's files through GitHub's
+    pull request files API (not the compare API, which stops at 300 files). Each page
+    carries `baseSha`, `headSha`, `changedFiles`, `startIndex`, and per-file
+    `filename`, `previousFilename` (on rename), `status`, `additions`, `deletions`,
+    `changes`, and `patchStatus`: `included` with `patch`; `unavailable_upstream` when
+    GitHub omits the patch (binary or too large; the harness does not guess which);
+    or `exceeds_response_limit` with `patchBytes` when one patch is larger than a whole
+    response (read the file at both SHAs with `file_read` instead).
+    `filesUnavailableUpstream` counts changed files GitHub does not list: those past
+    its 3,000-file listing limit, and any a listing that ends early never reached. A
+    diff is complete only when the last page (`nextCursor: null`) reports `0`. The
+    cursor is bound to the pull request and its base and head SHAs: a push or base
+    change since the cursor returns `STALE_HEAD` (`currentHeadOid`,
+    `expectedHeadOid`), and a page read while the head moved returns a retryable
+    `STALE_HEAD`. A files page over the download cap is read again with 5 and then 1
+    file before `LIMIT_EXCEEDED`.
+  - `file_read` takes `path` (repository-relative: no leading `/`, drive prefix,
+    backslash, NUL, or empty, `.`, or `..` segment; `?` and `#` are allowed) and `sha` (branch, tag,
+    or commit SHA). The helper resolves `sha` to a commit and looks the path up there
+    over GraphQL, passing the path as a variable, and classifies the entry by its Git
+    mode, so a symlink is never read as the file it points to (the Contents API would
+    return the target's content). Contents are read by object ID from the Git blobs
+    and trees APIs of the workspace repository; no `download_url`, submodule URL, or
+    fork is followed. Every response carries `commitSha`, the resolved commit, and
+    `exists`; a path absent at that commit returns `exists: false`, and an unknown
+    revision fails with `NOT_FOUND`. A file returns `size`, `sha` (blob), and
+    `contentStatus`: `text` with `content`, `offset`, and `nextCursor` (byte-offset
+    pages that never split a UTF-8 character); `binary` (a NUL in the first 8,000
+    bytes or invalid UTF-8) without content; or `too_large` above 4 MiB, which is not
+    downloaded. Content whose decoded length differs from the blob size is refused as
+    a retryable `UNAVAILABLE`, never returned as the whole file. A directory returns
+    `entries` typed `file`, `dir`, `symlink`, or `submodule` (with `entriesTotal` and
+    `entriesTruncated` when they exceed one page or GitHub truncated the tree), a
+    symlink its `target`, and a submodule only its commit `sha`. Decoded content and
+    symlink targets that contain the credential used for the read are refused with
+    `FORBIDDEN`, because helper output is redacted while still base64. The cursor is
+    bound to the path, revision, and blob and continues only a regular file, so a
+    file that changed (or became a symlink) since the cursor returns `STALE_HEAD`.
+  - `pr_diff` mints a `pull_requests: read` token (which also carries
+    `contents: read`, like every pull request read) and `file_read` a
+    `contents: read` token, through the same broker and credential lanes as every
+    other read; neither can mint a write token.
 - `github_action` executes authenticated GitHub CLI actions (`pr_list`, `pr_view`,
   `pr_create`, `pr_update`, `pr_comment`, `pr_review`, `pr_review_comment`, `pr_review_reply`,
   `pr_review_thread_resolve`, `pr_review_thread_unresolve`, `pr_reviewers_request`,

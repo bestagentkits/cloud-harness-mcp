@@ -1667,16 +1667,16 @@ Traverse and query the bounded neighborhood knowledge graph for a root node.
 
 ### `github_read`
 
-**Read GitHub pull requests, reviews, review threads, issues, commits, comparisons, releases, tags, refs, commit statuses, check runs, and Actions workflow runs**
+**Read GitHub pull requests and their diffs, reviews, review threads, issues, commits, comparisons, files at a revision, releases, tags, refs, commit statuses, check runs, and Actions workflow runs**
 
-Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, pr_reviews (every review with its state and the latest state per reviewer, including CHANGES_REQUESTED), pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list, ref_get (current OID of refs/heads/... or refs/tags/..., or exists: false), commit_status_get (combined status and every status context for a SHA or ref), check_runs_list (check runs for a SHA or ref), workflow_runs_list (Actions runs filtered by workflow, headSha, branch, event, status), and workflow_run_view (one run with its jobs and conclusions). Maps to operations.pullRequestList, pullRequestView, pullRequestReviewList, issueList, issueView, commitList, compare, releaseList, tagList, refGet, commitStatusRead, checkRunList, and workflowRunRead. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.
+Read-only GitHub access for the repository bound to an owner-authorized workspace. Annotated read-only and non-destructive, so clients may group or pre-allow it. Supported actions: pr_list, pr_view, pr_diff (per-file patches of a pull request with its base and head SHAs; page with the returned nextCursor until it is null; each file reports patchStatus included, unavailable_upstream when GitHub omits the patch, or exceeds_response_limit; filesUnavailableUpstream counts changed files GitHub does not list, so the diff is complete only when it is 0 on the last page; STALE_HEAD when the pull request moved since the cursor), pr_reviews (every review with its state and the latest state per reviewer, including CHANGES_REQUESTED), pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), file_read (one repository path at a branch, tag, or commit SHA given as sha, classified by its Git mode at the resolved commitSha: text content paged by byte offset with nextCursor, directory entries, a symlink target, or a submodule commit, and exists: false for a path absent at that commit; contentStatus binary or too_large instead of content when it cannot be returned as text; STALE_HEAD when the file changed since the cursor), release_list, tag_list, ref_get (current OID of refs/heads/... or refs/tags/..., or exists: false), commit_status_get (combined status and every status context for a SHA or ref), check_runs_list (check runs for a SHA or ref), workflow_runs_list (Actions runs filtered by workflow, headSha, branch, event, status), and workflow_run_view (one run with its jobs and conclusions). pr_diff and file_read exist only on github_read. Maps to operations.pullRequestList, pullRequestView, pullRequestDiff, pullRequestReviewList, issueList, issueView, commitList, compare, fileRead, releaseList, tagList, refGet, commitStatusRead, checkRunList, and workflowRunRead. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent` · <span class="badge-openworld">openWorld</span>
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `action` | `"pr_list"` \| `"pr_view"` \| `"pr_review_threads"` \| `"pr_reviews"` \| `"issue_list"` \| `"issue_view"` \| `"commit_list"` \| `"compare"` \| `"release_list"` \| `"tag_list"` \| `"ref_get"` \| `"commit_status_get"` \| `"check_runs_list"` \| `"workflow_runs_list"` \| `"workflow_run_view"` | **Yes** | — |
+| `action` | `"pr_list"` \| `"pr_view"` \| `"pr_review_threads"` \| `"pr_reviews"` \| `"issue_list"` \| `"issue_view"` \| `"commit_list"` \| `"compare"` \| `"release_list"` \| `"tag_list"` \| `"ref_get"` \| `"commit_status_get"` \| `"check_runs_list"` \| `"workflow_runs_list"` \| `"workflow_run_view"` \| `"pr_diff"` \| `"file_read"` | **Yes** | — |
 | `limit` | `integer` | No | range: 1–250 |
 | `state` | `"open"` \| `"closed"` \| `"all"` | No | — |
 | `prNumber` | `integer` | No | range: 0–9007199254740991 |
@@ -1695,6 +1695,7 @@ Read-only GitHub access for the repository bound to an owner-authorized workspac
 | `event` | `string` | No | pattern: `^[a-z_]{1,64}$` |
 | `status` | `"queued"` \| `"in_progress"` \| `"completed"` \| `"requested"` \| `"waiting"` \| `"pending"` \| `"success"` \| `"failure"` \| `"cancelled"` \| `"skipped"` \| `"timed_out"` \| `"action_required"` \| `"neutral"` \| `"stale"` | No | — |
 | `runId` | `integer` | No | range: 0–9007199254740991 |
+| `cursor` | `string` | No | pattern: `^[A-Za-z0-9_-]+$`, length: 1–512 |
 
 ### `agent_spawn`
 

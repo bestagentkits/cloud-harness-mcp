@@ -47,6 +47,20 @@ import { PACKAGE_OPERATIONS, PackageService, databaseWorkspaceDirectory, type Pa
 import { PackageStore } from './package-store.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
 import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken, requiredGitHubPermissions, type GitHubPermissionScope } from './github-app-broker.js';
+import {
+  FILE_READ_MAX_BYTES,
+  GITHUB_READ_DOWNLOAD_CAP_MARKER,
+  GITHUB_READ_HELPER_OUTPUT_MAX_BYTES,
+  GITHUB_READ_RESPONSE_MAX_BYTES,
+  PULL_REQUEST_DIFF_PAGE_SIZES,
+  decodeFileReadCursor,
+  decodePullRequestDiffCursor,
+  githubReadCursorScope,
+  parseGitHubReadHelperOutput,
+  pullRequestDiffPage,
+  shapeFileReadPage,
+  shapePullRequestDiffPage
+} from './github-pull-request-diff-and-file-pages.js';
 import type { GitHubBindingService } from './github-binding-service.js';
 import { ArtifactStoreError, type ArtifactMetadata, type ArtifactStore } from './artifact-store.js';
 import { CONTENTS_PERMISSION_MISSING_REASON, type GitHubInstallationRecord, type GitHubInstallationStore } from './github-installation-store.js';
@@ -1841,6 +1855,7 @@ export class WorkspaceService {
         labelCreate: issuesWrite,
         pullRequestList: pullRequestsRead,
         pullRequestView: pullRequestsRead,
+        pullRequestDiff: pullRequestsRead,
         pullRequestCreate: pullRequestsWrite,
         pullRequestUpdate: pullRequestsWrite,
         pullRequestComment: pullRequestsWrite,
@@ -1853,6 +1868,7 @@ export class WorkspaceService {
         pullRequestAutoMerge: pullRequestsWrite && contentsWrite,
         commitList: isGitHub && contentsRead,
         compare: isGitHub && contentsRead,
+        fileRead: isGitHub && contentsRead,
         releaseList: isGitHub && contentsRead,
         tagList: isGitHub && contentsRead,
         pullRequestReviewList: pullRequestsRead,
@@ -2904,12 +2920,52 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
   }
 
+  /**
+   * github_read pr_diff and file_read: the helper reads each GitHub response through a download cap, and
+   * the runner cuts one page whose serialized JSON stays within the output budget.
+   */
+  private async readGitHubPage(record: WorkspaceRecord, validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+    const budgetBytes = this.config.maxOutputBytes;
+    const capped = { downloadCapped: true };
+    const cap = String(GITHUB_READ_RESPONSE_MAX_BYTES);
+    const scope = githubReadCursorScope(record.id, record.repositoryUrl);
+    const helperStdout = ({ data }: RunnerResponse): string =>
+      data && typeof data === 'object' && 'output' in data && typeof data.output === 'string' ? data.output : '';
+    if (validated.action === 'file_read') {
+      const path = validated.path as string;
+      const revision = validated.sha as string;
+      const cursor = decodeFileReadCursor(validated.cursor as string | undefined, scope, path, revision);
+      const { result, usedTokens } = await this.runBrokeredGitHubAction(record, 'file_read', [path, revision, String(FILE_READ_MAX_BYTES), cap], signal, capped);
+      if (!result.ok) return result;
+      const output = shapeFileReadPage({
+        scope, path, revision, cursor, output: parseGitHubReadHelperOutput('file_read', helperStdout(result)), budgetBytes, credentials: usedTokens ?? []
+      });
+      return { ok: true, message: 'GitHub file_read successful', data: { output }, truncated: false };
+    }
+    const prNumber = validated.prNumber as number;
+    const cursor = decodePullRequestDiffCursor(validated.cursor as string | undefined, scope, prNumber);
+    const startIndex = cursor?.i ?? 0;
+    // A page of large patches can exceed the download cap; the same file index is then read in smaller pages.
+    for (const pageSize of PULL_REQUEST_DIFF_PAGE_SIZES) {
+      const { page } = pullRequestDiffPage(startIndex, pageSize);
+      const { result } = await this.runBrokeredGitHubAction(record, 'pr_diff', [String(prNumber), String(page), String(pageSize), cap], signal, capped);
+      if (!result.ok && result.error?.code === 'LIMIT_EXCEEDED') continue;
+      if (!result.ok) return result;
+      const output = shapePullRequestDiffPage({
+        prNumber, scope, startIndex, pageSize, cursor, output: parseGitHubReadHelperOutput('pr_diff', helperStdout(result)), budgetBytes
+      });
+      return { ok: true, message: 'GitHub pr_diff successful', data: { output }, truncated: false };
+    }
+    throw new HarnessError('LIMIT_EXCEEDED', `file ${startIndex + 1} of pull request #${prNumber} exceeded the ${GITHUB_READ_RESPONSE_MAX_BYTES}-byte download cap`);
+  }
+
   private async runBrokeredGitHubAction(
     record: WorkspaceRecord,
     action: string,
     args: string[],
-    signal?: AbortSignal
-  ): Promise<{ result: RunnerResponse; credentialSource: RepositoryCredentialSource }> {
+    signal?: AbortSignal,
+    options: { downloadCapped?: boolean } = {}
+  ): Promise<{ result: RunnerResponse; credentialSource: RepositoryCredentialSource; usedTokens?: readonly string[] }> {
     const requirement = requiredGitHubPermissions(action);
     if (!requirement) throw new HarnessError('INVALID_INPUT', `unsupported github_action: ${action}`);
     const isWrite = requirement.write;
@@ -3079,7 +3135,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         ], {
           stdin: `${helperToken}\n`,
           timeoutMs: 60_000,
-          maxBytes: this.config.maxOutputBytes,
+          maxBytes: options.downloadCapped ? GITHUB_READ_HELPER_OUTPUT_MAX_BYTES : this.config.maxOutputBytes,
           ...(signal ? { signal } : {})
         });
         return { ...output, stdout: redactCredentials(output.stdout, usedTokens), stderr: redactCredentials(output.stderr, usedTokens) };
@@ -3089,8 +3145,14 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     };
 
     let activeToken: string = token;
+    // A capped read that hit its cap was stopped mid-response: its partial output is never classified or returned.
+    // The helper reports its own cap with exit 3 and one exact stderr line; stderr can also echo a requested
+    // path, so the marker text alone is not enough.
+    const helperCapLine = new RegExp(`^${GITHUB_READ_DOWNLOAD_CAP_MARKER}: a GitHub response exceeded \\d+ bytes$`, 'm');
+    const capExceeded = (output: { truncated: boolean; stderr: string; exitCode: number }) =>
+      options.downloadCapped === true && (output.truncated || (output.exitCode === 3 && helperCapLine.test(output.stderr)));
     let result = await runHelper(activeToken);
-    if (result.exitCode !== 0 && userCredential !== undefined
+    if (!capExceeded(result) && result.exitCode !== 0 && userCredential !== undefined
       && classifyGitHubFailure(result.stderr, result.stdout, action).code === 'AUTHENTICATION_FAILED') {
       // GitHub rejected the user token itself (401): it expired, or a refresh rotated it. The user lane
       // recovers with its own token and runs the action once more. It never switches to another credential.
@@ -3103,6 +3165,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       result = await runHelper(activeToken);
     }
+    if (capExceeded(result)) {
+      const message = `GitHub ${action} exceeded the ${GITHUB_READ_RESPONSE_MAX_BYTES}-byte download cap`;
+      return { result: { ok: false, message, error: { code: 'LIMIT_EXCEEDED', message, retryable: false }, truncated: true }, credentialSource };
+    }
 
     if (result.exitCode === 0) {
       return {
@@ -3112,7 +3178,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           data: { output: result.stdout || result.stderr },
           truncated: result.truncated
         },
-        credentialSource
+        credentialSource,
+        // Redaction runs on the helper's text; a caller that decodes content checks it against these.
+        usedTokens
       };
     }
 
@@ -4419,6 +4487,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       const action = validated.action as string;
       if (operation === 'github_read' && requiredGitHubPermissions(action)?.write !== false) {
         throw new HarnessError('INVALID_INPUT', `github_read accepts read-only actions only; use github_action for ${action}`);
+      }
+      if (action === 'pr_diff' || action === 'file_read') {
+        const result = await this.readGitHubPage(record, validated, signal);
+        await this.enforceActiveLimits(record);
+        return result;
       }
       let fingerprint: string | undefined;
       if (validated.idempotencyKey) {
