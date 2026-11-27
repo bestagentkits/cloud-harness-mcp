@@ -28,8 +28,6 @@ export type GitHubRepositoryListing = {
   unreachableAccounts: GitHubUnreachableAccount[];
   userAuthorization?: string;
   listedAt?: string;
-  /** False until the bound installations were refreshed from GitHub. */
-  synced?: boolean;
   incomplete?: boolean;
   warnings: string[];
 };
