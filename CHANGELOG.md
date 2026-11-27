@@ -1,3 +1,15 @@
+# [2.3.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v2.2.0...v2.3.0) (2026-11-27)
+
+
+### Bug Fixes
+
+* **runner:** start with an unreadable durable store while the engine is off ([#664](https://github.com/bestagentkits/cloud-harness-mcp/issues/664)) ([0d24b3a](https://github.com/bestagentkits/cloud-harness-mcp/commit/0d24b3a5999bff44c8f67b1339a8b885437f68b8)), closes [#597](https://github.com/bestagentkits/cloud-harness-mcp/issues/597) [#597](https://github.com/bestagentkits/cloud-harness-mcp/issues/597)
+
+
+### Features
+
+* **dashboard:** create a Gemini OAuth client from Settings ([#672](https://github.com/bestagentkits/cloud-harness-mcp/issues/672)) ([92bf2ac](https://github.com/bestagentkits/cloud-harness-mcp/commit/92bf2ac1a4f137c4d9a648bcef296658c26776d0)), closes [#665](https://github.com/bestagentkits/cloud-harness-mcp/issues/665) [#671](https://github.com/bestagentkits/cloud-harness-mcp/issues/671)
+
 # [2.2.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v2.1.0...v2.2.0) (2026-11-26)
 
 
